@@ -5,7 +5,7 @@ import { ApiError } from './errors.mts';
 import { safeText } from './projection.mts';
 
 export type JournalRecord = {id: string; name: EventName; envelope: EventEnvelope; wire: string; bytes: number};
-type Client = {response: ServerResponse; workspace: string; session: string; clientId?:string; queue: {wire:string;id:string}[]; bytes: number; blocked: boolean; closed: boolean; onClose?: () => void};
+type Client = {response: ServerResponse; workspace: string; session: string; connectionId:string; clientId?:string; queue: {wire:string;id:string}[]; bytes: number; blocked: boolean; closed: boolean; onClose?: () => void};
 /** Optional monotonic instrumentation is consumer-owned; it never records prompt text. */
 export type Measure = (stage: string, id: string, at: number, bytes?: number) => void;
 function control(name: 'ready' | 'resync', data: unknown) { return `event: ${name}\ndata: ${JSON.stringify({at: new Date().toISOString(), data})}\n\n`; }
@@ -69,6 +69,12 @@ export class Journal {
     return {records: this.records.filter(record => Number(record.id.slice(record.id.lastIndexOf(':') + 1)) > sequence && (!record.envelope.workspaceId || record.envelope.workspaceId === workspace))};
   }
   hasClient(workspace:string,session:string,clientId:string):boolean {return [...this.clients].some(client=>client.workspace === workspace && client.session === session && client.clientId === clientId && !client.closed);}
+  controlPage(workspace:string):{session:string;pageId:string;connectionId:string}|undefined {
+    const clients=[...this.clients].filter(client=>client.workspace===workspace&&!client.closed);
+    const client=clients.length===1?clients[0]:undefined;
+    return client?.clientId?{session:client.session,pageId:client.clientId,connectionId:client.connectionId}:undefined;
+  }
+  hasConnection(workspace:string,session:string,pageId:string,connectionId:string):boolean {return [...this.clients].some(client=>!client.closed&&client.workspace===workspace&&client.session===session&&client.clientId===pageId&&client.connectionId===connectionId);}
   attach(response: ServerResponse, workspace: string, session: string, after?: string, onClose?: () => void,clientId?:string) {
     if (clientId) for (const old of [...this.clients]) if (old.workspace === workspace && old.clientId === clientId) {
       if (old.session !== session) throw new ApiError('invalid_request','The page scope belongs to another session.');
@@ -81,14 +87,14 @@ export class Journal {
       response.end(control('resync', {reason: replay.reason, snapshotUrl: `/api/snapshot?workspace=${encodeURIComponent(workspace)}`, cursor: this.cursor}));
       onClose?.(); return;
     }
-    const client: Client = {response, workspace, session,clientId, queue: [], bytes: 0, blocked: false, closed: false, onClose};
+    const client: Client = {response, workspace, session,connectionId:randomUUID(),clientId, queue: [], bytes: 0, blocked: false, closed: false, onClose};
     response.on('close', () => this.detach(client));
     response.on('error', () => this.detach(client));
     response.on('drain', () => { client.blocked = false; this.flush(client); });
     // Replay admission and live registration are synchronous on the same event-loop boundary.
     for (const record of replay.records) this.enqueue(client, record.wire, record.id);
     if (client.closed) return;
-    this.enqueue(client, control('ready', {bootId: this.bootId, cursor: this.cursor}));
+    this.enqueue(client, control('ready', {bootId: this.bootId, cursor: this.cursor,connectionId:client.connectionId}));
     if (!client.closed) this.clients.add(client);
   }
   workspaceClients(workspace: string) { return [...this.clients].filter(client => client.workspace === workspace).length; }

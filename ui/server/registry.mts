@@ -18,6 +18,7 @@ import { dispatchAgent } from './routes-agent.mts';
 import { dispatchView } from './routes-view.mts';
 import { StoredAgentStarter, startIdentity, type StartOptions } from './agent-start.mts';
 import { validateSessionProject } from './sessions.mts';
+import type {Control} from './control.mts';
 
 export type AgentAdapter = Pick<AgentService, 'roster' | 'rosterRow' | 'prepare' | 'refresh' | 'select' | 'hide' | 'reconnect' | 'history' | 'image' | 'imageInputAvailable' | 'inspect' | 'submit' | 'retrySubmit' | 'abort' | 'configure' | 'disconnectWorkspace' | 'close'> & {readonly available?:boolean};
 export type RegistryOptions = {stateDir: string; cwd: string; executable: string; agentStore: string;
@@ -38,6 +39,7 @@ interface AgentObservationSlot {epoch: number; afterEpoch: number; started: bool
 interface WorkspaceObservation {version: number; dirty: boolean; desired: Map<string,AgentObservationSlot>; attached: Map<string,AgentObservationSlot>; running?: Promise<void>}
 /** Process ownership is independent of browser connections and saved view state. */
 export class Registry {
+  control?:Control;
   readonly journal: Journal;
   readonly operations: Operations;
   readonly sessions = new Map<string, PrimarySession>();

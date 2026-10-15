@@ -4,13 +4,13 @@ import type { ProjectedFrame } from '../shared/api.ts';
 import {createAppFixture} from './app-fixture.mts';
 const {app, arrive, settle, event, hostDocument, byId, agentControl, primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, observation, singlePane, coverage, transportLog} = await createAppFixture();
 
-test('initial focused draft hydration restores focus, while rerenders preserve another control focus', async () => {
+test('passive draft hydration leaves focus unchanged, while explicit focus and rerenders preserve native ranges', async () => {
   const target = {kind: 'agent', identity: 'caret-agent'} as const;
   const saved = targetFixture('caret-target', target, {draft: {revision: 4, text: 'saved draft', mode: 'followUp', persisted: true}, reading: {revision: 3, anchorId: 'caret-entry', offsetPx: 17, followTail: false}});
   const frame: ProjectedFrame = {revision: 1, observedAt: '', live: [], entries: [entryFixture('caret-entry', [messageFixture('caret-message', [textPart('Reading anchor')])])], nextBefore: null, coverage, status: {busy: false}};
   hostDocument.activeElement = hostDocument.body;
   await arrive({workspace: {id: 'caret-workspace', revision: 1, selectedTarget: target}, primaries: [], roster: [agentFixture(target.identity)], targets: [saved], observations: [observation(target.identity, frame)]});
-  const composer = app.agentComposer(); assert.equal(hostDocument.activeElement, composer.editor);
+  const composer = app.agentComposer(); assert.equal(hostDocument.activeElement, hostDocument.body);
   composer.editor.setSelectionRange(2, 7, 'backward'); agentControl('editor').dispatch('select');
   const unrelated = byId('agent-search'); unrelated.focus(); await app.reload(); await settle();
   assert.equal(hostDocument.activeElement, unrelated); assert.deepEqual([composer.editor.selectionStart, composer.editor.selectionEnd], [2, 7]);

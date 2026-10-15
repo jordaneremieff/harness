@@ -48,12 +48,18 @@ import type { ConversationPresentation } from './conversation-presentation.ts';
 import { newerOperation, mergeOperationMap } from './operation-state.ts';
 import { ApiError, authenticate, connect, errorMessage, operation, request, setUnauthorizedHandler, setRequestTiming } from './transport.ts';
 import type { ReceivedEvent } from './transport.ts';
+import {CONTROL_LIMITS, CONTROL_ROUTES, type ControlRequest} from '../shared/control.ts';
+import {BrowserControl, ControlRefusal, controlLayout, controlPaneBox, controlProvenance} from './control.ts';
 
 export let state = createState();
 let snapshot: Bootstrap | Snapshot | undefined;
 let launchCwd: string | undefined;
 let source: EventSource | undefined;
 let connected = false;
+let connectionId: string | undefined;
+const composingFields = new Set<EventTarget>();
+let controlStatus = '';
+let controlStatusWorkspace: string | undefined;
 export let drawerOpen = false;
 let connectionPhase: ConnectionPhase = 'healthy';
 let connectionError: unknown;
@@ -70,8 +76,9 @@ type Pane = string;
 export let focusedPane: Pane = 'pane-1';
 export function focusPane(pane: Pane): void {
   const leaf = paneById(currentLayout(), pane); if (!leaf) return;
-  applyLayout({...currentLayout(), focusedPane: pane});
   const tab = leaf.tabs.find(tab => tabKey(tab) === leaf.active), target = tab ? controllerTarget(tab) : undefined;
+  if(target)conversationController(target).passive = false;
+  applyLayout({...currentLayout(), focusedPane: pane});
   if (tab?.kind === 'file' && state.workspace) filesViews.view(state.workspace,tab).focus();
   else if (target) conversationController(target).composer.focus();
 }
@@ -149,7 +156,7 @@ function conversationController(target: Target): ConversationController {
   const activity = add('activity', 'p', 'exception'); activity.setAttribute('role', 'status'); const queued = element('ul', 'queued-list'); queued.hidden = true; queued.setAttribute('aria-label', 'Queued messages'); nodes.set('queued', queued); elements.root.prepend(activity, queued);
   root.append(observed, notice, region, above, elements.root, below); stableViews().mount(root);
   if (target.kind === 'agent') root.insertBefore(createAgentState(add), region);
-  const controller = {workspaceId, target: {...target}, instanceId, root, nodes, elements, abort: new AbortController(), historyAbort: new AbortController(), cursor: null, before: null, loading: false, preparing: false, historyReady: false, historyBoundaryLoaded: false, initialized: false, showThinking: false} as ConversationController;
+  const controller = {workspaceId, target: {...target}, instanceId, root, nodes, elements, abort: new AbortController(), historyAbort: new AbortController(), cursor: null, before: null, loading: false, preparing: false, passive: true, historyReady: false, historyBoundaryLoaded: false, initialized: false, showThinking: false} as ConversationController;
   controller.composer = new Composer(elements, {prepareInput: () => !controller.passive, imageState: refreshComposerImages, imageInput: captured => composerImageInput(controller, captured), recovery: () => recovery.open(), layoutHeight: () => stableViews().height(elements.root), enterSends: () => state.workspace?.enterSendsMessages === true, timing: (start, end) => {if (controller.workspaceId === state.workspace?.id && !elements.root.closest('[hidden],[inert]')) diagnostics.measure('editor-echo', start, end);}, submitted: result => showOperation(result, workspaceId), unknownCommand: (text, literal) => target.kind === 'primary' && sameTarget(primaryTarget(), target) ? actions.unknown(text, literal) : false,
     ...(target.kind === 'primary' ? {commands: () => actions.commandOptions(), moreCommands: (captured: Target) => actions.continueCommands(captured)} : {}),
     retained: (workspace, captured) => { if (workspace === state.workspace?.id && captured.kind === 'agent') renderMessageResume(captured.identity); }});
@@ -164,7 +171,11 @@ function conversationController(target: Target): ConversationController {
   const focusPane = (event: Event): void => {const pane = viewPane(event.target as HTMLElement); if (pane?.dataset.paneId) updatePaneFocus(pane.dataset.paneId);};
   root.addEventListener('pointerdown', focusPane); root.addEventListener('focusin', focusPane);
   elements.editor.addEventListener('focus', () => { footerController = controller; renderWorkbenchStatus(); });
+  bindControllerInput(controller);
   controllers.set(key, controller); return controller;
+}
+function bindControllerInput(controller:ConversationController):void {
+  for(const name of ['pointerdown','keydown','beforeinput'])controller.elements.root.addEventListener(name,()=> {if(controller.passive) {controller.passive = false;renderController(controller);}}, {capture:true});
 }
 function bindControllerReadingIntent(controller: ConversationController): void {
   const interrupt = (event: Event) => {
@@ -222,6 +233,7 @@ async function loadControllerOutput(controller: ConversationController, more: im
 }
 let footerController: ConversationController | undefined;
 const workbenchStatus = new WorkbenchStatus();
+const controlAttribution = element('span','secondary');controlAttribution.id = 'control-attribution';controlAttribution.setAttribute('role','status');controlAttribution.hidden = true;workbenchStatus.node.append(controlAttribution);
 const messageTarget = new MessageTarget({workspace: () => state.workspace, prepare: prepareMessageTarget, paint: renderMessagePanel});
 const references = new ReferenceResolver(resolveReference, destination => { void navigateReference(destination).catch(showError); });
 const actions: Actions = new Actions({snapshot: currentSnapshot, primary, modelChanged: renderAvailability, get composer() { return primaryComposer(); }, commandsChanged: () => {const target = primaryTarget(); if (target && state.workspace) controllers.get(controllerKey(state.workspace.id, target))?.composer.commandsChanged();}, modal, selection, reload: reloadSelection, result: showOperation, rosterRefresh: refreshRoster, hasTranscript: () => !!focusedTranscript(), find: () => captureFind(), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, view: (tools, expand) => focusedTranscript()?.expandLoaded(tools, expand), selectPrimary, agentStatus: row => presentation({kind: 'agent', identity: row.identity}).activity, conversationFacts: identity => agentFacts(agentRow(identity), state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame), copyAgent: () => { void copy(selectedAgent() ?? '', agentNode('view-notice')); }, inspectAgent,
@@ -347,7 +359,7 @@ const connectionRecovery = new ConnectionRecovery({attempt: resync, unauthorized
   connectionPhase = phase; connectionError = error; connected = phase === 'healthy'; renderConnection();
   if (connected) {renderAll(); void finishStartup().catch(showError);} else renderAvailability();
 }});
-export const selectionQueue = new SelectionQueue({current: () => state.workspace, reload, save: (workspace, change) => request<Workspace>(`/api/workspaces/${encodeURIComponent(workspace.id)}/selection`, 'PUT', {expectedRevision: workspace.revision, ...change}), paint: (workspace, pending) => { selecting = pending; state = {...state, workspace}; renderAll(); }});
+export const selectionQueue = new SelectionQueue({current: () => state.workspace, reload, save: (workspace, change, control) => request<Workspace>(`/api/workspaces/${encodeURIComponent(workspace.id)}/selection`, 'PUT', {expectedRevision: workspace.revision, ...change,...(control ? {control} : {})},undefined,control ? AbortSignal.timeout(CONTROL_LIMITS.executionMs) : undefined), paint: (workspace, pending) => { selecting = pending; state = {...state, workspace}; renderAll(); }});
 
 let paneWorkspace = '';
 let paneResizers: Resizer[] = [];
@@ -434,7 +446,12 @@ function presentation(target?: Target): ConversationPresentation {
 function tabPresentation(tab: ConversationTab): ConversationPresentation { return presentation(controllerTarget(tab)); }
 function activePresentation(): ConversationPresentation { return presentation(layoutTarget(currentLayout(), primaryTarget()) ?? undefined); }
 function projectPath(): string | undefined { return fileRoot.selection?.root?.path ?? primary()?.cwd ?? launchCwd; }
+function renderControlAttribution():void {
+  if(controlStatusWorkspace !== state.workspace?.id)controlStatus = '';
+  setText(controlAttribution,controlStatus);controlAttribution.hidden = !controlStatus;
+}
 function renderWorkbenchStatus(): void {
+  renderControlAttribution();
   const retained = byId<HTMLButtonElement>('file-retained-drafts');retained.hidden = !filesViews.retained().length;setText(retained,'Review retained draft');retained.onclick = reviewRetainedDrafts;
   const tab = activeTab(currentLayout());
   const editingMessage = footerController && messageTarget.current?.identity === (footerController.target.kind === 'agent' ? footerController.target.identity : undefined) && footerController.elements.root.contains(document.activeElement);
@@ -546,12 +563,15 @@ function mountPaneLeaf(leaf: PaneLeaf, layout: ConversationLayout): HTMLElement 
   pane.previous.disabled = activeIndex <= 0; pane.next.disabled = activeIndex < 0 || activeIndex >= leaf.tabs.length - 1;
   pane.plus.disabled = !state.workspace; pane.menu.disabled = !leaf.tabs.length;
   pane.node.dataset.focused = String(leaf.id === layout.focusedPane);
+  return pane.node;
+}
+function placePaneContent(leaf:PaneLeaf):void {
+  const pane = paneRegions.get(leaf.id);if(!pane)throw new Error(`Missing pane region for ${leaf.id}.`);
   const tab = leaf.tabs.find(tab => tabKey(tab) === leaf.active), target = tab ? controllerTarget(tab) : undefined;
   if (tab?.kind === 'file' && state.workspace) {const view = filesViews.view(state.workspace,tab);view.root.dataset.paneId = leaf.id;stableViews().place(view.root,pane.content);}
   else if (target) { const owner = conversationController(target); stableViews().place(owner.root, pane.content); owner.root.dataset.paneId = leaf.id; delete owner.root.dataset.messageOnly;
     if (messageTarget.current?.identity !== (target.kind === 'agent' ? target.identity : undefined)) stableViews().project(owner.elements.root);
   }
-  return pane.node;
 }
 let renderedPaneLayout = '';
 function renderPaneTree(layout: ConversationLayout): void {
@@ -562,6 +582,8 @@ function renderPaneTree(layout: ConversationLayout): void {
   retainPaneGeometry();
   if (state.workspace) filesViews.reconcile(state.workspace,paneLeaves(layout.root).flatMap(pane=>pane.tabs).filter((tab):tab is FileTab=>tab.kind === 'file'),paneLeaves(layout.root).flatMap(pane=>pane.tabs.filter(tab=>tabKey(tab) === pane.active)).filter((tab):tab is FileTab=>tab.kind === 'file'));
   const visited = new Set<string>(); const root = mountPaneNode(layout.root, layout, visited); if (container.firstChild !== root) placeRetained(root, container, container.firstChild);
+  for(const leaf of paneLeaves(layout.root))placePaneContent(leaf);
+  hideInactiveControllers(layout);
   for (const [id, pane] of paneRegions) if (!visited.has(id)) {pane.node.remove(); paneRegions.delete(id);}
   for (const [id, split] of paneSplits) if (!visited.has(id)) {split.resizer?.destroy(); split.node.remove(); paneSplits.delete(id);}
   for (const controller of controllers.values()) if (controller.root.hidden && !controller.historyAbort.signal.aborted) controller.historyAbort.abort();
@@ -569,14 +591,20 @@ function renderPaneTree(layout: ConversationLayout): void {
   if (changed) restorePaneGeometry();
   markFocusedPane(); collectControllers();void watchFiles();
 }
+function hideInactiveControllers(layout:ConversationLayout):void {
+  const shown = new Set(paneLeaves(layout.root).flatMap(pane=>pane.tabs.filter(tab=>tabKey(tab) === pane.active)).flatMap(tab=> {const target = controllerTarget(tab);return target && state.workspace ? [controllerKey(state.workspace.id,target)] : [];}));
+  for (const [key,controller] of controllers) if (!shown.has(key))hideController(controller);
+}
+function hideController(controller:ConversationController):void {
+  const projected = controller.workspaceId === state.workspace?.id && messageTarget.current?.identity === (controller.target.kind === 'agent' ? controller.target.identity : undefined) && !!controller.elements.root.dataset.messagePanel;
+  stableViews().place(controller.root,projected ? byId('agent-message-panel') : undefined);delete controller.root.dataset.paneId;
+  if(projected)controller.root.dataset.messageOnly = 'true';
+  else {delete controller.root.dataset.messageOnly;stableViews().project(controller.elements.root);}
+}
 function retainPaneGeometry(): void {
   for (const controller of controllers.values()) {
     const pane = viewPane(controller.root);
     if (!controller.root.hidden && !controller.root.inert && !pane?.hidden && !pane?.inert) controller.geometry = controller.transcript.captureGeometry();
-    const projected = messageTarget.current?.identity === (controller.target.kind === 'agent' ? controller.target.identity : undefined) && !!controller.elements.root.dataset.messagePanel;
-    stableViews().place(controller.root, projected ? byId('agent-message-panel') : undefined); delete controller.root.dataset.paneId;
-    if (projected) controller.root.dataset.messageOnly = 'true';
-    else {delete controller.root.dataset.messageOnly; stableViews().project(controller.elements.root);}
   }
 }
 function restorePaneGeometry(): void {
@@ -619,6 +647,91 @@ function selection(change: SelectionChange): Promise<void> {
   const task = selectionQueue.select(change);
   requestAnimationFrame(() => {diagnostics.measure('switch', startedAt, performance.now());}); return task;
 }
+export const browserControl = new BrowserControl({
+  page:()=>state.workspace && state.bootId ? {bootId:state.bootId,workspaceId:state.workspace.id,pageId:fileWatch.clientId,connectionId,revision:state.workspace.revision,enabled:state.workspace.agentControl !== false,connected:connected && !document.hidden} : undefined,
+  busy:controlBusy,
+  apply:applyControl,
+  ack:ack=>request(CONTROL_ROUTES.ack,'POST',ack,undefined,AbortSignal.timeout(CONTROL_LIMITS.executionMs)),
+});
+function controlBusy():string|undefined {
+  if(document.hidden || !connected || resynchronizing || accessRequired || devNavigating || devRestoreOwner)return 'page_busy';
+  if(selectionQueue.unsettled || preferences.pending || messageTarget.current?.preparing)return 'selection_busy';
+  if(modal.openNow || contextMenu.openNow)return 'modal';
+  if(composingFields.size || [...controllers.values()].some(controller=>!!controller.composer.reloadHold))return 'input_busy';
+  if(document.documentElement.classList.contains('resizing'))return 'resize';
+  if(document.getSelection()?.isCollapsed === false)return 'selection';
+  return undefined;
+}
+function controlTarget(command:ControlRequest):void {
+  const view = command.intent.action === 'split' || command.intent.action === 'focus' ? command.intent.view : undefined;
+  if(view?.kind === 'agent' && !state.roster.has(view.identity))throw new ControlRefusal('agent_missing');
+  if(view?.kind === 'primary' && (!command.primary || !sameTarget(command.primary,primaryTarget())))throw new ControlRefusal('primary_changed');
+}
+function controlNativeOwner(native:HTMLElement,next:ConversationLayout):void {
+  const root = native.closest<HTMLElement>('.conversation,.file-view');if(!root)return;
+  const slot = stableViews().slot(root),id = slot?.closest<HTMLElement>('.pane-leaf')?.dataset.paneId;
+  if(!id) {if(!byId('agent-message-panel').contains(slot ?? null))throw new ControlRefusal('native_owner_hidden');return;}
+  const old = paneById(currentLayout(),id),proposed = paneById(next,id);
+  if(!old || !proposed || old.active !== proposed.active)throw new ControlRefusal('native_owner_hidden');
+  controlPaneGeometry(id,next,'native_owner_geometry');
+}
+function controlPaneGeometry(id:string,next:ConversationLayout,code:string):void {
+  const box = byId('conversation-panes').getBoundingClientRect(),space = {width:box.width,height:box.height,divider:4};
+  const before = controlPaneBox(currentLayout().root,id,space),after = controlPaneBox(next.root,id,space);
+  if(!before || !after || JSON.stringify(before) !== JSON.stringify(after))throw new ControlRefusal(code);
+}
+function controlReadingGeometry(next:ConversationLayout):void {
+  for(const controller of controllers.values()) {
+    if(controller.workspaceId !== state.workspace?.id || controller.root.hidden || controller.root.inert)continue;
+    const pane = controller.root.dataset.paneId;if(!pane)continue;
+    const reading = controller.transcript.captureGeometry();
+    // Reflow can shorten the anchored entry and clamp its offset before a receipt.
+    if(!reading.followTail && reading.anchor)controlPaneGeometry(pane,next,'reading_owner_geometry');
+  }
+}
+function nativeSignature(native:HTMLTextAreaElement):string {return JSON.stringify([native.value,native.selectionStart,native.selectionEnd,native.selectionDirection,native.scrollTop,native.scrollLeft]);}
+function captureControlNative(next:ConversationLayout):()=>void {
+  const active = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+  const native = active && nativeEditingTarget(active) ? active as HTMLTextAreaElement : undefined;
+  if(native)controlNativeOwner(native,next);
+  const signature = native && nativeSignature(native),parent = native?.parentElement;
+  return ()=> {
+    if(active && document.activeElement !== active)throw new Error('The native focus changed before its receipt.');
+    if(native && (!native.isConnected || native.parentElement !== parent || native.closest('[hidden],[inert]') || nativeSignature(native) !== signature))throw new Error('The native input changed before its receipt.');
+  };
+}
+function controlPaneSpace(id:string):{width:number;height:number;divider:number} {const box = paneRegions.get(id)?.node.getBoundingClientRect();return {width:box?.width ?? 0,height:box?.height ?? 0,divider:4};}
+function controlSelection(next:ConversationLayout):SelectionChange {
+  const target = layoutTarget(next,primaryTarget());
+  return {conversationLayout:next,...(activeTab(next)?.kind === 'file' ? {} : {selectedTarget:target,panelVisible:target?.kind === 'agent'})};
+}
+async function controlFiles(command:ControlRequest,workspace:Workspace):Promise<void> {
+  const intent = command.intent,view:ConversationTab|undefined = intent.action === 'show' ? {kind:'file',rootId:intent.rootId,path:intent.path,...(intent.preview ? {view:'preview'} : {})} : intent.action === 'split' || intent.action === 'focus' ? intent.view : undefined;
+  if(view?.kind !== 'file')return;
+  const owner = filesViews.view(workspace,view).owner;await owner.load();
+  if(owner.text === undefined || owner.loading || owner.error)throw new Error('The presented file is not ready.');
+}
+function controlFrame():Promise<void> {return new Promise<void>((resolve,reject)=> {const timer = window.setTimeout(()=>reject(new Error('The presentation frame did not render.')),250);requestAnimationFrame(()=> {window.clearTimeout(timer);resolve();});});}
+function verifyControlPane(pane:PaneLeaf,workspace:Workspace):void {
+  const region = paneRegions.get(pane.id);if(!region || region.node.hidden || region.node.inert)throw new Error('The pane is not rendered.');
+  const tab = pane.tabs.find(tab=>tabKey(tab) === pane.active),target = tab && controllerTarget(tab);
+  const root = tab?.kind === 'file' ? filesViews.view(workspace,tab).root : target ? controllers.get(controllerKey(workspace.id,target))?.root : undefined;
+  if(root && (!root.isConnected || root.hidden || root.inert || stableViews().slot(root) !== region.content))throw new Error('The native view is not placed.');
+}
+async function applyControl(command:ControlRequest):Promise<number> {
+  const workspace = state.workspace;if(!workspace)throw new ControlRefusal('workspace_missing');
+  const busy = controlBusy();if(busy)throw new ControlRefusal(busy);
+  if(command.intent.action === 'notice')return workspace.revision;
+  controlTarget(command);const box = byId('conversation-panes').getBoundingClientRect();
+  const next = controlLayout(currentLayout(),command.intent,{width:box.width,height:box.height,divider:4},controlPaneSpace),verifyNative = captureControlNative(next);
+  controlReadingGeometry(next);
+  let revision = workspace.revision;
+  if(!samePaneLayout(currentLayout(),next))revision = (await selectionQueue.selectControl(controlSelection(next),controlProvenance(command))).revision;
+  await controlFiles(command,workspace);await controlFrame();stableViews().sync();
+  if(state.workspace?.id !== workspace.id || !samePaneLayout(currentLayout(),next))throw new Error('The presentation changed before its receipt.');
+  for(const pane of paneLeaves(next.root))verifyControlPane(pane,state.workspace);
+  verifyNative();return revision;
+}
 let focusPrimaryKey: string | undefined;
 export async function reloadSelection(): Promise<void> {
   await reload(); focusPrimaryKey = state.workspace?.primaryKey;
@@ -638,8 +751,7 @@ async function refreshSnapshot(signal?: AbortSignal): Promise<void> {
   try {
     const explicit = messageTarget.current;
     const read = <T>(path: string, method = 'GET', body?: unknown) => request<T>(path, method, body, undefined, signal && (method === 'GET' ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : signal));
-    const pending = read<Snapshot>(`/api/snapshot?workspace=${encodeURIComponent(state.workspace.id)}`).then(value => hydrateVisible(value, read, explicit?.workspaceId === value.workspace.id ? {kind: 'agent', identity: explicit.identity} : undefined,
-      [...controllers.values()].filter(controller => controller.workspaceId === value.workspace.id && controller.passive).map(controller => controller.target)));
+    const pending = read<Snapshot>(`/api/snapshot?workspace=${encodeURIComponent(state.workspace.id)}`).then(value => hydrateVisible(value, read, explicit?.workspaceId === value.workspace.id ? {kind: 'agent', identity: explicit.identity} : undefined));
     const current = await (signal ? waitForSignal(pending, signal) : pending); signal?.throwIfAborted();
     if (buffered.overflow) throw new Error('Current view changed too quickly during restore. Reconnect to request a fresh baseline.');
     updateDiagnostics(true); snapshot = current; state = replaceSnapshot({...before, dismissedNotices: state.dismissedNotices, readNotices: state.readNotices}, current, buffered.events); if (state.workspace) state = {...state, workspace: selectionQueue.observe(state.workspace)}; renderAll();
@@ -648,7 +760,7 @@ async function refreshSnapshot(signal?: AbortSignal): Promise<void> {
 function stream(signal?: AbortSignal): Promise<void> {
   signal?.throwIfAborted();
   if (document.hidden) return Promise.reject(new Error('The page is hidden.'));
-  source?.close();
+  source?.close(); connectionId = undefined;
   if (!state.workspace || !state.cursor) return Promise.reject(new Error('No current workspace baseline.'));
   const ready = {resolve: () => {}, reject: (_error: unknown) => {}};
   const promise = new Promise<void>((resolve, reject) => { ready.resolve = resolve; ready.reject = reject; }); streamWait = ready;
@@ -658,7 +770,7 @@ function stream(signal?: AbortSignal): Promise<void> {
   return (signal ? waitForSignal(promise, signal) : promise).finally(() => { window.clearTimeout(timer); if (streamWait === ready) streamWait = undefined; });
 }
 function disconnected(error: unknown = new Error('The event stream closed.')): void {
-  source?.close(); connected = false; renderAvailability();
+  source?.close(); connectionId = undefined; connected = false; renderAvailability();
   if (streamWait) streamWait.reject(error);
   else connectionRecovery.lost(error);
 }
@@ -701,21 +813,30 @@ async function resync(signal: AbortSignal): Promise<void> {
 export function receive(event: ReceivedEvent): void {
   const old = state;
   const reduced = {id: event.id, name: event.name, target: event.envelope.target, workspaceId: event.envelope.workspaceId, data: event.envelope.data} as UiEvent;
-  for (const buffer of snapshotBuffers) {
-    buffer.bytes += event.bytes ?? 512;
-    if (buffer.bytes > 1_048_576 || buffer.events.length >= 256) buffer.overflow = true;
-    if (!buffer.overflow) buffer.events.push(reduced);
-  }
+  bufferSnapshotEvent(reduced,event.bytes);
   const reducerStartedAt = performance.now(); state = reduceEvent(state, reduced);
   diagnostics.measure('reducer', reducerStartedAt, performance.now());
   if (state.needsResync) { disconnected(new Error('The event baseline needs a refresh.')); return; }
   if (event.name === 'workspace.changed' && state.workspace) state = {...state, workspace: selectionQueue.observe(state.workspace)};
-  if (event.name === 'ready') { streamWait?.resolve();refreshFileConnection();return; }
+  if (event.name === 'ready') { connectionId = (event.envelope.data as EventData['ready']).connectionId;streamWait?.resolve();refreshFileConnection();return; }
   if (old === state) return;
+  if (event.name === 'control.request') {void browserControl.receive(event.envelope.data as ControlRequest);return;}
   applyEvent(event);
   if (event.name === 'primary.state') {
-    const current = event.envelope.data as PrimaryView; const previous = old.primaries.get(current.key);
-    if (historyBecameReady(previous, current, state.workspace?.primaryKey)) void loadVisibleHistory();
+    const current = event.envelope.data as PrimaryView; refreshReadyHistory(old.primaries.get(current.key),current);
+  }
+}
+function refreshReadyHistory(previous:PrimaryView|undefined,current:PrimaryView):void {
+  if(!historyBecameReady(previous,current,state.workspace?.primaryKey))return;
+  const target = primaryTarget(), controller = target && state.workspace ? controllers.get(controllerKey(state.workspace.id,target)) : undefined;
+  if(controller)controller.historyReady = false;
+  void loadVisibleHistory();
+}
+function bufferSnapshotEvent(event:UiEvent,bytes = 512):void {
+  for(const buffer of snapshotBuffers) {
+    buffer.bytes += bytes;
+    if(buffer.bytes > 1_048_576 || buffer.events.length >= 256)buffer.overflow = true;
+    if(!buffer.overflow)buffer.events.push(event);
   }
 }
 function refreshFileConnection():void {void watchFiles(true);filesTree.refresh();const workspace = state.workspace;if (workspace) for (const root of filesViews.scopes(workspace.id)) void filesViews.refresh(workspace.id,root.rootId,root.files);}
@@ -734,7 +855,7 @@ function applyShellEvent(event:ReceivedEvent):void {
     case 'files.changed': fileChanges(event.envelope.data as FileChanges,event.envelope.workspaceId);break;
     case 'draft.changed': updateDraft(event.envelope.data as EventData['draft.changed']);break;
     case 'operation.changed': showOperation(event.envelope.data as OperationView);break;
-    case 'notice': noticesBadge();break;
+    case 'notice': {const notice = event.envelope.data as EventData['notice'];if (notice.code?.startsWith('control_')) {controlStatus = notice.message;controlStatusWorkspace = state.workspace?.id;renderWorkbenchStatus();}noticesBadge();break;}
     case 'extension.request': applyExtension(event);break;
     case 'extension.expired': extensionDialogs.update();break;
   }
@@ -820,7 +941,8 @@ function selectPrimary(): void {
   const origin = document.activeElement; drawerOpen = false;
   let layout: ConversationLayout;
   try { layout = openTab(currentLayout(), {kind: 'primary'}); } catch (error) { showError(error); return; }
-  const applied = selection({selectedTarget: primaryTarget() ?? null, conversationLayout: layout});
+  const target = primaryTarget();if(target) conversationController(target).passive = false;
+  const applied = selection({selectedTarget: target ?? null, conversationLayout: layout});
   focusEditor(); void applied.then(() => {
     if (!selectedAgent() && (document.activeElement === origin || document.activeElement === document.body)) focusEditor();
   }).catch(showError);
@@ -848,7 +970,7 @@ function renderController(controller: ConversationController, deferred = false, 
   controller.composer.receipts(state.operations.values());
   const view = presentation(controller.target); controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + view.name, controllerGuidance(controller, view));
   controller.composer.availability(connected, !!saved && view.input, view.busy, selecting);
-  if (firstDraft && !controller.root.hidden && sameTarget(layoutTarget(currentLayout(), primaryTarget()) ?? undefined, controller.target) && document.activeElement === document.body) controller.composer.focus();
+  if (firstDraft && !controller.passive && !controller.root.hidden && sameTarget(layoutTarget(currentLayout(), primaryTarget()) ?? undefined, controller.target) && document.activeElement === document.body) controller.composer.focus();
   controller.elements.root.hidden = !saved; controllerNode(controller, 'observed').hidden = controller.target.kind === 'agent' || connected || !view.activity;
   controllerNode(controller, 'stop').hidden = !canStopController(controller);
   if (controller.root.hidden) return;
@@ -1103,12 +1225,13 @@ async function confirmCheckedAgent(result: import('../shared/api.ts').TargetPrep
     agentStarts.delete(key);
   } else await reload();
   requireCurrentPreparation(connection);
-  if (current()) {const controller = conversationController({kind: 'agent', identity}); controller.connection = result; controller.connectionError = undefined; renderRoster();}
+  if (current()) {const controller = conversationController({kind: 'agent', identity}); controller.connection = result; controller.connectionError = undefined;renderController(controller);renderRoster();}
 }
 export async function checkAgentConnection(workspace: string, identity: string): Promise<void> {
   const key = agentStartKey(workspace, identity);
   if (!connected || workspace !== state.workspace?.id || identity !== selectedAgent() || checkingAgent || agentStarts.get(key)?.pending) return;
   const connection = source;
+  conversationController({kind:'agent',identity}).passive = false;
   checkingAgent = identity; focusStoredEditor(); renderStoredAgent(identity, agentRow(identity));
   const current = () => workspace === state.workspace?.id && identity === selectedAgent();
   try {
@@ -1194,7 +1317,8 @@ function loadControllerHistory(controller: ConversationController, earlier = fal
 async function runControllerHistory(controller: ConversationController, earlier = false, restoring = false): Promise<void> {
   if (controller.loading || controller.abort.signal.aborted || controller.workspaceId !== state.workspace?.id) return;
   if (controller.historyAbort.signal.aborted) controller.historyAbort = new AbortController();
-  const abort = controller.historyAbort, reading = earlier || restoring ? undefined : controller.saved?.reading ?? targetState(controller.target)?.reading;
+  // Saved positions initialize history; refreshes preserve the transcript's newer intent.
+  const abort = controller.historyAbort, reading = earlier || restoring || controller.historyReady ? undefined : controller.saved?.reading ?? targetState(controller.target)?.reading;
   const more = controller.target.kind === 'primary' ? controller.cursor !== null : controller.before !== null;
   if (earlier && !more) return;
   const release = ownControllerReading(controller, reading); let loaded = false;
@@ -1395,13 +1519,13 @@ async function navigateReference(destination: ReferenceDestination): Promise<voi
   if (!workspace) return;
   if (target.kind === 'agent') {
     if (!state.roster.has(target.identity) && selectedAgent() !== target.identity) return;
-    conversationController(target).passive = true;
+    conversationController(target);
     await selection({panelVisible: true, selectedTarget: target, conversationLayout: openTab(currentLayout(), {kind: 'agent', identity: target.identity})});
     if (workspace !== state.workspace?.id || selectedAgent() !== target.identity) return;
     focusReference(conversationController(target).transcript, entryId);
   } else {
     if (state.primaries.get(target.key)?.epoch !== target.epoch) return;
-    conversationController(target).passive = true;
+    conversationController(target);
     await selection({primaryKey: target.key, selectedTarget: target, conversationLayout: openTab(currentLayout(), {kind: 'primary'})});
     if (!referencePrimaryCurrent(workspace, target)) return;
     focusReference(conversationController(target).transcript, entryId);
@@ -1551,6 +1675,8 @@ export function appKey(event: KeyboardEvent): void {
   event.preventDefault(); if (!event.repeat && !modal.openNow) actions.palette(mode);
 }
 function bind(): void {
+  document.addEventListener('compositionstart', event=> {if(event.target)composingFields.add(event.target);},true);
+  document.addEventListener('compositionend', event=> {if(event.target)composingFields.delete(event.target);},true);
   for (const node of document.querySelectorAll<HTMLElement>('[data-control-icon]')) {
     const count = node.querySelector<HTMLElement>('#notices-count');
     controlIcon(node, node.dataset.controlIcon as CardIcon, node.getAttribute('aria-label') ?? node.textContent ?? '');
@@ -1605,13 +1731,15 @@ function bind(): void {
   document.addEventListener('visibilitychange', () => {
     diagnostics.setHidden(document.hidden); for (const controller of controllers.values()) controller.transcript.visibilityChanged();
     if (document.hidden) {
-      connectionRecovery.suspend(); source?.close(); source = undefined;
+      connectionRecovery.suspend(); source?.close(); source = undefined; connectionId = undefined;
       streamWait?.reject(new Error('The page is hidden.')); streamWait = undefined; resynchronizing = undefined;
       connected = false; renderAvailability();
     } else connectionRecovery.resume();
   });
 }
 export function devHold(): DevReloadHold | undefined {
+  if (browserControl.applying || selectionQueue.unsettled) return 'input';
+  if (composingFields.size) return 'ime';
   if (accessRequired) return 'auth';
   if (!connected || resynchronizing) return 'offline';
   if (modal.openNow || contextMenu.openNow) return 'modal';

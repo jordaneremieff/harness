@@ -1,4 +1,5 @@
 import type { EventData, TargetPreparation, Workspace } from '../shared/api.ts';
+import type {ControlProvenance} from '../shared/control.ts';
 import type { SelectionChange } from './actions.ts';
 import {movedWorkspaceFiles, type FileMove} from './file-identity.ts';
 export function navigationState(workspace: Workspace | undefined, narrow: boolean, drawerOpen = false): {sidebarVisible: boolean; agentSelected: boolean; editor: 'primary-editor' | 'agent-editor'} {
@@ -58,14 +59,15 @@ export class MessageTarget {
   }
   get ready(): boolean { const current = this.current; return !!current && this.valid(current) && !current.invalidated && current.prepared?.availability === 'live' && current.prepared.capabilities.input; }
 }
-export type SelectionHooks = {current: () => Workspace | undefined; save: (workspace: Workspace, change: SelectionChange) => Promise<Workspace>; reload: () => Promise<void>; paint: (workspace: Workspace, pending: boolean) => void};
+export type SelectionHooks = {current: () => Workspace | undefined; save: (workspace: Workspace, change: SelectionChange, control?:ControlProvenance) => Promise<Workspace>; reload: () => Promise<void>; paint: (workspace: Workspace, pending: boolean) => void};
 /** Cached selection appears immediately; backend revisions advance in one ordered lane. */
 export class SelectionQueue {
   private lanes = new Map<string,{committed:Workspace; pending:Map<number,SelectionChange>}>();
   private serial = 0;
   private tail = Promise.resolve();
+  private inFlight = 0;
   private hooks: SelectionHooks;
-  get unsettled(): boolean {return [...this.lanes.values()].some(lane=>lane.pending.size > 0);}
+  get unsettled(): boolean {return this.inFlight > 0;}
   async drain(): Promise<void> {let tail: Promise<void>; do {tail = this.tail; await tail;} while (tail !== this.tail);}
   constructor(hooks: SelectionHooks) {this.hooks = hooks;}
   private lane(workspace:Workspace) {
@@ -97,22 +99,29 @@ export class SelectionQueue {
     if (!lane.pending.size) await this.hooks.reload();
     if (this.hooks.current()?.id === workspaceId) throw error;
   }
-  select(input:SelectionChange):Promise<void> {
-    const current = this.hooks.current(); if (!current) return Promise.resolve();
+  select(input:SelectionChange):Promise<void> {return this.enqueue(input).then(()=>undefined);}
+  selectControl(input:SelectionChange,control:ControlProvenance):Promise<Workspace> {
+    if(this.unsettled) return Promise.reject(new Error('The selection lane is busy.'));
+    return this.enqueue(input,structuredClone(control)).then(value=> {if(!value)throw new Error('The workspace changed.');return value;});
+  }
+  private enqueue(input:SelectionChange,control?:ControlProvenance):Promise<Workspace|undefined> {
+    const current = this.hooks.current(); if (!current) return Promise.resolve(undefined);
     const workspaceId = current.id, lane = this.lane(current), id = ++this.serial, change = structuredClone(input);
-    lane.pending.set(id,change);this.paint(workspaceId);
+    this.inFlight++;lane.pending.set(id,change);this.paint(workspaceId);
     const task = this.tail.then(async()=> {
+      let saved:Workspace;
       try {
-        const result = await this.hooks.save(lane.committed,lane.pending.get(id) ?? change);
+        const result = await this.hooks.save(lane.committed,lane.pending.get(id) ?? change,control);
         if (result.id !== workspaceId) throw new Error('The saved workspace identity changed.');
-        this.observe(result);
-      } catch (error) {await this.failed(workspaceId,id,error);return;}
+        this.observe(result);saved = result;
+      } catch (error) {await this.failed(workspaceId,id,error);if(control)throw error;return;}
       lane.pending.delete(id);this.paint(workspaceId);
       if (!lane.pending.size && this.hooks.current()?.id === workspaceId) {
         await this.hooks.reload();
         const current = this.hooks.current(); if (current?.id === workspaceId) {this.observe(current);this.paint(workspaceId);}
       }
-    });
-    this.tail = task.catch(()=>undefined);return task;
+      return saved;
+    }).finally(()=> {this.inFlight--;});
+    this.tail = task.then(()=>undefined,()=>undefined);return task;
   }
 }

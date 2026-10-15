@@ -73,6 +73,7 @@ export class FileState {
       return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes.subarray(0,length)));
     } finally {await handle.close();}
   }
+  roots() {return this.data.roots.map(publicRoot);}
   selection(workspace:string):FileRootSelection {return structuredClone(this.data.selections[workspace] ?? {revision:0,root:null});}
   root(id:string):RegisteredRoot {
     const root = this.data.roots.find(root=>root.id === id);

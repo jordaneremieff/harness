@@ -131,6 +131,17 @@ function directPicker(t: TestContext, active?: PrimaryView, page: SavedSessionPa
 }
 const settle = () => new Promise<void>(resolve => setImmediate(resolve));
 const active = {key: 'current', cwd: '/project', epoch: 1, lifecycle: 'ready'} as PrimaryView;
+test('first-use folder selection retains the inline session chooser after the root save',async t=> {
+  const setup=directPicker(t);const root=new Node('main');let folder:string|undefined;
+  const picker=new ProjectPicker({modal:setup.modal as unknown as Modal,snapshot:()=>setup.state,primary:()=>undefined,project:()=>folder,selection:async()=>{},reload:async()=>{},workingFolder:async path=> {folder=path;}});
+  picker.mount(root as unknown as HTMLElement);await settle();picker.openProject();await settle();
+  const other=descendants(root).find(node=>node.tag==='button'&&node.textContent==='Other folder…');assert.ok(other);other.click();
+  const field=descendants(root).find(node=>node.id==='picker-project');assert.ok(field);field.value='/another-project';
+  const use=descendants(root).find(node=>node.tag==='button'&&node.textContent==='Use folder');assert.ok(use);use.click();await settle();await settle();
+  assert.equal(folder,'/another-project');assert.ok(descendants(root).find(node=>node.id==='picker-search'));
+  assert.ok(descendants(root).find(node=>node.attributes['aria-label']==='New session'));assert.ok(descendants(root).find(node=>node.className==='picker-select'));
+  assert.equal(setup.modal.token,0);assert.equal(setup.calls.some(call=>call.path==='/api/primaries'),false);
+});
 test('current project opens its session list and a saved row directly admits one open without attestation', async t => {
   const setup = directPicker(t, active); setup.picker.open(); await settle();
   assert.equal(setup.calls.some(call => call.path.includes('/api/projects')), false);

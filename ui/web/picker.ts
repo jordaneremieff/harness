@@ -156,7 +156,7 @@ export class ProjectPicker {
   private workingFolderItems():ContextItem[] {
     const labels = projectLabels(this.projectPaths());
     return this.projectPaths().map(path=>({key:`project:${path}`,label:labels.get(path) ?? path,description:path,checked:path === this.project(),run:()=> {
-      void this.ctx.workingFolder?.(path).catch(cause=> {this.begin('Working folder');this.error(cause,'The working folder is unchanged.');});
+      void this.run(()=>this.chooseWorkingFolder(path),cause=> {this.begin('Working folder');this.error(cause,'The working folder is unchanged.');});
     }}));
   }
   private retainedPrimaryItems(snapshot?:Snapshot):ContextItem[] {
@@ -192,6 +192,10 @@ export class ProjectPicker {
     items.push({key: 'folder', label: 'Other folder…', separatorBefore: true, run: () => this.selectFolder()}, {key: 'refresh', label: 'Refresh recent projects', description: this.projects ? `Saved list · ${relativeTime(this.projects.observedAt, Date.now())}` : undefined, run: () => this.selectProject(control)});
     return items;
   }
+  private async chooseWorkingFolder(path:string):Promise<void> {
+    await this.ctx.workingFolder?.(path);
+    if(this.inline) this.show(path);
+  }
   private selectFolder(): void {
     const {body, token} = this.begin('Working folder');
     const directory = input('Working folder', this.project() ?? ''); directory.field.id = 'picker-project'; directory.label.htmlFor = directory.field.id;
@@ -199,7 +203,7 @@ export class ProjectPicker {
     const next = () => {
       if (!savedPathValid(directory.field.value)) {error.textContent = 'Enter a working folder path that starts with /.'; directory.field.focus(); return;}
       error.textContent = '';
-      if (this.ctx.workingFolder) {void this.run(async()=> {await this.ctx.workingFolder?.(directory.field.value);});return;}
+      if (this.ctx.workingFolder) {void this.run(()=>this.chooseWorkingFolder(directory.field.value));return;}
       void this.sessions(directory.field.value).catch(cause => {if (this.owns(token)) {error.textContent = 'The working folder is unavailable.'; this.error(cause, '');}});
     };
     body.append(pickerField(directory, true), error); this.actions(button('Use folder', next));

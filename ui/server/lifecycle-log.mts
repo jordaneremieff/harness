@@ -27,17 +27,28 @@ export class LifecycleLog {
       if(stat.size<=LIFECYCLE_BYTES) {
         const buffer=Buffer.alloc(LIFECYCLE_BYTES+1),read=await file.read(buffer,0,buffer.length,0);
         log.rows=buffer.subarray(0,read.bytesRead).toString('utf8').split('\n').filter(Boolean).slice(-128).flatMap(row=> {
-          try {const item=JSON.parse(row);if(typeof item.at!=='string'||!/^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(item.at)||!['start','restart','shutdown','fatal','unavailable'].includes(item.event)||typeof item.detail!=='string') return [];return [JSON.stringify({at:item.at.slice(0,40),event:item.event,detail:redactLifecycle(item.detail)})];} catch {return [];}
+          try {const item=JSON.parse(row);if(typeof item.at!=='string'||!/^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(item.at)||!['start','restart','shutdown','fatal','unavailable','control'].includes(item.event)||typeof item.detail!=='string') return [];return [JSON.stringify({at:item.at.slice(0,40),event:item.event,detail:redactLifecycle(item.detail)})];} catch {return [];}
         });
       }
       log.record('start','Backend resources opened.');return log;
     } catch(error) {await file.close();throw error;}
   }
-  record(event:'start'|'restart'|'shutdown'|'fatal'|'unavailable',detail:string) {
+  async control(detail:string):Promise<void> {
+    if(this.stopped||this.failed)throw new Error('Retained control logging is unavailable.');
+    this.record('control',detail);while(this.pending)await this.pending;
+    if(this.failed||this.stopped)throw new Error('Retained control logging is unavailable.');
+    try {await this.file.sync();}catch {this.failed=true;throw new Error('Retained control logging is unavailable.');}
+  }
+  record(event:'start'|'restart'|'shutdown'|'fatal'|'unavailable'|'control',detail:string) {
     if(this.stopped||this.failed) return;
     this.rows.push(JSON.stringify({at:new Date().toISOString(),event,detail:redactLifecycle(detail)}));
+    this.trimControls();
     while(this.rows.length>128||Buffer.byteLength(this.rows.join('\n'))+1>LIFECYCLE_BYTES) this.rows.shift();
     this.dirty=true;this.flush();
+  }
+  private trimControls() {
+    let count=this.rows.filter(row=>JSON.parse(row).event==='control').length;
+    while(count>64) {this.rows.splice(this.rows.findIndex(row=>JSON.parse(row).event==='control'),1);count--;}
   }
   private flush() {
     this.pending??=this.publish().catch(()=>{this.failed=true;}).finally(()=>{this.pending=undefined;if(this.dirty&&!this.failed) this.flush();});

@@ -17,6 +17,14 @@ function fileTransport(context:test.TestContext):void {
     return previous(input,init);
   };
 }
+test('restored file-first split constructs every tab region before document hydration',async context=> {
+  fileTransport(context);hostDocument.activeElement=hostDocument.body;const target={kind:'primary' as const,key:'p',epoch:899},tab:FileTab={kind:'file',rootId:'root',path:'restored.md'};
+  const layout:ConversationLayout={focusedPane:'restored-primary',root:{kind:'split',id:'restored-split',axis:'x',ratio:50,first:{kind:'pane',id:'restored-file',tabs:[tab],active:tabKey(tab)},second:{kind:'pane',id:'restored-primary',tabs:[{kind:'primary'}],active:'primary'}}},start=transportLog.length;
+  await arrive({workspace:{id:'restored-file-first',revision:1,primaryKey:'p',selectedTarget:target,conversationLayout:layout},primaries:[primaryFixture({epoch:899})],roster:[],targets:[targetFixture('restored-primary',target)]});await settle();
+  assert.equal(primaryControl('root').hidden,false);assert.equal(paneNode('restored-file').querySelectorAll('.conversation-tab').length,1);assert.equal(paneNode('restored-primary').querySelectorAll('.conversation-tab').length,1);
+  const workspace=app.state.workspace;assert.ok(workspace);const view=app.filesViews.view(workspace,tab);assert.equal(view.root.hidden,false);assert.equal(view.owner.loading,false);assert.equal(view.owner.source?.text,'# Exact file\n\nRetained source.\n');assert.deepEqual(currentLayout(),layout);assert.equal(hostDocument.activeElement,hostDocument.body);
+  assert.equal(transportLog.slice(start).some(call=>call.path.endsWith('/prepare') || call.path.endsWith('/start') || call.path === '/api/operations' || call.path.includes('/inputs') || call.method === 'PUT' && (call.path.endsWith('/draft') || call.path.endsWith('/text'))),false);
+});
 test('file selection retains native conversation ancestors, caret, draft, source and split geometry',async context=> {
   fileTransport(context);const target = {kind:'primary' as const,key:'p',epoch:900};
   await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:target},primaries:[primaryFixture({epoch:900})],roster:[],targets:[targetFixture('file-primary',target,{draft:{revision:1,text:'Exact draft',mode:'prompt',images:[],persisted:true}})]});

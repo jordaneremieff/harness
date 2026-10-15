@@ -114,7 +114,7 @@ export type PaneNode = {kind: 'pane'; id: string; tabs: WorkspaceTab[]; active: 
 export type ConversationLayout = {root: PaneNode; focusedPane: string};
 /** Shared tabs use compare-and-set revisions for view state. */
 export type Workspace = {id: string; revision: number; primaryKey?: string; selectedTarget?: Target;
-  panelVisible?: boolean; sidebarVisible?: boolean; sidebarWidth?: number; appearance?: Appearance; enterSendsMessages?: boolean;
+  panelVisible?: boolean; sidebarVisible?: boolean; sidebarWidth?: number; appearance?: Appearance; enterSendsMessages?: boolean; agentControl?: boolean;
   conversationLayout?: ConversationLayout; filePositions?: Record<string, FilePosition>};
 export type DraftImage = {digest: string; mimeType: 'image/png' | 'image/jpeg'; bytes: number; width: number; height: number; name: string};
 export type DraftTuple = {text: string; mode: string; images: DraftImage[]};
@@ -189,7 +189,8 @@ export type Snapshot = {notices?: NoticeView[]; omitted?: SnapshotSection[]; pri
   dialogs: DialogView[]; pendingOperations: OperationView[]; targets?: TargetState[]; targetIndex?: TargetIndex[]};
 export type Bootstrap = Snapshot & {limits: typeof LIMITS; launchCwd?: string};
 export type EventData = {
-  ready: {bootId: string; cursor: string};
+  ready: {bootId: string; cursor: string; connectionId?:string};
+  'control.request': import('./control.ts').ControlRequest;
   resync: {reason: 'initial' | 'expired' | 'boot-changed' | 'invalid-cursor' | 'slow-client'; snapshotUrl: string; cursor: string};
   'primary.state': PrimaryView;
   'primary.message': {message: MessageView};
@@ -212,10 +213,11 @@ export type EventData = {
   notice: {level: 'info' | 'warning' | 'error'; message: string; code?: string};
 };
 export type EventName = keyof EventData;
-/** Control events have no journal ID and do not advance browser replay cursors. */
+/** Transport lifecycle events (`ready` and `resync`) have no journal ID and do not advance browser replay cursors. */
 export type EventEnvelope<N extends EventName = EventName> = {at: string; workspaceId?: string; target?: Target; data: EventData[N]};
 /** Closed HTTP route vocabulary. Dynamic segments are encoded single path segments. */
 export const ROUTES = [
+  'GET /api/control/layout', 'POST /api/control/requests', 'GET /api/control/requests/:id', 'POST /api/control/ack',
   'GET /', 'POST /api/auth/launch', 'POST /api/auth/logout', 'GET /api/bootstrap', 'GET /api/events', 'GET /api/snapshot',
   'POST /api/workspaces', 'POST /api/operations', 'GET /api/operations/:id', 'POST /api/operations/:id/reconcile', 'DELETE /api/operations/:id',
   'POST /api/primaries', 'GET /api/primaries/:key', 'GET /api/primaries/:key/history', 'GET /api/primaries/:key/history/output', 'GET /api/primaries/:key/history/image', 'GET /api/primaries/:key/resources/:kind',

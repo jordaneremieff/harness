@@ -1,5 +1,5 @@
-import {validFileTab, workspaceTabKey, type FileTab, type FilePosition} from '../shared/api.ts';
-export type DevFileCheckpoint = {tab:FileTab;position:FilePosition;digest:string;focused:boolean};
+import {LIMITS, validFileTab, workspaceTabKey, type FileTab, type FilePosition} from '../shared/api.ts';
+export type DevFileCheckpoint = {tab:FileTab;position:FilePosition;digest:string;focused:boolean;selection?:NonNullable<DevCheckpointEntry['selection']>};
 export type DevBuild = {
   revision: number; generation: string; previous: string | null;
   change: 'css' | 'reload'; status: 'ready' | 'building' | 'failed' | 'held' | 'restart-required';
@@ -81,8 +81,10 @@ function entry(value: unknown): value is DevCheckpointEntry {
   if (!id(value.targetKey) || !target(value.target) || !integer(value.draftRevision) || !integer(value.readingRevision) || !integer(value.presentationRevision)) return false;
   if (typeof value.imageFingerprint !== 'string' || value.imageFingerprint.length > 8192) return false;
   if (value.selection === undefined) return true;
-  const s = value.selection;
-  return record(s, ['start', 'end', 'direction']) && integer(s.start) && integer(s.end) && s.start <= s.end && s.end <= 262144 && typeof s.direction === 'string' && ['forward', 'backward', 'none'].includes(s.direction);
+  return selection(value.selection,262144);
+}
+function selection(value:unknown,maximum:number):boolean {
+  return record(value,['start','end','direction']) && integer(value.start) && integer(value.end) && value.start <= value.end && value.end <= maximum && typeof value.direction === 'string' && ['forward','backward','none'].includes(value.direction);
 }
 function fileList(value:unknown):value is DevFileCheckpoint[] {
   if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) return false;
@@ -91,7 +93,7 @@ function fileList(value:unknown):value is DevFileCheckpoint[] {
   return Array.from({length:value.length},(_,index)=>descriptors[String(index)]).every(descriptor=> {
     if (!descriptor || !Object.hasOwn(descriptor,'value')) return false;
     const file:unknown = descriptor.value;
-    return record(file,['tab','position','digest','focused']) && record(file.tab,['kind','rootId','path'],['view']) && validFileTab(file.tab) && filePosition(file.position) && typeof file.digest === 'string' && GENERATION.test(file.digest) && typeof file.focused === 'boolean';
+    return record(file,['tab','position','digest','focused'],['selection']) && record(file.tab,['kind','rootId','path'],['view']) && validFileTab(file.tab) && filePosition(file.position) && typeof file.digest === 'string' && GENERATION.test(file.digest) && typeof file.focused === 'boolean' && (file.tab.view === 'preview' ? file.selection === undefined : selection(file.selection,LIMITS.fileTextBytes));
   });
 }
 function targetList(value: unknown): value is DevCheckpointEntry[] {

@@ -1,6 +1,5 @@
 import { spawn } from 'node:child_process';
-import { homedir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Registry, type RegistryOptions } from './registry.mts';
 import { LocalHttp, assetMap, type Asset } from './http.mts';
@@ -14,6 +13,8 @@ import type {BackendHealthFacts} from '../shared/health.ts';
 import {Auth} from './auth.mts';
 import {LifecycleLog} from './lifecycle-log.mts';
 import {supervise} from './supervisor.mts';
+import {Control} from './control.mts';
+import {ControlAuth} from './control-auth.mts';
 
 export type Options = {cwd: string; port: number; pi: string; stateDir?: string; open?: boolean; devReload?:boolean; devDiagnostics?:boolean};
 /** CLI flags select process boundaries, never environment or arbitrary commands. */
@@ -50,12 +51,7 @@ function assignFlag(result: Options, flag: string, value: string) {
     result.port=port;
   }
 }
-function expand(path: string) {return path==='~'?homedir():path.startsWith('~/')?join(homedir(),path.slice(2)):resolve(path);}
-export function statePaths(environment:NodeJS.ProcessEnv=process.env) {
-  const agentDir=environment.PI_CODING_AGENT_DIR?expand(environment.PI_CODING_AGENT_DIR):join(homedir(),'.pi','agent');
-  const agentStore=environment.PI_AGENT_SESSIONS_DIR?expand(environment.PI_AGENT_SESSIONS_DIR):join(agentDir,'agent-sessions');
-  return {agentDir,agentStore,stateDir:join(agentDir,'ui')};
-}
+import {statePaths} from './state-paths.mts';
 function rpcHealth(registry:Registry):'ready'|'unavailable'|'stopped' {
   const sessions=[...registry.sessions.values()];
   if(sessions.some(session=>session.view.lifecycle==='failed'))return 'unavailable';
@@ -74,7 +70,7 @@ export async function startBackend(options:Options, injection:Partial<Pick<Regis
   if(!isAbsolute(options.cwd)) throw new ApiError('invalid_request','The project directory must be absolute.');
   let development:Awaited<ReturnType<typeof DevelopmentBuild.open>>|undefined;
   let diagnostics:DiagnosticSink|undefined,log:LifecycleLog|undefined,auth:Auth|undefined;
-  let startupRegistry:Registry|undefined,startupHttp:LocalHttp|undefined,files:Files|undefined;
+  let startupRegistry:Registry|undefined,startupHttp:LocalHttp|undefined,files:Files|undefined,control:Control|undefined,controlAuth:ControlAuth|undefined;
   try {
     development=options.devReload?await DevelopmentBuild.open(injection.assetRoot):undefined;
     const assets=injection.assets??(development?new Map<string,Asset>():await assetMap(injection.assetRoot));
@@ -89,12 +85,14 @@ export async function startBackend(options:Options, injection:Partial<Pick<Regis
     files=await Files.open(stateDir,()=>registry.fileIdentityFailed());
     files.observe((change,workspace)=>registry.journal.publish('files.changed',undefined,change,workspace));
     await registry.validatePath(options.cwd,true);
+    control=new Control(registry,files,log);controlAuth=new ControlAuth();registry.control=control;
     let stopping=false,closing:Promise<void>|undefined,closedServices:Promise<PromiseSettledResult<void>[]>|undefined;
     const health=():BackendHealthFacts=>({startedAt,supervisorRestarts:injection.supervisorRestarts??0,
       services:serviceHealth(registry,files,stopping),
       build:{state:development?.generations.status().status??'static'}});
-    const http=new LocalHttp(registry,assets,undefined,{generations:development?.generations,diagnostics,identity,files,health},auth);startupHttp=http;
+    const http=new LocalHttp(registry,assets,undefined,{generations:development?.generations,diagnostics,identity,files,health,control:{auth:controlAuth,service:control}},auth);startupHttp=http;
     const launchUrl=await http.listen(options.port);
+    await controlAuth.publish(stateDir,http.auth.origin,registry.journal.bootId);
     development?.generations.observe(status=> {
       diagnostics?.emit({event:'reload',code:status.status==='failed'?'failed':status.status==='ready'?'applied':'deferred'},'build');
       if(status.status==='restart-required') injection.onRestart?.();
@@ -102,13 +100,16 @@ export async function startBackend(options:Options, injection:Partial<Pick<Regis
     development?.build.start();diagnostics?.emit({event:'connection',code:'applied'});
     void registry.agents.refresh().catch(()=>registry.journal.publish('notice',undefined,{level:'warning',message:'The retained agent catalog is unavailable.',code:'catalog_unavailable'}));
     const close=()=>closing??=(async()=> {
-      stopping=true;http.stopAdmission();registry.journal.close();log?.record('shutdown','Admission stopped; owned resources will close.');
+      stopping=true;http.stopAdmission();
+      const controls=await Promise.allSettled([control?.close(),controlAuth?.close()]);
+      registry.journal.close();log?.record('shutdown','Admission stopped; owned resources will close.');
       closedServices??=Promise.allSettled([http.close(),files?.close(),development?.build.close(),diagnostics?.close(),log?.close()]);
       const services=await closedServices,primaries=await Promise.allSettled([registry.close()]);
-      const failed=[...primaries,...services].find(item=>item.status==='rejected');if(failed?.status==='rejected') throw failed.reason;
+      const failed=[...controls,...primaries,...services].find(item=>item.status==='rejected');if(failed?.status==='rejected') throw failed.reason;
     })().catch(error=>{closing=undefined;throw error;});
     return {registry,http,launchUrl,identity,close,log};
   } catch(error) {
+    await Promise.allSettled([control?.close(),controlAuth?.close()]);
     await Promise.allSettled([files?.close(),startupHttp?.close(),auth?.close(),development?.build.close(),diagnostics?.close(),log?.close()]);
     await Promise.allSettled([startupRegistry?.close()]);throw error;
   }

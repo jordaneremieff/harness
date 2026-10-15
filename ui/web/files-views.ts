@@ -108,17 +108,28 @@ export class FilesViews {
     return [...this.views.values()].filter(view=>view.owner.workspace === workspace.id).map(view=> {
       const owner = view.owner;if (!owner.source || owner.loading || owner.error || owner.unsaved || owner.saving) throw new Error('File content is not ready for an update.');
       const tab:FileTab = {...owner.tab,...(view.preview ? {view:'preview'} : {})};
-      return {tab,position:view.capture(),digest:owner.source.revision.digest,focused:document.activeElement === view.scroller};
+      const editor = view.editor;
+      return {tab,position:view.capture(),digest:owner.source.revision.digest,focused:document.activeElement === view.scroller,...(editor ? {selection:{start:editor.selectionStart,end:editor.selectionEnd,direction:editor.selectionDirection}} : {})};
     });
   }
   private restorePositions(workspace:Workspace,files:DevFileCheckpoint[]):boolean {
-    for (const file of files) {const view = this.views.get(this.key(workspace.id,file.tab));if (!view) return false;view.setPosition(file.position);if (file.focused) view.focus();}return true;
+    for (const file of files) {
+      const view = this.views.get(this.key(workspace.id,file.tab));if (!view) return false;
+      if (file.focused) view.focus();
+      if (file.selection) view.editor?.setSelectionRange(file.selection.start,file.selection.end,file.selection.direction);
+      view.setPosition(file.position);
+    }return true;
+  }
+  private rangeMatches(view:FileView,file:DevFileCheckpoint):boolean {
+    if(view.preview)return file.selection === undefined;
+    return !!file.selection && !!view.editor && file.selection.end <= view.editor.value.length;
   }
   async restore(workspace:Workspace,files:DevFileCheckpoint[],current:()=>boolean):Promise<boolean> {
     for (const file of files) {
       if (!workspace.conversationLayout || !paneLeaves(workspace.conversationLayout.root).some(pane=>pane.tabs.some(tab=>workspaceTabKey(tab) === workspaceTabKey(file.tab)))) return false;
       const view = this.view(workspace,file.tab);await view.owner.load();if (!current() || view.owner.source?.revision.digest !== file.digest || view.owner.error) return false;
       if (file.focused && (view.root.hidden || view.root.inert)) return false;
+      if (!this.rangeMatches(view,file)) return false;
     }
     return current() && this.restorePositions(workspace,files) && current();
   }

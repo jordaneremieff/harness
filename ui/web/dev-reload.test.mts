@@ -159,7 +159,7 @@ test('reload drains before the checkpoint and navigates in the same origin with 
   assert.equal(f.releases().length, 0); dev.destroy(); assert.equal(f.releases().length, 0);
 });
 test('reload persists and restores the app capture with empty or populated file checkpoints', async () => {
-  const file = {tab: {kind: 'file' as const, rootId: 'r', path: 'source.ts'}, position: {scrollTop: 240, scrollLeft: 32}, digest: A, focused: false};
+  const file = {tab: {kind: 'file' as const, rootId: 'r', path: 'source.ts'}, position: {scrollTop: 240, scrollLeft: 32}, digest: A, focused: false,selection:{start:3,end:7,direction:'backward' as const}};
   for (const files of [[], [file], [{...file, focused: true}]]) {
     const f = new Fixture(); const captured = {...view(), files};
     if (files.some(item => item.focused)) delete captured.focusedControl;
@@ -237,13 +237,17 @@ test('checkpoint validation is closed, bounded and rejects duplicate or missing 
   const original = checkpoint(); const validated = validateDevReloadCheckpoint(original, B, NOW); const agent = original.targets[1]; assert.ok(agent); agent.draftRevision++;
   assert.equal(validated?.targets[1]?.draftRevision, 7);
 });
-test('file checkpoints contain only bounded identities, source digests, position and focus',()=> {
-  const file = {tab:{kind:'file' as const,rootId:'r',path:'note.md'},position:{scrollTop:120,scrollLeft:8},digest:A,focused:false};
+test('file checkpoints contain bounded source ranges, identities, digests, position and focus',()=> {
+  const file = {tab:{kind:'file' as const,rootId:'r',path:'note.md'},position:{scrollTop:120,scrollLeft:8},digest:A,focused:false,selection:{start:24,end:44,direction:'backward' as const}};
   const value = {...checkpoint(),files:[file]};assert.deepEqual(validateDevReloadCheckpoint(value,B,NOW),value);
   const many = {...checkpoint(),files:Array.from({length:40},(_,index)=>({...file,tab:{...file.tab,path:`file-${index}.md`}}))};assert.deepEqual(validateDevReloadCheckpoint(many,B,NOW),many);
-  const preview = {...value,files:[file,{...file,tab:{...file.tab,view:'preview' as const}}]};assert.deepEqual(validateDevReloadCheckpoint(preview,B,NOW),preview);
+  const preview = {...value,files:[file,{tab:{...file.tab,view:'preview' as const},position:file.position,digest:A,focused:false}]};assert.deepEqual(validateDevReloadCheckpoint(preview,B,NOW),preview);
   for (const files of [[file,file],[{...file,text:'source'}],[{...file,focused:true}],[{...file,position:{scrollTop:-1,scrollLeft:0}}],[{...file,digest:'wrong'}],[{...file,tab:{...file.tab,path:'../escape'}}]]) assert.equal(validateDevReloadCheckpoint({...value,files},B,NOW),null);
+  for(const selection of [undefined,{start:-1,end:2,direction:'none'},{start:2,end:1,direction:'none'},{start:0,end:1.5,direction:'none'},{start:0,end:1048577,direction:'none'},{start:0,end:1,direction:'wrong'},{start:0,end:1,direction:'none',text:'not stored'}])assert.equal(validateDevReloadCheckpoint({...value,files:[{...file,selection}]},B,NOW),null);
+  assert.ok(validateDevReloadCheckpoint({...value,files:[{...file,selection:{start:300000,end:300000,direction:'none'}}]},B,NOW));
+  assert.equal(validateDevReloadCheckpoint({...value,files:[{...file,tab:{...file.tab,view:'preview'}}]},B,NOW),null);
   let reads = 0;const entries = [file];Object.defineProperty(entries,'0',{get:()=> {reads++;return file;}});assert.equal(validateDevReloadCheckpoint({...value,files:entries},B,NOW),null);assert.equal(reads,0);
+  const range={...file};Object.defineProperty(range,'selection',{get:()=> {reads++;return file.selection;}});assert.equal(validateDevReloadCheckpoint({...value,files:[range]},B,NOW),null);assert.equal(reads,0);
 });
 test('checkpoint validation does not invoke accessors on objects or array entries', () => {
   let reads = 0; const accessor = checkpoint(); Object.defineProperty(accessor, 'workspaceId', {get: () => {reads++; return 'w';}});

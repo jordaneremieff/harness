@@ -84,9 +84,10 @@ async function inProcessHttp(context:TestContext, identity?: UiIdentity) {
   const assets=new Map<string,Asset>([
     ['/',{type:'text/html',data:Buffer.from('<html><head><link href="/style.css" rel="stylesheet"><link href="/favicon.svg" rel="icon"></head><body><script src="/web/app.js"></script></body></html>')}],
     ['/style.css',{type:'text/css',data:Buffer.from('body {color:black;}')}],['/favicon.svg',{type:'image/svg+xml',data:Buffer.from('<svg/>')}],
-    ['/web/app.js',{type:'text/javascript',data:Buffer.from("import '../shared/api.js';")}],['/shared/api.js',{type:'text/javascript',data:Buffer.from('export {};')}]
+    ['/web/app.js',{type:'text/javascript',data:Buffer.from("import '../shared/api.js'; import '../shared/control.js';")}],['/shared/api.js',{type:'text/javascript',data:Buffer.from('export {};')}],
+    ['/shared/control.js',{type:'text/javascript',data:Buffer.from("import './api.js'; export const control=true;")}]
   ]);
-  const imports=new Map<string,string[]>();imports.set('/web/app.js',['../shared/api.js']);imports.set('/shared/api.js',[]);
+  const imports=new Map<string,string[]>();imports.set('/web/app.js',['../shared/api.js','../shared/control.js']);imports.set('/shared/api.js',[]);imports.set('/shared/control.js',['./api.js']);
   const generations=new AssetGenerations(new AssetGeneration(assets,imports));
   let now=0;const rows:string[]=[];const diagnostics=new DiagnosticSink({append:async row=>{rows.push(row);},close:async()=>{}},()=>now);
   const counts={dispatch:0,observe:0,detached:0};const journal=new Journal();
@@ -160,6 +161,9 @@ test('pure development HTTP pins every asset and uses a distinct bounded notific
   assert.match(page.text,new RegExp(`/_ui/${id}/style.css`));const client=/name="ui-client" content="([a-f0-9]+)"/.exec(page.text)?.[1];assert.ok(client);
   const stream=await fixture.invoke(`/api/dev/events?client=${client}`);assert.match(stream.text,/event: build\ndata:/);assert.equal(stream.destroyed,false);
   assert.equal(fixture.backend.journal.cursor,cursor);assert.equal(fixture.backend.journal.connectionCount,0);
+  assert.equal((await fixture.invoke(`/_ui/${id}/shared/control.js`)).statusCode,200);
+  assert.match((await fixture.invoke(`/_ui/${id}/shared/control.js`)).text,/export const control=true/);
+  assert.equal((await fixture.invoke(`/_ui/${id}/shared/control.js`,'HEAD')).statusCode,200);
   assert.equal((await fixture.invoke(`/_ui/${id}/web/app.js`)).statusCode,200);assert.equal((await fixture.invoke(`/_ui/${'f'.repeat(64)}/web/app.js`)).statusCode,409);
   assert.equal((await fixture.invoke('/api/dev/ack','POST',{client,generation:id,cssGeneration:id,extra:'no'})).statusCode,400);
   assert.equal((await fixture.invoke('/api/dev/ack','POST',{client,generation:id,cssGeneration:id})).statusCode,200);
@@ -403,7 +407,7 @@ test('request rate accounting rejects the next request at a deterministic fixed 
   assert.equal(app.fake.counts.refresh, 1); assert.equal(app.registry.sessions.size, 0);
 });
 
-const requiredAssets = ['web/index.html', 'web/style.css', 'web/favicon.svg', 'dist/web/app.js', 'dist/shared/api.js', 'dist/shared/version.js', 'dist/shared/files.js', 'dist/shared/health.js'];
+const requiredAssets = ['web/index.html', 'web/style.css', 'web/favicon.svg', 'dist/web/app.js', 'dist/shared/api.js', 'dist/shared/version.js', 'dist/shared/files.js', 'dist/shared/health.js', 'dist/shared/control.js'];
 async function browserBuild(context: TestContext, emptyFiles = false) {
   const root = await mkdtemp(join(tmpdir(), 'ui-browser-assets-'));
   const apps: Awaited<ReturnType<typeof startBackend>>[] = [];
@@ -455,7 +459,7 @@ test('startup browser bytes survive overwrites and deletion; a fresh backend rea
   const {root, start} = await browserBuild(context); const extra = 'dist/web/extra-module.js';
   await writeFile(join(root, extra), Buffer.from([0, 255, 1, 127, 128]));
   const original = await assetMap(root);
-  assert.deepEqual([...original.keys()].sort(), ['/', '/favicon.svg', '/shared/api.js', '/shared/files.js', '/shared/health.js', '/shared/version.js', '/style.css', '/web/app.js', '/web/extra-module.js']);
+  assert.deepEqual([...original.keys()].sort(), ['/', '/favicon.svg', '/shared/api.js', '/shared/control.js', '/shared/files.js', '/shared/health.js', '/shared/version.js', '/style.css', '/web/app.js', '/web/extra-module.js']);
   const app = await start(); const headers = await verifyBrowserBytes(app.origin, original);
   for (const path of [...requiredAssets, extra]) await writeFile(join(root, path), `Rebuilt ${path}`);
   assert.deepEqual(await verifyBrowserBytes(app.origin, original), headers);
@@ -530,7 +534,7 @@ test('browser traversal ignores non-matching names and does not recurse', async 
   for (const name of ['bad.name.js', '.hidden.js', 'space name.js', 'note.txt', 'app.js.map', '雪.js']) await writeFile(join(root, 'dist/web', name), 'ignored');
   await mkdir(join(root, 'dist/web/nested')); await writeFile(join(root, 'dist/web/nested/valid.js'), 'ignored');
   await writeFile(join(root, 'dist/web/Valid_0-module.js'), 'routed');
-  assert.deepEqual([...((await assetMap(root)).keys())].sort(), ['/', '/favicon.svg', '/shared/api.js', '/shared/files.js', '/shared/health.js', '/shared/version.js', '/style.css', '/web/Valid_0-module.js', '/web/app.js']);
+  assert.deepEqual([...((await assetMap(root)).keys())].sort(), ['/', '/favicon.svg', '/shared/api.js', '/shared/control.js', '/shared/files.js', '/shared/health.js', '/shared/version.js', '/style.css', '/web/Valid_0-module.js', '/web/app.js']);
 });
 
 test('browser startup rejects special build files without waiting on them', async context => {

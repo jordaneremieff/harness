@@ -2,7 +2,7 @@ import {Worker} from 'node:worker_threads';
 import {LIMITS, type Retry} from '../shared/api.ts';
 import {ApiError,fileIdentityUncertain} from './errors.mts';
 import {movedFilePath, type FileRevision, type FileEncoding, type FileWatchScope, type FileChanges} from '../shared/files.ts';
-export type FileJob = {kind:'open'; directory:string} | {kind:'selection'; workspace:string} |
+export type FileJob = {kind:'open'; directory:string} | {kind:'roots'} | {kind:'selection'; workspace:string} |
   {kind:'select'; workspace:string; path:string; expectedRevision:number} |
   {kind:'directory'; rootId:string; path:string; limit:number; cursor?:string} |
   {kind:'text'; rootId:string; path:string} | {kind:'draft'; rootId:string; path:string} |

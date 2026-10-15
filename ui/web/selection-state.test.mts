@@ -3,6 +3,22 @@ import test from 'node:test';
 import type { AgentRow, EventData, TargetPreparation, Workspace } from '../shared/api.ts';
 import type { SelectionChange } from './actions.ts';
 import { MessageTarget, SelectionQueue, navigationState, visibleReceipt } from './selection-state.ts';
+test('control uses the existing ordered lane with private provenance and the exact saved revision',async()=> {
+  let current:Workspace={id:'w',revision:3};const pending=Promise.withResolvers<Workspace>();let received:unknown;let overlay:Workspace|undefined;
+  const control={requestId:'r',bootId:'boot',workspaceId:'w',pageId:'page',connectionId:'stream'};
+  const queue=new SelectionQueue({current:()=>current,paint:workspace=> {current=workspace;overlay=workspace;},reload:async()=>{},save:(_workspace,_change,provenance)=> {received=provenance;return pending.promise;}});
+  const task=queue.selectControl({sidebarWidth:300},control);assert.equal(Object.hasOwn(overlay ?? {},'control'),false);
+  await Promise.resolve();assert.deepEqual(received,control);assert.notEqual(received,control);
+  await assert.rejects(queue.selectControl({sidebarWidth:320},control),/busy/);
+  pending.resolve({id:'w',revision:4,sidebarWidth:300});const saved=await task;assert.equal(saved.revision,4);assert.equal(queue.unsettled,false);
+});
+test('control refuses the same selection lane while its committed snapshot reload is still active',async()=> {
+  let current:Workspace={id:'w',revision:1};const reload=Promise.withResolvers<void>();
+  const queue=new SelectionQueue({current:()=>current,paint:value=> {current=value;},reload:()=>reload.promise,save:async workspace=>({...workspace,revision:2})});
+  const user=queue.select({sidebarWidth:300});await Promise.resolve();await Promise.resolve();assert.equal(queue.unsettled,true);
+  await assert.rejects(queue.selectControl({sidebarWidth:320},{requestId:'r',bootId:'boot',workspaceId:'w',pageId:'page',connectionId:'stream'}),/busy/);
+  reload.resolve();await user;assert.equal(queue.unsettled,false);
+});
 test('navigation separates the selected conversation, sidebar preference and narrow drawer', () => {
   const workspace: Workspace = {id: 'w', revision: 1, panelVisible: false, selectedTarget: {kind: 'agent', identity: 'a'}};
   assert.deepEqual(navigationState(workspace, false), {sidebarVisible: true, agentSelected: true, editor: 'agent-editor'});

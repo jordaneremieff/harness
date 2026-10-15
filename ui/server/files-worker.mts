@@ -10,18 +10,21 @@ async function execute(job:FileJob):Promise<unknown> {
   if (job.kind === 'open') {const loaded = new FileState(job.directory);await loaded.load();state = loaded;watches = new FileWatches(id=>loaded.root(id),(change,workspace)=>parentPort?.postMessage({change,workspace}));return null;}
   if (job.kind === 'close') {watches?.close();return null;}
   if (!state || !watches) throw new ApiError('not_ready','File access is not ready.',503);
-  if (job.kind === 'selection') return state.selection(job.workspace);
-  if (job.kind === 'select') return state.select(job.workspace,job.path,job.expectedRevision);
-  if (job.kind === 'draft') return state.draft(job.rootId,job.path);
-  if (job.kind === 'put-draft') return state.putDraft(job.rootId,job.path,job.expectedRevision,job.base,job.text,job.encoding);
-  if (job.kind === 'save') return state.saveDraft(job.rootId,job.path,job.expectedRevision);
-  if (job.kind === 'watch') return watches.replace(job.workspace,job.clientId,job.roots);
-  if (job.kind === 'watch-state') return watches.state(job.workspace,job.clientId);
-  if (job.kind === 'unwatch') {await watches.release(job.workspace,job.clientId);return null;}
-  if (job.kind === 'move') return moveEntry(state,watches,job);
-  if (job.kind === 'create') {watches.assertMove(job.rootId,'',job.path);return state.create(job.rootId,job.path,job.entryKind);}
-  if (job.kind === 'trash') return state.trash(job.rootId,job.path);
-  return accessEntry(state,job);
+  switch(job.kind) {
+    case 'selection':return state.selection(job.workspace);
+    case 'roots':return state.roots();
+    case 'select':return state.select(job.workspace,job.path,job.expectedRevision);
+    case 'draft':return state.draft(job.rootId,job.path);
+    case 'put-draft':return state.putDraft(job.rootId,job.path,job.expectedRevision,job.base,job.text,job.encoding);
+    case 'save':return state.saveDraft(job.rootId,job.path,job.expectedRevision);
+    case 'watch':return watches.replace(job.workspace,job.clientId,job.roots);
+    case 'watch-state':return watches.state(job.workspace,job.clientId);
+    case 'unwatch':await watches.release(job.workspace,job.clientId);return null;
+    case 'move':return moveEntry(state,watches,job);
+    case 'create':watches.assertMove(job.rootId,'',job.path);return state.create(job.rootId,job.path,job.entryKind);
+    case 'trash':return state.trash(job.rootId,job.path);
+    default:return accessEntry(state,job);
+  }
 }
 async function moveEntry(state:FileState,watches:FileWatches,job:Extract<FileJob,{kind:'move'}>) {
   watches.assertMove(job.rootId,job.from,job.to);const result = await state.move(job.rootId,job.from,job.to);

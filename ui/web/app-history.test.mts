@@ -215,6 +215,30 @@ test('the final reading intent returns to A after an in-flight B write completes
   assert.deepEqual(puts, [{expectedRevision: h.reading.revision, ...valueA, offsetPx: valueA.offsetPx + 30}, {expectedRevision: h.reading.revision + 1, ...valueA}]);
   assert.equal(app.captureDevCheckpoint().targets.find(saved => saved.targetKey === h.saved.targetKey)?.readingRevision, finalA.revision);
 });
+test('Latest keeps its newer intent after pane focus refreshes history from a stale saved position', async t => {
+  const original=globalThis.fetch,target={kind:'primary' as const,key:'p',epoch:++readingSerial},workspace=`latest-history-${target.epoch}`,side=agentFixture('latest-history-side');
+  const reading={revision:9,anchorId:'saved-anchor',offsetPx:25,followTail:false},saved=targetFixture(workspace,target,{reading}),items=[row('before-anchor'),row('saved-anchor'),...Array.from({length:12},(_,index)=>row(`after-${index}`))];
+  const tailEntered=Promise.withResolvers<void>(),tailRelease=Promise.withResolvers<void>(),historyEntered=Promise.withResolvers<void>(),history=Promise.withResolvers<Response>();
+  const writes:{expectedRevision:number;anchorId:string|null;offsetPx:number;followTail:boolean}[]=[];let refreshing=false,held=false;
+  t.after(async()=> {tailRelease.resolve();history.resolve(response(target,items,null));await app.drainDev(AbortSignal.timeout(2000));globalThis.fetch=original;});
+  globalThis.fetch=async(input,init)=> {
+    const path=new URL(String(input),'http://ui.test').pathname;
+    if(refreshing && !held && path === '/api/primaries/p/history') {held=true;historyEntered.resolve();return history.promise;}
+    if(refreshing && init?.method === 'PUT' && path === `/api/workspaces/${workspace}/targets/${encodeURIComponent(saved.targetKey)}/reading`) {
+      writes.push(JSON.parse(String(init.body)));if(writes.length === 1) {tailEntered.resolve();await tailRelease.promise;}
+    }
+    return original(input,init);
+  };
+  await arrive({workspace:{id:workspace,revision:1,primaryKey:'p',conversationLayout:fixtureHost.twoPanes(side.identity)},primaries:[primaryFixture({epoch:target.epoch})],roster:[side],targets:[saved,targetFixture(`${workspace}-side`,{kind:'agent',identity:side.identity})],history:items});
+  event('ready',{bootId:'boot',connectionId:'latest-history-stream'});await settle();const transcript=primaryControl('transcript'),latest=primaryControl('latest'),anchor=transcript.querySelector('[data-entry-id="saved-anchor"]');assert.ok(anchor);
+  assert.equal(transcript.scrollTop-(anchor.offsetTop-transcript.offsetTop),reading.offsetPx);assert.deepEqual(app.state.targets.get(saved.targetKey)?.reading,reading);assert.equal(app.state.workspace?.conversationLayout?.focusedPane,'agent-pane');
+  refreshing=true;latest.dispatch('pointerdown',{isTrusted:true});latest.click();transcript.dispatch('scrollend');assert.equal(app.state.workspace?.conversationLayout?.focusedPane,'primary-pane');await settle();
+  assert.equal(writes.length,1,'Latest must enqueue its tail intent before history completes');assert.equal(held,true,'The pane-focus selection must start a history refresh');await tailEntered.promise;await historyEntered.promise;assert.equal(writes[0]?.followTail,true);
+  tailRelease.resolve();await settle();assert.equal(app.state.targets.get(saved.targetKey)?.reading.followTail,true);
+  history.resolve(response(target,items,null));await settle();transcript.dispatch('scrollend');await app.drainDev(AbortSignal.timeout(2000));await settle();
+  assert.deepEqual(app.state.targets.get(saved.targetKey)?.reading,{revision:reading.revision+1,anchorId:null,offsetPx:0,followTail:true});
+  assert.deepEqual(fixtureHost.fixture.targets?.find(value=>value.targetKey === saved.targetKey)?.reading,app.state.targets.get(saved.targetKey)?.reading);assert.equal(latest.hidden,true);assert.equal(writes.length,1);
+});
 test('a failed resume read releases reading persistence without applying the saved position', async t => {
   const h = await pendingResume(t);
   h.notifyScroll(); await settle();

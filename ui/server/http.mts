@@ -17,7 +17,10 @@ import type { DiagnosticSink } from './diagnostics.mts';
 import { UI_ITERATION, type UiIdentity } from '../shared/version.ts';
 import { readHealthSnapshot, type BackendHealthFacts, type HealthSnapshot } from '../shared/health.ts';
 import { identityDocument } from './version.mts';
-export type DevelopmentHttp = {generations?:AssetGenerations;diagnostics?:DiagnosticSink;identity?:UiIdentity;files?:Files;health?:()=>BackendHealthFacts};
+import {CONTROL_LIMITS, CONTROL_ROUTES} from '../shared/control.ts';
+import type {Control} from './control.mts';
+import type {ControlAuth} from './control-auth.mts';
+export type DevelopmentHttp = {control?:{auth:ControlAuth;service:Control};generations?:AssetGenerations;diagnostics?:DiagnosticSink;identity?:UiIdentity;files?:Files;health?:()=>BackendHealthFacts};
 
 export type RequestContext = {method: string; parts: string[]; url: URL; body: Record<string, unknown>;
   operationId?: string; workspace?: string; session: string; signal?: AbortSignal};
@@ -90,6 +93,7 @@ export async function assetMap(root = fileURLToPath(new URL('../', import.meta.u
   await add('/shared/version.js', 'dist/shared/version.js', MIME['.js']);
   await add('/shared/files.js', 'dist/shared/files.js', MIME['.js']);
   await add('/shared/health.js', 'dist/shared/health.js', MIME['.js']);
+  await add('/shared/control.js', 'dist/shared/control.js', MIME['.js']);
   return assets;
 }
 function matchRoute(method: string, parts: string[]) {
@@ -159,6 +163,7 @@ export class LocalHttp {
   private stopped = false;
   private active = 0;
   private imageReads = 0;
+  private controlWaits = 0;
   private buckets = new Map<string, {tokens: number; at: number}>();
   readonly backend: HttpBackend;
   private assets: Map<string, Asset>;
@@ -206,7 +211,7 @@ export class LocalHttp {
       const rawPath = (request.url ?? '/').split('?')[0] ?? '/'; pathParts(rawPath);
       const url = new URL(request.url ?? '/', this.auth.origin);
       if (this.staticRoute(response, url, request.method ?? 'GET')) return;
-      this.rate('loopback');
+      this.rate(url.pathname.startsWith('/api/control/')&&url.pathname!==CONTROL_ROUTES.ack?'agent-control':'loopback');
       if (this.active >= 64) throw new ApiError('capacity', 'Too many requests are active.', 429, 'read');
       this.active++;
       try { await this.route(request, response); } finally { this.active--; }
@@ -222,6 +227,8 @@ export class LocalHttp {
     pathParts(rawPath);
     const url = new URL(request.url ?? '/', this.auth.origin);
     const method = request.method ?? 'GET'; const parts = pathParts(url.pathname);
+    if(url.pathname.startsWith('/api/control/')) {await this.controlRoute(request,response,url,method,parts);return;}
+    if(request.headers.authorization)throw new ApiError('unauthorized','Bearer credentials do not authorize browser APIs.',401);
     if(await this.developmentRoute(request,response,url,method)) return;
     if (!isFileRoute(parts)) matchRoute(method, parts);
     if (this.savedImageRoute(method, parts, 'POST', 6)) return this.uploadImage(request, response, url, parts, this.auth.session(request));
@@ -235,6 +242,36 @@ export class LocalHttp {
     if (await this.savedMetadata(url, response)) return;
     await this.validateResume(method, url, body);
     return this.dispatchRequest(request,response,url,method,parts,body,session);
+  }
+  private async controlRoute(request:IncomingMessage,response:ServerResponse,url:URL,method:string,parts:string[]):Promise<void> {
+    const control=this.development.control;
+    if(!control)throw new ApiError('not_ready','Presentation control is unavailable.',503);
+    if(request.headers['idempotency-key'])throw new ApiError('invalid_request','Presentation control does not accept mutation replay keys.');
+    const query=(allowed:string[])=> {if([...url.searchParams.keys()].some(key=>!allowed.includes(key)||url.searchParams.getAll(key).length!==1))throw new ApiError('invalid_request','The control query is invalid.');};
+    if(url.pathname===CONTROL_ROUTES.ack) {
+      requireMethod(method,'POST');query(['workspace']);
+      if(request.headers.authorization)throw new ApiError('unauthorized','Presentation acknowledgments require a browser session, not a bearer credential.',401);
+      const session=this.auth.session(request),body=await readBody(request,CONTROL_LIMITS.payloadBytes),workspace=url.searchParams.get('workspace');
+      if(workspace!==null&&workspace!==body.workspaceId)throw new ApiError('invalid_request','The acknowledgment workspace query does not match its body.');
+      respond(response,await control.service.ack(body,session));return;
+    }
+    control.auth.authorize(request);
+    if(url.pathname===CONTROL_ROUTES.layout) {
+      requireMethod(method,'GET');query(['workspace']);respond(response,await control.service.layout(url.searchParams.get('workspace')??undefined));return;
+    }
+    if(url.pathname===CONTROL_ROUTES.requests) {
+      requireMethod(method,'POST');query([]);respond(response,await control.service.submit(await readBody(request,CONTROL_LIMITS.payloadBytes)),202);return;
+    }
+    if(parts.length===4&&parts[2]==='requests') {
+      requireMethod(method,'GET');query(['wait']);await this.controlReceipt(control.service,response,url,parts[3] as string);return;
+    }
+    throw new ApiError('invalid_request','The control route does not exist.',404);
+  }
+  private async controlReceipt(service:Control,response:ServerResponse,url:URL,id:string):Promise<void> {
+    const wait=url.searchParams.get('wait');if(wait!==null&&wait!=='1')throw new ApiError('invalid_request','Use wait=1 for a bounded presentation receipt wait.');
+    if(wait!=='1'){respond(response,await service.receipt(id));return;}
+    if(this.controlWaits>=CONTROL_LIMITS.outstanding)throw new ApiError('capacity','Presentation receipt wait capacity is full.',429);
+    this.controlWaits++;try {respond(response,await service.wait(id));}finally {this.controlWaits--;}
   }
   private health(): HealthSnapshot {
     try {

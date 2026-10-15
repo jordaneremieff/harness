@@ -126,7 +126,7 @@ async function syncDirectory(path: string): Promise<void> {
   const dir = await open(path, constants.O_RDONLY); try { await dir.sync(); } finally { await dir.close(); }
 }
 
-type SelectionInput = {expectedRevision: number; primaryKey?: string; selectedTarget?: Target | null; panelVisible?: boolean; sidebarVisible?: boolean; sidebarWidth?: number; appearance?: Appearance; enterSendsMessages?: boolean; conversationLayout?: ConversationLayout; filePositions?: Record<string,FilePosition>};
+type SelectionInput = {expectedRevision: number; primaryKey?: string; selectedTarget?: Target | null; panelVisible?: boolean; sidebarVisible?: boolean; sidebarWidth?: number; appearance?: Appearance; enterSendsMessages?: boolean; agentControl?:boolean; conversationLayout?: ConversationLayout; filePositions?: Record<string,FilePosition>};
 function fileKeys(layout?:ConversationLayout):Set<string> {
   const keys = new Set<string>();
   const visit = (node:ConversationLayout['root']):void => {if (node.kind === 'split') {visit(node.first);visit(node.second);} else for (const tab of node.tabs) if (tab.kind === 'file') keys.add(workspaceTabKey(tab));};
@@ -140,6 +140,7 @@ export function validateFilePositions(value:unknown, layout?:ConversationLayout)
 function validateEnterPreference(value: unknown): void {
   if (value !== undefined && typeof value !== 'boolean') throw new StateError('invalid_request', 'Invalid Enter preference');
 }
+function validateAgentControl(value:unknown):void {if(value!==undefined&&typeof value!=='boolean')throw new StateError('invalid_request','Invalid agent control setting');}
 function validateSelection(input: SelectionInput): void {
       if (input.selectedTarget) validateTarget(input.selectedTarget);
       if (input.primaryKey !== undefined && (typeof input.primaryKey !== 'string' || input.primaryKey.length > 256)) throw new StateError('invalid_request', 'Invalid primary key');
@@ -148,8 +149,9 @@ function validateSelection(input: SelectionInput): void {
       if (input.sidebarWidth !== undefined && (!Number.isSafeInteger(input.sidebarWidth) || input.sidebarWidth < LIMITS.sidebarWidthMin || input.sidebarWidth > LIMITS.sidebarWidthMax)) throw new StateError('invalid_request', 'Invalid sidebar width');
       if (input.appearance !== undefined && !['dark', 'light', 'system', 'latte', 'frappe', 'macchiato', 'mocha'].includes(input.appearance)) throw new StateError('invalid_request', 'Invalid appearance');
       validateEnterPreference(input.enterSendsMessages);
+      validateAgentControl(input.agentControl);
       if (input.conversationLayout !== undefined) validateConversationLayout(input.conversationLayout);
-      const allowed = ['expectedRevision', 'primaryKey', 'selectedTarget', 'panelVisible', 'sidebarVisible', 'sidebarWidth', 'appearance', 'enterSendsMessages', 'conversationLayout', 'filePositions'];
+      const allowed = ['expectedRevision', 'primaryKey', 'selectedTarget', 'panelVisible', 'sidebarVisible', 'sidebarWidth', 'appearance', 'enterSendsMessages', 'agentControl', 'conversationLayout', 'filePositions'];
       if (Object.keys(input).some(key => !allowed.includes(key))) throw new StateError('invalid_request', 'Unknown workspace field');
 }
 function selectedWorkspace(current: Workspace, input: SelectionInput): Workspace {
@@ -160,6 +162,7 @@ function selectedWorkspace(current: Workspace, input: SelectionInput): Workspace
       if (input.sidebarWidth !== undefined) value.sidebarWidth = input.sidebarWidth;
       if (input.appearance !== undefined) value.appearance = input.appearance;
       if (input.enterSendsMessages !== undefined) value.enterSendsMessages = input.enterSendsMessages;
+      if(input.agentControl!==undefined)value.agentControl=input.agentControl;
       if (input.conversationLayout !== undefined) value.conversationLayout = structuredClone(input.conversationLayout);
       if (input.selectedTarget === null) delete value.selectedTarget;
       else if (input.selectedTarget !== undefined) value.selectedTarget = structuredClone(input.selectedTarget);
@@ -282,6 +285,7 @@ export class StateStore {
       await this.load('workspaces', LIMITS.workspaces, LIMITS.requestBytes, value => {
         const record = value as Workspace;
         if (!UUID.test(record.id) || !Number.isSafeInteger(record.revision)) throw new StateError('not_ready', 'Invalid saved workspace', 503);
+        if(record.agentControl!==undefined&&typeof record.agentControl!=='boolean')throw new StateError('not_ready','Invalid saved agent control setting',503);
         if (record.enterSendsMessages !== undefined && typeof record.enterSendsMessages !== 'boolean') throw new StateError('not_ready', 'Invalid saved Enter preference', 503);
         if (record.conversationLayout !== undefined) validateConversationLayout(record.conversationLayout);
         if (record.filePositions !== undefined) validateFilePositions(record.filePositions,record.conversationLayout);
@@ -479,10 +483,12 @@ export class StateStore {
     catch {throw new StateError('file_identity_uncertain','The file moved, but its workspace identity did not complete. Restart the backend and inspect both paths.',503);}
     return changed;
   }
-  updateSelection(id: string, input: SelectionInput): Promise<Workspace> {
+  async workspaceList():Promise<Workspace[]> {await this.queue;return structuredClone([...this.workspaces.values()]);}
+  updateSelection(id: string, input: SelectionInput,guard?:(current:Workspace)=>void): Promise<Workspace> {
     return this.transaction(async () => {
       if (this.fileIdentity === 'uncertain' || input.conversationLayout !== undefined || input.filePositions !== undefined) this.requireFileIdentity();
       const current = this.requireWorkspace(id); revision(current.revision, input.expectedRevision, current);
+      guard?.(structuredClone(current));
       validateSelection(input);
       const value = selectedWorkspace(current, input);
       await this.atomic(`workspaces/${id}.json`, value, LIMITS.requestBytes); this.workspaces.set(id, value);

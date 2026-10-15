@@ -52,6 +52,7 @@ test('actual input intent still interrupts an owned restore before its controls 
     assert.equal(await app.restoreDevCheckpoint(checkpoint, new AbortController().signal), false, type);
     assert.deepEqual([editor.selectionStart, editor.selectionEnd], [1, 1], type);
     globalThis.fetch = original;
+    if(type === 'compositionstart')trusted('compositionend',editor);
     assert.equal(await app.restoreDevCheckpoint(checkpoint, new AbortController().signal), true, `${type} cleanup`);
   }
 });

@@ -185,7 +185,7 @@ export class Composer {
     if (!connected) for (const buffer of this.buffers.values()) buffer.attachments?.suspend();
     const buffer = this.current;
     if (buffer) {
-      if (buffer.state.target.kind === 'primary' && busy && buffer.data.mode === 'prompt' && !buffer.submitting) this.change(buffer.data.text, 'steer');
+      if (this.hooks.prepareInput?.() !== false && buffer.state.target.kind === 'primary' && busy && buffer.data.mode === 'prompt' && !buffer.submitting) this.change(buffer.data.text, 'steer');
       this.prepare(buffer);
     }
     this.resize(); this.render(); if (buffer) {this.paintAttachments(buffer); this.receipt(buffer);} this.commandMenu?.update(); if (!this.admissionBlocked) for (const item of this.buffers.values()) this.flush(item);

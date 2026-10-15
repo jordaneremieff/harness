@@ -17,7 +17,7 @@ export async function dispatchView(registry:Registry,context:RequestContext):Pro
   const workspace=v.string(parts[2],'workspace ID');
   if(parts[3]==='targets' && parts.length===4 && method==='POST') return prepareTarget(registry,workspace,body);
   await registry.store.workspace(workspace);
-  if(parts[3]==='selection') return selection(registry,workspace,body);
+  if(parts[3]==='selection') return selection(registry,workspace,context);
   if(parts[3]==='unconfirmed') return unconfirmed(registry,workspace,context);
   return targetAction(registry, workspace, context);
 }
@@ -64,8 +64,9 @@ async function unconfirmed(registry:Registry,workspace:string,context:RequestCon
   v.fields(body,['expectedDraftRevision'],['expectedDraftRevision']);
   return registry.store.restoreRetainedInput(workspace,id,v.integer(body.expectedDraftRevision,'draft revision'));
 }
-async function selection(registry:Registry,workspace:string,body:Record<string,unknown>) {
-  v.fields(body,['expectedRevision','primaryKey','selectedTarget','panelVisible','sidebarVisible','sidebarWidth','appearance','enterSendsMessages','conversationLayout','filePositions'],['expectedRevision']);
+async function selection(registry:Registry,workspace:string,context:RequestContext) {
+  const {body}=context;
+  v.fields(body,['expectedRevision','primaryKey','selectedTarget','panelVisible','sidebarVisible','sidebarWidth','appearance','enterSendsMessages','agentControl','conversationLayout','filePositions','control'],['expectedRevision']);
   const selectedTarget=body.selectedTarget===undefined?undefined:body.selectedTarget===null?null:v.target(body.selectedTarget);
   const primaryKey=body.primaryKey===undefined?undefined:v.string(body.primaryKey,'primary key');
   if(primaryKey && !registry.saved.has(primaryKey)) throw new ApiError('invalid_request','The primary does not exist.',404);
@@ -73,10 +74,17 @@ async function selection(registry:Registry,workspace:string,body:Record<string,u
     const view=registry.sessions.get(selectedTarget.key)?.view??registry.saved.get(selectedTarget.key);
     if(!view || selectedTarget.epoch!==view.epoch) throw new ApiError('stale_epoch','The primary conversation changed.',409,'read');
   }
-  const result=await registry.store.updateSelection(workspace,selectionFields(body,primaryKey,selectedTarget));
+  const input=selectionFields(body,primaryKey,selectedTarget);
+  const result=body.control===undefined?await registry.store.updateSelection(workspace,input):await controlSelection(registry,workspace,context,input);
+  await registry.control?.workspaceChanged(result);
   if(result.selectedTarget) await registry.store.target(workspace,result.selectedTarget);
   void registry.observe(workspace).catch(() => undefined);
   return result;
+}
+async function controlSelection(registry:Registry,workspace:string,context:RequestContext,input:ReturnType<typeof selectionFields>) {
+  const broker=registry.control;if(!broker)throw new ApiError('not_ready','Presentation control is unavailable.',503);
+  const {control,...change}=context.body;
+  return broker.selection(workspace,control,context.session,change,guard=>registry.store.updateSelection(workspace,input,guard));
 }
 function selectionFields(body:Record<string,unknown>,primaryKey:string|undefined,selectedTarget:ReturnType<typeof v.target>|null|undefined) {
   const conversationLayout=body.conversationLayout;
@@ -89,6 +97,7 @@ function selectionFields(body:Record<string,unknown>,primaryKey:string|undefined
     ...(body.sidebarVisible!==undefined?{sidebarVisible:v.boolean(body.sidebarVisible,'sidebar visibility')}:{}),
     ...(sidebarWidth!==undefined?{sidebarWidth}:{}),
     ...(body.enterSendsMessages!==undefined?{enterSendsMessages:v.boolean(body.enterSendsMessages,'Enter preference')}:{}),
+    ...(body.agentControl!==undefined?{agentControl:v.boolean(body.agentControl,'agent control setting')}:{}),
     ...(conversationLayout!==undefined?{conversationLayout:structuredClone(conversationLayout)}:{}),
     ...(body.filePositions!==undefined?{filePositions:structuredClone(body.filePositions) as import('../shared/api.ts').Workspace['filePositions']}:{}),
     ...(body.appearance!==undefined?{appearance:v.choice(body.appearance,['dark','light','system','latte','frappe','macchiato','mocha'],'appearance')}: {})};

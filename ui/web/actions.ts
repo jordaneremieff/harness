@@ -329,6 +329,11 @@ export class Actions {
           this.ctx.modal.open('Message preference'); this.ctx.modal.error(error, 'The preference was not saved.');
         });
       }), checked: this.ctx.snapshot()?.workspace.enterSendsMessages === true},
+      {...entry('Agent presentation control', 'Allow agents to arrange this workspace and show notices', () => {
+        void this.ctx.selection({agentControl:this.ctx.snapshot()?.workspace.agentControl === false}).catch(error=> {
+          this.ctx.modal.open('Agent presentation control');this.ctx.modal.error(error,'The preference was not saved.');
+        });
+      }),checked:this.ctx.snapshot()?.workspace.agentControl !== false},
       entry('Help', 'Browser controls and terminal fallback', () => this.help()),
       entry('Expand loaded tools', 'Expand loaded tool output', () => this.ctx.view(true, true), transcript),
       entry('Collapse loaded tools', 'Collapse loaded tool output', () => this.ctx.view(true, false), transcript),
