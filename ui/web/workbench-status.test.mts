@@ -25,7 +25,7 @@ function fixture(t: TestContext) {
   }
   const nodes = new Map<string, StatusNode>();
   const get = (id: string) => {let node = nodes.get(id); if (!node) {node = new StatusNode(); nodes.set(id, node);} return node as unknown as HTMLElement;};
-  const status = new WorkbenchStatus(get), footer = nodes.get('workbench-status')!;
+  const status = new WorkbenchStatus(get), footer = nodes.get('workbench-status'); assert.ok(footer);
   const fire = (target: EventTarget, name: string, pointerId = 7) => target.dispatchEvent(Object.assign(new Event(name), {pointerId}));
   const press = (pointerId = 7) => status.holdGeometry({pointerId, button: 0, isPrimary: true});
   const flush = () => {for (const [id, callback] of [...frames]) {frames.delete(id); callback(0);}};
@@ -58,7 +58,7 @@ test('duplicate press does not remeasure changed facts and replacement restores 
 
 test('old frame cannot release a later press with the same pointer identity', t => {
   const {footer, document, frames, fire, press} = fixture(t);
-  press(); fire(document, 'pointerup'); const stale = [...frames.values()][0]!;
+  press(); fire(document, 'pointerup'); const stale = [...frames.values()][0]; assert.ok(stale);
   footer.height = 51; press(); assert.equal(frames.size, 0); assert.equal(footer.style.getPropertyValue('height'), '51px');
   stale(0); assert.equal(footer.style.getPropertyValue('height'), '51px');
   fire(document, 'click'); assert.equal(footer.declarations.size, 0);
@@ -91,7 +91,7 @@ test('release away restores geometry without activating the pressed control', t 
 
 test('window blur and footer focus release geometry and invalidate stale frame cleanup', t => {
   const {footer, document, window, frames, fire, press} = fixture(t);
-  press(); fire(document, 'pointerup'); const stale = [...frames.values()][0]!;
+  press(); fire(document, 'pointerup'); const stale = [...frames.values()][0]; assert.ok(stale);
   fire(window, 'blur'); assert.equal(footer.declarations.size, 0); assert.equal(frames.size, 0);
   footer.height = 48; press(8); stale(0); assert.equal(footer.style.getPropertyValue('height'), '48px');
   fire(footer, 'focusin'); assert.equal(footer.declarations.size, 0); assert.equal(frames.size, 0);
@@ -103,8 +103,9 @@ test('keyboard facts, secondary buttons and non-primary pointers do not acquire 
   status.holdGeometry({pointerId: 7, button: 2, isPrimary: true});
   status.holdGeometry({pointerId: 7, button: 0, isPrimary: false});
   assert.equal(footer.measurements, 0); assert.equal(footer.declarations.size, 0);
-  assert.equal(nodes.get('workbench-scope')!.textContent, 'folder/file.ts');
-  assert.equal(nodes.get('workbench-status-primary')!.hidden, true);
+  const scope = nodes.get('workbench-scope'), primary = nodes.get('workbench-status-primary'); assert.ok(scope); assert.ok(primary);
+  assert.equal(scope.textContent, 'folder/file.ts');
+  assert.equal(primary.hidden, true);
 });
 
 test('hidden or invalid footer geometry creates no hold or cleanup frame', t => {
