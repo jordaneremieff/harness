@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { afterEach, beforeEach, test } from 'node:test';
-import type { AgentRow, Appearance, OperationView, PrimaryControl, PrimaryView, Snapshot, Target } from '../shared/api.ts';
+import { afterEach, beforeEach, test, type TestContext } from 'node:test';
+import type { AgentRow, Appearance, HandoffView, OperationView, PrimaryControl, PrimaryView, Snapshot, Target } from '../shared/api.ts';
 import { Actions, COMMAND_INVENTORY_PAGE_LIMIT, rankPalette } from './actions.ts';
 import { Modal } from './modal.ts';
 import { rankCommands } from './command-menu-state.ts';
@@ -22,6 +22,7 @@ afterEach(() => {
   if (originalResizeObserver) Object.defineProperty(globalThis, 'ResizeObserver', originalResizeObserver); else Reflect.deleteProperty(globalThis, 'ResizeObserver');
 });
 const primary: PrimaryView = {key: 'p', epoch: 1, cwd: '/project', lifecycle: 'ready', activity: 'idle', pendingDialogs: [], pendingOperationIds: [], capabilities: {control: true}};
+const handoff: HandoffView = {cwd: '/handed-project', sessionFile: '/handed-project/session.jsonl', executable: 'pi', argv: ['--session', '/handed-project/session.jsonl'], command: 'pi --session /handed-project/session.jsonl'};
 const operation: OperationView = {id: 'op', kind: 'primary.control', state: 'completed', target: {kind: 'primary', key: 'p', epoch: 1}, createdAt: '2026-10-08T12:00:00Z', updatedAt: '2026-10-08T12:00:00Z'};
 function context(overrides: Partial<ActionContext> = {}): ActionContext {
   return {snapshot: () => undefined, primary: () => primary, composer: {commandsChanged: () => {}} as ActionContext['composer'], commandsChanged: () => {overrides.composer?.commandsChanged?.();}, modal: {} as ActionContext['modal'], selection: async () => undefined, reload: async () => undefined, result: () => undefined, rosterRefresh: () => undefined, hasTranscript: () => !!(overrides.primary ?? (() => primary))(), find: () => undefined, recovery: () => undefined, primaryEntries: () => [], agents: () => [], selectedAgent: () => undefined, agentStatus: row => row.availability === 'live' ? row.state : row.availability, selectAgent: () => {}, selectPrimary: () => {}, notices: () => {}, sidebar: () => {}, view: () => {}, copyAgent: () => {}, inspectAgent: () => {}, ...overrides};
@@ -158,13 +159,82 @@ test('journal and HTTP copies of one handoff completion open its result once', (
   Object.defineProperty(globalThis, 'document', {configurable: true, value: fakeDocument()});
   try {
     let opened = 0; const body = new FakeNode();
-    const modal = {node: new FakeNode(), body, open() {opened++; return body;}} as unknown as ActionContext['modal'];
+    const modal = {node: new FakeNode(), body, open() {opened++; return body;}, actions(...buttons: FakeNode[]) {body.append(...buttons);}} as unknown as ActionContext['modal'];
     const actions = new Actions(context({modal}));
-    const result: OperationView = {...operation, kind: 'primary.handoff', receipt: {kind: 'rpc', result: {value: {command: 'pi --session fixture-session.jsonl'}, truncated: false}}};
+    const result: OperationView = {...operation, kind: 'primary.handoff', receipt: {kind: 'rpc', result: {value: handoff, truncated: false}}};
     actions.handoffResult({...result, state: 'uncertain'}); assert.equal(opened, 0);
     actions.handoffResult(result); actions.handoffResult({...result}); assert.equal(opened, 1);
-    assert.equal(body.children[0]?.textContent, 'pi --session fixture-session.jsonl');
+    assert.equal(body.children[0]?.textContent, handoff.command);
   } finally {if (oldDocument) Object.defineProperty(globalThis, 'document', oldDocument); else Reflect.deleteProperty(globalThis, 'document');}
+});
+
+function handoffSetup(t: TestContext, overrides: Partial<ActionContext> = {}) {
+  const oldDocument = Object.getOwnPropertyDescriptor(globalThis, 'document'), oldElement = Object.getOwnPropertyDescriptor(globalThis, 'HTMLElement');
+  const nodes = new Map(['modal', 'modal-body', 'modal-close', 'modal-title', 'modal-error'].map(id => [id, new FakeNode()]));
+  Object.defineProperty(globalThis, 'document', {configurable: true, value: {...fakeDocument(), getElementById: (id: string) => nodes.get(id)}});
+  Object.defineProperty(globalThis, 'HTMLElement', {configurable: true, value: FakeNode});
+  t.after(() => {
+    if (oldDocument) Object.defineProperty(globalThis, 'document', oldDocument); else Reflect.deleteProperty(globalThis, 'document');
+    if (oldElement) Object.defineProperty(globalThis, 'HTMLElement', oldElement); else Reflect.deleteProperty(globalThis, 'HTMLElement');
+  });
+  const body = nodes.get('modal-body'); assert.ok(body);
+  const descendants = (node: FakeNode): FakeNode[] => node.children.flatMap(child => [child, ...descendants(child)]);
+  body.querySelectorAll = selector => descendants(body).filter(node => node.tagName === selector);
+  const modal = new Modal(), actions = new Actions(context({...overrides, modal}));
+  const result: OperationView = {...operation, kind: 'primary.handoff', receipt: {kind: 'rpc', result: {value: handoff, truncated: false}}};
+  const find = (text: string) => {const node = descendants(body).find(node => node.tagName === 'button' && node.textContent === text); assert.ok(node, text); return node;};
+  return {actions, modal, nodes, body, result, find};
+}
+test('handoff return explicitly opens the captured file once without a picker or another dialog', async t => {
+  let selected = primary, reloads = 0;
+  const setup = handoffSetup(t, {primary: () => selected, reload: async () => {reloads++;}});
+  const admitted = Promise.withResolvers<void>(), reply = Promise.withResolvers<Response>(); const calls: {path: string; body: unknown}[] = [];
+  globalThis.fetch = async (path, init) => {
+    calls.push({path: String(path), body: JSON.parse(String(init?.body))});
+    if (String(path) === '/api/operations') return Response.json({ok: true, data: {operationId: 'resume'}});
+    assert.equal(String(path), '/api/primaries'); admitted.resolve(); return reply.promise;
+  };
+  const receipt = {...handoff}; setup.actions.handoffResult({...setup.result, receipt: {kind: 'rpc', result: {value: receipt, truncated: false}}});
+  receipt.cwd = '/other-project'; receipt.sessionFile = '/other-project/other.jsonl';
+  assert.equal(calls.length, 0); assert.equal(setup.modal.token, 1);
+  assert.match(textOf(setup.body), /Exit Pi in the terminal before you resume here\. The browser does not detect other writers\./);
+  assert.equal(setup.find('Resume here').className, 'main-action'); setup.find('Open session…');
+  selected = {...primary, cwd: '/other-project', sessionFile: '/other-project/other.jsonl'};
+  const resume = setup.find('Resume here'); resume.dispatchEvent(new Event('click')); resume.dispatchEvent(new Event('click')); await admitted.promise;
+  assert.equal(resume.disabled, true); assert.equal(setup.modal.token, 1);
+  assert.deepEqual(calls, [{path: '/api/operations', body: {kind: 'primary.open'}}, {path: '/api/primaries', body: {cwd: handoff.cwd, sessionFile: handoff.sessionFile}}]);
+  reply.resolve(Response.json({ok: true, data: {primaryKey: 'resumed', operation: {...operation, kind: 'primary.open'}}}));
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(reloads, 1); assert.equal(setup.modal.openNow, false); assert.equal(setup.modal.token, 1);
+});
+for (const state of ['rejected', 'uncertain'] as const) test(`handoff return retains the command and controls after ${state} admission without replay`, async t => {
+  let reloads = 0; const setup = handoffSetup(t, {reload: async () => {reloads++;}}); const calls: string[] = [];
+  globalThis.fetch = async path => {
+    calls.push(String(path));
+    return Response.json({ok: true, data: String(path) === '/api/operations' ? {operationId: 'resume'} : {operation: {...operation, kind: 'primary.open', state, error: {code: state === 'rejected' ? 'operation_conflict' : 'delivery_uncertain', message: 'No confirmed return.', retry: 'manual'}}}});
+  };
+  setup.actions.handoffResult(setup.result); const resume = setup.find('Resume here'); resume.dispatchEvent(new Event('click'));
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, ['/api/operations', '/api/primaries']); assert.equal(reloads, 0);
+  assert.equal(setup.modal.openNow, true); assert.equal(setup.modal.token, 1); assert.equal(resume.disabled, false);
+  assert.equal(setup.body.children[0]?.textContent, handoff.command); assert.match(textOf(setup.nodes.get('modal-error') as FakeNode), /No confirmed return/);
+  setup.find('Open session…');
+});
+test('handoff results with invalid receipt paths retain the command and discovery without direct resume or effect', t => {
+  const setup = handoffSetup(t); let calls = 0; globalThis.fetch = async () => {calls++; throw Error('No request expected');};
+  const values = [{command: handoff.command}, {...handoff, cwd: 'relative'}, {...handoff, sessionFile: 'relative.jsonl'}, {...handoff, sessionFile: '/bad\u0000path'}, {...handoff, sessionFile: `/${'a'.repeat(4096)}`}];
+  for (const [index, value] of values.entries()) {
+    const result = {...setup.result, id: `handoff-${index}`, receipt: {kind: 'rpc' as const, result: {value, truncated: false}}};
+    setup.actions.handoffResult(result);
+    assert.equal(setup.modal.token, index + 1); assert.equal(setup.modal.openNow, true);
+    assert.equal(setup.body.children[0]?.textContent, handoff.command); setup.find('Open session…');
+    const buttons = setup.body.querySelectorAll('button');
+    assert.ok(buttons.some(node => node.attributes.get('aria-label') === 'Copy command'));
+    assert.equal(buttons.some(node => node.textContent === 'Resume here'), false); assert.equal(calls, 0);
+    setup.actions.handoffResult(result); assert.equal(setup.modal.token, index + 1, 'duplicate receipt does not replace the dialog');
+  }
+  setup.actions.handoffResult({...setup.result, id: 'uncertain', state: 'uncertain'});
+  assert.equal(setup.modal.token, values.length); assert.equal(calls, 0);
 });
 
 test('resource cache skips startup and warms once on the ready transition without page reload', async () => {

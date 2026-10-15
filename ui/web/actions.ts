@@ -1,5 +1,6 @@
 import {cardAction, cardIcon} from './card-icons.ts';
 import { ProjectPicker } from './picker.ts';
+import { savedPathValid } from './picker-state.ts';
 import { renderFacts, type ReportedFact } from './facts.ts';
 import type { AgentRow, Appearance, CommandView, ConversationLayout, EntryView, HandoffView, ModelChoice, OperationView, PrimaryControl, PrimaryView, ResourcePage, Snapshot, Target, Workspace } from '../shared/api.ts';
 import { button, copy, details, element, input, rawText } from './dom.ts';
@@ -563,7 +564,9 @@ export class Actions {
     if (result.kind !== 'primary.handoff' || result.state !== 'completed' || result.receipt?.kind !== 'rpc') return;
     const data = result.receipt.result?.value as HandoffView | undefined; if (!data?.command || this.displayedHandoffs.has(result.id)) return;
     this.displayedHandoffs.add(result.id); if (this.displayedHandoffs.size > 64) this.displayedHandoffs.delete(this.displayedHandoffs.values().next().value as string);
-    const modal = this.ctx.modal; modal.open('Ready for terminal');
-    modal.body.append(element('pre', undefined, data.command), cardAction('copy', 'Copy command', () => { void copy(data.command, modal.body); }), element('p', undefined, 'Browser control is stopped. Other Durable agents continue.'), button('Open session…', () => this.projectPicker()));
+    const {cwd, sessionFile} = data; const modal = this.ctx.modal; modal.open('Ready for terminal');
+    modal.body.append(element('pre', undefined, data.command), cardAction('copy', 'Copy command', () => { void copy(data.command, modal.body); }), element('p', undefined, 'Browser control is stopped. Other Durable agents continue.'), element('p', 'secondary', 'Exit Pi in the terminal before you resume here. The browser does not detect other writers.'));
+    const resumable = typeof cwd === 'string' && savedPathValid(cwd) && typeof sessionFile === 'string' && savedPathValid(sessionFile);
+    modal.actions(...(resumable ? [button('Resume here', () => this.sessionPicker().resume(cwd, sessionFile), 'main-action')] : []), button('Open session…', () => this.projectPicker()));
   }
 }

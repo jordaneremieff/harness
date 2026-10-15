@@ -152,6 +152,35 @@ test('current project opens its session list and a saved row directly admits one
   assert.deepEqual(setup.calls.filter(call => call.path === '/api/primaries').map(call => call.body), [{cwd: '/project', sessionFile: '/project/s.jsonl'}]);
   assert.equal(setup.reloads, 1); assert.equal(setup.closed, true);
 });
+for (const lifecycle of ['stopped', 'failed'] as const) test(`direct resume reopens a ${lifecycle} owner without a chooser, inventory read or confirmation`, async t => {
+  const setup = directPicker(t, {...active, lifecycle, sessionFile: saved.items[0].path});
+  setup.modal.open(); const command = new Node('pre'); command.textContent = 'pi --session /project/s.jsonl'; setup.body.append(command);
+  setup.picker.resume('/project', saved.items[0].path); setup.picker.resume('/project', saved.items[0].path); await settle();
+  assert.deepEqual(setup.calls, [{path: '/api/operations', body: {kind: 'primary.open'}}, {path: '/api/primaries', body: {cwd: '/project', sessionFile: saved.items[0].path}}]);
+  assert.equal(setup.modal.token, 1); assert.equal(setup.body.children[0], command); assert.equal(setup.closed, true);
+  assert.equal(setup.reloads, 1); assert.deepEqual(setup.selections, []);
+});
+test('direct resume selects the exact current owner and epoch without a second writer or dialog', async t => {
+  const setup = directPicker(t, {...active, sessionFile: '/project/other.jsonl'}); setup.modal.open();
+  setup.state.primaries = [{...active, key: 'resumed', epoch: 8, sessionFile: saved.items[0].path}];
+  setup.picker.resume('/project', saved.items[0].path); await settle();
+  assert.deepEqual(setup.selections, [{primaryKey: 'resumed', selectedTarget: {kind: 'primary', key: 'resumed', epoch: 8}}]);
+  assert.deepEqual(setup.calls, []); assert.equal(setup.modal.token, 1); assert.equal(setup.closed, true);
+  assert.deepEqual(setup.steps, ['selection', 'reload']);
+});
+test('direct resume retains its host and command on refusal without an automatic retry', async t => {
+  const setup = directPicker(t); setup.modal.open(); const command = new Node('pre'); command.textContent = 'pi --session /project/s.jsonl'; setup.body.append(command); setup.fail();
+  setup.picker.resume('/project', saved.items[0].path); await settle();
+  assert.deepEqual(setup.calls.map(call => call.path), ['/api/operations', '/api/primaries']);
+  assert.equal(setup.modal.token, 1); assert.equal(setup.body.children[0], command); assert.equal(setup.closed, false);
+  assert.equal(setup.reloads, 0); assert.match(setup.error, /backend writer/);
+});
+test('direct resume refuses a relative path in the current host without an open effect', async t => {
+  const setup = directPicker(t); setup.modal.open(); setup.picker.resume('/project', 'relative.jsonl'); await settle();
+  assert.deepEqual(setup.calls, []); assert.equal(setup.closed, false); assert.equal(setup.modal.token, 1);
+  assert.match(setup.error, /saved session path that starts with \//);
+});
+
 test('bootstrap without a primary lists launch-project sessions directly without starting Pi', async t => {
   const setup = directPicker(t); setup.picker.open(); await settle();
   assert.deepEqual(setup.calls.map(call => call.path), ['/api/sessions?project=%2Fproject']);

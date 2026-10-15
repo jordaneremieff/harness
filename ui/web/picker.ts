@@ -334,7 +334,7 @@ export class ProjectPicker {
   private row(item: SavedSession, tail?: string): HTMLElement {
     const row = element('div', 'picker-session');
     const opened = sessionOwner(this.ctx.snapshot()?.primaries ?? [], item.path);
-    const select = button('', () => this.enter(item.project, item.path), 'picker-select');
+    const select = button('', () => this.resume(item.project, item.path), 'picker-select');
     select.dataset.sessionPath = item.path; select.title = item.title;
     const heading = element('span', 'picker-session-heading'); const identity = element('span', 'picker-session-tail', tail ?? ''); identity.hidden = !tail;
     heading.append(element('strong', 'picker-session-title', sessionLabel(item)), identity);
@@ -371,19 +371,21 @@ export class ProjectPicker {
     const resume = () => {
       error.textContent = '';
       if (!savedPathValid(session.field.value)) { error.textContent = 'Enter a saved session path that starts with /.'; session.field.focus(); return; }
-      this.enter(project, session.field.value, cause => { error.textContent = cause instanceof Error ? cause.message : String(cause); session.field.focus(); });
+      this.resume(project, session.field.value, cause => { error.textContent = cause instanceof Error ? cause.message : String(cause); session.field.focus(); });
     };
     disclosure.append(pickerField(session, true), error, button('Resume session', resume, 'main-action'));
     disclosure.addEventListener('toggle', () => { changed(); disclosure.hidden = !disclosure.open; if (disclosure.open) session.field.focus(); else search.focus(); });
     session.field.addEventListener('keydown', event => { if (event instanceof KeyboardEvent && event.key === 'Enter') { event.preventDefault(); resume(); } });
     return disclosure;
   }
-  private enter(project: string, path: string, failed?: (cause: unknown) => void): void {
-    if (!savedPathValid(path)) { this.error(undefined, 'Enter a saved session path that starts with /.'); return; }
-    const current = sessionOwner(this.ctx.snapshot()?.primaries ?? [], path);
-    void this.run(() => current
-      ? this.select({primaryKey: current.key, selectedTarget: {kind: 'primary', key: current.key, epoch: current.epoch}})
-      : this.start(project, path), failed);
+  resume(project: string, path: string, failed?: (cause: unknown) => void): void {
+    void this.run(() => {
+      if (!savedPathValid(path)) throw new Error('Enter a saved session path that starts with /.');
+      const current = sessionOwner(this.ctx.snapshot()?.primaries ?? [], path);
+      return current
+        ? this.select({primaryKey: current.key, selectedTarget: {kind: 'primary', key: current.key, epoch: current.epoch}})
+        : this.start(project, path);
+    }, failed);
   }
   private async select(change: SelectionChange): Promise<void> {
     await this.ctx.selection(change);
