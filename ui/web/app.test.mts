@@ -1328,6 +1328,30 @@ test('drawer Close, outside pointer and Escape retain drafts and desktop visibil
   assert.equal(primaryControl('editor').value, 'Exact retained draft'); assert.equal(primaryControl('transcript').scrollTop, 140); assert.equal(selectionSaves.length, 0); assert.equal(app.state.workspace?.sidebarVisible, true);
   app.toggleSidebar(true); host.viewport = 1100; app.renderNavigation(); assert.equal(app.drawerOpen, false); assert.equal(byId('sidebar').hidden, false);
 });
+test('projected Message pointers stay inside the drawer without exempting the conversation transcript', async t => {
+  t.after(() => {app.toggleSidebar(false); byId('agent-message-close').click(); host.viewport = 1200;});
+  for (const visiblePane of [false, true]) {
+    const row = agentFixture(`drawer-message-${visiblePane}`), primary = primaryFixture({epoch: visiblePane ? 718 : 717});
+    const target = {kind: 'primary' as const, key: primary.key, epoch: primary.epoch};
+    await arrive({workspace: {id: 'drawer-message', revision: 1, primaryKey: primary.key, selectedTarget: target,
+      conversationLayout: visiblePane ? twoPanes(row.identity) : singlePane([{kind: 'primary'}])}, primaries: [primary], roster: [row]});
+    host.viewport = 390; app.toggleSidebar(true);
+    const message = byId('roster').querySelector(`[data-identity="${row.identity}"]`)?.querySelector('.row-message'); assert.ok(message); message.click(); await settle();
+    const editor = messageControl('editor'), form = messageControl('composer'), parent = form.parentNode;
+    editor.value = 'Retained Message draft'; editor.dispatch('input'); editor.focus(); editor.setSelectionRange(2, 7, 'backward');
+    for (const node of [editor, messageControl('send'), form]) {
+      assert.equal(byId('sidebar').contains(node), false);
+      app.dismissDrawerPointer({target: node, preventDefault: () => assert.fail('Message pointer was canceled'), stopImmediatePropagation: () => assert.fail('Message pointer was stopped')} as unknown as PointerEvent);
+      app.consumeDrawerClick({detail: 1, preventDefault: () => assert.fail('Message click was canceled'), stopImmediatePropagation: () => assert.fail('Message click was stopped')} as unknown as MouseEvent);
+      assert.equal(app.drawerOpen, true); assert.equal(hostDocument.activeElement, editor); assert.equal(form.parentNode, parent);
+      assert.equal(editor.value, 'Retained Message draft'); assert.deepEqual([editor.selectionStart, editor.selectionEnd], [2, 7]);
+    }
+    let prevented = false;
+    app.dismissDrawerPointer({target: primaryControl('transcript'), preventDefault: () => {prevented = true;}, stopImmediatePropagation() {}} as unknown as PointerEvent);
+    assert.equal(prevented, true); assert.equal(app.drawerOpen, false);
+    byId('agent-message-close').click(); await settle(); host.viewport = 1200;
+  }
+});
 test('drawer dismissal excludes its own controls, dialogs, command lists and context menus', () => {
   host.viewport = 760; app.toggleSidebar(true);
   for (const node of [byId('sidebar'), new HostNode('dialog'), Object.assign(new HostNode('div'), {className: 'command-menu'}), Object.assign(new HostNode('div'), {className: 'context-menu'})]) {

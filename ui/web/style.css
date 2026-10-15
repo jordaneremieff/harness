@@ -974,7 +974,11 @@ dialog[data-variant=menu]::backdrop { background: transparent; }
   .sidebar-close { display: inline-flex; }
   .app.drawer-open .workbench > .sidebar { position: absolute; inset: 0 auto 0 0; z-index: 10; display: flex; width: min(300px, calc(100vw - 48px)); box-shadow: var(--shadow); }
   .workspace, .stable-views { --gutter: 16px; }
-  .app.drawer-open .stable-views { z-index: 11; }
+  .app.drawer-open .stable-views { z-index: auto; }
+  /* Only the projected writer crosses the drawer; its native ancestors stay in place. */
+  .app.drawer-open .stable-views > .conversation:has(> .composer[data-message-panel=true]) { container: none; }
+  .app.drawer-open .stable-views > .conversation:has(> .composer[data-message-panel=true]) > .transcript-region { container: conversation / inline-size; }
+  .app.drawer-open .composer[data-message-panel=true] { z-index: 11; container-name: composer conversation; }
 }
 @media (max-width:599px) {
   .workspace, .stable-views { --gutter: 16px; }

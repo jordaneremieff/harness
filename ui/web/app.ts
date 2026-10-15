@@ -1686,7 +1686,9 @@ function tabLabel(tab: ConversationTab): string { return tab.kind === 'file' ? `
 let dismissedPointer = false;
 export function dismissDrawerPointer(event: PointerEvent): void {
   dismissedPointer = false;
-  if (!drawerOpen || modal.openNow || contextMenu.openNow || (event.target as HTMLElement | null)?.closest?.('#sidebar, dialog, .context-menu, .command-menu')) return;
+  const target = event.target as HTMLElement | null;
+  if (!drawerOpen || modal.openNow || contextMenu.openNow || target?.closest?.('#sidebar, dialog, .context-menu, .command-menu')) return;
+  if (target && workspaceViews?.slot(target)?.closest('#sidebar')) return;
   event.preventDefault(); event.stopImmediatePropagation(); dismissedPointer = true; toggleSidebar(false);
 }
 export function consumeDrawerClick(event: MouseEvent): void {

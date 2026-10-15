@@ -42,6 +42,18 @@ test('off-pane Message roots pass header pointers through while the original com
   assert.match(rule('.conversation[data-message-only=true] > .composer'), /pointer-events: auto/);
   assert.match(rule('.conversation[data-message-only=true] > :not(.composer)'), /display: none/);
 });
+test('the narrow drawer covers transcripts while only its projected Message writer crosses the drawer layer', () => {
+  const narrow = media('@media (max-width:899px)');
+  assert.match(narrow, /\.app\.drawer-open \.workbench > \.sidebar \{[^}]*z-index: 10;/);
+  assert.match(narrow, /\.app\.drawer-open \.stable-views \{ z-index: auto; \}/);
+  assert.doesNotMatch(narrow, /\.app\.drawer-open \.stable-views \{[^}]*z-index: \d/);
+  const projected = '.app.drawer-open .stable-views > .conversation:has(> .composer[data-message-panel=true])';
+  assert.equal(rule(projected).trim(), 'container: none;');
+  assert.match(rule(`${projected} > .transcript-region`), /container: conversation \/ inline-size/);
+  assert.match(rule('.app.drawer-open .composer[data-message-panel=true]'), /z-index: 11; container-name: composer conversation/);
+  assert.match(rule('.conversation'), /container: conversation \/ inline-size/);
+  assert.match(rule('.composer'), /container: composer \/ inline-size/);
+});
 test('saved drafts and message choices retain full-width readable rows with separated values', () => {
   assert.match(rule('.recovery-target'), /display: grid; grid-template-columns: minmax\(0,1fr\) minmax\(12ch,20ch\);[^}]*gap: 12px/);
   assert.match(rule('.recovery-name, .recovery-count'), /min-width: 0; overflow-wrap: anywhere/);
