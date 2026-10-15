@@ -82,7 +82,11 @@ export function focusPane(pane: Pane): void {
   if (tab?.kind === 'file' && state.workspace) filesViews.view(state.workspace,tab).focus();
   else if (target) conversationController(target).composer.focus();
 }
-function updatePaneFocus(pane: Pane): void { if (focusedPane !== pane) applyLayout({...currentLayout(), focusedPane: pane}); }
+function updatePaneFocus(pane: Pane, event?: Event): void {
+  if (focusedPane === pane) return;
+  if (event?.type === 'pointerdown') workbenchStatus.holdGeometry(event as PointerEvent);
+  applyLayout({...currentLayout(), focusedPane: pane});
+}
 function markFocusedPane(): void {
   for (const [id, pane] of paneRegions) pane.node.dataset.focused = String(id === focusedPane);
   renderWorkbenchStatus();
@@ -168,7 +172,7 @@ function conversationController(target: Target): ConversationController {
   bindControllerReadingIntent(controller);
   earlier.addEventListener('click', () => { void loadControllerHistory(controller, true); });
   stop.addEventListener('click', () => { void stopController(controller); });
-  const focusPane = (event: Event): void => {const pane = viewPane(event.target as HTMLElement); if (pane?.dataset.paneId) updatePaneFocus(pane.dataset.paneId);};
+  const focusPane = (event: Event): void => {const pane = viewPane(event.target as HTMLElement); if (pane?.dataset.paneId) updatePaneFocus(pane.dataset.paneId, event);};
   root.addEventListener('pointerdown', focusPane); root.addEventListener('focusin', focusPane);
   elements.editor.addEventListener('focus', () => { footerController = controller; renderWorkbenchStatus(); });
   bindControllerInput(controller);
@@ -556,7 +560,7 @@ function mountPaneLeaf(leaf: PaneLeaf, layout: ConversationLayout): HTMLElement 
       if (event.defaultPrevented || !(event.target instanceof HTMLElement) || nativeEditingTarget(event.target) || event.target.closest('.transcript,.file-reading')) return;
       event.preventDefault(); openPaneMenu(leaf.id, event, event.target.closest<HTMLElement>('.conversation-tab')?.dataset.tabKey);
     });
-    content.addEventListener('pointerdown', () => updatePaneFocus(leaf.id));
+    content.addEventListener('pointerdown', event => updatePaneFocus(leaf.id, event));
     content.addEventListener('focusin', () => updatePaneFocus(leaf.id));
   }
   const activeIndex = leaf.tabs.findIndex(tab => tabKey(tab) === leaf.active);

@@ -1051,6 +1051,49 @@ test('pane tabs keep separate menus and focused facts while both target owners s
   app.focusPane('agent-pane');await settle();assert.equal(hostDocument.activeElement,ae);assert.equal(byId('workbench-scope').title,identity);assert.equal(byId('workbench-status-primary').hidden,true);assert.equal(byId('workbench-status-agent').hidden,false);assert.equal(a('editor'),ae);assert.equal(p('editor'),pe);assert.deepEqual([pe.selectionStart,pe.selectionEnd],[1,3]);assert.deepEqual([ae.selectionStart,ae.selectionEnd],[2,4]);assert.equal(byId('primary-usage-details').open,true);
 });
 
+test('pointer pane focus holds footer geometry before paint and leaves native actions in their existing phase', async t => {
+  const identity = 'pointer-focus-owner';
+  await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'agent', identity}, conversationLayout: twoPanes(identity)}, primaries: [primaryFixture({epoch: 711})], roster: [agentFixture(identity)]});
+  app.focusPane('agent-pane'); await settle();
+  const footer = byId('workbench-status'), scope = byId('workbench-scope'), style = footer.style, agentEditor = agentControl('editor');
+  const bounds = footer.getBoundingClientRect, attribute = scope.setAttribute;
+  let height = 26, measurements = 0, paints = 0, pressed = false, clicks = 0;
+  Reflect.set(style, 'getPropertyPriority', () => '');
+  Reflect.set(footer, 'getBoundingClientRect', () => {measurements++; return {...bounds.call(footer), height};});
+  Reflect.set(scope, 'setAttribute', function(this: HostNode, name: string, value: string) {
+    if (pressed && name === 'aria-label') {paints++; assert.equal(style.getPropertyValue('height'), `${height}px`, 'The immediate selection paint retains the pressed geometry.');}
+    attribute.call(this, name, value);
+  });
+  const latest = primaryControl('composer').querySelector('.latest'); assert.ok(latest);
+  const clicked = () => {clicks++; assert.equal(style.getPropertyValue('height'), '26px', 'The existing target handler precedes geometry cleanup.');};
+  latest.addEventListener('click', clicked);
+  t.after(() => {for (const pointerId of [41, 42, 43, 44]) for (const handler of documentHandlers.get('pointercancel') ?? []) handler({pointerId}); latest.removeEventListener('click', clicked); Reflect.set(footer, 'getBoundingClientRect', bounds); Reflect.set(scope, 'setAttribute', attribute); Reflect.deleteProperty(style, 'getPropertyPriority');});
+  const keyboardAgent = () => {agentEditor.blur(); agentEditor.focus();};
+  const before = transportLog.length;
+  const press = (node: HostNode, pointerId: number) => node.dispatch('pointerdown', {type: 'pointerdown', pointerId, button: 0, isPrimary: true});
+  const content = paneNode('primary-pane').querySelector('.pane-content'); assert.ok(content);
+  pressed = true; press(latest, 41);
+  assert.equal(app.focusedPane, 'primary-pane'); assert.equal(footer.dataset.pane, 'primary'); assert.ok(paints > 0);
+  assert.equal(style.getPropertyValue('height'), '26px'); assert.equal(clicks, 0); assert.equal(measurements, 1);
+  press(content, 41); assert.equal(measurements, 1, 'The second focus site does not acquire again for this press.');
+  latest.dispatch('click', {pointerId: 41}); pressed = false;
+  assert.equal(clicks, 1); assert.equal(style.getPropertyValue('height'), ''); await settle();
+  keyboardAgent(); await settle();
+  assert.equal(app.focusedPane, 'agent-pane'); assert.equal(footer.dataset.pane, 'agent');
+  assert.equal(measurements, 1, 'Keyboard focus has no pointer hold.'); assert.equal(style.getPropertyValue('height'), '');
+  height = 63; pressed = true; press(content, 42); pressed = false;
+  assert.equal(app.focusedPane, 'primary-pane'); assert.equal(style.getPropertyValue('height'), '63px'); assert.equal(measurements, 2);
+  byId('model-button').focus(); assert.equal(style.getPropertyValue('height'), '', 'Footer focus restores access to facts immediately.'); await settle();
+  keyboardAgent(); await settle(); press(content, 43);
+  for (const handler of documentHandlers.get('pointercancel') ?? []) handler({pointerId: 43});
+  assert.equal(style.getPropertyValue('height'), ''); assert.equal(clicks, 1); flushFrames(); await settle();
+  keyboardAgent(); await settle(); press(content, 44);
+  for (const handler of documentHandlers.get('pointerup') ?? []) handler({pointerId: 44});
+  assert.equal(style.getPropertyValue('height'), '63px'); flushFrames(); await settle();
+  assert.equal(style.getPropertyValue('height'), ''); assert.equal(clicks, 1);
+  assert.equal(transportLog.slice(before).filter(call => call.path.includes('/inputs') || call.path.endsWith('/start') || (call.path === '/api/primaries' && call.method === 'POST')).length, 0);
+});
+
 test('footer facts follow a Message recipient while Primary stays selected', async () => {
   const recipient=agentFixture('footer-recipient'),target={kind:'primary' as const,key:'p',epoch:8600}; await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:target},primaries:[primaryFixture({epoch:8600})],roster:[recipient],targets:[targetFixture('footer-p',target),targetFixture('footer-b',{kind:'agent',identity:recipient.identity},{draft:{revision:1,text:'Recipient draft',mode:'prompt',persisted:true}})]});
   byId('roster').querySelector('[data-identity="footer-recipient"]')?.querySelector('.row-message')?.click(); await settle(); const editor=messageControl('editor');editor.focus();editor.setSelectionRange(2,6); const disclosure=byId('agent-usage-details');disclosure.open=true;
