@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Value } from "typebox/value";
 import { AgentManager } from "./manager.ts";
-import { AgentConversationSummarySchema, StatusOutputSchema } from "./observation-schema.ts";
+import { AgentConversationSummarySchema, StatusToolOutputSchema } from "./observation-schema.ts";
 import { composeListRow, enrichDashboardRow, matchesListRow } from "./profile-discovery.ts";
 import type { ProfileHints } from "./profile-schema.ts";
 import { row } from "./dashboard-test-fixture.mts";
@@ -45,7 +45,7 @@ it("manager list searches handle and role through retained hints without acquiri
 	const dashboard = await manager.dashboardPage();
 	assert.equal(dashboard.rows[0].profile?.handle, "@history");
 	const status = await manager.status();
-	assert.ok(Value.Check(StatusOutputSchema, status), "composite profile does not leak into the base status schema");
+	assert.ok(Value.Check(StatusToolOutputSchema, status), "manager overview matches the tool status schema without composite profile fields");
 	const empty = await manager.list({ query: "missing role" }) as { rows: unknown[]; coverage: { profileHints: { complete: boolean; omitted: number } } };
 	assert.equal(empty.rows.length, 0);
 	assert.equal(empty.coverage.profileHints.complete, false);
