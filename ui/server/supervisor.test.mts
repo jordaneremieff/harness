@@ -41,11 +41,11 @@ test('readiness pins the ephemeral port, defaults development, and diagnostic ch
   const child=childAt(children,0);
   child.stdout.emit('data',Buffer.from('http://127.0.0.1:1234/#lau'));
   child.stdout.emit('data',Buffer.from('nch=private\ntoken=hidden\n'));
-  child.emit('message',{kind:'ready',launchUrl:'http://127.0.0.1:1234/#launch=fixture'});
+  child.emit('message',{kind:'ready',url:'http://127.0.0.1:1234/'});
   child.emit('exit',1,null);await turn();context.mock.timers.tick(1);await turn();
   const sent=childAt(children,1).sent[0] as {options:typeof options&{devReload:boolean}};assert.equal(sent.options.port,1234);assert.equal(sent.options.devReload,true);
   assert.equal(output.join('').includes('private'),false);assert.equal(output.join('').includes('hidden'),false);
-  childAt(children,1).emit('message',{kind:'ready',launchUrl:'http://127.0.0.1:80/#launch=fixture'});
+  childAt(children,1).emit('message',{kind:'ready',url:'http://127.0.0.1:80/'});
   childAt(children,1).emit('exit',1,null);await turn();context.mock.timers.tick(2);await turn();
   const defaultPort=childAt(children,2).sent[0] as {options:typeof options};assert.equal(defaultPort.options.port,80);
   parent.stop();assert.equal(await parent.closed,0);
@@ -80,7 +80,7 @@ test('an actual crash removes an owned descendant before a replacement starts', 
   const replacement=new Promise<BackendReady>(resolve=>{ready=resolve;});
   await writeFile(module,`import {spawn} from 'node:child_process';
 process.once('message',m=>{let descendant;if(m.restarts===0){descendant=spawn(process.execPath,['-e','process.on("SIGTERM",()=>{});setInterval(()=>{},1000)'],{stdio:'ignore'}).pid;}
-process.send({kind:'ready',launchUrl:'http://127.0.0.1:1234/#launch=fixture',identity:{},descendant});
+process.send({kind:'ready',url:'http://127.0.0.1:1234/',identity:{},descendant});
 if(m.restarts===0)process.exit(1);else process.on('SIGTERM',()=>process.exit(0));});`);
   const parent=supervise({cwd:join(root,'project'),port:0,pi:'pi'},{module,restartDelayMs:1,
     spawn:((...args:Parameters<typeof fork>)=>{const child=fork(...args);if(child.pid)groups.push(child.pid);return child;}) as typeof fork,

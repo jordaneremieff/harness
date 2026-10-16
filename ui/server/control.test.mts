@@ -25,7 +25,7 @@ async function fixture(t:TestContext) {
   const registry=new Proxy({store,journal,views:()=>primaries,agents:{rosterRow:(id:string)=>id==='known:agent'?{}:undefined}}, {get(target,key){if(!(key in target))throw new Error(`Execution access is forbidden: ${String(key)}`);return Reflect.get(target,key);}}) as unknown as Registry;
   const control=new Control(registry,{request:async job=> {jobs.push(job.kind);if(job.kind==='roots')return new FileResponse(JSON.stringify({ok:true,data:[{id:'root',name:'Project',path:'/project'}]}),200);assert.equal(job.kind,'text');if(job.kind==='text'&&(job.rootId!=='root'||job.path==='missing.txt'))return new FileResponse(JSON.stringify({ok:false,error:{code:'file_missing',message:'The file is unavailable.',retry:'read'}}),404);return new FileResponse(JSON.stringify({ok:true,data:{text:'PRIVATE FILE CONTENT'}}),200);}},{control:async text=>{if(logFails)throw new Error('disk');const hook=nextLog;nextLog=undefined;await hook?.();logs.push(JSON.parse(text));}});
   t.after(async()=>{await control.close();journal.close();await store.close();await rm(directory,{recursive:true,force:true});});
-  const connect=(pageId='page',session='browser')=>{const page=new Page();journal.attach(page.response,workspace.id,session,journal.cursor,undefined,pageId);return page;};
+  const connect=(pageId='page')=>{const page=new Page();journal.attach(page.response,workspace.id,journal.cursor,undefined,pageId);return page;};
   const submit=async(intent:unknown,extra:Record<string,unknown>={})=>{const cut=journal.cursor,receipt=await control.submit({workspaceId:workspace.id,actor:'Test actor',intent,...extra});const record=journal.replay(cut,workspace.id).records.find(record=>record.name==='control.request');assert.ok(record);return {receipt,request:record.envelope.data as ControlRequest};};
   return {control,store,journal,workspace,connect,submit,jobs,logs,primaries,atNextLog(hook:()=>Promise<void>){nextLog=hook;},failLog(){logFails=true;}};
 }
@@ -52,25 +52,25 @@ test('no page, multiple pages, off, stale and unknown exact targets refuse befor
   const workspace=await f.store.updateSelection(f.workspace.id,{expectedRevision:f.workspace.revision,agentControl:false});await f.control.workspaceChanged(workspace);await assert.rejects(()=>f.submit({action:'notice',text:'x'}),/off/);assert.ok(a);assert.equal(f.logs.length,0);
 });
 
-test('a notice uses the original actor, a browser-only ack and no selection or execution owner',async t=> {
-  const f=await fixture(t);f.connect();const {receipt,request}=await f.submit({action:'notice',text:'Keep this plain'});assert.equal(receipt.state,'pending');await assert.rejects(()=>f.control.ack({...provenance(request),result:'applied',appliedRevision:f.workspace.revision},'wrong-browser'),/connection/);
-  const wait=f.control.wait(receipt.requestId);const result=await f.control.ack({...provenance(request),result:'applied',appliedRevision:f.workspace.revision},'browser');assert.equal(result.state,'applied');assert.deepEqual(await wait,result);assert.equal((await f.store.workspace(f.workspace.id)).revision,f.workspace.revision);assert.deepEqual(f.jobs,[]);assert.equal(f.logs.length,2);assert.doesNotMatch(JSON.stringify(f.logs),/Keep this plain/);assert.equal(f.logs[1]?.actor,'Test actor');
+test('a notice uses the original actor, a page-bound ack and no selection or execution owner',async t=> {
+  const f=await fixture(t);f.connect();const {receipt,request}=await f.submit({action:'notice',text:'Keep this plain'});assert.equal(receipt.state,'pending');await assert.rejects(()=>f.control.ack({...provenance(request),connectionId:'wrong-connection',result:'applied',appliedRevision:f.workspace.revision}),/connection/);
+  const wait=f.control.wait(receipt.requestId);const result=await f.control.ack({...provenance(request),result:'applied',appliedRevision:f.workspace.revision});assert.equal(result.state,'applied');assert.deepEqual(await wait,result);assert.equal((await f.store.workspace(f.workspace.id)).revision,f.workspace.revision);assert.deepEqual(f.jobs,[]);assert.equal(f.logs.length,2);assert.doesNotMatch(JSON.stringify(f.logs),/Keep this plain/);assert.equal(f.logs[1]?.actor,'Test actor');
 });
 
 test('saved layout is not an application ack; only its exact revision correlates to success',async t=> {
   const f=await fixture(t);f.connect();const {receipt,request}=await f.submit({action:'show',rootId:'root',path:'notes.md',preview:true});const layout=structuredClone(initial);assert.equal(layout.root.kind,'pane');if(layout.root.kind!=='pane')return;const tab:WorkspaceTab={kind:'file',rootId:'root',path:'notes.md',view:'preview'};layout.root.tabs.push(tab);layout.root.active=workspaceTabKey(tab);
-  const change={expectedRevision:f.workspace.revision,conversationLayout:layout};await assert.rejects(()=>f.control.ack({...provenance(request),result:'applied',appliedRevision:f.workspace.revision},'browser'),/intent/);
-  const saved=await f.control.selection(f.workspace.id,provenance(request),'browser',change,guard=>f.store.updateSelection(f.workspace.id,change,guard));assert.equal((await f.control.receipt(receipt.requestId)).state,'pending');
-  await assert.rejects(()=>f.control.ack({...provenance(request),result:'applied',appliedRevision:saved.revision+1},'browser'),/revision/);await assert.rejects(()=>f.control.ack({...provenance(request),result:'refused',refusalCode:'busy'},'browser'),/unconfirmed/);
-  await f.store.updateSelection(f.workspace.id,{expectedRevision:saved.revision,sidebarVisible:true});const applied=await f.control.ack({...provenance(request),result:'applied',appliedRevision:saved.revision},'browser');assert.equal(applied.appliedRevision,saved.revision);assert.equal(applied.state,'applied');assert.deepEqual(f.jobs,['text']);
+  const change={expectedRevision:f.workspace.revision,conversationLayout:layout};await assert.rejects(()=>f.control.ack({...provenance(request),result:'applied',appliedRevision:f.workspace.revision}),/intent/);
+  const saved=await f.control.selection(f.workspace.id,provenance(request),change,guard=>f.store.updateSelection(f.workspace.id,change,guard));assert.equal((await f.control.receipt(receipt.requestId)).state,'pending');
+  await assert.rejects(()=>f.control.ack({...provenance(request),result:'applied',appliedRevision:saved.revision+1}),/revision/);await assert.rejects(()=>f.control.ack({...provenance(request),result:'refused',refusalCode:'busy'}),/unconfirmed/);
+  await f.store.updateSelection(f.workspace.id,{expectedRevision:saved.revision,sidebarVisible:true});const applied=await f.control.ack({...provenance(request),result:'applied',appliedRevision:saved.revision});assert.equal(applied.appliedRevision,saved.revision);assert.equal(applied.state,'applied');assert.deepEqual(f.jobs,['text']);
 });
 
 test('reconnect changes incarnation and invalidates old saves and acknowledgments without replay',async t=> {
-  const f=await fixture(t),old=f.connect();const {request,receipt}=await f.submit({action:'notice',text:'x'});old.emit('close');f.connect();assert.notEqual(f.journal.controlPage(f.workspace.id)?.connectionId,request.connectionId);await assert.rejects(()=>f.control.ack({...provenance(request),result:'applied',appliedRevision:f.workspace.revision},'browser'),/connection/);assert.equal((await f.control.receipt(receipt.requestId)).state,'unconfirmed');assert.equal((await f.store.workspace(f.workspace.id)).revision,f.workspace.revision);
+  const f=await fixture(t),old=f.connect();const {request,receipt}=await f.submit({action:'notice',text:'x'});old.emit('close');f.connect();assert.notEqual(f.journal.controlPage(f.workspace.id)?.connectionId,request.connectionId);await assert.rejects(()=>f.control.ack({...provenance(request),result:'applied',appliedRevision:f.workspace.revision}),/connection/);assert.equal((await f.control.receipt(receipt.requestId)).state,'unconfirmed');assert.equal((await f.store.workspace(f.workspace.id)).revision,f.workspace.revision);
 });
 
 test('the deadline resolves a bounded waiter as unconfirmed and a late ack cannot change it',async t=> {
-  const f=await fixture(t);f.connect();t.mock.timers.enable({apis:['setTimeout','Date']});const {request,receipt}=await f.submit({action:'notice',text:'x'}),wait=f.control.wait(receipt.requestId);await Promise.resolve();t.mock.timers.tick(5001);const result=await wait;assert.equal(result.state,'unconfirmed');assert.equal(result.code,'deadline');await assert.rejects(()=>f.control.ack({...provenance(request),result:'applied',appliedRevision:f.workspace.revision},'browser'),/no longer/);
+  const f=await fixture(t);f.connect();t.mock.timers.enable({apis:['setTimeout','Date']});const {request,receipt}=await f.submit({action:'notice',text:'x'}),wait=f.control.wait(receipt.requestId);await Promise.resolve();t.mock.timers.tick(5001);const result=await wait;assert.equal(result.state,'unconfirmed');assert.equal(result.code,'deadline');await assert.rejects(()=>f.control.ack({...provenance(request),result:'applied',appliedRevision:f.workspace.revision}),/no longer/);
 });
 
 test('off invalidates pending work; duplicate workspace admission and missing logs refuse',async t=> {
@@ -79,21 +79,21 @@ test('off invalidates pending work; duplicate workspace admission and missing lo
 });
 
 test('logging failure after a browser ack cannot claim an applied retained result',async t=> {
-  const f=await fixture(t);f.connect();const {request}=await f.submit({action:'notice',text:'x'});f.failLog();const result=await f.control.ack({...provenance(request),result:'applied',appliedRevision:f.workspace.revision},'browser');assert.equal(result.state,'unconfirmed');assert.equal(result.code,'control_log_unavailable');
+  const f=await fixture(t);f.connect();const {request}=await f.submit({action:'notice',text:'x'});f.failLog();const result=await f.control.ack({...provenance(request),result:'applied',appliedRevision:f.workspace.revision});assert.equal(result.state,'unconfirmed');assert.equal(result.code,'control_log_unavailable');
 });
 
 test('control saves recheck current revision and reject unrelated settings or target changes',async t=> {
-  const f=await fixture(t);f.connect();const {request}=await f.submit({action:'focus',paneId:'pane-1'}),change={expectedRevision:f.workspace.revision,conversationLayout:initial};await assert.rejects(()=>f.control.selection(f.workspace.id,provenance(request),'browser',{...change,appearance:'light'},guard=>f.store.updateSelection(f.workspace.id,{...change,appearance:'light'},guard)),/intent/);
-  await f.store.updateSelection(f.workspace.id,{expectedRevision:f.workspace.revision,sidebarVisible:true});await assert.rejects(()=>f.control.selection(f.workspace.id,provenance(request),'browser',change,guard=>f.store.updateSelection(f.workspace.id,{...change,expectedRevision:f.workspace.revision+1},guard)),/workspace changed/);
+  const f=await fixture(t);f.connect();const {request}=await f.submit({action:'focus',paneId:'pane-1'}),change={expectedRevision:f.workspace.revision,conversationLayout:initial};await assert.rejects(()=>f.control.selection(f.workspace.id,provenance(request),{...change,appearance:'light'},guard=>f.store.updateSelection(f.workspace.id,{...change,appearance:'light'},guard)),/intent/);
+  await f.store.updateSelection(f.workspace.id,{expectedRevision:f.workspace.revision,sidebarVisible:true});await assert.rejects(()=>f.control.selection(f.workspace.id,provenance(request),change,guard=>f.store.updateSelection(f.workspace.id,{...change,expectedRevision:f.workspace.revision+1},guard)),/workspace changed/);
 });
 
 test('bounded mutation rate excludes receipt reads and burst exhaustion dispatches nothing further',async t=> {
-  const f=await fixture(t);f.connect();for(let i=0;i<8;i++){const {request,receipt}=await f.submit({action:'notice',text:'x'});for(let j=0;j<12;j++)assert.equal((await f.control.receipt(receipt.requestId)).state,'pending');await f.control.ack({...provenance(request),result:'refused',refusalCode:'busy'},'browser');}await assert.rejects(()=>f.submit({action:'notice',text:'x'}),/rate/);
+  const f=await fixture(t);f.connect();for(let i=0;i<8;i++){const {request,receipt}=await f.submit({action:'notice',text:'x'});for(let j=0;j<12;j++)assert.equal((await f.control.receipt(receipt.requestId)).state,'pending');await f.control.ack({...provenance(request),result:'refused',refusalCode:'busy'});}await assert.rejects(()=>f.submit({action:'notice',text:'x'}),/rate/);
 });
 
 test('a terminal result between receipt lookup and waiter registration cannot strand the wait',async t=> {
   const f=await fixture(t);f.connect();const {request,receipt}=await f.submit({action:'notice',text:'x'}),read=f.control.receipt.bind(f.control);
-  t.mock.method(f.control,'receipt',async (id:string)=>{const captured=await read(id);await f.control.ack({...provenance(request),result:'applied',appliedRevision:f.workspace.revision},'browser');return captured;});
+  t.mock.method(f.control,'receipt',async (id:string)=>{const captured=await read(id);await f.control.ack({...provenance(request),result:'applied',appliedRevision:f.workspace.revision});return captured;});
   assert.equal((await f.control.wait(receipt.requestId)).state,'applied');
 });
 
@@ -106,22 +106,22 @@ test('empty target records remain distinct from preparation and existing drafts 
   const f=await fixture(t);f.connect();const target=await f.store.target(f.workspace.id,{kind:'agent',identity:'known:agent'});assert.equal(target.draft.text,'');assert.equal(target.draft.mode,'followUp');
   await f.store.putDraft(f.workspace.id,target.targetKey,{expectedRevision:0,text:'Keep this draft',mode:'followUp'});await f.store.putReading(f.workspace.id,target.targetKey,{expectedRevision:0,anchorId:'saved-entry',offsetPx:42,followTail:false});const before=await f.store.getTarget(f.workspace.id,target.targetKey);
   const {request}=await f.submit({action:'focus',paneId:'pane-1',view:{kind:'agent',identity:'known:agent'}}),layout=structuredClone(initial);if(layout.root.kind!=='pane')return;layout.root.tabs.push({kind:'agent',identity:'known:agent'});layout.root.active='agent:known:agent';const change={expectedRevision:f.workspace.revision,conversationLayout:layout,selectedTarget:{kind:'agent' as const,identity:'known:agent'},panelVisible:true};
-  const saved=await f.control.selection(f.workspace.id,provenance(request),'browser',change,guard=>f.store.updateSelection(f.workspace.id,change,guard));await f.control.ack({...provenance(request),result:'applied',appliedRevision:saved.revision},'browser');assert.deepEqual(await f.store.target(f.workspace.id,before.target),before);assert.deepEqual(f.jobs,[]);
+  const saved=await f.control.selection(f.workspace.id,provenance(request),change,guard=>f.store.updateSelection(f.workspace.id,change,guard));await f.control.ack({...provenance(request),result:'applied',appliedRevision:saved.revision});assert.deepEqual(await f.store.target(f.workspace.id,before.target),before);assert.deepEqual(f.jobs,[]);
 });
 
 test('a primary reveal binds the exact current key and epoch rather than starting a primary',async t=> {
-  const f=await fixture(t);f.connect();f.primaries.push({key:'current-primary',epoch:2});await f.store.updateSelection(f.workspace.id,{expectedRevision:f.workspace.revision,primaryKey:'current-primary'});const {request}=await f.submit({action:'focus',paneId:'pane-1',view:{kind:'primary'}});assert.deepEqual(request.primary,{kind:'primary',key:'current-primary',epoch:2});f.primaries[0]={key:'current-primary',epoch:3};await assert.rejects(()=>f.control.ack({...provenance(request),result:'refused',refusalCode:'busy'},'browser'),/primary conversation changed/);
+  const f=await fixture(t);f.connect();f.primaries.push({key:'current-primary',epoch:2});await f.store.updateSelection(f.workspace.id,{expectedRevision:f.workspace.revision,primaryKey:'current-primary'});const {request}=await f.submit({action:'focus',paneId:'pane-1',view:{kind:'primary'}});assert.deepEqual(request.primary,{kind:'primary',key:'current-primary',epoch:2});f.primaries[0]={key:'current-primary',epoch:3};await assert.rejects(()=>f.control.ack({...provenance(request),result:'refused',refusalCode:'busy'}),/primary conversation changed/);
 });
 
 test('outstanding capacity and terminal retention stay bounded independently of status reads',async t=> {
   const f=await fixture(t);let clock=performance.now();t.mock.method(performance,'now',()=>clock);
-  for(let i=0;i<9;i++) {const workspace=await f.store.createWorkspace(),page=new Page();f.journal.attach(page.response,workspace.id,'browser',f.journal.cursor,undefined,`page-${i}`);clock+=1000;const submit=()=>f.control.submit({workspaceId:workspace.id,intent:{action:'notice',text:'x'}});if(i===8)await assert.rejects(submit,/capacity is full/);else assert.equal((await submit()).state,'pending');}
+  for(let i=0;i<9;i++) {const workspace=await f.store.createWorkspace(),page=new Page();f.journal.attach(page.response,workspace.id,f.journal.cursor,undefined,`page-${i}`);clock+=1000;const submit=()=>f.control.submit({workspaceId:workspace.id,intent:{action:'notice',text:'x'}});if(i===8)await assert.rejects(submit,/capacity is full/);else assert.equal((await submit()).state,'pending');}
   await f.control.close();
 });
 
 test('terminal receipts retain only the bounded newest window',async t=> {
   const f=await fixture(t);f.connect();let clock=performance.now();t.mock.method(performance,'now',()=>clock);let first='',last='';
-  for(let i=0;i<66;i++){clock+=1000;const {request,receipt}=await f.submit({action:'notice',text:'x'});if(i===0)first=receipt.requestId;last=receipt.requestId;await f.control.ack({...provenance(request),result:'refused',refusalCode:'busy'},'browser');}
+  for(let i=0;i<66;i++){clock+=1000;const {request,receipt}=await f.submit({action:'notice',text:'x'});if(i===0)first=receipt.requestId;last=receipt.requestId;await f.control.ack({...provenance(request),result:'refused',refusalCode:'busy'});}
   await assert.rejects(()=>f.control.receipt(first),/unavailable/);assert.equal((await f.control.receipt(last)).state,'refused');
 });
 

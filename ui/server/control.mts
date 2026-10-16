@@ -7,7 +7,7 @@ import type {LifecycleLog} from './lifecycle-log.mts';
 import {ApiError} from './errors.mts';
 import {controlLayout,controlView,validateControlChange} from './control-layout.mts';
 
-type Entry={request:ControlRequest;session:string;receipt:ControlReceipt;timer?:ReturnType<typeof setTimeout>;savedRevision?:number;saving?:boolean;finishing?:Promise<void>;waiter?:(receipt:ControlReceipt)=>void};
+type Entry={request:ControlRequest;receipt:ControlReceipt;timer?:ReturnType<typeof setTimeout>;savedRevision?:number;saving?:boolean;finishing?:Promise<void>;waiter?:(receipt:ControlReceipt)=>void};
 function invalid(message='The control request is invalid.'):ApiError {return new ApiError('invalid_request',message);}
 function fields(body:Record<string,unknown>,required:string[],optional:string[]=[]):void {if(required.some(key=>!Object.hasOwn(body,key))||Object.keys(body).some(key=>!required.includes(key)&&!optional.includes(key)))throw invalid();}
 function safe<T>(read:()=>T):T {try{return read();}catch(error){throw invalid(error instanceof Error?error.message:undefined);}}
@@ -65,9 +65,9 @@ export class Control {
       await this.record(request,'admitted');admitted=request;
       const current=await this.registry.store.workspace(workspaceId);this.enabled(current);
       if(current.revision!==workspace.revision)throw new ApiError('stale_revision','The workspace changed during presentation admission.',409,'read');
-      if(this.registry.journal.controlPage(workspaceId)?.connectionId!==page.connectionId||!this.registry.journal.hasConnection(workspaceId,page.session,page.pageId,page.connectionId))throw new ApiError('control_page_unavailable','The addressed page connection changed.',409);
+      if(this.registry.journal.controlPage(workspaceId)?.connectionId!==page.connectionId||!this.registry.journal.hasConnection(workspaceId,page.pageId,page.connectionId))throw new ApiError('control_page_unavailable','The addressed page connection changed.',409);
       if(request.expiresAt<=Date.now())throw new ApiError('control_expired','Presentation admission exceeded its deadline.',408);
-      const receipt:ControlReceipt={requestId:request.requestId,workspaceId,actor,action:intent.action,state:'pending',createdAt:new Date().toISOString()},entry:Entry={request,session:page.session,receipt};
+      const receipt:ControlReceipt={requestId:request.requestId,workspaceId,actor,action:intent.action,state:'pending',createdAt:new Date().toISOString()},entry:Entry={request,receipt};
       this.entries.set(request.requestId,entry);entry.timer=setTimeout(()=>{void this.finish(entry,'unconfirmed','deadline');},Math.max(1,request.expiresAt-Date.now()));entry.timer.unref();
       this.registry.journal.publish('control.request',undefined,request,workspaceId);return structuredClone(receipt);
     } catch(error) {if(admitted&&!this.entries.has(admitted.requestId))await this.record(admitted,'refused');throw error;}
@@ -75,19 +75,19 @@ export class Control {
   }
   private async record(request:ControlRequest,result:string,revision?:number):Promise<void> {if(!this.log)throw new ApiError('control_log_unavailable','Retained presentation logging is unavailable.',503);try {await this.log.control(JSON.stringify({requestId:request.requestId,actor:request.actor,workspaceId:request.workspaceId,action:request.intent.action,result,...(revision===undefined?{}:{revision})}));}catch {throw new ApiError('control_log_unavailable','Retained presentation logging is unavailable.',503);}}
   private entry(id:string):Entry {safe(()=>controlText(id,'request ID'));const entry=this.entries.get(id);if(!entry)throw new ApiError('control_unknown','This presentation receipt is unavailable. Read the current layout before a new intent.',404);return entry;}
-  async receipt(id:string):Promise<ControlReceipt> {const entry=this.entry(id);if(entry.finishing)await entry.finishing;if(entry.receipt.state==='pending'&&!this.registry.journal.hasConnection(entry.request.workspaceId,entry.session,entry.request.pageId,entry.request.connectionId))await this.finish(entry,'unconfirmed','connection_changed');return structuredClone(entry.receipt);}
+  async receipt(id:string):Promise<ControlReceipt> {const entry=this.entry(id);if(entry.finishing)await entry.finishing;if(entry.receipt.state==='pending'&&!this.registry.journal.hasConnection(entry.request.workspaceId,entry.request.pageId,entry.request.connectionId))await this.finish(entry,'unconfirmed','connection_changed');return structuredClone(entry.receipt);}
   async wait(id:string):Promise<ControlReceipt> {await this.receipt(id);const entry=this.entry(id);if(entry.finishing)await entry.finishing;if(entry.receipt.state!=='pending')return structuredClone(entry.receipt);if(entry.waiter)throw new ApiError('capacity','This presentation receipt already has a waiter.',429);return new Promise(resolve=>{entry.waiter=resolve;});}
-  private match(entry:Entry,provenance:ControlProvenance,session:string):void {
+  private match(entry:Entry,provenance:ControlProvenance):void {
     if(entry.finishing||entry.receipt.state!=='pending'||entry.request.expiresAt<=Date.now())throw new ApiError('control_expired','This presentation request no longer accepts actions.',409);
-    if(this.registry.journal.controlPage(provenance.workspaceId)?.connectionId!==provenance.connectionId||session!==entry.session||['requestId','bootId','workspaceId','pageId','connectionId'].some(key=>provenance[key as keyof ControlProvenance]!==entry.request[key as keyof ControlProvenance])||!this.registry.journal.hasConnection(provenance.workspaceId,session,provenance.pageId,provenance.connectionId))throw new ApiError('control_stale_connection','The presentation connection changed.',409);
+    if(this.registry.journal.controlPage(provenance.workspaceId)?.connectionId!==provenance.connectionId||['requestId','bootId','workspaceId','pageId','connectionId'].some(key=>provenance[key as keyof ControlProvenance]!==entry.request[key as keyof ControlProvenance])||!this.registry.journal.hasConnection(provenance.workspaceId,provenance.pageId,provenance.connectionId))throw new ApiError('control_stale_connection','The presentation connection changed.',409);
     if(this.primary({id:entry.request.workspaceId,revision:0,primaryKey:entry.request.primary?.key})?.epoch!==entry.request.primary?.epoch)throw new ApiError('stale_epoch','The primary conversation changed.',409);
   }
-  async selection(workspaceId:string,raw:unknown,session:string,body:Record<string,unknown>,save:(guard:(current:Workspace)=>void)=>Promise<Workspace>):Promise<Workspace> {
+  async selection(workspaceId:string,raw:unknown,body:Record<string,unknown>,save:(guard:(current:Workspace)=>void)=>Promise<Workspace>):Promise<Workspace> {
     const provenance=safe(()=>readControlProvenance(raw)),entry=this.entry(provenance.requestId);
-    if(workspaceId!==provenance.workspaceId)throw invalid();this.match(entry,provenance,session);
+    if(workspaceId!==provenance.workspaceId)throw invalid();this.match(entry,provenance);
     if(entry.savedRevision!==undefined||entry.saving)throw new ApiError('control_busy','This presentation request already used its selection write.',409);
     entry.saving=true;
-    try {const result=await save(current=> {this.match(entry,provenance,session);this.enabled(current);if(current.revision!==entry.request.expectedRevision||body.expectedRevision!==entry.request.expectedRevision)throw new ApiError('stale_revision','The presentation workspace changed.',409,'read');validateControlChange(current,entry.request,body);});entry.savedRevision=result.revision;return result;}
+    try {const result=await save(current=> {this.match(entry,provenance);this.enabled(current);if(current.revision!==entry.request.expectedRevision||body.expectedRevision!==entry.request.expectedRevision)throw new ApiError('stale_revision','The presentation workspace changed.',409,'read');validateControlChange(current,entry.request,body);});entry.savedRevision=result.revision;return result;}
     finally {entry.saving=false;}
   }
   private applied(entry:Entry,ack:Extract<ControlAck,{result:'applied'}>,workspace:Workspace):void {
@@ -96,8 +96,8 @@ export class Control {
     if(workspace.revision!==entry.request.expectedRevision)throw invalid('The workspace changed before an unsaved presentation acknowledgment.');
     if(entry.request.intent.action!=='notice')validateControlChange(workspace,entry.request,{expectedRevision:workspace.revision,conversationLayout:controlLayout(workspace)});
   }
-  async ack(raw:Record<string,unknown>,session:string):Promise<ControlReceipt> {
-    const ack:ControlAck=safe(()=>readControlAck(raw)),entry=this.entry(ack.requestId);this.match(entry,ack,session);const workspace=await this.registry.store.workspace(ack.workspaceId);this.enabled(workspace);this.match(entry,ack,session);
+  async ack(raw:Record<string,unknown>):Promise<ControlReceipt> {
+    const ack:ControlAck=safe(()=>readControlAck(raw)),entry=this.entry(ack.requestId);this.match(entry,ack);const workspace=await this.registry.store.workspace(ack.workspaceId);this.enabled(workspace);this.match(entry,ack);
     if(ack.result==='applied') {this.applied(entry,ack,workspace);await this.finish(entry,'applied',undefined,ack.appliedRevision);}
     else {if(ack.result==='refused'&&(entry.savedRevision!==undefined||entry.saving))throw invalid('A dispatched selection requires an unconfirmed result, not refusal.');await this.finish(entry,ack.result,ack.result==='refused'?ack.refusalCode:'browser_unconfirmed');}
     return structuredClone(entry.receipt);

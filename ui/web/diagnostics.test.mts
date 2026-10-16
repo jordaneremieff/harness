@@ -43,7 +43,7 @@ function fixture(options: BrowserDiagnosticsOptions = {}, active = true) {
   return {sink, clock, entries, requests};
 }
 
-test('construction and unauthenticated use produce no timers, records or requests', async () => {
+test('construction and inactive use produce no timers, records or requests', async () => {
   const f = fixture({}, false);
   assert.equal(f.sink.emit(event()), false); assert.equal(f.sink.measure('reducer', 0, 1), false);
   assert.equal(await f.sink.flush(), false); assert.equal(f.clock.timers.size, 0); assert.equal(f.sink.state().buffered, 0);
@@ -194,14 +194,14 @@ test('close cancels delivery without awaiting it and discards queued work exactl
   await f.clock.advance(20000); assert.equal(f.clock.timers.size, 0);
 });
 
-test('authentication loss aborts an active request and disables future recording and sends', async () => {
+test('backend loss aborts an active request and disables future recording and sends', async () => {
   const held = gate(); const f = fixture({send: () => held.promise});
   f.sink.emit(event()); const pending = f.sink.flush(); await tick(); f.sink.setActive(false);
   assert.equal(await pending, false); assert.equal(f.sink.emit(event()), false); assert.equal(await f.sink.flush(), false);
   assert.equal(f.clock.timers.size, 0); f.sink.close();
 });
 
-test('a late aborted request cannot suspend a newer authenticated lifecycle', async () => {
+test('a late aborted request cannot suspend a newer active lifecycle', async () => {
   const held = gate(); let calls = 0;
   const f = fixture({send: async () => {calls++; return calls === 1 ? held.promise : reply(1);}});
   f.sink.emit(event()); const old = f.sink.flush(); await tick();

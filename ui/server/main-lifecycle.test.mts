@@ -16,7 +16,7 @@ async function fixture() {
 }
 const assets=new Map([['/',{type:'text/html; charset=utf-8',data:Buffer.from('<title>Fixture</title>') }]]);
 function isolated(root:string,agent:string):Parameters<typeof startBackend>[1] {return {assets,agents:options=>createAgentService({...options,store:join(root,'agent-sessions'),agentDir:agent})};}
-function ready(child:ReturnType<typeof fork>) {return new Promise<{kind:string;launchUrl:string}>((resolve,reject)=>{child.once('message',value=>resolve(value as {kind:string;launchUrl:string}));child.once('error',reject);child.once('exit',()=>reject(new Error('Child exited before readiness.')));});}
+function ready(child:ReturnType<typeof fork>) {return new Promise<{kind:string;url:string}>((resolve,reject)=>{child.once('message',value=>resolve(value as {kind:string;url:string}));child.once('error',reject);child.once('exit',()=>reject(new Error('Child exited before readiness.')));});}
 
 test('actual Registry startup recovers a proven dead owner and refuses a live owner', {timeout:15000},async context=> {
   const {root,cwd,agent,state}=await fixture();context.after(()=>rm(root,{recursive:true,force:true}));
@@ -30,17 +30,16 @@ test('actual Registry startup recovers a proven dead owner and refuses a live ow
   await app.close();assert.equal(await access(join(state,'lock.json')).then(()=>true,()=>false),false);
 });
 
-test('routine backend restart keeps the signed-in cookie and acknowledged workspace state', {timeout:15000},async context=> {
+test('routine backend restart keeps open access and acknowledged workspace state', {timeout:15000},async context=> {
   const {root,cwd,agent,state}=await fixture();const apps:Awaited<ReturnType<typeof startBackend>>[]=[];
   context.after(async()=>{for(const app of apps)await app.close();await rm(root,{recursive:true,force:true});});
   const options={cwd,port:0,pi:'pi',stateDir:state};let app=await startBackend(options,isolated(root,agent));apps.push(app);
-  const launch=new URL(app.launchUrl),login=await fetch(`${launch.origin}/api/auth/launch`,{method:'POST',headers:{Origin:launch.origin,'Content-Type':'application/json'},body:JSON.stringify({capability:new URLSearchParams(launch.hash.slice(1)).get('launch')})});
-  assert.equal(login.status,200);const sessionCookie=login.headers.get('set-cookie');assert.ok(sessionCookie);const cookie=sessionCookie.split(';')[0];assert.ok(cookie);
+  assert.equal(new URL(app.url).hash,'');
   const w=await app.registry.store.workspace();await app.registry.store.updateSelection(w.id,{expectedRevision:w.revision,appearance:'light'});
-  const authBefore=await readFile(join(state,'auth.json'));await app.close();assert.deepEqual(await readFile(join(state,'auth.json')),authBefore);
-  app=await startBackend(options,isolated(root,agent));apps.push(app);const response=await fetch(new URL(`/api/bootstrap?workspace=${w.id}`,app.launchUrl),{headers:{Cookie:cookie}});
+  await assert.rejects(()=>access(join(state,'auth.json')),{code:'ENOENT'});await app.close();
+  app=await startBackend(options,isolated(root,agent));apps.push(app);const response=await fetch(new URL(`/api/bootstrap?workspace=${w.id}`,app.url));
   assert.equal(response.status,200);const result=await response.json() as {data:{workspace:{appearance:string;revision:number}}};assert.equal(result.data.workspace.appearance,'light');assert.equal(result.data.workspace.revision,w.revision+1);
-  const health=await fetch(new URL('/api/health',app.launchUrl),{headers:{Cookie:cookie}});assert.equal(health.status,200);
+  const health=await fetch(new URL('/api/health',app.url));assert.equal(health.status,200);
 });
 
 test('a source restart before CLI startup completes closes the assigned backend once', {timeout:15000},async context=> {
@@ -77,8 +76,8 @@ test('fatal rejection and exception stop admission, close state, and exit rather
     if(kind==='signal')child.kill('SIGTERM');else child.send({fault:true});
     const [code,signal]=await done;assert.equal(signal,null);assert.equal(code,kind==='signal'?0:1);
     assert.equal(await access(join(state,'lock.json')).then(()=>true,()=>false),false);
-    const log=await readFile(join(state,'lifecycle.log'),'utf8');assert.equal(log.includes('secret fatal payload'),false);assert.equal(log.includes('#launch='),false);
+    const log=await readFile(join(state,'lifecycle.log'),'utf8');assert.equal(log.includes('secret fatal payload'),false);
     if(kind!=='signal')assert.match(log,/fatal/);
-    await assert.rejects(()=>fetch(new URL('/api/bootstrap',started.launchUrl)));
+    await assert.rejects(()=>fetch(new URL('/api/bootstrap',started.url)));
   }
 });

@@ -45,7 +45,7 @@ test('workspace filtering preserves global events and permits sequence gaps', ()
   const journal = new Journal(); const cut = journal.cursor;
   const ids = [publish(journal, 'global'), publish(journal, 'a', 'a'), publish(journal, 'b', 'b'), publish(journal, 'global2')];
   assert.deepEqual(journal.replay(cut, 'a').records.map(r => r.id), [ids[0], ids[1], ids[3]]);
-  const a = new Response(); const b = new Response(); journal.attach(a.http, 'a', 'session', journal.cursor); journal.attach(b.http, 'b', 'session', journal.cursor);
+  const a = new Response(); const b = new Response(); journal.attach(a.http, 'a', journal.cursor); journal.attach(b.http, 'b', journal.cursor);
   publish(journal, 'only a', 'a'); publish(journal, 'all');
   assert.deepEqual(frames(a).filter(f => f.id).map(f => f.envelope.data.message), ['only a', 'all']);
   assert.deepEqual(frames(b).filter(f => f.id).map(f => f.envelope.data.message), ['all']); journal.close();
@@ -73,7 +73,7 @@ test('count and UTF-8 byte retention bounds expire only cursors below the retain
 test('resync closes without a journal ID and carries a snapshot URL and current cut', () => {
   const journal = new Journal(); publish(journal, 'state'); const cut = journal.cursor;
   const response = new Response(); let closed = 0;
-  journal.attach(response.http, 'a & b', 'session', undefined, () => closed++);
+  journal.attach(response.http, 'a & b', undefined, () => closed++);
   assert.equal(response.status, 200); assert.equal(response.flushed, true);
   assert.deepEqual(response.headers, {'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive'});
   assert.equal(journal.connectionCount, 0); assert.equal(closed, 1);
@@ -85,7 +85,7 @@ test('blocked replay, ready metadata, and subsequent live events drain in order'
   const journal = new Journal(); const cut = journal.cursor;
   const first = publish(journal, 'first'); const second = publish(journal, 'second');
   const response = new Response(); response.writable = false;
-  journal.attach(response.http, 'a', 'session', cut);
+  journal.attach(response.http, 'a', cut);
   const third = publish(journal, 'third'); assert.equal(response.writes.length, 1);
   response.writable = true; response.emit('drain');
   assert.deepEqual(frames(response).map(f => [f.name, f.id]), [['notice', first], ['notice', second], ['ready', undefined], ['notice', third]]);
@@ -95,8 +95,8 @@ test('blocked replay, ready metadata, and subsequent live events drain in order'
 test('one slow browser never blocks producers or another browser', () => {
   const journal = new Journal({events: 4096, bytes: 8 * 1024 * 1024, queue: 1024});
   const slow = new Response(); const fast = new Response(); let closed = 0;
-  journal.attach(slow.http, 'a', 'slow', journal.cursor, () => closed++);
-  journal.attach(fast.http, 'a', 'fast', journal.cursor);
+  journal.attach(slow.http, 'a', journal.cursor, () => closed++);
+  journal.attach(fast.http, 'a', journal.cursor);
   slow.writable = false;
   const ids = Array.from({length: 100}, (_, i) => publish(journal, `delta ${i}`));
   assert.deepEqual(frames(fast).filter(f => f.id).map(f => f.id), ids);
@@ -107,17 +107,17 @@ test('one slow browser never blocks producers or another browser', () => {
 
 test('transport buffered bytes count toward the slow-client bound', () => {
   const journal = new Journal({events: 10, bytes: 10000, queue: 1024}); const response = new Response();
-  journal.attach(response.http, 'a', 'session', journal.cursor);
+  journal.attach(response.http, 'a', journal.cursor);
   response.writableLength = 1024; publish(journal, 'new');
   assert.equal(frames(response).at(-1)?.envelope.data.reason, 'slow-client'); assert.equal(journal.connectionCount, 0);
 });
 
-test('close, error, logout revocation, and shutdown detach exactly once', () => {
+test('close, error, and shutdown detach exactly once', () => {
   const journal = new Journal(); const a = new Response(); const b = new Response(); const c = new Response(); let closed = 0;
-  for (const [response, session] of [[a, 'one'], [b, 'two'], [c, 'two']] as const) journal.attach(response.http, 'a', session, journal.cursor, () => closed++);
+  for (const response of [a, b, c]) journal.attach(response.http, 'a', journal.cursor, () => closed++);
   a.emit('error', new Error('connection')); a.emit('close'); assert.equal(closed, 1);
-  journal.revoke('two'); assert.equal(closed, 3); assert.equal(journal.workspaceClients('a'), 0);
-  journal.close(); journal.revoke('two'); assert.equal(closed, 3); assert.equal(b.ends.length, 1); assert.equal(c.ends.length, 1);
+  journal.close(); assert.equal(closed, 3); assert.equal(journal.workspaceClients('a'), 0);
+  journal.close(); journal.close(); assert.equal(closed, 3); assert.equal(b.ends.length, 1); assert.equal(c.ends.length, 1);
 });
 
 test('control and oversized records never consume a sequence number', () => {

@@ -7,7 +7,7 @@ export const IMAGE_PIXELS = 16 * 1024 * 1024;
 export const IMAGE_EDGE = 8192;
 const ENCODED_BYTES = 4 * Math.ceil(IMAGE_BYTES / 3);
 export type ImageBytes = {mimeType: ImageView['mimeType']; data: Uint8Array};
-/** Only this server-owned wrapper permits an authenticated binary HTTP response. */
+/** Only this server-owned wrapper permits a same-origin binary HTTP response. */
 export class ImageResponse {
   readonly image: ImageBytes;
   constructor(image: ImageBytes) { this.image = image; }

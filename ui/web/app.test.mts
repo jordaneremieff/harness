@@ -678,9 +678,9 @@ test('a late action rejection stays under its captured owner after navigation', 
   assert.equal(agentControl('receipt').textContent, 'Agent receipt retained');
   app.primaryComposer().receipts(app.state.operations.values()); assert.equal(caption.parentNode, null); assert.equal(receipt.querySelector('.status-error'), null); assert.equal(receipt.title, '');
 });
-test('connection and access views stay distinct and tab hiding releases observation', async t => {
-  assert.ok(source.includes('connectionSurfaceFor(connectionPhase)')); assert.ok(source.includes('setUnauthorizedHandler(error =>'));
-  assert.ok(source.includes("byId('app').hidden = auth")); assert.ok(source.includes("byId('access-view').hidden = !auth")); assert.ok(source.includes("byId('skip-composer').hidden = auth")); assert.doesNotMatch(source, /setInterval/);
+test('connection recovery retains the shell and tab hiding releases observation', async t => {
+  assert.ok(source.includes('connectionSurfaceFor(connectionPhase)'));
+  assert.doesNotMatch(source,/access-view|accessRequired|setUnauthorizedHandler/); assert.doesNotMatch(source, /setInterval/);
   const identity = 'visibility-owner'; await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'agent', identity}, conversationLayout: twoPanes(identity)}, primaries: [primaryFixture({epoch: 9536})], roster: [agentFixture(identity)], observations: [observation(identity)]});
   const editor = agentControl('editor'), stream = streamSources.at(-1); assert.ok(stream); editor.value = 'Hidden tab draft'; editor.dispatch('input'); editor.setSelectionRange(2, 7); editor.dispatch('select');
   const tree = app.state.workspace?.conversationLayout, selected = app.state.workspace?.selectedTarget, saves = selectionSaves.length;
@@ -1886,15 +1886,4 @@ test('generic action failures keep exact details for the focused owner or an own
     else {assert.equal(byId('modal').open, true); assert.equal(byId('modal-body').querySelector('pre')?.textContent, diagnostic); byId('modal-close').click();}
     assert.doesNotMatch(byId('announcements').textContent, /ENOENT|selection-endpoint/);
   }
-});
-
-test('access refusal uses plain visible words and retains its exact error without destroying the editor', async t => {
-  const original = globalThis.fetch; t.after(() => {globalThis.fetch = original;});
-  const target = {kind: 'primary' as const, key: 'p', epoch: 9804};
-  await arrive({workspace: {id: 'access-error-detail', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({epoch: target.epoch})], roster: [], targets: [targetFixture('access-error-detail', target, {draft: {revision: 4, text: 'Keep access draft', mode: 'prompt', persisted: true}})]});
-  const editor = primaryControl('editor'), diagnostic = 'ENOENT authentication record /fixture/access-record';
-  globalThis.fetch = async (input, init) => new URL(String(input), 'http://ui.test').pathname === '/api/snapshot' ? Response.json({ok: false, error: {code: 'unauthorized', message: diagnostic, retry: 'none'}}, {status: 401}) : original(input, init);
-  await assert.rejects(app.reload()); await settle();
-  assert.equal(byId('access-view').hidden, false); assert.equal(byId('access-error').textContent, 'Browser access could not be confirmed.'); assert.equal(byId('access-error').title, diagnostic); assert.doesNotMatch(byId('access-view').textContent, /ENOENT|access-record/);
-  assert.equal(primaryControl('editor'), editor); assert.equal(editor.value, 'Keep access draft');
 });

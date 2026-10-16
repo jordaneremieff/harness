@@ -13,5 +13,7 @@ export function imageRequest(url: URL, primary: boolean): {source: ImageSource; 
     if (value === null || !/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) throw new ApiError('invalid_request', `The image ${name} is invalid.`);
     return Number(value);
   };
-  return {source: imageSource({entryId: url.searchParams.get('entry'), message: integer('message'), part: integer('part')}), digest: imageDigest(url.searchParams.get('digest')), ...(primary ? {epoch: integer('epoch')} : {})};
+  const source = imageSource({entryId: url.searchParams.get('entry'), message: integer('message'), part: integer('part')}), digest = imageDigest(url.searchParams.get('digest'));
+  if (!primary && (!/^[1-9]\d*$/.test(source.entryId) || !Number.isSafeInteger(Number(source.entryId)) || Number(source.entryId) >= Number.MAX_SAFE_INTEGER)) throw new ApiError('invalid_request', 'The native image entry is invalid.');
+  return {source, digest, ...(primary ? {epoch: integer('epoch')} : {})};
 }

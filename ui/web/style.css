@@ -221,12 +221,6 @@ a { color: var(--link); text-underline-offset: 2px; }
 .navigation-toggle { flex: none; font-size: 13px; }
 .connection-banner { display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 8px 16px; border-bottom: 1px solid var(--rule); color: var(--fg); background: var(--run-bg); font-size: 13px; }
 .connection-banner button { padding: 2px 8px; border: 1px solid var(--edge); }
-.access-view { display: grid; place-items: center; height: 100%; padding: 24px; }
-.access-view > div { max-width: 60ch; }
-.access-view h1 { font-size: 18px; }
-.access-view p, .access-view details { margin-top: 16px; }
-.access-view button { margin-top: 16px; border: 1px solid var(--edge); padding: 4px 12px; }
-.access-view pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 html.resizing, html.resizing * { cursor: col-resize !important; user-select: none; }
 html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(.resizer[data-axis=y][data-dragging=true]) * { cursor: row-resize !important; }
 

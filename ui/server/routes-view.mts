@@ -84,7 +84,7 @@ async function selection(registry:Registry,workspace:string,context:RequestConte
 async function controlSelection(registry:Registry,workspace:string,context:RequestContext,input:ReturnType<typeof selectionFields>) {
   const broker=registry.control;if(!broker)throw new ApiError('not_ready','Presentation control is unavailable.',503);
   const {control,...change}=context.body;
-  return broker.selection(workspace,control,context.session,change,guard=>registry.store.updateSelection(workspace,input,guard));
+  return broker.selection(workspace,control,change,guard=>registry.store.updateSelection(workspace,input,guard));
 }
 function selectionFields(body:Record<string,unknown>,primaryKey:string|undefined,selectedTarget:ReturnType<typeof v.target>|null|undefined) {
   const conversationLayout=body.conversationLayout;

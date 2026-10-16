@@ -13,7 +13,7 @@ function fixture(observation?:Promise<void>) {
   const registry={store:{workspace:async()=>workspace,target:async()=>undefined,
     updateSelection:async(_id:string,change:Partial<Workspace>)=>{changes.push(change);workspace={...workspace,...change};return workspace;}},
     saved:new Map(),observe:async()=>{observed++;await observation;}} as unknown as Registry;
-  return {changes,get observed(){return observed;},select:(body:Record<string,unknown>)=>dispatchView(registry,{parts:['api','workspaces','w','selection'],body,method:'PUT',url:new URL('http://localhost/api/workspaces/w/selection'),session:'test'})};
+  return {changes,get observed(){return observed;},select:(body:Record<string,unknown>)=>dispatchView(registry,{parts:['api','workspaces','w','selection'],body,method:'PUT',url:new URL('http://localhost/api/workspaces/w/selection')})};
 }
 test('pure concurrent layout replacement validates and clones one tree without focus or panel ownership',async()=> {
   const f=fixture();const conversationLayout=layout();const original=structuredClone(conversationLayout);

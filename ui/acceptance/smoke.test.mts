@@ -41,7 +41,7 @@ test("smoke accepts only explicit loopback HTTP URLs", () => {
   for (const url of ["http://localhost:1234/", "http://127.0.0.1/", "https://127.0.0.1:1234/", "http://user:secret@127.0.0.1:1234/", "http://example.com:1234/"]) {
     assert.throws(() => options(["--url", url, "--out", "."]), /127.0.0.1/);
   }
-  const parsed = options(["--url", "http://127.0.0.1:1234/#launch=synthetic", "--out", "."]);
+  const parsed = options(["--url", "http://127.0.0.1:1234/", "--out", "."]);
   assert.equal(parsed.fake, false);
 });
 
@@ -155,6 +155,7 @@ test("smoke CLI help exits successfully without launch, output, or prompt argume
   assert.equal(stderr, "");
   assert.match(stdout, /^Usage: node ui\/acceptance\/smoke\.mts/);
   for (const flag of ["--help", "--url", "--out", "--fake", "--cwd", "--session", "--prompt", "--dialog-prompt"]) assert.ok(stdout.includes(flag), flag);
+  assert.match(stdout, /^ {2}--url <local URL> {7}HTTP on 127\.0\.0\.1 with an explicit port\.$/m);
   assert.match(stdout, /without browser startup/);
   assert.match(stdout, /default run submits no model prompts/);
 });

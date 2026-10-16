@@ -17,13 +17,13 @@ import {StateStore} from './state.mts';
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
 const digest = (value: Uint8Array) => createHash('sha256').update(value).digest('hex');
 function context(workspace: string, path: string, body: Record<string, unknown> = {}, operationId?: string): RequestContext {
-  return {workspace, parts: path.split('/').filter(Boolean), url: new URL(path, 'http://localhost'), method: 'POST', body, operationId, session: 'fixture'};
+  return {workspace, parts: path.split('/').filter(Boolean), url: new URL(path, 'http://localhost'), method: 'POST', body, operationId};
 }
 async function upload(registry: Registry, workspace: string, target: Target, name = 'pixel.png') {
   const state = await registry.store.target(workspace, target);
   const path = `/api/workspaces/${workspace}/targets/${state.targetKey}/images`;
   const url = new URL(`${path}?name=${name}${target.kind === 'primary' ? `&epoch=${target.epoch}` : ''}`, 'http://localhost');
-  const result = await registry.uploadImage({...context(workspace, path), url, signal: new AbortController().signal, authorize() {}},
+  const result = await registry.uploadImage({...context(workspace, path), url, signal: new AbortController().signal, checkActive() {}},
     {mimeType: 'image/png', declaredBytes: png.length}, (async function* () {yield png;})()) as ImageUploadView;
   assert.equal(result.image.digest, digest(png));
   return {state, image: result.image};
@@ -205,7 +205,7 @@ test('agent upload rechecks current connection support between chunks', {timeout
   const path = `/api/workspaces/${f.workspace}/targets/${state.targetKey}/images`;
   const body = (async function* () {yield png.subarray(0, 30); available = false; yield png.subarray(30);})();
   await assert.rejects(f.registry.uploadImage({...context(f.workspace, path), url: new URL(`${path}?name=pixel.png`, 'http://localhost'),
-    signal: new AbortController().signal, authorize() {}}, {mimeType: 'image/png', declaredBytes: png.length}, body), {code: 'unsupported'});
+    signal: new AbortController().signal, checkActive() {}}, {mimeType: 'image/png', declaredBytes: png.length}, body), {code: 'unsupported'});
   assert.equal((await f.registry.store.getTarget(f.workspace, state.targetKey)).draft.images.length, 0);
   available = true; await upload(f.registry, f.workspace, f.target);
 });

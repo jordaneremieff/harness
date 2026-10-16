@@ -466,7 +466,7 @@ test("the agent result route preserves request selectors through the worker and 
   const { service, host } = await liveFixture(t, { handler: call => call.member === "inspect" ? unavailable : undefined });
   const registry = { agents: service } as unknown as Registry;
   const route = (body: Record<string, unknown>) => dispatchAgent(registry, { parts: ["api", "agents", identity, "inspect"], body,
-    method: "POST", url: new URL("http://localhost/api/agents/result/inspect"), session: "fixture" });
+    method: "POST", url: new URL("http://localhost/api/agents/result/inspect") });
   assert.deepEqual(JSON.parse(JSON.stringify(await route({ view: "result", requestId }))), { projection: { value: unavailable, truncated: false } });
   assert.deepEqual(host.calls[0].params, { sessionId: identity, view: "result", requestId });
   for (const body of [{ view: "result", requestId: "" }, { view: "result", requestId: 7 }, { view: "history", requestId },

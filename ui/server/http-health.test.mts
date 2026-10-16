@@ -8,13 +8,10 @@ const facts = (): BackendHealthFacts => ({startedAt:'2026-10-15T00:00:00.000Z',s
 async function fixture(context:TestContext,development:DevelopmentHttp) {
   const backend:HttpBackend = {journal:new Journal(),dispatch:async()=>{throw new Error('Health must not dispatch work.');},workspace:async()=>{throw new Error('Health must not load workspaces.');},observe:async()=>{},detached:()=>{}};
   const http = new LocalHttp(backend,new Map(),undefined,development), origin = new URL(await http.listen(0)).origin;context.after(()=>http.close());
-  const login = await fetch(`${origin}/api/auth/launch`,{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify({capability:http.auth.capability})});
-  assert.equal(login.status,200);await login.text();const cookie = login.headers.get('set-cookie')?.split(';')[0];assert.ok(cookie);
-  return {http,origin,cookie,read:(method='GET',authenticated=true)=>fetch(`${origin}/api/health`,{method,headers:{Origin:origin,...(authenticated?{Cookie:cookie}:{})}})};
+  return {http,origin,read:(method='GET')=>fetch(`${origin}/api/health`,{method,headers:{Origin:origin}})};
 }
-test('health reads are authenticated, on demand, method-bound and independent of work dispatch',async context => {
+test('health reads are open, on demand, method-bound and independent of work dispatch',async context => {
   let calls = 0;const app = await fixture(context,{health:()=>{calls++;return facts();}});assert.equal(calls,0);
-  const anonymous = await app.read('GET',false);assert.equal(anonymous.status,401);await anonymous.text();assert.equal(calls,0);
   const wrongMethod = await app.read('POST');assert.equal(wrongMethod.status,405);await wrongMethod.text();assert.equal(calls,0);
   const response = await app.read();assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'no-store');const result = await response.json() as {ok:boolean;data:HealthSnapshot};assert.equal(result.ok,true);assert.equal(calls,1);
   assert.equal(result.data.process.pid,process.pid);assert(Number.isSafeInteger(result.data.process.rssBytes));assert(result.data.process.rssBytes>0);assert(result.data.process.uptimeMs>=0);

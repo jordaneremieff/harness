@@ -4,7 +4,7 @@ import type {Options} from './main.mts';
 import type {UiIdentity} from '../shared/version.ts';
 import {redactLifecycle,LIFECYCLE_BYTES} from './lifecycle-log.mts';
 
-export type BackendReady={kind:'ready';launchUrl:string;identity:UiIdentity};
+export type BackendReady={kind:'ready';url:string;identity:UiIdentity};
 type SupervisorOptions={module?:string;ready?:(message:BackendReady)=>void;output?:(line:string)=>void;
   spawn?:typeof fork;signal?:(pid:number,signal:NodeJS.Signals|0)=>void;now?:()=>number;restartDelayMs?:number;graceMs?:number;cleanupMs?:number};
 function groupExists(pid:number,signal:NonNullable<SupervisorOptions['signal']>) {
@@ -15,8 +15,8 @@ function killGroup(pid:number,signal:NonNullable<SupervisorOptions['signal']>) {
 }
 function readyMessage(message:unknown):BackendReady|undefined {
   if(!message||typeof message!=='object')return;
-  const value=message as BackendReady;if(value.kind!=='ready'||typeof value.launchUrl!=='string')return;
-  let url:URL;try {url=new URL(value.launchUrl);} catch {return;}
+  const value=message as BackendReady;if(value.kind!=='ready'||typeof value.url!=='string')return;
+  let url:URL;try {url=new URL(value.url);} catch {return;}
   if(url.hostname==='127.0.0.1'&&url.protocol==='http:')return value;
 }
 async function cleanupGroup(pid:number,signal:NonNullable<SupervisorOptions['signal']>,now:()=>number,limit:number) {
@@ -95,7 +95,7 @@ export function supervise(options:Options,hooks:SupervisorOptions={}) {
     current.on('message',(message:unknown)=> {
       if(child!==current||stopped) return;
       const value=readyMessage(message);
-      if(value) {selected.port=Number(new URL(value.launchUrl).port||80);clearTimeout(startup);hooks.ready?.(value);return;}
+      if(value) {selected.port=Number(new URL(value.url).port||80);clearTimeout(startup);hooks.ready?.(value);return;}
       if(message&&typeof message==='object'&&(message as {kind?:string}).kind==='restart') {requested=true;awaitExit(current);}
     });
     current.once('exit',(code,termination)=> {

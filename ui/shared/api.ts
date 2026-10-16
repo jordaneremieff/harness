@@ -38,7 +38,7 @@ export type DisplayCoverage = {complete: boolean; truncated: boolean; omitted: n
 export type OutputContinuation = {entryId: string; part: number; offset: number};
 export type OutputPage = {entryId: string; part: number; text: string; nextOffset: number | null; totalBytes: number};
 export type ImageSource = {entryId: string; message: number; part: number};
-/** Raster metadata only; the authenticated image route supplies bytes on demand. */
+/** Raster metadata only; the same-origin image route supplies bytes on demand. */
 export type ImageView = {type: 'image'; mimeType: 'image/png' | 'image/jpeg'; digest: string;
   bytes: number; width: number; height: number; alt: string; source?: ImageSource};
 /** Supplied output metadata only; a full-output path is inert text, not an access link. */
@@ -230,7 +230,7 @@ export type EventEnvelope<N extends EventName = EventName> = {at: string; worksp
 export const ROUTES = [
   'GET /api/control/layout', 'POST /api/control/requests', 'GET /api/control/requests/:id', 'POST /api/control/ack',
   'POST /api/dev/lease',
-  'GET /', 'POST /api/auth/launch', 'POST /api/auth/logout', 'GET /api/bootstrap', 'GET /api/events', 'GET /api/snapshot',
+  'GET /', 'GET /api/bootstrap', 'GET /api/events', 'GET /api/snapshot',
   'POST /api/workspaces', 'POST /api/operations', 'GET /api/operations/:id', 'POST /api/operations/:id/reconcile', 'DELETE /api/operations/:id',
   'POST /api/primaries', 'GET /api/primaries/:key', 'GET /api/primaries/:key/history', 'GET /api/primaries/:key/history/output', 'GET /api/primaries/:key/history/image', 'GET /api/primaries/:key/resources/:kind',
   'GET /api/primaries/:key/diagnostics', 'POST /api/primaries/:key/inputs', 'POST /api/primaries/:key/stop',

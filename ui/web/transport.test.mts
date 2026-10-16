@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
-import { ApiError, authenticate, operation, request, reserve, setUnauthorizedHandler, setRequestTiming, connect, uploadDraftImage, draftImageUrl } from './transport.ts';
+import { ApiError, operation, request, reserve, setRequestTiming, connect, uploadDraftImage, draftImageUrl } from './transport.ts';
 
 const originalFetch = globalThis.fetch;
-afterEach(() => { globalThis.fetch = originalFetch; setUnauthorizedHandler(); setRequestTiming(); });
+afterEach(() => { globalThis.fetch = originalFetch; setRequestTiming(); });
 function json(data: unknown): Response { return Response.json({ok: true, data}); }
 test('working-folder requests carry the page workspace and the exact root selection body',async t=> {
   const previous = Object.getOwnPropertyDescriptor(globalThis,'location');
@@ -28,12 +28,6 @@ test('raw image upload retains its captured path, bytes and cancellation across 
   assert.equal(seen?.body, bytes); assert.deepEqual(seen?.headers, {'Content-Type': 'image/png'}); assert.equal(seen?.credentials, 'same-origin');
   controller.abort(); assert.equal(seen?.signal?.aborted, true);
   assert.equal(draftImageUrl('w', 't', 'a'.repeat(64)), `/api/workspaces/w/targets/t/images/${'a'.repeat(64)}`); assert.throws(() => draftImageUrl('w', 't', '../file'));
-});
-test('image authentication failure reports access once without an automatic retry', async () => {
-  let calls = 0, notices = 0; setUnauthorizedHandler(() => {notices++;});
-  globalThis.fetch = async () => {calls++; return Response.json({ok: false, error: {code: 'unauthorized', message: 'Access required', retry: 'none'}}, {status: 401});};
-  await assert.rejects(uploadDraftImage('w', 't', {kind: 'agent', identity: 'agent'}, {name: 'one.jpg', mimeType: 'image/jpeg'}, new Blob(['image']), new AbortController().signal), ApiError);
-  assert.equal(calls, 1); assert.equal(notices, 1);
 });
 test('request timing supplies only its own numeric interval without creating UserTiming entries', async () => {
   const samples: number[][] = [], pending = Promise.withResolvers<Response>(); const count = performance.getEntriesByName('ui:control-roundtrip').length;
@@ -64,27 +58,6 @@ test('event connections preserve the supplied page scope across reconnects and w
   connect('one','first',()=>{},()=>{},clientId);connect('one','second',()=>{},()=>{},clientId);connect('two','next',()=>{},()=>{},clientId);connect('other','plain',()=>{},()=>{});
   assert.deepEqual(urls.map(url=>new URL(url,'http://fixture').searchParams.get('clientId')),[clientId,clientId,clientId,null]);assert.deepEqual(urls.map(url=>new URL(url,'http://fixture').searchParams.get('workspace')),['one','one','two','other']);
 });
-test('later draft and control refusals report access without replacing the typed error or retrying', async () => {
-  for (const [path, method] of [['/api/workspaces/w/drafts', 'PUT'], ['/api/primaries/p/control', 'POST']]) {
-    let notified: ApiError | undefined; let calls = 0; let reports = 0;
-    setUnauthorizedHandler(error => { notified = error; reports++; });
-    globalThis.fetch = async () => { calls++; return Response.json({ok: false, error: {code: 'unauthorized', message: 'Access required', retry: 'none'}}, {status: 401}); };
-    await assert.rejects(request(path, method, {text: 'retained'}), error => error === notified && error instanceof ApiError && error.view.code === 'unauthorized');
-    assert.equal(calls, 1); assert.equal(reports, 1);
-  }
-});
-test('an unauthorized control reservation reports access without dispatching its mutation', async () => {
-  const paths: string[] = []; let reports = 0; setUnauthorizedHandler(() => { reports++; });
-  globalThis.fetch = async path => { paths.push(String(path)); return Response.json({ok: false, error: {code: 'unauthorized', message: 'Access required', retry: 'none'}}, {status: 401}); };
-  await assert.rejects(operation('primary.control', '/api/primaries/p/control', {epoch: 1, action: 'thinking', level: 'high'}), ApiError);
-  assert.deepEqual(paths, ['/api/operations']); assert.equal(reports, 1);
-});
-test('ordinary API refusals do not change browser access', async () => {
-  let reports = 0; setUnauthorizedHandler(() => { reports++; });
-  globalThis.fetch = async () => Response.json({ok: false, error: {code: 'stale_epoch', message: 'Conversation changed', retry: 'read'}}, {status: 409});
-  await assert.rejects(request('/api/primaries/p/control', 'POST', {}), ApiError); assert.equal(reports, 0);
-});
-
 test('request preserves the issued operation key and exact captured body', async () => {
   let captured: RequestInit | undefined;
   globalThis.fetch = async (_path, init) => { captured = init; return json({state: 'accepted'}); };
@@ -134,16 +107,4 @@ test('read cancellation reaches fetch without another request', async () => {
 test('reservation issues no target mutation', async () => {
   globalThis.fetch = async (path, init) => { assert.equal(path, '/api/operations'); assert.deepEqual(JSON.parse(String(init?.body)), {kind: 'primary.open'}); return json({operationId: 'issued'}); };
   assert.equal(await reserve('primary.open'), 'issued');
-});
-test('launch removes capability material before authentication transport', async () => {
-  const oldLocation = Object.getOwnPropertyDescriptor(globalThis, 'location');
-  const oldHistory = Object.getOwnPropertyDescriptor(globalThis, 'history');
-  let current = 'http://127.0.0.1:1234/#launch=one-use';
-  Object.defineProperty(globalThis, 'location', {configurable: true, value: {get href() {return current;}}});
-  Object.defineProperty(globalThis, 'history', {configurable: true, value: {replaceState(_data: unknown, _title: string, value: URL) {current = String(value);}}});
-  globalThis.fetch = async (_path, init) => { assert.equal(new URL(current).hash, ''); assert.deepEqual(JSON.parse(String(init?.body)), {capability: 'one-use'}); return json({authenticated: true}); };
-  try { await authenticate(); } finally {
-    if (oldLocation) Object.defineProperty(globalThis, 'location', oldLocation); else Reflect.deleteProperty(globalThis, 'location');
-    if (oldHistory) Object.defineProperty(globalThis, 'history', oldHistory); else Reflect.deleteProperty(globalThis, 'history');
-  }
 });

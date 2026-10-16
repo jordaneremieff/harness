@@ -180,7 +180,7 @@ import { startBackend, parseArgs } from ${JSON.stringify(entry)};
 const histogram = monitorEventLoopDelay({resolution:1});histogram.enable();
 const stages=[];
 const app = await startBackend(parseArgs(process.argv.slice(2)),{measure:(stage,id,at,bytes)=>{if(stages.length<2000)stages.push({stage,id,at,bytes});}});
-process.send({ready:app.launchUrl,pid:process.pid});
+process.send({ready:app.url,pid:process.pid});
 process.on('message',async message=>{
   try {
     if(message.action==='reset') {histogram.reset();process.send({id:message.id,result:true});}

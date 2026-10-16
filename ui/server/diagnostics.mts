@@ -8,12 +8,12 @@ export const DIAGNOSTIC_RECORD_BYTES=1024;
 export const DIAGNOSTIC_QUEUE_RECORDS=256;
 export const DIAGNOSTIC_QUEUE_BYTES=256*1024;
 export const DIAGNOSTIC_BATCH_BYTES=16*1024;
-export type DiagnosticInput={event:'measure'|'reload'|'connection'|'loss';code?:'none'|'failed'|'deferred'|'applied'|'offline'|'auth'|'overflow';metric?:'editor-echo'|'reducer'|'render'|'control-roundtrip'|'switch'|'stream-to-render';durationMs?:number;count?:number;bytes?:number;status?:number};
+export type DiagnosticInput={event:'measure'|'reload'|'connection'|'loss';code?:'none'|'failed'|'deferred'|'applied'|'offline'|'overflow';metric?:'editor-echo'|'reducer'|'render'|'control-roundtrip'|'switch'|'stream-to-render';durationMs?:number;count?:number;bytes?:number;status?:number};
 type RecordSource='server'|'browser'|'build';
 type DiagnosticRecord=DiagnosticInput & {v:1;at:number;boot:string;source:RecordSource;build?:string;dropped?:number};
 export type DiagnosticWriter={append(record:string):Promise<void>;close():Promise<void>};
 const events=new Set(['measure','reload','connection','loss']);
-const codes=new Set(['none','failed','deferred','applied','offline','auth','overflow']);
+const codes=new Set(['none','failed','deferred','applied','offline','overflow']);
 const metrics=new Set(['editor-echo','reducer','render','control-roundtrip','switch','stream-to-render']);
 const bounded=(value:unknown,max:number,integer=false)=>typeof value==='number'&&Number.isFinite(value)&&value>=0&&value<=max&&(!integer||Number.isInteger(value));
 const add=(left:number,right=1)=>Math.min(Number.MAX_SAFE_INTEGER,left+right);
@@ -45,7 +45,7 @@ export class DiagnosticSink {
   private tokens=40;
   private at:number;
   private boot=randomBytes(8).toString('hex');
-  private sessions=new Map<string,number>();
+  private lastBatch?:number;
   private requests={at:0,count:0,mean:0};
   private writer:DiagnosticWriter;
   private clock:()=>number;
@@ -60,18 +60,17 @@ export class DiagnosticSink {
     if(!this.enqueue(input,source)) {this.loss();return false;}
     this.accepted=add(this.accepted);return true;
   }
-  ingest(session:string,body:unknown,bytes:number) {
-    const prior=this.sessions.get(session);
+  ingest(body:unknown,bytes:number) {
+    const prior=this.lastBatch;
     if(!body||typeof body!=='object'||Array.isArray(body)||!bounded(bytes,DIAGNOSTIC_BATCH_BYTES,true)) {this.loss();return {accepted:0,dropped:1,failed:this.failed};}
     const batch=body as Record<string,unknown>;
     if(!Object.hasOwn(batch,'records')||!Object.hasOwn(batch,'dropped')||Object.keys(batch).some(key=>key!=='records'&&key!=='dropped')||!Array.isArray(batch.records)||batch.records.length>16||!bounded(batch.dropped,Number.MAX_SAFE_INTEGER,true)) {this.loss();return {accepted:0,dropped:1,failed:this.failed};}
     const now=this.clock();
-    if((prior!==undefined&&now-prior<1000)||(!this.sessions.has(session)&&this.sessions.size>=64)) {this.loss(batch.records.length);return {accepted:0,dropped:batch.records.length,failed:this.failed};}
-    this.sessions.set(session,now);this.loss(batch.dropped as number);
+    if(prior!==undefined&&now-prior<1000) {this.loss(batch.records.length);return {accepted:0,dropped:batch.records.length,failed:this.failed};}
+    this.lastBatch=now;this.loss(batch.dropped as number);
     let accepted=0;for(const record of batch.records) if(this.emit(record,'browser')) accepted++;
     return {accepted,dropped:batch.records.length-accepted,failed:this.failed};
   }
-  revoke(session:string) {this.sessions.delete(session);}
   request(durationMs:number) {
     if(!bounded(durationMs,60000)) return;
     const aggregate=this.requests;aggregate.count=add(aggregate.count);aggregate.mean+=(durationMs-aggregate.mean)/aggregate.count;

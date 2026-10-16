@@ -3,7 +3,7 @@ import {pathToFileURL} from 'node:url';
 import {parseArgs as parseFlags} from 'node:util';
 import {LIMITS} from '../shared/api.ts';
 import {CONTROL_LIMITS,CONTROL_ROUTES,controlText,readControlIntent,type ControlIntent,type ControlLayout,type ControlReceipt} from '../shared/control.ts';
-import {readControlDescriptor} from '../server/control-auth.mts';
+import {readControlDescriptor} from '../server/control-discovery.mts';
 import {statePaths} from '../server/state-paths.mts';
 
 export const HELP=`Usage: node ui/cli/control.mts [--state-dir <private-state>] [--actor <label>] [--workspace <id>] layout|'<JSON-intent>'
@@ -17,7 +17,7 @@ Other commands require an exact --workspace. Intents use closed JSON objects:
   {"action":"swap","splitId":"split-id"}
   {"action":"notice","text":"Plain text"}
 show.paneId, show.preview and focus.view are optional. A view is {kind:"primary"}, {kind:"agent",identity}, or {kind:"file",rootId,path,view?:"preview"}.
-The default private state is <PI_CODING_AGENT_DIR or ~/.pi/agent>/ui. Discovery uses its owner-only control.json; no browser login or credential argument is needed.
+The default private state is <PI_CODING_AGENT_DIR or ~/.pi/agent>/ui. Discovery uses its owner-only control.json; the local API requires no credential.
 Actor labels are supplied attribution, not verified authorship. This interface cannot send model input, write files, start hosts or control processes.
 Mutations never retry. A missing acknowledgment is unconfirmed; read layout before another intent.
 `;
@@ -55,7 +55,7 @@ export async function runControl(options:ControlOptions,transport:typeof fetch=f
   const signal=AbortSignal.timeout(CONTROL_LIMITS.cliMs);
   const call=async<T,>(path:string,body?:unknown):Promise<T>=> {
     const raw=body===undefined?undefined:JSON.stringify(body);if(raw&&Buffer.byteLength(raw)>CONTROL_LIMITS.payloadBytes)throw new Refused('The control request exceeds its byte bound.');
-    const response=await transport(new URL(path,descriptor.origin),{method:body===undefined?'GET':'POST',headers:{Origin:descriptor.origin,Authorization:`Bearer ${descriptor.credential}`,'Content-Type':'application/json'},body:raw,redirect:'error',signal});
+    const response=await transport(new URL(path,descriptor.origin),{method:body===undefined?'GET':'POST',headers:{Origin:descriptor.origin,'Content-Type':'application/json'},body:raw,redirect:'error',signal});
     const result=await readResponse(response) as {ok?:boolean;data?:T;error?:{code?:string}};
     if(!response.ok||result.ok!==true) {const code=typeof result.error?.code==='string'&&/^[a-z_]{1,64}$/.test(result.error.code)?result.error.code:'invalid_response';throw new Refused(`The control backend refused this request (${code}).`);}return result.data as T;
   };

@@ -6,6 +6,53 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import type {IncomingMessage, ServerResponse} from 'node:http';
+import {LocalBoundary, securityHeaders} from './boundary.mts';
+import {ApiError} from './errors.mts';
+
+const origin = 'http://127.0.0.1:43123';
+function boundaryRequest(method = 'GET', headers: IncomingMessage['headers'] = {}) {
+  return {method, headers: {host: '127.0.0.1:43123', ...headers}} as IncomingMessage;
+}
+function boundary() {const value = new LocalBoundary(); value.setPort(43123); return value;}
+function boundaryRejected(error: unknown) {
+  assert.ok(error instanceof ApiError);
+  assert.equal(error.code, 'origin_rejected'); assert.equal(error.status, 403); return true;
+}
+
+test('only the exact host and port are trusted, never forwarded headers', () => {
+  const value = boundary(); value.validate(boundaryRequest());
+  for (const host of [undefined, 'localhost:43123', '127.0.0.1', '127.0.0.1:43124', '127.0.0.1:43123.', '[::1]:43123', '127.0.0.1:43123,evil.invalid']) {
+    assert.throws(() => value.validate(boundaryRequest('GET', {host, 'x-forwarded-host': '127.0.0.1:43123', forwarded: 'host=127.0.0.1:43123'})), boundaryRejected);
+  }
+});
+test('each mutation requires exact Origin and safe reads reject a supplied foreign Origin', () => {
+  const value = boundary();
+  for (const method of ['POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']) {
+    value.validate(boundaryRequest(method, {origin}));
+    for (const wrong of [undefined, 'null', 'http://localhost:43123', `${origin}/`, 'https://127.0.0.1:43123', 'http://127.0.0.1:43124']) {
+      assert.throws(() => value.validate(boundaryRequest(method, {origin: wrong})), boundaryRejected);
+    }
+  }
+  for (const method of ['GET', 'HEAD']) {
+    value.validate(boundaryRequest(method)); value.validate(boundaryRequest(method, {origin}));
+    assert.throws(() => value.validate(boundaryRequest(method, {origin: 'http://evil.invalid'})), boundaryRejected);
+  }
+});
+test('fetch metadata permits only same-origin, none, or absent', () => {
+  const value = boundary();
+  for (const site of [undefined, 'same-origin', 'none']) value.validate(boundaryRequest('POST', {origin, 'sec-fetch-site': site}));
+  for (const site of ['same-site', 'cross-site', 'Same-Origin']) {
+    assert.throws(() => value.validate(boundaryRequest('GET', {'sec-fetch-site': site})), boundaryRejected);
+  }
+});
+test('security headers prohibit inline/eval content, framing, caching, and referrer leakage', () => {
+  const headers = new Map<string, string>();
+  securityHeaders({setHeader(name: string, value: string) {headers.set(name, value);}} as unknown as ServerResponse);
+  assert.equal(headers.get('Content-Security-Policy'), "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+  assert.equal(headers.get('X-Content-Type-Options'), 'nosniff');
+  assert.equal(headers.get('Referrer-Policy'), 'no-referrer'); assert.equal(headers.get('Cache-Control'), 'no-store');
+});
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const ui = path.join(root, 'ui');

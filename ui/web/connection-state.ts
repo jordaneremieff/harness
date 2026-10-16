@@ -1,14 +1,10 @@
-export type ConnectionPhase = 'healthy' | 'quiet' | 'reconnecting' | 'offline' | 'auth';
+export type ConnectionPhase = 'healthy' | 'quiet' | 'reconnecting' | 'offline';
 export type ConnectionClock = {now: () => number; set: (callback: () => void, delay: number) => number; clear: (timer: number) => void};
-export type ConnectionHooks = {attempt: (signal: AbortSignal) => Promise<void>; paint: (phase: ConnectionPhase, error?: unknown) => void; unauthorized: (error: unknown) => boolean};
+export type ConnectionHooks = {attempt: (signal: AbortSignal) => Promise<void>; paint: (phase: ConnectionPhase, error?: unknown) => void};
 const ATTEMPTS = [250, 1000, 3000, 6000];
-export type ConnectionSurface = {owner: 'connection' | 'access-view'; visible: boolean};
+export type ConnectionSurface = {owner: 'connection'; visible: boolean};
 export function connectionSurface(phase: ConnectionPhase): ConnectionSurface {
-  return {owner: phase === 'auth' ? 'access-view' : 'connection', visible: phase === 'reconnecting' || phase === 'offline'};
-}
-/** A read-only recheck must not expose the workbench before access is confirmed. */
-export function accessViewVisible(phase: ConnectionPhase, previous: boolean): boolean {
-  return phase === 'auth' || previous && phase !== 'healthy';
+  return {owner: 'connection', visible: phase === 'reconnecting' || phase === 'offline'};
 }
 const clock: ConnectionClock = {now: () => Date.now(), set: (callback, delay) => window.setTimeout(callback, delay), clear: timer => window.clearTimeout(timer)};
 
@@ -33,7 +29,6 @@ export class ConnectionRecovery {
     this.retryTimer = undefined; this.quietTimer = undefined;
   }
   healthy(): void { this.generation++; this.clear(); this.error = undefined; this.paint('healthy'); }
-  auth(error: unknown): void { this.generation++; this.clear(); this.error = error; this.paint('auth'); }
   suspend(): void {
     this.suspended = true; this.generation++; this.clear();
     this.active?.abort(new Error('The page is hidden.')); this.active = undefined;
@@ -45,7 +40,6 @@ export class ConnectionRecovery {
   lost(error?: unknown): void {
     if (this.suspended) return;
     if (error !== undefined) this.error = error;
-    if (error !== undefined && this.hooks.unauthorized(error)) { this.auth(error); return; }
     if (this.phase !== 'healthy') return;
     this.begin(); this.schedule();
   }
@@ -73,8 +67,7 @@ export class ConnectionRecovery {
     } catch (error) {
       if (generation !== this.generation) return;
       this.error = error;
-      if (this.hooks.unauthorized(error)) this.auth(error);
-      else this.schedule();
+      this.schedule();
     } finally { if (this.active === active) this.active = undefined; }
   }
 }

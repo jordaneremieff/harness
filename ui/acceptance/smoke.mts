@@ -13,7 +13,7 @@ export function options(args: string[]): Options {
     cwd: { type: "string" }, session: { type: "string" }, prompt: { type: "string", default: "acceptance smoke no-dialog" },
     "dialog-prompt": { type: "string" },
   } });
-  if (!values.url || !values.out) throw new Error("Use --url <launch URL> --out <capture directory> [--fake --cwd <project>]");
+  if (!values.url || !values.out) throw new Error("Use --url <local URL> --out <capture directory> [--fake --cwd <project>]");
   const url = new URL(values.url);
   if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || !url.port || url.username || url.password) {
     throw new Error("Smoke URL must be HTTP on 127.0.0.1 with an explicit port");
@@ -24,10 +24,10 @@ export function options(args: string[]): Options {
     session: values.session, prompt: values.prompt, dialogPrompt: values["dialog-prompt"] };
 }
 
-const usage = `Usage: node ui/acceptance/smoke.mts --url <launch URL> --out <capture directory>
+const usage = `Usage: node ui/acceptance/smoke.mts --url <local URL> --out <capture directory>
 
   --help                  Print this help without browser startup.
-  --url <launch URL>      HTTP on 127.0.0.1 with an explicit port.
+  --url <local URL>       HTTP on 127.0.0.1 with an explicit port.
   --out <directory>       Write screenshots and report.json here.
   --fake                  Enable deterministic fixture checks only.
   --cwd <project>         Open a disposable fixture project; requires --fake.
@@ -271,8 +271,8 @@ export async function runSmoke(config: Options): Promise<Report> {
       try{new PerformanceObserver(list=>window.__acceptanceLongTasks.push(...list.getEntries().map(e=>({start:e.startTime,duration:e.duration})))).observe({type:'longtask',buffered:true});}catch{}
     })()` });
     await page.navigate(config.url);
-    await page.waitFor(`!location.hash.includes('launch=') && (document.querySelector('#modal[open]') || !document.querySelector('#model-button')?.disabled)`);
-    await check("7.1 launch capability disappears from browser history", async () => {
+    await page.waitFor(`document.querySelector('#modal[open]') || !document.querySelector('#model-button')?.disabled`);
+    await check("7.1 local address has no access fragment", async () => {
       assert.equal(await page.evaluate("location.hash"), "");
       assert.equal(await page.evaluate("document.body.textContent.includes('Pair device')"), false);
     });

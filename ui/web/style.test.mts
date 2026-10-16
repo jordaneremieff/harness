@@ -590,9 +590,9 @@ test('recovery controls are bounded buttons and a ready Message panel reserves n
   assert.match(rule('.message-panel-status:has(> span:empty):has(> button[hidden])'), /display: none/);
 });
 
-test('the access check names its actual action without project jargon', () => {
-  assert.match(html, /id="access-title">This browser is not signed in\.<\/h1>/);
-  assert.match(html, /id="access-retry" type="button">Check access<\/button>/);
+test('the local shell has no sign-in or access view', () => {
+  assert.doesNotMatch(html, /access-view|access-title|access-retry|not signed in/);
+  assert.doesNotMatch(css, /\.access-view/);
 });
 
 test('footer metadata keeps scoped groups and native details outside the composers', async () => {

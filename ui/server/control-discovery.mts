@@ -1,8 +1,7 @@
 import {constants, type Stats} from 'node:fs';
 import {lstat,open,rename,unlink} from 'node:fs/promises';
-import {randomBytes,timingSafeEqual} from 'node:crypto';
+import {randomBytes} from 'node:crypto';
 import {join} from 'node:path';
-import type {IncomingMessage} from 'node:http';
 import type {ControlDescriptor} from '../shared/control.ts';
 import {ApiError} from './errors.mts';
 const BYTES=2048;
@@ -19,31 +18,24 @@ export async function readControlDescriptor(directory:string):Promise<ControlDes
     const raw:unknown=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(buffer.subarray(0,length)));
     if(!raw||typeof raw!=='object'||Array.isArray(raw))throw unavailable();
     const value=raw as Record<string,unknown>;
-    if(Object.keys(value).length!==3||typeof value.origin!=='string'||!/^http:\/\/127\.0\.0\.1:[1-9][0-9]{0,4}$/.test(value.origin)||new URL(value.origin).port===''||typeof value.bootId!=='string'||!/^[a-f0-9-]{36}$/.test(value.bootId)||typeof value.credential!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(value.credential))throw unavailable();
+    if(Object.keys(value).length!==2||typeof value.origin!=='string'||!/^http:\/\/127\.0\.0\.1:[1-9][0-9]{0,4}$/.test(value.origin)||new URL(value.origin).port===''||typeof value.bootId!=='string'||!/^[a-f0-9-]{36}$/.test(value.bootId))throw unavailable();
     return value as ControlDescriptor;
   } catch {throw unavailable();}finally {await file.close();}
 }
-/** A separate local capability never authorizes browser APIs or launch sessions. */
-export class ControlAuth {
-  readonly credential=randomBytes(32).toString('base64url');
+/** Private discovery identifies the current local backend without credentials. */
+export class ControlDiscovery {
   private descriptor?:ControlDescriptor;private directory?:string;
   async publish(directory:string,origin:string,bootId:string):Promise<void> {
     if(!privateEntry(await lstat(directory),true))throw unavailable();
-    const temporary=join(directory,`.control-${randomBytes(12).toString('hex')}.tmp`),descriptor={origin,bootId,credential:this.credential};
+    const temporary=join(directory,`.control-${randomBytes(12).toString('hex')}.tmp`),descriptor={origin,bootId};
     try {
       const file=await open(temporary,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
       try {await file.writeFile(JSON.stringify(descriptor));await file.sync();}finally {await file.close();}
       await rename(temporary,join(directory,'control.json'));this.directory=directory;this.descriptor=descriptor;
     }finally {await unlink(temporary).catch(error=>{if(error.code!=='ENOENT')throw error;});}
   }
-  authorize(request:IncomingMessage):void {
-    const header=request.headers.authorization;
-    const expected=Buffer.from(`Bearer ${this.credential}`),actual=Buffer.from(typeof header==='string'?header:'');
-    if(!this.descriptor||actual.length!==expected.length||!timingSafeEqual(actual,expected))throw new ApiError('unauthorized','The local control credential is unavailable or stale.',401);
-    if(request.headers.cookie)throw new ApiError('unauthorized','Control requests require the separate local credential, without browser cookies.',401);
-  }
   async close():Promise<void> {
-    const directory=this.directory;this.descriptor=undefined;this.directory=undefined;if(!directory)return;
-    try {const current=await readControlDescriptor(directory);if(current.credential===this.credential)await unlink(join(directory,'control.json'));}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+    const directory=this.directory,bootId=this.descriptor?.bootId;this.descriptor=undefined;this.directory=undefined;if(!directory)return;
+    try {const current=await readControlDescriptor(directory);if(current.bootId===bootId)await unlink(join(directory,'control.json'));}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
   }
 }

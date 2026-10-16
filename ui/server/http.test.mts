@@ -59,18 +59,14 @@ async function fixture(context: TestContext) {
   const fake = agents();
   const app = await startBackend({cwd, port: 0, pi: executable, stateDir: join(root, 'state')}, {agents: () => fake.adapter, assets: new Map([['/', {data: shell, type: 'text/html; charset=utf-8'}]])});
   context.after(async () => { await app.close(); await rm(root, {recursive: true, force: true}); });
-  const launch = new URL(app.launchUrl); const origin = launch.origin; let cookie = ''; let workspace: string | undefined;
+  const launch = new URL(app.url); const origin = launch.origin; let workspace: string | undefined;
   const call = (path: string, method = 'GET', body?: unknown, headers: Record<string, string> = {}) => {
     const separator = path.includes('?') ? '&' : '?';
     const scoped = workspace && path.startsWith('/api/') && !path.includes('workspace=') ? `${path}${separator}workspace=${encodeURIComponent(workspace)}` : path;
-    return send(origin, scoped, method, body, {Origin: origin, ...(cookie ? {Cookie: cookie} : {}), ...headers});
-  };
-  const login = async () => {
-    const reply = await call('/api/auth/launch', 'POST', {capability: new URLSearchParams(launch.hash.slice(1)).get('launch')});
-    assert.equal(reply.status, 200); cookie = reply.headers['set-cookie']?.[0]?.split(';')[0] ?? ''; assert.ok(cookie);
+    return send(origin, scoped, method, body, {Origin: origin, ...headers});
   };
   const reserve = async (kind: OperationKind, target?: Target) => data<{operationId: string}>(await call('/api/operations', 'POST', {kind, ...(target ? {target} : {})})).operationId;
-  return {...app, cwd, fake, origin, call, login, reserve, useWorkspace(id: string) { workspace = id; }, get cookie() { return cookie; }};
+  return {...app, cwd, fake, origin, call, reserve, useWorkspace(id: string) { workspace = id; }};
 }
 
 class MemoryResponse extends EventEmitter {
@@ -92,17 +88,15 @@ async function inProcessHttp(context:TestContext, identity?: UiIdentity) {
   let now=0;const rows:string[]=[];const diagnostics=new DiagnosticSink({append:async row=>{rows.push(row);},close:async()=>{}},()=>now);
   const counts={dispatch:0,observe:0,detached:0};const journal=new Journal();
   const backend:HttpBackend={journal,dispatch:async()=>{counts.dispatch++;return {};},workspace:async()=> 'fake',observe:async()=>{counts.observe++;},detached:()=>{counts.detached++;}};
-  const http=new LocalHttp(backend,new Map(),undefined,{generations,diagnostics,identity});http.auth.setPort(12345);
-  context.after(async()=>{await diagnostics.close();await http.auth.close();http.server.removeAllListeners();});
-  const authenticated=new MemoryResponse();await http.auth.launch(http.auth.capability,authenticated as unknown as ServerResponse);
-  const cookie=(authenticated.headers['Set-Cookie']??'').split(';')[0]??'';
+  const http=new LocalHttp(backend,new Map(),undefined,{generations,diagnostics,identity});http.boundary.setPort(12345);
+  context.after(async()=>{await diagnostics.close();http.server.removeAllListeners();});
   const invoke=async(path:string,method='GET',body?:unknown,headers:Record<string,string>={})=> {
     const raw=body===undefined?'':JSON.stringify(body);const request=Readable.from(raw?[Buffer.from(raw)]:[]) as unknown as IncomingMessage;
-    request.url=path;request.method=method;request.headers={host:'127.0.0.1:12345',origin:http.auth.origin,cookie,'content-type':'application/json','content-length':String(Buffer.byteLength(raw)),...headers};
+    request.url=path;request.method=method;request.headers={host:'127.0.0.1:12345',origin:http.boundary.origin,'content-type':'application/json','content-length':String(Buffer.byteLength(raw)),...headers};
     const response=new MemoryResponse();const handler=http as unknown as {handle(request:IncomingMessage,response:ServerResponse):Promise<void>};
     await handler.handle(request,response as unknown as ServerResponse);return response;
   };
-  return {http,backend,generations,diagnostics,rows,counts,invoke,cookie,advance:(value:number)=>{now=value;}};
+  return {http,backend,generations,diagnostics,rows,counts,invoke,advance:(value:number)=>{now=value;}};
 }
 
 test('leased documents carry their retained generation identity and matching HEAD lengths', async context => {
@@ -127,16 +121,15 @@ test('pure development HTTP startup closes its admitted listener when watcher se
   context.mock.method(DevelopmentBuild,'open',async()=>({generations:fixture.generations,build:{start:()=>{events.push('watch');throw failure;},close:async()=>{closed.push('build');}}}) as unknown as Awaited<ReturnType<typeof DevelopmentBuild.open>>);
   context.mock.method(DiagnosticDisk,'open',async()=>({append:async()=>{},close:async()=>{closed.push('diagnostics');}}) as unknown as DiagnosticDisk);
   context.mock.method(LocalHttp.prototype,'listen',async()=>{events.push('listen');return 'http://127.0.0.1:12345/';});
-  context.mock.method(LocalHttp.prototype,'close',async function(this:LocalHttp) {closed.push('http');await this.auth.close();this.server.removeAllListeners();});
+  context.mock.method(LocalHttp.prototype,'close',async function(this:LocalHttp) {closed.push('http');this.server.removeAllListeners();});
   await assert.rejects(startBackend({cwd:'/synthetic/project',stateDir,pi:'unrun',port:0,devReload:true,devDiagnostics:true}),error=>error===failure);
   assert.deepEqual(events,['listen','watch']);assert.deepEqual(closed.sort(),['build','diagnostics','http','registry']);assert.deepEqual(fixture.counts,{dispatch:0,observe:0,detached:0});
 });
 
-test('pure development HTTP enforces Host Origin session and bounded closed metadata ingestion',async context=> {
+test('pure development HTTP enforces Host Origin and bounded closed metadata ingestion',async context=> {
   const fixture=await inProcessHttp(context);const body={records:[{event:'measure',metric:'editor-echo',durationMs:2}],dropped:0};
   assert.equal((await fixture.invoke('/api/dev/diagnostics','POST',body,{host:'wrong.invalid'})).statusCode,403);
   assert.equal((await fixture.invoke('/api/dev/diagnostics','POST',body,{origin:'http://wrong.invalid'})).statusCode,403);
-  assert.equal((await fixture.invoke('/api/dev/diagnostics','POST',body,{cookie:''})).statusCode,401);assert.equal(fixture.diagnostics.state().accepted,0);
   const accepted=await fixture.invoke('/api/dev/diagnostics','POST',body);assert.equal(accepted.statusCode,200);assert.equal(JSON.parse(accepted.text).data.accepted,1);
   fixture.advance(1000);const rejected=await fixture.invoke('/api/dev/diagnostics','POST',{records:[{event:'connection',body:'PRIVATE-BODY-SENTINEL'}],dropped:0});
   assert.equal(JSON.parse(rejected.text).data.dropped,1);
@@ -149,7 +142,7 @@ test('pure development HTTP refuses generation-prefixed HTML through parsed and 
   for(const path of [`/_ui/${id}/`,`/_ui/${id}/index.html`]) {
     for(const method of ['GET','HEAD']) {const response=await fixture.invoke(path,method);assert.equal(response.statusCode,404);assert.doesNotMatch(response.text,/<html|ui-client/);assert.equal(fixture.generations.counts().clients,0);}
     const router=fixture.http as unknown as {staticRoute(response:ServerResponse,url:URL,method:string):boolean};
-    assert.throws(() => router.staticRoute(new MemoryResponse() as unknown as ServerResponse,new URL(path,fixture.http.auth.origin),'GET'),error=>error instanceof ApiError&&error.status===404);
+    assert.throws(() => router.staticRoute(new MemoryResponse() as unknown as ServerResponse,new URL(path,fixture.http.boundary.origin),'GET'),error=>error instanceof ApiError&&error.status===404);
   }
   const page=await fixture.invoke('/');assert.equal(page.statusCode,200);assert.match(page.text,/ui-client/);assert.equal(fixture.generations.counts().clients,1);assert.deepEqual(fixture.counts,{dispatch:0,observe:0,detached:0});
 });
@@ -172,13 +165,12 @@ test('pure development HTTP pins every asset and uses a distinct bounded notific
   assert.equal((await fixture.invoke('/api/dev/release','POST',{client})).statusCode,200);assert.equal(fixture.generations.counts().clients,0);
 });
 
-test('development lease recovery preserves auth identity capacity and explicit missing-release results',async context=> {
+test('development lease recovery preserves page identity capacity and explicit missing-release results',async context=> {
   const fixture=await inProcessHttp(context);const id=fixture.generations.status().generation;
   const family=/name="ui-module-family" content="([a-f0-9]{64})"/.exec(fixture.generations.documentHead()?.data.toString()??'')?.[1];assert.ok(family);
   const missing='0'.repeat(24),body={client:missing,generation:id,cssGeneration:id,family};
   assert.equal((await fixture.invoke('/api/dev/lease','GET')).statusCode,405);
   for(const headers of [{host:'wrong.invalid'},{origin:'http://wrong.invalid'}] as Record<string,string>[]) assert.equal((await fixture.invoke('/api/dev/lease','POST',body,headers)).statusCode,403);
-  assert.equal((await fixture.invoke('/api/dev/lease','POST',body,{cookie:''})).statusCode,401);
   for(const invalid of [{...body,client:'bad'},{...body,generation:'bad'},{...body,cssGeneration:'bad'},{...body,family:'bad'},{...body,extra:true}]) assert.equal((await fixture.invoke('/api/dev/lease','POST',invalid)).statusCode,400);
   const replacement=JSON.parse((await fixture.invoke('/api/dev/lease','POST',body)).text).data;assert.equal(replacement.lease,'replaced');assert.notEqual(replacement.client,missing);assert.equal(fixture.generations.counts().clients,1);
   assert.deepEqual(JSON.parse((await fixture.invoke('/api/dev/lease','POST',body)).text).data,replacement);assert.equal(fixture.generations.counts().clients,1);
@@ -189,27 +181,21 @@ test('development lease recovery preserves auth identity capacity and explicit m
   assert.equal((await fixture.invoke('/api/dev/lease','POST',{...known,generation:'f'.repeat(64)})).statusCode,409);
   assert.equal((await fixture.invoke('/api/dev/lease','POST',{...known,cssGeneration:'f'.repeat(64)})).statusCode,409);
   assert.equal((await fixture.invoke('/api/dev/lease','POST',{...known,family:'f'.repeat(64)})).statusCode,409);
-  const foreign=fixture.generations.document();fixture.generations.bind(foreign.client,'other-session');
-  assert.equal((await fixture.invoke('/api/dev/lease','POST',{...body,client:foreign.client})).statusCode,409);
-  assert.equal((await fixture.invoke('/api/dev/release','POST',{client:foreign.client})).statusCode,409);
   assert.equal((await fixture.invoke('/api/dev/release','POST',{client:'bad'})).statusCode,400);
   assert.equal(JSON.parse((await fixture.invoke('/api/dev/release','POST',{client:missing})).text).data.release,'absent');
   assert.equal(JSON.parse((await fixture.invoke('/api/dev/release','POST',{client})).text).data.release,'released');
-  for(let index=0;index<8;index++) {const own=fixture.generations.document();assert.equal((await fixture.invoke('/api/dev/lease','POST',{...body,client:own.client})).statusCode,200);}
-  const excess=fixture.generations.document();const fullAck=await fixture.invoke('/api/dev/ack','POST',{client:excess.client,generation:id,cssGeneration:id});assert.equal(fullAck.statusCode,429);assert.equal(JSON.parse(fullAck.text).error.code,'capacity');
   for(let index=fixture.generations.counts().clients;index<64;index++) fixture.generations.document();
   const capacity=await fixture.invoke('/api/dev/lease','POST',body);assert.equal(capacity.statusCode,429);assert.equal(JSON.parse(capacity.text).error.code,'capacity');
   assert.deepEqual(fixture.counts,{dispatch:0,observe:0,detached:0});
 });
 
-test('agent start has one authenticated POST route with a separate request ID', {timeout:10000}, async context => {
+test('agent start has one loopback POST route with a separate request ID', {timeout:10000}, async context => {
   const app = await fixture(context); const calls: {workspace:string;identity:string;requestId:string}[] = [];
   context.mock.method(app.registry,'startAgent',async (workspace:string,identity:string,requestId:string)=> {
     calls.push({workspace,identity,requestId});
     return {targetState:await app.registry.store.target(workspace,{kind:'agent',identity}),availability:'live',capabilities:{input:true,history:true,observe:true,abort:true,configure:false,inspect:true}};
   });
-  assert.equal((await app.call('/api/agents/stored/start','POST',{}, {'Idempotency-Key':'explicit'})).status,401);
-  await app.login(); const boot = data<Bootstrap>(await app.call('/api/bootstrap'));app.useWorkspace(boot.workspace.id);
+  const boot = data<Bootstrap>(await app.call('/api/bootstrap'));app.useWorkspace(boot.workspace.id);
   assert.equal((await app.call('/api/agents/stored/start','GET')).status,405);
   assert.equal((await app.call('/api/agents/stored/start','POST',{requestId:'explicit',message:'forbidden'})).status,400);
   assert.equal((await app.call('/api/agents/stored/start','POST',{})).status,400);assert.equal(calls.length,0);
@@ -224,10 +210,10 @@ type Frame = {name: string; id?: string; body: EventEnvelope};
 class Stream {
   frames: Frame[] = []; private waits = new Set<() => void>(); private buffer = '';
   readonly ready: Promise<void>; readonly ended: Promise<void>; private closeRequest: () => void = () => {};
-  constructor(origin: string, cookie: string, path: string, headers: Record<string, string> = {}) {
+  constructor(origin: string, path: string, headers: Record<string, string> = {}) {
     let end!: () => void; this.ended = new Promise(resolve => { end = resolve; });
     this.ready = new Promise((resolve, reject) => {
-      const req = request(origin, {path, headers: {Cookie: cookie, ...headers}}, res => {
+      const req = request(origin, {path, headers}, res => {
         assert.equal(res.statusCode, 200); res.setEncoding('utf8');
         res.on('data', (chunk: string) => this.read(chunk)); res.on('end', end); res.on('close', end); res.on('error', reject); resolve();
       });
@@ -256,7 +242,7 @@ class Stream {
   close() { this.closeRequest(); }
 }
 async function stream(context: TestContext, app: Awaited<ReturnType<typeof fixture>>, boot: Bootstrap, after = boot.cursor) {
-  const events = new Stream(app.origin, app.cookie, `/api/events?workspace=${boot.workspace.id}&after=${encodeURIComponent(after)}`);
+  const events = new Stream(app.origin, `/api/events?workspace=${boot.workspace.id}&after=${encodeURIComponent(after)}`);
   context.after(() => events.close()); await events.ready; await events.wait('ready'); return events;
 }
 async function openPrimary(app: Awaited<ReturnType<typeof fixture>>, events: Stream, body: unknown = {cwd: app.cwd}) {
@@ -274,7 +260,7 @@ async function input(app: Awaited<ReturnType<typeof fixture>>, target: Target & 
   const reply = await app.call(path, 'POST', body, {'Idempotency-Key': id});
   if (reply.status === 500 && (await app.registry.operations.get(id)).state === 'reserved') {
     try {
-      await app.registry.dispatch({method: 'POST', parts: ['api', 'primaries', target.key, 'inputs'], url: new URL(path, app.origin), body, session: 'fixture', operationId: id, workspace: snapshot.workspace.id});
+      await app.registry.dispatch({method: 'POST', parts: ['api', 'primaries', target.key, 'inputs'], url: new URL(path, app.origin), body, operationId: id, workspace: snapshot.workspace.id});
     } catch (cause) { throw new Error('The HTTP input failed before dispatch; the direct fixture dispatch exposes its cause.', {cause}); }
     assert.fail('The HTTP input failed before dispatch, but the same direct fixture dispatch succeeded.');
   }
@@ -282,7 +268,7 @@ async function input(app: Awaited<ReturnType<typeof fixture>>, target: Target & 
 }
 
 test('saved-file HTTP resume after restart preserves exact identity and state without a no-op selection write', {timeout:20000}, async context => {
-  const app=await fixture(context); await app.login(); const boot=data<Bootstrap>(await app.call('/api/bootstrap')); app.useWorkspace(boot.workspace.id);
+  const app=await fixture(context); const boot=data<Bootstrap>(await app.call('/api/bootstrap')); app.useWorkspace(boot.workspace.id);
   const file=join(app.cwd,'retained.jsonl'); await writeFile(file,`${JSON.stringify({type:'session',version:3,id:'retained-http',cwd:app.cwd})}\n`);
   const events=await stream(context,app,boot); const opened=await openPrimary(app,events,{cwd:app.cwd,sessionFile:file});
   const state=await app.registry.store.target(boot.workspace.id,opened.target);
@@ -296,15 +282,13 @@ test('saved-file HTTP resume after restart preserves exact identity and state wi
   let nextEvents: Stream | undefined;
   try {
     assert.equal(restarted.registry.sessions.size,0);
-    const launch=new URL(restarted.launchUrl); const origin=launch.origin;
-    const login=await send(origin,'/api/auth/launch','POST',{capability:new URLSearchParams(launch.hash.slice(1)).get('launch')},{Origin:origin});
-    const cookie=login.headers['set-cookie']?.[0]?.split(';')[0]; assert.ok(cookie);
-    const call=(path: string,method='GET',body?: unknown,headers: Record<string,string>={})=>send(origin,`${path}?workspace=${current.id}`,method,body,{Origin:origin,Cookie:cookie,...headers});
+    const launch=new URL(restarted.url); const origin=launch.origin;
+    const call=(path: string,method='GET',body?: unknown,headers: Record<string,string>={})=>send(origin,`${path}?workspace=${current.id}`,method,body,{Origin:origin,...headers});
     const stopped=data<Bootstrap>(await call('/api/snapshot')); assert.equal(stopped.primaries[0]?.lifecycle,'stopped');
     assert.deepEqual(stopped.workspace,before.workspace); assert.deepEqual(stopped.targets,before.targets);
     const updates=context.mock.method(restarted.registry.store,'updateSelection',restarted.registry.store.updateSelection.bind(restarted.registry.store));
     const publications=context.mock.method(restarted.registry.journal,'publish',restarted.registry.journal.publish.bind(restarted.registry.journal));
-    nextEvents=new Stream(origin,cookie,`/api/events?workspace=${current.id}&after=${stopped.cursor}`); await nextEvents.ready; await nextEvents.wait('ready');
+    nextEvents=new Stream(origin,`/api/events?workspace=${current.id}&after=${stopped.cursor}`); await nextEvents.ready; await nextEvents.wait('ready');
     const reserve=async()=>data<{operationId:string}>(await call('/api/operations','POST',{kind:'primary.open'})).operationId;
     const body={cwd:app.cwd,sessionFile:file}; const id=await reserve();
     const resumed=await call('/api/primaries','POST',body,{'Idempotency-Key':id}); assert.equal(resumed.status,202);
@@ -329,7 +313,7 @@ test('saved-file HTTP resume after restart preserves exact identity and state wi
 });
 
 test('HTTP and SSE drive the executable through deltas, tool output, a dialog, and settlement', {timeout: 15000}, async context => {
-  const app = await fixture(context); await app.login(); const initial = data<Bootstrap>(await app.call('/api/bootstrap'));
+  const app = await fixture(context); const initial = data<Bootstrap>(await app.call('/api/bootstrap'));
   const created = data<{workspace: {id: string}}>(await app.call('/api/workspaces', 'POST', {}));
   assert.notEqual(created.workspace.id, initial.workspace.id); app.useWorkspace(created.workspace.id);
   const boot = data<Bootstrap>(await app.call('/api/bootstrap')); assert.equal(boot.workspace.id, created.workspace.id);
@@ -355,19 +339,19 @@ test('HTTP and SSE drive the executable through deltas, tool output, a dialog, a
   assert.equal(app.fake.counts.refresh, 1);
 });
 
-test('logout closes SSE and releases observations without stopping a busy primary', {timeout: 15000}, async context => {
-  const app = await fixture(context); await app.login(); const boot = data<Bootstrap>(await app.call('/api/bootstrap'));
+test('page departure closes SSE and releases observations without stopping a busy primary', {timeout: 15000}, async context => {
+  const app = await fixture(context); const boot = data<Bootstrap>(await app.call('/api/bootstrap'));
   const events = await stream(context, app, boot); const {target} = await openPrimary(app, events);
   await input(app, target, 'keep work alive'); await events.wait('extension.request', value => value.method === 'confirm');
   const primary = app.registry.primary(target.key); const pid = primary.view.pid; assert.ok(pid);
-  assert.equal((await app.call('/api/auth/logout', 'POST', {})).status, 200);
+  events.close();
   await events.ended; await app.fake.disconnected;
   assert.equal(app.registry.journal.connectionCount, 0); assert.equal(primary.view.lifecycle, 'ready'); assert.equal(primary.view.activity, 'running');
-  assert.doesNotThrow(() => process.kill(pid, 0)); assert.equal((await app.call('/api/bootstrap')).status, 401);
+  assert.doesNotThrow(() => process.kill(pid, 0)); assert.equal((await app.call('/api/bootstrap')).status, 200);
 });
 
 test('saved-session open and resume are direct and idempotent; obsolete fields and stale epochs refuse', {timeout: 15000}, async context => {
-  const app = await fixture(context); await app.login(); const saved = join(app.cwd, 'saved.jsonl'); await writeFile(saved, `${JSON.stringify({type:'session',version:3,id:'fixture',timestamp:new Date(0).toISOString(),cwd:app.cwd})}\n`);
+  const app = await fixture(context); const saved = join(app.cwd, 'saved.jsonl'); await writeFile(saved, `${JSON.stringify({type:'session',version:3,id:'fixture',timestamp:new Date(0).toISOString(),cwd:app.cwd})}\n`);
   const id = await app.reserve('primary.open'); const obsolete = await app.call('/api/primaries', 'POST', {cwd: app.cwd, sessionFile: saved, writerReleased: true}, {'Idempotency-Key': id});
   assert.equal(obsolete.status, 400); assert.equal(app.registry.sessions.size, 0);
   for (const sessionFile of ['relative.jsonl', '/invalid\u0000session', app.cwd, `${app.cwd}/missing.jsonl`]) {
@@ -401,12 +385,12 @@ test('saved-session open and resume are direct and idempotent; obsolete fields a
   assert.equal(rejected.state, 'rejected'); assert.equal(rejected.error?.code, 'stale_epoch'); assert.equal(app.registry.primary(opened.target.key).view.epoch, 2);
 });
 
-test('HTTP authentication, methods, JSON bodies, and payload bounds are enforced', {timeout: 15000}, async context => {
+test('HTTP boundaries, methods, JSON bodies, and payload bounds are enforced', {timeout: 15000}, async context => {
   const app = await fixture(context);
-  assert.equal((await app.call('/api/events')).status, 401); assert.equal((await app.call('/api/snapshot')).status, 401);
-  assert.equal((await app.call('/api/auth/launch', 'POST', {}, {Origin: 'http://foreign.invalid'})).status, 403);
+  assert.equal((await app.call('/api/snapshot')).status, 200);
+  assert.equal((await app.call('/api/workspaces', 'POST', {}, {Origin: 'http://foreign.invalid'})).status, 403);
   assert.equal((await app.call('/', 'GET', undefined, {Host: 'localhost:1'})).status, 403);
-  await app.login(); assert.equal((await app.call('/api/snapshot', 'POST', {})).status, 405);
+  assert.equal((await app.call('/api/snapshot', 'POST', {})).status, 405);
   for (const body of ['[]', 'null', '{', '"scalar"']) assert.equal((await app.call('/api/workspaces', 'POST', body)).status, 400);
   assert.equal((await app.call('/api/workspaces', 'POST', {}, {'Content-Type': 'text/plain'})).status, 400);
   assert.equal((await app.call('/api/workspaces', 'POST', {text: 'x'.repeat(LIMITS.requestBytes)})).status, 413);
@@ -414,16 +398,16 @@ test('HTTP authentication, methods, JSON bodies, and payload bounds are enforced
 });
 
 test('raw traversal requests never normalize into an allowed asset or API route', {timeout: 15000}, async context => {
-  const app = await fixture(context); await app.login();
+  const app = await fixture(context);
   for (const path of ['/private/../', '/web/%2e%2e/api/bootstrap', '/web/%2fetc/passwd', '/web/%5csecret', '/web/%00', '/package.json', '/ui/server/main.mts']) {
     assert.equal((await app.call(path)).status, 404, path);
   }
 });
 
 test('Last-Event-ID overrides the URL cursor and replay precedes ready metadata', {timeout: 15000}, async context => {
-  const app = await fixture(context); await app.login(); const boot = data<Bootstrap>(await app.call('/api/bootstrap'));
+  const app = await fixture(context); const boot = data<Bootstrap>(await app.call('/api/bootstrap'));
   const id = app.registry.journal.publish('notice', undefined, {level: 'info', message: 'replayed'});
-  const events = new Stream(app.origin, app.cookie, `/api/events?workspace=${boot.workspace.id}&after=other-boot:0`, {'Last-Event-ID': boot.cursor});
+  const events = new Stream(app.origin, `/api/events?workspace=${boot.workspace.id}&after=other-boot:0`, {'Last-Event-ID': boot.cursor});
   context.after(() => events.close()); await events.ready; await events.wait('ready');
   assert.deepEqual(events.frames.map(frame => [frame.name, frame.id]), [['notice', id], ['ready', undefined]]);
 });
@@ -431,7 +415,7 @@ test('Last-Event-ID overrides the URL cursor and replay precedes ready metadata'
 test('request rate accounting rejects the next request at a deterministic fixed clock', {timeout: 15000}, async context => {
   context.mock.method(performance, 'now', () => 1);
   const app = await fixture(context);
-  for (let i = 0; i < 240; i++) assert.equal((await app.call('/api/bootstrap')).status, 401, String(i));
+  for (let i = 0; i < 240; i++) assert.equal((await app.call('/api/bootstrap')).status, 200, String(i));
   const rejected = await app.call('/api/bootstrap'); assert.equal(rejected.status, 429); assert.equal(rejected.json?.ok, false);
   for (let i = 0; i < 400; i++) assert.equal((await app.call('/')).status, 200, String(i));
   assert.equal(app.fake.counts.refresh, 1); assert.equal(app.registry.sessions.size, 0);
@@ -451,7 +435,7 @@ async function browserBuild(context: TestContext, emptyFiles = false) {
   return {root, start: async (state = 'state') => {
     const fake = agents();
     const app = await startBackend({cwd: root, port: 0, pi: executable, stateDir: join(root, state)}, {agents: () => fake.adapter, assetRoot: root});
-    apps.push(app); return {...app, origin: new URL(app.launchUrl).origin};
+    apps.push(app); return {...app, origin: new URL(app.url).origin};
   }};
 }
 function buildError(path: string, reason: string) {
@@ -459,7 +443,7 @@ function buildError(path: string, reason: string) {
     assert.ok(error instanceof ApiError); assert.ok(error.message.includes(path), error.message);
     assert.ok(error.message.includes(reason), error.message);
     assert.ok(error.message.includes('npm run ui:build'), error.message);
-    assert.ok(!error.message.includes('#launch=')); return true;
+    return true;
   };
 }
 function assetHeaders(reply: Reply) {
@@ -602,18 +586,18 @@ test('browser asset routes preserve method errors and Host, Origin, and fetch me
     assert.equal((await send(app.origin, path, 'POST', {}, {Origin: 'http://foreign.invalid'})).status, 403);
     assert.equal((await send(app.origin, path, 'GET', undefined, {'Sec-Fetch-Site': 'cross-site'})).status, 403);
   }
-  assert.equal((await send(app.origin, '/api/bootstrap')).status, 401);
+  assert.equal((await send(app.origin, '/api/bootstrap')).status, 200);
   for (const path of ['/web/not-built.js', '/favicon.ico', '/unknown.svg', '/favicon.svg/extra']) {
     assert.equal((await send(app.origin, path)).status, 404, path);
   }
 });
 
-test('raw image intake authenticates before bytes, saves a target-local lease and never falls back to text Send', {timeout: 15000}, async context => {
-  const app = await fixture(context); await app.login(); const boot = data<Bootstrap>(await app.call('/api/bootstrap')); const events = await stream(context, app, boot);
+test('raw image intake validates before bytes, saves a target-local lease and never falls back to text Send', {timeout: 15000}, async context => {
+  const app = await fixture(context); const boot = data<Bootstrap>(await app.call('/api/bootstrap')); const events = await stream(context, app, boot);
   const primary = await openPrimary(app, events); const saved = await app.registry.store.target(boot.workspace.id, primary.target);
   const raw = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
   const path = `/api/workspaces/${boot.workspace.id}/targets/${saved.targetKey}/images`; const query = `?name=pixel.png&epoch=${primary.target.epoch}`;
-  assert.equal((await app.call(path + query, 'POST', raw, {Cookie: '', 'Content-Type': 'image/png'})).status, 401);
+  assert.equal((await app.call(path + query, 'POST', raw, {Origin: 'http://foreign.invalid', 'Content-Type': 'image/png'})).status, 403);
   assert.equal((await app.call(`${path + query}&workspace=${boot.workspace.id}`, 'POST', raw, {'Content-Type': 'image/png'})).status, 400);
   assert.equal((await app.call(path + query, 'POST', raw, {'Content-Type': 'image/gif'})).status, 400);
   const reply = await app.call(path + query, 'POST', raw, {'Content-Type': 'image/png'}); assert.equal(reply.status, 200);
@@ -629,9 +613,9 @@ test('raw image intake authenticates before bytes, saves a target-local lease an
 test('raw body deadline cancels a stalled producer without an unhandled rejection', async context => {
   const f = await inProcessHttp(context); context.mock.timers.enable({apis: ['setTimeout']}); let reached!: () => void; let cancelled = false;
   const entered = new Promise<void>(resolve => {reached = resolve;});
-  f.backend.uploadImage = async (ctx, _headers, body) => {reached(); try {for await (const _chunk of body) ctx.authorize();} finally {cancelled = ctx.signal.aborted;} return {};};
+  f.backend.uploadImage = async (ctx, _headers, body) => {reached(); try {for await (const _chunk of body) ctx.checkActive();} finally {cancelled = ctx.signal.aborted;} return {};};
   const request = new Readable({read() {}}) as unknown as IncomingMessage; request.url = '/api/workspaces/w/targets/t/images?name=x.png&epoch=1'; request.method = 'POST';
-  request.headers = {host: '127.0.0.1:12345', origin: f.http.auth.origin, cookie: f.cookie, 'content-type': 'image/png'};
+  request.headers = {host: '127.0.0.1:12345', origin: f.http.boundary.origin, 'content-type': 'image/png'};
   const response = new MemoryResponse(); const pending = (f.http as unknown as {handle(request: IncomingMessage, response: ServerResponse): Promise<void>}).handle(request, response as unknown as ServerResponse);
   await entered; context.mock.timers.tick(LIMITS.imageReceiveMs); await pending; assert.equal(response.statusCode, 408); assert.equal(cancelled, true); request.destroy();
 });

@@ -1,5 +1,5 @@
 export type DiagnosticMetric = 'editor-echo' | 'reducer' | 'render' | 'control-roundtrip' | 'switch' | 'stream-to-render';
-export type DiagnosticCode = 'none' | 'failed' | 'deferred' | 'applied' | 'offline' | 'auth' | 'overflow';
+export type DiagnosticCode = 'none' | 'failed' | 'deferred' | 'applied' | 'offline' | 'overflow';
 export type BrowserDiagnosticEvent = {
   event: 'measure' | 'reload' | 'connection' | 'loss'; code?: DiagnosticCode; metric?: DiagnosticMetric;
   durationMs?: number; count?: number; bytes?: number; status?: number;
@@ -17,7 +17,7 @@ const metricNames: Record<DiagnosticMetric, string> = {
   'control-roundtrip': 'ui:control-roundtrip', switch: 'ui:switch', 'stream-to-render': 'ui:stream-receive-to-dom-update',
 };
 const events = new Set(['measure', 'reload', 'connection', 'loss']);
-const codes = new Set(['none', 'failed', 'deferred', 'applied', 'offline', 'auth', 'overflow']);
+const codes = new Set(['none', 'failed', 'deferred', 'applied', 'offline', 'overflow']);
 const fields = new Set(['event', 'code', 'metric', 'durationMs', 'count', 'bytes', 'status']);
 const add = (a: number, b = 1): number => Math.min(Number.MAX_SAFE_INTEGER, a + b);
 const bounded = (value: unknown, max: number): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= max;
@@ -77,7 +77,7 @@ function receipt(value: unknown, count: number): {accepted: number; dropped: num
 type Aggregate = {count: number; mean: number; due: number};
 type Batch = {body: string; count: number; bytes: number; dropped: number};
 
-/** One producer per authenticated page. Import and construction install no listeners or timers. */
+/** One producer per page. Import and construction install no listeners or timers. */
 export class BrowserDiagnostics {
   private readonly clock: DiagnosticClock;
   private readonly timing: DiagnosticTiming;
@@ -107,7 +107,7 @@ export class BrowserDiagnostics {
     this.timing = options.timing ?? performance;
     this.send = options.send ?? post;
   }
-  /** Enable only after authentication; explicit enable also resumes after a delivery failure. */
+  /** Enable only after the backend becomes available; explicit enable also resumes after a delivery failure. */
   setActive(active: boolean): void {
     if (this.closed) return;
     this.active = active; this.epoch++;

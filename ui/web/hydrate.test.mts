@@ -16,7 +16,7 @@ test('stalled history cannot hold connection recovery after snapshot and stream 
   const recovery = new ConnectionRecovery({attempt: () => {
     attempt = refreshVisible(() => baseline.promise, () => {historyStarted = true; return history.promise;}, error => failures.push(error)).then(() => stream.promise);
     return attempt;
-  }, paint: () => {}, unauthorized: () => false}, {now: () => 0, set: () => 1, clear: () => {}});
+  }, paint: () => {}}, {now: () => 0, set: () => 1, clear: () => {}});
   recovery.reconnect(); assert.equal(historyStarted, false);
   baseline.resolve(); await baseline.promise; await Promise.resolve();
   assert.equal(historyStarted, true); assert.equal(recovery.phase, 'quiet');

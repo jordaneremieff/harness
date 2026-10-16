@@ -19,7 +19,7 @@ test('deterministic burst publishes and measures every delta before returning', 
   const spans: Span[] = [];
   const measure: Measure = (stage, id, at, bytes) => { spans.push({stage, id, at, bytes}); };
   const journal = new Journal(undefined, measure); const sink = new Sink();
-  journal.attach(sink.http, 'a', 'session', journal.cursor); spans.length = 0; sink.writes.length = 0;
+  journal.attach(sink.http, 'a', journal.cursor); spans.length = 0; sink.writes.length = 0;
   const cut = journal.cursor; const ids: string[] = [];
   for (let i = 0; i < 512; i++) {
     const receipt = ++clock;
@@ -40,7 +40,7 @@ test('drain instrumentation correlates each queued write to its own event ID', c
   let clock = 0; context.mock.method(performance, 'now', () => ++clock);
   const spans: Span[] = []; const sink = new Sink();
   const journal = new Journal(undefined, (stage, id, at, bytes) => spans.push({stage, id, at, bytes}));
-  journal.attach(sink.http, 'a', 'session', journal.cursor); spans.length = 0; sink.writes.length = 0;
+  journal.attach(sink.http, 'a', journal.cursor); spans.length = 0; sink.writes.length = 0;
   sink.writable = false;
   const ids = Array.from({length: 4}, (_, i) => journal.publish('notice', undefined, {level: 'info', message: `event ${i}`}));
   assert.deepEqual(spans.filter(s => s.stage === 'sse.enqueue').map(s => s.id), ids);

@@ -7,8 +7,6 @@ export class ApiError extends Error {
 }
 let requestTiming: ((start: number, end: number) => void) | undefined;
 export function setRequestTiming(timing?: (start: number, end: number) => void): void {requestTiming = timing;}
-let unauthorizedHandler: ((error: ApiError) => void) | undefined;
-export function setUnauthorizedHandler(handler?: (error: ApiError) => void): void { unauthorizedHandler = handler; }
 export async function request<T>(path: string, method = 'GET', body?: unknown, operationId?: string, signal?: AbortSignal): Promise<T> {
   const headers: Record<string, string> = {};
   if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -17,12 +15,11 @@ export async function request<T>(path: string, method = 'GET', body?: unknown, o
   const response = await fetch(workspacePath(path), {method, body: body === undefined ? undefined : JSON.stringify(body), headers, signal: signal ?? (method === 'GET' ? AbortSignal.timeout(15_000) : undefined), credentials: 'same-origin'});
   const result = await response.json() as ApiResult<T>;
   try {timing?.(startedAt, performance.now());} catch { /* Diagnostics do not change the API result. */ }
-  return responseValue(response, result);
+  return responseValue(result);
 }
-function responseValue<T>(response: Response, result: ApiResult<T>): T {
+function responseValue<T>(result: ApiResult<T>): T {
   if (!result.ok) {
     const error = new ApiError(result.error);
-    if (response.status === 401 || error.view.code === 'unauthorized') unauthorizedHandler?.(error);
     throw error;
   }
   return result.data;
@@ -36,7 +33,7 @@ export async function uploadDraftImage(workspace: string, targetKey: string, tar
     method: 'POST', body: bytes, headers: {'Content-Type': image.mimeType}, credentials: 'same-origin',
     signal: AbortSignal.any([signal, AbortSignal.timeout(LIMITS.imageReceiveMs)]),
   });
-  return responseValue(response, await response.json() as ApiResult<ImageUploadView>);
+  return responseValue(await response.json() as ApiResult<ImageUploadView>);
 }
 export function draftImageUrl(workspace: string, targetKey: string, digest: string): string {
   if (!/^[a-f0-9]{64}$/.test(digest)) throw new Error('Invalid image identity.');
@@ -69,14 +66,5 @@ export function connect(workspace: string, cursor: string, receive: (event: Rece
   });
   source.onerror = () => { source.close(); lost(); };
   return source;
-}
-export async function authenticate(): Promise<void> {
-  const url = new URL(location.href);
-  const fragment = new URLSearchParams(url.hash.slice(1));
-  const capability = fragment.get('launch');
-  if (!capability) return;
-  url.hash = '';
-  history.replaceState(null, '', url);
-  await request('/api/auth/launch', 'POST', {capability});
 }
 export function errorMessage(error: unknown): string { return error instanceof Error ? error.message : 'The request failed.'; }

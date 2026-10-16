@@ -310,7 +310,7 @@ test('explicit retained resume never dispatches uncertain input or retained queu
   });
   const before=f.registry.store.records(); const replay=context.mock.method(Primary.prototype,'input',async()=>{throw new Error('Resume must not replay input');});
   assert.equal((await f.registry.operations.get(operationId)).state,'uncertain');
-  const route=async(id: string)=>f.registry.dispatch({method:'POST',parts:['api','primaries'],url:new URL('http://localhost/api/primaries'),body:{cwd:f.cwd,sessionFile:f.file},workspace:f.workspace.id,session:'fixture',operationId:id});
+  const route=async(id: string)=>f.registry.dispatch({method:'POST',parts:['api','primaries'],url:new URL('http://localhost/api/primaries'),body:{cwd:f.cwd,sessionFile:f.file},workspace:f.workspace.id,operationId:id});
   const id=(await f.registry.operations.reserve(f.workspace.id,'primary.open')).id; await route(id); await route(id);
   assert.equal(f.counts.started,2); assert.equal(replay.mock.callCount(),0);
   assert.deepEqual(f.registry.store.records().filter(record=>record.view.id!==id),before);
@@ -422,7 +422,7 @@ test('pure concurrent registry coalesces pending setup and refuses obsolete targ
 
 function prepareRoute(registry: Registry, workspace: string, body: Record<string,unknown>) {
   return registry.dispatch({parts:['api','workspaces',workspace,'targets'],body,method:'POST',
-    url:new URL(`http://localhost/api/workspaces/${workspace}/targets`),session:'fixture'}) as Promise<TargetPreparation>;
+    url:new URL(`http://localhost/api/workspaces/${workspace}/targets`)}) as Promise<TargetPreparation>;
 }
 
 test('agent target preparation validates exact fields and workspace before native work', async context => {
@@ -510,7 +510,7 @@ test('current host identities enable input and activity inspection but never con
   const prepared = await prepareRoute(registry, workspace.id, {target:{kind:'agent',identity}});
   assert.deepEqual(prepared.capabilities,{history:true,observe:true,input:true,images:false,abort:true,configure:false,inspect:true});
   const inspected = await registry.dispatch({parts:['api','agents',identity,'inspect'],body:{view:'activity',limit:20},method:'POST',
-    url:new URL('http://localhost/api/agents/storage:2/inspect'),session:'fixture'}) as {projection:{value:unknown}};
+    url:new URL('http://localhost/api/agents/storage:2/inspect')}) as {projection:{value:unknown}};
   assert.deepEqual(JSON.parse(JSON.stringify(inspected.projection.value)), activity(identity));
   assert.deepEqual(calls,[{identity,options:{view:'activity',limit:20}}]);
   assert.equal(registry.frames.size,0); assert.equal(setup.counts.started,0);

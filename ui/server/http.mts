@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type ServerResponse, type Server } 
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { LIMITS, ROUTES } from '../shared/api.ts';
-import { Auth, securityHeaders } from './auth.mts';
+import { LocalBoundary, securityHeaders } from './boundary.mts';
 import { ApiError, errorView } from './errors.mts';
 import { IMAGE_BYTES, ImageResponse } from './images.mts';
 import { isImageRoute } from './image-request.mts';
@@ -19,12 +19,11 @@ import { readHealthSnapshot, type BackendHealthFacts, type HealthSnapshot } from
 import { identityDocument } from './version.mts';
 import {CONTROL_LIMITS, CONTROL_ROUTES} from '../shared/control.ts';
 import type {Control} from './control.mts';
-import type {ControlAuth} from './control-auth.mts';
-export type DevelopmentHttp = {control?:{auth:ControlAuth;service:Control};generations?:AssetGenerations;diagnostics?:DiagnosticSink;identity?:UiIdentity;files?:Files;health?:()=>BackendHealthFacts};
+export type DevelopmentHttp = {control?:{service:Control};generations?:AssetGenerations;diagnostics?:DiagnosticSink;identity?:UiIdentity;files?:Files;health?:()=>BackendHealthFacts};
 
 export type RequestContext = {method: string; parts: string[]; url: URL; body: Record<string, unknown>;
-  operationId?: string; workspace?: string; session: string; signal?: AbortSignal};
-export type ImageUploadContext = Omit<RequestContext, 'body' | 'signal'> & {signal: AbortSignal; authorize(): void};
+  operationId?: string; workspace?: string; signal?: AbortSignal};
+export type ImageUploadContext = Omit<RequestContext, 'body' | 'signal'> & {signal: AbortSignal; checkActive(): void};
 export type ImageUploadHeaders = {mimeType: 'image/png' | 'image/jpeg'; declaredBytes?: number};
 export type HttpBackend = {journal: Journal; dispatch(context: RequestContext): Promise<unknown>;
   uploadImage?(context: ImageUploadContext, headers: ImageUploadHeaders, body: AsyncIterable<Uint8Array>): Promise<unknown>;
@@ -159,7 +158,7 @@ function operationKey(request: IncomingMessage) {
 /** Bounded request admission uses elapsed-time token accounting, never a refill timer. */
 export class LocalHttp {
   readonly server: Server;
-  readonly auth: Auth;
+  readonly boundary = new LocalBoundary();
   private stopped = false;
   private active = 0;
   private imageReads = 0;
@@ -169,10 +168,10 @@ export class LocalHttp {
   private assets: Map<string, Asset>;
   private sessions: Pick<SessionStore, 'sessions' | 'projects' | 'titles'>;
   private development:DevelopmentHttp;
-  private buildStreams=new Map<ServerResponse,string>();
+  private buildStreams=new Set<ServerResponse>();
   private closeWork?: Promise<void>;
-  constructor(backend: HttpBackend, assets: Map<string, Asset>, sessions: Pick<SessionStore, 'sessions' | 'projects' | 'titles'> = new SessionStore(), development:DevelopmentHttp = {}, auth: Auth = new Auth()) {
-    this.backend = backend; this.assets = assets; this.sessions = sessions;this.development=development; this.auth = auth;
+  constructor(backend: HttpBackend, assets: Map<string, Asset>, sessions: Pick<SessionStore, 'sessions' | 'projects' | 'titles'> = new SessionStore(), development:DevelopmentHttp = {}) {
+    this.backend = backend; this.assets = assets; this.sessions = sessions;this.development=development;
     this.server = createServer((request, response) => { void this.handle(request, response); });
     this.server.requestTimeout = 30_000;
     this.server.headersTimeout = 10_000;
@@ -182,20 +181,18 @@ export class LocalHttp {
     await new Promise<void>((resolve, reject) => { this.server.once('error', reject); this.server.listen(port, '127.0.0.1', () => {this.server.off('error', reject); resolve();}); });
     const address = this.server.address();
     if (!address || typeof address === 'string') throw new Error('Missing loopback address');
-    this.auth.setPort(address.port); return `${this.auth.origin}/#launch=${this.auth.capability}`;
+    this.boundary.setPort(address.port); return `${this.boundary.origin}/`;
   }
   stopAdmission() { this.stopped = true; }
   close(): Promise<void> {if (!this.closeWork) this.closeWork = this.finishClose(); return this.closeWork;}
   private async finishClose(): Promise<void> {
     this.stopAdmission(); this.backend.journal.close();
-    for(const response of this.buildStreams.keys()) response.end();
-    try {
-      await new Promise<void>((resolve, reject) => {
+    for(const response of this.buildStreams) response.end();
+    await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(() => this.server.closeAllConnections(), HTTP_CLOSE_GRACE_MS); timer.unref();
         this.server.close(error => {clearTimeout(timer); if (error) reject(error); else resolve();});
         this.server.closeIdleConnections();
-      });
-    } finally {await this.auth.close();}
+    });
   }
   private rate(key: string) {
     const now = performance.now(); const bucket = this.buckets.get(key) ?? {tokens: 240, at: now};
@@ -207,41 +204,36 @@ export class LocalHttp {
     securityHeaders(response);const started=performance.now();
     try {
       if (this.stopped) throw new ApiError('not_ready', 'The backend no longer accepts requests.', 503);
-      this.auth.validate(request);
+      this.boundary.validate(request);
       const rawPath = (request.url ?? '/').split('?')[0] ?? '/'; pathParts(rawPath);
-      const url = new URL(request.url ?? '/', this.auth.origin);
+      const url = new URL(request.url ?? '/', this.boundary.origin);
       if (this.staticRoute(response, url, request.method ?? 'GET')) return;
       this.rate(url.pathname.startsWith('/api/control/')&&url.pathname!==CONTROL_ROUTES.ack?'agent-control':'loopback');
       if (this.active >= 64) throw new ApiError('capacity', 'Too many requests are active.', 429, 'read');
       this.active++;
       try { await this.route(request, response); } finally { this.active--; }
     } catch (error) {rejectRequest(response, error);}
-    finally {this.recordRequest(request,started);}
+    finally {this.recordRequest(started);}
   }
-  private recordRequest(request:IncomingMessage,started:number) {
+  private recordRequest(started:number) {
     if(!this.development.diagnostics) return;
-    try {this.auth.session(request);this.development.diagnostics.request(performance.now()-started);} catch { /* Pre-auth requests produce no diagnostics. */ }
+    this.development.diagnostics.request(performance.now()-started);
   }
   private async route(request: IncomingMessage, response: ServerResponse) {
     const rawPath=(request.url??'/').split('?')[0]??'/';
     pathParts(rawPath);
-    const url = new URL(request.url ?? '/', this.auth.origin);
+    const url = new URL(request.url ?? '/', this.boundary.origin);
     const method = request.method ?? 'GET'; const parts = pathParts(url.pathname);
     if(url.pathname.startsWith('/api/control/')) {await this.controlRoute(request,response,url,method,parts);return;}
-    if(request.headers.authorization)throw new ApiError('unauthorized','Bearer credentials do not authorize browser APIs.',401);
     if(await this.developmentRoute(request,response,url,method)) return;
     if (!isFileRoute(parts)) matchRoute(method, parts);
-    if (this.savedImageRoute(method, parts, 'POST', 6)) return this.uploadImage(request, response, url, parts, this.auth.session(request));
-    if (fileMutationRoute(method,parts)) this.auth.session(request);
+    if (this.savedImageRoute(method, parts, 'POST', 6)) return this.uploadImage(request, response, url, parts);
     const body = await requestBody(request,method,parts);
-    if (url.pathname === '/api/auth/launch') return this.launch(body, response);
-    const session = this.auth.session(request);
-    if (url.pathname === '/api/auth/logout') return this.logout(session, response);
     if (url.pathname === '/api/health') return respond(response, this.health());
-    if (url.pathname === '/api/events') return this.events(request, response, url, session);
+    if (url.pathname === '/api/events') return this.events(request, response, url);
     if (await this.savedMetadata(url, response)) return;
     await this.validateResume(method, url, body);
-    return this.dispatchRequest(request,response,url,method,parts,body,session);
+    return this.dispatchRequest(request,response,url,method,parts,body);
   }
   private async controlRoute(request:IncomingMessage,response:ServerResponse,url:URL,method:string,parts:string[]):Promise<void> {
     const control=this.development.control;
@@ -250,12 +242,10 @@ export class LocalHttp {
     const query=(allowed:string[])=> {if([...url.searchParams.keys()].some(key=>!allowed.includes(key)||url.searchParams.getAll(key).length!==1))throw new ApiError('invalid_request','The control query is invalid.');};
     if(url.pathname===CONTROL_ROUTES.ack) {
       requireMethod(method,'POST');query(['workspace']);
-      if(request.headers.authorization)throw new ApiError('unauthorized','Presentation acknowledgments require a browser session, not a bearer credential.',401);
-      const session=this.auth.session(request),body=await readBody(request,CONTROL_LIMITS.payloadBytes),workspace=url.searchParams.get('workspace');
+      const body=await readBody(request,CONTROL_LIMITS.payloadBytes),workspace=url.searchParams.get('workspace');
       if(workspace!==null&&workspace!==body.workspaceId)throw new ApiError('invalid_request','The acknowledgment workspace query does not match its body.');
-      respond(response,await control.service.ack(body,session));return;
+      respond(response,await control.service.ack(body));return;
     }
-    control.auth.authorize(request);
     if(url.pathname===CONTROL_ROUTES.layout) {
       requireMethod(method,'GET');query(['workspace']);respond(response,await control.service.layout(url.searchParams.get('workspace')??undefined));return;
     }
@@ -286,8 +276,8 @@ export class LocalHttp {
   private savedImageRoute(method: string, parts: string[], expectedMethod: string, length: number): boolean {
     return method === expectedMethod && parts.length === length && parts[1] === 'workspaces' && parts[3] === 'targets' && parts[5] === 'images';
   }
-  private async dispatchRequest(request:IncomingMessage,response:ServerResponse,url:URL,method:string,parts:string[],body:Record<string,unknown>,session:string) {
-    const context={method,parts,url,body,session,operationId:operationKey(request),workspace:url.searchParams.get('workspace')??undefined};
+  private async dispatchRequest(request:IncomingMessage,response:ServerResponse,url:URL,method:string,parts:string[],body:Record<string,unknown>) {
+    const context={method,parts,url,body,operationId:operationKey(request),workspace:url.searchParams.get('workspace')??undefined};
     if(isImageRoute(method,parts) || this.savedImageRoute(method, parts, 'GET', 7)) return this.image(context,response);
     const controller=new AbortController();
     const cancel=()=>{if(!response.writableEnded) controller.abort();};
@@ -303,7 +293,7 @@ export class LocalHttp {
     finally {request.off('aborted',cancel);response.off('close',cancel);}
   }
   private imageUploads = 0;
-  private async uploadImage(request: IncomingMessage, response: ServerResponse, url: URL, parts: string[], session: string): Promise<void> {
+  private async uploadImage(request: IncomingMessage, response: ServerResponse, url: URL, parts: string[]): Promise<void> {
     if (!this.backend.uploadImage) throw new ApiError('unsupported', 'Image intake is unavailable.', 503);
     if (this.imageUploads >= LIMITS.imageUploads) throw new ApiError('capacity', 'Two image uploads are already active.', 429, 'read');
     const mimeType = request.headers['content-type'];
@@ -315,10 +305,9 @@ export class LocalHttp {
     const cancel = () => { if (!response.writableEnded) controller.abort(); };
     const timer = setTimeout(() => controller.abort(), LIMITS.imageReceiveMs); timer.unref();
     request.once('aborted', cancel); response.once('close', cancel); this.imageUploads++;
-    const authorize = () => {
+    const checkActive = () => {
       if (controller.signal.aborted) throw new ApiError('not_ready', 'Image intake ended or exceeded its receive deadline.', 408);
       if (this.stopped) throw new ApiError('not_ready', 'The backend no longer accepts requests.', 503);
-      if (this.auth.session(request) !== session) throw new ApiError('unauthorized', 'The browser session changed.', 401);
     };
     const iterator = request.iterator({destroyOnReturn: false});
     let rejectAbort: (reason: Error) => void = () => {};
@@ -329,7 +318,7 @@ export class LocalHttp {
     const body = async function* (): AsyncGenerator<Uint8Array> {
       let bytes = 0;
       while (true) {
-        authorize(); const next = await Promise.race([iterator.next(), aborted]);
+        checkActive(); const next = await Promise.race([iterator.next(), aborted]);
         if (next.done) return;
         if (!(next.value instanceof Uint8Array)) throw new ApiError('invalid_request', 'Image intake requires byte chunks.');
         bytes += next.value.byteLength;
@@ -338,8 +327,8 @@ export class LocalHttp {
       }
     };
     try {
-      const data = await this.backend.uploadImage({method: 'POST', parts, url, session, signal: controller.signal, authorize}, {mimeType, ...(length !== undefined ? {declaredBytes: Number(length)} : {})}, body());
-      authorize(); respond(response, data);
+      const data = await this.backend.uploadImage({method: 'POST', parts, url, signal: controller.signal, checkActive}, {mimeType, ...(length !== undefined ? {declaredBytes: Number(length)} : {})}, body());
+      checkActive(); respond(response, data);
     } catch (error) { if (!response.headersSent) response.setHeader('Connection', 'close'); throw error; }
     finally {
       clearTimeout(timer); controller.signal.removeEventListener('abort', abort); request.off('aborted', cancel); response.off('close', cancel);
@@ -349,15 +338,14 @@ export class LocalHttp {
   private async developmentRoute(request:IncomingMessage,response:ServerResponse,url:URL,method:string):Promise<boolean> {
     const generations=this.development.generations;
     if(!url.pathname.startsWith('/api/dev/')||(!generations&&!this.development.diagnostics)) return false;
-    const session=this.auth.session(request);
     if(url.pathname==='/api/dev/diagnostics'&&this.development.diagnostics) {
       requireMethod(method,'POST');const body=await readBody(request,16*1024);
-      respond(response,this.development.diagnostics.ingest(session,body,Buffer.byteLength(JSON.stringify(body))));return true;
+      respond(response,this.development.diagnostics.ingest(body,Buffer.byteLength(JSON.stringify(body))));return true;
     }
     if(!generations) return false;
-    if(url.pathname==='/api/dev/events') {requireMethod(method,'GET');this.developmentEvents(generations,response,url,session);return true;}
-    if(url.pathname==='/api/dev/lease') {requireMethod(method,'POST');await this.developmentLease(generations,request,response,session);return true;}
-    if(url.pathname==='/api/dev/ack'||url.pathname==='/api/dev/release') {requireMethod(method,'POST');await this.developmentAck(generations,request,response,url,session);return true;}
+    if(url.pathname==='/api/dev/events') {requireMethod(method,'GET');this.developmentEvents(generations,response,url);return true;}
+    if(url.pathname==='/api/dev/lease') {requireMethod(method,'POST');await this.developmentLease(generations,request,response);return true;}
+    if(url.pathname==='/api/dev/ack'||url.pathname==='/api/dev/release') {requireMethod(method,'POST');await this.developmentAck(generations,request,response,url);return true;}
     return false;
   }
   private staticRoute(response:ServerResponse,url:URL,method:string):boolean {
@@ -386,32 +374,32 @@ export class LocalHttp {
     const identity = this.development.identity; if (!identity) return asset;
     return identityDocument(asset, identity.git && build ? {...identity, assets: build} : identity, ASSET_FILE_BYTES);
   }
-  private developmentEvents(generations:AssetGenerations,response:ServerResponse,url:URL,session:string) {
+  private developmentEvents(generations:AssetGenerations,response:ServerResponse,url:URL) {
     const client=url.searchParams.get('client')??'';
-    try {generations.bind(client,session);} catch {throw new ApiError('invalid_request','The page lease is unavailable.',409);}
+    try {generations.bind(client);} catch {throw new ApiError('invalid_request','The page lease is unavailable.',409);}
     let unsubscribe:(()=>unknown)|undefined;
-    try {unsubscribe=generations.subscribe(client,session,status=> {
+    try {unsubscribe=generations.subscribe(client,status=> {
       if(response.destroyed) return;
       if(!response.headersSent) response.writeHead(200,{'Content-Type':'text/event-stream; charset=utf-8','Cache-Control':'no-store','Connection':'keep-alive'});
       if(response.writableLength>4096||!response.write(`event: build\ndata: ${JSON.stringify(status)}\n\n`)) response.end();
     });} catch {throw new ApiError('capacity','The page already has an update stream.',429);}
-    this.buildStreams.set(response,session);response.once('close',()=>{unsubscribe?.();this.buildStreams.delete(response);});
+    this.buildStreams.add(response);response.once('close',()=>{unsubscribe?.();this.buildStreams.delete(response);});
   }
-  private async developmentLease(generations:AssetGenerations,request:IncomingMessage,response:ServerResponse,session:string) {
+  private async developmentLease(generations:AssetGenerations,request:IncomingMessage,response:ServerResponse) {
     const body=await readBody(request,1024);const allowed=['client','generation','cssGeneration','family'];
     if(Object.keys(body).length!==allowed.length||!allowed.every(key=>typeof body[key]==='string')||!/^[a-f0-9]{24}$/.test(body.client as string)||!['generation','cssGeneration','family'].every(key=>/^[a-f0-9]{64}$/.test(body[key] as string))) throw new ApiError('invalid_request','The page lease identity is invalid.');
-    try {respond(response,generations.checkLease(body.client as string,session,body.generation as string,body.cssGeneration as string,body.family as string));}
+    try {respond(response,generations.checkLease(body.client as string,body.generation as string,body.cssGeneration as string,body.family as string));}
     catch(error) {
       if(error instanceof Error&&error.message==='capacity') throw new ApiError('capacity','The page lease capacity is unavailable.',429);
       throw new ApiError('invalid_request','The page lease identity does not match.',409);
     }
   }
-  private async developmentAck(generations:AssetGenerations,request:IncomingMessage,response:ServerResponse,url:URL,session:string) {
+  private async developmentAck(generations:AssetGenerations,request:IncomingMessage,response:ServerResponse,url:URL) {
     const body=await readBody(request,1024);const allowed=url.pathname.endsWith('/ack')?['client','generation','cssGeneration']:['client'];
     if(Object.keys(body).length!==allowed.length||!allowed.every(key=>typeof body[key]==='string')) throw new ApiError('invalid_request','The generation acknowledgment is invalid.');
     let release:'released'|'absent'|undefined;
     if(!/^[a-f0-9]{24}$/.test(body.client as string)) throw new ApiError('invalid_request','The page lease identity is invalid.');
-    try {if(url.pathname.endsWith('/ack')) generations.acknowledge(body.client as string,session,body.generation as string,body.cssGeneration as string);else release=generations.release(body.client as string,session);}
+    try {if(url.pathname.endsWith('/ack')) generations.acknowledge(body.client as string,body.generation as string,body.cssGeneration as string);else release=generations.release(body.client as string);}
     catch(error) {
       if(error instanceof Error&&error.message==='capacity') throw new ApiError('capacity','The page lease capacity is unavailable.',429);
       throw new ApiError('invalid_request','The page generation is unavailable.',409);
@@ -441,27 +429,18 @@ export class LocalHttp {
     if (method !== 'POST' || url.pathname !== '/api/primaries') return;
     if (typeof body.sessionFile === 'string' && typeof body.cwd === 'string') await validateSessionProject(body.cwd, body.sessionFile);
   }
-  private async launch(body: Record<string, unknown>, response: ServerResponse) {
-    if (typeof body.capability !== 'string' || body.capability.length > 256 || Object.keys(body).length !== 1) throw new ApiError('invalid_request', 'The launch request is invalid.');
-    await this.auth.launch(body.capability, response); respond(response, {authenticated: true});
-  }
-  private async logout(session: string, response: ServerResponse) {
-    await this.auth.logout(session, response); this.backend.journal.revoke(session);this.development.diagnostics?.revoke(session);
-    for(const [stream,owner] of this.buildStreams) if(owner===session) stream.end();
-    respond(response, {authenticated: false});
-  }
   private staticAsset(method: string, asset: Asset, response: ServerResponse) {
     if (method !== 'GET' && method !== 'HEAD') throw new ApiError('invalid_request', 'The asset does not accept this method.', 405);
     response.writeHead(200, {'Content-Type': asset.type, 'Content-Length': asset.data.length}); response.end(method === 'HEAD' ? undefined : asset.data);
   }
-  private async events(request: IncomingMessage, response: ServerResponse, url: URL, session: string) {
+  private async events(request: IncomingMessage, response: ServerResponse, url: URL) {
     const workspace = await this.backend.workspace(url.searchParams.get('workspace') ?? undefined);
     const rawClient = url.searchParams.get('clientId'),clientId = rawClient === null ? undefined : fileWatchClientId(rawClient);
     if (url.searchParams.getAll('clientId').length > 1) throw new ApiError('invalid_request','The page scope repeats.');
-    if (this.backend.journal.workspaceClients(workspace) >= LIMITS.eventClients && !(clientId && this.backend.journal.hasClient(workspace,session,clientId))) throw new ApiError('capacity', 'Too many event streams use this workspace.', 429);
+    if (this.backend.journal.workspaceClients(workspace) >= LIMITS.eventClients && !(clientId && this.backend.journal.hasClient(workspace,clientId))) throw new ApiError('capacity', 'Too many event streams use this workspace.', 429);
     const last = request.headers['last-event-id'];
     if (Array.isArray(last)) throw new ApiError('invalid_request', 'The replay cursor is invalid.');
-    this.backend.journal.attach(response, workspace, session, last ?? url.searchParams.get('after') ?? undefined, () => {
+    this.backend.journal.attach(response, workspace, last ?? url.searchParams.get('after') ?? undefined, () => {
       this.backend.detached(workspace);
       if (clientId) this.development.files?.releaseWatch(workspace,clientId);
     },clientId);

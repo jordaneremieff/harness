@@ -394,11 +394,11 @@ export class Registry {
     const name = v.imageName(context.url.searchParams.get('name'));
     const epoch = saved.target.kind === 'primary' ? v.integer(Number(context.url.searchParams.get('epoch')), 'primary epoch', 1) : undefined;
     if (saved.target.kind === 'primary' && context.url.searchParams.getAll('epoch').length !== 1) throw new ApiError('invalid_request', 'Image intake requires one primary epoch.');
-    context.authorize();
+    context.checkActive();
     if (this.closing) throw new ApiError('not_ready', 'The backend no longer accepts work.', 503);
     if (saved.target.kind === 'agent') await this.agents.prepare(saved.target.identity);
     const guard = () => {
-      context.authorize();
+      context.checkActive();
       if (this.closing) throw new ApiError('not_ready', 'The backend no longer accepts work.', 503);
       if (saved.target.kind === 'primary') this.primary(saved.target.key, saved.target.epoch, true);
       else if (!this.agents.imageInputAvailable(saved.target.identity)) throw new ApiError('unsupported', 'This connection does not accept images. Use a file reference.', 409);

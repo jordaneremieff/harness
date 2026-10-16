@@ -5,7 +5,7 @@ export type DevBuild = {
   change: 'css' | 'reload'; status: 'ready' | 'building' | 'failed' | 'held' | 'restart-required';
   code: 'none' | 'compile' | 'input-changed' | 'invalid-assets' | 'capacity' | 'backend-change' | 'io';
 };
-export type DevReloadHold = 'input' | 'ime' | 'selection' | 'resize' | 'modal' | 'offline' | 'auth' | 'conflict' | 'uncertain';
+export type DevReloadHold = 'input' | 'ime' | 'selection' | 'resize' | 'modal' | 'offline' | 'conflict' | 'uncertain';
 export type DevInteraction = {revision: number; safe: boolean; reason?: DevReloadHold};
 export type DevCheckpointTarget =
   | {kind: 'primary'; key: string; epoch: number}
@@ -23,7 +23,7 @@ export type DevReloadCheckpoint = DevReloadView & {
 };
 export type DevReloadNotice = {
   retryable: boolean;
-  state: DevBuild['status'] | 'idle' | 'deferred' | 'reconnecting' | 'offline' | 'auth' | 'applied' | 'navigating';
+  state: DevBuild['status'] | 'idle' | 'deferred' | 'reconnecting' | 'offline' | 'applied' | 'navigating';
   code: DevBuild['code'] | DevReloadHold | 'checkpoint' | 'restore' | 'storage' | 'stylesheet' | 'drain' | 'timeout' | 'ack' | 'release' | 'host';
   build?: DevBuild;
 };
@@ -60,7 +60,7 @@ const ID = /^[A-Za-z0-9_.:@/-]{1,256}$/;
 const RETRIES = [250, 1000, 3000, 6000];
 const DEADLINE = 10_000;
 const TTL = 15 * 60_000;
-const HOLDS: readonly string[] = ['input', 'ime', 'selection', 'resize', 'modal', 'offline', 'auth', 'conflict', 'uncertain'];
+const HOLDS: readonly string[] = ['input', 'ime', 'selection', 'resize', 'modal', 'offline', 'conflict', 'uncertain'];
 function integer(value: unknown): value is number {return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;}
 function id(value: unknown): value is string {return typeof value === 'string' && ID.test(value);}
 function record(value: unknown, required: string[], optional: string[] = []): value is Record<string, unknown> {
@@ -210,7 +210,7 @@ export class DevReload {
     const controller = new AbortController(); this.controller = controller;
     const task = Promise.resolve().then(() => this.stopped || controller.signal.aborted ? undefined : action(controller.signal)).catch(error => {
       if (!(error instanceof ReloadFailure)) this.fatal = true;
-      if (!this.stopped && !controller.signal.aborted) this.notice(error instanceof ReloadFailure && error.code === 'auth' ? 'auth' : 'failed', error instanceof ReloadFailure ? error.code : 'host');
+      if (!this.stopped && !controller.signal.aborted) this.notice('failed', error instanceof ReloadFailure ? error.code : 'host');
     }).finally(() => {
       if (this.controller === controller) this.controller = undefined;
       if (this.work === task) this.work = undefined;
@@ -222,7 +222,7 @@ export class DevReload {
     const code = path === '/api/dev/ack' ? 'ack' : 'release';
     try {
     const response = await this.bounded(this.env.fetch(path, {method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body), signal}), signal);
-    if (!response.ok) throw new ReloadFailure(response.status === 401 ? 'auth' : response.status === 429 ? 'capacity' : code, response.status);
+    if (!response.ok) throw new ReloadFailure(response.status === 429 ? 'capacity' : code, response.status);
     if (this.stopped || signal.aborted) return;
     const result: unknown = await this.bounded(response.json(), signal);
     if (!validPostResult(result, path === '/api/dev/release')) throw new ReloadFailure(code);
@@ -323,14 +323,13 @@ export class DevReload {
     const {signal} = controller;
     const identity: DevLeaseIdentity = {client: this.client, generation: this.generation, cssGeneration: this.cssGeneration, family: this.family};
     const response = await this.bounded(this.env.fetch('/api/dev/lease', {method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(identity), signal}), signal, controller);
-    if (!response.ok) throw new ReloadFailure(response.status === 401 ? 'auth' : response.status === 429 ? 'capacity' : response.status >= 500 ? 'offline' : 'invalid-assets');
+    if (!response.ok) throw new ReloadFailure(response.status === 429 ? 'capacity' : response.status >= 500 ? 'offline' : 'invalid-assets');
     const result = parseLeaseResult(await this.bounded(response.json(), signal, controller));
     if (!result) throw new ReloadFailure('invalid-assets');
     return result;
   }
   private linkFailed(error: unknown): void {
     const code = error instanceof ReloadFailure ? error.code : 'offline';
-    if (code === 'auth') {this.notice('auth', 'auth'); return;}
     if (code === 'invalid-assets') {this.fatal = true; this.notice('failed', code); return;}
     this.lost(code);
   }

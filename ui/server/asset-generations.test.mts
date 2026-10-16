@@ -18,7 +18,7 @@ const build=(revision='one',css?:string)=>{const input=generation(revision,css);
 const deferred=<T,>()=>{let resolve!:(value:T)=>void;let reject!:(error:Error)=>void;const promise=new Promise<T>((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};};
 
 test('a complete generation pins HTML and resolves delayed relative module dependencies to old bytes',()=> {
-  const old=build();const generations=new AssetGenerations(old);const page=generations.document();generations.bind(page.client,'session');
+  const old=build();const generations=new AssetGenerations(old);const page=generations.document();generations.bind(page.client);
   assert.match(page.asset.data.toString(),new RegExp(`/_ui/${old.id}/web/app.js`));
   assert.match(page.asset.data.toString(),new RegExp(`/_ui/${old.id}/style.css`));
   assert.match(page.asset.data.toString(),/meta name="ui-client"/);
@@ -32,7 +32,7 @@ test('a complete generation pins HTML and resolves delayed relative module depen
 
 test('the manifest hashes exact retained bytes and a newer build removes the older held candidate',()=> {
   const one=build();for(const [route,hash] of Object.entries(one.manifest)) assert.equal(createHash('sha256').update(one.asset(route)?.data??Buffer.alloc(0)).digest('hex'),hash);
-  const generations=new AssetGenerations(one);const page=generations.document();generations.bind(page.client,'session');
+  const generations=new AssetGenerations(one);const page=generations.document();generations.bind(page.client);
   generations.offer(build('two'),1);generations.offer(build('three'),2);assert.equal(generations.counts().candidate,1);
   generations.building(3);assert.equal(generations.counts().candidate,0);assert.equal(generations.counts().published,2);assert.ok(generations.asset(one.id,'/web/app.js'));
 });
@@ -55,66 +55,65 @@ test('bootstrap validation rejects missing head and reserves envelope bytes befo
 });
 
 test('active plus previous plus newest candidate are bounded without evicting an active client',()=> {
-  const one=build();const generations=new AssetGenerations(one);const page=generations.document();generations.bind(page.client,'session');
+  const one=build();const generations=new AssetGenerations(one);const page=generations.document();generations.bind(page.client);
   const two=build('two');const three=build('three');const four=build('four');
   assert.equal(generations.offer(two,1),true);assert.equal(generations.offer(three,2),false);assert.equal(generations.offer(four,3),false);
   assert.equal(generations.counts().published,2);assert.equal(generations.counts().candidate,1);
   assert.ok(generations.counts().bytes<=3*GENERATION_TOTAL_BYTES);assert.equal(generations.status().status,'held');
   assert.ok(generations.asset(one.id,'/web/app.js'));assert.equal(generations.asset(three.id,'/web/app.js'),undefined);
-  generations.acknowledge(page.client,'session',two.id,two.id);
+  generations.acknowledge(page.client,two.id,two.id);
   assert.equal(generations.status().generation,four.id);assert.equal(generations.asset(one.id,'/web/app.js'),undefined);
   assert.ok(generations.asset(two.id,'/web/app.js'));
 });
 
 test('CSS adoption keeps the old JavaScript generation pinned, and stream disconnect does not release it',()=> {
   const one=build();const generations=new AssetGenerations(one);const page=generations.document();let notifications=0;
-  const disconnect=generations.subscribe(page.client,'session',()=>{notifications++;});
+  const disconnect=generations.subscribe(page.client,()=>{notifications++;});
   const two=build('one','body { color: blue; }');generations.offer(two,1);assert.equal(generations.status().change,'css');
-  generations.acknowledge(page.client,'session',one.id,two.id);disconnect();
+  generations.acknowledge(page.client,one.id,two.id);disconnect();
   assert.equal(generations.offer(build('three'),2),true);assert.equal(generations.offer(build('four'),3),false);assert.ok(generations.asset(one.id,'/web/app.js'));
-  assert.throws(()=>generations.release(page.client,'another-session'));
-  generations.release(page.client,'session');assert.equal(generations.status().status,'ready');assert.equal(notifications,2);
+    generations.release(page.client);assert.equal(generations.status().status,'ready');assert.equal(notifications,2);
 });
 
 test('consecutive CSS generations advance in place while old JS aliases retain exact shared bytes',()=> {
-  const a=build();const generations=new AssetGenerations(a);const page=generations.document();generations.bind(page.client,'session');
+  const a=build();const generations=new AssetGenerations(a);const page=generations.document();generations.bind(page.client);
   const js=a.asset('/web/child.js')?.data;const b=build('one','body {color:blue;}');const c=build('one','body {color:green;}');
-  assert.equal(generations.offer(b,1),true);generations.acknowledge(page.client,'session',a.id,b.id);
+  assert.equal(generations.offer(b,1),true);generations.acknowledge(page.client,a.id,b.id);
   assert.equal(generations.offer(c,2),true);assert.equal(generations.status().change,'css');assert.equal(generations.status().generation,c.id);
-  generations.acknowledge(page.client,'session',a.id,c.id);assert.deepEqual(generations.asset(a.id,'/web/child.js')?.data,js);
+  generations.acknowledge(page.client,a.id,c.id);assert.deepEqual(generations.asset(a.id,'/web/child.js')?.data,js);
   assert.equal(generations.asset(a.id,'/style.css'),undefined);assert.equal(generations.asset(a.id,'/'),undefined);assert.equal(generations.documentHead(a.id),undefined);assert.throws(()=>generations.document(a.id));
   assert.equal(generations.counts().jsPins,1);assert.ok(generations.counts().bytes< a.bytes+b.bytes+c.bytes);
-  for(let revision=3;revision<35;revision++) {const next=build('one',`body {opacity:${revision/100};}`);assert.equal(generations.offer(next,revision),true);generations.acknowledge(page.client,'session',a.id,next.id);assert.equal(generations.counts().jsPins,1);assert.ok(generations.counts().bytes<=3*GENERATION_TOTAL_BYTES);}
+  for(let revision=3;revision<35;revision++) {const next=build('one',`body {opacity:${revision/100};}`);assert.equal(generations.offer(next,revision),true);generations.acknowledge(page.client,a.id,next.id);assert.equal(generations.counts().jsPins,1);assert.ok(generations.counts().bytes<=3*GENERATION_TOTAL_BYTES);}
   const copy=generations.asset(a.id,'/web/app.js');copy?.data.fill(0);assert.deepEqual(generations.asset(a.id,'/web/child.js')?.data,js);assert.match(generations.asset(a.id,'/web/app.js')?.data.toString()??'',/one/);
-  generations.release(page.client,'session');assert.equal(generations.counts().jsPins,0);assert.equal(generations.asset(a.id,'/web/child.js'),undefined);
+  generations.release(page.client);assert.equal(generations.counts().jsPins,0);assert.equal(generations.asset(a.id,'/web/child.js'),undefined);
 });
 
 test('live JS aliases stay lease-bounded across many CSS pages and release without retained payload growth',()=> {
-  const generations=new AssetGenerations(build());const pages:{client:string;generation:string;session:string}[]=[];
+  const generations=new AssetGenerations(build());const pages:{client:string;generation:string}[]=[];
   for(let revision=0;revision<64;revision++) {
-    if(revision) {const next=build('one',`body {opacity:${revision/100};}`);assert.equal(generations.offer(next,revision),true);for(const page of pages) generations.acknowledge(page.client,page.session,page.generation,next.id);}
-    const document=generations.document();const session=`session-${revision}`;generations.bind(document.client,session);pages.push({...document,session});
+    if(revision) {const next=build('one',`body {opacity:${revision/100};}`);assert.equal(generations.offer(next,revision),true);for(const page of pages) generations.acknowledge(page.client,page.generation,next.id);}
+    const document=generations.document();generations.bind(document.client);pages.push(document);
     assert.ok(generations.counts().jsPins<=generations.counts().clients);assert.ok(generations.counts().bytes<=3*GENERATION_TOTAL_BYTES);
     for(const page of pages) assert.ok(generations.asset(page.generation,'/web/child.js'));
   }
   assert.throws(()=>generations.document(),/capacity/);assert.equal(generations.counts().clients,64);assert.equal(generations.counts().jsPins,62);
-  for(const page of pages) generations.release(page.client,page.session);assert.equal(generations.counts().jsPins,0);assert.equal(generations.counts().clients,0);
+  for(const page of pages) generations.release(page.client);assert.equal(generations.counts().jsPins,0);assert.equal(generations.counts().clients,0);
 });
 
 test('CSS still protects an active old stylesheet and incompatible JS family without eviction',()=> {
   const a=build();const generations=new AssetGenerations(a);const first=generations.document();const second=generations.document();
-  generations.bind(first.client,'session');generations.bind(second.client,'session');const b=build('one','body {color:blue;}');const c=build('one','body {color:green;}');
-  generations.offer(b,1);generations.acknowledge(first.client,'session',a.id,b.id);assert.equal(generations.offer(c,2),false);assert.equal(generations.status().status,'held');assert.ok(generations.asset(a.id,'/style.css'));
-  generations.acknowledge(second.client,'session',a.id,b.id);assert.equal(generations.status().generation,c.id);generations.acknowledge(first.client,'session',a.id,c.id);generations.acknowledge(second.client,'session',a.id,c.id);
+  generations.bind(first.client);generations.bind(second.client);const b=build('one','body {color:blue;}');const c=build('one','body {color:green;}');
+  generations.offer(b,1);generations.acknowledge(first.client,a.id,b.id);assert.equal(generations.offer(c,2),false);assert.equal(generations.status().status,'held');assert.ok(generations.asset(a.id,'/style.css'));
+  generations.acknowledge(second.client,a.id,b.id);assert.equal(generations.status().generation,c.id);generations.acknowledge(first.client,a.id,c.id);generations.acknowledge(second.client,a.id,c.id);
   const d=build('different');assert.equal(generations.offer(d,3),true);const e=build('different','body {color:red;}');assert.equal(generations.offer(e,4),false);
-  assert.deepEqual(generations.asset(a.id,'/web/child.js')?.data,a.asset('/web/child.js')?.data);assert.throws(()=>generations.acknowledge(first.client,'session',a.id,d.id));
-  generations.acknowledge(first.client,'session',d.id,d.id);assert.equal(generations.status().status,'held');assert.ok(generations.asset(a.id,'/web/child.js'));
-  generations.acknowledge(second.client,'session',d.id,d.id);assert.equal(generations.status().generation,e.id);assert.equal(generations.asset(a.id,'/web/child.js'),undefined);assert.equal(generations.counts().jsPins,0);assert.ok(generations.counts().bytes<=3*GENERATION_TOTAL_BYTES);
+  assert.deepEqual(generations.asset(a.id,'/web/child.js')?.data,a.asset('/web/child.js')?.data);assert.throws(()=>generations.acknowledge(first.client,a.id,d.id));
+  generations.acknowledge(first.client,d.id,d.id);assert.equal(generations.status().status,'held');assert.ok(generations.asset(a.id,'/web/child.js'));
+  generations.acknowledge(second.client,d.id,d.id);assert.equal(generations.status().generation,e.id);assert.equal(generations.asset(a.id,'/web/child.js'),undefined);assert.equal(generations.counts().jsPins,0);assert.ok(generations.counts().bytes<=3*GENERATION_TOTAL_BYTES);
 });
 
 test('restart-required is a declaration and incompatible publication stays held',()=> {
   const old=build();const generations=new AssetGenerations(old);const page=generations.document();const statuses:string[]=[];
-  generations.subscribe(page.client,'session',state=>{statuses.push(state.status);});
+  generations.subscribe(page.client,state=>{statuses.push(state.status);});
   generations.restartRequired();assert.equal(generations.offer(build('two'),1),false);
   assert.equal(generations.status().generation,old.id);assert.equal(generations.status().status,'restart-required');
   assert.deepEqual(statuses,['ready','restart-required']);assert.equal(generations.counts().clients,1);
@@ -136,94 +135,88 @@ test('syntax failure leaves the last good generation and a corrected producer re
   fails=false;builder.request();await builder.drain();assert.equal(generations.status().generation,build('fixed').id);assert.equal(calls,2);
 });
 
-test('restart lease checks distinguish proven absence from malformed identity and known session or generation mismatch',()=> {
-  const initial=build();const generations=new AssetGenerations(initial);const page=generations.document();generations.bind(page.client,'owner');
-  assert.equal(generations.checkLease(page.client,'owner',page.generation,page.generation,initial.family.id).lease,'present');
-  for(const [client,session,generation,css] of [[page.client,'other',page.generation,page.generation],[page.client,'owner','f'.repeat(64),page.generation],[page.client,'owner',page.generation,'f'.repeat(64)],['bad','owner',page.generation,page.generation],['0'.repeat(24),'owner','bad',page.generation]] as const) assert.throws(()=>generations.checkLease(client,session,generation,css,initial.family.id),/invalid-assets/);
-  const restarted=new AssetGenerations(initial);const replacement=restarted.checkLease(page.client,'owner',page.generation,page.generation,initial.family.id);assert.equal(replacement.lease,'replaced');assert.equal(restarted.counts().clients,1);
+test('restart lease checks distinguish proven absence from malformed identity and known generation mismatch',()=> {
+  const initial=build();const generations=new AssetGenerations(initial);const page=generations.document();generations.bind(page.client);
+  assert.equal(generations.checkLease(page.client,page.generation,page.generation,initial.family.id).lease,'present');
+  for(const [client,generation,css] of [[page.client,'f'.repeat(64),page.generation],[page.client,page.generation,'f'.repeat(64)],['bad',page.generation,page.generation],['0'.repeat(24),'bad',page.generation]] as const) assert.throws(()=>generations.checkLease(client,generation,css,initial.family.id),/invalid-assets/);
+  const restarted=new AssetGenerations(initial);const replacement=restarted.checkLease(page.client,page.generation,page.generation,initial.family.id);assert.equal(replacement.lease,'replaced');assert.equal(restarted.counts().clients,1);
   assert.ok('client' in replacement);assert.notEqual(replacement.client,page.client);
-  assert.throws(()=>restarted.acknowledge(page.client,'owner',page.generation,page.generation));
-  assert.equal(restarted.release(page.client,'owner'),'absent');assert.throws(()=>restarted.release('bad','owner'));
-  assert.throws(()=>generations.release(page.client,'other'));assert.equal(generations.counts().clients,1);
-  assert.equal(generations.release(page.client,'owner'),'released');assert.equal(generations.release(page.client,'owner'),'absent');
+  assert.throws(()=>restarted.acknowledge(page.client,page.generation,page.generation));
+  assert.equal(restarted.release(page.client),'absent');assert.throws(()=>restarted.release('bad'));
+  assert.equal(generations.release(page.client),'released');assert.equal(generations.release(page.client),'absent');
 });
-test('missing lease checks respect global and per-session fresh-page capacity without admission',()=> {
-  for(const global of [true,false]) {
-    const initial=build(),generations=new AssetGenerations(initial);const pages=Array.from({length:global?64:8},()=>generations.document());
-    if(!global) for(const page of pages) generations.bind(page.client,'owner');
-    const first=pages[0];assert.ok(first);
-    assert.throws(()=>generations.checkLease('0'.repeat(24),'owner',first.generation,first.generation,initial.family.id),/capacity/);
-    assert.equal(generations.counts().clients,pages.length);
-  }
+test('missing lease checks respect global fresh-page capacity without admission',()=> {
+  const initial=build(),generations=new AssetGenerations(initial);const pages=Array.from({length:64},()=>generations.document());
+  const first=pages[0];assert.ok(first);
+  assert.throws(()=>generations.checkLease('0'.repeat(24),first.generation,first.generation,initial.family.id),/capacity/);
+  assert.equal(generations.counts().clients,pages.length);
 });
-test('fresh rotation retries stay inside live lease capacity and reject another session or changed predecessor',()=> {
+test('fresh rotation retries stay inside live lease capacity and reject changed predecessors',()=> {
   const initial=build(),generations=new AssetGenerations(initial),old='0'.repeat(24);
-  const first=generations.checkLease(old,'owner',initial.id,initial.id,initial.family.id);assert.ok('client' in first);
+  const first=generations.checkLease(old,initial.id,initial.id,initial.family.id);assert.ok('client' in first);
   assert.match(first.client,/^[a-f0-9]{24}$/);assert.notEqual(first.client,old);assert.equal(first.lease,'replaced');
-  for(let index=1;index<8;index++) generations.checkLease(index.toString(16).padStart(24,'0'),'owner',initial.id,initial.id,initial.family.id);
-  assert.equal(generations.counts().clients,8);
-  assert.deepEqual(generations.checkLease(old,'owner',initial.id,initial.id,initial.family.id),first);
-  for(const [session,js,css,family] of [['other',initial.id,initial.id,initial.family.id],['owner','f'.repeat(64),initial.id,initial.family.id],['owner',initial.id,'f'.repeat(64),initial.family.id],['owner',initial.id,initial.id,'f'.repeat(64)]]) assert.throws(()=>generations.checkLease(old,session??'',js??'',css??'',family??''),/invalid-assets/);
-  assert.throws(()=>generations.bind(first.client,'other'),/invalid-assets/);assert.throws(()=>generations.bind(old,'owner'),/invalid-assets/);
-  assert.throws(()=>generations.checkLease('e'.repeat(24),'owner',initial.id,initial.id,initial.family.id),/capacity/);
-  assert.equal(generations.counts().clients,8);generations.acknowledge(first.client,'owner',initial.id,initial.id);
-  assert.deepEqual(generations.checkLease(old,'owner',initial.id,initial.id,initial.family.id),first);
+  for(let index=1;index<64;index++) generations.checkLease(index.toString(16).padStart(24,'0'),initial.id,initial.id,initial.family.id);
+  assert.equal(generations.counts().clients,64);
+  assert.deepEqual(generations.checkLease(old,initial.id,initial.id,initial.family.id),first);
+  for(const [js,css,family] of [['f'.repeat(64),initial.id,initial.family.id],[initial.id,'f'.repeat(64),initial.family.id],[initial.id,initial.id,'f'.repeat(64)]]) assert.throws(()=>generations.checkLease(old,js??'',css??'',family??''),/invalid-assets/);
+  assert.throws(()=>generations.bind(old),/invalid-assets/);
+  assert.throws(()=>generations.checkLease('e'.repeat(24),initial.id,initial.id,initial.family.id),/capacity/);
+  assert.equal(generations.counts().clients,64);generations.acknowledge(first.client,initial.id,initial.id);
+  assert.deepEqual(generations.checkLease(old,initial.id,initial.id,initial.family.id),first);
 });
 test('CSS-history rotation pins exact module and favicon aliases but never HTML or CSS and releases publication pressure',()=> {
   const a=build(),b=build('one','body {color:blue;}'),generations=new AssetGenerations(b),old='0'.repeat(24);
   assert.equal(a.family.id,b.family.id);
-  const replacement=generations.checkLease(old,'owner',a.id,b.id,a.family.id);assert.ok('client' in replacement);
+  const replacement=generations.checkLease(old,a.id,b.id,a.family.id);assert.ok('client' in replacement);
   assert.equal(replacement.build.change,'css');assert.deepEqual(generations.asset(a.id,'/web/child.js'),b.asset('/web/child.js'));
   assert.deepEqual(generations.asset(a.id,'/favicon.svg'),b.asset('/favicon.svg'));
   for(const route of ['/','/index.html','/style.css']) assert.equal(generations.asset(a.id,route),undefined);
   assert.equal(generations.documentHead(a.id),undefined);assert.throws(()=>generations.document(a.id));
-  generations.acknowledge(replacement.client,'owner',a.id,b.id);
+  generations.acknowledge(replacement.client,a.id,b.id);
   const c=build('different');assert.equal(generations.offer(c,1),true);
-  const before=generations.counts();assert.throws(()=>generations.checkLease('1'.repeat(24),'owner',a.id,c.id,c.family.id),/invalid-assets/);assert.deepEqual(generations.counts(),before);
-  const notifications:string[]=[];generations.subscribe(replacement.client,'owner',status=>notifications.push(status.change));assert.deepEqual(notifications,['reload']);
+  const before=generations.counts();assert.throws(()=>generations.checkLease('1'.repeat(24),a.id,c.id,c.family.id),/invalid-assets/);assert.deepEqual(generations.counts(),before);
+  const notifications:string[]=[];generations.subscribe(replacement.client,status=>notifications.push(status.change));assert.deepEqual(notifications,['reload']);
   assert.equal(generations.offer(build('newest'),2),false);assert.equal(generations.status().status,'held');
-  generations.release(replacement.client,'owner');assert.equal(generations.counts().clients,0);assert.equal(generations.counts().jsPins,0);assert.equal(generations.status().status,'ready');assert.equal(generations.asset(a.id,'/web/child.js'),undefined);
+  generations.release(replacement.client);assert.equal(generations.counts().clients,0);assert.equal(generations.counts().jsPins,0);assert.equal(generations.status().status,'ready');assert.equal(generations.asset(a.id,'/web/child.js'),undefined);
 });
 test('predecessor release removes an unadopted reservation, its aliases and its publication hold',()=> {
   const a=build(),b=build('one','body{color:blue}'),generations=new AssetGenerations(b),old='0'.repeat(24);
-  const reserved=generations.checkLease(old,'owner',a.id,b.id,a.family.id);assert.ok('client' in reserved);
-  assert.deepEqual(generations.checkLease(old,'owner',a.id,b.id,a.family.id),reserved);assert.equal(generations.counts().clients,1);assert.equal(generations.counts().jsPins,1);
-  assert.throws(()=>generations.acknowledge(reserved.client,'owner','f'.repeat(64),b.id),/invalid-assets/);
+  const reserved=generations.checkLease(old,a.id,b.id,a.family.id);assert.ok('client' in reserved);
+  assert.deepEqual(generations.checkLease(old,a.id,b.id,a.family.id),reserved);assert.equal(generations.counts().clients,1);assert.equal(generations.counts().jsPins,1);
+  assert.throws(()=>generations.acknowledge(reserved.client,'f'.repeat(64),b.id),/invalid-assets/);
   assert.equal(generations.offer(build('one','body{color:green}'),1),true);assert.equal(generations.offer(build('one','body{color:purple}'),2),false);
-  assert.equal(generations.status().status,'held');assert.throws(()=>generations.release(old,'other'),/invalid-assets/);assert.equal(generations.counts().clients,1);
-  assert.equal(generations.release(old,'owner'),'absent');assert.equal(generations.counts().clients,0);assert.equal(generations.counts().jsPins,0);assert.equal(generations.status().status,'ready');assert.equal(generations.counts().candidate,0);
+  assert.equal(generations.status().status,'held');assert.equal(generations.counts().clients,1);
+  assert.equal(generations.release(old),'absent');assert.equal(generations.counts().clients,0);assert.equal(generations.counts().jsPins,0);assert.equal(generations.status().status,'ready');assert.equal(generations.counts().candidate,0);
   for(const route of ['/web/child.js','/favicon.svg','/','/index.html','/style.css'])assert.equal(generations.asset(a.id,route),undefined);
-  assert.equal(generations.release(old,'owner'),'absent');
+  assert.equal(generations.release(old),'absent');
 });
 test('stale predecessor release never removes a replacement after a valid request under its new identity',()=> {
   for(const adoption of ['ack','lease','stream']) {
     const a=build(),b=build('one','body{color:blue}'),generations=new AssetGenerations(b),old='0'.repeat(24);
-    const reserved=generations.checkLease(old,'owner',a.id,b.id,a.family.id);assert.ok('client' in reserved);
-    if(adoption==='ack')generations.acknowledge(reserved.client,'owner',a.id,b.id);
-    if(adoption==='lease')assert.equal(generations.checkLease(reserved.client,'owner',a.id,b.id,a.family.id).lease,'present');
-    if(adoption==='stream')generations.subscribe(reserved.client,'owner',()=>{})();
-    assert.equal(generations.release(old,'owner'),'absent');assert.equal(generations.counts().clients,1);assert.equal(generations.counts().jsPins,1);
-    assert.throws(()=>generations.release(old,'other'),/invalid-assets/);assert.equal(generations.checkLease(old,'owner',a.id,b.id,a.family.id).lease,'replaced');
-    const retry=generations.checkLease(old,'owner',a.id,b.id,a.family.id);assert.ok('client' in retry);assert.equal(retry.client,reserved.client);assert.equal(generations.counts().clients,1);
-    assert.equal(generations.offer(build('one','body{color:green}'),1),true);assert.equal(generations.offer(build('one','body{color:purple}'),2),false);assert.equal(generations.release(old,'owner'),'absent');assert.equal(generations.status().status,'held');
-    assert.equal(generations.release(reserved.client,'owner'),'released');assert.equal(generations.counts().clients,0);assert.equal(generations.counts().jsPins,0);assert.equal(generations.status().status,'ready');
+    const reserved=generations.checkLease(old,a.id,b.id,a.family.id);assert.ok('client' in reserved);
+    if(adoption==='ack')generations.acknowledge(reserved.client,a.id,b.id);
+    if(adoption==='lease')assert.equal(generations.checkLease(reserved.client,a.id,b.id,a.family.id).lease,'present');
+    if(adoption==='stream')generations.subscribe(reserved.client,()=>{})();
+    assert.equal(generations.release(old),'absent');assert.equal(generations.counts().clients,1);assert.equal(generations.counts().jsPins,1);
+    assert.equal(generations.release(old),'absent');assert.equal(generations.checkLease(old,a.id,b.id,a.family.id).lease,'replaced');
+    const retry=generations.checkLease(old,a.id,b.id,a.family.id);assert.ok('client' in retry);assert.equal(retry.client,reserved.client);assert.equal(generations.counts().clients,1);
+    assert.equal(generations.offer(build('one','body{color:green}'),1),true);assert.equal(generations.offer(build('one','body{color:purple}'),2),false);assert.equal(generations.release(old),'absent');assert.equal(generations.status().status,'held');
+    assert.equal(generations.release(reserved.client),'released');assert.equal(generations.counts().clients,0);assert.equal(generations.counts().jsPins,0);assert.equal(generations.status().status,'ready');
   }
 });
-test('unadopted predecessor cleanup restores both session and global rotation capacity',()=> {
-  for(const capacity of [8,64]) {
-    const a=build(),generations=new AssetGenerations(a),identities=Array.from({length:capacity},(_,index)=>({client:index.toString(16).padStart(24,'0'),session:`owner-${capacity===8?0:Math.floor(index/8)}`}));
-    for(const identity of identities)generations.checkLease(identity.client,identity.session,a.id,a.id,a.family.id);
-    const session=capacity===8?'owner-0':'new-owner',fresh='f'.repeat(24);assert.throws(()=>generations.checkLease(fresh,session,a.id,a.id,a.family.id),/capacity/);
-    const first=identities[0];assert.ok(first);assert.equal(generations.release(first.client,first.session),'absent');assert.equal(generations.counts().clients,capacity-1);
-    assert.equal(generations.checkLease(fresh,session,a.id,a.id,a.family.id).lease,'replaced');assert.equal(generations.counts().clients,capacity);
-    for(const identity of identities)generations.release(identity.client,identity.session);generations.release(fresh,session);assert.equal(generations.counts().clients,0);
-  }
+test('unadopted predecessor cleanup restores global rotation capacity',()=> {
+  const capacity=64,a=build(),generations=new AssetGenerations(a),identities=Array.from({length:capacity},(_,index)=>({client:index.toString(16).padStart(24,'0')}));
+  for(const identity of identities)generations.checkLease(identity.client,a.id,a.id,a.family.id);
+  const fresh='f'.repeat(24);assert.throws(()=>generations.checkLease(fresh,a.id,a.id,a.family.id),/capacity/);
+  const first=identities[0];assert.ok(first);assert.equal(generations.release(first.client),'absent');assert.equal(generations.counts().clients,capacity-1);
+  assert.equal(generations.checkLease(fresh,a.id,a.id,a.family.id).lease,'replaced');assert.equal(generations.counts().clients,capacity);
+  for(const identity of identities)generations.release(identity.client);generations.release(fresh);assert.equal(generations.counts().clients,0);
 });
 test('unknown incompatible bytes require the existing missing-lease update path without an alias or replacement',()=> {
   const old=build(),current=build('different'),generations=new AssetGenerations(current);
-  assert.equal(generations.checkLease('0'.repeat(24),'owner',old.id,old.id,old.family.id).lease,'missing');assert.equal(generations.counts().clients,0);assert.equal(generations.counts().jsPins,0);
-  assert.throws(()=>generations.checkLease('0'.repeat(24),'owner',old.id,current.id,old.family.id),/invalid-assets/);
-  assert.throws(()=>generations.checkLease('0'.repeat(24),'owner',old.id,old.id,'bad'),/invalid-assets/);
+  assert.equal(generations.checkLease('0'.repeat(24),old.id,old.id,old.family.id).lease,'missing');assert.equal(generations.counts().clients,0);assert.equal(generations.counts().jsPins,0);
+  assert.throws(()=>generations.checkLease('0'.repeat(24),old.id,current.id,old.family.id),/invalid-assets/);
+  assert.throws(()=>generations.checkLease('0'.repeat(24),old.id,old.id,'bad'),/invalid-assets/);
 });
 test('bootstrap family metadata reserves its complete byte envelope at the document boundary',()=> {
   const probe=new AssetGenerations(build()).document(),metadata=probe.asset.data.toString().match(/<meta name="ui-generation"[\s\S]*?<meta name="ui-module-family" content="([a-f0-9]{64})">/)?.[0];assert.ok(metadata);
@@ -236,6 +229,6 @@ test('bootstrap family metadata reserves its complete byte envelope at the docum
 test('page admission is bounded and never silently removes a prior page lease',()=> {
   const generations=new AssetGenerations(build());const pages=Array.from({length:64},()=>generations.document());
   assert.throws(()=>generations.document(),/capacity/);assert.equal(generations.counts().clients,64);
-  for(const page of pages.slice(0,8)) generations.bind(page.client,'session');assert.throws(()=>generations.bind(pages[8]?.client??'','session'),/capacity/);
-  generations.release(pages[0]?.client??'','session');assert.equal(generations.counts().clients,63);
+  for(const page of pages) generations.bind(page.client);assert.throws(()=>generations.bind('missing'),/invalid-assets/);
+  generations.release(pages[0]?.client??'');assert.equal(generations.counts().clients,63);
 });

@@ -4,7 +4,7 @@ This directory contains a dependency-free Brave Chrome DevTools Protocol (CDP)
 driver and a browser smoke command. It uses Node's built-in WebSocket and starts
 Brave with a fresh temporary profile. Readiness comes from the DevTools URL on
 stderr, not an HTTP probe or delay. Shutdown removes the profile after the owned
-browser exits. Browser profiles do not share launch cookies.
+browser exits. Every fresh profile uses the plain local address without sign-in.
 Fresh profiles must not touch the macOS keychain; the launcher always uses
 `--use-mock-keychain` and `--password-store=basic`.
 
@@ -14,21 +14,20 @@ Run the colocated deterministic tests:
 node --test ui/acceptance/*.test.mts
 ```
 
-After the backend and browser build are ready, use its newly issued launch URL:
+After the backend and browser build are ready, use its printed local URL:
 
 ```sh
-node ui/acceptance/smoke.mts --url '<launch URL>' --out '<capture directory>'
+node ui/acceptance/smoke.mts --url '<local URL>' --out '<capture directory>'
 ```
 
 The default run inspects the current workspace without model prompts. It changes
 view selection and opens menus. An empty workspace produces a launch capture and
-reports unavailable primary checks. The launch fragment is removed by the app;
-the smoke report does not record it.
+reports unavailable primary checks. The address has no access fragment.
 
 For an isolated deterministic backend, explicitly enable fixture mode:
 
 ```sh
-node ui/acceptance/smoke.mts --url '<launch URL>' --out '<capture directory>' \
+node ui/acceptance/smoke.mts --url '<local URL>' --out '<capture directory>' \
   --fake --cwd '<disposable project>' --prompt '<fixture trigger>' \
   --dialog-prompt '<fixture dialog trigger>'
 ```
@@ -47,7 +46,7 @@ cancels the fixture request; it does not approve trust or permission requests.
 The command writes PNG captures and `report.json` to the supplied directory.
 Every check has its own passed, failed, or unavailable state and browser/fixture/
 real scope. The report includes exact synthetic primary input JSON and public
-error replies, but never launch capabilities or cookie headers. A failed check produces a nonzero exit status. Unavailable checks do
+error replies, but never private credentials or headers. A failed check produces a nonzero exit status. Unavailable checks do
 not count as passes. The report retains the cached roster scan baseline, including
 its explicit omitted-row count. The default run does not accept the complete desktop path.
 

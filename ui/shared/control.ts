@@ -13,7 +13,7 @@ export type ControlProvenance = {requestId:string;bootId:string;workspaceId:stri
 export type ControlRequest = ControlProvenance & {expectedRevision:number;expiresAt:number;actor:string;intent:ControlIntent;primary?:Extract<Target,{kind:'primary'}>};
 export type ControlAck = ControlProvenance & ({result:'applied';appliedRevision:number}|{result:'refused';refusalCode:string}|{result:'unconfirmed'});
 export type ControlReceipt = {requestId:string;workspaceId:string;actor:string;action:ControlIntent['action'];state:'pending'|'applied'|'refused'|'unconfirmed';createdAt:string;appliedRevision?:number;code?:string};
-export type ControlDescriptor = {origin:string;bootId:string;credential:string};
+export type ControlDescriptor = {origin:string;bootId:string};
 export type ControlWorkspace = {id:string;revision:number;enabled:boolean;pages:number;layout?:ConversationLayout;primary?:Extract<Target,{kind:'primary'}>;roots?:{id:string;name:string;path:string}[]};
 export type ControlLayout = {bootId:string;workspaces:ControlWorkspace[]};
 function record(value:unknown):Record<string,unknown> {if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('Use a control object.');return value as Record<string,unknown>;}

@@ -64,7 +64,7 @@ async function watchRequest(files:Files,backend:HttpBackend,context:RequestConte
   if (context.method !== 'GET' && context.method !== 'PUT') throw new ApiError('invalid_request','The watch route does not accept this request.',405);
   if (context.method === 'PUT') v.fields(context.body,['clientId','roots'],['clientId','roots']);
   const clientId = fileWatchClientId(context.method === 'GET' ? context.url.searchParams.get('clientId') : context.body.clientId);
-  if (!backend.journal.hasClient(workspace,context.session,clientId)) throw new ApiError('file_unavailable','The page update stream is not active. Reconnect it before file watches.',503,'read');
+  if (!backend.journal.hasClient(workspace,clientId)) throw new ApiError('file_unavailable','The page update stream is not active. Reconnect it before file watches.',503,'read');
   if (context.method === 'GET') return files.request({kind:'watch-state',workspace,clientId},context.signal);
   return files.request({kind:'watch',workspace,clientId,roots:watchScope(context.body.roots)},context.signal);
 }

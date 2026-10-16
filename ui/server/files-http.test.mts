@@ -9,7 +9,7 @@ import {Journal} from './journal.mts';
 import {ApiError} from './errors.mts';
 import type {FileRootSelection,FileText,FileDraft,FileSave} from '../shared/files.ts';
 const workspace = '00000000-0000-4000-8000-000000000001';
-test('authenticated file routes preserve source and enforce strict draft/save requests',async context=> {
+test('loopback file routes preserve source and enforce strict draft/save requests',async context=> {
   const path = await mkdtemp(join(tmpdir(),'ui-files-http-'));await mkdir(join(path,'state'));await mkdir(join(path,'project'));
   const source = '\ufefftext\r\nlast\r';await writeFile(join(path,'project','text.md'),source);
   await writeFile(join(path,'project','escaped.txt'),'\t'.repeat(1024*1024));
@@ -17,10 +17,8 @@ test('authenticated file routes preserve source and enforce strict draft/save re
   const http = new LocalHttp({journal:new Journal(),workspace:async id=> {if (id !== workspace) throw new ApiError('invalid_request','Unknown workspace.');return workspace;},observe:async()=>{},detached:()=>{},dispatch:async()=> {dispatched++;return {}; }},new Map(),undefined,{files});
   const launch = new URL(await http.listen(0)), origin = launch.origin;
   context.after(async()=> {await http.close();await files.close();await rm(path,{recursive:true,force:true});});
-  let cookie = '';
-  const call = (route:string,method = 'GET',body?:unknown,extra:Record<string,string> = {})=>fetch(new URL(route,origin),{method,headers:{Origin:origin,...(cookie ? {Cookie:cookie} : {}),...(body === undefined ? {} : {'Content-Type':'application/json'}),...extra},...(body === undefined ? {} : {body:JSON.stringify(body)})});
-  assert.equal((await call(`/api/workspaces/${workspace}/files/root`)).status,401);
-  const login = await call('/api/auth/launch','POST',{capability:new URLSearchParams(launch.hash.slice(1)).get('launch')});assert.equal(login.status,200);cookie = login.headers.get('set-cookie')?.split(';')[0] ?? '';assert.ok(cookie);
+  const call = (route:string,method = 'GET',body?:unknown,extra:Record<string,string> = {})=>fetch(new URL(route,origin),{method,headers:{Origin:origin,...(body === undefined ? {} : {'Content-Type':'application/json'}),...extra},...(body === undefined ? {} : {body:JSON.stringify(body)})});
+  assert.equal((await call(`/api/workspaces/${workspace}/files/root`)).status,200);
   const rootPath = `/api/workspaces/${workspace}/files/root`, rootRoute = `${rootPath}?workspace=${workspace}`;
   const initial = await call(rootRoute);assert.equal(initial.status,200);assert.deepEqual((await initial.json() as {data:FileRootSelection}).data,{revision:0,root:null});
   const selected = await call(rootRoute,'PUT',{path:join(path,'project'),expectedRevision:0});assert.equal(selected.status,200);

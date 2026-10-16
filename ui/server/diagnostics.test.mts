@@ -40,16 +40,16 @@ test('disk failure produces one stable failure state without blocking the produc
   assert.equal(sink.emit({event:'connection',code:'none'}),false);await sink.drain();assert.equal(calls,1);assert.equal(sink.state().dropped,2);await sink.close();
 });
 
-test('batch, session cadence, global rate, and client loss counts are independent finite bounds',async()=> {
+test('batch, local cadence, global rate, and client loss counts are independent finite bounds',async()=> {
   let now=0;const log=memory();const sink=new DiagnosticSink(log.writer,()=>now);
   const records=Array.from({length:16},()=>({event:'connection',code:'none'}));
-  assert.deepEqual(sink.ingest('session',{records,dropped:3},1000),{accepted:16,dropped:0,failed:false});
-  assert.equal(sink.ingest('session',{records,dropped:0},1000).dropped,16);
-  assert.equal(sink.ingest('other',{records,dropped:0},17000).accepted,0);
-  assert.equal(sink.ingest('third',{records:Array(17).fill({event:'loss'}),dropped:0},1000).accepted,0);
-  assert.equal(sink.ingest('invalid',{records:[],dropped:0},NaN).dropped,1);assert.equal(sink.ingest('prototype',Object.create({records:[],dropped:0}),100).dropped,1);
-  assert.equal(sink.state().dropped,23);now=1000;assert.equal(sink.ingest('session',{records,dropped:0},1000).accepted,16);
-  await sink.drain();sink.revoke('session');assert.equal(sink.ingest('session',{records:[],dropped:0},100).accepted,0);await sink.close();
+  assert.deepEqual(sink.ingest({records,dropped:3},1000),{accepted:16,dropped:0,failed:false});
+  assert.equal(sink.ingest({records,dropped:0},1000).dropped,16);
+  assert.equal(sink.ingest({records,dropped:0},17000).accepted,0);
+  assert.equal(sink.ingest({records:Array(17).fill({event:'loss'}),dropped:0},1000).accepted,0);
+  assert.equal(sink.ingest({records:[],dropped:0},NaN).dropped,1);assert.equal(sink.ingest(Object.create({records:[],dropped:0}),100).dropped,1);
+  assert.equal(sink.state().dropped,23);now=1000;assert.equal(sink.ingest({records,dropped:0},1000).accepted,16);
+  await sink.drain();assert.equal(sink.ingest({records:[],dropped:0},100).accepted,0);await sink.close();
   const flood=memory();const limited=new DiagnosticSink(flood.writer,()=>0);let count=0;
   for(let index=0;index<50;index++) if(limited.emit({event:'connection'})) count++;
   assert.equal(count,40);assert.equal(limited.state().dropped,10);await limited.close();

@@ -54,7 +54,7 @@ class Fixture {
   styles: {path: string; signal: AbortSignal; result: ReturnType<typeof deferred<DevStylesheet>>; candidate: Stylesheet}[] = [];
   navigations: string[] = []; notices: DevReloadNotice[] = [];
   generation: string | null = A; client: string | null = OLD; family: string | null = A;
-  href = `https://ui.invalid/path?workspace=w&secret=synthetic#launch=synthetic`;
+  href = `https://ui.invalid/path?workspace=w&secret=synthetic#section`;
   state: DevInteraction = {revision: 1, safe: true}; stored: unknown = null;
   restoreCount = 0; drains = 0;
   drain = async (_signal: AbortSignal): Promise<void> => {};
@@ -185,7 +185,7 @@ test('reload refuses malformed file checkpoints before persistence and navigatio
   }
 });
 test('each unsafe interaction reason refuses reload before queue drainage', async () => {
-  for (const reason of ['input', 'ime', 'selection', 'resize', 'modal', 'offline', 'auth', 'conflict', 'uncertain'] as const) {
+  for (const reason of ['input', 'ime', 'selection', 'resize', 'modal', 'offline', 'conflict', 'uncertain'] as const) {
     const f = new Fixture(); await f.dev().ready; f.state = {revision: 1, safe: false, reason}; f.emit(build(1, B, 'reload')); await flush();
     assert.equal(f.drains, 0); assert.equal(f.navigations.length, 0); assert.equal(f.notices.at(-1)?.code, reason);
   }
@@ -358,7 +358,7 @@ test('reconnect waits for in-flight CSS acknowledgment before its lease check wi
   acknowledged = true; pending.resolve(await response()); await resumed; await flush();
   assert.equal(f.posts.filter(post => post.path === '/api/dev/lease').length, 1); assert.equal(f.acks().length, 2); assert.equal(f.sources.length, 2);
 });
-test('pending CSS refusal recovers only a separately proven missing lease and never treats auth capacity or network failure as absence', async () => {
+test('pending CSS refusal recovers only a separately proven missing lease and never treats capacity or network failure as absence', async () => {
   for (const status of [401, 409, 429, 0]) {
     const f = new Fixture(); const dev = f.dev(); await dev.ready;
     f.fetch = () => Promise.reject(new Error('initial ack lost'));
@@ -367,7 +367,7 @@ test('pending CSS refusal recovers only a separately proven missing lease and ne
     dev.reconnect(); await flush();
     assert.equal(f.posts.filter(post => post.path === '/api/dev/lease').length, status === 409 ? 1 : 0);
     assert.equal(f.navigations.length, status === 409 ? 1 : 0);
-    if (status === 401) assert.equal(f.notices.at(-1)?.code, 'auth');
+    if (status === 401) assert.equal(f.notices.at(-1)?.code, 'none');
     if (status === 429) assert.equal(f.notices.at(-1)?.code, 'capacity');
     dev.destroy();
   }
@@ -420,13 +420,13 @@ test('closing after a lost rotation response or canceled adoption releases the s
     const page=generations.document();f.generation=initial.id;f.family=initial.family.id;f.client=page.client;
     const pending=deferred<Awaited<ReturnType<DevReloadEnvironment['fetch']>>>();let replacement:unknown;
     function acknowledge(body:Record<string,string>) {
-      generations.acknowledge(body.client??'','owner',body.generation??'',body.cssGeneration??'');return response(200,{ok:true,data:generations.status()});
+      generations.acknowledge(body.client??'',body.generation??'',body.cssGeneration??'');return response(200,{ok:true,data:generations.status()});
     }
     function checkLease(body:Record<string,string>) {
-      replacement=generations.checkLease(body.client??'','owner',body.generation??'',body.cssGeneration??'',body.family??'');return failure==='lost-response'?Promise.reject(new Error('Lost rotation response')):pending.promise;
+      replacement=generations.checkLease(body.client??'',body.generation??'',body.cssGeneration??'',body.family??'');return failure==='lost-response'?Promise.reject(new Error('Lost rotation response')):pending.promise;
     }
     function releaseReservation(body:Record<string,string>) {
-      const release=generations.release(body.client??'','owner');return response(200,{ok:true,data:{release,build:generations.status()}});
+      const release=generations.release(body.client??'');return response(200,{ok:true,data:{release,build:generations.status()}});
     }
     f.fetch=(path,init)=>{
       const body=JSON.parse(String(init.body)) as Record<string,string>;
@@ -468,12 +468,12 @@ test('a missing lease respects unsafe work and changed interaction during draina
     assert.equal(f.navigations.length, hold ? 1 : 0); if (!hold) assert.equal(f.stored, null);
   }
 });
-test('lease identity refusals and authentication loss never become missing-lease recovery', async () => {
+test('lease identity refusals and HTTP refusals never become missing-lease recovery', async () => {
   for (const status of [400, 401, 409]) {
     const f = new Fixture(); const dev = f.dev(); await dev.ready; f.fetch = () => response(status);
     dev.reconnect(); await flush(); assert.equal(f.navigations.length, 0); assert.equal(f.drains, 0); assert.equal(f.clock.timers.size, 0);
-    assert.equal(f.notices.at(-1)?.code, status === 401 ? 'auth' : 'invalid-assets');
-    assert.equal(f.notices.at(-1)?.retryable, status === 401);
+    assert.equal(f.notices.at(-1)?.code, 'invalid-assets');
+    assert.equal(f.notices.at(-1)?.retryable, false);
   }
   for (const data of [{lease: 'missing', build: {...build(), generation: 'bad'}}, {lease: 'absent', build: build()}, {lease: 'missing', build: build(), client: NEW}]) {
     const f = new Fixture(); const dev = f.dev(); await dev.ready; f.fetch = () => response(200, {ok: true, data});
@@ -519,10 +519,10 @@ test('destroy before initialization or during drainage prevents future hooks, ac
   const f = new Fixture(); const dev = f.dev(); await dev.ready; const drain = deferred<void>(); f.drain = () => drain.promise;
   f.emit(build(1, B, 'reload')); await flush(); dev.destroy(); drain.resolve(); await flush(); assert.equal(f.stored, null); assert.equal(f.navigations.length, 0); assert.equal(f.acks().length, 1);
 });
-test('HTTP auth refusal and malformed acknowledgment report fixed status without a stream', async () => {
-  for (const auth of [true, false]) {
-    const f = new Fixture(); f.fetch = () => auth ? response(401) : response(200, {ok: true, data: {text: 'synthetic-body'}});
-    const dev = f.dev(); await dev.ready; assert.equal(f.sources.length, 0); assert.equal(f.notices.at(-1)?.code, auth ? 'auth' : 'ack'); assert.equal(f.acks().length, 1);
+test('HTTP refusal and malformed acknowledgment report fixed status without a stream', async () => {
+  for (const refused of [true, false]) {
+    const f = new Fixture(); f.fetch = () => refused ? response(400) : response(200, {ok: true, data: {text: 'synthetic-body'}});
+    const dev = f.dev(); await dev.ready; assert.equal(f.sources.length, 0); assert.equal(f.notices.at(-1)?.code, 'ack'); assert.equal(f.acks().length, 1);
     f.fetch = () => response(); await dev.resume(); assert.equal(f.sources.length, 1); assert.equal(f.acks().length, 2);
   }
 });

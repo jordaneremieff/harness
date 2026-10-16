@@ -18,7 +18,7 @@ test('pure concurrent agent actions retain the workspace guard and exact identit
   const calls:unknown[][]=[];
   const registry={workspace:async(id?:string)=>{if(id!=='w')throw new ApiError('invalid_request','Unknown workspace',404);calls.push(['workspace',id]);return id;},
     startAgent:async(...args:unknown[])=>{calls.push(['start',...args]);return {availability:'stored'};},agents:{select:()=>{throw Error('No implicit observation');},hide:()=>{throw Error('No implicit hide');}}} as unknown as Registry;
-  const context:RequestContext={parts:['api','agents',STORAGE,'start'],body:{},method:'POST',url:new URL('http://localhost/api'),workspace:'wrong',session:'synthetic',operationId:'request'};
+  const context:RequestContext={parts:['api','agents',STORAGE,'start'],body:{},method:'POST',url:new URL('http://localhost/api'),workspace:'wrong',operationId:'request'};
   await assert.rejects(dispatchAgent(registry,context),{code:'invalid_request'});assert.deepEqual(calls,[]);
   await assert.rejects(dispatchAgent(registry,{...context,workspace:'w',body:{message:'not input'}}),{code:'invalid_request'});
   assert.deepEqual(calls,[['workspace','w']]);calls.length=0;
@@ -28,11 +28,24 @@ test('pure concurrent agent actions retain the workspace guard and exact identit
 test('pure concurrent agent history remains an identity-qualified bounded read',async()=> {
   const calls:unknown[][]=[];
   const registry={agents:{history:async(identity:string,options:unknown)=>{calls.push([identity,options]);return {entries:[],nextBefore:null,revision:'r',coverage:{complete:true,truncated:false,omitted:0}};}}} as unknown as Registry;
-  const context:RequestContext={parts:['api','agents',`${STORAGE}:2`,'history'],body:{},method:'GET',url:new URL('http://localhost/api?limit=2&before=7'),session:'synthetic'};
+  const context:RequestContext={parts:['api','agents',`${STORAGE}:2`,'history'],body:{},method:'GET',url:new URL('http://localhost/api?limit=2&before=7')};
   const result=await dispatchAgent(registry,context) as {target:{identity:string};revision:string};
   assert.equal(result.target.identity,`${STORAGE}:2`);assert.equal(result.revision,'r');assert.deepEqual(calls,[[`${STORAGE}:2`,{limit:2,before:7}]]);
   await assert.rejects(dispatchAgent(registry,{...context,url:new URL('http://localhost/api?limit=101')}),{code:'invalid_request'});
   assert.equal(calls.length,1);
+});
+
+test('agent image routes reject malformed identities before the adapter and preserve downstream failures',async()=> {
+  const calls:string[]=[];let failure:Error|undefined;
+  const registry={agents:{image:async(identity:string)=>{calls.push(identity);if(failure)throw failure;return {mimeType:'image/png',data:new Uint8Array([1])};}}} as unknown as Registry;
+  const route=(identity:string)=>dispatchAgent(registry,{method:'GET',parts:['api','agents',identity,'history','image'],body:{},url:new URL(`http://localhost/api?entry=1&message=0&part=0&digest=${'a'.repeat(64)}`)});
+  for(const identity of ['invalid',`${STORAGE}:0`,`${STORAGE}:02`,`${STORAGE}:2:3`]) {
+    await assert.rejects(route(identity),error=>error instanceof ApiError&&error.status===400&&error.code==='invalid_request');
+  }
+  assert.deepEqual(calls,[]);await route(`${STORAGE}:2`);assert.deepEqual(calls,[`${STORAGE}:2`]);
+  for(const error of [new ApiError('not_found','No retained conversation.',404),new Error('Image worker failed.')]) {
+    failure=error;await assert.rejects(route(STORAGE),caught=>caught===error);
+  }
 });
 
 async function fixture(t: TestContext, mismatch=false, announce=true) {
@@ -57,7 +70,7 @@ async function fixture(t: TestContext, mismatch=false, announce=true) {
   const registry = await Registry.open({cwd,agentStore:store,stateDir:join(root,'ui'),executable,agentStart:{agentDir,spawn:fakeSpawn,timeoutMs:1000}});
   t.after(async()=>{await registry.close();await host?.close();await rm(root,{recursive:true,force:true});});
   await registry.agents.refresh(); const workspace = await registry.store.workspace();
-  const context = (requestId?:string,identity=STORAGE,body:Record<string,unknown>={}):RequestContext=>({method:'POST',parts:['api','agents',identity,'start'],url:new URL('http://localhost/api'),body,operationId:requestId,workspace:workspace.id,session:'fixture'});
+  const context = (requestId?:string,identity=STORAGE,body:Record<string,unknown>={}):RequestContext=>({method:'POST',parts:['api','agents',identity,'start'],url:new URL('http://localhost/api'),body,operationId:requestId,workspace:workspace.id});
   return {registry,workspace,context,endpoint,get host(){assert.ok(host);return host;},get launches(){return launches;},get errors(){return errors;}};
 }
 test('explicit start transitions stored to input-ready without changing selection or drafts, and survives UI shutdown',{timeout:10000},async t=> {

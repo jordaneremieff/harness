@@ -7,6 +7,7 @@ import { FileHistory } from './history.mts';
 import { IMAGE_BYTES, IMAGE_EDGE, IMAGE_PIXELS, imagePart, readImage } from './images.mts';
 import { imageRequest } from './image-request.mts';
 import { projectFrame, projectSavedEntry } from './projection.mts';
+import {ApiError} from './errors.mts';
 
 const data = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
 const raw = {type: 'image', mimeType: 'image/png', data};
@@ -80,6 +81,25 @@ test('image queries reject unknown, duplicated, invalid source and identity fiel
   const query = `entry=entry&message=0&part=0&digest=${image.digest}&epoch=1`;
   assert.deepEqual(imageRequest(new URL(`http://localhost/?${query}`), true), {source, digest: image.digest, epoch: 1});
   for (const bad of [`${query}&path=/secret`, `${query}&part=1`, query.replace('part=0', 'part=-1'), query.replace('message=0', 'message=8'), query.replace(image.digest, 'invalid'), query.replace('epoch=1', 'epoch=-1')]) assert.throws(() => imageRequest(new URL(`http://localhost/?${bad}`), true));
+});
+test('agent image entry IDs match the retained numeric contract while Primary entries remain strings',()=> {
+  const query=new URLSearchParams({entry:'1',message:'0',part:'0',digest:'a'.repeat(64)});
+  for(const entry of ['0','abc','01','-1','1.5',String(Number.MAX_SAFE_INTEGER),String(Number.MAX_SAFE_INTEGER+1),'9'.repeat(256)]) {
+    query.set('entry',entry);
+    assert.throws(()=>imageRequest(new URL(`http://localhost/?${query}`),false),error=>error instanceof ApiError&&error.status===400&&error.code==='invalid_request');
+    query.set('epoch','1');assert.equal(imageRequest(new URL(`http://localhost/?${query}`),true).source.entryId,entry);query.delete('epoch');
+  }
+  for(const entry of ['1',String(Number.MAX_SAFE_INTEGER-1)]) {query.set('entry',entry);assert.equal(imageRequest(new URL(`http://localhost/?${query}`),false).source.entryId,entry);}
+});
+test('bounded image request fields refuse malformed input with explicit HTTP errors',()=> {
+  const base={entry:'1',message:'0',part:'0',digest:'a'.repeat(64)},queries:URLSearchParams[]=[];
+  for(const field of Object.keys(base)) {const missing=new URLSearchParams(base);missing.delete(field);queries.push(missing);const duplicate=new URLSearchParams(base);duplicate.append(field,base[field as keyof typeof base]);queries.push(duplicate);}
+  for(const [field,values] of Object.entries({entry:['','x'.repeat(257),'\u0000'],message:['-1','1.5','8',String(Number.MAX_SAFE_INTEGER+1)],part:['-1','1.5','100',String(Number.MAX_SAFE_INTEGER+1)],digest:['','A'.repeat(64),'a'.repeat(63)],unknown:['1'],epoch:['1']})) {
+    for(const value of values) {const query=new URLSearchParams(base);query.set(field,value);queries.push(query);}
+  }
+  const repeatedWorkspace=new URLSearchParams(base);repeatedWorkspace.append('workspace','one');repeatedWorkspace.append('workspace','two');queries.push(repeatedWorkspace);
+  for(const query of queries)assert.throws(()=>imageRequest(new URL(`http://localhost/?${query}`),false),error=>error instanceof ApiError&&error.status===400&&error.code==='invalid_request');
+  const edges=new URLSearchParams({...base,message:'7',part:'99',workspace:'workspace'});assert.deepEqual(imageRequest(new URL(`http://localhost/?${edges}`),false).source,{entryId:'1',message:7,part:99});
 });
 test('saved and native projections preserve source references without eager frame image bytes', () => {
   const saved = projectSavedEntry(entry);

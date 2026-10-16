@@ -19,7 +19,7 @@ import { Composer, createComposerElements } from './composer.ts';
 import { WorkbenchStatus } from './workbench-status.ts';
 import { VersionStatus } from './version-status.ts';
 import { HealthStatus } from './health-status.ts';
-import { ConnectionRecovery, accessViewVisible, connectionSurface as connectionSurfaceFor, type ConnectionPhase } from './connection-state.ts';
+import { ConnectionRecovery, connectionSurface as connectionSurfaceFor, type ConnectionPhase } from './connection-state.ts';
 import { announce, byId, button, copy, details, element, empty, placeRetained, rawText, setText } from './dom.ts';
 import {StableViews} from './stable-views.ts';
 import { ExtensionDialogs, extensionStatus } from './extensions.ts';
@@ -46,7 +46,7 @@ import {DevReload, type DevReloadCheckpoint, type DevReloadHooks, type DevCheckp
 import { conversationPresentation, presentationGlyph, projectIdentity, composerFolder, agentViewStatus } from './conversation-presentation.ts';
 import type { ConversationPresentation } from './conversation-presentation.ts';
 import { newerOperation, mergeOperationMap } from './operation-state.ts';
-import { ApiError, authenticate, connect, errorMessage, operation, request, setUnauthorizedHandler, setRequestTiming } from './transport.ts';
+import { ApiError, connect, errorMessage, operation, request, setRequestTiming } from './transport.ts';
 import type { ReceivedEvent } from './transport.ts';
 import {CONTROL_LIMITS, CONTROL_ROUTES, type ControlRequest} from '../shared/control.ts';
 import {BrowserControl, ControlRefusal, controlLayout, controlPaneBox, controlProvenance} from './control.ts';
@@ -64,8 +64,6 @@ export let drawerOpen = false;
 let connectionPhase: ConnectionPhase = 'healthy';
 let connectionError: unknown;
 let connectionSurface = '';
-let accessRequired = false;
-let accessFocus: HTMLElement | undefined;
 let streamWait: {resolve: () => void; reject: (error: unknown) => void} | undefined;
 let resynchronizing: Promise<void> | undefined;
 
@@ -374,7 +372,7 @@ async function prepareMessageTarget(workspaceId: string, target: Extract<Target,
   }
 }
 const extensionDialogs = new ExtensionDialogs(modal, () => state, next => { state = next; }, primary);
-const connectionRecovery = new ConnectionRecovery({attempt: resync, unauthorized: error => error instanceof ApiError && error.view.code === 'unauthorized', paint: (phase, error) => {
+const connectionRecovery = new ConnectionRecovery({attempt: resync, paint: (phase, error) => {
   connectionPhase = phase; connectionError = error; connected = phase === 'healthy'; renderConnection();
   if (connected) {renderAll(); void finishStartup().catch(showError);} else renderAvailability();
 }});
@@ -520,7 +518,7 @@ function renderIdentity(): void {
     control.setAttribute('aria-label', 'Choose working folder');
     control.setAttribute('aria-description', project.path ?? 'No working folder selected');
   }
-  document.title = accessRequired ? 'Pi · Browser access required' : view.activity ? `Pi · ${view.name} · ${view.activity}` : `Pi · ${project.name}`;
+  document.title = view.activity ? `Pi · ${view.name} · ${view.activity}` : `Pi · ${project.name}`;
   for (const controller of controllers.values()) renderObserved(controller, connected || !presentation(controller.target).activity);
 }
 function renderObserved(controller:ConversationController, hide:boolean):void {
@@ -697,7 +695,7 @@ export const browserControl = new BrowserControl({
   ack:ack=>request(CONTROL_ROUTES.ack,'POST',ack,undefined,AbortSignal.timeout(CONTROL_LIMITS.executionMs)),
 });
 function controlBusy():string|undefined {
-  if(document.hidden || !connected || resynchronizing || accessRequired || devNavigating || devRestoreOwner)return 'page_busy';
+  if(document.hidden || !connected || resynchronizing || devNavigating || devRestoreOwner)return 'page_busy';
   if(selectionQueue.unsettled || preferences.pending || messageTarget.current?.preparing)return 'selection_busy';
   if(modal.openNow || contextMenu.openNow)return 'modal';
   if(composingFields.size || [...controllers.values()].some(controller=>!!controller.composer.reloadHold))return 'input_busy';
@@ -815,7 +813,7 @@ async function refreshSnapshot(signal?: AbortSignal): Promise<void> {
     const pending = read<Snapshot>(`/api/snapshot?workspace=${encodeURIComponent(state.workspace.id)}`).then(value => hydrateVisible(value, read, explicit?.workspaceId === value.workspace.id ? {kind: 'agent', identity: explicit.identity} : undefined));
     const current = await (signal ? waitForSignal(pending, signal) : pending); signal?.throwIfAborted();
     if (buffered.overflow) throw new Error('Current view changed too quickly during restore. Reconnect to request a fresh baseline.');
-    updateDiagnostics(true); snapshot = current; state = replaceSnapshot({...before, dismissedNotices: state.dismissedNotices, readNotices: state.readNotices}, current, buffered.events); if (state.workspace) state = {...state, workspace: selectionQueue.observe(state.workspace)};
+    updateDiagnostics(); snapshot = current; state = replaceSnapshot({...before, dismissedNotices: state.dismissedNotices, readNotices: state.readNotices}, current, buffered.events); if (state.workspace) state = {...state, workspace: selectionQueue.observe(state.workspace)};
     if(before.bootId!==current.bootId) for(const controller of controllers.values()) if(state.conversations.get(targetIdentity(controller.target))?.retainedSession) {controller.cursor=null;controller.historyBoundaryLoaded=false;controller.transcript.historyAvailable(false);}
     renderAll();
   } finally { snapshotBuffers.delete(buffered); }
@@ -841,22 +839,11 @@ function connectionDetails(): void {
   const body = modal.open('Connection details');
   if (connectionError) body.append(element('p', 'error', errorMessage(connectionError)));
 }
-function renderAccessView(): boolean {
-  const app = byId('app');
-  if (connectionPhase === 'auth' && !accessRequired) { accessRequired = true; if (document.activeElement instanceof HTMLElement && app.contains(document.activeElement)) accessFocus = document.activeElement; }
-  accessRequired = accessViewVisible(connectionPhase, accessRequired);
-  const auth = accessRequired; const restored = app.hidden && !auth;
-  byId('app').hidden = auth; byId('access-view').hidden = !auth; byId('skip-composer').hidden = auth;
-  if (restored && accessFocus?.isConnected) { accessFocus.focus({preventScroll: true}); accessFocus = undefined; }
-  return auth;
-}
 export function renderConnection(): void {
-  const auth = renderAccessView();
-  if (auth) { document.title = 'Pi · Browser access required'; contextMenu.close(); modal.close(); const error = byId('access-error'); setText(error, connectionError ? 'Browser access could not be confirmed.' : ''); error.title = connectionError ? errorMessage(connectionError) : ''; if (!byId('access-view').contains(document.activeElement)) byId('access-retry').focus({preventScroll: true}); }
   const {visible} = connectionSurfaceFor(connectionPhase);
   const key = `${connectionPhase}`; if (connectionSurface === key) return; connectionSurface = key;
-  const node = byId('connection'); node.hidden = auth || !visible; node.replaceChildren();
-  if (auth || !visible) return;
+  const node = byId('connection'); node.hidden = !visible; node.replaceChildren();
+  if (!visible) return;
   if (connectionPhase === 'offline') node.append(element('span', undefined, 'Disconnected. Your draft is still in this tab.'), button('Reconnect', () => connectionRecovery.reconnect()), button('Details', connectionDetails));
   else setText(node, 'Connection lost. Reconnecting…');
 }
@@ -1788,9 +1775,6 @@ function bind(): void {
   window.addEventListener('pagehide', event => {if (!event.persisted && !devNavigating) devReload?.destroy();});
   setRequestTiming((start, end) => {diagnostics.measure('control-roundtrip', start, end);});
   diagnostics.setHidden(document.hidden); if (document.hidden) connectionRecovery.suspend();
-  setUnauthorizedHandler(error => {
-    updateDiagnostics(false); source?.close(); streamWait?.reject(error); contextMenu.close(); modal.close(); connectionRecovery.auth(error);
-  });
   document.addEventListener('contextmenu', appContextMenu);
 
   byId('tabs-open-primary').addEventListener('click', selectPrimary);
@@ -1805,7 +1789,6 @@ function bind(): void {
   byId('notifications-button').addEventListener('click', notices);
   byId('appearance-button').addEventListener('click', () => actions.appearance());
   for (const id of ['session-open', 'tabs-open-session']) byId(id).addEventListener('click', () => picker.open(projectPath()));
-  byId('access-retry').addEventListener('click', () => connectionRecovery.reconnect());
   byId('session-new').addEventListener('click', () => picker.newSession(projectPath()));
   byId('agent-refresh').addEventListener('click', refreshRoster);
   byId('agent-new').addEventListener('click', () => actions.prepareText('/agent new'));
@@ -1836,7 +1819,6 @@ function bind(): void {
 export function devHold(): DevReloadHold | undefined {
   if (browserControl.applying || selectionQueue.unsettled) return 'input';
   if (composingFields.size) return 'ime';
-  if (accessRequired) return 'auth';
   if (!connected || resynchronizing) return 'offline';
   if (modal.openNow || contextMenu.openNow) return 'modal';
   if (document.documentElement.classList.contains('resizing')) return 'resize';
@@ -1970,9 +1952,9 @@ async function initializeDevReload(current:()=>boolean): Promise<void> {
     }});
   await devReload.ready;
 }
-function updateDiagnostics(authorized: boolean): void {
+function updateDiagnostics(): void {
   const generation = document.querySelector('meta[name="ui-generation"]')?.getAttribute('content') ?? '', client = document.querySelector('meta[name="ui-client"]')?.getAttribute('content') ?? '';
-  const active = authorized && /^[a-f0-9]{64}$/.test(generation) && /^[a-f0-9]{24}$/.test(client);
+  const active = /^[a-f0-9]{64}$/.test(generation) && /^[a-f0-9]{24}$/.test(client);
   if (active !== diagnosticsActive) {diagnosticsActive = active; diagnostics.setActive(active);}
 }
 async function bootstrap(signal?: AbortSignal): Promise<void> {
@@ -1980,13 +1962,13 @@ async function bootstrap(signal?: AbortSignal): Promise<void> {
   const read = <T>(path: string, method = 'GET', body?: unknown) => request<T>(path, method, body, undefined, signal && (method === 'GET' ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : signal));
   const pending = read<Bootstrap>(`/api/bootstrap${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''}`).then(value => hydrateVisible(value, read));
   const data = await (signal ? waitForSignal(pending, signal) : pending); signal?.throwIfAborted();
-  snapshot = data; launchCwd = data.launchCwd; state = replaceSnapshot(state, data); updateDiagnostics(true);
+  snapshot = data; launchCwd = data.launchCwd; state = replaceSnapshot(state, data); updateDiagnostics();
   const url = new URL(location.href); url.searchParams.set('workspace', data.workspace.id); history.replaceState(null, '', url);
 }
 async function start(): Promise<void> {
   bind(); renderNavigation();
   try {
-    await authenticate(); await refreshVisible(bootstrap, loadVisibleHistory, showError);
+    await refreshVisible(bootstrap, loadVisibleHistory, showError);
     renderAll(); await stream(); connectionRecovery.healthy();
   } catch (error) {
     connectionRecovery.lost(error);

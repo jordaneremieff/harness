@@ -43,12 +43,12 @@ test('parseArgs refuses a value-taking flag without a value and unknown flags', 
   assert.throws(() => parseArgs(['--opened'], '/base'), invalid);
 });
 
-test('main passes the launch URL to the opener only with --open', {timeout: 15000}, async context => {
+test('main passes the local URL to the opener only with --open', {timeout: 15000}, async context => {
   const {root, cwd, keep} = await project(context);
   const opened: string[] = [];
   const app = keep(await main([...flags(cwd, root, 'state-open'), '--open'], async url => { opened.push(url); }, quiet));
-  assert.deepEqual(opened, [app.launchUrl]);
-  assert.match(app.launchUrl, /^http:\/\/127\.0\.0\.1:\d+\/#launch=/);
+  assert.deepEqual(opened, [app.url]);
+  assert.match(app.url, /^http:\/\/127\.0\.0\.1:\d+\/$/);
   let silent = 0;
   keep(await main(flags(cwd, root, 'state-plain'), async () => { silent += 1; }, quiet));
   assert.equal(silent, 0);
@@ -64,10 +64,8 @@ test('main forwards qualified native result selectors without admission and retu
     return {view: 'result', sessionId: identity, conversationId: 7, requestId: options.requestId ?? '', status: 'unavailable', reason: 'Not retained', usage: {models: {}, tools: {}}};
   }};
   const app = keep(await main(flags(cwd, root, 'state-inspect'), async () => { throw new Error('No browser'); }, {agents: () => injected, assets,announce:()=>{}}));
-  const launch = new URL(app.launchUrl);
-  const login = await fetch(`${launch.origin}/api/auth/launch`, {method: 'POST', headers: {Origin: launch.origin, 'Content-Type': 'application/json'}, body: JSON.stringify({capability: new URLSearchParams(launch.hash.slice(1)).get('launch')})});
-  assert.equal(login.status, 200); const cookie = login.headers.get('set-cookie')?.split(';')[0]; assert.ok(cookie);
-  const inspect = (body: unknown) => fetch(`${launch.origin}/api/agents/${encodeURIComponent(identity)}/inspect`, {method: 'POST', headers: {Origin: launch.origin, Cookie: cookie, 'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  const launch = new URL(app.url);
+  const inspect = (body: unknown) => fetch(`${launch.origin}/api/agents/${encodeURIComponent(identity)}/inspect`, {method: 'POST', headers: {Origin: launch.origin, 'Content-Type': 'application/json'}, body: JSON.stringify(body)});
   const input = {view: 'result' as const, requestId: 'exact-native-request', operationId: 'separate-operation', entryId: 30};
   const reply = await inspect(input); assert.equal(reply.status, 200);
   const result = await reply.json() as ApiResult<{projection: {value: Record<string, unknown>}}>; assert.ok(result.ok); assert.equal(result.data.projection.value.status, 'unavailable');
@@ -82,17 +80,17 @@ test('main forwards qualified native result selectors without admission and retu
 test('main keeps the backend running when the opener fails', {timeout: 15000}, async context => {
   const {root, cwd, keep} = await project(context);
   const app = keep(await main([...flags(cwd, root, 'state-fail'), '--open'], async () => { throw new Error('no browser'); }, quiet));
-  assert.match(app.launchUrl, /^http:\/\/127\.0\.0\.1:\d+\//);
+  assert.match(app.url, /^http:\/\/127\.0\.0\.1:\d+\//);
 });
 
-test('startup prints the served page identity directly after the launch URL', {timeout: 15000}, async context => {
+test('startup prints the served page identity directly after the local URL', {timeout: 15000}, async context => {
   const {root, cwd, keep} = await project(context);
   const identity: UiIdentity = {iteration: UI_ITERATION, git: {commit: 'a'.repeat(40), shortCommit: 'aaaaaaa', branch: 'feature/ui', modified: true, committedAt: '2026-10-12T00:00:00.000Z'},
     assets: {digest: 'b'.repeat(64), builtAt: '2026-10-12T01:00:00.000Z'}, startedAt: '2026-10-12T02:00:00.000Z', pi: '1.1.0', durable: '1.1.0'};
   const output: string[] = [];
   const app = keep(await main(flags(cwd, root, 'state-identity'), async () => {throw new Error('No browser');}, {agents: () => adapter, assets, identity,announce:text=>{output.push(text);}}));
-  assert.deepEqual(output.join('').trimEnd().split('\n'), [app.launchUrl, identityLabel(identity)]);
-  const html = await (await fetch(new URL('/', app.launchUrl))).text();
+  assert.deepEqual(output.join('').trimEnd().split('\n'), [app.url, identityLabel(identity)]);
+  const html = await (await fetch(new URL('/', app.url))).text();
   const encoded = /name="ui-identity" content="([^"]*)"/.exec(html)?.[1]; assert.ok(encoded);
   assert.deepEqual(readIdentity(encoded), identity); assert.equal(app.identity, identity);
 });

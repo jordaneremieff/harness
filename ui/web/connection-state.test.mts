@@ -1,24 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ConnectionRecovery, accessViewVisible, connectionSurface, type ConnectionClock, type ConnectionPhase } from './connection-state.ts';
+import { ConnectionRecovery, connectionSurface, type ConnectionClock, type ConnectionPhase } from './connection-state.ts';
 
-test('connection trouble has one top owner and unauthorized access replaces the shell', () => {
+test('connection trouble has one visible owner', () => {
   for (const phase of ['healthy','quiet'] as const) assert.deepEqual(connectionSurface(phase), {owner: 'connection', visible: false});
   for (const phase of ['reconnecting','offline'] as const) assert.deepEqual(connectionSurface(phase), {owner: 'connection', visible: true});
-  assert.deepEqual(connectionSurface('auth'), {owner: 'access-view', visible: false});
 });
 
-test('access rechecks retain the full-window view until a healthy baseline returns', () => {
-  assert.equal(accessViewVisible('auth', false), true);
-  for (const phase of ['quiet','reconnecting','offline','auth'] as const) assert.equal(accessViewVisible(phase, true), true);
-  assert.equal(accessViewVisible('healthy', true), false); assert.equal(accessViewVisible('quiet', false), false);
-});
 function fixture() {
   let now = 0; let serial = 0;
   const timers = new Map<number, {at: number; callback: () => void}>();
   const phases: ConnectionPhase[] = []; const attempts: Array<ReturnType<typeof Promise.withResolvers<void>>> = []; const signals: AbortSignal[] = [];
   const clock: ConnectionClock = {now: () => now, set: (callback, delay) => {const id = ++serial; timers.set(id, {at: now + delay, callback}); return id;}, clear: id => {timers.delete(id);}};
-  const recovery = new ConnectionRecovery({attempt: signal => {const task = Promise.withResolvers<void>(); attempts.push(task); signals.push(signal); return task.promise;}, paint: phase => phases.push(phase), unauthorized: error => error === 'auth'}, clock);
+  const recovery = new ConnectionRecovery({attempt: signal => {const task = Promise.withResolvers<void>(); attempts.push(task); signals.push(signal); return task.promise;}, paint: phase => phases.push(phase)}, clock);
   return {recovery, phases, attempts, signals, timers, advance: (time: number) => {
     now = time;
     for (const [id, timer] of [...timers].sort((a, b) => a[1].at - b[1].at)) if (timer.at <= now) {timers.delete(id); timer.callback();}
@@ -43,11 +37,6 @@ test('successful ready attempt cancels all timers and remains visually quiet', a
   const f = fixture(); f.recovery.lost(); f.advance(250); f.attempts[0]?.resolve(); await settle();
   assert.deepEqual(f.phases, ['quiet', 'healthy']); assert.equal(f.timers.size, 0);
   f.advance(10000); assert.equal(f.attempts.length, 1);
-});
-test('auth failure stops retries immediately and explicit reconnect starts a new episode', async () => {
-  const f = fixture(); f.recovery.lost('auth'); assert.equal(f.recovery.phase, 'auth'); assert.equal(f.timers.size, 0);
-  f.recovery.reconnect(); assert.equal(f.attempts.length, 1);
-  f.attempts[0]?.reject('auth'); await settle(); assert.equal(f.recovery.phase, 'auth'); assert.equal(f.timers.size, 0);
 });
 test('a late failure cannot replace a newer healthy state', async () => {
   const f = fixture(); f.recovery.lost(); f.advance(250); f.recovery.healthy();

@@ -11,8 +11,44 @@ import { LocalHttp } from './http.mts';
 import { Journal } from './journal.mts';
 import { StateStore } from './state.mts';
 import type { PrimaryView } from '../shared/api.ts';
+import type {Registry} from './registry.mts';
+import {dispatchAgent} from './routes-agent.mts';
+import {ApiError} from './errors.mts';
+import {nativeImage} from '../agents/images.mts';
 
 const data = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
+test('agent image HTTP validation keeps malformed identities separate from missing source and server failures',async t=> {
+  let calls=0,failure:Error=new ApiError('not_found','No retained conversation.',404);
+  const registry={agents:{image:async()=>{calls++;throw failure;}}} as unknown as Registry;
+  const http=new LocalHttp({journal:new Journal(),workspace:async()=> 'workspace',observe:async()=>{},detached:()=>{},dispatch:context=>dispatchAgent(registry,context)},new Map());
+  const url=await http.listen(0);t.after(()=>http.close());
+  const read=async(identity:string)=> {
+    const response=await fetch(new URL(`/api/agents/${identity}/history/image?entry=1&message=0&part=0&digest=${'a'.repeat(64)}`,url));
+    const result=await response.json() as {ok:boolean;error:{code:string}};assert.equal(result.ok,false);return {status:response.status,code:result.error.code};
+  };
+  assert.deepEqual(await read('invalid'),{status:400,code:'invalid_request'});assert.equal(calls,0);
+  const identity='00000000-0000-4000-8000-000000000099';
+  assert.deepEqual(await read(identity),{status:404,code:'not_found'});assert.equal(calls,1);
+  failure=new Error('Unrelated image source failure.');assert.deepEqual(await read(identity),{status:500,code:'internal'});assert.equal(calls,2);
+});
+test('agent image entries use bounded positive numeric IDs before adapter access',async t=> {
+  const raw={type:'image',mimeType:'image/png',data},image=imagePart(raw);assert.ok(image.type==='image');
+  let calls=0;
+  const registry={agents:{image:async(identity:string,source:import('../shared/api.ts').ImageSource,digest:string)=> {
+    calls++;return nativeImage({history:async(_identity:string,options?:{before?:number})=>({entries:[{id:(options?.before??2)-1,kind:'message',model:[{role:'user',content:[raw]}]}]})} as unknown as Parameters<typeof nativeImage>[0],identity,source,digest);
+  }}} as unknown as Registry;
+  const http=new LocalHttp({journal:new Journal(),workspace:async()=> 'workspace',observe:async()=>{},detached:()=>{},dispatch:context=>dispatchAgent(registry,context)},new Map());
+  const url=await http.listen(0);t.after(()=>http.close());
+  const read=(entry:string)=>fetch(new URL(`/api/agents/00000000-0000-4000-8000-000000000099/history/image?entry=${encodeURIComponent(entry)}&message=0&part=0&digest=${image.digest}`,url));
+  const rejected=[];
+  for(const entry of ['0','abc']) {
+    const response=await read(entry),result=await response.json() as {error:{code:string}};
+    rejected.push({entry,status:response.status,code:result.error.code});
+  }
+  assert.deepEqual(rejected,[{entry:'0',status:400,code:'invalid_request'},{entry:'abc',status:400,code:'invalid_request'}]);assert.equal(calls,0);
+  for(const entry of ['1',String(Number.MAX_SAFE_INTEGER-1)]) {const response=await read(entry);assert.equal(response.status,200);assert.equal(Buffer.from(await response.arrayBuffer()).toString('base64'),data);}
+  assert.equal(calls,2);
+});
 test('binary image admission holds two response slots and releases them after completion', async t => {
   let release = () => {}, admitted = () => {}, calls = 0;
   const gate = new Promise<void>(resolve => { release = resolve; });
@@ -23,9 +59,7 @@ test('binary image admission holds two response slots and releases them after co
   }}, new Map());
   const launch = new URL(await http.listen(0));
   t.after(async () => { release(); await http.close(); });
-  const auth = await fetch(`${launch.origin}/api/auth/launch`, {method: 'POST', headers: {Origin: launch.origin, 'Content-Type': 'application/json'}, body: JSON.stringify({capability: launch.hash.slice('#launch='.length)})});
-  const cookie = auth.headers.get('set-cookie')?.split(';')[0]; assert.ok(cookie);
-  const url = `${launch.origin}/api/primaries/key/history/image`, options = {headers: {Cookie: cookie}};
+  const url = `${launch.origin}/api/primaries/key/history/image`, options = {headers: {}};
   const first = fetch(url, options), second = fetch(url, options); await entered;
   assert.equal((await fetch(url, options)).status, 429); assert.equal(calls, 2);
   release(); const responses = await Promise.all([first, second]);
@@ -47,9 +81,7 @@ test('a disconnected active image releases its slot when its bounded source read
   http.server.on('request', (request, response) => { if (request.url?.includes('request=first')) response.once('close', disconnected); });
   const launch = new URL(await http.listen(0));
   t.after(async () => { releaseFirst(); releaseSecond(); await http.close(); });
-  const auth = await fetch(`${launch.origin}/api/auth/launch`, {method: 'POST', headers: {Origin: launch.origin, 'Content-Type': 'application/json'}, body: JSON.stringify({capability: launch.hash.slice('#launch='.length)})});
-  const cookie = auth.headers.get('set-cookie')?.split(';')[0]; assert.ok(cookie);
-  const url = `${launch.origin}/api/primaries/key/history/image`, headers = {Cookie: cookie}, controller = new AbortController();
+  const url = `${launch.origin}/api/primaries/key/history/image`, headers = {}, controller = new AbortController();
   const first = fetch(`${url}?request=first`, {headers, signal: controller.signal});
   const rejected = assert.rejects(first, {name: 'AbortError'});
   const second = fetch(`${url}?request=second`, {headers}); await entered;
@@ -74,9 +106,7 @@ test('disconnect during an active binary response releases the response slot', a
   }}, new Map());
   http.server.on('request', (request, response) => { if (request.url?.includes('request=disconnect')) response.once('close', disconnected); });
   const launch = new URL(await http.listen(0)); t.after(async () => { controller.abort(); release(); await http.close(); });
-  const auth = await fetch(`${launch.origin}/api/auth/launch`, {method: 'POST', headers: {Origin: launch.origin, 'Content-Type': 'application/json'}, body: JSON.stringify({capability: launch.hash.slice('#launch='.length)})});
-  const cookie = auth.headers.get('set-cookie')?.split(';')[0]; assert.ok(cookie);
-  const url = `${launch.origin}/api/primaries/key/history/image`, headers = {Cookie: cookie};
+  const url = `${launch.origin}/api/primaries/key/history/image`, headers = {};
   const first = await fetch(`${url}?request=disconnect`, {headers, signal: controller.signal}); assert.equal(first.status, 200);
   const held = fetch(`${url}?request=held`, {headers}); await entered;
   assert.equal((await fetch(url, {headers})).status, 429);
@@ -84,7 +114,7 @@ test('disconnect during an active binary response releases the response slot', a
   const replacement = await fetch(url, {headers}); assert.equal(replacement.status, 200); await replacement.arrayBuffer();
   release(); assert.equal((await held).status, 200);
 });
-test('image HTTP route requires authentication and exact epoch, entry, part and content identity', async t => {
+test('image HTTP route requires exact epoch, entry, part and content identity', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'ui-image-')), path = join(dir, 'session.jsonl');
   const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = join(dir, 'agent');
   t.after(() => { if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous; });
@@ -104,14 +134,13 @@ test('image HTTP route requires authentication and exact epoch, entry, part and 
   }});
   t.after(async () => { await app.close(); await rm(dir, {recursive: true, force: true}); });
   const key = await app.registry.openPrimary(dir, path); await ready;
-  const launch = new URL(app.launchUrl), origin = launch.origin;
-  const auth = await fetch(`${origin}/api/auth/launch`, {method: 'POST', headers: {Origin: origin, 'Content-Type': 'application/json'}, body: JSON.stringify({capability: launch.hash.slice('#launch='.length)})});
-  const cookie = auth.headers.get('set-cookie')?.split(';')[0]; assert.ok(cookie);
-  const headers = {Cookie: cookie}; const part = imagePart(raw); assert.ok(part.type === 'image');
+  const launch = new URL(app.url), origin = launch.origin;
+  const headers = {}; const part = imagePart(raw); assert.ok(part.type === 'image');
   const route = `${origin}/api/primaries/${key}/history/image`;
   const query = `epoch=1&entry=image-entry&message=0&part=0&digest=${part.digest}`;
-  assert.equal((await fetch(`${route}?${query}`)).status, 401);
-  assert.equal((await fetch(`${origin}/api/agents/invalid/history/image?${query}`)).status, 401);
+  assert.equal((await fetch(`${route}?${query}`)).status, 200);
+  const invalidFields = await fetch(`${origin}/api/agents/invalid/history/image?${query}`);
+  assert.equal(invalidFields.status, 400); assert.equal((await invalidFields.json() as {error:{code:string}}).error.code, 'invalid_request');
   const response = await fetch(`${route}?${query}`, {headers}); assert.equal(response.status, 200);
   assert.equal(response.headers.get('content-type'), 'image/png'); assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
   assert.equal(response.headers.get('cache-control'), 'no-store'); assert.match(response.headers.get('content-security-policy') ?? '', /img-src 'self'/);
@@ -121,7 +150,8 @@ test('image HTTP route requires authentication and exact epoch, entry, part and 
   }
   const history = await fetch(`${origin}/api/primaries/${key}/history`, {headers}); const body = await history.text();
   assert.ok(!body.includes(data)); assert.ok(body.length < 60 * 1024);
-  const invalidNative = await fetch(`${origin}/api/agents/invalid/history/image?entry=1&message=0&part=0&digest=${part.digest}`, {headers}); assert.notEqual(invalidNative.status, 200);
+  const invalidNative = await fetch(`${origin}/api/agents/invalid/history/image?entry=1&message=0&part=0&digest=${part.digest}`, {headers});
+  assert.equal(invalidNative.status, 400); assert.equal((await invalidNative.json() as {error:{code:string}}).error.code, 'invalid_request');
   const changed = Buffer.from(data, 'base64'); changed[50] ^= 1; raw.data = changed.toString('base64'); await save();
   const stale = await fetch(`${route}?${query}`, {headers}); assert.equal(stale.status, 409);
   raw.mimeType = 'image/svg+xml'; await save();

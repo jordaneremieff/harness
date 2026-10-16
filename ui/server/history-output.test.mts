@@ -27,13 +27,11 @@ async function setup(t: import('node:test').TestContext) {
   }});
   t.after(async () => { await app.close(); await rm(dir, {recursive: true, force: true}); });
   const key = await app.registry.openPrimary(dir, path); await ready;
-  const launch = new URL(app.launchUrl); const origin = launch.origin;
-  const auth = await fetch(`${origin}/api/auth/launch`, {method: 'POST', headers: {Origin: origin, 'Content-Type': 'application/json'}, body: JSON.stringify({capability: launch.hash.slice('#launch='.length)})});
-  assert.equal(auth.status, 200); const cookie = auth.headers.get('set-cookie')?.split(';')[0]; assert.ok(cookie);
-  return {app, child, stateDir, path, key, origin, cookie, route: `${origin}/api/primaries/${key}/history/output`};
+  const launch = new URL(app.url); const origin = launch.origin;
+  return {app, child, stateDir, path, key, origin, route: `${origin}/api/primaries/${key}/history/output`};
 }
-test('authenticated history output restores protected bytes in bounded chunks and validates epoch and part', async t => {
-  const fixture = await setup(t); const headers = {Cookie: fixture.cookie};
+test('loopback history output restores protected bytes in bounded chunks and validates epoch and part', async t => {
+  const fixture = await setup(t); const headers = {};
   const history = await fetch(`${fixture.origin}/api/primaries/${fixture.key}/history`, {headers});
   const page = (await history.json() as Success<HistoryPage>).data;
   const part = page.items[0]?.messages?.[0]?.parts[0]; assert.ok(part?.type === 'text'); assert.ok(part.more);
@@ -48,7 +46,7 @@ test('authenticated history output restores protected bytes in bounded chunks an
   for (const query of ['epoch=0&entry=text&part=0&offset=0', 'epoch=1&entry=missing&part=0&offset=0', 'epoch=1&entry=text&part=0&offset=1', 'epoch=1&entry=text&part=100&offset=0', 'epoch=1&entry=text&part=0&offset=-1', 'epoch=1&entry=text&part=0&offset=0&path=untrusted']) {
     const response = await fetch(`${fixture.route}?${query}`, {headers}); assert.ok([400, 409].includes(response.status), `${query}: ${response.status}`);
   }
-  assert.equal((await fetch(`${fixture.route}?epoch=1&entry=text&part=0&offset=0`)).status, 401);
+  assert.equal((await fetch(`${fixture.route}?epoch=1&entry=text&part=0&offset=0`)).status, 200);
   assert.ok(Buffer.byteLength(JSON.stringify(fixture.app.registry.primary(fixture.key).entries)) < 64 * 1024);
   const beforeClose = fixture.child.writes.length;
   await fixture.app.close();

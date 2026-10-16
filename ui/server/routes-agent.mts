@@ -20,6 +20,7 @@ export async function dispatchAgent(registry: Registry,context: RequestContext) 
   const identity=v.string(parts[2],'agent identity'); const target:Target={kind:'agent',identity};
   if(isImageRoute(method,parts)) {
     const request=imageRequest(url,false);
+    try {retainedTarget(identity);} catch {throw new ApiError('invalid_request','Use the exact agent conversation identity.');}
     return new ImageResponse(await registry.agents.image(identity,request.source,request.digest));
   }
   if(method==='GET') return history(registry,identity,target,url,context.signal);
