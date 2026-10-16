@@ -1,7 +1,7 @@
 import {createHash, randomUUID} from 'node:crypto';
 import {constants} from 'node:fs';
 import {open, mkdir, realpath, rename, lstat, opendir, chmod, rm} from 'node:fs/promises';
-import {join, resolve, relative, isAbsolute} from 'node:path';
+import {join, resolve, relative, isAbsolute, basename} from 'node:path';
 import {RELEASE_FORMAT, BROWSER_API, type ReleaseManifest, type ReleaseSelection} from '../shared/release.ts';
 
 export const RELEASE_LIMITS = {entries: 100000, bytes: 2 * 1024 ** 3, fileBytes: 128 * 1024 ** 2, releases: 8, rootBytes: 8 * 1024 ** 3, manifestBytes: 2 * 1024 ** 2};
@@ -88,6 +88,16 @@ export async function sealTree(directory: string) {
   const entries = await inventory(directory);
   for (const entry of entries.reverse()) await chmod(join(directory, entry.path), entry.directory ? 0o500 : entry.executable ? 0o500 : 0o400);
   await chmod(directory, 0o500);
+}
+/** Only unpublished staging names can regain directory write permission for removal. */
+export async function removeStagingTree(directory:string):Promise<void> {
+  if(!/^\.stage-[a-f0-9-]{36}$/.test(basename(directory)))throw new Error('Only an unpublished staging directory can be removed.');
+  const info=await lstat(directory);
+  if(!info.isDirectory()||info.isSymbolicLink()||info.uid!==process.getuid?.()||await realpath(directory)!==directory)throw new Error('The staging directory identity is unavailable.');
+  const entries=await inventory(directory);
+  await chmod(directory,0o700);
+  for(const entry of entries)if(entry.directory)await chmod(join(directory,entry.path),0o700);
+  await rm(directory,{recursive:true});
 }
 export type InventoryEntry = {path: string; directory: boolean; bytes: number; executable: boolean};
 async function inventoryEntry(root:string,path:string):Promise<InventoryEntry> {

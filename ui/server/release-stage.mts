@@ -1,14 +1,14 @@
 import {execFile} from 'node:child_process';
-import {mkdir,copyFile,lstat,opendir,rename,rm} from 'node:fs/promises';
+import {mkdir,copyFile,lstat,opendir,rename} from 'node:fs/promises';
 import {join,resolve,dirname} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
-import {SourceTextModule} from 'node:vm';
+import vm from 'node:vm';
 import {assetMap} from './http.mts';
 import {assetDigest} from './version.mts';
 import {AssetGeneration} from './asset-generations.mts';
 import {RELEASE_FORMAT,BROWSER_API,type ReleaseManifest} from '../shared/release.ts';
 import {UI_ITERATION} from '../shared/version.ts';
-import {atomicJson,boundedFile,inventory,RELEASE_LIMITS,releaseRoot,sealTree,sha256,type InventoryEntry} from './release-store.mts';
+import {atomicJson,boundedFile,inventory,RELEASE_LIMITS,releaseRoot,sealTree,sha256,removeStagingTree,type InventoryEntry} from './release-store.mts';
 const run=(cwd:string,args:string[])=>new Promise<string>((accept,reject)=>execFile('git',['--no-optional-locks',...args],{cwd,encoding:'utf8',timeout:5000,maxBuffer:256*1024},(error,out)=>error?reject(error):accept(out.trim())));
 async function copyInventory(source:string,target:string,entries:InventoryEntry[]) {
   await mkdir(target,{recursive:true,mode:0o700});const digest=createHash('sha256');
@@ -47,7 +47,7 @@ async function ensureRuntime(root:string,runtime:string,source:string,dependenci
   }catch(error){
     if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;const temporary=join(root,'runtimes',`.stage-${randomUUID()}`);
     try{const copied=await copyInventory(source,join(temporary,'node_modules'),dependencies);if(copied!==digest)throw new Error('Runtime dependencies changed during staging.');await sealTree(join(temporary,'node_modules'));await mkdir(join(temporary,'releases'),{mode:0o700});await rename(temporary,runtime);}
-    catch(failure){await rm(temporary,{recursive:true,force:true}).catch(()=>{});throw failure;}
+    catch(failure){await removeStagingTree(temporary).catch(()=>{});throw failure;}
   }
 }
 async function copySourceEntry(source:string,directory:string,name:string,entry:InventoryEntry,files:Record<string,string>) {
@@ -62,13 +62,13 @@ async function copySource(source:string,directory:string,inputs:Map<string,Inven
   const bytes=await boundedFile(join(source,'package.json'),128*1024);files['package.json']=sha256(bytes);await copyFile(join(source,'package.json'),join(directory,'package.json'),1);return files;
 }
 async function buildManifest(directory:string,revision:Awaited<ReturnType<typeof sourceRevision>>,runtimeDigest:string,lockDigest:string,files:Record<string,string>,ownerProtocol:string):Promise<ReleaseManifest> {
-  const assets=await assetMap(join(directory,'ui')),imports:Record<string,string[]>={};for(const [route,asset]of assets)if(route.endsWith('.js'))imports[route]=[...new SourceTextModule(asset.data.toString('utf8')).dependencySpecifiers];
+  const assets=await assetMap(join(directory,'ui')),imports:Record<string,string[]>={};for(const [route,asset]of assets)if(route.endsWith('.js'))imports[route]=[...new vm.SourceTextModule(asset.data.toString('utf8')).dependencySpecifiers];
   const generation=new AssetGeneration(assets,new Map(Object.entries(imports))),stagedAt=new Date().toISOString(),id=sha256(JSON.stringify({sourceCommit:revision.sourceCommit,sourceTree:revision.sourceTree,runtimeDigest,files,ownerProtocol}));
   return {format:RELEASE_FORMAT,id,...revision,stagedAt,iteration:UI_ITERATION,runtimeDigest,lockDigest,assetDigest:assetDigest(assets),ownerProtocol,browserApi:BROWSER_API,generation:generation.id,moduleFamily:generation.family.id,files,imports};
 }
-async function publishSnapshot(root:string,runtime:string,directory:string,manifest:ReleaseManifest) {
+export async function publishSnapshot(root:string,runtime:string,directory:string,manifest:ReleaseManifest) {
   await atomicJson(join(directory,'release.json'),manifest);const destination=join(runtime,'releases',manifest.id);
-  if(await exists(destination))await rm(directory,{recursive:true,force:true});else{await sealTree(directory);await rename(directory,destination);}
+  if(await exists(destination))await removeStagingTree(directory);else{await rename(directory,destination);await sealTree(destination);}
   const count=await descriptorCount(join(root,'releases')),descriptor=join(root,'releases',`${manifest.id}.json`);
   if(count>=RELEASE_LIMITS.releases&&!await exists(descriptor))throw new Error('Release capacity is full; protected releases were not removed.');
   await atomicJson(descriptor,{runtimeDigest:manifest.runtimeDigest});return {directory:destination,manifest};
@@ -82,5 +82,5 @@ export async function stageRelease(sourceRoot:string,stateDir:string,options:{ow
   await mkdir(join(root,'runtimes'),{recursive:true,mode:0o700});const snapshot=await snapshotInputs(source);await reserveCapacity(root,runtime,dependencies,snapshot.bytes);await ensureRuntime(root,runtime,runtimeSource,dependencies,runtimeDigest);
   const directory=join(runtime,'releases',`.stage-${randomUUID()}`);
   try{await mkdir(directory,{mode:0o700});const files=await copySource(source,directory,snapshot.inputs),manifest=await buildManifest(directory,revision,runtimeDigest,lockDigest,files,options.ownerProtocol);return await publishSnapshot(root,runtime,directory,manifest);}
-  catch(error){await rm(directory,{recursive:true,force:true}).catch(()=>{});throw error;}
+  catch(error){await removeStagingTree(directory).catch(()=>{});throw error;}
 }
