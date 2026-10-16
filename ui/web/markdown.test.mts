@@ -63,7 +63,8 @@ test('frontmatter DOM uses a safe highlighted pre block and keeps body Markdown 
   const dom = markdownDom(`${metadata}\n\n# Body\n\n- item\n\n<script>alert(1)</script>`) as unknown as MarkdownNode;
   assert.deepEqual(dom.children.map(node => node.tag), ['div', 'h1', 'ul', 'p']);
   const wrap = dom.children[0];
-  assert.equal(wrap.className, 'code-block');
+  assert.equal(wrap.className, 'code-block markdown-content');
+  assert.ok(dom.children.every(node=>node.className.split(' ').includes('markdown-content')));
   assert.deepEqual(wrap.children.map(node => node.tag), ['div', 'pre']);
   assert.equal(wrap.children[0].className, 'source-header');
   assert.equal(wrap.children[0].children[0].textContent, 'yaml');

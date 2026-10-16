@@ -170,7 +170,7 @@ test('roster has sibling native actions and preserves retained, idle and working
   assert.equal(stored.query('row-state').dataset.glyph, '○');
   assert.equal(idle.query('row-state').dataset.glyph, '○'); assert.equal(working.query('row-state').dataset.glyph, '●');
   assert.equal(stored.query('row-state').attributes['aria-hidden'], 'true');
-  assert.equal(stored.query('row-state').dataset.state, 'retained');
+  assert.equal(stored.query('row-state').dataset.tone, 'secondary');
   assert.equal(stored.query('row-name').textContent, 'Agent');
   const select = stored.query('row-select'); const age = stored.query('row-age');
   assert.equal(stored.tagName, 'div'); assert.equal(stored.attributes.role, 'listitem');
@@ -200,7 +200,7 @@ test('liveness attributes update on the same keyed row without a visible state w
   for (const availability of ['stored', 'unavailable', 'incompatible'] as const) {
     roster.set([row('one', {availability})]); f.flush();
     assert.equal(f.node.children[0], wrapper); assert.equal(wrapper.dataset.live, 'false');
-    assert.equal(wrapper.query('row-state').dataset.glyph, '○'); assert.equal(wrapper.query('row-state').dataset.state, 'retained');
+    assert.equal(wrapper.query('row-state').dataset.glyph, '○'); assert.equal(wrapper.query('row-state').dataset.tone, 'secondary');
     assert.match(wrapper.query('row-select').title, new RegExp(availability));
     assert.match(wrapper.query('row-select').attributes['aria-label'] ?? '', new RegExp(availability)); assert.throws(() => wrapper.query('row-word'));
   }
@@ -265,10 +265,10 @@ test('duplicate loaded names keep names first with distinguishing identity text'
   fixture.search.value = 'storage:one'; fixture.search.dispatch('input'); fixture.flush();
   assert.equal(one.query('row-identity').hidden, false);
   fixture.search.value = ''; roster.set([row('storage:one')]); fixture.flush();
-  assert.equal(one.query('row-identity').hidden, true);
+  assert.equal(one.query('row-identity').hidden, false); assert.equal(one.query('row-identity').textContent,'one');
   roster.set([row('first:shared'), row('second:shared')]); fixture.flush();
-  assert.equal(fixture.node.children[0]?.query('row-identity').textContent, 'shared');
-  assert.equal(fixture.node.children[1]?.query('row-identity').textContent, 'shared');
+  assert.equal(fixture.node.children[0]?.query('row-identity').textContent, 'irst:shared');
+  assert.equal(fixture.node.children[1]?.query('row-identity').textContent, 'cond:shared');
   assert.equal(fixture.node.children[0]?.query('row-identity').title, 'Agent ID: first:shared');
   assert.equal(fixture.node.children[1]?.query('row-identity').title, 'Agent ID: second:shared');
 });
@@ -291,7 +291,7 @@ test('shared-prefix duplicates use the shortest unique identity tail and retain 
     }
   }
 });
-test('identity suffix uniqueness uses all loaded duplicates and falls back to full identity after eight colliding characters', () => {
+test('identity suffix uniqueness uses all loaded duplicates and extends beyond short collisions', () => {
   const f = setup(); const roster = new Roster(() => {}, () => {});
   const rows = [row('00000000-a1234'), row('00000000-b1234'), row('other-a1234', {name: 'Only'})];
   roster.set(rows); f.flush(); const first = required(f.node.children[0]); const select = first.query('row-select');
@@ -300,7 +300,16 @@ test('identity suffix uniqueness uses all loaded duplicates and falls back to fu
   assert.equal(f.node.children[0], first); assert.equal(first.query('row-identity').textContent, 'a1234'); assert.equal(first.query('row-select'), select);
   f.search.value = ''; const collision = ['first-12345678', 'second-12345678'];
   roster.set(collision.map(identity => row(identity))); f.flush();
-  assert.deepEqual(f.node.children.map(child => child.query('row-identity').textContent), collision);
+  assert.deepEqual(f.node.children.map(child => child.query('row-identity').textContent), ['t-12345678','d-12345678']);
+});
+test('canonical-ID names become distinct Agent captions without changing routing or filtering tails',()=> {
+  const f=setup(),selected:string[]=[],ids=['00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000002'];
+  const roster=new Roster(value=>selected.push(value.identity),()=>{},undefined,undefined,()=>({glyph:'?',label:'Unknown',tone:'warning'}));
+  const rows=ids.map(identity=>row(identity,{name:identity}));roster.set(rows);f.flush();
+  assert.deepEqual(f.node.children.map(child=>child.query('row-name').textContent),['Agent','Agent']);assert.deepEqual(f.node.children.map(child=>child.query('row-identity').textContent),['0001','0002']);
+  for(const child of f.node.children)assert.equal(child.query('row-state').dataset.tone,'warning');
+  f.search.value=ids[0]??'';f.search.dispatch('input');f.flush();assert.equal(f.node.children[0]?.query('row-identity').textContent,'0001');f.node.children[0]?.query('row-select').click();assert.deepEqual(selected,[ids[0]]);
+  f.search.value='';roster.set([...rows].reverse());f.flush();assert.equal(f.node.children.find(child=>child.dataset.identity===ids[0])?.query('row-identity').textContent,'0001');
 });
 test('empty roster discovery failure keeps the reason in the list and retry in the footer', () => {
   const fixture = setup(); const actions: Array<string | undefined> = [];

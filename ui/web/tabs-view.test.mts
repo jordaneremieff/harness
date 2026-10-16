@@ -103,14 +103,17 @@ test('toolbar steps address only the requested pane and stop at its tab boundari
   const before = f.calls.length; f.strip.step('pane-1', -1); assert.equal(f.calls.length, before);
 });
 test('shared sidebar status SVGs keep authored labels and retained nodes through repaint', () => {
-  let status = {label: 'Ready', glyph: '✓'}; const f = fixture(undefined, {status: () => status});
+  let status: ReturnType<TabHooks['status']> = {label: 'Ready', glyph: '✓', tone:'success'}; const f = fixture(undefined, {status: () => status});
   const row = f.rows()[0]; const state = row?.querySelector('.conversation-state'); assert.ok(row); assert.ok(state);
   const ready = state.children[0]; assert.equal(ready?.attributes.get('class'), 'card-icon card-icon-success');
   f.strip.render(); assert.equal(state.children[0], ready);
-  status = {label: 'Working · Read', glyph: '●'}; f.strip.render();
+  status = {label: 'Working · Read', glyph: '●', tone:'info'}; f.strip.render();
   assert.equal(f.rows()[0], row); assert.equal(state.children.length, 1); assert.equal(state.children[0]?.attributes.get('class'), 'card-icon card-icon-working');
   assert.equal(state.title, 'Working · Read'); assert.match(row.attributes.get('aria-label') ?? '', /Working · Read/);
-  assert.equal(f.root().children[0]?.querySelector('.tab-dot')?.dataset.state, 'working');
+  assert.equal(f.root().children[0]?.querySelector('.tab-dot')?.dataset.tone, 'info');
+});
+test('tabs and sidebar marks carry explicit semantic tones without interpreting glyphs or words',()=> {
+  for(const tone of ['info','success','warning','error','secondary'] as const) {const f=fixture([{kind:'agent',identity:'exact'}],{label:()=> 'Agent',status:()=>({label:'Same words',glyph:'?',tone})});assert.equal(f.root().children[0]?.querySelector('.tab-dot')?.dataset.tone,tone);assert.equal(f.rows()[0]?.querySelector('.conversation-state')?.dataset.tone,tone);assert.equal(f.root().children[0]?.querySelector('.tab-identity')?.textContent,'xact');event(f.rows()[0],'click');assert.equal(f.calls.at(-1),'pane-1:agent:exact');f.strip.destroy();}
 });
 test('owned drag moves across panes, retains the target node and does not accept an external drag', () => {
   const f=fixture(); f.split('pane-1','x','agent:b'); const source=f.root().children[1]; const target=f.root('pane-2').children[0]; assert.ok(source); assert.ok(target);

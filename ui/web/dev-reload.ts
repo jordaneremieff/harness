@@ -27,6 +27,11 @@ export type DevReloadNotice = {
   code: DevBuild['code'] | DevReloadHold | 'checkpoint' | 'restore' | 'storage' | 'stylesheet' | 'drain' | 'timeout' | 'ack' | 'release' | 'host';
   build?: DevBuild;
 };
+export function devReloadPresentation(notice: DevReloadNotice): {text: string; detail: string; retry: boolean} {
+  const labels: Record<DevReloadNotice['state'], string> = {idle:'', applied:'', ready:'Updating…', building:'Updating…', navigating:'Updating…', held:'Update paused', deferred:'Update paused', failed:'Update unavailable', offline:'Update unavailable', 'restart-required':'Restart required', reconnecting:'Reconnecting updates…'};
+  const retry = notice.retryable && (notice.state === 'deferred' || notice.state === 'offline' || notice.state === 'failed' && ['stylesheet', 'drain', 'ack'].includes(notice.code));
+  return {text:labels[notice.state], detail:`${notice.state} (${notice.code})`, retry};
+}
 export interface DevReloadHooks {
   /** Revision advances for user interaction, target changes and writes, not restoration itself. */
   interaction(): DevInteraction;
@@ -359,7 +364,7 @@ export class DevReload {
     if (this.latest && (build.revision < this.latest.revision || JSON.stringify(build) === JSON.stringify(this.latest))) return;
     this.attempts = 0; this.latest = build; this.serial++;
     if (!this.acknowledging) this.controller?.abort();
-    this.notice(build.status, build.code);
+    if (!this.ackBlocked) this.notice(build.status, build.code);
     if (this.work) this.queued = true; else void this.applyLatest();
   }
   private applyLatest(): Promise<void> {
@@ -370,7 +375,7 @@ export class DevReload {
     return this.run(async signal => {
       if (this.pendingAck) await this.ack(signal);
       if (!this.current(serial, signal)) return;
-      if (this.upToDate(build)) return;
+      if (this.upToDate(build)) {this.notice('idle'); return;}
       const state = this.interaction(); if (!state) return;
       if (build.change === 'css' && !this.leaseMissing) await this.css(build, state.revision, serial, signal);
       else await this.reload(build, state.revision, serial, signal);

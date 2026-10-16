@@ -10,7 +10,7 @@ import { ApiError, operation, request, reserve } from './transport.ts';
 import type { Composer } from './composer.ts';
 import { rankCommands } from './command-menu-state.ts';
 import { DECORATION_BYTES, DECORATION_LINES, DECORATION_SPANS } from './composer-syntax.ts';
-import { duplicateIdentityTails } from './tabs.ts';
+import { agentIdentityTails, agentName as agentDisplayName } from './tabs.ts';
 import { compactAge } from './format.ts';
 import { navigateOptions } from './list-navigation.ts';
 import { responseOutcome } from './conversation-presentation.ts';
@@ -54,7 +54,7 @@ function paletteEmpty(query: string, incomplete: boolean): HTMLElement {
   const message = element('p', 'secondary', `No results${query.trim() ? ` for “${query.trim()}”` : ''}.${incomplete ? ' The list is incomplete.' : ''}`);
   message.setAttribute('role', 'status'); return message;
 }
-function agentName(row: AgentRow): string { return row.name ?? row.handle ?? row.identity; }
+function agentName(row: AgentRow): string { return agentDisplayName(row.name, row.handle, row.identity); }
 function revealPaletteRow(container: HTMLElement, row: HTMLElement): void {
   if (container.clientHeight <= 0 || container.scrollHeight <= container.clientHeight) return;
   const top = container.getBoundingClientRect().top + container.clientTop;
@@ -371,7 +371,7 @@ export class Actions {
   }
   private agentEntries(chooseTarget?: (target: Target) => void): PaletteEntry[] {
     const now = Date.now(); const agents = this.ctx.agents().filter(row => !chooseTarget || !!row.identity);
-    const tails = duplicateIdentityTails(agents.map(row => ({name: agentName(row), identity: row.identity})));
+    const tails = agentIdentityTails(agents.map(row => ({name: agentName(row), identity: row.identity})));
     return agents.slice().sort((a, b) => agentOrder(a) - agentOrder(b)).map(row => ({name: agentName(row), tail: tails.get(row.identity), description: [this.ctx.agentStatus(row), compactAge(row.modifiedAt, now)].filter(Boolean).join(' · '), search: [row.identity, ...row.handle ? [row.handle] : []], title: row.identity, source: 'agent', enabled: true, run: () => chooseTarget ? chooseTarget({kind: 'agent', identity: row.identity}) : this.ctx.selectAgent(row)}));
   }
   sessionMenuEntries(agent = false): PaletteEntry[] {
@@ -394,8 +394,7 @@ export class Actions {
       const target = this.target(primary);
       entries.unshift({name: primary.extension?.title ?? primary.sessionName ?? primary.sessionId ?? 'Primary', description: 'Primary', source: 'primary', enabled: true, title: `primary:${primary.key}:${primary.epoch}`, search: ['primary', primary.key, primary.cwd, ...(primary.sessionId ? [primary.sessionId] : [])], run: () => chooseTarget ? chooseTarget(target) : this.ctx.selectPrimary()});
     }
-    const tails = duplicateIdentityTails(entries.map(item => ({name: item.name, identity: item.title ?? item.name})));
-    return entries.map(item => ({...item, tail: tails.get(item.title ?? item.name)}));
+    return entries;
   }
   palette(mode: 'commands' | 'goto' = 'commands', chooseTarget?: (target: Target) => void): void {
     let dispose = () => {};

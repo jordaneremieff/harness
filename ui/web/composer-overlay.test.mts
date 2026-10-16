@@ -62,7 +62,7 @@ test('overlay installs exact inert source, invalidates immediately and restores 
   editor.value = '`first`'; overlay.invalidate(); flush();
   const otherEditor = new NodeFake(), otherLayer = new NodeFake(); otherEditor.value = '`other`';
   const other = new ComposerOverlay(otherEditor as unknown as HTMLTextAreaElement, otherLayer as unknown as HTMLElement); other.invalidate(); flush();
-  const marks = registry.get('composer-string'); assert.ok(marks); assert.equal(marks.size, 2);
+  const marks = registry.get('composer-md-code'); assert.ok(marks); assert.equal(marks.size, 2);
   overlay.invalidate(); overlay.destroy(); assert.equal(frames.size, 0); assert.equal(editor.dataset.decorated, undefined); assert.equal(marks.size, 1); assert.equal(otherEditor.dataset.decorated, 'true');
   other.destroy(); assert.equal(registry.size, 0);
 });

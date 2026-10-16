@@ -3,13 +3,15 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import {TONES} from './highlight.ts';
 
 // CONTRAST_CSS selects an isolated stylesheet; colocated style.css is the normal source.
 const cssPath = process.env.CONTRAST_CSS
 	? resolve(process.env.CONTRAST_CSS)
 	: fileURLToPath(new URL("./style.css", import.meta.url));
 const css = readFileSync(cssPath, "utf8");
-const foregrounds = ["fg", "muted", "dim", "success", "error", "warning", "link"];
+const syntaxTokens = TONES.map(tone=>tone.startsWith('md-') ? tone : `syntax-${tone}`);
+const foregrounds = ["fg", "muted", "dim", "success", "error", "warning", "link", "accent", "info", ...syntaxTokens];
 // Every painted surface, including tool-status tints and diff rows, carries any foreground.
 const surfaces = ["canvas", "side", "raised", "code", "run-bg", "ok-bg", "err-bg", "add-bg", "del-bg"];
 // No inverted fills exist; the list stays explicit so a new one needs a deliberate model.
@@ -37,8 +39,8 @@ const decorativeHairlines = new Set([
 	".statusbar|border-top",
 	".extension-status-list|border",
 	".agent-message-panel|border-top",
-	".message-body th, .message-body td|border-bottom",
-	".message-body hr|border-top",
+	".markdown-content th, .markdown-content td|border-bottom",
+	".markdown-content:is(hr)|border-top",
 	".code-block > .copy|border",
 	".thinking > .stream-text|border-left",
 	".thinking-content|border-left",
@@ -58,9 +60,8 @@ const decorativeHairlines = new Set([
 const decorativeBackgrounds = new Set(["dialog::backdrop|var(--backdrop)", ".pane-split > .pane-divider::after|var(--rule)"]);
 // Graphic paint carries no text; meaningful hover/focus and selected marks still meet 3:1.
 const graphicForegrounds = new Map([
-  [".tab-dot", "muted"],
-  [".tab-dot[data-state=working]", "link"],
-  [".tab-dot[data-state=failed]", "error"],
+  ['.tab-dot', 'muted'],
+  ...['info','success','warning','error','secondary'].map((tone):[string,string]=>[`:is(.tab-dot, .conversation-state, .row-state, .state-glyph)[data-tone=${tone}]`, tone==='secondary'?'muted':tone]),
 ]);
 const graphicBackgrounds = new Map([
   [".pane-split > .pane-divider:hover::after", "edge"],
@@ -511,7 +512,17 @@ test('native insertion caret is measured as graphics without weakening text or i
   for (const value of ['#fff', 'transparent', 'auto', 'var(--unexpected)', 'var(--rule)', 'var(--accent, #fff)']) assert.ok(audit(`${css}\n.probe { caret-color: ${value}; }`).issues.some(issue => issue.includes('unmodeled caret color')), value);
   const weakened = audit(css.replace('--accent: #74b6d8', '--accent: #16181b'));
   assert.ok(weakened.measurements.some(row => row.kind === 'caret-declaration' && row.ratio < row.threshold));
-  assert.ok(audit(`${css}\n.probe { color: var(--accent); }`).issues.some(issue => issue.includes('non-token text color')));
+  const accentText = audit(`${css}\n.probe { color: var(--accent); }`); assert.deepEqual(accentText.issues, []); assert.ok(accentText.measurements.some(row=>row.source.startsWith('.probe ')&&row.kind==='text-declaration'&&row.threshold===4.5));
+});
+test('source highlights and rendered spans use identical complete foreground tokens',()=> {
+  const rules=parse(css);
+  for(const tone of TONES) {
+    const span=rules.find(rule=>rule.selector===`.syn-${tone}`), mark=rules.find(rule=>rule.selector===`.composer-colors::highlight(composer-${tone})`);
+    assert.ok(span&&mark,tone);assert.deepEqual(span.declarations,mark.declarations,tone);
+    assert.equal(span.declarations.length,1);assert.equal(span.declarations[0]?.property,'color');assert.equal(span.declarations[0]?.value,`var(--${tone.startsWith('md-')?tone:`syntax-${tone}`})`);
+  }
+  for(const selector of ['.markdown-content:is(h1, h2, h3, h4, h5, h6)','.markdown-content .markdown-inline-code','.markdown-content:is(blockquote)','.markdown-content:is(table)'])assert.ok(rules.some(rule=>rule.selector===selector),selector);
+  assert.throws(()=>audit(css.replace(/--syntax-property:\s*#[a-f0-9]{6};/i,'')),/lacks --syntax-property/);
 });
 test("all color declarations use modeled semantic tokens", () => assert.deepEqual(result.issues, []));
 test("graphic paint measures selected marks and divider hover/focus without opening a surface exception", () => {

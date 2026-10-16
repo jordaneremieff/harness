@@ -5,38 +5,16 @@ import { captureAnchor, layoutItems, restoreAnchor, visibleWindow } from './virt
 import type { LayoutItem, VirtualLayout } from './virtual.ts';
 import { absoluteTime, compactAge, isValidTimestamp, previewText, relativeTime, timestampDetails } from './format.ts';
 import { reconcileChildren } from './render.ts';
+import {agentIdentityTails, agentName} from './tabs.ts';
+import type {PresentationTone} from './conversation-presentation.ts';
 
 export type CachedPageSearch = {load: (cursor: string, signal: AbortSignal) => Promise<CachedRoster>; merge: (page: CachedRoster) => void};
 const SEARCH_PAGE_LIMIT = 20;
 const ROW_HEIGHT = 20;
 const RECENT_AGE = 24 * 60 * 60 * 1000;
 type RowNode = {node: HTMLElement; select: HTMLButtonElement; state: HTMLElement; name: HTMLElement; identity: HTMLElement; ageButton: HTMLButtonElement; message: HTMLButtonElement; age: HTMLTimeElement; source: AgentRow; absolute: boolean};
-function rowName(row: AgentRow): string { return row.name ?? row.handle ?? row.identity; }
-function identitySuffix(identity: string, tails: Map<string, number>[]): string {
-  const colon = identity.lastIndexOf(':');
-  if (colon >= 0 && colon < identity.length - 1) return identity.slice(colon + 1);
-  for (const [index, counts] of tails.entries()) {
-    const tail = identity.slice(-(index + 4));
-    if (counts.get(tail) === 1) return tail;
-  }
-  return identity;
-}
-function duplicateLabels(rows: AgentRow[]): Map<string, string> {
-  const groups = new Map<string, AgentRow[]>();
-  for (const row of rows) { const name = rowName(row); const group = groups.get(name) ?? []; group.push(row); groups.set(name, group); }
-  const labels = new Map<string, string>();
-  for (const group of groups.values()) {
-    if (group.length < 2) continue;
-    const tails = Array.from({length: 5}, (_, index) => {
-      const counts = new Map<string, number>();
-      for (const row of group) { const tail = row.identity.slice(-(index + 4)); counts.set(tail, (counts.get(tail) ?? 0) + 1); }
-      return counts;
-    });
-    for (const row of group) labels.set(row.identity, identitySuffix(row.identity, tails));
-  }
-  return labels;
-}
-export type RosterStatus = {glyph: string; label: string; tool?: AgentRow['currentTool']};
+function rowName(row: AgentRow): string {return agentName(row.name, row.handle, row.identity);}
+export type RosterStatus = {glyph: string; label: string; tone?: PresentationTone; name?: string; tail?: string; tool?: AgentRow['currentTool']};
 function modelText(row: AgentRow): string {
   if (!row.model) return '';
   const thinking = row.model.thinkingLevel ?? row.thinkingLevel;
@@ -64,6 +42,8 @@ export class Roster {
   private arrivals = new Map<string, {source: AgentRow; now: number}>();
   private gaps = new Map<string, HTMLElement>();
   private rows: AgentRow[] = [];
+  private tails = new Map<string, string>();
+  private displayName(row: AgentRow): string {const status = this.resolvedStatus(row), name = status.name ?? rowName(row), tail = status.tail ?? this.tails.get(row.identity); return tail ? `${name} · ${tail}` : name;}
   private selected?: string;
   private message?: (identity: string) => void;
   private resumes = new Set<string>();
@@ -125,8 +105,9 @@ export class Roster {
   private messageAction(cached: RowNode): void {
     cached.message.hidden = this.selected === cached.source.identity || !this.message;
     const resume = this.resumes.has(cached.source.identity);
-    cardActionLabel(cached.message, resume ? 'Resume' : 'Message', `${resume ? 'Resume message to' : 'Message'} ${rowName(cached.source)} · ${cached.source.identity}`); cached.node.dataset.action = cached.message.hidden ? '' : resume ? 'resume' : 'message';
-    cached.message.setAttribute('aria-label', `${this.resumes.has(cached.source.identity) ? 'Resume message to' : 'Message'} ${rowName(cached.source)} · ${cached.source.identity}`);
+    const label = `${resume ? 'Resume message to' : 'Message'} ${this.displayName(cached.source)} · ${cached.source.identity}`;
+    cardActionLabel(cached.message, resume ? 'Resume' : 'Message', label); cached.node.dataset.action = cached.message.hidden ? '' : resume ? 'resume' : 'message';
+    cached.message.setAttribute('aria-label', label);
   }
   private query(): string { return byId<HTMLInputElement>('agent-search').value.trim().toLocaleLowerCase(); }
   private async searchCached(more = false): Promise<void> {
@@ -242,7 +223,8 @@ export class Roster {
     this.layout = layoutItems(rows.map(row => row.identity), this.heights, ROW_HEIGHT);
     if (anchor) pins.add(anchor.id);
     const selected = rows.length > 100 ? visibleWindow(this.layout, this.node.scrollTop, this.node.clientHeight, {pins}).items : this.layout.items;
-    const children = this.children(selected, rows, duplicateLabels(this.rows));
+    this.tails = agentIdentityTails(this.rows.map(row => ({name:rowName(row), identity:row.identity})));
+    const children = this.children(selected, rows, this.tails);
     const controls = this.controls(olderCount, query);
     if (!rows.length && !olderCount) children.push(this.emptyState());
     children.push(...controls);
@@ -297,18 +279,17 @@ export class Roster {
   }
   private row(row: AgentRow, identity: string): RowNode {
     const cached = this.cache.get(row.identity) ?? this.createRow(row);
-    const state = this.resolvedStatus(row); statusGlyph(cached.state, state.glyph); cached.state.title = state.label; setText(cached.name, rowName(row));
-    setText(cached.identity, identity); cached.identity.hidden = !identity; cached.identity.title = `Agent ID: ${row.identity}`;
+    const state = this.resolvedStatus(row); statusGlyph(cached.state, state.glyph); cached.state.title = state.label; cached.state.dataset.tone = state.tone ?? 'secondary'; setText(cached.name, state.name ?? rowName(row));
+    identity = state.tail ?? identity; setText(cached.identity, identity); cached.identity.hidden = !identity; cached.identity.title = `Agent ID: ${row.identity}`;
     cached.identity.setAttribute('aria-label', cached.identity.title);
-    cached.state.dataset.state = row.availability === 'live' ? state.label.toLocaleLowerCase() : 'retained';
     cached.node.dataset.live = String(row.availability === 'live');
     cached.node.dataset.tool = String(!!state.tool);
     const reported = !state.tool && row.currentTool ? `Last reported tool · ${row.currentTool.name} · ${row.currentTool.argument}` : '';
     const description = [modelText(row), activityLine({...row, currentTool: state.tool}, state.label), reported, publishedRetryDescription(row)].filter(Boolean).join('\n');
     cached.select.title = description; cached.select.setAttribute('aria-description', description);
     cached.select.setAttribute('aria-current', row.identity === this.selected ? 'page' : 'false');
-    cached.select.setAttribute('aria-label', `${rowName(row)} · ${row.identity} · ${state.label}`);
-    cached.node.setAttribute('aria-label', rowName(row));
+    cached.select.setAttribute('aria-label', `${this.displayName(row)} · ${row.identity} · ${state.label}`);
+    cached.node.setAttribute('aria-label', this.displayName(row));
     cached.node.title = `${row.identity}\n${state.label}\n${row.ownerLabel ?? row.availability}`;
     cached.source = row; this.messageAction(cached); this.updateAge(cached);
     return cached;

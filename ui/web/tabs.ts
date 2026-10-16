@@ -43,7 +43,7 @@ export class FileBrowseState {
   }
 }
 export function duplicateTabTails(tabs:ConversationTab[],label:(tab:ConversationTab)=>string):Map<string,string> {
-  const tails = duplicateIdentityTails(tabs.filter(tab=>tab.kind !== 'file').map(tab=>({name:label(tab),identity:tab.kind === 'agent' ? tab.identity : 'primary'})));
+  const tails = agentIdentityTails(tabs.filter((tab):tab is Extract<ConversationTab,{kind:'agent'}>=>tab.kind === 'agent').map(tab=>({name:label(tab),identity:tab.identity})));
   for (const tab of tabs) {
     if (tab.kind !== 'file') continue;
     const peers = tabs.filter((peer):peer is Extract<ConversationTab,{kind:'file'}>=>peer.kind === 'file' && label(peer) === label(tab));
@@ -62,26 +62,41 @@ export function duplicateTabTails(tabs:ConversationTab[],label:(tab:Conversation
   }
   return tails;
 }
-function agentTail(identity: string, counts: Map<string, number>[], conversations: Map<string, number>): string {
-  const colon = identity.lastIndexOf(':');
-  if (colon >= 0 && colon < identity.length - 1 && conversations.get(identity.slice(colon + 1)) === 1) return identity.slice(colon + 1);
-  const index = counts.findIndex((values, index) => values.get(identity.slice(-(index + 4))) === 1);
-  return index < 0 ? identity : identity.slice(-(index + 4));
+export function agentName(name: string | undefined, handle: string | undefined, identity: string, reported?: string): string {
+  return [reported, name, handle].find(value => !!value?.trim() && value.trim() !== identity) ?? 'Agent';
 }
-export function duplicateIdentityTails(rows: {name: string; identity: string}[]): Map<string, string> {
-  const groups = new Map<string, string[]>();
-  for (const row of rows) { const name = row.name; const group = groups.get(name) ?? []; group.push(row.identity); groups.set(name, group); }
-  const labels = new Map<string, string>();
-  for (const group of groups.values()) {
-    if (group.length < 2) continue;
-    const conversations = new Map<string, number>();
-    for (const identity of group) { const tail = identity.slice(identity.lastIndexOf(':') + 1); conversations.set(tail, (conversations.get(tail) ?? 0) + 1); }
-    const counts = Array.from({length: 5}, (_, index) => {
-      const values = new Map<string, number>();
-      for (const identity of group) { const tail = identity.slice(-(index + 4)); values.set(tail, (values.get(tail) ?? 0) + 1); }
-      return values;
-    });
-    for (const identity of group) labels.set(identity, agentTail(identity, counts, conversations));
-  }
+function storageTail(identity: string, length: number): string {
+  const colon = identity.lastIndexOf(':');
+  return colon < 0 ? identity.slice(-length) : `${identity.slice(0, colon).slice(-length)}${identity.slice(colon)}`;
+}
+function identityCounts(values: string[]): Map<string, number> {
+  const counts=new Map<string,number>();for(const value of values)counts.set(value,(counts.get(value)??0)+1);return counts;
+}
+function extendIdentityTails(group: string[], preferred: Set<string>, lengths: Map<string,number>, labels: Map<string,string>): boolean {
+  const counts=identityCounts(group.map(identity=>labels.get(identity)??identity));
+  const collisions=group.filter(identity=>(counts.get(labels.get(identity)??identity)??0)>1);
+  for(const identity of collisions)if(!preferred.has(identity)){const length=(lengths.get(identity)??4)+1;lengths.set(identity,length);labels.set(identity,storageTail(identity,length));}
+  return collisions.length>0;
+}
+function identityGroup(group: string[], labels: Map<string,string>): void {
+  const conversations=identityCounts(group.filter(identity=>identity.includes(':')).map(identity=>identity.slice(identity.lastIndexOf(':')+1)));
+  const preferred=new Set(group.filter(identity=>identity.includes(':')&&conversations.get(identity.slice(identity.lastIndexOf(':')+1))===1));
+  const lengths=new Map(group.map(identity=>[identity,4]));
+  for(const identity of group)labels.set(identity,preferred.has(identity)?identity.slice(identity.lastIndexOf(':')+1):storageTail(identity,4));
+  const bound=group.reduce((maximum,identity)=>Math.max(maximum,identity.length),0)+1;
+  for(let pass=0;pass<bound;pass++)if(!extendIdentityTails(group,preferred,lengths,labels))return;
+  for(const identity of group)labels.set(identity,identity);
+}
+type NamedIdentity = {name: string; identity: string};
+/** Generic captions keep their supplied names; only duplicate captions need tails. */
+export function duplicateIdentityTails(rows: NamedIdentity[]): Map<string, string> {return identityTails(rows, false);}
+/** Agent captions reject identity fallbacks and keep unnamed singleton suffixes. */
+export function agentIdentityTails(rows: NamedIdentity[]): Map<string, string> {
+  return identityTails(rows.map(row=>({...row,name:agentName(row.name,undefined,row.identity)})), true);
+}
+function identityTails(rows: NamedIdentity[], agents: boolean): Map<string, string> {
+  const groups=new Map<string,Set<string>>(),labels=new Map<string,string>();
+  for(const {name,identity} of rows){const group=groups.get(name)??new Set<string>();group.add(identity);groups.set(name,group);}
+  for(const [name,identities]of groups)if(identities.size>1||agents&&name==='Agent')identityGroup([...identities],labels);
   return labels;
 }

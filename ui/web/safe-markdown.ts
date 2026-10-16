@@ -6,7 +6,7 @@ import { highlight } from './highlight.ts';
 
 function inlineNode(node: MarkdownInline): Node {
   if (node.type === 'text') return document.createTextNode(node.text);
-  if (node.type === 'code') return element('code', undefined, node.text);
+  if (node.type === 'code') return element('code', 'markdown-inline-code', node.text);
   if (node.type === 'omitted') return element('span', 'secondary', node.label);
   if (node.type === 'link') {
     const link = element('a'); link.href = node.href; link.rel = 'noopener noreferrer'; link.target = '_blank'; link.append(inline(node.children)); return link;
@@ -63,6 +63,9 @@ function tableBlock(node: Extract<MarkdownBlock, {type: 'table'}>): HTMLElement 
   table.append(body); return table;
 }
 function block(node: MarkdownBlock): HTMLElement {
+  const result = markdownBlock(node); result.className = [result.className, 'markdown-content'].filter(Boolean).join(' '); return result;
+}
+function markdownBlock(node: MarkdownBlock): HTMLElement {
   switch (node.type) {
     case 'paragraph': { const p = element('p'); p.append(inline(node.children)); return p; }
     case 'heading': { const h = element(`h${Math.min(6, Math.max(1, node.level))}` as 'h1'); h.append(inline(node.children)); return h; }

@@ -20,7 +20,7 @@ test('fence identity, closing length and malformed labels never mutate source', 
 });
 test('dense inline runs keep nearest equal-length pairing across the span bound', () => {
   const text = '`x` '.repeat(DECORATION_SPANS), ranges = composerSyntax(text);assert.ok(ranges);assert.equal(ranges.length,DECORATION_SPANS);
-  for (let i = 0;i < ranges.length;i++) assert.deepEqual(ranges[i],{start:i*4,end:i*4+3,tone:'string'});
+  for (let i = 0;i < ranges.length;i++) assert.deepEqual(ranges[i],{start:i*4,end:i*4+3,tone:'md-code'});
   assert.deepEqual(composerSyntax('a `one `` nested` ``two``` tail')?.map(range=>[range.start,range.end]),[[2,17]]);
 });
 test('every decoration bound exits to whole-source plain text', () => {

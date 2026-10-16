@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test, {type TestContext} from 'node:test';
 import {AssetGeneration, AssetGenerations} from '../server/asset-generations.mts';
-import {DevReload, browserDevReloadEnvironment, validateDevReloadCheckpoint, type DevBuild, type DevInteraction, type DevReloadCheckpoint, type DevReloadEnvironment, type DevReloadHooks, type DevReloadNotice, type DevReloadView, type DevStylesheet} from './dev-reload.ts';
+import {DevReload, devReloadPresentation, browserDevReloadEnvironment, validateDevReloadCheckpoint, type DevBuild, type DevInteraction, type DevReloadCheckpoint, type DevReloadEnvironment, type DevReloadHooks, type DevReloadNotice, type DevReloadView, type DevStylesheet} from './dev-reload.ts';
 
 const A = 'a'.repeat(64), B = 'b'.repeat(64), C = 'c'.repeat(64);
 const OLD = '1'.repeat(24), NEW = '2'.repeat(24);
@@ -93,6 +93,22 @@ class Fixture {
   releases() {return this.posts.filter(post => post.path === '/api/dev/release');}
 }
 
+test('already-current ready publications settle quietly through the real update path',async()=> {
+  const f=new Fixture(),dev=f.dev();await dev.ready;f.emit(build(1,A,'reload'));await flush();
+  const notice=f.notices.at(-1);assert.ok(notice);assert.equal(notice.state,'idle');assert.equal(devReloadPresentation(notice).text,'');assert.equal(f.drains,0);assert.equal(f.styles.length,0);assert.equal(f.acks().length,1);dev.destroy();
+});
+test('an already-current CSS generation never hides its pending acknowledgment failure',async()=> {
+  const f=new Fixture(),dev=f.dev();await dev.ready;f.fetch=()=>response(500);f.emit(build(1,B));await flush();f.loaded();await flush();
+  assert.equal(f.notices.at(-1)?.state,'failed');assert.equal(f.notices.at(-1)?.code,'ack');
+  f.emit(build(2,B));await flush();assert.equal(f.notices.at(-1)?.state,'failed');assert.equal(f.notices.at(-1)?.code,'ack');
+  await dev.resume();assert.equal(f.notices.at(-1)?.state,'failed');f.fetch=()=>response();await dev.resume();await flush();
+  const notice=f.notices.at(-1);assert.ok(notice);assert.equal(notice.state,'idle');assert.equal(devReloadPresentation(notice).text,'');assert.equal(f.styles.length,1);dev.destroy();
+});
+test('update footer words keep exceptional actions separate from exact technical detail',()=> {
+  const labels:Record<DevReloadNotice['state'],string>={idle:'',applied:'',ready:'Updating…',building:'Updating…',navigating:'Updating…',held:'Update paused',deferred:'Update paused',failed:'Update unavailable',offline:'Update unavailable','restart-required':'Restart required',reconnecting:'Reconnecting updates…'};
+  for(const [state,text]of Object.entries(labels)) {const view=devReloadPresentation({state:state as DevReloadNotice['state'],code:'none',retryable:true});assert.equal(view.text,text);assert.doesNotMatch(view.text,/Development|none|ready/);assert.equal(view.detail,`${state} (none)`);}
+  for(const [state,code,retry]of [['failed','ack',true],['failed','restore',false],['deferred','ime',true],['offline','none',true],['restart-required','backend-change',false]] as const){assert.equal(devReloadPresentation({state,code,retryable:true}).retry,retry);assert.equal(devReloadPresentation({state,code,retryable:false}).retry,false);}
+});
 test('missing or malformed metadata is inert, including the deferred browser default', async () => {
   for (const [generation, client] of [[null, OLD], [A, null], ['A'.repeat(64), OLD], [A, 'bad']]) {
     const f = new Fixture(); f.generation = generation ?? null; f.client = client ?? null;
@@ -343,7 +359,7 @@ test('reconnect reconciles retained CSS acknowledgment before strict lease compa
     f.emit(); await flush(); f.loaded(); await flush(); assert.equal(f.notices.at(-1)?.code, 'ack');
     const start = f.posts.length; dev.reconnect(); const resumed = dev.resume(); await flush(); await resumed;
     assert.deepEqual(f.posts.slice(start).map(post => post.path), ['/api/dev/ack', '/api/dev/lease']);
-    assert.equal(serverCss, B); assert.equal(f.sources.length, 2); assert.equal(f.notices.at(-1)?.state, 'applied');
+    assert.equal(serverCss, B); assert.equal(f.sources.length, 2); assert.equal(f.notices.at(-1)?.state, 'idle');
     assert.equal(f.navigations.length, 0); assert.equal(f.clock.timers.size, 0);
   }
 });

@@ -1,11 +1,30 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type {ConversationTab, Workspace} from '../shared/api.ts';
-import {activeTab, closeTab, duplicateIdentityTails, duplicateTabTails, FileBrowseState, layoutTarget, MAX_TABS, openTab, switchTab, tabForTarget, workspaceLayout} from './tabs.ts';
+import {activeTab, agentIdentityTails, agentName, closeTab, duplicateIdentityTails, duplicateTabTails, FileBrowseState, layoutTarget, MAX_TABS, openTab, switchTab, tabForTarget, workspaceLayout} from './tabs.ts';
 import {createPaneLayout, paneById, paneLeaves, splitPane} from './pane-layout.ts';
 const agent = (identity: string): ConversationTab => ({kind: 'agent', identity});
 const base = () => createPaneLayout([{kind: 'primary'}]);
 const workspace = (layout = base()): Workspace => ({id: 'fixture', revision: 0, primaryKey: 'primary-key', conversationLayout: layout});
+
+test('unnamed and duplicate agent names retain unique nonrouting suffixes across storage identities',()=> {
+  const ids=['00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000002'];
+  const rows=ids.map(identity=>({identity,name:identity})), tails=agentIdentityTails(rows);
+  assert.deepEqual(ids.map(id=>tails.get(id)),['0001','0002']);assert.equal(agentName(ids[0],'writer',ids[0]??''),'writer');assert.equal(agentName('  ',undefined,ids[0]??''),'Agent');
+  const conversations=ids.map(identity=>({identity:`${identity}:2`,name:'Review'})), same=duplicateIdentityTails(conversations);
+  assert.deepEqual(conversations.map(row=>same.get(row.identity)),['0001:2','0002:2']);
+  const reversed=duplicateIdentityTails([...conversations].reverse());for(const row of conversations)assert.equal(same.get(row.identity),reversed.get(row.identity));
+  const first=conversations[0],second=conversations[1];assert.ok(first&&second);const renamed=duplicateIdentityTails([{...first,name:'Named'},second]);assert.equal(renamed.get(first.identity),undefined);
+  assert.deepEqual(rows.map(row=>row.identity),ids);
+});
+test('generic blank or identity captions do not adopt agent singleton suffixes', () => {
+  for (const name of ['', 'session-1234']) assert.equal(duplicateIdentityTails([{name, identity: 'session-1234'}]).size, 0);
+  assert.equal(agentIdentityTails([{name: '', identity: 'session-1234'}]).get('session-1234'), '1234');
+});
+test('Primary captions never derive an agent suffix from the internal tab key', () => {
+  const tails = duplicateTabTails([{kind: 'primary'}, agent('store:conversation')], () => 'Review');
+  assert.equal(tails.get('primary'), undefined); assert.equal(tails.get('store:conversation'), undefined);
+});
 
 test('plain browsing reuses only a transient unmodified view and kept or held views remain',()=> {
   const browse = new FileBrowseState(), file = (path:string)=>({kind:'file' as const,rootId:'r',path});let layout = base();

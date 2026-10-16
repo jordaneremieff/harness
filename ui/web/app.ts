@@ -8,7 +8,7 @@ import {FileWatch} from './file-watch.ts';
 import {movedWorkspaceFiles, type FileMove} from './file-identity.ts';
 import {FilesViews} from './files-views.ts';
 import {FileRootChoice} from './file-root.ts';
-import { activeTab, closeTab, duplicateTabTails, FileBrowseState, layoutTarget, openTab, switchTab, tabForTarget, tabKey, workspaceLayout } from './tabs.ts';
+import { activeTab, agentIdentityTails, agentName, closeTab, duplicateTabTails, FileBrowseState, layoutTarget, openTab, switchTab, tabForTarget, tabKey, workspaceLayout } from './tabs.ts';
 import { paneLeaves, paneById, activatePaneTab, movePaneTab, resizePaneSplit, minimumPaneSize, paneSplitGeometry, splitPane, normalizePaneLayout, samePaneLayout, type PaneLeaf } from './pane-layout.ts';
 import { TabStrip } from './tabs-view.ts';
 import { cardAction, controlIcon, type CardIcon } from './card-icons.ts';
@@ -42,8 +42,8 @@ import { primaryBusy, primaryEmpty } from './primary-presentation.ts';
 import { inputOperation, operationLabel } from './operation-label.ts';
 import { PreferenceQueue } from './preference-queue.ts';
 import { BrowserDiagnostics } from './diagnostics.ts';
-import {DevReload, type DevReloadCheckpoint, type DevReloadHooks, type DevCheckpointEntry, type DevReloadHold} from './dev-reload.ts';
-import { conversationPresentation, presentationGlyph, projectIdentity, composerFolder, agentViewStatus } from './conversation-presentation.ts';
+import {DevReload, devReloadPresentation, type DevReloadCheckpoint, type DevReloadHooks, type DevCheckpointEntry, type DevReloadHold} from './dev-reload.ts';
+import { conversationPresentation, presentationGlyph, presentationName, projectIdentity, composerFolder, agentViewStatus } from './conversation-presentation.ts';
 import type { ConversationPresentation } from './conversation-presentation.ts';
 import { newerOperation, mergeOperationMap } from './operation-state.ts';
 import { ApiError, connect, errorMessage, operation, request, setRequestTiming } from './transport.ts';
@@ -252,7 +252,8 @@ const paneRegions = new Map<string, {node: HTMLElement; tabs: HTMLElement; conte
 const paneSplits = new Map<string, {node: HTMLElement; handle: HTMLElement; resizer?: Resizer; extent?: number}>();
 const tabStrip = new TabStrip({layout: currentLayout, activate: activateConversationTab, close: key => applyLayout(closeTab(currentLayout(), key)),
   move: (key, pane, index) => {fileBrowse.keep(key);applyLayout(movePaneTab(currentLayout(), key, pane, index));}, label: tabLabel,keep:key=>fileBrowse.keep(key),
-  status: tab => { if (tab.kind === 'file') {const owner = state.workspace && filesViews.owner(state.workspace.id,tab);return {label:owner?.modified ? 'Modified' : '',glyph:owner?.modified ? '•' : ''};}const view = tabPresentation(tab); return {label: [view.activity, view.tool?.name].filter(Boolean).join(' · '), glyph: presentationGlyph(view)}; },
+  identity: tab => tab.kind !== 'file' ? tabPresentation(tab).identityTail : undefined,
+  status: tab => { if (tab.kind === 'file') {const owner = state.workspace && filesViews.owner(state.workspace.id,tab);return {label:owner?.modified ? 'Modified' : '',glyph:owner?.modified ? '•' : '',tone:owner?.modified ? 'warning' : 'secondary'};}const view = tabPresentation(tab); return {label: [view.activity, view.tool?.name].filter(Boolean).join(' · '), glyph: presentationGlyph(view), tone:view.tone}; },
   overflow: (overflow, pane) => { const region = paneRegions.get(pane); if (region) region.menu.dataset.overflow = String(overflow); }},
   {panes: () => [...paneRegions].map(([id, pane]) => ({id, tabs: pane.tabs, controls: [...controllers.values()].find(owner => stableViews().slot(owner.root) === pane.content)?.root.id ?? pane.content.id})), conversations: byId('sidebar-conversations')});
 let fileActionStatus = '';
@@ -342,7 +343,7 @@ const recovery = new Recovery({snapshot: currentSnapshot, reload, modal});
 const roster = new Roster(row => { void selectAgent(row).catch(showError); }, action => { if (action === 'refresh') refreshRoster(); else moreRoster(); }, {
   load: (cursor, signal) => request<import('../shared/api.ts').CachedRoster>(`/api/agents?limit=20&cursor=${encodeURIComponent(cursor)}`, 'GET', undefined, undefined, signal),
   merge: page => { state = mergeRosterPage(state, page); renderRoster(); },
-}, openAgentMessage, row => { const view = presentation({kind: 'agent', identity: row.identity}); return {glyph: presentationGlyph(view), label: view.activity, tool: view.tool}; });
+}, openAgentMessage, row => { const view = presentation({kind: 'agent', identity: row.identity}); return {glyph: presentationGlyph(view), label: view.activity, tool: view.tool, tone:view.tone, name:view.name, tail:view.identityTail}; });
 function openAgentMessage(identity: string): void {
   let controller: ConversationController; try {controller = conversationController({kind: 'agent', identity});} catch (error) {showError(error); return;}
   controller.messageRetention = {};
@@ -451,13 +452,24 @@ function agentRow(identity: string): AgentRow | undefined {
   const availability = state.agentAvailability.get(identity);
   return row && availability ? {...row, availability: availability.state, capabilities: availability.capabilities} : row;
 }
+let namesRoster = state.roster, namesConversations = state.conversations, identityTails = new Map<string, string>();
+function presentationIdentityTails(): Map<string, string> {
+  if (namesRoster !== state.roster || namesConversations !== state.conversations) {
+    namesRoster = state.roster; namesConversations = state.conversations;
+    const names = new Map([...state.roster.values()].map(row => [row.identity, {identity:row.identity, name:agentName(row.name, row.handle, row.identity)}]));
+    for (const conversation of state.conversations.values()) if (conversation.target.kind === 'agent') {const identity = conversation.target.identity, row = state.roster.get(identity); names.set(identity, {identity, name:agentName(row?.name, row?.handle, identity, conversation.frame?.status.name)});}
+    identityTails = agentIdentityTails([...names.values()]);
+  }
+  return identityTails;
+}
+function targetIdentityTail(target?: Target): string | undefined {return target?.kind === 'agent' ? presentationIdentityTails().get(target.identity) : undefined;}
 function presentation(target?: Target): ConversationPresentation {
   const row = target?.kind === 'agent' ? agentRow(target.identity) : undefined;
   const controller = target && state.workspace ? controllers.get(controllerKey(state.workspace.id, target)) : undefined;
   const conversation = target ? state.conversations.get(targetIdentity(target)) : undefined;
   const tool = target?.kind === 'primary' ? [...conversation?.tools.values() ?? []].findLast(item => item.phase !== 'end') : undefined;
   return conversationPresentation({target, primary: target?.kind === 'primary' ? state.primaries.get(target.key) : undefined,
-    row, availability: target?.kind === 'agent' && !controller?.connection && !controller?.connectionError ? state.agentAvailability.get(target.identity) : undefined,
+    row, identityTail: targetIdentityTail(target), availability: target?.kind === 'agent' && !controller?.connection && !controller?.connectionError ? state.agentAvailability.get(target.identity) : undefined,
     negotiated: target?.kind === 'agent' && controller?.connection ? {identity: target.identity, ...controller.connection} : undefined,
     entries: conversation ? conversationBlocks(conversation) : undefined,
     frame: target ? state.conversations.get(targetIdentity(target))?.frame : undefined, tool: tool ? {name: tool.name, argument: tool.argumentText ?? ''} : undefined, connected});
@@ -471,7 +483,7 @@ function renderControlAttribution():void {
 }
 function fileStatusNotice():string {return fileActionStatus || fileWatch.status;}
 function updateConversationStatus(target: Target | undefined, view: ConversationPresentation, notice: string): void {
-  workbenchStatus.update(target?.kind ?? 'primary', view.name, notice || view.activity, target?.kind === 'agent' ? target.identity : target?.key);
+  workbenchStatus.update(target?.kind ?? 'primary', presentationName(view), notice || view.activity, target?.kind === 'agent' ? target.identity : target?.key);
   byId('workbench-activity').title = notice ? '' : view.detail ?? '';
 }
 function renderWorkbenchStatus(): void {
@@ -518,7 +530,7 @@ function renderIdentity(): void {
     control.setAttribute('aria-label', 'Choose working folder');
     control.setAttribute('aria-description', project.path ?? 'No working folder selected');
   }
-  document.title = view.activity ? `Pi · ${view.name} · ${view.activity}` : `Pi · ${project.name}`;
+  document.title = view.activity ? `Pi · ${presentationName(view)} · ${view.activity}` : `Pi · ${project.name}`;
   for (const controller of controllers.values()) renderObserved(controller, connected || !presentation(controller.target).activity);
 }
 function renderObserved(controller:ConversationController, hide:boolean):void {
@@ -1019,7 +1031,7 @@ function renderController(controller: ConversationController, deferred = false, 
     controller.composer.attach(controller.workspaceId, saved);
   } else prepareController(controller);
   controller.composer.receipts(state.operations.values());
-  const view = presentation(controller.target); controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + view.name, controllerGuidance(controller, view));
+  const view = presentation(controller.target); controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + presentationName(view), controllerGuidance(controller, view));
   controller.composer.availability(connected, !!saved && view.input, view.busy, selecting);
   if (firstDraft && !controller.passive && !controller.root.hidden && sameTarget(layoutTarget(currentLayout(), primaryTarget()) ?? undefined, controller.target) && document.activeElement === document.body) controller.composer.focus();
   controller.elements.root.hidden = !saved; renderObserved(controller, controller.target.kind === 'agent' || connected || !view.activity);
@@ -1103,7 +1115,7 @@ function primaryNavigation(item?: PrimaryView): void {
   const view = presentation(item ? {kind: 'primary', key: item.key, epoch: item.epoch} : undefined);
   const glyph = presentationGlyph(view);
   const status = byId('primary-row-state'); setText(status, glyph);
-  status.dataset.state = view.busy ? 'running' : glyph === '!' ? 'failed' : view.input ? 'idle' : 'none';
+  status.dataset.tone = view.tone;
   setText(byId('primary-row-title'), item?.extension?.title ?? item?.sessionName ?? item?.sessionId ?? 'no session');
   setText(byId('primary-row-meta'), item && view.activity !== 'Ready' ? primaryState(item) : '');
 }
@@ -1160,8 +1172,8 @@ function renderMessagePanel(): void {
   const captured = messageTarget.current, panel = byId('agent-message-panel'); panel.hidden = !captured;
   if (!captured) {clearMessageProjections(); workspaceViews?.sync(); return;}
   if (!messageTarget.valid(captured)) {closeMessagePanel(false); return;}
-  const target = {kind: 'agent' as const, identity: captured.identity}, controller = conversationController(target), row = agentRow(captured.identity);
-  setText(byId('agent-message-name'), row?.name ?? row?.handle ?? 'Agent'); setText(byId('agent-message-identity'), captured.identity); byId('agent-message-identity').title = captured.identity;
+  const target = {kind: 'agent' as const, identity: captured.identity}, controller = conversationController(target), name = presentationName(presentation(target));
+  setText(byId('agent-message-name'), name); setText(byId('agent-message-identity'), captured.identity); byId('agent-message-identity').title = captured.identity;
   renderMessageStatus(captured); renderMessageRecovery(captured.preparing === true);
   if (captured.prepared) {
     const prepared = captured.prepared.targetState, current = state.targets.get(prepared.targetKey);
@@ -1169,7 +1181,7 @@ function renderMessagePanel(): void {
     state = {...state, targets: new Map(state.targets).set(saved.targetKey, saved)}; controller.saved = saved; controller.composer.attach(captured.workspaceId, saved);
   } else controller.composer.attachRetained(captured.workspaceId, target);
   placeMessageEditor(controller, panel);
-  const ready = messageTarget.ready; controller.composer.recipient((ready ? 'Message ' : 'Draft for ') + (row?.name ?? row?.handle ?? captured.identity), ready || !captured.prepared || captured.invalidated ? '' : 'Connect this agent to send.');
+  const ready = messageTarget.ready; controller.composer.recipient((ready ? 'Message ' : 'Draft for ') + name, ready || !captured.prepared || captured.invalidated ? '' : 'Connect this agent to send.');
   controller.composer.availability(connected, ready, false, selecting); controller.composer.receipts(state.operations.values()); controllerNode(controller, 'stop').hidden = true;
   renderWorkbenchStatus();
 }
@@ -1227,7 +1239,7 @@ function controllerGuidance(controller: ConversationController, view: Conversati
   return controller.target.kind === 'agent' ? '' : view.guidance;
 }
 function renderAgentRecipient(identity: string, view: ConversationPresentation = presentation({kind: 'agent', identity})): void {
-  agentComposer().recipient(`${view.input ? 'Message' : 'Draft for'} ${view.name}`, '');
+  agentComposer().recipient(`${view.input ? 'Message' : 'Draft for'} ${presentationName(view)}`, '');
 }
 function renderStoredAgent(identity: string, _row?: AgentRow): void {
   renderAgentState(conversationController({kind: 'agent', identity}));
@@ -1661,7 +1673,7 @@ function paneTabChoices(leaf: PaneLeaf, layout: ConversationLayout): ContextItem
   const tabs = paneLeaves(layout.root).flatMap(pane => pane.tabs);
   const tails = duplicateTabTails(tabs,tabLabel);
   return leaf.tabs.map(tab => {
-    const name = tabLabel(tab), tail = tails.get(tab.kind === 'file' ? tabKey(tab) : tab.kind === 'agent' ? tab.identity : 'primary');
+    const name = tabLabel(tab), tail = tab.kind === 'file' ? tails.get(tabKey(tab)) : tabPresentation(tab).identityTail ?? tails.get(tab.kind==='agent'?tab.identity:'primary');
     return {label: tail ? `${name} · ${tail}` : name, description: tab.kind === 'file' ? tab.path : tabPresentation(tab).activity, checked: tabKey(tab) === leaf.active, run: () => activateConversationTab(leaf.id, tabKey(tab))};
   });
 }
@@ -1946,8 +1958,9 @@ async function initializeDevReload(current:()=>boolean): Promise<void> {
     captureCssState: captureDevCssState, afterCssApply: applyDevCssState,
     status: status => {
       devNavigating = status.state === 'navigating'; notice.replaceChildren();
-      if (!['idle', 'applied'].includes(status.state)) notice.append(element('span', undefined, `Development update: ${status.state} (${status.code})`));
-      if (status.retryable && (status.state === 'deferred' || status.state === 'offline' || status.state === 'failed' && ['stylesheet', 'drain', 'ack'].includes(status.code))) notice.append(button('Retry update', () => {if (status.state === 'offline') devReload?.reconnect(); void devReload?.resume();}));
+      const view = devReloadPresentation(status); notice.hidden = !view.text && !view.retry; notice.title = view.detail;
+      if (view.text) notice.append(element('span', undefined, view.text));
+      if (view.retry) notice.append(button('Retry update', () => {if (status.state === 'offline') devReload?.reconnect(); void devReload?.resume();}));
       if (!notice.isConnected) workbenchStatus.node.append(notice);
     }});
   await devReload.ready;

@@ -18,6 +18,31 @@ function decorated(path: string, text: string): TokenRange[] {
   const ranges = fileSyntaxRanges(path, text); assert.ok(ranges); exactSource(text, ranges); return ranges;
 }
 
+test('skill descriptions stay scalar-colored across plain folded literal and indented source', () => {
+  for (const separator of ['\n', '\r\n', '\r']) for (const description of [
+    ['description: Use C# on Desktop (examples) yes no off'],
+    ['description: First line', '  Use C# on Desktop (examples)', '  Example: on or off'],
+    ['description: >-', '  Use C# on Desktop (examples)', '  # literal body', '  Example: on or off'],
+    ['description: |2', '  Use C# on Desktop (examples)', '  # literal body'],
+    ['description:', '  Use C# on Desktop (examples)', '  Example: on or off'],
+  ]) {
+    const text = ['---', 'name: sample', ...description, 'enabled: true', '---', '# Heading'].join(separator);
+    const ranges = decorated('SKILL.md', text); assert.deepEqual(ranges, composerSyntax(text)); assert.deepEqual(ranges, tokenRanges(text, 'md'));
+    for (const word of ['Use', 'C#', 'Desktop', '(examples)']) assert.equal(ranges.find(range => range.start <= text.indexOf(word) && range.end > text.indexOf(word))?.tone, 'string', text);
+    if (text.includes('# literal body')) assert.equal(ranges.find(range => range.start <= text.indexOf('# literal body') && range.end > text.indexOf('# literal body'))?.tone, 'string');
+    if (text.includes('Example:')) assert.equal(ranges.find(range => range.start <= text.indexOf('Example:') && range.end > text.indexOf('Example:'))?.tone, 'string');
+    assert.equal(ranges.find(range => range.start <= text.indexOf('enabled') && range.end > text.indexOf('enabled'))?.tone, 'property');
+    assert.equal(ranges.find(range => range.start <= text.indexOf('Heading') && range.end > text.indexOf('Heading'))?.tone, 'md-heading');
+  }
+});
+test('config scalar byte line and span excess returns complete plain fallback', () => {
+  const exact = `description: ${'a'.repeat(FILE_SYNTAX_BYTES - 'description: '.length)}`;
+  const ranges = decorated('skill.yaml', exact); assert.ok(ranges.some(range => range.tone === 'string'));
+  for (const text of [`${exact}a`, `description: ${'é'.repeat(FILE_SYNTAX_BYTES / 2)}`, 'key: value\n'.repeat(FILE_SYNTAX_LINES)]) assert.equal(fileSyntaxRanges('skill.yaml', text), undefined);
+  assert.equal(tokenRanges('key: value', 'yaml', 2), undefined);
+  assert.equal(tokenRanges('key: [1, true, "x"]', 'toml', 2), undefined);
+});
+
 test('file extensions reuse the current lexical families for every requested code language', () => {
   const fixtures: Record<string, string> = {
     ts: 'export const n: number = parseInt("2", 10); // note',
@@ -26,7 +51,7 @@ test('file extensions reuse the current lexical families for every requested cod
     css: 'body { color: "red"; width: 12px; /* note */ }', html: '<div title="x">exact 42</div><!-- note -->',
     sh: 'if true; then echo "yes"; fi # note', bash: 'echo "hi" # note', zsh: 'echo 4',
     yaml: 'value: 2 # note', yml: 'ready: true', toml: 'value = "text" # note',
-    py: 'def greet():\n  return "hello" # note',
+    py: 'def greet():\n  return "hello" # note', go:'func main() { var count int = 2 }', rs:'fn main() { let count: u32 = 2; }', rust:'fn main() {}', diff:'@@ -1 +1 @@\n-old\n+new', patch:'@@ -1 +1 @@\n-old\n+new',
   };
   for (const [extension, text] of Object.entries(fixtures)) {
     const ranges = decorated(`/source/file.${extension}`, text);
@@ -56,7 +81,7 @@ test('Markdown adds headings, list markers, task markers, quotes, rules and bala
   const text = '# Heading 😀\r\n- [x] task\n12. item\n> quote\n---\n[link](docs/a_(b).md) and ![image](pic.png)\nTitle\n===';
   const ranges = decorated('README.MD', text);
   const slices = ranges.map(range => [text.slice(range.start, range.end), range.tone]);
-  for (const expected of [['#', 'keyword'], ['- [x] ', 'punct'], ['12. ', 'punct'], ['> ', 'punct'], ['---', 'punct'], ['(docs/a_(b).md)', 'string'], ['(pic.png)', 'string'], ['===', 'punct']]) {
+  for (const expected of [['# Heading 😀', 'md-heading'], ['- [x] ', 'md-marker'], ['12. ', 'md-marker'], ['> ', 'md-marker'], ['---', 'md-marker'], ['[link](docs/a_(b).md)', 'md-link'], ['[image](pic.png)', 'md-link'], ['===', 'md-heading']]) {
     assert.ok(slices.some(slice => slice[0] === expected[0] && slice[1] === expected[1]), expected.join(':'));
   }
   assert.deepEqual(fileSyntaxRanges('guide.markdown', text), ranges);
@@ -70,7 +95,7 @@ test('Markdown retains composer inline and fence semantics without decorating th
   const raw = text.indexOf('# raw');
   assert.equal(ranges.some(range => range.start >= raw && range.start < text.indexOf('\n~~~', raw)), false);
   assert.equal(ranges.filter(range => text.slice(range.start, range.end) === '(url)').length, 0);
-  assert.ok(ranges.some(range => text.slice(range.start, range.end) === '(dest)'));
+  assert.ok(ranges.some(range => text.slice(range.start, range.end) === '[real](dest)'));
 });
 
 test('Markdown code fences keep identity, length, unknown labels, and unterminated bodies', () => {
@@ -85,8 +110,8 @@ test('Markdown code fences keep identity, length, unknown labels, and unterminat
 test('Markdown escapes and inline code shield link destinations with exact UTF-16 offsets', () => {
   const text = '😀 `code [label](raw)` \\[escaped](no) [ok](a\\)b) [broken](unterminated';
   const ranges = decorated('links.md', text);
-  assert.deepEqual(ranges.filter(range => range.tone === 'string').map(range => text.slice(range.start, range.end)), ['`code [label](raw)`', '(a\\)b)']);
-  assert.ok(ranges.some(range => range.start === text.indexOf('(a\\)b)')));
+  assert.deepEqual(ranges.filter(range => range.tone === 'md-code' || range.tone === 'md-link').map(range => text.slice(range.start, range.end)), ['`code [label](raw)`', '[ok](a\\)b)']);
+  assert.ok(ranges.some(range => range.start === text.indexOf('[ok]')));
 });
 
 test('all code budgets fall back to whole-file plain text, including UTF-8 and span density', () => {
@@ -99,12 +124,14 @@ test('all code budgets fall back to whole-file plain text, including UTF-8 and s
   assert.ok(fileSyntaxRanges('limit.ts', '\n'.repeat(FILE_SYNTAX_LINES - 1)));
 });
 
-test('Markdown retains byte and line budgets and applies one shared span budget', () => {
-  assert.ok(fileSyntaxRanges('limit.md', 'x'.repeat(DECORATION_BYTES)));
-  assert.ok(fileSyntaxRanges('limit.md', '\n'.repeat(DECORATION_LINES - 1)));
-  for (const text of ['x'.repeat(DECORATION_BYTES + 1), 'é'.repeat(DECORATION_BYTES / 2 + 1), '\n'.repeat(DECORATION_LINES), '`x` '.repeat(DECORATION_SPANS + 1), '[a]()'.repeat(DECORATION_SPANS + 1), '`x` [a]() '.repeat(DECORATION_SPANS / 2 + 1)]) {
-    assert.equal(fileSyntaxRanges('limit.md', text), undefined);
+test('Markdown uses the full file budget while drafts retain their smaller bounds', () => {
+  for (const text of [`# Heading\n${'x'.repeat(DECORATION_BYTES + 1)}`, `# Heading\n${'\n'.repeat(DECORATION_LINES)}`, '`x` '.repeat(DECORATION_SPANS + 1)]) {
+    assert.ok(fileSyntaxRanges('limit.md', text)); assert.equal(composerSyntax(text), undefined);
   }
+  for (const text of ['x'.repeat(FILE_SYNTAX_BYTES + 1), 'é'.repeat(FILE_SYNTAX_BYTES / 2 + 1), '\n'.repeat(FILE_SYNTAX_LINES), '`x` '.repeat(FILE_SYNTAX_SPANS + 1)]) assert.equal(fileSyntaxRanges('limit.md', text), undefined);
+  assert.ok(fileSyntaxRanges('limit.md', 'x'.repeat(FILE_SYNTAX_BYTES)));
+  assert.ok(fileSyntaxRanges('limit.md', '\n'.repeat(FILE_SYNTAX_LINES - 1)));
+  assert.equal(tokenRanges('`a` `b`', 'markdown', 1), undefined);
 });
 
 test('malformed code and Markdown remain finite and exact', () => {
@@ -115,6 +142,26 @@ test('malformed code and Markdown remain finite and exact', () => {
   assert.equal(fileSyntaxRanges('huge.ts', `/*${'x'.repeat(1_000_000)}`), undefined);
 });
 
+test('Markdown source shares semantic ranges across files drafts and rendered code aliases',()=> {
+  const text='---\r\nname: "hello"\r\ncount: 2\r\nready: true\r\n---\r\n# Heading *em* **strong** [label](dest) `code`\r\n\r\nTitle\r\n===\r\nplain paragraph';
+  const ranges=decorated('skill.mdown',text), toneAt=(word:string)=>ranges.find(range=>range.start<=text.indexOf(word)&&range.end>text.indexOf(word))?.tone;
+  assert.deepEqual(ranges,tokenRanges(text,'markdown'));assert.deepEqual(ranges,composerSyntax(text));
+  assert.equal(toneAt('name'),'property');assert.equal(toneAt('"hello"'),'string');assert.equal(toneAt('2'),'number');assert.equal(toneAt('true'),'keyword');
+  assert.equal(toneAt('Heading'),'md-heading');assert.equal(toneAt('*em*'),'md-em');assert.equal(toneAt('**strong**'),'md-strong');assert.equal(toneAt('[label]'),'md-link');assert.equal(toneAt('`code`'),'md-code');assert.equal(toneAt('Title'),'md-heading');assert.equal(toneAt('plain paragraph'),undefined);
+});
+test('only closed opening frontmatter receives config colors and Markdown fences have a finite nesting depth',()=> {
+  for(const text of ['---\nname: value','plain\n\n---\nname: value\n---']) {const ranges=decorated('x.md',text);assert.equal(ranges.some(range=>range.tone==='property'),false);}
+  const nested='```markdown\n~~~markdown\n# shielded\n~~~\n```';const ranges=decorated('x.md',nested);assert.equal(ranges.some(range=>range.start>=nested.indexOf('# shielded')&&range.start<nested.indexOf('\n~~~',nested.indexOf('# shielded'))),false);
+  for(const text of ['**unclosed','\\*escaped*','[label](unclosed','😀\r\n*em*\r\n','```ts\r\nconst n=2;\r\n```'])exactSource(text,decorated('x.md',text));
+});
+test('properties operators and delimiters keep separate semantic roles',()=> {
+  const text='const object = {title: "plain", count: 2}; object.run();';const ranges=decorated('x.ts',text);
+  assert.ok(ranges.some(range=>range.tone==='property'&&text.slice(range.start,range.end)==='title'));
+  assert.ok(ranges.some(range=>range.tone==='operator'&&text.slice(range.start,range.end)==='='));
+  assert.ok(ranges.some(range=>range.tone==='punct'&&text.slice(range.start,range.end).includes('{')));
+  assert.ok(ranges.some(range=>range.tone==='fn'&&text.slice(range.start,range.end)==='run'));
+  const json='{"key":"value"}';assert.deepEqual(decorated('x.json',json).filter(range=>range.tone==='property').map(range=>json.slice(range.start,range.end)),['"key"']);
+});
 test('bounded Markdown and code scans finish within a generous local time bound', context => {
   const markdown = `[a](${'('.repeat(DECORATION_BYTES - 4)}`;
   const line = 'const value: number = parseInt("42", 10); // comment\n';

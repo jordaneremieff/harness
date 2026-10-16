@@ -923,11 +923,30 @@ test('working-folder context disambiguates loaded primaries and late recent proj
   } finally {globalThis.fetch = originalFetch;}
 });
 
+test('unnamed same-prefix agents keep distinct tab footer and native message labels through late names',async()=> {
+  const identities=['12345678-aaaa-4bbb-8ccc-000000001001','12345678-aaaa-4bbb-8ccc-000000002002'],first=identities[0];assert.ok(first);
+  const layout=singlePane(identities.map(identity=>({kind:'agent' as const,identity}))),workspace={id:'readable-identities',revision:1,selectedTarget:{kind:'agent' as const,identity:first},conversationLayout:layout};
+  await arrive({workspace,primaries:[],roster:identities.map(identity=>agentFixture(identity,{name:identity,handle:undefined}))});
+  const nodes=tabsNode().children;assert.deepEqual(nodes.map(node=>node.querySelector('.tab-label')?.textContent),['Agent','Agent']);assert.deepEqual(nodes.map(node=>node.querySelector('.tab-identity')?.textContent),['1001','2002']);
+  assert.equal(byId('workbench-scope').textContent,'Agent · 1001');assert.match(agentControl('recipient').textContent,/Agent · 1001$/);const editor=agentControl('editor');
+  await arrive({workspace:{...workspace,revision:2},primaries:[],roster:[...identities].reverse().map(identity=>agentFixture(identity,{name:'Review'}))});
+  assert.equal(agentControl('editor'),editor);assert.equal(byId('workbench-scope').textContent,'Review · 1001');assert.match(agentControl('recipient').textContent,/Review · 1001$/);assert.deepEqual(app.state.workspace?.selectedTarget,{kind:'agent',identity:first});
+});
+test('Primary and agent name collisions never expose a suffix from the internal Primary key', async () => {
+  const identity = 'primary-name-peer', target = {kind: 'primary' as const, key: 'p', epoch: 8451};
+  const layout = singlePane([{kind: 'primary'}, {kind: 'agent', identity}]);
+  await arrive({workspace: {id: 'primary-name-collision', revision: 1, primaryKey: 'p', selectedTarget: target, conversationLayout: layout}, primaries: [primaryFixture({epoch: target.epoch, sessionName: 'Review'})], roster: [agentFixture(identity, {name: 'Review'})]});
+  const primaryTab = tabsNode().children.find(node => node.querySelector('.tab-label')?.textContent === 'Review'); assert.ok(primaryTab);
+  assert.equal(primaryTab.querySelector('.tab-identity')?.textContent ?? '', '');
+  assert.equal(byId('workbench-scope').textContent, 'Review'); assert.match(primaryControl('recipient').textContent, /Review$/);
+  assert.doesNotMatch(byId('primary-row').textContent, /mary/); assert.deepEqual(app.state.workspace?.selectedTarget, target);
+});
+
 test('the missing Primary uses the shared unknown glyph rather than a connected mark', async () => {
   await arrive({workspace: {id: 'w', revision: 1}, primaries: [], roster: []});
   assert.equal(byId('primary-row-state').dataset.glyph, '?');
   assert.ok(byId('primary-row-state').querySelector('.card-icon-unknown'));
-  assert.equal(byId('primary-row-state').dataset.state, 'none');
+  assert.equal(byId('primary-row-state').dataset.tone, 'warning');
   assert.equal(byId('primary-row-title').textContent, 'no session');
   assert.equal(byId('session-chooser').hidden, false); assert.equal(byId('conversation-panes').querySelector('textarea'), null);
 });
@@ -960,7 +979,7 @@ test('pane strips expose local navigation, a direct new-tab chooser and a separa
 test('pane tab-list choices disambiguate identical names and states through exact target tails', async () => {
   const cases = [
     {identities: ['left-source:choice-one', 'right-source:choice-two'], labels: ['Review · choice-one', 'Review · choice-two']},
-    {identities: ['left-source:shared-choice', 'right-source:shared-choice'], labels: ['Review · left-source:shared-choice', 'Review · right-source:shared-choice']},
+    {identities: ['left-source:shared-choice', 'right-source:shared-choice'], labels: ['Review · ft-source:shared-choice', 'Review · ht-source:shared-choice']},
   ];
   for (const [index, item] of cases.entries()) {
     const [first, second] = item.identities; assert.ok(first); assert.ok(second);

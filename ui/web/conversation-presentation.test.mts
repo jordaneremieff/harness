@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { AgentRow, ProjectedFrame, PrimaryView } from '../shared/api.ts';
-import { composerFolder, conversationPresentation, presentationGlyph, projectIdentity, projectLabels, agentViewStatus, responseOutcome } from './conversation-presentation.ts';
+import { composerFolder, conversationPresentation, presentationGlyph, presentationName, projectIdentity, projectLabels, agentViewStatus, responseOutcome } from './conversation-presentation.ts';
 const row: AgentRow = {identity: 'agent:one', storageId: 'agent', cwd: '/projects/work', name: 'Worker', modifiedAt: 0,
   state: 'unavailable', owner: 'unknown', availability: 'live', partial: false,
   capabilities: {input: true, observe: true, history: true, abort: true, configure: false}};
@@ -10,13 +10,27 @@ const frame = (busy: boolean): ProjectedFrame => ({revision: 1, observedAt: 'now
 const target = {kind: 'agent' as const, identity: row.identity};
 assert.ok(row.capabilities);
 const negotiated = {identity: row.identity, availability: 'live' as const, capabilities: row.capabilities};
+test('presentation tones come from source states without changing readiness',()=> {
+  const states=[['ready','running','info'],['ready','compacting','info'],['ready','idle','success'],['ready','retrying','warning'],['ready','unknown','warning'],['stopped','idle','warning'],['failed','idle','error'],['starting','unknown','info']];
+  for(const [lifecycle,activity,tone]of states){const primary={key:'p',epoch:1,lifecycle,activity} as PrimaryView;const view=conversationPresentation({target:{kind:'primary',key:'p',epoch:1},primary,connected:true});assert.equal(view.tone,tone,`${lifecycle}/${activity}`);assert.equal(view.input,lifecycle==='ready');}
+  for(const availability of ['stored','unavailable','incompatible'] as const) {const view=conversationPresentation({target,row:{...row,availability},connected:true});assert.equal(view.tone,availability==='stored'?'secondary':'warning');assert.equal(view.input,false);}
+  assert.equal(conversationPresentation({target,row,connected:true}).tone,'warning');
+  assert.equal(conversationPresentation({target,row,negotiated,frame:frame(true),connected:true}).tone,'info');
+  assert.equal(conversationPresentation({target,row,negotiated,frame:frame(false),connected:true}).tone,'success');
+  const compacting=frame(false);compacting.status.compactions={value:[{active:true}],truncated:false};assert.equal(conversationPresentation({target,row,negotiated,frame:compacting,connected:true}).tone,'info');
+});
+test('agent display names reject identity fallbacks and retain shared suffixes in accessible names',()=> {
+  const identity='00000000-0000-4000-8000-000000000099', target={kind:'agent' as const,identity};
+  const unnamed=conversationPresentation({target,row:{...row,identity,name:identity,handle:undefined},connected:true});assert.equal(unnamed.name,'Agent');assert.equal(presentationName(unnamed),'Agent · 0099');
+  const named=conversationPresentation({target,row:{...row,identity,name:'Review',handle:'reviewer'},identityTail:'0099:2',frame:{...frame(false),status:{busy:false,name:' '}},connected:true});assert.equal(named.name,'Review');assert.equal(presentationName(named),'Review · 0099:2');assert.equal(target.identity,identity);
+});
 test('retry, response outcome and provider blocks do not change input readiness or connection', () => {
   const current = frame(true); current.status.retry = {attempt: 2, at: 1700000060000, error: 'unclassified provider detail'};
   let view = conversationPresentation({target, row, negotiated, frame: current, connected: true});
-  assert.match(view.activity, /^Retrying · attempt 2 · next /); assert.equal(view.detail, current.status.retry.error); assert.equal(view.input, true); assert.equal(view.busy, true);
+  assert.match(view.activity, /^Retrying · attempt 2 · next /); assert.equal(view.detail, current.status.retry.error); assert.equal(view.input, true); assert.equal(view.busy, true); assert.equal(view.tone,'warning');
   current.status.busy = false; delete current.status.retry;
   current.entries = [{id: 'failed', kind: 'message', messages: [{id: 'm', role: 'assistant', state: 'final', parts: [], stopReason: 'error', error: 'anything', coverage: current.coverage}]}];
-  view = conversationPresentation({target, row, negotiated, frame: current, connected: true}); assert.equal(view.activity, 'Response failed'); assert.equal(view.input, true); assert.equal(view.busy, false); assert.equal(presentationGlyph(view), '!');
+  view = conversationPresentation({target, row, negotiated, frame: current, connected: true}); assert.equal(view.activity, 'Response failed'); assert.equal(view.input, true); assert.equal(view.busy, false); assert.equal(presentationGlyph(view), '!'); assert.equal(view.tone,'error');
   current.status.providerBlock = {blockId: 'b', conversationId: 1, providerSessionId: 'p', epoch: 1, model: {provider: 'fixture', modelId: 'fixture'}, error: 'opaque', errorRedacted: true, errorTruncated: true, source: 'provider', timestamp: 1, originalResults: [], omittedOriginalResults: 0};
   view = conversationPresentation({target, row, negotiated, frame: current, connected: true}); assert.equal(view.activity, 'Provider blocked'); assert.match(view.detail ?? '', /Configure this agent through Primary/); assert.match(view.detail ?? '', /redacted/); assert.match(view.detail ?? '', /shortened/);
   const published = conversationPresentation({target, row: {...row, publishedRetry: {attempt: 2, maxAttempts: 5, delayMs: 60000, error: 'published'}}, connected: true});

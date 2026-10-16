@@ -11,6 +11,39 @@ function rule(selector: string): string {
 const declarations = (property: string): string[] => [...css.matchAll(new RegExp(`(?:^|[;{\\s])${property}:\\s*([^;}]+)`, 'g'))].map(match => match[1].trim());
 const media = (query: string): string => { const start = css.indexOf(query); assert.ok(start >= 0, `Missing ${query}`); const next = css.indexOf('\n@media', start + 1); return css.slice(start, next < 0 ? undefined : next); };
 
+test('content hues share scoped Markdown rules and leave metadata and identity tails intact',()=> {
+  assert.match(rule('.secondary, .info'),/color: var\(--muted\)/);
+  assert.match(rule('.message.user > .message-header > .message-role'),/color: var\(--accent\)/);
+  assert.match(rule('.message[data-role=assistant] > .message-header > .message-role'),/color: var\(--info\)/);
+  assert.match(rule('.thinking > summary'),/color: var\(--md-em\)/);assert.match(rule('.thinking-content'),/color: var\(--muted\)/);
+  assert.match(rule('.tool-name'),/color: var\(--syntax-fn\)/);assert.match(rule('.tool-status.working'),/color: var\(--info\)/);assert.match(rule('.tool-status.missing'),/color: var\(--warning\)/);
+  assert.match(rule('.communication-card[data-state=ready] .communication-header > .communication-sender'),/color: var\(--md-em\)/);
+  assert.match(rule('.markdown-content:is(h1, h2, h3, h4, h5, h6)'),/color: var\(--md-heading\)/);assert.match(rule('.markdown-content .markdown-inline-code'),/color: var\(--md-code\)/);
+  assert.doesNotMatch(css,/\.file-content th, \.file-content td|\.file-content blockquote/);
+  assert.match(rule('.row-identity'),/flex: none; max-width: none/);assert.doesNotMatch(rule('.row-identity'),/overflow: hidden|text-overflow: ellipsis/);
+  assert.match(rule('.conversation-identity'),/white-space: nowrap/);
+});
+test('shared Markdown adjacency never overrides heading or post-heading margins', () => {
+  const adjacency = css.split('\n').find(line => line.includes('.markdown-content') && line.includes(' + ') && line.includes('margin-top: 8px;'))?.split('{')[0].trim(); assert.ok(adjacency);
+  const weight = (selector: string) => {
+    const weighted = selector.replace(/:where\([^)]*\)/g, '');
+    return (weighted.match(/\.[\w-]+/g)?.length ?? 0) * 100 + Number(/:is\(h[1-6]/.test(weighted));
+  };
+  const selectors = ['.markdown-content:is(h1)', '.markdown-content:is(h2, h3, h4, h5, h6)', '.markdown-content:is(h1, h2, h3, h4, h5, h6) + *'];
+  for (const [index, selector] of selectors.entries()) {
+    assert.ok(weight(selector) > weight(adjacency), `${selector} must beat ${adjacency}`);
+    assert.match(rule(selector), new RegExp(`margin-top: ${[20, 18, 6][index]}px`));
+  }
+  assert.match(rule(adjacency), /margin-top: 8px/);
+});
+test('the tool status from active execution receives the information tone', async () => {
+  const tools = await readFile(new URL('./transcript-tools.ts', import.meta.url), 'utf8');
+  const rendered = /if \(part.status === 'running'\) return '([^']+)'/.exec(tools)?.[1]; assert.ok(rendered);
+  const renderer = await readFile(new URL('./render.ts', import.meta.url), 'utf8'); assert.match(renderer, /tool\.glyph\.className = `tool-status \$\{source.status\}`/);
+  assert.match(rule(`.tool-status.${rendered}`), /color: var\(--info\)/);
+  assert.doesNotMatch(css, /\.tool-status\.running\s*\{/);
+});
+
 test('two families: system sans for interface and prose, system monospace for code and status', () => {
   assert.match(rule(':root'), /--sans: system-ui, -apple-system, "Segoe UI", sans-serif;/);
   assert.match(rule(':root'), /--mono: ui-monospace, "SF Mono", Menlo, monospace;/);
@@ -26,7 +59,7 @@ test('one fixed type scale: meta 12, controls 13, interface 14, prose 15, headin
   assert.match(rule('.message-role'), /font-size: 12px; line-height: 18px; font-weight: 500/);
   assert.match(rule('.communication-card > .communication-body'), /font-size: 15px; line-height: 1\.6; font-weight: 400; font-style: normal/);
   assert.match(rule('.message-body'), /font-size: 15px; line-height: 1\.6/);
-  assert.match(rule('.message-body h1'), /font-size: 18px/);
+  assert.match(rule('.markdown-content:is(h1)'), /font-size: 18px/);
   assert.match(rule('.composer textarea'), /font-size: 15px/);
   assert.deepEqual([...new Set(declarations('font-weight'))].sort(), ['400', '500', '600']);
   assert.deepEqual(declarations('font').filter(value => value !== '400 14px/1.5 var(--sans)' && value !== '13px/1.5 var(--mono)' && value !== 'inherit'), []);
@@ -70,7 +103,7 @@ test('blue marks focus while selected rows and tabs use neutral rules and surfac
   const values = [...css.matchAll(/(?:^|\n)\s*([^{}]+)\{([^{}]+)\}/g)].flatMap(match =>
     ['background', 'background-color', 'color', 'fill'].flatMap(property =>
       [...match[2].matchAll(new RegExp(`(?:^|[;\\s])${property}:\\s*([^;}]+)`, 'g'))].map(value => ({selector: match[1].replace(/\/\*[\s\S]*?\*\//g, '').trim(), property, value: value[1].trim()}))));
-  assert.deepEqual(values.filter(item => item.value.includes('--accent')), [{selector: '.pane-split > .pane-divider:focus-visible::after', property: 'background', value: 'var(--accent)'}]);
+  assert.deepEqual(values.filter(item => item.value.includes('--accent')), [{selector: '.pane-split > .pane-divider:focus-visible::after', property: 'background', value: 'var(--accent)'}, {selector: '.message.user > .message-header > .message-role', property: 'color', value: 'var(--accent)'}]);
   const fills = values.filter(item => item.property === 'background' || item.property === 'background-color');
   assert.deepEqual(fills.filter(item => item.value.includes('--edge')), [
     {selector: '.pane-split > .pane-divider:hover::after', property: 'background', value: 'var(--edge)'},
@@ -118,11 +151,11 @@ test('neutral tools keep lifecycle accents in marks and errors while source diff
   assert.doesNotMatch(css, /\.tool-shell\[data-status=success\]/);
   assert.match(rule('.tool-status.success'), /color: var\(--success\)/);
   assert.match(rule('.tool-shell[data-status=error]'), /border-left-color: var\(--error\)/);
-  assert.match(rule('.state-glyph[data-state=running], .row-state[data-state=working]'), /color: var\(--link\)/, 'work in progress reads as activity, not as a warning');
+  assert.match(rule(':is(.tab-dot, .conversation-state, .row-state, .state-glyph)[data-tone=info]'), /color: var\(--info\)/, 'work in progress reads as activity, not as a warning');
   assert.match(rule('.diff-del'), /background: var\(--del-bg\); color: var\(--error\)/);
   assert.match(rule('.diff-add'), /background: var\(--add-bg\); color: var\(--success\)/);
-  assert.match(rule('.row-state[data-state=done]'), /color: var\(--success\)/);
-  assert.match(rule('.state-glyph[data-state=failed], .row-state[data-state=failed]'), /color: var\(--error\)/);
+  assert.match(rule(':is(.tab-dot, .conversation-state, .row-state, .state-glyph)[data-tone=success]'), /color: var\(--success\)/);
+  assert.match(rule(':is(.tab-dot, .conversation-state, .row-state, .state-glyph)[data-tone=error]'), /color: var\(--error\)/);
   assert.match(rule('a'), /color: var\(--link\)/);
   assert.match(rule('.stop'), /color: var\(--error\)/);
 });
@@ -238,7 +271,7 @@ test('lean chrome: gutter-marked user turns, no pills, one-line roster rows and 
   assert.match(user, /border-radius: 0/);
   assert.match(user, /padding: 0 0 0 12px/);
   assert.match(user, /font-weight: 400/);
-  assert.match(rule('.message.user > .message-body::before'), /content: "";[^}]*left: 0; border-left: 2px solid var\(--edge\)/);
+  assert.match(rule('.message.user > .message-body::before'), /content: "";[^}]*left: 0; border-left: 2px solid var\(--accent\)/);
   assert.doesNotMatch(css, /content: "You"/);
   const circles = [...css.matchAll(/(?:^|\n)\s*([^{}]+)\{[^{}]*border-radius: 50%;/g)].map(match => match[1].replace(/\/\*[\s\S]*?\*\//g, '').trim());
   assert.deepEqual(circles, []);
@@ -261,15 +294,15 @@ test('lean chrome: gutter-marked user turns, no pills, one-line roster rows and 
 test('user paragraphs and lists use regular body weight while semantic headings retain emphasis', () => {
   assert.match(rule('.message.user > .message-body'), /font-weight: 400/);
   assert.match(rule('h1, h2, h3, h4, h5, h6, strong, th, b'), /font-weight: 600/);
-  assert.match(rule('.message-body h1'), /font-size: 18px/);
+  assert.match(rule('.markdown-content:is(h1)'), /font-size: 18px/);
   assert.doesNotMatch(css, /\.message\.user[^{}]*\s(?:p|li|ul|ol|h[1-6]|\*)[^{}]*\{[^}]*font-weight:/);
 });
 test('prose table cells wrap at words while wide data keeps horizontal scroll and intact cell values', () => {
-  const prose = rule('.message-body th, .message-body td');
+  const prose = rule('.markdown-content th, .markdown-content td');
   assert.match(prose, /white-space: normal; overflow-wrap: normal/);
   assert.doesNotMatch(prose, /white-space: nowrap|overflow: hidden|text-overflow:|line-clamp/);
-  assert.match(rule('.message-body table'), /display: block; max-width: 100%; overflow-x: auto/);
-  assert.doesNotMatch(rule('.message-body table'), /table-layout: fixed|overflow-x: hidden/);
+  assert.match(rule('.markdown-content:is(table)'), /display: block; max-width: 100%; overflow-x: auto/);
+  assert.doesNotMatch(rule('.markdown-content:is(table)'), /table-layout: fixed|overflow-x: hidden/);
   assert.match(rule('.tool-rows th, .tool-rows td'), /white-space: normal; overflow-wrap: anywhere/);
   assert.match(rule('.tool-rows'), /max-width: 100%; overflow-x: auto/);
 });
@@ -631,7 +664,7 @@ test('transcript images retain aspect ratio within the pane and expose readable 
 test('every theme uses blue focus, never lavender or mauve', () => {
   const focus: Record<string, string> = {':root': '#74b6d8', ':root[data-appearance=light]': '#22698a', ':root[data-appearance=system]': '#22698a', ':root[data-appearance=latte]': '#1a59d5', ':root[data-appearance=frappe]': '#a3bbf1', ':root[data-appearance=macchiato]': '#8baef4', ':root[data-appearance=mocha]': '#89b4fa'};
   for (const [selector, color] of Object.entries(focus)) assert.match(rule(selector), new RegExp(`--accent: ${color};`));
-  assert.doesNotMatch(css, /#b0a2e0|#6a4fae|#8839ef|#ca9ee6|#c6a0f6|#cba6f7/i);
+  for (const selector of Object.keys(focus)) {const accent=/--accent: (#[a-f0-9]{6});/i.exec(rule(selector))?.[1]; assert.ok(accent);assert.ok(Number.parseInt(accent.slice(5,7),16)>Number.parseInt(accent.slice(1,3),16),selector);}
 });
 test('Catppuccin flavors map text and subtext onto the text tokens and keep the shared token set', () => {
   const text: Record<string, [string, string]> = {latte: ['#4c4f69', '#5c5f77'], frappe: ['#c6d0f5', '#b5bfe2'], macchiato: ['#cad3f5', '#b8c0e0'], mocha: ['#cdd6f4', '#bac2de']};
@@ -778,9 +811,9 @@ test('message coverage stays subordinate without restoring turn-sized margins', 
 });
 
 test('prose keeps a measured narrow allowance without shrinking technical blocks', () => {
-  assert.match(rule('.message-body :is(p, ul, ol, blockquote):not(.tool-caption)'), /max-width: 72ch/);
+  assert.match(rule('.markdown-content:is(p, ul, ol, blockquote)'), /max-width: 72ch/);
   assert.doesNotMatch(rule('.code-block'), /600px/);
-  assert.doesNotMatch(rule('.message-body table'), /600px/);
+  assert.doesNotMatch(rule('.markdown-content:is(table)'), /600px/);
   assert.match(rule('.message-body'), /font-size: 15px; line-height: 1.6/);
 });
 test('phone drawer sections keep usable content inside one outer scroll owner', () => {

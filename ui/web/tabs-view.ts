@@ -1,4 +1,5 @@
 import {cardIcon} from './card-icons.ts';
+import type {PresentationTone} from './conversation-presentation.ts';
 import {statusGlyph} from './dom.ts';
 import type { WorkspaceTab as ConversationTab } from '../shared/api.ts';
 import { duplicateTabTails, tabKey } from './tabs.ts';
@@ -8,7 +9,8 @@ export type TabRegion = {id: string; tabs: HTMLElement; controls: string};
 export type TabRegions = {panes: () => TabRegion[]; conversations: HTMLElement};
 export type TabHooks = {layout: () => PaneLayout; activate: (pane: string, key: string) => void; close: (key: string) => void;
   move: (key: string, pane: string, index: number) => void; label: (tab: ConversationTab) => string;
-  status: (tab: ConversationTab) => {label: string; glyph: string}; keep?: (key:string)=>void; overflow?: (overflow: boolean, pane: string) => void};
+  identity?: (tab: ConversationTab) => string | undefined;
+  status: (tab: ConversationTab) => {label: string; glyph: string; tone?: PresentationTone}; keep?: (key:string)=>void; overflow?: (overflow: boolean, pane: string) => void};
 /** Keyed tab and sidebar nodes follow real pane ownership, independent of target kind. */
 export class TabStrip {
   private nodes = new Map<string, HTMLElement>();
@@ -112,17 +114,18 @@ export class TabStrip {
     node.style.setProperty('--tab-identity-width', `${tail}px`);
   }
   private paintTab(node: HTMLElement, tab: ConversationTab, selected: boolean): void {
-    const label = this.hooks.label(tab); const tail = this.tails.get(tab.kind === 'file' ? tabKey(tab) : tab.kind === 'agent' ? tab.identity : 'primary'); const accessible = tail ? `${label}, ${tail}` : label; const status = this.hooks.status(tab);
+    const label = this.hooks.label(tab); const tail = this.tail(tab); const accessible = tail ? `${label}, ${tail}` : label; const status = this.hooks.status(tab);
     node.title = [label, tab.kind === 'file' ? tab.path : tab.kind === 'agent' ? tab.identity : '', status.label].filter(Boolean).join(' · ');
     node.setAttribute('aria-label', `${accessible}${status.label ? `, ${status.label}` : ''}`); node.setAttribute('aria-selected', String(selected)); node.tabIndex = selected ? 0 : -1;
     const caption = node.querySelector('.tab-label'); if (caption) caption.textContent = label;
-    this.paintDot(node, status.glyph, status.label);
+    this.paintDot(node, status.glyph, status.label, status.tone);
     const identity = node.querySelector<HTMLElement>('.tab-identity'); if (identity) {identity.textContent = tail ?? ''; identity.hidden = !tail;}
     const close = node.querySelector<HTMLElement>('.tab-close'); if (close) {close.setAttribute('aria-label', `Close ${accessible} tab`); close.title = `Close ${accessible} tab`;}
   }
-  private paintDot(node: HTMLElement, glyph: string, label: string): void {
+  private tail(tab: ConversationTab): string | undefined {return this.hooks.identity?.(tab) ?? this.tails.get(tab.kind === 'file' ? tabKey(tab) : tab.kind === 'agent' ? tab.identity : 'primary');}
+  private paintDot(node: HTMLElement, glyph: string, label: string, tone: PresentationTone = 'secondary'): void {
     const dot = node.querySelector<HTMLElement>('.tab-dot'); if (!dot) return;
-    dot.hidden = !glyph;statusGlyph(dot, glyph); dot.dataset.state = glyph === '●' ? 'working' : glyph === '!' ? 'failed' : 'idle'; dot.title = label;
+    dot.hidden = !glyph;statusGlyph(dot, glyph); dot.dataset.tone = tone; dot.title = label;
   }
   private navigate(key: string, event: KeyboardEvent): void {
     const pane = paneForTab(this.hooks.layout(), key); if (!pane) return;
@@ -162,9 +165,9 @@ export class TabStrip {
     if (!row) {const doc = this.regions.conversations.ownerDocument; row = doc.createElement('button'); row.type = 'button'; row.className = 'conversation-row'; row.dataset.tabKey = key;
       for (const name of ['state', 'name', 'identity']) {const span = doc.createElement('span'); span.className = `conversation-${name}`; row.append(span);}
       row.addEventListener('click', () => this.activate(key)); this.rows.set(key, row);}
-    const status = this.hooks.status(tab); const label = this.hooks.label(tab); const tail = this.tails.get(tab.kind === 'file' ? tabKey(tab) : tab.kind === 'agent' ? tab.identity : 'primary');
+    const status = this.hooks.status(tab); const label = this.hooks.label(tab); const tail = this.tail(tab);
     row.title = [label, tab.kind === 'file' ? tab.path : tab.kind === 'agent' ? tab.identity : '', status.label].filter(Boolean).join(' · '); row.setAttribute('aria-label', [label, tail, status.label].filter(Boolean).join(', ')); row.setAttribute('aria-controls', controls);
-    const state = row.querySelector<HTMLElement>('.conversation-state'); if (state) {statusGlyph(state, status.glyph); state.title = status.label; state.setAttribute('aria-hidden', 'true');}
+    const state = row.querySelector<HTMLElement>('.conversation-state'); if (state) {statusGlyph(state, status.glyph); state.title = status.label; state.dataset.tone = status.tone ?? 'secondary'; state.setAttribute('aria-hidden', 'true');}
     const caption = row.querySelector<HTMLElement>('.conversation-name'); if (caption) caption.textContent = label;
     const identity = row.querySelector<HTMLElement>('.conversation-identity'); if (identity) {identity.textContent = tail ?? ''; identity.hidden = !tail; identity.title = tab.kind === 'agent' ? `Agent ID: ${tab.identity}` : '';}
     return row;

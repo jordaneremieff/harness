@@ -330,6 +330,14 @@ test('saved conversations keep title and duplicate tail first with searchable id
   assert.equal(descendants(setup.body).find(node => node.className === 'picker-session-tail')?.textContent, '0034');
 });
 
+test('a blank saved title keeps session identity in details without an agent suffix', async t => {
+  const item = saved.items[0]; assert.ok(item);
+  const setup = directPicker(t, undefined, {...saved, items: [{...item, id: 'blank0033', title: ''}]}); setup.picker.open(); await settle();
+  const row = descendants(setup.body).find(node => node.className === 'picker-select'); assert.ok(row);
+  assert.equal(row.querySelector('.picker-session-title')?.textContent, ''); assert.equal(row.querySelector('.picker-session-tail')?.hidden, true); assert.equal(row.querySelector('.picker-session-tail')?.textContent, '');
+  assert.match(descendants(setup.body).find(node => node.className === 'picker-session-details')?.textContent ?? '', /blank0033/);
+});
+
 test('title completion updates duplicate tails without replacing a focused saved row', async t => {
   const item = saved.items[0]; assert.ok(item);
   const page = {...saved, total: 2, items: [{...item, id: 'fixture0033', titleState: 'pending' as const}, {...item, id: 'fixture0034', path: '/project/second.jsonl', titleState: 'pending' as const}]};

@@ -963,7 +963,7 @@ export class Transcript {
     const text = messageCopyText(current.source, source => partText(source.parts)); if (text) void copy(text, node);
   }
   private createMessage(entry: EntryNode, message: MessageView): MessageNode {
-    const node = element('article', `message ${message.role === 'user' ? 'user' : ''}`);
+    const node = element('article', `message ${message.role === 'user' ? 'user' : ''}`); node.dataset.role = message.role;
     const header = element('div', 'message-header');
     const heading = element('span', 'message-role', bounded(presentMessage(message).label, 4096));
     const actions = element('div', 'message-actions'); const body = element('div', 'message-body'); const error = element('div', 'error message-error'); error.hidden = true;
