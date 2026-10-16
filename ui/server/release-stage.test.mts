@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {mkdtemp,mkdir,writeFile,readFile,realpath,chmod,rm,lstat,access} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,readFile,realpath,chmod,rm,lstat,access,rename} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
@@ -24,6 +24,31 @@ test('snapshot publication renames writable staging before sealing and only then
   assert.equal((await lstat(join(published.directory,'ui/server/backend.mts'))).mode&0o222,0);
   assert.equal((await manifestAt(published.directory,true)).id,f.manifest.id);
   assert.deepEqual(JSON.parse(await readFile(join(f.root,'releases',`${f.manifest.id}.json`),'utf8')),{runtimeDigest:f.manifest.runtimeDigest});
+});
+test('a retry completes an interrupted seal before descriptor publication and returns retained metadata',async context=>{
+  const f=await fixture(context),destination=join(f.runtime,'releases',f.manifest.id);
+  await writeFile(join(f.directory,'release.json'),JSON.stringify(f.manifest));await rename(f.directory,destination);
+  assert.equal((await lstat(destination)).mode&0o777,0o700);await assert.rejects(()=>access(join(f.root,'releases',`${f.manifest.id}.json`)),{code:'ENOENT'});
+  await mkdir(join(f.directory,'ui/server'),{recursive:true,mode:0o700});await writeFile(join(f.directory,'ui/server/backend.mts'),'export const sealed=true;');
+  const retry={...f.manifest,stagedAt:new Date(Date.parse(f.manifest.stagedAt)+1000).toISOString()},published=await publishSnapshot(f.root,f.runtime,f.directory,retry);
+  assert.equal((await lstat(destination)).mode&0o777,0o500);assert.equal((await lstat(join(destination,'ui/server/backend.mts'))).mode&0o222,0);
+  assert.equal(published.manifest.stagedAt,f.manifest.stagedAt);assert.equal((await manifestAt(destination,true)).id,f.manifest.id);
+});
+test('a retry refuses corrupt retained bytes without publishing or sealing them',async context=>{
+  const f=await fixture(context),destination=join(f.runtime,'releases',f.manifest.id);
+  await writeFile(join(f.directory,'release.json'),JSON.stringify(f.manifest));await rename(f.directory,destination);
+  await writeFile(join(destination,'ui/server/backend.mts'),'corrupt retained bytes');
+  await mkdir(join(f.directory,'ui/server'),{recursive:true,mode:0o700});await writeFile(join(f.directory,'ui/server/backend.mts'),'export const sealed=true;');
+  await assert.rejects(()=>publishSnapshot(f.root,f.runtime,f.directory,f.manifest),/integrity mismatch/);
+  await assert.rejects(()=>access(join(f.root,'releases',`${f.manifest.id}.json`)),{code:'ENOENT'});
+  assert.equal((await lstat(destination)).mode&0o777,0o700);assert.equal(await readFile(join(destination,'ui/server/backend.mts'),'utf8'),'corrupt retained bytes');
+});
+test('a retry refuses a writable published tree without changing that tree or descriptor',async context=>{
+  const f=await fixture(context),first=await publishSnapshot(f.root,f.runtime,f.directory,f.manifest),descriptor=join(f.root,'releases',`${f.manifest.id}.json`),before=await readFile(descriptor,'utf8');
+  await chmod(first.directory,0o700);const rootInfo=await lstat(first.directory);
+  await mkdir(join(f.directory,'ui/server'),{recursive:true,mode:0o700});await writeFile(join(f.directory,'ui/server/backend.mts'),'export const sealed=true;');
+  await assert.rejects(()=>publishSnapshot(f.root,f.runtime,f.directory,f.manifest),/not sealed/);
+  const after=await lstat(first.directory);assert.equal(after.mode,rootInfo.mode);assert.equal(after.mtimeMs,rootInfo.mtimeMs);assert.equal(await readFile(descriptor,'utf8'),before);
 });
 test('unpublished sealed staging cleanup preserves sibling snapshots and runtime dependency bytes and modes',async context=>{
   const f=await fixture(context),sibling=join(f.runtime,'releases','c'.repeat(64)),dependency=join(f.runtime,'node_modules/fixture');

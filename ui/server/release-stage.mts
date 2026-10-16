@@ -1,5 +1,5 @@
 import {execFile} from 'node:child_process';
-import {mkdir,copyFile,lstat,opendir,rename} from 'node:fs/promises';
+import {mkdir,copyFile,lstat,opendir,rename,realpath} from 'node:fs/promises';
 import {join,resolve,dirname} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import vm from 'node:vm';
@@ -8,7 +8,7 @@ import {assetDigest} from './version.mts';
 import {AssetGeneration} from './asset-generations.mts';
 import {RELEASE_FORMAT,BROWSER_API,type ReleaseManifest} from '../shared/release.ts';
 import {UI_ITERATION} from '../shared/version.ts';
-import {atomicJson,boundedFile,inventory,RELEASE_LIMITS,releaseRoot,sealTree,sha256,removeStagingTree,type InventoryEntry} from './release-store.mts';
+import {atomicJson,boundedFile,inventory,RELEASE_LIMITS,releaseRoot,sealTree,sha256,removeStagingTree,manifestAt,assertSealedTree,type InventoryEntry} from './release-store.mts';
 const run=(cwd:string,args:string[])=>new Promise<string>((accept,reject)=>execFile('git',['--no-optional-locks',...args],{cwd,encoding:'utf8',timeout:5000,maxBuffer:256*1024},(error,out)=>error?reject(error):accept(out.trim())));
 async function copyInventory(source:string,target:string,entries:InventoryEntry[]) {
   await mkdir(target,{recursive:true,mode:0o700});const digest=createHash('sha256');
@@ -66,12 +66,28 @@ async function buildManifest(directory:string,revision:Awaited<ReturnType<typeof
   const generation=new AssetGeneration(assets,new Map(Object.entries(imports))),stagedAt=new Date().toISOString(),id=sha256(JSON.stringify({sourceCommit:revision.sourceCommit,sourceTree:revision.sourceTree,runtimeDigest,files,ownerProtocol}));
   return {format:RELEASE_FORMAT,id,...revision,stagedAt,iteration:UI_ITERATION,runtimeDigest,lockDigest,assetDigest:assetDigest(assets),ownerProtocol,browserApi:BROWSER_API,generation:generation.id,moduleFamily:generation.family.id,files,imports};
 }
+function manifestIdentity(m:ReleaseManifest):string {
+  return JSON.stringify([m.format,m.id,m.sourceCommit,m.sourceTree,m.iteration,m.committedAt,m.branch,m.lockDigest,m.runtimeDigest,m.assetDigest,m.ownerProtocol,m.browserApi,m.generation,m.moduleFamily,Object.entries(m.files).sort(([a],[b])=>a.localeCompare(b)),Object.entries(m.imports).sort(([a],[b])=>a.localeCompare(b))]);
+}
+async function checkedSnapshot(directory:string,expected:ReleaseManifest,published:boolean):Promise<ReleaseManifest> {
+  const info=await lstat(directory);
+  if(!info.isDirectory()||info.isSymbolicLink()||info.uid!==process.getuid?.()||await realpath(directory)!==directory)throw new Error('The retained release directory identity is invalid.');
+  const entries=await inventory(directory),retained=await manifestAt(directory,true);
+  if(manifestIdentity(retained)!==manifestIdentity(expected))throw new Error('The retained release manifest differs from the staged content.');
+  const actualFiles=entries.filter(entry=>!entry.directory).map(entry=>entry.path).sort(),expectedFiles=[...Object.keys(retained.files),'release.json'].sort();
+  if(JSON.stringify(actualFiles)!==JSON.stringify(expectedFiles))throw new Error('The retained release file inventory differs from its manifest.');
+  if(!published)await sealTree(directory);
+  await assertSealedTree(directory);return retained;
+}
 export async function publishSnapshot(root:string,runtime:string,directory:string,manifest:ReleaseManifest) {
-  await atomicJson(join(directory,'release.json'),manifest);const destination=join(runtime,'releases',manifest.id);
-  if(await exists(destination))await removeStagingTree(directory);else{await rename(directory,destination);await sealTree(destination);}
-  const count=await descriptorCount(join(root,'releases')),descriptor=join(root,'releases',`${manifest.id}.json`);
-  if(count>=RELEASE_LIMITS.releases&&!await exists(descriptor))throw new Error('Release capacity is full; protected releases were not removed.');
-  await atomicJson(descriptor,{runtimeDigest:manifest.runtimeDigest});return {directory:destination,manifest};
+  await atomicJson(join(directory,'release.json'),manifest);
+  const destination=join(runtime,'releases',manifest.id),descriptor=join(root,'releases',`${manifest.id}.json`),published=await exists(descriptor),retained=await exists(destination);
+  if(published&&!retained)throw new Error('The published release directory is unavailable.');
+  if(retained){manifest=await checkedSnapshot(destination,manifest,published);await removeStagingTree(directory);}
+  else{await rename(directory,destination);manifest=await checkedSnapshot(destination,manifest,false);}
+  const count=await descriptorCount(join(root,'releases'));
+  if(count>=RELEASE_LIMITS.releases&&!published)throw new Error('Release capacity is full; protected releases were not removed.');
+  if(!published)await atomicJson(descriptor,{runtimeDigest:manifest.runtimeDigest});return {directory:destination,manifest};
 }
 /** Staging reads checked source and copies real bytes. It never changes the selected release. */
 export async function stageRelease(sourceRoot:string,stateDir:string,options:{ownerProtocol:string;allowDirty?:boolean}):Promise<{directory:string;manifest:ReleaseManifest}> {

@@ -89,6 +89,15 @@ export async function sealTree(directory: string) {
   for (const entry of entries.reverse()) await chmod(join(directory, entry.path), entry.directory ? 0o500 : entry.executable ? 0o500 : 0o400);
   await chmod(directory, 0o500);
 }
+async function assertSealedPath(path:string,directory:boolean):Promise<void> {
+  const info=await lstat(path),expected=directory||(info.mode&0o111)!==0?0o500:0o400;
+  if(info.uid!==process.getuid?.()||(info.mode&0o777)!==expected)throw new Error('The release tree is not sealed.');
+}
+/** Publication requires a private read-only root and every retained directory and file. */
+export async function assertSealedTree(directory:string):Promise<void> {
+  await assertSealedPath(directory,true);
+  for(const entry of await inventory(directory))await assertSealedPath(join(directory,entry.path),entry.directory);
+}
 /** Only unpublished staging names can regain directory write permission for removal. */
 export async function removeStagingTree(directory:string):Promise<void> {
   if(!/^\.stage-[a-f0-9-]{36}$/.test(basename(directory)))throw new Error('Only an unpublished staging directory can be removed.');
