@@ -13,6 +13,7 @@ import { DECORATION_BYTES, DECORATION_LINES, DECORATION_SPANS } from './composer
 import { duplicateIdentityTails } from './tabs.ts';
 import { compactAge } from './format.ts';
 import { navigateOptions } from './list-navigation.ts';
+import { responseOutcome } from './conversation-presentation.ts';
 import type { CommandInventory, CommandOption, CommandMatch } from './command-menu-state.ts';
 export const COMMAND_INVENTORY_PAGE_LIMIT = 8;
 const appearanceChoices: readonly [Appearance, string][] = [
@@ -356,7 +357,7 @@ export class Actions {
         entry('Next conversation tab', 'Select the next conversation', () => tabs.switch(1)),
         entry('Previous conversation tab', 'Select the previous conversation', () => tabs.switch(-1)));
     }
-    if (primary?.lastError) entries.push(entry('Review message', 'Restore the last loaded user prompt for review', () => this.retryOutput()));
+    if (primary?.lifecycle === 'ready' && (primary.lastError || primary.responseOutcome === 'failed' || responseOutcome(this.ctx.primaryEntries()) === 'failed')) entries.push(entry('Review message', 'Restore the last loaded Primary user prompt for review', () => this.retryOutput()));
     if (agent) {
       entries.push(entry('Copy agent ID', agent.identity, () => this.ctx.copyAgent()));
       if (agent.capabilities?.inspect) entries.push(entry('View activity…', agent.identity, () => this.ctx.inspectAgent()));
@@ -543,11 +544,23 @@ export class Actions {
     modal.body.append(details('Display limits', `Message box syntax uses plain text above ${DECORATION_BYTES / 1024} KiB, ${DECORATION_LINES} lines, or ${DECORATION_SPANS} color marks. Composition and forced colors use native text.`));
   }
   retryOutput(): void {
+    const primary = this.ctx.primary(); if (primary?.lifecycle !== 'ready') return;
+    const composer = this.ctx.composer, selected = composer.target;
+    if (selected?.kind !== 'primary' || selected.key !== primary.key || selected.epoch !== primary.epoch) return;
+    const target = {...selected}, workspace = this.ctx.snapshot()?.workspace.id, draft = composer.editor.value;
     const items = this.ctx.primaryEntries();
     const user = items.flatMap(entry => entry.messages ?? []).findLast(message => message.role === 'user');
     const text = user?.parts.flatMap(part => part.type === 'text' ? [part.text] : []).join('\n');
     if (!text) { this.ctx.modal.open('Review message').append(element('p', undefined, 'No loaded message is available. Write a new message to Primary.')); return; }
-    this.ctx.modal.confirm('Review message', 'This restores the message for review. Sending it again risks duplicate work.', async () => this.prepareText(text), 'Restore message');
+    const guard = () => {
+      const current = this.ctx.primary();
+      if (this.ctx.snapshot()?.workspace.id !== workspace || current?.key !== primary.key || current.epoch !== primary.epoch || current.lifecycle !== 'ready' || this.ctx.composer !== composer || JSON.stringify(composer.target) !== JSON.stringify(target) || composer.editor.value !== draft) throw new Error('The Primary or its draft changed. Review the current message again.');
+    };
+    this.ctx.modal.confirm('Review message', `${draft ? 'This replaces your current Primary draft. ' : ''}This restores the message for review. Sending it again risks duplicate work.`, async () => {
+      guard(); await this.ctx.selection({selectedTarget: target}); guard(); composer.setText(text); composer.editor.focus();
+    }, 'Restore message');
+    this.ctx.modal.body.append(element('p', undefined, 'Message to restore'), element('pre', undefined, text));
+    if (draft) this.ctx.modal.body.append(element('p', undefined, 'Current draft'), element('pre', undefined, draft));
   }
   handoff(): void {
     const primary = this.ctx.primary(); if (!primary) return;

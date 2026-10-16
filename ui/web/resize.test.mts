@@ -114,9 +114,24 @@ test('horizontal keyboard commands use normal and Shift steps, endpoints and bou
   f.handle.emit('keydown', {key: 'Home'}); assert.equal(f.resizer.value, 200);
   f.handle.emit('keydown', {key: 'ArrowLeft'}); assert.deepEqual(f.commits, [280, 216, 200]);
   f.handle.emit('keydown', {key: 'End'}); assert.equal(f.resizer.value, 480);
-  for (const key of ['ArrowUp', 'ArrowDown', 'Enter', 'Escape']) assert.equal(f.handle.emit('keydown', {key}), false);
+  for (const key of ['ArrowUp', 'ArrowDown', 'Escape']) assert.equal(f.handle.emit('keydown', {key}), false);
   assert.equal(f.handle.emit('keydown', {key: 'ArrowLeft', ctrlKey: true}), false);
   f.handle.frame(); assert.deepEqual(f.writes, [264, 480]); assert.equal(f.handle.getAttribute('aria-valuenow'), '480');
+});
+
+test('Enter and Space reset the focused separator without repeated or modified activation', () => {
+  for (const key of ['Enter', ' ']) {
+    const f = setup({}, 320); f.handle.frame();
+    assert.equal(f.handle.emit('keydown', {key}), true); f.handle.frame();
+    assert.equal(f.resizer.value, 264); assert.deepEqual(f.commits, [264]);
+    assert.equal(f.handle.getAttribute('aria-valuenow'), '264');
+    assert.equal(f.handle.emit('keydown', {key, repeat: true}), true);
+    for (const fields of [{shiftKey: true}, {altKey: true}, {ctrlKey: true}, {metaKey: true}, {isComposing: true}, {keyCode: 229}]) {
+      assert.equal(f.handle.emit('keydown', {key, ...fields}), false);
+    }
+    assert.deepEqual(f.commits, [264]);
+    f.resizer.destroy();
+  }
 });
 
 test('top-edge panes grow upwards for pointers and keys, double-click resets', () => {
@@ -152,6 +167,59 @@ test('automatic panes avoid an initial write and reset cancels a queued manual s
   assert.equal(resets, 1); assert.deepEqual(f.writes, []); assert.equal(f.resizer.value, 240);
   assert.equal(f.handle.getAttribute('aria-valuenow'), '240');
   f.handle.emit('keydown', {key: 'ArrowRight'}); f.handle.frame(); assert.deepEqual(f.writes, [256]);
+});
+
+test('automatic reset measures the callback frame without a manual write or commit', () => {
+  for (const activation of ['Enter', ' ', 'dblclick']) {
+    let resets = 0;
+    const f = setup({applyInitial: false, onReset: () => {
+      resets++; f.handle.ownerDocument.defaultView.requestAnimationFrame(() => f.external(240));
+    }}, 320);
+    if (activation === 'dblclick') f.handle.emit('dblclick'); else f.handle.emit('keydown', {key: activation});
+    assert.equal(resets, 1); assert.equal(f.resizer.value, 320);
+    f.handle.frame();
+    assert.equal(f.resizer.value, 240); assert.equal(f.handle.getAttribute('aria-valuenow'), '240');
+    assert.deepEqual(f.writes, []); assert.deepEqual(f.commits, []);
+    f.handle.emit('keydown', {key: 'ArrowRight'}); f.handle.frame();
+    assert.equal(f.resizer.value, 256); assert.deepEqual(f.writes, [256]);
+    f.resizer.destroy();
+  }
+});
+
+test('measured size describes unclamped initial and reset geometry without inferring an automatic mode', () => {
+  const f = setup({applyInitial: false, min: 40, max: 640, defaultValue: 144, onReset: () => {
+    f.handle.ownerDocument.defaultView.requestAnimationFrame(() => f.external(24));
+  }}, 24);
+  assert.equal(f.resizer.value, 40); assert.equal(f.handle.getAttribute('aria-valuenow'), '40');
+  assert.equal(f.handle.getAttribute('aria-valuetext'), '24 pixels');
+  f.handle.emit('keydown', {key: 'ArrowRight'}); f.handle.frame();
+  assert.equal(f.handle.getAttribute('aria-valuenow'), '56'); assert.equal(f.handle.getAttribute('aria-valuetext'), null);
+  f.handle.emit('keydown', {key: 'Enter'}); f.handle.frame();
+  assert.equal(f.resizer.value, 40); assert.equal(f.handle.getAttribute('aria-valuetext'), '24 pixels');
+  f.handle.emit('pointerdown'); assert.equal(f.handle.getAttribute('aria-valuetext'), null);
+  f.resizer.destroy();
+  const generic = setup({applyInitial: false, onReset: () => generic.external(240)}, 264);
+  generic.handle.emit('dblclick'); generic.handle.frame();
+  assert.equal(generic.handle.getAttribute('aria-valuetext'), '240 pixels'); generic.resizer.destroy();
+  const unknown = setup({applyInitial: false}, NaN);
+  assert.equal(unknown.handle.getAttribute('aria-valuetext'), null); unknown.resizer.destroy();
+});
+
+test('new input, replacement reset and destroy retire an outstanding reset measurement', () => {
+  for (const action of ['arrow', 'pointer', 'reset', 'destroy']) {
+    let resets = 0;
+    const f = setup({applyInitial: false, onReset: () => {resets++;}}, 320);
+    f.handle.emit('keydown', {key: 'Enter'}); assert.equal(f.handle.frames.size, 1);
+    if (action === 'arrow') f.handle.emit('keydown', {key: 'ArrowRight'});
+    else if (action === 'pointer') f.handle.emit('pointerdown');
+    else if (action === 'reset') f.handle.emit('dblclick');
+    else f.resizer.destroy();
+    assert.equal(f.handle.frames.size, action === 'arrow' || action === 'reset' ? 1 : 0);
+    f.external(240); f.handle.frame();
+    assert.equal(f.resizer.value, action === 'reset' ? 240 : action === 'arrow' ? 336 : 320);
+    assert.equal(resets, action === 'reset' ? 2 : 1);
+    f.resizer.destroy();
+  }
 });
 
 test('the global resize class remains until all handles release their captures', () => {

@@ -1,4 +1,5 @@
-import type { AgentRow, EventData, PrimaryView, ProjectedFrame, Target, TargetPreparation } from '../shared/api.ts';
+import type { AgentRow, EntryView, EventData, MessageView, PrimaryView, ProjectedFrame, ResponseOutcome, Target, TargetPreparation } from '../shared/api.ts';
+import {absoluteTime} from './format.ts';
 
 export type AgentViewState = {hasEntries: boolean; connected: boolean; loading: boolean; ready: boolean; complete?: boolean; availability?: AgentRow['availability']; input?: boolean; checked?: boolean; reason?: string; error?: {code?: string; message: string}; startAttempt?: {pending: boolean; reason?: string}; connectionError?: string};
 /** Reading retained messages and admitting new work have independent outcomes. */
@@ -29,20 +30,40 @@ function agentConnectionStatus(source: AgentViewState): string {
 export type ConversationPresentation = {
   name: string; cwd?: string; activity: string; input: boolean; busy: boolean; lastObserved: boolean; guidance: string;
   model?: {provider: string; modelId: string}; thinking?: string; retainedModel: boolean; retainedThinking: boolean;
-  tool?: AgentRow['currentTool'];
+  tool?: AgentRow['currentTool']; detail?: string; responseOutcome?: ResponseOutcome;
 };
 export type PresentationSource = {target?: Target; primary?: PrimaryView; row?: AgentRow;
-  availability?: EventData['agent.availability']; negotiated?: Pick<TargetPreparation, 'availability' | 'capabilities'> & {identity: string}; frame?: ProjectedFrame; tool?: AgentRow['currentTool']; connected: boolean};
+  availability?: EventData['agent.availability']; negotiated?: Pick<TargetPreparation, 'availability' | 'capabilities'> & {identity: string}; frame?: ProjectedFrame; entries?: readonly EntryView[]; tool?: AgentRow['currentTool']; connected: boolean};
+/** The newest conversational record owns its response outcome; tool errors do not. */
+export function responseOutcome(entries: readonly EntryView[] = []): ResponseOutcome | undefined {
+  const message = lastConversationMessage(entries);
+  if (message?.role !== 'assistant' || message.state !== 'final') return;
+  return message.stopReason === 'error' ? 'failed' : message.stopReason === 'aborted' ? 'stopped' : undefined;
+}
+function lastConversationMessage(entries: readonly EntryView[]): MessageView | undefined {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const message = entries[i]?.messages?.findLast(value => value.role === 'assistant' || value.role === 'user');
+    if (message) return message;
+  }
+}
+function outcomeLabel(outcome?: ResponseOutcome): string | undefined { return outcome === 'failed' ? 'Response failed' : outcome === 'stopped' ? 'Stopped' : undefined; }
+function retryTime(at: number): string { return Number.isSafeInteger(at) && at >= 0 && at <= 8640000000000000 ? absoluteTime(at) : 'unavailable'; }
 const emptyPresentation = (connected: boolean): ConversationPresentation => ({name: 'Primary', activity: '', input: false, busy: false, guidance: '', lastObserved: !connected, retainedModel: false, retainedThinking: false});
+function primaryActivity(item: PrimaryView, outcome?: ResponseOutcome): string {
+  if (item.lifecycle !== 'ready') return {starting: 'Starting session…', switching: 'Switching session…', stopped: 'Stopped', failed: 'Session stopped', stopping: 'Stopping…'}[item.lifecycle];
+  if (item.activity === 'retrying' && item.retry) return `Retrying · retry ${item.retry.attempt} of ${item.retry.maxAttempts} · next about ${retryTime(item.retry.at)}`;
+  if (item.activity === 'idle' && outcome) return outcomeLabel(outcome) as string;
+  return {idle: 'Ready', running: 'Working', compacting: 'Compacting…', retrying: 'Retrying…', unknown: 'Connected'}[item.activity];
+}
 function primaryPresentation(source: PresentationSource, target: Extract<Target, {kind: 'primary'}>): ConversationPresentation {
   const base = emptyPresentation(source.connected); const item = source.primary;
   if (!item || item.key !== target.key || item.epoch !== target.epoch) return base;
   const ready = item.lifecycle === 'ready';
-  const activity = item.lifecycle === 'ready'
-    ? {idle: 'Ready', running: 'Working', compacting: 'Compacting…', retrying: 'Retrying…', unknown: 'Connected'}[item.activity]
-    : {starting: 'Starting session…', switching: 'Switching session…', stopped: 'Stopped', failed: 'Session stopped', stopping: 'Stopping…'}[item.lifecycle];
+  const outcome = item.responseOutcome ?? responseOutcome(source.entries);
+  const activity = primaryActivity(item, outcome);
   return {...base, name: item.extension?.title ?? item.sessionName ?? 'Primary', cwd: item.cwd, activity,
-    input: ready, busy: ready && ['running', 'compacting', 'retrying'].includes(item.activity),
+    input: ready, busy: ready && ['running', 'compacting', 'retrying'].includes(item.activity), responseOutcome: outcome,
+    detail: item.activity === 'retrying' && item.retry ? `Next retry time is estimated from backend receipt plus ${item.retry.delayMs} ms.\n${item.retry.error}` : undefined,
     model: item.model ? {provider: item.model.provider, modelId: item.model.id} : undefined, thinking: item.thinkingLevel,
     tool: ready && item.activity === 'running' ? source.tool : undefined};
 }
@@ -54,8 +75,10 @@ function agentSettings(row?: AgentRow, frame?: ProjectedFrame): Pick<Conversatio
 function agentActivity(state: AgentRow['availability'], input: boolean, frame?: ProjectedFrame): string {
   if (state !== 'live') return {stored: 'Not connected', incompatible: 'Connection unavailable', unavailable: 'Unavailable'}[state];
   if (Array.isArray(frame?.status.compactions?.value) && frame.status.compactions.value.length) return 'Compacting…';
+  if (frame?.status.retry && frame.status.busy) return `Retrying · attempt ${frame.status.retry.attempt} · next ${retryTime(frame.status.retry.at)}`;
   if (frame?.status.busy) return 'Working';
-  return frame && input ? 'Ready' : 'Connected';
+  if (frame?.status.providerBlock) return 'Provider blocked';
+  return outcomeLabel(responseOutcome(frame?.entries)) ?? (frame && input ? 'Ready' : 'Connected');
 }
 function frameTool(frame?: ProjectedFrame): AgentRow['currentTool'] {
   if (!frame?.status.busy) return undefined;
@@ -74,13 +97,20 @@ function agentConnection(source: PresentationSource, identity: string) {
   const input = source.connected && checked && state === 'live' && (negotiated?.capabilities ?? availability?.capabilities)?.input === true;
   return {row, checked, state, input};
 }
+function agentFailureDetails(frame?: ProjectedFrame): string | undefined {
+  if (frame?.status.busy && frame.status.retry) return frame.status.retry.error;
+  const block = frame?.status.providerBlock; if (!block) return;
+  return ['Configure this agent through Primary.', block.error, block.errorRedacted ? 'Some diagnostic text was redacted.' : '', block.errorTruncated ? 'The diagnostic is shortened.' : ''].filter(Boolean).join('\n');
+}
 function agentPresentation(source: PresentationSource, identity: string): ConversationPresentation {
   const {row, checked, state, input} = agentConnection(source, identity), frame = source.frame;
-  const busy = checked && state === 'live' && frame?.status.busy === true, retained = !checked || state !== 'live';
+  const live = checked && state === 'live';
+  const busy = live && frame?.status.busy === true, retained = !live;
   const settings = agentSettings(row, frame);
   return {...emptyPresentation(source.connected), ...settings, name: settings.name || identity, cwd: row?.cwd,
     activity: state === 'live' && !checked ? 'Connection not checked' : agentActivity(state, input, frame), input, busy, guidance: input ? '' : state === 'stored' ? 'Use Start agent to connect this agent.' : 'Messages are unavailable for this agent.', retainedModel: settings.retainedModel || retained && !!settings.model, retainedThinking: settings.retainedThinking || retained && !!settings.thinking,
-    tool: checked && state === 'live' ? frameTool(frame) : undefined};
+    detail: live ? agentFailureDetails(frame) : undefined,
+    responseOutcome: responseOutcome(frame?.entries), tool: live ? frameTool(frame) : undefined};
 }
 /** Negotiated input and accepted activity describe the same recipient; catalog claims never override them. */
 export function conversationPresentation(source: PresentationSource): ConversationPresentation {
@@ -92,7 +122,7 @@ export function presentationGlyph(view: ConversationPresentation): string {
   if (view.busy) return '●';
   if (['Ready', 'Connected'].includes(view.activity)) return '✓';
   if (view.activity === 'Not connected') return '○';
-  if (['Stopped', 'Unavailable', 'Connection unavailable', 'Session stopped'].includes(view.activity)) return '!';
+  if (['Stopped', 'Response failed', 'Provider blocked', 'Unavailable', 'Connection unavailable', 'Session stopped'].includes(view.activity)) return '!';
   return '?';
 }
 /** Composer folders come only from this recipient, never the window launch directory. */

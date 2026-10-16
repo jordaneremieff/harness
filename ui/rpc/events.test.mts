@@ -9,6 +9,46 @@ function create() {
   const projection = new EventProjection(view, (name, _target, data) => emitted.push({name, data: structuredClone(data)}), () => {});
   return { projection, emitted };
 }
+test('ordinary retry facts survive state snapshots and clear at exact run boundaries', () => {
+  const {projection, emitted} = create();
+  const start = {type: 'auto_retry_start', attempt: 2, maxAttempts: 9, delayMs: 60000, errorMessage: 'fetch failed'};
+  const before = Date.now(); projection.reduce(start);
+  assert.equal(projection.view.activity, 'retrying'); assert.equal(projection.view.retry?.attempt, 2);
+  assert.equal(projection.view.retry?.maxAttempts, 9); assert.ok((projection.view.retry?.at ?? 0) >= before + 60000);
+  const state = emitted.findLast(event => event.name === 'primary.state'); assert.ok(state); assert.deepEqual((state.data as PrimaryView).retry, projection.view.retry);
+  projection.reduce({type: 'agent_start'}); assert.equal(projection.view.retry, undefined); assert.equal(projection.view.responseOutcome, undefined);
+  projection.reduce(start); projection.reduce({type: 'auto_retry_end', success: false, attempt: 9, finalError: 'opaque diagnostic'});
+  assert.equal(projection.view.retry, undefined); assert.equal(projection.view.responseOutcome, 'failed');
+  projection.reduce({type: 'agent_settled', aborted: true}); assert.equal(projection.view.responseOutcome, 'stopped');
+  projection.reduce(start); projection.reduce({type: 'auto_retry_end', success: true, attempt: 2});
+  assert.equal(projection.view.retry, undefined); assert.equal(projection.view.responseOutcome, undefined);
+  projection.reduce(start); projection.reset(); assert.equal(projection.view.retry, undefined); assert.equal(projection.view.responseOutcome, undefined);
+});
+test('retry cancellation identity expires at new attempts and lifecycle resets', () => {
+  for (const boundary of ['attempt', 'retry', 'reset', 'close'] as const) {
+    const {projection} = create(); const start = {type: 'auto_retry_start', attempt: 1, maxAttempts: 4, delayMs: 1000};
+    projection.reduce(start); const captured = projection.captureRetry(); assert.notEqual(captured, undefined);
+    if (boundary === 'attempt') projection.reduce({type: 'agent_start'});
+    if (boundary === 'retry') projection.reduce({...start, attempt: 2});
+    if (boundary === 'reset') projection.reset();
+    if (boundary === 'close') projection.clearRetry();
+    projection.confirmRetryAbort(captured); projection.reduce({type: 'auto_retry_end', success: false, attempt: 1});
+    assert.equal(projection.view.responseOutcome, 'failed');
+  }
+});
+test('successful retry ends never become stopped after an old cancellation reply', () => {
+  const {projection} = create(); projection.reduce({type: 'auto_retry_start', attempt: 1, maxAttempts: 4, delayMs: 1000});
+  const captured = projection.captureRetry(); projection.reduce({type: 'auto_retry_end', success: true, attempt: 1});
+  projection.confirmRetryAbort(captured); assert.equal(projection.view.responseOutcome, undefined);
+});
+test('assistant stop reasons own response outcome without classifying diagnostic text', () => {
+  const {projection} = create();
+  for (const [stopReason, expected] of [['error', 'failed'], ['aborted', 'stopped'], ['stop', undefined]] as const) {
+    projection.reduce({type: 'message_start', message: {role: 'assistant', timestamp: 1, content: []}});
+    projection.reduce({type: 'message_end', message: {role: 'assistant', timestamp: 1, content: [], stopReason, errorMessage: 'arbitrary unclassified text'}});
+    assert.equal(projection.view.responseOutcome, expected);
+  }
+});
 test('live and saved peer messages preserve the same communication value through RPC projection', () => {
   const raw = {role: 'custom', customType: 'agent.peer', timestamp: 1700000000000, content: 'Transport', details: {kind: 'report', senderIdentity: '10000000-0000-4000-8000-000000000001', message: 'Contribution', reportSourceId: 'source', requestId: 'request'}};
   const {projection} = create(); projection.reduce({type: 'message_start', message: raw}); projection.reduce({type: 'message_end', message: raw});

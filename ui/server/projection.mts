@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { CatalogRow } from '../agents/index.mts';
-import type { AgentRow, CachedRoster, DisplayCoverage, EntryView, ImageSource, JsonDisplay, MessageView, PartView, ProjectedFrame, ToolOutputInfo } from '../shared/api.ts';
+import type { AgentRow, CachedRoster, DisplayCoverage, EntryView, ImageSource, JsonDisplay, MessageView, PartView, ProjectedFrame, ToolOutputInfo, GenerationRetry, ProviderBlock } from '../shared/api.ts';
 import { imagePart, imageSource } from './images.mts';
 import { projectCommunication, type CommunicationSource } from './communication.mts';
 
@@ -469,8 +469,9 @@ export function projectSavedEntry(raw: unknown): EntryView {
 }
 
 function scalarRows(value: unknown): JsonDisplay | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const rows = value.slice(0, 32).map(raw => {
+  const supplied = object(value), source = Array.isArray(supplied.value) ? supplied.value : value;
+  if (!Array.isArray(source)) return undefined;
+  const rows = source.slice(0, 32).map(raw => {
     const row = object(raw), result: Record<string, unknown> = {};
     for (const field of ['id', 'kind', 'type', 'status', 'background', 'abortRequested', 'requestId', 'entryId', 'answerEntryId', 'reason']) {
       const item = row[field];
@@ -479,11 +480,34 @@ function scalarRows(value: unknown): JsonDisplay | undefined {
     }
     return result;
   });
-  const result = jsonDisplay(rows, 8192); result.truncated ||= value.length > 32; return result;
+  const result = jsonDisplay(rows, 8192); result.truncated ||= source.length > 32 || supplied.truncated === true; return result;
 }
 function modelFields(raw: unknown): {provider: string; modelId: string} | undefined {
   const model = object(raw);
   return typeof model.provider === 'string' && typeof model.modelId === 'string' ? {provider: safeText(model.provider, 256), modelId: safeText(model.modelId, 256)} : undefined;
+}
+function generationRetry(raw: unknown): GenerationRetry | undefined {
+  const retry = object(raw);
+  if (!Number.isSafeInteger(retry.attempt) || Number(retry.attempt) < 1 || !Number.isSafeInteger(retry.at) || Number(retry.at) < 0 || Number(retry.at) > 8640000000000000 || typeof retry.error !== 'string') return;
+  return {attempt: Number(retry.attempt), at: Number(retry.at), error: safeText(retry.error, 512)};
+}
+function providerBlockReference(raw: unknown): ProviderBlock['originalResults'][number] | undefined {
+  const result = object(raw);
+  if (typeof result.sessionId !== 'string' || !Number.isSafeInteger(result.submissionId) || Number(result.submissionId) < 1 || result.requestId !== undefined && typeof result.requestId !== 'string') return;
+  if (safeText(result.sessionId, Number.MAX_SAFE_INTEGER) !== result.sessionId || typeof result.requestId === 'string' && safeText(result.requestId, Number.MAX_SAFE_INTEGER) !== result.requestId) return;
+  return {sessionId: result.sessionId, submissionId: Number(result.submissionId), ...(typeof result.requestId === 'string' ? {requestId: result.requestId} : {})};
+}
+function providerBlock(raw: unknown): ProviderBlock | undefined {
+  const block = object(raw), model = modelFields(block.model);
+  if (!model || typeof block.blockId !== 'string' || typeof block.providerSessionId !== 'string' || typeof block.error !== 'string' || !Number.isSafeInteger(block.conversationId) || Number(block.conversationId) < 1 || !Number.isSafeInteger(block.epoch) || Number(block.epoch) < 0 || !Number.isSafeInteger(block.timestamp) || Number(block.timestamp) < 0 || !Array.isArray(block.originalResults) || !Number.isSafeInteger(block.omittedOriginalResults) || Number(block.omittedOriginalResults) < 0 || typeof block.errorRedacted !== 'boolean' || typeof block.errorTruncated !== 'boolean' || !['provider', 'host-block'].includes(String(block.source))) return;
+  const originalResults: ProviderBlock['originalResults'] = [];
+  for (const value of block.originalResults.slice(0, 16)) {
+    const result = providerBlockReference(value); if (result) originalResults.push(result);
+  }
+  const protectedError = safeText(block.error, Number.MAX_SAFE_INTEGER), error = safeText(block.error, 4096);
+  return {blockId: safeText(block.blockId, 128), conversationId: Number(block.conversationId), providerSessionId: safeText(block.providerSessionId, 256), epoch: Number(block.epoch), model,
+    error, errorRedacted: block.errorRedacted || protectedError !== block.error, errorTruncated: block.errorTruncated || error !== protectedError,
+    source: block.source as ProviderBlock['source'], timestamp: Number(block.timestamp), originalResults, omittedOriginalResults: Number(block.omittedOriginalResults) + block.originalResults.length - originalResults.length};
 }
 function frameStatus(raw: unknown): ProjectedFrame['status'] {
   const source = object(raw), agent = object(source.agent); const status: ProjectedFrame['status'] = {busy: source.busy === true};
@@ -494,7 +518,9 @@ function frameStatus(raw: unknown): ProjectedFrame['status'] {
   if (typeof source.lastText === 'string') status.lastText = safeText(source.lastText, 1024);
   const tasks = scalarRows(source.tasks), submissions = scalarRows(source.submissions);
   if (tasks) status.tasks = tasks; if (submissions) status.submissions = submissions;
-  const live = object(source.live);
+  const live = object(source.live), generation = object(live.generation);
+  const retry = generationRetry(source.retry ?? {...object(generation.retry), attempt: generation.attempt}); if (retry) status.retry = retry;
+  const block = providerBlock(source.providerBlock); if (block) status.providerBlock = block;
   if (source.compactions !== undefined) status.compactions = displayData(source.compactions, 8192);
   else if (Array.isArray(live.compactions)) {
     status.compactions = jsonDisplay(live.compactions.slice(0, 32), 8192);
@@ -511,7 +537,8 @@ function unavailableLiveImages(parts: PartView[]): void {
   }
 }
 class FrameProjector {
-  private bytes = 4096;
+  private bytes: number;
+  constructor(statusBytes = 0) { this.bytes = 4096 + statusBytes; }
   omitted = 0;
   truncated = false;
   collect(value: unknown, partial: boolean, communicationSource: CommunicationSource): EntryView[] {
@@ -537,15 +564,19 @@ function frameCoverage(raw: unknown, projected: FrameProjector): DisplayCoverage
 }
 export function projectFrame(raw: unknown): ProjectedFrame {
   try {
-    const source = object(raw), projector = new FrameProjector();
+    const source = object(raw), status = frameStatus(source.status), projector = new FrameProjector(sizeOf(status));
     const communicationSource: CommunicationSource = {storageId: typeof source.storageId === 'string' ? source.storageId : undefined, conversationId: typeof source.conversationId === 'number' ? source.conversationId : undefined};
     const live = projector.collect(source.live ?? [], true, communicationSource), entries = projector.collect(source.entries ?? [], false, communicationSource);
-    const status = frameStatus(source.status);
     projector.truncated ||= status.compactions?.truncated === true || status.compactionFailure?.truncated === true;
     return {revision: Number.isSafeInteger(source.revision) ? Number(source.revision) : 0, observedAt: safeText(source.observedAt, 256), entries, live,
       nextBefore: Number.isSafeInteger(source.nextBefore) && Number(source.nextBefore) > 0 ? Number(source.nextBefore) : null,
       status, coverage: frameCoverage(source.coverage, projector)};
   } catch { return {revision: 0, observedAt: '', entries: [], live: [], nextBefore: null, status: {busy: false}, coverage: coverage(true, 1)}; }
+}
+function publishedRetry(source: Record<string, unknown>): AgentRow['publishedRetry'] {
+  const retry = object(object(source.health).autoRetry ?? source.publishedRetry);
+  if (!Number.isSafeInteger(retry.attempt) || Number(retry.attempt) < 1 || !Number.isSafeInteger(retry.maxAttempts) || Number(retry.maxAttempts) < 1 || !Number.isSafeInteger(retry.delayMs) || Number(retry.delayMs) < 0 || typeof (retry.errorMessage ?? retry.error) !== 'string') return;
+  return {attempt: Number(retry.attempt), maxAttempts: Number(retry.maxAttempts), delayMs: Number(retry.delayMs), error: safeText(retry.errorMessage ?? retry.error, 512)};
 }
 function rosterOptionals(row: AgentRow, source: Record<string, unknown>): void {
   for (const key of ['name', 'handle', 'thinkingLevel', 'latestReply', 'firstMessage', 'error', 'observedAt', 'ownerLabel'] as const) {
@@ -556,6 +587,7 @@ function rosterOptionals(row: AgentRow, source: Record<string, unknown>): void {
   if (row.model && typeof thinking === 'string') row.model.thinkingLevel = safeText(thinking, 256);
   const tool = object(source.currentTool);
   if (typeof tool.name === 'string') row.currentTool = {name: safeText(tool.name, 256), argument: safeText(tool.argument, 1024)};
+  const retry = publishedRetry(source); if (retry) row.publishedRetry = retry;
   const caps = object(source.capabilities);
   if (typeof source.identity === 'string' && source.capabilities) row.capabilities = {history: caps.history === true, observe: caps.observe === true, input: caps.input === true, abort: caps.abort === true, configure: caps.configure === true, inspect: caps.inspect === true};
 }

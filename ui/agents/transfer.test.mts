@@ -16,6 +16,29 @@ const nativeFacts = (coverage: Snapshot["coverage"]) => ({ complete: coverage.co
   bytes: coverage.bytes, hiddenExcluded: coverage.hiddenExcluded, entryLimitReached: coverage.entryLimitReached,
   byteLimitReached: coverage.byteLimitReached });
 
+test("native retries and provider blocks survive worker transfer and repeated projection", () => {
+  const source = frame(7) as ConversationFrame;
+  source.status.live = {generation: {attempt: 2, retry: {at: 1700000060000, error: 'Bearer private-token'}}}; source.status.busy = true;
+  source.status.providerBlock = {blockId: 'block', conversationId: 1, providerSessionId: 'provider-session', epoch: 1,
+    model: {provider: 'fixture', modelId: 'fixture'}, error: 'Bearer private-token', errorRedacted: false, errorTruncated: false,
+    source: 'provider', timestamp: 1700000000000, originalResults: [{sessionId: source.storageId, submissionId: 1, requestId: '雪'.repeat(1024)}, {sessionId: source.storageId, submissionId: 2, requestId: 'Bearer private-token'}], omittedOriginalResults: 0};
+  assert.deepEqual(decodeFrame(source), source);
+  const direct = projectFrame(source), transferred = transferFrame(source), displayed = projectFrame(transferred);
+  assert.deepEqual(displayed.status.retry, direct.status.retry); assert.deepEqual(displayed.status.providerBlock, direct.status.providerBlock);
+  assert.deepEqual(projectFrame(displayed).status, displayed.status);
+  assert.equal(displayed.status.retry?.at, 1700000060000); assert.equal(displayed.status.retry?.attempt, 2);
+  assert.equal(displayed.status.providerBlock?.errorRedacted, true); assert.equal(displayed.status.providerBlock?.originalResults[0].submissionId, 1);
+  assert.equal(displayed.status.providerBlock?.originalResults[0].requestId, '雪'.repeat(1024)); assert.equal(displayed.status.providerBlock?.omittedOriginalResults, 1);
+  assert.doesNotMatch(JSON.stringify(transferred), /private-token/); assert.ok(bytes(transferred) <= 256 * 1024);
+});
+test("large provider blocks reserve transfer space before transcript entries", () => {
+  const source = frame(8) as ConversationFrame;
+  source.entries = Array.from({length: 8}, (_, index) => ({id: String(index + 1), kind: 'pi.assistant', model: [{role: 'assistant', content: [{type: 'text', text: 'x'.repeat(60000)}]}]}));
+  source.status.providerBlock = {blockId: 'block', conversationId: 1, providerSessionId: 'provider-session', epoch: 1, model: {provider: 'fixture', modelId: 'fixture'}, error: 'x'.repeat(4096), errorRedacted: false, errorTruncated: false, source: 'provider', timestamp: 1,
+    originalResults: Array.from({length: 16}, (_, index) => ({sessionId: source.storageId, submissionId: index + 1, requestId: 'r'.repeat(1024)})), omittedOriginalResults: 0};
+  const result = transferFrame(source); assert.ok(bytes(result) <= 256 * 1024); assert.ok(result.entries.length < source.entries.length);
+  assert.equal(projectFrame(result).status.providerBlock?.originalResults.length, 16); assert.equal(result.coverage.truncated, true);
+});
 test("oversized first entry transfers bounded native-shaped messages and preserves source facts", () => {
   const source = snapshot([{ id: "11", kind: "model", model: [{ role: "assistant", content: [{ type: "text", text: "x".repeat(8 * 1024 * 1024) }] }] }]);
   const result = transferSnapshot(source);

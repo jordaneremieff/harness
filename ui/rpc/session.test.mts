@@ -17,6 +17,79 @@ function create(options: Partial<ConstructorParameters<typeof PrimarySession>[0]
 }
 const message = (content: unknown = [], timestamp = 1) => ({ role: 'assistant', content, timestamp });
 
+test('current retry stays in same-backend views and clears on stop, replacement and exit', async () => {
+  const {child, session, published} = create(); await session.start();
+  const retry = () => child.event({type: 'auto_retry_start', attempt: 1, maxAttempts: 4, delayMs: 60000, errorMessage: 'opaque provider text'});
+  retry(); const current = structuredClone(session.view.retry); assert.ok(current);
+  child.onCommand = record => {
+    if (record.type === 'get_state') child.response(record, {sessionId: 'fixture', isStreaming: true, isCompacting: false, pendingMessageCount: 0});
+    else if (record.type === 'abort') { child.event({type: 'agent_settled', aborted: true}); child.response(record); }
+    else if (record.type === 'abort_retry') { child.event({type: 'auto_retry_end', success: false, attempt: 1, finalError: 'Unclassified terminal text'}); child.response(record); }
+    else child.defaults(record);
+  };
+  await session.refreshState(); assert.deepEqual(session.view.retry, current); assert.equal(session.view.activity, 'retrying');
+  const snapshot = published.findLast(event => event.name === 'primary.state'); assert.ok(snapshot); assert.deepEqual((snapshot.data as typeof session.view).retry, current);
+  await session.stop(); assert.equal(session.view.retry, undefined); assert.equal(session.view.responseOutcome, 'stopped');
+  retry(); await session.control({epoch: 1, action: 'abortRetry'}); child.event({type: 'agent_settled', aborted: false});
+  assert.equal(session.view.retry, undefined); assert.equal(session.view.responseOutcome, 'stopped');
+  retry(); child.onCommand = record => child.defaults(record); await session.transition({epoch: 1, action: 'new'});
+  assert.equal(session.view.retry, undefined); assert.equal(session.view.responseOutcome, undefined);
+  retry(); await session.close(); assert.equal(session.view.retry, undefined);
+});
+test('idle Stop and retry cancellation replies do not label a completed response stopped', async () => {
+  const {child, session} = create(); await session.start();
+  child.event({type: 'agent_start'}); child.event({type: 'message_end', message: {...message(), stopReason: 'stop'}}); child.event({type: 'agent_settled', aborted: false});
+  await session.control({epoch: 1, action: 'abortRetry'}); assert.equal(session.view.responseOutcome, undefined);
+  await session.stop(); assert.equal(session.view.responseOutcome, undefined); assert.equal(session.view.activity, 'idle'); await session.close();
+});
+test('a stale retry cancellation reply cannot overwrite a completed or newer attempt', async () => {
+  for (const next of ['completed', 'running', 'retrying'] as const) {
+    const {child, session} = create(); await session.start();
+    child.event({type: 'auto_retry_start', attempt: 1, maxAttempts: 4, delayMs: 1000});
+    child.onCommand = record => {
+      if (record.type === 'abort_retry') return;
+      if (record.type === 'get_state') child.response(record, {sessionId: 'fixture', isStreaming: next !== 'completed', isCompacting: false, pendingMessageCount: 0});
+      else child.defaults(record);
+    };
+    const control = session.control({epoch: 1, action: 'abortRetry'}), pending = await child.command('abort_retry');
+    child.event({type: 'agent_start'});
+    if (next === 'completed') { child.event({type: 'message_end', message: {...message(), stopReason: 'stop'}}); child.event({type: 'agent_settled', aborted: false}); }
+    if (next === 'retrying') child.event({type: 'auto_retry_start', attempt: 2, maxAttempts: 4, delayMs: 1000});
+    child.response(pending); await control;
+    assert.equal(session.view.responseOutcome, undefined); assert.equal(session.view.activity, next === 'completed' ? 'idle' : next);
+    assert.equal(session.view.retry?.attempt, next === 'retrying' ? 2 : undefined);
+    child.onCommand = record => child.defaults(record); await session.close();
+  }
+});
+test('retry cancellation requires its own false end in either acknowledgment order', async () => {
+  for (const order of ['end-first', 'reply-first'] as const) {
+    const {child, session} = create(); await session.start();
+    child.event({type: 'auto_retry_start', attempt: 1, maxAttempts: 4, delayMs: 1000});
+    const end = () => { child.event({type: 'auto_retry_end', success: false, attempt: 1, finalError: 'Arbitrary diagnostic, not a category'}); child.event({type: 'agent_settled', aborted: false}); };
+    child.onCommand = record => {
+      if (record.type === 'abort_retry') { if (order === 'end-first') end(); child.response(record); }
+      else if (record.type === 'get_state') child.response(record, {sessionId: 'fixture', isStreaming: order === 'reply-first', isCompacting: false, pendingMessageCount: 0});
+      else child.defaults(record);
+    };
+    await session.control({epoch: 1, action: 'abortRetry'});
+    if (order === 'reply-first') { assert.notEqual(session.view.responseOutcome, 'stopped'); end(); }
+    assert.equal(session.view.responseOutcome, 'stopped'); assert.equal(session.view.retry, undefined);
+    child.onCommand = record => child.defaults(record); await session.close();
+  }
+});
+test('a delayed Stop reply leaves a newer run active', async () => {
+  const {child, session} = create(); await session.start(); child.event({type: 'agent_start'});
+  child.onCommand = record => {if (record.type !== 'abort') child.defaults(record);};
+  const stopping = session.stop(), pending = await child.command('abort');
+  child.event({type: 'agent_settled', aborted: true}); child.event({type: 'agent_start'}); child.response(pending); await stopping;
+  assert.equal(session.view.activity, 'running'); assert.equal(session.view.responseOutcome, undefined);
+  child.onCommand = record => child.defaults(record); await session.close();
+});
+test('an authoritative idle refresh clears stale ordinary retry facts', async () => {
+  const {child, session} = create(); await session.start();
+  child.event({type: 'auto_retry_start', attempt: 1, maxAttempts: 4, delayMs: 1000, errorMessage: 'opaque'});
+  await session.refreshState(); assert.equal(session.view.retry, undefined); assert.equal(session.view.activity, 'idle'); await session.close();
+});
 test('readiness waits for state/resources/history; handled prompt requires no settled event', async () => {
   const { child, session } = create(); await session.start();
   assert.equal(session.view.lifecycle, 'ready'); assert.equal(session.models[0]?.provider, 'acceptance-fixture');

@@ -14,6 +14,13 @@ function resultText(message: MessageView | undefined): Extract<PartView, {type: 
 const retainedResult = (text: string) => ({type: 'message', id: 'result', parentId: null,
   message: {role: 'toolResult', toolCallId: 'call', toolName: 'generic', content: [{type: 'text', text}]}});
 
+test('published retry health keeps its source time without becoming live authority', () => {
+  const roster = projectRoster({rows: [{identity: 'published', storageId: 'storage', cwd: '/project', modifiedAt: 1, state: 'working', owner: 'here', availability: 'stored', partial: false,
+    observedAt: '2026-10-16T00:00:00Z', health: {autoRetry: {attempt: 2, maxAttempts: 5, delayMs: 60000, errorMessage: 'Bearer private-token'}}}]});
+  assert.deepEqual(roster.rows[0]?.publishedRetry, {attempt: 2, maxAttempts: 5, delayMs: 60000, error: 'Bearer [redacted]'});
+  assert.equal(roster.rows[0].observedAt, '2026-10-16T00:00:00Z'); assert.equal(roster.rows[0].availability, 'stored');
+  assert.deepEqual(projectRoster({rows: roster.rows}).rows[0].publishedRetry, roster.rows[0].publishedRetry);
+});
 test('saved structured documents derive from complete text before the raw preview', () => {
   const document = `# Document\n${'A useful paragraph with "quotes".\n'.repeat(300)}`;
   const text = JSON.stringify({document}); assert.ok(Buffer.byteLength(text) > 8192);

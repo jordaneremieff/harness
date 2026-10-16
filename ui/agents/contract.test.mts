@@ -255,6 +255,12 @@ test("change feed accepts a complete revision value without a transport envelope
 
 test("conversation frames bind storage, conversation, token, and native status", () => {
 	const value = frame(); assert.deepEqual(decodeFrame(value, { identity: storageId }), value);
+	const retry = frame(); (retry.status as JsonObject).live = {generation: {attempt: 2, retry: {at: 1700000060000, error: 'opaque'}}};
+	assert.deepEqual(decodeFrame(retry), retry);
+	for (const invalid of [{attempt: 0, retry: {at: 1, error: ''}}, {attempt: 1, retry: {at: -1, error: ''}}, {attempt: 1, retry: {at: 1, error: 3}}, {attempt: 1, retry: {at: 8640000000000001, error: ''}}]) {
+		const changed = frame(); (changed.status as JsonObject).live = {generation: invalid}; refusal(() => decodeFrame(changed));
+	}
+	const invalidBlock = frame(); (invalidBlock.status as JsonObject).providerBlock = {error: 'not a complete block'}; refusal(() => decodeFrame(invalidBlock));
 	const opened = { token: "test:token", frame: value };
 	assert.deepEqual(decodeResponse("observe-open", opened, { identity: storageId, token: "test:token" }), opened);
 	assert.deepEqual(decodeResponse("observe-frame", value, { identity: storageId }), value);

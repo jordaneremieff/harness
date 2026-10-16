@@ -55,6 +55,9 @@ export class EventProjection {
   coverage: DisplayCoverage = { complete: true, truncated: false, omitted: 0 };
   activityRevision = 0;
   manualCompactionEndRevision?: number;
+  private retryRevision = 0;
+  private retryAbortRevision?: number;
+  private retryEnd?: {revision: number; success: boolean};
   silent = false;
   private ids = new Map<string, string>();
   private active?: string;
@@ -70,8 +73,15 @@ export class EventProjection {
   get target(): Extract<Target, {kind: 'primary'}> { return { kind: 'primary', key: this.view.key, epoch: this.view.epoch }; }
   emit<N extends EventName>(name: N, data: EventData[N]): void { if (!this.silent) this.publish(name, this.target, data); }
   state(): void { this.changed(); this.emit('primary.state', structuredClone(this.view)); }
+  clearRetry(): void { this.retryRevision++; this.retryAbortRevision = undefined; this.retryEnd = undefined; delete this.view.retry; }
+  captureRetry(): number | undefined { return this.view.retry ? this.retryRevision : undefined; }
+  confirmRetryAbort(revision: number | undefined): void {
+    if (revision === undefined || revision !== this.retryRevision || this.view.lifecycle !== 'ready') return;
+    this.retryAbortRevision = revision;
+    if (this.retryEnd?.revision === revision && !this.retryEnd.success && this.view.responseOutcome === 'failed') { this.view.responseOutcome = 'stopped'; this.state(); }
+  }
   reset(): void {
-    this.manualCompactionEndRevision = undefined;
+    this.manualCompactionEndRevision = undefined; this.clearRetry(); delete this.view.responseOutcome;
     this.entries = []; this.messages = []; this.ids.clear(); this.counts.clear(); this.active = undefined; this.activeSignature = undefined; this.bytes = 0;
     this.sizes.clear(); this.toolArgs.clear(); this.coverage = { complete: true, truncated: false, omitted: 0 };
   }
@@ -140,8 +150,8 @@ export class EventProjection {
   reduce(event: RpcRecord, replaySignature?: string): void {
     this.lastSignature = undefined;
     switch (event.type) {
-      case 'agent_start': this.activity('running'); return;
-      case 'agent_settled': this.activity('idle'); return;
+      case 'agent_start': this.clearRetry(); delete this.view.responseOutcome; this.activity('running'); return;
+      case 'agent_settled': delete this.view.retry; if (event.aborted === true) this.view.responseOutcome = 'stopped'; this.activity('idle'); return;
       case 'agent_end': case 'turn_start': case 'turn_end': return;
       case 'message_start': case 'message_end': this.message(event, replaySignature); return;
       case 'message_update': this.update(object(event.assistantMessageEvent)); return;
@@ -172,8 +182,13 @@ export class EventProjection {
         }
         const message = projectMessage(raw, id, event.type === 'message_start' ? 'partial' : 'final');
         this.save(message); this.emit('primary.message', { message });
+        this.responseOutcome(event.type, message);
         if (event.type === 'message_end' && this.active === id) { this.active = undefined; this.activeSignature = undefined; this.toolArgs.clear(); }
         return;
+  }
+  private responseOutcome(type: string, message: MessageView): void {
+    if (type !== 'message_end' || message.role !== 'assistant') return;
+    this.view.responseOutcome = message.stopReason === 'error' ? 'failed' : message.stopReason === 'aborted' ? 'stopped' : undefined; this.state();
   }
   private tool(event: RpcRecord): void {
         const phase = event.type === 'tool_execution_start' ? 'start' : event.type === 'tool_execution_update' ? 'update' : 'end';
@@ -202,13 +217,24 @@ export class EventProjection {
   private recovery(event: RpcRecord): void {
         const kind = event.type.startsWith('compaction') ? 'compaction' : event.type.startsWith('auto_retry') ? 'retry' : 'summarizationRetry';
         const phase = recoveryPhase(event.type);
+        if (kind === 'retry') this.retry(event, phase);
         if (phase !== 'end') this.activity(kind === 'retry' ? 'retrying' : 'compacting');
-        else this.activityRevision++;
+        else { this.activityRevision++; this.state(); }
         this.emit('primary.recovery', { kind, phase, ...(typeof event.attempt === 'number' ? { attempt: event.attempt } : {}),
           ...(typeof event.maxAttempts === 'number' ? { maxAttempts: event.maxAttempts } : {}),
           ...(typeof event.delayMs === 'number' ? { delayMs: event.delayMs } : {}),
           ...(typeof (event.errorMessage ?? event.finalError) === 'string' ? { error: safeText(String(event.errorMessage ?? event.finalError), 512) } : {}),
           ...(typeof event.success === 'boolean' ? { success: event.success } : {}) }); return;
+  }
+  private retry(event: RpcRecord, phase: EventData['primary.recovery']['phase']): void {
+    if (phase === 'end') {
+      delete this.view.retry; this.retryEnd = {revision: this.retryRevision, success: event.success === true};
+      this.view.responseOutcome = event.success === true ? undefined : this.retryAbortRevision === this.retryRevision ? 'stopped' : 'failed'; return;
+    }
+    this.clearRetry();
+    if (!Number.isSafeInteger(event.attempt) || Number(event.attempt) < 1 || !Number.isSafeInteger(event.maxAttempts) || Number(event.maxAttempts) < 1 || !Number.isSafeInteger(event.delayMs) || Number(event.delayMs) < 0) { delete this.view.retry; return; }
+    this.view.retry = {attempt: Number(event.attempt), maxAttempts: Number(event.maxAttempts), delayMs: Number(event.delayMs),
+      at: Math.min(8640000000000000, Date.now() + Number(event.delayMs)), error: typeof event.errorMessage === 'string' ? safeText(event.errorMessage, 512) : ''};
   }
   private activity(activity: PrimaryView['activity']): void { this.activityRevision++; this.view.activity = activity; this.state(); }
   private update(update: Record<string, unknown>): void {

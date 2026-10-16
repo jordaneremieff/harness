@@ -138,7 +138,8 @@ export class PrimarySession {
     this.projection.state();
   }
   private refreshedActivity(state: Record<string, unknown>, manualCompaction: boolean): void {
-    this.view.activity = state.isCompacting ? 'compacting' : state.isStreaming ? 'running' : 'idle';
+    if (!state.isStreaming) delete this.view.retry;
+    this.view.activity = state.isCompacting ? 'compacting' : state.isStreaming ? this.view.retry ? 'retrying' : 'running' : 'idle';
     if (manualCompaction && this.view.activity === 'idle') { for (const waiter of this.settled) waiter.resolve(); this.settled.clear(); }
   }
   async resynchronize(): Promise<void> {
@@ -331,8 +332,10 @@ export class PrimarySession {
     const {type, fields} = this.controlCommand(body);
     if (body.action === 'model') { this.modelChanges++; this.modelGeneration++; this.modelUncertain = true; this.invalidatePreparation(); }
     const modelGeneration = this.modelGeneration;
+    const retryRevision = body.action === 'abortRetry' ? this.projection.captureRetry() : undefined;
     try {
       const result = await this.controlRequest(type, fields, body.epoch); this.epoch(body.epoch);
+      if (body.action === 'abortRetry') this.projection.confirmRetryAbort(retryRevision);
       if (body.action === 'model' && modelGeneration === this.modelGeneration) {
         this.stats.clear(); this.view.model = model(result);
         const levels = await this.client.request('get_available_thinking_levels'); this.epoch(body.epoch);
@@ -410,6 +413,7 @@ export class PrimarySession {
   }
   private async closeOnce(): Promise<void> {
     this.frozen = true; this.invalidatePreparation(); this.rejectStartup?.(new RpcError('not_ready', 'Primary is closed.'));
+    this.projection.clearRetry();
     this.view.capabilities.input = false; this.view.capabilities.control = false; this.view.capabilities.handoff = false;
     if (!this.client.child) { await this.client.close(); this.view.lifecycle = 'stopped'; this.projection.state(); return; }
     if (this.client.exited) { await this.flushRecoveredQueue(); await this.client.close(); return; }
@@ -436,6 +440,7 @@ export class PrimarySession {
   private exited(error?: RpcError): void {
     this.invalidatePreparation();
     this.fileClosing ??= this.fileHistory?.close();
+    this.projection.clearRetry();
     this.view.lifecycle = error ? 'failed' : 'stopped'; this.view.activity = 'unknown';
     this.view.capabilities.input = false; this.view.capabilities.control = false; this.view.capabilities.handoff = false;
     this.dialogs.expireAll('process-exit');
@@ -447,6 +452,7 @@ export class PrimarySession {
   }
   private fail(error: RpcError): void {
     this.invalidatePreparation();
+    this.projection.clearRetry();
     this.client.synchronized = false; this.view.capabilities.input = false;
     this.view.lastError = { code: error.code, message: safeText(error.message), retry: 'manual' }; this.projection.state();
   }

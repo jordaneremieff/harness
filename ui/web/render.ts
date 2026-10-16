@@ -1,5 +1,5 @@
 import type { EntryView, ImageView, JsonDisplay, MessageView, PartView, PresentationView, ReadingView, TranscriptView } from '../shared/api.ts';
-import { button, copy, element, rawText, setText } from './dom.ts';
+import { button, copy, details, element, rawText, setText } from './dom.ts';
 import { cardAction, cardActionLabel, cardDisclosure, cardIcon } from './card-icons.ts';
 import { contextMenu, nativeEditingTarget, type ContextItem } from './context-menu.ts';
 import { markdownDom, sourceHeader, sourceWrap } from './safe-markdown.ts';
@@ -724,8 +724,7 @@ export class Transcript {
       cached.communication = new CommunicationCard(cached, {active: () => !this.deferred && generation === this.generation && cached.node.isConnected && !this.hidden() && this.index.entries.get(entryId)?.messages?.includes(cached.source) === true, current: () => cached.source, protected: node => this.protectedNode(node), raw: source => partText(source.parts), expanded: key => this.expanded.has(key), disclosure: (key, open) => this.sourcePreference(key, open), layout: () => this.sourceLayout(entryId), reference: this.hooks.references ? (text, active) => this.hooks.references?.render(text, active) ?? element('span', undefined, typeof text === 'string' ? text : text.text) : undefined}, communicationDisclosureKeys(entryId, message.id));
     }
     if (cached.communication.sync(message)) {
-      const error = message.error || (message.stopReason === 'error' ? 'The response failed.' : message.stopReason === 'aborted' ? 'The response stopped.' : '');
-      setText(cached.error, bounded(error)); cached.error.hidden = !error;
+      this.messageError(cached, message);
     }
     this.registerContent(cached.body);
   }
@@ -856,8 +855,18 @@ export class Transcript {
   }
   private messageError(cached: MessageNode, message: MessageView): string {
     const error = message.error || (message.stopReason === 'error' ? 'The response failed.' : message.stopReason === 'aborted' ? 'The response stopped.' : '');
-    cached.error.className = `${message.stopReason === 'aborted' && !message.error ? 'warning' : 'error'} message-error`;
-    setText(cached.error, bounded(error)); cached.error.hidden = !error; return error;
+    const stopped = message.stopReason === 'aborted';
+    cached.error.className = `${stopped ? 'warning' : 'error'} message-error`; cached.error.hidden = !error;
+    if (!error) return error;
+    let summary = cached.error.querySelector<HTMLElement>('.response-error-summary');
+    if (!summary) { summary = element('span', 'response-error-summary'); cached.error.append(summary); }
+    setText(summary, stopped ? 'The response stopped.' : 'The response failed.');
+    let diagnostic = cached.error.querySelector<HTMLDetailsElement>('details');
+    if (message.error) {
+      if (!diagnostic) { diagnostic = details('Details', ''); cached.error.append(diagnostic); }
+      const body = diagnostic.querySelector('pre'); if (body) setText(body, bounded(message.error));
+    } else diagnostic?.remove();
+    return error;
   }
   private joinedMessage(entryId: string, message: MessageView): boolean {
     if (message.error || !message.parts.length) return false;
@@ -957,7 +966,7 @@ export class Transcript {
     const node = element('article', `message ${message.role === 'user' ? 'user' : ''}`);
     const header = element('div', 'message-header');
     const heading = element('span', 'message-role', bounded(presentMessage(message).label, 4096));
-    const actions = element('div', 'message-actions'); const body = element('div', 'message-body'); const error = element('p', 'error message-error'); error.hidden = true;
+    const actions = element('div', 'message-actions'); const body = element('div', 'message-body'); const error = element('div', 'error message-error'); error.hidden = true;
     node.setAttribute('aria-label', message.role === 'user' ? 'Input message' : bounded(`${presentMessage(message).label} message`, 4096));
     const menu = cardAction('menu', 'Message actions', () => this.messageMenu(entry, message.id, menu), 'message-menu');
     menu.setAttribute('aria-label', 'Message actions'); menu.title = 'Message actions'; menu.setAttribute('aria-haspopup', 'menu'); menu.setAttribute('aria-expanded', 'false');

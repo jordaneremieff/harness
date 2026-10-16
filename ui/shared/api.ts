@@ -84,6 +84,13 @@ export type ExtensionState = {method: 'notify'; message: string; notifyType: str
   {method: 'setStatus'; statusKey: string; statusText?: string} |
   {method: 'setWidget'; widgetKey: string; widgetLines?: string[]; widgetPlacement?: string} |
   {method: 'setTitle'; title: string} | {method: 'set_editor_text'; text: string};
+export type ResponseOutcome = 'failed' | 'stopped';
+export type GenerationRetry = {attempt: number; at: number; error: string};
+export type PrimaryRetry = GenerationRetry & {maxAttempts: number; delayMs: number};
+/** Public provider-limit evidence, separate from admission and connection state. */
+export type ProviderBlock = {blockId: string; conversationId: number; providerSessionId: string; epoch: number;
+  model: {provider: string; modelId: string}; error: string; errorRedacted: boolean; errorTruncated: boolean;
+  source: 'provider' | 'host-block'; timestamp: number; originalResults: {sessionId: string; submissionId: number; requestId?: string}[]; omittedOriginalResults: number};
 /** Public process state. Stderr is available only through diagnostics. */
 export type PrimaryView = {key: string; epoch: number; cwd: string;
   lifecycle: 'starting' | 'ready' | 'switching' | 'stopping' | 'stopped' | 'failed';
@@ -93,6 +100,7 @@ export type PrimaryView = {key: string; epoch: number; cwd: string;
   contextUsage?: {tokens: number | null; contextWindow: number; percent: number | null};
   usage?: {tokens: {input: number; output: number; cacheRead: number; cacheWrite: number; total: number}; cost: number};
   pendingDialogs: DialogView[]; lastError?: ErrorView; capabilities: Record<string, boolean>;
+  retry?: PrimaryRetry; responseOutcome?: ResponseOutcome;
   extension?: {title?: string; statuses: Record<string, string>; widgets: Record<string, {lines: string[]; placement?: string}>};
 };
 export type Appearance = 'dark' | 'light' | 'system' | 'latte' | 'frappe' | 'macchiato' | 'mocha';
@@ -157,14 +165,15 @@ export type AgentRow = {identity: string; storageId: string; cwd: string; name?:
   model?: {provider: string; modelId: string; thinkingLevel?: string};
   thinkingLevel?: string; latestReply?: string; firstMessage?: string; error?: string;
   currentTool?: {name: string; argument: string}; partial: boolean; observedAt?: string;
-  ownerLabel?: string; capabilities?: AgentCapabilities};
+  ownerLabel?: string; capabilities?: AgentCapabilities;
+  publishedRetry?: {attempt: number; maxAttempts: number; delayMs: number; error: string}};
 export type ScanView = {state: 'not-started' | 'running' | 'ready' | 'failed'; complete: boolean;
   visited: number; skipped: number; omitted: number; scanId?: string};
 export type CachedRoster = {rows: AgentRow[]; nextCursor?: string | null; observedAt?: string; scan: ScanView; stale: boolean; error?: ErrorView};
 export type ProjectedFrame = {revision: number; observedAt: string; entries: EntryView[]; live: EntryView[];
   nextBefore: number | null; status: {busy: boolean; name?: string; model?: {provider: string; modelId: string};
   thinkingLevel?: string; lastText?: string; tasks?: JsonDisplay; submissions?: JsonDisplay;
-  compactions?: JsonDisplay; compactionFailure?: JsonDisplay}; coverage: DisplayCoverage};
+  compactions?: JsonDisplay; compactionFailure?: JsonDisplay; retry?: GenerationRetry; providerBlock?: ProviderBlock}; coverage: DisplayCoverage};
 export type OperationKind = 'primary.open' | 'primary.input' | 'primary.stop' | 'primary.session' |
   'primary.control' | 'primary.dialog' | 'primary.handoff' | 'agent.input' | 'agent.abort' | 'agent.configure';
 /** Admission is separate from the eventual answer. Completed is a local control response. */

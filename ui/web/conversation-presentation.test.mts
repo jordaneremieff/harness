@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { AgentRow, ProjectedFrame, PrimaryView } from '../shared/api.ts';
-import { composerFolder, conversationPresentation, presentationGlyph, projectIdentity, projectLabels, agentViewStatus } from './conversation-presentation.ts';
+import { composerFolder, conversationPresentation, presentationGlyph, projectIdentity, projectLabels, agentViewStatus, responseOutcome } from './conversation-presentation.ts';
 const row: AgentRow = {identity: 'agent:one', storageId: 'agent', cwd: '/projects/work', name: 'Worker', modifiedAt: 0,
   state: 'unavailable', owner: 'unknown', availability: 'live', partial: false,
   capabilities: {input: true, observe: true, history: true, abort: true, configure: false}};
@@ -10,6 +10,25 @@ const frame = (busy: boolean): ProjectedFrame => ({revision: 1, observedAt: 'now
 const target = {kind: 'agent' as const, identity: row.identity};
 assert.ok(row.capabilities);
 const negotiated = {identity: row.identity, availability: 'live' as const, capabilities: row.capabilities};
+test('retry, response outcome and provider blocks do not change input readiness or connection', () => {
+  const current = frame(true); current.status.retry = {attempt: 2, at: 1700000060000, error: 'unclassified provider detail'};
+  let view = conversationPresentation({target, row, negotiated, frame: current, connected: true});
+  assert.match(view.activity, /^Retrying · attempt 2 · next /); assert.equal(view.detail, current.status.retry.error); assert.equal(view.input, true); assert.equal(view.busy, true);
+  current.status.busy = false; delete current.status.retry;
+  current.entries = [{id: 'failed', kind: 'message', messages: [{id: 'm', role: 'assistant', state: 'final', parts: [], stopReason: 'error', error: 'anything', coverage: current.coverage}]}];
+  view = conversationPresentation({target, row, negotiated, frame: current, connected: true}); assert.equal(view.activity, 'Response failed'); assert.equal(view.input, true); assert.equal(view.busy, false); assert.equal(presentationGlyph(view), '!');
+  current.status.providerBlock = {blockId: 'b', conversationId: 1, providerSessionId: 'p', epoch: 1, model: {provider: 'fixture', modelId: 'fixture'}, error: 'opaque', errorRedacted: true, errorTruncated: true, source: 'provider', timestamp: 1, originalResults: [], omittedOriginalResults: 0};
+  view = conversationPresentation({target, row, negotiated, frame: current, connected: true}); assert.equal(view.activity, 'Provider blocked'); assert.match(view.detail ?? '', /Configure this agent through Primary/); assert.match(view.detail ?? '', /redacted/); assert.match(view.detail ?? '', /shortened/);
+  const published = conversationPresentation({target, row: {...row, publishedRetry: {attempt: 2, maxAttempts: 5, delayMs: 60000, error: 'published'}}, connected: true});
+  assert.equal(published.activity, 'Connection not checked'); assert.equal(published.input, false);
+});
+test('a newer user or successful assistant record clears an earlier failed response', () => {
+  const message = {id: 'failed', role: 'assistant', state: 'final' as const, parts: [], stopReason: 'error', coverage: {complete: true, truncated: false, omitted: 0}};
+  const entry = {id: '1', kind: 'message', messages: [message]}; assert.equal(responseOutcome([entry]), 'failed');
+  assert.equal(responseOutcome([entry, {...entry, id: '2', messages: [{...message, role: 'user'}]}]), undefined);
+  assert.equal(responseOutcome([entry, {...entry, id: '2', messages: [{...message, stopReason: 'stop'}]}]), undefined);
+  assert.equal(responseOutcome([{...entry, messages: [{...message, stopReason: 'aborted'}]}]), 'stopped');
+});
 test('one status combines read truth with independent connection and admission state', () => {
   const source = {hasEntries: false, connected: true, loading: false, ready: false};
   assert.equal(agentViewStatus(source).text, 'Messages not loaded.');

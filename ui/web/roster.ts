@@ -42,6 +42,11 @@ function modelText(row: AgentRow): string {
   const thinking = row.model.thinkingLevel ?? row.thinkingLevel;
   return `${row.model.provider}/${row.model.modelId}${thinking ? ` · ${thinking}` : ''}`;
 }
+/** A catalog retry is a publication, never current input or execution authority. */
+export function publishedRetryDescription(row: AgentRow): string {
+  const retry = row.publishedRetry; if (!retry) return '';
+  return `Published retry · attempt ${retry.attempt} of ${retry.maxAttempts} · delay at publication ${retry.delayMs} ms${row.observedAt ? ` · published ${row.observedAt}` : ' · publication time unavailable'}\n${retry.error}`;
+}
 function activityText(row: AgentRow): string {
   if (row.error) return row.error;
   if (row.currentTool) return `${row.currentTool.name} · ${row.currentTool.argument}`;
@@ -299,7 +304,7 @@ export class Roster {
     cached.node.dataset.live = String(row.availability === 'live');
     cached.node.dataset.tool = String(!!state.tool);
     const reported = !state.tool && row.currentTool ? `Last reported tool · ${row.currentTool.name} · ${row.currentTool.argument}` : '';
-    const description = [modelText(row), activityLine({...row, currentTool: state.tool}, state.label), reported].filter(Boolean).join('\n');
+    const description = [modelText(row), activityLine({...row, currentTool: state.tool}, state.label), reported, publishedRetryDescription(row)].filter(Boolean).join('\n');
     cached.select.title = description; cached.select.setAttribute('aria-description', description);
     cached.select.setAttribute('aria-current', row.identity === this.selected ? 'page' : 'false');
     cached.select.setAttribute('aria-label', `${rowName(row)} · ${row.identity} · ${state.label}`);

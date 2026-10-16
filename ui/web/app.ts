@@ -456,10 +456,12 @@ function agentRow(identity: string): AgentRow | undefined {
 function presentation(target?: Target): ConversationPresentation {
   const row = target?.kind === 'agent' ? agentRow(target.identity) : undefined;
   const controller = target && state.workspace ? controllers.get(controllerKey(state.workspace.id, target)) : undefined;
-  const tool = target?.kind === 'primary' ? [...state.conversations.get(targetIdentity(target))?.tools.values() ?? []].findLast(item => item.phase !== 'end') : undefined;
+  const conversation = target ? state.conversations.get(targetIdentity(target)) : undefined;
+  const tool = target?.kind === 'primary' ? [...conversation?.tools.values() ?? []].findLast(item => item.phase !== 'end') : undefined;
   return conversationPresentation({target, primary: target?.kind === 'primary' ? state.primaries.get(target.key) : undefined,
     row, availability: target?.kind === 'agent' && !controller?.connection && !controller?.connectionError ? state.agentAvailability.get(target.identity) : undefined,
     negotiated: target?.kind === 'agent' && controller?.connection ? {identity: target.identity, ...controller.connection} : undefined,
+    entries: conversation ? conversationBlocks(conversation) : undefined,
     frame: target ? state.conversations.get(targetIdentity(target))?.frame : undefined, tool: tool ? {name: tool.name, argument: tool.argumentText ?? ''} : undefined, connected});
 }
 function tabPresentation(tab: ConversationTab): ConversationPresentation { return presentation(controllerTarget(tab)); }
@@ -470,6 +472,10 @@ function renderControlAttribution():void {
   setText(controlAttribution,controlStatus);controlAttribution.hidden = !controlStatus;
 }
 function fileStatusNotice():string {return fileActionStatus || fileWatch.status;}
+function updateConversationStatus(target: Target | undefined, view: ConversationPresentation, notice: string): void {
+  workbenchStatus.update(target?.kind ?? 'primary', view.name, notice || view.activity, target?.kind === 'agent' ? target.identity : target?.key);
+  byId('workbench-activity').title = notice ? '' : view.detail ?? '';
+}
 function renderWorkbenchStatus(): void {
   renderControlAttribution();
   const notice = fileStatusNotice();
@@ -482,7 +488,7 @@ function renderWorkbenchStatus(): void {
   const target = editingMessage ? footerController?.target : selected;
   const controller = target ? conversationController(target) : undefined; footerController = controller;
   const skip = byId<HTMLAnchorElement>('skip-composer'); skip.href = controller ? `#${controller.composer.editor.id}` : '#session-new';
-  const view = presentation(target); workbenchStatus.update(target?.kind ?? 'primary', view.name, notice || view.activity, target?.kind === 'agent' ? target.identity : target?.key);
+  const view = presentation(target); updateConversationStatus(target, view, notice);
   const slot = byId('focused-composer-status'), nodes = controller ? [controller.elements.save, controller.elements.receiptDetails] : [];
   if (slot.children.length !== nodes.length || nodes.some((node, index) => slot.children[index] !== node)) slot.replaceChildren(...nodes);
   if (target?.kind === 'agent') renderAgentSettings(view, target);
@@ -940,6 +946,7 @@ function renderObservedAgent(data: EventData['agent.frame'], receivedAt?: number
   const target = {kind: 'agent' as const, identity: data.identity}; const controller = state.workspace ? controllers.get(controllerKey(state.workspace.id, target)) : undefined;
   const conversation = state.conversations.get(targetIdentity(target)); if (conversation?.connectionEpoch !== data.connectionEpoch || conversation.frame?.revision !== data.frame.revision) return;
   if (controller) renderController(controller, true, receivedAt);
+  tabStrip.render(); renderIdentity();
   if (footerController?.target.kind === 'agent' && footerController.target.identity === data.identity) renderAgentSettings(presentation(target), target);
 }
 function applyExtension(event: ReceivedEvent): void {
@@ -1115,10 +1122,15 @@ function primaryNavigation(item?: PrimaryView): void {
 }
 function primaryActivity(item?: PrimaryView, target?: Target): void {
   const conversation = target ? state.conversations.get(targetIdentity(target)) : undefined;
-  const recovery = conversation?.recovery;
+  const view = presentation(target);
   renderPrimaryQueue(conversation?.queue);
-  setText(primaryNode('activity'), item?.lifecycle === 'ready' && recovery?.kind === 'retry' && recovery.phase !== 'end' ? `Retrying${recovery.error ? ` after ${recovery.error}` : ''}${recovery.attempt ? ` · attempt ${recovery.attempt}` : ''}` : item?.lastError?.message ?? (item?.activity === 'retrying' ? 'Retrying' : ''));
-  if (item?.lastError) { setText(primaryNode('activity'), item.lifecycle === 'failed' ? 'This session failed. Your draft is unchanged. Pi did not confirm that its process exited. Choose another session.' : 'The response failed.'); primaryNode('activity').append(button('Sessions', () => picker.open(projectPath())), details('Details', item.lastError.message), button('Review message', () => actions.retryOutput())); }
+  primaryNode('activity').replaceChildren();
+  if (item?.lastError) {
+    setText(primaryNode('activity'), item.lifecycle === 'ready' ? 'This session reported an error.' : 'This session is not ready. Your draft is unchanged.');
+    primaryNode('activity').append(button('Sessions', () => picker.open(projectPath())), details('Details', item.lastError.message));
+    if (item.lifecycle === 'ready') primaryNode('activity').append(button('Review message', () => actions.retryOutput()));
+  }
+  else if (!view.busy && view.responseOutcome === 'failed' && item?.lifecycle === 'ready') primaryNode('activity').append(button('Review message', () => actions.retryOutput()));
   primaryNode('stop').hidden = !(connected && primaryBusy(item, conversation?.queue?.pending));
 }
 export function renderPrimaryQueue(queue?: EventData['primary.queue']): void {
@@ -1212,10 +1224,12 @@ export function agentChrome(identity: string, _row?: AgentRow): void { renderCon
 function renderAgentSettings(view: ConversationPresentation, target: Extract<Target, {kind: 'agent'}>): void {
   setText(byId('agent-status'), [view.model ? `Model ${view.model.modelId}${view.retainedModel ? ' (retained)' : ''}` : '', view.thinking ? `Thinking ${view.thinking}${view.retainedThinking ? ' (retained)' : ''}` : ''].filter(Boolean).join(' · '));
   byId('agent-status').hidden = !view.model && !view.thinking; byId('agent-status').title = view.model ? `${view.model.provider}/${view.model.modelId}` : '';
-  setText(byId('agent-settings-detail'), [byId('agent-status').textContent, byId('agent-status').title].filter(Boolean).join(' · '));
+  const phone = matchMedia('(max-width: 599px)').matches, detail = byId('agent-settings-detail');
+  setText(detail, [[byId('agent-status').textContent, byId('agent-status').title].filter(Boolean).join(' · '), view.detail].filter(Boolean).join('\n'));
+  detail.classList.toggle('phone-status-facts', !view.detail || phone);
   const conversation = state.conversations.get(targetIdentity(target)); const usage = usageFacts(undefined, conversation ? conversationBlocks(conversation) : []);
   byId('agent-usage-summary').replaceChildren(...usageNodes(usage, true)); byId('agent-usage').replaceChildren(...usageNodes(usage, false));
-  byId('agent-usage-details').hidden = !matchMedia('(max-width: 599px)').matches && !usage.facts.length && !view.cwd && !view.model && !view.thinking;
+  byId('agent-usage-details').hidden = !phone && !usage.facts.length && !view.cwd && !view.model && !view.thinking && !view.detail;
   setText(byId('agent-usage-note'), 'Loaded finalized assistant messages only; earlier and omitted usage is not included.');
   renderComposerFolder('agent-folder', composerFolder(view, true));
 }
@@ -1238,7 +1252,9 @@ function renderAgentState(controller: ConversationController): void {
   const availability = controller.connection || controller.connectionError ? undefined : state.agentAvailability.get(identity), row = agentRow(identity), attempt = agentStarts.get(agentStartKey(workspace, identity));
   const view = agentViewStatus({hasEntries: !!controller.hasEntries, connected, loading: controller.loading, ready: controller.historyReady, complete: controller.historyComplete, error: controller.historyError, availability: availability?.state ?? row?.availability, input: presentation(controller.target).input, checked: !!controller.connection || !!availability, reason: controller.connection?.reason ?? availability?.reason, startAttempt: attempt, connectionError: controller.connectionError});
   const status = controllerNode(controller, 'agent-state'), line = controllerNode(controller, 'agent-state-line');
-  status.hidden = !view.text; setText(line, view.text); line.title = view.detail; controller.elements.send.setAttribute('aria-describedby', line.id);
+  const current = presentation(controller.target), blocked = current.activity === 'Provider blocked';
+  const text = [view.text, blocked ? 'Configure this agent through Primary.' : ''].filter(Boolean).join(' · ');
+  status.hidden = !text; setText(line, text); line.title = [view.detail, current.detail].filter(Boolean).join('\n'); controller.elements.send.setAttribute('aria-describedby', line.id);
   controllerNode(controller, 'empty').hidden = true; controller.root.classList.toggle('agent-empty', !controller.hasEntries);
   const start = controllerNode(controller, 'start') as HTMLButtonElement; start.hidden = !view.start; start.disabled = !connected || !!checkingAgent;
   start.onclick = () => {void startStoredAgent(workspace, identity);};

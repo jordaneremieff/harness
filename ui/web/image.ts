@@ -31,14 +31,23 @@ export function transcriptImage(part: ImageView, url?: string, changed: () => vo
   image.alt = part.alt; image.width = part.width; image.height = part.height;
   image.loading = 'lazy'; image.decoding = 'async'; image.referrerPolicy = 'no-referrer';
   let active = false;
+  const clear = () => {
+    // Chromium can retain an offscreen image tree if src is cleared without removing the image.
+    image.removeAttribute('src'); image.remove(); image.hidden = true;
+  };
   const slot: ImageSlot = {release: () => {
-    active = false; image.removeAttribute('src'); image.hidden = true; retry.hidden = false;
+    active = false; clear(); retry.hidden = false;
     setText(status, 'Reload this image to view it.'); changed();
   }};
-  const activate = () => { reserve(slot); active = true; image.hidden = false; retry.hidden = true; setText(status, 'Loading image…'); image.src = url; changed(); };
+  const activate = () => {
+    if (document.activeElement === retry) { figure.tabIndex = -1; figure.focus({preventScroll: true}); }
+    reserve(slot); active = true;
+    if (image.parentElement !== figure) figure.insertBefore(image, retry);
+    image.hidden = false; retry.hidden = true; setText(status, 'Loading image…'); image.src = url; changed();
+  };
   const retry = button('Reload image', activate);
   retry.hidden = true;
   image.addEventListener('load', () => { if (!active) return; setText(status, ''); retry.hidden = true; changed(); });
-  image.addEventListener('error', () => { if (!active) return; active = false; image.removeAttribute('src'); image.hidden = true; setText(status, 'The image could not be loaded.'); retry.hidden = false; changed(); });
+  image.addEventListener('error', () => { if (!active) return; active = false; clear(); setText(status, 'The image could not be loaded.'); retry.hidden = false; changed(); });
   figure.append(image, retry); activate(); return figure;
 }

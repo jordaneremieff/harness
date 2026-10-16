@@ -78,14 +78,15 @@ async function fixture(context: TestContext) {
 test('registry restart restores stopped records, drafts, and workspace without spawning', {timeout: 10000}, async context => {
   const setup = await fixture(context); const registry = await setup.open(); const workspace = await registry.store.workspace();
   const key = await registry.openPrimary(setup.cwd); const primary = registry.primary(key); assert.equal(setup.counts.started, 1);
-  primary.view.pid = 123; primary.view.activity = 'running'; primary.view.pendingDialogs = [{id: 'pending', method: 'confirm', title: 'Pending'}];
+  primary.view.pid = 123; primary.view.activity = 'retrying'; primary.view.retry = {attempt: 2, maxAttempts: 9, delayMs: 60000, at: Date.now() + 60000, error: 'Opaque provider diagnostic'}; primary.view.responseOutcome = 'failed'; primary.view.pendingDialogs = [{id: 'pending', method: 'confirm', title: 'Pending'}];
   await registry.store.updateSelection(workspace.id, {expectedRevision: workspace.revision, primaryKey: key, selectedTarget: primary.target});
   const target = await registry.store.target(workspace.id, primary.target);
   await registry.store.putDraft(workspace.id, target.targetKey, {expectedRevision: 0, text: 'retained draft', mode: 'prompt'});
-  await registry.store.savePrimaries(registry.views()); const boot = registry.journal.bootId; await registry.close();
+  await registry.store.savePrimaries(registry.views()); assert.deepEqual((await registry.store.readPrimaries())[0]?.retry, primary.view.retry); const boot = registry.journal.bootId; await registry.close();
   const restarted = await setup.open(); assert.equal(setup.counts.started, 1); assert.equal(restarted.sessions.size, 0); assert.notEqual(restarted.journal.bootId, boot);
   const snapshot = await restarted.snapshot(workspace.id); const view = snapshot.primaries[0]; assert.ok(view);
   assert.equal(view.key, key); assert.equal(view.lifecycle, 'stopped'); assert.equal(view.activity, 'unknown'); assert.equal(view.pid, undefined);
+  assert.equal(view.retry, undefined); assert.equal(view.responseOutcome, undefined); assert.equal(Object.hasOwn(JSON.parse(JSON.stringify(view)), 'retry'), false);
   assert.deepEqual(view.pendingDialogs, []); assert.equal(view.capabilities.input, false); assert.equal(view.lastError?.code, 'not_ready');
   assert.equal(snapshot.workspace.selectedTarget?.kind, 'primary'); assert.equal(snapshot.targets?.[0]?.draft.text, 'retained draft');
   assert.throws(() => restarted.primary(key), {code: 'not_ready', status: 503});

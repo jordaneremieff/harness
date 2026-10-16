@@ -319,6 +319,8 @@ function status(value: JsonValue, expected: string): void {
 	const agent = object(o.agent); string(agent.thinkingLevel, 256, true);
 	fields(agent, ["extensions", "tools"], v => array(v, x => string(x, 512)));
 	optional(agent, ["model"], model); array(o.tasks, task); array(o.submissions, submission);
+	optional(o, ["providerBlock"], providerBlock);
+	if (o.retry !== undefined) { const retry = object(o.retry); integer(retry.attempt, 1); retryState(retry); }
 }
 function toolProgress(o: JsonObject): void {
 	fields(o, ["callId", "name"], v => string(v, 512)); choice(o.status, ["pending", "running", "done"]);
@@ -347,8 +349,15 @@ function compaction(value: JsonValue, failure = false): void {
 		string(r.error, 16 * 1024 * 1024, true);
 	}
 }
+function retryState(value: JsonValue): void {
+	const retry = object(value); integer(retry.at, 0, 8640000000000000); string(retry.error, 16 * 1024 * 1024, true);
+}
 function liveState(value: JsonValue): void {
 	const o = object(value);
+	if (o.generation !== undefined) {
+		const generation = object(o.generation); integer(generation.attempt, 1);
+		if (generation.retry !== undefined) retryState(generation.retry);
+	}
 	if (o.tools !== undefined) array(o.tools, v => toolProgress(object(v)));
 	if (o.nestedTools !== undefined) array(o.nestedTools, nestedTool);
 	if (o.compactions !== undefined) array(o.compactions, v => compaction(v));

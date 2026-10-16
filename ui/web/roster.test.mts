@@ -2,8 +2,15 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { AgentRow, CachedRoster } from '../shared/api.ts';
 import { absoluteTime, relativeTime, timestampDetails } from './format.ts';
-import { Roster as RosterView, activityLine } from './roster.ts';
+import { Roster as RosterView, activityLine, publishedRetryDescription } from './roster.ts';
 
+test('published retry detail names its old source and never claims a current deadline', () => {
+  const row: AgentRow = {identity: 'published', storageId: 'storage', cwd: '/project', modifiedAt: 0, state: 'working', owner: 'unknown', availability: 'stored', partial: false,
+    observedAt: '2026-10-16T00:00:00Z', publishedRetry: {attempt: 2, maxAttempts: 5, delayMs: 60000, error: 'Opaque diagnostic'}};
+  assert.match(publishedRetryDescription(row), /Published retry · attempt 2 of 5/); assert.match(publishedRetryDescription(row), /delay at publication 60000 ms/);
+  assert.match(publishedRetryDescription(row), /published 2026-10-16T00:00:00Z/); assert.doesNotMatch(publishedRetryDescription(row), /next retry/i);
+  assert.match(publishedRetryDescription({...row, observedAt: undefined}), /publication time unavailable/);
+});
 type RosterParameters = ConstructorParameters<typeof RosterView>;
 class Roster extends RosterView {
   constructor(select: RosterParameters[0], more: RosterParameters[1], search?: RosterParameters[2], message?: RosterParameters[3], resolved?: RosterParameters[4]) {

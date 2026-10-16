@@ -41,15 +41,25 @@ export function createResizer(options: ResizerOptions): Resizer {
   };
   const direction = options.direction ?? 1;
   const clamp = (next: number): number => Math.min(max, Math.max(min, Math.round(Number.isFinite(next) ? next : defaultValue)));
-  let value = clamp(read());
+  const initialSize = read();
+  let value = clamp(initialSize);
   let frame: number | undefined;
+  let resetFrame: number | undefined;
   let painted: number | undefined;
   let destroyed = false;
   let drag: {id: number; origin: number; value: number} | undefined;
   const coordinate = (event: PointerEvent): number => axis === 'x' ? event.clientX : event.clientY;
-  const aria = (): void => { handle.setAttribute('aria-valuenow', String(value)); };
+  const aria = (measured?: number): void => {
+    handle.setAttribute('aria-valuenow', String(value));
+    if (measured !== undefined && Number.isFinite(measured) && measured >= 0) handle.setAttribute('aria-valuetext', `${Math.round(measured)} pixels`);
+    else handle.removeAttribute('aria-valuetext');
+  };
+  const cancelReset = (): void => {
+    if (resetFrame !== undefined) view.cancelAnimationFrame(resetFrame);
+    resetFrame = undefined;
+  };
   const schedule = (next: number): void => {
-    value = clamp(next); aria();
+    cancelReset(); value = clamp(next); aria();
     if (frame !== undefined || value === painted) return;
     frame = view.requestAnimationFrame(() => {
       frame = undefined;
@@ -65,12 +75,12 @@ export function createResizer(options: ResizerOptions): Resizer {
   handle.setAttribute('aria-valuemax', String(max));
   const previousTouchAction = handle.style.touchAction;
   handle.style.touchAction = 'none';
-  aria();
   if (options.applyInitial !== false) schedule(value);
+  else aria(initialSize);
 
   const down = (event: PointerEvent): void => {
     if (drag || !event.isPrimary || event.button !== 0) return;
-    handle.setPointerCapture(event.pointerId);
+    cancelReset(); handle.setPointerCapture(event.pointerId);
     event.preventDefault(); handle.focus({preventScroll: true});
     value = clamp(read()); aria();
     drag = {id: event.pointerId, origin: coordinate(event), value};
@@ -88,27 +98,37 @@ export function createResizer(options: ResizerOptions): Resizer {
     if (handle.hasPointerCapture(id)) handle.releasePointerCapture(id);
     onCommit(value);
   };
+  const reset = (event: Event): void => {
+    if (drag || destroyed) return;
+    event.preventDefault(); cancelReset();
+    if (options.onReset) {
+      if (frame !== undefined) view.cancelAnimationFrame(frame); frame = undefined;
+      painted = undefined; options.onReset();
+      resetFrame = view.requestAnimationFrame(() => {
+        resetFrame = undefined;
+        const measured = read(); value = clamp(measured); aria(measured);
+      });
+    } else { schedule(defaultValue); onCommit(value); }
+  };
+  const resetKey = (event: KeyboardEvent): boolean => {
+    if (event.key !== 'Enter' && event.key !== ' ') return false;
+    if (event.shiftKey) return true;
+    event.preventDefault(); if (!event.repeat) reset(event);
+    return true;
+  };
   const decreaseKey = axis === 'x' ? 'ArrowLeft' : 'ArrowUp';
   const increaseKey = axis === 'x' ? 'ArrowRight' : 'ArrowDown';
   const key = (event: KeyboardEvent): void => {
-    if (drag || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (drag || event.altKey || event.ctrlKey || event.metaKey || event.isComposing || event.keyCode === 229) return;
+    if (resetKey(event)) return;
     if (![decreaseKey, increaseKey, 'Home', 'End'].includes(event.key)) return;
     if (frame === undefined) { value = clamp(read()); aria(); }
     const step = event.shiftKey ? 64 : 16;
     const values: Record<string, number> = {Home: min, End: max, [decreaseKey]: value - direction * step, [increaseKey]: value + direction * step};
-    if (!Object.hasOwn(values, event.key)) return;
     event.preventDefault();
     const next = values[event.key];
     if (next === undefined || clamp(next) === value) return;
     schedule(next); onCommit(value);
-  };
-  const reset = (event: MouseEvent): void => {
-    if (drag) return;
-    event.preventDefault();
-    if (options.onReset) {
-      if (frame !== undefined) view.cancelAnimationFrame(frame); frame = undefined;
-      painted = undefined; options.onReset(); value = clamp(read()); aria();
-    } else { schedule(defaultValue); onCommit(value); }
   };
   handle.addEventListener('pointerdown', down);
   handle.addEventListener('pointermove', move);
@@ -123,6 +143,7 @@ export function createResizer(options: ResizerOptions): Resizer {
     destroy() {
       if (destroyed) return; destroyed = true;
       if (frame !== undefined) view.cancelAnimationFrame(frame); frame = undefined;
+      cancelReset();
       const id = drag?.id; drag = undefined;
       if (id !== undefined && handle.hasPointerCapture(id)) handle.releasePointerCapture(id);
       if (id !== undefined) dragging(false);

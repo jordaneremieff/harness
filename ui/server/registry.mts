@@ -97,7 +97,7 @@ export class Registry {
     try {
       const registry = new Registry(store, options, journal);
       for (const previous of await store.readPrimaries()) {
-        registry.saved.set(previous.key, {...previous,lifecycle:'stopped',activity:'unknown',pid:undefined,pendingDialogs:[],contextUsage:undefined,usage:undefined,extension:undefined,
+        registry.saved.set(previous.key, {...previous,lifecycle:'stopped',activity:'unknown',retry:undefined,responseOutcome:undefined,pid:undefined,pendingDialogs:[],contextUsage:undefined,usage:undefined,extension:undefined,
           capabilities: {input:false,control:false,handoff:false,history:false},lastError:{code:'not_ready',message:'Explicit resume is required after backend restart.',retry:'manual'}});
       }
       return registry;

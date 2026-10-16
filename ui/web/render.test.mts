@@ -12,6 +12,17 @@ import { ReferenceResolver, referenceCandidates } from './references.ts';
 import { TranscriptGroups, entryGroup } from './transcript-groups.ts';
 import type { AgentRow, DisplayCoverage, EntryView, JsonDisplay, OutputPage, PartView, ReadingView } from '../shared/api.ts';
 
+test('response diagnostics stay collapsed and stable while partial content stays readable', () => {
+  setup(); const view = transcript();
+  const message = {id: 'failure', role: 'assistant', state: 'final' as const, stopReason: 'error', error: 'Opaque diagnostic '.repeat(50), parts: [{type: 'text' as const, text: 'Retained partial content'}], coverage: {complete: true, truncated: false, omitted: 0}};
+  const entry = {id: 'failure-entry', kind: 'message', messages: [message]}; view.set([entry]); flush();
+  const root = node('primary-transcript'), diagnostic = root.querySelector('.message-error')?.querySelector('details'); assert.ok(diagnostic);
+  assert.equal(diagnostic.open, false); assert.equal(root.querySelector('.response-error-summary')?.textContent, 'The response failed.');
+  assert.match(root.textContent, /Retained partial content/); assert.equal(diagnostic.querySelector('pre')?.textContent, message.error);
+  diagnostic.open = true; view.set([{...entry, messages: [{...message, error: 'Updated diagnostic'}]}]); flush();
+  assert.equal(root.querySelector('.message-error')?.querySelector('details'), diagnostic); assert.equal(diagnostic.open, true);
+  assert.equal(diagnostic.querySelector('pre')?.textContent, 'Updated diagnostic'); view.reset();
+});
 function rosterStatus(row: AgentRow) {
   const view = conversationPresentation({target: {kind: 'agent', identity: row.identity}, row, connected: true});
   return {label: view.activity, glyph: presentationGlyph(view), tool: view.tool};
@@ -2004,7 +2015,9 @@ test('communication keeps sender and text at rest and opens one hidden Source fr
   const card = node('primary-transcript').querySelector('.communication-card'); assert.ok(card);
   const region = card.querySelector('.message-source'); const menu = card.querySelector('.message-menu'); assert.ok(region); assert.ok(menu);
   assert.equal(card.querySelector('.communication-sender')?.textContent, 'Peer'); assert.equal(card.querySelector('.communication-text')?.textContent, 'Actual contribution');
-  assert.equal(card.querySelector('.message-error')?.textContent, 'Synthetic message error');
+  assert.equal(card.querySelector('.response-error-summary')?.textContent, 'The response failed.');
+  assert.equal(card.querySelector('.message-error')?.querySelector('details')?.open, false);
+  assert.equal(card.querySelector('.message-error')?.querySelector('pre')?.textContent, 'Synthetic message error');
   for (const selector of ['.communication-kind', '.communication-time', '.communication-trust', '.communication-copy', '.timestamp']) assert.equal(card.querySelector(selector), null);
   assert.equal(region.tagName, 'section'); assert.equal(region.attributes.role, 'region'); assert.equal(region.attributes['aria-label'], 'Source'); assert.equal(region.hidden, true); assert.equal(Reflect.get(region, 'inert'), true); assert.equal(region.querySelector('summary'), null); assert.equal(region.querySelector('pre'), null);
   assert.equal(menu.textContent, 'Message actions'); assert.equal(menu.attributes['aria-label'], 'Message actions');

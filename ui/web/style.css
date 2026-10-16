@@ -962,7 +962,6 @@ dialog[data-variant=palette] #modal-body > * + * { margin-top: 0; }
 .palette-input-row { display: block; padding: var(--s1); border-bottom: 1px solid var(--rule); }
 .palette-prompt { display: none; }
 .palette-input { width: 100%; height: 36px; padding: var(--s1) var(--s2); border: 0; background: transparent; font-size: 15px; }
-.palette-input:focus-visible { outline: none; }
 .palette-list { --palette-row-size: 32px; box-sizing: border-box; max-height: calc(round(down,max(0px,var(--palette-available-height,calc(70dvh - 64px)) - 8px),var(--palette-row-size)) + 8px); padding: 0; border-block: 4px solid transparent; overflow-y: auto; scrollbar-width: thin; scroll-snap-type: y mandatory; }
 .palette-list > .palette-row { box-sizing: border-box; height: var(--palette-row-size); min-height: var(--palette-row-size); scroll-snap-align: start; }
 dialog[data-variant=menu] { inset: var(--menu-top) var(--menu-right) auto auto; width: 260px; margin: 0; padding: 4px 0; }
