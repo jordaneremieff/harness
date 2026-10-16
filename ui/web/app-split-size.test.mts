@@ -59,6 +59,23 @@ test('restored splits use the fixed divider threshold and narrowness shows only 
     host.viewport = 1000; app.renderNavigation(); await settle(); assert.equal(paneNode('primary-pane').hidden, false); assert.deepEqual([app.primaryComposer().editor, app.agentComposer().editor], f.editors);
   }
 });
+test('phone vertical splits show one leaf and the existing menu switches without changing the saved tree or editors', async () => {
+  for (const width of [390,430]) {
+    host.viewport = width;failSelection(undefined);const layout = twoPanes('a');assert.equal(layout.root.kind,'split');if(layout.root.kind === 'split')layout.root.axis = 'y';
+    const primary = targetFixture('phone-primary',{kind:'primary',key:'p',epoch:1}),agent = targetFixture('phone-agent',{kind:'agent',identity:'a'});primary.draft.text = 'Primary retained';agent.draft.text = 'Agent retained';
+    await arrive({workspace:{id:`phone-panes-${width}`,revision:1,primaryKey:'p',selectedTarget:agent.target,conversationLayout:layout},primaries:[primaryFixture()],roster:[agentFixture('a',{model:{provider:'fixture',modelId:'phone-model'},thinkingLevel:'high'})],targets:[primary,agent]});
+    assert.match(byId('agent-settings-detail').textContent,/fixture\/phone-model/);assert.match(byId('agent-settings-detail').textContent,/Thinking high/);assert.equal(byId('agent-usage-details').hidden,false);
+    const originalRoot = app.state.workspace?.conversationLayout?.root,editors = [primaryControl('editor'),agentControl('editor')],parents = editors.map(editor=>editor.parentNode);
+    const agentEditor = agentControl('editor');agentEditor.setSelectionRange(2,5,'backward');agentEditor.dispatch('select');selectionSaves.length = 0;
+    assert.equal(byId('conversation-panes').dataset.focusOnly,'true');assert.equal(paneNode('primary-pane').hidden,true);assert.equal(paneNode('agent-pane').hidden,false);
+    app.openTabsList('agent-pane');const menu = hostDocument.body.querySelector('.context-menu');assert.ok(menu);const switcher = menu.querySelectorAll('button').find(item=>item.textContent === 'Switch to Primary (pane 1)');assert.ok(switcher);switcher.click();await settle();
+    assert.equal(app.state.workspace?.conversationLayout?.focusedPane,'primary-pane');assert.deepEqual(app.state.workspace?.conversationLayout?.root,originalRoot);assert.equal(paneNode('primary-pane').hidden,false);assert.equal(paneNode('agent-pane').hidden,true);assert.equal(selectionSaves.length,1);
+    app.openTabsList('primary-pane');const back = hostDocument.body.querySelector('.context-menu')?.querySelectorAll('button').find(item=>item.textContent.startsWith('Switch to ') && item.textContent.endsWith('(pane 2)'));assert.ok(back);back.click();await settle();
+    assert.deepEqual(editors,[primaryControl('editor'),agentControl('editor')]);assert.deepEqual(editors.map(editor=>editor.parentNode),parents);assert.deepEqual([agentEditor.selectionStart,agentEditor.selectionEnd,agentEditor.selectionDirection],[2,5,'backward']);assert.equal(agentEditor.value,'Agent retained');
+    host.viewport = 1200;app.renderNavigation();await settle();assert.equal(byId('conversation-panes').dataset.focusOnly,'false');assert.equal(paneNode('primary-pane').hidden,false);assert.equal(paneNode('agent-pane').hidden,false);assert.deepEqual(app.state.workspace?.conversationLayout?.root,originalRoot);
+    app.openTabsList('agent-pane');assert.equal(hostDocument.body.querySelector('.context-menu')?.querySelectorAll('button').some(item=>item.textContent.startsWith('Switch to ')),false);byId('workbench-version').focus();
+  }
+});
 test('viewport corrections do not reorder queued selection or replay a refused layout write', async () => {
   const f = await fixture(1200); const single = createPaneLayout([{kind: 'primary'}, {kind: 'agent', identity: 'a'}], 'agent:a');
   await app.selectionQueue.select({conversationLayout: single}); await settle(); assert.equal(selectionSaves.length, 1);

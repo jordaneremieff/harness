@@ -2,7 +2,7 @@
 <html lang="en" data-appearance="dark">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark light">
 <title>Pi · Web harness</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
@@ -16,6 +16,7 @@
 <div class="workbench">
 <nav id="sidebar" class="sidebar" aria-label="Navigation">
 <div class="nav-top"><span id="project-name" class="project-context">Working folder</span><button id="project-button" class="icon-button project-button" type="button" data-control-icon="folder" title="Choose working folder" aria-label="Choose working folder" aria-haspopup="menu" aria-expanded="false"><span class="sr-only">Choose working folder</span></button><button id="sidebar-close" class="icon-button sidebar-close" type="button" data-control-icon="close" aria-label="Hide navigation" title="Hide navigation"><span class="sr-only">Hide navigation</span></button></div>
+<div class="sidebar-scroll">
 <section id="sidebar-conversations" class="nav-section sidebar-conversations" aria-label="Conversations"></section>
 <section id="files-section" class="nav-section files-section" aria-labelledby="files-heading">
 <div class="nav-heading-row"><h2 class="nav-heading"><button id="files-heading" class="section-toggle" type="button" aria-expanded="true" aria-controls="files-section-body">FILES</button></h2><div class="nav-heading-actions"><button id="files-refresh" class="icon-button" type="button" data-control-icon="restart" aria-label="Refresh files" title="Refresh files"><span class="sr-only">Refresh files</span></button></div></div>
@@ -34,6 +35,7 @@
 <div id="roster-footer" class="roster-footer"></div>
 </div>
 </section>
+</div>
 <section id="agent-message-panel" class="agent-message-panel" aria-labelledby="agent-message-name" hidden>
 <div id="message-panel-resizer" class="resizer" data-axis="y" tabindex="0" role="separator" aria-orientation="horizontal" aria-label="Resize Message panel" aria-controls="agent-message-panel"></div>
 <header class="message-panel-head"><h2 id="agent-message-name"></h2><button id="agent-message-close" type="button" data-control-icon="close" aria-label="Close message panel" title="Close message panel"><span class="sr-only">Close message panel</span></button></header>
@@ -59,12 +61,12 @@
 <div id="workbench-status-primary" class="workbench-status-facts" data-pane="primary" hidden>
 <div class="workbench-model"><button id="model-button" type="button" disabled>Model</button><button id="thinking-button" type="button" hidden></button></div>
 
-<details id="primary-usage-details" class="composer-details workbench-status-details" hidden><summary><span id="primary-context"></span><span id="primary-usage-summary" class="composer-summary-secondary"></span><span class="composer-details-label" data-control-icon="info" aria-label="Status details">Details</span></summary><div class="composer-detail-body"><div id="primary-usage" class="usage-details"></div><p id="primary-folder" hidden></p><section class="composer-extension"><p>Extension status</p><span id="extension-status" class="fact"></span></section></div></details>
+<details id="primary-usage-details" class="composer-details workbench-status-details" hidden><summary><span id="primary-context"></span><span id="primary-usage-summary" class="composer-summary-secondary"></span><span class="composer-details-label" data-control-icon="info" aria-label="Status details">Details</span></summary><div class="composer-detail-body"><p id="primary-status-summary" class="phone-status-facts"></p><div id="primary-usage" class="usage-details"></div><p id="primary-folder" hidden></p><section class="composer-extension"><p>Extension status</p><span id="extension-status" class="fact"></span></section></div></details>
 </div>
 <div id="workbench-status-agent" class="workbench-status-facts" data-pane="agent" hidden>
 <span id="agent-status" class="agent-settings"></span>
 
-<details id="agent-usage-details" class="composer-details workbench-status-details" hidden><summary><span id="agent-usage-summary"></span><span class="composer-details-label" data-control-icon="info" aria-label="Status details">Details</span></summary><div class="composer-detail-body"><p id="agent-usage-note"></p><div id="agent-usage" class="usage-details"></div><p id="agent-folder" hidden></p></div></details>
+<details id="agent-usage-details" class="composer-details workbench-status-details" hidden><summary><span id="agent-usage-summary"></span><span class="composer-details-label" data-control-icon="info" aria-label="Status details">Details</span></summary><div class="composer-detail-body"><p id="agent-status-summary" class="phone-status-facts"></p><p id="agent-settings-detail" class="phone-status-facts"></p><p id="agent-usage-note"></p><div id="agent-usage" class="usage-details"></div><p id="agent-folder" hidden></p></div></details>
 </div>
 <button id="workbench-version" class="workbench-version" type="button" aria-label="Copy UI version identity"></button>
 </footer>

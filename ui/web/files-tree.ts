@@ -1,12 +1,12 @@
 import type {FileDirectoryPage, FileEntry, FileRoot} from '../shared/files.ts';
-import {cardIcon} from './card-icons.ts';
+import {cardAction, cardIcon} from './card-icons.ts';
 import {element, placeRetained, setText} from './dom.ts';
 import {contextMenu, nativeEditingTarget} from './context-menu.ts';
 import {movedFilePath, type FileMove} from './file-identity.ts';
 
 type Directory = {entries: FileEntry[]; nextCursor: string | null; expanded: boolean; loading: boolean; again?:boolean; error?: string; incomplete?: string};
 export type FileTreeAction = 'file'|'directory'|'rename'|'move'|'trash';
-type Naming = {action:Exclude<FileTreeAction,'trash'>;path:string;parent:string;depth:number;row:HTMLElement;input:HTMLInputElement;busy:boolean};
+type Naming = {action:Exclude<FileTreeAction,'trash'>;path:string;parent:string;depth:number;row:HTMLElement;input:HTMLInputElement;commit:HTMLButtonElement;cancel:HTMLButtonElement;busy:boolean};
 function createAction(action:FileTreeAction):boolean {return action === 'file' || action === 'directory';}
 function parentPath(path:string):string {return path.split('/').slice(0,-1).join('/');}
 function namingLabel(action:Naming['action']):string {switch (action) {case 'move':return 'Destination path from working folder';case 'rename':return 'New name';case 'directory':return 'New folder name';case 'file':return 'New file name';}}
@@ -205,27 +205,39 @@ export class FilesTree {
     const path = entry?.path ?? '',parent = createAction(action) && entry?.kind === 'directory' ? path : parentPath(path);
     const depth = parent ? parent.split('/').length : 0,row = element('div','file-row file-naming'),input = element('input','file-name-input');
     row.style.setProperty('--file-depth',String(depth));row.setAttribute('role','treeitem');input.setAttribute('aria-label',namingLabel(action));input.autocomplete = 'off';input.spellcheck = false;
-    input.value = action === 'move' ? path : action === 'rename' ? entry?.name ?? '' : '';row.append(cardIcon(action === 'directory' || entry?.kind === 'directory' ? 'folder' : 'file'),input);
-    const naming:Naming = {action,path,parent,depth,row,input,busy:false};this.naming = naming;
+    input.value = action === 'move' ? path : action === 'rename' ? entry?.name ?? '' : '';
+    const commit = cardAction('success','Confirm name',()=> {void this.submit(naming);});
+    const cancel = cardAction('close','Cancel name',()=>this.cancelNaming(naming));
+    const actions = element('span','file-name-actions');actions.append(commit,cancel);
+    row.append(cardIcon(action === 'directory' || entry?.kind === 'directory' ? 'folder' : 'file'),input,actions);
+    const naming:Naming = {action,path,parent,depth,row,input,commit,cancel,busy:false};this.naming = naming;
     input.addEventListener('keydown',event=>this.namingKey(event,naming));
     this.paint();input.focus();input.setSelectionRange(0,input.value.length);
     if (createAction(action) && parent && !this.directories.get(parent)?.expanded) void this.load(parent);
   }
+  private cancelNaming(naming:Naming):void {
+    if (this.naming !== naming || naming.busy) return;
+    this.naming = undefined;this.paint();(this.buttons.get(naming.path) ?? this.node).focus({preventScroll:true});
+  }
   private namingKey(event:KeyboardEvent,naming:Naming):void {
     if (event.isComposing) return;
-    if (event.key === 'Escape' && !naming.busy) {event.preventDefault();event.stopPropagation();this.naming = undefined;this.paint();this.buttons.get(naming.path)?.focus();}
+    if (event.key === 'Escape' && !naming.busy) {event.preventDefault();event.stopPropagation();this.cancelNaming(naming);}
     else if (event.key === 'Enter') {event.preventDefault();event.stopPropagation();if (!event.repeat) void this.submit(naming);}
+  }
+  private namingBusy(naming:Naming,busy:boolean):void {
+    if (busy && naming.row.contains(document.activeElement)) naming.input.focus({preventScroll:true});
+    naming.busy = busy;naming.input.readOnly = busy;naming.commit.disabled = busy;naming.cancel.disabled = busy;
   }
   private async submit(naming:Naming):Promise<void> {
     const root = this.root;if (!root || !this.hooks.operation || naming.busy || this.naming !== naming) return;
     const value = naming.input.value;
     if (!value || (naming.action !== 'move' && /[/\\]/.test(value))) {this.hooks.status?.('Enter a file or folder name without a separator.');return;}
-    const generation = this.generation;naming.busy = true;naming.input.readOnly = true;
+    const generation = this.generation;this.namingBusy(naming,true);
     try {const completed = await this.hooks.operation(root.id,naming.action,createAction(naming.action) ? naming.parent : naming.path,value);if (generation === this.generation && this.naming === naming) this.finishNaming(naming,value,completed);}
-    catch(error) {if (generation === this.generation && this.naming === naming) {this.hooks.status?.(error instanceof Error ? error.message : 'The file action failed.');naming.busy = false;naming.input.readOnly = false;naming.input.focus();}}
+    catch(error) {if (generation === this.generation && this.naming === naming) {this.hooks.status?.(error instanceof Error ? error.message : 'The file action failed.');this.namingBusy(naming,false);naming.input.focus();}}
   }
   private finishNaming(naming:Naming,value:string,completed:undefined|(()=>void)):void {
-    const focus = document.activeElement === naming.input;this.naming = undefined;this.paint();if (!focus) return;
+    const focus = naming.row.contains(document.activeElement);this.naming = undefined;this.paint();if (!focus) return;
     if (naming.action === 'file') {completed?.();return;}
     this.pendingFocus = naming.action === 'move' ? value : [naming.parent,value].filter(Boolean).join('/');this.node.focus({preventScroll:true});this.restoreFocus();
   }

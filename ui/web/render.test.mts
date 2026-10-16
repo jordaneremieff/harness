@@ -2242,7 +2242,7 @@ test('workbench and communication CSS retain direct compact controls and keyboar
   assert.match(css, /\.message-menu \{ min-width: 24px; min-height: 24px/);
   assert.match(css, /\.message-menu, \.communication-unverified, \.message-source-close, \.pane-actions, \.context-menu > \.context-menu-item \{ min-height: 44px; min-width: 44px/);
   assert.doesNotMatch(css, /\.communication-header > \.communication-trust\s*\{/);
-  assert.doesNotMatch(css, /\.composer-settings\b/); assert.doesNotMatch(css, /\.composer-details > summary[^{}]*\{[^}]*display:\s*none/);
+  assert.doesNotMatch(css, /\.composer-settings\b/); assert.doesNotMatch(css, /\.composer-details > summary\s*\{[^}]*display:\s*none/);
   assert.match(css, /\.workbench-status \.composer-details > summary \{[^}]*min-height:\s*44px;[^}]*min-width:\s*44px/);
 });
 test('communication preserves selected contribution through refresh and deferred removal', () => {

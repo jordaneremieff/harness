@@ -469,8 +469,11 @@ function renderControlAttribution():void {
   if(controlStatusWorkspace !== state.workspace?.id)controlStatus = '';
   setText(controlAttribution,controlStatus);controlAttribution.hidden = !controlStatus;
 }
+function fileStatusNotice():string {return fileActionStatus || fileWatch.status;}
 function renderWorkbenchStatus(): void {
   renderControlAttribution();
+  const notice = fileStatusNotice();
+  byId('workbench-activity').dataset.notice = String(!!notice);
   const retained = byId<HTMLButtonElement>('file-retained-drafts');retained.hidden = !filesViews.retained().length;setText(retained,'Review retained draft');retained.onclick = reviewRetainedDrafts;
   const tab = activeTab(currentLayout());
   const editingMessage = footerController && messageTarget.current?.identity === (footerController.target.kind === 'agent' ? footerController.target.identity : undefined) && footerController.elements.root.contains(document.activeElement);
@@ -479,7 +482,7 @@ function renderWorkbenchStatus(): void {
   const target = editingMessage ? footerController?.target : selected;
   const controller = target ? conversationController(target) : undefined; footerController = controller;
   const skip = byId<HTMLAnchorElement>('skip-composer'); skip.href = controller ? `#${controller.composer.editor.id}` : '#session-new';
-  const view = presentation(target); workbenchStatus.update(target?.kind ?? 'primary', view.name, fileActionStatus || fileWatch.status || view.activity, target?.kind === 'agent' ? target.identity : target?.key);
+  const view = presentation(target); workbenchStatus.update(target?.kind ?? 'primary', view.name, notice || view.activity, target?.kind === 'agent' ? target.identity : target?.key);
   const slot = byId('focused-composer-status'), nodes = controller ? [controller.elements.save, controller.elements.receiptDetails] : [];
   if (slot.children.length !== nodes.length || nodes.some((node, index) => slot.children[index] !== node)) slot.replaceChildren(...nodes);
   if (target?.kind === 'agent') renderAgentSettings(view, target);
@@ -645,7 +648,7 @@ function restorePaneGeometry(): void {
 }
 function refreshTreeGeometry(): void {
   const layout = currentLayout(), root = byId('conversation-panes'), box = root.getBoundingClientRect(), minimum = minimumPaneSize(layout.root);
-  const focusOnly = box.width < minimum.width || box.height < minimum.height; root.dataset.focusOnly = String(focusOnly);
+  const focusOnly = matchMedia('(max-width: 599px)').matches || box.width < minimum.width || box.height < minimum.height; root.dataset.focusOnly = String(focusOnly);
   for (const [id, pane] of paneRegions) {pane.node.hidden = focusOnly && id !== layout.focusedPane; pane.node.inert = pane.node.hidden;}
   if (!focusOnly) refreshPaneSplit(layout.root);
   for (const controller of controllers.values()) if (controller.elements.root.dataset.messagePanel) placeMessageRoot(controller, byId('agent-message-panel'));
@@ -1209,9 +1212,10 @@ export function agentChrome(identity: string, _row?: AgentRow): void { renderCon
 function renderAgentSettings(view: ConversationPresentation, target: Extract<Target, {kind: 'agent'}>): void {
   setText(byId('agent-status'), [view.model ? `Model ${view.model.modelId}${view.retainedModel ? ' (retained)' : ''}` : '', view.thinking ? `Thinking ${view.thinking}${view.retainedThinking ? ' (retained)' : ''}` : ''].filter(Boolean).join(' · '));
   byId('agent-status').hidden = !view.model && !view.thinking; byId('agent-status').title = view.model ? `${view.model.provider}/${view.model.modelId}` : '';
+  setText(byId('agent-settings-detail'), [byId('agent-status').textContent, byId('agent-status').title].filter(Boolean).join(' · '));
   const conversation = state.conversations.get(targetIdentity(target)); const usage = usageFacts(undefined, conversation ? conversationBlocks(conversation) : []);
   byId('agent-usage-summary').replaceChildren(...usageNodes(usage, true)); byId('agent-usage').replaceChildren(...usageNodes(usage, false));
-  byId('agent-usage-details').hidden = !usage.facts.length && !view.cwd && !view.model && !view.thinking;
+  byId('agent-usage-details').hidden = !matchMedia('(max-width: 599px)').matches && !usage.facts.length && !view.cwd && !view.model && !view.thinking;
   setText(byId('agent-usage-note'), 'Loaded finalized assistant messages only; earlier and omitted usage is not included.');
   renderComposerFolder('agent-folder', composerFolder(view, true));
 }
@@ -1658,6 +1662,15 @@ function paneTabChoices(leaf: PaneLeaf, layout: ConversationLayout): ContextItem
     return {label: tail ? `${name} · ${tail}` : name, description: tab.kind === 'file' ? tab.path : tabPresentation(tab).activity, checked: tabKey(tab) === leaf.active, run: () => activateConversationTab(leaf.id, tabKey(tab))};
   });
 }
+function paneSwitchItems(layout:ConversationLayout,valid:()=>boolean):ContextItem[] {
+  if (byId('conversation-panes').dataset.focusOnly !== 'true') return [];
+  const panes = paneLeaves(layout.root);
+  return panes.filter(pane=>pane.id !== layout.focusedPane).map((pane,index)=> {
+    const active = pane.tabs.find(item=>tabKey(item) === pane.active);
+    return {label:`Switch to ${active ? tabLabel(active) : 'Empty'} (pane ${panes.indexOf(pane) + 1})`,separatorBefore:index === 0,
+      run:()=> {if (valid()) focusPane(pane.id);}};
+  });
+}
 function openPaneMenu(paneId: string, event?: MouseEvent, key?: string, purpose: 'list' | 'context' = 'context'): void {
   const region = paneRegions.get(paneId), workspace = state.workspace; if (!region || !workspace) return;
   const layout = currentLayout(), leaf = paneById(layout, paneId), tab = leaf?.tabs.find(tab => tabKey(tab) === (key ?? leaf.active));
@@ -1674,6 +1687,7 @@ function openPaneMenu(paneId: string, event?: MouseEvent, key?: string, purpose:
     overflow: purpose === 'context' && region.menu.dataset.overflow === 'true'});
   if (tab?.kind === 'file') items.push(...fileMenuItems(workspace,tab,valid));
   if (leaf) items.push(...closeViewMenuItems(leaf,key ?? leaf.active,valid));
+  items.push(...paneSwitchItems(layout,valid));
   if (purpose === 'list' && leaf) {
     const first = items[0]; if (first) items[0] = {...first, heading: 'Pane actions', separatorBefore: true};
     items.unshift(...paneTabChoices(leaf, layout));

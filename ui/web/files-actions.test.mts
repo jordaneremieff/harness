@@ -48,6 +48,33 @@ for (const change of ['none','focus','scope'] as const) test(`file completion fo
   release(()=> {calls++;assert.equal(node.querySelector('.file-name-input'),null);});await settle();
   assert.equal(calls,change === 'none' ? 1 : 0);
 });
+test('inline name buttons submit and cancel through the captured tree operation',async context=> {
+  const calls:unknown[] = [];let completed = 0;
+  const {node} = fixture(context,async(...args)=> {calls.push(args);return ()=> {completed++;assert.equal(node.querySelector('.file-name-input'),null);};});await settle();
+  node.dispatch('contextmenu',{clientX:10,clientY:10});
+  hostDocument.body.querySelector('.context-menu')?.querySelectorAll('button').find(item=>item.textContent === 'New file')?.click();
+  const input = field(node),commit = node.querySelector('[aria-label="Confirm name"]'),cancel = node.querySelector('[aria-label="Cancel name"]');assert.ok(commit);assert.ok(cancel);
+  input.value = 'touch.txt';input.dispatch('keydown',{key:'Enter',isComposing:true});assert.equal(calls.length,0);
+  commit.focus();commit.click();await settle();assert.deepEqual(calls,[['file','','touch.txt']]);assert.equal(completed,1);
+  node.dispatch('keydown',{target:row(node,'note.md'),key:'F2'});const changed = field(node),dismiss = node.querySelector('[aria-label="Cancel name"]');assert.ok(dismiss);changed.value = 'do-not-write.txt';dismiss.focus();dismiss.click();await settle();
+  assert.equal(node.querySelector('.file-name-input'),null);assert.equal(calls.length,1);assert.equal(hostDocument.activeElement,row(node,'note.md'));
+});
+for (const change of ['none','focus','scope'] as const) test(`touch name completion retains exact pending ownership: ${change}`,async context=> {
+  let release!:(value:()=>void)=>void,completed = 0,calls = 0;
+  const pending = new Promise<()=>void>(resolve=> {release = resolve;}),{node,tree} = fixture(context,async()=> {calls++;return pending;});await settle();
+  node.dispatch('keydown',{target:node,key:'n',ctrlKey:true});field(node).value = 'touch.txt';
+  const commit = node.querySelector('[aria-label="Confirm name"]'),cancel = node.querySelector('[aria-label="Cancel name"]');assert.ok(commit);assert.ok(cancel);commit.focus();commit.click();
+  assert.equal(commit.disabled,true);assert.equal(cancel.disabled,true);commit.click();cancel.click();assert.equal(calls,1);
+  if (change === 'focus') byId('workbench-version').focus();
+  if (change === 'scope') tree.setRoot(root,'replacement');
+  release(()=> {completed++;});await settle();assert.equal(completed,change === 'none' ? 1 : 0);
+  if (change === 'scope') {commit.click();cancel.click();assert.equal(calls,1);}
+});
+test('refused touch naming restores the same field and both actions',async context=> {
+  const {node,statuses} = fixture(context,async()=> {throw new Error('Destination exists.');});await settle();
+  node.dispatch('keydown',{target:row(node,'note.md'),key:'F2'});const input = field(node),commit = node.querySelector('[aria-label="Confirm name"]'),cancel = node.querySelector('[aria-label="Cancel name"]');assert.ok(commit);assert.ok(cancel);
+  input.value = 'duplicate';commit.focus();commit.click();await settle();assert.equal(field(node),input);assert.equal(commit.disabled,false);assert.equal(cancel.disabled,false);assert.equal(hostDocument.activeElement,input);assert.equal(statuses.at(-1),'Destination exists.');
+});
 test('directory bursts coalesce an in-flight listing and retain disclosed branches',async context=> {
   let finish!:(value:FileDirectoryPage)=>void,reads = 0;const delayed = new Promise<FileDirectoryPage>(resolve=> {finish = resolve;});const node = new HostNode('div');byId('workspace').append(node);context.after(()=>node.remove());
   const tree = new FilesTree(node as unknown as HTMLElement,{page:async(_root,path)=> {reads++;if (reads === 2) return delayed;return page(path,path ? [{name:'child',path:'folder/child',kind:'file'}] : [{name:'folder',path:'folder',kind:'directory'}]);},select:()=>{},escape:()=>{}});tree.setRoot(root);await settle();row(node,'folder').click();for (let index = 0;index < 200;index++) tree.invalidate('r',['folder']);assert.equal(reads,2);finish(page('folder',[]));await settle();assert.equal(reads,3);assert.equal(row(node,'folder').getAttribute('aria-expanded'),'true');assert.ok(row(node,'folder/child'));

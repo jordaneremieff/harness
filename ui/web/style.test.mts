@@ -372,20 +372,21 @@ test('expanded output retains bounded native scrollports with fixed gutters', ()
   assert.doesNotMatch(output, /(?:^|;\s*)(?:height|line-height):|padding-(?:top|bottom|block):|overflow(?:-y)?:|clip-path:|transform:|margin:/);
   assert.doesNotMatch(css, /\.tool-output-frame/);
 });
-test('the Message panel is pinned to the sidebar bottom and only the roster scrolls', () => {
-  assert.match(rule('.sidebar > *'), /flex-shrink: 0/);
-  assert.match(rule('.sidebar > .roster-section'), /flex: 1 1 auto/);
+test('the desktop Message panel stays outside the sidebar section flow and the roster scrolls', () => {
+  assert.match(rule('.sidebar > *, .sidebar-scroll > *'), /flex-shrink: 0/);
+  assert.match(rule('.sidebar-scroll'), /display: contents/);
+  assert.match(rule('.sidebar-scroll > .roster-section'), /flex: 1 1 auto/);
   assert.match(rule('.roster'), /flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto/);
   assert.match(rule('.roster-body'), /display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0/);
   assert.match(rule('.roster-body > :not(.roster)'), /flex: none/);
-  assert.match(rule('.sidebar > .roster-section'), /min-height: 0/);
+  assert.match(rule('.sidebar-scroll > .roster-section'), /min-height: 0/);
   assert.match(rule('.agent-message-panel'), /flex: none;/);
 });
 test('responsive, short, coarse, reduced-motion and forced-color paths remain', () => {
   for (const width of [899, 599]) assert.ok(css.includes(`${width}px`));
   assert.match(css, /\.app\.drawer-open \.workbench > \.sidebar/);
   assert.match(media('@media (max-width:899px)'), /\.sidebar > \.resizer \{ display: none; \}/);
-  assert.ok(media('@media (max-height:599px)').includes('.sidebar > .roster-section { min-height: 0; }'));
+  assert.ok(media('@media (max-height:599px)').includes('.sidebar-scroll > .roster-section { min-height: 0; }'));
   const coarse = media('@media (pointer:coarse)');
   assert.match(coarse, /\.icon-button \{ min-height: 44px; min-width: 44px; \}/);
   assert.match(coarse, /\.resizer\[data-axis=x\] \{ right: 0; width: 44px; \}/);
@@ -708,7 +709,7 @@ test('Message connection recovery shares flat state actions and retains native f
 });
 
 test('the sidebar footer stays at the bottom without a heavy separator', () => {
-  assert.equal([...css.matchAll(/\.sidebar-footer \{/g)].length, 1);
+  assert.equal([...css.matchAll(/^\.sidebar-footer \{/gm)].length, 1);
   assert.match(rule('.sidebar-footer'), /align-items: center; gap: var\(--s1\); margin-top: auto; padding: var\(--s1\) var\(--s2\) 0/); assert.doesNotMatch(rule('.sidebar-footer'), /border-top:/);
 });
 
@@ -740,16 +741,16 @@ test('primary history details and retry share a flat wrapping action row', () =>
   assert.match(rule('.history-actions > .history-details'), /min-width: 0; max-width: calc\(100% - 40px\)/);
   assert.match(rule('.history-actions > .card-action'), /flex: none/);
 });
-test('coarse working tool slots require roster width and preserve names and action reservations', () => {
-  assert.match(rule('.roster'), /container-type: inline-size; container-name: roster/);
+test('coarse roster timestamps and Message actions own disjoint columns at every roster width', () => {
   const coarse = media('@media (pointer:coarse)');
-  assert.match(coarse, /@container roster \(min-width: 392px\)/);
-  assert.match(coarse, /min-width: 184px; padding-right: 8px/);
-  assert.match(coarse, /\.row-name \{ min-width: 64px/);
-  assert.match(coarse, /max-width: calc\(100% - 184px\); visibility: visible/);
-  assert.match(coarse, /padding-left: 12px; padding-right: 72px/);
-  assert.match(coarse, /\.row-heading \{ gap: 6px/);
-  assert.match(coarse, /\.agent-row:is\(\[data-action=message\],\[data-action=resume\]\) > \.row-age \{ visibility: hidden/);
+  assert.match(coarse, /\.agent-row \{ display: grid; grid-template-columns: minmax\(0,1fr\) 64px/);
+  assert.match(coarse, /\.agent-row:is\(\[data-action=message\],\[data-action=resume\]\) \{ grid-template-columns: minmax\(0,1fr\) 64px 44px/);
+  assert.match(coarse, /\.agent-row > \.row-select \{ grid-column: 1; grid-row: 1;[^}]*min-height: 44px/);
+  assert.match(coarse, /\.agent-row > \.row-age \{ position: static; grid-column: 2; grid-row: 1;[^}]*min-height: 44px; max-width: 64px/);
+  assert.match(coarse, /\.agent-row > \.row-message \{ position: static; grid-column: 3; grid-row: 1; width: 44px; height: 44px/);
+  assert.match(coarse, /\.row-age\[data-absolute=true\] \{ max-width: 64px; white-space: normal; overflow-wrap: anywhere/);
+  assert.match(coarse, /\.row-age\[data-absolute=true\] > time \{ white-space: normal/);
+  assert.doesNotMatch(coarse, /visibility: hidden/);
 });
 test('source disclosure controls occupy the caption row without entering its click target', () => {
   assert.match(rule('.source-disclosure'), /position: relative/);
@@ -781,6 +782,42 @@ test('prose keeps a measured narrow allowance without shrinking technical blocks
   assert.doesNotMatch(rule('.code-block'), /600px/);
   assert.doesNotMatch(rule('.message-body table'), /600px/);
   assert.match(rule('.message-body'), /font-size: 15px; line-height: 1.6/);
+});
+test('phone drawer sections keep usable content inside one outer scroll owner', () => {
+  const phone = media('@media (max-width:599px)');
+  assert.match(phone,/\.app\.drawer-open \.sidebar-scroll \{ display: block; flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain/);
+  assert.match(phone,/\.app\.drawer-open \.files-section \{ flex: none; max-height: none/);
+  assert.match(phone,/\.app\.drawer-open #files-section-body \{ overflow: visible/);
+  assert.match(phone,/\.app\.drawer-open \.sidebar-scroll > \.roster-section \{ flex: none/);
+  assert.match(phone,/\.app\.drawer-open \.roster \{ flex: none; min-height: 44px; max-height: 50dvh/);
+  const sectionEnd = html.indexOf('</div>\n<section id="agent-message-panel"');
+  assert.ok(html.indexOf('<div class="sidebar-scroll">') < html.indexOf('id="sidebar-conversations"'));
+  assert.ok(sectionEnd > html.indexOf('id="roster-section"'));
+  assert.ok(sectionEnd < html.indexOf('class="sidebar-footer"'));
+});
+test('phone footer keeps direct settings and identity while full facts stay in the existing disclosure', () => {
+  const phone = media('@media (max-width:599px)');
+  assert.match(phone,/\.workbench-status > \.workbench-status-facts \{ display: contents/);
+  assert.match(phone,/\.workbench-status \.workbench-model \{ flex: 1; flex-wrap: nowrap/);
+  assert.match(phone,/\.workbench-status \.workbench-model > button \{ min-width: 44px/);
+  assert.match(phone,/\.composer-details > summary > span:not\(\.composer-details-label\) \{ display: none/);
+  assert.match(phone,/\.composer-details-label \{[^}]*min-width: 44px; min-height: 44px/);
+  assert.match(phone,/\.workbench-status \.phone-status-facts \{ display: block/);
+  assert.match(phone,/\.workbench-status \.workbench-version \{ max-width: 14ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap/);
+  assert.match(phone,/\.workbench-activity\[data-notice=true\] \{ display: block/);
+  for(const id of ['primary-status-summary','agent-status-summary','agent-settings-detail']) assert.match(html,new RegExp(`id="${id}" class="phone-status-facts"`));
+  assert.match(rule('.phone-status-facts'),/display: none/);
+});
+test('phone chrome removes redundant tab arrows and coarse tree names retain explicit touch controls', () => {
+  const phone = media('@media (max-width:599px)'),coarse = media('@media (pointer:coarse)');
+  assert.match(phone,/\.tab-bar > \.pane-tab-nav, \.navigation-access > \.compact-project-context, \.navigation-access > \.compact-project-button \{ display: none/);
+  assert.match(coarse,/\.conversation-row \{ min-height: 44px; align-items: center/);
+  assert.match(coarse,/\.file-name-input \{ min-height: 44px/);
+  assert.match(coarse,/\.file-name-actions \{ display: inline-flex/);
+  assert.match(rule('.file-name-actions'),/display: none/);
+  assert.match(html,/viewport-fit=cover/);
+  for(const edge of ['top','right','bottom','left'])assert.ok(rule('body').includes(`env(safe-area-inset-${edge})`));
+  assert.match(rule('body'),/height: 100dvh/);
 });
 test('slash rows use the conversation container and full-width descriptions at narrow pane widths', () => {
   const start = css.indexOf('@container conversation (max-width: 540px)'); assert.ok(start >= 0);

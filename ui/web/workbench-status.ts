@@ -9,10 +9,12 @@ export class WorkbenchStatus {
   private readonly scope: HTMLElement;
   private readonly activity: HTMLElement;
   private readonly groups = new Map<Pane, HTMLElement>();
+  private readonly summaries: HTMLElement[];
   private geometry?: GeometryHold;
   constructor(get: (id: string) => HTMLElement = byId) {
     this.node = get('workbench-status'); this.scope = get('workbench-scope'); this.activity = get('workbench-activity');
     for (const pane of ['primary', 'agent'] as const) this.groups.set(pane, get(`workbench-status-${pane}`));
+    this.summaries = ['primary', 'agent'].map(owner => get(`${owner}-status-summary`));
     const matching = (event: Event): GeometryHold | undefined => this.geometry?.pointerId === (event as PointerEvent).pointerId ? this.geometry : undefined;
     document.addEventListener('click', event => this.releaseGeometry(matching(event)));
     document.addEventListener('pointerup', event => {
@@ -47,6 +49,7 @@ export class WorkbenchStatus {
     setText(this.scope, name); this.scope.title = identity ?? name;
     this.scope.setAttribute('aria-label', identity ? `${name}: ${identity}` : name);
     setText(this.activity, activity); this.activity.hidden = !activity;
+    for (const summary of this.summaries) setText(summary, [name, activity].filter(Boolean).join(' · '));
     this.node.dataset.pane = pane;
     for (const [owner, group] of this.groups) group.hidden = owner !== pane;
   }
