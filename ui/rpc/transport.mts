@@ -7,7 +7,7 @@ export interface PrimaryTransport {
   request(type: string, fields?: Record<string, unknown>, beforeEntryId?: string): Promise<unknown>;
   requestPrepared(type: 'prompt', prepare: (id: string) => Promise<PreparedLine>, beforeWrite: () => void): Promise<unknown>;
   sendUI(record: Record<string, unknown>): Promise<void>;
-  markSynchronized(): void; close(): Promise<void>;
+  markSynchronized(token?:string): void|Promise<void>; close(): Promise<void>;
   detach?(): Promise<void>; captureBegin?(): Promise<{token: string; from: number}>;
   captureFinish?(token: string): Promise<OwnerBaseline>; captureAck?(token: string): Promise<void>;
   setQueueReservation?(reservation: OwnerQueueReservation): void;

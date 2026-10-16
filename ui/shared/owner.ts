@@ -41,7 +41,8 @@ export type OwnerRecovery = {format: 'ui.owner-recovery/1'; state: OwnerStateIde
 export type OwnerError = {code: string; message: string; uncertain: boolean};
 export type OwnerReply = {ok: true; value: unknown} | {ok: false; error: OwnerError};
 export type OwnerHello = {protocol: typeof OWNER_PROTOCOL; ownerIncarnation: string;
-  state: OwnerStateIdentity; attachmentId: string; mutator: boolean; primaries: OwnerDescriptor[]};
+  state: OwnerStateIdentity; attachmentId: string; mutator: boolean; primaries: OwnerDescriptor[];
+  capabilities?: ('capture-resynchronize/1')[]};
 export type OwnerNotice = {kind: 'record'; primaryKey: string; epoch: number; event: OwnerEvent} |
   {kind: 'resync'; primaryKey: string; reason: string} |
   {kind: 'exit'; primaryKey: string; epoch: number; descriptor: OwnerDescriptor};
@@ -54,6 +55,8 @@ export type OwnerAction =
   | ({kind: 'prepared'; id: string; line: string} & Address)
   | ({kind: 'ui-response'; record: OwnerRecord} & Address)
   | ({kind: 'capture-begin'} & Address)
+  /** Backend attests a verified full native refresh since capture-begin; the capture must remain unsealed. */
+  | ({kind: 'resynchronize'; token: string} & Address)
   | ({kind: 'capture-finish'; token: string} & Address)
   | ({kind: 'capture-page'; token: string; index: number} & Address)
   | ({kind: 'capture-ack'; token: string} & Address)

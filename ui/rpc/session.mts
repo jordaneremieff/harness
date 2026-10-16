@@ -30,6 +30,9 @@ export class PrimarySession {
   readonly view: PrimaryView;
   readonly client: PrimaryTransport;
   private attaching = false;
+  private captureToken?:string;
+  private streamRecovery?:Promise<void>;
+  private streamRecoveryPending=false;
   private attachEvents: RpcRecord[] = [];
   private attachBytes = 0;
   commands: CommandView[] = [];
@@ -68,6 +71,7 @@ export class PrimarySession {
   private started = false;
   private closing?: Promise<void>;
   private shutdownWork?:Promise<void>;
+  private identityQuarantined=false;
   private options: PrimarySessionOptions;
   constructor(options: PrimarySessionOptions) {
     this.options = options;
@@ -97,10 +101,10 @@ export class PrimarySession {
       if (this.closing || this.frozen) throw new RpcError('not_ready', 'Primary is closed.');
       const timeout = new Promise<never>((_, reject) => { this.rejectStartup = reject; });
       this.deadline(); await this.client.start(this.options.sessionFile); this.view.pid = this.client.child?.pid;
-      await Promise.race([this.options.attach ? this.attach() : this.initialize(), timeout]);
+      await Promise.race([this.client.captureBegin ? this.attach() : this.initialize(), timeout]);
       if (this.closing || this.frozen || this.view.lifecycle === 'failed' || this.view.lifecycle === 'stopped') throw new RpcError('host_unavailable', 'Primary exited during startup.');
       this.view.lifecycle = 'ready'; this.view.capabilities = { input: this.client.synchronized, control: true, handoff: this.client.synchronized, history: true };
-      this.projection.state(); this.stats.refresh();
+      this.projection.state(); this.stats.refresh();this.recoverStream();
     } catch (error) {
       const failure = this.error(error);
       if (!this.closing) { this.fail(failure); this.view.lifecycle = 'failed'; this.projection.state(); }
@@ -110,17 +114,28 @@ export class PrimarySession {
   }
   private async attach(): Promise<void> {
     if (!this.client.captureBegin || !this.client.captureFinish || !this.client.captureAck) throw new RpcError('unsupported', 'The transport does not support attachment.');
-    this.attaching = true;
-    const capture = await this.client.captureBegin();
+    this.attaching = true;let capture:{token:string;from:number}|undefined,acknowledged=false;
     try {
+      capture=await this.client.captureBegin();this.captureToken=capture.token;
       await this.initialize();
       const baseline = await this.client.captureFinish(capture.token);
       this.hydrate(baseline);
-      await this.client.captureAck(capture.token);
+      if(this.view.lifecycle==='ready'){this.view.capabilities.input=this.client.synchronized;this.view.capabilities.handoff=this.client.synchronized;}
+      if(this.client.synchronized&&['protocol_error','owner_delivery_lost'].includes(this.view.lastError?.code??''))delete this.view.lastError;
+      this.projection.state();
+      await this.client.captureAck(capture.token);acknowledged=true;
       const suffix = this.attachEvents.filter(event => Number(event.__ownerSequence) > baseline.cursor);
       this.attachEvents = []; this.attachBytes = 0; this.attaching = false;
       for (const event of suffix) this.event(event);
-    } finally {this.attaching = false; this.attachEvents = []; this.attachBytes = 0;}
+    } finally {
+      if(capture&&!acknowledged){try{await this.client.captureFinish(capture.token);await this.client.captureAck(capture.token);}catch{/* A failed capture remains unavailable until another explicit refresh. */}}
+      this.captureToken=undefined;this.attaching = false; this.attachEvents = []; this.attachBytes = 0;
+    }
+  }
+  private recoverStream():void {
+    if(!this.streamRecoveryPending||this.streamRecovery||this.attaching||this.refreshing||this.frozen||this.closing||this.view.lifecycle!=='ready')return;
+    this.streamRecoveryPending=false;
+    this.streamRecovery=this.resynchronize().catch(error=>this.fail(this.error(error))).finally(()=>{this.streamRecovery=undefined;this.recoverStream();});
   }
   private ownerEvent({record,seq,at,messageStartSequence}:OwnerEvent):RpcRecord {return {...record,__ownerSequence:seq,__ownerStartSequence:messageStartSequence,__ownerAt:at,__ownerIdentity:this.options.ownerIdentity} as RpcRecord;}
   private hydrateCompleted(baseline:OwnerBaseline,committedThrough:number):void {
@@ -197,6 +212,7 @@ export class PrimarySession {
     if (manualCompaction && this.view.activity === 'idle') { for (const waiter of this.settled) waiter.resolve(); this.settled.clear(); }
   }
   async resynchronize(): Promise<void> {
+    if(this.client.captureBegin&&!this.attaching){await this.attach();this.recoverStream();return;}
     if (this.refreshing) throw new RpcError('not_ready', 'History refresh already in progress.');
     const epoch = this.view.epoch;
     this.refreshing = true; this.buffer = []; this.bufferBytes = 0;
@@ -210,7 +226,7 @@ export class PrimarySession {
       finally { this.projection.silent = false; }
       this.projection.prune();
       if (this.dialogs.blocked) throw new RpcError('capacity', 'An extension dialog exceeds browser capacity; stop cancels the request.');
-      this.client.markSynchronized();
+      await this.client.markSynchronized(this.captureToken);
       if (this.view.lifecycle === 'ready') this.view.capabilities.input = true;
       this.projection.state();
     } finally { this.refreshing = false; this.buffer = []; this.bufferBytes = 0; }
@@ -304,7 +320,7 @@ export class PrimarySession {
   async stop(): Promise<unknown> {
     this.admit(true); this.frozen = true; this.invalidatePreparation();
     try { await this.dialogs.cancel(); const queue = await this.clearQueue(); await this.client.request('abort'); return queue; }
-    finally { if (!this.closing) this.frozen = false; }
+    finally { if (!this.closing) {this.frozen = false;this.recoverStream();} }
   }
   private async flushRecoveredQueue(): Promise<void> {
     if (!this.pendingRecovery) return;
@@ -438,7 +454,7 @@ export class PrimarySession {
         this.view.extension = { statuses: {}, widgets: {} }; await this.refreshState(); await this.client.setEpoch?.(this.view.epoch, this.view.sessionFile); await this.resynchronize();
       }
       return result;
-    } finally { this.frozen = false; if (this.view.lifecycle === 'switching') this.view.lifecycle = 'ready'; this.projection.state(); this.stats.refresh(); }
+    } finally { this.frozen = false; if (this.view.lifecycle === 'switching') this.view.lifecycle = 'ready'; this.projection.state(); this.stats.refresh();this.recoverStream(); }
   }
   respond(dialogId: string, body: DialogResponse): Promise<void> { return this.dialogs.respond(dialogId, body); }
   async handoff(body: HandoffRequest): Promise<HandoffView> {
@@ -459,7 +475,7 @@ export class PrimarySession {
       const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
       return { cwd: this.view.cwd, sessionFile, executable: this.options.executable, argv: ['--session', sessionFile],
         command: `cd ${quote(this.view.cwd)} && ${quote(this.options.executable)} --session ${quote(sessionFile)}` };
-    } catch (error) { if (this.view.lifecycle === 'ready') this.frozen = false; throw error; }
+    } catch (error) { if (this.view.lifecycle === 'ready') {this.frozen = false;this.recoverStream();} throw error; }
   }
   private waitForSettled(): Promise<void> {
     if (this.view.activity === 'idle') return Promise.resolve();
@@ -477,11 +493,13 @@ export class PrimarySession {
     if (this.startupTimer) clearTimeout(this.startupTimer);
     await this.fileHistory?.close(); await this.client.detach();
   }
+  quarantineIdentity():void {this.identityQuarantined=true;this.frozen=true;this.client.synchronized=false;}
   private waitShutdown(work:Promise<void>):Promise<void> {
     let timer:NodeJS.Timeout|undefined;
     return Promise.race([work,new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new RpcError('handoff_blocked','Primary shutdown exceeded its deadline; the writer remains owned.')),this.options.shutdownTimeoutMs??30000);})]).finally(()=>clearTimeout(timer));
   }
   close():Promise<void> {
+    if(this.identityQuarantined&&this.client.child&&!this.client.exited)return Promise.reject(new RpcError('handoff_blocked','The owned primary identity is unconfirmed; its writer remains owned.'));
     if(!this.shutdownWork){
       const work=this.closeOnce().finally(async()=>{this.fileClosing??=this.fileHistory?.close();await this.fileClosing;});this.shutdownWork=work;
       void work.catch(()=>{if(this.shutdownWork===work)this.shutdownWork=undefined;});
@@ -543,6 +561,7 @@ export class PrimarySession {
     this.projection.clearRetry();
     this.client.synchronized = false; this.view.capabilities.input = false;
     this.view.lastError = { code: error.code, message: safeText(error.message), retry: 'manual' }; this.projection.state();
+    if(error.code==='owner_delivery_lost'){this.streamRecoveryPending=true;this.recoverStream();}
   }
   private epoch(epoch: number): void { if (epoch !== this.view.epoch) throw new RpcError('stale_epoch', 'Primary session epoch changed.'); }
   private admit(allowUnsynchronized = false): void {

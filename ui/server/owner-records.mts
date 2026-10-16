@@ -2,7 +2,8 @@ import {randomUUID} from 'node:crypto';
 import {OWNER_LIMITS, type OwnerBaseline, type OwnerCapture, type OwnerCapturePage, type OwnerDescriptor, type OwnerDialog, type OwnerEvent, type OwnerLimits, type OwnerRecord} from '../shared/owner.ts';
 
 type Stored = {seq: number; at: number; bytes: Buffer; messageStartSequence?: number};
-type Capture = {attachment: string; from: number; overlap: Stored[]; bytes: number; lost: boolean; sealed?: Buffer; cursor?: number};
+type Capture = {attachment: string; from: number; lossVersion: number; overlap: Stored[]; bytes: number; lost: boolean; sealed?: Buffer; cursor?: number};
+const protocolLoss = ['unknown-response','invalid-response','record-limit','decode-capacity','invalid-rpc-record','session-file-conflict'];
 const object = (value: unknown): Record<string, unknown> | undefined => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 const decode = (value: Stored): OwnerEvent => ({seq:value.seq,at:value.at,record:JSON.parse(value.bytes.toString('utf8')) as OwnerRecord,...(value.messageStartSequence===undefined?{}:{messageStartSequence:value.messageStartSequence})});
 
@@ -18,6 +19,8 @@ export class OwnerRecords {
   private dialogs = new Map<string,{event:Stored;expiresAt?:number}>();
   private captures = new Map<string,Capture>();
   private lost = new Set<string>();
+  private lossVersion = 0;
+  private missingDialogs = new Map<string,{reason:string;expiresAt?:number}>();
   readonly limits: OwnerLimits;
   private now:()=>number;
   constructor(limits: Partial<OwnerLimits> = {}, now: () => number = Date.now, sequence=0) {this.limits={...OWNER_LIMITS,...limits};this.now=now;this.sequence=sequence;this.droppedThrough=sequence;}
@@ -35,7 +38,18 @@ export class OwnerRecords {
     }
     this.retain(stored,record);return decode(stored);
   }
-  incomplete(reason: string) {this.lost.add(reason);}
+  incomplete(reason: string) {
+    this.lossVersion++;this.lost.add(reason);
+    if(['record-limit','decode-capacity','invalid-rpc-record'].includes(reason)) {
+      this.lost.add('raw-event-loss');if(this.tape)this.tape.complete=false;
+    }
+  }
+  /** A trusted backend calls this only after its full native refresh within this capture. */
+  resynchronize(attachment:string,token:string) {
+    const capture=this.capture(attachment,token);
+    if(capture.sealed||capture.lossVersion!==this.lossVersion)throw new Error('refresh-invalidated');
+    for(const reason of protocolLoss)this.lost.delete(reason);
+  }
   private retain(stored:Stored,record:OwnerRecord) {
     this.retainMessage(stored,record);this.retainTool(stored,record);this.retainState(stored,record);
     if(record.type==='extension_ui_request' && typeof record.id==='string' && ['select','confirm','input','editor'].includes(String(record.method))) this.dialog(stored,record);
@@ -91,27 +105,37 @@ export class OwnerRecords {
   }
   private dialog(stored:Stored,record:OwnerRecord) {
     this.expireDialogs();
-    const id=String(record.id);const bytes=[...this.dialogs.values()].reduce((sum,item)=>sum+item.event.bytes.length,stored.bytes.length);
-    if(this.dialogs.has(id)||this.dialogs.size>=this.limits.dialogs||bytes>this.limits.dialogBytes) {this.lost.add('dialog-limit');return;}
-    const timeout=record.timeout;
-    if(timeout!==undefined&&(typeof timeout!=='number'||!Number.isFinite(timeout)||timeout<0||timeout>2147483647)) {this.lost.add('invalid-dialog-timeout');return;}
-    this.dialogs.set(id,{event:stored,...(typeof timeout==='number'&&timeout>0?{expiresAt:stored.at+timeout}:{})});
+    const id=String(record.id),timeout=record.timeout;
+    if(timeout!==undefined&&(typeof timeout!=='number'||!Number.isFinite(timeout)||timeout<0||timeout>2147483647)) {this.missingDialog(id,'invalid-dialog-timeout');return;}
+    const expiresAt=typeof timeout==='number'&&timeout>0?stored.at+timeout:undefined;
+    const bytes=[...this.dialogs.values()].reduce((sum,item)=>sum+item.event.bytes.length,stored.bytes.length);
+    if(this.dialogs.has(id)||this.dialogs.size>=this.limits.dialogs||bytes>this.limits.dialogBytes) {this.missingDialog(id,'dialog-limit',expiresAt);return;}
+    this.dialogs.set(id,{event:stored,...(expiresAt===undefined?{}:{expiresAt})});
   }
-  private expireDialogs() {for(const [id,value] of this.dialogs)if(value.expiresAt!==undefined&&value.expiresAt<=this.now())this.dialogs.delete(id);}
+  private missingDialog(id:string,reason:string,expiresAt?:number) {
+    if(id.length>256||this.missingDialogs.size>=this.limits.dialogs&&!this.missingDialogs.has(id)) {this.lost.add('dialog-coverage-unavailable');return;}
+    const previous=this.missingDialogs.get(id);
+    this.missingDialogs.set(id,{reason,...(previous&&previous.expiresAt===undefined||expiresAt===undefined?{}:{expiresAt:Math.max(previous?.expiresAt??0,expiresAt)})});
+  }
+  private expireDialogs() {
+    for(const [id,value] of this.dialogs)if(value.expiresAt!==undefined&&value.expiresAt<=this.now())this.dialogs.delete(id);
+    for(const [id,value] of this.missingDialogs)if(value.expiresAt!==undefined&&value.expiresAt<=this.now())this.missingDialogs.delete(id);
+  }
   pendingDialogs():OwnerDialog[] {this.expireDialogs();return [...this.dialogs.values()].map(value=>({event:decode(value.event),...(value.expiresAt===undefined?{}:{expiresAt:value.expiresAt})}));}
-  hasDialog(id:string) {this.expireDialogs();return this.dialogs.has(id);}
-  answered(id:string) {this.dialogs.delete(id);}
-  reset() {this.tape=null;this.tools.clear();this.states.clear();this.dialogs.clear();this.lost.clear();this.ring=[];this.ringBytes=0;this.droppedThrough=this.sequence;this.captures.clear();}
+  hasDialog(id:string) {this.expireDialogs();return this.dialogs.has(id)||this.missingDialogs.has(id);}
+  answered(id:string) {this.dialogs.delete(id);this.missingDialogs.delete(id);}
+  reset() {this.tape=null;this.tools.clear();this.states.clear();this.dialogs.clear();this.missingDialogs.clear();this.lost.clear();this.ring=[];this.ringBytes=0;this.droppedThrough=this.sequence;this.captures.clear();}
   begin(attachment:string):{token:string;from:number} {
     for(const [token,value]of this.captures)if(value.attachment===attachment)this.captures.delete(token);
     if(this.captures.size>=2)throw new Error('capture-capacity');
-    const token=randomUUID(),from=this.sequence;this.captures.set(token,{attachment,from,overlap:[],bytes:0,lost:false});return {token,from};
+    const token=randomUUID(),from=this.sequence;this.captures.set(token,{attachment,from,lossVersion:this.lossVersion,overlap:[],bytes:0,lost:false});return {token,from};
   }
   private capture(attachment:string,token:string):Capture {const value=this.captures.get(token);if(!value||value.attachment!==attachment)throw new Error('capture-unavailable');return value;}
   finish(attachment:string,token:string,descriptor:OwnerDescriptor):OwnerCapture {
     const capture=this.capture(attachment,token);
     if(!capture.sealed) {
-      const reasons=[...this.lost];if(capture.lost)reasons.push('capture-overflow');if(this.tape&&!this.tape.complete)reasons.push('active-message-overflow');
+      this.expireDialogs();
+      const reasons=[...new Set([...this.lost,...[...this.missingDialogs.values()].map(value=>value.reason)])];if(capture.lost)reasons.push('capture-overflow');if(this.tape&&!this.tape.complete)reasons.push('active-message-overflow');
       const baseline:OwnerBaseline={descriptor,from:capture.from,cursor:this.sequence,complete:!reasons.length,reasons,
         overlap:capture.overlap.map(decode),activeMessage:this.tape?{startSequence:this.tape.start,complete:this.tape.complete,events:this.tape.items.map(decode)}:null,
         tools:[...this.tools].map(([callId,value])=>({callId,start:decode(value.start),...(value.latest?{latest:decode(value.latest)}:{})})),

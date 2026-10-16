@@ -117,7 +117,7 @@ export function supervise(options:Options,hooks:SupervisorOptions={}) {
         const reply=owner?await owner.handle(run.attachment,v.request as OwnerRequest):{ok:false,error:{code:'not_ready',message:'The raw owner is unavailable.',uncertain:false}};
         run.wire.send({kind:'reply',id:v.request?.requestId,reply});
       })().catch(()=>output('An owner request failed without affecting other primaries.'));
-    });
+    },()=>owner?.deliveryReady(run.attachment));
     if(prewarm)candidate=run;else current=run;
     if(child.stdout)relay(child.stdout);if(child.stderr)relay(child.stderr);
     child.once('spawn',()=> {if(stopped) {child.kill('SIGTERM');return;} child.send({kind:prewarm?'prewarm':'start',options:selected,restarts,owner:true,ownerState:ownerHello?.state,release},error=>{if(error)child.kill('SIGTERM');});run.timer=setTimeout(()=>{output('The backend did not confirm startup.');child.kill('SIGKILL');},45000);});

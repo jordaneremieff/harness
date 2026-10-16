@@ -20,7 +20,7 @@ const id=(value:unknown):value is string=>typeof value==='string'&&value.length>
 const object=(value:unknown):value is Record<string,unknown>=>!!value&&typeof value==='object'&&!Array.isArray(value);
 const readCommands=new Set(['get_state','get_entries','get_tree','get_messages','get_commands','get_available_models','get_available_thinking_levels','get_session_stats','get_last_assistant_text','get_fork_messages']);
 const effectCommands=new Set(['prompt','steer','follow_up','abort','clear_queue','new_session','switch_session','fork','set_model','set_thinking_level','set_auto_compaction','set_auto_retry','abort_retry','set_session_name','compact','export_html']);
-const actionKeys:Record<string,readonly string[]>={hello:[],open:['primary'],command:['record','mutation','recovery'],prepare:['mutation','bytes'],prepared:['id','line'],'ui-response':['record'],'capture-begin':[],'capture-finish':['token'],'capture-page':['token','index'],'capture-ack':['token'],outcome:['id','mutation'],ack:['id'],'operation-complete':['mutation','result'],'operation-result':['operationId','digest'],epoch:['next','sessionFile'],'close-primary':['timeoutMs'],recoveries:[],'recovery-ack':['id'],detach:[]};
+const actionKeys:Record<string,readonly string[]>={hello:[],open:['primary'],command:['record','mutation','recovery'],prepare:['mutation','bytes'],prepared:['id','line'],'ui-response':['record'],'capture-begin':[],resynchronize:['token'],'capture-finish':['token'],'capture-page':['token','index'],'capture-ack':['token'],outcome:['id','mutation'],ack:['id'],'operation-complete':['mutation','result'],'operation-result':['operationId','digest'],epoch:['next','sessionFile'],'close-primary':['timeoutMs'],recoveries:[],'recovery-ack':['id'],detach:[]};
 const commandKeys:Record<string,readonly string[]>={
   get_entries:['since'],get_fork_messages:[],prompt:['message','images','streamingBehavior'],steer:['message','images'],follow_up:['message','images'],
   new_session:['parentSession'],switch_session:['sessionPath'],fork:['entryId'],set_model:['provider','modelId'],set_thinking_level:['level'],
@@ -45,7 +45,7 @@ function validateRecord(record:OwnerRecord) {
   if(Object.keys(record).some(key=>!allowed.includes(key)))failure('invalid_request','The RPC command has unsupported fields.');
 }
 type Pending={value:OwnerOutcome;bodyDigest:string;attachment:string;promise:Promise<OwnerOutcome>;resolve:(value:OwnerOutcome)=>void;line?:string;reservedBytes?:number;recoveryId?:string;settling?:boolean};
-type Attachment={notify:(notice:OwnerNotice)=>unknown;paused:Set<string>;failed:Set<string>};
+type Attachment={notify:(notice:OwnerNotice)=>unknown;paused:Set<string>;failed:Set<string>;resyncNotified:Set<string>};
 type Primary={descriptor:OwnerPrimary;observedSessionFile?:string;child:ChildProcessWithoutNullStreams;exited:boolean;available:boolean;synchronized:boolean;
   records:OwnerRecords;stderr:Buffer;accumulator:Buffer;discarding:boolean;decodeTail:Promise<void>;decodeBytes:number;
   writeTail:Promise<void>;exit:Promise<void>;resolveExit:()=>void;close?:Promise<void>;openingAttachment:string};
@@ -76,7 +76,7 @@ export class PrimaryOwner {
   constructor(options:PrimaryOwnerOptions,recovery:OwnerRecoveryStore) {this.options=options;this.recovery=recovery;this.limits={...OWNER_LIMITS,...options.limits};this.now=options.now??Date.now;}
   connect(attachmentId:string,notify:(notice:OwnerNotice)=>unknown):OwnerHello {
     if(this.disposed||!id(attachmentId)||this.attachments.has(attachmentId)||this.attachments.size>=4)failure('capacity','Owner attachment is unavailable.');
-    this.attachments.set(attachmentId,{notify,paused:new Set(),failed:new Set()});return this.hello(attachmentId);
+    this.attachments.set(attachmentId,{notify,paused:new Set(),failed:new Set(),resyncNotified:new Set()});return this.hello(attachmentId);
   }
   grant(attachmentId:string) {this.attachment(attachmentId);this.mutator=attachmentId;}
   detach(attachmentId:string) {
@@ -86,7 +86,7 @@ export class PrimaryOwner {
   }
   descriptors():OwnerDescriptor[] {return [...this.primaries.values()].map(primary=>this.describe(primary));}
   private describe(primary:Primary):OwnerDescriptor {return {...structuredClone(primary.descriptor),...(primary.child.pid?{pid:primary.child.pid}:{}),exited:primary.exited,available:primary.available,synchronized:primary.synchronized,sequence:primary.records.cursor,stderr:primary.stderr.toString('utf8'),recoveryPending:this.recovery.hasPrimary(primary.descriptor.key)};}
-  private hello(attachmentId:string):OwnerHello {return {protocol:OWNER_PROTOCOL,ownerIncarnation:this.incarnation,state:structuredClone(this.options.state),attachmentId,mutator:this.mutator===attachmentId,primaries:this.descriptors()};}
+  private hello(attachmentId:string):OwnerHello {return {protocol:OWNER_PROTOCOL,ownerIncarnation:this.incarnation,state:structuredClone(this.options.state),attachmentId,mutator:this.mutator===attachmentId,primaries:this.descriptors(),capabilities:['capture-resynchronize/1']};}
   private attachment(id:string):Attachment {const value=this.attachments.get(id);return value??failure('not_ready','The owner attachment is absent.');}
   private writable(attachment:string) {this.attachment(attachment);if(this.mutator!==attachment)failure('stale_attachment','The backend no longer owns mutation admission.');}
   private primary(key:string,epoch:number,retained=false):Primary {const value=this.primaries.get(key);if(!value)failure('not_ready','The primary is not owned.');if(value.descriptor.epoch!==epoch&&(!retained||epoch<1||epoch>value.descriptor.epoch))failure('stale_epoch','The primary epoch changed.');return value;}
@@ -119,11 +119,17 @@ export class PrimaryOwner {
       case 'prepare':return this.prepare(attachment,primary,request.mutation,request.bytes);
       case 'prepared':return this.prepared(attachment,primary,request.id,request.line);
       case 'ui-response':return this.uiResponse(attachment,primary,request.record);
-      case 'capture-begin':{const result=primary.records.begin(attachment);this.attachment(attachment).paused.add(request.primaryKey);return result;}
+      case 'capture-begin':{await primary.decodeTail;const result=primary.records.begin(attachment);this.attachment(attachment).paused.add(request.primaryKey);return result;}
+      case 'resynchronize': {
+        await primary.decodeTail;this.writable(attachment);this.primary(request.primaryKey,request.epoch);
+        if(!primary.available||primary.exited)failure('not_ready','The Pi pipe is unavailable.');
+        try {primary.records.resynchronize(attachment,request.token);}catch {failure('not_ready','The native refresh capture was invalidated.');}
+        primary.synchronized=true;return this.describe(primary);
+      }
       case 'capture-finish':await primary.decodeTail;return primary.records.finish(attachment,request.token,this.describe(primary));
       case 'capture-page':return primary.records.page(attachment,request.token,request.index);
       case 'capture-ack': {
-        const records=primary.records.ack(attachment,request.token),target=this.attachment(attachment);target.paused.delete(request.primaryKey);target.failed.delete(request.primaryKey);
+        const records=primary.records.ack(attachment,request.token),target=this.attachment(attachment);target.paused.delete(request.primaryKey);target.failed.delete(request.primaryKey);target.resyncNotified.delete(request.primaryKey);
         for(const event of records)this.deliver(attachment,{kind:'record',primaryKey:request.primaryKey,epoch:request.epoch,event});return true;
       }
       case 'outcome':return this.lookup(primary,request.epoch,request.id,request.mutation);
@@ -269,6 +275,16 @@ export class PrimaryOwner {
     if(primary.exited)return;primary.exited=true;primary.available=false;primary.resolveExit();
     for(const [path,key]of this.fileClaims)if(key===primary.descriptor.key)this.fileClaims.delete(path);
     void primary.decodeTail.finally(()=> {for(const pending of this.pending.values())if(pending.value.primaryKey===primary.descriptor.key&&['pending','prepared'].includes(pending.value.state))this.settle(pending,pending.value.written?'uncertain':'refused','Pi exited before its response.');this.broadcast({kind:'exit',primaryKey:primary.descriptor.key,epoch:primary.descriptor.epoch,descriptor:this.describe(primary)});});
+  }
+  /** Wire drain retries only the notice; capture acknowledgment restores ordered records. */
+  deliveryReady(attachment:string) {
+    const target=this.attachments.get(attachment);if(!target)return;
+    for(const primaryKey of target.failed) {
+      if(target.paused.has(primaryKey)||target.resyncNotified.has(primaryKey))continue;
+      target.resyncNotified.add(primaryKey);
+      try {if(target.notify({kind:'resync',primaryKey,reason:'delivery-backpressure'})===false)target.resyncNotified.delete(primaryKey);}
+      catch {target.resyncNotified.delete(primaryKey);}
+    }
   }
   private deliver(attachment:string,notice:OwnerNotice) {
     const target=this.attachments.get(attachment);if(!target||target.paused.has(notice.primaryKey)||target.failed.has(notice.primaryKey))return;

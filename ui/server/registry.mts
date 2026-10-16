@@ -118,14 +118,57 @@ export class Registry {
     await this.importOwnerRecovery(owner);
     for (const descriptor of owner.hello.primaries) {
       if (descriptor.exited) continue;
-      const previous = this.saved.get(descriptor.key);
-      if (previous && previous.epoch !== descriptor.epoch) throw new ApiError('stale_epoch', 'Retained metadata and raw owner epochs differ.', 409);
-      const session = this.createPrimary(descriptor.key, descriptor.cwd, descriptor.sessionFile, previous, descriptor);
-      this.sessions.set(descriptor.key, session); this.saved.set(descriptor.key, session.view);
-      this.queueWorkspaces.set(descriptor.key, descriptor.recoveryWorkspaceId);
-      await session.start();
+      await this.attachPrimary(owner,descriptor);
     }
-    for (const record of this.store.operationMetadata()) if (record.view.target?.kind === 'primary' && ['uncertain', 'dispatched'].includes(record.view.state)) await this.operations.reconcile(record.view.id);
+    for (const record of this.store.operationMetadata()) if (record.view.target?.kind === 'primary' && this.sessions.get(record.view.target.key)?.view.lifecycle==='ready' && ['uncertain', 'dispatched'].includes(record.view.state)) await this.operations.reconcile(record.view.id);
+  }
+  private async completedTransition(owner:OwnerConnection,key:string,epoch:number):Promise<boolean> {
+    for(const metadata of this.store.operationMetadata()) {
+      const record=this.store.record(metadata.view.id),target=record.view.target;
+      if(record.view.kind!=='primary.session'||target?.kind!=='primary'||target.key!==key||target.epoch!==epoch||!record.digest)continue;
+      for(const command of ['new_session','switch_session','fork']) {
+        const outcome=await owner.request<import('../shared/owner.ts').OwnerOutcome|null>({kind:'outcome',primaryKey:key,epoch,mutation:{operationId:record.view.id,digest:record.digest,step:`1:${command}`}});
+        const data=outcome?.response?.data;
+        if(outcome?.state==='complete'&&outcome.response?.success===true&&data&&typeof data==='object'&&!Array.isArray(data)&&data.cancelled===false)return true;
+      }
+    }
+    return false;
+  }
+  private async sameOwnedSession(previous:PrimaryView,state:Record<string,unknown>):Promise<boolean> {
+    if(previous.sessionId!==state.sessionId)return false;
+    if(previous.sessionFile===state.sessionFile)return true;
+    if(!previous.sessionFile||typeof state.sessionFile!=='string')return false;
+    try{return await realpath(previous.sessionFile)===await realpath(state.sessionFile);}catch{return false;}
+  }
+  private async reconcileOwned(owner:OwnerConnection,descriptor:OwnerDescriptor,previous?:PrimaryView):Promise<OwnerDescriptor> {
+    if(!previous)return descriptor;
+    if(previous.cwd!==descriptor.cwd&&!await canonicalMatch(previous.cwd,await realpath(descriptor.cwd)))throw new ApiError('operation_conflict','The owned primary project differs from retained metadata.',409);
+    if(Math.abs(previous.epoch-descriptor.epoch)>1)throw new ApiError('operation_conflict','The owned primary epoch has no adjacent retained identity.',409);
+    const transport=owner.factory({...descriptor},descriptor)({});let state:Record<string,unknown>;
+    try{state=await transport.request('get_state') as Record<string,unknown>;}finally{await transport.detach?.();}
+    if(typeof state?.sessionId!=='string'||!state.sessionId)throw new ApiError('operation_conflict','The native primary identity is unavailable.',409);
+    const same=await this.sameOwnedSession(previous,state);
+    if(descriptor.epoch>previous.epoch)return descriptor;
+    if(descriptor.epoch===previous.epoch&&(!previous.sessionId||same))return descriptor;
+    if(!same&&!await this.completedTransition(owner,descriptor.key,descriptor.epoch))throw new ApiError('operation_conflict','The native primary identity has no confirmed retained transition.',409);
+    const next=Math.max(previous.epoch,descriptor.epoch+1);
+    return owner.request<OwnerDescriptor>({kind:'epoch',primaryKey:descriptor.key,epoch:descriptor.epoch,next,...(typeof state.sessionFile==='string'?{sessionFile:state.sessionFile}:{})});
+  }
+  private async attachPrimary(owner:OwnerConnection,descriptor:OwnerDescriptor) {
+    const previous=this.saved.get(descriptor.key);let session:PrimarySession|undefined;
+    this.queueWorkspaces.set(descriptor.key,descriptor.recoveryWorkspaceId);
+    try{
+      const current=await this.reconcileOwned(owner,descriptor,previous);
+      session=this.createPrimary(current.key,current.cwd,current.sessionFile,previous,current);
+      this.sessions.set(current.key,session);this.saved.set(current.key,session.view);await session.start();
+    }catch{
+      session??=this.createPrimary(descriptor.key,descriptor.cwd,descriptor.sessionFile,previous,descriptor);
+      if(previous)Object.assign(session.view,previous);
+      session.quarantineIdentity();session.view.pid=descriptor.pid;session.view.lifecycle='failed';session.view.capabilities={input:false,control:false,handoff:false,history:false};
+      session.view.lastError={code:'operation_conflict',message:'The owned primary identity or attachment is unconfirmed. Other primaries remain available.',retry:'manual'};
+      this.sessions.set(descriptor.key,session);this.saved.set(descriptor.key,session.view);
+    }
+    await this.metadataWrite;await this.store.savePrimaries(this.views());
   }
   private async importOwnerRecovery(owner: OwnerConnection) {
     for (const recovery of await owner.request<OwnerRecovery[]>({kind: 'recoveries'})) {

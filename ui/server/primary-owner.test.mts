@@ -67,6 +67,60 @@ test('unknown replies do not terminate Pi or misroute into a new pending command
   const f=await fixture(t);f.child.emitRecord({type:'response',id:'unknown',command:'prompt',success:true,data:{disposition:'started'}});
   const captured=await baseline(f.owner,'old',f.address);assert.equal(captured.value.descriptor.synchronized,false);assert.equal(f.child.ended,false);assert.ok(captured.value.reasons.includes('unknown-response'));
 });
+test('verified capture refresh restores admission and planned capture without replaying uncertain effects',async t=> {
+  const f=await fixture(t),binding=mutation();
+  f.child.onCommand=record=>f.child.emitRecord({type:'response',id:record.id,command:'wrong-command',success:true});
+  const uncertain=await f.command({type:'prompt',message:'once'},binding);assert.equal(uncertain.state,'uncertain');
+  f.child.emitRecord({type:'response',id:'unknown',command:'prompt',success:true});
+  await assert.rejects(f.command({type:'prompt',message:'blocked'},mutation()),/resynchronization/);
+  const hello=await call<{capabilities:string[]}>(f.owner,'old',{kind:'hello'});assert.deepEqual(hello.capabilities,['capture-resynchronize/1']);
+  const begin=await call<{token:string}>(f.owner,'old',{kind:'capture-begin',...f.address});
+  f.child.onCommand=record=>f.child.answer(record,record.type==='get_entries'?{entries:[]}:{});
+  for(const type of ['get_state','get_commands','get_entries'])await f.command({type});
+  const restored=await call<OwnerDescriptor>(f.owner,'old',{kind:'resynchronize',...f.address,token:begin.token});assert.equal(restored.synchronized,true);
+  const complete=await call<OwnerCapture>(f.owner,'old',{kind:'capture-finish',...f.address,token:begin.token});assert.equal(complete.complete,true);
+  await call(f.owner,'old',{kind:'capture-ack',...f.address,token:begin.token});
+  assert.deepEqual(await f.command({type:'prompt',message:'once'},binding),uncertain);
+  assert.equal(f.child.writes.filter(record=>record.type==='prompt').length,1);
+  assert.equal((await f.command({type:'prompt',message:'new'},mutation())).state,'complete');
+  assert.equal((await baseline(f.owner,'old',f.address)).metadata.complete,true);
+});
+test('capture refresh refuses newer protocol loss and stale attachments',async t=> {
+  const f=await fixture(t),begin=await call<{token:string}>(f.owner,'old',{kind:'capture-begin',...f.address});
+  f.child.emitRecord({type:'response',id:'unknown',command:'prompt',success:true});
+  await assert.rejects(call(f.owner,'old',{kind:'resynchronize',...f.address,token:begin.token}),/invalidated/);
+  assert.equal(f.owner.descriptors()[0]?.synchronized,false);
+  const next=await call<{token:string}>(f.owner,'old',{kind:'capture-begin',...f.address});
+  f.owner.connect('new',()=>{});f.owner.grant('new');
+  await assert.rejects(call(f.owner,'old',{kind:'resynchronize',...f.address,token:next.token}),/stale_attachment/);
+  await assert.rejects(call(f.owner,'new',{kind:'resynchronize',...f.address,token:next.token}),/invalidated/);
+  assert.equal(f.owner.descriptors()[0]?.synchronized,false);
+});
+test('wire readiness sends one resync and capture acknowledgment resumes ordered records',async t=> {
+  const f=await fixture(t),notices:OwnerNotice[]=[];let writable=false,attempts=0;
+  f.owner.connect('slow',notice=>{attempts++;if(!writable)return false;notices.push(notice);return true;});
+  f.child.emitRecord({type:'agent_start'});await f.command({type:'get_state'});assert.equal(attempts,1);
+  f.child.emitRecord({type:'queue_update',steering:[],followUp:[]});await f.command({type:'get_state'});assert.equal(attempts,1);
+  f.owner.deliveryReady('slow');assert.equal(attempts,2);assert.equal(notices.length,0);
+  writable=true;f.owner.deliveryReady('slow');f.owner.deliveryReady('slow');
+  assert.deepEqual([...notices],[{kind:'resync',primaryKey:'primary',reason:'delivery-backpressure'}]);
+  f.child.emitRecord({type:'agent_settled'});await f.command({type:'get_state'});assert.equal(notices.length,1);
+  const captured=await baseline(f.owner,'slow',f.address);assert.equal(captured.metadata.complete,true);
+  f.child.emitRecord({type:'agent_start'});await f.command({type:'get_state'});
+  await call(f.owner,'slow',{kind:'capture-ack',...f.address,token:captured.begin.token});
+  f.child.emitRecord({type:'agent_settled'});await f.command({type:'get_state'});
+  assert.deepEqual(notices.slice(1).map(notice=>notice.kind==='record'?notice.event.record.type:notice.kind),['agent_start','agent_settled']);
+  f.owner.deliveryReady('slow');assert.equal(notices.length,3);
+});
+test('a failed capture suffix requests another resync instead of releasing a partial stream',async t=> {
+  const f=await fixture(t),notices:OwnerNotice[]=[];let writable=true;
+  f.owner.connect('slow',notice=>{if(!writable)return false;notices.push(notice);return true;});
+  const captured=await baseline(f.owner,'slow',f.address);f.child.emitRecord({type:'agent_start'});await f.command({type:'get_state'});
+  writable=false;await call(f.owner,'slow',{kind:'capture-ack',...f.address,token:captured.begin.token});
+  writable=true;f.owner.deliveryReady('slow');assert.equal(notices[0]?.kind,'resync');
+  const next=await baseline(f.owner,'slow',f.address);await call(f.owner,'slow',{kind:'capture-ack',...f.address,token:next.begin.token});
+  f.child.emitRecord({type:'agent_settled'});await f.command({type:'get_state'});assert.equal(notices[1]?.kind,'record');
+});
 test('actual RPC deltas survive capture and overflow never aborts or pauses stdout',async t=> {
   const f=await fixture(t,{tapeBytes:200});f.child.emitRecord({type:'message_start',message:{role:'assistant',timestamp:1,content:[]}});
   for(let index=0;index<30;index++)f.child.emitRecord({type:'message_update',usage:{input:1},assistantMessageEvent:{type:'text_delta',contentIndex:0,delta:'stream'}});

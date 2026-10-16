@@ -5,8 +5,12 @@ const PAGE = 192 * 1024, TOTAL = 64 * 1024 * 1024, QUEUE = 8 * 1024 * 1024;
 export class OwnerWire {
   private endpoint: WireEndpoint; private receive: (value: unknown) => void;
   private pieces = new Map<string, {next: number; count: number; parts: string[]; bytes: number}>();
-  private retained = 0; private queued = 0; private stopped = false;
-  constructor(endpoint: WireEndpoint, receive: (value: unknown) => void) {this.endpoint = endpoint; this.receive = receive; endpoint.on('message', this.message);}
+  private retained = 0; private queued = 0; private stopped = false; private congested=false; private drainScheduled=false; private onDrain?:()=>void;
+  constructor(endpoint: WireEndpoint, receive: (value: unknown) => void,onDrain?:()=>void) {this.endpoint = endpoint; this.receive = receive;this.onDrain=onDrain; endpoint.on('message', this.message);}
+  private drained() {
+    if(this.stopped||!this.congested||this.queued>QUEUE||this.drainScheduled)return;
+    this.drainScheduled=true;queueMicrotask(()=>{this.drainScheduled=false;if(this.stopped||!this.congested||this.queued>QUEUE)return;this.congested=false;this.onDrain?.();});
+  }
   private message = (value: unknown) => {
     if (this.stopped || !value || typeof value !== 'object') return;
     const v = value as {kind?: string; id?: string; index?: number; count?: number; data?: string};
@@ -26,13 +30,14 @@ export class OwnerWire {
   send(value: unknown): boolean {
     if (this.stopped) return false;
     const json = JSON.stringify(value), bytes = Buffer.byteLength(json);
-    if (bytes > TOTAL || this.queued > QUEUE) return false;
+    if (bytes > TOTAL || this.queued > QUEUE) {this.congested=true;this.drained();return false;}
     // UTF-16 slices preserve all bytes after concatenation and remain below the IPC page ceiling.
     const width = PAGE / 4, count = Math.max(1, Math.ceil(json.length / width)), id = randomUUID();
-    this.queued += bytes; let pending = count;
+    this.queued += bytes; let pending = count,released=false;
+    const release=()=>{if(released)return;released=true;this.queued-=bytes;this.drained();};
     for (let index = 0; index < count; index++) {
-      try {this.endpoint.send({kind: 'owner-frame', id, index, count, data: json.slice(index * width, (index + 1) * width)}, () => {if (!--pending) this.queued -= bytes;});}
-      catch {this.queued -= bytes; return false;}
+      try {this.endpoint.send({kind: 'owner-frame', id, index, count, data: json.slice(index * width, (index + 1) * width)}, () => {if (!--pending) release();});}
+      catch {this.congested=true;release();return false;}
     }
     return true;
   }

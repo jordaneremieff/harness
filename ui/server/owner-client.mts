@@ -59,9 +59,10 @@ class OwnerTransport implements PrimaryTransport {
       if (this.stopped) return;
       if (notice.kind === 'record' && notice.epoch === this.primary.epoch) this.callbacks.onEvent?.({...notice.event.record, __ownerSequence: notice.event.seq, __ownerStartSequence: notice.event.messageStartSequence, __ownerAt: notice.event.at, __ownerIdentity: `${connection.hello.ownerIncarnation}:${primary.key}:${notice.epoch}`} as never);
       else if (notice.kind === 'exit') {this.descriptor = notice.descriptor; this.callbacks.onExit?.(notice.descriptor.exited && notice.descriptor.synchronized ? undefined : new RpcError('delivery_uncertain', 'The owned Pi process exited.', true));}
-      else if (notice.kind === 'resync') {this.synchronized = false; this.callbacks.onProtocolError?.(new RpcError('protocol_error', notice.reason, true));}
+      else if (notice.kind === 'resync') this.protocolLost(notice.reason);
     });
   }
+  private protocolLost(reason:string){this.synchronized=false;this.callbacks.onProtocolError?.(new RpcError(reason==='delivery-backpressure'?'owner_delivery_lost':'protocol_error',reason,true));}
   get child() {return this.descriptor ? {pid: this.descriptor.pid} : undefined;}
   get exited() {return this.descriptor?.exited ?? false;}
   get available() {return !this.stopped && (this.descriptor?.available ?? false);}
@@ -101,7 +102,13 @@ class OwnerTransport implements PrimaryTransport {
     return this.result(await this.connection.request<OwnerOutcome>({kind: 'prepared', ...this.address(), id: reserved.id, line: line.line}));
   }
   async sendUI(record: Record<string, unknown>) {await this.connection.request({kind: 'ui-response', ...this.address(), record: {type: 'extension_ui_response', ...record} as OwnerRecord});}
-  markSynchronized() {this.synchronized = true;}
+  async markSynchronized(token?:string) {
+    if(this.connection.hello.capabilities?.includes('capture-resynchronize/1')) {
+      if(!token)throw new RpcError('not_ready','Owner resynchronization requires its capture token.');
+      this.descriptor=await this.connection.request<OwnerDescriptor>({kind:'resynchronize',...this.address(),token});
+      this.synchronized=this.descriptor.synchronized;
+    }else if(!this.synchronized)throw new RpcError('unsupported','This running owner cannot clear a protocol loss.');
+  }
   async close() {if (!this.descriptor || this.descriptor.exited) return; this.descriptor = await this.connection.request({kind: 'close-primary', ...this.address()}); this.callbacks.onExit?.(); this.unobserve();}
   async detach() {this.stopped = true; this.unobserve();}
   captureBegin() {return this.connection.request<{token: string; from: number}>({kind: 'capture-begin', ...this.address()});}

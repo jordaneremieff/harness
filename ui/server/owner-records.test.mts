@@ -71,6 +71,42 @@ test('dialog restore keeps receipt deadline and Pi zero-timeout semantics',()=> 
   assert.equal(records.hasDialog('timed'),false);assert.equal(records.hasDialog('zero'),true);
   records.answered('zero');assert.equal(records.pendingDialogs().length,0);
 });
+test('full refresh clears protocol reasons without inventing active or unknown raw coverage',()=> {
+  const records=new OwnerRecords({tapeBytes:1});records.incomplete('unknown-response');
+  records.advance({type:'message_start',message:{role:'assistant',content:[]}});
+  const capture=records.begin('backend');records.resynchronize('backend',capture.token);
+  assert.deepEqual(snapshot(records,'backend',capture.token).reasons,['active-message-overflow']);
+  records.detach('backend');records.advance({type:'message_end',message:{role:'assistant',content:[]}});
+  assert.equal(snapshot(records).complete,true);records.detach('backend');
+  records.incomplete('invalid-rpc-record');const lost=records.begin('backend');records.resynchronize('backend',lost.token);
+  assert.deepEqual(snapshot(records,'backend',lost.token).reasons,['raw-event-loss']);
+});
+test('a fresh protocol loss invalidates an in-progress refresh even for the same reason',()=> {
+  const records=new OwnerRecords();records.incomplete('unknown-response');const capture=records.begin('backend');
+  records.incomplete('unknown-response');assert.throws(()=>records.resynchronize('backend',capture.token),/refresh-invalidated/);
+  assert.throws(()=>records.resynchronize('other',capture.token),/capture-unavailable/);
+  const next=records.begin('backend');records.resynchronize('backend',next.token);assert.equal(snapshot(records,'backend',next.token).complete,true);
+  assert.throws(()=>records.resynchronize('backend',next.token),/refresh-invalidated/);
+});
+test('omitted dialog coverage clears only after its known deadline or explicit answer',()=> {
+  let now=1000;const records=new OwnerRecords({dialogs:1},()=>now);
+  records.advance({type:'extension_ui_request',id:'retained',method:'input',timeout:0});
+  records.advance({type:'extension_ui_request',id:'omitted',method:'confirm',timeout:100});
+  assert.deepEqual(snapshot(records).reasons,['dialog-limit']);records.detach('backend');
+  const refresh=records.begin('backend');records.resynchronize('backend',refresh.token);
+  assert.equal(snapshot(records,'backend',refresh.token).complete,false);records.detach('backend');
+  records.answered('retained');assert.equal(snapshot(records).complete,false);records.detach('backend');
+  now=1100;assert.equal(snapshot(records).complete,true);records.detach('backend');
+  records.advance({type:'extension_ui_request',id:'invalid',method:'input',timeout:-1});
+  assert.equal(records.hasDialog('invalid'),true);assert.deepEqual(snapshot(records).reasons,['invalid-dialog-timeout']);records.detach('backend');
+  records.answered('invalid');assert.equal(snapshot(records).complete,true);
+});
+test('untracked dialog overflow stays incomplete rather than inventing its expiry',()=> {
+  let now=1000;const records=new OwnerRecords({dialogs:1},()=>now);
+  for(const id of ['retained','tracked','untracked'])records.advance({type:'extension_ui_request',id,method:'input',timeout:1});
+  now=2000;const capture=records.begin('backend');records.resynchronize('backend',capture.token);
+  assert.deepEqual(snapshot(records,'backend',capture.token).reasons,['dialog-coverage-unavailable']);
+});
 test('capture overflow and expired suffix refuse complete reconstruction without discarding new records',()=> {
   const records=new OwnerRecords({ringRecords:2});const capture=records.begin('one');
   records.advance({type:'agent_start'});records.advance({type:'queue_update',steering:[],followUp:[]});records.advance({type:'agent_settled'});
