@@ -7,7 +7,7 @@ import {FakeChild} from '../rpc/fake-child.mts';
 import {PrimarySession} from '../rpc/session.mts';
 import type {CatalogPage} from '../agents/index.mts';
 import type {AgentAdapter} from './registry.mts';
-import {main, startBackend} from './main.mts';
+import {main, startBackend} from './backend.mts';
 import {StateStore, type OperationRecord} from './state.mts';
 
 function deferred() {

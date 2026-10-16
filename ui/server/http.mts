@@ -63,18 +63,21 @@ async function readBounded(root: string, path: string, limit: number, buffer: Bu
   } catch (error) { throw buildPathError(error, path); }
   return Buffer.concat(chunks, length);
 }
+async function assetNames(root:string,folder:string,budget:{entries:number}):Promise<string[]> {
+  const names:string[]=[];
+  try{const directory=await opendir(join(root,folder),{bufferSize:1});for await(const entry of directory){
+    if(++budget.entries>ASSET_ENTRY_LIMIT)throw new ApiError('capacity',`Browser assets exceed ${ASSET_ENTRY_LIMIT} entries: ${folder}. Remove extra build files and run npm run ui:build before starting.`,503);
+    if(/^[a-zA-Z0-9_-]+\.js$/.test(entry.name))names.push(entry.name);
+  }}catch(error){throw buildPathError(error,folder==='dist/shared'?'dist/shared/api.js':folder);}
+  return names;
+}
 /** Startup retains bounded browser bytes. Requests never access the filesystem. */
 export async function assetMap(root = fileURLToPath(new URL('../', import.meta.url))) {
   const assets = new Map<string, Asset>();
-  const files: string[] = []; let entries = 0;
-  try {
-    const directory = await opendir(join(root, 'dist/web'), {bufferSize: 1});
-    for await (const entry of directory) {
-      if (++entries > ASSET_ENTRY_LIMIT) throw new ApiError('capacity', `Browser assets exceed ${ASSET_ENTRY_LIMIT} entries: dist/web. Remove extra build files and run npm run ui:build before starting.`, 503);
-      if (/^[a-zA-Z0-9_-]+\.js$/.test(entry.name)) files.push(entry.name);
-    }
-  } catch (error) { throw buildPathError(error, 'dist/web'); }
-  if (!files.includes('app.js')) throw missingAsset('dist/web/app.js');
+  const budget={entries:0},files=await assetNames(root,'dist/web',budget);
+  if(!files.includes('app.js'))throw missingAsset('dist/web/app.js');
+  const shared=await assetNames(root,'dist/shared',budget);
+  for (const name of ['api.js','version.js','files.js','health.js','control.js','inspection.js']) if (!shared.includes(name)) throw missingAsset(`dist/shared/${name}`);
   let retained = 0;
   const buffer = Buffer.allocUnsafe(64 * 1024);
   const add = async (route: string, path: string, type: string) => {
@@ -88,11 +91,7 @@ export async function assetMap(root = fileURLToPath(new URL('../', import.meta.u
   await add('/style.css', 'web/style.css', MIME['.css']);
   await add('/favicon.svg', 'web/favicon.svg', MIME['.svg']);
   for (const name of files) await add(`/web/${name}`, `dist/web/${name}`, MIME['.js']);
-  await add('/shared/api.js', 'dist/shared/api.js', MIME['.js']);
-  await add('/shared/version.js', 'dist/shared/version.js', MIME['.js']);
-  await add('/shared/files.js', 'dist/shared/files.js', MIME['.js']);
-  await add('/shared/health.js', 'dist/shared/health.js', MIME['.js']);
-  await add('/shared/control.js', 'dist/shared/control.js', MIME['.js']);
+  for (const name of shared) await add(`/shared/${name}`, `dist/shared/${name}`, MIME['.js']);
   return assets;
 }
 function matchRoute(method: string, parts: string[]) {
@@ -170,6 +169,7 @@ export class LocalHttp {
   private development:DevelopmentHttp;
   private buildStreams=new Set<ServerResponse>();
   private closeWork?: Promise<void>;
+  private drainWaiters = new Set<() => void>();
   constructor(backend: HttpBackend, assets: Map<string, Asset>, sessions: Pick<SessionStore, 'sessions' | 'projects' | 'titles'> = new SessionStore(), development:DevelopmentHttp = {}) {
     this.backend = backend; this.assets = assets; this.sessions = sessions;this.development=development;
     this.server = createServer((request, response) => { void this.handle(request, response); });
@@ -184,6 +184,20 @@ export class LocalHttp {
     this.boundary.setPort(address.port); return `${this.boundary.origin}/`;
   }
   stopAdmission() { this.stopped = true; }
+  resumeAdmission() {if (!this.closeWork) this.stopped = false;}
+  async fence(timeoutMs = 500): Promise<void> {
+    this.stopped = true;
+    if (!this.active && !this.imageReads && !this.imageUploads) return;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const done = () => {if (!this.active && !this.imageReads && !this.imageUploads) {this.drainWaiters.delete(done); clearTimeout(timer); resolve();}};
+        this.drainWaiters.add(done);
+        timer = setTimeout(() => {this.drainWaiters.delete(done); reject(new ApiError('not_ready', 'Active effects prevent a short release switch.', 503));}, timeoutMs);
+      });
+    } catch (error) {this.stopped = false; throw error;}
+    finally {clearTimeout(timer);}
+  }
   close(): Promise<void> {if (!this.closeWork) this.closeWork = this.finishClose(); return this.closeWork;}
   private async finishClose(): Promise<void> {
     this.stopAdmission(); this.backend.journal.close();
@@ -211,7 +225,7 @@ export class LocalHttp {
       this.rate(url.pathname.startsWith('/api/control/')&&url.pathname!==CONTROL_ROUTES.ack?'agent-control':'loopback');
       if (this.active >= 64) throw new ApiError('capacity', 'Too many requests are active.', 429, 'read');
       this.active++;
-      try { await this.route(request, response); } finally { this.active--; }
+      try { await this.route(request, response); } finally { this.active--; for (const done of this.drainWaiters) done(); }
     } catch (error) {rejectRequest(response, error);}
     finally {this.recordRequest(started);}
   }

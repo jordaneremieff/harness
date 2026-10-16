@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import type { CatalogPage } from '../agents/index.mts';
 import type { ApiResult } from '../shared/api.ts';
 import { ApiError } from './errors.mts';
-import { main, parseArgs } from './main.mts';
+import { main, parseArgs } from './backend.mts';
 import { UI_ITERATION, identityLabel, readIdentity, type UiIdentity } from '../shared/version.ts';
 import type { AgentAdapter } from './registry.mts';
 
@@ -37,7 +37,7 @@ test('parseArgs reads flag values and the standalone --open flag in any position
 });
 
 test('parseArgs refuses a value-taking flag without a value and unknown flags', () => {
-  const invalid = (error: unknown) => error instanceof ApiError && error.code === 'invalid_request';
+  const invalid = (error: unknown) => error instanceof Error && 'code' in error && error.code === 'invalid_request';
   assert.throws(() => parseArgs(['--port', '--open'], '/base'), invalid);
   assert.throws(() => parseArgs(['--open', '--cwd'], '/base'), invalid);
   assert.throws(() => parseArgs(['--opened'], '/base'), invalid);
@@ -68,8 +68,8 @@ test('main forwards qualified native result selectors without admission and retu
   const inspect = (body: unknown) => fetch(`${launch.origin}/api/agents/${encodeURIComponent(identity)}/inspect`, {method: 'POST', headers: {Origin: launch.origin, 'Content-Type': 'application/json'}, body: JSON.stringify(body)});
   const input = {view: 'result' as const, requestId: 'exact-native-request', operationId: 'separate-operation', entryId: 30};
   const reply = await inspect(input); assert.equal(reply.status, 200);
-  const result = await reply.json() as ApiResult<{projection: {value: Record<string, unknown>}}>; assert.ok(result.ok); assert.equal(result.data.projection.value.status, 'unavailable');
-  assert.equal(Object.hasOwn(result.data.projection.value, 'submissionId'), false);
+  const result = await reply.json() as ApiResult<{status: string}>; assert.ok(result.ok); assert.equal(result.data.status, 'unavailable');
+  assert.equal(Object.hasOwn(result.data, 'submissionId'), false);
   assert.deepEqual(calls, [{identity, options: input}]);
   const conflict = await inspect({...input, submissionId: 99}); assert.equal(conflict.status, 400);
   const failure = await conflict.json() as ApiResult<never>; assert.ok(!failure.ok);

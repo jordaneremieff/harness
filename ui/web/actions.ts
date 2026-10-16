@@ -84,7 +84,7 @@ function findStatusText(result: FindStatus | undefined, query: string): string {
 }
 export type SelectionChange = Partial<Omit<Workspace, 'selectedTarget'>> & {selectedTarget?: Target | null};
 export type ActionContext = {snapshot: () => Snapshot | undefined; primary: () => PrimaryView | undefined; composer: Composer; commandsChanged: () => void; modelChanged?: () => void; modal: Modal;
-  selection: (change: SelectionChange) => Promise<void>; reload: () => Promise<void>; result: (result: OperationView) => void; rosterRefresh: () => void; hasTranscript: () => boolean; find: () => FindSession | undefined; recovery: () => void; primaryEntries: () => EntryView[]; agents: () => AgentRow[]; selectedAgent: () => Pick<AgentRow, 'identity' | 'capabilities'> | undefined; selectAgent: (row: AgentRow) => void; selectPrimary: () => void; notices: () => void; sidebar: (visible: boolean) => void; view: (tools: boolean, expand: boolean) => void; copyAgent: () => void; inspectAgent: () => void; agentStatus: (row: AgentRow) => string; conversationFacts?: (identity: string) => readonly ReportedFact[]; tabs?: {close: () => void; switch: (direction: number) => void; layout: () => ConversationLayout}};
+  selection: (change: SelectionChange) => Promise<void>; reload: () => Promise<void>; result: (result: OperationView) => void; rosterRefresh: () => void; hasTranscript: () => boolean; find: () => FindSession | undefined; recovery: () => void; primaryEntries: () => EntryView[]; agents: () => AgentRow[]; selectedAgent: () => Pick<AgentRow, 'identity' | 'capabilities'> | undefined; selectAgent: (row: AgentRow) => void; selectPrimary: () => void; notices: () => void; sidebar: (visible: boolean) => void; view: (tools: boolean, expand: boolean) => void; copyAgent: () => void; inspectAgent: () => void; resultLookup?: () => void; agentStatus: (row: AgentRow) => string; conversationFacts?: (identity: string) => readonly ReportedFact[]; tabs?: {close: () => void; switch: (direction: number) => void; layout: () => ConversationLayout}};
 export class Actions {
   private resources = new Map<string, Promise<ResourcePage>>();
   private commands: CommandView[] = [];
@@ -360,7 +360,8 @@ export class Actions {
     if (primary?.lifecycle === 'ready' && (primary.lastError || primary.responseOutcome === 'failed' || responseOutcome(this.ctx.primaryEntries()) === 'failed')) entries.push(entry('Review message', 'Restore the last loaded Primary user prompt for review', () => this.retryOutput()));
     if (agent) {
       entries.push(entry('Copy agent ID', agent.identity, () => this.ctx.copyAgent()));
-      if (agent.capabilities?.inspect) entries.push(entry('View activity…', agent.identity, () => this.ctx.inspectAgent()));
+      entries.push(entry('View activity…', agent.identity, () => this.ctx.inspectAgent()));
+      if(this.ctx.resultLookup)entries.push(entry('Result lookup…',agent.identity,this.ctx.resultLookup));
     }
     if (primary?.lifecycle === 'ready' && this.resourceTarget === `${primary.key}:${primary.epoch}:${primary.lifecycle}`) {
       for (const command of this.commands.filter(item => item.name !== 'resume')) {
@@ -375,7 +376,7 @@ export class Actions {
     return agents.slice().sort((a, b) => agentOrder(a) - agentOrder(b)).map(row => ({name: agentName(row), tail: tails.get(row.identity), description: [this.ctx.agentStatus(row), compactAge(row.modifiedAt, now)].filter(Boolean).join(' · '), search: [row.identity, ...row.handle ? [row.handle] : []], title: row.identity, source: 'agent', enabled: true, run: () => chooseTarget ? chooseTarget({kind: 'agent', identity: row.identity}) : this.ctx.selectAgent(row)}));
   }
   sessionMenuEntries(agent = false): PaletteEntry[] {
-    const names = new Set(agent ? ['Conversation details', 'Copy agent ID', 'View activity…', 'Saved drafts and messages', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Appearance', 'Help'] : ['New session', 'Sessions', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Saved drafts and messages', 'Appearance', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Model', 'Thinking', 'Review message']);
+    const names = new Set(agent ? ['Conversation details', 'Copy agent ID', 'View activity…', 'Result lookup…', 'Saved drafts and messages', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Appearance', 'Help'] : ['New session', 'Sessions', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Saved drafts and messages', 'Appearance', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Model', 'Thinking', 'Review message']);
     return this.paletteEntries().filter(item => item.source === 'app' && names.has(item.name));
   }
   sessionMenu(agent = false): void {

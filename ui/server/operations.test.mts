@@ -7,6 +7,7 @@ import { Operations, nativeRequestId } from './operations.mts';
 import type { DispatchResult, ExecuteRequest } from './operations.mts';
 import { StateStore } from './state.mts';
 import type {Target} from '../shared/api.ts';
+import {primaryMutation} from '../rpc/primary-operation.mts';
 async function retainReturnedQueue(operations: Operations, workspace: string, target: Extract<Target, {kind: 'primary'}>, rows: {steering: string[]; followUp: string[]}) {
   const id = await operations.beginQueueClear(workspace, target, rows.steering.length + rows.followUp.length);
   await operations.retainQueue(id, rows);
@@ -250,6 +251,22 @@ test('a full recovery window exposes bounded previews, exact copies, and metadat
   assert.ok(Buffer.byteLength(JSON.stringify(cut)) < 16 * 1024);
   const restarted = await reopen(); assert.equal((await restarted.getRetainedInput(workspace.id, id)).text, exactText);
   assert.equal(restarted.unresolvedInputCount(), 128);
+});
+
+test('retained primary receipt reconciliation is read-only and preserves a newer draft', async t => {
+  const {store,operations,workspace,target,view,request,reopen}=await setup(t);let retained:DispatchResult|undefined,sends=0;
+  operations.retainWith({complete:async(record,result)=>{assert.equal(record.view.id,view.id);retained=result;throw Error('Backend receipt not retained locally.');},reconcile:async()=>retained});
+  const result=await operations.execute(view.id,request,async()=>{sends++;const mutation=primaryMutation('prompt');assert.equal(mutation?.operationId,view.id);assert.equal(mutation?.step,'1:prompt');return {state:'accepted',receipt:{kind:'rpc',disposition:'started'}};});
+  assert.equal(result.state,'uncertain');await store.putDraft(workspace.id,target.targetKey,{expectedRevision:1,text:'newer input',mode:'prompt'});
+  const afterStore=await reopen(),after=new Operations(afterStore);after.retainWith({complete:async()=>{throw Error('Read-only reconciliation must not dispatch.');},reconcile:async()=>retained});
+  assert.equal((await after.reconcile(view.id)).state,'accepted');assert.equal(sends,1);assert.equal((await afterStore.getTarget(workspace.id,target.targetKey)).draft.text,'newer input');
+});
+test('partial primary controls remain uncertain without retained high-level proof and never send a missing step',async t=> {
+  const {operations,view,request}=await setup(t);let sends=0;
+  operations.retainWith({complete:async()=>{},reconcile:async()=>undefined});
+  await operations.execute(view.id,request,async()=>{sends++;throw Error('Backend detached after one command.');});
+  assert.equal((await operations.reconcile(view.id)).state,'uncertain');
+  await operations.execute(view.id,request,async()=>{sends++;return{state:'accepted'};});assert.equal(sends,1);
 });
 
 test('queue file-byte validation happens before any copy publication', async t => {

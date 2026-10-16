@@ -3,7 +3,7 @@ import { open, stat } from 'node:fs/promises';
 import { parentPort } from 'node:worker_threads';
 import type { ImageSource, OutputPage } from '../shared/api.ts';
 import { readImage, type ImageBytes } from './images.mts';
-import type { ProjectedSnapshot } from '../rpc/events.mts';
+import {rawMessageIdentity, type ProjectedSnapshot} from '../rpc/events.mts';
 import { projectSavedEntry, protectedTextPage } from './projection.mts';
 
 const RECORD_BYTES = 32 * 1024 * 1024;
@@ -143,18 +143,20 @@ export class SessionIndex {
   }
   private async collect(end: number): Promise<{snapshot: ProjectedSnapshot; start: number}> {
     const entries: ProjectedSnapshot['entries'] = [], signatures: [string, string][] = [], sizes: [string, number][] = [];
+    const rawMessages = new Map<string, number>();
     let start = end, bytes = 2048;
     while (start > 0 && entries.length < 50) {
       const row = this.ordered[start - 1]; if (!row) break;
-      const entry = projectSavedEntry(await this.raw(row));
+      const raw = await this.raw(row), entry = projectSavedEntry(raw);
       const size = Buffer.byteLength(JSON.stringify(entry));
       if (bytes + size > PAGE_BYTES && entries.length) break;
       if (bytes + size > PAGE_BYTES) throw new HistorySourceError('A saved entry exceeds the bounded page limit.');
       entries.unshift(entry); sizes.unshift([entry.id, size]); bytes += size; start--;
+      if (raw.type === 'message') {const fingerprint = rawMessageIdentity(raw.message); rawMessages.set(fingerprint, (rawMessages.get(fingerprint) ?? 0) + 1);}
       const signature = this.signatures.get(row.id), message = entry.messages?.[0];
       if (signature && message) signatures.unshift([signature, message.id]);
     }
-    return {snapshot: {projected: true, entries, signatures, sizes, coverage: {complete: false, truncated: false, omitted: start}}, start};
+    return {snapshot: {projected: true, entries, signatures, sizes, rawMessages: [...rawMessages], coverage: {complete: false, truncated: false, omitted: start}}, start};
   }
   async image(leaf: string | null, source: ImageSource, digest: string): Promise<ImageBytes> {
     await this.refresh(); this.branch(leaf);

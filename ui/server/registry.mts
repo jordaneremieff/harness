@@ -19,11 +19,14 @@ import { dispatchView } from './routes-view.mts';
 import { StoredAgentStarter, startIdentity, type StartOptions } from './agent-start.mts';
 import { validateSessionProject } from './sessions.mts';
 import type {Control} from './control.mts';
+import type {OwnerConnection} from './owner-client.mts';
+import type {OwnerDescriptor, OwnerStateIdentity, OwnerRecovery} from '../shared/owner.ts';
 
 export type AgentAdapter = Pick<AgentService, 'roster' | 'rosterRow' | 'prepare' | 'refresh' | 'select' | 'hide' | 'reconnect' | 'history' | 'image' | 'imageInputAvailable' | 'inspect' | 'submit' | 'retrySubmit' | 'abort' | 'configure' | 'disconnectWorkspace' | 'close'> & {readonly available?:boolean};
 export type RegistryOptions = {stateDir: string; cwd: string; executable: string; agentStore: string;
   agents?: (options: AgentServiceOptions) => AgentAdapter; primary?: (options: PrimarySessionOptions) => PrimarySession; measure?: Measure;
-  agentStart?: Pick<StartOptions,'spawn'|'timeoutMs'|'agentDir'>};
+  agentStart?: Pick<StartOptions,'spawn'|'timeoutMs'|'agentDir'>;
+  owner?: OwnerConnection; connectOwner?: (state: OwnerStateIdentity) => Promise<OwnerConnection>};
 const live = (view: PrimaryView) => !['stopped','failed'].includes(view.lifecycle);
 const ownsWriter = (session: PrimarySession) => !!session.client.child && !session.client.exited;
 const needsStorage = (session: PrimarySession) => ownsWriter(session) || session.queueRecoveryPending;
@@ -95,13 +98,43 @@ export class Registry {
     const journal = new Journal(undefined, options.measure);
     const store = await StateStore.open(options.stateDir, {recoverDeadLock:true,onChange: (name,data,workspace,target) => journal.publish(name,target,data,workspace)});
     try {
+      if (options.connectOwner) options.owner = await options.connectOwner({root: store.root, instanceId: store.instanceId});
       const registry = new Registry(store, options, journal);
       for (const previous of await store.readPrimaries()) {
         registry.saved.set(previous.key, {...previous,lifecycle:'stopped',activity:'unknown',retry:undefined,responseOutcome:undefined,pid:undefined,pendingDialogs:[],contextUsage:undefined,usage:undefined,extension:undefined,
           capabilities: {input:false,control:false,handoff:false,history:false},lastError:{code:'not_ready',message:'Explicit resume is required after backend restart.',retry:'manual'}});
       }
+      if (options.owner) await registry.attachOwned(options.owner);
       return registry;
     } catch (error) { await store.close(); throw error; }
+  }
+  private async attachOwned(owner: OwnerConnection) {
+    if (owner.hello.state.root !== this.store.root || owner.hello.state.instanceId !== this.store.instanceId) throw new ApiError('operation_conflict', 'The raw owner belongs to another state identity.', 409);
+    this.operations.retainWith({
+      complete: async (record, result) => {const target = record.view.target; if (target?.kind === 'primary' && record.digest) await owner.complete(target.key, target.epoch, record.view.id, record.digest, result);},
+      reconcile: async record => {const target = record.view.target; if (target?.kind === 'primary' && record.digest) return owner.reconcile(target.key, target.epoch, record.view.id, record.digest);},
+      acknowledged: async record => {const target = record.view.target; if (target?.kind === 'primary' && record.digest) await owner.acknowledge(target.key, target.epoch, record.view.id);}
+    });
+    await this.importOwnerRecovery(owner);
+    for (const descriptor of owner.hello.primaries) {
+      if (descriptor.exited) continue;
+      const previous = this.saved.get(descriptor.key);
+      if (previous && previous.epoch !== descriptor.epoch) throw new ApiError('stale_epoch', 'Retained metadata and raw owner epochs differ.', 409);
+      const session = this.createPrimary(descriptor.key, descriptor.cwd, descriptor.sessionFile, previous, descriptor);
+      this.sessions.set(descriptor.key, session); this.saved.set(descriptor.key, session.view);
+      this.queueWorkspaces.set(descriptor.key, descriptor.recoveryWorkspaceId);
+      await session.start();
+    }
+    for (const record of this.store.operationMetadata()) if (record.view.target?.kind === 'primary' && ['uncertain', 'dispatched'].includes(record.view.state)) await this.operations.reconcile(record.view.id);
+  }
+  private async importOwnerRecovery(owner: OwnerConnection) {
+    for (const recovery of await owner.request<OwnerRecovery[]>({kind: 'recoveries'})) {
+      if (recovery.state.root !== this.store.root || recovery.state.instanceId !== this.store.instanceId || recovery.status !== 'returned' || recovery.response?.success !== true) throw new ApiError('not_ready', 'Raw owner queue recovery remains unresolved.', 503, 'manual');
+      const queue = recovery.response.data as {steering?: unknown; followUp?: unknown};
+      if (!queue || !Array.isArray(queue.steering) || !Array.isArray(queue.followUp) || [...queue.steering, ...queue.followUp].some(v => typeof v !== 'string')) throw new ApiError('not_ready', 'Raw owner queue recovery is malformed.', 503, 'manual');
+      await this.operations.importOwnerQueue(recovery.id, recovery.workspaceId, {kind: 'primary', key: recovery.primary.key, epoch: recovery.primary.epoch}, recovery.pendingCount, queue as {steering: string[]; followUp: string[]});
+      await owner.request({kind: 'recovery-ack', id: recovery.id});
+    }
   }
   private capabilities(identity: string, supported?: Record<string,boolean>): AgentCapabilities {
     return {history: supported?.snapshot === true, observe: ['observe-open','observe-frame','observe-close','snapshot'].every(key=>supported?.[key] === true),
@@ -218,6 +251,10 @@ export class Registry {
     const run=this.openOnce(cwd,sessionFile,workspaceId); this.opens.add(run);
     void run.finally(()=>this.opens.delete(run)).catch(()=>{}); return run;
   }
+  private async queueWorkspace(key:string,workspaceId?:string):Promise<string|undefined> {
+    if(!workspaceId&&this.options.owner)workspaceId=await this.workspace();
+    if(workspaceId)this.queueWorkspaces.set(key,workspaceId);return workspaceId;
+  }
   private async openOnce(cwd: string, sessionFile?: string, workspaceId?: string) {
     this.admitPrimary(true);
     if(sessionFile) sessionFile = await this.validatePath(sessionFile,false);
@@ -229,10 +266,10 @@ export class Registry {
     let session: PrimarySession; let claimed = false;
     try {
       if(sessionFile) {await this.claimPath(sessionFile,key); claimed = true;}
+      workspaceId=await this.queueWorkspace(key,workspaceId);
       this.admitPrimary(previous !== undefined);
       session = this.createPrimary(key,cwd,sessionFile,previous);
       this.sessions.set(key,session); this.saved.set(key,session.view);
-      if(workspaceId) this.queueWorkspaces.set(key,workspaceId);
       await this.store.savePrimaries(this.views());
       if(this.closing) throw new ApiError('not_ready','The backend no longer accepts primaries.',503);
     } catch (error) {
@@ -243,8 +280,12 @@ export class Registry {
     void session.start().catch(()=>{}).finally(()=>this.metadataChanged());
     return key;
   }
-  private createPrimary(key: string, cwd: string, sessionFile?: string, previous?: PrimaryView) {
-    const session = (this.options.primary ?? (options=>new PrimarySession(options)))({key,cwd,sessionFile,...(previous ? {epoch:previous.epoch} : {}),executable:this.options.executable,
+  private createPrimary(key: string, cwd: string, sessionFile?: string, previous?: PrimaryView, descriptor?: OwnerDescriptor) {
+    const owner = this.options.owner, epoch = descriptor?.epoch ?? previous?.epoch ?? 1;
+    const recoveryWorkspaceId = descriptor?.recoveryWorkspaceId ?? this.queueWorkspaces.get(key);
+    const primary = {key, cwd, sessionFile, epoch, executable: this.options.executable, recoveryWorkspaceId: recoveryWorkspaceId ?? ''};
+    const session = (this.options.primary ?? (options=>new PrimarySession(options)))({key,cwd,sessionFile,epoch,executable:this.options.executable,
+      ...(owner ? {transport: owner.factory(primary, descriptor), attach: !!descriptor, recoveryWorkspaceId, ownerIdentity: `${owner.hello.ownerIncarnation}:${key}:${epoch}`} : {}),
       measure:this.options.measure ? (stage,id,at,bytes)=>this.options.measure?.(stage,`${key}:${id}`,at,bytes) : undefined,
       publish: (name,target,data) => this.publish(name,target,data), onChange:()=>this.metadataChanged(),
       onBeforeClearQueue: async (target, pendingCount) => this.operations.beginQueueClear(this.queueWorkspaces.get(key) ?? await this.workspace(), target, pendingCount),
@@ -417,6 +458,13 @@ export class Registry {
     if(family === 'primaries') return dispatchPrimary(this,context);
     if(family === 'agents') return dispatchAgent(this,context);
     return dispatchView(this,context);
+  }
+  async detach(): Promise<void> {
+    this.closing = true; this.starter.close();
+    await Promise.all([...this.opens]);
+    await Promise.all([...this.sessions.values()].map(session => session.detach()));
+    await this.agents.close(); await this.metadataWrite; await this.store.savePrimaries(this.views());
+    await this.store.close(); this.options.owner?.close(); this.journal.close();
   }
   close():Promise<void> {
     if(this.shutdownReady && ![...this.sessions.values()].some(needsStorage)) return this.finalize();

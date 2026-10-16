@@ -19,7 +19,7 @@ import type { ApiResult, Bootstrap, EventData, EventEnvelope, EventName, Operati
 import { LIMITS } from '../shared/api.ts';
 import { UI_ITERATION, readIdentity, type UiIdentity } from '../shared/version.ts';
 import type { CatalogPage } from '../agents/index.mts';
-import { startBackend } from './main.mts';
+import { startBackend } from './backend.mts';
 import { ASSET_ENTRY_LIMIT, ASSET_FILE_BYTES, ASSET_TOTAL_BYTES, assetMap, LocalHttp, type HttpBackend, type Asset } from './http.mts';
 import { ApiError } from './errors.mts';
 import { identityDocument } from './version.mts';
@@ -421,7 +421,7 @@ test('request rate accounting rejects the next request at a deterministic fixed 
   assert.equal(app.fake.counts.refresh, 1); assert.equal(app.registry.sessions.size, 0);
 });
 
-const requiredAssets = ['web/index.html', 'web/style.css', 'web/favicon.svg', 'dist/web/app.js', 'dist/shared/api.js', 'dist/shared/version.js', 'dist/shared/files.js', 'dist/shared/health.js', 'dist/shared/control.js'];
+const requiredAssets = ['web/index.html', 'web/style.css', 'web/favicon.svg', 'dist/web/app.js', 'dist/shared/api.js', 'dist/shared/version.js', 'dist/shared/files.js', 'dist/shared/health.js', 'dist/shared/control.js', 'dist/shared/inspection.js'];
 async function browserBuild(context: TestContext, emptyFiles = false) {
   const root = await mkdtemp(join(tmpdir(), 'ui-browser-assets-'));
   const apps: Awaited<ReturnType<typeof startBackend>>[] = [];
@@ -473,7 +473,7 @@ test('startup browser bytes survive overwrites and deletion; a fresh backend rea
   const {root, start} = await browserBuild(context); const extra = 'dist/web/extra-module.js';
   await writeFile(join(root, extra), Buffer.from([0, 255, 1, 127, 128]));
   const original = await assetMap(root);
-  assert.deepEqual([...original.keys()].sort(), ['/', '/favicon.svg', '/shared/api.js', '/shared/control.js', '/shared/files.js', '/shared/health.js', '/shared/version.js', '/style.css', '/web/app.js', '/web/extra-module.js']);
+  assert.deepEqual([...original.keys()].sort(), ['/', '/favicon.svg', '/shared/api.js', '/shared/control.js', '/shared/files.js', '/shared/health.js', '/shared/inspection.js', '/shared/version.js', '/style.css', '/web/app.js', '/web/extra-module.js']);
   const app = await start(); const headers = await verifyBrowserBytes(app.origin, original);
   for (const path of [...requiredAssets, extra]) await writeFile(join(root, path), `Rebuilt ${path}`);
   assert.deepEqual(await verifyBrowserBytes(app.origin, original), headers);
@@ -537,10 +537,10 @@ test('browser reads accept the exact total byte bound and stop at the next byte'
 
 test('browser traversal accepts the exact entry cap and rejects the next entry', async context => {
   const {root} = await browserBuild(context);
-  for (let i = 1; i < ASSET_ENTRY_LIMIT; i++) await writeFile(join(root, `dist/web/ignored-${i}.txt`), '');
+  for (let i = 1; i < ASSET_ENTRY_LIMIT - (requiredAssets.length - 4); i++) await writeFile(join(root, `dist/web/ignored-${i}.txt`), '');
   assert.equal((await assetMap(root)).size, requiredAssets.length);
   await writeFile(join(root, 'dist/web/one-too-many.txt'), '');
-  await assert.rejects(assetMap(root), buildError('dist/web', `${ASSET_ENTRY_LIMIT} entries`));
+  await assert.rejects(assetMap(root), buildError('dist/shared', `${ASSET_ENTRY_LIMIT} entries`));
 });
 
 test('browser traversal ignores non-matching names and does not recurse', async context => {
@@ -548,7 +548,7 @@ test('browser traversal ignores non-matching names and does not recurse', async 
   for (const name of ['bad.name.js', '.hidden.js', 'space name.js', 'note.txt', 'app.js.map', '雪.js']) await writeFile(join(root, 'dist/web', name), 'ignored');
   await mkdir(join(root, 'dist/web/nested')); await writeFile(join(root, 'dist/web/nested/valid.js'), 'ignored');
   await writeFile(join(root, 'dist/web/Valid_0-module.js'), 'routed');
-  assert.deepEqual([...((await assetMap(root)).keys())].sort(), ['/', '/favicon.svg', '/shared/api.js', '/shared/control.js', '/shared/files.js', '/shared/health.js', '/shared/version.js', '/style.css', '/web/Valid_0-module.js', '/web/app.js']);
+  assert.deepEqual([...((await assetMap(root)).keys())].sort(), ['/', '/favicon.svg', '/shared/api.js', '/shared/control.js', '/shared/files.js', '/shared/health.js', '/shared/inspection.js', '/shared/version.js', '/style.css', '/web/Valid_0-module.js', '/web/app.js']);
 });
 
 test('browser startup rejects special build files without waiting on them', async context => {

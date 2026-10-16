@@ -7,6 +7,7 @@ import { StateError, sameTarget, validateTarget } from './state.mts';
 import type { StateStore } from './state.mts';
 import type { OperationRecord } from './state.mts';
 import { projectJson, safeText } from './projection.mts';
+import {withPrimaryOperation} from '../rpc/primary-operation.mts';
 
 const KINDS: OperationKind[] = ['primary.open', 'primary.input', 'primary.stop', 'primary.session', 'primary.control', 'primary.dialog', 'primary.handoff', 'agent.input', 'agent.abort', 'agent.configure'];
 const terminal = (record: {view: {state: string}; input?: unknown; inputResolved?: boolean; retainedInput?: unknown; protected?: boolean}) => ['accepted', 'rejected', 'completed'].includes(record.view.state) && (!record.input || record.inputResolved) && !record.retainedInput && !record.protected;
@@ -44,7 +45,9 @@ function requestDigest(request: ExecuteRequest): string {
 export class Operations {
   private readonly now: () => number;
   readonly store: StateStore;
+  private hooks?: {complete(record: OperationRecord, result: DispatchResult): Promise<void>; reconcile(record: OperationRecord): Promise<DispatchResult | undefined>; acknowledged?(record: OperationRecord): Promise<void>};
   constructor(store: StateStore, options: {now?: () => number} = {}) { this.store = store; this.now = options.now ?? Date.now; }
+  retainWith(hooks: NonNullable<Operations['hooks']>) {this.hooks = hooks;}
   private stamp(): string { return new Date(this.now()).toISOString(); }
   private async prune(): Promise<void> {
     for (const record of this.store.operationMetadata()) {
@@ -79,7 +82,26 @@ export class Operations {
   list(workspaceId: string): Promise<OperationView[]> {
     return this.store.transaction(async () => { this.store.getWorkspaceForOperation(workspaceId); await this.prune(); return this.store.operationMetadata().filter(record => record.workspaceId === workspaceId && !terminal(record)).map(record => this.store.record(record.view.id).view); });
   }
-  reconcile(id: string): Promise<OperationView> { return this.get(id); }
+  async reconcile(id: string): Promise<OperationView> {
+    const previous = await this.get(id);
+    if (!['dispatched', 'uncertain'].includes(previous.state) || !this.hooks) return previous;
+    const record = this.store.record(id), outcome = await this.hooks.reconcile(record);
+    if (!outcome) return previous;
+    this.validateOutcome(outcome, record);
+    const saved = await this.store.transaction(async () => {
+      const current = this.store.record(id);
+      if (!['dispatched', 'uncertain'].includes(current.view.state)) return current.view;
+      const submitted = current.input, clear = this.resolveInput(current, outcome);
+      current.view.state = outcome.state; current.view.updatedAt = this.stamp();
+      if (outcome.receipt) current.view.receipt = outcome.receipt;
+      if (outcome.error) current.view.error = publicError(outcome.error); else delete current.view.error;
+      await this.store.writeOperation(current);
+      if (clear && submitted) await this.store.clearSubmittedDraft(current.workspaceId, submitted).catch(() => {});
+      return current.view;
+    });
+    await this.hooks.acknowledged?.(this.store.record(id)).catch(() => {});
+    return saved;
+  }
   remove(id: string): Promise<void> {
     return this.store.transaction(async () => {
       const record = this.store.record(id);
@@ -108,12 +130,13 @@ export class Operations {
     if (!prepared.send) return prepared.record.view;
     let outcome: DispatchResult;
     try {
-      outcome = await dispatch(); this.validateOutcome(outcome, prepared.record);
+      outcome = await withPrimaryOperation(id, digest, dispatch); this.validateOutcome(outcome, prepared.record);
+      await this.hooks?.complete(prepared.record, outcome);
     } catch {
       return this.uncertain(prepared.record, 'Dispatch ended without a valid receipt');
     }
     try {
-      return await this.store.transaction(async () => {
+      const saved = await this.store.transaction(async () => {
         const record = this.store.record(id);
         record.view.state = outcome.state; record.view.updatedAt = this.stamp();
         if (outcome.receipt) record.view.receipt = outcome.receipt;
@@ -134,6 +157,8 @@ export class Operations {
         }
         return record.view;
       });
+      await this.hooks?.acknowledged?.(this.store.record(id)).catch(() => {});
+      return saved;
     } catch { return this.uncertain(prepared.record, 'Receipt persistence failed after possible delivery'); }
   }
   private retainRefusedInput(record: OperationRecord, outcome: DispatchResult): boolean {
@@ -220,6 +245,19 @@ export class Operations {
       await this.makeRoom(1 + pendingCount, Buffer.byteLength(JSON.stringify(record)) + pendingCount * 128 * 1024);
       await this.store.writeOperation(record); return id;
     }));
+  }
+  async importOwnerQueue(id: string, workspaceId: string, target: Extract<Target, {kind: 'primary'}>, pendingCount: number, queue: {steering: string[]; followUp: string[]}) {
+    if (!Number.isSafeInteger(pendingCount) || pendingCount < 0 || pendingCount > LIMITS.unconfirmed) throw new StateError('capacity', 'Owner queue reservation exceeds its bound', 429);
+    if (!this.store.operationMetadata().some(record => record.view.id === id)) {
+      await this.store.target(workspaceId, target);
+      await this.store.transaction(async () => {
+        const at = this.stamp();
+        const record: OperationRecord = {workspaceId, view: {id, kind: 'primary.control', action: 'clearQueue', target, state: 'dispatched', createdAt: at, updatedAt: at}, queueClear: {recoveryWorkspaceId: workspaceId, phase: 'prepared', rowBudget: pendingCount, imageCopies: []}};
+        await this.makeRoom(1 + pendingCount, Buffer.byteLength(JSON.stringify(record)) + pendingCount * 128 * 1024);
+        await this.store.writeOperation(record);
+      });
+    }
+    await this.retainQueue(id, queue);
   }
   async retainQueue(clearOperationId: string, queue: {steering: string[]; followUp: string[]}): Promise<void> {
     if (!Array.isArray(queue.steering) || !Array.isArray(queue.followUp) || queue.steering.length + queue.followUp.length > LIMITS.unconfirmed || Buffer.byteLength(JSON.stringify(queue)) > 1024 * 1024) throw new StateError('capacity', 'Recovered queue exceeds its retention bound', 429);

@@ -6,7 +6,7 @@ import {mkdtemp,mkdir,readFile,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
-import {startBackend} from './main.mts';
+import {startBackend} from './backend.mts';
 import type {AgentAdapter} from './registry.mts';
 import {readControlDescriptor} from './control-discovery.mts';
 import {runControl} from '../cli/control.mts';

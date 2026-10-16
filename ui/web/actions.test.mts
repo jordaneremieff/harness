@@ -554,11 +554,11 @@ test('transcript actions follow the focused view without enabling Primary execut
   for (const name of names) assert.equal(unrelatedPrimary.paletteEntries().find(item => item.name === name)?.enabled, false);
   assert.equal(unrelatedPrimary.paletteEntries().find(item => item.name === 'Compact…')?.enabled, true);
 });
-test('retry and selected-agent palette entries require their evidence and capability', () => {
+test('retry requires failure evidence while retained activity stays reachable without live capability', () => {
   const actions = new Actions(context({primary: () => ({...primary, lastError: {code: 'failed', message: 'Failure', retry: 'manual'}}), selectedAgent: () => ({identity: 'agent-id'})}));
   assert.equal(actions.paletteEntries().some(item => item.name === 'Review message'), true);
   assert.equal(actions.paletteEntries().some(item => item.name === 'Copy agent ID'), true);
-  assert.equal(actions.paletteEntries().some(item => item.name === 'View activity…'), false);
+  assert.equal(actions.paletteEntries().some(item => item.name === 'View activity…'), true);
   const inspect = new Actions(context({selectedAgent: () => ({identity: 'agent-id', capabilities: {history: true, observe: true, input: false, abort: false, configure: false, inspect: true}})}));
   assert.equal(inspect.paletteEntries().some(item => item.name === 'View activity…'), true);
   assert.equal(new Actions(context()).paletteEntries().some(item => /Copy agent|Inspect agent|Review retry/.test(item.name)), false);
@@ -834,7 +834,7 @@ test('session menus reuse palette availability and preserve primary-only actions
   assert.equal(actions.sessionMenuEntries().some(item => item.name === 'Copy agent ID'), false);
   const selected = new Actions(context({selectedAgent: () => ({identity: 'selected-agent'})}));
   assert.equal(selected.sessionMenuEntries(true).some(item => item.name === 'Copy agent ID'), true);
-  assert.equal(selected.sessionMenuEntries(true).some(item => item.name === 'View activity…'), false);
+  assert.equal(selected.sessionMenuEntries(true).some(item => item.name === 'View activity…'), true);
   assert.equal(selected.sessionMenuEntries(true).some(item => item.name === 'New session'), false);
   const capable = new Actions(context({selectedAgent: () => ({identity: 'selected-agent', capabilities: {history: true, observe: true, input: true, abort: true, configure: false, inspect: true}})}));
 

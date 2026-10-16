@@ -6,9 +6,9 @@ import {mkdtemp,mkdir,writeFile,readFile,access,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
-import {startBackend} from './main.mts';
+import {startBackend} from './backend.mts';
 import {createAgentService} from '../agents/index.mts';
-const mainModule=pathToFileURL(fileURLToPath(new URL('./main.mts',import.meta.url))).href;
+const mainModule=pathToFileURL(fileURLToPath(new URL('./backend.mts',import.meta.url))).href;
 const stateModule=pathToFileURL(fileURLToPath(new URL('./state.mts',import.meta.url))).href;
 async function fixture() {
   const root=await mkdtemp(join(tmpdir(),'ui-main-lifecycle-')),cwd=join(root,'project'),agent=join(root,'agent'),state=join(root,'state');

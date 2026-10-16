@@ -12,11 +12,14 @@ import { StateError } from '../server/state.mts';
 import { RpcClient, RpcError, type RpcRecord, type SpawnChild } from './client.mts';
 import { Dialogs } from './dialogs.mts';
 import { SessionStats } from './stats.mts';
-import { EventProjection, identifier, model, object, text, type Publish } from './events.mts';
+import { EventProjection, identifier, model, object, text, rawMessageIdentity, type Publish } from './events.mts';
+import type {PrimaryTransport, TransportFactory} from './transport.mts';
+import type {OwnerBaseline, OwnerEvent} from '../shared/owner.ts';
 
 export interface PrimarySessionOptions {
   key: string; executable: string; cwd: string; sessionFile?: string; epoch?: number;
   publish: Publish; onChange?: () => void; spawnChild?: SpawnChild;
+  transport?: TransportFactory; attach?: boolean; recoveryWorkspaceId?: string; ownerIdentity?: string;
   onBeforeClearQueue?: (target: Extract<Target, {kind: 'primary'}>, pendingCount: number) => Promise<string>;
   onRecoveredQueue?: (clearOperationId: string, queue: {steering: string[]; followUp: string[]}) => Promise<void>;
   onQueueClearFailed?: (clearOperationId: string, uncertain: boolean) => Promise<void>;
@@ -25,7 +28,10 @@ export interface PrimarySessionOptions {
 }
 export class PrimarySession {
   readonly view: PrimaryView;
-  readonly client: RpcClient;
+  readonly client: PrimaryTransport;
+  private attaching = false;
+  private attachEvents: RpcRecord[] = [];
+  private attachBytes = 0;
   commands: CommandView[] = [];
   models: ModelChoice[] = [];
   thinking: string[] = [];
@@ -68,7 +74,8 @@ export class PrimarySession {
     this.view = { key: options.key, epoch: options.epoch ?? 1, cwd: options.cwd, lifecycle: 'starting', activity: 'unknown',
       pendingOperationIds: [], pendingDialogs: [], capabilities: { input: false, control: false, handoff: false, history: false } };
     this.projection = new EventProjection(this.view, options.publish, () => options.onChange?.());
-    this.client = new RpcClient({ ...options, onEvent: (event) => this.event(event), onExit: (error) => this.exited(error), onProtocolError: (error) => this.fail(error) });
+    const callbacks = {...options, onEvent: (event: RpcRecord) => this.event(event), onExit: (error?: RpcError) => this.exited(error), onProtocolError: (error: RpcError) => this.fail(error)};
+    this.client = options.transport ? options.transport(callbacks) : new RpcClient(callbacks);
     this.dialogs = new Dialogs(this.view, this.projection, this.client, () => this.deadline());
     this.stats = new SessionStats(this.view, this.client, () => this.projection.state());
   }
@@ -85,10 +92,10 @@ export class PrimarySession {
       if (this.options.sessionFile) this.options.sessionFile = await this.sessionPath(this.options.sessionFile);
       if (this.closing || this.frozen) throw new RpcError('not_ready', 'Primary is closed.');
       const timeout = new Promise<never>((_, reject) => { this.rejectStartup = reject; });
-      this.deadline(); this.client.start(this.options.sessionFile); this.view.pid = this.client.child?.pid;
-      await Promise.race([this.initialize(), timeout]);
+      this.deadline(); await this.client.start(this.options.sessionFile); this.view.pid = this.client.child?.pid;
+      await Promise.race([this.options.attach ? this.attach() : this.initialize(), timeout]);
       if (this.closing || this.frozen || this.view.lifecycle === 'failed' || this.view.lifecycle === 'stopped') throw new RpcError('host_unavailable', 'Primary exited during startup.');
-      this.view.lifecycle = 'ready'; this.view.capabilities = { input: true, control: true, handoff: true, history: true };
+      this.view.lifecycle = 'ready'; this.view.capabilities = { input: this.client.synchronized, control: true, handoff: this.client.synchronized, history: true };
       this.projection.state(); this.stats.refresh();
     } catch (error) {
       const failure = this.error(error);
@@ -96,6 +103,49 @@ export class PrimarySession {
       throw failure;
     }
     finally { this.rejectStartup = undefined; if (this.startupTimer) clearTimeout(this.startupTimer); this.startupTimer = undefined; }
+  }
+  private async attach(): Promise<void> {
+    if (!this.client.captureBegin || !this.client.captureFinish || !this.client.captureAck) throw new RpcError('unsupported', 'The transport does not support attachment.');
+    this.attaching = true;
+    const capture = await this.client.captureBegin();
+    try {
+      await this.initialize();
+      const baseline = await this.client.captureFinish(capture.token);
+      this.hydrate(baseline);
+      await this.client.captureAck(capture.token);
+      const suffix = this.attachEvents.filter(event => Number(event.__ownerSequence) > baseline.cursor);
+      this.attachEvents = []; this.attachBytes = 0; this.attaching = false;
+      for (const event of suffix) this.event(event);
+    } finally {this.attaching = false; this.attachEvents = []; this.attachBytes = 0;}
+  }
+  private ownerEvent({record,seq,at,messageStartSequence}:OwnerEvent):RpcRecord {return {...record,__ownerSequence:seq,__ownerStartSequence:messageStartSequence,__ownerAt:at,__ownerIdentity:this.options.ownerIdentity} as RpcRecord;}
+  private hydrateCompleted(baseline:OwnerBaseline,committedThrough:number):void {
+    const completed=baseline.overlap.filter(event=>event.seq>committedThrough&&event.record.type==='message_end'),occurrences=new Map<string,number>();
+    for(const end of completed){
+      const fingerprint=rawMessageIdentity(end.record.message),count=(occurrences.get(fingerprint)??0)+1;occurrences.set(fingerprint,count);
+      if(this.projection.hasRawMessage(end.record.message,count))continue;
+      const start=baseline.overlap.find(event=>event.record.type==='message_start'&&object(event.record.message).role===object(end.record.message).role&&object(event.record.message).timestamp===object(end.record.message).timestamp);
+      if(start)this.projection.reduce(this.ownerEvent(start));this.projection.reduce(this.ownerEvent(end));
+    }
+    for(const event of baseline.overlap)if(event.seq>committedThrough&&event.record.type==='entry_appended')this.projection.reduce(this.ownerEvent(event));
+  }
+  private hydrateLive(baseline:OwnerBaseline):void {
+    const tape=baseline.activeMessage;
+    if(tape?.complete)for(const event of tape.events)this.projection.reduce(this.ownerEvent(event));
+    else if(tape)this.projection.incomplete('owner-active-message-incomplete');
+    for(const tool of baseline.tools){this.projection.reduce(this.ownerEvent(tool.start));if(tool.latest)this.projection.reduce(this.ownerEvent(tool.latest));}
+    this.dialogs.restoreRaw(baseline.dialogs);
+  }
+  private hydrate(baseline:OwnerBaseline):void {
+    if(baseline.descriptor.key!==this.view.key||baseline.descriptor.epoch!==this.view.epoch)throw new RpcError('stale_epoch','Owner baseline identifies another primary.');
+    const leaf=this.projection.entries.at(-1)?.id,committedThrough=baseline.overlap.findLast(event=>event.record.type==='entry_appended'&&event.record.entry&&object(event.record.entry).id===leaf)?.seq??baseline.from;
+    this.projection.silent=true;
+    try{
+      for(const event of baseline.state){const record=this.ownerEvent(event);if(record.type==='extension_ui_request')this.dialogs.accept(record);else this.projection.reduce(record);}
+      this.hydrateCompleted(baseline,committedThrough);this.hydrateLive(baseline);
+      if(!baseline.complete)this.projection.incomplete(`owner-baseline:${baseline.reasons.join(',')}`);
+      this.client.synchronized=baseline.complete&&baseline.descriptor.synchronized;this.view.pid=baseline.descriptor.pid;
+    }finally{this.projection.silent=false;}
   }
   private async initialize(): Promise<void> {
     await this.refreshState();
@@ -260,6 +310,7 @@ export class PrimarySession {
       if (!queue) throw new RpcError('protocol_error', 'Invalid cleared queue response.', true);
       if (!this.options.onRecoveredQueue) throw new RpcError('not_ready', 'The cleared messages must be saved before another queue clear.');
       await this.options.onRecoveredQueue(clearOperationId, structuredClone(queue));
+      await this.client.queueAcknowledged?.(clearOperationId);
       this.pendingRecovery = undefined;
     } catch (error) { await this.options.onQueueClearFailed?.(clearOperationId, true); throw error; }
   }
@@ -280,10 +331,14 @@ export class PrimarySession {
       throw new RpcError('protocol_error', 'Queue recovery did not return a valid operation identity.');
     let nativeReturned = false;
     try {
+      if (this.client.setQueueReservation) {
+        if (!this.options.recoveryWorkspaceId) throw new RpcError('not_ready', 'Queue recovery workspace is unavailable.');
+        this.client.setQueueReservation({id: clearOperationId, workspaceId: this.options.recoveryWorkspaceId, pendingCount: pendingCount as number});
+      }
       const raw = await this.client.request('clear_queue'); nativeReturned = true;
       const queue = this.retainReturnedQueue(raw, clearOperationId, pendingCount as number);
       if (hooks) {
-        await hooks.onRecoveredQueue(clearOperationId, structuredClone(queue)); this.pendingRecovery = undefined;
+        await hooks.onRecoveredQueue(clearOperationId, structuredClone(queue)); await this.client.queueAcknowledged?.(clearOperationId); this.pendingRecovery = undefined;
       } else if (!queue.steering.length && !queue.followUp.length) this.pendingRecovery = undefined;
       this.projection.emit('primary.queue', {pending: 0, ...queue}); this.options.onChange?.(); return queue;
     } catch (error) {
@@ -376,7 +431,7 @@ export class PrimarySession {
       if (typeof result.cancelled !== 'boolean') throw new RpcError('protocol_error', 'Invalid session transition result.', true);
       if (!result.cancelled) {
         this.dialogs.expireAll('epoch-changed'); this.view.epoch++; this.stats.clear(); this.projection.reset(); this.view.activity = 'unknown';
-        this.view.extension = { statuses: {}, widgets: {} }; await this.refreshState(); await this.resynchronize();
+        this.view.extension = { statuses: {}, widgets: {} }; await this.refreshState(); await this.client.setEpoch?.(this.view.epoch, this.view.sessionFile); await this.resynchronize();
       }
       return result;
     } finally { this.frozen = false; if (this.view.lifecycle === 'switching') this.view.lifecycle = 'ready'; this.projection.state(); this.stats.refresh(); }
@@ -406,6 +461,18 @@ export class PrimarySession {
     if (this.view.activity === 'idle') return Promise.resolve();
     return new Promise((resolve, reject) => this.settled.add({ resolve, reject }));
   }
+  async prepareDetach(): Promise<void> {
+    if (!this.client.captureBegin || !this.client.captureFinish || !this.client.captureAck) throw new RpcError('unsupported', 'The Pi transport cannot survive backend replacement.');
+    const capture = await this.client.captureBegin();
+    try {const baseline = await this.client.captureFinish(capture.token); if (!baseline.complete) throw new RpcError('history_limit', `The raw owner cannot reconstruct this live primary: ${baseline.reasons.join(',')}`);}
+    finally {await this.client.captureAck(capture.token);}
+  }
+  async detach(): Promise<void> {
+    if (!this.client.detach) throw new RpcError('unsupported', 'A local Pi transport cannot detach.');
+    this.frozen = true; this.invalidatePreparation(); this.dialogs.detach(); this.stats.clear();
+    if (this.startupTimer) clearTimeout(this.startupTimer);
+    await this.fileHistory?.close(); await this.client.detach();
+  }
   close(): Promise<void> {
     this.closing ??= this.closeOnce().finally(async () => { this.fileClosing ??= this.fileHistory?.close(); await this.fileClosing; })
       .catch(error => { this.closing = undefined; throw error; });
@@ -421,7 +488,19 @@ export class PrimarySession {
     if (!this.client.available) { await this.flushRecoveredQueue(); await this.client.close(); return; }
     await this.dialogs.cancel(); await this.clearQueue(); await this.client.request('abort'); await this.client.close();
   }
+  private bufferAttachment(event:RpcRecord):boolean {
+    if(!this.attaching)return false;
+    this.attachBytes+=Buffer.byteLength(JSON.stringify(event));
+    if(this.attachBytes>40*1024*1024)this.fail(new RpcError('history_limit','Attachment event suffix exceeds its bound.'));
+    else this.attachEvents.push(event);
+    return true;
+  }
+  private eventSettled(type:string):void {
+    if(type==='agent_settled'||type==='compaction_end')this.stats.refresh();
+    if(type==='agent_settled'){for(const waiter of this.settled)waiter.resolve();this.settled.clear();}
+  }
   private event(event: RpcRecord): void {
+    if(this.bufferAttachment(event))return;
     try {
       if (event.type === 'extension_ui_request') this.dialogs.accept(event);
       else {
@@ -433,8 +512,7 @@ export class PrimarySession {
         }
       }
       if (!this.refreshing) this.projection.prune();
-      if (event.type === 'agent_settled' || event.type === 'compaction_end') this.stats.refresh();
-      if (event.type === 'agent_settled') { for (const waiter of this.settled) waiter.resolve(); this.settled.clear(); }
+      this.eventSettled(event.type);
     } catch (error) { this.fail(this.error(error)); }
   }
   private exited(error?: RpcError): void {

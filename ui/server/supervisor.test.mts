@@ -10,7 +10,7 @@ const turn=()=>new Promise<void>(resolve=>setImmediate(resolve));
 const options={cwd:'/fixture',port:0,pi:'pi'};
 class Child extends EventEmitter {
   pid=101;stdout=new EventEmitter();stderr=new EventEmitter();sent:unknown[]=[];killed:string[]=[];
-  send(value:unknown,callback:(error?:Error)=>void) {this.sent.push(value);callback();}
+  send(value:unknown,callback?:(error?:Error)=>void) {this.sent.push(value);callback?.();}
   kill(signal:string) {this.killed.push(signal);queueMicrotask(()=>this.emit('exit',0,null));return true;}
 }
 function fake(children:Child[]) {
@@ -23,7 +23,8 @@ test('crashes have a bounded rolling budget and replacements use one-shot delays
   context.mock.timers.enable({apis:['setTimeout']});const children:Child[]=[];
   const parent=supervise(options,{spawn:fake(children),signal:absent,restartDelayMs:10});await turn();
   for(let i=0;i<3;i++) {childAt(children,i).emit('exit',1,null);await turn();if(i<2) {context.mock.timers.tick(10*2**i);await turn();}}
-  assert.equal(await parent.closed,1);assert.equal(children.length,3);assert.equal(parent.restartCount(),2);
+  assert.equal(parent.status().state,'backend-unavailable');assert.equal(children.length,3);assert.equal(parent.restartCount(),2);
+  let settled=false;void parent.closed.then(()=>{settled=true;});await turn();assert.equal(settled,false);parent.stop();assert.equal(await parent.closed,0);
 });
 test('stop cancels a pending replacement and does not create another child',async context=> {
   context.mock.timers.enable({apis:['setTimeout']});const children:Child[]=[];
@@ -33,7 +34,7 @@ test('stop cancels a pending replacement and does not create another child',asyn
 test('an unknown process group refuses restart rather than risking another owner',async()=> {
   const children:Child[]=[];
   const parent=supervise(options,{spawn:fake(children),signal:()=>{throw Object.assign(new Error('Unknown'),{code:'EPERM'});}});
-  await turn();childAt(children,0).emit('exit',1,null);assert.equal(await parent.closed,1);assert.equal(children.length,1);
+  await turn();childAt(children,0).emit('exit',1,null);await turn();assert.equal(parent.status().state,'backend-unavailable');assert.equal(children.length,1);
 });
 test('readiness pins the ephemeral port, defaults development, and diagnostic chunks redact before relay',async context=> {
   context.mock.timers.enable({apis:['setTimeout']});const children:Child[]=[],output:string[]=[];

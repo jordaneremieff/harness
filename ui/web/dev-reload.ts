@@ -1,4 +1,5 @@
 import {LIMITS, validFileTab, workspaceTabKey, type FileTab, type FilePosition, type DevLeaseIdentity} from '../shared/api.ts';
+import {validInspectionCheckpoint, type InspectionCheckpoint} from '../shared/inspection.ts';
 export type DevFileCheckpoint = {tab:FileTab;position:FilePosition;digest:string;focused:boolean;selection?:NonNullable<DevCheckpointEntry['selection']>};
 export type DevBuild = {
   revision: number; generation: string; previous: string | null;
@@ -9,14 +10,15 @@ export type DevReloadHold = 'input' | 'ime' | 'selection' | 'resize' | 'modal' |
 export type DevInteraction = {revision: number; safe: boolean; reason?: DevReloadHold};
 export type DevCheckpointTarget =
   | {kind: 'primary'; key: string; epoch: number}
-  | {kind: 'agent'; identity: string; connectionEpoch: number};
+  | {kind: 'agent'; identity: string; connectionEpoch: number}
+  | {kind: 'agent'; identity: string; retained: true};
 export type DevCheckpointEntry = {
   targetKey: string; target: DevCheckpointTarget; draftRevision: number; imageFingerprint: string; readingRevision: number; presentationRevision: number;
   selection?: {start: number; end: number; direction: 'forward' | 'backward' | 'none'};
 };
 export type DevReloadView = {
   workspaceId: string; focusedPane: string; targets: DevCheckpointEntry[]; messageRecipient?: string;
-  focusedControl?: {targetKey: string; kind: 'composer' | 'message'}; files?:DevFileCheckpoint[];
+  focusedControl?: {targetKey: string; kind: 'composer' | 'message'}; files?:DevFileCheckpoint[]; inspections?:InspectionCheckpoint[];
 };
 export type DevReloadCheckpoint = DevReloadView & {
   version: 1; generation: string; oldClient: string; capturedAt: number; interactionRevision: number;
@@ -80,6 +82,7 @@ function filePosition(value:unknown):boolean {
 }
 function target(value: unknown): value is DevCheckpointTarget {
   if (record(value, ['kind', 'key', 'epoch']) && value.kind === 'primary') return id(value.key) && integer(value.epoch) && value.epoch > 0;
+  if(record(value,['kind','identity','retained'])&&value.kind==='agent'&&id(value.identity)&&value.retained===true)return true;
   return record(value, ['kind', 'identity', 'connectionEpoch']) && value.kind === 'agent' && id(value.identity) && integer(value.connectionEpoch) && value.connectionEpoch > 0;
 }
 function entry(value: unknown): value is DevCheckpointEntry {
@@ -112,6 +115,14 @@ function control(value: unknown, keys: Set<string>, recipient: unknown): boolean
   return value === undefined || record(value, ['targetKey', 'kind']) && id(value.targetKey) && keys.has(value.targetKey) &&
     (value.kind === 'composer' || value.kind === 'message' && value.targetKey === recipient);
 }
+function inspectionList(value:unknown):boolean {
+  return value===undefined||Array.isArray(value)&&value.length<=128&&value.every(validInspectionCheckpoint)&&new Set(value.map(item=>item.identity)).size===value.length;
+}
+function checkpointViews(value:Record<string,unknown>):boolean {
+  if(!fileCheckpointState(value.files,value.focusedControl)||!inspectionList(value.inspections))return false;
+  const inspections=(value.inspections??[]) as InspectionCheckpoint[];
+  return (value.targets as DevCheckpointEntry[]).every(entry=>{const target=entry.target;return target.kind!=='agent'||!('retained' in target)||inspections.some(item=>item.identity===target.identity);});
+}
 function fileCheckpointState(files:unknown,focusedControl:unknown):boolean {
   if (files === undefined) return true;
   if (!fileList(files)) return false;
@@ -120,7 +131,7 @@ function fileCheckpointState(files:unknown,focusedControl:unknown):boolean {
 }
 /** Structural validation does not replace the host's checks against freshly hydrated state. */
 export function validateDevReloadCheckpoint(value: unknown, generation: string, now: number): DevReloadCheckpoint | null {
-  if (!record(value, ['version', 'generation', 'oldClient', 'capturedAt', 'interactionRevision', 'workspaceId', 'focusedPane', 'targets'], ['focusedControl', 'messageRecipient', 'files'])) return null;
+  if (!record(value, ['version', 'generation', 'oldClient', 'capturedAt', 'interactionRevision', 'workspaceId', 'focusedPane', 'targets'], ['focusedControl', 'messageRecipient', 'files', 'inspections'])) return null;
   if (value.version !== 1 || value.generation !== generation || !GENERATION.test(generation) || typeof value.oldClient !== 'string' || !CLIENT.test(value.oldClient)) return null;
   if (!integer(now) || !integer(value.capturedAt) || value.capturedAt > now || now - value.capturedAt > TTL || !integer(value.interactionRevision)) return null;
   if (!id(value.workspaceId) || value.workspaceId.length > 128 || !id(value.focusedPane) || value.focusedPane.length > 128 || !targetList(value.targets)) return null;
@@ -128,7 +139,7 @@ export function validateDevReloadCheckpoint(value: unknown, generation: string, 
   const identities = new Set(value.targets.map(item => item.target.kind === 'primary' ? `primary:${item.target.key}` : `agent:${item.target.identity}`));
   if (keys.size !== value.targets.length || identities.size !== value.targets.length) return null;
   if (value.messageRecipient !== undefined && (!id(value.messageRecipient) || !keys.has(value.messageRecipient))) return null;
-  if (!fileCheckpointState(value.files,value.focusedControl)) return null;
+  if (!checkpointViews(value)) return null;
   if (!control(value.focusedControl, keys, value.messageRecipient) || new TextEncoder().encode(JSON.stringify(value)).length > 16384) return null;
   return JSON.parse(JSON.stringify(value)) as DevReloadCheckpoint;
 }
@@ -407,7 +418,7 @@ export class DevReload {
     try {await this.bounded(this.hooks.drain(signal), signal);} catch {if (this.current(serial, signal)) this.notice('failed', 'drain'); return;}
     if (!this.current(serial, signal) || !this.interaction(revision)) return;
     const view = this.hooks.captureCheckpoint();
-    if (!record(view, ['workspaceId', 'focusedPane', 'targets'], ['focusedControl', 'messageRecipient', 'files'])) {this.notice('failed', 'checkpoint'); return;}
+    if (!record(view, ['workspaceId', 'focusedPane', 'targets'], ['focusedControl', 'messageRecipient', 'files', 'inspections'])) {this.notice('failed', 'checkpoint'); return;}
     const checkpoint = validateDevReloadCheckpoint({...view, version: 1, generation: build.generation, oldClient: this.client, capturedAt: this.env.clock.now(), interactionRevision: revision}, build.generation, this.env.clock.now());
     const workspace = new URL(this.env.href()).searchParams.get('workspace');
     if (!checkpoint || checkpoint.workspaceId !== workspace) {this.notice('failed', 'checkpoint'); return;}

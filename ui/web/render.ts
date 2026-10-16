@@ -1,4 +1,5 @@
 import type { EntryView, ImageView, JsonDisplay, MessageView, PartView, PresentationView, ReadingView, TranscriptView } from '../shared/api.ts';
+import type {ResultSelector} from '../shared/inspection.ts';
 import { button, copy, details, element, rawText, setText } from './dom.ts';
 import { cardAction, cardActionLabel, cardDisclosure, cardIcon } from './card-icons.ts';
 import { contextMenu, nativeEditingTarget, type ContextItem } from './context-menu.ts';
@@ -23,7 +24,7 @@ import { captureAnchor, layoutItems, restoreAnchor, visibleWindow, updateHeights
 import type { LayoutItem, VirtualLayout } from './virtual.ts';
 
 export type TranscriptElements = {transcript: HTMLElement; latest: HTMLElement; earlier?: HTMLElement};
-export type ViewHooks = {references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
+export type ViewHooks = {result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
 const RAW_LIMIT = 65536;
 function selectionCopy(origin: HTMLElement): ContextItem[] {
   const selection = document.getSelection();
@@ -721,7 +722,7 @@ export class Transcript {
   private updateCommunication(cached: MessageNode, message: MessageView, entryId: string): void {
     if (!cached.communication) {
       const generation = this.generation;
-      cached.communication = new CommunicationCard(cached, {active: () => !this.deferred && generation === this.generation && cached.node.isConnected && !this.hidden() && this.index.entries.get(entryId)?.messages?.includes(cached.source) === true, current: () => cached.source, protected: node => this.protectedNode(node), raw: source => partText(source.parts), expanded: key => this.expanded.has(key), disclosure: (key, open) => this.sourcePreference(key, open), layout: () => this.sourceLayout(entryId), reference: this.hooks.references ? (text, active) => this.hooks.references?.render(text, active) ?? element('span', undefined, typeof text === 'string' ? text : text.text) : undefined}, communicationDisclosureKeys(entryId, message.id));
+      cached.communication = new CommunicationCard(cached, {active: () => !this.deferred && generation === this.generation && cached.node.isConnected && !this.hidden() && this.index.entries.get(entryId)?.messages?.includes(cached.source) === true, current: () => cached.source, result:this.hooks.result, protected: node => this.protectedNode(node), raw: source => partText(source.parts), expanded: key => this.expanded.has(key), disclosure: (key, open) => this.sourcePreference(key, open), layout: () => this.sourceLayout(entryId), reference: this.hooks.references ? (text, active) => this.hooks.references?.render(text, active) ?? element('span', undefined, typeof text === 'string' ? text : text.text) : undefined}, communicationDisclosureKeys(entryId, message.id));
     }
     if (cached.communication.sync(message)) {
       this.messageError(cached, message);

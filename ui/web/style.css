@@ -493,6 +493,30 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .conversation[data-message-only=true] > .composer { pointer-events: auto; }
 .conversation[data-message-only=true] > :not(.composer) { display: none; }
 
+.inspection-navigation { display: flex; flex: none; gap: var(--s2); padding-block: var(--s2); }
+.inspection-navigation > button { padding: 2px var(--s2); color: var(--muted); }
+.inspection-navigation > button[aria-pressed=true] { color: var(--fg); box-shadow: inset 0 -2px var(--accent); }
+.agent-inspection { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; gap: var(--s2); padding-block: var(--s2); }
+.agent-inspection[hidden] { display: none; }
+.inspection-identity { display: flex; flex: none; align-items: baseline; gap: var(--s2); min-width: 0; font-size: 12px; }
+.inspection-identity > .identity { min-width: 0; overflow-wrap: anywhere; color: var(--muted); }
+.inspection-identity > button { flex: none; }
+.inspection-query { display: grid; flex: none; grid-template-columns: minmax(0,1fr); gap: var(--s2); }
+.inspection-query[hidden] { display: none; }
+.inspection-query label { display: grid; grid-template-columns: minmax(100px,auto) minmax(0,1fr); align-items: center; gap: var(--s2); font-size: 12px; }
+.inspection-query input { min-width: 0; width: 100%; }
+.inspection-query > button { justify-self: start; }
+.inspection-content { overflow: auto; flex: 1; min-height: 0; min-width: 0; overflow-wrap: anywhere; }
+.inspection-content h3 { margin-block: var(--s2); font-size: 13px; font-weight: 500; }
+.inspection-content pre { max-width: 100%; overflow: auto; white-space: pre-wrap; }
+.inspection-entry { padding-block: var(--s3); }
+.inspection-entry > h3 { color: var(--info); }
+.inspection-text { min-width: 0; }
+.inspection-status, .inspection-facts, .inspection-coverage { flex: none; margin: 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.inspection-content button, .agent-inspection > button { align-self: start; padding: 2px var(--s2); }
+.communication-results { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.communication-results:empty { display: none; }
+
 /* Workspace and conversation column */
 .workspace { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .tab-bar { display: flex; flex: none; align-items: stretch; min-width: 0; min-height: 32px; border-bottom: 1px solid var(--rule); background: var(--side); }

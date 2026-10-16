@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { captureInputs, compileBrowser, confirmedBuild, sameInputs, needsRestart, checkCss, DevelopmentBuild, type BuildProducer, type InputSnapshot } from './development-build.mts';
-import { parseArgs } from './main.mts';
+import { parseArgs } from './backend.mts';
 import {AssetGenerations} from './asset-generations.mts';
 import {createHook} from 'node:async_hooks';
 

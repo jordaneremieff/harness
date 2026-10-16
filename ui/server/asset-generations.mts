@@ -113,7 +113,8 @@ export class AssetGenerations {
   private blocked=false;
   private state:BuildStatus;
   private observer?: (status:BuildStatus)=>void;
-  constructor(initial:AssetGeneration) {this.active=initial;this.state={revision:0,generation:initial.id,previous:null,change:'reload',status:'ready',code:'none'};}
+  constructor(initial:AssetGeneration, previous?:AssetGeneration) {this.active=initial;this.previous=previous;this.state={revision:0,generation:initial.id,previous:previous?.id??null,change:previous?.sameExceptCss(initial)?'css':'reload',status:'ready',code:'none'};}
+  transitionReady(): boolean {return [...this.leases.values()].every(lease => this.jsFamily(lease.generation)?.id === this.active.family.id && lease.cssGeneration === this.active.id);}
   status():BuildStatus {return {...this.state};}
   private pageStatus(client:string):BuildStatus {
     const lease=this.leases.get(client);

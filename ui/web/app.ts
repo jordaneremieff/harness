@@ -1,6 +1,8 @@
 import type { AgentHistoryPage, AgentRow, Bootstrap, EventData, HistoryPage, OperationView, PrimaryView, ProjectedFrame, Snapshot, Target, TargetState, Workspace } from '../shared/api.ts';
 import { draftHasContent, draftImageFingerprint, LIMITS } from '../shared/api.ts';
 import { Actions } from './actions.ts';
+import {AgentInspection} from './agent-inspection.ts';
+import type {AgentInspectionView, ResultSelector} from '../shared/inspection.ts';
 import type { ConversationLayout, WorkspaceTab as ConversationTab, FileTab } from '../shared/api.ts';
 import type {FileDirectoryPage, FileRootSelection, FileText, FileDraftState, FileDraft, FileSave, FileMutation, FileWatchState, FileWatchScope, FileChanges} from '../shared/files.ts';
 import {FilesTree, type FileTreeAction} from './files-tree.ts';
@@ -75,10 +77,10 @@ export let focusedPane: Pane = 'pane-1';
 export function focusPane(pane: Pane): void {
   const leaf = paneById(currentLayout(), pane); if (!leaf) return;
   const tab = leaf.tabs.find(tab => tabKey(tab) === leaf.active), target = tab ? controllerTarget(tab) : undefined;
-  if(target)conversationController(target).passive = false;
+  if(target&&!conversationController(target).inspection?.active)conversationController(target).passive = false;
   applyLayout({...currentLayout(), focusedPane: pane});
   if (tab?.kind === 'file' && state.workspace) filesViews.view(state.workspace,tab).focus();
-  else if (target) conversationController(target).composer.focus();
+  else if (target) {const controller=conversationController(target);if(controller.inspection?.active)controller.inspection.scroller.focus({preventScroll:true});else controller.composer.focus();}
 }
 function updatePaneFocus(pane: Pane, event?: Event): void {
   if (focusedPane === pane) return;
@@ -105,7 +107,7 @@ let devRestoreOwner: object | undefined;
 let devNavigating = false;
 const devCheckpointKey = 'ui:dev-checkpoint';
 type ConversationController = {workspaceId: string; target: Target; instanceId: string; root: HTMLElement; nodes: Map<string, HTMLElement>;
-  elements: import('./composer.ts').ComposerElements; composer: Composer; transcript: Transcript; saved?: TargetState; geometry?: ReturnType<Transcript['captureGeometry']>; messageRetention?: object;
+  elements: import('./composer.ts').ComposerElements; composer: Composer; transcript: Transcript; inspection?: AgentInspection; saved?: TargetState; geometry?: ReturnType<Transcript['captureGeometry']>; messageRetention?: object;
   abort: AbortController; historyAbort: AbortController; cursor: string | null; before: number | null; loading: boolean; preparing: boolean; passive?: boolean; historyReading?: TargetState['reading']; historyReady: boolean; historyBoundaryLoaded: boolean; historyComplete?: boolean; historyError?: {code?: string; message: string}; hasEntries?: boolean; initialized: boolean; showThinking: boolean; historyWork?: Promise<void>; connectionError?: string; connection?: Pick<import('../shared/api.ts').TargetPreparation, 'availability' | 'capabilities' | 'reason'>; resizer?: Resizer};
 const controllers = new Map<string, ConversationController>();
 let controllerSerial = 0;
@@ -155,7 +157,7 @@ function conversationController(target: Target): ConversationController {
   if (target.kind === 'primary') absent.append(add('empty-heading', 'h2'), add('empty-caption', 'p'));
   const scroller = add('transcript', 'div', 'transcript'); scroller.tabIndex = 0; scroller.setAttribute('aria-label', 'Conversation messages');
   const latest = add('latest', 'button', 'latest') as HTMLButtonElement; latest.type = 'button'; controlIcon(latest, 'latest', 'Latest message'); latest.hidden = true;
-  region.append(absent, scroller); const above = add('widgets-above', 'div', 'widgets'), below = add('widgets-below', 'div', 'widgets');
+  nodes.set('transcript-region',region);region.append(absent, scroller); const above = add('widgets-above', 'div', 'widgets'), below = add('widgets-below', 'div', 'widgets');
   const elements = createComposerElements(instanceId); elements.root.hidden = false;
   const composerLine = elements.root.querySelector('.composer-line') as HTMLElement; composerLine.prepend(latest);
   for (const [name, node] of Object.entries(elements)) if (node) nodes.set(name === 'root' ? 'composer' : name, node);
@@ -172,14 +174,35 @@ function conversationController(target: Target): ConversationController {
     presentation: (expanded, thinking, view) => { controller.showThinking = thinking; void savePresentation(controllerCapture(controller), expanded, thinking, view); },
     reading: reading => { void saveReading(controllerCapture(controller), reading); },
     ...(target.kind === 'primary' ? {fork: (message: import('../shared/api.ts').MessageView, entry: string) => { if (sameTarget(target, primaryTarget())) actions.fork(entry, rawText(message.parts)); }, output: (more: import('../shared/api.ts').OutputContinuation) => loadControllerOutput(controller, more)} : {}),
-    image: part => imageUrl(part, controller.target, controller.workspaceId)});
+    image: part => imageUrl(part, controller.target, controller.workspaceId),result:(identity,selector)=>inspectAgent(identity,'result',selector)});
   bindControllerReadingIntent(controller);
   earlier.addEventListener('click', () => { void loadControllerHistory(controller, true); });
   stop.addEventListener('click', () => { void stopController(controller); });
   root.addEventListener('pointerdown', focusViewPane); root.addEventListener('focusin', focusViewPane);
   elements.editor.addEventListener('focus', () => { footerController = controller; renderWorkbenchStatus(); });
   bindControllerInput(controller);
-  controllers.set(key, controller); return controller;
+  controllers.set(key, controller);
+  attachInspection(controller,region);return controller;
+}
+function attachInspection(controller:ConversationController,region:HTMLElement):void {
+  const {target,workspaceId,root}=controller;if(target.kind!=='agent')return;
+    const storageKey=`ui:inspection:${JSON.stringify([workspaceId,target.identity])}`;
+    controller.inspection=new AgentInspection(target.identity,{
+      read:(body,signal)=>request<AgentInspectionView>(`/api/agents/${encodeURIComponent(target.identity)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',body,undefined,AbortSignal.any([signal,AbortSignal.timeout(15_000)])),
+      changed:()=>{devInteractionRevision++;if(controller.inspection?.active)controller.passive=true;renderController(controller);},current:()=>controller.workspaceId===state.workspace?.id&&!controller.abort.signal.aborted,
+      restore:()=>{const value=sessionStorage.getItem(storageKey);return value?JSON.parse(value):null;},save:value=>{if(value)sessionStorage.setItem(storageKey,JSON.stringify(value));else sessionStorage.removeItem(storageKey);}});
+    root.insertBefore(controller.inspection.navigation,region);root.insertBefore(controller.inspection.node,region);
+}
+function renderInspection(controller:ConversationController):void {
+  const inspection=controller.inspection;if(!inspection)return;
+  const projected=!!controller.elements.root.dataset.messagePanel;
+  if(controller.target.kind==='agent')inspection.observe(state.conversations.get(targetIdentity(controller.target))?.frame,connected&&state.agentAvailability.get(controller.target.identity)?.state==='live');
+  controllerNode(controller,'transcript-region').hidden=inspection.active;
+  controller.elements.root.hidden=!controller.saved||inspection.active&&!projected;
+  controllerNode(controller,'agent-state').hidden=inspection.active||controllerNode(controller,'agent-state').hidden;
+  inspection.navigation.hidden=projected&&controller.root.dataset.messageOnly==='true';
+  inspection.visibility(inspection.active&&!controller.root.hidden&&!controller.root.inert&&controller.workspaceId===state.workspace?.id);
+  controller.root.classList.toggle('inspection-active',inspection.active);
 }
 function bindControllerInput(controller:ConversationController):void {
   for(const name of ['pointerdown','keydown','beforeinput'])controller.elements.root.addEventListener(name,()=> {if(controller.passive) {controller.passive = false;renderController(controller);}}, {capture:true});
@@ -231,7 +254,7 @@ function collectControllers(): void {
     const awaitingDraft = controller.workspaceId === state.workspace?.id && (controller.composer.serverDraftRevision ?? 0) > (targetState(controller.target)?.draft.revision ?? 0);
     const retainedMessage = controller.workspaceId === state.workspace?.id && !!controller.messageRetention;
     if (open.has(key) || retainedMessage || !controller.composer.canDispose || preferences.pending || awaitingDraft) continue;
-    controller.abort.abort(); controller.historyAbort.abort(); controller.resizer?.destroy(); controller.transcript.destroy(); controller.composer.destroy(); stableViews().forget(controller.root); controller.root.remove(); controller.elements.root.remove(); controllers.delete(key);
+    controller.abort.abort(); controller.historyAbort.abort(); controller.resizer?.destroy(); controller.transcript.destroy(); controller.inspection?.destroy(); controller.composer.destroy(); stableViews().forget(controller.root); controller.root.remove(); controller.elements.root.remove(); controllers.delete(key);
   }
 }
 async function loadControllerOutput(controller: ConversationController, more: import('../shared/api.ts').OutputContinuation): Promise<import('../shared/api.ts').OutputPage> {
@@ -244,7 +267,7 @@ const workbenchStatus = new WorkbenchStatus();
 const controlAttribution = element('span','secondary');controlAttribution.id = 'control-attribution';controlAttribution.setAttribute('role','status');controlAttribution.hidden = true;workbenchStatus.node.append(controlAttribution);
 const messageTarget = new MessageTarget({workspace: () => state.workspace, prepare: prepareMessageTarget, paint: renderMessagePanel});
 const references = new ReferenceResolver(resolveReference, destination => { void navigateReference(destination).catch(showError); });
-const actions: Actions = new Actions({snapshot: currentSnapshot, primary, modelChanged: renderAvailability, get composer() { return primaryComposer(); }, commandsChanged: () => {const target = primaryTarget(); if (target && state.workspace) controllers.get(controllerKey(state.workspace.id, target))?.composer.commandsChanged();}, modal, selection, reload: reloadSelection, result: showOperation, rosterRefresh: refreshRoster, hasTranscript: () => !!focusedTranscript(), find: () => captureFind(), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, view: (tools, expand) => focusedTranscript()?.expandLoaded(tools, expand), selectPrimary, agentStatus: row => presentation({kind: 'agent', identity: row.identity}).activity, conversationFacts: identity => agentFacts(agentRow(identity), state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame), copyAgent: () => { void copy(selectedAgent() ?? '', agentNode('view-notice')); }, inspectAgent,
+const actions: Actions = new Actions({snapshot: currentSnapshot, primary, modelChanged: renderAvailability, get composer() { return primaryComposer(); }, commandsChanged: () => {const target = primaryTarget(); if (target && state.workspace) controllers.get(controllerKey(state.workspace.id, target))?.composer.commandsChanged();}, modal, selection, reload: reloadSelection, result: showOperation, rosterRefresh: refreshRoster, hasTranscript: () => !!focusedTranscript(), find: () => captureFind(), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, view: (tools, expand) => focusedTranscript()?.expandLoaded(tools, expand), selectPrimary, agentStatus: row => presentation({kind: 'agent', identity: row.identity}).activity, conversationFacts: identity => agentFacts(agentRow(identity), state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame), copyAgent: () => { void copy(selectedAgent() ?? '', agentNode('view-notice')); }, inspectAgent,resultLookup:()=>inspectAgent(selectedAgent(),'result'),
   tabs: {close: () => { const tab = activeTab(currentLayout()); if (tab) applyLayout(closeTab(currentLayout(), tabKey(tab))); }, switch: direction => applyLayout(switchTab(currentLayout(), direction)), layout: currentLayout},
 });
 const fileBrowse = new FileBrowseState();
@@ -565,7 +588,7 @@ export function applyLayout(layout: ConversationLayout): void {
 }
 function activateConversationTab(pane: string, key: string): void {
   const layout = activatePaneTab(currentLayout(), pane, key); if (paneById(layout, pane)?.active !== key) return;
-  const target = layoutTarget(layout, primaryTarget()); if (target) conversationController(target).passive = false;
+  const target = layoutTarget(layout, primaryTarget()); if (target&&!conversationController(target).inspection?.active) conversationController(target).passive = false;
   applyLayout(layout); focusEditor();
 }
 function moveRetained(node: HTMLElement, parent: HTMLElement): void {
@@ -669,7 +692,7 @@ function refreshTreeGeometry(): void {
   if (!focusOnly) refreshPaneSplit(layout.root);
   for (const controller of controllers.values()) if (controller.elements.root.dataset.messagePanel) placeMessageRoot(controller, byId('agent-message-panel'));
   stableViews().sync();filesViews.attached();
-  for (const controller of controllers.values()) controller.transcript.visibilityChanged();
+  for (const controller of controllers.values()) {controller.transcript.visibilityChanged();renderInspection(controller);}
 }
 function refreshPaneSplit(node: import('../shared/api.ts').PaneNode): void {
   if (node.kind !== 'split') return; const split = paneSplits.get(node.id); if (!split) return;
@@ -991,7 +1014,7 @@ function renderSessionEntry(hasTab: boolean): void {
   const chooser = byId('session-chooser'); chooser.hidden = !firstUse;
   if (firstUse && snapshot) picker.mount(chooser, projectPath()); else picker.unmount();
 }
-function focusEditor(): void {const tab = activeTab(currentLayout());if (tab?.kind === 'file' && state.workspace) {filesViews.view(state.workspace,tab).focus();return;}const target = layoutTarget(currentLayout(), primaryTarget()); if (target) conversationController(target).composer.focus(); }
+function focusEditor(): void {const selected=layoutTarget(currentLayout(),primaryTarget());const owner=selected&&state.workspace?controllers.get(controllerKey(state.workspace.id,selected)):undefined;if(owner?.inspection?.active){owner.inspection.scroller.focus({preventScroll:true});return;}const tab = activeTab(currentLayout());if (tab?.kind === 'file' && state.workspace) {filesViews.view(state.workspace,tab).focus();return;}const target = layoutTarget(currentLayout(), primaryTarget()); if (target) conversationController(target).composer.focus(); }
 export function toggleSidebar(visible: boolean): void {
   if (!matchMedia('(min-width: 900px)').matches) {
     drawerOpen = visible; renderNavigation(); roster.schedule(); byId(visible ? 'project-button' : 'sidebar-show').focus(); return;
@@ -1034,7 +1057,7 @@ function renderController(controller: ConversationController, deferred = false, 
   const view = presentation(controller.target); controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + presentationName(view), controllerGuidance(controller, view));
   controller.composer.availability(connected, !!saved && view.input, view.busy, selecting);
   if (firstDraft && !controller.passive && !controller.root.hidden && sameTarget(layoutTarget(currentLayout(), primaryTarget()) ?? undefined, controller.target) && document.activeElement === document.body) controller.composer.focus();
-  controller.elements.root.hidden = !saved; renderObserved(controller, controller.target.kind === 'agent' || connected || !view.activity);
+  controller.elements.root.hidden = !saved;renderInspection(controller); renderObserved(controller, controller.target.kind === 'agent' || connected || !view.activity);
   controllerNode(controller, 'stop').hidden = !canStopController(controller);
   if (controller.root.hidden) return;
   const paint = () => {
@@ -1046,7 +1069,7 @@ function renderController(controller: ConversationController, deferred = false, 
       controller.transcript.historyAvailable(controller.before !== null);
     }
   };
-  if (deferred) controller.transcript.defer(paint, receivedAt); else paint();
+  if (deferred) controller.transcript.defer(()=>{paint();renderInspection(controller);}, receivedAt); else {paint();renderInspection(controller);}
 }
 function clearPreparationError(controller: ConversationController): void {
   const notice = controllerNode(controller, 'view-notice'); if (notice.querySelector('.preparation-error')) notice.replaceChildren();
@@ -1621,13 +1644,18 @@ function referencePrimaryCurrent(workspace: string, target: Extract<Target, {kin
   const selected = primaryTarget();
   return workspace === state.workspace?.id && selected?.kind === 'primary' && selected.key === target.key && selected.epoch === target.epoch;
 }
-function inspectAgent(identity = selectedAgent()): void {
-  if (!identity || !agentRow(identity)?.capabilities?.inspect) return;
-  modal.open('Agent activity').append(element('p', 'identity', identity)); const token = modal.token;
-  void modal.run(async () => {
-    const data = await request(`/api/agents/${encodeURIComponent(identity)}/inspect`, 'POST', {view: 'activity', limit: 20});
-    if (modal.owns(token)) modal.body.append(details('Reported activity', rawText(data)));
-  }, false);
+export function inspectAgent(identity = selectedAgent(), mode:'activity'|'result'='activity', selector?:ResultSelector): void {
+  if(!identity||!state.workspace)return;
+  const target={kind:'agent' as const,identity},controller=conversationController(target);controller.passive=true;
+  const layout=currentLayout(),key=`agent:${identity}`,existing=paneLeaves(layout.root).find(pane=>pane.tabs.some(tab=>tabKey(tab)===key));
+  const primaryPane=paneLeaves(layout.root).find(pane=>pane.tabs.some(tab=>tab.kind==='primary'));let next=layout;
+  if(existing&&existing.id!==primaryPane?.id)next=activatePaneTab(primaryPane?activatePaneTab(layout,primaryPane.id,'primary'):layout,existing.id,key);
+  else {
+    const source=existing??primaryPane??paneById(layout,layout.focusedPane);
+    if(source){const added=openTab({...layout,focusedPane:source.id},{kind:'agent',identity});const split=splitPane(added,source.id,'x',paneSpace(source.id),key);
+      next=split;if(split===added&&primaryPane)announce('Activity uses this pane. Keep Primary available in its tab.');}
+  }
+  controller.inspection?.open(mode,selector);applyLayout(next);renderInspection(controller);
 }
 function conversationMenuItems(target: Target): ContextItem[] {
   const controller = conversationController(target), shown = controller.showThinking;
@@ -1651,7 +1679,7 @@ function agentMenuItems(identity: string): ContextItem[] {
     {label: 'Copy agent ID', run: () => { void copy(identity, agentNode('view-notice')); }},
     {label: 'Conversation details', run: () => actions.conversationDetails(identity)},
   ];
-  if (row.capabilities?.inspect) items.push({label: 'View activity…', run: () => inspectAgent(identity)});
+  items.push({label: 'View activity…', run: () => inspectAgent(identity)},{label:'Result lookup…',run:()=>inspectAgent(identity,'result')});
   items.push(...conversationMenuItems({kind: 'agent', identity}).filter(item => !items.some(existing => existing.label === item.label)));
   return items;
 }
@@ -1853,20 +1881,23 @@ export async function drainDev(signal: AbortSignal): Promise<void> {
 function devEntry(controller: ConversationController): DevCheckpointEntry {
   const saved = controller.saved; if (!saved || !sameTarget(saved.target, controller.target)) throw new Error('Target preservation metadata is unavailable.');
   const epoch = controller.target.kind === 'agent' ? state.conversations.get(targetIdentity(controller.target))?.connectionEpoch : undefined;
-  if (controller.target.kind === 'agent' && (!epoch || !Number.isSafeInteger(epoch))) throw new Error('Agent observation metadata is unavailable.');
+  const retained=controller.target.kind==='agent'&&(!epoch||!Number.isSafeInteger(epoch))&&controller.inspection?.active;
+  if (controller.target.kind === 'agent' && (!epoch || !Number.isSafeInteger(epoch))&&!retained) throw new Error('Agent observation metadata is unavailable.');
   const editor = controller.composer.editor;
-  return {targetKey: saved.targetKey, target: controller.target.kind === 'primary' ? {...controller.target} : {...controller.target, connectionEpoch: epoch as number},
+  return {targetKey: saved.targetKey, target: controller.target.kind === 'primary' ? {...controller.target} : retained?{...controller.target,retained:true}:{...controller.target, connectionEpoch: epoch as number},
     draftRevision: controller.composer.serverDraftRevision ?? saved.draft.revision, imageFingerprint: draftImageFingerprint(controller.composer.state?.draft.images ?? saved.draft.images), readingRevision: saved.reading.revision, presentationRevision: saved.presentation?.revision ?? 0,
     selection: {start: editor.selectionStart, end: editor.selectionEnd, direction: editor.selectionDirection}};
 }
 export function captureDevCheckpoint(): ReturnType<DevReloadHooks['captureCheckpoint']> {
   const workspaceId = state.workspace?.id; if (!workspaceId) throw new Error('No workspace is hydrated.');
-  const owned = [...controllers.values()].filter(controller => controller.workspaceId === workspaceId), targets = owned.map(devEntry);
+  const all=[...controllers.values()].filter(controller=>controller.workspaceId===workspaceId);
+  const owned = all.filter(controller=>!!controller.saved||!controller.inspection?.active), targets = owned.map(devEntry);
+  const inspections=all.flatMap(controller=>{const value=controller.inspection?.checkpoint();return value?[value]:[];});
   const recipient = messageTarget.current;
   const messageRecipient = recipient ? owned.find(controller => controller.target.kind === 'agent' && controller.target.identity === recipient.identity)?.saved?.targetKey : undefined;
   if (recipient && (!messageTarget.valid(recipient) || !messageRecipient)) throw new Error('Message preservation metadata changed.');
   const focused = owned.find(controller => controller.composer.editor === document.activeElement);
-  return {workspaceId, focusedPane: currentLayout().focusedPane, targets,files:filesViews.checkpoint(state.workspace as Workspace), ...(messageRecipient ? {messageRecipient} : {}),
+  return {workspaceId, focusedPane: currentLayout().focusedPane, targets,files:filesViews.checkpoint(state.workspace as Workspace),...(inspections.length?{inspections}:{}), ...(messageRecipient ? {messageRecipient} : {}),
     ...(focused?.saved ? {focusedControl: {targetKey: focused.saved.targetKey, kind: focused.saved.targetKey === messageRecipient ? 'message' : 'composer'}} : {})};
 }
 function devTargetMatches(entry: DevCheckpointEntry, saved: TargetState): boolean {
@@ -1874,6 +1905,7 @@ function devTargetMatches(entry: DevCheckpointEntry, saved: TargetState): boolea
   if (saved.draft.revision !== entry.draftRevision || saved.reading.revision !== entry.readingRevision || (saved.presentation?.revision ?? 0) !== entry.presentationRevision || saved.unconfirmed.length) return false;
   if (entry.imageFingerprint !== draftImageFingerprint(saved.draft.images)) return false;
   if (entry.target.kind === 'primary') return state.primaries.get(entry.target.key)?.epoch === entry.target.epoch;
+  if('retained' in entry.target)return true;
   const epoch = state.conversations.get(targetIdentity(saved.target))?.connectionEpoch;
   return !!epoch && Number.isSafeInteger(epoch) && epoch > 0;
 }
@@ -1919,7 +1951,7 @@ export async function restoreDevCheckpoint(checkpoint: DevReloadCheckpoint, sign
 }
 async function restoreDevState(checkpoint: DevReloadCheckpoint, signal: AbortSignal): Promise<boolean> {
   const revision = devInteractionRevision;
-  const epochs = new Map(checkpoint.targets.flatMap(entry => entry.target.kind === 'agent' ? [[entry.target.identity, state.conversations.get(targetIdentity({kind: 'agent', identity: entry.target.identity}))?.connectionEpoch] as const] : []));
+  const epochs = new Map(checkpoint.targets.flatMap(entry => entry.target.kind === 'agent'&&'connectionEpoch' in entry.target ? [[entry.target.identity, state.conversations.get(targetIdentity({kind: 'agent', identity: entry.target.identity}))?.connectionEpoch] as const] : []));
   const current = () => !signal.aborted && revision === devInteractionRevision && checkpoint.workspaceId === state.workspace?.id && !devHold() && [...epochs].every(([identity, epoch]) => !!epoch && state.conversations.get(targetIdentity({kind: 'agent', identity}))?.connectionEpoch === epoch);
   if (!current() || currentLayout().focusedPane !== checkpoint.focusedPane || !paneById(currentLayout(), checkpoint.focusedPane)) return false;
   const savedTargets = await Promise.all(checkpoint.targets.map(entry => request<TargetState>(
@@ -1928,18 +1960,25 @@ async function restoreDevState(checkpoint: DevReloadCheckpoint, signal: AbortSig
   if (!checkpoint.targets.every(devRestoreSourceCurrent)) return false;
   const owned = savedTargets.map(saved => {state = {...state, targets: new Map(state.targets).set(saved.targetKey, saved)}; const controller = conversationController(saved.target); controller.saved = saved; return controller;});
   if (!await restoreDevRecipient(checkpoint, savedTargets, signal) || !current()) return false;
+  if(!restoreDevInspections(checkpoint))return false;
   renderAll(); if (!await restoreDevReading(owned, signal, current)) return false;
   if (!state.workspace || !await waitForSignal(filesViews.restore(state.workspace,checkpoint.files ?? [],current),signal) || !current()) return false;
   const refreshed = savedTargets.flatMap(saved => {const value = targetState(saved.target); return value ? [value] : [];});
   return current() && devRecordsCurrent(checkpoint.targets, refreshed) && restoreDevControls(checkpoint, owned) && current();
 }
-let cssState: Array<{controller: ConversationController; geometry: ReturnType<Transcript['captureGeometry']>}> = [];
+function restoreDevInspections(checkpoint:DevReloadCheckpoint):boolean {
+  const tabs=paneLeaves(currentLayout().root).flatMap(pane=>pane.tabs).filter(tab=>tab.kind==='agent');
+  for(const value of checkpoint.inspections??[]){if(!tabs.some(tab=>tab.identity===value.identity))return false;
+    if(!conversationController({kind:'agent',identity:value.identity}).inspection?.restore(value))return false;}
+  return true;
+}
+let cssState: Array<{controller: ConversationController; geometry: ReturnType<Transcript['captureGeometry']>; inspectionTop?:number}> = [];
 export function captureDevCssState(): unknown {
-  cssState = [...controllers.values()].filter(controller => controller.workspaceId === state.workspace?.id && !controller.root.hidden && !controller.root.inert).map(controller => ({controller, geometry: controller.transcript.captureGeometry()})); return cssState;
+  cssState = [...controllers.values()].filter(controller => controller.workspaceId === state.workspace?.id && !controller.root.hidden && !controller.root.inert).map(controller => ({controller, geometry: controller.transcript.captureGeometry(),...(controller.inspection?.active?{inspectionTop:controller.inspection.scroller.scrollTop}:{})})); return cssState;
 }
 export function applyDevCssState(captured: unknown): void {
   if (captured !== cssState) return; refreshPaneSizes();
-  for (const {controller, geometry} of cssState) {controller.transcript.applyGeometry(geometry); controller.composer.resize();}
+  for (const {controller, geometry,inspectionTop} of cssState) {controller.transcript.applyGeometry(geometry); controller.composer.resize();if(controller.inspection&&inspectionTop!==undefined)controller.inspection.scroller.scrollTop=inspectionTop;}
 }
 let uiReady = false;
 async function finishStartup(): Promise<void> {

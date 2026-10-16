@@ -1,4 +1,5 @@
 import type { Communication, CommunicationPresentation, MessageView } from '../shared/api.ts';
+import type {ResultSelector} from '../shared/inspection.ts';
 import { copy, element, rawText, setText } from './dom.ts';
 import { cardAction, cardActionLabel } from './card-icons.ts';
 import { markdownDom, sourceWrap } from './safe-markdown.ts';
@@ -7,7 +8,7 @@ import { presentMessage } from './entry-presentation.ts';
 import type { QualifiedReference, ReferenceField, ReferenceQuery } from './references.ts';
 
 type Shell = {node: HTMLElement; header: HTMLElement; heading: HTMLElement; actions: HTMLElement; body: HTMLElement};
-type Hooks = {reference?: (query: ReferenceQuery, active: (node: HTMLElement) => boolean) => HTMLElement; active(): boolean; current(): MessageView; protected(node: HTMLElement): boolean; raw(message: MessageView): string; expanded(key: string): boolean; disclosure(key: string, open: boolean): void; layout(): void};
+type Hooks = {result?: (identity:string,selector:ResultSelector)=>void; reference?: (query: ReferenceQuery, active: (node: HTMLElement) => boolean) => HTMLElement; active(): boolean; current(): MessageView; protected(node: HTMLElement): boolean; raw(message: MessageView): string; expanded(key: string): boolean; disclosure(key: string, open: boolean): void; layout(): void};
 type Ready = Extract<CommunicationPresentation, {state: 'ready'}>;
 type Row = [string, string, QualifiedReference?];
 function qualified(label: string, text: string, owner: string, field: ReferenceField): Row { return [label, text, {text, owner, field}]; }
@@ -89,6 +90,8 @@ export class CommunicationCard {
   private opener?: HTMLElement;
   private readonly key: string;
   private readonly text = element('div', 'communication-text');
+  private readonly resultActions=element('div','communication-results');
+  private resultSignature='';
   private readonly facts = element('dl', 'kv');
   private readonly references = element('dl', 'kv');
   private readonly rawPre = element('pre', 'raw');
@@ -120,14 +123,28 @@ export class CommunicationCard {
     this.inspection.append(heading); this.inspection.dataset.disclosure = this.key;
     this.inspection.setAttribute('role', 'region'); this.inspection.setAttribute('aria-label', 'Source');
     this.rawPre.append(this.rawFrame); this.detailsPre.append(this.detailsFrame);
-    this.configureSource(hooks.expanded(this.key)); shell.body.replaceChildren(this.text, this.inspection);
+    this.configureSource(hooks.expanded(this.key)); shell.body.replaceChildren(this.text, this.resultActions, this.inspection);
   }
   sync(message: MessageView): boolean {
     if (this.source !== message && this.hooks.protected(this.shell.node)) return false;
     const value = message.communication; if (!value) return false;
-    this.source = message; this.header(value); this.content(value, message);
+    this.source = message; this.header(value); this.content(value, message);this.results(value);
     if (!this.inspection.hidden) this.renderSource();
     return true;
+  }
+  private results(value:CommunicationPresentation):void {
+    const result=value.state==='ready'&&value.value.kind==='result'?value.value:undefined;
+    const signature=this.hooks.result&&result?JSON.stringify([result.sender.identity,result.metadata.references]):'';
+    if(signature===this.resultSignature)return;this.resultSignature=signature;this.resultActions.replaceChildren();
+    this.resultActions.hidden=!signature;if(!signature||!result)return;
+    result.metadata.references.forEach((reference,index)=>{
+      const action=cardAction('search',`View result${result.metadata.references.length>1?` ${index+1}`:''}`,()=>{
+        const current=this.current()?.communication;
+        if(current?.state!=='ready'||current.value.kind!=='result'||current.value.sender.identity!==result.sender.identity)return;
+        const selected=current.value.metadata.references[index];if(!selected||selected.submissionId!==reference.submissionId||selected.requestId!==reference.requestId)return;
+        this.hooks.result?.(current.value.sender.identity,{submissionId:selected.submissionId,...(selected.requestId?{requestId:selected.requestId}:{})});
+      });action.querySelector('.card-action-label')?.classList.remove('sr-only');this.resultActions.append(action);
+    });
   }
   private header(value: CommunicationPresentation): void {
     this.shell.node.dataset.state = value.state;

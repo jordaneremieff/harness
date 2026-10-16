@@ -510,8 +510,8 @@ test('current host identities enable input and activity inspection but never con
   const prepared = await prepareRoute(registry, workspace.id, {target:{kind:'agent',identity}});
   assert.deepEqual(prepared.capabilities,{history:true,observe:true,input:true,images:false,abort:true,configure:false,inspect:true});
   const inspected = await registry.dispatch({parts:['api','agents',identity,'inspect'],body:{view:'activity',limit:20},method:'POST',
-    url:new URL('http://localhost/api/agents/storage:2/inspect')}) as {projection:{value:unknown}};
-  assert.deepEqual(JSON.parse(JSON.stringify(inspected.projection.value)), activity(identity));
+    url:new URL('http://localhost/api/agents/storage:2/inspect')}) as {identity:string;view:string};
+  assert.equal(inspected.identity,identity);assert.equal(inspected.view,'activity');
   assert.deepEqual(calls,[{identity,options:{view:'activity',limit:20}}]);
   assert.equal(registry.frames.size,0); assert.equal(setup.counts.started,0);
   assert.deepEqual(await registry.store.workspace(workspace.id),workspace);

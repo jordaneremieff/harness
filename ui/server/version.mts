@@ -8,6 +8,7 @@ import { VERSION } from '@earendil-works/pi-coding-agent';
 import { UI_ITERATION, type UiIdentity } from '../shared/version.ts';
 import type { Asset } from './http.mts';
 import { ApiError } from './errors.mts';
+import type {ReleaseManifest} from '../shared/release.ts';
 
 export const packageRoot = fileURLToPath(new URL('../../', import.meta.url));
 export type GitOptions = {cwd: string; shell: false; encoding: 'utf8'; maxBuffer: number; timeout: number};
@@ -54,10 +55,15 @@ async function durableVersion(): Promise<string> {
     return metadata.name === '@earendil-works/pi-durable' && typeof metadata.version === 'string' && /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(metadata.version) ? metadata.version : 'unknown';
   } catch {return 'unknown';}
 }
+async function releaseIdentity(assets:ReadonlyMap<string,Asset>,release:ReleaseManifest,startedAt?:string):Promise<UiIdentity> {
+  if(assetDigest(assets)!==release.assetDigest)throw new ApiError('not_ready','Sealed release assets do not match their identity.',503);
+  return Object.freeze({iteration:release.iteration,git:{commit:release.sourceCommit,shortCommit:release.sourceCommit.slice(0,8),branch:release.branch,modified:false,committedAt:release.committedAt},assets:{digest:release.generation,builtAt:release.stagedAt},startedAt:startedAt??new Date().toISOString(),pi:VERSION,durable:await durableVersion()});
+}
 export async function collectIdentity(assets: ReadonlyMap<string, Asset>, options: {
   root?: string; assetRoot?: string; startedAt?: string; execute?: GitExec;
-  build?: {digest: string; builtAt?: string};
+  build?: {digest: string; builtAt?: string}; release?: ReleaseManifest;
 } = {}): Promise<UiIdentity> {
+  if(options.release)return releaseIdentity(assets,options.release,options.startedAt);
   const root = options.root ?? packageRoot; const run = options.execute ?? execute;
   const declared = Object.freeze({iteration: UI_ITERATION});
   try {

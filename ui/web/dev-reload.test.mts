@@ -192,6 +192,14 @@ test('reload persists and restores the app capture with empty or populated file 
     assert.equal(next.restoreCount, 1); assert.equal(next.stored, null); assert.deepEqual(next.releases()[0]?.body, {client: OLD});
   }
 });
+test('inspection checkpoints retain read selectors and reject orphaned retained targets or malformed cursors',()=>{
+  const value=checkpoint();const identity='agent-a';value.inspections=[{identity,mode:'activity',selector:{requestId:'native-request'},offset:0,scrollTop:80,cursor:{before:7}}];
+  const agent=value.targets.find(entry=>entry.target.kind==='agent');assert.ok(agent);agent.target={kind:'agent',identity,retained:true};
+  assert.deepEqual(validateDevReloadCheckpoint(value,B,NOW)?.inspections,value.inspections);
+  assert.equal(validateDevReloadCheckpoint({...value,inspections:[]},B,NOW),null);
+  assert.equal(validateDevReloadCheckpoint({...value,inspections:[{...value.inspections[0],cursor:{before:Infinity}}]},B,NOW),null);
+  assert.equal(validateDevReloadCheckpoint({...value,inspections:[value.inspections[0],value.inspections[0]]},B,NOW),null);
+});
 test('reload refuses malformed file checkpoints before persistence and navigation', async () => {
   for (const files of [null, [{tab: {kind: 'file', rootId: 'r', path: 'source.ts'}, position: {scrollTop: 0, scrollLeft: 0}, digest: 'invalid', focused: false}]]) {
     const f = new Fixture(); const captured = view(); Object.defineProperty(captured, 'files', {value: files});

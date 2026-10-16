@@ -30,9 +30,9 @@ export class SessionStats {
   private generation = 0;
   private running = false;
   private view: PrimaryView;
-  private client: RpcClient;
+  private client: Pick<RpcClient, 'request' | 'exited'>;
   private changed: () => void;
-  constructor(view: PrimaryView, client: RpcClient, changed: () => void) { this.view = view; this.client = client; this.changed = changed; }
+  constructor(view: PrimaryView, client: Pick<RpcClient, 'request' | 'exited'>, changed: () => void) { this.view = view; this.client = client; this.changed = changed; }
   refresh(): void {
     this.wanted = true;
     if (this.running || this.view.lifecycle !== 'ready') return;

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { PrimarySession } from '../rpc/session.mts';
 import { FakeChild } from '../rpc/fake-child.mts';
-import { startBackend } from './main.mts';
+import { startBackend } from './backend.mts';
 import { IMAGE_BYTES, ImageResponse, imagePart } from './images.mts';
 import { LocalHttp } from './http.mts';
 import { Journal } from './journal.mts';

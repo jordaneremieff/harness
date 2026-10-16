@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { PrimarySession } from '../rpc/session.mts';
 import { FakeChild } from '../rpc/fake-child.mts';
-import { startBackend } from './main.mts';
+import { startBackend } from './backend.mts';
 import { StateStore } from './state.mts';
 import type { HistoryPage, OutputPage, PrimaryView, Success } from '../shared/api.ts';
 

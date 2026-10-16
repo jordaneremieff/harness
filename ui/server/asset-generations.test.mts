@@ -30,6 +30,18 @@ test('a complete generation pins HTML and resolves delayed relative module depen
   assert.match(old.asset('/web/app.js')?.data.toString()??'',/one/);
 });
 
+test('sealed adjacent releases rotate old page identities in both directions and hold another release until adoption',()=> {
+  const old=build('old'),next=build('new'),oldServer=new AssetGenerations(old),oldPage=oldServer.document();
+  const forward=new AssetGenerations(next,old),replacement=forward.checkLease(oldPage.client,old.id,old.id,old.family.id);
+  assert.equal(replacement.lease,'replaced');assert.equal(forward.transitionReady(),false);
+  if(replacement.lease!=='replaced')throw Error('Expected rotated lease.');
+  forward.acknowledge(replacement.client,next.id,next.id);assert.equal(forward.transitionReady(),true);
+  const candidatePage=forward.document(),rollback=new AssetGenerations(old,next),reverse=rollback.checkLease(candidatePage.client,next.id,next.id,next.family.id);
+  assert.equal(reverse.lease,'replaced');assert.equal(rollback.transitionReady(),false);
+  assert.match(rollback.asset(next.id,'/web/app.js')?.data.toString()??'',/new/);
+  if(reverse.lease!=='replaced')throw Error('Expected rollback lease.');rollback.acknowledge(reverse.client,old.id,old.id);assert.equal(rollback.transitionReady(),true);
+});
+
 test('the manifest hashes exact retained bytes and a newer build removes the older held candidate',()=> {
   const one=build();for(const [route,hash] of Object.entries(one.manifest)) assert.equal(createHash('sha256').update(one.asset(route)?.data??Buffer.alloc(0)).digest('hex'),hash);
   const generations=new AssetGenerations(one);const page=generations.document();generations.bind(page.client);

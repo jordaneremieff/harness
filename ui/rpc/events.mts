@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { DisplayCoverage, EntryView, EventData, EventName, MessageView, PrimaryView, Target } from '../shared/api.ts';
 import { projectEntry, jsonDisplay as projectJson, projectMessage, safeText, toolOutputInfo } from '../server/projection.mts';
 import { RpcError, type RpcRecord } from './client.mts';
@@ -6,7 +6,11 @@ import { RpcError, type RpcRecord } from './client.mts';
 export type Publish = (name: EventName, target: Target | undefined, data: EventData[EventName]) => void;
 const MAX_BYTES = 8 * 1024 * 1024;
 const TEXT_BYTES = 64 * 1024;
-export interface ProjectedSnapshot { projected: true; entries: EntryView[]; signatures: [string, string][]; sizes: [string, number][]; coverage: DisplayCoverage }
+export interface ProjectedSnapshot { projected: true; entries: EntryView[]; signatures: [string, string][]; sizes: [string, number][]; coverage: DisplayCoverage; rawMessages: [string, number][] }
+export function rawMessageIdentity(value: unknown): string {
+  const canonical = (item: unknown): unknown => Array.isArray(item) ? item.map(canonical) : item && typeof item === 'object' ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b)).map(([key, v]) => [key, canonical(v)])) : item;
+  return createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex');
+}
 export function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new RpcError('protocol_error', 'Invalid RPC data object.');
   return value as Record<string, unknown>;
@@ -63,6 +67,11 @@ export class EventProjection {
   private active?: string;
   private activeSignature?: string;
   private counts = new Map<string, number>();
+  private rawMessages = new Map<string, number>();
+  private endedMessages = new Map<string, string[]>();
+  hasRawMessage(message: unknown, occurrence = 1): boolean {return (this.rawMessages.get(rawMessageIdentity(message)) ?? 0) >= occurrence;}
+  private rememberRaw(fingerprint: string): void {this.rawMessages.set(fingerprint, (this.rawMessages.get(fingerprint) ?? 0) + 1); while (this.rawMessages.size > 8192) this.rawMessages.delete(this.rawMessages.keys().next().value as string);}
+  incomplete(reason: string): void {this.coverage = {complete: false, truncated: true, omitted: this.coverage.omitted + 1, reason};}
   lastSignature?: string;
   private bytes = 0;
   private sizes = new Map<string, number>();
@@ -83,11 +92,12 @@ export class EventProjection {
   reset(): void {
     this.manualCompactionEndRevision = undefined; this.clearRetry(); delete this.view.responseOutcome;
     this.entries = []; this.messages = []; this.ids.clear(); this.counts.clear(); this.active = undefined; this.activeSignature = undefined; this.bytes = 0;
-    this.sizes.clear(); this.toolArgs.clear(); this.coverage = { complete: true, truncated: false, omitted: 0 };
+    this.sizes.clear(); this.toolArgs.clear(); this.rawMessages.clear(); this.endedMessages.clear(); this.coverage = { complete: true, truncated: false, omitted: 0 };
   }
-  exportSnapshot(): ProjectedSnapshot { return { projected: true, entries: this.entries, signatures: [...this.ids], sizes: [...this.sizes], coverage: this.coverage }; }
+  exportSnapshot(): ProjectedSnapshot { return { projected: true, entries: this.entries, signatures: [...this.ids], sizes: [...this.sizes], coverage: this.coverage, rawMessages: [...this.rawMessages] }; }
   private install(snapshot: ProjectedSnapshot): void {
     const incoming = new Map(snapshot.signatures.map(([signature, id]) => [id, signature]));
+    this.rawMessages = new Map(snapshot.rawMessages);
     this.counts.clear();
     for (const [signature] of snapshot.signatures) { const split = signature.lastIndexOf('#'); const base = signature.slice(0, split); this.counts.set(base, Math.max(this.counts.get(base) ?? 0, Number(signature.slice(split + 1)) + 1)); }
     this.entries = snapshot.entries; this.messages = []; this.sizes = new Map(snapshot.sizes); this.bytes = 0; this.coverage = snapshot.coverage;
@@ -104,12 +114,12 @@ export class EventProjection {
     const snapshot = object(value);
     if (snapshot.projected === true) { this.install(snapshot as unknown as ProjectedSnapshot); return; }
     const ordered = activeBranch(snapshot);
-    this.entries = []; this.messages = []; this.bytes = 0; this.sizes.clear(); this.counts.clear();
+    this.entries = []; this.messages = []; this.bytes = 0; this.sizes.clear(); this.counts.clear(); this.rawMessages.clear();
     const cutoff = beforeEntryId === undefined ? ordered.length : ordered.findIndex((entry) => entry.id === beforeEntryId);
     if (cutoff < 0) throw new RpcError('history_limit', 'History anchor is absent from the active branch.');
     for (const entry of ordered.slice(0, cutoff)) {
       if (entry.type === 'message') {
-        const m = object(entry.message); const base = key(m); const ordinal = this.counts.get(base) ?? 0; this.counts.set(base, ordinal + 1); const signature = `${base}#${ordinal}`;
+        const m = object(entry.message); const fingerprint = rawMessageIdentity(m); this.rememberRaw(fingerprint); const base = key(m); const ordinal = this.counts.get(base) ?? 0; this.counts.set(base, ordinal + 1); const signature = `${base}#${ordinal}`;
         const id = this.ids.get(signature) ?? `message:${text(entry.id)}`;
         this.ids.set(signature, id);
         const message = projectMessage(m, id, 'final', undefined, {communicationSource: {entryId: text(entry.id), timestamp: entry.timestamp}}); this.messages.push(message);
@@ -168,18 +178,29 @@ export class EventProjection {
       default: this.emit('notice', { level: 'warning', message: 'Unsupported RPC event.', code: 'unsupported_event' });
     }
   }
+  private messageId(raw: Record<string, unknown>, event: RpcRecord): string {
+    if(raw.role==='toolResult')return `tool:${text(raw.toolCallId)}`;
+    if(typeof event.__ownerIdentity==='string'&&Number.isSafeInteger(event.__ownerSequence))return `live:${event.__ownerIdentity}:${event.__ownerStartSequence??event.__ownerSequence}`;
+    return randomUUID();
+  }
+  private rememberEnded(raw: Record<string, unknown>, id: string): void {
+    const fingerprint=rawMessageIdentity(raw),ids=this.endedMessages.get(fingerprint)??[];
+    if(!ids.includes(id))ids.push(id);this.endedMessages.set(fingerprint,ids);
+    while(this.endedMessages.size>128)this.endedMessages.delete(this.endedMessages.keys().next().value as string);
+  }
   private message(event: RpcRecord, replaySignature?: string): void {
         const raw = object(event.message); const base = key(raw);
         const ordinal = event.type === 'message_start' ? this.counts.get(base) ?? 0 : Math.max(0, (this.counts.get(base) ?? 1) - 1);
         const signature = replaySignature ?? (event.type === 'message_end' && this.activeSignature?.startsWith(`${base}#`) ? this.activeSignature : `${base}#${ordinal}`);
         const count = Number(signature.slice(signature.lastIndexOf('#') + 1)) + 1;
         this.counts.set(base, Math.max(this.counts.get(base) ?? 0, count)); this.lastSignature = signature;
-        const id = this.ids.get(signature) ?? (raw.role === 'toolResult' ? `tool:${text(raw.toolCallId)}` : randomUUID()); this.ids.set(signature, id);
+        const id = this.ids.get(signature) ?? this.messageId(raw,event); this.ids.set(signature, id);
         const old = this.messages.find((m) => m.id === id);
         if (event.type === 'message_start') {
           this.active = id; this.activeSignature = signature; this.toolArgs.clear();
           if (old?.state === 'final') return;
         }
+        if (event.type === 'message_end') this.rememberEnded(raw,id);
         const message = projectMessage(raw, id, event.type === 'message_start' ? 'partial' : 'final');
         this.save(message); this.emit('primary.message', { message });
         this.responseOutcome(event.type, message);
@@ -211,8 +232,29 @@ export class EventProjection {
         const steering = event.steering.map((v) => safeText(text(v))); const followUp = event.followUp.map((v) => safeText(text(v)));
         this.emit('primary.queue', { pending: steering.length + followUp.length, steering, followUp }); return;
   }
+  private consumeEnded(fingerprint:string,prior:EntryView):void {
+    const ids=this.endedMessages.get(fingerprint),index=ids?.indexOf(prior.messages?.[0]?.id??'')??-1;
+    if(ids&&index>=0)ids.splice(index,1);if(ids&&!ids.length)this.endedMessages.delete(fingerprint);
+  }
+  private installCommittedMessage(entryId:string,message:MessageView):void {
+    const live=this.entries.find(entry=>entry.id!==entryId&&entry.messages?.some(value=>value.id===message.id));
+    if(live){this.entries=this.entries.filter(entry=>entry!==live);this.bytes-=this.sizes.get(live.id)??0;this.sizes.delete(live.id);}
+    const index=this.messages.findIndex(value=>value.id===message.id);if(index<0)this.messages.push(message);else this.messages[index]=message;
+    const entry:EntryView={id:entryId,kind:'message',messages:[message]};this.put(entry);this.emit('primary.entry',{entry});
+  }
   private entry(event: RpcRecord): void {
-        const entry = projectEntry(event.entry); this.put(entry); this.emit('primary.entry', { entry }); return;
+    const raw = object(event.entry);
+    if (raw.type === 'message') {
+      const entryId = text(raw.id), messageRaw = object(raw.message), fingerprint = rawMessageIdentity(messageRaw);
+      const prior = this.entries.find(entry => entry.id === entryId);
+      const ids = this.endedMessages.get(fingerprint);
+      if(prior){this.consumeEnded(fingerprint,prior);return;}
+      const id = ids?.shift() ?? `message:${entryId}`;
+      if (ids && !ids.length) this.endedMessages.delete(fingerprint);
+      const message = projectMessage(messageRaw, id, 'final', undefined, {communicationSource: {entryId, timestamp: raw.timestamp}});
+      this.rememberRaw(fingerprint);this.installCommittedMessage(entryId,message);return;
+    }
+    const entry = projectEntry(raw); this.put(entry); this.emit('primary.entry', {entry});
   }
   private recovery(event: RpcRecord): void {
         const kind = event.type.startsWith('compaction') ? 'compaction' : event.type.startsWith('auto_retry') ? 'retry' : 'summarizationRetry';
@@ -234,7 +276,7 @@ export class EventProjection {
     this.clearRetry();
     if (!Number.isSafeInteger(event.attempt) || Number(event.attempt) < 1 || !Number.isSafeInteger(event.maxAttempts) || Number(event.maxAttempts) < 1 || !Number.isSafeInteger(event.delayMs) || Number(event.delayMs) < 0) { delete this.view.retry; return; }
     this.view.retry = {attempt: Number(event.attempt), maxAttempts: Number(event.maxAttempts), delayMs: Number(event.delayMs),
-      at: Math.min(8640000000000000, Date.now() + Number(event.delayMs)), error: typeof event.errorMessage === 'string' ? safeText(event.errorMessage, 512) : ''};
+      at: Math.min(8640000000000000, (typeof event.__ownerAt === 'number' ? event.__ownerAt : Date.now()) + Number(event.delayMs)), error: typeof event.errorMessage === 'string' ? safeText(event.errorMessage, 512) : ''};
   }
   private activity(activity: PrimaryView['activity']): void { this.activityRevision++; this.view.activity = activity; this.state(); }
   private update(update: Record<string, unknown>): void {

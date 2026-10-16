@@ -130,7 +130,7 @@ test('concurrent dialogs validate method/epoch and answer once; timeout is local
   const key = session.view.pendingDialogs.find((dialog) => dialog.id === 'a')?.optionKeys?.[0]; assert.ok(key);
   await session.respond('a', { epoch: 1, value: key }); await assert.rejects(session.respond('a', { epoch: 1, value: key }));
   assert.equal(child.writes.find((record) => record.type === 'extension_ui_response' && record.id === 'a')?.value, 'one');
-  child.event({ type: 'extension_ui_request', id: 'c', method: 'input', title: 'Timed', timeout: 0 });
+  child.event({ type: 'extension_ui_request', id: 'c', method: 'input', title: 'Timed', timeout: 1 });
   t.mock.timers.tick(1);
   assert.ok(published.some((event) => event.name === 'extension.expired' && (event.data as EventData['extension.expired']).id === 'c'));
   assert.equal(child.writes.filter((record) => record.id === 'c').length, 0);
@@ -191,7 +191,7 @@ test('private select retention is bounded and stop releases originals before ano
 test('timeout, epoch replacement and exit release select originals and refuse old keys', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const { child, session } = create(); await session.start(); const option = `Bearer ${'b'.repeat(15000)}`;
-  for (let i = 0; i < 4; i++) child.event({ type: 'extension_ui_request', id: `timed-${i}`, method: 'select', title: 'Choose', options: [option], timeout: 0 });
+  for (let i = 0; i < 4; i++) child.event({ type: 'extension_ui_request', id: `timed-${i}`, method: 'select', title: 'Choose', options: [option], timeout: 1 });
   t.mock.timers.tick(1); assert.equal(session.view.pendingDialogs.length, 0);
   for (let i = 0; i < 4; i++) child.event({ type: 'extension_ui_request', id: `epoch-${i}`, method: 'select', title: 'Choose', options: [option] });
   assert.equal(session.view.pendingDialogs.length, 4); const oldKey = session.view.pendingDialogs[0]?.optionKeys?.[0]; assert.ok(oldKey);

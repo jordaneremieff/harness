@@ -48,6 +48,20 @@ test('agent image routes reject malformed identities before the adapter and pres
   }
 });
 
+test('whole-response activity serialization remains usable across an adjacent page release',async()=>{
+  const identity=`${STORAGE}:2`,coverage={complete:false,scannedEntries:22,scannedBytes:65536,omittedEntries:13,entryLimitReached:false,scanByteLimitReached:true,byteLimitReached:true,metadataTruncated:false};
+  const registry={agents:{inspect:async()=>({view:'activity',sessionId:identity,detail:'Bounded digest',turns:[{entries:[{id:7,kind:'assistant',source:'assistant',text:'Readable retained text',truncated:false}]}],nextCursor:null,coverage,metadata:{live:false,owner:'unavailable',operation:null,pending:null,runningTools:[]}})}} as unknown as Registry;
+  const data=await dispatchAgent(registry,{parts:['api','agents',identity,'inspect'],body:{view:'activity',limit:20},method:'POST',url:new URL('http://localhost/api')});
+  const rendered=JSON.stringify(data,null,2);assert.match(rendered,/Readable retained text/);assert.match(rendered,/omittedEntries/);assert.match(rendered,/13/);assert.equal(JSON.parse(rendered).view,'activity');assert.equal(JSON.parse(rendered).identity,identity);
+});
+
+test('retained inspection needs neither workspace preparation nor live capability and forwards exact native selectors',async()=> {
+  const calls:unknown[]=[];const identity=`${STORAGE}:2`;
+  const registry={workspace:()=>{throw Error('No workspace mutation');},agents:{inspect:async(target:string,options:unknown)=>{calls.push([target,options]);return {view:'result',sessionId:identity,status:'done',submissionId:3,requestId:'native-request',answerEntryId:17,answer:'Retained answer',usage:{models:{},tools:{}}};}}} as unknown as Registry;
+  const result=await dispatchAgent(registry,{parts:['api','agents',identity,'inspect'],body:{view:'result',submissionId:3,requestId:'native-request'},method:'POST',url:new URL('http://localhost/api')}) as {identity:string;answerEntryId:number;answer:{text:string}};
+  assert.equal(result.identity,identity);assert.equal(result.answerEntryId,17);assert.equal(result.answer.text,'Retained answer');assert.deepEqual(calls,[[identity,{view:'result',submissionId:3,requestId:'native-request'}]]);
+});
+
 async function fixture(t: TestContext, mismatch=false, announce=true) {
   const root = await mkdtemp(join(process.cwd(),'ui-start-route-')); const store = join(root,'store'); const durable = join(store,'durable');
   const cwd = join(root,'project'); const agentDir = join(root,'agent'); await Promise.all([mkdir(durable,{recursive:true}),mkdir(cwd),mkdir(agentDir)]);

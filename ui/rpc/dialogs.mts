@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { DialogResponse, DialogView, ExtensionState, PrimaryView } from '../shared/api.ts';
 import { safeText } from '../server/projection.mts';
-import { RpcError, type RpcClient, type RpcRecord } from './client.mts';
+import { RpcError, type RpcRecord } from './client.mts';
+import type {PrimaryTransport} from './transport.mts';
+import type {OwnerDialog} from '../shared/owner.ts';
 import { type EventProjection, text } from './events.mts';
 
 type SelectOptions = { epoch: number; values: string[]; keys: string[]; bytes: number };
@@ -16,8 +18,8 @@ export class Dialogs {
   private timers = new Map<string, NodeJS.Timeout>();
   private selections = new Map<string, SelectOptions>();
   private blockedIds = new Set<string>();
-  private view: PrimaryView; private projection: EventProjection; private client: RpcClient; private changed: () => void;
-  constructor(view: PrimaryView, projection: EventProjection, client: RpcClient, changed: () => void) {
+  private view: PrimaryView; private projection: EventProjection; private client: PrimaryTransport; private changed: () => void;
+  constructor(view: PrimaryView, projection: EventProjection, client: PrimaryTransport, changed: () => void) {
     this.view = view; this.projection = projection; this.client = client; this.changed = changed;
     view.extension = { statuses: {}, widgets: {} };
   }
@@ -58,11 +60,19 @@ export class Dialogs {
     if (selection) { dialog.options = selection.values.map((value) => safeText(value)); dialog.optionKeys = [...selection.keys]; }
     return dialog;
   }
+  restoreRaw(dialogs: OwnerDialog[]): void {
+    for (const raw of dialogs) {
+      if (raw.expiresAt !== undefined && raw.expiresAt <= Date.now()) continue;
+      this.accept({...raw.event.record, __ownerAt: raw.event.at, __ownerDeadline: raw.expiresAt} as RpcRecord);
+    }
+  }
+  detach(): void {for (const timer of this.timers.values()) clearTimeout(timer); this.timers.clear(); this.selections.clear();}
   private timeout(event: RpcRecord, dialog: DialogView): void {
-    if (event.timeout === undefined) return;
+    if (event.timeout === undefined || event.timeout === 0) return;
     if (typeof event.timeout !== 'number' || !Number.isFinite(event.timeout) || event.timeout < 0 || event.timeout > 2_147_483_647) throw new RpcError('protocol_error', 'Invalid extension dialog timeout.');
-    dialog.deadline = new Date(Date.now() + event.timeout).toISOString();
-    this.timers.set(dialog.id, setTimeout(() => this.expire(dialog.id, 'timeout'), event.timeout));
+    const deadline = typeof event.__ownerDeadline === 'number' ? event.__ownerDeadline : (typeof event.__ownerAt === 'number' ? event.__ownerAt : Date.now()) + event.timeout;
+    dialog.deadline = new Date(deadline).toISOString();
+    this.timers.set(dialog.id, setTimeout(() => this.expire(dialog.id, 'timeout'), Math.max(0, deadline - Date.now())));
   }
   private acceptState(event: RpcRecord, method: string): void {
     const extension = this.view.extension ?? { statuses: {}, widgets: {} };
