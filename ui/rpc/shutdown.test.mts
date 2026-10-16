@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { test } from 'node:test';
 import type { PrimaryView } from '../shared/api.ts';
-import { RpcClient } from './client.mts';
+import { RpcClient, type RpcRecord } from './client.mts';
 import { FakeChild } from './fake-child.mts';
 import { PrimarySession } from './session.mts';
 
@@ -68,6 +68,19 @@ test('session close uses EOF after a transport failure and still publishes verif
   await session.close(); assert.equal(session.client.exited, true); assert.equal(session.view.lifecycle, 'stopped'); assert.equal(states.at(-1)?.lifecycle, 'stopped');
   assert.equal(child.writes.some((record) => record.type === 'abort'), false);
 });
+test('the shutdown deadline covers a stalled state read and retries keep one owned close sequence',async t=>{
+  const {child,session}=sessionFixture();await session.start();t.mock.timers.enable({apis:['setTimeout']});t.after(()=>child.exit(0));
+  let entered!:()=>void,held:RpcRecord|undefined;const waiting=new Promise<void>(resolve=>{entered=resolve;});
+  child.onCommand=record=>{if(record.type==='get_state'){held=record;entered();}else child.defaults(record);};
+  const before=child.writes.filter(record=>record.type==='get_state').length,result=session.close().then(()=> 'closed',error=>error.code);
+  await waiting;t.mock.timers.tick(2);await new Promise<void>(resolve=>setImmediate(resolve));
+  assert.equal(await Promise.race([result,Promise.resolve('pending')]),'handoff_blocked');
+  assert.equal(child.stdin.writableEnded,false);assert.equal(child.writes.some(record=>record.type==='clear_queue'||record.type==='abort'),false);
+  const retry=session.close().then(()=> 'closed',error=>error.code);t.mock.timers.tick(2);await new Promise<void>(resolve=>setImmediate(resolve));assert.equal(await retry,'handoff_blocked');
+  assert.equal(child.writes.filter(record=>record.type==='get_state').length,before+1);assert.ok(held);child.defaults(held);
+  await session.close();assert.equal(session.client.exited,true);assert.equal(child.writes.filter(record=>record.type==='clear_queue').length,1);
+});
+
 test('exit cancels active and queued history decodes and ignores late records without another decoder', async () => {
   const child = new FakeChild(); const events: unknown[] = []; const errors: unknown[] = [];
   const client = new RpcClient({ executable: 'pi', cwd: process.cwd(), spawnChild: child.spawn,

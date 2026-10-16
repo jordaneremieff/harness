@@ -46,7 +46,7 @@ function validateRecord(record:OwnerRecord) {
 }
 type Pending={value:OwnerOutcome;bodyDigest:string;attachment:string;promise:Promise<OwnerOutcome>;resolve:(value:OwnerOutcome)=>void;line?:string;reservedBytes?:number;recoveryId?:string;settling?:boolean};
 type Attachment={notify:(notice:OwnerNotice)=>unknown;paused:Set<string>;failed:Set<string>};
-type Primary={descriptor:OwnerPrimary;child:ChildProcessWithoutNullStreams;exited:boolean;available:boolean;synchronized:boolean;
+type Primary={descriptor:OwnerPrimary;observedSessionFile?:string;child:ChildProcessWithoutNullStreams;exited:boolean;available:boolean;synchronized:boolean;
   records:OwnerRecords;stderr:Buffer;accumulator:Buffer;discarding:boolean;decodeTail:Promise<void>;decodeBytes:number;
   writeTail:Promise<void>;exit:Promise<void>;resolveExit:()=>void;close?:Promise<void>;openingAttachment:string};
 type ParseWaiter={resolve:(value:unknown)=>void;reject:(error:Error)=>void};
@@ -149,13 +149,21 @@ export class PrimaryOwner {
   private async changeEpoch(primary:Primary,request:Extract<OwnerAction,{kind:'epoch'}>) {
     if(request.next!==request.epoch+1)failure('invalid_request','The epoch must advance once.');
     let sessionFile:string|undefined;
-    if(request.sessionFile!==undefined)sessionFile=await this.claimFile(request.sessionFile,request.primaryKey);
+    if(request.sessionFile!==undefined)sessionFile=await this.claimObservedFile(primary,request.sessionFile);
     for(const [path,key]of this.fileClaims)if(key===request.primaryKey&&path!==sessionFile)this.fileClaims.delete(path);
     primary.descriptor={...primary.descriptor,epoch:request.next,sessionFile};primary.records.reset();return this.describe(primary);
   }
   private async claimFile(path:string,key:string) {
     if(!isAbsolute(path))failure('invalid_request','Session file must be absolute.');const canonical=await realpath(path);if(!(await stat(canonical)).isFile())failure('invalid_request','The session file is invalid.');
     const claimed=this.fileClaims.get(canonical);if(claimed&&claimed!==key)failure('operation_conflict','The session file has another owner.');this.fileClaims.set(canonical,key);return canonical;
+  }
+  private async claimObservedFile(primary:Primary,path:string):Promise<string|undefined> {
+    try {return await this.claimFile(path,primary.descriptor.key);}
+    catch(error) {
+      // Pi names a new session before its first conversational entry creates the file.
+      if((error as NodeJS.ErrnoException).code==='ENOENT'&&primary.observedSessionFile===path)return;
+      throw error;
+    }
   }
   private validatePrimary(description:OwnerPrimary) {
     if(!object(description)||!id(description.key)||!id(description.recoveryWorkspaceId)||!Number.isSafeInteger(description.epoch)||description.epoch<1||!isAbsolute(description.cwd)||!id(description.executable))failure('invalid_request','The primary descriptor is invalid.');
@@ -250,7 +258,8 @@ export class PrimaryOwner {
   }
   private async retainSessionFile(primary:Primary,record:OwnerRecord,pending:Pending):Promise<boolean> {
     if(record.command!=='get_state'||record.success!==true||!object(record.data)||typeof record.data.sessionFile!=='string')return true;
-    try {primary.descriptor.sessionFile=await this.claimFile(record.data.sessionFile,primary.descriptor.key);return true;}
+    primary.observedSessionFile=record.data.sessionFile;
+    try {primary.descriptor.sessionFile=await this.claimObservedFile(primary,record.data.sessionFile);return true;}
     catch {this.unsynchronized(primary,'session-file-conflict');this.settle(pending,'uncertain','The saved session writer identity is unavailable.');return false;}
   }
   private outcomeBytes() {let bytes=0;for(const pending of this.pending.values())if(pending.value.response)bytes+=Buffer.byteLength(JSON.stringify(pending.value.response));for(const value of this.operations.values())bytes+=Buffer.byteLength(JSON.stringify(value));return bytes;}

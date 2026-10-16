@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {mkdtemp,realpath,rm,access} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {PrimarySession} from './session.mts';
 import type {PrimaryTransport} from './transport.mts';
 import type {RpcClientOptions,RpcRecord} from './client.mts';
@@ -9,10 +12,11 @@ const raw=(seq:number,record:RpcRecord,at=Date.now()):OwnerEvent=>({seq,at,recor
 const message={role:'assistant',timestamp:17,content:[],model:'fixture',provider:'fixture',stopReason:'stop',usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}};
 class Transport implements PrimaryTransport {
   child={pid:123};exited=false;available=true;stderrTail='';pendingCount=0;synchronized=true;writes:string[]=[];detached=false;closed=false;
+  sessionFile?:string;
   baseline:OwnerBaseline;callbacks:Pick<RpcClientOptions,'onEvent'|'onExit'|'onProtocolError'>={};entries:unknown={entries:[],leafId:null};
   constructor(baseline:OwnerBaseline){this.baseline=baseline;}
   start(){}markSynchronized(){this.synchronized=true;}
-  async request(type:string){this.writes.push(type);switch(type){case'get_state':return{sessionId:'fixture',isStreaming:true,isCompacting:false,pendingMessageCount:0};case'get_commands':return{commands:[]};case'get_available_models':return{models:[]};case'get_available_thinking_levels':return{levels:[]};case'get_entries':return this.entries;case'get_session_stats':return{tokens:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0},cost:0};default:return{};}}
+  async request(type:string){this.writes.push(type);switch(type){case'get_state':return{sessionId:'fixture',sessionFile:this.sessionFile,isStreaming:true,isCompacting:false,pendingMessageCount:0};case'get_commands':return{commands:[]};case'get_available_models':return{models:[]};case'get_available_thinking_levels':return{levels:[]};case'get_entries':return this.entries;case'get_session_stats':return{tokens:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0},cost:0};default:return{};}}
   async requestPrepared():Promise<unknown>{throw Error('Not part of attachment.');}async sendUI(){this.writes.push('extension_ui_response');}
   async close(){this.closed=true;this.exited=true;this.callbacks.onExit?.();}async detach(){this.detached=true;}
   async captureBegin(){return{token:'capture',from:this.baseline.from};}async captureFinish(){return this.baseline;}async captureAck(){this.callbacks.onEvent?.({type:'message_update',__ownerSequence:9,assistantMessageEvent:{type:'text_delta',contentIndex:0,delta:' suffix'}});}
@@ -20,13 +24,18 @@ class Transport implements PrimaryTransport {
 function baseline():OwnerBaseline {
   return{descriptor,from:1,cursor:8,complete:true,reasons:[],overlap:[],activeMessage:{startSequence:2,complete:true,events:[raw(2,{type:'message_start',message}),raw(3,{type:'message_update',assistantMessageEvent:{type:'text_start',contentIndex:0}}),raw(4,{type:'message_update',assistantMessageEvent:{type:'text_delta',contentIndex:0,delta:'before replace'}})]},tools:[],state:[],dialogs:[]};
 }
-async function attach(transport:Transport){const session=new PrimarySession({key:'primary',cwd:process.cwd(),executable:'pi',attach:true,ownerIdentity:'owner:primary:1',transport:callbacks=>{transport.callbacks=callbacks;return transport;},publish:()=>{}});await session.start();return session;}
+async function attach(transport:Transport,sessionFile?:string){const session=new PrimarySession({key:'primary',cwd:process.cwd(),executable:'pi',sessionFile,attach:true,ownerIdentity:'owner:primary:1',transport:callbacks=>{transport.callbacks=callbacks;return transport;},publish:()=>{}});await session.start();return session;}
 test('raw wire delta tape rebuilds an active message with stable identity and reduces the post-capture suffix once',async()=> {
   const first=new Transport(baseline()),session=await attach(first);
   assert.equal(session.view.pid,123);assert.equal(session.messages.length,1);assert.equal(session.messages[0]?.id,'live:owner:primary:1:2');assert.equal(session.messages[0]?.state,'partial');
   assert.deepEqual(session.messages[0]?.parts,[{type:'text',text:'before replace suffix'}]);
   const second=await attach(new Transport(baseline()));assert.equal(second.messages[0]?.id,session.messages[0]?.id);
   await session.detach();await second.detach();assert.equal(first.closed,false);assert.equal(first.detached,true);assert.ok(!first.writes.includes('abort'));assert.ok(!first.writes.includes('clear_queue'));
+});
+test('reattachment uses the owned Pi when its allocated session path has no file yet',async context=>{
+  const root=await realpath(await mkdtemp(join(tmpdir(),'ui-attach-unpersisted-')));context.after(()=>rm(root,{recursive:true,force:true}));const path=join(root,'allocated.jsonl'),b=baseline();b.descriptor={...descriptor,sessionFile:path};
+  const transport=new Transport(b);transport.sessionFile=path;const session=await attach(transport,path);context.after(()=>session.detach());
+  assert.equal(session.view.lifecycle,'ready');assert.equal(session.view.pid,123);assert.equal(session.view.sessionFile,path);await assert.rejects(()=>access(path),{code:'ENOENT'});assert.ok(!transport.writes.includes('new_session'));
 });
 test('capture overlap upserts exact committed messages and tool slots preserve the supplied partial',async()=> {
   const b=baseline(),final={...message,content:[{type:'text',text:'committed'}]};b.activeMessage=null;b.overlap=[raw(3,{type:'message_start',message}),raw(4,{type:'message_end',message:final})];b.tools=[{callId:'call',start:raw(5,{type:'tool_execution_start',toolCallId:'call',toolName:'fixture',args:{}}),latest:raw(6,{type:'tool_execution_update',toolCallId:'call',toolName:'fixture',partialResult:{content:[{type:'text',text:'supplied'}],details:{}}})}];

@@ -67,6 +67,7 @@ export class PrimarySession {
   private settled = new Set<{ resolve: () => void; reject: (error: RpcError) => void }>();
   private started = false;
   private closing?: Promise<void>;
+  private shutdownWork?:Promise<void>;
   private options: PrimarySessionOptions;
   constructor(options: PrimarySessionOptions) {
     this.options = options;
@@ -84,12 +85,15 @@ export class PrimarySession {
   get coverage() { return this.projection.coverage; }
   get stderrTail(): string { return this.client.stderrTail; }
   get target() { return this.projection.target; }
+  private async validateStartPaths():Promise<void> {
+    if (!isAbsolute(this.options.cwd) || !(await stat(this.options.cwd)).isDirectory()) throw new RpcError('invalid_request', 'Project directory must exist and be absolute.');
+    if (this.options.sessionFile&&!this.options.attach) this.options.sessionFile = await this.sessionPath(this.options.sessionFile);
+  }
   async start(): Promise<void> {
     if (this.started || this.closing || this.frozen) throw new RpcError('not_ready', 'Primary already started or closed.');
     this.started = true;
     try {
-      if (!isAbsolute(this.options.cwd) || !(await stat(this.options.cwd)).isDirectory()) throw new RpcError('invalid_request', 'Project directory must exist and be absolute.');
-      if (this.options.sessionFile) this.options.sessionFile = await this.sessionPath(this.options.sessionFile);
+      await this.validateStartPaths();
       if (this.closing || this.frozen) throw new RpcError('not_ready', 'Primary is closed.');
       const timeout = new Promise<never>((_, reject) => { this.rejectStartup = reject; });
       this.deadline(); await this.client.start(this.options.sessionFile); this.view.pid = this.client.child?.pid;
@@ -473,10 +477,16 @@ export class PrimarySession {
     if (this.startupTimer) clearTimeout(this.startupTimer);
     await this.fileHistory?.close(); await this.client.detach();
   }
-  close(): Promise<void> {
-    this.closing ??= this.closeOnce().finally(async () => { this.fileClosing ??= this.fileHistory?.close(); await this.fileClosing; })
-      .catch(error => { this.closing = undefined; throw error; });
-    return this.closing;
+  private waitShutdown(work:Promise<void>):Promise<void> {
+    let timer:NodeJS.Timeout|undefined;
+    return Promise.race([work,new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new RpcError('handoff_blocked','Primary shutdown exceeded its deadline; the writer remains owned.')),this.options.shutdownTimeoutMs??30000);})]).finally(()=>clearTimeout(timer));
+  }
+  close():Promise<void> {
+    if(!this.shutdownWork){
+      const work=this.closeOnce().finally(async()=>{this.fileClosing??=this.fileHistory?.close();await this.fileClosing;});this.shutdownWork=work;
+      void work.catch(()=>{if(this.shutdownWork===work)this.shutdownWork=undefined;});
+    }
+    this.closing??=this.waitShutdown(this.shutdownWork).catch(error=>{this.closing=undefined;throw error;});return this.closing;
   }
   private async closeOnce(): Promise<void> {
     this.frozen = true; this.invalidatePreparation(); this.rejectStartup?.(new RpcError('not_ready', 'Primary is closed.'));

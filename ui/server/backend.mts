@@ -142,6 +142,10 @@ export async function main(args=process.argv.slice(2), opener:(url:string)=>Prom
   process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);process.on('unhandledRejection',rejection);process.on('uncaughtException',exception);
   return {...app,close};
 }
+function shutdownBlockCode(error:unknown):string {
+  if(error&&typeof error==='object'&&'code' in error&&typeof error.code==='string'&&/^[a-z][a-z0-9_]{0,63}$/.test(error.code))return error.code;
+  return 'handoff_blocked';
+}
 async function cli() {
   if (!process.send) {await main(); return;}
   type Start = {kind: string; options: Options; restarts?: number; owner?: boolean; ownerState?:OwnerStateIdentity; release?: {directory:string; manifest:ReleaseManifest; previous?:string}};
@@ -177,7 +181,7 @@ async function cli() {
       case 'drain':void app.prepareRelease().then(()=>process.send?.({kind:'fenced'}),()=>process.send?.({kind:'drain-blocked'}));break;
       case 'drain-cancel':app.cancelRelease();break;
       case 'detach':void app.detach(true).then(()=>{process.send?.({kind:'drained'});process.exit(0);},()=>{process.send?.({kind:'detach-failed'});process.exit(1);});break;
-      case 'whole-stop':void app.close().then(()=>process.exit(0),()=>process.send?.({kind:'stop-blocked'}));break;
+      case 'whole-stop':void app.close().then(()=>process.exit(0),error=>process.send?.({kind:'stop-blocked',code:shutdownBlockCode(error)}));break;
     }
   };
   process.on('message',(value:unknown)=>{

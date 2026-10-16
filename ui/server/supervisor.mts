@@ -13,10 +13,10 @@ import {findRelease, writeSelection} from './release-store.mts';
 export type BackendReady = {kind:'ready';url:string;identity:UiIdentity};
 type Release = {directory:string;manifest:ReleaseManifest;previous?:string};
 type SupervisorOptions = {module?:string;ready?:(message:BackendReady)=>void;output?:(line:string)=>void;
-  spawn?:typeof fork;signal?:(pid:number,signal:NodeJS.Signals|0)=>void;now?:()=>number;restartDelayMs?:number;graceMs?:number;cleanupMs?:number;
+  spawn?:typeof fork;signal?:(pid:number,signal:NodeJS.Signals|0)=>void;now?:()=>number;restartDelayMs?:number;graceMs?:number;cleanupMs?:number;stopTimeoutMs?:number;
   release?:Release;releaseRoot?:string;lastGood?:string;
   observeOwnerRecord?:(notice:Extract<OwnerNotice,{kind:'record'}>)=>void};
-type Running = {child:ChildProcess; attachment:string; connected?:boolean; wire:OwnerWire; release?:Release; intentional:boolean; exited:Promise<void>; resolveExit:()=>void; ready:Promise<BackendReady>; resolveReady:(v:BackendReady)=>void; rejectReady:(e:Error)=>void; prewarmed:Promise<void>; resolveWarm:()=>void; rejectWarm:(e:Error)=>void; drain?:{resolve:()=>void;reject:(e:Error)=>void}; timer?:NodeJS.Timeout};
+type Running = {child:ChildProcess; attachment:string; connected?:boolean; wire:OwnerWire; release?:Release; intentional:boolean; exited:Promise<void>; resolveExit:()=>void; ready:Promise<BackendReady>; resolveReady:(v:BackendReady)=>void; rejectReady:(e:Error)=>void; prewarmed:Promise<void>; resolveWarm:()=>void; rejectWarm:(e:Error)=>void; drain?:{resolve:()=>void;reject:(e:Error)=>void}; stop?:{reject:(e:Error)=>void}; timer?:NodeJS.Timeout};
 function groupExists(pid:number,signal:NonNullable<SupervisorOptions['signal']>) {try {signal(-pid,0);return true;} catch(error) {if((error as NodeJS.ErrnoException).code==='ESRCH')return false;throw new Error('Owned process cleanup is unavailable.');}}
 function killGroup(pid:number,signal:NonNullable<SupervisorOptions['signal']>) {try {signal(-pid,'SIGKILL');} catch(error) {if((error as NodeJS.ErrnoException).code!=='ESRCH')throw error;}}
 async function cleanupGroup(pid:number,signal:NonNullable<SupervisorOptions['signal']>,now:()=>number,limit:number) {
@@ -36,10 +36,12 @@ export function supervise(options:Options,hooks:SupervisorOptions={}) {
   let stopped=false,stopping=false,restarts=0,unavailable=false,switching=false,lastGood=hooks.lastGood,activeRelease=hooks.release,triedLastGood=false,fallbackSelection=false;
   let delay:NodeJS.Timeout|undefined,finish!:(code:number)=>void;const closed=new Promise<number>(accept=>{finish=accept;});
   const crashes:number[]=[],failed:string[]=[],cleanupBlocked:Running[]=[];
+  let stopError:ReleaseStatus['stopError'];
   let outputBytes=0,outputStopped=false;
   const output=(line:string)=> {if(outputStopped)return;const text=redactLifecycle(line),bytes=Buffer.byteLength(text)+1;if(outputBytes+bytes>LIFECYCLE_BYTES-64) {outputStopped=true;hooks.output?.('Further backend output is omitted.');return;} outputBytes+=bytes;hooks.output?.(text);};
   const settle=(code:number)=> {stopped=true;clearTimeout(delay);finish(code);};
-  const status=():ReleaseStatus=>({current:activeRelease?.manifest.id,lastGood,candidate:candidate?.release?.manifest.id,state:switching?'switching':unavailable?'backend-unavailable':'ready',ownerPid:process.pid,backendPid:current?.child.pid,ownerIncarnation:ownerHello?.ownerIncarnation??'',ownerProtocol:OWNER_PROTOCOL,primaries:owner?.descriptors().filter(v=>!v.exited).map(({key,epoch,pid})=>({key,epoch,pid}))??[],failed:[...failed]});
+  const controlState=():ReleaseStatus['state']=>{if(stopped)return 'stopped';if(stopping)return 'stopping';if(stopError)return 'stop-blocked';if(switching)return 'switching';return unavailable?'backend-unavailable':'ready';};
+  const status=():ReleaseStatus=>({current:activeRelease?.manifest.id,lastGood,candidate:candidate?.release?.manifest.id,state:controlState(),...(stopError?{stopError}:{}),ownerPid:process.pid,backendPid:current?.child.pid,ownerIncarnation:ownerHello?.ownerIncarnation??'',ownerProtocol:OWNER_PROTOCOL,primaries:owner?.descriptors().filter(v=>!v.exited).map(({key,epoch,pid})=>({key,epoch,pid}))??[],failed:[...failed]});
   const relay=(stream:NodeJS.ReadableStream)=> {
     let buffer='',discard=false;
     const line=(part:string)=>{if(buffer.length+part.length>4096){buffer='';discard=true;}if(!discard)buffer+=part;if(!part.endsWith('\n'))return;if(!discard)output(buffer.trimEnd());buffer='';discard=false;};
@@ -92,13 +94,13 @@ export function supervise(options:Options,hooks:SupervisorOptions={}) {
     clearTimeout(run.timer);selected.port=Number(new URL(ready.url).port||80);unavailable=false;run.resolveReady(ready);hooks.ready?.(ready);
     if(fallbackSelection&&hooks.releaseRoot&&run.release){fallbackSelection=false;void writeSelection(hooks.releaseRoot,run.release.manifest.id).catch(()=>output('The restored release selection could not be retained.'));}
   };
-  const backendControl=(run:Running,kind?:string)=>{
+  const backendControl=(run:Running,kind?:string,code?:unknown)=>{
     switch(kind){
       case 'prewarmed':clearTimeout(run.timer);run.resolveWarm();break;
       case 'prewarm-failed':run.rejectWarm(new Error('Candidate prewarm failed.'));break;
       case 'drain-blocked':run.drain?.reject(new Error('The active backend refused a short release drain.'));break;
       case 'fenced':run.drain?.resolve();break;
-      case 'stop-blocked':stopping=false;output('Queue recovery blocks clean shutdown; the owner remains available.');break;
+      case 'stop-blocked':run.stop?.reject(Object.assign(new Error('Primary recovery or writer exit blocks clean shutdown; the owner and Pi remain active.'),{code:typeof code==='string'&&/^[a-z][a-z0-9_]{0,63}$/.test(code)?code:'shutdown_blocked'}));break;
       case 'restart':if(current===run&&!switching){run.intentional=true;run.timer=setTimeout(()=>{if(run.child.pid)killGroup(run.child.pid,signal);},hooks.graceMs??5000);void run.exited.then(()=>{if(!stopping&&!stopped){restarts++;launch(false,activeRelease);}});}break;
     }
   };
@@ -121,11 +123,11 @@ export function supervise(options:Options,hooks:SupervisorOptions={}) {
     child.once('spawn',()=> {if(stopped) {child.kill('SIGTERM');return;} child.send({kind:prewarm?'prewarm':'start',options:selected,restarts,owner:true,ownerState:ownerHello?.state,release},error=>{if(error)child.kill('SIGTERM');});run.timer=setTimeout(()=>{output('The backend did not confirm startup.');child.kill('SIGKILL');},45000);});
     child.on('error',()=> {output('The backend process failed.');if(!child.pid) {unavailable=true;run.rejectReady(new Error('Backend spawn failed.'));run.rejectWarm(new Error('Backend spawn failed.'));run.resolveExit();}else child.kill('SIGTERM');});
     child.on('message',(message:unknown)=> {
-      const v=message as {kind?:string;state?:OwnerStateIdentity};
+      const v=message as {kind?:string;state?:OwnerStateIdentity;code?:unknown};
       if(v.kind==='owner-connect'&&v.state) {void attachOwner(run,v.state);return;}
       const ready=readyMessage(message);
       if(ready){backendReady(run,ready);return;}
-      backendControl(run,v.kind);
+      backendControl(run,v.kind,v.code);
     });
     child.once('exit',(code,termination)=> {void watchExit(run,code,termination).catch(()=> {unavailable=true;run.resolveExit();cleanupBlocked.push(run);if(current===run)current=undefined;if(candidate===run)candidate=undefined;output('Backend group cleanup blocked replacement; the raw owner remains available.');});});
     return run;
@@ -148,7 +150,7 @@ export function supervise(options:Options,hooks:SupervisorOptions={}) {
   const selectRelease=async(id:string,release:Release,oldRelease?:Release)=>{
     if(!hooks.releaseRoot)throw new Error('Release storage is unavailable.');
     await writeSelection(hooks.releaseRoot,id,oldRelease?.manifest.id??lastGood);
-    lastGood=oldRelease?.manifest.id??lastGood;activeRelease={...release,previous:oldRelease?.directory};crashes.length=0;triedLastGood=false;unavailable=false;switching=false;
+    lastGood=oldRelease?.manifest.id??lastGood;activeRelease={...release,previous:oldRelease?.directory};crashes.length=0;triedLastGood=false;unavailable=false;switching=false;stopError=undefined;
   };
   const switchRelease=async(id:string)=> {
     if(switching||stopping||stopped||!hooks.releaseRoot||cleanupBlocked.length)throw new Error('Release switching is unavailable until owned backend cleanup is confirmed.');
@@ -166,19 +168,24 @@ export function supervise(options:Options,hooks:SupervisorOptions={}) {
       await restoreSwitch(id,release,previous,oldRelease,next,drained);throw error;
     } finally {candidate=undefined;switching=false;}
   };
+  const stopWithOwner=async(run:Running)=>{
+    let timer:NodeJS.Timeout|undefined;
+    const blocked=new Promise<never>((_,reject)=>{run.stop={reject};timer=setTimeout(()=>reject(Object.assign(new Error('The backend did not confirm shutdown before its deadline; the owner and Pi remain active.'),{code:'shutdown_timeout'})),hooks.stopTimeoutMs??35000);});
+    try{run.child.send({kind:'whole-stop'});await Promise.race([run.exited,blocked]);}finally{clearTimeout(timer);run.stop=undefined;}
+  };
   const stopBackends=async()=>{
     for(const run of cleanupBlocked)if(run.child.pid)await cleanupGroup(run.child.pid,signal,now,hooks.cleanupMs??5000);cleanupBlocked.length=0;
     if(candidate){candidate.intentional=true;candidate.child.kill('SIGTERM');await candidate.exited;candidate=undefined;}
     if(!current)return;const run=current;run.intentional=true;
-    if(owner)run.child.send({kind:'whole-stop'});else run.child.kill('SIGTERM');
-    const timer=setTimeout(()=>{if(!owner&&run.child.pid)killGroup(run.child.pid,signal);},hooks.graceMs??5000);await run.exited;clearTimeout(timer);
+    if(owner){await stopWithOwner(run);return;}
+    run.child.kill('SIGTERM');const timer=setTimeout(()=>{if(run.child.pid)killGroup(run.child.pid,signal);},hooks.graceMs??5000);await run.exited;clearTimeout(timer);
   };
   const stopOwner=async()=>{
     if(!owner)return;for(const primary of owner.descriptors())if(!primary.exited)await owner.shutdownPrimary(primary.key);if(ownerObserver)owner.detach(ownerObserver);await owner.dispose();
   };
   const stop=()=>{
-    if(stopped||stopping)return;stopping=true;clearTimeout(delay);
-    void (async()=>{await stopBackends();await stopOwner();settle(0);})().catch(()=>{stopping=false;unavailable=!current;output('Primary queue recovery or writer exit blocks clean shutdown.');});
+    if(stopped||stopping)return;stopping=true;stopError=undefined;clearTimeout(delay);
+    void (async()=>{await stopBackends();await stopOwner();settle(0);})().catch((error:unknown)=>{stopping=false;unavailable=!current;stopError={code:error&&typeof error==='object'&&'code' in error&&typeof error.code==='string'?error.code:'shutdown_blocked',message:'Primary recovery or writer exit is unconfirmed; the owner remains active.'};output('Primary queue recovery or writer exit blocks clean shutdown.');});
   };
   try {launch(false,activeRelease);} catch {unavailable=true;}
   return {closed,stop,status,switchRelease,rollback:()=>{if(!lastGood)throw new Error('There is no last good release.');return switchRelease(lastGood);},restartCount:()=>restarts};

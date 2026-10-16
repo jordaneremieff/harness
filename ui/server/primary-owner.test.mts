@@ -169,6 +169,29 @@ test('same-key reopen requires prior exit and durable queue recovery import',asy
   assert.notEqual(reopened.pid,f.primary.pid);assert.equal(reopened.sequence,before);assert.equal(reopened.exited,false);
   await f.command({type:'get_state'});assert.ok((f.owner.descriptors()[0]?.sequence??0)>(before??0));
 });
+test('an advertised unpersisted session file does not block state reads or deliberate shutdown',async t=> {
+  const f=await fixture(t),file=join(f.cwd,'not-yet-created.jsonl');
+  f.child.onCommand=record=>f.child.answer(record,record.type==='get_state'?{sessionFile:file,sessionId:'new',isStreaming:false,isCompacting:false,pendingMessageCount:0}:record.type==='clear_queue'?{steering:[],followUp:[]}:{});
+  const state=await f.command({type:'get_state'});assert.equal(state.state,'complete');assert.equal(state.response?.success,true);
+  assert.equal(f.owner.descriptors()[0]?.synchronized,true);assert.equal(f.owner.descriptors()[0]?.sessionFile,undefined);
+  const captured=await baseline(f.owner,'old',f.address);assert.equal(captured.metadata.complete,true);
+  await call(f.owner,'old',{kind:'capture-ack',...f.address,token:captured.begin.token});
+  f.owner.detach('old');await f.owner.shutdownPrimary('primary',1000);
+  assert.equal(f.child.ended,true);assert.deepEqual(f.child.writes.map(record=>record.type),['get_state','get_state','clear_queue','abort']);
+});
+test('only the observed unpersisted path crosses an epoch before its later writer claim',async t=> {
+  const f=await fixture(t),file=join(f.cwd,'not-yet-created.jsonl');
+  f.child.onCommand=record=>f.child.answer(record,{sessionFile:file,pendingMessageCount:0});
+  assert.equal((await f.command({type:'get_state'})).state,'complete');
+  await assert.rejects(call(f.owner,'old',{kind:'epoch',...f.address,next:2,sessionFile:join(f.cwd,'unobserved.jsonl')}));
+  const next=await call<OwnerDescriptor>(f.owner,'old',{kind:'epoch',...f.address,next:2,sessionFile:file});
+  assert.equal(next.epoch,2);assert.equal(next.sessionFile,undefined);assert.equal(next.synchronized,true);
+  await writeFile(file,'{}\n');
+  const state=await call<OwnerOutcome>(f.owner,'old',{kind:'command',primaryKey:'primary',epoch:2,record:{type:'get_state'}});
+  assert.equal(state.state,'complete');assert.equal(f.owner.descriptors()[0]?.sessionFile,await realpath(file));
+  await assert.rejects(call(f.owner,'old',{kind:'open',primary:{key:'other',epoch:1,cwd:f.cwd,executable:'fake',sessionFile:file,recoveryWorkspaceId:'workspace'}}),/another owner/);
+  assert.equal(f.children.length,1);
+});
 test('successful get_state claims the canonical saved file before another writer opens',async t=> {
   const f=await fixture(t),file=join(f.cwd,'session.jsonl');await writeFile(file,'{}\n');
   f.child.onCommand=record=>f.child.answer(record,{pendingMessageCount:0,sessionFile:file});
