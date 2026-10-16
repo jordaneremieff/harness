@@ -157,7 +157,7 @@ it opens no storage and starts no host. Each native row retains its own result
 observations so its header reflects applied settings without a discovery read.
 Tool cards retain Pi's native padding. Peer cards supply the same inner top and
 bottom padding, while Pi supplies their outer separator.
-The manager contract is `manager/3.0.0`; a reload over an older retained manager
+The manager contract is `manager/4.0.0`; a reload over an older retained manager
 refuses agent controls and requires a Pi restart.
 Expanded cards retain full IDs and the complete result within the display bound.
 
@@ -1874,8 +1874,8 @@ observation fields.
 
 `recovery-state/1.1.0` is the response contract for the separate `deliveriesActive`
 field. `deliveriesPending` still reports all pending rows and governs marker
-clearance. `manager/3.0.0` uses the package-level Chord transport and includes
-joined communication display and awaited primary endpoint teardown,
+clearance. `manager/4.0.0` uses the package-level Chord transport and includes
+retained primary acceptance, joined communication display and awaited primary endpoint teardown,
 preset-first creation resolution and machine
 preference snapshots, alongside caller usage for fleet observations, effective
 thinking from catalog validation, ordinary retained observation, first-input
@@ -1889,8 +1889,11 @@ for recovery links. Submit requests use 1.2.0 for structured retry notices;
 submit responses remain at 1.1.0. Receipts responses use 1.2.0 for retained
 provider-block facts; their request identity remains at 1.1.0.
 `native-controls/2.0.0` binds the preset-first dispatch behavior to the loaded
-Durable release. `primary-delivery/2.0.0` uses the package-level Chord transport
-and carries retry notices and blocked causes alongside exact continuations.
+Durable release. `primary-delivery/3.0.0` requires verified retained primary
+acceptance and carries retry notices and blocked causes alongside exact continuations.
+Older primary endpoints refuse delivery until their Pi process restarts. The
+retained manager contract also changes because its primary callback carries the
+transport source identity. Host operation identities remain unchanged.
 The Endpoint identity remains separate from both retained interfaces.
 
 Before replacing active host source or dependencies, drain admitted work under
@@ -2001,7 +2004,28 @@ no pending native work and no active delivery; host change notifications trigger
 that check, not polling. A row addressed only to a proven-dead ordinary primary
 waits in durable storage without a recovery link or a delivery retry timer. The
 host retires normally and keeps `recoveryDue` set while that row remains pending,
-with or without a live fallback recipient. Any primary registration runs the
+with or without a live fallback recipient. Source-ledger deliveries explicitly
+set `requireRetained:true` for both owning and fallback primary routes. The
+channel defaults to that strong acceptance mode: a live ordinary primary
+acknowledges only after its actual session JSONL file contains the matching
+`agent.peer` entry and transport source identity. Direct ordinary-primary
+submit/report routes have no source ledger and explicitly use
+`requireRetained:false`; their success means queued admission, not retention,
+action, or task acceptance. Queued deduplication never satisfies a later retained
+acceptance request. Pi's in-memory queue and `sendMessage`
+return do not prove retention. Pending confirmation refuses transiently, leaving
+the source ledger responsible for retry while other owners still receive their
+rows. In-memory attempt markers prevent repeated steering while a notice is
+queued; settled or failed attempts remain retryable. A new custom-only session
+waits for Pi's first conversation flush. Verification reads at most one MiB per
+scan with bounded continuation. It streams past unrelated records without
+buffering or parsing their bodies, so large image/tool records impose no new
+record-size limit. Only exact serialized candidate notice lines confirm
+retention. Invalid header identity, incomplete tails, file replacement, and
+truncation refuse confirmation. No second persistent delivery queue or
+exactly-once historical ledger exists. A crash after retention but before source
+acknowledgment still permits replay.
+Any primary registration runs the
 existing bounded recovery scan; a resumed owner with the same session ID receives
 its pending notice. A recovery-state read requests a delivery scan even if the
 source host is still up, so owner registration before retirement also resumes

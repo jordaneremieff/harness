@@ -50,6 +50,8 @@ export interface PrimaryDelivery {
 	readonly text: string;
 	readonly details?: JsonValue;
 	readonly replyTo?: string;
+	/** Defaults true. False accepts only queued admission for direct routes without a source ledger. */
+	readonly requireRetained?: boolean;
 }
 
 export type PrimaryRepositoryState = "git" | "outside-git" | "unknown";
@@ -492,7 +494,9 @@ class PrimaryChannelHost {
 		const message = raw as Record<string, unknown>;
 		if (typeof message.sourceId !== "string" || message.sourceId === "" || typeof message.text !== "string") throw invalid("params", "deliver requires sourceId and text");
 		if (message.replyTo !== undefined && typeof message.replyTo !== "string") throw invalid("params", "deliver replyTo must be a string");
+		if (message.requireRetained !== undefined && typeof message.requireRetained !== "boolean") throw invalid("params", "deliver requireRetained must be a boolean");
 		await this.options.deliver({
+			requireRetained: message.requireRetained !== false,
 			sourceId: message.sourceId,
 			text: message.text,
 			...(message.details === undefined ? {} : { details: message.details as JsonValue }),
@@ -618,6 +622,7 @@ export async function connectPrimaryChannel(options: { readonly id: string; read
 					text: message.text,
 					...(message.details === undefined ? {} : { details: message.details }),
 					...(message.replyTo === undefined ? {} : { replyTo: message.replyTo }),
+					...(message.requireRetained === undefined ? {} : { requireRetained: message.requireRetained }),
 				}, timeoutMs);
 			},
 			trustPrompt: async (cwd, signal) => {

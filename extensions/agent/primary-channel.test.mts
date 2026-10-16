@@ -124,7 +124,10 @@ it("delivers a message with source, text, details, and retained replyTo", async 
 	const client = await connectPrimaryChannel({ id: f.id, sessionsRoot: f.root });
 	try {
 		await client.deliver({ sourceId: "source-1", text: "hello primary", details: { kind: "report" }, replyTo: "entry-9" });
-		assert.deepEqual(f.delivered, [{ sourceId: "source-1", text: "hello primary", details: { kind: "report" }, replyTo: "entry-9" }]);
+		assert.deepEqual(f.delivered, [{ sourceId: "source-1", text: "hello primary", details: { kind: "report" }, replyTo: "entry-9", requireRetained: true }]);
+		await client.deliver({ sourceId: "source-2", text: "queued primary", requireRetained: false });
+		assert.deepEqual(f.delivered[1], { sourceId: "source-2", text: "queued primary", requireRetained: false });
+		await assert.rejects(client.deliver({ sourceId: "invalid", text: "invalid", requireRetained: "false" as never }), /requireRetained must be a boolean/u);
 	} finally {
 		await client.close();
 	}
@@ -404,7 +407,7 @@ it("rewrites the endpoint identity when a registered primary changes", async (t)
 	assert.equal("name" in cleared, false, "a cleared name leaves no stale record field");
 });
 
-it("publishes the current endpoint version and refuses an older record with the restart reason", async (t) => {
+it("publishes retained-acceptance semantics and refuses a pre-retention endpoint with the restart reason", async (t) => {
 	const root = testRoot(t);
 	const id = uuidV7();
 	const channel = await createPrimaryChannel(channelOptions(root, id));
@@ -412,12 +415,13 @@ it("publishes the current endpoint version and refuses an older record with the 
 	const path = primaryEndpointPath(root, id);
 	const published = JSON.parse(readFileSync(path, "utf8")) as { version: string };
 	assert.equal(published.version, PRIMARY_ENDPOINT_VERSION);
-	writeFileSync(path, JSON.stringify({ ...published, version: "primary-delivery/0.0.1" }));
+	assert.equal(published.version, "primary-delivery/3.0.0");
+	writeFileSync(path, JSON.stringify({ ...published, version: "primary-delivery/2.0.0" }));
 	await assert.rejects(
 		connectPrimaryChannel({ id, sessionsRoot: root }),
 		(error: unknown) =>
 			error instanceof PrimaryChannelUnavailableError &&
-			String(error).includes("endpoint version primary-delivery/0.0.1") &&
+			String(error).includes("endpoint version primary-delivery/2.0.0") &&
 			String(error).includes("Restart that Pi"),
 	);
 });

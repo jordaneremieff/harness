@@ -663,6 +663,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	): Promise<boolean> => {
 		const status = await readSourceStatus(identity);
 		const message: PrimaryDelivery = {
+			requireRetained: true,
 			sourceId: rowSourceId(metadata, row),
 			text: channelText(metadata, row, displayName(status, identity), originalOwnerId, fallback),
 			details: await rowDetails(row, identity, originalOwnerId, deliveryRecipient, liveOwner, fallback, status),

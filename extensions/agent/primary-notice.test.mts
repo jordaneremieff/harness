@@ -4,6 +4,7 @@ import { machineConfig } from "./settings-fixture.mts";
  * path: the registered primary channel receives a delivery, the extension calls
  * `pi.sendMessage`, and Pi decides whether that message starts a turn.
  *
+ * One-shot fixture sends accept queued admission, not source-ledger retention.
  * A wake-false notice appends to the session without a provider request when
  * idle and waits for the turn boundary while streaming. A wake-true notice
  * starts exactly one turn. The fixture uses an isolated agent store and a faux
@@ -207,7 +208,7 @@ async function noticeFixture(t: { after(fn: () => void): void }, toolTarget?: st
 	const deliver = async (sourceId: string, text: string, wake: boolean): Promise<void> => {
 		const connection = await connectPrimaryChannel({ id, sessionsRoot });
 		try {
-			await connection.deliver({ sourceId, text, details: { sourceId, wake, identity: "storage-a", label: "poem task", status: "done", provider: "test-provider", modelId: "test-model", thinkingLevel: "high" } });
+			await connection.deliver({ sourceId, text, requireRetained: false, details: { sourceId, wake, identity: "storage-a", label: "poem task", status: "done", provider: "test-provider", modelId: "test-model", thinkingLevel: "high" } });
 		} finally {
 			await connection.close().catch(() => undefined);
 		}
@@ -243,13 +244,13 @@ async function noticeFixture(t: { after(fn: () => void): void }, toolTarget?: st
 	};
 }
 
-it("retains a full wake-false notice and its source details without a primary model turn", { timeout: 30000 }, async (t) => {
+it("appends a full wake-false notice and its source details without a primary model turn", { timeout: 30000 }, async (t) => {
 	const fixture = await noticeFixture(t);
 	const body = `operator notice body\n${"Retained result line.\n".repeat(1800)}FINAL_RESULT`;
 	await fixture.deliver("operator:1", body, false);
 	await fixture.session.waitForIdle();
 	const entries = fixture.customEntries();
-	assert.equal(entries.length, 1, "the notice is retained in the session");
+	assert.equal(entries.length, 1, "the notice is present in Pi's session context");
 	assert.equal(entries[0]?.customType, "agent.peer");
 	assert.equal(entries[0]?.content, body);
 	assert.deepEqual(entries[0]?.details, { sourceId: "operator:1", wake: false, identity: "storage-a", label: "poem task", status: "done", provider: "test-provider", modelId: "test-model", thinkingLevel: "high" });

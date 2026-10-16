@@ -72,7 +72,7 @@ Source: `extensions/agent/communication.ts`; `communication-retention.ts`; `comm
 
 ## Ordinary peer communication mapping
 
-Ordinary Pi custom messages with `customType: "agent.peer"` expose a structured peer contribution through their supplied `details`. This section is the public mapping for consumers; it does not authorize imports of Agent-private types, prose parsing, new delivery operations, or history rewriting. The `primary-delivery/2.0.0` channel changes transport identity, not this payload mapping. `sendMessage`, wake behavior, original content, and `display: false` exclusion retain their meanings. Saved `custom_message` entries and live `role: "custom"` messages use the same mapping before projection drops their details.
+Ordinary Pi custom messages with `customType: "agent.peer"` expose a structured peer contribution through their supplied `details`. This section is the public mapping for consumers; it does not authorize imports of Agent-private types, prose parsing, new delivery operations, or history rewriting. The `primary-delivery/3.0.0` channel requires retained acceptance without changing this payload mapping. `sendMessage`, wake behavior, original content, and `display: false` exclusion retain their meanings. Saved `custom_message` entries and live `role: "custom"` messages use the same mapping before projection drops their details.
 
 The normalized value has `format: "agent.communication/1"`, `sender`, `body`, `recordedAt`, and exactly one of the variants below. Unknown properties are not copied into this closed value. Ordinary source records retain their original detail fields separately.
 
@@ -355,8 +355,19 @@ hydrated `value` and `dispose`. Reconnect creates a new client host and fresh
 Feed handles and observation tokens, not `host.connect()` with old handles.
 Sources: `transport/{index,endpoint,unix-link}.ts`.
 
-The manager's retained-object identity is `manager/3.0.0`; ordinary primary
-channels use `primary-delivery/2.0.0`. Their Endpoint methods are `info`,
+The manager's retained-object identity is `manager/4.0.0`; ordinary primary
+channels use `primary-delivery/3.0.0`. The typed `deliver` payload accepts optional
+`requireRetained:boolean`, defaulting to true. Source-ledger owner and fallback
+routes explicitly require retained acceptance: an exact `agent.peer` source
+identity and matching entry bytes in the primary's actual session JSONL file,
+not a queued call to Pi's void `sendMessage`. Direct ordinary-primary submit/report
+routes explicitly set false and accept queued admission without a retention
+promise; they have no source ledger to retry a pending refusal. Deduplication
+keeps those acceptance modes separate. The source ledger retains retry ownership
+while bounded file verification is incomplete. Unrelated transcript records are
+streamed past without a record-size limit or general transcript validation. A new custom-only session remains unconfirmed
+until Pi flushes its first conversation. Older endpoints refuse the new channel;
+restart the primary and source hosts at their agreed safe boundaries. Their Endpoint methods are `info`,
 `deliver`, and `trustPrompt`, with the existing single payload in `params`
 and no host operation contract. Host operation identities and
 `retained-read/1.0.0` do not change merely because the wire changes. A version

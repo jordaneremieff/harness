@@ -53,6 +53,7 @@ import { EFFORT_PURPOSE_ENTRY, purposeExcerpt, retainedPurpose } from "./effort-
 import { formatEffortAwareness } from "./effort-awareness.ts";
 import { formatPrimaryObservation } from "./primary-observation.ts";
 import type { PrimaryIntentClaim } from "./primary-channel.ts";
+import { PrimaryRetention } from "./primary-retention.ts";
 
 export { AgentManager } from "./manager.ts";
 const ownerKey = Symbol.for("pi.extension.agent.owners");
@@ -229,6 +230,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	pi.registerToolRenderer((name, next) => next() ?? cards[name]);
 	publishToolDisplay(pi.events, Object.entries(cards).map(([name, presentation]) => ({ name, ...presentation })));
 	const primaries = new Map<string, AbortController>();
+	const primaryRetentions = new Map<string, PrimaryRetention>();
 	const getManager = (): AgentManager => {
 		const agentDir = process.env.PI_AGENT_DIR ?? getAgentDir();
 		const configured = resolve(process.env.PI_AGENT_SESSIONS_DIR ?? join(agentDir, "agent-sessions"));
@@ -834,6 +836,12 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		const abort = new AbortController();
 		primaries.set(sessionId, abort);
 		const purpose = retainedPurpose(ctx.sessionManager, _event.reason);
+		const retention = new PrimaryRetention(ctx.sessionManager, () => ctx.isIdle(), (text, details) => {
+			refreshPreferences(ctx);
+			const wake = !(details !== null && typeof details === "object" && (details as { wake?: unknown }).wake === false);
+			pi.sendMessage({ customType: "agent.peer", content: text, details, display: true }, wake ? { triggerTurn: true, deliverAs: "steer" } : { triggerTurn: false });
+		});
+		primaryRetentions.set(sessionId, retention);
 		await getManager().registerPrimary(sessionId, {
 			sentWork: retainedSentWork(ctx.sessionManager.getEntries()),
 			retainSentWork: (sessionId) => pi.appendEntry(SENT_WORK_ENTRY, { sessionId }),
@@ -846,18 +854,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 			observedInputCanCapture: purpose.canCapture,
 			model: ctx.model ? { provider: ctx.model.provider, modelId: ctx.model.id } : undefined,
 			thinkingLevel: pi.getThinkingLevel(),
-			send: (text, details) => {
-				refreshPreferences(ctx);
-				const wake = !(
-					details !== null &&
-					typeof details === "object" &&
-					(details as { wake?: unknown }).wake === false
-				);
-				pi.sendMessage(
-					{ customType: "agent.peer", content: text, details, display: true },
-					wake ? { triggerTurn: true, deliverAs: "steer" } : { triggerTurn: false },
-				);
-			},
+			send: (text, details, sourceId, requireRetained) => retention.deliver(sourceId, text, details, requireRetained),
 			status: (text) => ctx.ui.setStatus("agent", text),
 			promptTrust: (cwd) =>
 				ctx.hasUI
@@ -894,10 +891,13 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		selfCompaction.clear();
 		getManager().touchPrimary(ctx.sessionManager.getSessionId());
 	});
+	pi.on("agent_settled", (_event, ctx) => { primaryRetentions.get(ctx.sessionManager.getSessionId())?.settled(); });
 	pi.on("session_shutdown", async (_event, ctx) => {
 		disposeFactorySettings();
 		selfCompaction.clear();
 		const id = ctx.sessionManager.getSessionId();
+		primaryRetentions.get(id)?.clear();
+		primaryRetentions.delete(id);
 		const abort = primaries.get(id);
 		if (!abort) return;
 		abort.abort();

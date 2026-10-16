@@ -79,7 +79,7 @@ export interface AgentManagerOptions {
 	/** Largest recorded-failure memory; the oldest failure evicts first. */
 	failureLimit?: number;
 }
-interface PrimaryClient { sentWork?: Set<string>; retainSentWork?(sessionId: string): void; send(text: string, details: unknown): void; status?(text: string | undefined): void; signal: AbortSignal; cwd?: string; sessionFile?: string; name?: string; observedInput?: string; observedInputComplete?: boolean; observedInputCanCapture?: boolean; model?: { provider: string; modelId: string }; thinkingLevel?: string; promptTrust?(cwd: string): Promise<ProjectTrustDecision | undefined> }
+interface PrimaryClient { sentWork?: Set<string>; retainSentWork?(sessionId: string): void; send(text: string, details: unknown, sourceId: string, requireRetained: boolean): void; status?(text: string | undefined): void; signal: AbortSignal; cwd?: string; sessionFile?: string; name?: string; observedInput?: string; observedInputComplete?: boolean; observedInputCanCapture?: boolean; model?: { provider: string; modelId: string }; thinkingLevel?: string; promptTrust?(cwd: string): Promise<ProjectTrustDecision | undefined> }
 interface ConversationPage { items: Array<{ identity: string; name?: string; busy?: boolean; parent?: string }>; next?: unknown }
 interface ListCursor { storage?: string; catalog?: string; native?: unknown; query: string; cwd: string }
 interface ListRecordStep { record: CatalogRecord; catalog?: string }
@@ -565,8 +565,8 @@ export class AgentManager {
 			const sender = this.primaryChannels.get(caller.id)?.info();
 			const name = "name" in caller ? caller.name : sender?.name;
 			const observedPurpose = caller.observedPurpose ?? sender?.observedPurpose;
-			await channel.deliver({ sourceId, text: String(input.message ?? ""), details: { kind: method === "report" ? "report" : "message", senderKind: "session", senderIdentity: caller.id, source: sourceId, liveOwner: true, saved: false, origin, wake: origin !== "operator", ...(name === undefined ? {} : { name }), ...(observedPurpose === undefined ? {} : { observedPurpose: observedPurpose.text }), ...(caller.model === undefined ? {} : { provider: caller.model.provider, modelId: caller.model.modelId }), ...(caller.thinkingLevel === undefined ? {} : { thinkingLevel: caller.thinkingLevel }) }, ...(typeof input.replyTo === "string" ? { replyTo: input.replyTo } : {}) });
-			return { sessionId, admitted: true, sourceId, boundary: "Delivery does not prove action or task acceptance" };
+			await channel.deliver({ sourceId, requireRetained: false, text: String(input.message ?? ""), details: { kind: method === "report" ? "report" : "message", senderKind: "session", senderIdentity: caller.id, source: sourceId, liveOwner: true, saved: false, origin, wake: origin !== "operator", ...(name === undefined ? {} : { name }), ...(observedPurpose === undefined ? {} : { observedPurpose: observedPurpose.text }), ...(caller.model === undefined ? {} : { provider: caller.model.provider, modelId: caller.model.modelId }), ...(caller.thinkingLevel === undefined ? {} : { thinkingLevel: caller.thinkingLevel }) }, ...(typeof input.replyTo === "string" ? { replyTo: input.replyTo } : {}) });
+			return { sessionId, admitted: true, sourceId, boundary: "Queued admission does not prove retention, action, or task acceptance" };
 		} finally { await channel.close(); }
 	}
 
@@ -814,9 +814,10 @@ export class AgentManager {
 			promptTrust: (cwd) => primary.promptTrust?.(cwd) ?? Promise.resolve(undefined),
 			deliver: (message) => {
 				if (this.stopping(primary) || this.primaries.get(ownerId) !== primary) throw new Error("Primary session is closed");
-				const key = `${ownerId}:${message.sourceId}`;
+				const requireRetained = message.requireRetained !== false;
+				const key = `${ownerId}:${requireRetained ? "retained" : "queued"}:${message.sourceId}`;
 				if (this.delivered.has(key)) return;
-				primary.send(message.text, message.details);
+				primary.send(message.text, message.details, message.sourceId, requireRetained);
 				this.delivered.set(key, true);
 			},
 		});
