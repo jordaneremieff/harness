@@ -754,8 +754,11 @@ dedupe observations do not permit later backfill. This session-scoped family
 retains lookup hints, not authoritative communication records. Each observation
 verifies the immutable native target and companion before publishing their join. The
 plain view stays unresolved without a companion or invalid marker.
-The retained input bound stays 128. Terminal-row pruning prepares all native reads
-before companion writes and materializes unlinked metadata before row eviction in
+The retained input bound stays 128. Pruning retains queued inputs and live-run
+classifications whose native input is not yet admitted. Placed inputs leave the
+native inbox and no longer need await-release provenance, even while their run
+continues. Pruning prepares all native reads before companion writes and
+materializes unlinked metadata or no-envelope decisions before row eviction in
 the same transaction. Queued intent reconciliation uses the existing background
 and reopen paths, not another queue. Native admission remains a separate commit;
 a crash before owner capture leaves an unresolved association. See the

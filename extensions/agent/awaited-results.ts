@@ -286,7 +286,8 @@ async function pruneInputProvenance(tx: Tx, state: AwaitState): Promise<void> {
 	for (const item of state.provenance) {
 		const submission = await tx.submissionByRequest(item.conversationId as ConversationId, item.requestId);
 		const live = await tx.doc(LiveDoc, item.conversationId as ConversationId);
-		if ((submission === undefined && item.runId !== undefined && item.runId === live.run?.taskId) || submission?.status === "queued" || submission?.status === "placed") retained.push(item);
+		// Placed inputs have left the inbox; only queued inputs can still release an await.
+		if ((submission === undefined && item.runId !== undefined && item.runId === live.run?.taskId) || submission?.status === "queued") retained.push(item);
 		else {
 			const write = await prepareEvictedCommunication(tx, state, item, submission);
 			if (write !== undefined) materialize.push(write);

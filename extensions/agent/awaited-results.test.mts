@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { Value } from "typebox/value";
-import { AwaitParams, AwaitDoc, declareAwait, commitAwaitOutcome, classifyAwaitInput, reconcileInputRelease, boundedAwaitAnswer, forgetFailedAdmission, acknowledgeProviderRetry, claimProviderRetryVisibility, providerRetryRevision, type AwaitState } from "./awaited-results.ts";
+import { AWAIT_PROVENANCE_LIMIT, AwaitParams, AwaitDoc, recordInputProvenance, declareAwait, commitAwaitOutcome, classifyAwaitInput, reconcileInputRelease, boundedAwaitAnswer, forgetFailedAdmission, acknowledgeProviderRetry, claimProviderRetryVisibility, providerRetryRevision, type AwaitState } from "./awaited-results.ts";
 import { LiveDoc, InboxDoc, type Tx, type ConversationId, type TaskId } from "@earendil-works/pi-durable";
 
 /** A serialized native transaction's read set, with controlled request placement. */
@@ -132,6 +132,46 @@ it("does not exhaust active slots across repeated aborts and failed admissions",
 		await forgetFailedAdmission(f.tx, a.conversationId, `failed-${index}`);
 	}
 	assert.equal(f.state.declarations.length, 0); assert.equal(f.state.provenance.length, 0);
+});
+
+for (const classification of ["explicit", "report"] as const) it(`preserves ${classification} await release after placed provenance exceeds the storage bound`, async () => {
+	const f = fixture(); const owner = f.owner(1); f.owner(2); const result = f.result(3);
+	await declareAwait(f.tx, "store", owner, [result]);
+	for (let index = 0; index < AWAIT_PROVENANCE_LIMIT * 2; index++) {
+		const conversationId = index % 2 + 1, requestId = `placed-${index}`, id = index + 10_000;
+		await classifyAwaitInput(f.tx, { conversationId, requestId, classification: "explicit" });
+		f.inputs.set(`${conversationId}/${requestId}`, { id, type: "input", status: "placed", entry: id });
+		f.live.get(conversationId)?.run.inputs.push(id);
+		await reconcileInputRelease(f.tx, conversationId as ConversationId, requestId);
+	}
+	assert.equal(f.state.declarations[0].decision, "awaiting", "placed input is already past the release boundary");
+	assert.ok(f.state.provenance.length <= AWAIT_PROVENANCE_LIMIT);
+	const incoming = { conversationId: 1, requestId: "new-control", classification, sender: result.sessionId };
+	assert.deepEqual(await classifyAwaitInput(f.tx, incoming), { suppress: false, defer: false, release: true });
+	f.inputs.set("1/new-control", { id: 99, type: "input", status: "queued" });
+	f.inbox.set(1, { items: [{ id: 99, mode: "followUp" }] });
+	await reconcileInputRelease(f.tx, owner.conversationId, incoming.requestId);
+	assert.equal(f.state.declarations[0].decision, "released");
+	assert.equal(f.inbox.get(1)?.items[0].mode, "steer");
+});
+
+it("retains queued and live unadmitted classifications through pruning and crash reconciliation", async () => {
+	const f = fixture(); const owner = f.owner(1); f.owner(2); const result = f.result(3);
+	await declareAwait(f.tx, "store", owner, [result]);
+	await classifyAwaitInput(f.tx, { conversationId: 1, requestId: "crash-gap", classification: "report", sender: result.sessionId });
+	await classifyAwaitInput(f.tx, { conversationId: 2, requestId: "unadmitted", classification: "explicit" });
+	f.inputs.set("1/crash-gap", { id: 99, type: "input", status: "queued" });
+	f.inbox.set(1, { items: [{ id: 99, mode: "followUp" }] });
+	for (let index = 0; index < AWAIT_PROVENANCE_LIMIT * 2; index++) {
+		const requestId = `consumed-${index}`;
+		await recordInputProvenance(f.tx, { conversationId: 2, requestId, classification: "automatic" });
+		f.inputs.set(`2/${requestId}`, { id: index + 10_000, type: "input", status: "placed" });
+	}
+	assert.ok(f.state.provenance.some((item) => item.requestId === "crash-gap" && item.submissionId === undefined));
+	assert.ok(f.state.provenance.some((item) => item.requestId === "unadmitted"));
+	await reconcileInputRelease(f.tx, owner.conversationId, "crash-gap");
+	assert.equal(f.state.declarations[0].decision, "released");
+	assert.equal(f.inbox.get(1)?.items[0].mode, "steer");
 });
 
 it("accepts default retry release and an explicit positive attempt threshold", () => {

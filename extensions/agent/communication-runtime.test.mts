@@ -483,49 +483,91 @@ it("preserves a queued plain decision through eviction after a stale negative de
 	}, control.models);
 });
 
-it("prepares reconstructed capture before a post-native classification prunes materializing terminal rows", { timeout: 60_000 }, async (t) => {
+for (const status of ["done", "placed"] as const) it(`reconstructs ${status} capture before post-native classification prunes materializing rows`, { timeout: 60_000 }, async (t) => {
+	const control = await controlledRuntime(status === "placed" ? AWAIT_PROVENANCE_LIMIT + 1 : 0);
 	await withHost(async (host, storageId) => {
-		const snapshot = host.harness.snapshot.bind(host.harness);
-		t.mock.method(host.harness, "snapshot", async (...args: unknown[]) => args[0] === AwaitDoc ? undefined : Reflect.apply(snapshot, host.harness, args));
-		const inputs = await terminalInputs(host, "combined"), appended = observePrune(t, host, inputs);
-		const original = host.harness.conversation.bind(host.harness);
-		let prunedBeforeCapture = false;
-		t.mock.method(host.harness, "conversation", async (...args: Parameters<typeof original>) => {
-			const conversation = await original(...args);
-			if (conversation !== undefined) {
-				const submit = conversation.submit.bind(conversation);
-				t.mock.method(conversation, "submit", async (...args: Parameters<typeof submit>) => {
-					const submission = await submit(...args);
-					if (args[0].requestId === "capture-race") {
-						await readOutcome(host.harness, submission.id, BACKGROUND_CONTEXT);
-						await host.harness.commit(async (tx) => {
-							const state = await tx.doc(AwaitDoc);
-							for (let index = state.provenance.length; index < AWAIT_PROVENANCE_LIMIT; index++) state.provenance.push({ conversationId: ROOT, requestId: `uncaptured-${index}`, classification: "explicit" });
-							await recordInputProvenance(tx, { conversationId: ROOT, requestId: "prune-race", classification: "explicit" });
-							prunedBeforeCapture = !state.provenance.some((row) => row.requestId === "capture-race");
-							state.provenance.splice(0, state.provenance.length, ...stagedRows(inputs, storageId));
-							assert.equal(state.provenance.length, AWAIT_PROVENANCE_LIMIT);
-						}, BACKGROUND_CONTEXT);
-					}
-					return submission;
-				});
+		try {
+			const snapshot = host.harness.snapshot.bind(host.harness);
+			t.mock.method(host.harness, "snapshot", async (...args: unknown[]) => args[0] === AwaitDoc ? undefined : Reflect.apply(snapshot, host.harness, args));
+			const inputs = await terminalInputs(host, "combined"), appended = observePrune(t, host, inputs);
+			const original = host.harness.conversation.bind(host.harness);
+			let prunedBeforeCapture = false;
+			t.mock.method(host.harness, "conversation", async (...args: Parameters<typeof original>) => {
+				const conversation = await original(...args);
+				if (conversation !== undefined) {
+					const submit = conversation.submit.bind(conversation);
+					t.mock.method(conversation, "submit", async (...args: Parameters<typeof submit>) => {
+						const submission = await submit(...args);
+						if (args[0].requestId === "capture-race") {
+							if (status === "placed") await control.held;
+							else await readOutcome(host.harness, submission.id, BACKGROUND_CONTEXT);
+							assert.equal((await submission.status(BACKGROUND_CONTEXT)).status, status);
+							await host.harness.commit(async (tx) => {
+								const state = await tx.doc(AwaitDoc);
+								for (let index = state.provenance.length; index < AWAIT_PROVENANCE_LIMIT; index++) state.provenance.push({ conversationId: ROOT, requestId: `uncaptured-${index}`, classification: "explicit" });
+								await recordInputProvenance(tx, { conversationId: ROOT, requestId: "prune-race", classification: "explicit" });
+								prunedBeforeCapture = !state.provenance.some((row) => row.requestId === "capture-race");
+								state.provenance.splice(0, state.provenance.length, ...stagedRows(inputs, storageId));
+								assert.equal(state.provenance.length, AWAIT_PROVENANCE_LIMIT);
+							}, BACKGROUND_CONTEXT);
+						}
+						return submission;
+					});
+				}
+				return conversation;
+			});
+			const admitted = await host.request("submit", { requestId: "capture-race", message: "Original bytes", communication }) as { submissionId: number };
+			assert.equal(prunedBeforeCapture, true);
+			assert.deepEqual(new Set(appended), new Set(inputs.map((input) => input.requestId)));
+			assert.equal(appended.length, AWAIT_PROVENANCE_LIMIT);
+			const state = await host.harness.commit(async (tx) => JSON.parse(JSON.stringify(await tx.doc(AwaitDoc))) as AwaitState, BACKGROUND_CONTEXT);
+			assert.deepEqual(state.provenance.map((row) => row.requestId), ["capture-race"]);
+			const captured = state.provenance[0];
+			assert.equal(captured?.submissionId, admitted.submissionId);
+			assert.equal(captured?.communicationIntent?.value?.recordedAt, 17);
+			assert.ok(captured?.communicationIntent?.linkedEntryId);
+			const page = await readConversationSnapshotPage(host.harness, ROOT, {}, BACKGROUND_CONTEXT, storageId);
+			assert.equal(parseCommunicationView(page.entries.find((entry) => entry.id === captured.communicationIntent?.linkedEntryId)?.communication)?.state, "ready");
+			await assertCompanions(host, storageId, inputs);
+		} finally { control.release(); }
+	}, control.models);
+});
+
+for (const plain of [false, true]) it(`materializes placed ${plain ? "no-envelope decisions" : "communication intent"} before provenance eviction`, async () => {
+	const control = await controlledRuntime(1);
+	await withHost(async (host, storageId) => {
+		try {
+			const conversation = await host.harness.conversation(ROOT, BACKGROUND_CONTEXT);
+			assert.ok(conversation);
+			const requestId = "placed-intent", message = "Unchanged native input";
+			const submitted = await conversation.submit({ type: "input", requestId, content: message }, BACKGROUND_CONTEXT);
+			await control.held;
+			const status = await submitted.status(BACKGROUND_CONTEXT);
+			assert.equal(status.status, "placed"); assert.ok(status.entry);
+			await host.harness.commit(async (tx) => {
+				const state = await tx.doc(AwaitDoc);
+				state.provenance.push({ conversationId: ROOT, requestId, classification: "explicit", submissionId: submitted.id,
+					communicationIntent: plain ? { storageId, noEnvelope: true } : { storageId, ...retainCommunicationIntent(communication, () => 17) } });
+				for (let index = state.provenance.length; index < AWAIT_PROVENANCE_LIMIT; index++) state.provenance.push({ conversationId: ROOT, requestId: `absent-${index}`, classification: "explicit" });
+				await recordInputProvenance(tx, { conversationId: ROOT, requestId: "new-admission", classification: "explicit" });
+				assert.equal(state.provenance.some((row) => row.requestId === requestId), false);
+			}, BACKGROUND_CONTEXT);
+			const point = await host.harness.snapshot(CommunicationIndexDoc, communicationIndexKey(storageId, ROOT, String(status.entry)), BACKGROUND_CONTEXT);
+			assert.equal(point?.target?.requestId, requestId);
+			assert.equal(point?.noEnvelope, plain ? true : undefined);
+			assert.equal(point?.invalid, undefined);
+			const entries = await conversation.entries({}, 10, undefined, BACKGROUND_CONTEXT);
+			assert.equal(entries.items.find((entry) => entry.id === status.entry)?.model?.[0]?.content, message);
+			const records = entries.items.filter((entry) => entry.kind === "agent.communication");
+			assert.equal(records.length, plain ? 0 : 1);
+			if (!plain) {
+				const record = records[0]; assert.ok(record);
+				assert.equal(point?.recordEntryId, String(record.id));
+				assert.deepEqual((record.data as { value?: Communication }).value, { ...communication, recordedAt: 17 });
 			}
-			return conversation;
-		});
-		const admitted = await host.request("submit", { requestId: "capture-race", message: "Original bytes", communication }) as { submissionId: number };
-		assert.equal(prunedBeforeCapture, true);
-		assert.deepEqual(new Set(appended), new Set(inputs.map((input) => input.requestId)));
-		assert.equal(appended.length, AWAIT_PROVENANCE_LIMIT);
-		const state = await host.harness.commit(async (tx) => JSON.parse(JSON.stringify(await tx.doc(AwaitDoc))) as AwaitState, BACKGROUND_CONTEXT);
-		assert.deepEqual(state.provenance.map((row) => row.requestId), ["capture-race"]);
-		const captured = state.provenance[0];
-		assert.equal(captured?.submissionId, admitted.submissionId);
-		assert.equal(captured?.communicationIntent?.value?.recordedAt, 17);
-		assert.ok(captured?.communicationIntent?.linkedEntryId);
-		const page = await readConversationSnapshotPage(host.harness, ROOT, {}, BACKGROUND_CONTEXT, storageId);
-		assert.equal(parseCommunicationView(page.entries.find((entry) => entry.id === captured.communicationIntent?.linkedEntryId)?.communication)?.state, "ready");
-		await assertCompanions(host, storageId, inputs);
-	});
+			assert.equal((await submitted.status(BACKGROUND_CONTEXT)).status, "placed");
+		} finally { control.release(); }
+	}, control.models);
 });
 
 it("materializes exact distinct terminal companions while every candidate remains present before eviction", { timeout: 60_000 }, async (t) => {

@@ -5,16 +5,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { AgentDoc, Harness, MemoryStorage, createRegistry, defineExtension, type CommitPublication, type SubmissionId, type TaskId } from "@earendil-works/pi-durable";
+import { AgentDoc, LiveDoc, Harness, MemoryStorage, createRegistry, defineExtension, defineTool, type CommitPublication, type ConversationId, type SubmissionId, type TaskId } from "@earendil-works/pi-durable";
+import { Type } from "typebox";
+import { AwaitDoc, AWAIT_PROVENANCE_LIMIT } from "./awaited-results.ts";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { AgentDeliveryDoc, AgentMetaDoc, forkConversation, rewindConversation, readOutcome, recordDeliveryIntent, recordReport, reconcileDeliveries, richSubmitConversation, settleDeliveries, submitConversation, writeConversationName } from "./durable-controls.ts";
-import { fixtureRegistry, fixtureRuntime } from "./durable-host-fixture.mts";
+import { completed, fixtureRegistry, fixtureRuntime, toolCallMessage } from "./durable-host-fixture.mts";
 import { DurableHost } from "./durable-host.ts";
 import { initializeProfile, ProfileDoc } from "./profile.ts";
 import { readRequestContexts, recordRequestContext, RequestContextDoc, REQUEST_CONTEXT_LIMIT } from "./request-context.ts";
 import { CheckInTask } from "./durable-checkins.ts";
 import { AgentTimerDoc, scheduleTimer, TimerTask, type TimerResult } from "./durable-timers.ts";
-import { testModel } from "./test-runtime.mts";
+import { createTestRuntime, testModel } from "./test-runtime.mts";
 
 async function fixture(t: TestContext, timers = false) {
 	const registry = timers ? createRegistry() : fixtureRegistry();
@@ -30,6 +32,61 @@ async function fixture(t: TestContext, timers = false) {
 	} });
 	return { harness, conversation };
 }
+
+it("admits dispatch and steer after long native runs place more inputs than the storage provenance bound", { timeout: 30_000 }, async (t) => {
+	type Gate = { release: () => void };
+	const gates = new Map<ConversationId, Gate>(), arrivals = new Map<ConversationId, (gate: Gate) => void>();
+	const checkpoint = defineTool({ name: "checkpoint", description: "Hold one native tool boundary.", parameters: Type.Object({}), execute: async (_args, api, ctx) => {
+		let release!: () => void;
+		const held = new Promise<void>((resolve) => { release = resolve; });
+		const gate = { release };
+		gates.set(api.conversationId, gate);
+		arrivals.get(api.conversationId)?.(gate);
+		arrivals.delete(api.conversationId);
+		if (ctx.abortSignal?.aborted) release();
+		else ctx.abortSignal?.addEventListener("abort", release, { once: true });
+		try { await held; } finally { ctx.abortSignal?.removeEventListener("abort", release); }
+		return {};
+	} });
+	const parked = (id: ConversationId, previous?: Gate): Promise<Gate> => {
+		const gate = gates.get(id);
+		if (gate !== undefined && gate !== previous) return Promise.resolve(gate);
+		return new Promise((resolve) => { arrivals.set(id, resolve); });
+	};
+	const models = await createTestRuntime();
+	const stream = () => completed(toolCallMessage("checkpoint"));
+	models.registerNativeProvider({ id: testModel.provider, name: "Placed input fixture", getModels: () => [testModel], auth: { apiKey: { name: "Test", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } }, stream, streamSimple: stream });
+	const harness = await Harness.open(new MemoryStorage(), { models, registry: fixtureRegistry([checkpoint]) }, context);
+	t.after(() => harness.close(context));
+	const agent = { model: { provider: testModel.provider, modelId: testModel.id } };
+	const root = await harness.root(context, { agent });
+	const worker = await harness.createConversation({ ownership: { kind: "ownerless" }, agent }, context);
+	const targets = [root, worker], admitted: SubmissionId[] = [];
+	for (const target of targets) {
+		admitted.push((await submitConversation(target, { requestId: `start-${target.id}`, message: "Start long run" }, context)).submissionId);
+		await parked(target.id);
+	}
+	for (let index = 0; index < AWAIT_PROVENANCE_LIMIT + 4; index++) {
+		const target = targets[index % targets.length], gate = await parked(target.id);
+		const input = await submitConversation(target, { requestId: `steer-${index}`, message: `Continue ${index}`, whenBusy: "steer" }, context);
+		admitted.push(input.submissionId);
+		gate.release();
+		await parked(target.id, gate);
+		assert.equal((await (await harness.submission(input.submissionId, context))?.status(context))?.status, "placed");
+	}
+	for (const target of targets) assert.ok(((await harness.snapshot(LiveDoc, target.id, context))?.run?.inputs.length ?? 0) > AWAIT_PROVENANCE_LIMIT / 2);
+	const dispatched = await harness.createConversation({ ownership: { kind: "ownerless" }, agent }, context);
+	admitted.push((await richSubmitConversation(dispatched, { requestId: "new-dispatch", message: "New task", requester: "requester", origin: "model" }, context)).submissionId);
+	await parked(dispatched.id);
+	const gate = await parked(root.id);
+	const steer = await submitConversation(root, { requestId: "new-steer", message: "New control", whenBusy: "steer" }, context);
+	admitted.push(steer.submissionId);
+	gate.release();
+	await parked(root.id, gate);
+	assert.ok(admitted.length > AWAIT_PROVENANCE_LIMIT);
+	for (const id of admitted) assert.equal((await (await harness.submission(id, context))?.status(context))?.status, "placed");
+	assert.ok(((await harness.snapshot(AwaitDoc, context))?.provenance.length ?? 0) <= AWAIT_PROVENANCE_LIMIT);
+});
 
 it("routes later rich requests to their requester or explicit reply recipient without changing the creator", { timeout: 10000 }, async (t) => {
 	const { harness, conversation } = await fixture(t);
