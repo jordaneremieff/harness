@@ -28,6 +28,17 @@ test('caption qualifiers preserve distinct root and child ownership across reord
   assert.equal(captions.get(root).tail, first.tail); assert.equal(captions.get(child).tail, second.tail);
   assert.deepEqual(rows.slice(0, 2).map(row => row.identity), [root, child]);
 });
+test('complete captions stay distinct from supplied literal names across reorder', () => {
+  const captions = new ConversationCaptions(), rows = [{identity:'a',name:'Review'},{identity:'b',name:'Review'},{identity:'c',name:'Review · 1'},{identity:'d',name:'Review · 1 · 3'}];
+  const text = (identity:string) => {const caption=captions.get(identity);return caption.tail ? `${caption.name} · ${caption.tail}` : caption.name;};
+  captions.update(rows); const first = new Map(rows.map(row=>[row.identity,text(row.identity)]));
+  assert.equal(new Set(first.values()).size,rows.length); assert.equal(first.get('a'),'Review · 1'); assert.equal(first.get('b'),'Review · 2');
+  assert.equal(captions.get('c').tail,'Label 3'); const revision=captions.revision;
+  captions.update([...rows].reverse()); assert.equal(captions.revision,revision); for(const row of rows)assert.equal(text(row.identity),first.get(row.identity));
+  captions.update([...rows,{identity:'e',name:'Review · 1 · Label 3'}]); assert.equal(new Set([...rows,{identity:'e'}].map(row=>text(row.identity))).size,5);
+  captions.update(rows); assert.equal(captions.get('a').tail,'1'); assert.equal(captions.get('b').tail,'2'); assert.equal(captions.get('c').tail,'Label 3');
+});
+
 test('duplicate captions prefer distinct public handles and folder suffixes before ordinals', () => {
   const captions = new ConversationCaptions();
   captions.update([{identity:'a',name:'Review',handle:'reader'},{identity:'b',name:'Review',handle:'writer'},{identity:'c',name:'Build',cwd:'/projects/one'},{identity:'d',name:'Build',cwd:'/projects/two'}]);

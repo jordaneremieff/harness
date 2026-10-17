@@ -2,7 +2,35 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ProjectedFrame } from '../shared/api.ts';
 import {createAppFixture} from './app-fixture.mts';
-const {app, arrive, settle, event, hostDocument, byId, agentControl, primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, observation, singlePane, coverage, transportLog} = await createAppFixture();
+import {Transcript} from './render.ts';
+const {app, arrive, settle, event, hostDocument, byId, agentControl, primaryControl, primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, observation, singlePane, coverage, transportLog} = await createAppFixture();
+
+test('caption fact events refresh idle subjects and every affected recipient without transcript rebuilds', async t => {
+  const a='00000000-0000-4000-8000-000000000301', b='00000000-0000-4000-8000-000000000302', targetA={kind:'agent' as const,identity:a}, targetB={kind:'agent' as const,identity:b};
+  const targetP={kind:'primary' as const,key:'p',epoch:3801};
+  const layout={root:{kind:'split' as const,id:'caption-root',axis:'x' as const,ratio:50,first:{kind:'pane' as const,id:'primary-pane',tabs:[{kind:'primary' as const}],active:'primary'},second:{kind:'split' as const,id:'caption-agents',axis:'y' as const,ratio:50,first:{kind:'pane' as const,id:'agent-a',tabs:[targetA],active:`agent:${a}`},second:{kind:'pane' as const,id:'agent-b',tabs:[targetB],active:`agent:${b}`}}},focusedPane:'agent-b'};
+  const tool=entryFixture('idle-subject',[messageFixture('idle-source',[{type:'toolCall',callId:'idle-call',name:'custom',arguments:{value:{sessionId:a},truncated:false}},{type:'toolResult',callId:'idle-call',name:'custom',isError:false,parts:[textPart(`Supplied ${a}`)]}])]);
+  await arrive({workspace:{id:'caption-events',revision:1,primaryKey:'p',selectedTarget:targetB,conversationLayout:layout},primaries:[primaryFixture({epoch:targetP.epoch,activity:'idle'})],roster:[agentFixture(b,{name:'Partner'})],history:[tool],
+    targets:[targetFixture('caption-p',targetP),targetFixture('caption-a',targetA),targetFixture('caption-b',targetB,{draft:{revision:1,text:'Keep B draft',mode:'prompt',persisted:true}})]});
+  const primaryRoot=primaryControl('transcript'), card=primaryRoot.querySelector('.tool-card'), subject=card?.querySelector('.tool-target'), preview=card?.querySelector('.tool-preview'); assert.ok(card && subject && preview);
+  assert.equal(subject.textContent,'Unresolved conversation'); const editor=app.agentComposer().editor; editor.focus(); editor.setSelectionRange(1,5,'backward');
+  let primarySets=0, refreshes=0; const originalSet=Transcript.prototype.set, originalRefresh=Transcript.prototype.refreshSubjects;
+  t.mock.method(Transcript.prototype,'set',function(this:Transcript,...args:Parameters<Transcript['set']>){if(this.node===primaryRoot as unknown as HTMLElement)primarySets++;return originalSet.apply(this,args);});
+  t.mock.method(Transcript.prototype,'refreshSubjects',function(this:Transcript){refreshes++;return originalRefresh.call(this);});
+  const publish=(name:string,modifiedAt=0)=>event('agent.roster',{revision:app.state.rosterRevision+1,changed:[agentFixture(a,{name,modifiedAt})],removed:[],scan:{state:'ready',complete:true,visited:2,skipped:0,omitted:0},stale:false});
+  publish('Discovered'); await settle(); const link=subject.querySelector('.tool-subject-link'); assert.ok(link); assert.equal(link.textContent,'Discovered'); assert.ok(refreshes>0);
+  publish('Renamed idle subject'); await settle(); assert.equal(subject.querySelector('.tool-subject-link'),link); assert.equal(link.textContent,'Renamed idle subject');
+  const beforeMetadata=refreshes; publish('Renamed idle subject',1000); await settle(); assert.equal(refreshes,beforeMetadata);
+  const frame:ProjectedFrame={revision:1,observedAt:'',live:[],entries:[],nextBefore:null,coverage,status:{busy:false,name:'Partner'}};
+  const connectionEpoch=app.state.agentEpochs.get(a)??1; event('agent.frame',{identity:a,connectionEpoch,frame}); await settle();
+  const rosterA=byId('roster').querySelector(`[data-identity="${a}"]`), rosterB=byId('roster').querySelector(`[data-identity="${b}"]`); assert.ok(rosterA && rosterB);
+  assert.equal(rosterA.querySelector('.row-name')?.textContent,'Partner'); assert.equal(rosterB.querySelector('.row-name')?.textContent,'Partner');
+  const aTail=rosterA.querySelector('.row-identity')?.textContent,bTail=rosterB.querySelector('.row-identity')?.textContent; assert.ok(aTail && bTail); assert.notEqual(aTail,bTail);
+  assert.equal(link.textContent,`Partner · ${aTail}`); assert.equal(agentControl('recipient').textContent,`Draft for Partner · ${bTail}`);
+  const beforeDelta=refreshes; event('agent.frame',{identity:a,connectionEpoch,frame:{...frame,revision:2,observedAt:'later',status:{...frame.status,busy:true}}}); await settle(); assert.equal(refreshes,beforeDelta);
+  assert.equal(primarySets,0); assert.equal(primaryRoot.querySelector('.tool-card'),card); assert.equal(card.querySelector('.tool-preview'),preview); assert.equal(card.open,false);
+  assert.equal(app.agentComposer().editor,editor); assert.equal(editor.value,'Keep B draft'); assert.deepEqual([editor.selectionStart,editor.selectionEnd,editor.selectionDirection],[1,5,'backward']); assert.equal(hostDocument.activeElement,editor);
+});
 
 test('public root and child captions agree across subjects, tabs, roster, chooser and exact recipients', async () => {
   const root = '00000000-0000-4000-8000-000000000101', child = `${root}:7906`, unknown = '00000000-0000-4000-8000-000000000909';

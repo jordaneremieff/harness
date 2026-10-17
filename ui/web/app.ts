@@ -276,7 +276,7 @@ const paneRegions = new Map<string, {node: HTMLElement; tabs: HTMLElement; conte
 const paneSplits = new Map<string, {node: HTMLElement; handle: HTMLElement; resizer?: Resizer; extent?: number}>();
 const tabStrip = new TabStrip({layout: currentLayout, activate: activateConversationTab, close: key => applyLayout(closeTab(currentLayout(), key)),
   move: (key, pane, index) => {fileBrowse.keep(key);applyLayout(movePaneTab(currentLayout(), key, pane, index));}, label: tabLabel,keep:key=>fileBrowse.keep(key),
-  identity: tab => tab.kind !== 'file' ? tabPresentation(tab).identityTail : undefined,
+  identity: tab => tab.kind !== 'file' ? tabPresentation(tab).identityTail ?? '' : undefined,
   status: tab => { if (tab.kind === 'file') {const owner = state.workspace && filesViews.owner(state.workspace.id,tab);return {label:owner?.modified ? 'Modified' : '',glyph:owner?.modified ? '•' : '',tone:owner?.modified ? 'warning' : 'secondary'};}const view = tabPresentation(tab); return {label: [view.activity, view.tool?.name].filter(Boolean).join(' · '), glyph: presentationGlyph(view), tone:view.tone}; },
   overflow: (overflow, pane) => { const region = paneRegions.get(pane); if (region) region.menu.dataset.overflow = String(overflow); }},
   {panes: () => [...paneRegions].map(([id, pane]) => ({id, tabs: pane.tabs, controls: [...controllers.values()].find(owner => stableViews().slot(owner.root) === pane.content)?.root.id ?? pane.content.id})), conversations: byId('sidebar-conversations')});
@@ -485,6 +485,34 @@ function presentationCaptions(): ConversationCaptions {
   for (const pane of paneLeaves(currentLayout().root)) for (const tab of pane.tabs) if (tab.kind === 'agent' && !names.has(tab.identity)) names.set(tab.identity, {identity: tab.identity});
   for (const conversation of state.conversations.values()) if (conversation.target.kind === 'agent') {const identity = conversation.target.identity; names.set(identity, {...state.roster.get(identity), identity, reported: conversation.frame?.status.name});}
   conversationCaptions.update([...names.values()]); return conversationCaptions;
+}
+let captionPaintRevision = -1, captionReferenceRoster: typeof state.roster | undefined, captionReferencePrimaries: typeof state.primaries | undefined;
+let captionReferenceKey = '', paintedCaptionReferenceKey = '';
+function captionReferences(): string {
+  if (captionReferenceRoster !== state.roster || captionReferencePrimaries !== state.primaries) {
+    captionReferenceRoster = state.roster; captionReferencePrimaries = state.primaries;
+    captionReferenceKey = JSON.stringify([[...state.roster.keys()].sort(), [...state.primaries.values()].map(value => [value.key, value.epoch, value.sessionId, value.extension?.title ?? value.sessionName ?? 'Primary']).sort((a,b)=>String(a[0]).localeCompare(String(b[0])))]);
+  }
+  return captionReferenceKey;
+}
+function refreshCaptionConsumers(): void {
+  const captions = presentationCaptions(), references = captionReferences();
+  if (captionPaintRevision === captions.revision && paintedCaptionReferenceKey === references) return;
+  captionPaintRevision = captions.revision; paintedCaptionReferenceKey = references;
+  for (const controller of controllers.values()) {
+    if (controller.workspaceId !== state.workspace?.id) continue;
+    controller.transcript.refreshSubjects();
+    const view = presentation(controller.target);
+    controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + presentationName(view), controllerGuidance(controller, view));
+  }
+  const captured = messageTarget.current;
+  if (captured && messageTarget.valid(captured)) {
+    const name = presentationName(presentation({kind: 'agent', identity: captured.identity})), ready = messageTarget.ready;
+    setText(byId('agent-message-name'), name);
+    const controller = controllers.get(controllerKey(captured.workspaceId, {kind: 'agent', identity: captured.identity}));
+    controller?.composer.recipient((ready ? 'Message ' : 'Draft for ') + name, ready || !captured.prepared || captured.invalidated ? '' : 'Connect this agent to send.');
+  }
+  tabStrip.render(); roster.schedule(); renderIdentity();
 }
 function targetCaption(target?: Target) {return target?.kind === 'agent' ? presentationCaptions().get(target.identity) : undefined;}
 function presentation(target?: Target): ConversationPresentation {
@@ -908,7 +936,7 @@ export function receive(event: ReceivedEvent): void {
     if (event.name === 'ready') { connectionId = (event.envelope.data as EventData['ready']).connectionId;streamWait?.resolve();refreshFileConnection();return; }
     if (old === state) return;
     if (event.name === 'control.request') {void browserControl.receive(event.envelope.data as ControlRequest);return;}
-    applyEvent(event);
+    applyEvent(event); refreshCaptionConsumers();
     if (event.name === 'primary.state') {
       const current = event.envelope.data as PrimaryView; refreshReadyHistory(old.primaries.get(current.key),current);
     }
@@ -989,7 +1017,7 @@ function renderAll(): void {
   document.documentElement.dataset.appearance = state.workspace.appearance ?? 'dark';
   renderNavigation();
   if (messageTarget.current && !messageTarget.valid(messageTarget.current)) closeMessagePanel(false);
-  renderPrimary(); renderRoster(); renderAgent(); renderMessagePanel(); refreshPaneSizes(); noticesBadge(); extensionDialogs.update();
+  renderPrimary(); renderRoster(); renderAgent(); renderMessagePanel(); refreshPaneSizes(); noticesBadge(); extensionDialogs.update(); refreshCaptionConsumers();
 }
 export function renderNavigation(): void {
   const narrow = !matchMedia('(min-width: 900px)').matches;
@@ -1170,6 +1198,7 @@ function renderRoster(): void {
   tabStrip.render(); renderIdentity();
   roster.set(state.rosterOrder.flatMap(id => { const row = state.roster.get(id); return row ? [row] : []; }), state.rosterMeta, selectedAgent());
   for (const identity of state.roster.keys()) renderMessageResume(identity);
+  refreshCaptionConsumers();
 }
 function renderMessageResume(identity: string): void {
   const target = {kind: 'agent' as const, identity}; const workspace = state.workspace?.id ?? '';
@@ -1712,7 +1741,7 @@ function paneTabChoices(leaf: PaneLeaf, layout: ConversationLayout): ContextItem
   const tabs = paneLeaves(layout.root).flatMap(pane => pane.tabs);
   const tails = duplicateTabTails(tabs,tabLabel);
   return leaf.tabs.map(tab => {
-    const name = tabLabel(tab), tail = tab.kind === 'file' ? tails.get(tabKey(tab)) : tabPresentation(tab).identityTail ?? tails.get(tab.kind==='agent'?tab.identity:'primary');
+    const name = tabLabel(tab), tail = tab.kind === 'file' ? tails.get(tabKey(tab)) : tabPresentation(tab).identityTail;
     return {label: tail ? `${name} · ${tail}` : name, description: tab.kind === 'file' ? tab.path : tabPresentation(tab).activity, checked: tabKey(tab) === leaf.active, run: () => activateConversationTab(leaf.id, tabKey(tab))};
   });
 }

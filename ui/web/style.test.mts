@@ -11,6 +11,17 @@ function rule(selector: string): string {
 const declarations = (property: string): string[] => [...css.matchAll(new RegExp(`(?:^|[;{\\s])${property}:\\s*([^;}]+)`, 'g'))].map(match => match[1].trim());
 const media = (query: string): string => { const start = css.indexOf(query); assert.ok(start >= 0, `Missing ${query}`); const next = css.indexOf('\n@media', start + 1); return css.slice(start, next < 0 ? undefined : next); };
 
+test('roster name-first headings reserve a full name row without the old glyph track', () => {
+  assert.match(rule('.agent-row .row-heading'), /grid-template-columns: minmax\(0,1fr\) auto/);
+  assert.doesNotMatch(rule('.agent-row .row-heading'), /grid-template-columns: 10px/);
+  assert.match(rule('.agent-row .row-name'), /grid-column: 1 \/ -1; grid-row: 1/);
+  assert.match(rule('.agent-row .row-identity'), /grid-column: 1; grid-row: 2; max-width: 100%/);
+  assert.match(rule('.agent-row .row-state'), /grid-column: 2; grid-row: 2/);
+  assert.match(rule('.agent-row:has(:is(.row-identity, .row-state):not([hidden])) .row-select'), /height: 44px/);
+  assert.match(rule('.agent-row:is([data-action=message],[data-action=resume]) > .row-select'), /padding-right: 104px/);
+  assert.match(rule('.agent-row:is([data-action=message],[data-action=resume]) > .row-age'), /right: 40px; max-width: 64px/);
+});
+
 test('content hues share scoped Markdown rules and leave metadata and identity tails intact',()=> {
   assert.match(rule('.secondary, .info'),/color: var\(--muted\)/);
   assert.match(rule('.message.user > .message-header > .message-role'),/color: var\(--accent\)/);

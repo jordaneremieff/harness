@@ -1274,6 +1274,11 @@ export class Transcript {
     }
     return active;
   }
+  /** Public caption changes repaint retained headings without rebuilding transcript content. */
+  refreshSubjects(): void {
+    if (this.destroyed || this.deferred) return;
+    for (const tool of this.tools.values()) if (tool.source && this.node.contains(tool.card)) this.toolHeading(tool, tool.source);
+  }
   private toolHeading(tool: ToolNode, source: JoinedTool): void {
     setText(tool.title, source.name);
     const args = record(source.args), value = args.sessionId ?? args.target;

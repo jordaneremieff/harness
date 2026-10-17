@@ -86,13 +86,36 @@ export class ConversationCaptions {
   private ordinals = new Map<string, number>();
   private nextOrdinal = 1;
   private captions = new Map<string, ConversationCaption>();
+  revision = 0;
   update(rows: readonly CaptionRow[]): void {
+    const previous = this.captions;
     const unique = [...new Map(rows.map(row => [row.identity, row])).values()];
     this.captions = new Map(unique.map(row => [row.identity, {name: agentName(row.name, row.handle, row.identity, row.reported, row.firstMessage),
       ...(![row.reported, row.name, row.handle].some(value => usefulName(value, row.identity)) && firstMessageTitle(row.firstMessage, row.identity) ? {source: 'first-message' as const} : {})}]));
     const groups = new Map<string, CaptionRow[]>();
     for (const row of unique) {const name = this.get(row.identity).name, group = groups.get(name) ?? []; group.push(row); groups.set(name, group);}
     for (const group of groups.values()) if (group.length > 1) this.qualify(group);
+    this.distinguishComposed();
+    if (previous.size !== this.captions.size || [...this.captions].some(([identity, caption]) => {
+      const old = previous.get(identity); return old?.name !== caption.name || old?.tail !== caption.tail || old?.source !== caption.source;
+    })) this.revision++;
+  }
+  private composed(caption: ConversationCaption): string {return caption.tail ? `${caption.name} · ${caption.tail}` : caption.name;}
+  private distinguishComposed(): void {
+    const groups = new Map<string, string[]>();
+    for (const [identity, caption] of this.captions) {const text = this.composed(caption), group = groups.get(text) ?? []; group.push(identity); groups.set(text, group);}
+    const occupied = new Set(groups.keys());
+    for (const group of groups.values()) {
+      if (group.length < 2) continue;
+      group.sort((a, b) => Number(!!this.get(b).tail) - Number(!!this.get(a).tail) || a.localeCompare(b));
+      for (const identity of group.slice(1)) {
+        const caption = this.get(identity);
+        if (!this.ordinals.has(identity)) this.ordinals.set(identity, this.nextOrdinal++);
+        let qualifier = [caption.tail, String(this.ordinals.get(identity))].filter(Boolean).join(' · ');
+        while (occupied.has(this.composed({...caption, tail: qualifier}))) qualifier = `Label ${qualifier}`;
+        caption.tail = qualifier; occupied.add(this.composed(caption));
+      }
+    }
   }
   private meaningfulTail(row: CaptionRow, group: CaptionRow[]): string | undefined {
     const handle = usefulName(row.handle, row.identity);
