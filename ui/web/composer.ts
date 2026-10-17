@@ -18,7 +18,7 @@ import { acknowledgeDraft, beginDraftSave, captureSubmission, createDraft, draft
 import type { DraftState, Submission } from './draft-state.ts';
 import { ApiError, draftImageUrl, errorMessage, operation, request, reserve } from './transport.ts';
 
-export type ComposerHooks = {prepareInput?: () => boolean; imageState?: (workspace: string, state: TargetState) => void; imageInput?: (target: Target) => {allowed: boolean; reason?: string}; recovery?: () => void; layoutHeight?: () => number | undefined; timing?: (start: number, end: number) => void; submitted: (operation: OperationView) => void; unknownCommand: (text: string, sendLiteral: () => void) => boolean; enterSends?: () => boolean; commands?: () => CommandInventory; moreCommands?: (target: Target) => Promise<void>; retained?: (workspace: string, target: Target, retained: boolean) => void};
+export type ComposerHooks = {captured?: (submission:Submission)=>void; failed?: (operationId:string,uncertain:boolean)=>void; prepareInput?: () => boolean; imageState?: (workspace: string, state: TargetState) => void; imageInput?: (target: Target) => {allowed: boolean; reason?: string}; recovery?: () => void; layoutHeight?: () => number | undefined; timing?: (start: number, end: number) => void; submitted: (operation: OperationView) => void; unknownCommand: (text: string, sendLiteral: () => void) => boolean; enterSends?: () => boolean; commands?: () => CommandInventory; moreCommands?: (target: Target) => Promise<void>; retained?: (workspace: string, target: Target, retained: boolean) => void};
 export type ComposerElements = {root: HTMLFormElement; editor: HTMLTextAreaElement; recipient: HTMLElement; receipt: HTMLElement;
   receiptDetails: HTMLElement; modes: HTMLElement; send: HTMLButtonElement; save: HTMLElement; commandMenu?: HTMLElement; overlay?: HTMLElement; attachments?: HTMLElement; attach?: HTMLButtonElement; picker?: HTMLInputElement};
 /** Creates one editor; the detached save/receipt-detail nodes belong in the shared footer. */
@@ -892,7 +892,7 @@ export class Composer {
     const captured = captureSubmission({...buffer.data, ...snapshot, submissions, savedEdit: snapshot.edit}, target, id, consent?.differentMessage);
     if (!captured.submission) throw new Error('This draft already has a pending submission.');
     buffer.data = {...buffer.data, submissions: new Map(buffer.data.submissions).set(id, captured.submission)};
-    const pending = {submission: captured.submission, uncertain: false}; buffer.pending.set(id, pending); return pending;
+    const pending = {submission: captured.submission, uncertain: false}; buffer.pending.set(id, pending); this.hooks.captured?.(captured.submission); return pending;
   }
   private dispatch(submission: Submission, literal: boolean): Promise<OperationView> {
     const target = submission.target;
@@ -902,6 +902,7 @@ export class Composer {
     return operation(target.kind === 'primary' ? 'primary.input' : 'agent.input', path, body, target, submission.operationId);
   }
   private sendError(buffer: Buffer, pending: Pending | undefined, error: unknown): void {
+    if(pending)this.hooks.failed?.(pending.submission.operationId,!(error instanceof ApiError)||['delivery_uncertain','internal'].includes(error.view.code));
     buffer.notice = errorMessage(error);
     if (pending && (!(error instanceof ApiError) || ['delivery_uncertain', 'internal'].includes(error.view.code))) pending.uncertain = true;
     else if (pending) {

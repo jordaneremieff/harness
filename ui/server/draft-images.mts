@@ -65,11 +65,21 @@ export class DraftImages {
   cancel(reservation: UploadReservation): Promise<void> { return this.request('cancel', {id: reservation.id, targetKey: reservation.targetKey}); }
   verify(targetKey: string, image: ValidatedImage): Promise<void> { return this.request('verify', {targetKey, image}); }
   read(targetKey: string, image: ValidatedImage): Promise<ImageBytes> { return this.request('read', {targetKey, image}); }
+  reference(targetKey: string, image: ValidatedImage): Promise<string> { return this.request('reference', {targetKey, image}); }
   remove(entry: {targetKey: string; image?: ValidatedImage; id?: string}): Promise<void> { return this.request('remove', entry); }
   async close(): Promise<void> {
     if (this.pending.size) throw new ApiError('not_ready', 'Image storage still has active work.', 503);
     this.closed = true; await this.worker.terminate();
   }
+}
+/** File references use the verified target-bound blob retained by the input receipt. */
+export async function verifiedImageReferences(spec: BlobReadSpec): Promise<string[]> {
+  const worker = new DraftImages(spec.root);
+  try {
+    const references:string[]=[];
+    for(const image of spec.images) references.push(await worker.reference(spec.targetKey,image));
+    return references;
+  } finally {await worker.close();}
 }
 /** Dispatch workers read only explicit target-bound references, never a state ledger. */
 export async function readVerifiedDraftImages(spec: BlobReadSpec): Promise<ImageBytes[]> {

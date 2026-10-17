@@ -1,6 +1,8 @@
 import type { AgentHistoryPage, AgentRow, Bootstrap, EventData, HistoryPage, OperationView, PrimaryView, ProjectedFrame, Snapshot, Target, TargetState, Workspace } from '../shared/api.ts';
 import { draftHasContent, draftImageFingerprint, LIMITS } from '../shared/api.ts';
 import { Actions } from './actions.ts';
+import {InputEchoes} from './input-echoes.ts';
+const inputEchoes=new InputEchoes();
 import {AgentInspection} from './agent-inspection.ts';
 import {taskReference, type ConversationTask} from './conversation-tasks.ts';
 import type {AgentInspectionView, ResultSelector} from '../shared/inspection.ts';
@@ -170,7 +172,7 @@ function conversationController(target: Target): ConversationController {
   root.append(observed, notice, region, above, liveStatus, elements.root, below); stableViews().mount(root);
   if (target.kind === 'agent') root.insertBefore(createAgentState(add), region);
   const controller = {workspaceId, target: {...target}, instanceId, root, nodes, elements, abort: new AbortController(), historyAbort: new AbortController(), cursor: null, before: null, loading: false, preparing: false, passive: true, historyReady: false, historyBoundaryLoaded: false, initialized: false, showThinking: false} as ConversationController;
-  controller.composer = new Composer(elements, {prepareInput: () => !controller.passive, imageState: refreshComposerImages, imageInput: captured => composerImageInput(controller, captured), recovery: () => recovery.open(), layoutHeight: () => stableViews().height(elements.root), enterSends: () => state.workspace?.enterSendsMessages === true, timing: (start, end) => {if (controller.workspaceId === state.workspace?.id && !elements.root.closest('[hidden],[inert]')) diagnostics.measure('editor-echo', start, end);}, submitted: result => showOperation(result, workspaceId), unknownCommand: (text, literal) => target.kind === 'primary' && sameTarget(primaryTarget(), target) ? actions.unknown(text, literal) : false,
+  controller.composer = new Composer(elements, {captured: submission=>{const conversation=state.conversations.get(targetIdentity(controller.target));inputEchoes.capture(workspaceId,submission,conversation?conversationBlocks(conversation):[]);renderController(controller);},failed:(id,uncertain)=>{inputEchoes.failed(id,uncertain);renderController(controller);},prepareInput: () => !controller.passive, imageState: refreshComposerImages, imageInput: captured => composerImageInput(controller, captured), recovery: () => recovery.open(), layoutHeight: () => stableViews().height(elements.root), enterSends: () => state.workspace?.enterSendsMessages === true, timing: (start, end) => {if (controller.workspaceId === state.workspace?.id && !elements.root.closest('[hidden],[inert]')) diagnostics.measure('editor-echo', start, end);}, submitted: result => {inputEchoes.settle(result);showOperation(result, workspaceId);renderController(controller);}, unknownCommand: (text, literal) => target.kind === 'primary' && sameTarget(primaryTarget(), target) ? actions.unknown(text, literal) : false,
     ...(target.kind === 'primary' ? {commands: () => actions.commandOptions(), moreCommands: (captured: Target) => actions.continueCommands(captured)} : {}),
     retained: (workspace, captured) => { if (workspace === state.workspace?.id && captured.kind === 'agent') renderMessageResume(captured.identity); }});
   controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {references, subject: toolSubjectCaption, readTaskResult:async(reference,signal)=>{const value=await request<AgentInspectionView>(`/api/agents/${encodeURIComponent(reference.sessionId)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',{view:'result',submissionId:reference.submissionId,...(reference.requestId?{requestId:reference.requestId}:{})},undefined,AbortSignal.any([signal,controller.abort.signal,AbortSignal.timeout(15_000)]));if(value.view!=='result')throw new Error('The task result view changed.');return value;}, activity:text=>{const fallback=presentation(controller.target).activity;setText(liveStatus,text||(fallback==='Ready'?'Idle':fallback));}, cwd: () => target.kind === 'primary' ? state.primaries.get(target.key)?.cwd : state.roster.get(target.identity)?.cwd, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
@@ -249,8 +251,6 @@ function composerImageInput(controller: ConversationController, target: Target):
     if (current?.epoch !== target.epoch || current.lifecycle !== 'ready' || !current.model?.input.includes('image')) return {allowed: false, reason: 'The current model does not report image input. Choose an image-capable model before sending.'};
     return {allowed: true};
   }
-  const capabilities = controller.connection?.capabilities ?? state.agentAvailability.get(target.identity)?.capabilities;
-  if (!presentation(target).input || capabilities?.images !== true) return {allowed: false, reason: 'This connection does not accept images. Use a file reference.'};
   return {allowed: true};
 }
 function createAgentState(add: (name: string, tag: 'div' | 'p' | 'button', css?: string) => HTMLElement): HTMLElement {
@@ -1118,7 +1118,7 @@ function renderController(controller: ConversationController, deferred = false, 
   controllerNode(controller, 'stop').hidden = !canStopController(controller);
   if (controller.root.hidden) return;
   const paint = () => {
-    const conversation = state.conversations.get(targetIdentity(controller.target)); const entries = conversation ? conversationBlocks(conversation) : [];
+    const conversation = state.conversations.get(targetIdentity(controller.target)); const entries = inputEchoes.entries(controller.workspaceId,controller.target,conversation ? conversationBlocks(conversation) : []);
     controller.transcript.set(entries, conversation?.tools); const hasEntries = entries.some(entry => !['model_change', 'thinking_level_change'].includes(entry.kind) && entryVisible(entry));
     controller.hasEntries = hasEntries; renderControllerEmpty(controller);
     if (controller.target.kind === 'agent') {

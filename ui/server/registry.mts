@@ -482,12 +482,10 @@ export class Registry {
     if (saved.target.kind === 'primary' && context.url.searchParams.getAll('epoch').length !== 1) throw new ApiError('invalid_request', 'Image intake requires one primary epoch.');
     context.checkActive();
     if (this.closing) throw new ApiError('not_ready', 'The backend no longer accepts work.', 503);
-    if (saved.target.kind === 'agent') await this.agents.prepare(saved.target.identity);
     const guard = () => {
       context.checkActive();
       if (this.closing) throw new ApiError('not_ready', 'The backend no longer accepts work.', 503);
       if (saved.target.kind === 'primary') this.primary(saved.target.key, saved.target.epoch, true);
-      else if (!this.agents.imageInputAvailable(saved.target.identity)) throw new ApiError('unsupported', 'This connection does not accept images. Use a file reference.', 409);
     };
     const reservation = await this.store.reserveImageUpload(workspace, key, {name, mimeType: headers.mimeType, epoch, declaredBytes: headers.declaredBytes}, guard);
     try {

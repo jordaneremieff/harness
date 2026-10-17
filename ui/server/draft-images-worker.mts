@@ -139,7 +139,7 @@ type Message = {id: number} & (
   {action: 'write'; body: {id: string; data: Uint8Array}} | {action: 'finish'; body: {id: string}} |
   {action: 'publish'; body: {reservation: UploadReservation; image: ValidatedImage}} |
   {action: 'cancel'; body: {id: string; targetKey: string}} |
-  {action: 'read' | 'verify'; body: {targetKey: string; image: ValidatedImage}} |
+  {action: 'read' | 'verify' | 'reference'; body: {targetKey: string; image: ValidatedImage}} |
   {action: 'remove'; body: {targetKey: string; image?: ValidatedImage; id?: string}});
 async function work(message: Message): Promise<unknown> {
   switch (message.action) {
@@ -151,6 +151,7 @@ async function work(message: Message): Promise<unknown> {
     case 'cancel': return cancel(message.body.id, message.body.targetKey);
     case 'read': return {mimeType: message.body.image.mimeType, data: await verified(message.body.targetKey, message.body.image)};
     case 'verify': await verified(message.body.targetKey, message.body.image); return;
+    case 'reference': await verified(message.body.targetKey, message.body.image); return imagePath(await targetDirectory(message.body.targetKey), message.body.image.digest);
     case 'remove': {
       const body = message.body, path = await targetDirectory(body.targetKey);
       const file = body.image ? imagePath(path, body.image.digest) : tempPath(path, body.id ?? '');

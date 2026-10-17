@@ -4,19 +4,24 @@ import {statePaths} from '../server/state-paths.mts';
 import {releaseRoot, readSelection} from '../server/release-store.mts';
 import {requestReleaseControl} from '../server/release-control.mts';
 import {OWNER_PROTOCOL} from '../shared/owner.ts';
-function releaseFlag(flag:string|undefined,value:string,options:{stateDir:string;source:string;release?:string}) {
-  switch(flag){case '--state-dir':options.stateDir=resolve(value);return;case '--source':options.source=resolve(value);return;case '--release':options.release=value;return;default:throw new Error('Unknown release flag.');}
+function releaseFlag(flag:string|undefined,value:string,options:{stateDir:string;source:string;release?:string;keep:string[]}) {
+  switch(flag){case '--state-dir':options.stateDir=resolve(value);return;case '--source':options.source=resolve(value);return;case '--release':options.release=value;return;case '--keep-release':options.keep.push(value);return;default:throw new Error('Unknown release flag.');}
 }
 export function parseReleaseArgs(args: string[]) {
-  const kind=args[0];if(!['stage','status','switch','rollback','stop'].includes(kind??''))throw new Error('Use stage, status, switch, rollback, or stop.');
-  const options:{stateDir:string;source:string;release?:string}={stateDir:statePaths().stateDir,source:resolve('.')};
+  const kind=args[0];if(!['stage','status','switch','rollback','prune','stop'].includes(kind??''))throw new Error('Use stage, status, switch, rollback, prune, or stop.');
+  const options:{stateDir:string;source:string;release?:string;keep:string[]}={stateDir:statePaths().stateDir,source:resolve('.'),keep:[]};
   for(let i=1;i<args.length;i++) {const flag=args[i],value=args[++i];if(!value||value.startsWith('--'))throw new Error('A release flag requires a value.');releaseFlag(flag,value,options);}
   if(kind==='switch'&&(!options.release||!/^[a-f0-9]{64}$/.test(options.release)))throw new Error('Switch requires --release with its complete identity.');
   if(kind!=='switch'&&options.release)throw new Error('Only switch accepts --release.');
-  return {kind:kind as 'stage'|'status'|'switch'|'rollback'|'stop',...options};
+  if(kind!=='prune'&&options.keep.length)throw new Error('Only prune accepts --keep-release.');
+  return {kind:kind as 'stage'|'status'|'switch'|'rollback'|'prune'|'stop',...options};
 }
 export async function releaseMain(args=process.argv.slice(2)) {
   const options=parseReleaseArgs(args);
+  if(options.kind==='prune') {
+    const {pruneReleases}=await import('../server/release-retention.mts');
+    return pruneReleases(options.stateDir,options.keep);
+  }
   if(options.kind==='stage') {
     const {stageRelease}=await import('../server/release-stage.mts');
     return stageRelease(options.source,options.stateDir,{ownerProtocol:OWNER_PROTOCOL});

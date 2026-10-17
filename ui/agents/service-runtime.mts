@@ -1,7 +1,7 @@
 import { AgentCatalog, deriveEndpoint, readClaim, type CatalogPage, type CatalogRecord, type CatalogScan } from "./catalog.mts";
 import { AgentError, HostLink, type SubmitInput } from "./client.mts";
 import { captureSubmitInput, submitInputDigest, type NativeInputMessage, type NativeInputPart } from "./input.mts";
-import { readVerifiedDraftImages } from "../server/draft-images.mts";
+import { readVerifiedDraftImages, verifiedImageReferences } from "../server/draft-images.mts";
 import { isAbsolute } from "node:path";
 import { decodeInput, type AbortReceipt, type Admission, type ConversationFrame, type InspectResult, type JsonObject, type Snapshot } from "./contract.mts";
 import { ObservationManager, type AvailabilityListener } from "./observation.mts";
@@ -158,15 +158,20 @@ export class AgentService {
     record.link = link;
     link.require(["task-submit"]);
     this.#ready();
-    const message = await this.#nativeMessage(input);
+    const message = await this.#nativeMessage(input, link.capabilities().images === true);
     this.#ready();
     try { return await link.submit(identity, {operationId: input.operationId, message, mode: input.mode}, this.#installationId); }
     finally {
       if (!link.connected || !link.supports("task-submit")) this.#onImageInput(this.#record(identity).storageId, undefined, false);
     }
   }
-  async #nativeMessage(input: SubmitInput): Promise<NativeInputMessage> {
+  async #nativeMessage(input: SubmitInput, acceptsImages: boolean): Promise<NativeInputMessage> {
     if (!input.images.length) return input.message;
+    if (!acceptsImages) {
+      const paths=await verifiedImageReferences({root:this.#stateDir,targetKey:input.targetKey,images:input.images});
+      const references=paths.map((path,index)=>`Attached image ${JSON.stringify(input.images[index].name)} (${input.images[index].mimeType}): ${path}`);
+      return [input.message,...references].filter(Boolean).join('\n\n');
+    }
     const images = await readVerifiedDraftImages({root: this.#stateDir, targetKey: input.targetKey, images: input.images});
     const parts: NativeInputPart[] = input.message.length ? [{type: "text", text: input.message}] : [];
     for (let i = 0; i < images.length; i++) parts.push({type: "image", mimeType: input.images[i].mimeType, data: Buffer.from(images[i].data).toString("base64")});

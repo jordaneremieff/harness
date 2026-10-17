@@ -9,7 +9,7 @@ import {StateStore} from './state.mts';
 import type {OperationRecord} from './state.mts';
 import {Operations} from './operations.mts';
 import {normalizeDraftImages} from './validate.mts';
-import {readVerifiedDraftImages} from './draft-images.mts';
+import {readVerifiedDraftImages,verifiedImageReferences} from './draft-images.mts';
 import {execute} from './dispatch.mts';
 import {AgentError} from '../agents/index.mts';
 import type {Registry} from './registry.mts';
@@ -36,6 +36,13 @@ async function admitted(f: Awaited<ReturnType<typeof fixture>>, wid: string, key
   assert.equal((await operations.execute(operation.id, request, async () => ({state: 'accepted', receipt: {kind: 'rpc', disposition}}))).state, 'accepted');
   return operation.id;
 }
+
+test('verified image file reference retains exact bytes and target isolation', async t => {
+  const f=await fixture(t),staged=await f.upload();
+  const paths=await verifiedImageReferences({root:f.root,targetKey:f.saved.targetKey,images:[staged.image]});
+  assert.equal(paths.length,1);assert.deepEqual(await readFile(paths[0]),bytes);
+  await assert.rejects(verifiedImageReferences({root:f.root,targetKey:'00000000-0000-0000-0000-000000000000',images:[staged.image]}),{code:'image_unavailable'});
+});
 
 test('image references normalize omissions and reject invalid complete metadata', () => {
   assert.deepEqual(normalizeDraftImages(undefined), []);
