@@ -782,7 +782,7 @@ test('editor height grows locally, caps long drafts, shrinks, and preserves expl
     const paint = () => {for (const frame of f.frames.splice(0)) frame();};
     f.composer.setText(Array(10).fill('line').join('\n')); paint(); assert.equal(editor.style.height, '243px');
     f.composer.setText(Array(20).fill('line').join('\n')); paint(); assert.equal(editor.style.height, '243px');
-    f.composer.setText('one'); paint(); assert.equal(editor.style.height, '40.5px');
+    f.composer.setText('one'); paint(); assert.equal(editor.style.height, '85.5px');
     editor.style.height = '180px'; editor.fire('pointerup'); f.composer.setText('two'); paint(); assert.equal(editor.style.height, '180px');
     f.composer.setManualHeight(600); paint(); assert.equal(editor.style.height, '540px'); assert.equal(editor.style.maxHeight, '540px');
     f.composer.setText('short'); paint(); assert.equal(editor.style.height, '540px');
@@ -792,7 +792,7 @@ test('editor height grows locally, caps long drafts, shrinks, and preserves expl
     f.node('composer').hidden = true; f.composer.setManualHeight(600); paint(); assert.equal(editor.style.height, '301px');
     f.node('composer').hidden = false; f.composer.resize(); paint(); assert.equal(editor.style.height, '540px');
     f.composer.setManualHeight(0); paint(); assert.equal(editor.style.height, '40.5px');
-    f.composer.setManualHeight(undefined); paint(); assert.equal(editor.style.height, '40.5px'); assert.equal(editor.style.maxHeight, '243px');
+    f.composer.setManualHeight(undefined); paint(); assert.equal(editor.style.height, '85.5px'); assert.equal(editor.style.maxHeight, '243px');
     for (const px of [NaN, Infinity, -1]) assert.throws(() => f.composer.setManualHeight(px), RangeError);
     assert.equal(f.calls.length, 1);
   } finally {
@@ -994,7 +994,7 @@ test('ready agent Send requires a nonempty draft and readiness never submits inp
   const f = fixture('agent'); const a = f.connect(state('a', draft(2, 'retained draft', 'followUp'), true));
   f.composer.recipient('Message Review companion'); f.node('editor').setSelectionRange(4, 8); f.node('editor').focus();
   assert.equal(f.node('recipient').textContent, 'Message Review companion');
-  assert.equal(f.composer.editor.placeholder, 'Write a message…');
+  assert.equal(f.composer.editor.placeholder, 'Message Review companion…');
   assert.equal(f.node('editor').attrs.get('aria-label'), 'Message Review companion');
   f.composer.availability(false, true, false); f.composer.recipient('Message Review companion');
   assert.equal(f.composer.editor.value, 'retained draft'); assert.equal(f.node('editor').selectionStart, 4);
@@ -1008,6 +1008,20 @@ test('ready agent Send requires a nonempty draft and readiness never submits inp
   f.composer.recipient('Draft for Review companion', ''); assert.equal(f.node('send').attrs.get('aria-description'), '');
   assert.equal(f.composer.editor.value, 'retained draft'); assert.equal(f.node('editor').selectionStart, 4); assert.equal(f.node('editor').selectionEnd, 8);
   assert.equal(f.node('editor').focused, true); assert.equal(f.calls.length, 0);
+});
+test('recipient placeholders and busy delivery capability preserve the exact native draft', () => {
+  const f = fixture('agent'); const a = f.connect(state('a', draft(2, 'Exact local draft', 'followUp'), true));
+  const editor = f.composer.editor, parent = editor.parentElement; editor.focus(); editor.setSelectionRange(2, 9, 'backward');
+  const name = 'A complete recipient name '.repeat(12);
+  f.composer.recipient(`Draft for ${name}`, 'Connect before sending.', `Message ${name}`);
+  assert.equal(editor.placeholder, `Message ${name}…`); assert.equal(f.node('editor').getAttribute('aria-label'), `Draft for ${name}`);
+  for (const [connected, ready, busy, supported, visible] of [[true, true, true, false, false], [true, true, true, true, true], [true, true, false, true, false], [false, true, true, true, false], [true, false, true, true, false]] as const) {
+    f.composer.availability(connected, ready, busy, false, supported);
+    assert.equal(f.node('modes').hidden, !visible); assert.equal(f.node('modes').children[0]?.value, 'followUp');
+    assert.equal(f.composer.editor, editor); assert.equal(editor.parentElement, parent); assert.equal(editor.value, 'Exact local draft');
+    assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [2, 9, 'backward']); assert.deepEqual(f.composer.target, a.target);
+  }
+  assert.equal(f.calls.length, 0); assert.equal(f.submitted.length, 0);
 });
 test('busy delivery choices describe timing once and stay separate from activity', () => {
   const f = fixture(); f.connect(); f.composer.recipient('Message Primary'); f.composer.availability(true, true, true);

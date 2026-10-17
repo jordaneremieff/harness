@@ -167,7 +167,7 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
   const latest = add('latest', 'button', 'latest') as HTMLButtonElement; latest.type = 'button'; latest.textContent = 'Latest'; latest.setAttribute('aria-label', 'Latest message'); latest.hidden = true;
   nodes.set('transcript-region',region);region.append(absent, scroller); const above = add('widgets-above', 'div', 'widgets'), below = add('widgets-below', 'div', 'widgets');
   const elements = createComposerElements(instanceId); elements.root.hidden = false;
-  const composerLine = elements.root.querySelector('.composer-line') as HTMLElement; composerLine.prepend(latest);
+  const composerLine = elements.root.querySelector('.composer-line') as HTMLElement; composerLine.insertBefore(latest, composerLine.querySelector('.composer-bar'));
   for (const [name, node] of Object.entries(elements)) if (node) nodes.set(name === 'root' ? 'composer' : name, node);
   const stop = elements.root.querySelector<HTMLButtonElement>('.stop'); if (!stop) throw new Error('Stop control is missing.'); nodes.set('stop', stop); nodes.set('abort', stop);
   const resize = elements.root.querySelector<HTMLElement>('.resizer'); if (resize) nodes.set('composer-resizer', resize);
@@ -522,14 +522,14 @@ function refreshCaptionConsumers(): void {
     if (controller.workspaceId !== state.workspace?.id) continue;
     controller.transcript.refreshSubjects();
     const view = presentation(controller.target);
-    controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + presentationName(view), controllerGuidance(controller, view));
+    controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + presentationName(view), controllerGuidance(controller, view), `Message ${presentationName(view)}`);
   }
   const captured = messageTarget.current;
   if (captured && messageTarget.valid(captured)) {
     const name = presentationName(presentation({kind: 'agent', identity: captured.identity})), ready = messageTarget.ready;
     setText(byId('agent-message-name'), name);
     const controller = controllers.get(controllerKey(captured.workspaceId, {kind: 'agent', identity: captured.identity}));
-    controller?.composer.recipient((ready ? 'Message ' : 'Draft for ') + name, ready || !captured.prepared || captured.invalidated ? '' : 'Connect this agent to send.');
+    controller?.composer.recipient((ready ? 'Message ' : 'Draft for ') + name, ready || !captured.prepared || captured.invalidated ? '' : 'Connect this agent to send.', `Message ${name}`);
   }
   tabStrip.render(); roster.schedule(); renderIdentity();
 }
@@ -1116,8 +1116,8 @@ function renderController(controller: ConversationController, deferred = false, 
     controller.composer.attach(controller.workspaceId, saved);
   } else prepareController(controller);
   controller.composer.receipts(state.operations.values());
-  const view = presentation(controller.target); controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + presentationName(view), controllerGuidance(controller, view));
-  controller.composer.availability(connected, !!saved && (controller.target.kind === 'agent' || view.input), view.busy, selecting);
+  const view = presentation(controller.target); controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + presentationName(view), controllerGuidance(controller, view), `Message ${presentationName(view)}`);
+  controller.composer.availability(connected, !!saved && (controller.target.kind === 'agent' || view.input), view.busy, selecting, view.input);
   if (firstDraft && !controller.passive && !controller.root.hidden && sameTarget(layoutTarget(currentLayout(), primaryTarget()) ?? undefined, controller.target) && document.activeElement === document.body) controller.composer.focus();
   controller.elements.root.hidden = !saved;renderInspection(controller); renderObserved(controller, controller.target.kind === 'agent' || connected || !view.activity);
   controllerNode(controller, 'stop').hidden = !canStopController(controller);
@@ -1258,7 +1258,7 @@ function renderMessagePanel(): void {
   const captured = messageTarget.current, panel = byId('agent-message-panel'); panel.hidden = !captured;
   if (!captured) {clearMessageProjections(); workspaceViews?.sync(); return;}
   if (!messageTarget.valid(captured)) {closeMessagePanel(false); return;}
-  const target = {kind: 'agent' as const, identity: captured.identity}, controller = conversationController(target), name = presentationName(presentation(target));
+  const target = {kind: 'agent' as const, identity: captured.identity}, controller = conversationController(target), view = presentation(target), name = presentationName(view);
   setText(byId('agent-message-name'), name); setText(byId('agent-message-identity'), captured.identity); byId('agent-message-identity').title = captured.identity;
   renderMessageStatus(captured); renderMessageRecovery(captured.preparing === true);
   if (captured.prepared) {
@@ -1267,8 +1267,8 @@ function renderMessagePanel(): void {
     state = {...state, targets: new Map(state.targets).set(saved.targetKey, saved)}; controller.saved = saved; controller.composer.attach(captured.workspaceId, saved);
   } else controller.composer.attachRetained(captured.workspaceId, target);
   placeMessageEditor(controller, panel);
-  const ready = messageTarget.ready; controller.composer.recipient((ready ? 'Message ' : 'Draft for ') + name, ready || !captured.prepared || captured.invalidated ? '' : 'Connect this agent to send.');
-  controller.composer.availability(connected, !!controller.saved, false, selecting); controller.composer.receipts(state.operations.values()); controllerNode(controller, 'stop').hidden = true;
+  const ready = messageTarget.ready; controller.composer.recipient((ready ? 'Message ' : 'Draft for ') + name, ready || !captured.prepared || captured.invalidated ? '' : 'Connect this agent to send.', `Message ${name}`);
+  controller.composer.availability(connected, !!controller.saved, view.busy, selecting, view.input); controller.composer.receipts(state.operations.values()); controllerNode(controller, 'stop').hidden = true;
   renderWorkbenchStatus();
 }
 function renderMessageStatus(captured: import('./selection-state.ts').MessageCapture): void {
@@ -1325,7 +1325,7 @@ function controllerGuidance(controller: ConversationController, view: Conversati
   return controller.target.kind === 'agent' ? '' : view.guidance;
 }
 function renderAgentRecipient(identity: string, view: ConversationPresentation = presentation({kind: 'agent', identity})): void {
-  agentComposer().recipient(`${view.input ? 'Message' : 'Draft for'} ${presentationName(view)}`, '');
+  agentComposer().recipient(`${view.input ? 'Message' : 'Draft for'} ${presentationName(view)}`, '', `Message ${presentationName(view)}`);
 }
 function renderStoredAgent(identity: string, _row?: AgentRow): void {
   renderAgentState(conversationController({kind: 'agent', identity}));
@@ -1422,7 +1422,7 @@ function agentFacts(row?: AgentRow, frame?: ProjectedFrame): {key: string; label
 function renderAvailability(): void {
   for (const controller of controllers.values()) {
     if (!connected && controller.connection?.availability === 'live') controller.connection = {...controller.connection, availability: 'unavailable', capabilities: {...controller.connection.capabilities, input: false}, reason: 'Check the agent connection after the browser reconnects.'};
-    const view = presentation(controller.target), current = controller.workspaceId === state.workspace?.id; controller.composer.availability(connected && current, current && !!controller.saved && (controller.target.kind === 'agent' || view.input), current && view.busy, selecting);
+    const view = presentation(controller.target), current = controller.workspaceId === state.workspace?.id; controller.composer.availability(connected && current, current && !!controller.saved && (controller.target.kind === 'agent' || view.input), current && view.busy, selecting, view.input);
     controllerNode(controller, 'stop').hidden = !canStopController(controller); renderControllerEmpty(controller);
   }
   if (!connected && messageTarget.current) {messageTarget.current.invalidated = true; messageTarget.current.preparing = false; messageTarget.current.error = 'The browser connection changed. Check the agent connection again.';}

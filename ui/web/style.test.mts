@@ -320,6 +320,15 @@ test('prose table cells wrap at words while wide data keeps horizontal scroll an
   assert.match(rule('.tool-rows th, .tool-rows td'), /white-space: normal; overflow-wrap: anywhere/);
   assert.match(rule('.tool-rows'), /max-width: 100%; overflow-x: auto/);
 });
+test('composer actions keep Attach left and submission right with one padded keyboard-focus boundary', () => {
+  assert.match(rule('.attach'), /margin-right: auto/); assert.doesNotMatch(rule('.attach'), /flex: 1|flex-grow/);
+  assert.doesNotMatch(rule('.composer-bar'), /margin-left: auto/);
+  assert.match(rule('.composer-submit'), /flex: none; flex-wrap: nowrap/);
+  assert.match(rule('.send:not(:disabled)'), /font-weight: 600; background: var\(--raised\)/);
+  assert.match(rule('.send'), /color: var\(--fg\)/);
+  assert.match(rule('.composer textarea'), /min-width: 0/);
+  assert.match(rule('.composer-input'), /border-radius: 0/);
+});
 test('narrow composer controls wrap only as needed and retain right alignment with unbroken control labels', () => {
   const narrow = [...css.matchAll(/@container conversation \(max-width: 480px\) \{([\s\S]*?)\n\}/g)].map(match => match[1]).join('\n');
   assert.match(rule('.composer-bar'), /flex-wrap: wrap;[^}]*justify-content: flex-end/);
@@ -491,8 +500,8 @@ test('editor text and prose share a bounded left-aligned column without moving t
   assert.match(rule('.transcript'), /padding: var\(--s3\) var\(--work-gutter\)/);
   assert.match(css, /@container conversation \(max-width: 700px\)[\s\S]*?--work-gutter: 16px/);
   assert.match(rule('.transcript-region > .empty-state'), /left: var\(--work-gutter\); right: var\(--work-gutter\); max-width: 960px/);
-  assert.match(rule('.composer-input'), /padding: var\(--s2\) 0 2px; border: 0; border-top: 1px solid var\(--rule\)/);
-  assert.match(rule('.composer textarea'), /padding: 0; border: 0/);
+  assert.match(rule('.composer-input'), /padding: 0; border: 1px solid var\(--rule\)/);
+  assert.match(rule('.composer textarea'), /padding: var\(--s3\); border: 0/);
   for (const selector of ['.transcript', '.composer-input', '.composer textarea']) {
     assert.doesNotMatch(rule(selector), /margin-left: -|translateX|left: -/);
   }
@@ -623,9 +632,9 @@ test('supplied roles stay inline metadata and expanded thinking separates from p
 });
 
 test('focus marks the actual editor and its local split identity without changing placement', () => {
-  assert.match(rule('.composer textarea:focus-visible'), /outline: 1px solid var\(--accent\); outline-offset: 3px/);
-  assert.doesNotMatch(css, /\.composer:has\(textarea:focus-visible\).*border-color: var\(--accent\)/);
-  assert.match(rule('.composer-input'), /border-top: 1px solid var\(--rule\)/);
+  assert.match(rule('.composer textarea:focus-visible'), /outline: none/);
+  assert.match(rule('.composer-input:has(textarea:focus-visible)'), /border-color: var\(--accent\)/);
+  assert.match(rule('.composer-input'), /border: 1px solid var\(--rule\)/);
   assert.match(rule('.pane-leaf[data-focused=true] > .tab-bar .conversation-tab[aria-selected=true]'), /box-shadow: inset 0 -2px var\(--accent\)/);
   assert.doesNotMatch(css, /\.pane-heading/);
 });

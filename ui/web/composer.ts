@@ -25,7 +25,7 @@ export type ComposerElements = {root: HTMLFormElement; editor: HTMLTextAreaEleme
 export function createComposerElements(instanceId: string): ComposerElements {
   const id = `composer-${encodeURIComponent(instanceId)}`;
   const root = element('form', 'composer'); root.id = id; root.hidden = true;
-  const editor = element('textarea'); editor.id = `${id}-editor`; editor.rows = 1; editor.placeholder = 'Write a message…'; editor.spellcheck = false;
+  const editor = element('textarea'); editor.id = `${id}-editor`; editor.rows = 3; editor.placeholder = 'Write a message…'; editor.spellcheck = false;
   const recipient = element('label', 'sr-only', 'Message'); recipient.id = `${id}-recipient`; recipient.htmlFor = editor.id;
   const resize = element('div', 'resizer'); resize.id = `${id}-resizer`; resize.dataset.axis = 'y'; resize.tabIndex = 0;
   resize.setAttribute('role', 'separator'); resize.setAttribute('aria-orientation', 'horizontal'); resize.setAttribute('aria-label', 'Resize message box'); resize.setAttribute('aria-controls', editor.id);
@@ -36,7 +36,8 @@ export function createComposerElements(instanceId: string): ComposerElements {
   const attachments = element('div', 'composer-attachments'); attachments.hidden = true; attachments.setAttribute('aria-label', 'Attachments');
   const input = element('div', 'composer-input'); input.append(commandMenu, recipient, surface, attachments);
   const modes = element('div', 'modes'); modes.id = `${id}-modes`; modes.hidden = true; modes.setAttribute('role', 'group'); modes.setAttribute('aria-label', 'Delivery while working');
-  const delivery = element('select'); delivery.setAttribute('aria-label', 'Delivery while working'); delivery.title = 'Delivery while working';
+  const delivery = element('select'); delivery.setAttribute('aria-label', 'Delivery while working'); delivery.title = 'Next step reaches the next step of the current work. After response follows the current response.';
+  delivery.setAttribute('aria-description', delivery.title);
   for (const [mode, text] of [['steer', 'Next step'], ['followUp', 'After response']] as const) {
     const choice = element('option', undefined, text); choice.value = mode; delivery.append(choice);
   }
@@ -46,7 +47,8 @@ export function createComposerElements(instanceId: string): ComposerElements {
   send.setAttribute('aria-label', 'Send message'); stop.setAttribute('aria-label', 'Stop response');
   const attach = element('button', 'attach', 'Attach'); attach.type = 'button'; attach.setAttribute('aria-label', 'Attach files');
   const picker = element('input'); picker.type = 'file'; picker.multiple = true; picker.hidden = true; picker.tabIndex = -1; picker.setAttribute('aria-label', 'Choose attachments');
-  const bar = element('div', 'composer-bar'); bar.append(attach, picker, modes, stop, send); const line = element('div', 'composer-line'); line.append(bar); root.append(resize, receipt, input, line);
+  const submit = element('div', 'composer-submit'); submit.append(modes, send);
+  const bar = element('div', 'composer-bar'); bar.append(stop, submit); const line = element('div', 'composer-line'); line.append(attach, picker, bar); root.append(resize, receipt, input, line);
   const save = element('span', 'draft-state'); save.id = `${id}-save`;
   const receiptDetails = element('span', 'receipt-details'); receiptDetails.id = `${id}-receipt-details`;
   return {root, editor, recipient, receipt, receiptDetails, modes, send, save, commandMenu, overlay, attachments, attach, picker};
@@ -79,6 +81,7 @@ export class Composer {
   private ready = false;
   private recipientGuidance = 'Connect this agent to send.';
   private busy = false;
+  private deliverySupported = false;
   private operations: OperationView[] = [];
   private admittedSaves = new WeakMap<DraftSave,Submission>();
   private sizePending = false;
@@ -154,8 +157,9 @@ export class Composer {
     for (const buffer of this.buffers.values()) {clearTimeout(buffer.slowTimer); buffer.slowTimer = undefined; buffer.attachments?.destroy();}
     this.elements.receipt.replaceChildren(); this.elements.receiptDetails.replaceChildren();
   }
-  recipient(label: string, guidance = 'Connect this agent to send.'): void {
+  recipient(label: string, guidance = 'Connect this agent to send.', placeholder = label): void {
     setText(this.elements.recipient, label);
+    this.editor.placeholder = `${placeholder}…`;
     this.editor.setAttribute('aria-label', label);
     this.recipientGuidance = guidance; this.renderControls();
   }
@@ -190,8 +194,8 @@ export class Composer {
     this.receipt(buffer); this.flush(buffer);
   }
   updateDraft(draft: DraftView): void { if (this.current) { this.receive(this.current, draft); this.paint(this.current); this.receipt(this.current); } }
-  availability(connected: boolean, ready: boolean, busy: boolean, gated = false): void {
-    this.connected = connected; this.ready = ready; this.busy = busy; this.gated = gated;
+  availability(connected: boolean, ready: boolean, busy: boolean, gated = false, deliverySupported = ready): void {
+    this.connected = connected; this.ready = ready; this.busy = busy; this.gated = gated; this.deliverySupported = deliverySupported;
     if (!connected) for (const buffer of this.buffers.values()) buffer.attachments?.suspend();
     const buffer = this.current;
     if (buffer) {
@@ -531,7 +535,7 @@ export class Composer {
       const style = getComputedStyle(this.editor); const line = Number.parseFloat(style.lineHeight);
       const extra = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom) + Number.parseFloat(style.borderTopWidth) + Number.parseFloat(style.borderBottomWidth);
       const short = matchMedia('(max-height: 599px)').matches;
-      const baseline = line + extra;
+      const baseline = (this.manualHeight === undefined ? 3 : 1) * line + extra;
       const available = this.hooks.layoutHeight?.() ?? this.elements.root.parentElement?.clientHeight ?? this.elements.root.clientHeight;
       const autoCap = Math.min(10 * line + extra, available * (short ? 0.25 : 0.3));
       const cap = Math.max(baseline, this.manualHeight === undefined ? autoCap : available * 0.6);
@@ -554,7 +558,7 @@ export class Composer {
   }
   private renderControls(): void {
     if (this.destroyed) return;
-    this.elements.modes.hidden = !this.ready || !this.connected || !this.busy;
+    this.elements.modes.hidden = !this.current || !this.ready || !this.connected || !this.busy || !this.deliverySupported;
     this.elements.send.hidden = false;
     const reason = this.sendGuidance();
     const send = this.elements.send; send.setAttribute('aria-description', reason); send.title = reason || 'Send';

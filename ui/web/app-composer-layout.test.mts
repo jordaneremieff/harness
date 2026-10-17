@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type {DraftImage} from '../shared/api.ts';
 import {createAppFixture, type HostNode} from './app-fixture.mts';
-const {app, arrive, settle, primaryControl, agentControl, primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, twoPanes, observation, coverage, host} = await createAppFixture();
+const {app, arrive, settle, event, primaryControl, agentControl, primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, twoPanes, observation, coverage, host} = await createAppFixture();
 
 function ancestors(node: HostNode): HostNode[] {
   const result: HostNode[] = [];
@@ -33,7 +33,12 @@ test('conversation state and split width changes retain editor ancestry, draft i
   const primaryEditor = primaryControl('editor'), primaryChain = ancestors(primaryEditor);
   for (const control of [primaryControl, agentControl]) {
     const latest = control('latest'), line = control('composer').querySelector('.composer-line');
-    assert.ok(line); assert.equal(latest.parentNode, line); assert.equal(line.firstChild, latest);
+    assert.ok(line); const bar = line.querySelector('.composer-bar'); assert.ok(bar);
+    const attach = line.querySelector('.attach'), picker = line.querySelector('input'); assert.ok(attach); assert.ok(picker);
+    assert.equal(latest.parentNode, line); assert.deepEqual(line.children, [attach, picker, latest, bar]);
+    const submit = bar.querySelector('.composer-submit'); assert.ok(submit);
+    assert.deepEqual(bar.children, [control('stop'), submit]); assert.deepEqual(submit.children, [control('modes'), control('send')]);
+    assert.equal(control('editor').rows, 3);
     assert.equal(control('transcript').parentNode?.contains(latest), false);
     assert.equal(control('editor').parentNode?.classList.contains('composer-surface'), true);
   }
@@ -41,9 +46,11 @@ test('conversation state and split width changes retain editor ancestry, draft i
   const height = (editor.style as {height?: string}).height;
   assert.equal(height, '160px');
   assert.equal(root.classList.contains('agent-empty'), true);
+  let frameRevision = 0;
   for (const next of ['running', 'failed', 'incompatible', 'populated']) {
     phase = next;
-    await arrive({...baseline, roster: [agentFixture(identity, {availability: next === 'incompatible' ? 'incompatible' : 'live'})], observations: [observation(identity, {revision: 1, observedAt: 'now', entries: [], live: [], nextBefore: null, status: {busy: next === 'running'}, coverage}, 10)]});
+    await arrive({...baseline, roster: [agentFixture(identity, {availability: next === 'incompatible' ? 'incompatible' : 'live'})], observations: [observation(identity, {revision: ++frameRevision, observedAt: 'now', entries: [], live: [], nextBefore: null, status: {busy: next === 'running'}, coverage}, 10)]});
+    event('agent.availability', {identity, connectionEpoch: 10, state: next === 'incompatible' ? 'incompatible' : 'live', capabilities: agentFixture(identity).capabilities}); await settle();
     for (const width of [1000, 1440]) {
       host.viewport = width; app.renderNavigation(); await settle();
       assert.equal(agentControl('root'), root); assert.equal(agentControl('composer'), form); assert.equal(agentControl('editor'), editor);
@@ -52,6 +59,8 @@ test('conversation state and split width changes retain editor ancestry, draft i
       assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [2, 9, 'backward']);
       assert.equal((editor.style as {height?: string}).height, height);
       assert.equal(root.classList.contains('agent-empty'), next !== 'populated');
+      assert.equal(agentControl('modes').hidden, next !== 'running'); assert.equal(agentControl('stop').hidden, next !== 'running');
+      assert.match(editor.placeholder, /^Message .*…$/); assert.match(editor.getAttribute('aria-label') ?? '', /^(?:Message |Draft for )/);
     }
   }
 });
