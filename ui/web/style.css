@@ -1109,7 +1109,7 @@ dialog textarea:focus-visible { outline: 2px solid var(--accent); outline-offset
 .picker-safety { margin-block: 12px; color: var(--muted); font-size: 13px; }
 dialog[data-variant=picker] { overflow-y: auto; }
 dialog[data-variant=picker] #modal-body { overflow: visible; }
-.picker-session { position: relative; display: grid; grid-template-columns: minmax(0,1fr) auto auto; align-items: center; gap: 0 12px; }
+.picker-session { position: relative; display: grid; grid-template-columns: minmax(0,1fr) auto auto auto; align-items: center; gap: 0 12px; }
 .picker-select { display: flex; flex-direction: column; align-items: stretch; gap: 2px; width: 100%; min-width: 0; padding: 6px 10px; border-left: 2px solid transparent; border-radius: 0; text-align: left; white-space: nowrap; }
 .picker-select:hover { background: var(--canvas); }
 .picker-select:focus-visible { border-left-color: var(--accent); outline: none; background: var(--canvas); }

@@ -9,11 +9,11 @@ import type { OperationRecord } from './state.mts';
 import { projectJson, safeText } from './projection.mts';
 import {withPrimaryOperation} from '../rpc/primary-operation.mts';
 
-const KINDS: OperationKind[] = ['primary.open', 'primary.input', 'primary.stop', 'primary.session', 'primary.control', 'primary.dialog', 'primary.handoff', 'agent.input', 'agent.abort', 'agent.configure'];
+const KINDS: OperationKind[] = ['primary.open', 'primary.input', 'primary.stop', 'primary.session', 'primary.control', 'primary.dialog', 'primary.handoff', 'agent.input', 'agent.abort', 'agent.configure', 'agent.convert'];
 const terminal = (record: {view: {state: string}; input?: unknown; inputResolved?: boolean; retainedInput?: unknown; protected?: boolean}) => ['accepted', 'rejected', 'completed'].includes(record.view.state) && (!record.input || record.inputResolved) && !record.retainedInput && !record.protected;
 export type ExecuteRequest = {workspaceId: string; kind: OperationKind; target?: Target; body: unknown;
   input?: {targetKey: string; text: string; mode: string; draftRevision: number; images?: DraftImage[]; differentMessage?: true}; retryUncertainNative?: boolean};
-export type DispatchResult = {state: 'accepted' | 'completed' | 'rejected'; receipt?: OperationView['receipt']; error?: ErrorView};
+export type DispatchResult = {state: 'accepted' | 'completed' | 'rejected' | 'uncertain'; receipt?: OperationView['receipt']; error?: ErrorView};
 export const nativeRequestId = (id: string): string => `ui:${id}`;
 
 function canonical(value: unknown, depth = 0): string {
@@ -58,7 +58,7 @@ export class Operations {
     return this.store.transaction(async () => {
       if (!KINDS.includes(kind)) throw new StateError('invalid_request', 'Unknown operation kind');
       if (target) validateTarget(target);
-      if (kind !== 'primary.open' && (!target || (kind.startsWith('primary.') ? target.kind !== 'primary' : target.kind !== 'agent'))) throw new StateError('invalid_request', 'Operation requires its exact target');
+      if (kind !== 'primary.open' && kind !== 'agent.convert' && (!target || (kind.startsWith('primary.') ? target.kind !== 'primary' : target.kind !== 'agent'))) throw new StateError('invalid_request', 'Operation requires its exact target');
       // A workspace lookup uses the already-loaded bounded state, not directory enumeration.
       await this.store.getWorkspaceForOperation(workspaceId);
       await this.prune();
@@ -205,7 +205,7 @@ export class Operations {
         record.input = record.input ?? {operationId: record.view.id, target: structuredClone(request.target), targetKey: input.targetKey, text: input.text, mode: input.mode, images, submittedDraftRevision: input.draftRevision, createdAt: this.stamp(), reason: 'Dispatch has no receipt yet', ...(origin ? {recoveryOrigin: origin} : {}), ...(input.differentMessage === true ? {differentMessage: true as const} : {})};
   }
   private validateOutcome(outcome: DispatchResult, record: OperationRecord): void {
-    if (!outcome || !['accepted', 'completed', 'rejected'].includes(outcome.state)) throw new Error('Invalid outcome');
+    if (!outcome || (!['accepted', 'completed', 'rejected'].includes(outcome.state) && !(outcome.state === 'uncertain' && record.view.kind === 'agent.convert'))) throw new Error('Invalid outcome');
     if (record.input && !['rejected', 'accepted'].includes(outcome.state)) throw new Error('Input needs admission receipt');
     if (record.input && outcome.state === 'accepted' && !outcome.receipt) throw new Error('Missing admission receipt');
     const receipt = outcome.receipt;

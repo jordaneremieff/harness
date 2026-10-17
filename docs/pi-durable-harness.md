@@ -1,22 +1,24 @@
 # Pi durable-harness track
 
-Pi 1.2.0 supplies the ordinary coding-agent host and the separate Pi Durable
+Pi 1.3.0 supplies the ordinary coding-agent host and the separate Pi Durable
 runtime. The ordinary primary owns the terminal. Durable owns native agent
 conversations, generation, tool tasks, committed state, and recovery. The Agent
 extension supplies cwd-bound resources, process ownership, controls, and delivery.
 The [session host roles](conventions/session-host-roles.md) and
 [Agent host contract](agent-host-contract.md) define that composition.
 
-Source review date: 2026-10-13. Source inspection establishes the named package
-contracts, not the version loaded by every process, live provider behavior, or
-cumulative release acceptance. The release declaration below records acceptance
-separately. Published-file comparisons cover 1.0.3 to 1.2.0 and 1.1.0 to 1.2.0 for
+Source review date: 2026-10-17. The current review covers published 1.3.0
+manifests and the Chord, native execution, tool-argument validation, and saved
+context contracts below. Source inspection does not establish loaded modules,
+live provider behavior, conversion acceptance, or cumulative release acceptance.
+The release declaration records acceptance separately.
+
+The historical file comparisons cover 1.0.3 to 1.2.0 and 1.1.0 to 1.2.0 for
 coding-agent, TUI, and Durable, plus cited AI, agent-core, Codemode, and MCP files.
-They exclude source maps, coding-agent bundles, native prebuild binaries,
-generated schemas, and vendored assets. Selected current coding-agent and TUI
-files match the running installation's files. Generated model catalogs have hash
-comparisons only. Earlier runtime trials do not become current trials through a
-file comparison.
+They exclude source maps, bundles, native prebuild binaries, generated schemas,
+and vendored assets. Their byte-equality findings apply to those compared
+releases, not automatically to 1.3.0. Earlier runtime trials do not become
+current trials through a source comparison.
 
 ## Release review coverage
 
@@ -56,10 +58,10 @@ A manifest does not identify another process's loaded modules.
 
 | Source | Current contract |
 |---|---|
-| Coding-agent 1.2.0 manifest | Runtime exports are the ordinary root and `./rpc-entry`. `./client` and `./experimental/plugin` export keys are removed. |
-| Agent-core 1.2.0 manifest | The root and package metadata remain public; no AgentHarness lane runtime is published there. |
-| Durable 1.2.0 manifest | Root, environments, tools, native codemode, native tool-search, optional image processing, storage adapters, and testing exports are published. |
-| Chord 1.2.0 manifest | Typed host runtime plus context, delta, and Node surfaces replace the old service runtime. Context and JSON types remain available. |
+| Coding-agent 1.3.0 manifest | Runtime exports are the ordinary root and `./rpc-entry`. `./client` and `./experimental/plugin` export keys are removed. |
+| Agent-core 1.3.0 manifest | The root and package metadata remain public; no AgentHarness lane runtime is published there. |
+| Durable 1.3.0 manifest | Root, environments, tools, native codemode, native tool-search, optional image processing, storage adapters, and testing exports are published. |
+| Chord 1.3.0 manifest | Typed host runtime plus context, output, delta, and Node surfaces are public. The live protocol is wire 4. |
 | Coding-agent dependencies | Chord is no longer its dependency. Durable still depends on Chord; this does not remove the harness's direct Chord requirement. |
 | Removed packages | Pi Client, Pi Protocol, and Pi Server served the removed experimental runtime and are no longer released. Their old transport is not a current integration surface. |
 | Loaded processes | Unknown unless that process reports its descriptor or its resolution is directly observed. |
@@ -88,6 +90,51 @@ power-loss, or every host-lifecycle trial. The owning slice READMEs and normal
 regressions retain those boundaries. The Agent's process transport, native
 codemode adoption, and exact operation identities require the composed host
 checks before activation. Source release labels are not acceptance evidence.
+
+## Pi 1.3 integration contracts
+
+- Chord uses host-family placement keyed by `serverId`, explicit principals and
+  upstream links, `Ref`, named state and resources, and hydrated references.
+  The Unix adapter checks wire 4 and `codeVersion`, and returns encoded bytes
+  including LF from `Link.send()`. The owning contract is
+  [Chord wire contract](agent-host-contract.md#chord-wire-contract).
+- Native Codemode supplies `acquireWorker`. Its release callback runs once on
+  construction failure or actual worker exit, not result settlement. The Agent
+  uses a process-scoped admission count and retains native non-waiting close.
+  Sources: `pi-codemode/dist/types.d.ts`, `pi-codemode/dist/runtime/host.js` and
+  `extensions/agent/durable-execution.ts`.
+- Native generation retains the original tool call. Tool-task validation passes
+  it to AI validation, which rejects `argumentsError`. ProviderModels forwards
+  original events and messages; observation and UI projections preserve the
+  error field. No second validation layer replaces native validation.
+  Sources: `pi-durable/dist/harness/{generation,tool}.js`,
+  `pi-ai/dist/utils/validation.js`, and `extensions/agent/provider-models.ts`.
+- Saved ordinary conversion uses a complete unchanged read-only snapshot and
+  public `parseSessionEntries`, `buildSessionProjection`, and `convertToLlm`.
+  The final persisted leaf supplies context, including compaction and context
+  edits. System and runtime state are excluded. A new native root receives
+  matching message entries inside `ConversationInit`; no input task replays the
+  transcript. The ordinary file and coordinator role remain unchanged.
+  Sources: `dist/core/{session-manager,messages}.js`,
+  `pi-durable/dist/harness/types.d.ts`, and
+  [saved context creation](agent-host-contract.md#saved-context-creation).
+
+The external Anthropic wrapper boundary preserves delegate `stream` and
+`streamSimple` responses and the supplied model/context. Existing model entries
+and thinking metadata remain unchanged; only an absent custom model is added.
+Its payload path spreads the request, changes system prefixes and metadata,
+merges headers/fetch/onPayload, and optionally compresses the body. The billing
+patch changes only a system text field. The checked paths do not rewrite
+conversation messages or responses, so they introduce no observed source loss of
+tool-result image placement or `argumentsError`. Source boundary:
+`src/anthropic-provider.ts` and `src/claude-code-protocol.ts` in that external
+wrapper. This does not establish the provider binding loaded by a process or a
+live provider outcome. No wrapper implementation belongs in this repository.
+
+These contracts do not close the cumulative acceptance gap after 1.0.3. Static
+checks do not establish released UI behavior, loaded dependency replacement, or
+successful conversion. Resource registry replacement alone does not replace
+cached package modules.
 
 ## Runtime adoption and distribution
 

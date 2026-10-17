@@ -245,6 +245,9 @@ existing manager and host. It sends no prompt, changes no model, and creates no
 ordinary Pi session. A target need not appear in the bounded dashboard roster.
 The selected conversation fills the window with the existing transcript, native
 pi-tui `Editor`, tool cards, live tool and assistant output, and status block.
+The composer caption uses the selected native conversation's actual name from
+attach status and live observations. Name clears remove stale captions; an
+unnamed target uses its exact identity, not an invented name.
 
 Without `--session`, the terminal reads the last attached identity from
 `terminal-target.json` under `PI_AGENT_SESSIONS_DIR`, or its default store root.
@@ -1620,6 +1623,31 @@ ordinary `AgentSession` behind a Durable transcript.
 The package declares Pi Durable, Codemode, MCP, and Chord as runtime dependencies.
 Core coding-agent services come from the primary's selected public Pi package
 entrypoint. No private upstream implementation is imported or copied.
+
+## Saved ordinary context conversion
+
+The UI's **Convert to Durable** action creates a new independent native root with
+the saved session's actual name. It does not attach, resume, convert a store in
+place, transfer a coordinator role, or start another ordinary runtime. The source
+file remains unchanged. The context is Pi's public saved projection at the final
+persisted leaf, not an unpersisted live selection or in-flight work.
+
+`create-saved-context.ts` is an internal server-selected creation process. It uses
+normal preference resolution, catalog request deduplication, model validation,
+writer admission, and native root initialization. Projected messages cross the
+process boundary on bounded stdin. Matching native entry kinds preserve model
+content, timestamps, tool-call errors and order inside the creating commit. No
+prompt or input task submits the old transcript. The new root starts with fresh
+execution settings, no imported role and untrusted project resources.
+
+An uncertain result retains its candidate identity when available and never
+replays automatically. See [the public process contract](../../docs/agent-host-contract.md#saved-context-creation)
+for source limits, identity matching, exact output and refusal semantics.
+
+Native Codemode admission uses the public `acquireWorker` callback. Process-local
+capacity remains charged through actual worker exit, including termination after
+result settlement. Closing the runtime retains native non-waiting termination;
+it does not wait indefinitely for a built-in operation to exit.
 
 ## Recovery and delivery
 

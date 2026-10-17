@@ -66,7 +66,7 @@ export const UsageStateSchema = object({ models: Type.Record(string, UsageSchema
 const textContent = object({ type: literal("text"), text: string, textSignature: Type.Optional(string) });
 const imageContent = object({ type: literal("image"), data: string, mimeType: string });
 const thinkingContent = object({ type: literal("thinking"), thinking: string, thinkingSignature: Type.Optional(string), redacted: Type.Optional(boolean) });
-const toolCallContent = object({ type: literal("toolCall"), id: string, name: string, arguments: jsonObject, thoughtSignature: Type.Optional(string), namespace: Type.Optional(string) });
+const toolCallContent = object({ type: literal("toolCall"), id: string, name: string, arguments: jsonObject, argumentsError: Type.Optional(string), thoughtSignature: Type.Optional(string), namespace: Type.Optional(string) });
 const userInputContent = union([string, Type.Array(union([textContent, imageContent]))]);
 
 const diagnosticError = object({ name: Type.Optional(string), message: string, stack: Type.Optional(string), code: Type.Optional(union([string, number])) });

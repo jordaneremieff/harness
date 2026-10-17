@@ -26,6 +26,7 @@ export type RequestContext = {method: string; parts: string[]; url: URL; body: R
 export type ImageUploadContext = Omit<RequestContext, 'body' | 'signal'> & {signal: AbortSignal; checkActive(): void};
 export type ImageUploadHeaders = {mimeType: 'image/png' | 'image/jpeg'; declaredBytes?: number};
 export type HttpBackend = {journal: Journal; dispatch(context: RequestContext): Promise<unknown>;
+  publishedSessions?():Promise<import('../shared/api.ts').SavedSessionPage>;
   uploadImage?(context: ImageUploadContext, headers: ImageUploadHeaders, body: AsyncIterable<Uint8Array>): Promise<unknown>;
   workspace(id?: string): Promise<string>; observe(workspace: string): Promise<void>; detached(workspace: string): void;
   moveFiles?(rootId:string,from:string,to:string,work:()=>Promise<import('../shared/files.ts').FileMutation>):Promise<import('../shared/files.ts').FileMutation>;
@@ -432,6 +433,7 @@ export class LocalHttp {
     } finally { this.imageReads--; }
   }
   private async savedMetadata(url: URL, response: ServerResponse): Promise<boolean> {
+    if(url.pathname==='/api/sessions/published'){if(!this.backend.publishedSessions)throw new ApiError('not_ready','Ordinary discovery is unavailable.',503);respond(response,await this.backend.publishedSessions());return true;}
     if (url.pathname === '/api/projects') { respond(response, await this.sessions.projects(url.searchParams.get('cursor'))); return true; }
     if (url.pathname === '/api/sessions') {
       const project = url.searchParams.get('project') ?? ''; const titles = url.searchParams.get('titles');

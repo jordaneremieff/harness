@@ -47,7 +47,7 @@ export type ToolOutputInfo = {truncation?: {truncated: true; truncatedBy?: 'line
   maxLines?: number; maxBytes?: number; lastLinePartial?: true; firstLineExceedsLimit?: true}; fullOutputPath?: string};
 export type PartView = {type: 'text'; text: string; redacted?: boolean; more?: OutputContinuation; structured?: JsonDisplay} |
   {type: 'thinking'; text: string; redacted?: boolean; more?: OutputContinuation} |
-  {type: 'toolCall'; callId: string; name: string; arguments: JsonDisplay} |
+  {type: 'toolCall'; callId: string; name: string; arguments: JsonDisplay; argumentsError?: string} |
   {type: 'toolResult'; callId: string; name: string; parts: PartView[]; isError: boolean; output?: ToolOutputInfo} |
   ImageView | {type: 'omitted'; label: string};
 /** Supplied input-token counts for one assistant message; absent usage is unknown. */
@@ -175,7 +175,7 @@ export type ProjectedFrame = {revision: number; observedAt: string; entries: Ent
   thinkingLevel?: string; lastText?: string; tasks?: JsonDisplay; submissions?: JsonDisplay;
   compactions?: JsonDisplay; compactionFailure?: JsonDisplay; retry?: GenerationRetry; providerBlock?: ProviderBlock}; coverage: DisplayCoverage};
 export type OperationKind = 'primary.open' | 'primary.input' | 'primary.stop' | 'primary.session' |
-  'primary.control' | 'primary.dialog' | 'primary.handoff' | 'agent.input' | 'agent.abort' | 'agent.configure';
+  'primary.control' | 'primary.dialog' | 'primary.handoff' | 'agent.input' | 'agent.abort' | 'agent.configure' | 'agent.convert';
 /** Admission is separate from the eventual answer. Completed is a local control response. */
 export type OperationView = {id: string; kind: OperationKind; target?: Target; action?: string;
   state: 'reserved' | 'dispatched' | 'accepted' | 'rejected' | 'uncertain' | 'completed';
@@ -228,6 +228,7 @@ export type EventName = keyof EventData;
 export type EventEnvelope<N extends EventName = EventName> = {at: string; workspaceId?: string; target?: Target; data: EventData[N]};
 /** Closed HTTP route vocabulary. Dynamic segments are encoded single path segments. */
 export const ROUTES = [
+  'POST /api/agents/convert', 'GET /api/sessions/published',
   'GET /api/control/layout', 'POST /api/control/requests', 'GET /api/control/requests/:id', 'POST /api/control/ack',
   'POST /api/dev/lease',
   'GET /', 'GET /api/bootstrap', 'GET /api/events', 'GET /api/snapshot',

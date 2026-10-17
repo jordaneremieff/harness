@@ -207,10 +207,7 @@ class MessageProjector {
       if (projected.type === 'image' && !projected.source && this.source && index < 100) projected.source = imageSource({...this.source, part: index});
       return projected;
     }
-    if (part.type === 'toolCall') {
-      const args = displayData(part.arguments, Math.max(128, Math.floor(this.remaining / 2))); this.changed ||= args.truncated;
-      return {type: 'toolCall', callId: safeText(part.id ?? part.callId, 256), name: safeText(part.name, 256), arguments: args};
-    }
+    if (part.type === 'toolCall') return this.toolCall(part);
     if (part.type === 'toolResult' && this.depth < 8) {
       const nested = new MessageProjector(this.depth + 1, undefined, {trustedStructured: this.options.trustedStructured, budget: this.budget, deferred: this.options.deferred}).message({role: 'toolResult', content: part.parts, toolCallId: part.callId, toolName: part.name, isError: part.isError, details: part.output}, 'nested', 'final');
       this.changed ||= nested.coverage.truncated; return nested.parts[0] ?? {type: 'omitted', label: 'Tool result omitted'};
@@ -218,6 +215,10 @@ class MessageProjector {
     if (part.type === 'omitted') { this.changed = true; return {type: 'omitted', label: safeText(part.label, 256)}; }
     this.omitted++;
     return {type: 'omitted', label: 'Unsupported content omitted'};
+  }
+  private toolCall(part:Record<string,unknown>):PartView {
+    const args=displayData(part.arguments,Math.max(128,Math.floor(this.remaining/2)));this.changed ||= args.truncated;
+    return{type:'toolCall',callId:safeText(part.id??part.callId,256),name:safeText(part.name,256),arguments:args,...(typeof part.argumentsError==='string'?{argumentsError:safeText(part.argumentsError,4096)}:{})};
   }
   private textPart(part: Record<string, unknown>, index: number): PartView {
     const text = part.type === 'text' ? part.text : part.thinking ?? part.text;

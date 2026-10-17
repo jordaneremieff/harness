@@ -2,7 +2,7 @@ import type { EntryView, JsonDisplay, PartView, ToolOutputInfo } from '../shared
 import type { ToolState } from './state.ts';
 import { TranscriptGroups } from './transcript-groups.ts';
 
-export type JoinedTool = {callId: string; name: string; owner: string; slot: string; args?: JsonDisplay; result?: PartView[]; output?: ToolOutputInfo; status: string; duration?: number; observedStart?: number; argumentText?: string; parentCallId?: string; taskId?: number; parentTaskId?: number};
+export type JoinedTool = {callId: string; name: string; owner: string; slot: string; args?: JsonDisplay; result?: PartView[]; output?: ToolOutputInfo; status: string; duration?: number; observedStart?: number; argumentText?: string; argumentsError?: string; parentCallId?: string; taskId?: number; parentTaskId?: number};
 /** Elapsed time starts at receipt of a tool start, not at a history timestamp. */
 export function toolTime(tool: JoinedTool, now = Date.now()): string {
   if (tool.status !== 'working') return tool.duration === undefined ? '' : `${tool.duration} ms`;
@@ -33,7 +33,7 @@ export function communicationDisclosureKeys(entry: string, message: string): [st
 }
 function sameTool(a: JoinedTool | undefined, b: JoinedTool): boolean {
   return !!a && a.name === b.name && a.owner === b.owner && a.slot === b.slot && a.args === b.args &&
-    a.result === b.result && a.output === b.output && a.status === b.status && a.duration === b.duration && a.observedStart === b.observedStart && a.argumentText === b.argumentText &&
+    a.result === b.result && a.output === b.output && a.status === b.status && a.duration === b.duration && a.observedStart === b.observedStart && a.argumentText === b.argumentText && a.argumentsError === b.argumentsError &&
     a.parentCallId === b.parentCallId && a.taskId === b.taskId && a.parentTaskId === b.parentTaskId;
 }
 function executionStatus(part: NonNullable<EntryView['tool']>): string {
@@ -51,7 +51,7 @@ function combineParts(id: string, parts: ToolPart[]): JoinedTool | undefined {
     for (const item of parts) {
       const part = item.part;
       tool ??= {callId: id, name: part.name, owner: item.owner, slot: item.slot, status: 'missing'};
-      if (part.type === 'toolCall') { tool.args = part.arguments; if (!called) { tool.name = part.name; tool.owner = item.owner; tool.slot = item.slot; called = true; } }
+      if (part.type === 'toolCall') { tool.args = part.arguments; tool.argumentsError = part.argumentsError; if (!called) { tool.name = part.name; tool.owner = item.owner; tool.slot = item.slot; called = true; } }
       else if (part.type === 'execution') applyExecution(tool, part);
       else { tool.result = part.parts; tool.output = part.output; tool.status = part.isError ? 'error' : 'success'; }
     }

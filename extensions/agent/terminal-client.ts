@@ -74,7 +74,7 @@ export class TerminalController {
 		const frame = this.frame;
 		const row = this.row;
 		if (frame && row && this.target && this.availability?.state === "live") {
-			this.row = { ...row, name: frame.status.name ?? row.name, awaiting: frame.status.awaiting,
+			this.row = { ...row, name: frame.status.name, awaiting: frame.status.awaiting,
 				state: frame.status.busy ? "working" : "idle",
 				model: frame.status.agent.model ? { ...frame.status.agent.model, thinkingLevel: frame.status.agent.thinkingLevel } : row.model };
 			this.setSnapshot({ entries: frame.entries, partial: !frame.coverage.complete, revision: `r${frame.revision}`, nextBefore: frame.nextBefore });
@@ -109,7 +109,7 @@ export class TerminalController {
 		if (this.target !== id) this.previous = this.target;
 		this.source.select(undefined);
 		this.target = id;
-		this.row = row;
+		this.row = { ...row, name: status.name };
 		this.state.selected = id;
 		this.setSnapshot(snapshot);
 		this.source.select(id);
@@ -387,7 +387,7 @@ export class TerminalScreen implements Component {
 		if (width < 60 || height < 20) return Array.from({ length: height }, (_, i) => fitLine(i === 0 ? "Resize to use this conversation. Esc opens Agents." : "", width));
 		console.composer.focused = true;
 		console.composer.setViewportRows(Math.max(5, Math.min(10, Math.floor(height / 3))));
-		const editor = console.composer.render(width, "Message", console.messageMode(), console.state.receipt);
+		const editor = console.composer.render(width, console.row.name?.trim() ? console.row.name : console.row.id, console.messageMode(), console.state.receipt);
 		const status = console.statusLines(width, undefined, this.branches.get(console.row.cwd));
 		const body = console.conversation.render(width, Math.max(1, height - editor.length - status.length - 1));
 		this.composerY = body.length; this.composerHeight = editor.length;

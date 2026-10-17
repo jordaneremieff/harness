@@ -81,6 +81,7 @@ async function readSession(info: FileStamp): Promise<SavedSession | null> {
   return {id: saved.id, path: info.path, project: saved.cwd, revision: fingerprint([info.path, info.stamp]), title: '(title pending)', titleState: 'pending',
     modifiedAt: new Date(info.mtime).toISOString(), size: info.size};
 }
+export function savedSessionRevision(path: string, info: Stats): string { return fingerprint([path, fileStamp(path, info)]); }
 function fileStamp(path: string, info: Stats): string {
   return `${basename(path)}:${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
 }

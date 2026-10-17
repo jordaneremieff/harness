@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, linkSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { createConnection, createServer, type Socket } from "node:net";
 import { dirname, join, resolve } from "node:path";
-import type { Frame, Link } from "@earendil-works/chord";
+import { PROTOCOL_VERSION, type Frame, type Link } from "@earendil-works/chord";
 
 /** Default UTF-8 JSON frame bound, excluding the LF delimiter. */
 export const UNIX_FRAME_BYTES = 16 * 1024 * 1024;
@@ -47,7 +47,7 @@ function isFrameObject(raw: unknown): raw is Frame {
 	return raw !== null && typeof raw === "object" && !Array.isArray(raw) && typeof (raw as { t?: unknown }).t === "string";
 }
 function matchingHello(frame: Frame, options: UnixLinkOptions): boolean {
-	return frame.t === "hello" && frame.kind === options.expectedKind && typeof frame.name === "string" && Number.isSafeInteger(frame.epoch) && frame.epoch >= 0 && (options.expectedName === undefined || frame.name === options.expectedName);
+	return frame.t === "hello" && frame.kind === options.expectedKind && typeof frame.name === "string" && frame.protocol === PROTOCOL_VERSION && Number.isSafeInteger(frame.codeVersion) && frame.codeVersion >= 0 && (options.expectedName === undefined || frame.name === options.expectedName);
 }
 
 function unixLimits(options: Pick<UnixLinkOptions, "maxFrameBytes" | "maxSendFrameBytes" | "maxQueueBytes">): { frameLimit: number; sendFrameLimit: number; queueLimit: number } {
@@ -157,6 +157,7 @@ export function createUnixLink(socket: Socket, options: UnixLinkOptions): UnixLi
 			if (bytes > sendFrameLimit) { refuse(frame, new LocalTransportRefusal("frame-limit", "Unix frame exceeds its byte bound", bytes)); return; }
 			if (pendingBytes + bytes + 1 > queueLimit) { refuse(frame, new LocalTransportRefusal("queue-limit", "Unix write queue exceeds its byte bound", bytes)); return; }
 			write(`${encoded}\n`, bytes + 1);
+			return bytes + 1;
 		},
 		onSendRefusal(handler) { if (!closed) refusals.add(handler); return () => { refusals.delete(handler); }; },
 		receive(handler) {

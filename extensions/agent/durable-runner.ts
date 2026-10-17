@@ -1,6 +1,8 @@
+import { existsSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
 import { bindInstallationPackages } from "./installation-binding.ts";
+import { readInitialContext } from "./initial-context.ts";
 
 /** Read the caller installation before any host module resolves a Pi package import. */
 function callerInstallation(input: unknown): string {
@@ -26,7 +28,11 @@ async function runDurableAgentHost(metadataJson: string): Promise<void> {
 		import("./durable-runtime.ts"),
 	]);
 	const metadata = parseHostMetadata(input);
-	const host = await runHost(() => createDurableRuntime(metadata), { metadata, exit: () => process.exit(0) });
+	const initialMessages = process.argv.includes("--initial-context") ? await readInitialContext() : undefined;
+	const host = await runHost(() => {
+		if (initialMessages !== undefined && existsSync(metadata.storagePath)) throw new Error("Saved context requires a new native storage; inspect the previous creation before retrying");
+		return createDurableRuntime(metadata, { initialMessages });
+	}, { metadata, exit: () => process.exit(0) });
 	const stop = () => { void host.close().catch((error: unknown) => { process.stderr.write(`${String(error)}\n`); process.exitCode = 1; }); };
 	process.once("SIGTERM", stop);
 	process.once("SIGINT", stop);

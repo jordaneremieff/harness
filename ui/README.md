@@ -44,6 +44,33 @@ After you exit Pi in the terminal, choose **Resume here** in **Ready for termina
 
 Opening a saved session is itself the deliberate resume action: **Resume here**, or the click or Enter on a saved row, starts the primary on that exact file with no separate confirmation step. After backend replacement, a live primary reattaches through the raw owner. When no live owned primary remains, an explicit open of the same verified saved conversation reuses its retained primary key and conversation epoch. Its workspace keeps the acknowledged draft, reading position and presentation. Explicit Resume selects the returned Primary tab; ordinary refresh preserves the current layout. The server's selection of the returned session does not cancel that explicit action. A canceled picker or later workspace, pane or conversation choice prevents delayed selection and focus. Other input during Resume suppresses late composer focus without canceling the admitted selection. Recovery requires both the canonical file and saved-session identity to match; ambiguous or changed identities are refused without transferring state. Restart alone starts no primary and replays no input or uncertain operation. Pi exposes no public saved-file writer lock or owner query, so the backend cannot detect a terminal or other external writer; close that writer yourself before you open the file here. The backend rejects duplicate canonical files within its own registry, refuses a file another backend primary already writes, and selects an already open backend session instead of opening it again. Each active process keeps its own in-memory branch; the UI does not read later writes from another active process. Concurrent writers can create separate branches. Stop both writers before reopening the saved session. Inspect and select branches with Pi’s `/tree` command; this UI does not merge branches. There is no automatic terminal-to-browser attachment.
 
+### Convert saved context to Durable
+
+The session picker shows named registered ordinary sessions across folders beside
+native Durable conversations. Its project list also retains archived ordinary
+sessions. Public primary metadata corrects unavailable names only after exact
+saved-file and session-ID matching; registration is not proof of live idle state.
+Discovery limits and unavailable records remain visible.
+
+Every ordinary row has one **Convert to Durable** action. This creates a new
+native identity with the same actual name. Selection follows the captured picker,
+workspace and pane choice; cancellation or a later choice prevents late selection
+without undoing admitted creation. The
+original file stays unchanged. It does not resume an ordinary session, submit the
+transcript as a new prompt, or transfer the coordinator role. The source is a
+complete unchanged saved snapshot, projected through public Pi helpers at the
+final persisted leaf with compaction and context edits applied. Unpersisted live
+selection, queued or in-flight work, system prompts, extension runtime state and
+future provider transformations are excluded.
+
+Capture refuses incomplete, malformed, cyclic, changed or oversized input. Its
+limits are documented in [saved context creation](../docs/agent-host-contract.md#saved-context-creation).
+The action retains its operation key across an unconfirmed response. A lost
+acknowledgment stays uncertain and requires inspection, not automatic replay.
+The receipt returns the exact new identity and name. Ordinary owner reload and a
+live ordinary context endpoint are not prerequisites. Conversion does not stop or
+replace the source process.
+
 Startup extension errors are initialization warnings with bounded text. Their presence or absence does not establish exclusive session ownership.
 
 ## Supervisor and recovery

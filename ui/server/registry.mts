@@ -7,6 +7,7 @@ import { LIMITS, type AgentCapabilities, type Bootstrap, type EventData, type Ev
 import { ApiError } from './errors.mts';
 import * as v from './validate.mts';
 import { Journal, type Measure } from './journal.mts';
+import {publishedOrdinarySessions} from './ordinary-presence.mts';
 import { Operations } from './operations.mts';
 import { StateStore } from './state.mts';
 import { projectFrame, projectRoster, safeText } from './projection.mts';
@@ -42,6 +43,7 @@ interface AgentObservationSlot {epoch: number; afterEpoch: number; started: bool
 interface WorkspaceObservation {version: number; dirty: boolean; desired: Map<string,AgentObservationSlot>; attached: Map<string,AgentObservationSlot>; running?: Promise<void>}
 /** Process ownership is independent of browser connections and saved view state. */
 export class Registry {
+  publishedSessions() {return publishedOrdinarySessions(this.options.agentStore);}
   control?:Control;
   readonly journal: Journal;
   readonly operations: Operations;

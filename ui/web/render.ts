@@ -84,7 +84,7 @@ function subject(source: JoinedTool, limit = 4096, lines = 1): string {
   return '';
 }
 function metadata(source: JoinedTool): string {
-  const args = record(source.args); const facts: string[] = [];
+  const args = record(source.args); const facts: string[] = source.argumentsError ? [`Invalid arguments: ${source.argumentsError}`] : [];
   const range = source.name === 'read' ? readRange(args) : '';
   if (source.name === 'bash' && typeof args.timeout === 'number' && Number.isFinite(args.timeout) && args.timeout >= 0) facts.push(`(timeout ${args.timeout}s)`);
   for (const key of range ? ['cwd'] : ['cwd', 'offset', 'limit']) {

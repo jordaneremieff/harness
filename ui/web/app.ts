@@ -379,7 +379,7 @@ function fileTreeOperation(rootId:string,action:FileTreeAction,path:string,value
   const pane = currentLayout().focusedPane,input = document.activeElement;
   return mutateFile(workspace,rootId,action,path,value,()=>state.workspace?.id === workspace && currentLayout().focusedPane === pane && document.activeElement === input);
 }
-const picker = new ProjectPicker({snapshot: currentSnapshot, primary, modal, selection, reload, selectOpened:capturePrimarySelection, project: projectPath, projectsChanged: renderIdentity,workingFolder:path=>fileRoot.choose(path)});
+const picker = new ProjectPicker({snapshot: currentSnapshot, primary, modal, selection:change=>{if(change.selectedTarget?.kind==='agent')conversationController(change.selectedTarget).passive=false;return selection(change);}, reload, selectOpened:capturePrimarySelection, selectConverted:captureNativeSelection, project: projectPath, projectsChanged: renderIdentity,workingFolder:path=>fileRoot.choose(path)});
 actions.projectPicker = () => picker.open(projectPath());
 const recovery = new Recovery({snapshot: currentSnapshot, reload, modal});
 const roster = new Roster(row => { void selectAgent(row).catch(showError); }, action => { if (action === 'refresh') refreshRoster(); else moreRoster(); }, {
@@ -854,6 +854,15 @@ async function applyControl(command:ControlRequest):Promise<number> {
   if(state.workspace?.id !== workspace.id || !samePaneLayout(currentLayout(),next))throw new Error('The presentation changed before its receipt.');
   for(const pane of paneLeaves(next.root))verifyControlPane(pane,state.workspace);
   verifyNative();return revision;
+}
+function captureNativeSelection():(identity:string)=>Promise<void> {
+  const workspace=state.workspace?.id,layout=JSON.stringify(state.workspace?.conversationLayout),chosen=paneSelectionRevision;
+  const previousKey=state.workspace?.primaryKey,previousTarget=JSON.stringify(state.workspace?.selectedTarget),token=modal.token,dialog=modal.openNow;
+  return async identity=> {
+    if(state.workspace?.id!==workspace||paneSelectionRevision!==chosen||JSON.stringify(state.workspace?.conversationLayout)!==layout||state.workspace?.primaryKey!==previousKey||JSON.stringify(state.workspace?.selectedTarget)!==previousTarget||(dialog?!modal.owns(token):modal.openNow))return;
+    const target={kind:'agent' as const,identity};conversationController(target).passive=false;
+    await selection({panelVisible:true,selectedTarget:target});
+  };
 }
 export function capturePrimarySelection():(key:string)=>Promise<void> {
   const workspace = state.workspace?.id,layout = JSON.stringify(state.workspace?.conversationLayout),chosen = paneSelectionRevision;

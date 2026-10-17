@@ -46,6 +46,8 @@ export interface HostRequestOptions {
 }
 
 export interface HostLaunchOptions {
+	/** Saved projected context for the creating root commit, never a submitted prompt. */
+	readonly initialMessages?: readonly import("./initial-context.ts").InitialMessage[];
 	/** Runner entry path. Defaults to the sibling `durable-runner.ts`. */
 	readonly runner?: string;
 	/** Arguments between the runner entry and the metadata argument. */
@@ -268,16 +270,20 @@ function detachChild(child: ChildProcess): void {
 async function launchRunner(metadata: HostMetadata, options: HostLaunchOptions): Promise<Link> {
 	const timeoutMs = options.launchTimeoutMs ?? (metadata.trust === undefined ? TRUST_LAUNCH_TIMEOUT_MS : DEFAULT_LAUNCH_TIMEOUT_MS);
 	const runner = options.runner ?? fileURLToPath(new URL("./durable-runner.ts", import.meta.url));
-	const child = spawn(process.execPath, [runner, ...(options.runnerArgs ?? []), JSON.stringify(metadata)], {
+	const child = spawn(process.execPath, [runner, ...(options.runnerArgs ?? []), JSON.stringify(metadata), ...(options.initialMessages === undefined ? [] : ["--initial-context"])], {
 		cwd: metadata.cwd,
 		detached: true,
-		stdio: ["ignore", "pipe", "pipe"],
+		stdio: [options.initialMessages === undefined ? "ignore" : "pipe", "pipe", "pipe"],
 		env: { ...process.env, ...options.env },
 	});
 	if (child.pid !== undefined) {
 		const pid = child.pid;
 		launchedChildren.set(pid, child);
 		child.once("exit", () => { launchedChildren.delete(pid); });
+	}
+	if (options.initialMessages !== undefined) {
+		child.stdin?.on("error", () => {});
+		child.stdin?.end(JSON.stringify(options.initialMessages));
 	}
 	const readiness = waitForReady(child, timeoutMs);
 	launchedReadiness.set(child, readiness);
@@ -868,7 +874,9 @@ function connectLink(metadata: HostMetadata, link: Link, options: HostLaunchOpti
 /** Attach to a running host or launch a new one; never blocks on a stale claim. */
 export async function acquireHost(metadata: HostMetadata, options: HostLaunchOptions = {}): Promise<HostConnection> {
 	const parsed = parseHostMetadata(metadata);
-	return connectLink(parsed, await acquireLink(parsed, options), options);
+	// Saved context must win a fresh writer claim, never attach to an unverified root.
+	const link = options.initialMessages === undefined ? await acquireLink(parsed, options) : await launchRunner(parsed, options);
+	return connectLink(parsed, link, options);
 }
 
 /** Attach to a running host and fail when none is live. */

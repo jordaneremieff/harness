@@ -94,7 +94,7 @@ function validateModel(services: DurableServices, model: { provider: string; mod
 }
 
 /** Constructed only after the process claims the storage writer. */
-export async function createDurableRuntime(metadata: HostMetadata, options: Pick<CreateDurableServicesOptions, "modelRuntime"> = {}): Promise<HostRuntime> {
+export async function createDurableRuntime(metadata: HostMetadata, { initialMessages, ...options }: Pick<CreateDurableServicesOptions, "modelRuntime"> & { initialMessages?: readonly import("./initial-context.ts").InitialMessage[] } = {}): Promise<HostRuntime> {
 	const controller = new AbortController();
 	let services = await bootstrap(metadata, controller, true, options);
 	let host: DurableHost;
@@ -329,9 +329,10 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 			models: services.services.modelRuntime, registry: services.registry, settings: services.settings, env: services.env,
 			retryMaxAttempts: services.services.settingsManager.getRetrySettings().enabled ? services.services.settingsManager.getRetrySettings().maxRetries + 1 : 1,
 			agent: hostAgent(),
-			meta: { name: metadata.name, owner: metadata.ownerId }, profileSeed: catalog.read(metadata.storageId).view?.profileSeed, commands: services.commands, contributionHost: services.contributionHost,
+			initialMessages, meta: { name: metadata.name, owner: metadata.ownerId }, profileSeed: catalog.read(metadata.storageId).view?.profileSeed, commands: services.commands, contributionHost: services.contributionHost,
 			resume: false, onReport: (error) => { process.stderr.write(`Durable task: ${String(error)}\n`); },
 		});
+		initialMessages = undefined;
 		try {
 			await services.install(opened.harness);
 			host = opened;

@@ -20,10 +20,10 @@ const response = { value: { submissionId: 7, conversationId: 1, deduped: false, 
   result: { sessionId: identity, submissionId: 7, requestId: "ui:fixture-input" } } };
 const state = { ready: true, value: { revision: 1 } };
 const frames = [
-  { t: "hello", name: "fixture-host", kind: "host", epoch: 0 },
+  { t: "hello", name: "fixture-host", kind: "host", codeVersion: 0, protocol: 4 },
   { t: "call", id: 1, hold: 1, member: "request", args: request },
   { t: "result", id: 1, value: response },
-  { t: "state", id: 2, snap: state },
+  { t: "state", hold: 2, m: "value", as: "snap", value: state },
   { t: "result", id: 3, error: { code: "unavailable", message: "unavailable/version: Operation contract mismatch", reason: "version" } },
   { t: "cancel", id: 4 },
   { t: "result", id: 5, value: {} },

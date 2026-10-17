@@ -8,7 +8,7 @@ import { duplicateIdentityTails } from './tabs.ts';
 import { absoluteTime, relativeTime } from './format.ts';
 import type { Modal } from './modal.ts';
 import { filterSessions, mergeSessions, mergeSessionTitles, savedPathValid, sessionCoverage, sessionEmptyMessage, sessionOwner, sessionSize, sessionLabel, type SessionList } from './picker-state.ts';
-import { operation, request } from './transport.ts';
+import { operation, request, reserve } from './transport.ts';
 
 function pickerField(control: {label: HTMLLabelElement; field: HTMLElement}, visibleLabel = false): HTMLElement {
   control.field.className = 'picker-input';
@@ -30,12 +30,13 @@ function projectPage(previous: RecentProjectPage | undefined, page: RecentProjec
 }
 
 type Context = {snapshot(): Snapshot | undefined; primary(): PrimaryView | undefined; modal: Modal;
-  selection(change: SelectionChange): Promise<void>; reload(): Promise<void>; selectOpened?(): (key:string)=>Promise<void>; project?(): string | undefined; projectsChanged?(): void; workingFolder?(path:string):Promise<void>};
+  selection(change: SelectionChange): Promise<void>; reload(): Promise<void>; selectOpened?(): (key:string)=>Promise<void>; selectConverted?(): (identity:string)=>Promise<void>; project?(): string | undefined; projectsChanged?(): void; workingFolder?(path:string):Promise<void>};
 
 /** Metadata caches belong to the picker, never to execution or writer ownership. */
 export class ProjectPicker {
   private ctx: Context;
   private cached = new Map<string, SessionList>();
+  private conversions = new Map<string,{id:string;revision:string}>();
   private projects?: RecentProjectPage;
   private pending = new AbortController();
   private choosing = 0;
@@ -230,6 +231,8 @@ export class ProjectPicker {
     const safety = element('p', 'secondary picker-safety', 'Stop the terminal session before Resume. Each active process keeps its own in-memory branch; this window does not read later writes from another active process.');
     const search = input('Search sessions'); search.field.id = 'picker-search'; search.label.htmlFor = search.field.id; search.field.placeholder = 'Search sessions';
     const searchRow = element('div', 'picker-search-row'); searchRow.append(pickerField(search)); body.append(searchRow, safety);
+    const publishedPaths=new Set<string>();
+    this.catalog(body,signal,token,paths=>{for(const path of paths)publishedPaths.add(path);paint();});
     const list = element('div', 'picker-sessions'); const coverage = element('p', 'secondary'); coverage.id = 'picker-coverage'; coverage.setAttribute('aria-live', 'polite');
     const error = element('p', 'error'); error.setAttribute('role', 'alert');
     let data = first ? mergeSessions(undefined, first) : existing;
@@ -249,7 +252,7 @@ export class ProjectPicker {
       const focusedPath = document.activeElement instanceof HTMLElement && document.activeElement.classList.contains('picker-select') ? document.activeElement.dataset.sessionPath : undefined;
       const version = ++render; list.replaceChildren();
       if (!data) return;
-      const matches = filterSessions(data.items, search.field.value);
+      const matches = filterSessions(data.items, search.field.value).filter(item=>!publishedPaths.has(item.path));
       const tails = duplicateIdentityTails(data.items.map(item => ({name: sessionLabel(item), identity: item.id})));
       if (focusedPath && !matches.some(item => item.path === focusedPath)) { search.field.focus(); error.textContent = 'The selected session is no longer in this loaded list.'; }
       updateCoverage(matches.length);
@@ -318,6 +321,18 @@ export class ProjectPicker {
     });
     save(); paint(); for (const page of data?.pendingTitles ?? []) void fillTitles(page); search.field.focus();
   }
+  private catalog(body:HTMLElement,signal:AbortSignal,token:number,changed:(paths:string[])=>void):void {
+    const durable=element('section','picker-durable');durable.append(element('h2',undefined,'Durable conversations'));
+    for(const row of this.ctx.snapshot()?.roster.rows??[])durable.append(button(row.name||'(unnamed Durable conversation)',()=>{void this.run(async()=>{await this.ctx.selection({panelVisible:true,selectedTarget:{kind:'agent',identity:row.identity}});await this.ctx.reload();});},'picker-project-row'));
+    const ordinary=element('section','picker-ordinary');ordinary.append(element('h2',undefined,'Registered ordinary sessions'),element('p','secondary','All folders. Conversion copies saved context only. The source session stays unchanged.'));
+    body.append(durable,ordinary);
+    void request<SavedSessionPage>('/api/sessions/published','GET',undefined,undefined,signal).then(page=>{
+      if(!this.owns(token)||signal.aborted)return;
+      for(const item of page.items)ordinary.append(this.row(item));
+      if(page.omitted)ordinary.append(element('p','secondary',`${page.omitted} discovery records are unavailable or outside the bound.`));
+      changed(page.items.map(item=>item.path));
+    }).catch(()=>{if(this.owns(token)&&!signal.aborted)ordinary.append(element('p','secondary','Registered ordinary sessions are unavailable. Refresh the session picker.'));});
+  }
   private patchTitles(list: HTMLElement, data: SessionList): void {
     const items = new Map(data.items.map(item => [item.path, item]));
     const tails = duplicateIdentityTails(data.items.map(item => ({name: sessionLabel(item), identity: item.id})));
@@ -351,7 +366,9 @@ export class ProjectPicker {
     const details = element('details', 'picker-session-details'); const summary = element('summary'); controlIcon(summary, 'info', `Details for ${item.title}`);
     details.append(summary, element('p', 'picker-session-full-title', item.title), element('p', 'identity', item.project), element('p', 'identity', item.id), element('p', 'identity', item.path), element('p', 'secondary', sessionSize(item.size)));
     if (!opened) details.append(element('p', 'secondary', 'Stop the terminal session before Resume. Active processes keep independent branches.'));
-    row.append(select, age, details); return row;
+    const convert=button('Convert to Durable',()=>{void this.run(()=>this.convert(item),cause=>this.error(cause,'The conversion did not return a confirmed conversation.'));},'quiet');
+    convert.title='Create a new Durable conversation from saved context. The ordinary session stays unchanged.';
+    row.append(select, age, convert, details); return row;
   }
   private navigate(event: KeyboardEvent, list: HTMLElement): void {
     if (event.key === 'Enter' && event.target instanceof HTMLButtonElement && event.target.matches('.picker-select, .picker-project-row')) {
@@ -392,6 +409,20 @@ export class ProjectPicker {
     if (!selected) await this.ctx.selection(change);
     await this.ctx.reload();
     if (change.primaryKey && (inline || this.owns(revision))) await selected?.(change.primaryKey);
+  }
+  private async convert(item:SavedSession):Promise<void> {
+    const selected=this.ctx.selectConverted?.(),revision=this.revision,workspace=this.ctx.snapshot()?.workspace.id;
+    const previous=this.conversions.get(item.path);
+    if(previous&&previous.revision!==item.revision)throw new Error(`Inspect the prior conversion before another request. Operation: ${previous.id}.`);
+    const key=previous?.id??await reserve('agent.convert');this.conversions.set(item.path,{id:key,revision:item.revision});
+    const result=await operation('agent.convert','/api/agents/convert',{path:item.path,project:item.project,id:item.id,revision:item.revision},undefined,key).catch(cause=>{throw new Error(`${cause instanceof Error?cause.message:'The conversion response was lost.'} Operation: ${key}. Inspect this operation before another conversion.`);});
+    if(result.state==='rejected')this.conversions.delete(item.path);
+    const value=result.receipt?.kind==='rpc'?result.receipt.result?.value:undefined;
+    const identity=value&&typeof value==='object'&&!Array.isArray(value)&&'identity' in value&&typeof value.identity==='string'?value.identity:undefined;
+    if(result.state!=='completed'||!identity)throw new Error(`${result.error?.message??'The native creation receipt is unavailable.'} Operation: ${result.id}.${identity?` Possible identity: ${identity}.`:''}`);
+    if(selected)await selected(identity);
+    else if(this.owns(revision)&&this.ctx.snapshot()?.workspace.id===workspace)await this.ctx.selection({panelVisible:true,selectedTarget:{kind:'agent',identity}});
+    await this.ctx.reload();this.conversions.delete(item.path);
   }
   private async start(project: string, path?: string): Promise<void> {
     const selected = this.ctx.selectOpened?.(),revision = this.revision,inline = !!this.inline;

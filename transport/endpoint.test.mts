@@ -153,7 +153,7 @@ it("classifies disconnect during negotiation as local transport loss", { timeout
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const path = join(root, "host.sock"), serverId = randomUUID();
 	const server = listenUnixLinks(path, (link) => {
-		link.send({ t: "hello", name: serverId, kind: "host", epoch: 1 });
+		link.send({ t: "hello", name: `pi.agent:${serverId}`, kind: "host", codeVersion: 1, protocol: 4 });
 		link.close("negotiation interrupted");
 	});
 	await server.start(); t.after(() => server.close());

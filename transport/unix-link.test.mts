@@ -20,7 +20,7 @@ async function pair(t: TestContext, options: Partial<UnixLinkOptions> = {}) {
 	t.after(async () => { socket.destroy(); peer.destroy(); await new Promise<void>((resolve) => server.close(() => resolve())); rmSync(root, { recursive: true, force: true }); });
 	return { link, peer, socket };
 }
-const hello = { t: "hello", kind: "host", name: "test", epoch: 1 } as const;
+const hello = { t: "hello", kind: "host", name: "test", codeVersion: 1, protocol: 4 } as const;
 const line = (frame: unknown) => `${JSON.stringify(frame)}\n`;
 
 it("forwards queued hello and fragmented UTF-8 frames in order", { timeout: 3000 }, async (t) => {

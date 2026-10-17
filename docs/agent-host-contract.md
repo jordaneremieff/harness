@@ -17,7 +17,7 @@ Use these terms consistently:
 - `storageId` identifies one Durable SQLite storage and host.
 - The external conversation identity is `storageId` for root conversation 1, otherwise `storageId:conversationId`.
 - `conversationId`, submission IDs, and entry IDs resolve to positive safe integers. Live request parsers also accept decimal-digit strings in the corresponding ID fields; responses use numbers except display snapshot entry IDs, which are strings. Source: `extensions/agent/durable-observation.ts:473-500`.
-- `serverId` is the expected Chord host name in the first `hello` frame. It is not a conversation identity.
+- `serverId` is the public server UUID. The expected Chord host name is `pi.agent:<serverId>`. Neither is a conversation identity.
 
 Source: `extensions/agent/index.ts:231-235`; `extensions/agent/identity.ts:15-19`; `extensions/agent/durable-observation.ts:508-522`; `extensions/agent/dashboard-types.ts:107-127`.
 
@@ -238,6 +238,55 @@ Read a bounded amount of output within a bounded deadline. A matching malformed 
 
 The host owns its lifetime independently of the UI. Runtime construction resumes unfinished conversations, tool work, and retained deliveries before the socket starts and before READY is emitted. A readiness, negotiation, or startup timeout does not prove that native work was never admitted. Source: `extensions/agent/durable-runtime.ts:324–350`; `durable-host.ts:353–362`; `host-process.ts:277–302,688–711`; owner-installed Durable `dist/harness/{harness,scheduler}.js:resume`. Retain an uncertain attempt while its child remains alive; offer an explicit connection check rather than automatic relaunch or task submission. Malformed readiness, socket mismatch, connection failure, browser loss, and UI shutdown never justify killing admitted or pre-existing work. UI shutdown cancels only its own readiness wait and closes its observations/transports. A confirmed exited child permits a new explicit attempt. The owner client's current cleanup implementation is not a consumer requirement or permission to interrupt work. Source: `extensions/agent/{durable-runner,host-process,durable-runtime}.ts`.
 
+## Saved context creation
+
+The browser's explicit `agent.convert` operation creates a new native root from
+an ordinary saved session. It never resumes or writes the ordinary file. Public
+primary discovery records at `<store>/.primaries/<id>.json` supply only declared
+identity, cwd, name and saved-file association. A name fallback requires matching
+the file header identity and canonical file path. Saved name declarations,
+including clears, remain authoritative. Discovery does not establish a live
+selected branch or idle state.
+
+The UI captures a complete unchanged file in current format version 3, bounded to 64 MiB,
+32 MiB per record and 65,536 records. Conversion's 4 KiB name check is only an
+outer byte bound. Native host metadata still limits names to 256 UTF-16 code
+units and rejects control characters (`host-protocol.ts`). A source name outside
+that existing native contract refuses; conversion never expands the limit or
+truncates the name. The worker has a 15-second capture deadline
+and a bounded heap. Invalid UTF-8, JSON, headers, entries, duplicate identities,
+missing parents, cycles, incomplete final records and changed input refuse.
+Public `parseSessionEntries` then `buildSessionProjection` selects the final
+persisted leaf; `convertToLlm` applies Pi's custom/bash/summary semantics. System
+entries, system prompts, tool definitions and ordinary runtime state do not enter
+the native initialization.
+
+The server selects `create-saved-context.ts` only from global configured Agent
+resources. Its internal process contract uses metadata with `protocol: 1`,
+server-owned roots and package directory, source identity, cwd, optional actual
+name and a stable request key. stdin contains only the projected message array,
+with a 64 MiB ceiling. stdout returns `protocol: 1`, `state`, `identity`, and
+`name`; a completed result names the new identity. A definite pre-admission
+refusal is rejected. Lost acknowledgment or failure after creation starts is
+uncertain, not an instruction to replay.
+
+The Agent helper uses existing preference selection, catalog deduplication,
+exclusive host admission and root profile/name initialization. It supplies no
+prompt. Initialization requires a fresh writer claim and an absent storage file;
+it never attaches to an existing root or overwrites its context. The runner checks
+storage absence inside the writer claim. A collision remains unconfirmed rather
+than acknowledging an empty or unrelated root. The detached runner accepts the
+bounded initial array through stdin;
+`ConversationInit` appends matching UserEntry, AssistantEntry and ToolResultEntry
+model messages in order. Original message timestamps, content and
+`argumentsError` remain intact. Tool-result entries have empty native diagnostics
+and no invented task receipts; original result details stay in the model message.
+The new root uses fresh execution and trust settings. Source queues, reports,
+role, live leaf and coordinator ownership are not transferred. Repeated UI
+requests retain the same operation key; uncertain creation is never replayed
+automatically. No ordinary owner endpoint or resource reload is a conversion
+prerequisite. The creating SDK must satisfy the current minimum Pi version.
+
 ## Chord wire contract
 
 The live interface uses the published Chord `remote`, `method`, `createHost`,
@@ -246,11 +295,11 @@ both Agent and UI; neither imports the other's private implementation. Its
 contract runtime values use these exact closed schemas:
 
 ```typescript
-import { method, remote } from "@earendil-works/chord";
+import { hostFamily, method, remote } from "@earendil-works/chord";
 import { Type } from "typebox";
 
 const Endpoint = remote("pi.agent.endpoint", {
-  version: 1,
+  version: 1, host: hostFamily("pi.agent:", "serverId"),
   input: Type.Object({ serverId: Type.String() }, { additionalProperties: false }),
   variants: { default: { methods: {
     request: method(Type.Object({
@@ -264,7 +313,7 @@ const Endpoint = remote("pi.agent.endpoint", {
 });
 
 const Feed = remote("pi.agent.feed", {
-  version: 1,
+  version: 1, host: hostFamily("pi.agent:", "serverId"),
   input: Type.Object({
     serverId: Type.String(),
     kind: Type.Union([Type.Literal("changes"), Type.Literal("observation")]),
@@ -305,15 +354,18 @@ equal numeric defaults do not establish equal payload capacity across wire
 formats. Larger exchanges require suitable limits at both peers.
 
 The first server frame is `hello` with `kind: "host"`, exact expected
-`name: serverId`, and a nonnegative safe-integer epoch. The client rejects a
+`name: pi.agent:<serverId>`, protocol 4, and a nonnegative safe-integer `codeVersion`. The client rejects a
 mismatch and forwards the same matching hello to Chord. The server accepts only client
 peers and assigns a unique connection principal; supplied frame fields do not
 select that principal. Filesystem permissions, not the public name, enforce
 same-user access. Attach failure grants no authority to start or replace a host.
 
-Create a Chord client host, connect the Unix `Link`, and acquire
-`host.get(Endpoint, {serverId}, {at: serverId})`. Await its readiness within the
-handshake deadline. Run calls through `host.root()`. Unwrap the response's
+Create a Chord client host with explicit self and principal values and an
+upstream `{link, principal}`. Acquire `host.hold(Endpoint, {serverId})` and await
+its readiness with state disabled within the handshake deadline. Placement comes
+from the declared host family, not an `at` option. References use `Ref`; await
+hydration before reading state. The server opens named `self.state` and
+`self.resource` handles. Run calls through `host.root()`. Unwrap the response's
 optional `value` without converting absent values to `null`. Chord errors
 remain errors, not empty data. Malformed application input uses `invalid`.
 Version refusal uses `unavailable` with reason `version`; other availability,
@@ -323,7 +375,10 @@ Link loss is a separate failure. Do not encode an error code in its message.
 
 The Unix Link closes on a received `bye` instead of forwarding it. Sending
 after close is a no-op. Serialization or queue overflow closes the Link and
-returns from its void `send()` without a throw or a partial offending frame.
+returns `undefined` from `send()` without a throw or a partial offending frame.
+Chord treats that absent byte count as zero.
+A successful send returns the encoded byte count including LF. Chord owns its
+frame acknowledgments; the adapter does not reinterpret them as byte credits.
 The public `UnixLink.onSendRefusal` event supplies that unsent frame and a
 `LocalTransportRefusal` before close notification. Its `code` is
 `"transport-local-refusal"`; its `reason` is `"frame-limit"`, `"queue-limit"`, or
@@ -414,7 +469,7 @@ A consumer must possess an expected contract for the payload it implements. It m
 
 `D` below is the exact `@earendil-works/pi-durable` release loaded by that process, not a future version pinned by this document. A consumer of opaque native values compares it with the Durable representation it supports. The descriptor's `release` is currently `1.0.0`.
 
-The current descriptor requires `codingAgent: "1.2.0"` and `durable: "1.2.0"`. The coding-agent floor covers custom-message startup guidance and its retention through tool rounds. The Durable floor covers native codemode, deferred tool search, nested tool execution, and `Session.closed`. These are minimum required APIs, not dependency pins, a supported-version ceiling, or a substitute for exact operation checks. Read floors from the loaded descriptor, not from the source release label. Source: `extensions/agent/version-contract.ts:10-12,30-75`; installed coding-agent and Durable `CHANGELOG.md` sections for 1.2.0.
+The current descriptor requires `codingAgent: "1.3.0"` and `durable: "1.3.0"` for current tool-argument validation and native transport integration. Chord wire 4 is a separate transport contract. These are minimum required APIs, not dependency pins, a supported-version ceiling, or a substitute for exact operation checks. Read floors from the loaded descriptor, not from the source release label. Source: `extensions/agent/version-contract.ts`; published coding-agent, Durable, AI and Chord 1.3 declarations and defining implementations.
 
 For every member in the following set, request and response are both `<member>/1.0.0`, with no `durable` field:
 
@@ -758,8 +813,10 @@ settings, credentials, models, or extensions.
 without reading catalog or storage. `version` is exactly `retained-read/1.0.0`.
 The loaded reader derives upstream versions and both operation values from
 `HOST_CONTRACT`; it advertises no other operations. See the
-[descriptor fixture](#fixture-retained-read-descriptor). Its concrete 1.2.0
-values describe the current example, not a supported-version ceiling.
+[descriptor fixture](#fixture-retained-read-descriptor). Its historical 1.2.0
+values illustrate exact negotiation, not current compatibility or a
+supported-version ceiling. A current reader emits its own loaded versions and
+schema identities; do not copy this historical fixture into a current request.
 
 Default mode reads exactly one UTF-8 JSON request on stdin followed by EOF.
 The caller closes stdin and drains stdout/stderr concurrently. The reader emits

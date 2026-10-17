@@ -1,12 +1,16 @@
 /** Chord contracts for local host operations and connection-owned state feeds. */
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { ChordError, cell, createHost, invalid, isChordError, isJsonValue, method, remote, resource, type Handle, type Host } from "@earendil-works/chord";
+import { ChordError, createHost, hostFamily, invalid, isChordError, isJsonValue, method, remote, type Ref, type Host } from "@earendil-works/chord";
 import { Type } from "typebox";
 import { connectUnixLink, listenUnixLinks, type LocalTransportRefusal, type UnixLink } from "./unix-link.ts";
 
+const placement = hostFamily('pi.agent:', 'serverId');
+const hostName = (serverId: string) => `${placement.prefix}${serverId}`;
+type TransportPrincipal = {connection: string};
 export const Endpoint = remote("pi.agent.endpoint", {
 	version: 1,
+	host: placement,
 	input: Type.Object({ serverId: Type.String() }, { additionalProperties: false }),
 	variants: { default: { methods: {
 		request: method(Type.Object({
@@ -19,6 +23,7 @@ export const Endpoint = remote("pi.agent.endpoint", {
 });
 export const Feed = remote("pi.agent.feed", {
 	version: 1,
+	host: placement,
 	input: Type.Object({ serverId: Type.String(), kind: Type.Union([Type.Literal("changes"), Type.Literal("observation")]), token: Type.Optional(Type.String()) }, { additionalProperties: false }),
 	variants: { default: { state: { value: Type.Object({ ready: Type.Boolean(), value: Type.Optional(Type.Unknown()) }, { additionalProperties: false }) } } },
 });
@@ -56,7 +61,7 @@ function peerKey(principal: unknown): string {
 
 export function createTransportServer(options: TransportServerOptions): TransportServer {
 	const peers = new Set<string>();
-	const host = createHost({ name: options.serverId, principalKey: (principal) => principal !== null && typeof principal === "object" && "connection" in principal ? String(principal.connection) : "host" });
+	const host = createHost<TransportPrincipal>({ name: hostName(options.serverId), self: {connection:'host'}, principalKey: principal => principal.connection });
 	const authorize = (serverId: string, principal: unknown): string => {
 		if (serverId !== options.serverId) throw invalid("identity", "The host endpoint identity differs from the requested serverId");
 		const key = peerKey(principal);
@@ -65,34 +70,32 @@ export function createTransportServer(options: TransportServerOptions): Transpor
 	};
 	host.serve(Endpoint, ({ serverId }, principal) => {
 		const peer = authorize(serverId, principal);
-		return { kind: "default", request: async (request, ctx) => {
+		return { variant: "default", request: async (request, ctx) => {
 			try { return wrapped(await options.request(request, peer, ctx.signal)); }
 			catch (error) { if (isChordError(error)) throw error; throw new ChordError("unavailable", error instanceof Error ? error.message : String(error), { reason: "internal" }); }
 		} };
 	});
 	host.serve(Feed, ({ serverId, kind, token }, principal, self) => {
 		const peer = authorize(serverId, principal);
-		const state = self.state({ value: cell(Type.Object({ ready: Type.Boolean(), value: Type.Optional(Type.Unknown()) }, { additionalProperties: false }), { ready: false } as { ready: boolean; value?: unknown }) });
-		self.resources({ feed: resource({ rev: 1, open: async () => {
-			if (!options.subscribe) throw invalid("feed", "The endpoint publishes no state feeds");
-			let closed = false;
-			let latest: { value?: unknown } | undefined;
-			let active = false;
-			const publish = (value: unknown): void => {
-				if (closed || !peers.has(peer)) return;
-				latest = wrapped(value);
-				if (active) void host.root((ctx) => { if (!closed && peers.has(peer)) state.value.replace(ctx, { ready: true, ...latest }); }).catch(() => {});
+		let closed = false, active = false;
+		let latest: {value?:unknown} | undefined;
+		const value = self.state('value', Type.Object({ready:Type.Boolean(),value:Type.Optional(Type.Unknown())},{additionalProperties:false}), {init:()=>{active=true;return {ready:true,...latest};}});
+		self.resource('feed', {version:1,open:async()=>{
+			if(!options.subscribe)throw invalid('feed','The endpoint publishes no state feeds');
+			const publish=(next:unknown):void=>{
+				if(closed||!peers.has(peer))return;
+				latest=wrapped(next);
+				if(active)void host.root(ctx=>{if(!closed&&peers.has(peer))value.replace(ctx,{ready:true,...latest});}).catch(()=>{});
 			};
-			const subscription = await options.subscribe(kind, token, peer, publish);
-			if (!peers.has(peer)) { closed = true; subscription.close(); throw invalid("feed", "The host connection closed during subscription"); }
-			try {
-				const baseline = wrapped(subscription.value);
-				active = true;
-				await host.root((ctx) => state.value.replace(ctx, { ready: true, ...(latest ?? baseline) }));
-				return () => { closed = true; subscription.close(); };
-			} catch (error) { closed = true; subscription.close(); throw error; }
-		}, close: (close) => close() }) });
-		return { kind: "default", value: state.value };
+			const subscription=await options.subscribe(kind,token,peer,publish);
+			try{
+				const baseline=wrapped(subscription.value);
+				if(!peers.has(peer))throw invalid('feed','The host connection closed during subscription');
+				latest??=baseline;
+				return ()=>{closed=true;subscription.close();};
+			}catch(error){closed=true;subscription.close();throw error;}
+		},close:close=>close()});
+		return {variant:'default',value};
 	});
 	const server = listenUnixLinks(options.path, (link) => {
 		const peer = randomUUID();
@@ -115,15 +118,15 @@ function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
 
 export async function connectTransport(options: { readonly serverId: string; readonly path: string; readonly timeoutMs?: number; readonly maxFrameBytes?: number; readonly maxSendFrameBytes?: number; readonly maxQueueBytes?: number }): Promise<TransportClient> {
 	const deadline = AbortSignal.timeout(options.timeoutMs ?? 5000);
-	const link = await connectUnixLink(options.path, { expectedName: options.serverId, expectedKind: "host", signal: deadline, maxFrameBytes: options.maxFrameBytes, maxSendFrameBytes: options.maxSendFrameBytes, maxQueueBytes: options.maxQueueBytes });
+	const link = await connectUnixLink(options.path, { expectedName: hostName(options.serverId), expectedKind: "host", signal: deadline, maxFrameBytes: options.maxFrameBytes, maxSendFrameBytes: options.maxSendFrameBytes, maxQueueBytes: options.maxQueueBytes });
 	let endpointHold: number | undefined;
 	const send = link.send.bind(link);
 	link.send = (frame) => {
-		if (frame.t === "hold" && frame.at === options.serverId && frame.token.name === Endpoint.name) endpointHold = frame.id;
-		send(frame);
+		if (frame.t === "hold" && frame.at === hostName(options.serverId) && frame.token.name === Endpoint.name) endpointHold = frame.id;
+		return send(frame);
 	};
-	const host = createHost({ kind: "client", upstream: link });
-	const endpoint = host.get(Endpoint, { serverId: options.serverId }, { at: options.serverId });
+	const host = createHost<TransportPrincipal>({kind:'client',self:{connection:'client'},principalKey:principal=>principal.connection,upstream:{link,principal:{connection:'server'}}});
+	const endpoint = host.hold(Endpoint, {serverId:options.serverId}, {state:false});
 	const disconnected = new AbortController();
 	link.onClose((reason) => disconnected.abort(new Error(`The host link closed during connection: ${reason}`)));
 	try { await abortable(endpoint.ready, AbortSignal.any([deadline, disconnected.signal])); }
@@ -132,16 +135,16 @@ export async function connectTransport(options: { readonly serverId: string; rea
 }
 
 class ConnectedTransport implements TransportClient {
-	private readonly host: Host;
+	private readonly host: Host<TransportPrincipal>;
 	private readonly link: UnixLink;
 	private readonly attempts = new AsyncLocalStorage<{ refusal?: LocalTransportRefusal }>();
-	private readonly endpoint: Handle<typeof Endpoint>;
+	private readonly endpoint: Ref<typeof Endpoint>;
 	private readonly serverId: string;
 	private readonly closedListeners = new Set<(reason: string) => void>();
 	private reason = "closed";
 	private readonly disconnected = new AbortController();
 	private closing: Promise<void> | undefined;
-	constructor(host: Host, link: UnixLink, endpoint: Handle<typeof Endpoint>, serverId: string, endpointHold: () => number | undefined) {
+	constructor(host: Host<TransportPrincipal>, link: UnixLink, endpoint: Ref<typeof Endpoint>, serverId: string, endpointHold: () => number | undefined) {
 		this.host = host; this.link = link; this.endpoint = endpoint; this.serverId = serverId;
 		link.onSendRefusal((frame, error) => {
 			const attempt = this.attempts.getStore();
@@ -176,7 +179,7 @@ class ConnectedTransport implements TransportClient {
 		if (this.link.closed) throw new Error("The host link is closed");
 		signal = signal ? AbortSignal.any([signal, this.disconnected.signal]) : this.disconnected.signal;
 		signal.throwIfAborted();
-		const handle = this.host.get(Feed, { serverId: this.serverId, kind, ...(token === undefined ? {} : { token }) }, { at: this.serverId });
+		const handle = this.host.hold(Feed, { serverId: this.serverId, kind, ...(token === undefined ? {} : { token }) });
 		let disposed = false;
 		let value: unknown;
 		let off = () => {};

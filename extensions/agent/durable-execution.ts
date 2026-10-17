@@ -66,6 +66,8 @@ const LIST_MCP_RESOURCES_TOOL = "list_mcp_resources";
 const LIST_MCP_RESOURCE_TEMPLATES_TOOL = "list_mcp_resource_templates";
 const READ_MCP_RESOURCE_TOOL = "read_mcp_resource";
 const CODEMODE_MEMORY_LIMIT_BYTES = 256 * 1024 * 1024;
+const CODEMODE_WORKER_LIMIT = 2;
+let liveCodemodeWorkers = 0;
 const DEFAULT_READY_TIMEOUT_MS = 10_000;
 const MCP_OUTPUT_MAX_BYTES = 20 * 1024;
 const SERVER_NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
@@ -955,7 +957,7 @@ class DurableExecutionRuntime implements DurableExecution {
 	private readonly namespaces: CodemodeNamespace[] = [];
 	private readonly resourceTools: NestedTool[];
 	private readonly servers: McpServerConnection[] = [];
-	private readonly sandbox = new CodemodeSandbox({ memoryLimitBytes: CODEMODE_MEMORY_LIMIT_BYTES });
+	private readonly sandbox = new CodemodeSandbox({ memoryLimitBytes: CODEMODE_MEMORY_LIMIT_BYTES, acquireWorker:()=>this.acquireWorker() });
 	private readonly readyTimeoutMs: number;
 	private readonly closeOnHostAbort = () => void this.close();
 	private closed = false;
@@ -1018,6 +1020,12 @@ class DurableExecutionRuntime implements DurableExecution {
 		return result;
 	}
 
+	private acquireWorker():()=>void {
+		if(this.closed)throw new Error('The native execution runtime is closed.');
+		if(liveCodemodeWorkers>=CODEMODE_WORKER_LIMIT)throw new Error('The native host codemode worker limit is full. Existing workers must exit before another starts.');
+		liveCodemodeWorkers++;
+		return ()=>{liveCodemodeWorkers--;};
+	}
 	async close(): Promise<void> {
 		if (this.closed) return;
 		this.closed = true;

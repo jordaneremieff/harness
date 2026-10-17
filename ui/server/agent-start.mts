@@ -26,7 +26,7 @@ async function canonical(path: string, directory: boolean) {
   if((directory ? !info.isDirectory() : !info.isFile()) || await realpath(path) !== path) throw new Error('Noncanonical path');
 }
 /** Global server-owned settings select the Agent source, never retained metadata or project settings. */
-async function configuredRunner(agentDir:string, member: 'durable-runner.ts' | 'retained-read.ts' = 'durable-runner.ts') {
+async function configuredRunner(agentDir:string, member: 'durable-runner.ts' | 'retained-read.ts' | 'create-saved-context.ts' = 'durable-runner.ts') {
   await canonical(agentDir,true);
   const settings = (await readJson(join(agentDir,'settings.json'),65536)).value as {extensions?:unknown;packages?:unknown};
   if(!settings) throw new Error('Agent source configuration is unavailable');
@@ -39,6 +39,10 @@ async function configuredRunner(agentDir:string, member: 'durable-runner.ts' | '
   const manifest=(await readJson(join(root,'package.json'),32768)).value as {name?:unknown;pi?:{extensions?:unknown}};
   if(manifest?.name !== 'harness' || !Array.isArray(manifest.pi?.extensions) || !manifest.pi.extensions.includes('./extensions')) throw new Error('The configured Agent package is invalid');
   const runner=join(slice,member);await canonical(runner,false);return runner;
+}
+export async function savedContextCreatorPath(agentDir?:string):Promise<string> {
+  try{return await configuredRunner(resolve(agentDir??getAgentDir()),'create-saved-context.ts');}
+  catch{throw new ApiError('host_unavailable','The configured saved context creator is unavailable.',503,'read');}
 }
 /** The reader comes from global server resources, never a target record or browser argument. */
 export async function retainedReaderPath(agentDir?: string): Promise<string> {

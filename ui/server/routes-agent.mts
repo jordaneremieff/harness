@@ -1,3 +1,4 @@
+import {convertSaved} from './conversion.mts';
 import type { AgentHistoryPage, Target } from '../shared/api.ts';
 import { retainedTarget } from '../agents/contract.mts';
 import type { Registry } from './registry.mts';
@@ -18,6 +19,7 @@ export async function dispatchAgent(registry: Registry,context: RequestContext) 
     return {rows:roster.rows,nextCursor:page.nextCursor,coverage:page.coverage,observedAt:roster.observedAt,stale:roster.stale,scan:roster.scan};
   }
   if(parts[2]==='refresh') return refresh(registry,body);
+  if(parts[2]==='convert') return convertSaved(registry,context);
   const identity=v.string(parts[2],'agent identity'); const target:Target={kind:'agent',identity};
   if(isImageRoute(method,parts)) {
     const request=imageRequest(url,false);
