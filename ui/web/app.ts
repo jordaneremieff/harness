@@ -2,6 +2,7 @@ import type { AgentHistoryPage, AgentRow, Bootstrap, EventData, HistoryPage, Ope
 import { draftHasContent, draftImageFingerprint, LIMITS } from '../shared/api.ts';
 import { Actions } from './actions.ts';
 import {AgentInspection} from './agent-inspection.ts';
+import {taskReference, type ConversationTask} from './conversation-tasks.ts';
 import type {AgentInspectionView, ResultSelector} from '../shared/inspection.ts';
 import type { ConversationLayout, WorkspaceTab as ConversationTab, FileTab } from '../shared/api.ts';
 import type {FileDirectoryPage, FileRootSelection, FileText, FileDraftState, FileDraft, FileSave, FileMutation, FileWatchState, FileWatchScope, FileChanges} from '../shared/files.ts';
@@ -26,7 +27,7 @@ import { announce, byId, button, copy, details, element, empty, placeRetained, r
 import {StableViews} from './stable-views.ts';
 import { ExtensionDialogs, extensionStatus } from './extensions.ts';
 import { Modal } from './modal.ts';
-import { Transcript } from './render.ts';
+import { Transcript, type ToolSubjectCaption } from './render.ts';
 import { ReferenceResolver, type ReferenceDestination, type ReferenceQuery, type ReferenceResolution } from './references.ts';
 import { imageUrl } from './image.ts';
 import { historyBecameReady, pageToReadingAnchor } from './transcript-history.ts';
@@ -165,13 +166,14 @@ function conversationController(target: Target): ConversationController {
   const stop = elements.root.querySelector<HTMLButtonElement>('.stop'); if (!stop) throw new Error('Stop control is missing.'); nodes.set('stop', stop); nodes.set('abort', stop);
   const resize = elements.root.querySelector<HTMLElement>('.resizer'); if (resize) nodes.set('composer-resizer', resize);
   const activity = add('activity', 'p', 'exception'); activity.setAttribute('role', 'status'); const queued = element('ul', 'queued-list'); queued.hidden = true; queued.setAttribute('aria-label', 'Queued messages'); nodes.set('queued', queued); elements.root.prepend(activity, queued);
-  root.append(observed, notice, region, above, elements.root, below); stableViews().mount(root);
+  const liveStatus=add('live-status','p','conversation-live-status');liveStatus.setAttribute('role','status');
+  root.append(observed, notice, region, above, liveStatus, elements.root, below); stableViews().mount(root);
   if (target.kind === 'agent') root.insertBefore(createAgentState(add), region);
   const controller = {workspaceId, target: {...target}, instanceId, root, nodes, elements, abort: new AbortController(), historyAbort: new AbortController(), cursor: null, before: null, loading: false, preparing: false, passive: true, historyReady: false, historyBoundaryLoaded: false, initialized: false, showThinking: false} as ConversationController;
   controller.composer = new Composer(elements, {prepareInput: () => !controller.passive, imageState: refreshComposerImages, imageInput: captured => composerImageInput(controller, captured), recovery: () => recovery.open(), layoutHeight: () => stableViews().height(elements.root), enterSends: () => state.workspace?.enterSendsMessages === true, timing: (start, end) => {if (controller.workspaceId === state.workspace?.id && !elements.root.closest('[hidden],[inert]')) diagnostics.measure('editor-echo', start, end);}, submitted: result => showOperation(result, workspaceId), unknownCommand: (text, literal) => target.kind === 'primary' && sameTarget(primaryTarget(), target) ? actions.unknown(text, literal) : false,
     ...(target.kind === 'primary' ? {commands: () => actions.commandOptions(), moreCommands: (captured: Target) => actions.continueCommands(captured)} : {}),
     retained: (workspace, captured) => { if (workspace === state.workspace?.id && captured.kind === 'agent') renderMessageResume(captured.identity); }});
-  controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {references, subject: toolSubjectCaption, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
+  controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {references, subject: toolSubjectCaption, readTaskResult:async(reference,signal)=>{const value=await request<AgentInspectionView>(`/api/agents/${encodeURIComponent(reference.sessionId)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',{view:'result',submissionId:reference.submissionId,...(reference.requestId?{requestId:reference.requestId}:{})},undefined,AbortSignal.any([signal,controller.abort.signal,AbortSignal.timeout(15_000)]));if(value.view!=='result')throw new Error('The task result view changed.');return value;}, activity:text=>{const fallback=presentation(controller.target).activity;setText(liveStatus,text||(fallback==='Ready'?'Idle':fallback));}, cwd: () => target.kind === 'primary' ? state.primaries.get(target.key)?.cwd : state.roster.get(target.identity)?.cwd, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
     presentation: (expanded, thinking, view) => { controller.showThinking = thinking; void savePresentation(controllerCapture(controller), expanded, thinking, view); },
     reading: reading => { void saveReading(controllerCapture(controller), reading); },
     ...(target.kind === 'primary' ? {fork: (message: import('../shared/api.ts').MessageView, entry: string) => { if (sameTarget(target, primaryTarget())) actions.fork(entry, rawText(message.parts)); }, output: (more: import('../shared/api.ts').OutputContinuation) => loadControllerOutput(controller, more)} : {}),
@@ -186,21 +188,37 @@ function conversationController(target: Target): ConversationController {
   attachInspection(controller,region);return controller;
 }
 function attachInspection(controller:ConversationController,region:HTMLElement):void {
-  const {target,workspaceId,root}=controller;if(target.kind!=='agent')return;
-    const storageKey=`ui:inspection:${JSON.stringify([workspaceId,target.identity])}`;
-    controller.inspection=new AgentInspection(target.identity,{
-      read:(body,signal)=>request<AgentInspectionView>(`/api/agents/${encodeURIComponent(target.identity)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',body,undefined,AbortSignal.any([signal,AbortSignal.timeout(15_000)])),
+  const {target,workspaceId,root}=controller;
+    const identity=target.kind==='agent'?target.identity:`primary:${target.key}`;
+    const storageKey=`ui:inspection:${JSON.stringify([workspaceId,identity])}`;
+    controller.inspection=new AgentInspection(identity,{
+      read:(body,signal)=>target.kind==='agent'?request<AgentInspectionView>(`/api/agents/${encodeURIComponent(target.identity)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',body,undefined,AbortSignal.any([signal,AbortSignal.timeout(15_000)])):Promise.reject(new Error('Primary tasks use recorded conversation history.')),
+      readResult:async(identity,selector,signal)=>{const value=await request<AgentInspectionView>(`/api/agents/${encodeURIComponent(identity)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',{view:'result',...selector},undefined,AbortSignal.any([signal,AbortSignal.timeout(15_000)]));if(value.view==='result')controller.transcript.acceptTaskResult(value);return value;},
+      tasks:()=>inspectionTaskRows(controller),entryKey:id=>target.kind==='agent'?controller.transcript.loadedReference({text:String(id),owner:target.identity,field:'entryId'},target.identity):undefined,history:target.kind==='agent',showConversation:(entry,identity)=>{if(identity&&(controller.target.kind!=='agent'||identity!==controller.target.identity)){void navigateReference({target:{kind:'agent',identity},entryId:entry},true).catch(showError);return;}const owner=controller.target.kind==='agent'?controller.target.identity:state.primaries.get(controller.target.key)?.sessionId;const loaded=owner?controller.transcript.loadedReference({text:entry,owner,field:'entryId'},owner):undefined;controller.transcript.revealEntry(loaded??entry);},moreConversation:()=>{void loadControllerHistory(controller,true);},
       changed:()=>{devInteractionRevision++;if(controller.inspection?.active)controller.passive=true;renderController(controller);},current:()=>controller.workspaceId===state.workspace?.id&&!controller.abort.signal.aborted,
       restore:()=>{const value=sessionStorage.getItem(storageKey);return value?JSON.parse(value):null;},save:value=>{if(value)sessionStorage.setItem(storageKey,JSON.stringify(value));else sessionStorage.removeItem(storageKey);}});
     root.insertBefore(controller.inspection.navigation,region);root.insertBefore(controller.inspection.node,region);
+}
+function inspectionTaskRows(controller:ConversationController):ConversationTask[]{
+  const rows=[...controller.transcript.taskRows()];
+  if(controller.target.kind==='agent')for(const operation of state.operations.values()){
+    const receipt=operation.receipt;if(receipt?.kind!=='durable'||receipt.identity!==controller.target.identity)continue;
+    const reference=taskReference({sessionId:receipt.identity,submissionId:receipt.submissionId,requestId:receipt.requestId});if(!reference)continue;
+    const input=controller.saved?.retainedInputs.find(item=>item.operationId===operation.id);
+    rows.push({key:`ui:${operation.id}`,entryId:'',reference,subject:input?.text.split(/\r?\n/,1)[0]?.slice(0,80)||'Message from this UI',state:'awaiting',asked:true,asker:'You',time:Date.parse(operation.createdAt)});
+  }
+  return rows;
 }
 function renderInspection(controller:ConversationController):void {
   const inspection=controller.inspection;if(!inspection)return;
   const projected=!!controller.elements.root.dataset.messagePanel;
   if(controller.target.kind==='agent')inspection.observe(state.conversations.get(targetIdentity(controller.target))?.frame,connected&&state.agentAvailability.get(controller.target.identity)?.state==='live');
+  else inspection.observe(undefined,connected);
+  const activity=controller.transcript.activitySentence()||presentation(controller.target).activity;
+  setText(controllerNode(controller,'live-status'),activity==='Ready'?'Idle':activity);
   controllerNode(controller,'transcript-region').hidden=inspection.active;
   controller.elements.root.hidden=!controller.saved||inspection.active&&!projected;
-  controllerNode(controller,'agent-state').hidden=inspection.active||controllerNode(controller,'agent-state').hidden;
+  if(controller.target.kind==='agent')controllerNode(controller,'agent-state').hidden=inspection.active||controllerNode(controller,'agent-state').hidden;
   inspection.navigation.hidden=projected&&controller.root.dataset.messageOnly==='true';
   inspection.visibility(inspection.active&&!controller.root.hidden&&!controller.root.inert&&controller.workspaceId===state.workspace?.id);
   controller.root.classList.toggle('inspection-active',inspection.active);
@@ -268,7 +286,7 @@ const workbenchStatus = new WorkbenchStatus();
 const controlAttribution = element('span','secondary');controlAttribution.id = 'control-attribution';controlAttribution.setAttribute('role','status');controlAttribution.hidden = true;workbenchStatus.node.append(controlAttribution);
 const messageTarget = new MessageTarget({workspace: () => state.workspace, prepare: prepareMessageTarget, paint: renderMessagePanel});
 const references = new ReferenceResolver(resolveReference, destination => { void navigateReference(destination).catch(showError); });
-const actions: Actions = new Actions({snapshot: currentSnapshot, primary, modelChanged: renderAvailability, get composer() { return primaryComposer(); }, commandsChanged: () => {const target = primaryTarget(); if (target && state.workspace) controllers.get(controllerKey(state.workspace.id, target))?.composer.commandsChanged();}, modal, selection, reload: reloadSelection, result: showOperation, rosterRefresh: refreshRoster, hasTranscript: () => !!focusedTranscript(), find: () => captureFind(), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, view: (tools, expand) => focusedTranscript()?.expandLoaded(tools, expand), selectPrimary, agentCaption: identity => {return presentationCaptions().get(identity);}, agentStatus: row => presentation({kind: 'agent', identity: row.identity}).activity, conversationFacts: identity => agentFacts(agentRow(identity), state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame), copyAgent: () => { void copy(selectedAgent() ?? '', agentNode('view-notice')); }, inspectAgent,resultLookup:()=>inspectAgent(selectedAgent(),'result'),
+const actions: Actions = new Actions({snapshot: currentSnapshot, primary, modelChanged: renderAvailability, get composer() { return primaryComposer(); }, commandsChanged: () => {const target = primaryTarget(); if (target && state.workspace) controllers.get(controllerKey(state.workspace.id, target))?.composer.commandsChanged();}, modal, selection, reload: reloadSelection, result: showOperation, rosterRefresh: refreshRoster, hasTranscript: () => !!focusedTranscript(), find: () => captureFind(), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, view: (tools, expand) => focusedTranscript()?.expandLoaded(tools, expand), selectPrimary, agentCaption: identity => {return presentationCaptions().get(identity);}, agentStatus: row => presentation({kind: 'agent', identity: row.identity}).activity, conversationFacts: identity => agentFacts(agentRow(identity), state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame), copyAgent: () => { void copy(selectedAgent() ?? '', agentNode('view-notice')); }, inspectAgent,resultLookup:()=>{const target=layoutTarget(currentLayout(),primaryTarget());if(target)conversationController(target).inspection?.open('result');},
   tabs: {close: () => { const tab = activeTab(currentLayout()); if (tab) applyLayout(closeTab(currentLayout(), tabKey(tab))); }, switch: direction => applyLayout(switchTab(currentLayout(), direction)), layout: currentLayout},
 });
 const fileBrowse = new FileBrowseState();
@@ -367,7 +385,7 @@ const recovery = new Recovery({snapshot: currentSnapshot, reload, modal});
 const roster = new Roster(row => { void selectAgent(row).catch(showError); }, action => { if (action === 'refresh') refreshRoster(); else moreRoster(); }, {
   load: (cursor, signal) => request<import('../shared/api.ts').CachedRoster>(`/api/agents?limit=20&cursor=${encodeURIComponent(cursor)}`, 'GET', undefined, undefined, signal),
   merge: page => { state = mergeRosterPage(state, page); renderRoster(); },
-}, openAgentMessage, row => { const view = presentation({kind: 'agent', identity: row.identity}); return {glyph: presentationGlyph(view), label: view.activity, tool: view.tool, tone:view.tone, name:view.name, tail:view.identityTail}; });
+}, openAgentMessage, row => { const view = presentation({kind: 'agent', identity: row.identity}); return {glyph: presentationGlyph(view), label: view.activity, activity: state.workspace ? controllers.get(controllerKey(state.workspace.id,{kind:'agent',identity:row.identity}))?.transcript.activitySentence() : undefined, tool: view.tool, tone:view.tone, name:view.name, tail:view.identityTail}; });
 function openAgentMessage(identity: string): void {
   let controller: ConversationController; try {controller = conversationController({kind: 'agent', identity});} catch (error) {showError(error); return;}
   controller.messageRetention = {};
@@ -1641,10 +1659,13 @@ function referenceIdentities(query: ReferenceQuery): ReferenceDestination[] {
   for (const view of state.primaries.values()) if (view.sessionId === text || view.key === text) destinations.push({target: {kind: 'primary', key: view.key, epoch: view.epoch}});
   return destinations;
 }
-function toolSubjectCaption(value: string): {text: string; title: string; open?: () => void} | undefined {
+function toolSubjectCaption(value: string): ToolSubjectCaption | undefined {
   const destinations = referenceIdentities(value), destination = destinations.length === 1 ? destinations[0] : undefined;
   if (!destination) return destinations.length || conversationIdentityText(value) ? {text: 'Unresolved conversation', title: value} : undefined;
-  return {text: presentationName(presentation(destination.target)), title: value, open: () => {
+  const primary = destination.target.kind === 'primary' ? state.primaries.get(destination.target.key) : undefined;
+  const supplied = primary?.extension?.title || primary?.sessionName;
+  const known = destination.target.kind === 'agent' ? presentationCaptions().knownName(destination.target.identity) : supplied && supplied !== value && !conversationIdentityText(supplied) ? {name:supplied,provenance:'supplied' as const} : undefined;
+  return {text: presentationName(presentation(destination.target)), ...known, title: value, open: () => {
     const current = referenceIdentities(value);
     if (current.length === 1 && current[0] && sameTarget(current[0].target, destination.target)) void navigateReference(current[0]).catch(showError);
   }};
@@ -1660,11 +1681,11 @@ function resolveReference(query: ReferenceQuery): ReferenceResolution {
   const first = destinations[0]; if (destinations.length === 1 && first) return {destination: first};
   return {reason: destinations.length ? 'Reference has more than one loaded destination.' : 'Reference is not resolved by the loaded public identities.'};
 }
-async function navigateReference(destination: ReferenceDestination): Promise<void> {
+async function navigateReference(destination: ReferenceDestination, knownTaskReference = false): Promise<void> {
   const {target, entryId} = destination; const workspace = state.workspace?.id;
   if (!workspace) return;
   if (target.kind === 'agent') {
-    if (!state.roster.has(target.identity) && selectedAgent() !== target.identity) return;
+    if (!state.roster.has(target.identity) && selectedAgent() !== target.identity && !knownTaskReference) return;
     conversationController(target);
     await selection({panelVisible: true, selectedTarget: target, conversationLayout: openTab(currentLayout(), {kind: 'agent', identity: target.identity})});
     if (workspace !== state.workspace?.id || selectedAgent() !== target.identity) return;
@@ -1684,7 +1705,7 @@ function referencePrimaryCurrent(workspace: string, target: Extract<Target, {kin
   const selected = primaryTarget();
   return workspace === state.workspace?.id && selected?.kind === 'primary' && selected.key === target.key && selected.epoch === target.epoch;
 }
-export function inspectAgent(identity = selectedAgent(), mode:'activity'|'result'='activity', selector?:ResultSelector): void {
+export function inspectAgent(identity = selectedAgent(), mode:'result'='result', selector?:ResultSelector): void {
   if(!identity||!state.workspace)return;
   const target={kind:'agent' as const,identity},controller=conversationController(target);controller.passive=true;
   const layout=currentLayout(),key=`agent:${identity}`,existing=paneLeaves(layout.root).find(pane=>pane.tabs.some(tab=>tabKey(tab)===key));
@@ -1693,7 +1714,7 @@ export function inspectAgent(identity = selectedAgent(), mode:'activity'|'result
   else {
     const source=existing??primaryPane??paneById(layout,layout.focusedPane);
     if(source){const added=openTab({...layout,focusedPane:source.id},{kind:'agent',identity});const split=splitPane(added,source.id,'x',paneSpace(source.id),key);
-      next=split;if(split===added&&primaryPane)announce('Activity uses this pane. Keep Primary available in its tab.');}
+      next=split;if(split===added&&primaryPane)announce('Tasks use this pane. Keep Primary available in its tab.');}
   }
   controller.inspection?.open(mode,selector);applyLayout(next);renderInspection(controller);
 }
@@ -1719,7 +1740,7 @@ function agentMenuItems(identity: string): ContextItem[] {
     {label: 'Copy agent ID', run: () => { void copy(identity, agentNode('view-notice')); }},
     {label: 'Conversation details', run: () => actions.conversationDetails(identity)},
   ];
-  items.push({label: 'View activity…', run: () => inspectAgent(identity)},{label:'Result lookup…',run:()=>inspectAgent(identity,'result')});
+  items.push({label: 'Tasks', run: () => inspectAgent(identity)});
   items.push(...conversationMenuItems({kind: 'agent', identity}).filter(item => !items.some(existing => existing.label === item.label)));
   return items;
 }

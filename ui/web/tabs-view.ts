@@ -125,7 +125,7 @@ export class TabStrip {
   private tail(tab: ConversationTab): string | undefined {return this.hooks.identity?.(tab) ?? this.tails.get(tab.kind === 'file' ? tabKey(tab) : tab.kind === 'agent' ? tab.identity : 'primary');}
   private paintDot(node: HTMLElement, glyph: string, label: string, tone: PresentationTone = 'secondary'): void {
     const dot = node.querySelector<HTMLElement>('.tab-dot'); if (!dot) return;
-    const text = glyph === '•' ? 'Modified' : ['Ready', 'Connected', 'Not connected'].includes(label) ? '' : label;
+    const text = glyph === '•' || tone === 'info' || tone === 'error' ? '•' : '';
     dot.hidden = !text; dot.textContent = text; dot.dataset.tone = tone; dot.title = label;
   }
   private navigate(key: string, event: KeyboardEvent): void {
@@ -168,7 +168,7 @@ export class TabStrip {
       row.addEventListener('click', () => this.activate(key)); this.rows.set(key, row);}
     const status = this.hooks.status(tab); const label = this.hooks.label(tab); const tail = this.tail(tab);
     row.title = [label, tab.kind === 'file' ? tab.path : tab.kind === 'agent' ? tab.identity : '', status.label].filter(Boolean).join(' · '); row.setAttribute('aria-label', [label, tail, status.label].filter(Boolean).join(', ')); row.setAttribute('aria-controls', controls);
-    const state = row.querySelector<HTMLElement>('.conversation-state'); if (state) {state.textContent = ['Ready', 'Connected', 'Not connected'].includes(status.label) ? '' : status.label; state.hidden = !state.textContent; state.title = status.label; state.dataset.tone = status.tone ?? 'secondary'; state.setAttribute('aria-hidden', 'true');}
+    const state = row.querySelector<HTMLElement>('.conversation-state'); if (state) {state.textContent = status.glyph === '•' || status.tone === 'info' || status.tone === 'error' ? '•' : ''; state.hidden = !state.textContent; state.title = status.label; state.dataset.tone = status.tone ?? 'secondary'; state.setAttribute('aria-hidden', 'true');}
     const caption = row.querySelector<HTMLElement>('.conversation-name'); if (caption) caption.textContent = label;
     const identity = row.querySelector<HTMLElement>('.conversation-identity'); if (identity) {identity.textContent = tail ?? ''; identity.hidden = !tail; identity.title = tab.kind === 'agent' ? `Agent ID: ${tab.identity}` : '';}
     return row;

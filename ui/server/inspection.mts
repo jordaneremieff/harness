@@ -1,6 +1,8 @@
-import type {ActivityCoverage, ActivityInspection, AgentInspectionView, ExactInspection, InspectCursor, InspectionEntry, InspectionText, ResultInspection} from '../shared/inspection.ts';
+import type {ActivityCoverage, ActivityInspection, AgentInspectionView, ExactInspection, HistoryInspection, InspectCursor, InspectionEntry, InspectionText, ResultInspection} from '../shared/inspection.ts';
 import {ApiError} from './errors.mts';
 import {projectJson, safeText} from './projection.mts';
+import {projectCommunication} from './communication.mts';
+import {retainedTarget} from '../agents/contract.mts';
 
 function invalid(): never {throw new ApiError('invalid_inspection', 'The inspection source is incomplete or invalid.', 502, 'read');}
 function record(value: unknown): Record<string, unknown> {if (!value || typeof value !== 'object' || Array.isArray(value)) return invalid(); return value as Record<string, unknown>;}
@@ -51,9 +53,13 @@ class InspectionProjection {
   private call(raw:unknown):InspectionEntry['calls'][number] {
     const row=record(raw);return {name:this.text(row.name,512),arguments:this.text(row.arguments),truncated:flag(row.truncated),...(row.callId===undefined?{}:{callId:this.text(row.callId,512)})};
   }
-  private entry(raw:unknown):InspectionEntry {
+  private entry(raw:unknown,identity?:string):InspectionEntry {
     const row=record(raw),calls=row.toolCalls===undefined?[]:array(row.toolCalls);
-    return {id:integer(row.id,1),kind:string(row.kind,128),source:string(row.source,128),text:this.text(row.text),truncated:flag(row.truncated),
+    const binding=identity?retainedTarget(identity):undefined;
+    const native=row.communication&&typeof row.communication==='object'&&!Object.hasOwn(row.communication,'origin')?row.communication:undefined;
+    let communication=identity?projectCommunication(row,String(row.id),{...binding,singleMessage:true,nativeEntryId:String(row.id),...(native===undefined?{}:{native})},{safeText,jsonDisplay:projectJson}):undefined;
+    if(communication?.state==='ready'){const body=communication.value.body,shown=this.text(body.text,16384);communication={...communication,value:{...communication.value,body:{text:shown.text,complete:body.complete&&!shown.shortened,redacted:body.redacted||shown.protected}}};}
+    return {id:integer(row.id,1),kind:string(row.kind,128),source:string(row.source,128),...(row.role===undefined?{}:{role:string(row.role,32)}),...(communication?{communication}:{}),text:this.text(row.text),truncated:flag(row.truncated),
       calls:calls.slice(0,DISPLAY_ENTRY_CALLS).map(value=>this.call(value)),callsOmitted:Math.max(0,calls.length-DISPLAY_ENTRY_CALLS),
       tools:row.toolResults===undefined?[]:array(row.toolResults,8).map(value=>this.tool(value))};
   }
@@ -67,6 +73,10 @@ class InspectionProjection {
   activity(row:Record<string,unknown>,identity:string,readAt:string):ActivityInspection {
     const entries=array(row.turns,12).flatMap(turn=>array(record(turn).entries,200)),selected=entries.slice(0,200);
     return {view:'activity',identity,readAt,nextCursor:inspectCursor(row.nextCursor),coverage:coverage(row.coverage),displayOmitted:Math.max(0,entries.length-selected.length),detail:this.text(row.detail,2000),metadata:this.metadata(row.metadata),entries:selected.map(value=>this.entry(value))};
+  }
+  history(row:Record<string,unknown>,identity:string,readAt:string):HistoryInspection {
+    if(row.order!=='newestFirst'||row.format!=='compact')invalid();
+    return {view:'history',identity,readAt,entries:array(row.entries,100).map(value=>this.entry(value,identity)),nextCursor:inspectCursor(row.nextCursor),detail:this.text(row.detail,2000)};
   }
   result(row:Record<string,unknown>,identity:string,readAt:string):ResultInspection {
     const status=string(row.status);if(!['queued','placed','done','unanswered','unavailable'].includes(status))invalid();
@@ -89,5 +99,5 @@ function resultIds(row:Record<string,unknown>):Pick<ResultInspection,'submission
 /** IDs, cursors and coverage bypass lossy body projection. */
 export function projectInspection(value:unknown,identity:string,readAt=new Date().toISOString()):AgentInspectionView {
   const row=record(value);if(row.sessionId!==identity)invalid();const projection=new InspectionProjection();
-  switch(row.view){case 'activity':return projection.activity(row,identity,readAt);case 'result':return projection.result(row,identity,readAt);case 'exact':return projection.exact(row,identity,readAt);default:return invalid();}
+  switch(row.view){case 'history':return projection.history(row,identity,readAt);case 'activity':return projection.activity(row,identity,readAt);case 'result':return projection.result(row,identity,readAt);case 'exact':return projection.exact(row,identity,readAt);default:return invalid();}
 }

@@ -1,5 +1,5 @@
 import type { EntryView, ImageView, JsonDisplay, MessageView, PartView, PresentationView, ReadingView, TranscriptView } from '../shared/api.ts';
-import type {ResultSelector} from '../shared/inspection.ts';
+import type {ResultInspection, ResultSelector} from '../shared/inspection.ts';
 import { button, copy, details, element, rawText, setText } from './dom.ts';
 import { cardAction, cardActionLabel, cardDisclosure } from './card-icons.ts';
 import { contextMenu, nativeEditingTarget, type ContextItem } from './context-menu.ts';
@@ -9,10 +9,13 @@ import { transcriptImage } from './image.ts';
 import type { ToolState } from './state.ts';
 import { isValidTimestamp, previewText } from './format.ts';
 import { entryVisible, presentEntry, presentMessage } from './entry-presentation.ts';
-import { cardPreviewLimits, presentToolPreview, readRange, resultPreview } from './cards.ts';
+import { cardPreviewLimits, readRange } from './cards.ts';
 import { TranscriptIndex, ToolElapsedClock, toolTime, slot, communicationDisclosureKeys } from './transcript-tools.ts';
 import { CommunicationCard, messageCopyText, messageCopyDescription } from './communication.ts';
 import type { TranscriptGroups } from './transcript-groups.ts';
+import {TranscriptRows, type StepRun} from './transcript-rows.ts';
+import {toolSentence, type NamedDestination} from './tool-sentences.ts';
+import {ConversationTasks, type ConversationTask, type TaskReference} from './conversation-tasks.ts';
 import { loadedReference, type ReferenceQuery, type ReferenceResolver } from './references.ts';
 import type { JoinedTool } from './transcript-tools.ts';
 import { outputPages } from './transcript-output.ts';
@@ -24,9 +27,10 @@ import { captureAnchor, layoutItems, restoreAnchor, visibleWindow, updateHeights
 import type { LayoutItem, VirtualLayout } from './virtual.ts';
 
 export type TranscriptElements = {transcript: HTMLElement; latest: HTMLElement; earlier?: HTMLElement};
-export type ToolSubjectCaption = {text: string; title?: string; open?: () => void};
-export type ViewHooks = {subject?: (value: string) => ToolSubjectCaption | undefined; result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
+export type ToolSubjectCaption = NamedDestination;
+export type ViewHooks = {readTaskResult?: (reference:TaskReference,signal:AbortSignal)=>Promise<ResultInspection>; activity?: (text:string)=>void; cwd?: () => string | undefined; subject?: (value: string) => ToolSubjectCaption | undefined; result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
 const RAW_LIMIT = 65536;
+const TASK_READ_CONCURRENCY = 4;
 function selectionCopy(origin: HTMLElement): ContextItem[] {
   const selection = document.getSelection();
   if (!selection || selection.isCollapsed || !origin.contains(selection.anchorNode) || !origin.contains(selection.focusNode)) return [];
@@ -166,8 +170,9 @@ type PartNode = {node: HTMLElement; source: PartView; partial: boolean};
 type MessageNode = {communication?: CommunicationCard; node: HTMLElement; header: HTMLElement; heading: HTMLElement; actions: HTMLElement; body: HTMLElement; error: HTMLElement; parts: Map<string, PartNode>; source: MessageView; menu: HTMLButtonElement; forkRevision: number; inspection?: HTMLElement; inspectionSource?: MessageView; sourceOpener?: HTMLElement; thinkingGroups?: Map<string, {node: HTMLDetailsElement; body: HTMLElement}>};
 type EventPage = {node: HTMLElement; rows: HTMLElement; page: number; previous: HTMLButtonElement; next: HTMLButtonElement; cache: Map<string, {source: EntryView; node: HTMLElement}>};
 type SessionNode = {source?: SessionGroup; details: HTMLDetailsElement; events: EventPage; notices: EventPage};
-type EntryNode = {node: HTMLElement; messages: Map<string, MessageNode>; source?: EntryView; custom?: HTMLElement; session?: SessionNode; groupHeader?: HTMLElement};
-type ToolNode = {subject?: ToolSubjectCaption; card: HTMLElement; node: HTMLDetailsElement; copy: HTMLButtonElement; title: HTMLElement; target: HTMLElement; glyph: HTMLElement; meta: HTMLElement; preview: HTMLElement; qualification: HTMLElement; expanded: HTMLElement; info: HTMLElement; source?: JoinedTool; inspectionSources?: Map<HTMLDetailsElement, JoinedTool>; presentation?: HTMLElement; argumentsDocument?: HTMLElement; argumentsSource?: JoinedTool; output?: HTMLElement; images?: HTMLElement; contentSource?: JoinedTool; viewport?: HTMLElement; pageViewports?: Set<HTMLElement>; resultDocument?: HTMLElement; documentSource?: JoinedTool; previewBudget?: PreviewBudget; outputNotice?: {node: HTMLElement; source: JoinedTool}; inspections?: {arguments: HTMLDetailsElement; output: HTMLDetailsElement; details: HTMLDetailsElement}};
+type StepNode = {details: HTMLDetailsElement; label: HTMLElement; failures: HTMLElement; body: HTMLElement; earlier: HTMLButtonElement; newer: HTMLButtonElement; shown: number; to: number; wasOpen: boolean};
+type EntryNode = {node: HTMLElement; messages: Map<string, MessageNode>; source?: EntryView; custom?: HTMLElement; session?: SessionNode; groupHeader?: HTMLElement; steps?: StepNode};
+type ToolNode = {answerText?: string; subject?: ToolSubjectCaption; card: HTMLElement; node: HTMLDetailsElement; copy: HTMLButtonElement; title: HTMLElement; target: HTMLElement; glyph: HTMLElement; meta: HTMLElement; preview: HTMLElement; qualification: HTMLElement; expanded: HTMLElement; info: HTMLElement; source?: JoinedTool; inspectionSources?: Map<HTMLDetailsElement, JoinedTool>; presentation?: HTMLElement; argumentsDocument?: HTMLElement; argumentsSource?: JoinedTool; output?: HTMLElement; images?: HTMLElement; contentSource?: JoinedTool; viewport?: HTMLElement; pageViewports?: Set<HTMLElement>; resultDocument?: HTMLElement; documentSource?: JoinedTool; previewBudget?: PreviewBudget; outputNotice?: {node: HTMLElement; source: JoinedTool}; inspections?: {arguments: HTMLDetailsElement; output: HTMLDetailsElement; details: HTMLDetailsElement}};
 export type TranscriptGeometry = {generation: number; followTail: boolean; anchor: {id: string; offsetPx: number} | null; scrollTop: number};
 export type FindStatus = {total: number; position: number; moved: boolean; end: 'none' | 'first' | 'last' | 'unavailable' | null};
 export type FindSession = {next: (query: string) => FindStatus; previous: (query: string) => FindStatus; reset: () => void; close: () => void};
@@ -175,6 +180,10 @@ export class Transcript {
   private entries: EntryView[] = [];
   private displayed: EntryView[] = [];
   private chronological: EntryView[] = [];
+  private rows = new TranscriptRows();
+  private tasks = new ConversationTasks();
+  private taskReads=new Map<string,AbortController>();
+  private taskReadStamps=new Map<string,string>();
   private get groups(): TranscriptGroups { return this.index.groups; }
   private view: TranscriptView = 'chronological';
   private pendingView?: TranscriptView;
@@ -319,6 +328,7 @@ export class Transcript {
     this.renderFrame = undefined; this.renderTask = undefined; this.pending = false;
   }
   destroy(): void {
+    this.cancelTaskReads();
     if (this.destroyed) return;
     this.destroyed = true; this.listenerAbort.abort(); this.cancelRender();
     for (const remove of this.listenerCleanup) remove(); this.listenerCleanup = [];
@@ -328,6 +338,7 @@ export class Transcript {
     this.reset(); this.resize = undefined;
   }
   visibilityChanged(): void {
+    if(this.hidden())this.cancelTaskReads();
     if (this.destroyed) return;
     if (this.hidden() || document.hidden) this.clearTiming();
     this.elapsed.sync(); if (!this.hidden()) this.schedule();
@@ -363,8 +374,8 @@ export class Transcript {
   configure(presentation?: PresentationView, reading?: ReadingView): void {
     this.view = presentation?.transcriptView ?? 'chronological'; this.pendingView = undefined;
     this.node.dataset.view = this.view;
-    this.displayed = this.view === 'grouped' ? this.groups.rows(this.chronological) : this.chronological; this.dirtyLayout = true;
     this.expanded = new Set(presentation?.expanded ?? []); this.showThinking = presentation?.showThinking ?? false;
+    this.deriveRows();
     if (reading) {
       this.follow = reading.followTail; this.readingRevision = reading.revision; this.restoring = reading.followTail ? undefined : reading;
       this.reflowAnchor = reading.anchorId ? {id: this.displayId(reading.anchorId), offsetPx: reading.offsetPx} : null;
@@ -376,12 +387,13 @@ export class Transcript {
     if (this.hasSelection()) { this.pendingView = view; return; }
     const anchor = this.anchor();
     this.view = view; this.pendingView = undefined; this.node.dataset.view = view;
-    this.displayed = view === 'grouped' ? this.groups.rows(this.chronological) : this.chronological;
+    this.deriveRows();
     this.dirtyLayout = true; this.restoring = undefined;
     if (anchor) this.follow = false;
     this.paint(anchor); this.hooks.presentation([...this.expanded], this.showThinking, this.view); this.saveReading();
   }
   reset(): void {
+    this.cancelTaskReads();this.taskReadStamps.clear();
     this.cancelRender(); if (this.inputFrame !== undefined) this.pending = false;
     this.clearTiming(); this.streamPending = false; this.deferred = undefined; this.chronological = []; this.view = 'chronological'; this.pendingView = undefined;
     this.node.dataset.view = this.view;
@@ -390,7 +402,7 @@ export class Transcript {
     this.geometryTimer = undefined; this.geometryDirty.clear(); this.outputNodes.clear();
     this.resize?.disconnect(); if (!this.destroyed) this.resize?.observe(this.node); this.sizes = new WeakMap(); this.scrolling = new WeakSet(); this.reflowAnchor = undefined; this.writtenScrollTop = undefined;
     this.clearFind(); this.findRevision++;
-    this.generation++; this.entries = []; this.displayed = []; this.cache.clear(); this.tools.clear(); this.index = new TranscriptIndex(); this.joined = this.index.joined; this.visible.clear(); this.dirtyLayout = true; this.pins.clear(); this.heights.clear(); this.gaps.clear();
+    this.generation++; this.entries = []; this.displayed = []; this.cache.clear(); this.tools.clear(); this.index = new TranscriptIndex(); this.joined = this.index.joined; this.rows = new TranscriptRows(); this.tasks = new ConversationTasks(); this.visible.clear(); this.dirtyLayout = true; this.pins.clear(); this.heights.clear(); this.gaps.clear();
     this.expanded.clear(); this.showThinking = false; this.follow = true; this.readingRevision = 0;
     this.layout = layoutItems([], this.heights, 140); this.restoring = undefined; this.node.replaceChildren(...(this.lead ? [this.lead] : [])); this.scrollTo(0);
   }
@@ -412,13 +424,38 @@ export class Transcript {
       const entry = this.index.entries.get(id);
       if (entry) this.visible.set(id, this.visibleEntry(entry)); else this.visible.delete(id);
     }
-    const displayed = entries.filter(entry => this.visible.get(entry.id) && (this.index.sessionOwners.get(entry.id) ?? entry.id) === entry.id);
-    const structural = displayed.length !== this.chronological.length || displayed.some((entry, at) => entry.id !== this.chronological[at]?.id);
-    this.chronological = displayed;
-    const grouped = this.groups.rows(displayed, structural);
-    const ordered = this.view === 'grouped' ? grouped : displayed;
-    if (structural || ordered.length !== this.displayed.length || ordered.some((entry, at) => entry.id !== this.displayed[at]?.id)) this.dirtyLayout = true;
-    this.displayed = ordered; this.prune(); this.schedule();
+    this.chronological = entries;
+    this.tasks.update(entries,this.joined);
+    this.deriveRows(); this.prune(); this.schedule();
+  }
+  taskRows(): readonly ConversationTask[] {return [...this.tasks.sent,...this.tasks.asked];}
+  acceptTaskResult(value:ResultInspection):void {let changed=false;for(const row of this.tasks.sent)if(row.tool&&this.tasks.recordResult(row.tool.callId,value))changed=true;if(changed)this.schedule();}
+  activitySentence(): string {
+    const active=[...this.joined.values()].findLast(tool=>tool.status==='working');
+    return active?[this.sentence(active),toolTime(active).replace(/ elapsed$/,'')].filter(Boolean).join(' · '):'';
+  }
+  private openTaskAnswer(task: ConversationTask): void {
+    if(!task.tool)return;const id=this.rows.calls.get(task.tool.callId),run=id?this.rows.runs.get(id):undefined;
+    if(run){this.expanded.add(run.key);const group=id?this.cache.get(id)?.steps:undefined;if(group)group.shown=Math.max(group.shown,run.tools.length-run.tools.findIndex(tool=>tool.callId===task.tool?.callId));}
+    this.expanded.add(`answer:${task.tool.callId}`);this.hooks.presentation([...this.expanded],this.showThinking);
+    this.revealEntry(task.entryId,true,task.tool.callId);
+  }
+  private deriveRows(): void {
+    const previous = new Map(this.rows.runs);
+    const ordered = this.view === 'grouped' ? this.groups.rows(this.chronological) : this.chronological;
+    const displayed = this.rows.derive(ordered, this.joined, this.index.sessionOwners, this.showThinking);
+    for(const [id,run] of previous){
+      const first=run.tools[0],next=first?this.rows.calls.get(first.callId):undefined,cached=this.cache.get(id);
+      if(!next||next===id||!cached||this.cache.has(next))continue;
+      this.cache.delete(id);this.cache.set(next,cached);cached.node.dataset.entryId=next;
+      const height=this.heights.get(id);if(height!==undefined)this.heights.set(next,height);
+    }
+    for (const run of previous.values()) if (this.expanded.has(run.key)) {
+      for (const tool of run.tools) {const id = this.rows.calls.get(tool.callId), current = id ? this.rows.runs.get(id) : undefined;if(current)this.expanded.add(current.key);}
+    }
+    for (const [id, run] of this.rows.runs) this.index.disclosures.set(run.key,id);
+    if (displayed.length !== this.displayed.length || displayed.some((entry, at) => entry.id !== this.displayed[at]?.id)) this.dirtyLayout = true;
+    this.displayed = displayed;
   }
   private reconcileSessions(previous: ReadonlyMap<string, SessionGroup>): void {
     for (const [id, group] of previous) {
@@ -640,12 +677,12 @@ export class Transcript {
   loadedReference(query: ReferenceQuery, owner?: string): string | undefined {
     return loadedReference(this.entries, query, typeof query === 'string' ? this.groups.reference(query) : undefined, owner);
   }
-  revealEntry(entryId: string, focus = true): void {
+  revealEntry(entryId: string, focus = true, callId?: string): void {
     if (!this.index.entries.has(entryId)) return;
-    const id = this.displayId(entryId); this.follow = false; this.pins.clear(); this.pins.add(entryId);
+    const id = callId ? this.rows.calls.get(callId) ?? this.displayId(entryId) : this.displayId(entryId); this.follow = false; this.pins.clear(); this.pins.add(entryId);
     const group = this.index.sessions.get(id);
     if (group) this.expanded.add(`events:${id}`);
-    this.restoring = {revision: this.readingRevision, anchorId: entryId, offsetPx: 0, followTail: false}; this.paint();
+    this.restoring = {revision: this.readingRevision, anchorId: callId ? id : entryId, offsetPx: 0, followTail: false}; this.paint();
     const session = this.cache.get(id)?.session;
     if (session && group) {
       session.events.page = Math.floor(group.entries.findIndex(member => member.id === entryId) / 32);
@@ -699,6 +736,7 @@ export class Transcript {
     this.evict(new Set(selected.map(item => item.id)));
     this.refreshMountedTools();
     this.refreshMountedCommunications();
+    this.readVisibleTaskAnswers(new Set(selected.map(item=>item.id)));
     this.finishScroll(anchor);
     this.refreshFind();
     this.elapsed.sync();
@@ -723,12 +761,26 @@ export class Transcript {
   private updateCommunication(cached: MessageNode, message: MessageView, entryId: string): void {
     if (!cached.communication) {
       const generation = this.generation;
-      cached.communication = new CommunicationCard(cached, {active: () => !this.deferred && generation === this.generation && cached.node.isConnected && !this.hidden() && this.index.entries.get(entryId)?.messages?.includes(cached.source) === true, current: () => cached.source, result:this.hooks.result, protected: node => this.protectedNode(node), raw: source => partText(source.parts), expanded: key => this.expanded.has(key), disclosure: (key, open) => this.sourcePreference(key, open), layout: () => this.sourceLayout(entryId), reference: this.hooks.references ? (text, active) => this.hooks.references?.render(text, active) ?? element('span', undefined, typeof text === 'string' ? text : text.text) : undefined}, communicationDisclosureKeys(entryId, message.id));
+      cached.communication = new CommunicationCard(cached, {subject:this.hooks.subject, reply:message=>{const task=this.tasks.replies.get(message);return task?.tool?{text:this.sentence(task.tool),open:()=>this.openTaskAnswer(task)}:undefined;}, active: () => !this.deferred && generation === this.generation && cached.node.isConnected && !this.hidden() && this.index.entries.get(entryId)?.messages?.includes(cached.source) === true, current: () => cached.source, result:this.hooks.result, protected: node => this.protectedNode(node), raw: source => partText(source.parts), expanded: key => this.expanded.has(key), disclosure: (key, open) => this.sourcePreference(key, open), layout: () => this.sourceLayout(entryId), reference: this.hooks.references ? (text, active) => this.hooks.references?.render(text, active) ?? element('span', undefined, typeof text === 'string' ? text : text.text) : undefined}, communicationDisclosureKeys(entryId, message.id));
     }
     if (cached.communication.sync(message)) {
       this.messageError(cached, message);
     }
     this.registerContent(cached.body);
+  }
+  private cancelTaskReads(): void {for(const [id,controller] of this.taskReads){controller.abort();this.taskReadStamps.delete(id);}this.taskReads.clear();}
+  private readVisibleTaskAnswers(visible:ReadonlySet<string>):void {
+    if(!this.hooks.readTaskResult)return;
+    const tasks=[...visible].flatMap(id=>this.rows.runs.get(id)?.tools??[]).reverse().flatMap(tool=>{const row=this.tasks.byCall.get(tool.callId);return row?.reference&&!row.answer?[row]:[];}).slice(0,20);
+    const wanted=new Set(tasks.map(task=>task.tool?.callId));for(const [id,controller] of this.taskReads)if(!wanted.has(id)){controller.abort();this.taskReads.delete(id);this.taskReadStamps.delete(id);}
+    for(const task of tasks){
+      if(this.taskReads.size>=TASK_READ_CONCURRENCY)break;
+      const tool=task.tool,reference=task.reference;if(!tool||!reference||this.taskReads.has(tool.callId))continue;
+      const stamp=JSON.stringify([reference,this.tasks.incomingRevision]);if(this.taskReadStamps.get(tool.callId)===stamp)continue;
+      this.taskReadStamps.set(tool.callId,stamp);if(this.taskReadStamps.size>200){const first=this.taskReadStamps.keys().next().value;if(first)this.taskReadStamps.delete(first);}
+      const controller=new AbortController(),generation=this.generation;this.taskReads.set(tool.callId,controller);
+      void this.hooks.readTaskResult(reference,controller.signal).then(value=>{if(!controller.signal.aborted&&!this.destroyed&&generation===this.generation&&this.tasks.recordResult(tool.callId,value))this.schedule();}).catch(()=>{/* A failed read is not a failed recipient task; Refresh tasks retries the exact reference. */}).finally(()=>{if(this.taskReads.get(tool.callId)===controller){this.taskReads.delete(tool.callId);if(!this.destroyed&&generation===this.generation)this.schedule();}});
+    }
   }
   private refreshMountedTools(): void {
     for (const tool of this.tools.values()) if (tool.source && tool.node.open && this.node.contains(tool.card)) {
@@ -798,7 +850,7 @@ export class Transcript {
     updateHeights(this.layout, measurements);
   }
   private prune(): void {
-    for (const [id, entry] of this.cache) if (!this.index.entries.has(id)) { this.releaseFrames(entry.node); entry.node.remove(); this.cache.delete(id); this.pins.delete(id); }
+    for (const [id, entry] of this.cache) if (!this.rows.byId.has(id)) { this.releaseFrames(entry.node); entry.node.remove(); this.cache.delete(id); this.pins.delete(id); }
     for (const id of this.index.changed) if (!this.index.entries.has(id)) this.heights.delete(id);
     for (const [id, tool] of this.tools) if (!this.joined.has(id)) { this.releaseToolGeometry(tool); tool.card.remove(); this.tools.delete(id); }
   }
@@ -806,7 +858,7 @@ export class Transcript {
     const offscreen = [...this.cache.keys()].filter(id => !mounted.has(id));
     for (const id of offscreen.slice(0, Math.max(0, offscreen.length - 32))) { const entry = this.cache.get(id); if (entry) this.releaseFrames(entry.node); this.cache.delete(id); }
     for (const [id, tool] of this.tools) {
-      const owner = this.joined.get(id)?.owner;
+      const owner = this.rows.calls.get(id) ?? this.joined.get(id)?.owner;
       if (!owner || !this.cache.has(owner)) { this.releaseToolGeometry(tool); tool.card.remove(); this.tools.delete(id); }
     }
   }
@@ -816,21 +868,61 @@ export class Transcript {
       const node = element('div', 'entry'); node.dataset.entryId = entry.id; node.style.display = 'flow-root';
       cached = {node, messages: new Map()}; this.cache.set(entry.id, cached);
     }
+    const row = this.rows.byId.get(entry.id);
+    if (row?.steps) {
+      this.updateSteps(cached, row.steps); cached.source = row.source;
+      return cached.node;
+    }
+    entry = row?.source ?? entry;
     const session = this.index.sessions.get(entry.id);
     if (session) cached.node.classList.add('session-event-group'); else cached.node.classList.remove('session-event-group');
     if (session) this.updateSession(cached, session);
     else { if (cached.session) cached.custom = undefined; cached.session = undefined; this.updateCustom(cached, entry); }
     const children: HTMLElement[] = cached.custom ? [cached.custom] : [];
-    children.push(...this.entryToolChildren(entry));
+    if (!row?.parts) children.push(...this.entryToolChildren(entry));
     const ids = new Set<string>();
     for (const message of entry.messages ?? []) {
-      if (!presentMessage(message).visible || this.joinedMessage(entry.id, message)) continue;
-      ids.add(message.id); children.push(this.updateMessage(cached, message, entry).node);
+      if (row?.parts && !row.parts.has(message.id) || !presentMessage(message).visible || this.joinedMessage(entry.id, message)) continue;
+      ids.add(message.id); children.push(this.updateMessage(cached, message, entry, row?.parts?.get(message.id)).node);
     }
     this.pruneMessages(cached, ids);
     setEntryRhythm(cached.node, children, session !== undefined);
     const header = this.groupHeader(cached, entry.id); if (header) children.unshift(header);
     reconcileChildren(cached.node, children); this.registerContent(cached.node); cached.source = entry; return cached.node;
+  }
+  private updateSteps(cached: EntryNode, run: StepRun): void {
+    let group = cached.steps;
+    if (!group) {
+      const details = element('details', 'step-run'), summary = element('summary'), label = element('span', 'step-run-label');
+      cardDisclosure(summary);summary.append(label);const failures = element('div', 'step-run-failures'), body = element('div', 'step-list');
+      const earlier = button('', () => {if(cached.steps){cached.steps.shown+=50;this.schedule();}}, 'step-earlier');
+      const newer=button('',()=>{const current=this.rows.runs.get(cached.node.dataset.entryId??'');if(cached.steps&&current){cached.steps.to=current.tools.length;cached.steps.shown=50;this.schedule();}},'step-newer');
+      details.append(summary, earlier, body,newer);group={details,label,failures,body,earlier,newer,shown:50,to:run.tools.length,wasOpen:false};cached.steps=group;
+      this.trackDisclosure(details,run.key);details.addEventListener('toggle',()=>this.schedule());
+    }
+    cached.node.classList.add('compact-entry');group.details.dataset.disclosure=run.key;group.details.open=this.expanded.has(run.key);
+    this.stepSummary(group,run);
+    if(group.details.open){
+      if(!group.wasOpen)group.to=run.tools.length;
+      const end=Math.min(group.to,run.tools.length),start=Math.max(0,end-group.shown);group.earlier.hidden=start===0;setText(group.earlier,`Show ${Math.min(50,start)} earlier steps`);
+      group.newer.hidden=end===run.tools.length;setText(group.newer,`Show ${run.tools.length-end} newer steps`);
+      this.reconcileContent(group.body,run.tools.slice(start,end).map(tool=>this.updateTool(tool)));
+    }else{group.earlier.hidden=true;group.newer.hidden=true;this.reconcileContent(group.body,[]);}
+    group.wasOpen=group.details.open;
+    reconcileChildren(cached.node,[group.details,group.failures]);this.registerContent(cached.node);
+  }
+  private sentence(tool: JoinedTool): string {return toolSentence(tool,{subject:this.hooks.subject,cwd:this.hooks.cwd?.(),nestedCount:this.rows.nestedCounts.get(tool.callId)});}
+  private stepSummary(group: StepNode, run: StepRun): void {
+    const active=run.tools.findLast(tool=>tool.status==='working')??run.tools.findLast(tool=>tool.status==='pending');
+    const last=active??run.tools.at(-1);if(!last)return;
+    const failed=run.tools.filter(tool=>tool.status==='error'), count=`${run.tools.length} steps`;
+    const elapsed=active?toolTime(active).replace(/ elapsed$/,''):'';
+    const label=active?[this.sentence(active),elapsed,run.tools.length>1?count:''].filter(Boolean).join(' · '):run.tools.length===1?this.sentence(last):`${count} · ${this.sentence(last)}`;
+    if(!this.protectedNode(group.label))setText(group.label,label+(failed.length?` · ${failed.length} failed`:''));
+    group.details.dataset.status=failed.length?'error':active?.status??'success';
+    const failure=failed.at(-1),provided=failure?.result?.find(part=>part.type==='text'&&!part.structured&&!part.redacted);
+    const reason=provided?.type==='text'?bounded(provided.text.split(/\r?\n/,1)[0]??'',160,1):'';
+    group.failures.hidden=!failure;setText(group.failures,failure?[this.sentence(failure),reason].filter(Boolean).join(' · '):'');
   }
   private entryToolChildren(entry: EntryView): HTMLElement[] {
     if (!entry.tool) return [];
@@ -884,6 +976,8 @@ export class Transcript {
     return entry.messages.some(message => presentMessage(message).visible && !this.joinedMessage(entry.id, message));
   }
   private displayId(id: string): string {
+    const row = this.rows.owners.get(id); if (row) return row;
+    if (this.rows.byId.has(id)) return id;
     const session = this.index.sessionOwners.get(id); if (session) return session;
     if (this.visible.get(id)) return id;
     const entry = this.index.entries.get(id);
@@ -986,7 +1080,7 @@ export class Transcript {
     if (this.protectedNode(cached.node)) return true;
     cached.communication.dispose(); cached.communication = undefined; return false;
   }
-  private updateMessage(entry: EntryNode, message: MessageView, retained: EntryView): MessageNode {
+  private updateMessage(entry: EntryNode, message: MessageView, retained: EntryView, selected?: ReadonlySet<number>): MessageNode {
     const entryId = retained.id;
     const cached = entry.messages.get(message.id) ?? this.createMessage(entry, message);
     const error = this.messageError(cached, message);
@@ -994,6 +1088,7 @@ export class Transcript {
     setText(cached.heading, bounded(presentMessage(message).label, 4096));
     const children: HTMLElement[] = []; const keys = new Set<string>();
     message.parts.forEach((part, index) => {
+      if (selected && !selected.has(index)) return;
       if ((part.type === 'text' || part.type === 'thinking') && !part.text.trim() && !part.redacted && !part.more) return;
       const key = `${index}:${part.type}`; keys.add(key);
       const node = this.updatePart(cached, part, index, message.state === 'partial', entryId);
@@ -1205,12 +1300,12 @@ export class Transcript {
     const card = element('div', 'tool-shell'); const node = element('details', 'tool-card'); card.append(node); const summary = element('summary');
     const tier = element('span', 'tool-tier'); const glyph = element('span', 'tool-status');
     const title = element('span', 'tool-name'); const target = element('span', 'tool-target'); const meta = element('span', 'tool-secondary');
-    tier.append(title, glyph); cardDisclosure(summary); summary.append(tier, target, meta);
+    tier.append(title, glyph); cardDisclosure(summary); summary.append(tier);
     const preview = element('div', 'tool-preview'); const qualification = element('p', 'tool-preview-qualification', 'Partial output'); qualification.hidden = true;
-    const expanded = element('div', 'tool-expanded'); const info = element('p', 'secondary tool-output-info'); expanded.append(info); summary.append(preview, qualification); node.append(summary, expanded);
+    const expanded = element('div', 'tool-expanded'); const info = element('p', 'secondary tool-output-info'); expanded.append(target, meta, info); summary.append(preview, qualification); node.append(summary, expanded);
     node.dataset.disclosure = `tool:${source.callId}`; node.open = this.expanded.has(`tool:${source.callId}`);
     const generation = this.generation;
-    const action = cardAction('copy', 'Copy output', () => {
+    const action = button('Copy output', () => {
       const captured = tool.source; if (!captured || !this.currentToolSource(tool, captured, generation)) return;
       const raw = tool.inspections?.output;
       if (raw?.open && tool.inspectionSources?.get(raw) !== captured) return;
@@ -1220,7 +1315,10 @@ export class Transcript {
     }, 'tool-copy');
     action.setAttribute('aria-label', 'Copy tool output'); action.title = 'Copy tool output';
     action.addEventListener('click', event => event.stopPropagation());
-    action.addEventListener('blur', () => { if (!this.destroyed && tool.source) this.toolCopyLabel(tool, tool.source); }); card.append(action);
+    action.addEventListener('blur', () => { if (!this.destroyed && tool.source) this.toolCopyLabel(tool, tool.source); });
+    const controls=element('div','tool-source-actions');
+    controls.append(action,button('Copy arguments',()=>{const source=tool.source;if(source&&this.currentToolSource(tool,source,generation))void copy(this.toolArguments(tool),controls);}),button('Copy ID',()=>{const source=tool.source;if(source&&this.currentToolSource(tool,source,generation))void copy(source.callId,controls);}));
+    expanded.prepend(controls);
     const tool: ToolNode = {card, node, copy: action, title, target, glyph, meta, preview, qualification, expanded, info}; this.tools.set(source.callId, tool);
     this.trackDisclosure(node, `tool:${source.callId}`);
     node.addEventListener('toggle', () => this.toolExpansion(tool)); this.registerContent(card); return tool;
@@ -1228,10 +1326,10 @@ export class Transcript {
   private updateTool(source: JoinedTool): HTMLElement {
     const tool = this.tools.get(source.callId) ?? this.createTool(source);
     const previous = tool.source; tool.source = source;
-    this.toolHeading(tool, source);
+    this.toolHeading(tool, source);this.toolAnswer(tool,source);
     if (previous === source) { if (tool.node.open && tool.documentSource !== source) this.expandTool(tool); return tool.card; }
     tool.card.dataset.status = source.status;
-    setText(tool.glyph, this.toolStatusMark(source.status));
+    setText(tool.glyph, '');
     tool.glyph.className = `tool-status ${source.status}`;
     this.toolMetadata(tool, source);
     const explanation = [metadata(source), outputExplanation(source), source.args?.truncated ? 'Some arguments are not available.' : ''].filter(Boolean).join('\n');
@@ -1240,18 +1338,23 @@ export class Transcript {
     tool.meta.hidden = !tool.meta.textContent; tool.copy.hidden = !source.result; this.toolCopyLabel(tool, source);
     const changed = previous?.args !== source.args || previous?.result !== source.result || previous?.argumentText !== source.argumentText || previous?.status !== source.status;
     if (changed) this.toolContent(tool);
-    tool.preview.hidden = tool.node.open; tool.expanded.hidden = !tool.node.open; return tool.card;
+    tool.preview.hidden = true; tool.expanded.hidden = !tool.node.open; return tool.card;
   }
-  private toolStatusMark(status: string): string {
-    switch (status) {
-      case 'success': return 'Done';
-      case 'error': return 'Error';
-      case 'working': return 'Working';
-      case 'pending': return 'Pending';
-      case 'ended': return 'Ended';
-      case 'available': return 'Result available';
-      default: return 'No result recorded';
-    }
+  private toolAnswer(tool: ToolNode, source: JoinedTool): void {
+    const task=this.tasks.byCall.get(source.callId);let state=tool.node.querySelector<HTMLButtonElement>('.step-answer-state');
+    let answer=tool.card.querySelector<HTMLElement>('.step-answer');
+    if(!task){state?.remove();answer?.remove();return;}
+    if(!state){state=button('',()=>{const current=tool.source?this.tasks.byCall.get(tool.source.callId):undefined;if(!current?.answer&&!current?.reason)return;const key=`answer:${source.callId}`;if(this.expanded.has(key))this.expanded.delete(key);else this.expanded.add(key);this.hooks.presentation([...this.expanded],this.showThinking);this.schedule();},'step-answer-state');state.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();});tool.node.querySelector('summary')?.append(state);}
+    setText(state,task.state==='answered'?'answered':task.state==='unanswered'?'no answer':task.state==='queued'?'waiting to start':task.state==='unavailable'?'answer unavailable':'awaiting answer');state.disabled=!task.answer&&!task.reason;state.dataset.state=task.state;
+    if(this.expanded.has(`answer:${source.callId}`)&&(task.answer||task.reason)){
+      if(!answer){answer=element('section','step-answer');tool.card.append(answer);tool.answerText=undefined;}
+      const text=task.answer?task.answer.text:task.reason??'';
+      if(tool.answerText!==text&&!this.protectedNode(answer)){
+        const exact=task.answer?.text;answer.replaceChildren(markdownDom(text));if(exact!==undefined)answer.append(button('Copy answer',()=>{void copy(exact,answer as HTMLElement);}));tool.answerText=text;
+      }
+      let notice=answer.querySelector<HTMLElement>('.step-answer-coverage');
+      if(task.answer&&(!task.answer.complete||task.answer.redacted)){if(!notice){notice=element('p','secondary step-answer-coverage');answer.append(notice);}setText(notice,task.answer.redacted?'Some answer text is withheld.':'Only the retained answer text is shown.');}else notice?.remove();
+    }else{answer?.remove();tool.answerText=undefined;}
   }
   private partialToolOutput(source: JoinedTool): boolean {
     const partial = (parts: readonly PartView[]): boolean => parts.some(part => part.type === 'omitted' || part.type === 'toolResult' && partial(part.parts) || (part.type === 'text' || part.type === 'thinking') && !!part.more);
@@ -1263,11 +1366,13 @@ export class Transcript {
   }
   private toolMetadata(tool: ToolNode, source: JoinedTool): void {
     setText(tool.meta, [source.parentCallId ? `Within ${source.parentCallId}` : '', source.name === 'read' ? readRange(record(source.args)) : '', toolTime(source)].filter(Boolean).join(' · '));
-    tool.meta.hidden = !tool.meta.textContent;
+    tool.meta.hidden = true;
   }
   private paintElapsed(): boolean {
     if (this.hidden() || document.hidden || !this.node.isConnected) return false;
     let active = false;
+    this.hooks.activity?.(this.activitySentence());
+    for (const [id,run] of this.rows.runs) {const group=this.cache.get(id)?.steps;if(group&&this.node.contains(group.details)){this.stepSummary(group,run);if(run.tools.some(tool=>tool.status==='working'&&tool.observedStart!==undefined))active=true;}}
     for (const tool of this.tools.values()) {
       if (tool.source?.status !== 'working' || tool.source.observedStart === undefined || !this.node.contains(tool.card)) continue;
       this.toolMetadata(tool, tool.source); active = true;
@@ -1278,15 +1383,16 @@ export class Transcript {
   refreshSubjects(): void {
     if (this.destroyed || this.deferred) return;
     for (const tool of this.tools.values()) if (tool.source && this.node.contains(tool.card)) this.toolHeading(tool, tool.source);
+    for (const [id,run] of this.rows.runs) {const group=this.cache.get(id)?.steps;if(group)this.stepSummary(group,run);}
   }
   private toolHeading(tool: ToolNode, source: JoinedTool): void {
-    setText(tool.title, source.name);
+    setText(tool.title, this.sentence(source));
     const args = record(source.args), value = args.sessionId ?? args.target;
     const eligible = typeof value === 'string' && subject(source, RAW_LIMIT, Number.MAX_SAFE_INTEGER) === value;
     const caption = eligible ? this.hooks.subject?.(value) : undefined; tool.subject = caption;
-    const text = caption?.text ?? subject(source);
+    const text = caption?.name && caption.provenance ? caption.name : '';
     let link = tool.target.querySelector<HTMLButtonElement>('.tool-subject-link');
-    if (caption?.open) {
+    if (caption?.open && text) {
       if (!link) {
         const generation = this.generation;
         link = button('', () => {if (tool.source && this.currentToolSource(tool, tool.source, generation)) tool.subject?.open?.();}, 'tool-subject-link');
@@ -1298,24 +1404,14 @@ export class Transcript {
     tool.target.hidden = !text; tool.target.title = caption?.title ?? bounded(subject(source, RAW_LIMIT, Number.MAX_SAFE_INTEGER));
   }
   private toolContent(tool: ToolNode): void {
-    const source = tool.source; if (!source) return;
-    const edits = Object.getOwnPropertyDescriptor(record(source.args), 'edits')?.value;
-    const content = Array.isArray(edits) && edits.length > 8 ? undefined : presentToolPreview(source);
-    tool.preview.classList.toggle('tool-error', source.status === 'error');
-    const image = source.status === 'error' ? undefined : imageParts(source.result ?? [])[0];
-    if (content) this.replaceContent(tool.preview, content);
-    else if (image) { const node = element('div'); this.imageContent(node, image); this.replaceContent(tool.preview, node); }
-    else {
-      const text = partText(source.result ?? []);
-      this.releaseFrames(tool.preview); setText(tool.preview, bounded(resultPreview(source.result ?? []) || text || this.emptyToolResult(source.status), 1200, 6));
-    }
+    tool.preview.hidden = true;
     if (tool.node.open) this.expandTool(tool);
   }
   private toolExpansion(tool: ToolNode): void {
     if (this.destroyed) return;
     if (!tool.source || this.tools.get(tool.source.callId) !== tool) return;
     this.toolHeading(tool, tool.source);
-    tool.preview.hidden = tool.node.open; tool.expanded.hidden = !tool.node.open;
+    tool.preview.hidden = true; tool.expanded.hidden = !tool.node.open;
     if (tool.node.open) this.expandTool(tool);
   }
   private toolArguments(tool: ToolNode): string {
@@ -1327,10 +1423,6 @@ export class Transcript {
     const pre = element('pre'); const frame = preTextFrame(pre); const summary = element('summary', undefined, label); cardDisclosure(summary); node.append(summary);
     const sources = tool.inspectionSources ?? new Map(); tool.inspectionSources = sources;
     if (tool.source) sources.set(node, tool.source);
-    if (label === 'Arguments') controls.append(cardAction('copy', 'Copy arguments', () => {
-      const captured = sources.get(node); if (!captured || !this.currentToolSource(tool, captured, generation)) return;
-      void copy(source(), controls);
-    }, 'copy'));
     controls.append(sourceWrap(pre)); node.append(controls);
     const materialize = () => {
       if (this.destroyed || !node.open || pre.parentElement && this.protectedNode(pre)) return;
@@ -1355,7 +1447,7 @@ export class Transcript {
     this.retireNode(tool.presentation); this.retireNode(tool.argumentsDocument);
     tool.presentation = supplied ? args : undefined; tool.argumentsDocument = supplied ? undefined : args;
     tool.previewBudget = budget;
-    if (tool.presentation) { tool.expanded.prepend(tool.presentation); this.registerContent(tool.presentation); }
+    if (tool.presentation) { tool.expanded.querySelector('.tool-source-actions')?.after(tool.presentation); this.registerContent(tool.presentation); }
     if (tool.argumentsDocument && tool.inspections) { tool.inspections.arguments.append(tool.argumentsDocument); this.registerContent(tool.argumentsDocument); }
     tool.argumentsSource = source; tool.previewBudget = budget; tool.documentSource = undefined;
   }
@@ -1415,7 +1507,7 @@ export class Transcript {
       const resultInspection = this.toolInspection(tool, 'Raw output', () => partText(tool.source?.result ?? []), `raw-output:${source.callId}`);
       argumentsInspection.classList.add('tool-inspection'); argumentsInspection.classList.add('tool-arguments');
       resultInspection.classList.add('tool-inspection'); resultInspection.classList.add('tool-raw-output');
-      const details = this.inspection('Display limits', () => this.toolDetails(tool)); details.classList.add('tool-inspection');
+      const details = this.inspection('Details', () => this.toolDetails(tool)); details.classList.add('tool-inspection');
       tool.inspections = {arguments: argumentsInspection, output: resultInspection, details};
       tool.expanded.append(argumentsInspection, resultInspection, details);
     }
@@ -1535,14 +1627,13 @@ export class Transcript {
   private toolDetails(tool: ToolNode): string {
     const source = tool.source;
     const cards = source?.name === 'write' || source?.name === 'edit' ? cardPreviewLimits() : '';
-    return [cards, previewLimits(), `Raw inspection: at most ${RAW_LIMIT} characters.`, source ? outputExplanation(source) : ''].filter(Boolean).join('\n\n');
+    return [source ? `Tool: ${source.name}\nCall ID: ${source.callId}\n${metadata(source)}\n${toolTime(source)}` : '', cards, previewLimits(), `Raw inspection: at most ${RAW_LIMIT} characters.`, source ? outputExplanation(source) : ''].filter(Boolean).join('\n\n');
   }
   private refreshToolInspections(tool: ToolNode, source: JoinedTool): void {
     this.refreshToolInspection(tool.inspections?.arguments, () => this.toolArguments(tool), tool);
     this.refreshToolInspection(tool.inspections?.output, () => partText(source.result ?? []), tool);
     this.refreshToolInspection(tool.inspections?.details, () => this.toolDetails(tool));
-    if (tool.inspections) tool.inspections.details.hidden = !source.args?.truncated && !outputExplanation(source) &&
-      !tool.expanded.querySelector('.preview-omission, .warning') && !tool.presentation?.querySelector('details') && partText(source.result ?? []).length <= RAW_LIMIT;
+    if (tool.inspections) tool.inspections.details.hidden = false;
   }
   private refreshToolInspection(node: HTMLDetailsElement | undefined, source: () => string, tool?: ToolNode): void {
     if (!node?.open || this.protectedNode(node) || tool?.source && tool.inspectionSources?.get(node) === tool.source) return;
@@ -1585,7 +1676,7 @@ export class Transcript {
     }
   }
   expandLoaded(tools: boolean, expanded: boolean): void {
-    if (!tools) this.showThinking = expanded;
+    if (!tools) {this.showThinking = expanded;this.deriveRows();}
     for (const id of this.loadedDisclosures(tools)) {
       if (expanded) this.expanded.add(id); else this.expanded.delete(id);
     }
@@ -1593,7 +1684,7 @@ export class Transcript {
     this.follow = false; this.hooks.presentation([...this.expanded], this.showThinking); this.schedule();
   }
   private loadedDisclosures(tools: boolean): string[] {
-    const ids = [...this.index.disclosures.keys()].filter(id => id.startsWith(tools ? 'tool:' : 'thinking:'));
+    const ids = [...this.index.disclosures.keys()].filter(id => tools ? id.startsWith('tool:') || id.startsWith('steps:') : id.startsWith('thinking:'));
     if (!tools) ids.push(...[...this.expanded].filter(id => id.endsWith(':group') && this.index.disclosures.has(id.slice(0, -6))));
     return ids;
   }

@@ -1,14 +1,16 @@
 import type { Communication, CommunicationPresentation, MessageView } from '../shared/api.ts';
 import type {ResultSelector} from '../shared/inspection.ts';
-import { copy, element, rawText, setText } from './dom.ts';
+import { button, copy, element, rawText, setText } from './dom.ts';
 import { cardAction, cardActionLabel } from './card-icons.ts';
 import { markdownDom, sourceWrap } from './safe-markdown.ts';
 import { isValidTimestamp, previewText } from './format.ts';
 import { presentMessage } from './entry-presentation.ts';
 import type { QualifiedReference, ReferenceField, ReferenceQuery } from './references.ts';
+import type {NamedDestination} from './tool-sentences.ts';
+import {conversationIdentityText} from './tabs.ts';
 
 type Shell = {node: HTMLElement; header: HTMLElement; heading: HTMLElement; actions: HTMLElement; body: HTMLElement};
-type Hooks = {result?: (identity:string,selector:ResultSelector)=>void; reference?: (query: ReferenceQuery, active: (node: HTMLElement) => boolean) => HTMLElement; active(): boolean; current(): MessageView; protected(node: HTMLElement): boolean; raw(message: MessageView): string; expanded(key: string): boolean; disclosure(key: string, open: boolean): void; layout(): void};
+type Hooks = {reply?: (message:MessageView)=>{text:string;open():void}|undefined; subject?: (identity:string)=>NamedDestination|undefined; result?: (identity:string,selector:ResultSelector)=>void; reference?: (query: ReferenceQuery, active: (node: HTMLElement) => boolean) => HTMLElement; active(): boolean; current(): MessageView; protected(node: HTMLElement): boolean; raw(message: MessageView): string; expanded(key: string): boolean; disclosure(key: string, open: boolean): void; layout(): void};
 type Ready = Extract<CommunicationPresentation, {state: 'ready'}>;
 type Row = [string, string, QualifiedReference?];
 function qualified(label: string, text: string, owner: string, field: ReferenceField): Row { return [label, text, {text, owner, field}]; }
@@ -90,6 +92,7 @@ export class CommunicationCard {
   private opener?: HTMLElement;
   private readonly key: string;
   private readonly text = element('div', 'communication-text');
+  private readonly reply = element('p','communication-reply');
   private readonly resultActions=element('div','communication-results');
   private resultSignature='';
   private readonly facts = element('dl', 'kv');
@@ -123,12 +126,14 @@ export class CommunicationCard {
     this.inspection.append(heading); this.inspection.dataset.disclosure = this.key;
     this.inspection.setAttribute('role', 'region'); this.inspection.setAttribute('aria-label', 'Source');
     this.rawPre.append(this.rawFrame); this.detailsPre.append(this.detailsFrame);
-    this.configureSource(hooks.expanded(this.key)); shell.body.replaceChildren(this.text, this.resultActions, this.inspection);
+    this.configureSource(hooks.expanded(this.key)); shell.body.replaceChildren(this.reply, this.text, this.resultActions, this.inspection);
   }
   sync(message: MessageView): boolean {
     if (this.source !== message && this.hooks.protected(this.shell.node)) return false;
     const value = message.communication; if (!value) return false;
     this.source = message; this.header(value); this.content(value, message);this.results(value);
+    const reply=this.hooks.reply?.(message);this.reply.hidden=!reply;
+    if(reply){const link=button(reply.text,()=>{if(this.current())this.hooks.reply?.(this.hooks.current())?.open();});this.reply.replaceChildren(document.createTextNode('Reply to: '),link);}else this.reply.replaceChildren();
     if (!this.inspection.hidden) this.renderSource();
     return true;
   }
@@ -138,7 +143,7 @@ export class CommunicationCard {
     if(signature===this.resultSignature)return;this.resultSignature=signature;this.resultActions.replaceChildren();
     this.resultActions.hidden=!signature;if(!signature||!result)return;
     result.metadata.references.forEach((reference,index)=>{
-      const action=cardAction('search',`View result${result.metadata.references.length>1?` ${index+1}`:''}`,()=>{
+      const action=cardAction('search',`${result.body.complete?'Open answer':'Show full answer'}${result.metadata.references.length>1?` ${index+1}`:''}`,()=>{
         const current=this.current()?.communication;
         if(current?.state!=='ready'||current.value.kind!=='result'||current.value.sender.identity!==result.sender.identity)return;
         const selected=current.value.metadata.references[index];if(!selected||selected.submissionId!==reference.submissionId||selected.requestId!==reference.requestId)return;
@@ -149,10 +154,15 @@ export class CommunicationCard {
   private header(value: CommunicationPresentation): void {
     this.shell.node.dataset.state = value.state;
     this.shell.node.dataset.reason = value.state === 'unavailable' ? value.reason : '';
-    setText(this.shell.heading, value.state === 'ready' ? value.value.sender.name || value.value.sender.identity : '');
+    const sender=value.state==='ready'?value.value.sender:undefined;
+    const supplied=sender?.name?.trim(), loaded=sender?this.hooks.subject?.(sender.identity):undefined;
+    const name=supplied&&supplied!==sender?.identity&&!conversationIdentityText(supplied)?supplied:loaded?.name&&loaded.provenance?loaded.name:'Another agent';
+    const kind=value.state==='ready'?value.value.kind:undefined;
+    const heading=kind==='result'?`Answer from ${name}`:kind==='report'?`Report from ${name}`:`Message from ${name}`;
+    setText(this.shell.heading,heading);
     this.shell.heading.hidden = value.state !== 'ready'; this.shell.heading.title = '';
     this.unverified.hidden = value.state === 'ready';
-    this.shell.node.setAttribute('aria-label', value.state === 'ready' ? `Message from ${value.value.sender.name || value.value.sender.identity}` : 'Message with unverified source');
+    this.shell.node.setAttribute('aria-label', value.state === 'ready' ? heading : 'Message with unverified source');
   }
   private content(value: CommunicationPresentation, message: MessageView): void {
     const ready = value.state === 'ready'; const original = ready ? value.value.body.text : this.hooks.raw(message);
@@ -161,8 +171,8 @@ export class CommunicationCard {
   }
   private renderText(original: string, ready: boolean): void {
     if (ready) { this.text.replaceChildren(...markdownDom(original).childNodes); this.text.removeAttribute('aria-label'); return; }
-    const preview = previewText(original, 3, 359); setText(this.text, original ? preview.text + (preview.truncated ? '…' : '') : 'No retained text');
-    if (preview.truncated) this.text.setAttribute('aria-label', 'Preview shortened; available text is in Source'); else this.text.removeAttribute('aria-label');
+    setText(this.text, original || 'No retained text');
+    this.text.removeAttribute('aria-label');
   }
   current(): MessageView | undefined { return this.hooks.active() && this.source === this.hooks.current() ? this.source : undefined; }
   openSource(opener: HTMLElement): void {

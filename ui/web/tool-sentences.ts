@@ -1,0 +1,94 @@
+import type {JoinedTool} from './transcript-tools.ts';
+
+export type NamedDestination = {text: string; name?: string; provenance?: 'reported' | 'supplied' | 'handle'; title?: string; open?: () => void};
+export type SentenceContext = {nestedCount?:number; cwd?: string; subject?: (identity: string) => NamedDestination | undefined};
+type Words = {done: string; active: string; action: string};
+const text = (value: unknown): string => typeof value === 'string' ? value : '';
+function first(value: unknown, limit = 60): string {
+  const source = text(value), line = source.split(/\r?\n/, 1)[0] ?? '';
+  return line.slice(0, limit) + (line.length > limit || source.length > line.length ? '…' : '');
+}
+function quote(value: unknown): string {const line = first(value); return line ? `: “${line}”` : '';}
+function pathName(value: unknown, cwd?: string): string {
+  const path = text(value);if (!path) return '';
+  const root = cwd?.replace(/\/$/, '');
+  if (root && path.startsWith(`${root}/`)) return path.slice(root.length + 1);
+  if (!path.startsWith('/')) return first(path, 100);
+  return `…/${path.split('/').filter(Boolean).slice(-2).join('/')}`;
+}
+function words(done: string, active: string, action: string, object = ''): Words {
+  return {done: `${done}${object}`, active: `${active}${object}`, action: `${action}${object}`};
+}
+function argsOf(tool: JoinedTool): Record<string, unknown> {
+  const value = tool.args?.value;
+  if (tool.args?.truncated || !value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const args: Record<string, unknown> = {};
+  for (const key of Object.keys(value).slice(0, 64)) {
+    const own = Object.getOwnPropertyDescriptor(value, key);if (own && 'value' in own) args[key] = own.value;
+  }
+  return args;
+}
+function sentenceWords(tool: JoinedTool, context: SentenceContext): Words {
+  const args = argsOf(tool), identity = text(args.sessionId), caption = identity ? context.subject?.(identity) : undefined;
+  const name = caption?.name && caption.provenance ? caption.text===caption.name||caption.text.startsWith(`${caption.name} · `)?caption.text:caption.name : 'another conversation';
+  const path = pathName(args.path ?? args.file_path, text(args.cwd) || context.cwd);
+  const target = path ? ` ${path}` : '';
+  switch (tool.name) {
+    case 'agent_send': case 'agent_steer': {
+      const subject = identity ? ` ${name}` : '';
+      if (typeof args.deliverAt === 'string') return words('Scheduled a message to', 'Scheduling a message to', 'Schedule a message to', subject + quote(args.message));
+      if (tool.name === 'agent_steer' || args.mode === 'steer') return words('Redirected', 'Redirecting', 'Redirect', subject + quote(args.message));
+      if (args.mode === 'report') return words('Reported to', 'Reporting to', 'Report to', subject + quote(args.message));
+      return identity ? words('Sent a message to', 'Sending a message to', 'Send a message to', subject + quote(args.message)) : words('Sent a message', 'Sending a message', 'Send a message');
+    }
+    case 'agent_spawn': return words('Started', 'Starting', 'Start', ` ${first(args.name) || 'a new agent'}${quote(args.prompt)}`);
+    case 'agent_abort': return typeof args.timerId === 'number' ? words('Canceled a timer', 'Canceling a timer', 'Cancel a timer', identity?` for ${name}`:'') : words('Stopped work', 'Stopping work', 'Stop work', identity?` in ${name}`:'');
+    case 'agent_inspect': {
+      if (args.view === 'result') return words('Checked a task result from', 'Checking a task result from', 'Check a task result from', ` ${name}`);
+      if (args.view === 'search') return words('Searched history from', 'Searching history from', 'Search history from', ` ${name}${quote(args.query)}`);
+      if (args.view === 'exact') return words('Read one entry from', 'Reading one entry from', 'Read one entry from', ` ${name}`);
+      if (args.view === 'history' || args.view === 'activity') return words('Read recent history from', 'Reading recent history from', 'Read recent history from', ` ${name}`);
+      return words('Checked', 'Checking', 'Check', ` ${name}`);
+    }
+    case 'agent_await': {const count = Array.isArray(args.results) ? args.results.length : undefined;const suffix = count === undefined ? ' agent results' : ` ${count} agent ${count === 1 ? 'result' : 'results'}`;return words('Waited for', 'Waiting for', 'Wait for', suffix);}
+    case 'agent_status': return words('Checked agent status', 'Checking agent status', 'Check agent status');
+    case 'agent_list': return words('Listed agents', 'Listing agents', 'List agents');
+    case 'bash': return words('Ran', 'Running', 'Run', args.command ? ` ${first(args.command)}` : ' a command');
+    case 'read': {
+      const image = tool.result?.some(part => part.type === 'image');
+      const range = typeof args.offset === 'number' && typeof args.limit === 'number' && args.offset > 0 && args.limit > 0 ? ` (lines ${args.offset}–${args.offset + args.limit - 1})` : '';
+      return image ? words('Viewed', 'Viewing', 'View', target || ' an image') : words('Read', 'Reading', 'Read', (target || ' a file') + range);
+    }
+    case 'edit': {const n = Array.isArray(args.edits) ? args.edits.length : undefined;return words('Edited', 'Editing', 'Edit', (target || ' a file') + (n === undefined ? '' : ` (${n} ${n === 1 ? 'change' : 'changes'})`));}
+    case 'write': {const n = typeof args.content === 'string' ? args.content.split('\n').length : undefined;return words('Wrote', 'Writing', 'Write', (target || ' a file') + (n === undefined ? '' : ` (${n} ${n === 1 ? 'line' : 'lines'})`));}
+    case 'pillars': {
+      if (!args.resource) return words('Listed pillars', 'Listing pillars', 'List pillars');
+      const title = text(args.resource).replace(/^(principle|pattern|heuristic)-/, '').replace(/-/g, ' ').replace(/\b\w/g, letter => letter.toUpperCase());
+      return args.draft ? words('Checked a draft against pillar:', 'Checking a draft against pillar:', 'Check a draft against pillar:', ` ${title}`) : words('Read pillar:', 'Reading pillar:', 'Read pillar:', ` ${title}`);
+    }
+    case 'memory_search': return words('Searched memory', 'Searching memory', 'Search memory', quote(Array.isArray(args.query) ? args.query[0] : args.query));
+    case 'memory_read': return words('Read memory note', 'Reading memory note', 'Read memory note', args.slug ? ` ${first(args.slug)}` : '');
+    case 'memory_write': return words('Saved a memory note', 'Saving a memory note', 'Save a memory note', quote(args.title));
+    case 'memory_edit': return words('Edited memory note', 'Editing memory note', 'Edit memory note', args.slug ? ` ${first(args.slug)}` : '');
+    case 'memory_review': return words('Reviewed memory note', 'Reviewing memory note', 'Review memory note', args.slug ? ` ${first(args.slug)}` : '');
+    case 'web_search': return words('Searched the web', 'Searching the web', 'Search the web', quote(args.query));
+    case 'web_read': {
+      let url: URL | undefined;try {url = args.url ? new URL(text(args.url)) : undefined;} catch { /* Invalid supplied URL has no display destination. */ }
+      if (args.find) return words('Looked for', 'Looking for', 'Look for', ` ${quote(args.find).slice(2)}${url ? ` on ${url.host}` : ''}`);
+      return words('Read', 'Reading', 'Read', url ? ` ${url.host}${first(url.pathname, 80)}` : ' a web page');
+    }
+    case 'codemode': return words('Ran a script', 'Running a script', 'Run a script',context.nestedCount===undefined?'':` (${context.nestedCount} recorded tool calls)`);
+    default: return words('Used', 'Using', 'Use', ` ${first(tool.name)}`);
+  }
+}
+/** Public call arguments describe the action; completion never describes a recipient's task outcome. */
+export function toolSentence(tool: JoinedTool, context: SentenceContext = {}): string {
+  const value = sentenceWords(tool, context);
+  if (tool.status === 'success') return value.done;
+  if (tool.status === 'working') return tool.argumentText !== undefined && !tool.args ? 'Preparing…' : value.active;
+  if (tool.status === 'error') return `Failed: ${value.action}`;
+  if (tool.status === 'pending') return `Queued: ${value.action}`;
+  if (tool.status === 'ended') return `Ended without a result: ${value.action}`;
+  if (tool.status === 'available') return `Result available: ${value.action}`;
+  return `No result recorded: ${value.action}`;
+}

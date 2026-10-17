@@ -4,7 +4,7 @@ import type { Registry } from './registry.mts';
 import type { RequestContext } from './http.mts';
 import { execute } from './dispatch.mts';
 import { ApiError } from './errors.mts';
-import { projectFrame, projectJson, projectRoster } from './projection.mts';
+import { projectFrame, projectRoster } from './projection.mts';
 import {inspectCursor, projectInspection} from './inspection.mts';
 import * as v from './validate.mts';
 import { ImageResponse } from './images.mts';
@@ -71,9 +71,11 @@ async function history(registry:Registry,identity:string,target:Target,url:URL,s
   return page;
 }
 async function inspect(registry:Registry,identity:string,body:Record<string,unknown>,signal?:AbortSignal) {
-  v.fields(body,['view','cursor','entryId','offset','submissionId','requestId','operationId','limit'],['view']);
+  v.fields(body,['view','source','cursor','entryId','offset','submissionId','requestId','operationId','limit'],['view']);
   const view=v.choice(body.view,['history','activity','exact','result'],'inspect view');
+  if(body.source!==undefined&&view!=='history')throw new ApiError('invalid_request','Source selects history only.');
   const source=await registry.agents.inspect(identity,{view,
+    ...(body.source!==undefined?{source:v.choice(body.source,['user'],'history source')} : {}),
     ...(body.cursor!==undefined?{cursor:requestInspectCursor(body.cursor)} : {}),
     ...(body.entryId!==undefined?{entryId:v.integer(body.entryId,'entry ID',1)}:{}),
     ...(body.offset!==undefined?{offset:v.integer(body.offset,'offset')}:{}),
@@ -81,7 +83,6 @@ async function inspect(registry:Registry,identity:string,body:Record<string,unkn
     ...(body.requestId!==undefined?{requestId:v.string(body.requestId,'native request ID',1024)}:{}),
     ...(body.operationId!==undefined?{operationId:v.string(body.operationId,'native operation ID',1024)}:{}),
     ...(body.limit!==undefined?{limit:v.integer(body.limit,'page limit',1)}:{})},signal);
-  if (view === 'history') return {projection:projectJson(source)};
   return projectInspection(source,identity);
 }
 function requestInspectCursor(value:unknown) {

@@ -12,9 +12,9 @@ export type CachedPageSearch = {load: (cursor: string, signal: AbortSignal) => P
 const SEARCH_PAGE_LIMIT = 20;
 const ROW_HEIGHT = 20;
 const RECENT_AGE = 24 * 60 * 60 * 1000;
-type RowNode = {node: HTMLElement; select: HTMLButtonElement; state: HTMLElement; name: HTMLElement; identity: HTMLElement; ageButton: HTMLButtonElement; message: HTMLButtonElement; age: HTMLTimeElement; source: AgentRow; absolute: boolean};
+type RowNode = {node: HTMLElement; select: HTMLButtonElement; state: HTMLElement; name: HTMLElement; preview: HTMLElement; identity: HTMLElement; ageButton: HTMLButtonElement; message: HTMLButtonElement; age: HTMLTimeElement; source: AgentRow; absolute: boolean};
 function rowName(row: AgentRow): string {return agentName(row.name, row.handle, row.identity, undefined, row.firstMessage);}
-export type RosterStatus = {glyph: string; label: string; tone?: PresentationTone; name?: string; tail?: string; tool?: AgentRow['currentTool']};
+export type RosterStatus = {activity?: string; glyph: string; label: string; tone?: PresentationTone; name?: string; tail?: string; tool?: AgentRow['currentTool']};
 function modelText(row: AgentRow): string {
   if (!row.model) return '';
   const thinking = row.model.thinkingLevel ?? row.thinkingLevel;
@@ -271,17 +271,19 @@ export class Roster {
     const select = button('', () => { const current = this.cache.get(row.identity)?.source; if (current) this.select(current); }, 'row-select');
     node.dataset.identity = row.identity;
     const heading = element('span', 'row-heading'); const state = element('span', 'row-state'); state.setAttribute('aria-hidden', 'true');
-    const name = element('span', 'row-name'); const identity = element('code', 'row-identity muted'); heading.append(name, identity, state);
+    const name = element('span', 'row-name'); const identity = element('code', 'row-identity muted'), preview=element('span','row-preview'); heading.append(name, identity, state,preview);
     const age = element('time', 'timestamp');
     const ageButton = button('', () => { cached.absolute = !cached.absolute; this.updateAge(cached, true); }, 'row-age'); ageButton.append(age);
     const message = cardAction('message', 'Message', () => this.message?.(row.identity), 'row-message');
     select.append(heading); node.append(select, ageButton, message);
-    const cached = {node, select, state, name, identity, ageButton, message, age, source: row, absolute: false}; this.cache.set(row.identity, cached);
+    const cached = {node, select, state, name, preview, identity, ageButton, message, age, source: row, absolute: false}; this.cache.set(row.identity, cached);
     return cached;
   }
   private row(row: AgentRow, identity: string): RowNode {
     const cached = this.cache.get(row.identity) ?? this.createRow(row);
-    const state = this.resolvedStatus(row); setText(cached.state, ['Ready', 'Connected', 'Not connected'].includes(state.label) ? '' : state.label); cached.state.hidden = !cached.state.textContent; cached.state.title = state.label; cached.state.dataset.tone = state.tone ?? 'secondary'; setText(cached.name, state.name ?? rowName(row));
+    const state = this.resolvedStatus(row); setText(cached.state, state.activity || (state.label==='Ready'?'Idle':state.label)); cached.state.hidden = !cached.state.textContent; cached.state.title = state.label; cached.state.dataset.tone = state.tone ?? 'secondary'; setText(cached.name, state.name ?? rowName(row));
+    const caption=this.captions.get(row.identity);cached.name.title=caption.source==='first-message'?'Title from first message, not a supplied name':'Conversation name';
+    setText(cached.preview,previewText(row.latestReply??'',1,180).text);cached.preview.hidden=!cached.preview.textContent;
     identity = state.name !== undefined ? state.tail ?? '' : identity; setText(cached.identity, identity); cached.identity.hidden = !identity; cached.identity.title = `Agent ID: ${row.identity}`;
     cached.identity.setAttribute('aria-label', cached.identity.title);
     cached.node.dataset.live = String(row.availability === 'live');
@@ -298,15 +300,6 @@ export class Roster {
   }
   private updateAge(cached: RowNode, deliberate = false): void {
     const row = cached.source; const now = deliberate ? Date.now() : this.arrivals.get(row.identity)?.now ?? Date.now();
-    const tool = this.resolvedStatus(row).tool;
-    if (tool) {
-      cached.absolute = false; cached.ageButton.dataset.absolute = 'false';
-      cached.ageButton.hidden = false; cached.ageButton.disabled = true; cached.ageButton.tabIndex = -1;
-      setText(cached.age, tool.name); cached.age.dateTime = '';
-      const description = `${tool.name} · ${tool.argument}`;
-      cached.ageButton.title = description; cached.ageButton.setAttribute('aria-label', `Current tool for ${this.displayName(row)} · ${tool.name}`);
-      cached.ageButton.setAttribute('aria-description', description); return;
-    }
     const label = cached.absolute ? absoluteTime(row.modifiedAt) : relativeTime(row.modifiedAt, now);
     const valid = row.modifiedAt > 0 && isValidTimestamp(row.modifiedAt) && !!label;
     cached.ageButton.dataset.absolute = String(cached.absolute);

@@ -28,7 +28,7 @@ export interface AgentServiceOptions {
 export interface HistoryOptions { before?: number; limit?: number; maxBytes?: number }
 export interface InspectOptions {
   view: "history" | "activity" | "exact" | "result";
-  cursor?: JsonObject; limit?: number; entryId?: number; offset?: number; submissionId?: number; requestId?: string; operationId?: string;
+  cursor?: JsonObject; source?: 'user'; limit?: number; entryId?: number; offset?: number; submissionId?: number; requestId?: string; operationId?: string;
 }
 export interface UnavailableConfiguration { available: false; reason: string }
 interface InputRecord { identity: string; input: SubmitInput; digest: string; promise: Promise<Admission>; pending: boolean; link?: HostLink }
@@ -45,6 +45,7 @@ function inspectionSelectors(options: InspectOptions, params: JsonObject): void 
 function inspectionParams(identity: string, options: InspectOptions): JsonObject {
   if (!["history", "activity", "exact", "result"].includes(options.view)) throw new AgentError("invalid_request", "Unsupported inspection view.");
   const params: JsonObject = {sessionId: identity, view: options.view}; inspectionSelectors(options, params);
+  if(options.source!==undefined){if(options.view!=='history'||options.source!=='user')throw new AgentError('invalid_request','Source selects user history only.');params.source=options.source;}
   if (options.limit !== undefined) { bounded(options.limit, 1, 100, "Inspection limit"); params.limit = options.limit; }
   if (options.offset !== undefined) { bounded(options.offset, 0, Number.MAX_SAFE_INTEGER, "Inspection offset"); params.offset = options.offset; }
   if (options.cursor !== undefined) {

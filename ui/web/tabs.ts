@@ -86,10 +86,15 @@ export class ConversationCaptions {
   private ordinals = new Map<string, number>();
   private nextOrdinal = 1;
   private captions = new Map<string, ConversationCaption>();
+  private knownNames = new Map<string, {name: string; provenance: 'reported' | 'supplied' | 'handle'}>();
   revision = 0;
   update(rows: readonly CaptionRow[]): void {
-    const previous = this.captions;
+    const previous = this.captions, previousNames = this.knownNames;
     const unique = [...new Map(rows.map(row => [row.identity, row])).values()];
+    this.knownNames = new Map();
+    for (const row of unique) for (const [value, provenance] of [[row.reported,'reported'],[row.name,'supplied'],[row.handle,'handle']] as const) {
+      const name = usefulName(value,row.identity);if(name){this.knownNames.set(row.identity,{name,provenance});break;}
+    }
     this.captions = new Map(unique.map(row => [row.identity, {name: agentName(row.name, row.handle, row.identity, row.reported, row.firstMessage),
       ...(![row.reported, row.name, row.handle].some(value => usefulName(value, row.identity)) && firstMessageTitle(row.firstMessage, row.identity) ? {source: 'first-message' as const} : {})}]));
     const groups = new Map<string, CaptionRow[]>();
@@ -97,7 +102,7 @@ export class ConversationCaptions {
     for (const group of groups.values()) if (group.length > 1) this.qualify(group);
     this.distinguishComposed();
     if (previous.size !== this.captions.size || [...this.captions].some(([identity, caption]) => {
-      const old = previous.get(identity); return old?.name !== caption.name || old?.tail !== caption.tail || old?.source !== caption.source;
+      const old = previous.get(identity); return old?.name !== caption.name || old?.tail !== caption.tail || old?.source !== caption.source || previousNames.get(identity)?.provenance !== this.knownNames.get(identity)?.provenance;
     })) this.revision++;
   }
   private composed(caption: ConversationCaption): string {return caption.tail ? `${caption.name} · ${caption.tail}` : caption.name;}
@@ -142,6 +147,7 @@ export class ConversationCaptions {
       caption.tail = qualifier; tails.set(qualifier, 1);
     }
   }
+  knownName(identity: string): {name: string; provenance: 'reported' | 'supplied' | 'handle'} | undefined {return this.knownNames.get(identity);}
   get(identity: string): ConversationCaption {return this.captions.get(identity) ?? {name: 'Unnamed conversation'};}
 }
 function storageTail(identity: string, length: number): string {

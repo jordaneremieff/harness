@@ -1,14 +1,14 @@
-import type {JsonDisplay} from './api.ts';
+import type {CommunicationPresentation, JsonDisplay} from './api.ts';
 
 /** Native read selectors stay separate from UI operation receipts. */
 export type InspectionJson = null | string | number | boolean | InspectionJson[] | {[key:string]:InspectionJson};
 export type InspectCursor = {[key:string]:InspectionJson};
 export type ResultSelector = {submissionId?: number; requestId?: string; operationId?: string};
-export type InspectRequest = {view: 'activity'; cursor?: InspectCursor; limit?: number} |
+export type InspectRequest = {view: 'history'; source?: 'user'; cursor?: InspectCursor; limit?: number} | {view: 'activity'; cursor?: InspectCursor; limit?: number} |
   ({view: 'result'} & ResultSelector) | {view: 'exact'; entryId: number; offset: number};
 export type InspectionText = {text: string; shortened: boolean; protected: boolean};
 export type InspectionCall = {name: InspectionText; arguments: InspectionText; truncated: boolean; callId?:InspectionText};
-export type InspectionEntry = {id: number; kind: string; source: string; text: InspectionText; truncated: boolean;
+export type InspectionEntry = {id: number; kind: string; source: string; role?: string; communication?: CommunicationPresentation; text: InspectionText; truncated: boolean;
   calls: InspectionCall[]; callsOmitted: number;
   tools: {name: string; text: InspectionText; isError: boolean; truncated: boolean}[]};
 export type ActivityCoverage = {complete: boolean; scannedEntries: number; scannedBytes: number; omittedEntries: number; bytes?: number;
@@ -23,7 +23,8 @@ export type ResultInspection = InspectionBase & ResultSelector & {view: 'result'
   providerBlock?: JsonDisplay; recoveryOf?: InspectionText};
 export type ExactInspection = InspectionBase & {view: 'exact'; entryId: number; offset: number; nextOffset: number | null;
   text: InspectionText; truncated: boolean};
-export type AgentInspectionView = ActivityInspection | ResultInspection | ExactInspection;
+export type HistoryInspection = InspectionBase & {view:'history';entries:InspectionEntry[];nextCursor:InspectCursor|null;detail:InspectionText;source?:'user'};
+export type AgentInspectionView = ActivityInspection | ResultInspection | ExactInspection | HistoryInspection;
 
 /** Only compact read-view metadata belongs in a same-tab checkpoint. */
 export type InspectionCheckpoint = {identity: string; mode: 'activity' | 'result' | 'exact'; selector: ResultSelector;
