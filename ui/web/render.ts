@@ -32,7 +32,7 @@ export type ToolSubjectCaption = NamedDestination;
 export type ViewHooks = {readTaskResult?: (reference:TaskReference,signal:AbortSignal)=>Promise<ResultInspection>; activity?: (text:string)=>void; cwd?: () => string | undefined; subject?: (value: string) => ToolSubjectCaption | undefined; result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
 const RAW_LIMIT = 65536;
 const TASK_READ_CONCURRENCY = 4;
-const toolStateLabels:Record<JoinedTool['status'],string>={success:'',working:'Working',pending:'Queued',error:'Failed',ended:'Ended without result',available:'Result available',missing:'No result recorded'};
+const toolStateLabels:Record<JoinedTool['status'],string>={success:'',preparing:'Preparing call',working:'Working',pending:'Queued',error:'Failed',ended:'Ended without result',available:'Result available',missing:'No result recorded'};
 function selectionCopy(origin: HTMLElement): ContextItem[] {
   const selection = document.getSelection();
   if (!selection || selection.isCollapsed || !origin.contains(selection.anchorNode) || !origin.contains(selection.focusNode)) return [];
@@ -1547,6 +1547,7 @@ export class Transcript {
   }
   private emptyToolResult(status: string): string {
     switch (status) {
+      case 'preparing': return 'The assistant is preparing this call.';
       case 'working': return 'Working';
       case 'pending': return 'The tool has not started.';
       case 'ended': return 'The tool ended. No outcome is available.';

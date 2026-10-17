@@ -10,6 +10,11 @@ import { markdownDom } from './safe-markdown.ts';
 import { outputPages } from './transcript-output.ts';
 import { ReferenceResolver, referenceCandidates } from './references.ts';
 import { TranscriptGroups, entryGroup } from './transcript-groups.ts';
+import {createState, reduceEvent, conversationBlocks, targetIdentity} from './state.ts';
+import {projectFrame} from '../server/projection.mts';
+import {transferFrame} from '../agents/transfer.mts';
+import {frame} from '../agents/fake-host.mts';
+import type {ConversationFrame, JsonObject} from '../agents/contract.mts';
 import type { AgentRow, DisplayCoverage, EntryView, JsonDisplay, OutputPage, PartView, ReadingView } from '../shared/api.ts';
 
 test('response diagnostics stay collapsed and stable while partial content stays readable', () => {
@@ -330,6 +335,43 @@ for (const status of ['pending', 'done'] as const) test(`empty native ${status} 
   assert.match(card.textContent, status === 'pending' ? /The tool has not started\./ : /The tool ended\. No outcome is available\./);
   assert.doesNotMatch(card.textContent, /completed without output|success|Success/);
 });
+test('transferred tool frames distinguish argument preparation, execution and historical unresolved calls', () => {
+  setup(); const view = transcript(); const raw = frame(1) as ConversationFrame;
+  const target = {kind:'agent' as const,identity:raw.storageId};
+  let state = {...createState(),bootId:'boot',needsResync:false,workspace:{id:'workspace',revision:0,panelVisible:true,appearance:'dark' as const,selectedTarget:target}};
+  const modelCall = (id:string, args:JsonObject = {}):JsonObject => ({role:'assistant',stopReason:'stop',content:[{type:'toolCall',id,name:'read',arguments:args}]});
+  const current = modelCall('read-current');
+  raw.status.busy = true;
+  raw.entries = [{id:'1',kind:'pi.assistant',model:[modelCall('historical')]}];
+  raw.live = [{id:'live:generation',kind:'pi.assistant',model:[current]}];
+  const paint = () => {
+    const projected = projectFrame(transferFrame(raw));
+    state = reduceEvent(state,{name:'agent.frame',id:`boot:${raw.revision}`,data:{identity:raw.storageId,connectionEpoch:1,frame:projected}}) as typeof state;
+    const conversation = state.conversations.get(targetIdentity(target)); assert.ok(conversation);
+    view.set(conversationBlocks(conversation), conversation.tools); flush(); raw.revision++;
+  };
+  paint();
+  const root = node('primary-transcript'), shells = root.querySelectorAll('.tool-shell');
+  const historical = shells.find(shell => shell.dataset.status === 'missing'); assert.ok(historical);
+  const shell = shells.find(shell => shell.dataset.status === 'preparing'), card = shell?.querySelector('.tool-card'); assert.ok(shell); assert.ok(card);
+  assert.equal(card.querySelector('.tool-status')?.textContent, 'Preparing call');
+  assert.doesNotMatch(card.textContent, /No result recorded|Queued|Working/);
+  card.open = true; card.dispatch('toggle'); flush();
+  assert.match(card.querySelector('.tool-output-text')?.textContent ?? '', /preparing this call/);
+  raw.live = [{id:'live:generation',kind:'pi.assistant',model:[modelCall('read-current',{path:'notes.md',offset:1,limit:10})]}];
+  paint(); assert.equal(shell.querySelector('.tool-card'), card); assert.match(card.textContent, /notes\.md/);
+  raw.entries.push({id:'2',kind:'pi.assistant',model:[modelCall('read-current',{path:'notes.md'})]}); raw.live = [];
+  for (const [status, label] of [['pending','Queued'],['running','Working'],['done','Ended without result']] as const) {
+    raw.status.live = {tools:[{callId:'read-current',name:'read',status}]}; paint();
+    assert.equal(shell.querySelector('.tool-card'), card); assert.equal(card.querySelector('.tool-status')?.textContent, label);
+    assert.equal(historical.dataset.status, 'missing'); assert.equal(card.open, true);
+  }
+  raw.status.live = null; raw.status.busy = false;
+  raw.entries.push({id:'3',kind:'pi.tool-result',model:[{role:'toolResult',toolCallId:'read-current',toolName:'read',isError:false,content:[{type:'text',text:'Actual source output'}]}]});
+  paint(); assert.equal(shell.dataset.status, 'success'); assert.match(card.textContent, /Actual source output/);
+  assert.equal(historical.dataset.status, 'missing'); view.reset();
+});
+
 test('native running tool cards retain their block and details before the result arrives', () => {
   setup(); const view = transcript(); const source: EntryView = {id: 'native-call', kind: 'pi.assistant', messages: [{...message('native-call', '', 'final'),
     parts: [{type: 'toolCall', callId: 'read-current', name: 'read', arguments: {value: {path: 'notes.md'}, truncated: false}}]}]};

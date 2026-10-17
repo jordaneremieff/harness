@@ -24,6 +24,27 @@ test('native nested tasks use supplied status and duration without a model call 
   index.update([], new Map()); assert.equal(index.joined.size, 0); assert.equal(index.disclosures.size, 0);
 });
 
+test('partial call arguments prepare without implying execution or changing historical unresolved calls', () => {
+  const index = new TranscriptIndex(), historical = entry('historical', [call('old')]);
+  for (const stopReason of ['pending','stop','toolUse']) {
+    const source = entry('live', [call('new')]); const message = source.messages?.[0]; assert.ok(message);
+    message.state = 'partial'; message.stopReason = stopReason;
+    index.update([historical, source], new Map());
+    assert.equal(index.joined.get('new')?.status, 'preparing');
+    assert.equal(index.joined.get('new')?.observedStart, undefined);
+    assert.equal(index.joined.get('old')?.status, 'missing');
+    for (const [nativeStatus, expected] of [['pending','pending'],['running','working'],['done','ended']] as const) {
+      index.update([historical, source], new Map([['new',{callId:'new',name:'read',phase:'update',nativeStatus}]]));
+      assert.equal(index.joined.get('new')?.status, expected);
+      assert.equal(index.joined.get('old')?.status, 'missing');
+    }
+    index.update([historical, {...source,messages:[{...message,state:'final'}]}], new Map());
+    assert.equal(index.joined.get('new')?.status, 'missing');
+    index.update([historical, source, entry('output',[result('new','Supplied output')])], new Map());
+    assert.equal(index.joined.get('new')?.status, 'success');
+  }
+});
+
 test('partial tool results remain active until their final result without an invented start time', () => {
   const index = new TranscriptIndex(), source = entry('progress', [result('read', 'first output')]);
   const message = source.messages?.[0]; assert.ok(message); message.state = 'partial';

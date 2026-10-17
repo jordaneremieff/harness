@@ -16,6 +16,29 @@ const nativeFacts = (coverage: Snapshot["coverage"]) => ({ complete: coverage.co
   bytes: coverage.bytes, hiddenExcluded: coverage.hiddenExcluded, entryLimitReached: coverage.entryLimitReached,
   byteLimitReached: coverage.byteLimitReached });
 
+test("native tool slots without output survive bounded transfer and repeated projection", () => {
+  const source = frame(4) as ConversationFrame;
+  source.status.busy = true;
+  const tools = ['pending','running','done'].map((status, index) => ({callId:`call-${index}`,name:'read',status}));
+  source.status.live = {tools};
+  assert.deepEqual(decodeFrame(source), source);
+  const transferred = transferFrame(source), displayed = projectFrame(transferred);
+  assert.deepEqual(decodeFrame(transferred), transferred);
+  assert.equal(transferred.status.live, null);
+  assert.deepEqual(displayed.status.tools, tools);
+  assert.deepEqual(projectFrame(displayed).status.tools, tools);
+  assert.deepEqual(projectFrame(transferFrame(transferred)).status.tools, tools);
+  const many = Array.from({length:65}, (_, index) => ({callId:`call-${index}`,name:'read',status:'running'}));
+  source.status.live = {tools:many};
+  const bounded = transferFrame(source), repeated = projectFrame(transferFrame(bounded));
+  assert.equal(repeated.status.tools?.length, 64);
+  assert.equal(repeated.status.toolsOmitted, 1);
+  assert.equal(repeated.coverage.truncated, true);
+  assert.equal(bounded.coverage.complete, true);
+  assert.equal(bounded.coverage.uiComplete, false);
+  assert.ok(bytes(bounded) <= 256 * 1024);
+});
+
 test("native retries and provider blocks survive worker transfer and repeated projection", () => {
   const source = frame(7) as ConversationFrame;
   source.status.live = {generation: {attempt: 2, retry: {at: 1700000060000, error: 'Bearer private-token'}}}; source.status.busy = true;

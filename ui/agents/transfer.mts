@@ -20,7 +20,7 @@ function status(source: ConversationFrame, display: ReturnType<typeof projectFra
     agent: { thinkingLevel: display.status.thinkingLevel ?? "", extensions: [], tools: [] },
     tasks: display.status.tasks?.value ?? [], submissions: display.status.submissions?.value ?? [],
   };
-  for (const key of ["name", "model", "thinkingLevel", "compactions", "compactionFailure", "retry", "providerBlock"] as const) if (display.status[key] !== undefined) result[key] = display.status[key];
+  for (const key of ["name", "model", "thinkingLevel", "compactions", "compactionFailure", "retry", "providerBlock", "tools", "toolsOmitted"] as const) if (display.status[key] !== undefined) result[key] = display.status[key];
   return result as JsonObject;
 }
 function sourceCoverage(source: ConversationFrame["coverage"], display: ReturnType<typeof projectFrame>): ConversationFrame["coverage"] {

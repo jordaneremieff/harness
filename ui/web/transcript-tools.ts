@@ -54,7 +54,11 @@ function combineParts(id: string, parts: ToolPart[]): JoinedTool | undefined {
     for (const item of parts) {
       const part = item.part;
       tool ??= {callId: id, name: part.name, owner: item.owner, slot: item.slot, status: 'missing'};
-      if (part.type === 'toolCall') { tool.args = part.arguments; tool.argumentsError = part.argumentsError; if (!called) { tool.name = part.name; tool.owner = item.owner; tool.slot = item.slot; called = true; } }
+      if (part.type === 'toolCall') {
+        tool.args = part.arguments; tool.argumentsError = part.argumentsError;
+        if (item.partial && tool.status === 'missing') tool.status = 'preparing';
+        if (!called) { tool.name = part.name; tool.owner = item.owner; tool.slot = item.slot; called = true; }
+      }
       else if (part.type === 'execution') applyExecution(tool, part);
       else { tool.result = part.parts; tool.output = part.output; tool.status = resultStatus(part, item.partial); }
     }

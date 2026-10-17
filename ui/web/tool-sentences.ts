@@ -110,6 +110,7 @@ export function toolLabel(tool:JoinedTool,context:SentenceContext={}):string{
 export function toolSentence(tool: JoinedTool, context: SentenceContext = {}): string {
   const value = sentenceWords(tool, context);
   if (tool.status === 'success') return value.done;
+  if (tool.status === 'preparing') return `Preparing call: ${value.action}`;
   if (tool.status === 'working') return tool.argumentText !== undefined && !tool.args ? 'Preparing…' : value.active;
   if (tool.status === 'error') return `Failed: ${value.action}`;
   if (tool.status === 'pending') return `Queued: ${value.action}`;
