@@ -467,7 +467,19 @@ test("the agent result route preserves request selectors through the worker and 
   const registry = { agents: service } as unknown as Registry;
   const route = (body: Record<string, unknown>) => dispatchAgent(registry, { parts: ["api", "agents", identity, "inspect"], body,
     method: "POST", url: new URL("http://localhost/api/agents/result/inspect") });
-  assert.deepEqual(JSON.parse(JSON.stringify(await route({ view: "result", requestId }))), { projection: { value: unavailable, truncated: false } });
+  const beforeRead = Date.now();
+  const result = JSON.parse(JSON.stringify(await route({ view: "result", requestId }))) as import('../shared/inspection.ts').ResultInspection;
+  const afterRead = Date.now(), {readAt, ...actual} = result;
+  const expected: Omit<import('../shared/inspection.ts').ResultInspection, 'readAt'> = {
+    view: 'result', identity, requestId, status: 'unavailable',
+    reason: {text: 'No native submission matches the result selector in this conversation', shortened: false, protected: false},
+    usage: {value: {models: {}, tools: {}}, truncated: false},
+  };
+  assert.deepEqual(actual, expected);
+  assert.equal(typeof readAt, 'string'); const timestamp = Date.parse(readAt);
+  assert.ok(Number.isFinite(timestamp) && timestamp >= beforeRead && timestamp <= afterRead);
+  assert.equal(new Date(timestamp).toISOString(), readAt);
+  for (const field of ['submissionId', 'entryId', 'answerEntryId', 'operationId', 'answer', 'projection', 'sessionId', 'conversationId']) assert.equal(Object.hasOwn(result, field), false, field);
   assert.deepEqual(host.calls[0].params, { sessionId: identity, view: "result", requestId });
   for (const body of [{ view: "result", requestId: "" }, { view: "result", requestId: 7 }, { view: "history", requestId },
     { view: "result" }, { view: "result", requestId, submissionId: 0 }]) await assert.rejects(route(body), hasCode("invalid_request"));
