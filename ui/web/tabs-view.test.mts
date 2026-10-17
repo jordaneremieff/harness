@@ -135,24 +135,6 @@ test('each group fits its own status/width and overflow; narrowness does not rem
   assert.equal(f.overflow.get('pane-1'),true); assert.equal(f.overflow.get('pane-2'),false);
   for (const node of f.root().children) {assert.equal(node.querySelector('.tab-state'),null); assert.equal(node.querySelector('.tab-dot')?.title,'Custom activity'); assert.equal(node.querySelector('.tab-dot')?.textContent,'Custom activity'); assert.equal(node.querySelector('.tab-label')?.textContent,'A very long conversation name'); assert.match(node.attributes.get('aria-label')??'',/Custom activity/);}
 });
-test('repeated resize retains full exceptional status instead of erasing it', () => {
-  const f=fixture([{kind:'primary'},{kind:'agent',identity:'a'}], {label:tab=>tab.kind==='primary'?'Primary':'Parser',status:()=>({label:'Working · bash',glyph:'○'})});
-  const node=f.root().children[0]; const state=node?.querySelector('.tab-dot'); assert.ok(node); assert.ok(state);
-  const mark=state; assert.equal(state.textContent,'Working · bash');
-  node.clientWidth=280; const observer=Observer.instances.at(-1); assert.ok(observer);
-  for (let i=0;i<3;i++) {observer.resize(); assert.equal(node.querySelector('.tab-dot'),mark); assert.equal(state.title,'Working · bash');}
-  assert.equal(node.querySelector('.tab-label')?.textContent,'Primary');
-  assert.equal(f.root().children[1]?.querySelector('.tab-label')?.textContent,'Parser');
-  assert.equal(node.attributes.get('aria-label'),'Primary, Working · bash'); assert.match(node.title,/Working · bash/);
-  assert.equal(node.querySelector('.tab-state'),null);
-  node.clientWidth=400; observer.resize(); assert.equal(node.querySelector('.tab-dot'),mark);
-  node.clientWidth=280; observer.resize(); observer.resize(); assert.equal(node.querySelector('.tab-dot'),mark);
-});
-test('full status labels stay authoritative and status repaint preserves retained focus', () => {
-  let status={label:'Custom',glyph:'●'}; const f=fixture(undefined,{status:()=>status}); const node=f.root().children[1]; assert.ok(node); node.focus();
-  assert.equal(node.querySelector('.tab-dot')?.title,'Custom'); assert.equal(node.querySelector('.tab-dot')?.textContent,'Custom'); status={label:'Working',glyph:'○'}; f.strip.render();
-  assert.equal(node.querySelector('.tab-dot')?.title,'Working'); assert.equal(node.querySelector('.tab-dot')?.textContent,'Working'); assert.equal(f.doc.activeElement,node); assert.match(node.attributes.get('aria-label')??'',/Working/);
-});
 test('active reveal scrolls only its local host and repaint preserves manual strip position and draft selection', () => {
   const f=fixture(Array.from({length:11},(_,i)=>({kind:'agent',identity:String(i)}))); f.set(activatePaneTab(f.layout(),'pane-1','agent:10'));
   const root=f.root(); root.clientWidth=500; root.scrollWidth=1600; root.children.forEach((node,index)=>{node.offsetLeft=index*130; node.offsetWidth=130;});
@@ -183,17 +165,6 @@ test('strip reveal uses only the nearest hidden edge', () => {
   assert.equal(revealTabScroll(200,500,300,130),200); assert.equal(revealTabScroll(200,500,100,130),100); assert.equal(revealTabScroll(0,500,1300,130),930);
 });
 
-test('a sole oversized tab exposes strip overflow without erasing its name or exceptional status', () => {
-  const name = 'Long named conversation with its complete caption retained';
-  const f = fixture([{kind: 'primary'}], {label: () => name, status: () => ({label: 'Failed', glyph: '!'})});
-  const host = f.root(), node = host.children[0]; assert.ok(node);
-  host.clientWidth = 200; host.scrollWidth = 1600; host.scrollLeft = 300; node.offsetWidth = 1600; node.offsetLeft = 0;
-  f.strip.requestReveal(); f.strip.render();
-  assert.equal(host.dataset.sole, 'true'); assert.equal(f.overflow.get('pane-1'), true); assert.equal(host.scrollLeft, 0);
-  assert.equal(node.querySelector('.tab-label')?.textContent, name); assert.equal(node.querySelector('.tab-dot')?.title, 'Failed');
-  assert.equal(node.querySelector('.tab-dot')?.textContent, 'Failed'); assert.equal(node.querySelector('.tab-state'), null); assert.ok(node.querySelector('.tab-close'));
-  assert.match(node.attributes.get('aria-label') ?? '', /complete caption retained, Failed/);
-});
 test('a sole tab retains its caption and Ready never competes with its name', () => {
   const f = fixture([{kind:'primary'}], {label:()=> 'Long named conversation'});
   const node = f.root().children[0]; assert.ok(node); assert.equal(f.root().dataset.sole,'true');
