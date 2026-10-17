@@ -139,7 +139,9 @@ test('pure concurrent optional frames share one display budget and do not alter 
   const source=snapshot();source.roster.rows=[row('first')];source.roster.nextCursor='actual-after-first';
   const entry={id:'entry',kind:'custom',data:{value:'x'.repeat(Math.floor(LIMITS.displayBytes/3)),truncated:false}};
   source.observations=Array.from({length:4},(_,i)=>({identity:`agent${i}`,connectionEpoch:i+1,frame:{revision:i,observedAt:'date',entries:[entry],live:[],nextBefore:null,status:{busy:false},coverage:{complete:true,truncated:false,omitted:0}}}));
+  for (const item of source.observations) item.availability={identity:item.identity,connectionEpoch:item.connectionEpoch,state:'live',capabilities:{input:true,images:true,history:true,observe:true,abort:true,configure:false}};
   const result=budgetSnapshot(source);bounded(result);
+  assert.deepEqual(result.observations?.map(item=>item.availability),source.observations.map(item=>item.availability));
   assert.equal(result.observations?.length,4);assert.equal(result.observations?.filter(value=>value.frame).length,2);
   assert.ok(result.observations?.slice(2).every(value=>value.omitted===true));assert.deepEqual(result.roster.rows,source.roster.rows);assert.equal(result.roster.nextCursor,'actual-after-first');
   const second=budgetSnapshot(result);bounded(second);assert.deepEqual(second.observations,result.observations);

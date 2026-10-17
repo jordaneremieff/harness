@@ -193,7 +193,7 @@ export type HistoryPage = {target: Target; items: EntryView[]; nextCursor: strin
 export type AgentHistoryPage = {target: Target; entries: EntryView[]; nextBefore: number | null; coverage: DisplayCoverage; revision: string};
 export type ResourcePage = {items: CommandView[] | ModelChoice[] | string[]; nextCursor: string | null; revision: string};
 export type NoticeView = {id: string; target?: Target; workspaceId?: string; level: 'info' | 'warning' | 'error'; code?: string; message: string};
-export type AgentObservationView = {identity: string; connectionEpoch: number; frame?: ProjectedFrame; omitted?: true};
+export type AgentObservationView = {identity: string; connectionEpoch: number; availability?: EventData['agent.availability']; frame?: ProjectedFrame; omitted?: true};
 export type SnapshotSection = 'notices' | 'targets' | 'selectedPage' | 'observations' | 'primaries' | 'roster' | 'pendingOperations' | 'dialogs';
 export type Snapshot = {notices?: NoticeView[]; omitted?: SnapshotSection[]; primaryIndex?: Pick<PrimaryView,'key'|'epoch'|'lifecycle'>[]; operationIndex?: string[]; bootId: string; cursor: string; workspace: Workspace; primaries: PrimaryView[];
   roster: CachedRoster; observations?: AgentObservationView[]; selectedPage?: HistoryPage | AgentHistoryPage;

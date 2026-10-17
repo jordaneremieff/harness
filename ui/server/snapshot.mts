@@ -91,7 +91,7 @@ function optionalPages(source: Snapshot, result: Snapshot, budget: Budget, omitt
 function emptySnapshot(snapshot: Snapshot | Bootstrap): Snapshot | Bootstrap {
   const {primaries, targets, pendingOperations, dialogs: _dialogs, roster, selectedPage: _page, observations = [], notices, omitted: _omitted, ...core} = snapshot;
   if (observations.length > 4) throw new ApiError('capacity', 'The snapshot observation capacity is full.', 413);
-  const result: Snapshot = {...core, observations: observations.map(({identity,connectionEpoch}) => ({identity,connectionEpoch,omitted:true})), primaryIndex: snapshot.primaryIndex ?? primaries.map(({key, epoch, lifecycle}) => ({key, epoch, lifecycle})),
+  const result: Snapshot = {...core, observations: observations.map(({identity,connectionEpoch,availability}) => ({identity,connectionEpoch,...(availability ? {availability} : {}),omitted:true})), primaryIndex: snapshot.primaryIndex ?? primaries.map(({key, epoch, lifecycle}) => ({key, epoch, lifecycle})),
     operationIndex: snapshot.operationIndex ?? pendingOperations.map(operation => operation.id),
     targetIndex: snapshot.targetIndex ?? targetIndex(targets ?? []), omitted: [...SECTIONS], primaries: [], pendingOperations: [], dialogs: [],
     roster: {...roster, rows: [], nextCursor: undefined, error: undefined}, ...(targets === undefined ? {} : {targets: []}), ...(notices === undefined ? {} : {notices: []})};

@@ -47,6 +47,15 @@ test('two visible agent leaves receive independent frames and reject stale avail
   state = reduceEvent(state, event(7, 'agent.frame', {identity: 'b', connectionEpoch: 5, frame: frame(0, [], [entry('b-new')])}));
   assert.equal(agentBlocks(state, 'b')[0]?.id, 'b-new'); assert.equal(agentBlocks(state, 'a')[0]?.id, 'a-next');
 });
+test('snapshot readiness restores exact input capabilities without a separate live event', () => {
+  const snap = snapshot(); snap.workspace.selectedTarget = {kind:'agent',identity:'a'};
+  const availability: EventData['agent.availability'] = {identity:'a',connectionEpoch:2,state:'live',capabilities:{history:true,observe:true,input:true,images:true,abort:true,configure:false}};
+  snap.observations = [{identity:'a',connectionEpoch:2,availability,frame:frame(1)}];
+  let state = replaceSnapshot(createState(),snap);
+  assert.deepEqual(state.agentAvailability.get('a'),availability); assert.equal(state.roster.get('a')?.capabilities?.input,true);
+  const mismatched = {...snap,cursor:'boot:1',observations:[{identity:'a',connectionEpoch:3,availability:{...availability,connectionEpoch:2},frame:frame(2)}]};
+  state = replaceSnapshot(state,mismatched); assert.equal(state.agentEpochs.get('a'),3); assert.equal(state.agentAvailability.has('a'),false);
+});
 test('omitted unobserved targets do not admit epoch-zero events and workspace changes reset epoch ownership', () => {
   const snap = snapshot(); snap.workspace.selectedTarget = {kind: 'agent', identity: 'a'};
   snap.observations = [{identity: 'a', connectionEpoch: 0, omitted: true}];

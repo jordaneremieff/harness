@@ -203,7 +203,14 @@ export class Registry {
       this.frames.get(workspace)?.delete(target.identity); this.availability.get(workspace)?.delete(target.identity);
       await this.observe(workspace);
     }
-    return {targetState:await this.store.target(workspace,target),availability,capabilities:this.capabilities(target.identity,supported),...(reason ? {reason} : {})};
+    const capabilities = this.capabilities(target.identity,supported);
+    const observed = this.availability.get(workspace)?.get(target.identity);
+    if (availability === 'live' && observed?.state === 'live') {
+      const data = {...observed, capabilities};
+      this.availability.get(workspace)?.set(target.identity,data);
+      this.journal.publish('agent.availability',target,data,workspace);
+    }
+    return {targetState:await this.store.target(workspace,target),availability,capabilities,...(reason ? {reason} : {})};
   }
   /** Request receipts are separate from input operations and never contain composer text. */
   startAgent(workspace: string, identity: string, requestId: string): Promise<TargetPreparation> {
@@ -402,7 +409,9 @@ export class Registry {
       const observations = identities.map(identity => {
         const slot = this.observations.get(workspace.id)?.desired.get(identity);
         const cached = this.frames.get(workspace.id)?.get(identity);
-        return {identity,connectionEpoch:slot?.epoch ?? 0,...(cached && cached.connectionEpoch === slot?.epoch ? {frame:structuredClone(cached.frame)} : {omitted:true as const})};
+        const availability = this.availability.get(workspace.id)?.get(identity);
+        return {identity,connectionEpoch:slot?.epoch ?? 0,...(availability && availability.connectionEpoch === slot?.epoch ? {availability:structuredClone(availability)} : {}),
+          ...(cached && cached.connectionEpoch === slot?.epoch ? {frame:structuredClone(cached.frame)} : {omitted:true as const})};
       });
       const primary = selected?.kind === 'primary' ? this.sessions.get(selected.key) : active ? this.sessions.get(active.key) : undefined;
       const result: Snapshot = {observations,bootId:this.journal.bootId,cursor:this.journal.cursor,workspace:cut.workspace,primaries,roster:projectRoster(this.agents.roster({limit:20})),

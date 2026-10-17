@@ -399,6 +399,8 @@ function restoreSnapshotConversations(next: UiState, state: UiState, snapshot: S
     next = updateConversation(next, page.target, old => ({...mergeEntries(retainedPrimaryHistory(state, snapshot, page.target, old, items), items, false), tools: retainedPrimaryTools(state, snapshot, page.target, old, items)}));
   }
   for (const observation of snapshot.observations ?? []) {
+    const availability = observation.availability;
+    if (availability?.identity === observation.identity && availability.connectionEpoch === observation.connectionEpoch) next = applyAgentAvailability(next,availability);
     if (observation.frame) next = applyFrame(next, observation.identity, observation.connectionEpoch, observation.frame);
     else if (observation.connectionEpoch > 0) next = admitAgentEpoch(next, observation.identity, observation.connectionEpoch) ?? next;
   }
@@ -551,11 +553,14 @@ function applyAgentEvent(state: UiState, event: UiEvent): UiState {
   if (event.name === 'agent.frame') return applyFrame(state, event.data.identity, event.data.connectionEpoch, event.data.frame);
   if (event.name === 'agent.roster') return applyRoster(state, event.data);
   if (event.name !== 'agent.availability') return state;
-  const next = admitAgentEpoch(state, event.data.identity, event.data.connectionEpoch); if (!next) return state;
-  const agentAvailability = new Map(next.agentAvailability).set(event.data.identity, event.data);
-  const row = state.roster.get(event.data.identity);
+  return applyAgentAvailability(state,event.data);
+}
+function applyAgentAvailability(state: UiState, data: EventData['agent.availability']): UiState {
+  const next = admitAgentEpoch(state, data.identity, data.connectionEpoch); if (!next) return state;
+  const agentAvailability = new Map(next.agentAvailability).set(data.identity, data);
+  const row = state.roster.get(data.identity);
   const roster = new Map(state.roster);
-  if (row) roster.set(row.identity, { ...row, availability: event.data.state, capabilities: event.data.capabilities });
+  if (row) roster.set(row.identity, { ...row, availability: data.state, capabilities: data.capabilities });
   return { ...next, roster, agentAvailability };
 }
 function applyTargetEvent(state: UiState, event: UiEvent): UiState {

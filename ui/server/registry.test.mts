@@ -356,6 +356,7 @@ test('pure concurrent registry snapshots include active leaves beyond the roster
   f.callbacks.onFrame?.('w',STORAGE,1,frame(5) as never);f.callbacks.onFrame?.('w',CHILD,2,frame(7,CHILD) as never);
   f.callbacks.onFrame?.('other',STORAGE,3,frame(9) as never);
   const active=await f.registry.snapshot('w');assert.deepEqual(active.observations?.map(value=>[value.identity,value.connectionEpoch,value.frame?.revision]),[[STORAGE,1,5],[CHILD,2,7]]);
+  assert.deepEqual(active.observations?.map(value=>[value.availability?.identity,value.availability?.connectionEpoch,value.availability?.state,value.availability?.capabilities.input]),[[STORAGE,1,'live',true],[CHILD,2,'live',true]]);
   assert.deepEqual(active.roster.rows,[]);assert.equal(active.roster.nextCursor,'authentic-page');
   assert.equal(active.targets?.length,2);assert.equal(f.registry.availability.get('w')?.get(CHILD)?.capabilities.input,true);
   f.callbacks.onAvailability?.('w',CHILD,1,'unavailable');assert.equal(f.registry.availability.get('w')?.get(CHILD)?.state,'live');
@@ -378,6 +379,17 @@ test('pure concurrent explicit preparation reopens only a failed active target a
   f.callbacks.onFrame?.('w',STORAGE,1,frame(99) as never);assert.equal(f.registry.frames.get('w')?.has(STORAGE),false);
   f.callbacks.onFrame?.('w',STORAGE,3,frame(8) as never);
   assert.deepEqual((await f.registry.snapshot('w')).observations?.map(value=>[value.connectionEpoch,value.frame?.revision]),[[3,8],[2,7]]);
+});
+test('explicit preparation refreshes image readiness in the existing observation lifetime',async context=> {
+  const f=await memoryRegistry(context);await f.registry.observe('w');
+  context.mock.method(f.registry.agents,'prepare',async()=>({snapshot:true,'observe-open':true,'observe-frame':true,'observe-close':true,'task-submit':true}));
+  let images = false; context.mock.method(f.registry.agents,'imageInputAvailable',()=>images);
+  assert.equal(f.registry.availability.get('w')?.get(STORAGE)?.capabilities.images,false);
+  images = true; const result=await f.registry.prepareTarget('w',{kind:'agent',identity:STORAGE});
+  assert.equal(result.capabilities.images,true);
+  const readiness=f.registry.availability.get('w')?.get(STORAGE);assert.equal(readiness?.connectionEpoch,1);assert.equal(readiness?.capabilities.images,true);
+  assert.equal((await f.registry.snapshot('w')).observations?.[0]?.availability?.capabilities.images,true);
+  assert.equal(f.calls.filter(call=>call[0]==='select').length,2);assert.equal(f.calls.some(call=>call[0]==='hide'),false);
 });
 test('pure concurrent hidden tabs do not acquire observations',async context=> {
   const f=await memoryRegistry(context);const root=f.workspaces.get('w')?.conversationLayout?.root;
