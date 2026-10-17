@@ -76,6 +76,10 @@ export function actionableEntry(entry: EntryView): boolean {
   const actions = own('actions'); const error = own('error');
   return Array.isArray(actions) && actions.length > 0 || error !== undefined && error !== null && error !== false && error !== '';
 }
+/** Public session state records are not messages; uncertain kinds and flagged data remain visible. */
+export function routineSessionEntry(entry:EntryView):boolean{
+  return ['custom','model_change','thinking_level_change','session_info'].includes(entry.kind)&&!!entry.data&&!actionableEntry(entry);
+}
 function sessionEvent(entry: EntryView): boolean { return entry.kind !== 'message' && !entry.messages?.length && !entry.tool; }
 function sessionGroup(old: SessionGroup | undefined, id: string, members: EntryView[]): SessionGroup {
   if (old && old.entries.length === members.length && old.entries.every((entry, index) => entry === members[index])) return old;

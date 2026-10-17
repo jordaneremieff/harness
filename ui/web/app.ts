@@ -293,7 +293,7 @@ const fileBrowse = new FileBrowseState();
 const paneRegions = new Map<string, {node: HTMLElement; tabs: HTMLElement; content: HTMLElement; plus: HTMLButtonElement; menu: HTMLButtonElement; previous: HTMLButtonElement; next: HTMLButtonElement}>();
 const paneSplits = new Map<string, {node: HTMLElement; handle: HTMLElement; resizer?: Resizer; extent?: number}>();
 const tabStrip = new TabStrip({layout: currentLayout, activate: activateConversationTab, close: key => applyLayout(closeTab(currentLayout(), key)),
-  move: (key, pane, index) => {fileBrowse.keep(key);applyLayout(movePaneTab(currentLayout(), key, pane, index));}, label: tabLabel,keep:key=>fileBrowse.keep(key),
+  move: (key, pane, index) => {fileBrowse.keep(key);applyLayout(movePaneTab(currentLayout(), key, pane, index));}, label: tabLabel,unnamed:unnamedTab,keep:key=>fileBrowse.keep(key),
   identity: tab => tab.kind !== 'file' ? tabPresentation(tab).identityTail ?? '' : undefined,
   status: tab => { if (tab.kind === 'file') {const owner = state.workspace && filesViews.owner(state.workspace.id,tab);return {label:owner?.modified ? 'Modified' : '',glyph:owner?.modified ? '•' : '',tone:owner?.modified ? 'warning' : 'secondary'};}const view = tabPresentation(tab); return {label: [view.activity, view.tool?.name].filter(Boolean).join(' · '), glyph: presentationGlyph(view), tone:view.tone}; },
   overflow: (overflow, pane) => { const region = paneRegions.get(pane); if (region) region.menu.dataset.overflow = String(overflow); }},
@@ -1823,6 +1823,10 @@ function choosePaneTarget(pane: string, axis?: 'x' | 'y'): void {
   });
 }
 export function openTabsList(pane: Pane = focusedPane): void { openPaneMenu(pane, undefined, undefined, 'list'); }
+function unnamedTab(tab:ConversationTab):boolean{
+  if(tab.kind!=='agent')return false;const captions=presentationCaptions(),caption=captions.get(tab.identity);
+  return caption.name==='Unnamed conversation'&&caption.source!=='first-message'&&!captions.knownName(tab.identity);
+}
 function tabLabel(tab: ConversationTab): string { return tab.kind === 'file' ? `${tab.path.split('/').at(-1) ?? tab.path}${tab.view === 'preview' ? ' preview' : ''}` : tabPresentation(tab).name; }
 let dismissedPointer = false;
 export function dismissDrawerPointer(event: PointerEvent): void {

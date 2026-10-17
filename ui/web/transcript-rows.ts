@@ -1,7 +1,8 @@
 import type {EntryView, MessageView, PartView} from '../shared/api.ts';
-import {slot, type JoinedTool} from './transcript-tools.ts';
+import {slot,routineSessionEntry,type JoinedTool,type SessionGroup} from './transcript-tools.ts';
 
-export type StepRun = {key: string; tools: JoinedTool[]};
+export type StepRun = {key: string; tools: JoinedTool[];events:EntryView[]};
+type RunPosition={id:string;at:number};
 export type TranscriptRow = {view: EntryView; source: EntryView; parts?: Map<string, Set<number>>; steps?: StepRun};
 /** View rows retain original source objects and original part offsets for copy, menus and tool joins. */
 export class TranscriptRows {
@@ -15,12 +16,14 @@ export class TranscriptRows {
   private result:EntryView[]=[];
   private used=new Set<string>();
   private run?:TranscriptRow;
-  derive(entries:readonly EntryView[],joined:ReadonlyMap<string,JoinedTool>,sessionOwners:ReadonlyMap<string,string>,showThinking:boolean):EntryView[]{
+  private routine=new Map<string,readonly EntryView[]>();
+  derive(entries:readonly EntryView[],joined:ReadonlyMap<string,JoinedTool>,sessionOwners:ReadonlyMap<string,string>,showThinking:boolean,sessions:ReadonlyMap<string,SessionGroup>=new Map()):EntryView[]{
     if(this.reuse(entries,joined,showThinking))return this.result;
     this.sources=[...entries];this.thinking=showThinking;
     this.byId.clear();this.owners.clear();this.calls.clear();this.runs.clear();this.nestedCounts.clear();
-    this.result=[];this.used.clear();this.run=undefined;
-    for(const entry of entries)this.entry(entry,joined,sessionOwners,showThinking);
+    this.result=[];this.used.clear();this.run=undefined;this.routine.clear();
+    for(const entry of entries)this.entry(entry,joined,sessionOwners,showThinking,sessions);
+    this.foldRoutineEvents();
     // Result-only records point back to the exact call's derived row rather than acquiring a second row.
     for(const entry of entries)if(!this.owners.has(entry.id))this.linkResults(entry);
     return this.result;
@@ -42,16 +45,37 @@ export class TranscriptRows {
     return row;
   }
   private step(entry:EntryView,tool:JoinedTool):void{
-    if(!this.run){this.run=this.add(entry,`steps:${tool.slot}`);this.run.steps={key:`steps:${tool.slot}`,tools:[]};this.runs.set(this.run.view.id,this.run.steps);}
+    if(!this.run){this.run=this.add(entry,`steps:${tool.slot}`);this.run.steps={key:`steps:${tool.slot}`,tools:[],events:[]};this.runs.set(this.run.view.id,this.run.steps);}
     this.run.steps?.tools.push(tool);this.calls.set(tool.callId,this.run.view.id);
     if(tool.parentCallId)this.nestedCounts.set(tool.parentCallId,(this.nestedCounts.get(tool.parentCallId)??0)+1);
     if(!this.owners.has(entry.id))this.owners.set(entry.id,this.run.view.id);
   }
-  private entry(entry:EntryView,joined:ReadonlyMap<string,JoinedTool>,sessionOwners:ReadonlyMap<string,string>,showThinking:boolean):void{
+  private entry(entry:EntryView,joined:ReadonlyMap<string,JoinedTool>,sessionOwners:ReadonlyMap<string,string>,showThinking:boolean,sessions:ReadonlyMap<string,SessionGroup>):void{
     if(sessionOwners.has(entry.id)&&sessionOwners.get(entry.id)!==entry.id)return;
-    if(entry.data||!entry.messages?.length&&!entry.tool){this.run=undefined;this.add(entry,'event');return;}
+    if(entry.data||!entry.messages?.length&&!entry.tool){this.event(entry,sessions.get(entry.id));return;}
     if(entry.tool){const tool=joined.get(entry.tool.callId);if(tool?.owner===entry.id)this.step(entry,tool);return;}
     for(const message of entry.messages??[])this.message(entry,message,joined,showThinking);
+  }
+  private event(entry:EntryView,group?:SessionGroup):void{
+    const members=group?.entries??[entry],routine=members.every(routineSessionEntry);
+    if(!routine)this.run=undefined;
+    const row=this.add(entry,'event');if(routine)this.routine.set(row.view.id,members);
+  }
+  private foldRoutineEvents():void{
+    if(!this.runs.size||!this.routine.size)return;
+    const next=new Map<string,RunPosition>();let after:RunPosition|undefined;
+    for(let at=this.result.length-1;at>=0;at--){const row=this.result[at];if(!row)continue;if(this.runs.has(row.id))after={id:row.id,at};if(after&&this.routine.has(row.id))next.set(row.id,after);}
+    const kept:EntryView[]=[];let before:RunPosition|undefined;
+    this.result.forEach((row,at)=>{
+      if(this.runs.has(row.id))before={id:row.id,at};
+      const events=this.routine.get(row.id),owner=nearestRun(at,before,next.get(row.id));
+      if(events&&owner)this.attachEvents(row,events,owner);else kept.push(row);
+    });
+    this.result=kept;
+  }
+  private attachEvents(row:EntryView,events:readonly EntryView[],owner:RunPosition):void{
+    this.runs.get(owner.id)?.events.push(...events);this.byId.delete(row.id);
+    for(const entry of events)this.owners.set(entry.id,owner.id);
   }
   private message(entry:EntryView,message:MessageView,joined:ReadonlyMap<string,JoinedTool>,showThinking:boolean):void{
     if(message.communication){this.run=undefined;this.add(entry,`message:${message.id}`,new Map([[message.id,new Set(message.parts.map((_,at)=>at))]]));return;}
@@ -73,6 +97,9 @@ export class TranscriptRows {
       const owner=this.calls.get(part.callId);if(owner)this.owners.set(entry.id,owner);
     }
   }
+}
+function nearestRun(at:number,before?:RunPosition,after?:RunPosition):RunPosition|undefined{
+  if(!before)return after;if(!after)return before;return at-before.at<=after.at-at?before:after;
 }
 function hiddenPart(part:PartView,showThinking:boolean):boolean{
   if(part.type==='thinking'&&!showThinking)return true;

@@ -443,7 +443,7 @@ export class Transcript {
   private deriveRows(): void {
     const previous = new Map(this.rows.runs);
     const ordered = this.view === 'grouped' ? this.groups.rows(this.chronological) : this.chronological;
-    const displayed = this.rows.derive(ordered, this.joined, this.index.sessionOwners, this.showThinking);
+    const displayed = this.rows.derive(ordered, this.joined, this.index.sessionOwners, this.showThinking,this.index.sessions);
     this.migrateStepRows(previous);this.inheritStepExpansion(previous);
     for (const [id, run] of this.rows.runs) this.index.disclosures.set(run.key,id);
     if (displayed.length !== this.displayed.length || displayed.some((entry, at) => entry.id !== this.displayed[at]?.id)) this.dirtyLayout = true;
@@ -454,6 +454,7 @@ export class Transcript {
       const first=run.tools[0],next=first?this.rows.calls.get(first.callId):undefined,cached=this.cache.get(id);
       if(!next||next===id||!cached||this.cache.has(next))continue;
       this.cache.delete(id);this.cache.set(next,cached);cached.node.dataset.entryId=next;
+      if(this.expanded.has(`events:${id}`))this.expanded.add(`events:${next}`);
       const height=this.heights.get(id);if(height!==undefined)this.heights.set(next,height);
     }
   }
@@ -685,8 +686,8 @@ export class Transcript {
   revealEntry(entryId: string, focus = true, callId?: string): void {
     if (!this.index.entries.has(entryId)) return;
     const id = callId ? this.rows.calls.get(callId) ?? this.displayId(entryId) : this.displayId(entryId); this.follow = false; this.pins.clear(); this.pins.add(entryId);
-    const group = this.index.sessions.get(id);
-    if (group) this.expanded.add(`events:${id}`);
+    const group=this.entryEventGroup(id,entryId);
+    if(group){this.expanded.add(`events:${id}`);const run=this.rows.runs.get(id);if(run)this.expanded.add(run.key);}
     this.restoring = {revision: this.readingRevision, anchorId: callId ? id : entryId, offsetPx: 0, followTail: false}; this.paint();
     const session = this.cache.get(id)?.session;
     if (session && group) {
@@ -697,6 +698,10 @@ export class Transcript {
     }
     this.refreshFind();
     const node = this.cache.get(id)?.node; if (focus && node) { node.tabIndex = -1; node.focus({preventScroll: true}); }
+  }
+  private entryEventGroup(id:string,entryId:string):SessionGroup|undefined{
+    const run=this.rows.runs.get(id);
+    return run?.events.some(entry=>entry.id===entryId)?{id,entries:run.events,notices:[]}:this.index.sessions.get(id);
   }
   private retireNode(node?: HTMLElement): void { if (node) { this.releaseFrames(node); node.remove(); } }
   private releaseFrames(root: HTMLElement): void {
@@ -924,8 +929,13 @@ export class Transcript {
       group.newer.hidden=end===run.tools.length;setText(group.newer,`Show ${run.tools.length-end} newer steps`);
       this.reconcileContent(group.body,run.tools.slice(start,end).map(tool=>this.updateTool(tool)));
     }else{group.earlier.hidden=true;group.newer.hidden=true;this.reconcileContent(group.body,[]);}
-    group.wasOpen=group.details.open;
+    group.wasOpen=group.details.open;this.stepEvents(cached,run);
     reconcileChildren(cached.node,[group.details,group.failures]);this.registerContent(cached.node);
+  }
+  private stepEvents(cached:EntryNode,run:StepRun):void{
+    if(!run.events.length){cached.session?.details.remove();return;}
+    this.updateSession(cached,{id:cached.node.dataset.entryId??run.key,entries:run.events,notices:[]});
+    if(cached.session)cached.steps?.details.append(cached.session.details);
   }
   private sentence(tool: JoinedTool): string {return toolSentence(tool,{subject:this.hooks.subject,cwd:this.hooks.cwd?.(),nestedCount:this.rows.nestedCounts.get(tool.callId)});}
   private stepSummary(group: StepNode, run: StepRun): void {

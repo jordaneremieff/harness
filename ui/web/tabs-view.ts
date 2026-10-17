@@ -8,13 +8,14 @@ export type TabRegion = {id: string; tabs: HTMLElement; controls: string};
 export type TabRegions = {panes: () => TabRegion[]; conversations: HTMLElement};
 export type TabHooks = {layout: () => PaneLayout; activate: (pane: string, key: string) => void; close: (key: string) => void;
   move: (key: string, pane: string, index: number) => void; label: (tab: ConversationTab) => string;
-  identity?: (tab: ConversationTab) => string | undefined;
+  identity?: (tab: ConversationTab) => string | undefined;unnamed?:(tab:ConversationTab)=>boolean;
   status: (tab: ConversationTab) => {label: string; glyph: string; tone?: PresentationTone}; keep?: (key:string)=>void; overflow?: (overflow: boolean, pane: string) => void};
 /** Keyed tab and sidebar nodes follow real pane ownership, independent of target kind. */
 export class TabStrip {
   private nodes = new Map<string, HTMLElement>();
   private rows = new Map<string, HTMLButtonElement>();
   private groups = new Map<string, HTMLElement>();
+  private unnamedGroups=new Map<string,{details:HTMLDetailsElement;summary:HTMLElement;list:HTMLElement}>();
   private hosts = new Map<HTMLElement, () => void>();
   private widths = new Map<HTMLElement, number>();
   private dragging?: string;
@@ -76,9 +77,9 @@ export class TabStrip {
         const key = tabKey(tab); let node = this.nodes.get(key); if (!node) {node = this.create(key); this.nodes.set(key, node); this.observer.observe(node);}
         this.paintTab(node, tab, pane.active === key); node.dataset.paneId = pane.id; node.setAttribute('aria-controls', region.controls);
         if (host.children[index] !== node) host.insertBefore(node, host.children[index] ?? null);
-        const row = this.conversationRow(tab, region.controls); row.dataset.paneId = pane.id; row.setAttribute('aria-current', String(pane.active === key && layout.focusedPane === pane.id));
-        if (list.children[index] !== row) list.insertBefore(row, list.children[index] ?? null);
+
       });
+      this.sidebarRows(list,pane.id,pane.tabs,pane.active,layout.focusedPane===pane.id,region.controls);
       host.dataset.sole = String(pane.tabs.length === 1);
       host.tabIndex = pane.tabs.length ? -1 : 0; host.dataset.focused = String(layout.focusedPane === pane.id);
     });
@@ -89,7 +90,7 @@ export class TabStrip {
   }
   private pruneNodes(keys: Set<string>, paneIds: Set<string>): void {
     for (const [key, node] of this.nodes) if (!keys.has(key)) {this.observer.unobserve(node); node.remove(); this.nodes.delete(key); this.rows.get(key)?.remove(); this.rows.delete(key); if (this.dragging === key) this.clearDrag();}
-    for (const [id, group] of this.groups) if (!paneIds.has(id)) {group.remove(); this.groups.delete(id);}
+    for (const [id, group] of this.groups) if (!paneIds.has(id)) {group.remove(); this.groups.delete(id);this.unnamedGroups.delete(id);}
   }
   private syncHosts(regions: TabRegion[]): void {
     for (const [host, cleanup] of this.hosts) if (!regions.some(region => region.tabs === host)) {cleanup(); this.observer.unobserve(host); this.hosts.delete(host); this.widths.delete(host);}
@@ -117,10 +118,14 @@ export class TabStrip {
     const label = this.hooks.label(tab); const tail = this.tail(tab); const accessible = tail ? `${label}, ${tail}` : label; const status = this.hooks.status(tab);
     node.title = [label, tab.kind === 'file' ? tab.path : tab.kind === 'agent' ? tab.identity : '', status.label].filter(Boolean).join(' · ');
     node.setAttribute('aria-label', `${accessible}${status.label ? `, ${status.label}` : ''}`); node.setAttribute('aria-selected', String(selected)); node.tabIndex = selected ? 0 : -1;
-    const caption = node.querySelector('.tab-label'); if (caption) caption.textContent = label;
+    const compact=!selected&&this.hooks.unnamed?.(tab)===true;node.dataset.unnamed=String(compact);
+    const caption = node.querySelector('.tab-label'); if (caption) caption.textContent = this.tabCaption(label,tail,compact);
     this.paintDot(node, status.glyph, status.label, status.tone);
-    const identity = node.querySelector<HTMLElement>('.tab-identity'); if (identity) {identity.textContent = tail ?? ''; identity.hidden = !tail;}
+    const identity = node.querySelector<HTMLElement>('.tab-identity'); if (identity) {identity.textContent = tail ?? ''; identity.hidden = compact||!tail;}
     const close = node.querySelector<HTMLElement>('.tab-close'); if (close) {close.setAttribute('aria-label', `Close ${accessible} tab`); close.title = `Close ${accessible} tab`;}
+  }
+  private tabCaption(label:string,tail:string|undefined,compact:boolean):string{
+    if(!compact)return label;return `Unnamed${tail?` · ${tail}`:''}`;
   }
   private tail(tab: ConversationTab): string | undefined {return this.hooks.identity?.(tab) ?? this.tails.get(tab.kind === 'file' ? tabKey(tab) : tab.kind === 'agent' ? tab.identity : 'primary');}
   private paintDot(node: HTMLElement, glyph: string, label: string, tone: PresentationTone = 'secondary'): void {
@@ -161,6 +166,24 @@ export class TabStrip {
     const doc = this.regions.conversations.ownerDocument; group = doc.createElement('div'); group.className = 'conversation-group'; group.dataset.paneId = id;
     const heading = doc.createElement('h3'); heading.className = 'conversation-group-title'; const list = doc.createElement('div'); list.className = 'conversation-list'; group.append(heading, list); this.groups.set(id, group); return group;
   }
+  private unnamedGroup(id:string):{details:HTMLDetailsElement;summary:HTMLElement;list:HTMLElement}{
+    let group=this.unnamedGroups.get(id);if(group)return group;
+    const doc=this.regions.conversations.ownerDocument,details=doc.createElement('details'),summary=doc.createElement('summary'),list=doc.createElement('div');
+    details.className='unnamed-conversations';list.className='conversation-list';details.append(summary,list);group={details,summary,list};this.unnamedGroups.set(id,group);return group;
+  }
+  private sidebarRows(list:HTMLElement,pane:string,tabs:readonly ConversationTab[],active:string|null,focused:boolean,controls:string):void{
+    const visible:HTMLElement[]=[],unnamed:HTMLElement[]=[],group=this.unnamedGroup(pane);
+    for(const tab of tabs){const key=tabKey(tab),row=this.conversationRow(tab,controls);row.dataset.paneId=pane;row.setAttribute('aria-current',String(key===active&&focused));
+      if(key!==active&&this.hooks.unnamed?.(tab))unnamed.push(row);else visible.push(row);
+    }
+    group.summary.textContent=`${unnamed.length} unnamed ${unnamed.length===1?'conversation':'conversations'}`;
+    if(unnamed.length)visible.push(group.details);
+    this.placeSidebarRows(list,visible);this.placeSidebarRows(group.list,unnamed);
+  }
+  private placeSidebarRows(parent:HTMLElement,nodes:readonly HTMLElement[]):void{
+    nodes.forEach((node,at)=>{if(parent.children[at]!==node)parent.insertBefore(node,parent.children[at]??null);});
+    const wanted=new Set<Element>(nodes);for(const node of [...parent.children])if(!wanted.has(node))node.remove();
+  }
   private conversationRow(tab: ConversationTab, controls: string): HTMLButtonElement {
     const key = tabKey(tab); let row = this.rows.get(key);
     if (!row) {const doc = this.regions.conversations.ownerDocument; row = doc.createElement('button'); row.type = 'button'; row.className = 'conversation-row'; row.dataset.tabKey = key;
@@ -178,7 +201,7 @@ export class TabStrip {
   destroy(): void {
     if (this.destroyed) return; this.destroyed = true; this.observer.disconnect();
     for (const cleanup of this.hosts.values()) cleanup(); for (const node of this.nodes.values()) node.remove(); for (const group of this.groups.values()) group.remove(); this.heading.remove();
-    this.hosts.clear(); this.nodes.clear(); this.rows.clear(); this.groups.clear(); this.widths.clear(); this.dragging = undefined;
+    this.hosts.clear(); this.nodes.clear(); this.rows.clear(); this.groups.clear();this.unnamedGroups.clear(); this.widths.clear(); this.dragging = undefined;
   }
 }
 /** Reveal only the local strip; do not scroll ancestors or change editor focus. */
