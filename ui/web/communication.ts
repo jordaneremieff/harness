@@ -137,6 +137,10 @@ export class CommunicationCard {
     if (!this.inspection.hidden) this.renderSource();
     return true;
   }
+  refreshSender():void{
+    const message=this.current(),value=message?.communication;
+    if(value&&!this.hooks.protected(this.shell.heading))this.header(value);
+  }
   private results(value:CommunicationPresentation):void {
     const result=value.state==='ready'&&value.value.kind==='result'?value.value:undefined;
     const signature=this.hooks.result&&result?JSON.stringify([result.sender.identity,result.metadata.references]):'';
@@ -156,9 +160,9 @@ export class CommunicationCard {
     this.shell.node.dataset.reason = value.state === 'unavailable' ? value.reason : '';
     const sender=value.state==='ready'?value.value.sender:undefined;
     const supplied=sender?.name?.trim(), loaded=sender?this.hooks.subject?.(sender.identity):undefined;
-    const name=supplied&&supplied!==sender?.identity&&!conversationIdentityText(supplied)?supplied:loaded?.name&&loaded.provenance?loaded.name:'Another agent';
-    const kind=value.state==='ready'?value.value.kind:undefined;
-    const heading=kind==='result'?`Answer from ${name}`:kind==='report'?`Report from ${name}`:`Message from ${name}`;
+    const name=loaded?.name&&loaded.provenance?loaded.name:supplied&&supplied!==sender?.identity&&!conversationIdentityText(supplied)?supplied:undefined;
+    const kind=value.state==='ready'?value.value.kind:undefined,label=kind==='result'?'Answer':kind==='report'?'Report':'Message';
+    const heading=name?`${label} from ${name}`:`${label} · sender name unavailable`;
     setText(this.shell.heading,heading);
     this.shell.heading.hidden = value.state !== 'ready'; this.shell.heading.title = '';
     this.unverified.hidden = value.state === 'ready';

@@ -761,15 +761,8 @@ summary::before { content: none; }
 .source-header button.card-action, .source-disclosure > .source-wrap.card-action { min-height: 24px; padding: 0; }
 .tool-source-header { display: flex; align-items: center; gap: 4px; }
 
-/* Prose carries meaning; consecutive public tool calls form one quiet trail. */
-.step-run { min-width: 0; max-width: 100%; color: var(--muted); font-family: var(--sans); font-size: 13px; line-height: 1.6; }
-.step-run > summary { display: flex; align-items: baseline; min-width: 0; padding-block: 2px; }
-.step-run-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.step-run[data-status=error] > summary, .step-run-failures { color: var(--error); }
-.step-run-failures { margin-left: 24px; font-family: var(--sans); font-size: 13px; overflow-wrap: anywhere; }
-.step-list { margin-top: 4px; padding-left: 24px; }
-.step-earlier, .step-newer { margin: 4px 0 4px 24px; color: var(--muted); font-size: 12px; text-decoration: underline; }
-.tool-shell { position: relative; display: block; min-width: 0; margin: 0; padding: 0; border: 0; background: transparent; color: var(--muted); font-family: var(--sans); font-size: 13px; line-height: 1.6; }
+/* Each original tool call owns one visible compact block and its native details. */
+.tool-shell { position: relative; display: block; min-width: 0; margin: 4px 0; padding: 6px 8px; border: 1px solid var(--rule); border-radius: 4px; background: var(--raised); color: var(--fg); font-family: var(--sans); font-size: 13px; line-height: 1.6; }
 .tool-shell[data-status=error] > .tool-card > summary { color: var(--error); }
 .message-body > .tool-shell, .message-body > * > .tool-shell { font-size: 13px; }
 .message-body > .tool-shell + .tool-shell { margin-top: 4px; }
@@ -780,7 +773,8 @@ summary::before { content: none; }
 details[open] > .card-disclosure > .card-icon-disclosure { transform: rotate(90deg); }
 .tool-card > summary > .card-icon-disclosure { width: 16px; height: 16px; margin-right: 8px; }
 .tool-card > summary > .tool-tier { min-width: 0; }
-.tool-tier { display: flex; align-items: baseline; min-width: 0; min-height: 24px; }
+.tool-tier { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; min-width: 0; min-height: 24px; }
+.tool-status { flex: none; color: var(--muted); font-size: 12px; }
 .tool-status:empty { display: none; }
 .tool-status.error { color: var(--error); }
 .tool-status.working { color: var(--info); }

@@ -99,6 +99,13 @@ function sentenceWords(tool: JoinedTool, context: SentenceContext): Words {
   const template=Object.hasOwn(templates,tool.name)?templates[tool.name]:undefined;
   return template?template({tool,context,args,identity,name,target}):words('Used','Using','Use',` ${first(tool.name)}`);
 }
+/** A call title describes the action; its separate state stays with the original invocation. */
+export function toolLabel(tool:JoinedTool,context:SentenceContext={}):string{
+  const value=sentenceWords(tool,context);
+  if(tool.status==='success')return value.done;
+  if(tool.status==='working')return tool.argumentText!==undefined&&!tool.args?'Preparing…':value.active;
+  return value.action;
+}
 /** Public call arguments describe the action; completion never describes a recipient's task outcome. */
 export function toolSentence(tool: JoinedTool, context: SentenceContext = {}): string {
   const value = sentenceWords(tool, context);

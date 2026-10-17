@@ -1660,11 +1660,12 @@ function referenceIdentities(query: ReferenceQuery): ReferenceDestination[] {
   return destinations;
 }
 function toolSubjectCaption(value: string): ToolSubjectCaption | undefined {
+  const loadedName=presentationCaptions().knownName(value);
   const destinations = referenceIdentities(value), destination = destinations.length === 1 ? destinations[0] : undefined;
-  if (!destination) return destinations.length || conversationIdentityText(value) ? {text: 'Unresolved conversation', title: value} : undefined;
+  if (!destination) return loadedName?{text:loadedName.name,...loadedName,title:value}:destinations.length || conversationIdentityText(value) ? {text: 'Unresolved conversation', title: value} : undefined;
   const primary = destination.target.kind === 'primary' ? state.primaries.get(destination.target.key) : undefined;
   const supplied = primary?.extension?.title || primary?.sessionName;
-  const known = destination.target.kind === 'agent' ? presentationCaptions().knownName(destination.target.identity) : supplied && supplied !== value && !conversationIdentityText(supplied) ? {name:supplied,provenance:'supplied' as const} : undefined;
+  const known = destination.target.kind === 'agent' ? loadedName : supplied && supplied !== value && !conversationIdentityText(supplied) ? {name:supplied,provenance:'supplied' as const} : undefined;
   return {text: presentationName(presentation(destination.target)), ...known, title: value, open: () => {
     const current = referenceIdentities(value);
     if (current.length === 1 && current[0] && sameTarget(current[0].target, destination.target)) void navigateReference(current[0]).catch(showError);

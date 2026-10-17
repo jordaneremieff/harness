@@ -14,7 +14,7 @@ import { TranscriptIndex, ToolElapsedClock, toolTime, slot, communicationDisclos
 import { CommunicationCard, messageCopyText, messageCopyDescription } from './communication.ts';
 import type { TranscriptGroups } from './transcript-groups.ts';
 import {TranscriptRows, type StepRun} from './transcript-rows.ts';
-import {toolSentence, type NamedDestination} from './tool-sentences.ts';
+import {toolSentence,toolLabel, type NamedDestination} from './tool-sentences.ts';
 import {ConversationTasks, type ConversationTask, type TaskReference} from './conversation-tasks.ts';
 import { loadedReference, type ReferenceQuery, type ReferenceResolver } from './references.ts';
 import type { JoinedTool } from './transcript-tools.ts';
@@ -31,6 +31,7 @@ export type ToolSubjectCaption = NamedDestination;
 export type ViewHooks = {readTaskResult?: (reference:TaskReference,signal:AbortSignal)=>Promise<ResultInspection>; activity?: (text:string)=>void; cwd?: () => string | undefined; subject?: (value: string) => ToolSubjectCaption | undefined; result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
 const RAW_LIMIT = 65536;
 const TASK_READ_CONCURRENCY = 4;
+const toolStateLabels:Record<JoinedTool['status'],string>={success:'',working:'Working',pending:'Queued',error:'Failed',ended:'Ended without result',available:'Result available',missing:'No result recorded'};
 function selectionCopy(origin: HTMLElement): ContextItem[] {
   const selection = document.getSelection();
   if (!selection || selection.isCollapsed || !origin.contains(selection.anchorNode) || !origin.contains(selection.focusNode)) return [];
@@ -170,8 +171,7 @@ type PartNode = {node: HTMLElement; source: PartView; partial: boolean};
 type MessageNode = {communication?: CommunicationCard; node: HTMLElement; header: HTMLElement; heading: HTMLElement; actions: HTMLElement; body: HTMLElement; error: HTMLElement; parts: Map<string, PartNode>; source: MessageView; menu: HTMLButtonElement; forkRevision: number; inspection?: HTMLElement; inspectionSource?: MessageView; sourceOpener?: HTMLElement; thinkingGroups?: Map<string, {node: HTMLDetailsElement; body: HTMLElement}>};
 type EventPage = {node: HTMLElement; rows: HTMLElement; page: number; previous: HTMLButtonElement; next: HTMLButtonElement; cache: Map<string, {source: EntryView; node: HTMLElement}>};
 type SessionNode = {source?: SessionGroup; details: HTMLDetailsElement; events: EventPage; notices: EventPage};
-type StepNode = {details: HTMLDetailsElement; label: HTMLElement; failures: HTMLElement; body: HTMLElement; earlier: HTMLButtonElement; newer: HTMLButtonElement; shown: number; to: number; wasOpen: boolean};
-type EntryNode = {node: HTMLElement; messages: Map<string, MessageNode>; source?: EntryView; custom?: HTMLElement; session?: SessionNode; groupHeader?: HTMLElement; steps?: StepNode};
+type EntryNode = {node: HTMLElement; messages: Map<string, MessageNode>; source?: EntryView; custom?: HTMLElement; session?: SessionNode; groupHeader?: HTMLElement};
 type ToolNode = {answerText?: string; subject?: ToolSubjectCaption; card: HTMLElement; node: HTMLDetailsElement; copy: HTMLButtonElement; title: HTMLElement; target: HTMLElement; glyph: HTMLElement; meta: HTMLElement; preview: HTMLElement; qualification: HTMLElement; expanded: HTMLElement; info: HTMLElement; source?: JoinedTool; inspectionSources?: Map<HTMLDetailsElement, JoinedTool>; presentation?: HTMLElement; argumentsDocument?: HTMLElement; argumentsSource?: JoinedTool; output?: HTMLElement; images?: HTMLElement; contentSource?: JoinedTool; viewport?: HTMLElement; pageViewports?: Set<HTMLElement>; resultDocument?: HTMLElement; documentSource?: JoinedTool; previewBudget?: PreviewBudget; outputNotice?: {node: HTMLElement; source: JoinedTool}; inspections?: {arguments: HTMLDetailsElement; output: HTMLDetailsElement; details: HTMLDetailsElement}};
 export type TranscriptGeometry = {generation: number; followTail: boolean; anchor: {id: string; offsetPx: number} | null; scrollTop: number};
 export type FindStatus = {total: number; position: number; moved: boolean; end: 'none' | 'first' | 'last' | 'unavailable' | null};
@@ -435,8 +435,8 @@ export class Transcript {
     return active?[this.sentence(active),toolTime(active).replace(/ elapsed$/,'')].filter(Boolean).join(' · '):'';
   }
   private openTaskAnswer(task: ConversationTask): void {
-    if(!task.tool)return;const id=this.rows.calls.get(task.tool.callId),run=id?this.rows.runs.get(id):undefined;
-    if(run){this.expanded.add(run.key);const group=id?this.cache.get(id)?.steps:undefined;if(group)group.shown=Math.max(group.shown,run.tools.length-run.tools.findIndex(tool=>tool.callId===task.tool?.callId));}
+    if(!task.tool)return;this.expanded.add(`tool:${task.tool.callId}`);
+    const tool=this.tools.get(task.tool.callId);if(tool){tool.node.open=true;tool.expanded.hidden=false;}
     this.expanded.add(`answer:${task.tool.callId}`);this.hooks.presentation([...this.expanded],this.showThinking);
     this.revealEntry(task.entryId,true,task.tool.callId);
   }
@@ -444,7 +444,7 @@ export class Transcript {
     const previous = new Map(this.rows.runs);
     const ordered = this.view === 'grouped' ? this.groups.rows(this.chronological) : this.chronological;
     const displayed = this.rows.derive(ordered, this.joined, this.index.sessionOwners, this.showThinking,this.index.sessions);
-    this.migrateStepRows(previous);this.inheritStepExpansion(previous);
+    this.migrateStepRows(previous);
     for (const [id, run] of this.rows.runs) this.index.disclosures.set(run.key,id);
     if (displayed.length !== this.displayed.length || displayed.some((entry, at) => entry.id !== this.displayed[at]?.id)) this.dirtyLayout = true;
     this.displayed = displayed;
@@ -456,11 +456,6 @@ export class Transcript {
       this.cache.delete(id);this.cache.set(next,cached);cached.node.dataset.entryId=next;
       if(this.expanded.has(`events:${id}`))this.expanded.add(`events:${next}`);
       const height=this.heights.get(id);if(height!==undefined)this.heights.set(next,height);
-    }
-  }
-  private inheritStepExpansion(previous:ReadonlyMap<string,StepRun>):void{
-    for (const run of previous.values()) if (this.expanded.has(run.key)) {
-      for (const tool of run.tools) {const id = this.rows.calls.get(tool.callId), current = id ? this.rows.runs.get(id) : undefined;if(current)this.expanded.add(current.key);}
     }
   }
   private reconcileSessions(previous: ReadonlyMap<string, SessionGroup>): void {
@@ -686,8 +681,7 @@ export class Transcript {
   revealEntry(entryId: string, focus = true, callId?: string): void {
     if (!this.index.entries.has(entryId)) return;
     const id = callId ? this.rows.calls.get(callId) ?? this.displayId(entryId) : this.displayId(entryId); this.follow = false; this.pins.clear(); this.pins.add(entryId);
-    const group=this.entryEventGroup(id,entryId);
-    if(group){this.expanded.add(`events:${id}`);const run=this.rows.runs.get(id);if(run)this.expanded.add(run.key);}
+    const group=this.openEntryEvents(id,entryId);
     this.restoring = {revision: this.readingRevision, anchorId: callId ? id : entryId, offsetPx: 0, followTail: false}; this.paint();
     const session = this.cache.get(id)?.session;
     if (session && group) {
@@ -698,6 +692,12 @@ export class Transcript {
     }
     this.refreshFind();
     const node = this.cache.get(id)?.node; if (focus && node) { node.tabIndex = -1; node.focus({preventScroll: true}); }
+  }
+  private openEntryEvents(id:string,entryId:string):SessionGroup|undefined{
+    const group=this.entryEventGroup(id,entryId);if(!group)return;
+    this.expanded.add(`events:${id}`);const run=this.rows.runs.get(id);
+    if(run){this.expanded.add(run.key);const tool=run.tools[0]&&this.tools.get(run.tools[0].callId);if(tool){tool.node.open=true;tool.expanded.hidden=false;}}
+    return group;
   }
   private entryEventGroup(id:string,entryId:string):SessionGroup|undefined{
     const run=this.rows.runs.get(id);
@@ -911,51 +911,18 @@ export class Transcript {
   private rowMessageVisible(entryId:string,message:MessageView,parts?:Map<string,Set<number>>):boolean{
     return !(parts&&!parts.has(message.id)||!presentMessage(message).visible||this.joinedMessage(entryId,message));
   }
-  private updateSteps(cached: EntryNode, run: StepRun): void {
-    let group = cached.steps;
-    if (!group) {
-      const details = element('details', 'step-run'), summary = element('summary'), label = element('span', 'step-run-label');
-      cardDisclosure(summary);summary.append(label);const failures = element('div', 'step-run-failures'), body = element('div', 'step-list');
-      const earlier = button('', () => {if(cached.steps){cached.steps.shown+=50;this.schedule();}}, 'step-earlier');
-      const newer=button('',()=>{const current=this.rows.runs.get(cached.node.dataset.entryId??'');if(cached.steps&&current){cached.steps.to=current.tools.length;cached.steps.shown=50;this.schedule();}},'step-newer');
-      details.append(summary, earlier, body,newer);group={details,label,failures,body,earlier,newer,shown:50,to:run.tools.length,wasOpen:false};cached.steps=group;
-      this.trackDisclosure(details,run.key);details.addEventListener('toggle',()=>this.schedule());
-    }
-    cached.node.classList.add('compact-entry');group.details.dataset.disclosure=run.key;group.details.open=this.expanded.has(run.key);
-    this.stepSummary(group,run);
-    if(group.details.open){
-      if(!group.wasOpen)group.to=run.tools.length;
-      const end=Math.min(group.to,run.tools.length),start=Math.max(0,end-group.shown);group.earlier.hidden=start===0;setText(group.earlier,`Show ${Math.min(50,start)} earlier steps`);
-      group.newer.hidden=end===run.tools.length;setText(group.newer,`Show ${run.tools.length-end} newer steps`);
-      this.reconcileContent(group.body,run.tools.slice(start,end).map(tool=>this.updateTool(tool)));
-    }else{group.earlier.hidden=true;group.newer.hidden=true;this.reconcileContent(group.body,[]);}
-    group.wasOpen=group.details.open;this.stepEvents(cached,run);
-    reconcileChildren(cached.node,[group.details,group.failures]);this.registerContent(cached.node);
+  private updateSteps(cached:EntryNode,run:StepRun):void{
+    cached.node.classList.add('compact-entry');
+    const children=run.tools.map(tool=>this.updateTool(tool));this.stepEvents(cached,run);
+    reconcileChildren(cached.node,children);this.registerContent(cached.node);
   }
   private stepEvents(cached:EntryNode,run:StepRun):void{
     if(!run.events.length){cached.session?.details.remove();return;}
     this.updateSession(cached,{id:cached.node.dataset.entryId??run.key,entries:run.events,notices:[]});
-    if(cached.session)cached.steps?.details.append(cached.session.details);
+    const source=run.tools[0],tool=source&&this.tools.get(source.callId);
+    if(cached.session&&tool)tool.expanded.append(cached.session.details);
   }
   private sentence(tool: JoinedTool): string {return toolSentence(tool,{subject:this.hooks.subject,cwd:this.hooks.cwd?.(),nestedCount:this.rows.nestedCounts.get(tool.callId)});}
-  private stepSummary(group: StepNode, run: StepRun): void {
-    const active=run.tools.findLast(tool=>tool.status==='working')??run.tools.findLast(tool=>tool.status==='pending');
-    const last=active??run.tools.at(-1);if(!last)return;
-    const failed=run.tools.filter(tool=>tool.status==='error'),label=this.stepLabel(run,last,active);
-    if(!this.protectedNode(group.label))setText(group.label,label+(failed.length?` · ${failed.length} failed`:''));
-    group.details.dataset.status=failed.length?'error':active?.status??'success';
-    this.stepFailure(group,failed.at(-1));
-  }
-  private stepLabel(run:StepRun,last:JoinedTool,active?:JoinedTool):string{
-    const count=`${run.tools.length} steps`,elapsed=active?toolTime(active).replace(/ elapsed$/,''):'';
-    if(active)return [this.sentence(active),elapsed,run.tools.length>1?count:''].filter(Boolean).join(' · ');
-    return run.tools.length===1?this.sentence(last):`${count} · ${this.sentence(last)}`;
-  }
-  private stepFailure(group:StepNode,failure?:JoinedTool):void{
-    const provided=failure?.result?.find(part=>part.type==='text'&&!part.structured&&!part.redacted);
-    const reason=provided?.type==='text'?bounded(provided.text.split(/\r?\n/,1)[0]??'',160,1):'';
-    group.failures.hidden=!failure;setText(group.failures,failure?[this.sentence(failure),reason].filter(Boolean).join(' · '):'');
-  }
   private entryToolChildren(entry: EntryView): HTMLElement[] {
     if (!entry.tool) return [];
     const children: HTMLElement[] = [], tool = this.joined.get(entry.tool.callId);
@@ -1361,7 +1328,7 @@ export class Transcript {
     this.toolHeading(tool, source);this.toolAnswer(tool,source);
     if (previous === source) { if (tool.node.open && tool.documentSource !== source) this.expandTool(tool); return tool.card; }
     tool.card.dataset.status = source.status;
-    setText(tool.glyph, '');
+    setText(tool.glyph,toolStateLabels[source.status]??'State unavailable');
     tool.glyph.className = `tool-status ${source.status}`;
     this.toolMetadata(tool, source);
     const explanation = [metadata(source), outputExplanation(source), source.args?.truncated ? 'Some arguments are not available.' : ''].filter(Boolean).join('\n');
@@ -1419,7 +1386,6 @@ export class Transcript {
     if (this.hidden() || document.hidden || !this.node.isConnected) return false;
     let active = false;
     this.hooks.activity?.(this.activitySentence());
-    for (const [id,run] of this.rows.runs) {const group=this.cache.get(id)?.steps;if(group&&this.node.contains(group.details)){this.stepSummary(group,run);if(run.tools.some(tool=>tool.status==='working'&&tool.observedStart!==undefined))active=true;}}
     for (const tool of this.tools.values()) {
       if (tool.source?.status !== 'working' || tool.source.observedStart === undefined || !this.node.contains(tool.card)) continue;
       this.toolMetadata(tool, tool.source); active = true;
@@ -1430,10 +1396,10 @@ export class Transcript {
   refreshSubjects(): void {
     if (this.destroyed || this.deferred) return;
     for (const tool of this.tools.values()) if (tool.source && this.node.contains(tool.card)) this.toolHeading(tool, tool.source);
-    for (const [id,run] of this.rows.runs) {const group=this.cache.get(id)?.steps;if(group)this.stepSummary(group,run);}
+    for(const entry of this.cache.values())for(const message of entry.messages.values())message.communication?.refreshSender();
   }
   private toolHeading(tool: ToolNode, source: JoinedTool): void {
-    setText(tool.title, this.sentence(source));
+    setText(tool.title,toolLabel(source,{subject:this.hooks.subject,cwd:this.hooks.cwd?.(),nestedCount:this.rows.nestedCounts.get(source.callId)}));
     const args = record(source.args), value = args.sessionId ?? args.target;
     const eligible = typeof value === 'string' && subject(source, RAW_LIMIT, Number.MAX_SAFE_INTEGER) === value;
     const caption = eligible ? this.hooks.subject?.(value) : undefined; tool.subject = caption;

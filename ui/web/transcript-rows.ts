@@ -15,13 +15,12 @@ export class TranscriptRows {
   private thinking?:boolean;
   private result:EntryView[]=[];
   private used=new Set<string>();
-  private run?:TranscriptRow;
   private routine=new Map<string,readonly EntryView[]>();
   derive(entries:readonly EntryView[],joined:ReadonlyMap<string,JoinedTool>,sessionOwners:ReadonlyMap<string,string>,showThinking:boolean,sessions:ReadonlyMap<string,SessionGroup>=new Map()):EntryView[]{
     if(this.reuse(entries,joined,showThinking))return this.result;
     this.sources=[...entries];this.thinking=showThinking;
     this.byId.clear();this.owners.clear();this.calls.clear();this.runs.clear();this.nestedCounts.clear();
-    this.result=[];this.used.clear();this.run=undefined;this.routine.clear();
+    this.result=[];this.used.clear();this.routine.clear();
     for(const entry of entries)this.entry(entry,joined,sessionOwners,showThinking,sessions);
     this.foldRoutineEvents();
     // Result-only records point back to the exact call's derived row rather than acquiring a second row.
@@ -45,10 +44,10 @@ export class TranscriptRows {
     return row;
   }
   private step(entry:EntryView,tool:JoinedTool):void{
-    if(!this.run){this.run=this.add(entry,`steps:${tool.slot}`);this.run.steps={key:`steps:${tool.slot}`,tools:[],events:[]};this.runs.set(this.run.view.id,this.run.steps);}
-    this.run.steps?.tools.push(tool);this.calls.set(tool.callId,this.run.view.id);
+    const row=this.add(entry,`steps:${tool.slot}`);row.steps={key:`tool:${tool.callId}`,tools:[tool],events:[]};this.runs.set(row.view.id,row.steps);
+    this.calls.set(tool.callId,row.view.id);
     if(tool.parentCallId)this.nestedCounts.set(tool.parentCallId,(this.nestedCounts.get(tool.parentCallId)??0)+1);
-    if(!this.owners.has(entry.id))this.owners.set(entry.id,this.run.view.id);
+    if(!this.owners.has(entry.id))this.owners.set(entry.id,row.view.id);
   }
   private entry(entry:EntryView,joined:ReadonlyMap<string,JoinedTool>,sessionOwners:ReadonlyMap<string,string>,showThinking:boolean,sessions:ReadonlyMap<string,SessionGroup>):void{
     if(sessionOwners.has(entry.id)&&sessionOwners.get(entry.id)!==entry.id)return;
@@ -58,7 +57,6 @@ export class TranscriptRows {
   }
   private event(entry:EntryView,group?:SessionGroup):void{
     const members=group?.entries??[entry],routine=members.every(routineSessionEntry);
-    if(!routine)this.run=undefined;
     const row=this.add(entry,'event');if(routine)this.routine.set(row.view.id,members);
   }
   private foldRoutineEvents():void{
@@ -78,10 +76,10 @@ export class TranscriptRows {
     for(const entry of events)this.owners.set(entry.id,owner.id);
   }
   private message(entry:EntryView,message:MessageView,joined:ReadonlyMap<string,JoinedTool>,showThinking:boolean):void{
-    if(message.communication){this.run=undefined;this.add(entry,`message:${message.id}`,new Map([[message.id,new Set(message.parts.map((_,at)=>at))]]));return;}
+    if(message.communication){this.add(entry,`message:${message.id}`,new Map([[message.id,new Set(message.parts.map((_,at)=>at))]]));return;}
     let prose:TranscriptRow|undefined;
     message.parts.forEach((part,at)=>{prose=this.part(entry,message,part,at,joined,showThinking,prose);});
-    if(messageNotice(message)&&!prose){this.run=undefined;this.add(entry,`notice:${message.id}`,new Map([[message.id,new Set()]]));}
+    if(messageNotice(message)&&!prose){this.add(entry,`notice:${message.id}`,new Map([[message.id,new Set()]]));}
   }
   private part(entry:EntryView,message:MessageView,part:PartView,at:number,joined:ReadonlyMap<string,JoinedTool>,showThinking:boolean,prose?:TranscriptRow):TranscriptRow|undefined{
     if(part.type==='toolCall'||part.type==='toolResult'){
@@ -89,7 +87,7 @@ export class TranscriptRows {
       return;
     }
     if(hiddenPart(part,showThinking))return prose;
-    this.run=undefined;prose??=this.add(entry,`prose:${message.id}:${at}`,new Map([[message.id,new Set()]]));
+    prose??=this.add(entry,`prose:${message.id}:${at}`,new Map([[message.id,new Set()]]));
     prose.parts?.get(message.id)?.add(at);return prose;
   }
   private linkResults(entry:EntryView):void{
