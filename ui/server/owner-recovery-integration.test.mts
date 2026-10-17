@@ -15,7 +15,7 @@ import {PrimarySession} from '../rpc/session.mts';
 import {FakeChild} from '../rpc/fake-child.mts';
 import {RpcError} from '../rpc/client.mts';
 import {RELEASE_FORMAT, BROWSER_API, type ReleaseManifest, type ReleaseStatus} from '../shared/release.ts';
-import type {Bootstrap, PrimaryView, HistoryPage, OperationView, Target, OperationKind} from '../shared/api.ts';
+import {LIMITS, type Bootstrap, type PrimaryView, type HistoryPage, type OperationView, type Target, type OperationKind, type EventEnvelope} from '../shared/api.ts';
 import {readIdentity} from '../shared/version.ts';
 import {manifestAt, inventory, assertSealedTree, releaseRoot, findRelease, readSelection, boundedFile, sha256, atomicJson, sealTree} from './release-store.mts';
 import {requestReleaseControl, assertControlPath} from './release-control.mts';
@@ -207,15 +207,22 @@ async function until<T>(read: () => Promise<T>, accepts: (value: T) => boolean):
   throw new Error('The controlled fixture phase did not arrive.');
 }
 function publicApi(initial: string, signal: AbortSignal) {
-  let url = initial, workspace = '';
-  async function call<T>(pathname: string, method = 'GET', body?: unknown, key?: string): Promise<T> {
+  let url = initial, workspace = '', cursor = '';
+  async function call<T>(pathname: string, method = 'GET', body?: unknown, key?: string, scope = signal): Promise<T> {
     const origin = new URL(url).origin, destination = new URL(pathname, origin); if (workspace) destination.searchParams.set('workspace', workspace);
-    const response = await fetch(destination, {method, headers: {Origin: origin, 'Content-Type': 'application/json', ...(key ? {'Idempotency-Key': key} : {})}, ...(body === undefined ? {} : {body: JSON.stringify(body)}), signal: AbortSignal.any([signal, AbortSignal.timeout(5000)])});
+    const response = await fetch(destination, {method, headers: {Origin: origin, 'Content-Type': 'application/json', ...(key ? {'Idempotency-Key': key} : {})}, ...(body === undefined ? {} : {body: JSON.stringify(body)}), signal: AbortSignal.any([scope, AbortSignal.timeout(5000)])});
     const value = await response.json() as {ok: boolean; data: T}; assert.ok(response.ok && value.ok, JSON.stringify(value)); return value.data;
   }
-  async function mutation<T>(kind: OperationKind, pathname: string, body: unknown, target?: Target): Promise<T> {
-    const reservation = await call<{operationId: string}>('/api/operations','POST',{kind, ...(target ? {target} : {})});
-    return call<T>(pathname, 'POST', body, reservation.operationId);
+  async function mutation<T>(kind: OperationKind, pathname: string, body: unknown, target?: Target, scope = signal): Promise<T> {
+    const reservation = await call<{operationId: string}>('/api/operations','POST',{kind, ...(target ? {target} : {})},undefined,scope);
+    return call<T>(pathname, 'POST', body, reservation.operationId,scope);
+  }
+  async function events(scope: AbortSignal) {
+    assert.ok(workspace && cursor);
+    const origin = new URL(url).origin, destination = new URL('/api/events',origin);
+    destination.searchParams.set('workspace',workspace); destination.searchParams.set('after',cursor);
+    const response = await fetch(destination,{headers:{Origin:origin},signal:scope});
+    return {response,workspace};
   }
   async function version(release: Release) {
     const response = await fetch(url, {signal: AbortSignal.any([signal, AbortSignal.timeout(5000)])}), html = await response.text();
@@ -224,8 +231,116 @@ function publicApi(initial: string, signal: AbortSignal) {
     const identity = readIdentity(meta[1] ?? null);
     assert.equal(identity.git?.commit, release.manifest.sourceCommit); assert.equal(identity.git?.modified, false); assert.equal(identity.assets?.digest, release.manifest.generation);
   }
-  return {call, mutation, version, use: (next: string) => {url = next;}, hydrate: async () => {const boot = await call<Bootstrap>('/api/bootstrap'); workspace = boot.workspace.id; return boot;}};
+  return {call, mutation, version, events, use: (next: string) => {url = next;}, hydrate: async () => {const boot = await call<Bootstrap>('/api/bootstrap'); workspace = boot.workspace.id; cursor = boot.cursor; return boot;}};
 }
+function primaryFrame(wire: string, workspace: string, key: string, epoch: number): PrimaryView | undefined {
+  const name = /^event: (.+)$/m.exec(wire)?.[1], data = /^data: (.+)$/m.exec(wire)?.[1];
+  if (name !== 'primary.state' || !data) return;
+  const envelope = JSON.parse(data) as EventEnvelope<'primary.state'>, view = envelope?.data;
+  if (envelope?.workspaceId !== workspace || envelope.target?.kind !== 'primary' || envelope.target.key !== key || envelope.target.epoch !== epoch || view?.key !== key || view.epoch !== epoch) return;
+  return view;
+}
+async function primaryEvents(reader: ReadableStreamDefaultReader<Uint8Array>, workspace: string, key: string, epoch: number, ready: (view: PrimaryView) => boolean, wait: <T>(work: Promise<T>) => Promise<T>): Promise<PrimaryView> {
+  const decoder = new TextDecoder(); let buffer = '', bytes = 0;
+  for (;;) {
+    const chunk = await wait(reader.read());
+    if (chunk.done) throw new Error('The Primary state stream ended before readiness.');
+    bytes += chunk.value.byteLength; assert.ok(bytes <= LIMITS.clientQueueBytes,'The startup event stream exceeds its bound.');
+    buffer += decoder.decode(chunk.value,{stream:true});
+    for (;;) {
+      const cut = buffer.indexOf('\n\n'); if (cut < 0) break;
+      const wire = buffer.slice(0,cut); buffer = buffer.slice(cut+2);
+      const view = primaryFrame(wire,workspace,key,epoch);
+      if (view && ready(view)) return view;
+    }
+  }
+}
+async function initialPrimary(api: Pick<ReturnType<typeof publicApi>,'events'|'mutation'|'call'>, cwd: string, signal: AbortSignal, exited: Promise<void>): Promise<PrimaryView> {
+  signal.throwIfAborted();
+  const startup = new AbortController(), scope = AbortSignal.any([signal,startup.signal]);
+  const deadline = setTimeout(()=>startup.abort(new Error('Primary startup deadline expired.')),30_000);
+  let abort!: () => void;
+  const cancelled = new Promise<never>((_resolve,reject)=>{abort=()=>reject(scope.reason);scope.addEventListener('abort',abort,{once:true});});
+  const stopped = exited.then(()=>{throw new Error('The launcher exited before Primary readiness.');});
+  const interrupted = Promise.race([cancelled,stopped]);
+  const wait = <T,>(work: Promise<T>) => Promise.race([work,interrupted]);
+  let response: Response | undefined, reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  try {
+    const stream = await wait(api.events(scope)); response = stream.response;
+    assert.equal(response.status,200); assert.ok(response.body); reader = response.body.getReader();
+    const opening = await wait(api.mutation<{primaryKey: string; operation: OperationView}>('primary.open','/api/primaries',{cwd},undefined,scope));
+    assert.equal(opening.operation.state,'completed');
+    const key = opening.primaryKey, first = await wait(api.call<PrimaryView>(`/api/primaries/${key}`,'GET',undefined,undefined,scope));
+    assert.equal(first.key,key); assert.ok(Number.isSafeInteger(first.epoch) && first.epoch > 0);
+    const ready = (view: PrimaryView) => {
+      if (view.lastError) throw new Error(`Primary startup failed: ${view.lastError.message}`);
+      if (['failed','stopping','stopped'].includes(view.lifecycle)) throw new Error(`Primary startup ended: ${view.lifecycle}`);
+      return view.lifecycle === 'ready' && !!view.pid && !!view.sessionId;
+    };
+    if (ready(first)) return first;
+    return await primaryEvents(reader,stream.workspace,key,first.epoch,ready,wait);
+  } finally {
+    clearTimeout(deadline); scope.removeEventListener('abort',abort); startup.abort();
+    if (reader) {await reader.cancel().catch(()=>{}); reader.releaseLock();}
+    else await response?.body?.cancel().catch(()=>{});
+  }
+}
+function startupFixture() {
+  let controller!: ReadableStreamDefaultController<Uint8Array>, exit!: () => void, cancelled = 0, subscribed = false;
+  let beforeRead = () => {};
+  const body = new ReadableStream<Uint8Array>({start(value){controller=value;},cancel(){cancelled++;}}), response = new Response(body);
+  const first: PrimaryView = {key:'primary',epoch:1,cwd:'/fixture',lifecycle:'starting',activity:'unknown',pendingOperationIds:[],pendingDialogs:[],capabilities:{}};
+  const exited = new Promise<void>(resolve=>{exit=resolve;});
+  const api = {
+    events: async (_scope: AbortSignal) => {subscribed=true;return {response,workspace:'workspace'};},
+    mutation: async <T,>() => {assert.equal(subscribed,true);return {primaryKey:'primary',operation:{state:'completed'}} as T;},
+    call: async <T,>() => {beforeRead();return structuredClone(first) as T;},
+  };
+  const frame = (view: PrimaryView, fields: Partial<EventEnvelope<'primary.state'>> = {}) => `event: primary.state\ndata: ${JSON.stringify({at:new Date(0).toISOString(),workspaceId:'workspace',target:{kind:'primary',key:'primary',epoch:1},data:view,...fields})}\n\n`;
+  return {api,first,exited,exit,response,frame,send:(wire:string)=>controller.enqueue(new TextEncoder().encode(wire)),end:()=>controller.close(),fail:(error:Error)=>controller.error(error),beforeRead(work:()=>void){beforeRead=work;},get cancelled(){return cancelled;}};
+}
+test('initial Primary readiness subscribes before open and retains events across the first read',async()=>{
+  const f=startupFixture(),ready={...f.first,lifecycle:'ready' as const,pid:123,sessionId:'session'};
+  f.beforeRead(()=>f.send(f.frame(ready)));
+  const actual=await initialPrimary(f.api,'/fixture',new AbortController().signal,f.exited);
+  assert.deepEqual(actual,ready);assert.equal(f.cancelled,1);assert.equal(f.response.body?.locked,false);
+});
+test('initial Primary readiness ignores other workspaces, keys and epochs before pending becomes ready',async()=>{
+  const f=startupFixture(),ready={...f.first,lifecycle:'ready' as const,pid:123,sessionId:'session'};let resolved=false;
+  const waiting=initialPrimary(f.api,'/fixture',new AbortController().signal,f.exited);void waiting.then(()=>{resolved=true;},()=>{});await ownerTurn();
+  f.send(f.frame(ready,{workspaceId:'other'}));f.send(f.frame(ready,{target:{kind:'primary',key:'other',epoch:1}}));f.send(f.frame(ready,{target:{kind:'primary',key:'primary',epoch:2}}));f.send(f.frame({...ready,epoch:2}));f.send(f.frame({...ready,key:'other'}));
+  await ownerTurn();assert.equal(resolved,false);
+  const wire=f.frame(ready);f.send(wire.slice(0,17));f.send(wire.slice(17));assert.deepEqual(await waiting,ready);assert.equal(f.cancelled,1);assert.equal(f.response.body?.locked,false);
+});
+test('initial Primary readiness accepts an already ready snapshot and closes the subscribed stream',async()=>{
+  const f=startupFixture();Object.assign(f.first,{lifecycle:'ready',pid:123,sessionId:'session'});
+  assert.deepEqual(await initialPrimary(f.api,'/fixture',new AbortController().signal,f.exited),f.first);assert.equal(f.cancelled,1);assert.equal(f.response.body?.locked,false);
+});
+test('initial Primary readiness preserves a correlated startup error and closes the stream',async()=>{
+  const f=startupFixture(),waiting=initialPrimary(f.api,'/fixture',new AbortController().signal,f.exited),rejected=assert.rejects(waiting,/Primary startup failed: fixture rejected/);await ownerTurn();
+  f.send(f.frame({...f.first,lastError:{code:'protocol_error',message:'fixture rejected',retry:'none'}}));await rejected;assert.equal(f.cancelled,1);assert.equal(f.response.body?.locked,false);
+});
+test('initial Primary readiness rejects stopped startup without accepting an earlier ready event',async()=>{
+  const f=startupFixture();f.first.lifecycle='stopped';f.beforeRead(()=>f.send(f.frame({...f.first,lifecycle:'ready',pid:123,sessionId:'session'})));
+  await assert.rejects(()=>initialPrimary(f.api,'/fixture',new AbortController().signal,f.exited),/Primary startup ended: stopped/);assert.equal(f.cancelled,1);
+});
+test('initial Primary readiness rejects launcher exit and closes the stream',async()=>{
+  const f=startupFixture(),waiting=initialPrimary(f.api,'/fixture',new AbortController().signal,f.exited),rejected=assert.rejects(waiting,/launcher exited before Primary readiness/);await ownerTurn();f.exit();await rejected;assert.equal(f.cancelled,1);assert.equal(f.response.body?.locked,false);
+});
+test('initial Primary readiness preserves cancellation and closes the stream',async()=>{
+  const f=startupFixture(),cancel=new AbortController(),waiting=initialPrimary(f.api,'/fixture',cancel.signal,f.exited),rejected=assert.rejects(waiting,/fixture cancelled/);await ownerTurn();cancel.abort(new Error('fixture cancelled'));await rejected;assert.equal(f.cancelled,1);assert.equal(f.response.body?.locked,false);
+});
+test('initial Primary readiness enforces and disposes the owning startup deadline',async context=>{
+  context.mock.timers.enable({apis:['setTimeout']});
+  const f=startupFixture(),waiting=initialPrimary(f.api,'/fixture',new AbortController().signal,f.exited),rejected=assert.rejects(waiting,/Primary startup deadline expired/);await ownerTurn();context.mock.timers.tick(30_000);await rejected;assert.equal(f.cancelled,1);assert.equal(f.response.body?.locked,false);
+});
+test('initial Primary readiness rejects a closed or failed event stream',async()=>{
+  const closed=startupFixture(),waiting=initialPrimary(closed.api,'/fixture',new AbortController().signal,closed.exited),rejected=assert.rejects(waiting,/state stream ended before readiness/);await ownerTurn();closed.end();await rejected;assert.equal(closed.response.body?.locked,false);
+  const failed=startupFixture(),reading=initialPrimary(failed.api,'/fixture',new AbortController().signal,failed.exited),error=assert.rejects(reading,/fixture stream failed/);await ownerTurn();failed.fail(new Error('fixture stream failed'));await error;assert.equal(failed.response.body?.locked,false);
+});
+test('initial Primary readiness bounds stream bytes and closes before rejection',async()=>{
+  const f=startupFixture(),waiting=initialPrimary(f.api,'/fixture',new AbortController().signal,f.exited),rejected=assert.rejects(waiting,/startup event stream exceeds its bound/);await ownerTurn();f.send('x'.repeat(LIMITS.clientQueueBytes+1));await rejected;assert.equal(f.cancelled,1);assert.equal(f.response.body?.locked,false);
+});
 function liveEntry(page: HistoryPage) {
   const entry = page.items.find(item => item.messages?.some(value => value.role === 'assistant' && value.parts.some(part => part.type === 'text' && part.text.includes('before'))));
   assert.ok(entry); return {id: entry.id, text: entry.messages?.flatMap(value => value.parts.flatMap(part => part.type === 'text' ? [part.text] : [])).join('') ?? ''};
@@ -249,8 +364,8 @@ async function publicScenario(plan: Plan, signal: AbortSignal, diagnostic: (valu
       () => requestReleaseControl(plan.control, {kind: 'stop'}), async run => {
         const api = publicApi(await run.next(), signal); await api.version(plan.old); await api.hydrate();
         const status = () => requestReleaseControl(plan.control, {kind: 'status'}) as Promise<ReleaseStatus>;
-        const opening = await api.mutation<{primaryKey: string; operation: OperationView}>('primary.open','/api/primaries',{cwd}); assert.equal(opening.operation.state, 'completed');
-        const key = opening.primaryKey, read = () => api.call<PrimaryView>(`/api/primaries/${key}`), first = await until(read, view => view.lifecycle === 'ready' && !!view.pid && !!view.sessionId), target = {kind: 'primary' as const, key, epoch: first.epoch};
+        const first = await initialPrimary(api,cwd,signal,run.exited);
+        const key = first.key, read = () => api.call<PrimaryView>(`/api/primaries/${key}`), target = {kind: 'primary' as const, key, epoch: first.epoch};
         const original = await status(); assert.equal(original.current, plan.old.manifest.id); assert.equal(original.ownerPid, run.pid); assert.equal(original.ownerProtocol, OWNER_PROTOCOL); assert.ok(first.pid); assert.ok(first.sessionId); assert.ok(original.ownerIncarnation); run.remember(first.pid);
         assert.deepEqual(original.primaries, [{key, epoch: target.epoch, pid: first.pid}]);
         const transitions: {release: string; backendPid?: number}[] = [{release: original.current as string, backendPid: original.backendPid}];
