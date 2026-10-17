@@ -598,7 +598,9 @@ Observation uses public Durable entries, documents, submissions, task outcomes,
 and views. The selected conversation renders Pi's published chat components,
 built-in tool cards, arguments, thinking, and tool results paired with their
 calls. Live partial text and running output update before the turn ends.
-Committed output replaces its partial. Hidden native messages stay hidden.
+The native generation state defines an assistant partial, including providers
+that set a final stop reason before their text stream ends. Committed output
+replaces its partial. Hidden native messages stay hidden.
 Display limits remain explicit; missing content is not a fabricated answer.
 
 One dashboard observes one selected conversation. Selection changes release the

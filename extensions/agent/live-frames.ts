@@ -77,7 +77,9 @@ export const LIVE_GENERATION_ID = "live:generation";
 export const LIVE_TOOL_PREFIX = "live:tool:";
 
 function isAssistantPartial(message: AssistantMessage | undefined): message is AssistantMessage {
-	return message !== undefined && message.stopReason === "pending" && assistantHasVisibleContent(message);
+	// The native generation mount owns liveness. Responses final-answer deltas
+	// already carry stopReason="stop" before the provider finishes the stream.
+	return message !== undefined && assistantHasVisibleContent(message);
 }
 
 function assistantHasVisibleContent(message: AssistantMessage): boolean {

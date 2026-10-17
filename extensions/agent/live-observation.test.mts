@@ -206,7 +206,7 @@ it("advances the conversation frame after a commit and serves committed entries"
 	assert.equal(service.watches, 0);
 });
 
-it("serves the uncommitted tail and drops it after the committed entry arrives", { timeout: 30000 }, async (t) => {
+for (const stopReason of ["pending", "stop"] as const) it(`serves the uncommitted tail with stopReason=${stopReason} and drops it after commit`, { timeout: 30000 }, async (t) => {
 	const storagePath = join(fixtureRoot(t), "tail.sqlite");
 	const release = defer();
 	const publish = defer();
@@ -216,7 +216,7 @@ it("serves the uncommitted tail and drops it after the committed entry arrives",
 		started.resolve();
 		const events = createAssistantMessageEventStream();
 		const base = answerMessage("");
-		const partial = { ...base, stopReason: "pending" as const, content: [{ type: "text" as const, text: "streaming answer" }] };
+		const partial = { ...base, stopReason, content: [{ type: "text" as const, text: "streaming answer" }] };
 		void publish.promise.then(() => {
 			events.push({ type: "start", partial });
 			events.push({ type: "text_delta", contentIndex: 0, delta: "streaming answer", partial });
