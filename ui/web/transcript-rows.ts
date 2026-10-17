@@ -3,7 +3,7 @@ import {slot,routineSessionEntry,type JoinedTool,type SessionGroup} from './tran
 
 export type StepRun = {key: string; tools: JoinedTool[];events:EntryView[]};
 type RunPosition={id:string;at:number};
-export type TranscriptRow = {view: EntryView; source: EntryView; parts?: Map<string, Set<number>>; steps?: StepRun};
+export type TranscriptRow = {view: EntryView; source: EntryView; parts?: Map<string, Set<number>>; steps?: StepRun; actionsOnly?: boolean};
 /** View rows retain original source objects and original part offsets for copy, menus and tool joins. */
 export class TranscriptRows {
   readonly byId = new Map<string, TranscriptRow>();
@@ -16,16 +16,38 @@ export class TranscriptRows {
   private result:EntryView[]=[];
   private used=new Set<string>();
   private routine=new Map<string,readonly EntryView[]>();
-  derive(entries:readonly EntryView[],joined:ReadonlyMap<string,JoinedTool>,sessionOwners:ReadonlyMap<string,string>,showThinking:boolean,sessions:ReadonlyMap<string,SessionGroup>=new Map()):EntryView[]{
-    if(this.reuse(entries,joined,showThinking))return this.result;
-    this.sources=[...entries];this.thinking=showThinking;
+  private retained=new Set<string>();
+  derive(entries:readonly EntryView[],joined:ReadonlyMap<string,JoinedTool>,sessionOwners:ReadonlyMap<string,string>,showThinking:boolean,sessions:ReadonlyMap<string,SessionGroup>=new Map(),retained:ReadonlySet<string>=new Set()):EntryView[]{
+    if(this.reuse(entries,joined,showThinking)&&retained.size===this.retained.size&&[...retained].every(id=>this.retained.has(id)))return this.result;
+    const previous=this.result,controls=[...retained].flatMap(id=>{const row=this.byId.get(id);return row?[row]:[];});
+    const calls=new Map([...this.runs].flatMap(([id,run])=>run.tools[0]?[[id,run.tools[0].callId] as const]:[]));
+    this.sources=[...entries];this.thinking=showThinking;this.retained=new Set(retained);
     this.byId.clear();this.owners.clear();this.calls.clear();this.runs.clear();this.nestedCounts.clear();
     this.result=[];this.used.clear();this.routine.clear();
     for(const entry of entries)this.entry(entry,joined,sessionOwners,sessions);
     this.foldRoutineEvents();
     // Result-only records point back to the exact call's derived row rather than acquiring a second row.
     for(const entry of entries)if(!this.owners.has(entry.id))this.linkResults(entry);
+    this.retainControls(entries,previous,controls,calls);
     return this.result;
+  }
+  private retainControls(entries:readonly EntryView[],previous:readonly EntryView[],controls:readonly TranscriptRow[],previousCalls:ReadonlyMap<string,string>):void{
+    if(!controls.length)return;
+    const current=new Map(entries.map(entry=>[entry.id,entry]));
+    for(const old of controls)this.retainControl(current.get(old.source.id),old,previous,previousCalls);
+  }
+  private retainControl(source:EntryView|undefined,old:TranscriptRow,previous:readonly EntryView[],previousCalls:ReadonlyMap<string,string>):void{
+    if(!source)return;
+    const parts=new Map((source.messages??[]).filter(message=>old.parts?.has(message.id)).map(message=>[message.id,new Set<number>()]));
+    if(!parts.size)return;
+    const row=this.byId.get(old.view.id);
+    if(row){if(row.steps){row.parts=parts;row.actionsOnly=true;}return;}
+    const view={...source,id:old.view.id};
+    this.byId.set(view.id,{view,source,parts,actionsOnly:true});
+    const next=previous.slice(previous.indexOf(old.view)+1).map(entry=>this.byId.has(entry.id)?entry.id:this.calls.get(previousCalls.get(entry.id)??'')).find(id=>id!==undefined);
+    const at=next===undefined?-1:this.result.findIndex(entry=>entry.id===next);
+    this.result.splice(at<0?this.result.length:at,0,view);
+    if(!this.owners.has(source.id))this.owners.set(source.id,view.id);
   }
   private reuse(entries:readonly EntryView[],joined:ReadonlyMap<string,JoinedTool>,showThinking:boolean):boolean{
     if(this.thinking!==showThinking||entries.length!==this.sources.length||!entries.every((entry,at)=>entry===this.sources[at]))return false;

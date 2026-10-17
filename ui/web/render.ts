@@ -445,7 +445,8 @@ export class Transcript {
   private deriveRows(): void {
     const previous = new Map(this.rows.runs);
     const ordered = this.view === 'grouped' ? this.groups.rows(this.chronological) : this.chronological;
-    const displayed = this.rows.derive(ordered, this.joined, this.index.sessionOwners, this.showThinking,this.index.sessions);
+    const retained = new Set([...this.cache].filter(([id, cached]) => cached.messages.size > 0 && (this.rows.byId.get(id)?.actionsOnly || this.protectedNode(cached.node))).map(([id]) => id));
+    const displayed = this.rows.derive(ordered, this.joined, this.index.sessionOwners, this.showThinking,this.index.sessions,retained);
     this.migrateStepRows(previous);
     for (const [id, run] of this.rows.runs) this.index.disclosures.set(run.key,id);
     if (displayed.length !== this.displayed.length || displayed.some((entry, at) => entry.id !== this.displayed[at]?.id)) this.dirtyLayout = true;
@@ -895,7 +896,7 @@ export class Transcript {
     const cached=this.entryCacheNode(entry.id);
     const row = this.rows.byId.get(entry.id);
     if (row?.steps) {
-      this.updateSteps(cached, row.steps); cached.source = row.source;
+      this.updateSteps(cached, row.steps, row.source, row.actionsOnly ? row.parts : undefined); cached.source = row.source;
       return cached.node;
     }
     entry = row?.source ?? entry;
@@ -905,22 +906,29 @@ export class Transcript {
     else { if (cached.session) cached.custom = undefined; cached.session = undefined; this.updateCustom(cached, entry); }
     const children: HTMLElement[] = cached.custom ? [cached.custom] : [];
     if (!row?.parts) children.push(...this.entryToolChildren(entry));
-    const ids = new Set<string>();
-    for (const message of entry.messages ?? []) {
-      if (!this.rowMessageVisible(entry.id,message,row?.parts)) continue;
-      ids.add(message.id); children.push(this.updateMessage(cached, message, entry, row?.parts?.get(message.id)).node);
-    }
-    this.pruneMessages(cached, ids);
+    children.push(...this.updateMessages(cached, entry, row?.parts, row?.actionsOnly));
     setEntryRhythm(cached.node, children, session !== undefined);
     const header = this.groupHeader(cached, entry.id); if (header) children.unshift(header);
     reconcileChildren(cached.node, children); this.registerContent(cached.node); cached.source = entry; return cached.node;
   }
+  private updateMessages(cached: EntryNode, entry: EntryView, parts?: Map<string, Set<number>>, actionsOnly = false): HTMLElement[] {
+    const children: HTMLElement[] = [], ids = new Set<string>();
+    for (const message of entry.messages ?? []) {
+      if (actionsOnly ? !parts?.has(message.id) : !this.rowMessageVisible(entry.id, message, parts)) continue;
+      const current = this.updateMessage(cached, message, entry, parts?.get(message.id));
+      if (actionsOnly) {current.node.classList.add('tool-only'); current.heading.hidden = true;}
+      ids.add(message.id); children.push(current.node);
+    }
+    this.pruneMessages(cached, ids); return children;
+  }
   private rowMessageVisible(entryId:string,message:MessageView,parts?:Map<string,Set<number>>):boolean{
     return !(parts&&!parts.has(message.id)||!presentMessage(message).visible||this.joinedMessage(entryId,message));
   }
-  private updateSteps(cached:EntryNode,run:StepRun):void{
+  private updateSteps(cached:EntryNode,run:StepRun,entry:EntryView,parts?:Map<string,Set<number>>):void{
     cached.node.classList.add('compact-entry');
-    const children=run.tools.map(tool=>this.updateTool(tool));this.stepEvents(cached,run);
+    const children=parts?this.updateMessages(cached,entry,parts,true):[];
+    if(!parts)this.pruneMessages(cached,new Set());
+    children.push(...run.tools.map(tool=>this.updateTool(tool)));this.stepEvents(cached,run);
     reconcileChildren(cached.node,children);this.registerContent(cached.node);
   }
   private stepEvents(cached:EntryNode,run:StepRun):void{
