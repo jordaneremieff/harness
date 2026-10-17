@@ -33,27 +33,9 @@ function defer(): { promise: Promise<void>; resolve: () => void } {
 /** Observe the service's own watch after its callback updates the frame revision. */
 function serviceFor(host: DurableHost, t: TestContext) {
 	const listeners = new Set<() => Promise<void>>();
-	const tap = <T,>(handle: WatchHandle<T>): WatchHandle<T> => ({
-		get value() { return handle.value; },
-		closed: handle.closed,
-		stop: () => handle.stop(),
-		start: (listener) => handle.start(async (...args) => {
-			await listener(...args);
-			for (const check of [...listeners]) await check();
-		}),
-	});
-	const conversation = host.harness.conversation.bind(host.harness);
-	t.mock.method(host.harness, "conversation", async (...args: Parameters<typeof conversation>) => {
-		const value = await conversation(...args);
-		if (value) {
-			const watch = value.watch.bind(value);
-			t.mock.method(value, "watch", async (...watchArgs: Parameters<typeof watch>) => tap(await watch(...watchArgs)));
-		}
-		return value;
-	});
-	const tasks = host.harness.watchTaskGraph.bind(host.harness);
-	t.mock.method(host.harness, "watchTaskGraph", async (...args: Parameters<typeof tasks>) => tap(await tasks(...args)));
 	const service = new LiveObservationService(host.harness, { storageId: fixtureStorageId }, BACKGROUND_CONTEXT);
+	const unsubscribe = service.onChange(() => { for (const check of [...listeners]) void check(); });
+	t.after(unsubscribe);
 	return Object.assign(service, {
 		/** Read once now, then once per publication; the timer only rejects a missing event. */
 		waitForFrame(token: string, accept: (frame: ObservationFrame) => boolean, label: string): Promise<ObservationFrame> {

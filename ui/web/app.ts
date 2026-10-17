@@ -17,6 +17,7 @@ import { activeTab, ConversationCaptions, conversationIdentityText, type Caption
 import { paneLeaves, paneById, activatePaneTab, movePaneTab, resizePaneSplit, minimumPaneSize, paneSplitGeometry, splitPane, normalizePaneLayout, samePaneLayout, type PaneLeaf } from './pane-layout.ts';
 import { TabStrip } from './tabs-view.ts';
 import { cardAction, controlIcon, type CardIcon } from './card-icons.ts';
+import { thinkingExpanded } from './transcript-presentation.ts';
 import { contextMenu, nativeEditingTarget, paneMenuItems, type ContextItem } from './context-menu.ts';
 import { ProjectPicker } from './picker.ts';
 import type { SelectionChange } from './actions.ts';
@@ -160,7 +161,7 @@ function conversationController(target: Target): ConversationController {
   const region = element('div', 'transcript-region'); const absent = add('empty', 'div', 'empty-state'); absent.hidden = true;
   if (target.kind === 'primary') absent.append(add('empty-heading', 'h2'), add('empty-caption', 'p'));
   const scroller = add('transcript', 'div', 'transcript'); scroller.tabIndex = 0; scroller.setAttribute('aria-label', 'Conversation messages');
-  const latest = add('latest', 'button', 'latest') as HTMLButtonElement; latest.type = 'button'; controlIcon(latest, 'latest', 'Latest message'); latest.hidden = true;
+  const latest = add('latest', 'button', 'latest') as HTMLButtonElement; latest.type = 'button'; latest.textContent = 'Latest'; latest.setAttribute('aria-label', 'Latest message'); latest.hidden = true;
   nodes.set('transcript-region',region);region.append(absent, scroller); const above = add('widgets-above', 'div', 'widgets'), below = add('widgets-below', 'div', 'widgets');
   const elements = createComposerElements(instanceId); elements.root.hidden = false;
   const composerLine = elements.root.querySelector('.composer-line') as HTMLElement; composerLine.prepend(latest);
@@ -168,14 +169,13 @@ function conversationController(target: Target): ConversationController {
   const stop = elements.root.querySelector<HTMLButtonElement>('.stop'); if (!stop) throw new Error('Stop control is missing.'); nodes.set('stop', stop); nodes.set('abort', stop);
   const resize = elements.root.querySelector<HTMLElement>('.resizer'); if (resize) nodes.set('composer-resizer', resize);
   const activity = add('activity', 'p', 'exception'); activity.setAttribute('role', 'status'); const queued = element('ul', 'queued-list'); queued.hidden = true; queued.setAttribute('aria-label', 'Queued messages'); nodes.set('queued', queued); elements.root.prepend(activity, queued);
-  const liveStatus=add('live-status','p','conversation-live-status');liveStatus.setAttribute('role','status');
-  root.append(observed, notice, region, above, liveStatus, elements.root, below); stableViews().mount(root);
+  root.append(observed, notice, region, above, elements.root, below); stableViews().mount(root);
   if (target.kind === 'agent') root.insertBefore(createAgentState(add), region);
-  const controller = {workspaceId, target: {...target}, instanceId, root, nodes, elements, abort: new AbortController(), historyAbort: new AbortController(), cursor: null, before: null, loading: false, preparing: false, passive: true, historyReady: false, historyBoundaryLoaded: false, initialized: false, showThinking: false} as ConversationController;
+  const controller = {workspaceId, target: {...target}, instanceId, root, nodes, elements, abort: new AbortController(), historyAbort: new AbortController(), cursor: null, before: null, loading: false, preparing: false, passive: true, historyReady: false, historyBoundaryLoaded: false, initialized: false, showThinking: true} as ConversationController;
   controller.composer = new Composer(elements, {captured: submission=>{const conversation=state.conversations.get(targetIdentity(controller.target));inputEchoes.capture(workspaceId,submission,conversation?conversationBlocks(conversation):[]);renderController(controller);},failed:(id,uncertain)=>{inputEchoes.failed(id,uncertain);renderController(controller);},prepareInput: () => !controller.passive, imageState: refreshComposerImages, imageInput: captured => composerImageInput(controller, captured), recovery: () => recovery.open(), layoutHeight: () => stableViews().height(elements.root), enterSends: () => state.workspace?.enterSendsMessages === true, timing: (start, end) => {if (controller.workspaceId === state.workspace?.id && !elements.root.closest('[hidden],[inert]')) diagnostics.measure('editor-echo', start, end);}, submitted: result => {inputEchoes.settle(result);showOperation(result, workspaceId);renderController(controller);}, unknownCommand: (text, literal) => target.kind === 'primary' && sameTarget(primaryTarget(), target) ? actions.unknown(text, literal) : false,
     ...(target.kind === 'primary' ? {commands: () => actions.commandOptions(), moreCommands: (captured: Target) => actions.continueCommands(captured)} : {}),
     retained: (workspace, captured) => { if (workspace === state.workspace?.id && captured.kind === 'agent') renderMessageResume(captured.identity); }});
-  controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {references, subject: toolSubjectCaption, readTaskResult:async(reference,signal)=>{const value=await request<AgentInspectionView>(`/api/agents/${encodeURIComponent(reference.sessionId)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',{view:'result',submissionId:reference.submissionId,...(reference.requestId?{requestId:reference.requestId}:{})},undefined,AbortSignal.any([signal,controller.abort.signal,AbortSignal.timeout(15_000)]));if(value.view!=='result')throw new Error('The task result view changed.');return value;}, activity:text=>{const fallback=presentation(controller.target).activity;setText(liveStatus,text||(fallback==='Ready'?'Idle':fallback));}, cwd: () => target.kind === 'primary' ? state.primaries.get(target.key)?.cwd : state.roster.get(target.identity)?.cwd, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
+  controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {references, subject: toolSubjectCaption, readTaskResult:async(reference,signal)=>{const value=await request<AgentInspectionView>(`/api/agents/${encodeURIComponent(reference.sessionId)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',{view:'result',submissionId:reference.submissionId,...(reference.requestId?{requestId:reference.requestId}:{})},undefined,AbortSignal.any([signal,controller.abort.signal,AbortSignal.timeout(15_000)]));if(value.view!=='result')throw new Error('The task result view changed.');return value;}, activity:()=>{if (footerController === controller) renderWorkbenchStatus();}, cwd: () => target.kind === 'primary' ? state.primaries.get(target.key)?.cwd : state.roster.get(target.identity)?.cwd, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
     presentation: (expanded, thinking, view) => { controller.showThinking = thinking; void savePresentation(controllerCapture(controller), expanded, thinking, view); },
     reading: reading => { void saveReading(controllerCapture(controller), reading); },
     ...(target.kind === 'primary' ? {fork: (message: import('../shared/api.ts').MessageView, entry: string) => { if (sameTarget(target, primaryTarget())) actions.fork(entry, rawText(message.parts)); }, output: (more: import('../shared/api.ts').OutputContinuation) => loadControllerOutput(controller, more)} : {}),
@@ -216,8 +216,6 @@ function renderInspection(controller:ConversationController):void {
   const projected=!!controller.elements.root.dataset.messagePanel;
   if(controller.target.kind==='agent')inspection.observe(state.conversations.get(targetIdentity(controller.target))?.frame,connected&&state.agentAvailability.get(controller.target.identity)?.state==='live');
   else inspection.observe(undefined,connected);
-  const activity=controller.transcript.activitySentence()||presentation(controller.target).activity;
-  setText(controllerNode(controller,'live-status'),activity==='Ready'?'Idle':activity);
   controllerNode(controller,'transcript-region').hidden=inspection.active;
   controller.elements.root.hidden=!controller.saved||inspection.active&&!projected;
   if(controller.target.kind==='agent')controllerNode(controller,'agent-state').hidden=inspection.active||controllerNode(controller,'agent-state').hidden;
@@ -553,8 +551,12 @@ function renderControlAttribution():void {
 }
 function fileStatusNotice():string {return fileActionStatus || fileWatch.status;}
 function updateConversationStatus(target: Target | undefined, view: ConversationPresentation, notice: string): void {
-  workbenchStatus.update(target?.kind ?? 'primary', presentationName(view), notice || view.activity, target?.kind === 'agent' ? target.identity : target?.key);
-  byId('workbench-activity').title = notice ? '' : view.detail ?? '';
+  const controller = target && state.workspace ? controllers.get(controllerKey(state.workspace.id, target)) : undefined;
+  const action = view.busy && view.activity === 'Working' ? controller?.transcript.activitySentence() : undefined;
+  workbenchStatus.update(target?.kind ?? 'primary', presentationName(view), notice || action || view.activity, target?.kind === 'agent' ? target.identity : target?.key);
+  const activity = byId('workbench-activity'); activity.title = notice ? '' : view.detail ?? '';
+  activity.dataset.busy = String(!notice && view.busy); activity.dataset.tone = view.tone;
+  activity.setAttribute('role', 'status');
 }
 function renderWorkbenchStatus(): void {
   renderControlAttribution();
@@ -585,7 +587,7 @@ function reviewRetainedDrafts():void {
   modal.actions(button('Close',()=>modal.close()));first?.focus();first?.setSelectionRange(0,first.value.length);
 }
 function renderFileWorkbenchStatus(tab:FileTab):void {
-  footerController = undefined;const owner = state.workspace && filesViews.owner(state.workspace.id,tab);workbenchStatus.update('file',tab.path,fileActionStatus || owner?.status || fileWatch.status,tab.path);
+  footerController = undefined;byId('workbench-activity').dataset.busy = 'false';const owner = state.workspace && filesViews.owner(state.workspace.id,tab);workbenchStatus.update('file',tab.path,fileActionStatus || owner?.status || fileWatch.status,tab.path);
   const slot = byId('focused-composer-status');slot.replaceChildren();
   if (owner?.conflict) {const controls = element('span','file-status-actions');controls.append(button('Re-read file',()=> {void owner.reread();}),button('Keep editing',()=>focusEditor()));slot.append(controls);}
   byId<HTMLAnchorElement>('skip-composer').href = '#files-tree';
@@ -1107,7 +1109,7 @@ function renderController(controller: ConversationController, deferred = false, 
   const firstDraft = !!saved && !controller.initialized;
   if (saved) {
     clearPreparationError(controller);
-    if (!controller.initialized) {controller.initialized = true; controller.showThinking = saved.presentation?.showThinking ?? false; controller.transcript.configure(saved.presentation, saved.reading);}
+    if (!controller.initialized) {controller.initialized = true; controller.showThinking = thinkingExpanded(saved.presentation); controller.transcript.configure(saved.presentation, saved.reading);}
     controller.composer.attach(controller.workspaceId, saved);
   } else prepareController(controller);
   controller.composer.receipts(state.operations.values());
@@ -1546,7 +1548,7 @@ function canStopController(controller: ConversationController): boolean {
   if (!connected || controller.workspaceId !== state.workspace?.id || controller.abort.signal.aborted) return false;
   if (controller.target.kind === 'agent' && messageTarget.current?.workspaceId === controller.workspaceId && messageTarget.current.identity === controller.target.identity) return false;
   if (controller.target.kind === 'primary') return presentation(controller.target).busy;
-  const row = agentRow(controller.target.identity); return !!row?.capabilities?.abort && presentation(controller.target).input;
+  const row = agentRow(controller.target.identity), view = presentation(controller.target); return !!row?.capabilities?.abort && view.input && view.busy;
 }
 async function stopController(controller: ConversationController): Promise<void> {
   const target = controller.target;
@@ -1595,7 +1597,7 @@ async function saveView(captured: TranscriptTarget | undefined, kind: 'reading' 
       void reload().then(() => {
       if (!currentTranscriptTarget(captured)) return;
       const latest = state.targets.get(saved.targetKey); const transcript = controller.transcript;
-      controller.showThinking = latest?.presentation?.showThinking ?? false; transcript.configure(latest?.presentation, latest?.reading); notice.replaceChildren();
+      controller.showThinking = thinkingExpanded(latest?.presentation); transcript.configure(latest?.presentation, latest?.reading); notice.replaceChildren();
     }).catch(showError); }));
   }
 }

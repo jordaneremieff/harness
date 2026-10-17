@@ -107,9 +107,11 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 	let activityGeneration = 0;
 	let retirementSealed = false;
 	const changeListeners = new Set<() => void>();
+	const observationListeners = new Set<() => void>();
 	const activityListeners = new Set<() => void>();
 	function notifyActivity(): void { for (const listener of activityListeners) listener(); }
 	let unsubscribeChanges: (() => void) | undefined;
+	let unsubscribeObservation: (() => void) | undefined;
 	let unsubscribeClose: (() => void) | undefined;
 	const catalog = new AgentCatalog(dirname(dirname(metadata.storagePath)));
 	let publishTimer: ReturnType<typeof setTimeout> | undefined;
@@ -350,6 +352,10 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 				activityGeneration++;
 				notifyActivity();
 			});
+			unsubscribeObservation?.();
+			unsubscribeObservation = opened.onObservationChange(() => {
+				for (const listener of observationListeners) listener();
+			});
 			unsubscribeChanges?.();
 			unsubscribeChanges = opened.harness.subscribeCommits((publication) => {
 				activityGeneration++;
@@ -402,6 +408,8 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 			await deliveries.close();
 			unsubscribeChanges?.();
 			unsubscribeChanges = undefined;
+			unsubscribeObservation?.();
+			unsubscribeObservation = undefined;
 			await flushCatalogView();
 			await settleRecoveryMarker();
 			// Only this host has an expected close; a replacement still needs failure supervision.
@@ -525,6 +533,8 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 			publishTimer = undefined;
 		}
 		unsubscribeChanges?.();
+		unsubscribeObservation?.();
+		observationListeners.clear();
 		unsubscribeClose?.();
 		if (processExit) {
 			markRecoveryDue(true);
@@ -540,7 +550,7 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 		await closeIdleRuntime();
 		return undefined;
 	};
-	return { request, get shutdownRequired() { return reloadFailed || sessionFailed || (host.sessionEnded && host !== reloadClosingHost); }, isIdle: () => !runtimeUnavailable() && !reloading && activeRequests === 0 && host.isIdle(), tryRetire, onActivity: (listener) => { activityListeners.add(listener); return () => { activityListeners.delete(listener); }; }, onChange: (listener) => { changeListeners.add(listener); return () => { changeListeners.delete(listener); }; }, close: closeHost };
+	return { request, get shutdownRequired() { return reloadFailed || sessionFailed || (host.sessionEnded && host !== reloadClosingHost); }, isIdle: () => !runtimeUnavailable() && !reloading && activeRequests === 0 && host.isIdle(), tryRetire, onActivity: (listener) => { activityListeners.add(listener); return () => { activityListeners.delete(listener); }; }, onChange: (listener) => { changeListeners.add(listener); return () => { changeListeners.delete(listener); }; }, onObservationChange: (listener) => { observationListeners.add(listener); return () => { observationListeners.delete(listener); }; }, close: closeHost };
 }
 
 /** Cold inspection writes a bounded disposable SQLite snapshot; it never writes source content. */

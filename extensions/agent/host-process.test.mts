@@ -267,6 +267,36 @@ it("publishes changed state to a public subscription", { timeout: 15000 }, async
 	await client.dispose();
 });
 
+it("publishes live observation deltas without a catalog change", { timeout: 15000 }, async (t) => {
+	const listeners = new Set<() => void>();
+	let revision = 1;
+	let changeReads = 0;
+	const root = fixtureRoot(t);
+	const frame = () => ({scope: "conversation", storageId: config.storageId, conversationId: 1, revision,
+		entries: [], live: [{text: "partial reasoning"}], status: {busy: true}});
+	const runtime: HostRuntime = {
+		request: async (method) => method === "observe-open" ? {token: "live-token", frame: frame()} : method === "observe-frame" ? frame() : {closed: true},
+		close: async () => {}, isIdle: () => true,
+		onChange: () => { changeReads++; return () => {}; },
+		onObservationChange: listener => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+	};
+	const {host, metadata: config} = await startHost(root, 0, () => runtime);
+	t.after(() => host.close().catch(() => {}));
+	const client = await connectClient(config);
+	t.after(() => client.dispose());
+	await call(client, config, "observe-open", {token: "live-token", scope: "conversation", sessionId: config.storageId});
+	const updates = eventLog<unknown>();
+	const subscription = await client.subscribe("observation", "live-token", update => { updates.push(update); });
+	assert.equal((subscription.value as {revision: number}).revision, 1);
+	revision = 2;
+	for (const listener of listeners) listener();
+	await updates.waitFor(values => values.some(value => (value as {revision: number}).revision === 2));
+	assert.equal(changeReads, 1, "only idle activity uses the catalog-change fallback");
+	await subscription.dispose();
+	await host.close();
+	assert.equal(listeners.size, 0, "closing the host releases the native observation listener");
+});
+
 it("parses the idle window with the configured bounds", (t) => {
 	const directory = fixtureRoot(t);
 	assert.equal(resolveIdleMs(undefined, {}, directory), 5 * 60_000);

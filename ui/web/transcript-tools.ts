@@ -21,7 +21,7 @@ export class ToolElapsedClock {
   }
   stop(): void { if (this.timer !== undefined) clearInterval(this.timer); this.timer = undefined; }
 }
-type ToolPart = {part: Extract<PartView, {type: 'toolCall' | 'toolResult'}> | (NonNullable<EntryView['tool']> & {type: 'execution'}); owner: string; slot: string; sequence: number};
+type ToolPart = {part: Extract<PartView, {type: 'toolCall' | 'toolResult'}> | (NonNullable<EntryView['tool']> & {type: 'execution'}); owner: string; slot: string; sequence: number; partial?: boolean};
 type EntryParts = {tools: ToolPart[]; thinking: string[]; communication: string[]};
 export function slot(entry: string, message: string, index: number): string { return JSON.stringify([entry, message, index]); }
 export function toolDisclosureKeys(id: string): string[] { return [`tool:${id}`, `arguments:${id}`, `raw-output:${id}`]; }
@@ -46,6 +46,9 @@ function applyExecution(tool: JoinedTool, part: NonNullable<EntryView['tool']>):
   tool.parentCallId = part.parentCallId; tool.taskId = part.taskId; tool.parentTaskId = part.parentTaskId;
   tool.status = executionStatus(part);
 }
+function resultStatus(part: Extract<PartView, {type: 'toolResult'}>, partial = false): string {
+  return partial ? 'working' : part.isError ? 'error' : 'success';
+}
 function combineParts(id: string, parts: ToolPart[]): JoinedTool | undefined {
     let tool: JoinedTool | undefined; let called = false;
     for (const item of parts) {
@@ -53,7 +56,7 @@ function combineParts(id: string, parts: ToolPart[]): JoinedTool | undefined {
       tool ??= {callId: id, name: part.name, owner: item.owner, slot: item.slot, status: 'missing'};
       if (part.type === 'toolCall') { tool.args = part.arguments; tool.argumentsError = part.argumentsError; if (!called) { tool.name = part.name; tool.owner = item.owner; tool.slot = item.slot; called = true; } }
       else if (part.type === 'execution') applyExecution(tool, part);
-      else { tool.result = part.parts; tool.output = part.output; tool.status = part.isError ? 'error' : 'success'; }
+      else { tool.result = part.parts; tool.output = part.output; tool.status = resultStatus(part, item.partial); }
     }
   return tool;
 }
@@ -167,7 +170,7 @@ export class TranscriptIndex {
       if (message.communication) parts.communication.push(...communicationDisclosureKeys(entry.id, message.id));
       message.parts.forEach((part, at) => {
         if (part.type === 'thinking') parts.thinking.push(`thinking:${entry.id}:${message.id}:${at}`);
-        if (part.type === 'toolCall' || part.type === 'toolResult') parts.tools.push({part, owner: entry.id, slot: slot(entry.id, message.id, at), sequence: parts.tools.length});
+        if (part.type === 'toolCall' || part.type === 'toolResult') parts.tools.push({part, owner: entry.id, slot: slot(entry.id, message.id, at), sequence: parts.tools.length, partial: message.state === 'partial'});
       });
     }
     return parts;

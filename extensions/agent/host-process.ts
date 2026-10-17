@@ -49,6 +49,8 @@ export interface HostRuntime {
 	 * serves the initial snapshot and publishes no changes.
 	 */
 	onChange?(listener: () => void): () => void;
+	/** Native view publications and committed invalidation wake observation feeds independently of catalog writes. */
+	onObservationChange?(listener: () => void): () => void;
 	/** Native commits and host-local control completion reset the idle interval without publishing a footer change. */
 	onActivity?(listener: () => void): () => void;
 }
@@ -300,8 +302,8 @@ class HostProcessServer implements HostProcess {
 			await server.close().catch(() => undefined);
 			throw error;
 		}
-		// The runtime commit source wakes frame publication for every open observation.
-		this.unsubscribeObservation = this.runtime.onChange?.(() => this.scheduleObservationPump());
+		const subscribeObservation = this.runtime.onObservationChange ?? this.runtime.onChange;
+		this.unsubscribeObservation = subscribeObservation?.call(this.runtime, () => this.scheduleObservationPump());
 		const subscribeActivity = this.runtime.onActivity ?? this.runtime.onChange;
 		this.unsubscribeActivity = subscribeActivity?.call(this.runtime, () => {
 			this.shutdownIfRequired();
@@ -395,7 +397,7 @@ class HostProcessServer implements HostProcess {
 		});
 	}
 
-	/** Coalesce runtime write notifications into one frame check per turn. */
+	/** Coalesce native observation notifications into one frame check per turn. */
 	private scheduleObservationPump(): void {
 		if (this.closing || this.observations.size === 0) return;
 		if (this.observationPumping) {

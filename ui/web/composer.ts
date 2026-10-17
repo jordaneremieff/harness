@@ -5,7 +5,7 @@ import { insertNativeText } from './native-insertion.ts';
 import { ComposerOverlay } from './composer-overlay.ts';
 import type { DraftImage, DraftView, OperationView, RecoveryInput, Target, TargetIndex, TargetState, UnconfirmedInput } from '../shared/api.ts';
 import { announce, button, copy, element, rawText, setText } from './dom.ts';
-import { cardAction, controlIcon } from './card-icons.ts';
+import { cardAction } from './card-icons.ts';
 import { exactInput, recoveryLabel } from './recovery.ts';
 import { targetReceipts } from './receipt.ts';
 import { CommandMenu } from './command-menu.ts';
@@ -42,9 +42,9 @@ export function createComposerElements(instanceId: string): ComposerElements {
   }
   modes.append(delivery);
   const stop = element('button', 'stop', 'Stop'); stop.id = `${id}-stop`; stop.type = 'button'; stop.hidden = true;
-  const send = element('button', 'send'); send.id = `${id}-send`; send.type = 'submit'; send.disabled = true;
-  controlIcon(send, 'send', 'Send'); controlIcon(stop, 'stop', 'Stop');
-  const attach = element('button', 'attach'); attach.type = 'button'; controlIcon(attach, 'plus', 'Attach');
+  const send = element('button', 'send', 'Send'); send.id = `${id}-send`; send.type = 'submit'; send.disabled = true;
+  send.setAttribute('aria-label', 'Send message'); stop.setAttribute('aria-label', 'Stop response');
+  const attach = element('button', 'attach', 'Attach'); attach.type = 'button'; attach.setAttribute('aria-label', 'Attach files');
   const picker = element('input'); picker.type = 'file'; picker.multiple = true; picker.hidden = true; picker.tabIndex = -1; picker.setAttribute('aria-label', 'Choose attachments');
   const bar = element('div', 'composer-bar'); bar.append(attach, picker, modes, stop, send); const line = element('div', 'composer-line'); line.append(bar); root.append(resize, receipt, input, line);
   const save = element('span', 'draft-state'); save.id = `${id}-save`;

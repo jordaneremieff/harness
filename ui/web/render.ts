@@ -9,7 +9,8 @@ import { transcriptImage } from './image.ts';
 import type { ToolState } from './state.ts';
 import { isValidTimestamp, previewText } from './format.ts';
 import { entryVisible, presentEntry, presentMessage } from './entry-presentation.ts';
-import { cardPreviewLimits, readRange } from './cards.ts';
+import { cardPreviewLimits, readRange, presentToolPreview, resultPreview } from './cards.ts';
+import { thinkingExpanded } from './transcript-presentation.ts';
 import { TranscriptIndex, ToolElapsedClock, toolTime, slot, communicationDisclosureKeys } from './transcript-tools.ts';
 import { CommunicationCard, messageCopyText, messageCopyDescription } from './communication.ts';
 import type { TranscriptGroups } from './transcript-groups.ts';
@@ -172,7 +173,7 @@ type MessageNode = {communication?: CommunicationCard; node: HTMLElement; header
 type EventPage = {node: HTMLElement; rows: HTMLElement; page: number; previous: HTMLButtonElement; next: HTMLButtonElement; cache: Map<string, {source: EntryView; node: HTMLElement}>};
 type SessionNode = {source?: SessionGroup; details: HTMLDetailsElement; events: EventPage; notices: EventPage};
 type EntryNode = {node: HTMLElement; messages: Map<string, MessageNode>; source?: EntryView; custom?: HTMLElement; session?: SessionNode; groupHeader?: HTMLElement};
-type ToolNode = {answerText?: string; subject?: ToolSubjectCaption; card: HTMLElement; node: HTMLDetailsElement; copy: HTMLButtonElement; title: HTMLElement; target: HTMLElement; glyph: HTMLElement; meta: HTMLElement; preview: HTMLElement; qualification: HTMLElement; expanded: HTMLElement; info: HTMLElement; source?: JoinedTool; inspectionSources?: Map<HTMLDetailsElement, JoinedTool>; presentation?: HTMLElement; argumentsDocument?: HTMLElement; argumentsSource?: JoinedTool; output?: HTMLElement; images?: HTMLElement; contentSource?: JoinedTool; viewport?: HTMLElement; pageViewports?: Set<HTMLElement>; resultDocument?: HTMLElement; documentSource?: JoinedTool; previewBudget?: PreviewBudget; outputNotice?: {node: HTMLElement; source: JoinedTool}; inspections?: {arguments: HTMLDetailsElement; output: HTMLDetailsElement; details: HTMLDetailsElement}};
+type ToolNode = {previewSource?: JoinedTool; answerText?: string; subject?: ToolSubjectCaption; card: HTMLElement; node: HTMLDetailsElement; copy: HTMLButtonElement; title: HTMLElement; target: HTMLElement; glyph: HTMLElement; meta: HTMLElement; preview: HTMLElement; qualification: HTMLElement; expanded: HTMLElement; info: HTMLElement; source?: JoinedTool; inspectionSources?: Map<HTMLDetailsElement, JoinedTool>; presentation?: HTMLElement; argumentsDocument?: HTMLElement; argumentsSource?: JoinedTool; output?: HTMLElement; images?: HTMLElement; contentSource?: JoinedTool; viewport?: HTMLElement; pageViewports?: Set<HTMLElement>; resultDocument?: HTMLElement; documentSource?: JoinedTool; previewBudget?: PreviewBudget; outputNotice?: {node: HTMLElement; source: JoinedTool}; inspections?: {arguments: HTMLDetailsElement; output: HTMLDetailsElement; details: HTMLDetailsElement}};
 export type TranscriptGeometry = {generation: number; followTail: boolean; anchor: {id: string; offsetPx: number} | null; scrollTop: number};
 export type FindStatus = {total: number; position: number; moved: boolean; end: 'none' | 'first' | 'last' | 'unavailable' | null};
 export type FindSession = {next: (query: string) => FindStatus; previous: (query: string) => FindStatus; reset: () => void; close: () => void};
@@ -197,7 +198,7 @@ export class Transcript {
   private dirtyLayout = true;
   private generation = 0;
   private expanded = new Set<string>();
-  private showThinking = false;
+  private showThinking = true;
   private follow = true;
   private readingRevision = 0;
   private pending = false;
@@ -374,7 +375,7 @@ export class Transcript {
   configure(presentation?: PresentationView, reading?: ReadingView): void {
     this.view = presentation?.transcriptView ?? 'chronological'; this.pendingView = undefined;
     this.node.dataset.view = this.view;
-    this.expanded = new Set(presentation?.expanded ?? []); this.showThinking = presentation?.showThinking ?? false;
+    this.expanded = new Set(presentation?.expanded ?? []); this.showThinking = thinkingExpanded(presentation);
     this.deriveRows();
     if (reading) {
       this.follow = reading.followTail; this.readingRevision = reading.revision; this.restoring = reading.followTail ? undefined : reading;
@@ -403,7 +404,7 @@ export class Transcript {
     this.resize?.disconnect(); if (!this.destroyed) this.resize?.observe(this.node); this.sizes = new WeakMap(); this.scrolling = new WeakSet(); this.reflowAnchor = undefined; this.writtenScrollTop = undefined;
     this.clearFind(); this.findRevision++;
     this.generation++; this.entries = []; this.displayed = []; this.cache.clear(); this.tools.clear(); this.index = new TranscriptIndex(); this.joined = this.index.joined; this.rows = new TranscriptRows(); this.tasks = new ConversationTasks(); this.visible.clear(); this.dirtyLayout = true; this.pins.clear(); this.heights.clear(); this.gaps.clear();
-    this.expanded.clear(); this.showThinking = false; this.follow = true; this.readingRevision = 0;
+    this.expanded.clear(); this.showThinking = true; this.follow = true; this.readingRevision = 0;
     this.layout = layoutItems([], this.heights, 140); this.restoring = undefined; this.node.replaceChildren(...(this.lead ? [this.lead] : [])); this.scrollTo(0);
   }
   defer(refresh: () => void, receivedAt?: number): void {
@@ -1326,7 +1327,11 @@ export class Transcript {
     const tool = this.tools.get(source.callId) ?? this.createTool(source);
     const previous = tool.source; tool.source = source;
     this.toolHeading(tool, source);this.toolAnswer(tool,source);
-    if (previous === source) { if (tool.node.open && tool.documentSource !== source) this.expandTool(tool); return tool.card; }
+    if (previous === source) {
+      if (tool.previewSource !== source) this.toolContent(tool);
+      if (tool.node.open && tool.documentSource !== source) this.expandTool(tool);
+      return tool.card;
+    }
     tool.card.dataset.status = source.status;
     setText(tool.glyph,toolStateLabels[source.status]??'State unavailable');
     tool.glyph.className = `tool-status ${source.status}`;
@@ -1337,7 +1342,7 @@ export class Transcript {
     tool.meta.hidden = !tool.meta.textContent; tool.copy.hidden = !source.result; this.toolCopyLabel(tool, source);
     const changed = previous?.args !== source.args || previous?.result !== source.result || previous?.argumentText !== source.argumentText || previous?.status !== source.status;
     if (changed) this.toolContent(tool);
-    tool.preview.hidden = true; tool.expanded.hidden = !tool.node.open; return tool.card;
+    tool.preview.hidden = tool.node.open || !tool.preview.textContent; tool.expanded.hidden = !tool.node.open; return tool.card;
   }
   private toolAnswer(tool: ToolNode, source: JoinedTool): void {
     const task=this.tasks.byCall.get(source.callId);let state=tool.node.querySelector<HTMLButtonElement>('.step-answer-state');
@@ -1417,14 +1422,22 @@ export class Transcript {
     tool.target.hidden = !text; tool.target.title = caption?.title ?? bounded(subject(source, RAW_LIMIT, Number.MAX_SAFE_INTEGER));
   }
   private toolContent(tool: ToolNode): void {
-    tool.preview.hidden = true;
+    const source = tool.source; if (!source) return;
+    if (!this.protectedNode(tool.preview)) {
+      const supplied = presentToolPreview(source);
+      if (supplied) this.replaceContent(tool.preview, supplied);
+      else setText(tool.preview, resultPreview(source.result ?? []));
+      tool.preview.classList.toggle('tool-error', source.status === 'error');
+      tool.previewSource = source;
+    }
+    tool.preview.hidden = tool.node.open || !tool.preview.textContent;
     if (tool.node.open) this.expandTool(tool);
   }
   private toolExpansion(tool: ToolNode): void {
     if (this.destroyed) return;
     if (!tool.source || this.tools.get(tool.source.callId) !== tool) return;
     this.toolHeading(tool, tool.source);
-    tool.preview.hidden = true; tool.expanded.hidden = !tool.node.open;
+    tool.preview.hidden = tool.node.open || !tool.preview.textContent; tool.expanded.hidden = !tool.node.open;
     if (tool.node.open) this.expandTool(tool);
   }
   private toolArguments(tool: ToolNode): string {

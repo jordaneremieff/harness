@@ -55,6 +55,7 @@ export class LiveObservationService {
 	private readonly context: Context;
 	private readonly conversations = new Map<ConversationId, ConversationWatchState>();
 	private readonly tokens = new Map<string, TokenState>();
+	private readonly listeners = new Set<() => void>();
 	private taskGraph: TaskGraphWatchState | undefined;
 	private operations: Promise<void> = Promise.resolve();
 
@@ -69,6 +70,12 @@ export class LiveObservationService {
 		this.harness = harness;
 		this.options = options;
 		this.context = context;
+	}
+
+	/** Native view publications and committed invalidation wake attached frame readers. */
+	onChange(listener: () => void): () => void {
+		this.listeners.add(listener);
+		return () => { this.listeners.delete(listener); };
 	}
 
 	/** Open or reuse one token. Repeated calls with the same token return the current frame. */
@@ -141,6 +148,7 @@ export class LiveObservationService {
 
 	private async stopAll(): Promise<void> {
 		this.tokens.clear();
+		this.listeners.clear();
 		const stops: Promise<unknown>[] = [];
 		for (const state of this.conversations.values()) {
 			state.references = 0;
@@ -165,6 +173,7 @@ export class LiveObservationService {
 		state.revision += 1;
 		state.dirty = true;
 		state.frame = undefined;
+		for (const listener of this.listeners) listener();
 	}
 
 	/** Number of open tokens; test and diagnostics surface. */
@@ -185,11 +194,7 @@ export class LiveObservationService {
 		const handle = await conversation.watch(this.context);
 		const state: ConversationWatchState = { conversationId, handle, revision: 1, dirty: true, references: 0, frame: undefined };
 		try {
-			handle.start(async () => {
-				state.revision += 1;
-				state.dirty = true;
-				state.frame = undefined;
-			});
+			handle.start(async () => { this.invalidateState(state); });
 		} catch (error) {
 			await handle.stop().catch(() => undefined);
 			throw error;
@@ -203,11 +208,7 @@ export class LiveObservationService {
 		const handle = await this.harness.watchTaskGraph(this.context);
 		const state: TaskGraphWatchState = { handle, revision: 1, dirty: true, references: 0, frame: undefined };
 		try {
-			handle.start(async () => {
-				state.revision += 1;
-				state.dirty = true;
-				state.frame = undefined;
-			});
+			handle.start(async () => { this.invalidateState(state); });
 		} catch (error) {
 			await handle.stop().catch(() => undefined);
 			throw error;

@@ -21,7 +21,7 @@ export class TranscriptRows {
     this.sources=[...entries];this.thinking=showThinking;
     this.byId.clear();this.owners.clear();this.calls.clear();this.runs.clear();this.nestedCounts.clear();
     this.result=[];this.used.clear();this.routine.clear();
-    for(const entry of entries)this.entry(entry,joined,sessionOwners,showThinking,sessions);
+    for(const entry of entries)this.entry(entry,joined,sessionOwners,sessions);
     this.foldRoutineEvents();
     // Result-only records point back to the exact call's derived row rather than acquiring a second row.
     for(const entry of entries)if(!this.owners.has(entry.id))this.linkResults(entry);
@@ -49,11 +49,11 @@ export class TranscriptRows {
     if(tool.parentCallId)this.nestedCounts.set(tool.parentCallId,(this.nestedCounts.get(tool.parentCallId)??0)+1);
     if(!this.owners.has(entry.id))this.owners.set(entry.id,row.view.id);
   }
-  private entry(entry:EntryView,joined:ReadonlyMap<string,JoinedTool>,sessionOwners:ReadonlyMap<string,string>,showThinking:boolean,sessions:ReadonlyMap<string,SessionGroup>):void{
+  private entry(entry:EntryView,joined:ReadonlyMap<string,JoinedTool>,sessionOwners:ReadonlyMap<string,string>,sessions:ReadonlyMap<string,SessionGroup>):void{
     if(sessionOwners.has(entry.id)&&sessionOwners.get(entry.id)!==entry.id)return;
     if(entry.data||!entry.messages?.length&&!entry.tool){this.event(entry,sessions.get(entry.id));return;}
     if(entry.tool){const tool=joined.get(entry.tool.callId);if(tool?.owner===entry.id)this.step(entry,tool);return;}
-    for(const message of entry.messages??[])this.message(entry,message,joined,showThinking);
+    for(const message of entry.messages??[])this.message(entry,message,joined);
   }
   private event(entry:EntryView,group?:SessionGroup):void{
     const members=group?.entries??[entry],routine=members.every(routineSessionEntry);
@@ -75,18 +75,18 @@ export class TranscriptRows {
     this.runs.get(owner.id)?.events.push(...events);this.byId.delete(row.id);
     for(const entry of events)this.owners.set(entry.id,owner.id);
   }
-  private message(entry:EntryView,message:MessageView,joined:ReadonlyMap<string,JoinedTool>,showThinking:boolean):void{
+  private message(entry:EntryView,message:MessageView,joined:ReadonlyMap<string,JoinedTool>):void{
     if(message.communication){this.add(entry,`message:${message.id}`,new Map([[message.id,new Set(message.parts.map((_,at)=>at))]]));return;}
     let prose:TranscriptRow|undefined;
-    message.parts.forEach((part,at)=>{prose=this.part(entry,message,part,at,joined,showThinking,prose);});
+    message.parts.forEach((part,at)=>{prose=this.part(entry,message,part,at,joined,prose);});
     if(messageNotice(message)&&!prose){this.add(entry,`notice:${message.id}`,new Map([[message.id,new Set()]]));}
   }
-  private part(entry:EntryView,message:MessageView,part:PartView,at:number,joined:ReadonlyMap<string,JoinedTool>,showThinking:boolean,prose?:TranscriptRow):TranscriptRow|undefined{
+  private part(entry:EntryView,message:MessageView,part:PartView,at:number,joined:ReadonlyMap<string,JoinedTool>,prose?:TranscriptRow):TranscriptRow|undefined{
     if(part.type==='toolCall'||part.type==='toolResult'){
       const tool=joined.get(part.callId);if(tool?.slot===slot(entry.id,message.id,at))this.step(entry,tool);
       return;
     }
-    if(hiddenPart(part,showThinking))return prose;
+    if(hiddenPart(part))return prose;
     prose??=this.add(entry,`prose:${message.id}:${at}`,new Map([[message.id,new Set()]]));
     prose.parts?.get(message.id)?.add(at);return prose;
   }
@@ -99,8 +99,7 @@ export class TranscriptRows {
 function nearestRun(at:number,before?:RunPosition,after?:RunPosition):RunPosition|undefined{
   if(!before)return after;if(!after)return before;return at-before.at<=after.at-at?before:after;
 }
-function hiddenPart(part:PartView,showThinking:boolean):boolean{
-  if(part.type==='thinking'&&!showThinking)return true;
+function hiddenPart(part:PartView):boolean{
   return (part.type==='text'||part.type==='thinking')&&!part.text.trim()&&!part.redacted&&!part.more;
 }
 function messageNotice(message:MessageView):boolean{return !!message.error||message.stopReason==='error'||message.stopReason==='aborted'||message.coverage.truncated||message.coverage.omitted>0||!message.coverage.complete;}

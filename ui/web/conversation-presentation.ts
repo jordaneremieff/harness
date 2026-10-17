@@ -69,9 +69,9 @@ function primaryPresentation(source: PresentationSource, target: Extract<Target,
   if (!item || item.key !== target.key || item.epoch !== target.epoch) return base;
   const ready = item.lifecycle === 'ready';
   const outcome = item.responseOutcome ?? responseOutcome(source.entries);
-  const activity = primaryActivity(item, outcome);
+  const activity = source.connected ? primaryActivity(item, outcome) : 'Connection lost; activity unknown';
   return {...base, name: item.extension?.title ?? item.sessionName ?? 'Primary', identityTail:source.identityTail, cwd: item.cwd, activity, tone: primaryTone(item, outcome, source.connected),
-    input: ready, busy: ready && ['running', 'compacting', 'retrying'].includes(item.activity), responseOutcome: outcome,
+    input: ready, busy: source.connected && ready && ['running', 'compacting', 'retrying'].includes(item.activity), responseOutcome: outcome,
     detail: item.activity === 'retrying' && item.retry ? `Next retry time is estimated from backend receipt plus ${item.retry.delayMs} ms.\n${item.retry.error}` : undefined,
     model: item.model ? {provider: item.model.provider, modelId: item.model.id} : undefined, thinking: item.thinkingLevel,
     tool: ready && item.activity === 'running' ? source.tool : undefined};
@@ -81,7 +81,9 @@ function agentSettings(row?: AgentRow, frame?: ProjectedFrame): Pick<Conversatio
     thinking: frame?.status.thinkingLevel ?? row?.thinkingLevel ?? row?.model?.thinkingLevel,
     retainedModel: !frame?.status.model && !!row?.model, retainedThinking: frame?.status.thinkingLevel === undefined && !!(row?.thinkingLevel ?? row?.model?.thinkingLevel)};
 }
-function agentActivity(state: AgentRow['availability'], input: boolean, frame?: ProjectedFrame): string {
+function agentActivity(state: AgentRow['availability'], input: boolean, frame: ProjectedFrame | undefined, connected: boolean, checked: boolean): string {
+  if (!connected) return 'Connection lost; activity unknown';
+  if (state === 'live' && !checked) return 'Connection not checked';
   if (state !== 'live') return {stored: 'Not connected', incompatible: 'Connection unavailable', unavailable: 'Unavailable'}[state];
   if (Array.isArray(frame?.status.compactions?.value) && frame.status.compactions.value.length) return 'Compacting…';
   if (frame?.status.retry && frame.status.busy) return `Retrying · attempt ${frame.status.retry.attempt} · next ${retryTime(frame.status.retry.at)}`;
@@ -123,7 +125,7 @@ function agentTone(state: AgentRow['availability'], connected: boolean, live: bo
 }
 function agentPresentation(source: PresentationSource, identity: string): ConversationPresentation {
   const {row, checked, state, input} = agentConnection(source, identity), frame = source.frame;
-  const live = checked && state === 'live';
+  const live = source.connected && checked && state === 'live';
   const busy = live && frame?.status.busy === true, retained = !live;
   const settings = agentSettings(row, frame);
   const name = source.caption?.name ?? agentName(row?.name, row?.handle, identity, frame?.status.name, row?.firstMessage);
@@ -131,7 +133,7 @@ function agentPresentation(source: PresentationSource, identity: string): Conver
   const outcome = responseOutcome(frame?.entries);
   const tone = agentTone(state,source.connected,live,busy,input,frame,outcome);
   return {...emptyPresentation(source.connected), ...settings, name, identityTail, tone, cwd: row?.cwd,
-    activity: state === 'live' && !checked ? 'Connection not checked' : agentActivity(state, input, frame), input, busy, guidance: input ? '' : state === 'stored' ? 'Use Start agent to connect this agent.' : 'Messages are unavailable for this agent.', retainedModel: settings.retainedModel || retained && !!settings.model, retainedThinking: settings.retainedThinking || retained && !!settings.thinking,
+    activity: agentActivity(state, input, frame, source.connected, checked), input, busy, guidance: input ? '' : state === 'stored' ? 'Use Start agent to connect this agent.' : 'Messages are unavailable for this agent.', retainedModel: settings.retainedModel || retained && !!settings.model, retainedThinking: settings.retainedThinking || retained && !!settings.thinking,
     detail: live ? agentFailureDetails(frame) : undefined,
     responseOutcome: responseOutcome(frame?.entries), tool: live ? frameTool(frame) : undefined};
 }

@@ -908,6 +908,11 @@ export class DurableHost {
 
 	// ----- live observation -----------------------------------------------------------------
 
+	/** Observe native view publications without treating a streamed delta as a storage commit. */
+	onObservationChange(listener: () => void): () => void {
+		return this.liveObservation().onChange(listener);
+	}
+
 	/** Live tokens cannot survive replacement of the Harness that owns their watches. */
 	get observationCount(): number { return liveObservations.get(this.harness)?.size ?? 0; }
 

@@ -1,4 +1,9 @@
-import type { JsonDisplay, PartView } from '../shared/api.ts';
+import type { JsonDisplay, PartView, PresentationView } from '../shared/api.ts';
+
+/** Revision zero has no deliberate disclosure choice. */
+export function thinkingExpanded(presentation?: PresentationView): boolean {
+  return !presentation || presentation.revision === 0 || presentation.showThinking;
+}
 
 export type PresentationContext = {
   bounded(text: string, limit?: number): string;

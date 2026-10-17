@@ -24,6 +24,17 @@ test('native nested tasks use supplied status and duration without a model call 
   index.update([], new Map()); assert.equal(index.joined.size, 0); assert.equal(index.disclosures.size, 0);
 });
 
+test('partial tool results remain active until their final result without an invented start time', () => {
+  const index = new TranscriptIndex(), source = entry('progress', [result('read', 'first output')]);
+  const message = source.messages?.[0]; assert.ok(message); message.state = 'partial';
+  index.update([source], new Map());
+  assert.equal(index.joined.get('read')?.status, 'working');
+  assert.equal(index.joined.get('read')?.observedStart, undefined);
+  assert.equal(toolTime(index.joined.get('read') as NonNullable<ReturnType<typeof index.joined.get>>), '');
+  index.update([{...source, messages: [{...message, state: 'final'}]}], new Map());
+  assert.equal(index.joined.get('read')?.status, 'success');
+});
+
 test('communication disclosures follow their message owner and clear on source removal', () => {
   const index = new TranscriptIndex(); const source = entry('peer', []); const message = source.messages?.[0]; assert.ok(message); message.communication = {state: 'unresolved'};
   const keys = communicationDisclosureKeys('peer', 'peer');

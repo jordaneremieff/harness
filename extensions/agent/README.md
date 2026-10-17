@@ -1993,6 +1993,13 @@ A process predating the current descriptor needs a restart; there is no hidden
 upgrade, migration, or interruption of active work. Application errors from a
 live writer never authorize another writer.
 
+Native conversation and task-watch publications wake the existing observation
+feed directly, including uncommitted text, thinking and tool progress. The host
+coalesces those signals without a catalog write or a polling timer. Committed
+catalog notifications retain their separate source and consumers. A running
+host retains its loaded notification code until a supported idle host restart;
+a browser or backend release alone does not replace it.
+
 An open live observation reconnects only to a live host. It never relaunches a
 lost host; it signals unavailable and leaves relaunch to bounded manager
 recovery. A listener attached after a frame arrives receives that current
