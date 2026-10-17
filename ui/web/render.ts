@@ -874,12 +874,13 @@ export class Transcript {
       if (!owner || !this.cache.has(owner)) { this.releaseToolGeometry(tool); tool.card.remove(); this.tools.delete(id); }
     }
   }
+  private entryCacheNode(id:string):EntryNode{
+    let cached=this.cache.get(id);
+    if(!cached){const node=element('div','entry');node.dataset.entryId=id;node.style.display='flow-root';cached={node,messages:new Map()};this.cache.set(id,cached);}
+    return cached;
+  }
   private updateEntry(entry: EntryView): HTMLElement {
-    let cached = this.cache.get(entry.id);
-    if (!cached) {
-      const node = element('div', 'entry'); node.dataset.entryId = entry.id; node.style.display = 'flow-root';
-      cached = {node, messages: new Map()}; this.cache.set(entry.id, cached);
-    }
+    const cached=this.entryCacheNode(entry.id);
     const row = this.rows.byId.get(entry.id);
     if (row?.steps) {
       this.updateSteps(cached, row.steps); cached.source = row.source;

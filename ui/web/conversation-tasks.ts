@@ -22,12 +22,15 @@ export function toolTaskReference(tool:JoinedTool):TaskReference|undefined {
   const parts=[...(tool.result??[])];let visits=0,selected:TaskReference|undefined;
   for(let at=0;at<parts.length&&visits++<128;at++){
     const part=parts[at];if(!part)continue;
-    if(part.type==='toolResult'){if(parts.length+part.parts.length<=128)parts.push(...part.parts);continue;}
+    if(part.type==='toolResult'){appendResultParts(parts,part);continue;}
     const reference=partReference(part,own(tool.args?.value,'sessionId'));if(!reference)continue;
     if(selected&&!sameReference(selected,reference))return;
     selected=reference;
   }
   return selected;
+}
+function appendResultParts(parts:PartView[],part:Extract<PartView,{type:'toolResult'}>):void{
+  if(parts.length+part.parts.length<=128)parts.push(...part.parts);
 }
 function partReference(part:PartView,target:unknown):TaskReference|undefined {
   if(part.type!=='text'||!part.structured||part.structured.truncated)return;
