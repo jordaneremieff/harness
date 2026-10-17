@@ -49,7 +49,7 @@ import { primaryBusy, primaryEmpty } from './primary-presentation.ts';
 import { inputOperation, operationLabel } from './operation-label.ts';
 import { PreferenceQueue } from './preference-queue.ts';
 import { BrowserDiagnostics } from './diagnostics.ts';
-import {DevReload, devReloadPresentation, type DevReloadCheckpoint, type DevReloadHooks, type DevCheckpointEntry, type DevReloadHold} from './dev-reload.ts';
+import {DevReload, devReloadPresentation, type DevReloadCheckpoint, type DevReloadHooks, type DevCheckpointEntry, type DevReloadHold, type DevReloadNotice} from './dev-reload.ts';
 import { conversationPresentation, presentationGlyph, presentationName, projectIdentity, composerFolder, agentViewStatus } from './conversation-presentation.ts';
 import type { ConversationPresentation } from './conversation-presentation.ts';
 import { newerOperation, mergeOperationMap } from './operation-state.ts';
@@ -2133,14 +2133,16 @@ async function initializeDevReload(current:()=>boolean): Promise<void> {
     captureCheckpoint: captureDevCheckpoint, writeCheckpoint: checkpoint => sessionStorage.setItem(devCheckpointKey, JSON.stringify(checkpoint)),
     readCheckpoint: () => {const value = sessionStorage.getItem(devCheckpointKey);if(value===null)return null;const checkpoint=JSON.parse(value);reloadStateKey=checkpoint?.composerStateKey;return checkpoint;}, restoreCheckpoint: restoreDevCheckpoint, clearCheckpoint: () => {sessionStorage.removeItem(devCheckpointKey);const key=reloadStateKey;reloadStateKey=undefined;preparedReloadState=undefined;if(key)void deleteReloadState(key).catch(()=>{});},
     captureCssState: captureDevCssState, afterCssApply: applyDevCssState,
-    status: status => {
-      devNavigating = status.state === 'navigating'; notice.replaceChildren();
-      const view = devReloadPresentation(status); notice.hidden = !view.text && !view.retry; notice.title = view.detail;
-      if (view.text) notice.append(element('span', undefined, view.text));
-      if (view.retry) notice.append(button('Retry update', () => {if (status.state === 'offline') devReload?.reconnect(); void devReload?.resume();}));
-      if (!notice.isConnected) workbenchStatus.node.append(notice);
-    }});
+    status: status => renderDevReloadNotice(notice, status)});
   await devReload.ready;
+}
+export function renderDevReloadNotice(notice: HTMLElement, status: DevReloadNotice): void {
+  devNavigating = status.state === 'navigating'; notice.replaceChildren();
+  const view = devReloadPresentation(status); notice.hidden = !view.text && !view.retry; notice.title = view.detail;
+  if (status.error) notice.dataset.reloadError = JSON.stringify(status.error); else delete notice.dataset.reloadError;
+  if (view.text) notice.append(element('span', undefined, view.text));
+  if (view.retry) notice.append(button('Retry update', () => {if (status.state === 'offline') devReload?.reconnect(); void devReload?.resume();}));
+  if (!notice.isConnected) workbenchStatus.node.append(notice);
 }
 function updateDiagnostics(): void {
   const generation = document.querySelector('meta[name="ui-generation"]')?.getAttribute('content') ?? '', client = document.querySelector('meta[name="ui-client"]')?.getAttribute('content') ?? '';

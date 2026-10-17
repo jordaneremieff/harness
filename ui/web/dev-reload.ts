@@ -23,8 +23,10 @@ export type DevReloadView = {
 export type DevReloadCheckpoint = DevReloadView & {
   version: 1; generation: string; oldClient: string; capturedAt: number; interactionRevision: number;
 };
+export type DevReloadError = {name: string; message: string; stack: string; truncated: Array<'name' | 'message' | 'stack'>};
 export type DevReloadNotice = {
   retryable: boolean;
+  error?: DevReloadError;
   state: DevBuild['status'] | 'idle' | 'deferred' | 'reconnecting' | 'offline' | 'applied' | 'navigating';
   code: DevBuild['code'] | DevReloadHold | 'checkpoint' | 'restore' | 'storage' | 'stylesheet' | 'drain' | 'timeout' | 'ack' | 'release' | 'host';
   build?: DevBuild;
@@ -32,7 +34,9 @@ export type DevReloadNotice = {
 export function devReloadPresentation(notice: DevReloadNotice): {text: string; detail: string; retry: boolean} {
   const labels: Record<DevReloadNotice['state'], string> = {idle:'', applied:'', ready:'Updating…', building:'Updating…', navigating:'Updating…', held:'Update paused', deferred:'Update paused', failed:'Update unavailable', offline:'Update unavailable', 'restart-required':'Restart required', reconnecting:'Reconnecting updates…'};
   const retry = notice.retryable && (notice.state === 'deferred' || notice.state === 'offline' || notice.state === 'failed' && ['stylesheet', 'drain', 'ack'].includes(notice.code));
-  return {text:labels[notice.state], detail:`${notice.state} (${notice.code})`, retry};
+  const error = notice.error;
+  const detail = `${notice.state} (${notice.code})` + (error ? `\nName: ${error.name}\nMessage: ${error.message}\nStack:\n${error.stack || '[not supplied]'}${error.truncated.length ? `\nTruncated fields: ${error.truncated.join(', ')}` : ''}` : '');
+  return {text:labels[notice.state], detail, retry};
 }
 export interface DevReloadHooks {
   /** Revision advances for user interaction, target changes and writes, not restoration itself. */
@@ -169,7 +173,32 @@ function validPostResult(value: unknown, release: boolean): boolean {
 class ReloadFailure extends Error {
   code: DevReloadNotice['code'];
   status?: number;
-  constructor(code: DevReloadNotice['code'], status?: number) {super(code); this.code = code; this.status = status;}
+  constructor(code: DevReloadNotice['code'], status?: number, options?: ErrorOptions) {super(code, options); this.code = code; this.status = status;}
+}
+function isReloadFailure(error: unknown): error is ReloadFailure {
+  try {return error instanceof ReloadFailure;} catch {return false;}
+}
+function exceptionField(error: unknown, field: 'name' | 'message' | 'stack', fallback: string): string {
+  try {
+    if (error !== null && (typeof error === 'object' || typeof error === 'function')) {
+      const value: unknown = Reflect.get(error, field); return typeof value === 'string' ? value : fallback;
+    }
+  } catch {return `[${field} unavailable: property access threw]`;}
+  return fallback;
+}
+/** Only detached bounded strings reach the notice; native DOMException getters remain readable. */
+export function devReloadError(thrown: unknown): DevReloadError {
+  let error = thrown;
+  try {if (thrown instanceof ReloadFailure && Object.hasOwn(thrown, 'cause')) error = thrown.cause;} catch { /* Exotic exceptions still reach the guarded field reads. */ }
+  const primitive = error === null || !['object', 'function'].includes(typeof error);
+  const result: DevReloadError = {name: exceptionField(error, 'name', 'Thrown value'), message: exceptionField(error, 'message', primitive ? String(error) : '[no string message supplied]'), stack: exceptionField(error, 'stack', ''), truncated: []};
+  for (const [field, limit] of [['name', 256], ['message', 4096], ['stack', 16384]] as const) {
+    if (result[field].length <= limit) continue;
+    let end = limit; const last = result[field].charCodeAt(end - 1);
+    if (last >= 0xd800 && last <= 0xdbff) end--;
+    result[field] = result[field].slice(0, end); result.truncated.push(field);
+  }
+  return result;
 }
 
 /** One dev page, one stream and one newest update. Construct only after app hydration. */
@@ -206,8 +235,8 @@ export class DevReload {
     this.active = GENERATION.test(this.generation) && CLIENT.test(this.client) && GENERATION.test(this.family);
     this.ready = this.active ? this.run(signal => this.initialize(signal)) : Promise.resolve();
   }
-  private notice(state: DevReloadNotice['state'], code: DevReloadNotice['code'] = 'none'): void {
-    if (!this.stopped) {try {this.hooks.status({state, code, retryable: !this.fatal && !this.stopped, ...(this.latest ? {build: {...this.latest}} : {})});} catch {this.fatal = true;}}
+  private notice(state: DevReloadNotice['state'], code: DevReloadNotice['code'] = 'none', error?: DevReloadError): void {
+    if (!this.stopped) {try {this.hooks.status({state, code, retryable: !this.fatal && !this.stopped, ...(error ? {error} : {}), ...(this.latest ? {build: {...this.latest}} : {})});} catch {this.fatal = true;}}
   }
   private current(serial: number, signal: AbortSignal): boolean {return !this.stopped && !signal.aborted && serial === this.serial;}
   private async bounded<T>(promise: Promise<T>, signal: AbortSignal, controller = this.controller): Promise<T> {
@@ -216,7 +245,7 @@ export class DevReload {
     const limit = new Promise<never>((_resolve, reject) => {
       abort = () => {if (timer !== undefined) this.env.clock.clear(timer); reject(new ReloadFailure('timeout'));};
       signal.addEventListener('abort', abort, {once: true});
-      timer = this.env.clock.set(() => {this.notice('failed', 'timeout');this.retryRecovery(); reject(new ReloadFailure('timeout')); controller?.abort();}, DEADLINE);
+      timer = this.env.clock.set(() => {const error = new ReloadFailure('timeout'); this.notice('failed', 'timeout', devReloadError(error));this.retryRecovery(); reject(error); controller?.abort();}, DEADLINE);
       if (signal.aborted) abort();
     });
     try {return await Promise.race([promise, limit]);}
@@ -226,9 +255,10 @@ export class DevReload {
     if (this.work) return this.work;
     const controller = new AbortController(); this.controller = controller;
     const task = Promise.resolve().then(() => this.stopped || controller.signal.aborted ? undefined : action(controller.signal)).catch(error => {
-      if (!(error instanceof ReloadFailure)) this.fatal = true;
-      if (!this.stopped && !controller.signal.aborted) this.notice('failed', error instanceof ReloadFailure ? error.code : 'host');
-      if(error instanceof ReloadFailure&&['ack','drain','stylesheet','offline','capacity','timeout'].includes(error.code))this.retryRecovery();
+      const known = isReloadFailure(error);
+      if (!known) this.fatal = true;
+      if (!this.stopped && !controller.signal.aborted) this.notice('failed', known ? error.code : 'host', devReloadError(error));
+      if(known&&['ack','drain','stylesheet','offline','capacity','timeout'].includes(error.code))this.retryRecovery();
     }).finally(() => {
       if (this.controller === controller) this.controller = undefined;
       if (this.work === task) this.work = undefined;
@@ -244,7 +274,7 @@ export class DevReload {
     if (this.stopped || signal.aborted) return;
     const result: unknown = await this.bounded(response.json(), signal);
     if (!validPostResult(result, path === '/api/dev/release')) throw new ReloadFailure(code);
-    } catch (error) {throw error instanceof ReloadFailure ? error : new ReloadFailure(code);}
+    } catch (error) {throw isReloadFailure(error) ? error : new ReloadFailure(code, undefined, {cause: error});}
   }
   private async ack(signal: AbortSignal): Promise<void> {
     this.acknowledging = true;
@@ -372,9 +402,9 @@ export class DevReload {
     return result;
   }
   private linkFailed(error: unknown): void {
-    const code = error instanceof ReloadFailure ? error.code : 'offline';
-    if (code === 'invalid-assets') {this.fatal = true; this.notice('failed', code); return;}
-    this.lost(code);
+    const code = isReloadFailure(error) ? error.code : 'offline';
+    if (code === 'invalid-assets') {this.fatal = true; this.notice('failed', code, devReloadError(error)); return;}
+    this.lost(code, devReloadError(error));
   }
   private openSource(token: number): void {
     if (token !== this.sourceToken || this.stopped || this.fatal) return;
@@ -384,15 +414,17 @@ export class DevReload {
         this.receive(data);
       }, () => {if (token === this.sourceToken && !this.stopped) this.lost();});
       void this.applyLatest();
-    } catch {this.lost();}
+    } catch (error) {this.lost('offline', devReloadError(error));}
   }
-  private lost(code: DevReloadNotice['code'] = 'offline'): void {
+  private lost(code: DevReloadNotice['code'] = 'offline', error?: DevReloadError): void {
+    if (this.fatal) return;
     this.closeSource(); this.clearRetry();
     const delay = RETRIES[Math.min(this.attempts++,RETRIES.length-1)]??6000;
-    this.notice('reconnecting', code === 'capacity' ? code : 'none');
+    this.notice('reconnecting', code === 'capacity' ? code : 'none', error);
     this.retry = this.env.clock.set(() => {this.retry = undefined; this.connect(true);}, delay);
   }
   private receive(data: string): void {
+    if (this.fatal) return;
     const build = parseBuild(data);
     if (!build) {
       this.latest = undefined; this.serial++; this.queued = false;
@@ -429,7 +461,7 @@ export class DevReload {
       return candidate;
     });
     let candidate: DevStylesheet;
-    try {candidate = await this.bounded(loading, signal);} catch {if (this.current(serial, signal)) this.notice('failed', 'stylesheet'); return;}
+    try {candidate = await this.bounded(loading, signal);} catch (error) {if (this.current(serial, signal)) this.notice('failed', 'stylesheet', devReloadError(error)); return;}
     if (!this.current(serial, signal)) {candidate.discard(); return;}
     try {
       if (!this.interaction(revision)) return;
@@ -442,14 +474,14 @@ export class DevReload {
     } finally {candidate.discard();}
   }
   private async reload(build: DevBuild, revision: number, serial: number, signal: AbortSignal): Promise<void> {
-    try {await this.bounded(this.hooks.drain(signal), signal);} catch {if (this.current(serial, signal)) {this.notice('failed', 'drain');this.retryRecovery();} return;}
+    try {await this.bounded(this.hooks.drain(signal), signal);} catch (error) {if (this.current(serial, signal)) {this.notice('failed', 'drain', devReloadError(error));this.retryRecovery();} return;}
     if (!this.current(serial, signal) || !this.interaction(revision)) return;
     const view = this.hooks.captureCheckpoint();
     if (!record(view, ['workspaceId', 'focusedPane', 'targets'], ['focusedControl', 'messageRecipient', 'files', 'inspections', 'composerStateKey'])) {this.notice('failed', 'checkpoint'); return;}
     const checkpoint = validateDevReloadCheckpoint({...view, version: 1, generation: build.generation, oldClient: this.client, capturedAt: this.env.clock.now(), interactionRevision: revision}, build.generation, this.env.clock.now());
     const workspace = new URL(this.env.href()).searchParams.get('workspace');
     if (!checkpoint || checkpoint.workspaceId !== workspace) {this.notice('failed', 'checkpoint'); return;}
-    try {this.hooks.writeCheckpoint(checkpoint);} catch {this.notice('failed', 'storage'); return;}
+    try {this.hooks.writeCheckpoint(checkpoint);} catch (error) {this.notice('failed', 'storage', devReloadError(error)); return;}
     if (!this.current(serial, signal) || !this.interaction(revision)) return;
     const url = new URL('/', this.env.href()); url.searchParams.set('generation', build.generation); url.searchParams.set('workspace', checkpoint.workspaceId);
     this.notice('navigating');

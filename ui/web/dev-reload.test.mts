@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test, {type TestContext} from 'node:test';
 import {AssetGeneration, AssetGenerations} from '../server/asset-generations.mts';
-import {DevReload, devReloadPresentation, browserDevReloadEnvironment, validateDevReloadCheckpoint, type DevBuild, type DevInteraction, type DevReloadCheckpoint, type DevReloadEnvironment, type DevReloadHooks, type DevReloadNotice, type DevReloadView, type DevStylesheet} from './dev-reload.ts';
+import {DevReload, devReloadError, devReloadPresentation, browserDevReloadEnvironment, validateDevReloadCheckpoint, type DevBuild, type DevInteraction, type DevReloadCheckpoint, type DevReloadEnvironment, type DevReloadHooks, type DevReloadNotice, type DevReloadView, type DevStylesheet} from './dev-reload.ts';
 
 const A = 'a'.repeat(64), B = 'b'.repeat(64), C = 'c'.repeat(64);
 const OLD = '1'.repeat(24), NEW = '2'.repeat(24);
@@ -92,6 +92,50 @@ class Fixture {
   acks() {return this.posts.filter(post => post.path === '/api/dev/ack');}
   releases() {return this.posts.filter(post => post.path === '/api/dev/release');}
 }
+
+test('unexpected capture and initialization exceptions retain their real name message and stack', async () => {
+  for (const stage of ['read', 'capture', 'restore'] as const) {
+    const f = new Fixture(), error = new TypeError(`Synthetic ${stage} failure`); error.stack = `TypeError: Synthetic ${stage} failure\n    at syntheticCapture (fixture.ts:7:3)`;
+    if (stage === 'read') f.hooks.readCheckpoint = () => {throw error;};
+    if (stage === 'restore') {f.client = NEW; f.stored = checkpoint(A); f.restore = async () => {throw error;};}
+    const dev = f.dev(); await dev.ready;
+    if (stage === 'capture') {f.hooks.captureCheckpoint = () => {throw error;}; f.emit(build(1, B, 'reload')); await flush();}
+    const notice = f.notices.at(-1); assert.ok(notice); assert.equal(notice.code, 'host'); assert.equal(notice.retryable, false);
+    assert.deepEqual(notice.error, {name: error.name, message: error.message, stack: error.stack, truncated: []});
+    const detail = devReloadPresentation(notice).detail; assert.ok(detail.includes(error.stack)); assert.ok(detail.includes(error.message));
+    if (stage === 'capture') {f.emit(build(2, C, 'reload')); f.sources.at(-1)?.lost(); await flush(); assert.equal(f.notices.at(-1), notice);}
+    assert.equal(f.navigations.length, 0); assert.deepEqual(f.stored, stage === 'restore' ? checkpoint(A) : null); dev.destroy();
+  }
+});
+test('unreadable thrown objects still produce a bounded host diagnostic', async () => {
+  const f = new Fixture(), hostile = new Proxy({}, {getPrototypeOf() {throw new Error('prototype refused');}, get() {throw new Error('property refused');}});
+  f.hooks.readCheckpoint = () => {throw hostile;}; const dev = f.dev(); await dev.ready;
+  assert.equal(f.notices.at(-1)?.code, 'host'); assert.match(f.notices.at(-1)?.error?.message ?? '', /unavailable/); dev.destroy();
+});
+test('drain storage stylesheet and transport catches preserve original exceptions beside their codes', async () => {
+  for (const stage of ['drain', 'storage', 'stylesheet', 'ack'] as const) {
+    const f = new Fixture(), error = new DOMException(`Synthetic ${stage} refusal`, 'QuotaExceededError');
+    if (stage === 'ack') f.fetch = async () => {throw error;};
+    const dev = f.dev(); await dev.ready;
+    if (stage === 'drain') f.drain = async () => {throw error;};
+    if (stage === 'storage') f.hooks.writeCheckpoint = () => {throw error;};
+    if (stage !== 'ack') {f.emit(build(1, B, stage === 'stylesheet' ? 'css' : 'reload')); await flush();}
+    if (stage === 'stylesheet') {f.styles[0]?.result.reject(error); await flush();}
+    const notice = f.notices.at(-1); assert.ok(notice); assert.equal(notice.code, stage);
+    assert.equal(notice.error?.name, error.name); assert.equal(notice.error?.message, error.message); assert.equal(notice.error?.stack, error.stack);
+    assert.equal(f.navigations.length, 0); dev.destroy();
+  }
+});
+test('exception snapshots bound each field explicitly without splitting a surrogate pair or retaining the thrown object', () => {
+  const error = {name: 'n'.repeat(257), message: 'm'.repeat(4095) + '😀tail', stack: 's'.repeat(16385)};
+  const captured = devReloadError(error); error.message = 'changed';
+  assert.equal(captured.name.length, 256); assert.equal(captured.message.length, 4095); assert.equal(captured.stack.length, 16384);
+  assert.deepEqual(captured.truncated, ['name', 'message', 'stack']);
+  assert.match(devReloadPresentation({state: 'failed', code: 'host', retryable: false, error: captured}).detail, /Truncated fields: name, message, stack/);
+  assert.equal(devReloadError('Synthetic rejection').message, 'Synthetic rejection'); assert.equal(devReloadError(undefined).message, 'undefined');
+  const hostile = new Proxy({}, {getPrototypeOf() {throw new Error('unreadable prototype');}, get() {throw new Error('unreadable property');}});
+  assert.doesNotThrow(() => devReloadError(hostile)); assert.match(devReloadError(hostile).stack, /unavailable/);
+});
 
 test('already-current ready publications settle quietly through the real update path',async()=> {
   const f=new Fixture(),dev=f.dev();await dev.ready;f.emit(build(1,A,'reload'));await flush();
