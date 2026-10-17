@@ -444,18 +444,23 @@ export class Transcript {
     const previous = new Map(this.rows.runs);
     const ordered = this.view === 'grouped' ? this.groups.rows(this.chronological) : this.chronological;
     const displayed = this.rows.derive(ordered, this.joined, this.index.sessionOwners, this.showThinking);
+    this.migrateStepRows(previous);this.inheritStepExpansion(previous);
+    for (const [id, run] of this.rows.runs) this.index.disclosures.set(run.key,id);
+    if (displayed.length !== this.displayed.length || displayed.some((entry, at) => entry.id !== this.displayed[at]?.id)) this.dirtyLayout = true;
+    this.displayed = displayed;
+  }
+  private migrateStepRows(previous:ReadonlyMap<string,StepRun>):void{
     for(const [id,run] of previous){
       const first=run.tools[0],next=first?this.rows.calls.get(first.callId):undefined,cached=this.cache.get(id);
       if(!next||next===id||!cached||this.cache.has(next))continue;
       this.cache.delete(id);this.cache.set(next,cached);cached.node.dataset.entryId=next;
       const height=this.heights.get(id);if(height!==undefined)this.heights.set(next,height);
     }
+  }
+  private inheritStepExpansion(previous:ReadonlyMap<string,StepRun>):void{
     for (const run of previous.values()) if (this.expanded.has(run.key)) {
       for (const tool of run.tools) {const id = this.rows.calls.get(tool.callId), current = id ? this.rows.runs.get(id) : undefined;if(current)this.expanded.add(current.key);}
     }
-    for (const [id, run] of this.rows.runs) this.index.disclosures.set(run.key,id);
-    if (displayed.length !== this.displayed.length || displayed.some((entry, at) => entry.id !== this.displayed[at]?.id)) this.dirtyLayout = true;
-    this.displayed = displayed;
   }
   private reconcileSessions(previous: ReadonlyMap<string, SessionGroup>): void {
     for (const [id, group] of previous) {
@@ -772,15 +777,22 @@ export class Transcript {
   private readVisibleTaskAnswers(visible:ReadonlySet<string>):void {
     if(!this.hooks.readTaskResult)return;
     const tasks=[...visible].flatMap(id=>this.rows.runs.get(id)?.tools??[]).reverse().flatMap(tool=>{const row=this.tasks.byCall.get(tool.callId);return row?.reference&&!row.answer?[row]:[];}).slice(0,20);
-    const wanted=new Set(tasks.map(task=>task.tool?.callId));for(const [id,controller] of this.taskReads)if(!wanted.has(id)){controller.abort();this.taskReads.delete(id);this.taskReadStamps.delete(id);}
-    for(const task of tasks){
-      if(this.taskReads.size>=TASK_READ_CONCURRENCY)break;
-      const tool=task.tool,reference=task.reference;if(!tool||!reference||this.taskReads.has(tool.callId))continue;
-      const stamp=JSON.stringify([reference,this.tasks.incomingRevision]);if(this.taskReadStamps.get(tool.callId)===stamp)continue;
-      this.taskReadStamps.set(tool.callId,stamp);if(this.taskReadStamps.size>200){const first=this.taskReadStamps.keys().next().value;if(first)this.taskReadStamps.delete(first);}
-      const controller=new AbortController(),generation=this.generation;this.taskReads.set(tool.callId,controller);
-      void this.hooks.readTaskResult(reference,controller.signal).then(value=>{if(!controller.signal.aborted&&!this.destroyed&&generation===this.generation&&this.tasks.recordResult(tool.callId,value))this.schedule();}).catch(()=>{/* A failed read is not a failed recipient task; Refresh tasks retries the exact reference. */}).finally(()=>{if(this.taskReads.get(tool.callId)===controller){this.taskReads.delete(tool.callId);if(!this.destroyed&&generation===this.generation)this.schedule();}});
-    }
+    this.cancelOffscreenTaskReads(tasks);
+    for(const task of tasks){if(this.taskReads.size>=TASK_READ_CONCURRENCY)break;this.startTaskRead(task);}
+  }
+  private cancelOffscreenTaskReads(tasks:readonly ConversationTask[]):void{
+    const wanted=new Set(tasks.map(task=>task.tool?.callId));
+    for(const [id,controller] of this.taskReads)if(!wanted.has(id)){controller.abort();this.taskReads.delete(id);this.taskReadStamps.delete(id);}
+  }
+  private rememberTaskRead(callId:string,stamp:string):void{
+    this.taskReadStamps.set(callId,stamp);if(this.taskReadStamps.size>200){const first=this.taskReadStamps.keys().next().value;if(first)this.taskReadStamps.delete(first);}
+  }
+  private startTaskRead(task:ConversationTask):void{
+    const tool=task.tool,reference=task.reference;if(!tool||!reference||this.taskReads.has(tool.callId)||!this.hooks.readTaskResult)return;
+    const stamp=JSON.stringify([reference,this.tasks.incomingRevision]);if(this.taskReadStamps.get(tool.callId)===stamp)return;
+    this.rememberTaskRead(tool.callId,stamp);
+    const controller=new AbortController(),generation=this.generation;this.taskReads.set(tool.callId,controller);
+    void this.hooks.readTaskResult(reference,controller.signal).then(value=>{if(!controller.signal.aborted&&!this.destroyed&&generation===this.generation&&this.tasks.recordResult(tool.callId,value))this.schedule();}).catch(()=>{/* A failed read is not a failed recipient task; Refresh tasks retries the exact reference. */}).finally(()=>{if(this.taskReads.get(tool.callId)===controller){this.taskReads.delete(tool.callId);if(!this.destroyed&&generation===this.generation)this.schedule();}});
   }
   private refreshMountedTools(): void {
     for (const tool of this.tools.values()) if (tool.source && tool.node.open && this.node.contains(tool.card)) {
@@ -882,13 +894,16 @@ export class Transcript {
     if (!row?.parts) children.push(...this.entryToolChildren(entry));
     const ids = new Set<string>();
     for (const message of entry.messages ?? []) {
-      if (row?.parts && !row.parts.has(message.id) || !presentMessage(message).visible || this.joinedMessage(entry.id, message)) continue;
+      if (!this.rowMessageVisible(entry.id,message,row?.parts)) continue;
       ids.add(message.id); children.push(this.updateMessage(cached, message, entry, row?.parts?.get(message.id)).node);
     }
     this.pruneMessages(cached, ids);
     setEntryRhythm(cached.node, children, session !== undefined);
     const header = this.groupHeader(cached, entry.id); if (header) children.unshift(header);
     reconcileChildren(cached.node, children); this.registerContent(cached.node); cached.source = entry; return cached.node;
+  }
+  private rowMessageVisible(entryId:string,message:MessageView,parts?:Map<string,Set<number>>):boolean{
+    return !(parts&&!parts.has(message.id)||!presentMessage(message).visible||this.joinedMessage(entryId,message));
   }
   private updateSteps(cached: EntryNode, run: StepRun): void {
     let group = cached.steps;
@@ -915,12 +930,18 @@ export class Transcript {
   private stepSummary(group: StepNode, run: StepRun): void {
     const active=run.tools.findLast(tool=>tool.status==='working')??run.tools.findLast(tool=>tool.status==='pending');
     const last=active??run.tools.at(-1);if(!last)return;
-    const failed=run.tools.filter(tool=>tool.status==='error'), count=`${run.tools.length} steps`;
-    const elapsed=active?toolTime(active).replace(/ elapsed$/,''):'';
-    const label=active?[this.sentence(active),elapsed,run.tools.length>1?count:''].filter(Boolean).join(' · '):run.tools.length===1?this.sentence(last):`${count} · ${this.sentence(last)}`;
+    const failed=run.tools.filter(tool=>tool.status==='error'),label=this.stepLabel(run,last,active);
     if(!this.protectedNode(group.label))setText(group.label,label+(failed.length?` · ${failed.length} failed`:''));
     group.details.dataset.status=failed.length?'error':active?.status??'success';
-    const failure=failed.at(-1),provided=failure?.result?.find(part=>part.type==='text'&&!part.structured&&!part.redacted);
+    this.stepFailure(group,failed.at(-1));
+  }
+  private stepLabel(run:StepRun,last:JoinedTool,active?:JoinedTool):string{
+    const count=`${run.tools.length} steps`,elapsed=active?toolTime(active).replace(/ elapsed$/,''):'';
+    if(active)return [this.sentence(active),elapsed,run.tools.length>1?count:''].filter(Boolean).join(' · ');
+    return run.tools.length===1?this.sentence(last):`${count} · ${this.sentence(last)}`;
+  }
+  private stepFailure(group:StepNode,failure?:JoinedTool):void{
+    const provided=failure?.result?.find(part=>part.type==='text'&&!part.structured&&!part.redacted);
     const reason=provided?.type==='text'?bounded(provided.text.split(/\r?\n/,1)[0]??'',160,1):'';
     group.failures.hidden=!failure;setText(group.failures,failure?[this.sentence(failure),reason].filter(Boolean).join(' · '):'');
   }
@@ -1342,19 +1363,34 @@ export class Transcript {
   }
   private toolAnswer(tool: ToolNode, source: JoinedTool): void {
     const task=this.tasks.byCall.get(source.callId);let state=tool.node.querySelector<HTMLButtonElement>('.step-answer-state');
-    let answer=tool.card.querySelector<HTMLElement>('.step-answer');
+    const answer=tool.card.querySelector<HTMLElement>('.step-answer');
     if(!task){state?.remove();answer?.remove();return;}
-    if(!state){state=button('',()=>{const current=tool.source?this.tasks.byCall.get(tool.source.callId):undefined;if(!current?.answer&&!current?.reason)return;const key=`answer:${source.callId}`;if(this.expanded.has(key))this.expanded.delete(key);else this.expanded.add(key);this.hooks.presentation([...this.expanded],this.showThinking);this.schedule();},'step-answer-state');state.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();});tool.node.querySelector('summary')?.append(state);}
-    setText(state,task.state==='answered'?'answered':task.state==='unanswered'?'no answer':task.state==='queued'?'waiting to start':task.state==='unavailable'?'answer unavailable':'awaiting answer');state.disabled=!task.answer&&!task.reason;state.dataset.state=task.state;
+    if(!state){state=button('',()=>this.toggleTaskAnswer(tool,source.callId),'step-answer-state');state.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();});tool.node.querySelector('summary')?.append(state);}
+    setText(state,this.taskAnswerLabel(task));state.disabled=!task.answer&&!task.reason;state.dataset.state=task.state;
+    this.inlineTaskAnswer(tool,source,task,answer);
+  }
+  private toggleTaskAnswer(tool:ToolNode,callId:string):void{
+    const current=tool.source?this.tasks.byCall.get(tool.source.callId):undefined;if(!current?.answer&&!current?.reason)return;
+    const key=`answer:${callId}`;if(this.expanded.has(key))this.expanded.delete(key);else this.expanded.add(key);
+    this.hooks.presentation([...this.expanded],this.showThinking);this.schedule();
+  }
+  private taskAnswerLabel(task:ConversationTask):string{
+    if(task.state==='answered')return 'answered';if(task.state==='unanswered')return 'no answer';
+    if(task.state==='queued')return 'waiting to start';if(task.state==='unavailable')return 'answer unavailable';return 'awaiting answer';
+  }
+  private inlineTaskAnswer(tool:ToolNode,source:JoinedTool,task:ConversationTask,answer:HTMLElement|null):void{
     if(this.expanded.has(`answer:${source.callId}`)&&(task.answer||task.reason)){
       if(!answer){answer=element('section','step-answer');tool.card.append(answer);tool.answerText=undefined;}
       const text=task.answer?task.answer.text:task.reason??'';
       if(tool.answerText!==text&&!this.protectedNode(answer)){
         const exact=task.answer?.text;answer.replaceChildren(markdownDom(text));if(exact!==undefined)answer.append(button('Copy answer',()=>{void copy(exact,answer as HTMLElement);}));tool.answerText=text;
       }
-      let notice=answer.querySelector<HTMLElement>('.step-answer-coverage');
-      if(task.answer&&(!task.answer.complete||task.answer.redacted)){if(!notice){notice=element('p','secondary step-answer-coverage');answer.append(notice);}setText(notice,task.answer.redacted?'Some answer text is withheld.':'Only the retained answer text is shown.');}else notice?.remove();
+      this.taskAnswerCoverage(answer,task);
     }else{answer?.remove();tool.answerText=undefined;}
+  }
+  private taskAnswerCoverage(answer:HTMLElement,task:ConversationTask):void{
+    let notice=answer.querySelector<HTMLElement>('.step-answer-coverage');
+    if(task.answer&&(!task.answer.complete||task.answer.redacted)){if(!notice){notice=element('p','secondary step-answer-coverage');answer.append(notice);}setText(notice,task.answer.redacted?'Some answer text is withheld.':'Only the retained answer text is shown.');}else notice?.remove();
   }
   private partialToolOutput(source: JoinedTool): boolean {
     const partial = (parts: readonly PartView[]): boolean => parts.some(part => part.type === 'omitted' || part.type === 'toolResult' && partial(part.parts) || (part.type === 'text' || part.type === 'thinking') && !!part.more);
@@ -1419,7 +1455,7 @@ export class Transcript {
     return source.argumentText ?? (source.args ? rawText(source.args.value) : '');
   }
   private toolInspection(tool: ToolNode, label: string, source: () => string, id: string): HTMLDetailsElement {
-    const node = element('details', 'raw-details'); const controls = element('div', 'source-header'); const generation = this.generation;
+    const node = element('details', 'raw-details'); const controls = element('div', 'source-header');
     const pre = element('pre'); const frame = preTextFrame(pre); const summary = element('summary', undefined, label); cardDisclosure(summary); node.append(summary);
     const sources = tool.inspectionSources ?? new Map(); tool.inspectionSources = sources;
     if (tool.source) sources.set(node, tool.source);

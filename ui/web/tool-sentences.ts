@@ -28,58 +28,76 @@ function argsOf(tool: JoinedTool): Record<string, unknown> {
   }
   return args;
 }
+type SentenceInput = {tool:JoinedTool;context:SentenceContext;args:Record<string,unknown>;identity:string;name:string;target:string};
+function destinationName(caption?:NamedDestination):string {
+  if(!caption?.name||!caption.provenance)return 'another conversation';
+  return caption.text===caption.name||caption.text.startsWith(`${caption.name} · `)?caption.text:caption.name;
+}
+function sendWords({tool,args,identity,name}:SentenceInput):Words {
+  const subject=identity?` ${name}`:'';
+  if(typeof args.deliverAt==='string')return words('Scheduled a message to','Scheduling a message to','Schedule a message to',subject+quote(args.message));
+  if(tool.name==='agent_steer'||args.mode==='steer')return words('Redirected','Redirecting','Redirect',subject+quote(args.message));
+  if(args.mode==='report')return words('Reported to','Reporting to','Report to',subject+quote(args.message));
+  return identity?words('Sent a message to','Sending a message to','Send a message to',subject+quote(args.message)):words('Sent a message','Sending a message','Send a message');
+}
+function inspectWords({args,name}:SentenceInput):Words {
+  if(args.view==='result')return words('Checked a task result from','Checking a task result from','Check a task result from',` ${name}`);
+  if(args.view==='search')return words('Searched history from','Searching history from','Search history from',` ${name}${quote(args.query)}`);
+  if(args.view==='exact')return words('Read one entry from','Reading one entry from','Read one entry from',` ${name}`);
+  if(args.view==='history'||args.view==='activity')return words('Read recent history from','Reading recent history from','Read recent history from',` ${name}`);
+  return words('Checked','Checking','Check',` ${name}`);
+}
+function awaitWords({args}:SentenceInput):Words {
+  const count=Array.isArray(args.results)?args.results.length:undefined;
+  const suffix=count===undefined?' agent results':` ${count} agent ${count===1?'result':'results'}`;
+  return words('Waited for','Waiting for','Wait for',suffix);
+}
+function readWords({tool,args,target}:SentenceInput):Words {
+  const image=tool.result?.some(part=>part.type==='image');
+  const range=typeof args.offset==='number'&&typeof args.limit==='number'&&args.offset>0&&args.limit>0?` (lines ${args.offset}–${args.offset+args.limit-1})`:'';
+  return image?words('Viewed','Viewing','View',target||' an image'):words('Read','Reading','Read',(target||' a file')+range);
+}
+function editWords({args,target}:SentenceInput):Words {
+  const n=Array.isArray(args.edits)?args.edits.length:undefined;
+  return words('Edited','Editing','Edit',(target||' a file')+(n===undefined?'':` (${n} ${n===1?'change':'changes'})`));
+}
+function writeWords({args,target}:SentenceInput):Words {
+  const n=typeof args.content==='string'?args.content.split('\n').length:undefined;
+  return words('Wrote','Writing','Write',(target||' a file')+(n===undefined?'':` (${n} ${n===1?'line':'lines'})`));
+}
+function pillarWords({args}:SentenceInput):Words {
+  if(!args.resource)return words('Listed pillars','Listing pillars','List pillars');
+  const title=text(args.resource).replace(/^(principle|pattern|heuristic)-/,'').replace(/-/g,' ').replace(/\b\w/g,letter=>letter.toUpperCase());
+  return args.draft?words('Checked a draft against pillar:','Checking a draft against pillar:','Check a draft against pillar:',` ${title}`):words('Read pillar:','Reading pillar:','Read pillar:',` ${title}`);
+}
+function webWords({args}:SentenceInput):Words {
+  let url:URL|undefined;try{url=args.url?new URL(text(args.url)):undefined;}catch{/* Invalid supplied URL has no display destination. */}
+  if(args.find)return words('Looked for','Looking for','Look for',` ${quote(args.find).slice(2)}${url?` on ${url.host}`:''}`);
+  return words('Read','Reading','Read',url?` ${url.host}${first(url.pathname,80)}`:' a web page');
+}
+const templates:Record<string,(input:SentenceInput)=>Words>={
+  agent_send:sendWords,agent_steer:sendWords,agent_inspect:inspectWords,agent_await:awaitWords,
+  agent_spawn:({args})=>words('Started','Starting','Start',` ${first(args.name)||'a new agent'}${quote(args.prompt)}`),
+  agent_abort:({args,identity,name})=>typeof args.timerId==='number'?words('Canceled a timer','Canceling a timer','Cancel a timer',identity?` for ${name}`:''):words('Stopped work','Stopping work','Stop work',identity?` in ${name}`:''),
+  agent_status:()=>words('Checked agent status','Checking agent status','Check agent status'),
+  agent_list:()=>words('Listed agents','Listing agents','List agents'),
+  bash:({args})=>words('Ran','Running','Run',args.command?` ${first(args.command)}`:' a command'),
+  read:readWords,edit:editWords,write:writeWords,pillars:pillarWords,
+  memory_search:({args})=>words('Searched memory','Searching memory','Search memory',quote(Array.isArray(args.query)?args.query[0]:args.query)),
+  memory_read:({args})=>words('Read memory note','Reading memory note','Read memory note',args.slug?` ${first(args.slug)}`:''),
+  memory_write:({args})=>words('Saved a memory note','Saving a memory note','Save a memory note',quote(args.title)),
+  memory_edit:({args})=>words('Edited memory note','Editing memory note','Edit memory note',args.slug?` ${first(args.slug)}`:''),
+  memory_review:({args})=>words('Reviewed memory note','Reviewing memory note','Review memory note',args.slug?` ${first(args.slug)}`:''),
+  web_search:({args})=>words('Searched the web','Searching the web','Search the web',quote(args.query)),web_read:webWords,
+  codemode:({context})=>words('Ran a script','Running a script','Run a script',context.nestedCount===undefined?'':` (${context.nestedCount} recorded tool calls)`),
+};
 function sentenceWords(tool: JoinedTool, context: SentenceContext): Words {
   const args = argsOf(tool), identity = text(args.sessionId), caption = identity ? context.subject?.(identity) : undefined;
-  const name = caption?.name && caption.provenance ? caption.text===caption.name||caption.text.startsWith(`${caption.name} · `)?caption.text:caption.name : 'another conversation';
+  const name=destinationName(caption);
   const path = pathName(args.path ?? args.file_path, text(args.cwd) || context.cwd);
   const target = path ? ` ${path}` : '';
-  switch (tool.name) {
-    case 'agent_send': case 'agent_steer': {
-      const subject = identity ? ` ${name}` : '';
-      if (typeof args.deliverAt === 'string') return words('Scheduled a message to', 'Scheduling a message to', 'Schedule a message to', subject + quote(args.message));
-      if (tool.name === 'agent_steer' || args.mode === 'steer') return words('Redirected', 'Redirecting', 'Redirect', subject + quote(args.message));
-      if (args.mode === 'report') return words('Reported to', 'Reporting to', 'Report to', subject + quote(args.message));
-      return identity ? words('Sent a message to', 'Sending a message to', 'Send a message to', subject + quote(args.message)) : words('Sent a message', 'Sending a message', 'Send a message');
-    }
-    case 'agent_spawn': return words('Started', 'Starting', 'Start', ` ${first(args.name) || 'a new agent'}${quote(args.prompt)}`);
-    case 'agent_abort': return typeof args.timerId === 'number' ? words('Canceled a timer', 'Canceling a timer', 'Cancel a timer', identity?` for ${name}`:'') : words('Stopped work', 'Stopping work', 'Stop work', identity?` in ${name}`:'');
-    case 'agent_inspect': {
-      if (args.view === 'result') return words('Checked a task result from', 'Checking a task result from', 'Check a task result from', ` ${name}`);
-      if (args.view === 'search') return words('Searched history from', 'Searching history from', 'Search history from', ` ${name}${quote(args.query)}`);
-      if (args.view === 'exact') return words('Read one entry from', 'Reading one entry from', 'Read one entry from', ` ${name}`);
-      if (args.view === 'history' || args.view === 'activity') return words('Read recent history from', 'Reading recent history from', 'Read recent history from', ` ${name}`);
-      return words('Checked', 'Checking', 'Check', ` ${name}`);
-    }
-    case 'agent_await': {const count = Array.isArray(args.results) ? args.results.length : undefined;const suffix = count === undefined ? ' agent results' : ` ${count} agent ${count === 1 ? 'result' : 'results'}`;return words('Waited for', 'Waiting for', 'Wait for', suffix);}
-    case 'agent_status': return words('Checked agent status', 'Checking agent status', 'Check agent status');
-    case 'agent_list': return words('Listed agents', 'Listing agents', 'List agents');
-    case 'bash': return words('Ran', 'Running', 'Run', args.command ? ` ${first(args.command)}` : ' a command');
-    case 'read': {
-      const image = tool.result?.some(part => part.type === 'image');
-      const range = typeof args.offset === 'number' && typeof args.limit === 'number' && args.offset > 0 && args.limit > 0 ? ` (lines ${args.offset}–${args.offset + args.limit - 1})` : '';
-      return image ? words('Viewed', 'Viewing', 'View', target || ' an image') : words('Read', 'Reading', 'Read', (target || ' a file') + range);
-    }
-    case 'edit': {const n = Array.isArray(args.edits) ? args.edits.length : undefined;return words('Edited', 'Editing', 'Edit', (target || ' a file') + (n === undefined ? '' : ` (${n} ${n === 1 ? 'change' : 'changes'})`));}
-    case 'write': {const n = typeof args.content === 'string' ? args.content.split('\n').length : undefined;return words('Wrote', 'Writing', 'Write', (target || ' a file') + (n === undefined ? '' : ` (${n} ${n === 1 ? 'line' : 'lines'})`));}
-    case 'pillars': {
-      if (!args.resource) return words('Listed pillars', 'Listing pillars', 'List pillars');
-      const title = text(args.resource).replace(/^(principle|pattern|heuristic)-/, '').replace(/-/g, ' ').replace(/\b\w/g, letter => letter.toUpperCase());
-      return args.draft ? words('Checked a draft against pillar:', 'Checking a draft against pillar:', 'Check a draft against pillar:', ` ${title}`) : words('Read pillar:', 'Reading pillar:', 'Read pillar:', ` ${title}`);
-    }
-    case 'memory_search': return words('Searched memory', 'Searching memory', 'Search memory', quote(Array.isArray(args.query) ? args.query[0] : args.query));
-    case 'memory_read': return words('Read memory note', 'Reading memory note', 'Read memory note', args.slug ? ` ${first(args.slug)}` : '');
-    case 'memory_write': return words('Saved a memory note', 'Saving a memory note', 'Save a memory note', quote(args.title));
-    case 'memory_edit': return words('Edited memory note', 'Editing memory note', 'Edit memory note', args.slug ? ` ${first(args.slug)}` : '');
-    case 'memory_review': return words('Reviewed memory note', 'Reviewing memory note', 'Review memory note', args.slug ? ` ${first(args.slug)}` : '');
-    case 'web_search': return words('Searched the web', 'Searching the web', 'Search the web', quote(args.query));
-    case 'web_read': {
-      let url: URL | undefined;try {url = args.url ? new URL(text(args.url)) : undefined;} catch { /* Invalid supplied URL has no display destination. */ }
-      if (args.find) return words('Looked for', 'Looking for', 'Look for', ` ${quote(args.find).slice(2)}${url ? ` on ${url.host}` : ''}`);
-      return words('Read', 'Reading', 'Read', url ? ` ${url.host}${first(url.pathname, 80)}` : ' a web page');
-    }
-    case 'codemode': return words('Ran a script', 'Running a script', 'Run a script',context.nestedCount===undefined?'':` (${context.nestedCount} recorded tool calls)`);
-    default: return words('Used', 'Using', 'Use', ` ${first(tool.name)}`);
-  }
+  const template=Object.hasOwn(templates,tool.name)?templates[tool.name]:undefined;
+  return template?template({tool,context,args,identity,name,target}):words('Used','Using','Use',` ${first(tool.name)}`);
 }
 /** Public call arguments describe the action; completion never describes a recipient's task outcome. */
 export function toolSentence(tool: JoinedTool, context: SentenceContext = {}): string {

@@ -1,4 +1,4 @@
-import type {EntryView, MessageView} from '../shared/api.ts';
+import type {EntryView, MessageView, PartView} from '../shared/api.ts';
 import type {JoinedTool} from './transcript-tools.ts';
 import type {ResultInspection} from '../shared/inspection.ts';
 import {conversationIdentityText} from './tabs.ts';
@@ -23,15 +23,22 @@ export function toolTaskReference(tool:JoinedTool):TaskReference|undefined {
   for(let at=0;at<parts.length&&visits++<128;at++){
     const part=parts[at];if(!part)continue;
     if(part.type==='toolResult'){if(parts.length+part.parts.length<=128)parts.push(...part.parts);continue;}
-    if(part.type!=='text'||!part.structured||part.structured.truncated)continue;
-    const reference=taskReference(own(part.structured.value,'result'));if(!reference)continue;
-    const target=own(tool.args?.value,'sessionId');
-    if(canonical(target)&&target!==reference.sessionId)continue;
-    if(selected&&(selected.sessionId!==reference.sessionId||selected.submissionId!==reference.submissionId||selected.requestId!==reference.requestId))return;
+    const reference=partReference(part,own(tool.args?.value,'sessionId'));if(!reference)continue;
+    if(selected&&!sameReference(selected,reference))return;
     selected=reference;
   }
   return selected;
 }
+function partReference(part:PartView,target:unknown):TaskReference|undefined {
+  if(part.type!=='text'||!part.structured||part.structured.truncated)return;
+  const reference=taskReference(own(part.structured.value,'result'));if(!reference)return;
+  if(canonical(target)&&target!==reference.sessionId)return;
+  return reference;
+}
+function sameReference(a:TaskReference,b:TaskReference):boolean{return a.sessionId===b.sessionId&&a.submissionId===b.submissionId&&a.requestId===b.requestId;}
+function nativeMatches(value:ResultInspection,reference:TaskReference):boolean{return value.identity===reference.sessionId&&value.submissionId===reference.submissionId&&!(value.requestId&&reference.requestId&&value.requestId!==reference.requestId);}
+function messageText(message:MessageView):string{return message.parts.flatMap(part=>part.type==='text'&&!part.redacted?[part.text]:[]).join('\n');}
+type ReadyCarrier=Extract<NonNullable<MessageView['communication']>,{state:'ready'}>;
 function subject(tool:JoinedTool):string {
   const value=own(tool.args?.value,tool.name==='agent_spawn'?'prompt':'message');
   if(typeof value!=='string')return 'Task';
@@ -59,43 +66,57 @@ export class ConversationTasks {
   }
   update(entries:readonly EntryView[],tools:ReadonlyMap<string,JoinedTool>):void {
     const selected=new Map([...tools].filter(([,tool])=>['agent_send','agent_steer','agent_spawn'].includes(tool.name)));
-    if(entries.length===this.sources.length&&entries.every((entry,at)=>entry===this.sources[at])&&selected.size===this.toolSources.size&&[...selected].every(([id,tool])=>this.toolSources.get(id)===tool))return;
+    if(this.unchanged(entries,selected))return;
     this.sources=[...entries];this.toolSources=selected;
     this.sent.length=0;this.asked.length=0;this.byCall.clear();this.replies.clear();
     const positions=new Map(entries.map((entry,at)=>[entry.id,at]));
-    for(const tool of tools.values()){
-      const reference=toolTaskReference(tool);if(!reference)continue;
-      const row:ConversationTask={key:tool.callId,entryId:tool.owner,tool,reference,subject:subject(tool),state:'awaiting'};
-      const native=this.nativeAnswers.get(tool.callId);if(native&&native.identity===reference.sessionId&&native.submissionId===reference.submissionId&&!(native.requestId&&reference.requestId&&native.requestId!==reference.requestId))this.applyResult(row,native);
-      this.sent.push(row);this.byCall.set(tool.callId,row);
-    }
+    for(const tool of tools.values())this.addSent(tool);
     this.sent.sort((a,b)=>(positions.get(b.entryId)??0)-(positions.get(a.entryId)??0));
     const incoming=new Set<string>();
     let recorded:ConversationTask|undefined;
     for(const entry of entries)for(const message of entry.messages??[]){
-      if(message.role==='user'&&!message.communication){
-        const text=message.parts.flatMap(part=>part.type==='text'&&!part.redacted?[part.text]:[]).join('\n');
-        if(text.trim()){recorded={key:`recorded:${entry.id}:${message.id}`,entryId:entry.id,subject:text.split(/\r?\n/,1)[0]?.slice(0,80)||'Recorded input',state:'recorded',asked:true,time:message.timestamp};this.asked.push(recorded);}
-      }else if(message.role==='assistant'&&recorded){
-        const text=message.parts.flatMap(part=>part.type==='text'&&!part.redacted?[part.text]:[]).join('\n');
-        if(text.trim()){recorded.answer={text:[recorded.answer?.text,text].filter(Boolean).join('\n\n'),complete:message.state==='final'&&message.coverage.complete&&!message.coverage.truncated,redacted:false};recorded.answerEntryId=entry.id;}
-      }
-
-      const carrier=message.communication;if(carrier){const key=JSON.stringify([entry.id,message.id]);incoming.add(key);if(!this.incomingIds.has(key))this.incomingRevision++;}if(carrier?.state!=='ready')continue;
-      const value=carrier.value;
-      if(carrier.origin.kind==='native'&&carrier.origin.target.mode==='input'){
-        const target=carrier.origin.target,identity=target.conversationId===1?target.storageId:`${target.storageId}:${target.conversationId}`;
-        const reference=taskReference({sessionId:identity,submissionId:target.submissionId,requestId:target.requestId});
-        if(reference)this.asked.push({key:`asked:${entry.id}:${message.id}`,entryId:entry.id,reference,subject:value.body.text.split(/\r?\n/,1)[0]?.slice(0,80)||'Task',state:'awaiting',asked:true,asker:value.sender.name,time:value.recordedAt});
-      }
-      if(value.kind!=='result')continue;
-      for(const row of this.sent){
-        const reference=row.reference;if(!reference||value.sender.identity!==reference.sessionId)continue;
-        const match=value.metadata.references.find(item=>item.submissionId===reference.submissionId&&!(item.requestId&&reference.requestId&&item.requestId!==reference.requestId));
-        if(!match)continue;
-        row.state=value.metadata.status==='done'?'answered':'unanswered';row.answer={...value.body};row.answerEntryId=entry.id;row.reason=value.metadata.reason;this.replies.set(message,row);
-      }
+      recorded=this.recordMessage(entry,message,recorded);this.communication(entry,message,incoming);
     }
     this.asked.reverse();this.incomingIds=incoming;
+  }
+  private unchanged(entries:readonly EntryView[],selected:ReadonlyMap<string,JoinedTool>):boolean{
+    return entries.length===this.sources.length&&entries.every((entry,at)=>entry===this.sources[at])&&selected.size===this.toolSources.size&&[...selected].every(([id,tool])=>this.toolSources.get(id)===tool);
+  }
+  private addSent(tool:JoinedTool):void{
+    const reference=toolTaskReference(tool);if(!reference)return;
+    const row:ConversationTask={key:tool.callId,entryId:tool.owner,tool,reference,subject:subject(tool),state:'awaiting'};
+    const native=this.nativeAnswers.get(tool.callId);if(native&&nativeMatches(native,reference))this.applyResult(row,native);
+    this.sent.push(row);this.byCall.set(tool.callId,row);
+  }
+  private recordMessage(entry:EntryView,message:MessageView,recorded?:ConversationTask):ConversationTask|undefined{
+    if(message.role==='user'&&!message.communication){
+      const text=messageText(message);
+      if(text.trim()){recorded={key:`recorded:${entry.id}:${message.id}`,entryId:entry.id,subject:text.split(/\r?\n/,1)[0]?.slice(0,80)||'Recorded input',state:'recorded',asked:true,time:message.timestamp};this.asked.push(recorded);}
+    }else if(message.role==='assistant'&&recorded){
+      const text=messageText(message);
+      if(text.trim()){recorded.answer={text:[recorded.answer?.text,text].filter(Boolean).join('\n\n'),complete:message.state==='final'&&message.coverage.complete&&!message.coverage.truncated,redacted:false};recorded.answerEntryId=entry.id;}
+    }
+    return recorded;
+  }
+  private communication(entry:EntryView,message:MessageView,incoming:Set<string>):void{
+    const carrier=message.communication;
+    if(carrier){const key=JSON.stringify([entry.id,message.id]);incoming.add(key);if(!this.incomingIds.has(key))this.incomingRevision++;}
+    if(carrier?.state!=='ready')return;
+    this.addAsked(entry,message,carrier);this.matchReplies(entry,message,carrier);
+  }
+  private addAsked(entry:EntryView,message:MessageView,carrier:ReadyCarrier):void{
+    if(carrier.origin.kind!=='native'||carrier.origin.target.mode!=='input')return;
+    const target=carrier.origin.target,identity=target.conversationId===1?target.storageId:`${target.storageId}:${target.conversationId}`;
+    const reference=taskReference({sessionId:identity,submissionId:target.submissionId,requestId:target.requestId});
+    if(reference)this.asked.push({key:`asked:${entry.id}:${message.id}`,entryId:entry.id,reference,subject:carrier.value.body.text.split(/\r?\n/,1)[0]?.slice(0,80)||'Task',state:'awaiting',asked:true,asker:carrier.value.sender.name,time:carrier.value.recordedAt});
+  }
+  private matchReplies(entry:EntryView,message:MessageView,carrier:ReadyCarrier):void{
+    const value=carrier.value;if(value.kind!=='result')return;
+    for(const row of this.sent){
+      const reference=row.reference;if(!reference||value.sender.identity!==reference.sessionId)continue;
+      const match=value.metadata.references.find(item=>item.submissionId===reference.submissionId&&!(item.requestId&&reference.requestId&&item.requestId!==reference.requestId));
+      if(!match)continue;
+      row.state=value.metadata.status==='done'?'answered':'unanswered';row.answer={...value.body};row.answerEntryId=entry.id;row.reason=value.metadata.reason;this.replies.set(message,row);
+    }
   }
 }

@@ -7,6 +7,7 @@ import {reconcileChildren} from './render.ts';
 import {taskReference, type ConversationTask, type TaskReference, type TaskAnswer} from './conversation-tasks.ts';
 
 type Mode=InspectionCheckpoint['mode'];
+type TaskNode={node:HTMLElement;select:HTMLButtonElement;body:HTMLElement;row:ConversationTask;open:boolean;answerText?:string;result?:ResultInspection;reason?:string};
 export type InspectionHooks={read(request:InspectRequest,signal:AbortSignal):Promise<AgentInspectionView>;
   readResult?:(identity:string,selector:ResultSelector,signal:AbortSignal)=>Promise<AgentInspectionView>;
   tasks?:()=>readonly ConversationTask[];entryKey?:(native:number)=>string|undefined;history?:boolean;showConversation?:(entry:string,identity?:string)=>void;moreConversation?:()=>void;
@@ -42,7 +43,7 @@ export class AgentInspection {
   private shown=20;
   private readKeys=new Set<string>();
   private sections=new Map<boolean,HTMLElement>();
-  private taskNodes=new Map<string,{node:HTMLElement;select:HTMLButtonElement;body:HTMLElement;row:ConversationTask;open:boolean;answerText?:string;result?:ResultInspection;reason?:string}>();
+  private taskNodes=new Map<string,TaskNode>();
   constructor(identity:string,hooks:InspectionHooks){
     this.identity=identity;this.hooks=hooks;this.node.hidden=true;
     this.scroller.tabIndex=0;this.scroller.setAttribute('aria-label','Conversation tasks');this.status.setAttribute('role','status');
@@ -83,62 +84,69 @@ export class AgentInspection {
   private async loadTasks(cursor?:HistoryInspection['nextCursor']):Promise<void>{
     this.cancel();const controller=new AbortController(),serial=this.serial;this.controller=controller;this.pending=true;this.refresh.disabled=true;this.renderTasks();
     try{
-      if(this.hooks.history!==false){
-        const page=await this.hooks.read({view:'history',source:'user',limit:20,...(cursor?{cursor}:{})},controller.signal);
-        if(!this.current(serial,controller.signal))return;if(page.view!=='history'||page.identity!==this.identity)throw Error('The task history target changed.');this.history=page;
-        const all=await this.hooks.read({view:'history',limit:100},controller.signal);
-        if(!this.current(serial,controller.signal))return;if(all.view!=='history'||all.identity!==this.identity)throw Error('The reply history target changed.');this.historyAll=all;
-      }
+      if(!await this.readHistories(serial,controller.signal,cursor))return;
       this.renderTasks();await this.readVisibleAnswers(serial,controller.signal);if(this.current(serial,controller.signal)){setText(this.status,'Recorded tasks and available answers.');this.renderTasks();}
     }catch(error){if(this.current(serial,controller.signal))setText(this.status,error instanceof Error?error.message:'Task history is unavailable.');}
     finally{if(serial===this.serial){this.pending=false;this.refresh.disabled=false;this.controller=undefined;}}
   }
+  private async readHistories(serial:number,signal:AbortSignal,cursor?:HistoryInspection['nextCursor']):Promise<boolean>{
+    if(this.hooks.history===false)return true;
+    const page=await this.hooks.read({view:'history',source:'user',limit:20,...(cursor?{cursor}:{})},signal);
+    if(!this.current(serial,signal))return false;
+    if(page.view!=='history'||page.identity!==this.identity)throw Error('The task history target changed.');this.history=page;
+    const all=await this.hooks.read({view:'history',limit:100},signal);
+    if(!this.current(serial,signal))return false;
+    if(all.view!=='history'||all.identity!==this.identity)throw Error('The reply history target changed.');this.historyAll=all;return true;
+  }
   private rows():ConversationTask[]{
     const local=[...(this.hooks.tasks?.()??[])],rows=this.history?local.filter(row=>!row.asked):[...local];
-    for(const entry of this.history?.entries??[]){
-      const carrier=entry.communication;let reference:TaskReference|undefined;
-      if(carrier?.state==='ready'&&carrier.origin.kind==='native'&&carrier.origin.target.mode==='input'){
-        const target=carrier.origin.target;reference=taskReference({sessionId:target.conversationId===1?target.storageId:`${target.storageId}:${target.conversationId}`,submissionId:target.submissionId,requestId:target.requestId});
-      }
-      const nativeKey=this.hooks.entryKey?.(entry.id)??String(entry.id);
-      const existing=local.find(row=>row.asked&&(reference&&row.reference&&reference.sessionId===row.reference.sessionId&&reference.submissionId===row.reference.submissionId&&!(reference.requestId&&row.reference.requestId&&reference.requestId!==row.reference.requestId)||row.entryId===nativeKey));
-      if(existing){rows.push({...existing,subject:entry.text.text.split(/\r?\n/,1)[0]?.slice(0,80)||existing.subject});continue;}
-      const replies=reference?undefined:recordedReplies(entry.id,this.historyAll?.entries??[]),body=carrier?.state==='ready'?carrier.value.body.text:entry.text.text;
-      rows.push({key:`history:${entry.id}`,entryId:nativeKey,reference,subject:body.split(/\r?\n/,1)[0]?.slice(0,80)||'Recorded input',asked:true,state:reference?'awaiting':'recorded',...(replies?{answer:replies}:{}),...(carrier?.state==='ready'&&carrier.value.sender.name?{asker:carrier.value.sender.name}:{})});
-    }
-    const pendingRows:ConversationTask[]=[];
+    for(const entry of this.history?.entries??[])rows.push(this.historyTask(entry,local));
     const submissions=this.frame?.status.submissions;
-    if(Array.isArray(submissions?.value))for(const value of submissions.value.slice(-100).reverse()){
-      if(!value||typeof value!=='object'||Array.isArray(value))continue;
-      const item=value as Record<string,unknown>;if(item.type!=='input'||!['queued','placed'].includes(String(item.status)))continue;
-      const reference=taskReference({sessionId:this.identity,submissionId:item.id,...(typeof item.requestId==='string'&&item.requestId?{requestId:item.requestId}:{})});
-      if(!reference||rows.some(row=>referenceKey(row.reference)===referenceKey(reference)))continue;
-      const entry=this.history?.entries.find(entry=>entry.id===item.entryId);
-      pendingRows.push({key:`pending:${reference.submissionId}`,entryId:entry?String(entry.id):'',reference,subject:entry?.text.text.split(/\r?\n/,1)[0]?.slice(0,80)||'Admitted input',state:item.status==='queued'?'queued':'awaiting',asked:true});
-    }
+    const pendingRows=Array.isArray(submissions?.value)?submissions.value.slice(-100).reverse().flatMap(value=>{const row=this.pendingTask(value,rows);return row?[row]:[];}):[];
     return [...pendingRows,...rows];
+  }
+  private historyTask(entry:InspectionEntry,local:readonly ConversationTask[]):ConversationTask{
+    const carrier=entry.communication,reference=historyReference(entry),nativeKey=this.hooks.entryKey?.(entry.id)??String(entry.id);
+    const existing=local.find(row=>row.asked&&(compatibleReference(reference,row.reference)||row.entryId===nativeKey));
+    if(existing)return {...existing,subject:entry.text.text.split(/\r?\n/,1)[0]?.slice(0,80)||existing.subject};
+    const replies=reference?undefined:recordedReplies(entry.id,this.historyAll?.entries??[]),body=carrier?.state==='ready'?carrier.value.body.text:entry.text.text;
+    return {key:`history:${entry.id}`,entryId:nativeKey,reference,subject:body.split(/\r?\n/,1)[0]?.slice(0,80)||'Recorded input',asked:true,state:reference?'awaiting':'recorded',...(replies?{answer:replies}:{}),...(carrier?.state==='ready'&&carrier.value.sender.name?{asker:carrier.value.sender.name}:{})};
+  }
+  private pendingTask(value:unknown,rows:readonly ConversationTask[]):ConversationTask|undefined{
+    if(!value||typeof value!=='object'||Array.isArray(value))return;
+    const item=value as Record<string,unknown>;if(item.type!=='input'||!['queued','placed'].includes(String(item.status)))return;
+    const reference=taskReference({sessionId:this.identity,submissionId:item.id,...(typeof item.requestId==='string'&&item.requestId?{requestId:item.requestId}:{})});
+    if(!reference||rows.some(row=>referenceKey(row.reference)===referenceKey(reference)))return;
+    const entry=this.history?.entries.find(entry=>entry.id===item.entryId);
+    return {key:`pending:${reference.submissionId}`,entryId:entry?String(entry.id):'',reference,subject:entry?.text.text.split(/\r?\n/,1)[0]?.slice(0,80)||'Admitted input',state:item.status==='queued'?'queued':'awaiting',asked:true};
   }
   private async readVisibleAnswers(serial:number,signal:AbortSignal):Promise<void>{
     const rows=this.rows().filter(row=>row.reference&&!row.answer).slice(0,20);
     for(const row of rows){
       const reference=row.reference;if(!reference)continue;const key=referenceKey(reference);if(this.readKeys.has(key))continue;
-      try{
-        const selector={submissionId:reference.submissionId,...(reference.requestId?{requestId:reference.requestId}:{})};
-        const value=this.hooks.readResult?await this.hooks.readResult(reference.sessionId,selector,signal):reference.sessionId===this.identity?await this.hooks.read({view:'result',...selector},signal):undefined;
-        if(!this.current(serial,signal))return;if(value?.view!=='result'||value.identity!==reference.sessionId||!resultMatches(value,selector))continue;
-        this.readKeys.add(key);this.answers.set(key,value);if(this.answers.size>200){const first=this.answers.keys().next().value;if(first)this.answers.delete(first);}
-        if(!this.protectedContent())this.renderTasks();
-      }catch(error){if(signal.aborted)return;this.readKeys.delete(key);if(this.current(serial,signal))setText(this.status,error instanceof Error?error.message:'An answer is unavailable.');}
+      if(!await this.readAnswer(reference,key,serial,signal))return;
     }
+  }
+  private async fetchAnswer(reference:TaskReference,selector:ResultSelector,signal:AbortSignal):Promise<AgentInspectionView|undefined>{
+    if(this.hooks.readResult)return this.hooks.readResult(reference.sessionId,selector,signal);
+    if(reference.sessionId===this.identity)return this.hooks.read({view:'result',...selector},signal);
+    return;
+  }
+  private async readAnswer(reference:TaskReference,key:string,serial:number,signal:AbortSignal):Promise<boolean>{
+    try{
+      const selector={submissionId:reference.submissionId,...(reference.requestId?{requestId:reference.requestId}:{})},value=await this.fetchAnswer(reference,selector,signal);
+      if(!this.current(serial,signal))return false;
+      if(value?.view!=='result'||value.identity!==reference.sessionId||!resultMatches(value,selector))return true;
+      this.readKeys.add(key);this.cacheAnswer(key,value);if(!this.protectedContent())this.renderTasks();
+    }catch(error){if(signal.aborted)return false;this.readKeys.delete(key);if(this.current(serial,signal))setText(this.status,error instanceof Error?error.message:'An answer is unavailable.');}
+    return true;
+  }
+  private cacheAnswer(key:string,value:ResultInspection):void{
+    this.answers.set(key,value);if(this.answers.size>200){const first=this.answers.keys().next().value;if(first)this.answers.delete(first);}
   }
   private renderTasks():void{
     if(this.protectedContent())return;const rows=this.rows(),nodes:HTMLElement[]=[];
-    for(const [asked,title] of [[false,'Sent by this conversation'],[true,'Recorded inputs and asks']] as const){
-      let section=this.sections.get(asked);if(!section){section=element('section','task-section');section.append(element('h3',undefined,title),element('div','task-rows'));this.sections.set(asked,section);}
-      const selected=rows.filter(row=>!!row.asked===asked).slice(0,this.shown),list=section.querySelector<HTMLElement>('.task-rows');
-      const children=selected.map(row=>this.taskRow(row));if(!children.length)children.push(element('p','secondary',asked?'No recorded inputs in the loaded history.':'No linked sent tasks in the loaded conversation.'));
-      if(list)reconcileChildren(list,children);nodes.push(section);
-    }
+    for(const [asked,title] of [[false,'Sent by this conversation'],[true,'Recorded inputs and asks']] as const)nodes.push(this.taskSection(rows,asked,title));
     if(rows.filter(row=>row.asked).length>this.shown||rows.filter(row=>!row.asked).length>this.shown)nodes.push(button('Show more recorded tasks',()=>{this.shown+=20;this.renderTasks();}));
     if(this.frame?.status.submissions?.truncated)nodes.push(element('p','secondary','Some native task status is not shown.'));
     if(this.history?.nextCursor){const cursor=this.history.nextCursor;nodes.push(button('Earlier asks',()=>{this.selected=undefined;void this.loadTasks(cursor);}));}
@@ -147,25 +155,38 @@ export class AgentInspection {
     reconcileChildren(this.content,nodes);
     for(const [key,cached] of this.taskNodes)if(!this.content.contains(cached.node))this.taskNodes.delete(key);
   }
+  private taskSection(rows:readonly ConversationTask[],asked:boolean,title:string):HTMLElement{
+    let section=this.sections.get(asked);if(!section){section=element('section','task-section');section.append(element('h3',undefined,title),element('div','task-rows'));this.sections.set(asked,section);}
+    const selected=rows.filter(row=>!!row.asked===asked).slice(0,this.shown),list=section.querySelector<HTMLElement>('.task-rows'),children=selected.map(row=>this.taskRow(row));
+    if(!children.length)children.push(element('p','secondary',asked?'No recorded inputs in the loaded history.':'No linked sent tasks in the loaded conversation.'));
+    if(list)reconcileChildren(list,children);return section;
+  }
+  private createTaskNode(row:ConversationTask):TaskNode{
+    const node=element('section','task-row'),select=button('',()=>{this.selected=this.selected===row.key?undefined:row.key;this.renderTasks();this.persist();if(this.selected)void this.readSelected(row.key);}),body=element('div','task-answer');
+    select.className='task-select';node.append(select,body);const cached:TaskNode={node,select,body,row,open:false};this.taskNodes.set(row.key,cached);return cached;
+  }
   private taskRow(row:ConversationTask):HTMLElement{
     const result=row.reference?this.answers.get(referenceKey(row.reference)):undefined;
-    const state=row.answer?row.state==='unanswered'?'no answer':row.state==='recorded'?'recorded reply':'answered':result?resultLabel(result):row.state==='queued'?'waiting to start':row.reference?'awaiting answer':'recorded input';
-    let cached=this.taskNodes.get(row.key);
-    if(!cached){const node=element('section','task-row'),select=button('',()=>{this.selected=this.selected===row.key?undefined:row.key;this.renderTasks();this.persist();if(this.selected)void this.readSelected(row.key);}),body=element('div','task-answer');select.className='task-select';node.append(select,body);cached={node,select,body,row,open:false};this.taskNodes.set(row.key,cached);}
+    const state=taskState(row,result),cached=this.taskNodes.get(row.key)??this.createTaskNode(row);
     cached.row=row;setText(cached.select,[row.asker,row.subject,state].filter(Boolean).join(' · '));cached.select.dataset.state=state;cached.select.setAttribute('aria-expanded',String(this.selected===row.key));
     const item=cached.body;item.hidden=this.selected!==row.key;
-    const currentAnswer=row.answer??(result?.answer?{text:result.answer.text,complete:!result.answer.shortened,redacted:result.answer.protected}:undefined);
+    const currentAnswer=taskAnswer(row,result);
     if(cached.open===(this.selected===row.key)&&cached.answerText===currentAnswer?.text&&cached.result===result&&cached.reason===row.reason)return cached.node;
     cached.open=this.selected===row.key;cached.answerText=currentAnswer?.text;cached.result=result;cached.reason=row.reason;item.replaceChildren();
-    if(this.selected===row.key){
-      const answer=row.answer??(result?.answer?{text:result.answer.text,complete:!result.answer.shortened,redacted:result.answer.protected}:undefined);
-      if(answer){item.append(markdownDom(answer.text),button('Copy answer',()=>{void copy(answer.text,item);}));if(!answer.complete||answer.redacted)item.append(element('p','secondary',answer.redacted?'Some answer text is withheld.':'Only retained answer text is shown.'));}
-      else item.append(element('p','secondary',result?.reason?.text??'No answer is present in this read.'));
-      if(row.reason)item.append(element('p','secondary',row.reason));
-      if(this.hooks.showConversation)item.append(button('Show in conversation',()=>{this.conversation();const native=row.answerReference??(result?.answerEntryId&&row.reference?{identity:row.reference.sessionId,entryId:result.answerEntryId}:undefined);if(row.answerEntryId)this.hooks.showConversation?.(row.answerEntryId);else if(native)this.hooks.showConversation?.(String(native.entryId),native.identity);else this.hooks.showConversation?.(row.entryId);}));
-      item.append(details('Details',JSON.stringify({reference:row.reference,entryId:row.entryId,...(result?{status:result.status,answerEntryId:result.answerEntryId}: {})},null,2)));
-    }
+    if(this.selected===row.key)this.paintTaskAnswer(item,row,result);
     return cached.node;
+  }
+  private paintTaskAnswer(item:HTMLElement,row:ConversationTask,result?:ResultInspection):void{
+    const answer=taskAnswer(row,result);
+    if(answer){item.append(markdownDom(answer.text),button('Copy answer',()=>{void copy(answer.text,item);}));if(!answer.complete||answer.redacted)item.append(element('p','secondary',answer.redacted?'Some answer text is withheld.':'Only retained answer text is shown.'));}
+    else item.append(element('p','secondary',result?.reason?.text??'No answer is present in this read.'));
+    if(row.reason)item.append(element('p','secondary',row.reason));
+    if(this.hooks.showConversation)item.append(button('Show in conversation',()=>this.showTaskConversation(row,result)));
+    item.append(details('Details',JSON.stringify({reference:row.reference,entryId:row.entryId,...(result?{status:result.status,answerEntryId:result.answerEntryId}:{})},null,2)));
+  }
+  private showTaskConversation(row:ConversationTask,result?:ResultInspection):void{
+    this.conversation();const native=row.answerReference??(result?.answerEntryId&&row.reference?{identity:row.reference.sessionId,entryId:result.answerEntryId}:undefined);
+    if(row.answerEntryId)this.hooks.showConversation?.(row.answerEntryId);else if(native)this.hooks.showConversation?.(String(native.entryId),native.identity);else this.hooks.showConversation?.(row.entryId);
   }
   private async readSelected(key:string):Promise<void>{
     const row=this.rows().find(row=>row.key===key);if(!row?.reference||row.answer||this.answers.has(referenceKey(row.reference)))return;
@@ -180,9 +201,7 @@ export class AgentInspection {
     this.cancel();const controller=new AbortController(),serial=this.serial;this.controller=controller;this.pending=true;this.refresh.disabled=true;setText(this.status,'Reading the selected answer…');
     try{
       const value=await this.hooks.read(request,controller.signal);if(!this.current(serial,controller.signal))return;
-      if(value.identity!==this.identity||value.view!==request.view)throw Error('The answer target changed.');
-      if(value.view==='result'&&request.view==='result'&&!resultMatches(value,request))throw Error('The result reference does not match.');
-      if(value.view==='exact'&&request.view==='exact'&&(value.entryId!==request.entryId||value.offset!==request.offset))throw Error('The entry page changed.');
+      validateRead(value,request,this.identity);
       this.loaded=value;this.content.replaceChildren(...(value.view==='exact'?this.renderExact(value):value.view==='result'?this.renderResult(value):[]));this.scroller.scrollTop=this.scrollTop;setText(this.status,`Read at ${value.readAt}`);this.persist();
     }catch(error){if(this.current(serial,controller.signal))setText(this.status,error instanceof Error?error.message:'The answer is unavailable.');}
     finally{if(serial===this.serial){this.pending=false;this.refresh.disabled=false;this.controller=undefined;}}
@@ -199,6 +218,25 @@ export class AgentInspection {
     if(this.pageOffsets.length)nodes.push(button('Previous page',()=>{this.offset=this.pageOffsets.pop()??0;void this.load();}));const next=value.nextOffset;if(next!==null)nodes.push(button('Next page',()=>{this.pageOffsets.push(value.offset);this.offset=next;void this.load();}));return nodes;
   }
 }
+function validateRead(value:AgentInspectionView,request:InspectRequest,identity:string):void{
+  if(value.identity!==identity||value.view!==request.view)throw Error('The answer target changed.');
+  if(value.view==='result'&&request.view==='result'&&!resultMatches(value,request))throw Error('The result reference does not match.');
+  if(value.view==='exact'&&request.view==='exact'&&(value.entryId!==request.entryId||value.offset!==request.offset))throw Error('The entry page changed.');
+}
+function compatibleReference(a?:TaskReference,b?:TaskReference):boolean{
+  return !!a&&!!b&&a.sessionId===b.sessionId&&a.submissionId===b.submissionId&&!(a.requestId&&b.requestId&&a.requestId!==b.requestId);
+}
+function historyReference(entry:InspectionEntry):TaskReference|undefined{
+  const carrier=entry.communication;if(carrier?.state!=='ready'||carrier.origin.kind!=='native'||carrier.origin.target.mode!=='input')return;
+  const target=carrier.origin.target;return taskReference({sessionId:target.conversationId===1?target.storageId:`${target.storageId}:${target.conversationId}`,submissionId:target.submissionId,requestId:target.requestId});
+}
+function taskState(row:ConversationTask,result?:ResultInspection):string{
+  if(row.answer)return row.state==='unanswered'?'no answer':row.state==='recorded'?'recorded reply':'answered';
+  if(result)return resultLabel(result);
+  if(row.state==='queued')return 'waiting to start';
+  return row.reference?'awaiting answer':'recorded input';
+}
+function taskAnswer(row:ConversationTask,result?:ResultInspection):TaskAnswer|undefined{return row.answer??(result?.answer?{text:result.answer.text,complete:!result.answer.shortened,redacted:result.answer.protected}:undefined);}
 function referenceKey(reference?:TaskReference):string{return reference?JSON.stringify([reference.sessionId,reference.submissionId,reference.requestId??null]):'';}
 function resultMatches(value:ResultInspection,request:ResultSelector):boolean{return !(['submissionId','requestId','operationId'] as const).some(key=>request[key]!==undefined&&(value[key]!==undefined||value.status!=='unavailable')&&value[key]!==request[key]);}
 function resultLabel(value:ResultInspection):string{return value.status==='done'?(value.answer?'answered':'answer text unavailable'):value.status==='unanswered'?'no answer':value.status==='queued'?'waiting to start':value.status==='placed'?'awaiting answer':'answer unavailable';}
