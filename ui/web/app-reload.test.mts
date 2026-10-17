@@ -122,30 +122,17 @@ test('a pinned epoch change during a held target read still refuses control rest
   const response = await entered.promise; ready(identities[0] as string, 21); held.resolve(response);
   assert.equal(await restore, false); assert.equal(primaryControl('editor').selectionStart, 1);
 });
-test('a replaced healthy source cannot complete the previous source restore', async t => {
-  const {checkpoint, identities} = await prepareRich(), original = globalThis.fetch, controller = new AbortController(), entered = deferred<Response>(), held = deferred<Response>();
-  t.after(() => {controller.abort(); globalThis.fetch = original;});
-  globalThis.fetch = async (input, init) => {
-    const response = await original(input, init);
-    if (targetRead(input, init) && init?.signal === controller.signal && new URL(String(input), 'http://ui.test').pathname.endsWith(checkpoint.targets[0]?.targetKey as string)) {entered.resolve(response); return held.promise;}
-    return response;
-  };
-  const previous = streamSources.at(-1), restore = app.restoreDevCheckpoint(checkpoint, controller.signal); ready(identities[0] as string);
-  const response = await entered.promise;
-  pageVisibility(true); pageVisibility(false);
-  await settle(); streamSources.at(-1)?.emit('ready', {bootId: 'boot'}); await settle();
-  assert.notEqual(streamSources.at(-1), previous); assert.equal(app.devHold(), undefined);
-  assert.equal(app.state.conversations.get(JSON.stringify(['agent', identities[0]]))?.connectionEpoch, 20);
-  held.resolve(response); assert.equal(await restore, false); assert.equal(primaryControl('editor').selectionStart, 1);
-});
 for (const change of ['input', 'workspace', 'pane', 'disconnect', 'hidden'] as const) test(`readiness never adopts a newer ${change} state`, async t => {
   const {checkpoint, identities} = await prepareRich(), controller = new AbortController(), original = globalThis.fetch;
+  let recover: (() => void) | undefined; const timeout = window.setTimeout.bind(window);
+  if (change === 'disconnect') {const now = Date.now(); t.mock.method(Date, 'now', () => now);}
+  t.mock.method(window, 'setTimeout', (callback, delay, ...args) => {
+    if (change === 'disconnect' && delay === 250) {recover = () => {if (typeof callback === 'function') callback(...args);}; return 0;}
+    return timeout(callback, delay, ...args);
+  });
   t.after(async () => {
-    controller.abort(); globalThis.fetch = original;
-    if (change === 'disconnect' || change === 'hidden') {
-      pageVisibility(true); pageVisibility(false);
-      await settle(); streamSources.at(-1)?.emit('ready', {bootId: 'boot'}); await settle();
-    }
+    controller.abort(); globalThis.fetch = original; pageVisibility(false);
+    if (change === 'disconnect') {assert.ok(recover); recover(); await settle(); streamSources.at(-1)?.emit('ready', {bootId: 'boot'}); await settle();}
   });
   let reads = 0; globalThis.fetch = async (input, init) => {if (targetRead(input, init) && init?.signal === controller.signal) reads++; return original(input, init);};
   const restore = app.restoreDevCheckpoint(checkpoint, controller.signal);

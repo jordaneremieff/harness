@@ -86,14 +86,14 @@ test('reservations are bounded before bytes and cancellation releases only the i
   await assert.rejects(f.store.reserveImageUpload(f.workspace.id, f.saved.targetKey, {name: 'old.png', mimeType: 'image/png', epoch: 2}, () => {}), {code: 'stale_epoch'});
 });
 
-test('saved references enforce target isolation, intrinsic metadata and complete tuple CAS', async t => {
+test('saved references enforce target isolation and intrinsic metadata while admission captures the submitted name', async t => {
   const f = await fixture(t), staged = await f.upload(); const other = await f.store.createWorkspace(), target = await f.store.target(other.id, f.target);
   await assert.rejects(f.store.putDraft(other.id, target.targetKey, {expectedRevision: 0, text: '', mode: 'prompt', images: [staged.image]}), {code: 'unknown_image_digest'});
   await assert.rejects(f.store.putDraft(f.workspace.id, f.saved.targetKey, {expectedRevision: 0, text: '', mode: 'prompt', images: [{...staged.image, width: 2}]}), {code: 'invalid_image_reference'});
   const draft = await f.store.putDraft(f.workspace.id, f.saved.targetKey, {expectedRevision: 0, text: '', mode: 'prompt', images: [staged.image]});
   const operations = f.operations(), operation = await operations.reserve(f.workspace.id, 'primary.input', f.target); let effects = 0;
   const request = {workspaceId: f.workspace.id, kind: 'primary.input' as const, target: f.target, body: {message: '', images: [{...staged.image, name: 'changed.png'}]}, input: {targetKey: f.saved.targetKey, text: '', mode: 'prompt', draftRevision: draft.revision, images: [{...staged.image, name: 'changed.png'}]}};
-  await assert.rejects(operations.execute(operation.id, request, async () => {effects++; return {state: 'accepted'};}), {code: 'stale_revision'}); assert.equal(effects, 0);
+  assert.equal((await operations.execute(operation.id, request, async () => {effects++; return {state: 'rejected', error: {code: 'unsupported', message: 'No admission', retry: 'manual'}};})).state, 'rejected'); assert.equal(effects, 1);
 });
 
 test('queued and handled image receipts protect the original complete operation and bytes', async t => {

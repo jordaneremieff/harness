@@ -196,18 +196,19 @@ test('agent text with images preserves part order and follow-up mode', {timeout:
   const sent = await sendDraft(f.registry, f.workspace, f.target, 'inspect this', 'followUp', [image]);
   assert.equal((await sent.result).state, 'accepted');
   assert.equal(calls[0]?.params?.whenBusy, 'followUp');
-  assert.deepEqual(calls[0]?.params?.message, [{type: 'text', text: 'inspect this'}, {type: 'image', mimeType: 'image/png', data: png.toString('base64')}]);
+  const imagePath = join(f.registry.store.root, 'images', (await f.registry.store.target(f.workspace, f.target)).targetKey, `${image.digest}.bin`);
+  assert.equal(calls[0]?.params?.message, `inspect this\n\nAttached image ${JSON.stringify(image.name)} (${image.mimeType}): ${imagePath}`);
 });
 
-test('agent upload rechecks current connection support between chunks', {timeout: 15000}, async t => {
+test('agent image upload remains valid after connection support changes between chunks', {timeout: 15000}, async t => {
   const f = await agentFixture(t); const state = await f.registry.store.target(f.workspace, f.target);
   let available = true; t.mock.method(f.registry.agents, 'imageInputAvailable', () => available);
   const path = `/api/workspaces/${f.workspace}/targets/${state.targetKey}/images`;
   const body = (async function* () {yield png.subarray(0, 30); available = false; yield png.subarray(30);})();
-  await assert.rejects(f.registry.uploadImage({...context(f.workspace, path), url: new URL(`${path}?name=pixel.png`, 'http://localhost'),
-    signal: new AbortController().signal, checkActive() {}}, {mimeType: 'image/png', declaredBytes: png.length}, body), {code: 'unsupported'});
+  const result = await f.registry.uploadImage({...context(f.workspace, path), url: new URL(`${path}?name=pixel.png`, 'http://localhost'),
+    signal: new AbortController().signal, checkActive() {}}, {mimeType: 'image/png', declaredBytes: png.length}, body) as ImageUploadView;
+  assert.equal(result.image.digest, digest(png));
   assert.equal((await f.registry.store.getTarget(f.workspace, state.targetKey)).draft.images.length, 0);
-  available = true; await upload(f.registry, f.workspace, f.target);
 });
 
 test('agent image route and explicit uncertain retry preserve exact parts, key and newer draft', {timeout: 20000}, async t => {
@@ -228,7 +229,7 @@ test('agent image route and explicit uncertain retry preserve exact parts, key a
   assert.deepEqual(calls[0]?.params, calls[1]?.params);
   const params = calls[0]?.params; assert.ok(params); assert.equal(params.sessionId, STORAGE); assert.equal(params.origin, 'operator');
   assert.equal(params.replyTo, STORAGE); assert.equal(params.requestId, `ui:${sent.operation.id}`); assert.equal(params.whenBusy, 'steer');
-  const parts = params.message as {type: string; data: string; mimeType: string}[]; assert.equal(parts.length, 1); assert.equal(parts[0]?.type, 'image');
-  assert.equal(digest(Buffer.from(parts[0]?.data ?? '', 'base64')), digest(png));
+  const imagePath = join(f.registry.store.root, 'images', state.targetKey, `${image.digest}.bin`);
+  assert.equal(params.message, `Attached image ${JSON.stringify(image.name)} (${image.mimeType}): ${imagePath}`);
   assert.equal((await f.registry.store.getTarget(f.workspace, state.targetKey)).draft.text, 'newer edit');
 });
