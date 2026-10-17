@@ -2,6 +2,7 @@ import { AgentCatalog, deriveEndpoint, readClaim, type CatalogPage, type Catalog
 import { AgentError, HostLink, type SubmitInput } from "./client.mts";
 import { captureSubmitInput, submitInputDigest, type NativeInputMessage, type NativeInputPart } from "./input.mts";
 import { readVerifiedDraftImages, verifiedImageReferences } from "../server/draft-images.mts";
+import { imageMessageDigest, imageReferenceMessage } from "../server/images.mts";
 import { isAbsolute } from "node:path";
 import { decodeInput, type AbortReceipt, type Admission, type ConversationFrame, type InspectResult, type JsonObject, type Snapshot } from "./contract.mts";
 import { ObservationManager, type AvailabilityListener } from "./observation.mts";
@@ -160,7 +161,12 @@ export class AgentService {
     this.#ready();
     const message = await this.#nativeMessage(input, link.capabilities().images === true);
     this.#ready();
-    try { return await link.submit(identity, {operationId: input.operationId, message, mode: input.mode}, this.#installationId); }
+    try {
+      const admission = {...await link.submit(identity, {operationId: input.operationId, message, mode: input.mode}, this.#installationId)};
+      delete admission.sentImageMessageDigest;
+      if (input.images.length && typeof message === 'string') admission.sentImageMessageDigest = imageMessageDigest(message);
+      return admission;
+    }
     finally {
       if (!link.connected || !link.supports("task-submit")) this.#onImageInput(this.#record(identity).storageId, undefined, false);
     }
@@ -169,8 +175,7 @@ export class AgentService {
     if (!input.images.length) return input.message;
     if (!acceptsImages) {
       const paths=await verifiedImageReferences({root:this.#stateDir,targetKey:input.targetKey,images:input.images});
-      const references=paths.map((path,index)=>`Attached image ${JSON.stringify(input.images[index].name)} (${input.images[index].mimeType}): ${path}`);
-      return [input.message,...references].filter(Boolean).join('\n\n');
+      return imageReferenceMessage(input.message, input.images, paths);
     }
     const images = await readVerifiedDraftImages({root: this.#stateDir, targetKey: input.targetKey, images: input.images});
     const parts: NativeInputPart[] = input.message.length ? [{type: "text", text: input.message}] : [];

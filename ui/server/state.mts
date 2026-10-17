@@ -8,8 +8,9 @@ import type {DraftImage, DraftPut, StoredDraft, RecoveryInput, RetainedInput, Re
 import {normalizeDraftImages, imageName} from './validate.mts';
 import {DraftImages, sameImageContent} from './draft-images.mts';
 import type {BlobIndex, BlobReferenceGraph, BlobReadSpec, BlobIntake, UploadReservation} from './draft-images.mts';
-import type {ImageBytes, ValidatedImage} from './images.mts';
-import type { Appearance, ConversationLayout, DraftView, EventData, EventName, OperationView, PresentationView, PrimaryView, ReadingView, Target, TargetIndex, TargetState, UnconfirmedInput, Workspace } from '../shared/api.ts';
+import {sentImageAttachments, imageDigest, imageMessageDigest} from './images.mts';
+import type {ImageBytes, ValidatedImage, SentImageReceipt} from './images.mts';
+import type { Appearance, ConversationLayout, DraftView, EntryView, EventData, EventName, MessageView, OperationView, PresentationView, PrimaryView, ReadingView, Target, TargetIndex, TargetState, UnconfirmedInput, Workspace } from '../shared/api.ts';
 
 import { safeText } from './projection.mts';
 import {movedFilePath, type FileMutation} from '../shared/files.ts';
@@ -22,8 +23,9 @@ type LockOwner = {format: string; pid: number; hostname: string; owner: string};
 export type ChangeHook = (name: EventName, data: EventData[EventName], workspaceId?: string, target?: Target) => void;
 export type QueueClearRecord = {recoveryWorkspaceId: string; phase: 'prepared' | 'retaining' | 'retained' | 'uncertain' | 'refused'; imageCopies: {workspaceId: string; operationId: string}[]; rowBudget: number; returned?: {steering: number; followUp: number}};
 export type OperationMetadata = {view: Pick<OperationView, 'id' | 'kind' | 'target' | 'state' | 'createdAt' | 'updatedAt'>; workspaceId: string; input?: true; inputResolved?: boolean; retainedInput?: RetainedAdmission; protected?: boolean};
-export type OperationRecord = {view: OperationView; workspaceId: string; digest?: string; input?: Omit<InputCopy, 'queueRecovery'> & {targetKey: string}; inputResolved?: boolean; retainedInput?: RetainedAdmission; queueRecovery?: QueueRecovery; queueClear?: QueueClearRecord};
+export type OperationRecord = {view: OperationView; workspaceId: string; digest?: string; input?: Omit<InputCopy, 'queueRecovery'> & {targetKey: string}; inputResolved?: boolean; retainedInput?: RetainedAdmission; sentImages?: SentImageReceipt; queueRecovery?: QueueRecovery; queueClear?: QueueClearRecord};
 export type ImageLease = {image: ValidatedImage; expiresAt: string};
+type SentImageSource = {workspaceId: string; receipt: SentImageReceipt};
 type StoredTarget = Omit<TargetState, 'draft' | 'unconfirmed' | 'retainedInputs' | 'imageAvailability' | 'imageStorageError' | 'recoveryPreviewTruncated'> & {workspaceId: string; draft: StoredDraft; imageLeases?: ImageLease[]};
 
 export class StateError extends Error {
@@ -658,7 +660,7 @@ export class StateStore {
   async deleteOperation(id: string): Promise<void> {
     const previous = this.operationRecords.get(id);
     if (!previous) throw new StateError('unknown_operation', 'Unknown operation', 404);
-    if (this.protectedOperationIds().has(id) || previous.retainedInput) throw new StateError('operation_conflict', 'This operation still protects recovery content', 409);
+    if (this.protectedOperationIds().has(id) || previous.retainedInput) throw new StateError('operation_conflict', 'This operation still protects saved content', 409);
     await unlink(join(this.root, 'operations', `${id}.json`)); await syncDirectory(join(this.root, 'operations'));
     this.operationRecords.delete(id); this.operationBytes -= this.operationSizes.get(id) ?? 0; this.operationSizes.delete(id); this.inputPreviews.delete(id);
   }
@@ -666,9 +668,50 @@ export class StateStore {
     if (record.input) this.validateCapturedInput(record, record.input);
     if (record.queueRecovery) validateQueueRecovery(record.queueRecovery);
     this.validateRetainedInput(record);
+    this.validateSentImages(record);
     this.validateQueueClear(record);
     record.view.retainedInput = record.retainedInput;
     if (!record.retainedInput) delete record.view.retainedInput;
+  }
+  private validateSentImages(record: OperationRecord): void {
+    if (record.sentImages === undefined) return;
+    try {
+      const receipt = record.sentImages;
+      if (Object.keys(receipt).length !== 3 || !UUID.test(receipt.targetKey) || record.view.kind !== 'agent.input' || record.view.state !== 'accepted' || record.view.receipt?.kind !== 'durable') throw new Error('Invalid sent-image receipt');
+      const saved = this.requireTarget(record.workspaceId, receipt.targetKey);
+      if (!sameTarget(saved.target, record.view.target) || saved.target.kind !== 'agent' || record.view.receipt.identity !== saved.target.identity) throw new Error('Wrong sent-image target');
+      imageDigest(receipt.messageDigest); receipt.images = savedImages(receipt.images, 'input');
+      if (!receipt.images.length) throw new Error('Empty sent-image receipt');
+    } catch { throw new StateError('state_record_refused', 'Saved sent-image provenance is invalid', 503); }
+  }
+  /** Attachments are server-owned display metadata, never native input or recovery content. */
+  enrichSentImages(wid: string, target: Target, entries: EntryView[], attachmentBytes = LIMITS.displayBytes - Buffer.byteLength(JSON.stringify(entries)) - 4096): number {
+    if (!this.workspaces.has(wid)) return attachmentBytes;
+    const receipts = this.sentImageReceipts(target);
+    for (const entry of entries) for (const message of entry.messages ?? []) attachmentBytes = this.enrichSentImageMessage(message, receipts, attachmentBytes);
+    return attachmentBytes;
+  }
+  private sentImageReceipts(target: Target): Map<string, SentImageSource> {
+    const receipts = new Map<string, SentImageSource>();
+    for (const record of this.operationRecords.values()) {
+      if (!sameTarget(record.view.target, target)) continue;
+      const receipt = record.sentImages;
+      if (receipt) receipts.set(receipt.messageDigest, {workspaceId: record.workspaceId, receipt});
+    }
+    return receipts;
+  }
+  private enrichSentImageMessage(message: MessageView, receipts: ReadonlyMap<string, SentImageSource>, attachmentBytes: number): number {
+    if (message.attachments) attachmentBytes += Buffer.byteLength(JSON.stringify({attachments: message.attachments})) - 1;
+    delete message.attachments;
+    const part = message.parts[0];
+    if (message.role !== 'user' || message.parts.length !== 1 || part?.type !== 'text') return attachmentBytes;
+    const source = receipts.get(imageMessageDigest(part.text));
+    if (!source) return attachmentBytes;
+    const attachments = sentImageAttachments(message, source.receipt, this.root, source.workspaceId);
+    if (!attachments) return attachmentBytes;
+    const bytes = Buffer.byteLength(JSON.stringify({attachments})) - 1;
+    if (bytes <= attachmentBytes) { message.attachments = attachments; attachmentBytes -= bytes; }
+    return attachmentBytes;
   }
   private validateRetainedInput(record: OperationRecord): void {
     if (!record.retainedInput) return;
@@ -761,7 +804,7 @@ export class StateStore {
     if (origin) { ids.add(origin.clearOperationId); ids.add(origin.recoveryOperationId); }
   }
   private protectInputRecord(ids: Set<string>, record: OperationRecord): void {
-    if (record.retainedInput) ids.add(record.view.id);
+    if (record.retainedInput || record.sentImages) ids.add(record.view.id);
     if (record.queueClear && !['retained', 'refused'].includes(record.queueClear.phase) && (record.queueClear.rowBudget || record.queueClear.returned)) ids.add(record.view.id);
     if (!record.input || record.inputResolved && !record.retainedInput) return;
     if (record.queueRecovery) ids.add(record.queueRecovery.clearOperationId);
@@ -819,7 +862,11 @@ export class StateStore {
       for (const image of target.draft.images) add(target.targetKey, image, {draft: true});
       for (const lease of target.imageLeases ?? []) if (Date.parse(lease.expiresAt) > this.now()) add(target.targetKey, lease.image, {lease: lease.expiresAt});
     }
-    for (const record of this.operationRecords.values()) this.addInputImagePins(record, add);
+    for (const record of this.operationRecords.values()) {
+      this.addInputImagePins(record, add);
+      const receipt = record.sentImages;
+      if (receipt) for (const image of receipt.images) add(receipt.targetKey, image, {retained: record.view.id});
+    }
     graph.references = [...entries.values()]; return graph;
   }
   private checkAcknowledgedImageReferences(index: BlobIndex, graph: BlobReferenceGraph): void {

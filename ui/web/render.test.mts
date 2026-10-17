@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {WorkbenchStatus} from './workbench-status.ts';
+import {imageUrl} from './image.ts';
 import test from 'node:test';
 import { Transcript as RetainedTranscript, structured } from './render.ts';
 import { contextMenu } from './context-menu.ts';
@@ -2752,4 +2753,37 @@ test('stream tasks are inert after reset, disposal or a direct replacement, and 
     owner.view.defer(() => { stale++; }, 9); const disposedTask = [...f.timeouts.values()][0]; assert.ok(disposedTask);
     owner.view.destroy(); disposedTask(); assert.equal(stale, 0); assert.equal(f.timeouts.size, 0); assert.equal(f.rafs.size, 0);
   } finally { f.restore(); }
+});
+
+test('sent attachment display uses a bounded image while Source retains the exact supplied reference', () => {
+  setup(); const target = {kind: 'agent' as const, identity: 'storage:9'};
+  const view = new Transcript('primary', {presentation: () => {}, reading: () => {}, image: part => imageUrl(part, target)});
+  const text = 'Describe the picture.\n\nAttached image "blue.png" (image/png): /server/owned.bin';
+  const image = {type: 'image' as const, mimeType: 'image/png' as const, digest: 'a'.repeat(64), bytes: 388, width: 96, height: 64, alt: 'blue.png',
+    attachment: {workspaceId: '11111111-1111-1111-1111-111111111111', targetKey: '22222222-2222-2222-2222-222222222222'}};
+  const source: EntryView = {id: 'sent-entry', kind: 'message', messages: [{id: 'sent-message', role: 'user', state: 'final', coverage,
+    parts: [{type: 'text', text}], attachments: [{part: 0, start: text.indexOf('Attached image'), end: text.length, image}]}]};
+  view.set([source]); flush();
+  const root = node('primary-transcript'), card = root.querySelector('.message'); assert.ok(card);
+  const img = card.querySelector('img'); assert.ok(img);
+  assert.equal(Reflect.get(img, 'alt'), 'blue.png'); assert.equal(Reflect.get(img, 'loading'), 'lazy');
+  assert.match(String(Reflect.get(img, 'src')), /^\/api\/workspaces\//);
+  assert.match(card.textContent, /Describe the picture/); assert.doesNotMatch(card.textContent, /\/server\/owned.bin/);
+  messageAction(card, 'Source').run();
+  assert.equal(card.querySelector('.message-source-content')?.querySelector('pre')?.textContent, text);
+  const originalParts = source.messages?.[0]?.parts; assert.deepEqual(originalParts, [{type: 'text', text}]); view.reset();
+});
+
+test('sent attachment display accepts late receipt metadata without replacing an unchanged image node', () => {
+  setup(); const view = new Transcript('primary', {presentation: () => {}, reading: () => {}, image: part => imageUrl(part, {kind: 'agent', identity: 'storage:9'})});
+  const text = 'Attached image "blue.png" (image/png): /server/owned.bin';
+  const source: EntryView = {id: 'late-entry', kind: 'message', messages: [{id: 'late-message', role: 'user', state: 'final', coverage, parts: [{type: 'text', text}]}]};
+  view.set([source]); flush(); const root = node('primary-transcript'); assert.equal(root.querySelector('img'), null);
+  const message = source.messages?.[0]; assert.ok(message);
+  const image = {type: 'image' as const, mimeType: 'image/png' as const, digest: 'a'.repeat(64), bytes: 388, width: 96, height: 64, alt: 'blue.png',
+    attachment: {workspaceId: '11111111-1111-1111-1111-111111111111', targetKey: '22222222-2222-2222-2222-222222222222'}};
+  const updated = {...source, messages: [{...message, attachments: [{part: 0, start: 0, end: text.length, image}]}]};
+  view.set([updated]); flush(); const img = root.querySelector('img'); assert.ok(img);
+  view.set([{...updated, messages: updated.messages.map(message => ({...message}))}]); flush();
+  assert.equal(root.querySelector('img'), img); assert.doesNotMatch(root.textContent, /\/server\/owned.bin/); view.reset();
 });

@@ -1,6 +1,32 @@
 import { createHash } from 'node:crypto';
-import type { DraftImage, ImageView, ImageSource, PartView } from '../shared/api.ts';
+import { join } from 'node:path';
+import type { DraftImage, ImageView, ImageSource, MessageView, PartView } from '../shared/api.ts';
 import { ApiError } from './errors.mts';
+
+export type SentImageReceipt = {targetKey: string; images: DraftImage[]; messageDigest: string};
+export function imageReferenceLines(images: readonly DraftImage[], paths: readonly string[]): string[] {
+  return images.map((image, index) => `Attached image ${JSON.stringify(image.name)} (${image.mimeType}): ${paths[index]}`);
+}
+export function imageReferenceMessage(text: string, images: readonly DraftImage[], paths: readonly string[]): string {
+  return [text, ...imageReferenceLines(images, paths)].filter(Boolean).join('\n\n');
+}
+export function imageMessageDigest(text: string): string { return createHash('sha256').update(text).digest('hex'); }
+/** Only a complete admitted user message owns display ranges; raw text remains unchanged. */
+export function sentImageAttachments(message: MessageView, receipt: SentImageReceipt, root: string, workspaceId: string): MessageView['attachments'] {
+  if (message.role !== 'user' || message.state !== 'final' || !message.coverage.complete || message.coverage.truncated || message.coverage.omitted || message.parts.length !== 1) return;
+  const part = message.parts[0];
+  if (part.type !== 'text' || part.redacted || part.more || part.structured?.truncated || imageMessageDigest(part.text) !== receipt.messageDigest) return;
+  const lines = imageReferenceLines(receipt.images, receipt.images.map(image => join(root, 'images', receipt.targetKey, `${image.digest}.bin`)));
+  const suffix = lines.join('\n\n');
+  if (!part.text.endsWith(suffix)) return;
+  let start = part.text.length - suffix.length;
+  if (start !== 0 && part.text.slice(start - 2, start) !== '\n\n') return;
+  return receipt.images.map((image, index) => {
+    const range = {part: 0, start, end: start + lines[index].length, image: {type: 'image' as const, mimeType: image.mimeType, digest: image.digest,
+      bytes: image.bytes, width: image.width, height: image.height, alt: image.name, attachment: {workspaceId, targetKey: receipt.targetKey}}};
+    start = range.end + 2; return range;
+  });
+}
 
 export const IMAGE_BYTES = 8 * 1024 * 1024;
 export const IMAGE_PIXELS = 16 * 1024 * 1024;

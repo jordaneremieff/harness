@@ -231,10 +231,10 @@ function admitAgentEpoch(state: UiState, identity: string, epoch: number): UiSta
   return updateConversation({...state, agentEpochs, agentAvailability}, {kind: 'agent', identity}, old => ({...old, tools:new Map(),live: [], frame: undefined, connectionEpoch: epoch}));
 }
 function applyFrame(state: UiState, identity: string, connectionEpoch: number, frame: ProjectedFrame): UiState {
-  if (!Number.isSafeInteger(frame.revision) || frame.revision < 0) return state;
+  if (!Number.isSafeInteger(frame.revision) || frame.revision < 0 || frame.attachmentRevision !== undefined && (!Number.isSafeInteger(frame.attachmentRevision) || frame.attachmentRevision < 0)) return state;
   const next = admitAgentEpoch(state, identity, connectionEpoch); if (!next) return state;
   const old = next.conversations.get(targetIdentity({kind: 'agent', identity}));
-  if (old?.frame && frame.revision <= old.frame.revision) return next;
+  if (old?.frame && (frame.revision < old.frame.revision || frame.revision === old.frame.revision && (frame.attachmentRevision ?? 0) <= (old.frame.attachmentRevision ?? 0))) return next;
   return updateConversation(next, {kind: 'agent', identity}, old => {
     const merged = mergeEntries(old, frame.entries, false);
     const tools = new Map<string,ToolState>((frame.status.tools ?? []).map(tool=>[tool.callId,{callId:tool.callId,name:tool.name,phase:'update',nativeStatus:tool.status}]));

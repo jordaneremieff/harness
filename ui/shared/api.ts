@@ -40,7 +40,8 @@ export type OutputPage = {entryId: string; part: number; text: string; nextOffse
 export type ImageSource = {entryId: string; message: number; part: number};
 /** Raster metadata only; the same-origin image route supplies bytes on demand. */
 export type ImageView = {type: 'image'; mimeType: 'image/png' | 'image/jpeg'; digest: string;
-  bytes: number; width: number; height: number; alt: string; source?: ImageSource};
+  bytes: number; width: number; height: number; alt: string; source?: ImageSource;
+  attachment?: {workspaceId: string; targetKey: string}};
 /** Supplied output metadata only; a full-output path is inert text, not an access link. */
 export type ToolOutputInfo = {truncation?: {truncated: true; truncatedBy?: 'lines' | 'bytes';
   totalLines?: number; outputLines?: number; totalBytes?: number; outputBytes?: number;
@@ -70,7 +71,8 @@ export type CommunicationPresentation = {state: 'ready'; origin: NativeOrigin | 
   {state: 'unresolved'} | {state: 'unavailable'; reason: 'limit' | 'invalid'};
 /** Stable adapter ID, not an array index. Final messages replace partial messages. */
 export type MessageView = {id: string; role: string; timestamp?: number; parts: PartView[];
-  state: 'partial' | 'final'; stopReason?: string; error?: string; coverage: DisplayCoverage; usage?: AssistantUsage; communication?: CommunicationPresentation};
+  state: 'partial' | 'final'; stopReason?: string; error?: string; coverage: DisplayCoverage; usage?: AssistantUsage; communication?: CommunicationPresentation;
+  attachments?: {part: number; start: number; end: number; image: ImageView}[]};
 /** A native nested task is not a model-issued message. Its status and links come from the host. */
 export type NestedToolView = {callId: string; name: string; taskId: number; parentTaskId: number; parentCallId: string;
   status: 'pending' | 'running' | 'done'; arguments: JsonDisplay; parts?: PartView[]; isError?: boolean;
@@ -170,7 +172,7 @@ export type AgentRow = {identity: string; storageId: string; cwd: string; name?:
 export type ScanView = {state: 'not-started' | 'running' | 'ready' | 'failed'; complete: boolean;
   visited: number; skipped: number; omitted: number; scanId?: string};
 export type CachedRoster = {rows: AgentRow[]; nextCursor?: string | null; observedAt?: string; scan: ScanView; stale: boolean; error?: ErrorView};
-export type ProjectedFrame = {revision: number; observedAt: string; entries: EntryView[]; live: EntryView[];
+export type ProjectedFrame = {revision: number; attachmentRevision?: number; observedAt: string; entries: EntryView[]; live: EntryView[];
   nextBefore: number | null; status: {busy: boolean; name?: string; model?: {provider: string; modelId: string};
   thinkingLevel?: string; lastText?: string; tasks?: JsonDisplay; submissions?: JsonDisplay;
   tools?: {callId:string;name:string;status:'pending'|'running'|'done'}[]; toolsOmitted?:number;

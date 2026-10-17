@@ -179,14 +179,16 @@ The backend owns private atomic files beneath `--state-dir`:
 - `files.json`: canonical root identities and separately revisioned workspace browse folders. Old roots remain available to retained file tabs.
 - `file-drafts.json`: current acknowledged file drafts and compact clean records in strict `ui.file-drafts/2` format. Each record retains its revision, base disk revision, and encoding information. Explicit successful Save alone releases that file's text payload. Closing a view never deletes a draft.
 - `targets/`: separate epoch/agent drafts, reading anchors, and expansion preferences.
-- `operations/`: issued keys, dispatch digests, receipts, and unresolved or retained complete input copies.
+- `operations/`: issued keys, dispatch digests, receipts, compact sent-image references, and unresolved or retained complete input copies.
 - `releases/active.json`: the selected and retained last-good release identities.
 - `releases/releases/`: release descriptors that select sealed runtime directories.
 - `releases/runtimes/<runtime-digest>/releases/<release-id>/`: sealed source and browser snapshots; the runtime directory also contains their real `node_modules` tree.
 - `releases/owner.json` and `releases/owner-control.sock`: the supervisor claim and private release-control endpoint, separate from the backend state lock.
 - `releases/owner-recovery/`: raw queue-clear reservations and responses retained by the owner until durable backend import.
 
-Image bytes remain in private content-addressed storage. Same-origin routes bind each upload and preview to the exact workspace and recipient; browser snapshots carry metadata, not image bytes.
+Image bytes remain in private content-addressed storage. Same-origin routes bind each upload and preview to the exact workspace and recipient; browser snapshots carry metadata, not image bytes. Accepted file-reference image sends retain compact attachment receipts and pin their validated bytes after draft cleanup and upload-lease expiry. These receipts describe sent content, not uncertain delivery or a message to resend. Their storage remains subject to the existing operation and image capacity limits.
+
+Sent images appear inline only when the complete user message matches the exact submitted reference-message fingerprint and its accepted, target-bound attachment receipt. The same conversation displays those images from any saved workspace; byte delivery keeps the receipt's original workspace and target key, without copying or rebinding bytes to the viewer. The agent still receives the unchanged file-reference input. The display replaces only the verified reference ranges with bounded, lazy images; Source and Copy retain the original text. Native image parts continue through the existing transcript-image path. Arbitrary paths, similar prose, other recipients, and protected or incomplete text never establish an image attachment. A message without a verified receipt keeps its supplied text; the UI does not reconstruct missing image bytes.
 
 Saved drafts and captured inputs require explicit image arrays, including empty arrays for text-only input. A record without this metadata is refused and produces a notice; its saved file remains unchanged. Valid text drafts and unrelated queue recovery remain available. Unknown image ownership disables image uploads and cleanup, preserving saved bytes. Queue recovery never rewrites a refused operation at the same identity.
 

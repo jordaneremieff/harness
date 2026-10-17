@@ -23,13 +23,9 @@ export async function dispatchView(registry:Registry,context:RequestContext):Pro
 }
 async function targetAction(registry: Registry, workspace: string, context: RequestContext): Promise<unknown> {
   const {parts, body, method} = context;
+  if (parts[3] !== 'targets') throw new ApiError('invalid_request', 'The target route does not exist.', 404);
   const key=v.string(parts[4],'target key');
-  if (parts[5] === 'images' && method === 'GET') {
-    if (context.url.searchParams.size) throw new ApiError('invalid_request', 'Saved image reads do not accept query fields.');
-    const digest = v.string(parts[6], 'image digest', 64);
-    if (!/^[a-f0-9]{64}$/.test(digest)) throw new ApiError('invalid_request', 'Image digest is invalid.');
-    return new ImageResponse(await registry.store.readDraftImage(workspace, key, digest));
-  }
+  if (parts[5] === 'images' && method === 'GET') return savedImage(registry, workspace, key, context);
   if(method==='GET') return registry.store.getTarget(workspace,key);
   const expectedRevision=v.integer(body.expectedRevision,'revision');
   if(parts[5]==='draft') {
@@ -44,6 +40,13 @@ async function targetAction(registry: Registry, workspace: string, context: Requ
     return presentation(registry,workspace,key,expectedRevision,body);
   }
   throw new ApiError('invalid_request','The view action does not exist.',404);
+}
+async function savedImage(registry: Registry, workspace: string, key: string, context: RequestContext): Promise<ImageResponse> {
+  if (context.parts.length !== 7) throw new ApiError('invalid_request', 'The saved image route does not exist.', 404);
+  if (context.url.searchParams.size) throw new ApiError('invalid_request', 'Saved image reads do not accept query fields.');
+  const digest = v.string(context.parts[6], 'image digest', 64);
+  if (!/^[a-f0-9]{64}$/.test(digest)) throw new ApiError('invalid_request', 'Image digest is invalid.');
+  return new ImageResponse(await registry.store.readDraftImage(workspace, key, digest));
 }
 function presentation(registry:Registry,workspace:string,key:string,expectedRevision:number,body:Record<string,unknown>) {
   v.fields(body,['expectedRevision','expanded','showThinking','transcriptView'],['expectedRevision','expanded','showThinking']);
@@ -122,6 +125,7 @@ async function operations(registry:Registry,context:RequestContext) {
   return execute(registry,id,{workspaceId:record.workspaceId,kind:'agent.input',target,body:captured,
     input:{targetKey:input.targetKey,text:input.text,mode:input.mode,draftRevision:input.submittedDraftRevision,images},retryUncertainNative:true},async()=> {
     const admission=await registry.agents.retrySubmit(target.identity,{operationId:id,message:input.text,mode:input.mode as 'steer'|'followUp',targetKey:input.targetKey,images});
-    return {state:'accepted',receipt:{kind:'durable',identity:admission.identity,submissionId:admission.submissionId,requestId:admission.result.requestId??'',deduped:admission.deduped}};
+    return {state:'accepted',receipt:{kind:'durable',identity:admission.identity,submissionId:admission.submissionId,requestId:admission.result.requestId??'',deduped:admission.deduped},
+      ...(typeof admission.sentImageMessageDigest === 'string' ? {sentImageMessageDigest: admission.sentImageMessageDigest} : {})};
   });
 }

@@ -52,6 +52,7 @@ export class Registry {
   readonly availability = new Map<string, Map<string, EventData['agent.availability']>>();
   readonly frames = new Map<string, Map<string, {identity: string; connectionEpoch: number; frame: ProjectedFrame}>>();
   private readonly observations = new Map<string, WorkspaceObservation>();
+  private attachmentRevision = 0;
   readonly agents: AgentAdapter;
   private readonly starter: StoredAgentStarter;
   private readonly starts = new Map<string,{identity:string; promise:Promise<TargetPreparation>}>();
@@ -69,7 +70,9 @@ export class Registry {
   readonly queueWorkspaces = new Map<string,string>();
   readonly store:StateStore; readonly options:RegistryOptions;
   private constructor(store: StateStore, options: RegistryOptions, journal: Journal) {
-    this.store=store;this.options=options;this.journal = journal; this.operations = new Operations(store);
+    this.store=store;this.options=options;this.journal = journal; this.operations = new Operations(store, {onSentImages: record => {
+      if (record.view.target) this.refreshSentImages(record.view.target);
+    }});
     this.starter = new StoredAgentStarter({store:options.agentStore,executable:options.executable,...options.agentStart});
     this.agents = (options.agents ?? createAgentService)({store: options.agentStore, stateDir: store.root, installationId: store.instanceId, agentDir: options.agentStart?.agentDir,
       onRoster: page => {
@@ -81,6 +84,7 @@ export class Registry {
       onFrame: (workspaceId, identity, connectionEpoch, source) => {
         if (!this.admitObservation(workspaceId,identity,connectionEpoch)) return;
         const frame = projectFrame(source);
+        this.enrichSentImageFrame(workspaceId, identity, frame);
         const frames = this.frames.get(workspaceId) ?? new Map();
         frames.set(identity,{identity,connectionEpoch,frame}); this.frames.set(workspaceId,frames);
         this.journal.publish('agent.frame', {kind:'agent', identity}, {identity, connectionEpoch, frame}, workspaceId);
@@ -95,6 +99,25 @@ export class Registry {
         availability.set(identity,data); this.availability.set(workspaceId,availability);
         this.journal.publish('agent.availability', {kind:'agent',identity}, data, workspaceId);
       }});
+  }
+  private enrichSentImageFrame(workspaceId: string, identity: string, frame: ProjectedFrame): void {
+    const target: Target = {kind: 'agent', identity};
+    const budget = LIMITS.displayBytes - Buffer.byteLength(JSON.stringify(frame)) - 4096;
+    const remaining = this.store.enrichSentImages(workspaceId, target, frame.entries, budget);
+    this.store.enrichSentImages(workspaceId, target, frame.live, remaining);
+    frame.attachmentRevision = this.attachmentRevision;
+  }
+  private refreshSentImages(target: Target): void {
+    if (target.kind !== 'agent') return;
+    this.attachmentRevision++;
+    for (const [workspaceId, frames] of this.frames) {
+      const cached = frames.get(target.identity);
+      if (!cached) continue;
+      const refreshed = structuredClone(cached);
+      this.enrichSentImageFrame(workspaceId, target.identity, refreshed.frame);
+      frames.set(target.identity, refreshed);
+      this.journal.publish('agent.frame', target, refreshed, workspaceId);
+    }
   }
   static async open(options: RegistryOptions) {
     const journal = new Journal(undefined, options.measure);

@@ -24,6 +24,27 @@ function selectAgent(state: UiState, identity: string): UiState {
 }
 const frame = (revision: number, entries: EntryView[] = [], live: EntryView[] = []): ProjectedFrame => ({revision, entries, live, observedAt: '2026-10-08T12:00:00.000Z', nextBefore: null, status: {busy: !!live.length}, coverage});
 
+test('attachment metadata advances independently without changing native frame ordering', () => {
+  let state = selectAgent(baseline(), 'a'), sequence = 0;
+  const target = {kind: 'agent' as const, identity: 'a'};
+  const source: EntryView = {id: 'sent', kind: 'message', messages: [{id: 'input', role: 'user', state: 'final', coverage, parts: [{type: 'text', text: 'exact reference'}]}]};
+  const apply = (value: ProjectedFrame) => {state = reduceEvent(state, event(++sequence, 'agent.frame', {identity: 'a', connectionEpoch: 2, frame: value}));};
+  apply(frame(10, [source]));
+  const enriched: EntryView = {...source, messages: source.messages?.map(message => ({...message, attachments: [{part: 0, start: 0, end: 15,
+    image: {type: 'image' as const, mimeType: 'image/png' as const, digest: 'a'.repeat(64), bytes: 388, width: 96, height: 64, alt: 'blue.png',
+      attachment: {workspaceId: '11111111-1111-1111-1111-111111111111', targetKey: '22222222-2222-2222-2222-222222222222'}}}]}))};
+  apply({...frame(10, [enriched]), attachmentRevision: 1});
+  const accepted = state.conversations.get(targetIdentity(target))?.frame; assert.ok(accepted);
+  assert.equal(accepted.revision, 10); assert.equal(accepted.attachmentRevision, 1);
+  assert.equal(agentBlocks(state, 'a')[0]?.messages?.[0]?.attachments?.length, 1);
+  for (const value of [{...frame(9), attachmentRevision: 100}, {...frame(10), attachmentRevision: 1}, frame(10),
+    {...frame(11), attachmentRevision: -1}, {...frame(11), attachmentRevision: 0.5}]) {
+    apply(value); assert.equal(state.conversations.get(targetIdentity(target))?.frame, accepted);
+  }
+  apply({...frame(11, [enriched]), attachmentRevision: 1});
+  assert.equal(state.conversations.get(targetIdentity(target))?.frame?.revision, 11);
+});
+
 test('two visible agent leaves receive independent frames and reject stale availability epochs', () => {
   const snap = snapshot();
   snap.workspace.conversationLayout = {root: {kind: 'split', id: 'split', axis: 'x', ratio: 50,

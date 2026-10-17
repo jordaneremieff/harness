@@ -23,6 +23,7 @@ import { outputPages } from './transcript-output.ts';
 import { appendKey, presentArguments, presentResult, previewLimits, PreviewBudget } from './generic-content.ts';
 import type { PreviewActions } from './generic-content.ts';
 import type { SessionGroup } from './transcript-tools.ts';
+import {attachmentParts} from './attachment-parts.ts';
 import type { OutputContinuation, OutputPage } from '../shared/api.ts';
 import { captureAnchor, layoutItems, restoreAnchor, visibleWindow, updateHeights } from './virtual.ts';
 import type { LayoutItem, VirtualLayout } from './virtual.ts';
@@ -1087,12 +1088,15 @@ export class Transcript {
     if (this.communicationMessage(cached, message, entryId)) return cached;
     setText(cached.heading, bounded(presentMessage(message).label, 4096));
     const children: HTMLElement[] = []; const keys = new Set<string>();
-    message.parts.forEach((part, index) => {
+    message.parts.forEach((_part, index) => {
       if (selected && !selected.has(index)) return;
-      if ((part.type === 'text' || part.type === 'thinking') && !part.text.trim() && !part.redacted && !part.more) return;
-      const key = `${index}:${part.type}`; keys.add(key);
-      const node = this.updatePart(cached, part, index, message.state === 'partial', entryId);
-      if (node) children.push(node);
+      const displayed = attachmentParts(message, index);
+      displayed.forEach((display, piece) => {
+        if ((display.type === 'text' || display.type === 'thinking') && !display.text.trim() && !display.redacted && !display.more) return;
+        const key = displayed.length === 1 ? `${index}:${display.type}` : `${index}:attachment:${piece}:${display.type}`; keys.add(key);
+        const node = this.updatePart(cached, display, index, message.state === 'partial', entryId, key);
+        if (node) children.push(node);
+      });
     });
     this.pruneParts(cached, keys);
     if (message.coverage.truncated || message.coverage.omitted > 0 || !message.coverage.complete) {
@@ -1236,12 +1240,12 @@ export class Transcript {
     }
     content.replaceChildren(...facts, controls, pre); this.registerContent(content); cached.inspectionSource = message;
   }
-  private updatePart(message: MessageNode, part: PartView, index: number, partial: boolean, entryId: string): HTMLElement | undefined {
+  private updatePart(message: MessageNode, part: PartView, index: number, partial: boolean, entryId: string, key = `${index}:${part.type}`): HTMLElement | undefined {
     if (part.type === 'toolCall' || part.type === 'toolResult') {
       const tool = this.joined.get(part.callId);
       return tool?.slot === slot(entryId, message.source.id, index) ? this.updateTool(tool) : undefined;
     }
-    const key = `${index}:${part.type}`; const previous = message.parts.get(key);
+    const previous = message.parts.get(key);
     if (previous?.source === part && previous.partial === partial) return previous.node;
     const node = previous?.node ?? this.createPart(part, entryId, message.source.id, index);
     const pages = node.querySelector<HTMLElement>('.output-pages'); if (pages) { this.releaseFrames(pages); pages.remove(); }

@@ -8,12 +8,14 @@ import type { StateStore } from './state.mts';
 import type { OperationRecord } from './state.mts';
 import { projectJson, safeText } from './projection.mts';
 import {withPrimaryOperation} from '../rpc/primary-operation.mts';
+import {join} from 'node:path';
+import {imageMessageDigest, imageReferenceMessage} from './images.mts';
 
 const KINDS: OperationKind[] = ['primary.open', 'primary.input', 'primary.stop', 'primary.session', 'primary.control', 'primary.dialog', 'primary.handoff', 'agent.input', 'agent.abort', 'agent.configure', 'agent.convert'];
 const terminal = (record: {view: {state: string}; input?: unknown; inputResolved?: boolean; retainedInput?: unknown; protected?: boolean}) => ['accepted', 'rejected', 'completed'].includes(record.view.state) && (!record.input || record.inputResolved) && !record.retainedInput && !record.protected;
 export type ExecuteRequest = {workspaceId: string; kind: OperationKind; target?: Target; body: unknown;
   input?: {targetKey: string; text: string; mode: string; draftRevision: number; images?: DraftImage[]; differentMessage?: true}; retryUncertainNative?: boolean};
-export type DispatchResult = {state: 'accepted' | 'completed' | 'rejected' | 'uncertain'; receipt?: OperationView['receipt']; error?: ErrorView};
+export type DispatchResult = {state: 'accepted' | 'completed' | 'rejected' | 'uncertain'; receipt?: OperationView['receipt']; error?: ErrorView; sentImageMessageDigest?: string};
 export const nativeRequestId = (id: string): string => `ui:${id}`;
 
 function canonical(value: unknown, depth = 0): string {
@@ -46,7 +48,12 @@ export class Operations {
   private readonly now: () => number;
   readonly store: StateStore;
   private hooks?: {complete(record: OperationRecord, result: DispatchResult): Promise<void>; reconcile(record: OperationRecord): Promise<DispatchResult | undefined>; acknowledged?(record: OperationRecord): Promise<void>};
-  constructor(store: StateStore, options: {now?: () => number} = {}) { this.store = store; this.now = options.now ?? Date.now; }
+  private readonly onSentImages?: (record: OperationRecord) => void;
+  constructor(store: StateStore, options: {now?: () => number; onSentImages?: (record: OperationRecord) => void} = {}) { this.store = store; this.now = options.now ?? Date.now; this.onSentImages = options.onSentImages; }
+  private publishSentImages(id: string): void {
+    const record = this.store.record(id);
+    if (record.sentImages) { try { this.onSentImages?.(record); } catch { /* Display publication never changes admission. */ } }
+  }
   retainWith(hooks: NonNullable<Operations['hooks']>) {this.hooks = hooks;}
   private stamp(): string { return new Date(this.now()).toISOString(); }
   private async prune(): Promise<void> {
@@ -99,6 +106,7 @@ export class Operations {
       if (clear && submitted) await this.store.clearSubmittedDraft(current.workspaceId, submitted).catch(() => {});
       return current.view;
     });
+    this.publishSentImages(id);
     await this.hooks.acknowledged?.(this.store.record(id)).catch(() => {});
     return saved;
   }
@@ -157,6 +165,7 @@ export class Operations {
         }
         return record.view;
       });
+      this.publishSentImages(id);
       await this.hooks?.acknowledged?.(this.store.record(id)).catch(() => {});
       return saved;
     } catch { return this.uncertain(prepared.record, 'Receipt persistence failed after possible delivery'); }
@@ -173,14 +182,18 @@ export class Operations {
   private resolveInput(record: OperationRecord, outcome: DispatchResult): boolean {
     if (this.retainRefusedInput(record, outcome)) return false;
     const submitted = record.input;
+    if (outcome.sentImageMessageDigest && submitted) record.sentImages = {targetKey: submitted.targetKey, images: structuredClone(submitted.images), messageDigest: outcome.sentImageMessageDigest};
     const disposition = outcome.receipt?.kind === 'rpc' ? outcome.receipt.disposition : undefined;
-    const retained = outcome.state === 'accepted' && submitted?.images?.length && ['queued', 'handled'].includes(disposition ?? '');
     record.inputResolved = true;
-    if (retained) {
-      record.retainedInput = disposition === 'queued' ? 'queued-image' : 'handled-image';
-      if (record.input) record.input.reason = disposition === 'queued' ? 'Input was queued; this retained copy does not prove non-admission' : 'Input was handled; the complete submitted message remains for review';
-    } else { delete record.input; delete record.retainedInput; }
+    if (!this.retainAdmittedImageInput(record, outcome, disposition)) { delete record.input; delete record.retainedInput; }
     return outcome.state === 'accepted' && !!submitted && !(submitted.images?.length && disposition === 'handled');
+  }
+  private retainAdmittedImageInput(record: OperationRecord, outcome: DispatchResult, disposition?: string): boolean {
+    const input = record.input;
+    if (outcome.state !== 'accepted' || !input?.images?.length || !['queued', 'handled'].includes(disposition ?? '')) return false;
+    record.retainedInput = disposition === 'queued' ? 'queued-image' : 'handled-image';
+    input.reason = disposition === 'queued' ? 'Input was queued; this retained copy does not prove non-admission' : 'Input was handled; the complete submitted message remains for review';
+    return true;
   }
   private validateImageMessage(input: NonNullable<ExecuteRequest['input']>, target: Target, images: DraftImage[]): void {
     if (target.kind === 'primary' && images.length && /^\s*\//u.test(input.text)) throw new StateError('unsupported', 'Send the command and image message as separate actions', 409);
@@ -207,10 +220,18 @@ export class Operations {
     if (!outcome || (!['accepted', 'completed', 'rejected'].includes(outcome.state) && !(outcome.state === 'uncertain' && record.view.kind === 'agent.convert'))) throw new Error('Invalid outcome');
     if (record.input && !['rejected', 'accepted'].includes(outcome.state)) throw new Error('Input needs admission receipt');
     if (record.input && outcome.state === 'accepted' && !outcome.receipt) throw new Error('Missing admission receipt');
+    this.validateSentImageOutcome(outcome, record);
     const receipt = outcome.receipt;
     if (receipt?.kind === 'durable') this.validateNativeReceipt(receipt, record);
     else if (receipt?.kind === 'rpc') this.validateRpcReceipt(receipt, record);
     else if (receipt) throw new Error('Wrong receipt kind');
+  }
+  private validateSentImageOutcome(outcome: DispatchResult, record: OperationRecord): void {
+    if (outcome.sentImageMessageDigest === undefined) return;
+    const input = record.input;
+    if (outcome.state !== 'accepted' || outcome.receipt?.kind !== 'durable' || !input?.images.length) throw new Error('Missing sent-image admission');
+    const message = imageReferenceMessage(input.text, input.images, input.images.map(image => join(this.store.root, 'images', input.targetKey, `${image.digest}.bin`)));
+    if (imageMessageDigest(message) !== outcome.sentImageMessageDigest) throw new Error('Wrong sent-image fingerprint');
   }
   private validateRpcReceipt(receipt: Extract<NonNullable<OperationView['receipt']>, {kind: 'rpc'}>, record: OperationRecord): void {
     if (record.view.target?.kind === 'agent') throw new Error('Wrong receipt kind');

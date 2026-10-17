@@ -1028,7 +1028,7 @@ function renderRosterEvent(event: ReceivedEvent): void {
 }
 function renderObservedAgent(data: EventData['agent.frame'], receivedAt?: number): void {
   const target = {kind: 'agent' as const, identity: data.identity}; const controller = state.workspace ? controllers.get(controllerKey(state.workspace.id, target)) : undefined;
-  const conversation = state.conversations.get(targetIdentity(target)); if (conversation?.connectionEpoch !== data.connectionEpoch || conversation.frame?.revision !== data.frame.revision) return;
+  const conversation = state.conversations.get(targetIdentity(target)); if (conversation?.connectionEpoch !== data.connectionEpoch || conversation.frame?.revision !== data.frame.revision || (conversation.frame.attachmentRevision ?? 0) !== (data.frame.attachmentRevision ?? 0)) return;
   if (controller) renderController(controller, true, receivedAt);
   tabStrip.render(); renderIdentity();
   if (footerController?.target.kind === 'agent' && footerController.target.identity === data.identity) renderAgentSettings(presentation(target), target);
@@ -1439,7 +1439,7 @@ async function loadVisibleHistory(): Promise<void> {
   await Promise.all(paneLeaves(currentLayout().root).flatMap(pane => { const tab = pane.tabs.find(tab => tabKey(tab) === pane.active), target = tab ? controllerTarget(tab) : undefined; return target ? [loadControllerHistory(conversationController(target))] : []; }));
 }
 function historyPath(controller: ConversationController, earlier: boolean): string {
-  const target = controller.target, base = target.kind === 'primary' ? `/api/primaries/${encodeURIComponent(target.key)}/history?limit=50` : `/api/agents/${encodeURIComponent(target.identity)}/history?limit=50`;
+  const target = controller.target, base = target.kind === 'primary' ? `/api/primaries/${encodeURIComponent(target.key)}/history?limit=50` : `/api/agents/${encodeURIComponent(target.identity)}/history?limit=50&workspace=${encodeURIComponent(controller.workspaceId)}`;
   if (!earlier) return base;
   return base + (target.kind === 'primary' ? controller.cursor ? `&cursor=${encodeURIComponent(controller.cursor)}` : '' : controller.before !== null ? `&before=${controller.before}` : '');
 }

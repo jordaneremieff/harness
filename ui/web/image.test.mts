@@ -97,6 +97,24 @@ test('reload preserves its button focus in the figure without moving unrelated f
   for (let index = 0; index < 5; index++) transcriptImage(image, url);
   assert.equal(document.activeElement, sentinel);
 });
+test('stored attachment URLs bind verified workspace and target identities without paths or queries', () => {
+  dom(); const attachment = {workspaceId: '11111111-1111-1111-1111-111111111111', targetKey: '22222222-2222-2222-2222-222222222222'};
+  const stored: ImageView = {...image, source: undefined, attachment, alt: 'Blue sample.png'};
+  const url = imageUrl(stored, {kind: 'agent', identity: 'storage:9'}, 'other-workspace'); assert.ok(url);
+  assert.equal(url, `/api/workspaces/${attachment.workspaceId}/targets/${attachment.targetKey}/images/${image.digest}`);
+  const figure = transcriptImage(stored, url) as unknown as FakeNode;
+  const img = figure.children.find(node => node.tag === 'img'); assert.ok(img);
+  assert.equal(img.src, url); assert.equal(img.alt, 'Blue sample.png'); assert.equal(img.loading, 'lazy');
+  assert.match(figure.textContent, /Blue sample.png/);
+  assert.equal(imageUrl({...stored, source: image.source}, {kind: 'agent', identity: 'storage:9'}), undefined);
+  for (const targetKey of ['../../file', 'x?path=/private/file', '22222222-2222-2222-2222-222222222222/extra']) {
+    assert.equal(imageUrl({...stored, attachment: {...attachment, targetKey}}, {kind: 'agent', identity: 'storage:9'}), undefined);
+  }
+  for (const unsafe of [`${url}?path=/private/file`, `${url}#fragment`, `/api/workspaces/${attachment.workspaceId}/targets/${attachment.targetKey}/images/other.bin`]) {
+    const refused = transcriptImage(stored, unsafe) as unknown as FakeNode;
+    assert.ok(!refused.children.some(node => node.tag === 'img'));
+  }
+});
 test('missing source and foreign, inline, and malformed URLs never create an image node', () => {
   dom();
   for (const url of [undefined, 'https://example.test/image.png', '//example.test/x', 'data:image/png;base64,AAAA', 'blob:test', '/api/primaries/key/history/image?x=1#fragment']) {

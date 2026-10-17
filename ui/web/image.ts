@@ -1,9 +1,17 @@
 import type { ImageView, Target } from '../shared/api.ts';
 import { button, element, setText } from './dom.ts';
+import {draftImageUrl} from './transport.ts';
 
-/** URLs carry only an exact transcript identity, never source bytes or filesystem paths. */
+const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+/** URLs carry only exact transcript or stored attachment identities, never source bytes or filesystem paths. */
 export function imageUrl(part: ImageView, target: Target, workspace?: string): string | undefined {
-  if (!part.source || !/^[a-f0-9]{64}$/.test(part.digest)) return undefined;
+  if (!/^[a-f0-9]{64}$/.test(part.digest)) return undefined;
+  if (part.attachment) {
+    const {workspaceId, targetKey} = part.attachment;
+    if (part.source || typeof workspaceId !== 'string' || typeof targetKey !== 'string' || !UUID.test(workspaceId) || !UUID.test(targetKey)) return undefined;
+    return draftImageUrl(workspaceId, targetKey, part.digest);
+  }
+  if (!part.source) return undefined;
   const query = new URLSearchParams({entry: part.source.entryId, message: String(part.source.message), part: String(part.source.part), digest: part.digest});
   if (workspace) query.set('workspace', workspace);
   if (target.kind === 'primary') query.set('epoch', String(target.epoch));
@@ -11,7 +19,7 @@ export function imageUrl(part: ImageView, target: Target, workspace?: string): s
   return `/api/${target.kind === 'primary' ? 'primaries' : 'agents'}/${encodeURIComponent(identity)}/history/image?${query}`;
 }
 function safeUrl(url: string | undefined): url is string {
-  return typeof url === 'string' && /^\/api\/(?:primaries|agents)\/[^/?#]+\/history\/image\?[^#]*$/.test(url) && !/[\\\x00-\x20\x7f]/.test(url);
+  return typeof url === 'string' && (/^\/api\/(?:primaries|agents)\/[^/?#]+\/history\/image\?[^#]*$/.test(url) || /^\/api\/workspaces\/[a-f0-9-]{36}\/targets\/[a-f0-9-]{36}\/images\/[a-f0-9]{64}$/i.test(url)) && !/[\\\x00-\x20\x7f]/.test(url);
 }
 type ImageSlot = {release: () => void};
 const slots: WeakRef<ImageSlot>[] = [];
@@ -23,7 +31,7 @@ function reserve(slot: ImageSlot): void {
 /** Native lazy loading leaves offscreen bytes with the server; only four elements hold image URLs. */
 export function transcriptImage(part: ImageView, url?: string, changed: () => void = () => {}): HTMLElement {
   const figure = element('figure', 'transcript-image');
-  const caption = element('figcaption', 'transcript-image-caption', `${part.mimeType === 'image/png' ? 'PNG' : 'JPEG'} · ${part.width} × ${part.height} · ${Math.ceil(part.bytes / 1024)} KiB`);
+  const caption = element('figcaption', 'transcript-image-caption', `${part.attachment ? `${part.alt} · ` : ''}${part.mimeType === 'image/png' ? 'PNG' : 'JPEG'} · ${part.width} × ${part.height} · ${Math.ceil(part.bytes / 1024)} KiB`);
   const status = element('p', 'transcript-image-status');
   figure.append(caption, status);
   if (!safeUrl(url)) { setText(status, 'This image is not available.'); return figure; }

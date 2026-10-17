@@ -26,7 +26,7 @@ export async function dispatchAgent(registry: Registry,context: RequestContext) 
     try {retainedTarget(identity);} catch {throw new ApiError('invalid_request','Use the exact agent conversation identity.');}
     return new ImageResponse(await registry.agents.image(identity,request.source,request.digest));
   }
-  if(method==='GET') return history(registry,identity,target,url,context.signal);
+  if(method==='GET') return history(registry,identity,target,url,context.workspace,context.signal);
   if(parts[3]==='inspect') return inspect(registry,identity,body,context.signal);
   const workspace=await registry.workspace(context.workspace);
   if(parts[3]==='start') {
@@ -40,7 +40,8 @@ export async function dispatchAgent(registry: Registry,context: RequestContext) 
     const state=await registry.store.target(workspace,target);
     return execute(registry,context.operationId,{workspaceId:workspace,kind:'agent.input',target,body,input:{targetKey:state.targetKey,text:message,mode,draftRevision,images}},async()=> {
       const admission=await registry.agents.submit(identity,{operationId:context.operationId ?? '',message,mode,targetKey:state.targetKey,images});
-      return {state:'accepted',receipt:{kind:'durable',identity:admission.identity,submissionId:admission.submissionId,requestId:admission.result.requestId ?? '',deduped:admission.deduped}};
+      return {state:'accepted',receipt:{kind:'durable',identity:admission.identity,submissionId:admission.submissionId,requestId:admission.result.requestId ?? '',deduped:admission.deduped},
+        ...(typeof admission.sentImageMessageDigest === 'string' ? {sentImageMessageDigest: admission.sentImageMessageDigest} : {})};
     });
   }
   if(parts[3]==='abort') {
@@ -63,12 +64,16 @@ async function refresh(registry:Registry,body:Record<string,unknown>) {
   if(body.scanId!==undefined) {v.string(body.scanId,'scan ID');if(body.continue!==true) throw new ApiError('invalid_request','Confirm catalog continuation.');}
   return registry.agents.refresh(body.scanId as string | undefined);
 }
-async function history(registry:Registry,identity:string,target:Target,url:URL,signal?:AbortSignal) {
+async function history(registry:Registry,identity:string,target:Target,url:URL,workspaceId?:string,signal?:AbortSignal) {
   let binding: ReturnType<typeof retainedTarget>;
   try {binding=retainedTarget(identity);} catch {throw new ApiError('invalid_request','Use the exact agent conversation identity.');}
   const before=url.searchParams.get('before');
   const source=await registry.agents.history(identity,{limit:v.limit(url),...(before?{before:v.integer(Number(before),'history boundary',1)}:{})},signal);
   const frame=projectFrame({...source,...binding,observedAt:new Date().toISOString(),revision:0,live:[],status:{busy:false}});
+  if (workspaceId !== undefined) {
+    await registry.store.workspace(workspaceId);
+    registry.store.enrichSentImages(workspaceId, target, frame.entries);
+  }
   const page:AgentHistoryPage={target,entries:frame.entries,nextBefore:source.nextBefore,coverage:frame.coverage,revision:source.revision};
   return page;
 }

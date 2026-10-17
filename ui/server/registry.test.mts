@@ -334,7 +334,7 @@ async function memoryRegistry(context: TestContext) {
     if(!value) {value={targetKey:target.kind==='agent'?target.identity:'primary',target,draft:{revision:0,text:'',mode:'steer',images:[],persisted:true},reading:{revision:0,anchorId:null,offsetPx:0,followTail:false},unconfirmed:[],retainedInputs:[],imageAvailability:[]};values.push(value);states.set(workspace,values);} return value;
   };
   const store={instanceId:'synthetic',workspace:async(id='w')=>{const value=workspaces.get(id);assert.ok(value);return structuredClone(value);},target:state,
-    readPrimaries:async()=>[],savePrimaries:async()=>{},close:async()=>{},transaction:async<T,>(job:()=>Promise<T>)=>job(),operationViews:()=>[],
+    readPrimaries:async()=>[],savePrimaries:async()=>{},close:async()=>{},transaction:async<T,>(job:()=>Promise<T>)=>job(),operationViews:()=>[],enrichSentImages:()=>{},
     snapshot:(id:string)=>({workspace:structuredClone(workspaces.get(id)),targets:states.get(id) ?? [],targetIndex:[]})} as unknown as StateStore;
   context.mock.method(StateStore,'open',async()=>store);
   const registry=await Registry.open({cwd:'/project',stateDir:'synthetic',agentStore:'synthetic',executable:'not-used',agents:options=> {
