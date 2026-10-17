@@ -173,6 +173,7 @@ export type CachedRoster = {rows: AgentRow[]; nextCursor?: string | null; observ
 export type ProjectedFrame = {revision: number; observedAt: string; entries: EntryView[]; live: EntryView[];
   nextBefore: number | null; status: {busy: boolean; name?: string; model?: {provider: string; modelId: string};
   thinkingLevel?: string; lastText?: string; tasks?: JsonDisplay; submissions?: JsonDisplay;
+  tools?: {callId:string;name:string;status:'pending'|'running'|'done'}[]; toolsOmitted?:number;
   compactions?: JsonDisplay; compactionFailure?: JsonDisplay; retry?: GenerationRetry; providerBlock?: ProviderBlock}; coverage: DisplayCoverage};
 export type OperationKind = 'primary.open' | 'primary.input' | 'primary.stop' | 'primary.session' |
   'primary.control' | 'primary.dialog' | 'primary.handoff' | 'agent.input' | 'agent.abort' | 'agent.configure' | 'agent.convert';

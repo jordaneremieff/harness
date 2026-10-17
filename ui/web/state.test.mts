@@ -47,6 +47,19 @@ test('two visible agent leaves receive independent frames and reject stale avail
   state = reduceEvent(state, event(7, 'agent.frame', {identity: 'b', connectionEpoch: 5, frame: frame(0, [], [entry('b-new')])}));
   assert.equal(agentBlocks(state, 'b')[0]?.id, 'b-new'); assert.equal(agentBlocks(state, 'a')[0]?.id, 'a-next');
 });
+test('native current tool state replaces earlier slots and clears with its observation lifetime', () => {
+  let state=selectAgent(baseline(),'a'); const target={kind:'agent' as const,identity:'a'};
+  const current=(revision:number,tools:NonNullable<ProjectedFrame['status']['tools']>):ProjectedFrame=>({...frame(revision),status:{busy:true,tools}});
+  state=reduceEvent(state,event(1,'agent.frame',{identity:'a',connectionEpoch:1,frame:current(1,[{callId:'first',name:'read',status:'running'}])}));
+  const first=state.conversations.get(targetIdentity(target))?.tools.get('first');assert.equal(first?.nativeStatus,'running');assert.equal(first?.phase,'update');assert.equal(first?.observedStart,undefined);
+  state=reduceEvent(state,event(2,'agent.frame',{identity:'a',connectionEpoch:1,frame:current(2,[{callId:'second',name:'bash',status:'pending'}])}));
+  assert.equal(state.conversations.get(targetIdentity(target))?.tools.has('first'),false);assert.equal(state.conversations.get(targetIdentity(target))?.tools.get('second')?.nativeStatus,'pending');
+  state=reduceEvent(state,event(3,'agent.availability',{identity:'a',connectionEpoch:1,state:'unavailable',capabilities:{input:false,history:true,observe:false,abort:false,configure:false}}));
+  assert.equal(state.conversations.get(targetIdentity(target))?.tools.size,0);
+  state=reduceEvent(state,event(4,'agent.frame',{identity:'a',connectionEpoch:2,frame:current(1,[{callId:'third',name:'write',status:'done'}])}));
+  assert.equal(state.conversations.get(targetIdentity(target))?.tools.get('third')?.nativeStatus,'done');
+  state=reduceEvent(state,event(5,'agent.frame',{identity:'a',connectionEpoch:2,frame:current(2,[])}));assert.equal(state.conversations.get(targetIdentity(target))?.tools.size,0);
+});
 test('snapshot readiness restores exact input capabilities without a separate live event', () => {
   const snap = snapshot(); snap.workspace.selectedTarget = {kind:'agent',identity:'a'};
   const availability: EventData['agent.availability'] = {identity:'a',connectionEpoch:2,state:'live',capabilities:{history:true,observe:true,input:true,images:true,abort:true,configure:false}};

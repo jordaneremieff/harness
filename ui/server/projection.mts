@@ -510,6 +510,19 @@ function providerBlock(raw: unknown): ProviderBlock | undefined {
     error, errorRedacted: block.errorRedacted || protectedError !== block.error, errorTruncated: block.errorTruncated || error !== protectedError,
     source: block.source as ProviderBlock['source'], timestamp: Number(block.timestamp), originalResults, omittedOriginalResults: Number(block.omittedOriginalResults) + block.originalResults.length - originalResults.length};
 }
+function currentToolSlots(source: Record<string,unknown>, live: Record<string,unknown>): Pick<ProjectedFrame['status'],'tools'|'toolsOmitted'> {
+  const raw = live.tools ?? source.tools;
+  if (!Array.isArray(raw)) return {};
+  const tools: NonNullable<ProjectedFrame['status']['tools']> = [], seen = new Set<string>();
+  for (const value of raw.slice(0,64)) {
+    const item = object(value);
+    if (typeof item.callId !== 'string' || !item.callId || item.callId.length > 512 || safeText(item.callId,512) !== item.callId || seen.has(item.callId) || typeof item.name !== 'string' || !['pending','running','done'].includes(String(item.status))) continue;
+    seen.add(item.callId);tools.push({callId:item.callId,name:safeText(item.name,256),status:item.status as 'pending'|'running'|'done'});
+  }
+  const prior = Number.isSafeInteger(source.toolsOmitted) && Number(source.toolsOmitted) > 0 ? Number(source.toolsOmitted) : 0;
+  const omitted = raw.length-tools.length+prior;
+  return {tools,...(omitted ? {toolsOmitted:omitted} : {})};
+}
 function frameStatus(raw: unknown): ProjectedFrame['status'] {
   const source = object(raw), agent = object(source.agent); const status: ProjectedFrame['status'] = {busy: source.busy === true};
   if (typeof source.name === 'string') status.name = safeText(source.name, 256);
@@ -520,6 +533,7 @@ function frameStatus(raw: unknown): ProjectedFrame['status'] {
   const tasks = scalarRows(source.tasks), submissions = scalarRows(source.submissions);
   if (tasks) status.tasks = tasks; if (submissions) status.submissions = submissions;
   const live = object(source.live), generation = object(live.generation);
+  Object.assign(status,currentToolSlots(source,live));
   const retry = generationRetry(source.retry ?? {...object(generation.retry), attempt: generation.attempt}); if (retry) status.retry = retry;
   const block = providerBlock(source.providerBlock); if (block) status.providerBlock = block;
   if (source.compactions !== undefined) status.compactions = displayData(source.compactions, 8192);
@@ -568,7 +582,7 @@ export function projectFrame(raw: unknown): ProjectedFrame {
     const source = object(raw), status = frameStatus(source.status), projector = new FrameProjector(sizeOf(status));
     const communicationSource: CommunicationSource = {storageId: typeof source.storageId === 'string' ? source.storageId : undefined, conversationId: typeof source.conversationId === 'number' ? source.conversationId : undefined};
     const live = projector.collect(source.live ?? [], true, communicationSource), entries = projector.collect(source.entries ?? [], false, communicationSource);
-    projector.truncated ||= status.compactions?.truncated === true || status.compactionFailure?.truncated === true;
+    projector.truncated ||= status.compactions?.truncated === true || status.compactionFailure?.truncated === true || !!status.toolsOmitted;
     return {revision: Number.isSafeInteger(source.revision) ? Number(source.revision) : 0, observedAt: safeText(source.observedAt, 256), entries, live,
       nextBefore: Number.isSafeInteger(source.nextBefore) && Number(source.nextBefore) > 0 ? Number(source.nextBefore) : null,
       status, coverage: frameCoverage(source.coverage, projector)};

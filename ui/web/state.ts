@@ -11,7 +11,7 @@ import { paneLeaves } from './pane-layout.ts';
 export type UiEvent = { [N in EventName]: { name: N; id?: string; target?: Target; workspaceId?: string; data: EventData[N] } }[EventName];
 export interface ToolState {
   callId: string; name: string; phase: 'start' | 'update' | 'end'; arguments?: JsonDisplay;
-  argumentText?: string; parts?: PartView[]; isError?: boolean; durationMs?: number; observedStart?: number; output?: ToolOutputInfo;
+  argumentText?: string; parts?: PartView[]; isError?: boolean; durationMs?: number; observedStart?: number; output?: ToolOutputInfo; nativeStatus?: 'pending'|'running'|'done';
 }
 export interface Conversation {
   target: Target; entries: ReadonlyMap<string, EntryView>; entryOrder: string[]; historyCursor?: string | null;
@@ -228,7 +228,7 @@ function admitAgentEpoch(state: UiState, identity: string, epoch: number): UiSta
   if (epoch === state.agentEpochs.get(identity)) return state.conversations.get(targetIdentity({kind: 'agent', identity}))?.connectionEpoch === epoch ? state : undefined;
   const agentEpochs = new Map(state.agentEpochs).set(identity, epoch);
   const agentAvailability = new Map(state.agentAvailability); agentAvailability.delete(identity);
-  return updateConversation({...state, agentEpochs, agentAvailability}, {kind: 'agent', identity}, old => ({...old, live: [], frame: undefined, connectionEpoch: epoch}));
+  return updateConversation({...state, agentEpochs, agentAvailability}, {kind: 'agent', identity}, old => ({...old, tools:new Map(),live: [], frame: undefined, connectionEpoch: epoch}));
 }
 function applyFrame(state: UiState, identity: string, connectionEpoch: number, frame: ProjectedFrame): UiState {
   if (!Number.isSafeInteger(frame.revision) || frame.revision < 0) return state;
@@ -237,7 +237,8 @@ function applyFrame(state: UiState, identity: string, connectionEpoch: number, f
   if (old?.frame && frame.revision <= old.frame.revision) return next;
   return updateConversation(next, {kind: 'agent', identity}, old => {
     const merged = mergeEntries(old, frame.entries, false);
-    return {...merged, live: reconcileLiveEntries(merged.entries, frame.live, old.live), frame, connectionEpoch};
+    const tools = new Map<string,ToolState>((frame.status.tools ?? []).map(tool=>[tool.callId,{callId:tool.callId,name:tool.name,phase:'update',nativeStatus:tool.status}]));
+    return {...merged, tools,live: reconcileLiveEntries(merged.entries, frame.live, old.live), frame, connectionEpoch};
   });
 }
 function releaseInvisibleAgents(state: UiState): UiState {
@@ -246,7 +247,7 @@ function releaseInvisibleAgents(state: UiState): UiState {
   for (const conversation of state.conversations.values()) {
     const target = conversation.target;
     if (target.kind !== 'agent' || visible.has(target.identity) || conversation.connectionEpoch === undefined) continue;
-    next = updateConversation(next, target, old => ({...old, live: [], frame: undefined, connectionEpoch: undefined}));
+    next = updateConversation(next, target, old => ({...old, tools:new Map(),live: [], frame: undefined, connectionEpoch: undefined}));
     const agentAvailability = new Map(next.agentAvailability); agentAvailability.delete(target.identity); next = {...next, agentAvailability};
   }
   return next;
@@ -556,7 +557,8 @@ function applyAgentEvent(state: UiState, event: UiEvent): UiState {
   return applyAgentAvailability(state,event.data);
 }
 function applyAgentAvailability(state: UiState, data: EventData['agent.availability']): UiState {
-  const next = admitAgentEpoch(state, data.identity, data.connectionEpoch); if (!next) return state;
+  let next = admitAgentEpoch(state, data.identity, data.connectionEpoch); if (!next) return state;
+  if (data.state !== 'live') next = updateConversation(next,{kind:'agent',identity:data.identity},old=>({...old,tools:new Map()}));
   const agentAvailability = new Map(next.agentAvailability).set(data.identity, data);
   const row = state.roster.get(data.identity);
   const roster = new Map(state.roster);

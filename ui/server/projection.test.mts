@@ -326,6 +326,18 @@ test('nested native tools project as tasks without model messages or invented ti
   assert.ok(large.tool); assert.equal(large.tool.coverage.truncated, true);
   assert.deepEqual(projectEntry(entry), entry); assert.deepEqual(projectEntry(large), large);
 });
+test('current native tool slots preserve exact state before output within display bounds', () => {
+  const tools=[{callId:'first',name:'read',status:'running',output:'execution output stays outside this status'},
+    {callId:'second',name:'bash',status:'pending'},{callId:'third',name:'write',status:'done'}];
+  const value=projectFrame({revision:1,entries:[],live:[],status:{busy:true,live:{tools}},coverage:{complete:true}});
+  assert.deepEqual(value.status.tools,tools.map(({callId,name,status})=>({callId,name,status})));
+  assert.doesNotMatch(JSON.stringify(value.status.tools),/execution output/);
+  assert.deepEqual(projectFrame(value).status.tools,value.status.tools);
+  const limited=projectFrame({status:{live:{tools:Array.from({length:100},(_,i)=>({callId:`tool-${i}`,name:'read',status:'running'}))}}});
+  assert.equal(limited.status.tools?.length,64);assert.equal(limited.status.toolsOmitted,36);assert.equal(limited.coverage.truncated,true);
+  const invalid=projectFrame({status:{live:{tools:[tools[0],tools[0],{callId:'invalid',name:'read',status:'future'}]}}});
+  assert.equal(invalid.status.tools?.length,1);assert.equal(invalid.status.toolsOmitted,2);
+});
 test('compaction state preserves retries and absent failure timestamps under display bounds', () => {
   const compactions = [{taskId: 4, reason: 'threshold', blocking: true, attempt: 1, retry: {at: 2000, error: 'retry'}}];
   const compactionFailure = {taskId: 5, reason: 'manual', error: 'Bearer private-token'};
