@@ -1136,13 +1136,15 @@ export class Transcript {
       node.dataset.disclosure = id; node.append(element('summary', undefined, 'Thinking'), body);
       group = {node, body}; groups.set(id, group);
       node.addEventListener('toggle', () => {
+        if (node.dataset.streaming === 'true') node.open = true;
         for (const part of body.children) (part as HTMLDetailsElement).open = node.open;
       });
       this.trackDisclosure(node, id);
     }
     for (const part of parts) { const summary = part.querySelector<HTMLElement>('summary'); if (summary) summary.hidden = true; }
     reconcileChildren(group.body, parts);
-    group.node.open = this.showThinking || this.expanded.has(id) || parts.some(part => (part as HTMLDetailsElement).open);
+    group.node.dataset.streaming = String(parts.some(part => part.dataset.streaming === 'true'));
+    group.node.open = this.thinkingOpen(group.node) || parts.some(part => (part as HTMLDetailsElement).open);
     return group.node;
   }
   private updateMessageLayout(cached: MessageNode, children: HTMLElement[], error: string): void {
@@ -1244,6 +1246,10 @@ export class Transcript {
     const node = previous?.node ?? this.createPart(part, entryId, message.source.id, index);
     const pages = node.querySelector<HTMLElement>('.output-pages'); if (pages) { this.releaseFrames(pages); pages.remove(); }
     this.partContent(node, part, partial, previous);
+    if (part.type === 'thinking') {
+      node.dataset.streaming = String(partial && !part.redacted && !!part.text.trim());
+      (node as HTMLDetailsElement).open = this.thinkingOpen(node);
+    }
     if ((part.type === 'text' || part.type === 'thinking') && part.more) {
       const source = part; const generation = this.generation;
       const pages = outputPages(part.more, this.hooks.output, () => generation === this.generation && message.parts.get(key)?.source === source, () => this.schedule());
@@ -1666,6 +1672,9 @@ export class Transcript {
     const data = [...node.children].find(child => child.tagName.toLowerCase() === 'pre') as HTMLElement | undefined;
     if (data) { setText(preTextFrame(data), bounded(source())); if (tool?.source) tool.inspectionSources?.set(node, tool.source); }
   }
+  private thinkingOpen(node: HTMLElement): boolean {
+    return node.dataset.streaming === 'true' || this.showThinking || this.expanded.has(node.dataset.disclosure ?? '');
+  }
   private trackDisclosure(node: HTMLDetailsElement, id: string): void {
     node.querySelector('summary')?.addEventListener('click', event => {
       if (this.hasSelection() || event.detail > 1 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) event.preventDefault();
@@ -1673,6 +1682,7 @@ export class Transcript {
     node.addEventListener('toggle', () => {
       if (this.destroyed || !this.node.contains(node)) return;
       const current = node.dataset.disclosure ?? id;
+      if (node.dataset.streaming === 'true') { node.open = true; return; }
       const expected = this.expanded.has(current) || (current.startsWith('thinking:') && this.showThinking);
       if (node.open === expected) return;
       this.follow = false;
@@ -1684,13 +1694,13 @@ export class Transcript {
   private closeThinkingPreference(excluded: string): void {
     for (const entry of this.cache.values()) for (const node of entry.node.querySelectorAll<HTMLDetailsElement>('.thinking')) {
       const id = node.dataset.disclosure;
-      if (node.open && id && id !== excluded) this.expanded.add(id);
+      if (node.open && node.dataset.streaming !== 'true' && id && id !== excluded) this.expanded.add(id);
     }
     this.showThinking = false;
   }
   private applyPreferences(): void {
     for (const entry of this.cache.values()) for (const node of entry.node.querySelectorAll<HTMLDetailsElement>('[data-disclosure]')) {
-      const id = node.dataset.disclosure ?? ''; const open = this.expanded.has(id) || (id.startsWith('thinking:') && this.showThinking);
+      const id = node.dataset.disclosure ?? ''; const open = id.startsWith('thinking:') ? this.thinkingOpen(node) : this.expanded.has(id);
       if (node.classList.contains('message-source')) { node.hidden = !open; node.inert = !open; }
       else node.open = open;
     }

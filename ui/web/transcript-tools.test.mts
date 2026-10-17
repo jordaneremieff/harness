@@ -35,6 +35,28 @@ test('partial tool results remain active until their final result without an inv
   assert.equal(index.joined.get('read')?.status, 'success');
 });
 
+test('current native slots supply exact state before output without classifying other retained calls', () => {
+  const index = new TranscriptIndex(), source = entry('calls', [call('active'), call('historical')]);
+  for (const [nativeStatus, status] of [['pending', 'pending'], ['running', 'working'], ['done', 'ended']] as const) {
+    index.update([source], new Map([['active', {callId: 'active', name: 'read', phase: 'update', nativeStatus}]]));
+    const active = index.joined.get('active'); assert.ok(active); assert.equal(active.status, status);
+    assert.equal(active.result, undefined); assert.equal(active.observedStart, undefined); assert.equal(toolTime(active), '');
+    assert.equal(index.joined.get('historical')?.status, 'missing');
+  }
+  const output = entry('output', [result('active', 'Partial source text')]); const message = output.messages?.[0]; assert.ok(message);
+  message.state = 'partial';
+  index.update([source, output], new Map([['active', {callId: 'active', name: 'read', phase: 'update', nativeStatus: 'running'}]]));
+  assert.equal(index.joined.get('active')?.status, 'working'); assert.deepEqual(index.joined.get('active')?.result, [{type: 'text', text: 'Partial source text'}]);
+  index.update([source], new Map()); assert.equal(index.joined.get('active')?.status, 'missing');
+});
+test('current native done state does not replace a recorded tool outcome', () => {
+  for (const isError of [false, true]) {
+    const index = new TranscriptIndex(), source = entry('call', [call('active')]);
+    const output = entry('output', [{type: 'toolResult', callId: 'active', name: 'read', parts: [], isError}]);
+    index.update([source, output], new Map([['active', {callId: 'active', name: 'read', phase: 'update', nativeStatus: 'done'}]]));
+    assert.equal(index.joined.get('active')?.status, isError ? 'error' : 'success');
+  }
+});
 test('communication disclosures follow their message owner and clear on source removal', () => {
   const index = new TranscriptIndex(); const source = entry('peer', []); const message = source.messages?.[0]; assert.ok(message); message.communication = {state: 'unresolved'};
   const keys = communicationDisclosureKeys('peer', 'peer');

@@ -20,9 +20,12 @@ function bounded(value: string, chars: number): string {
 export function messageCopyText(message: MessageView, raw: (message: MessageView) => string): string {
   return message.communication?.state === 'ready' ? message.communication.value.body.text : raw(message);
 }
+function unassociatedInput(message: MessageView): boolean {
+  return message.role === 'user' && message.communication?.state === 'unresolved';
+}
 export function messageCopyDescription(message: MessageView): string {
   const value = message.communication;
-  if (value && value.state !== 'ready') return 'Copy retained transport text; source unverified';
+  if (value && value.state !== 'ready' && !unassociatedInput(message)) return 'Copy retained transport text; source unverified';
   if (value?.state === 'ready' && value.value.body.redacted) return 'Copy retained message text; some text withheld';
   if (value?.state === 'ready' && !value.value.body.complete && value.origin.kind === 'native') return 'Copy retained message text; incomplete text';
   return 'Copy retained message text';
@@ -106,7 +109,7 @@ export class CommunicationCard {
   private structured?: HTMLElement;
   private originalCopy?: HTMLButtonElement;
   private bodyValue?: string;
-  private bodyReady?: boolean;
+  private bodyFormatted?: boolean;
   private factsValue = '';
   private referencesValue = '';
   private rawValue = '';
@@ -131,7 +134,7 @@ export class CommunicationCard {
   sync(message: MessageView): boolean {
     if (this.source !== message && this.hooks.protected(this.shell.node)) return false;
     const value = message.communication; if (!value) return false;
-    this.source = message; this.header(value); this.content(value, message);this.results(value);
+    this.source = message; this.header(value, message); this.content(value, message);this.results(value);
     const reply=this.hooks.reply?.(message);this.reply.hidden=!reply;
     if(reply){const link=button(reply.text,()=>{if(this.current())this.hooks.reply?.(this.hooks.current())?.open();});this.reply.replaceChildren(document.createTextNode('Reply to: '),link);}else this.reply.replaceChildren();
     if (!this.inspection.hidden) this.renderSource();
@@ -139,7 +142,7 @@ export class CommunicationCard {
   }
   refreshSender():void{
     const message=this.current(),value=message?.communication;
-    if(value&&!this.hooks.protected(this.shell.heading))this.header(value);
+    if(value&&message&&!this.hooks.protected(this.shell.heading))this.header(value,message);
   }
   private results(value:CommunicationPresentation):void {
     const result=value.state==='ready'&&value.value.kind==='result'?value.value:undefined;
@@ -155,26 +158,31 @@ export class CommunicationCard {
       });action.querySelector('.card-action-label')?.classList.remove('sr-only');this.resultActions.append(action);
     });
   }
-  private header(value: CommunicationPresentation): void {
+  private senderLabel(sender: Communication['sender']): string {
+    const loaded=this.hooks.subject?.(sender.identity);
+    if (loaded?.name && loaded.provenance) return loaded.name;
+    const supplied=sender.name?.trim();
+    return supplied && supplied!==sender.identity && !conversationIdentityText(supplied) ? supplied : sender.identity;
+  }
+  private header(value: CommunicationPresentation, message: MessageView): void {
     this.shell.node.dataset.state = value.state;
     this.shell.node.dataset.reason = value.state === 'unavailable' ? value.reason : '';
     const sender=value.state==='ready'?value.value.sender:undefined;
-    const supplied=sender?.name?.trim(), loaded=sender?this.hooks.subject?.(sender.identity):undefined;
-    const name=loaded?.name&&loaded.provenance?loaded.name:supplied&&supplied!==sender?.identity&&!conversationIdentityText(supplied)?supplied:undefined;
-    const kind=value.state==='ready'?value.value.kind:undefined,label=kind==='result'?'Answer':kind==='report'?'Report':'Message';
-    const heading=name?`${label} from ${name}`:`${label} · sender name unavailable`;
+    const input=unassociatedInput(message); this.shell.node.classList.toggle('user',input);
+    const heading=sender?this.senderLabel(sender):input?presentMessage(message).label:'';
     setText(this.shell.heading,heading);
-    this.shell.heading.hidden = value.state !== 'ready'; this.shell.heading.title = '';
-    this.unverified.hidden = value.state === 'ready';
-    this.shell.node.setAttribute('aria-label', value.state === 'ready' ? heading : 'Message with unverified source');
+    this.shell.heading.hidden = !sender && !input; this.shell.heading.title = sender?.identity ?? '';
+    this.unverified.hidden = value.state === 'ready' || input;
+    this.shell.node.setAttribute('aria-label', heading || 'Message with unverified source');
   }
   private content(value: CommunicationPresentation, message: MessageView): void {
     const ready = value.state === 'ready'; const original = ready ? value.value.body.text : this.hooks.raw(message);
-    this.text.classList.toggle('communication-quoted', !ready);
-    if (original !== this.bodyValue || ready !== this.bodyReady) { this.bodyValue = original; this.bodyReady = ready; this.renderText(original, ready); }
+    const formatted = ready || unassociatedInput(message);
+    this.text.classList.toggle('communication-quoted', !formatted);
+    if (original !== this.bodyValue || formatted !== this.bodyFormatted) { this.bodyValue = original; this.bodyFormatted = formatted; this.renderText(original, formatted); }
   }
-  private renderText(original: string, ready: boolean): void {
-    if (ready) { this.text.replaceChildren(...markdownDom(original).childNodes); this.text.removeAttribute('aria-label'); return; }
+  private renderText(original: string, formatted: boolean): void {
+    if (formatted) { this.text.replaceChildren(...markdownDom(original).childNodes); this.text.removeAttribute('aria-label'); return; }
     setText(this.text, original || 'No retained text');
     this.text.removeAttribute('aria-label');
   }

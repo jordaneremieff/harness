@@ -60,10 +60,15 @@ function combineParts(id: string, parts: ToolPart[]): JoinedTool | undefined {
     }
   return tool;
 }
+function nativeToolStatus(tool: JoinedTool, status: NonNullable<ToolState['nativeStatus']>): string {
+  if (tool.status === 'success' || tool.status === 'error') return tool.status;
+  return {pending: 'pending', running: 'working', done: 'ended'}[status];
+}
 function applyState(tool: JoinedTool, state: ToolState | undefined): void {
   if (!state) return;
   tool.args = state.arguments ?? tool.args; tool.argumentText = state.argumentText; tool.result = state.parts ?? tool.result; tool.duration = state.durationMs;
   tool.output = state.output ?? tool.output; tool.observedStart = state.observedStart;
+  if (state.nativeStatus !== undefined) { tool.status = nativeToolStatus(tool, state.nativeStatus); return; }
   if (state.phase === 'end') tool.status = state.isError ? 'error' : 'success';
   else if (state.observedStart !== undefined) tool.status = 'working';
   else if (tool.status === 'missing' && tool.result !== undefined) tool.status = 'available';

@@ -330,6 +330,21 @@ for (const status of ['pending', 'done'] as const) test(`empty native ${status} 
   assert.match(card.textContent, status === 'pending' ? /The tool has not started\./ : /The tool ended\. No outcome is available\./);
   assert.doesNotMatch(card.textContent, /completed without output|success|Success/);
 });
+test('native running tool cards retain their block and details before the result arrives', () => {
+  setup(); const view = transcript(); const source: EntryView = {id: 'native-call', kind: 'pi.assistant', messages: [{...message('native-call', '', 'final'),
+    parts: [{type: 'toolCall', callId: 'read-current', name: 'read', arguments: {value: {path: 'notes.md'}, truncated: false}}]}]};
+  view.set([source], new Map([['read-current', {callId: 'read-current', name: 'read', phase: 'update', nativeStatus: 'running'}]])); flush();
+  const root = node('primary-transcript'), shell = root.querySelector('.tool-shell'), card = shell?.querySelector('.tool-card'); assert.ok(shell); assert.ok(card);
+  assert.equal(shell.dataset.status, 'working'); assert.equal(card.querySelector('.tool-status')?.textContent, 'Working'); assert.doesNotMatch(card.textContent, /No result recorded/);
+  card.open = true; card.dispatch('toggle'); flush(); assert.match(card.querySelector('.tool-output-text')?.textContent ?? '', /Working/);
+  assert.ok(card.querySelector('.tool-arguments')); assert.ok(card.querySelectorAll('summary').some(item => item.textContent === 'Details'));
+  view.set([source], new Map([['read-current', {callId: 'read-current', name: 'read', phase: 'update', nativeStatus: 'pending'}]])); flush();
+  assert.equal(root.querySelector('.tool-card'), card); assert.equal(shell.dataset.status, 'pending'); assert.equal(card.querySelector('.tool-status')?.textContent, 'Queued');
+  const output: EntryView = {id: 'native-result', kind: 'pi.tool-result', messages: [{...message('native-result', '', 'final'), role: 'toolResult',
+    parts: [{type: 'toolResult', callId: 'read-current', name: 'read', isError: false, parts: [{type: 'text', text: 'Actual source output'}]}]}]};
+  view.set([source, output], new Map()); flush(); assert.equal(root.querySelector('.tool-card'), card); assert.equal(shell.dataset.status, 'success');
+  assert.match(card.textContent, /Actual source output/); assert.equal(card.open, true); view.reset();
+});
 test('callId joins call and results across entries with one bounded disclosure and raw output', () => {
   setup(); const view = transcript();
   const call = {type: 'toolCall' as const, callId: 'call-1', name: 'read', arguments: {value: {path: '/full/path', offset: 1, limit: 10}, truncated: false}};
@@ -1352,6 +1367,48 @@ test('adjacent thinking chunks share one disclosure and preserve retained inspec
   assert.equal(root.querySelector('.thinking-group'), group); assert.equal(group.children[1]?.children[0], parts[0]);
   assert.match(group.textContent, /Appended retained chunk/);
 });
+for (const count of [1, 2]) test(`supplied live thinking stays visible through saved collapse with ${count} parts`, () => {
+  setup(); const choices: {expanded: string[]; thinking: boolean}[] = [];
+  const view = new Transcript('primary', {reading: () => {}, presentation: (expanded, thinking) => {choices.push({expanded, thinking});}});
+  const saved = {revision: 1, expanded: [], showThinking: false}; view.configure(saved);
+  const thought = (id: string, state: 'partial' | 'final', text: string): EntryView => ({id, kind: 'message', messages: [{...message(id, '', state),
+    parts: Array.from({length: count}, (_, index) => ({type: 'thinking', text: `${text} ${index}`}))}]});
+  const retained = thought('retained', 'final', 'Older retained thinking');
+  view.set([retained, thought('stream', 'partial', 'Supplied live thinking')]); flush();
+  const root = node('primary-transcript'), live = root.children.find(row => row.dataset.entryId === 'stream'); assert.ok(live);
+  const older = root.children.find(row => row.dataset.entryId === 'retained'); assert.ok(older);
+  assert.equal(older.querySelectorAll('.thinking').every(node => !node.open), true);
+  assert.equal(live.querySelectorAll('.thinking').every(node => node.open), true);
+  for (const node of live.querySelectorAll('.thinking')) node.dispatch('toggle');
+  assert.equal(choices.length, 0, 'automatic expansion does not become a saved choice');
+  view.configure(saved); view.expandLoaded(false, false); flush();
+  assert.equal(live.querySelectorAll('.thinking').every(node => node.open), true);
+  assert.equal(choices.at(-1)?.thinking, false); assert.deepEqual(choices.at(-1)?.expanded, []);
+  view.set([retained, thought('stream', 'partial', 'More supplied live thinking')]); flush();
+  assert.match(live.textContent, /More supplied live thinking/);
+  view.set([retained, thought('stream', 'final', 'Complete retained thinking')]); flush();
+  assert.equal(live.querySelectorAll('.thinking').every(node => !node.open), true, 'settlement restores the retained choice');
+  const disclosure = live.querySelector('.thinking'); assert.ok(disclosure); disclosure.open = true; disclosure.dispatch('toggle'); flush();
+  view.set([retained, thought('stream', 'final', 'Updated retained thinking')]); flush(); assert.equal(disclosure.open, true);
+  view.reset();
+});
+test('retained collapse does not save a forced live thinking expansion', () => {
+  setup(); let saved: string[] = []; const view = new Transcript('primary', {reading: () => {}, presentation: value => {saved = value;}});
+  const thought = (id: string, state: 'partial' | 'final'): EntryView => ({id, kind: 'message', messages: [{...message(id, '', state), parts: [{type: 'thinking', text: id}]}]});
+  const older = thought('older', 'final'); view.set([older, thought('live', 'partial')]); flush();
+  const root = node('primary-transcript'), retained = root.children.find(row => row.dataset.entryId === 'older')?.querySelector('.thinking'); assert.ok(retained);
+  retained.open = false; retained.dispatch('toggle'); flush(); assert.deepEqual(saved, []);
+  const live = root.children.find(row => row.dataset.entryId === 'live')?.querySelector('.thinking'); assert.ok(live); assert.equal(live.open, true);
+  view.set([older, thought('live', 'final')]); flush(); assert.equal(live.open, false); view.reset();
+});
+test('empty and redacted partial thinking do not invent readable thinking', () => {
+  setup(); const view = transcript(); view.configure({revision: 1, expanded: [], showThinking: false});
+  view.set([{id: 'empty-thinking', kind: 'message', messages: [{...message('empty-thinking', '', 'partial'), parts: [{type: 'thinking', text: ''}]}]}]); flush();
+  const root = node('primary-transcript'); assert.equal(root.querySelector('.thinking'), null);
+  view.set([{id: 'redacted-thinking', kind: 'message', messages: [{...message('redacted-thinking', '', 'partial'), parts: [{type: 'thinking', text: 'withheld bytes', redacted: true}]}]}]); flush();
+  const redacted = root.querySelector('.thinking'); assert.ok(redacted); assert.equal(redacted.open, false);
+  assert.doesNotMatch(redacted.textContent, /withheld bytes/); assert.match(redacted.textContent, /Thinking not available/); view.reset();
+});
 test('thinking grouping preserves an expanded original disclosure', () => {
   setup(); const view = transcript(); const first = {type: 'thinking' as const, text: 'Original retained chunk'};
   const source = {id: 'expanded-thought', kind: 'message', messages: [{...message('expanded-thought', ''), parts: [first]}]};
@@ -2048,6 +2105,30 @@ test('communication keeps sender and text at rest and opens one hidden Source fr
   assert.equal(menu.textContent, 'Message actions'); assert.equal(menu.attributes['aria-label'], 'Message actions');
   messageAction(card, 'Source').run?.(); assert.equal(region.hidden, false); assert.equal(Reflect.get(region, 'inert'), false); assert.match(region.textContent, /Original transport paragraph/);
   const close = region.querySelector('.message-source-close'); assert.ok(close); close.click(); assert.equal(region.hidden, true); assert.equal(Reflect.get(region, 'inert'), true); assert.equal(fakeDocument.activeElement, menu); view.reset();
+});
+test('ordinary unresolved user input keeps its public role without a source warning', () => {
+  setup(); const view = transcript(); const source = communicationEntry('unresolved'); const input = source.messages?.[0]; assert.ok(input);
+  input.role = 'user'; input.parts = [{type: 'text', text: '**A genuine prompt** with no peer association'}];
+  view.set([source]); flush(); const card = node('primary-transcript').querySelector('.communication-card'); assert.ok(card);
+  assert.equal(card.querySelector('.communication-sender')?.textContent, 'Input');
+  assert.equal(card.querySelector('.communication-sender')?.hidden, false); assert.equal(card.querySelector('.communication-unverified')?.hidden, true);
+  assert.equal(card.querySelector('.communication-text')?.classList.contains('communication-quoted'), false); assert.equal(card.classList.contains('user'), true);
+  assert.equal(card.querySelector('.communication-text')?.querySelector('strong')?.textContent, 'A genuine prompt');
+  assert.doesNotMatch(messageAction(card, 'Copy').description ?? '', /unverified/);
+  messageAction(card, 'Source').run(); node('primary-editor').focus(); flush();
+  assert.match(card.querySelector('.message-source')?.textContent ?? '', /Source association not established/);
+  assert.doesNotMatch(card.querySelector('.message-source')?.textContent ?? '', /Sender identity/);
+  view.set([{...source, messages: [{...input, communication: {state: 'unavailable', reason: 'invalid'}}]}]); flush();
+  assert.equal(card.querySelector('.communication-unverified')?.hidden, false, 'invalid associations remain explicit'); view.reset();
+});
+test('communication headers use supplied identities rather than missing-name prose', () => {
+  setup(); const view = transcript(); const source = communicationEntry('ready', 'Body', ''); view.set([source]); flush();
+  const card = node('primary-transcript').querySelector('.communication-card'); assert.ok(card);
+  const heading = card.querySelector('.communication-sender'); assert.ok(heading);
+  assert.equal(heading.textContent, '10000000-0000-4000-8000-000000000001'); assert.equal(heading.title, heading.textContent);
+  assert.doesNotMatch(heading.textContent, /unavailable/);
+  view.set([communicationEntry()]); flush(); assert.equal(card.querySelector('.communication-sender'), heading); assert.equal(heading.textContent, 'Peer');
+  assert.equal(heading.title, '10000000-0000-4000-8000-000000000001'); view.reset();
 });
 test('unverified marker opens Source without inventing a sender and Copy keeps literal retained bytes', async () => {
   setup(); const view = transcript(); const writes: string[] = []; const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
