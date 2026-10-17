@@ -103,7 +103,7 @@ export class AgentService {
     if (options.maxBytes !== undefined) { bounded(options.maxBytes, 1, 1048576, "History byte target"); params.maxBytes = options.maxBytes; }
     signal?.throwIfAborted();
     let link: HostLink | undefined;
-    try { link = await this.#link(identity); return (await link.request("snapshot", params, { identity })) as Snapshot; }
+    try { link = await this.#link(identity); return (await link.request("snapshot", params, { identity }, signal)) as Snapshot; }
     catch (error) {
       if (!retainedEligible(error, link !== undefined)) throw error;
       this.#ready();
