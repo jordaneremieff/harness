@@ -965,9 +965,11 @@ export class StateStore {
 
   async clearSubmittedDraft(wid: string, input: NonNullable<OperationRecord['input']>): Promise<void> {
     const value = this.requireTarget(wid, input.targetKey);
-    if (value.draft.revision !== input.submittedDraftRevision || !sameDraftTuple(value.draft, input)) return;
-    const draft: StoredDraft = {...value.draft, revision: value.draft.revision + 1, text: '', images: []};
-    delete draft.recoveryOrigin;
+    const matching = sameDraftTuple({...value.draft,mode:input.mode},input);
+    if (value.draft.revision !== input.submittedDraftRevision && !(matching && value.draft.revision === input.submittedDraftRevision + 1)) return;
+    // Advancing the captured revision fences an older save without discarding different draft content.
+    const draft: StoredDraft = {...value.draft, revision: value.draft.revision + 1,...(matching ? {text:'',images:[],mode:input.mode} : {})};
+    if (matching) delete draft.recoveryOrigin;
     await this.writeTarget({...value, draft}); await this.cleanupImagesForMutation();
     const view = this.draftView(draft); this.changed('draft.changed', {targetKey: value.targetKey, target: value.target, draft: view}, wid, value.target);
   }

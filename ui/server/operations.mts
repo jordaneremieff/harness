@@ -190,13 +190,12 @@ export class Operations {
     if (typeof input.text !== 'string' || !input.text.trim() && !input.images?.length || Buffer.byteLength(input.text) > LIMITS.textBytes || !['prompt', 'steer', 'followUp'].includes(input.mode) || !Number.isSafeInteger(input.draftRevision) || input.draftRevision < 0 || (target.kind === 'agent' && input.mode === 'prompt')) throw new StateError('invalid_request', 'Invalid input text, mode, or revision');
   }
   private prepareInput(record: OperationRecord, request: ExecuteRequest, retry: boolean): void {
-        if (!request.input || !request.target) throw new StateError('invalid_request', 'Input dispatch requires a saved target and draft revision');
+        if (!request.input || !request.target) throw new StateError('invalid_request', 'Input dispatch requires an exact target and captured message');
         const input = request.input;
         this.validateInput(input, request.target);
         const target = this.store.draftForOperation(request.workspaceId, input.targetKey);
         if (!sameTarget(target.target, request.target)) throw new StateError('operation_conflict', 'Draft belongs to a different target', 409);
         const images = normalizeDraftImages(input.images);
-        if (!retry && (target.draft.revision !== input.draftRevision || !sameDraftTuple(target.draft, {...input, images}))) throw new StateError('stale_revision', 'Save this complete input draft before submission', 409, target.draft);
         this.validateImageMessage(input, request.target, images);
         const origin = retry ? record.input?.recoveryOrigin : target.draft.recoveryOrigin;
         if (origin) this.store.assertRecoverySendAllowed(origin, input.differentMessage);

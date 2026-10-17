@@ -47,12 +47,14 @@ test('save rejection retains local text and exposes the current server revision'
   assert.equal(state.inFlight, undefined);
   assert.equal(receiveDraft(state, view(0, 'old')), state);
 });
-test('submission captures exact target and saved text and blocks duplicate pending edits', () => {
+test('submission captures exact target and local text and blocks duplicate pending edits', () => {
   const state = createDraft(view(4, 'exact text', 'steer'));
   const captured = captureSubmission(state, target, 'operation'); assert.ok(captured.submission);
   assert.deepEqual(captured.submission.target, target); assert.notEqual(captured.submission.target, target); assert.equal(captured.submission.draftRevision, 4);
   assert.equal(captureSubmission(captured.state, target, 'other').submission, undefined);
-  assert.equal(captureSubmission(editDraft(state, 'unsaved'), target, 'operation').submission, undefined);
+  const local=beginDraftSave(editDraft(state,'unsaved'));assert.ok(local.request);
+  const unsaved=captureSubmission(local.state,target,'operation');assert.equal(unsaved.submission?.text,'unsaved');assert.equal(unsaved.submission?.draftRevision,4);
+  assert.equal(unsaved.state.inFlight,local.request);
   assert.equal(captureSubmission(createDraft(view(0, '  ')), target, 'operation').submission, undefined);
 });
 test('admission clears only the submitted edit; newer text survives', () => {

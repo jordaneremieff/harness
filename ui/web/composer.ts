@@ -15,7 +15,7 @@ import type { EditorSelection } from './draft-presentation.ts';
 export type { CommandOption } from './command-menu-state.ts';
 import { inputOperation, operationLabel } from './operation-label.ts';
 import { acknowledgeDraft, beginDraftSave, captureSubmission, createDraft, draftSaved, editDraft, receiveDraft, rejectDraftSave, resolveDraftConflict, settleSubmission } from './draft-state.ts';
-import type { DraftState, Submission } from './draft-state.ts';
+import type { DraftSave, DraftState, Submission } from './draft-state.ts';
 import { ApiError, draftImageUrl, errorMessage, operation, request, reserve } from './transport.ts';
 
 export type ComposerHooks = {captured?: (submission:Submission)=>void; failed?: (operationId:string,uncertain:boolean)=>void; prepareInput?: () => boolean; imageState?: (workspace: string, state: TargetState) => void; imageInput?: (target: Target) => {allowed: boolean; reason?: string}; recovery?: () => void; layoutHeight?: () => number | undefined; timing?: (start: number, end: number) => void; submitted: (operation: OperationView) => void; unknownCommand: (text: string, sendLiteral: () => void) => boolean; enterSends?: () => boolean; commands?: () => CommandInventory; moreCommands?: (target: Target) => Promise<void>; retained?: (workspace: string, target: Target, retained: boolean) => void};
@@ -71,6 +71,7 @@ export class Composer {
   private recipientGuidance = 'Connect this agent to send.';
   private busy = false;
   private operations: OperationView[] = [];
+  private admittedSaves = new WeakMap<DraftSave,Submission>();
   private sizePending = false;
   private manualHeight?: number;
   private sizedHeight = 0;
@@ -441,7 +442,7 @@ export class Composer {
     const modifierSend = (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey;
     const ordinarySend = this.hooks.enterSends?.() && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey;
     if (event.key === 'Enter' && (modifierSend || ordinarySend)) {
-      event.preventDefault(); if (!event.repeat && this.current && draftSaved(this.current.data) && !this.textLimit) void this.send();
+      event.preventDefault(); if (!event.repeat && this.current && !this.textLimit) void this.send();
     }
   }
   private prepare(buffer: Buffer): void {
@@ -512,7 +513,7 @@ export class Composer {
     const buffer = this.current; const mode = buffer?.data.mode;
     this.elements.root.hidden = !buffer; this.editor.disabled = !buffer;
     this.renderControls();
-    this.elements.send.disabled = !buffer || !this.ready || this.admissionBlocked || buffer.submitting || buffer.review || this.textLimit || !draftSaved(buffer.data) || this.pendingBlocks(buffer) || !!this.imageRefusal(buffer) || buffer.data.server.recoverySendGuard?.state === 'blocked' || buffer.data.server.recoverySendGuard?.state === 'unavailable' || !draftHasContent({text: buffer.data.text.trim(), images: buffer.data.images});
+    this.elements.send.disabled = !buffer || !this.ready || buffer.submitting || this.textLimit || this.pendingBlocks(buffer) || buffer.data.server.recoverySendGuard?.state === 'blocked' || buffer.data.server.recoverySendGuard?.state === 'unavailable' || !draftHasContent({text: buffer.data.text.trim(), images: buffer.data.images});
     const active = this.deliveryMode(mode);
     const delivery = this.delivery(); if (delivery) delivery.value = active === 'followUp' ? 'followUp' : 'steer';
     setText(this.elements.save, this.saveSummary(buffer));
@@ -525,10 +526,8 @@ export class Composer {
     const send = this.elements.send; send.setAttribute('aria-description', reason); send.title = reason || 'Send';
   }
   private sendGuidance(): string {
-    if (!this.connected) return 'Connection lost. Reconnect before sending.';
-    if (this.gated) return 'Selecting this conversation…';
     if (!this.ready) return this.current?.state.target.kind === 'agent' ? this.recipientGuidance : 'This conversation is not ready for messages.';
-    return this.current ? this.imageRefusal(this.current) : '';
+    return this.current?.attachments?.pending ? 'Unfinished local files stay in this tab and are not included in this message.' : '';
   }
   /** A primary prompt draft is delivered as steer while work runs; the saved mode changes on the next edit or send. */
   private deliveryMode(mode?: string): string | undefined {
@@ -546,7 +545,7 @@ export class Composer {
   }
   private receive(buffer: Buffer, draft: DraftView): void {
     for (const pending of buffer.pending.values()) {
-      if (draft.revision === pending.submission.draftRevision + 1 && !draftHasContent(draft) && draft.mode === pending.submission.mode) { pending.cleanup = draft; return; }
+      if (draft.revision >= pending.submission.draftRevision + 1 && !draftHasContent(draft) && draft.mode === pending.submission.mode) { pending.cleanup = draft; return; }
     }
     const previous = buffer.data, save = previous.inFlight;
     const ownSave = save && draft.revision === save.expectedRevision + 1 && sameDraftTuple(draft, save);
@@ -580,6 +579,7 @@ export class Composer {
         return draft;
       } catch (error) {
         buffer.data = rejectDraftSave(buffer.data, sent);
+        if (this.admittedSaveFailure(buffer,sent,error)) return buffer.data.server;
         this.saveFailure(buffer, error); throw error;
       } finally { clearTimeout(buffer.slowTimer); buffer.slowTimer = undefined; buffer.outstandingSince = undefined; buffer.saving = undefined; this.paint(buffer); this.receipt(buffer); }
     })();
@@ -594,6 +594,13 @@ export class Composer {
       if (this.admissionBlocked) throw error;
       return request<DraftView>(`${this.base(buffer)}/draft`, 'PUT', body);
     }
+  }
+  private admittedSaveFailure(buffer: Buffer, sent: DraftSave, error: unknown): boolean {
+    const input=this.admittedSaves.get(sent), value=error instanceof ApiError&&error.view.code==='stale_revision'&&!error.view.details?.truncated?error.view.details?.value:undefined;
+    if(!input||!value||typeof value!=='object')return false;
+    const draft=value as DraftView;
+    if(!Number.isSafeInteger(draft.revision)||draft.revision<=input.draftRevision||draft.revision<buffer.data.server.revision||draft.persisted!==true||draft.mode!==input.mode||typeof draft.text!=='string'||!Array.isArray(draft.images)||draftHasContent(draft))return false;
+    buffer.data={...buffer.data,server:draft,conflict:undefined,...(!draftHasContent(buffer.data)?{savedEdit:buffer.data.edit}:{})};buffer.state.draft=draft;buffer.saveError=undefined;return true;
   }
   private saveFailure(buffer: Buffer, error: unknown): void {
     if (error instanceof ApiError && error.view.code === 'stale_revision') this.stale(buffer, error);
@@ -649,7 +656,7 @@ export class Composer {
       const consent = this.consent(buffer, true);
       slot.append(element('p', 'warning', 'Confirm that this exact draft is a different message, not a resend of a retained image copy.'), button('Confirm different message', () => {if (this.consentMatches(buffer, consent)) void this.send(false, consent);}));
     });
-    ask.disabled = !draftSaved(buffer.data) || !!this.imageRefusal(buffer) || this.admissionBlocked || !this.ready;
+    ask.disabled = !this.ready || buffer.submitting;
     slot.append(ask);
   }
   private retainedCopy(buffer: Buffer, item: RecoveryInput, slot: HTMLElement): void {
@@ -801,6 +808,8 @@ export class Composer {
       pending.uncertain = false;
       if (this.current === buffer) this.rememberSelection(); const previous = buffer.data;
       const clearAccepted = pending.submission.images.length === 0 || result.receipt?.kind === 'durable' || result.receipt?.kind === 'rpc' && (result.receipt.disposition === 'started' || result.receipt.disposition === 'queued');
+      const save=buffer.data.inFlight;
+      if(outcome==='accepted'&&clearAccepted&&save?.edit===pending.submission.edit&&sameDraftTuple(save,pending.submission))this.admittedSaves.set(save,pending.submission);
       buffer.data = settleSubmission(buffer.data, pending.submission, outcome, undefined, clearAccepted); this.rebaseSelection(buffer, previous, outcome === 'accepted' && clearAccepted);
       buffer.notice = this.admissionNotice(result, pending.submission.images.length > 0); buffer.noticeDetails = undefined;
       this.paint(buffer); this.receipt(buffer); announce(buffer.notice);
@@ -815,7 +824,7 @@ export class Composer {
     try {
       const saved = pending.cleanup && !buffer.lastOperation?.retainedInput ? {...buffer.state, draft: pending.cleanup} : await request<TargetState>(this.base(buffer)); buffer.state = {...saved, draft: buffer.data.server};
       const draft = pending.cleanup ?? saved.draft;
-      if (!draftHasContent(draft) && draft.mode === pending.submission.mode && draft.revision === pending.submission.draftRevision + 1 && draft.revision >= buffer.data.server.revision) {
+      if (!draftHasContent(draft) && draft.mode === pending.submission.mode && draft.revision >= pending.submission.draftRevision + 1 && draft.revision >= buffer.data.server.revision) {
         const savedEdit = !draftHasContent(buffer.data) ? buffer.data.edit : buffer.data.savedEdit === buffer.data.edit ? -1 : buffer.data.savedEdit;
         const previous = buffer.data; buffer.data = {...buffer.data, server: draft, savedEdit}; this.rebaseSelection(buffer, previous);
       } else this.receive(buffer, draft);
@@ -828,16 +837,16 @@ export class Composer {
     return 'Message sent';
   }
   private pendingBlocks(buffer: Buffer): boolean {
-    return [...buffer.pending.values()].some(item => buffer.state.target.kind === 'primary' || sameDraftTuple(item.submission, buffer.data));
+    return [...buffer.pending.values()].some(item => item.submission.edit === buffer.data.edit && sameDraftTuple(item.submission, buffer.data));
   }
   private consent(buffer: Buffer, differentMessage?: true): SendConsent {
     return {buffer, edit: buffer.data.edit, revision: buffer.data.server.revision, operations: new Set(buffer.pending.keys()), tuple: {text: buffer.data.text, mode: buffer.data.mode, images: buffer.data.images.map(image => ({...image})), edit: buffer.data.edit}, ...(differentMessage ? {differentMessage} : {})};
   }
   private consentMatches(buffer: Buffer, consent?: SendConsent): boolean {
-    return !!consent && !consent.used && consent.buffer === buffer && consent.edit === buffer.data.edit && consent.revision === buffer.data.server.revision && sameDraftTuple(consent.tuple, buffer.data);
+    return !!consent && !consent.used && consent.buffer === buffer && consent.edit === buffer.data.edit && sameDraftTuple(consent.tuple, buffer.data);
   }
   private blocked(buffer: Buffer, consent?: SendConsent): boolean {
-    if (this.admissionBlocked || !this.ready || buffer.submitting || buffer.review || !draftHasContent({text: buffer.data.text.trim(), images: buffer.data.images}) || this.imageRefusal(buffer)) return true;
+    if (!this.ready || buffer.submitting || !draftHasContent({text: buffer.data.text.trim(), images: buffer.data.images})) return true;
     const guard = buffer.data.server.recoverySendGuard;
     if (guard?.state === 'unavailable' || guard?.state === 'blocked' && (!consent?.differentMessage || !this.consentMatches(buffer, consent))) return true;
     if (this.pendingBlocks(buffer) && !this.consentMatches(buffer, consent)) { this.receipt(buffer); return true; }
@@ -855,13 +864,12 @@ export class Composer {
       if (this.current === buffer && sameTarget(confirmation.target, buffer.state.target) && buffer.data.text === snapshot.text &&
         buffer.data.edit === snapshot.edit && buffer.data.server.revision === confirmation.revision && buffer.data.mode === confirmation.mode) void this.send(true);
     })) return;
-    // Mode is part of the saved payload, including an idle primary's prompt mode.
+    // The captured native message owns its mode independently of draft persistence.
     if (snapshot.mode !== buffer.data.mode) { const previous = buffer.data; buffer.data = editDraft(buffer.data, snapshot.text, snapshot.mode); this.rebaseSelection(buffer, previous); snapshot.edit = buffer.data.edit; }
     buffer.submitting = true; buffer.lastOperation = undefined; buffer.notice = 'Sending…'; buffer.noticeDetails = undefined; this.render(); this.receipt(buffer);
     const reservation = buffer.reservation;
     let pending: Pending | undefined;
     try {
-      await this.confirmSaved(buffer, snapshot);
       this.assertSendReady(buffer, snapshot, consent);
       pending = await this.capture(buffer, snapshot, reservation, consent);
       const result = await this.dispatch(pending.submission, literal);
@@ -871,15 +879,9 @@ export class Composer {
     finally { buffer.submitting = false; this.paint(buffer); this.receipt(buffer); this.prepare(buffer); this.flush(buffer); this.returnFocus(buffer, focusOrigin); }
   }
   private assertSendReady(buffer: Buffer, snapshot: Edit, consent?: SendConsent): void {
-    if (this.admissionBlocked || this.current === buffer && !this.ready || this.imageRefusal(buffer, snapshot)) throw new Error('The recipient or image capability changed. Your draft is unchanged.');
+    if (this.current === buffer && !this.ready) throw new Error('The recipient changed. Your draft is unchanged.');
     if (!consent) return;
-    if (buffer.data.server.revision !== consent.revision || buffer.data.edit !== snapshot.edit || !sameDraftTuple(snapshot, buffer.data) || [...buffer.pending.keys()].some(id => !consent.operations.has(id))) throw new Error('The confirmed draft changed. Confirm this message again.');
-  }
-  private async confirmSaved(buffer: Buffer, snapshot: Edit): Promise<void> {
-    if (buffer.saving) await buffer.saving;
-    if (buffer.review) throw new Error('Review this draft before sending.');
-    if (!sameDraftTuple(buffer.data.server, snapshot) || buffer.data.savedEdit < snapshot.edit) await this.save(buffer, snapshot);
-    if (buffer.review) throw new Error('Review this draft before sending.');
+    if (buffer.data.edit !== snapshot.edit || !sameDraftTuple(snapshot, buffer.data) || [...buffer.pending.keys()].some(id => !consent.operations.has(id))) throw new Error('The confirmed draft changed. Confirm this message again.');
   }
   private async capture(buffer: Buffer, snapshot: Edit, reservation?: Buffer['reservation'], consent?: SendConsent): Promise<Pending> {
     buffer.reservation = undefined;

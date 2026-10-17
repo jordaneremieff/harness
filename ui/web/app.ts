@@ -1114,7 +1114,7 @@ function renderController(controller: ConversationController, deferred = false, 
   } else prepareController(controller);
   controller.composer.receipts(state.operations.values());
   const view = presentation(controller.target); controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + presentationName(view), controllerGuidance(controller, view));
-  controller.composer.availability(connected, !!saved && view.input, view.busy, selecting);
+  controller.composer.availability(connected, !!saved && (controller.target.kind === 'agent' || view.input), view.busy, selecting);
   if (firstDraft && !controller.passive && !controller.root.hidden && sameTarget(layoutTarget(currentLayout(), primaryTarget()) ?? undefined, controller.target) && document.activeElement === document.body) controller.composer.focus();
   controller.elements.root.hidden = !saved;renderInspection(controller); renderObserved(controller, controller.target.kind === 'agent' || connected || !view.activity);
   controllerNode(controller, 'stop').hidden = !canStopController(controller);
@@ -1265,7 +1265,7 @@ function renderMessagePanel(): void {
   } else controller.composer.attachRetained(captured.workspaceId, target);
   placeMessageEditor(controller, panel);
   const ready = messageTarget.ready; controller.composer.recipient((ready ? 'Message ' : 'Draft for ') + name, ready || !captured.prepared || captured.invalidated ? '' : 'Connect this agent to send.');
-  controller.composer.availability(connected, ready, false, selecting); controller.composer.receipts(state.operations.values()); controllerNode(controller, 'stop').hidden = true;
+  controller.composer.availability(connected, !!controller.saved, false, selecting); controller.composer.receipts(state.operations.values()); controllerNode(controller, 'stop').hidden = true;
   renderWorkbenchStatus();
 }
 function renderMessageStatus(captured: import('./selection-state.ts').MessageCapture): void {
@@ -1371,14 +1371,9 @@ export async function startStoredAgent(workspace: string, identity: string): Pro
     await reload();
     if (!current()) { agentStarts.delete(key); return; }
     requireCurrentPreparation(connection);
-    if (!agentInputConfirmed(identity)) throw new Error('A usable connection was not confirmed.');
     agentStarts.delete(key); const controller = conversationController({kind: 'agent', identity}); controller.connection = result; controller.connectionError = undefined; renderRoster();
   } catch (error) { agentStarts.set(key, {pending: false, reason: errorMessage(error)}); }
   finally { if (current()) renderStoredAgent(identity, agentRow(identity)); }
-}
-function agentInputConfirmed(identity: string): boolean {
-  const availability = state.agentAvailability.get(identity);
-  return availability?.state === 'live' && availability.capabilities.input === true;
 }
 async function confirmCheckedAgent(result: import('../shared/api.ts').TargetPreparation, identity: string, key: string, current: () => boolean, connection: EventSource | undefined): Promise<void> {
   requireCurrentPreparation(connection);
@@ -1387,7 +1382,6 @@ async function confirmCheckedAgent(result: import('../shared/api.ts').TargetPrep
     await selection({selectedTarget: {kind: 'agent', identity}});
     if (!current()) return;
     requireCurrentPreparation(connection);
-    if (!agentInputConfirmed(identity)) throw new Error('A usable connection was not confirmed.');
     agentStarts.delete(key);
   } else await reload();
   requireCurrentPreparation(connection);
@@ -1425,7 +1419,7 @@ function agentFacts(row?: AgentRow, frame?: ProjectedFrame): {key: string; label
 function renderAvailability(): void {
   for (const controller of controllers.values()) {
     if (!connected && controller.connection?.availability === 'live') controller.connection = {...controller.connection, availability: 'unavailable', capabilities: {...controller.connection.capabilities, input: false}, reason: 'Check the agent connection after the browser reconnects.'};
-    const view = presentation(controller.target), current = controller.workspaceId === state.workspace?.id; controller.composer.availability(connected && current, current && !!controller.saved && view.input, current && view.busy, selecting);
+    const view = presentation(controller.target), current = controller.workspaceId === state.workspace?.id; controller.composer.availability(connected && current, current && !!controller.saved && (controller.target.kind === 'agent' || view.input), current && view.busy, selecting);
     controllerNode(controller, 'stop').hidden = !canStopController(controller); renderControllerEmpty(controller);
   }
   if (!connected && messageTarget.current) {messageTarget.current.invalidated = true; messageTarget.current.preparing = false; messageTarget.current.error = 'The browser connection changed. Check the agent connection again.';}

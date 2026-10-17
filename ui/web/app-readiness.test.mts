@@ -8,7 +8,7 @@ test('Check connection restores snapshot readiness without another availability 
   const identity='snapshot-ready',target={kind:'agent' as const,identity},workspace='snapshot-readiness';
   const saved=targetFixture('ready-target',target,{draft:{revision:3,text:'Keep this exact draft',mode:'followUp',persisted:true}});
   await arrive({workspace:{id:workspace,revision:1,selectedTarget:target,conversationLayout:singlePane([target])},primaries:[],roster:[agentFixture(identity,{availability:'stored',capabilities:{input:false}})],targets:[saved]});
-  const editor=agentControl('editor');editor.setSelectionRange(2,7,'backward');assert.equal(agentControl('send').disabled,true);
+  const editor=agentControl('editor');editor.setSelectionRange(2,7,'backward');assert.equal(agentControl('send').disabled,false);
   const row=agentFixture(identity),epoch=(app.state.agentEpochs.get(identity)??0)+1;
   const capabilities=row.capabilities;assert.ok(capabilities);
   const availability={identity,connectionEpoch:epoch,state:'live' as const,capabilities};
@@ -25,7 +25,7 @@ test('Check connection restores snapshot readiness without another availability 
   assert.deepEqual([editor.selectionStart,editor.selectionEnd,editor.selectionDirection],[2,7,'backward']);
 });
 
-test('Check connection still refuses input without a current observation confirmation',async t=> {
+test('native input stays available without a current observation confirmation',async t=> {
   const identity='unobserved-readiness',target={kind:'agent' as const,identity},workspace='unobserved-readiness';
   const saved=targetFixture('unobserved-target',target,{draft:{revision:2,text:'Keep unconfirmed draft',mode:'followUp',persisted:true}});
   await arrive({workspace:{id:workspace,revision:1,selectedTarget:target,conversationLayout:singlePane([target])},primaries:[],roster:[agentFixture(identity,{availability:'stored',capabilities:{input:false}})],targets:[saved],observations:[]});
@@ -36,6 +36,6 @@ test('Check connection still refuses input without a current observation confirm
     return original(input,init);
   });
   await app.checkAgentConnection(workspace,identity);await settle();
-  assert.equal(app.state.agentAvailability.has(identity),false);assert.equal(agentControl('send').disabled,true);
-  assert.match(agentControl('agent-state-line').textContent,/unavailable/);assert.equal(agentControl('editor').value,saved.draft.text);
+  assert.equal(app.state.agentAvailability.has(identity),false);assert.equal(agentControl('send').disabled,false);
+  assert.doesNotMatch(agentControl('agent-state-line').textContent,/unavailable/);assert.equal(agentControl('editor').value,saved.draft.text);
 });

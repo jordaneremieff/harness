@@ -119,6 +119,23 @@ function fixture(prefix: 'primary' | 'agent' = 'primary', commands?: () => Comma
 }
 
 const image = (name = 'one.png', digit = 'a'): DraftImage => ({name, digest: digit.repeat(64), mimeType: 'image/png', bytes: 67, width: 1, height: 1});
+test('native Send does not await draft save or observation and a late save preserves later edits', async () => {
+  for (const [newer,late] of [[false,'ack'],[true,'ack'],[false,'fenced'],[true,'fenced']] as const) {
+  const f=fixture('agent',undefined,false);const saved=f.connect(state('native-send',draft(0,'','followUp'),true));
+  f.composer.setText('Captured native message');await turn();const firstSave=f.pick('PUT','/draft');
+  f.composer.availability(false,true,false,true);assert.equal(f.node('send').disabled,false);
+  const sending=f.composer.send();const request=await f.waitCall('POST','/inputs');
+  assert.equal(request.body.message,'Captured native message');assert.equal(request.body.draftRevision,0);
+  if(newer) f.composer.setText('Newer local draft');f.admit(saved);await turn();
+  f.ok(f.pick('GET','/native-send'),{...saved,draft:draft(late==='ack'?2:1,'','followUp')});await sending;
+  assert.equal(f.composer.editor.value,newer?'Newer local draft':'');
+  if(late==='ack') f.ok(firstSave,draft(1,'Captured native message','followUp'));
+  else {f.calls.splice(f.calls.indexOf(firstSave),1);firstSave.resolve({ok:false,error:{code:'stale_revision',message:'The admitted input advanced this draft',retry:'manual',details:{value:draft(1,'','followUp'),truncated:false}}});}
+  await turn();
+  assert.equal(f.composer.editor.value,newer?'Newer local draft':'');assert.equal(f.calls.some(call=>call.method==='POST'&&call.path.endsWith('/inputs')),false);
+  f.composer.destroy();
+  }
+});
 test('passive attachment and availability never reserve input while explicit activation preserves the complete draft', async () => {
   for (const kind of ['primary', 'agent'] as const) {
     let active = false;

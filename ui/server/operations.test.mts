@@ -25,6 +25,35 @@ async function setup(t: test.TestContext, kind: 'primary' | 'agent' = 'primary')
   return {root, store, operations, workspace, target, draft, view, request, reopen: async () => { await store.close(); store = await StateStore.open(root); return store; }};
 }
 
+test('native admission persists unsaved captured input without replacing a different saved draft',async t=> {
+  const {store,operations,workspace,target,view,request}=await setup(t,'agent');
+  const text='Current browser input';const body={message:text,mode:'followUp',draftRevision:0};
+  const current={...request,body,input:{targetKey:target.targetKey,text,mode:'followUp',draftRevision:0}};
+  let calls=0;
+  const result=await operations.execute(view.id,current,async()=> {
+    calls++;const record=store.record(view.id);assert.equal(record.input?.text,text);assert.deepEqual(record.input?.target,target.target);
+    return {state:'accepted',receipt:{kind:'durable',identity:'storage:1',submissionId:2,requestId:nativeRequestId(view.id),deduped:false}};
+  });
+  assert.equal(result.state,'accepted');assert.equal(calls,1);assert.equal((await store.getTarget(workspace.id,target.targetKey)).draft.text,'exact message');
+  await operations.execute(view.id,current,async()=>{calls++;throw Error('duplicate');});assert.equal(calls,1);
+});
+test('native admission fences a late pre-send save and preserves a newer different draft',async t=> {
+  for(const timing of ['before','after','newer']) {
+    const {store,operations,workspace,target,view,request}=await setup(t,'agent');
+    const text='Captured unsaved message',revision=1;
+    const current={...request,body:{message:text,mode:'followUp',draftRevision:revision},input:{targetKey:target.targetKey,text,mode:'followUp',draftRevision:revision}};
+    let entered!:()=>void,release!:()=>void;const ready=new Promise<void>(resolve=>{entered=resolve;}),pending=new Promise<void>(resolve=>{release=resolve;});
+    const work=operations.execute(view.id,current,async()=>{entered();await pending;return {state:'accepted',receipt:{kind:'durable',identity:'storage:1',submissionId:2,requestId:nativeRequestId(view.id),deduped:false}};});
+    await ready;
+    if(timing!=='after')await store.putDraft(workspace.id,target.targetKey,{expectedRevision:revision,text:timing==='newer'?'Newer saved message':text,mode:'followUp'});
+    release();await work;
+    const saved=await store.getTarget(workspace.id,target.targetKey);
+    assert.equal(saved.draft.text,timing==='before'?'':timing==='newer'?'Newer saved message':'exact message');
+    assert.ok(saved.draft.revision>revision);
+    await assert.rejects(store.putDraft(workspace.id,target.targetKey,{expectedRevision:revision,text,mode:'followUp'}),{code:'stale_revision'});
+    assert.equal((await store.getTarget(workspace.id,target.targetKey)).draft.text,saved.draft.text);
+  }
+});
 test('issued keys bind body and target; exact concurrent retries never resend; newer edits remain', async t => {
   const {store, operations, workspace, target, view, request} = await setup(t);
   let calls = 0; let finish!: () => void; let dispatched!: () => void;

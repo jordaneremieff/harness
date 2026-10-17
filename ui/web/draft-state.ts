@@ -74,7 +74,7 @@ export function resolveDraftConflict(state: DraftState, choice: 'local' | 'serve
 }
 export function captureSubmission(state: DraftState, target: Target, operationId: string, differentMessage?: true): {state: DraftState; submission?: Submission} {
   const guard = state.server.recoverySendGuard;
-  if (!draftSaved(state) || (!state.text.trim() && !state.images.length) || state.submissions.has(operationId) || guard?.state === 'unavailable' || guard?.state === 'blocked' && differentMessage !== true) return {state};
+  if ((!state.text.trim() && !state.images.length) || state.submissions.has(operationId) || guard?.state === 'unavailable' || guard?.state === 'blocked' && differentMessage !== true) return {state};
   for (const item of state.submissions.values()) if (item.edit === state.edit) return {state};
   const submission: Submission = {operationId, target: structuredClone(target), text: state.text, mode: state.mode, images: imageCopy(state.images), draftRevision: state.server.revision, edit: state.edit, ...(differentMessage === true ? {differentMessage} : {})};
   const submissions = new Map(state.submissions); submissions.set(operationId, submission);
