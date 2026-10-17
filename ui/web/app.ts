@@ -104,6 +104,7 @@ let devInteractionRevision = 0;
 let selectionIntentRevision = 0;
 let paneSelectionRevision = 0;
 let devRestoreOwner: object | undefined;
+let devRestoreWake: (() => void) | undefined;
 let devNavigating = false;
 const devCheckpointKey = 'ui:dev-checkpoint';
 type ConversationController = {workspaceId: string; target: Target; instanceId: string; root: HTMLElement; nodes: Map<string, HTMLElement>;
@@ -866,7 +867,7 @@ function stream(signal?: AbortSignal): Promise<void> {
   return (signal ? waitForSignal(promise, signal) : promise).finally(() => { window.clearTimeout(timer); if (streamWait === ready) streamWait = undefined; });
 }
 function disconnected(error: unknown = new Error('The event stream closed.')): void {
-  source?.close(); connectionId = undefined; connected = false; renderAvailability();
+  source?.close(); connectionId = undefined; connected = false; renderAvailability(); devRestoreWake?.();
   if (streamWait) streamWait.reject(error);
   else connectionRecovery.lost(error);
 }
@@ -885,7 +886,7 @@ export function renderConnection(): void {
 async function resync(signal: AbortSignal): Promise<void> {
   signal.throwIfAborted(); if (document.hidden) throw new Error('The page is hidden.');
   if (resynchronizing) return resynchronizing;
-  source?.close(); connected = false; renderAvailability();
+  source?.close(); connected = false; renderAvailability(); devRestoreWake?.();
   const task = (async () => {
     if (state.workspace) await reload(signal); else await refreshVisible(() => bootstrap(signal), loadVisibleHistory, showError);
     signal.throwIfAborted();
@@ -896,20 +897,22 @@ async function resync(signal: AbortSignal): Promise<void> {
   resynchronizing = pending; return pending;
 }
 export function receive(event: ReceivedEvent): void {
-  const old = state;
-  const reduced = {id: event.id, name: event.name, target: event.envelope.target, workspaceId: event.envelope.workspaceId, data: event.envelope.data} as UiEvent;
-  bufferSnapshotEvent(reduced,event.bytes);
-  const reducerStartedAt = performance.now(); state = reduceEvent(state, reduced);
-  diagnostics.measure('reducer', reducerStartedAt, performance.now());
-  if (state.needsResync) { disconnected(new Error('The event baseline needs a refresh.')); return; }
-  if (event.name === 'workspace.changed' && state.workspace) state = {...state, workspace: selectionQueue.observe(state.workspace)};
-  if (event.name === 'ready') { connectionId = (event.envelope.data as EventData['ready']).connectionId;streamWait?.resolve();refreshFileConnection();return; }
-  if (old === state) return;
-  if (event.name === 'control.request') {void browserControl.receive(event.envelope.data as ControlRequest);return;}
-  applyEvent(event);
-  if (event.name === 'primary.state') {
-    const current = event.envelope.data as PrimaryView; refreshReadyHistory(old.primaries.get(current.key),current);
-  }
+  try {
+    const old = state;
+    const reduced = {id: event.id, name: event.name, target: event.envelope.target, workspaceId: event.envelope.workspaceId, data: event.envelope.data} as UiEvent;
+    bufferSnapshotEvent(reduced,event.bytes);
+    const reducerStartedAt = performance.now(); state = reduceEvent(state, reduced);
+    diagnostics.measure('reducer', reducerStartedAt, performance.now());
+    if (state.needsResync) { disconnected(new Error('The event baseline needs a refresh.')); return; }
+    if (event.name === 'workspace.changed' && state.workspace) state = {...state, workspace: selectionQueue.observe(state.workspace)};
+    if (event.name === 'ready') { connectionId = (event.envelope.data as EventData['ready']).connectionId;streamWait?.resolve();refreshFileConnection();return; }
+    if (old === state) return;
+    if (event.name === 'control.request') {void browserControl.receive(event.envelope.data as ControlRequest);return;}
+    applyEvent(event);
+    if (event.name === 'primary.state') {
+      const current = event.envelope.data as PrimaryView; refreshReadyHistory(old.primaries.get(current.key),current);
+    }
+  } finally {devRestoreWake?.();}
 }
 function refreshReadyHistory(previous:PrimaryView|undefined,current:PrimaryView):void {
   if(!historyBecameReady(previous,current,state.workspace?.primaryKey))return;
@@ -1811,6 +1814,7 @@ function bind(): void {
   for (const name of ['input', 'change', 'keydown', 'pointerdown', 'wheel', 'select', 'scroll', 'compositionstart', 'compositionend'] as const) document.addEventListener(name, event => {
     if (!event.isTrusted || devRestoreOwner && (name === 'select' || name === 'scroll')) return;
     devInteractionRevision++;if (name !== 'select' && name !== 'scroll') selectionIntentRevision++;
+    devRestoreWake?.();
   }, {capture: true, passive: true});
   window.addEventListener('pagehide', event => {if (!event.persisted && !devNavigating) devReload?.destroy();});
   setRequestTiming((start, end) => {diagnostics.measure('control-roundtrip', start, end);});
@@ -1852,7 +1856,7 @@ function bind(): void {
     if (document.hidden) {
       connectionRecovery.suspend(); source?.close(); source = undefined; connectionId = undefined;
       streamWait?.reject(new Error('The page is hidden.')); streamWait = undefined; resynchronizing = undefined;
-      connected = false; renderAvailability();
+      connected = false; renderAvailability(); devRestoreWake?.();
     } else connectionRecovery.resume();
   });
 }
@@ -1946,14 +1950,40 @@ export async function restoreDevCheckpoint(checkpoint: DevReloadCheckpoint, sign
   const owner = {}; devRestoreOwner = owner;
   const release = () => {if (devRestoreOwner === owner) devRestoreOwner = undefined;};
   signal.addEventListener('abort', release, {once: true});
-  try {return await restoreDevState(checkpoint, signal);}
+  try {return await restoreDevState(checkpoint, signal, owner);}
   finally {signal.removeEventListener('abort', release); release();}
 }
-async function restoreDevState(checkpoint: DevReloadCheckpoint, signal: AbortSignal): Promise<boolean> {
-  const revision = devInteractionRevision;
-  const epochs = new Map(checkpoint.targets.flatMap(entry => entry.target.kind === 'agent'&&'connectionEpoch' in entry.target ? [[entry.target.identity, state.conversations.get(targetIdentity({kind: 'agent', identity: entry.target.identity}))?.connectionEpoch] as const] : []));
-  const current = () => !signal.aborted && revision === devInteractionRevision && checkpoint.workspaceId === state.workspace?.id && !devHold() && [...epochs].every(([identity, epoch]) => !!epoch && state.conversations.get(targetIdentity({kind: 'agent', identity}))?.connectionEpoch === epoch);
-  if (!current() || currentLayout().focusedPane !== checkpoint.focusedPane || !paneById(currentLayout(), checkpoint.focusedPane)) return false;
+async function restoreDevState(checkpoint: DevReloadCheckpoint, signal: AbortSignal, owner: object): Promise<boolean> {
+  const revision = devInteractionRevision, connection = source;
+  const original = () => {
+    if (signal.aborted || devRestoreOwner !== owner || !connection || source !== connection || !connected || document.hidden || revision !== devInteractionRevision || checkpoint.workspaceId !== state.workspace?.id || devHold()) return false;
+    const layout = currentLayout();
+    return layout.focusedPane === checkpoint.focusedPane && !!paneById(layout, checkpoint.focusedPane);
+  };
+  const epochs = new Map<string, number | undefined>(checkpoint.targets.flatMap(entry => entry.target.kind === 'agent' && 'connectionEpoch' in entry.target && !('retained' in entry.target) ? [[entry.target.identity, undefined] as const] : []));
+  const epochFor = (identity: string) => {
+    const epoch = state.conversations.get(targetIdentity({kind: 'agent', identity}))?.connectionEpoch;
+    return epoch !== undefined && Number.isSafeInteger(epoch) && epoch > 0 ? epoch : undefined;
+  };
+  const pinned = () => [...epochs].every(([identity, epoch]) => epoch === undefined || epochFor(identity) === epoch);
+  const readiness = (): boolean | undefined => {
+    if (!original() || !pinned()) return false;
+    for (const [identity, epoch] of epochs) if (epoch === undefined) epochs.set(identity, epochFor(identity));
+    return [...epochs.values()].every(epoch => epoch !== undefined) ? true : undefined;
+  };
+  const ready = readiness();
+  if (ready === false) return false;
+  if (ready === undefined && !await new Promise<boolean>(resolve => {
+    const finish = (value: boolean) => {
+      if (devRestoreWake === wake) devRestoreWake = undefined;
+      signal.removeEventListener('abort', abort); resolve(value);
+    };
+    const wake = () => {const value = readiness(); if (value !== undefined) finish(value);};
+    const abort = () => finish(false);
+    devRestoreWake = wake; signal.addEventListener('abort', abort, {once: true}); wake();
+  })) return false;
+  const current = () => original() && [...epochs].every(([identity, epoch]) => epoch !== undefined && epochFor(identity) === epoch);
+  if (!current()) return false;
   const savedTargets = await Promise.all(checkpoint.targets.map(entry => request<TargetState>(
     `/api/workspaces/${encodeURIComponent(checkpoint.workspaceId)}/targets/${encodeURIComponent(entry.targetKey)}`, 'GET', undefined, undefined, signal)));
   if (!current() || !devRecordsCurrent(checkpoint.targets, savedTargets)) return false;
