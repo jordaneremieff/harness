@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {spawn, execFileSync} from 'node:child_process';
+import {spawn, execFileSync, type ChildProcess} from 'node:child_process';
+import {createConnection} from 'node:net';
 import {EventEmitter, once} from 'node:events';
 import {mkdtemp,realpath,rm,mkdir,writeFile,chmod,lstat,opendir} from 'node:fs/promises';
 import {join} from 'node:path';
@@ -81,31 +82,102 @@ async function prepared(input: Prepared): Promise<Plan> {
 function present(pid: number): boolean {
   try {process.kill(pid, 0); return true;} catch (error) {if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false; throw error;}
 }
-function killGroup(pid: number): void {
-  try {process.kill(-pid, 'SIGKILL');} catch (error) {if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;}
+type ProcessIdentity = {pid: number; parent: number; group: number; uid: number; started: string; signature: string; token: string};
+type ProcessIO = {probe: (pid: number) => ProcessIdentity | undefined; members: (group: number) => number[]; signal: (group: number) => void};
+function processIdentity(text: string): ProcessIdentity {
+  assert.ok(Buffer.byteLength(text) <= 16384);
+  const fields = text.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\d\d:\d\d:\d\d\s+\d{4})\s+(.+)$/); assert.ok(fields);
+  const token = fields[6]?.match(/(?:^|\s)UI_TEST_OWNER_TOKEN=([a-f0-9-]+)(?:\s|$)/)?.[1]; assert.ok(token, 'Owned run token is unavailable.');
+  return {pid: Number(fields[1]), parent: Number(fields[2]), group: Number(fields[3]), uid: Number(fields[4]), started: fields[5] as string, signature: sha256(fields[6] as string), token};
 }
-function childGroups(root: number | undefined, groups: Set<number>): void {
-  if (!root) return;
-  const queue = [{pid: root, depth: 0}], found = new Set<number>();
+function processProbe(pid: number): ProcessIdentity | undefined {
+  assert.ok(Number.isSafeInteger(pid) && pid > 1);
+  try {return processIdentity(execFileSync('ps', ['eww','-p',String(pid),'-o','pid=,ppid=,pgid=,uid=,lstart=,command='], {encoding: 'utf8', maxBuffer: 16384, timeout: 2000, env: {PATH: process.env.PATH, LC_ALL: 'C'}}));}
+  catch (error) {if ((error as {status?: number}).status === 1) return undefined; throw error;}
+}
+function processIds(flag: '-P' | '-g', pid: number): number[] {
+  assert.ok(Number.isSafeInteger(pid) && pid > 1);
+  let output: string;
+  try {output = execFileSync('pgrep', [flag, String(pid)], {encoding: 'utf8', maxBuffer: 4096, timeout: 2000});}
+  catch (error) {if ((error as {status?: number}).status === 1) return []; throw error;}
+  const ids = output.trim().split(/\s+/).map(Number); assert.ok(ids.length <= 32 && ids.every(id => Number.isSafeInteger(id) && id > 1)); return ids;
+}
+const processIO: ProcessIO = {probe: processProbe, members: group => processIds('-g',group), signal: group => {try {process.kill(-group,'SIGKILL');} catch (error) {if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;}}};
+// Reparenting changes PPID, not the retained birth and run-ownership evidence.
+function sameIdentity(expected: ProcessIdentity, current: ProcessIdentity | undefined): boolean {
+  return !!current && expected.pid === current.pid && expected.group === current.group && expected.uid === current.uid && expected.started === current.started && expected.signature === current.signature && expected.token === current.token;
+}
+function remember(records: Map<number, ProcessIdentity>, token: string, pid: number) {
+  const current = processProbe(pid); assert.ok(current && current.token === token && current.uid === process.getuid?.(), 'Current ownership is unavailable.');
+  const previous = records.get(pid); if (previous) assert.ok(sameIdentity(previous,current), 'A recorded process identity changed.');
+  assert.ok(records.has(pid) || records.size < 32, 'Owned process inventory exceeds its bound.'); records.set(pid,current);
+}
+function childGroups(root: number, token: string, records: Map<number, ProcessIdentity>): void {
+  const queue = [{pid: root, depth: 0}], found = new Set([root]);
   for (const {pid, depth} of queue) {
-    assert.ok(depth < 8 && queue.length <= 32, 'Owned process inventory exceeds its bound.');
-    let children: string;
-    try {children = execFileSync('pgrep', ['-P', String(pid)], {encoding: 'utf8', maxBuffer: 4096, timeout: 2000});}
-    catch (error) {if ((error as {status?: number}).status === 1) continue; throw error;}
-    for (const value of children.trim().split(/\s+/)) {
-      const child = Number(value); assert.ok(Number.isSafeInteger(child) && child > 1);
-      if (!found.has(child)) {found.add(child); groups.add(child); queue.push({pid: child, depth: depth + 1});}
+    assert.ok(depth < 8 && queue.length <= 32, 'Owned process inventory exceeds its bound.'); remember(records,token,pid);
+    for (const child of processIds('-P',pid)) {
+      remember(records,token,child); assert.equal(records.get(child)?.parent,pid, 'Owned ancestry changed during capture.');
+      if (!found.has(child)) {assert.ok(queue.length < 32); found.add(child); queue.push({pid: child, depth: depth + 1});}
     }
   }
 }
-async function gone(pids: Set<number>): Promise<void> {
-  for (let attempt = 0; attempt < 200; attempt++) {if ([...pids].every(pid => !present(pid) && !present(-pid))) return; await ownerTurn();}
-  assert.fail('An owned process or group remains; retain the test state.');
+function forceOwned(records: Map<number, ProcessIdentity>, io = processIO): string[] {
+  const refused: string[] = [];
+  for (const group of new Set([...records.values()].map(record => record.group))) {
+    try {
+      const members = io.members(group); if (!members.length) continue;
+      for (const pid of members) {const expected = records.get(pid); assert.ok(expected && expected.group === group && sameIdentity(expected,io.probe(pid)), `Identity or ownership unavailable for group ${group}.`);}
+      assert.deepEqual(io.members(group),members, 'Group membership changed before force.'); io.signal(group);
+    } catch (error) {refused.push(String(error).slice(0,256));}
+  }
+  return refused;
 }
-async function ownedLauncher(entry: string, args: string[], cwd: string, stop: () => Promise<unknown>, action: (run: {next: () => Promise<string>; pids: Set<number>; pid: number}) => Promise<void>, signal: AbortSignal, grace = 10000, cleaned: () => void = () => {}): Promise<void> {
+function retireExited(records: Map<number, ProcessIdentity>, io = processIO): void {
+  for (const group of new Set([...records.values()].map(record => record.group))) {
+    assert.deepEqual(io.members(group),[], `Owned group ${group} exit is unverified.`);
+    for (const [pid, record] of records) if (record.group === group) records.delete(pid);
+  }
+}
+async function cleanupRefused(cwd: string, observed: ProcessIdentity[], records: Map<number, ProcessIdentity>, reasons: string[], owner: {pid?: number; token: string}): Promise<never> {
+  const path = join(cwd,'cleanup-unverified.json'), report = {verified: false, retainedDirectory: cwd, reportPath: path, expectedOwner: owner, reasons: reasons.slice(0,64), observedProcesses: observed, unverifiedProcesses: [...records.values()]};
+  try {assert.ok(Buffer.byteLength(JSON.stringify(report)) <= 65536); await atomicJson(path,report);}
+  catch (error) {throw new Error(`Cleanup is unverified; retained state: ${cwd}; report write failed: ${path}.`,{cause:error});}
+  throw new Error(`Cleanup is unverified; retained state: ${cwd}; report: ${path}. ${report.reasons.join(' ')}`);
+}
+async function forceLauncher(child: ChildProcess, records: Map<number, ProcessIdentity>, ended: () => boolean): Promise<string[]> {
+  const refused = forceOwned(records);
+  if (!ended() && child.pid && records.has(child.pid) && refused.length === 0) {try {await once(child,'exit',{signal: AbortSignal.timeout(5000)});} catch {refused.push('The launcher exit is unverified.');}}
+  return refused;
+}
+function captureBeforeStop(child: ChildProcess, records: Map<number, ProcessIdentity>, token: string, ended: boolean, leaf: boolean, reasons: string[]): boolean {
+  if (ended) {if (!leaf) reasons.push('Launcher exited before the final inventory; detached descendant coverage is incomplete.'); return false;}
+  try {assert.ok(child.pid); childGroups(child.pid,token,records); return true;} catch (error) {reasons.push(String(error).slice(0,256)); return false;}
+}
+async function stopLauncher(child: ChildProcess, records: Map<number, ProcessIdentity>, token: string, cwd: string, stop: () => Promise<unknown>, ended: () => boolean, grace: number, leaf: boolean, failed: boolean) {
+  const reasons: string[] = []; let forced = false, normal = false;
+  if (!child.pid || !records.has(child.pid)) reasons.push('The launcher ownership record is unavailable.');
+  if (!leaf && failed) reasons.push('The scenario did not complete; detached descendant coverage is unverified.');
+  const captured = captureBeforeStop(child,records,token,ended(),leaf,reasons);
+  if (leaf && records.size !== 1) reasons.push('The child-free fixture inventory is incomplete.');
+  const observed = [...records.values()];
+  try {
+    const receipt = await stop() as {accepted?: boolean}; assert.equal(receipt.accepted,true);
+    if (!ended()) await once(child,'exit',{signal: AbortSignal.timeout(grace)});
+    normal = captured && child.exitCode === 0;
+  } catch {
+    forced = true; reasons.push(...await forceLauncher(child,records,ended));
+  }
+  if (!leaf && !normal) reasons.push('No complete normal-stop witness; parent-based discovery cannot certify detached descendants.');
+  try {retireExited(records);} catch (error) {reasons.push(String(error).slice(0,256));}
+  if (reasons.length) await cleanupRefused(cwd,observed,records,reasons,{pid:child.pid,token});
+  return forced;
+}
+async function ownedLauncher(entry: string, args: string[], cwd: string, stop: () => Promise<unknown>, action: (run: {next: () => Promise<string>; remember: (pid: number) => void; pid: number; exited: Promise<void>; token: string; startDetachedFixture: () => void}) => Promise<void>, signal: AbortSignal, grace = 10000, cleaned: () => void = () => {}, token = randomUUID()): Promise<void> {
   const agent = join(cwd, 'agent'); await mkdir(agent, {mode: 0o700});
-  const child = spawn(process.execPath, [entry, ...args], {cwd, shell: false, detached: true, stdio: ['pipe','pipe','pipe'], env: {PATH: process.env.PATH, HOME: cwd, PI_CODING_AGENT_DIR: agent, PI_AGENT_SESSIONS_DIR: join(agent, 'agent-sessions')}});
-  const pids = new Set<number>(); if (child.pid) pids.add(child.pid);
+  const records = new Map<number, ProcessIdentity>();
+  const child = spawn(process.execPath, [entry, ...args], {cwd, shell: false, detached: true, stdio: ['pipe','pipe','pipe'], env: {PATH: process.env.PATH, HOME: cwd, PI_CODING_AGENT_DIR: agent, PI_AGENT_SESSIONS_DIR: join(agent, 'agent-sessions'), UI_TEST_OWNER_TOKEN: token}});
+  const exited = new Promise<void>(resolve => {child.once('exit',() => resolve()); child.once('error',() => resolve());});
   const events = new EventEmitter(), urls: string[] = []; let ended = false, failed = false, bytes = 0, pending = '';
   events.on('error', () => {});
   child.once('exit', () => {ended = true; events.emit('error', new Error('The launcher exited before readiness.'));});
@@ -119,22 +191,14 @@ async function ownedLauncher(entry: string, args: string[], cwd: string, stop: (
   const next = async () => {
     if (ended) throw new Error('The launcher exited.');
     if (!urls.length) await once(events, 'ready', {signal: AbortSignal.any([signal, AbortSignal.timeout(30000)])});
-    const url = urls.shift(); assert.ok(url); return url;
+    const url = urls.shift(); assert.ok(url); assert.ok(child.pid && !ended); childGroups(child.pid,token,records); return url;
   };
-  try {assert.ok(child.pid); await action({next, pids, pid: child.pid});}
+  try {assert.ok(child.pid); childGroups(child.pid,token,records); await action({next, remember: pid => childGroups(pid,token,records), pid: child.pid, exited, token, startDetachedFixture: () => {child.stdin.end('detach\n');}});}
   catch (error) {failed = true; throw error;}
   finally {
-    let forced = false;
-    try {childGroups(child.pid, pids);}
-    finally {
-      try {await stop(); if (!ended) await once(child, 'exit', {signal: AbortSignal.timeout(grace)});}
-      catch {
-        forced = true;
-        try {childGroups(child.pid, pids);}
-        finally {for (const pid of pids) killGroup(pid); if (!ended) await once(child, 'exit', {signal: AbortSignal.timeout(5000)});}
-      }
-    }
-    await gone(pids); cleaned();
+    // Only the no-argument RPC fixture has a child-free contract; sealed launchers require normal-stop evidence.
+    const forced = await stopLauncher(child,records,token,cwd,stop,() => ended,grace,entry === executable && args.length === 0,failed);
+    cleaned();
     if (forced && !failed) assert.fail('The owner did not confirm normal stop; forced cleanup is not compatibility success.');
   }
 }
@@ -187,10 +251,10 @@ async function publicScenario(plan: Plan, signal: AbortSignal, diagnostic: (valu
         const status = () => requestReleaseControl(plan.control, {kind: 'status'}) as Promise<ReleaseStatus>;
         const opening = await api.mutation<{primaryKey: string; operation: OperationView}>('primary.open','/api/primaries',{cwd}); assert.equal(opening.operation.state, 'completed');
         const key = opening.primaryKey, read = () => api.call<PrimaryView>(`/api/primaries/${key}`), first = await until(read, view => view.lifecycle === 'ready' && !!view.pid && !!view.sessionId), target = {kind: 'primary' as const, key, epoch: first.epoch};
-        const original = await status(); assert.equal(original.current, plan.old.manifest.id); assert.equal(original.ownerPid, run.pid); assert.equal(original.ownerProtocol, OWNER_PROTOCOL); assert.ok(first.pid); assert.ok(first.sessionId); assert.ok(original.ownerIncarnation); run.pids.add(first.pid);
+        const original = await status(); assert.equal(original.current, plan.old.manifest.id); assert.equal(original.ownerPid, run.pid); assert.equal(original.ownerProtocol, OWNER_PROTOCOL); assert.ok(first.pid); assert.ok(first.sessionId); assert.ok(original.ownerIncarnation); run.remember(first.pid);
         assert.deepEqual(original.primaries, [{key, epoch: target.epoch, pid: first.pid}]);
         const transitions: {release: string; backendPid?: number}[] = [{release: original.current as string, backendPid: original.backendPid}];
-        if (original.backendPid) run.pids.add(original.backendPid);
+        if (original.backendPid) run.remember(original.backendPid);
         const input = (message: string) => sendInput(api, target, message);
         const refresh = () => api.mutation<OperationView>('primary.control',`/api/primaries/${key}/control`,{epoch: target.epoch, action: 'resync'},target);
         const history = () => api.call<HistoryPage>(`/api/primaries/${key}/history`);
@@ -200,7 +264,7 @@ async function publicScenario(plan: Plan, signal: AbortSignal, diagnostic: (valu
           const [receipt, url] = await Promise.all([requestReleaseControl(plan.control, rollback ? {kind: 'rollback'} : {kind: 'switch', release: release.manifest.id}), run.next()]);
           const result = receipt as ReleaseStatus; api.use(url); assert.equal(result.current, release.manifest.id); assert.equal(result.state, 'ready');
           const current = await status(); assert.equal(current.ownerPid, original.ownerPid); assert.equal(current.ownerIncarnation, original.ownerIncarnation);
-          assert.deepEqual(current.primaries, original.primaries); assert.ok(current.backendPid); run.pids.add(current.backendPid); assert.notEqual(current.backendPid, original.backendPid);
+          assert.deepEqual(current.primaries, original.primaries); assert.ok(current.backendPid); run.remember(current.backendPid); assert.notEqual(current.backendPid, original.backendPid);
           transitions.push({release: current.current as string, backendPid: current.backendPid});
           await api.version(release); const view = await read(); assert.equal(view.sessionId, first.sessionId); assert.equal(view.sessionFile, first.sessionFile); assert.equal(view.pid, first.pid); assert.equal(view.epoch, target.epoch);
           const live = liveEntry(await history()); assert.equal(live.id, retained.id); assert.match(live.text, /before/);
@@ -262,6 +326,37 @@ for (const failure of ['scenario', 'timeout']) test(`owned launcher cleans its p
     }, failure === 'timeout' ? AbortSignal.timeout(20) : context.signal, 20, () => {cleaned = true;}), failure === 'scenario' ? /Scenario refused/ : /aborted/);
     assert.equal(cleaned, true); assert.equal(present(pid), false); assert.equal(present(-pid), false);
   } finally {if (cleaned) await rm(cwd, {recursive: true, force: true});}
+});
+for (const mismatch of ['reused','ownership-changed','unavailable','unknown-member'] as const) test(`forced cleanup refuses ${mismatch} ownership without a real process probe`, () => {
+  const old: ProcessIdentity = {pid:101,parent:100,group:101,uid:501,started:'old birth',signature:'old signature',token:'private-owner'};
+  const records = new Map([[old.pid,old]]), signals: number[] = [];
+  const io: ProcessIO = {members: () => mismatch === 'unknown-member' ? [101,102] : [101], probe: () => mismatch === 'unavailable' ? undefined : {...old,...(mismatch === 'reused' ? {started:'new birth'} : {}),...(mismatch === 'ownership-changed' ? {token:'different-owner'} : {})}, signal: group => {signals.push(group);}};
+  assert.equal(forceOwned(records,io).length,1); assert.deepEqual(signals,[]);
+  assert.throws(() => retireExited(records,io),/exit is unverified/); assert.equal(records.size,1);
+  io.members = () => []; retireExited(records,io); assert.equal(records.size,0);
+});
+async function finishDetachedFixture(cwd: string, token: string) {
+  const proof = JSON.parse((await boundedFile(join(cwd,'owner-recovery-orphan.json'),32768)).toString('utf8')) as {pid:number;port:number;identity:string};
+  const starting = JSON.parse((await boundedFile(join(cwd,'owner-recovery-orphan-starting.json'),4096)).toString('utf8')); assert.equal(starting.pid,proof.pid);
+  const identity = processIdentity(proof.identity); assert.equal(identity.pid,proof.pid); assert.equal(identity.token,token); assert.ok(sameIdentity(identity,processProbe(proof.pid)));
+  const socket = createConnection({host:'127.0.0.1',port:proof.port});
+  try {socket.resume(); await Promise.all([once(socket,'connect',{signal:AbortSignal.timeout(5000)}).then(() => {socket.write(`${token}\n`);}), once(socket,'end',{signal:AbortSignal.timeout(5000)})]);}
+  finally {socket.destroy();}
+  assert.deepEqual(processIds('-g',identity.group),[]); assert.equal(present(proof.pid),false); assert.equal(present(-identity.group),false);
+}
+test('launcher exit with a detached child refuses cleanup and retains state until verified fixture teardown', {timeout:15000}, async context => {
+  const cwd = await realpath(await mkdtemp(join(tmpdir(),'or-orphan-'))), token = randomUUID(); let cleaned = false, verified = false;
+  try {
+    await assert.rejects(ownedLauncher(executable,['--fixture-detached-parent'],cwd,async () => {throw new Error('The parent is gone.');},async run => {run.startDetachedFixture(); await run.exited;},context.signal,20,() => {cleaned = true;},token),error => {
+      assert.match(String(error),/Cleanup is unverified/); assert.ok(String(error).includes(cwd)); return true;
+    });
+    assert.equal(cleaned,false); assert.ok((await lstat(cwd)).isDirectory());
+    const refusal = JSON.parse((await boundedFile(join(cwd,'cleanup-unverified.json'),65536)).toString('utf8'));
+    assert.equal(refusal.verified,false); assert.equal(refusal.retainedDirectory,cwd); assert.equal(refusal.reportPath,join(cwd,'cleanup-unverified.json')); assert.match(JSON.stringify(refusal.reasons),/coverage is incomplete/);
+  } finally {
+    await finishDetachedFixture(cwd,token); verified = true; await rm(cwd,{recursive:true,force:true});
+  }
+  assert.equal(verified,true); context.diagnostic('The refusal retained its directory; independent fixture identity and child-group exit passed before teardown removed it.');
 });
 test('the current backend runs with an actual sealed owner and exposes its unsupported recovery', {skip: !process.env.UI_TEST_OLD_RELEASE, timeout: 180000}, async context => {
   const input = {stateDir: process.env.UI_TEST_RELEASE_STATE ?? '', oldDirectory: process.env.UI_TEST_OLD_RELEASE ?? '', currentDirectory: process.env.UI_TEST_CURRENT_RELEASE ?? '', currentCommit: process.env.UI_TEST_CURRENT_COMMIT ?? '', currentTree: process.env.UI_TEST_CURRENT_TREE ?? ''};

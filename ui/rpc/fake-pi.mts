@@ -3,9 +3,32 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile, writeFile, rename } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
+import {spawn, execFileSync} from 'node:child_process';
+import {once} from 'node:events';
+import {createServer} from 'node:net';
+import {fileURLToPath} from 'node:url';
 
 /** Executable RPC fixture used by browser and process-boundary regression tests. */
 const args = process.argv.slice(2);
+async function detachedChild(): Promise<never> {
+  const token = process.env.UI_TEST_OWNER_TOKEN; if (!token) throw new Error('A private fixture owner token is required.');
+  const server = createServer(socket => {let input: Buffer = Buffer.alloc(0); socket.on('data', data => {if (input.length + data.length > 128) {socket.destroy(); return;} input = Buffer.concat([input,data]); if (input.at(-1) === 10) {if (input.toString('utf8') === `${token}\n`) process.exit(0); socket.destroy();}});});
+  server.listen(0,'127.0.0.1'); await once(server,'listening');
+  const address = server.address(); if (!address || typeof address === 'string') throw new Error('The fixture socket did not bind.');
+  const identity = execFileSync('ps',['eww','-p',String(process.pid),'-o','pid=,ppid=,pgid=,uid=,lstart=,command='],{encoding:'utf8',maxBuffer:16384,timeout:2000,env:{PATH:process.env.PATH,LC_ALL:'C'}});
+  const path = resolve(process.cwd(),'owner-recovery-orphan.json');
+  await writeFile(`${path}.pending`,JSON.stringify({pid:process.pid,port:address.port,identity})); await rename(`${path}.pending`,path);
+  process.send?.({ready:true}); return new Promise<never>(() => {});
+}
+async function detachedParent(): Promise<void> {
+  const [request] = await once(process.stdin,'data'); if (request.length > 128 || request.toString('utf8') !== 'detach\n') throw new Error('The fixture detach request is invalid.');
+  const child = spawn(process.execPath,[fileURLToPath(import.meta.url),'--fixture-detached-child'],{cwd:process.cwd(),env:process.env,shell:false,detached:true,stdio:['ignore','ignore','ignore','ipc']});
+  const ready = once(child,'message');
+  await writeFile(resolve(process.cwd(),'owner-recovery-orphan-starting.json'),JSON.stringify({pid:child.pid}));
+  await ready; child.disconnect(); child.unref();
+}
+if (args.includes('--fixture-detached-child')) await detachedChild();
+if (args.includes('--fixture-detached-parent')) {await detachedParent(); process.exit(0);}
 let sessionFile = args.includes('--session') ? String(args[args.indexOf('--session') + 1]) : resolve(process.cwd(), 'fixture-session.jsonl');
 let sessionId = randomUUID();
 let entries: Record<string, unknown>[] = [];
