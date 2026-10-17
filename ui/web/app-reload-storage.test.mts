@@ -32,3 +32,20 @@ test('a file added during checkpoint storage prevents stale navigation and remai
   const file=preserved.flatMap(value=>value.attachments?.items??[]).find(item=>item.name==='retained.png');assert.ok(file);
   assert.equal(await file.file?.text(),'retained invalid bytes');assert.equal(file.lastModified,456);
 });
+test('reload never borrows the active workspace draft for a retained workspace with the same target key',async()=>{
+  const checkpoint=app.captureDevCheckpoint();assert.ok(checkpoint.composerStateKey);
+  const preserved=await readReloadState(checkpoint.composerStateKey,new AbortController().signal) as ComposerReloadState[];
+  const active=app.state.targets.get('reload-target'),snapshot=preserved[0];assert.ok(active);assert.ok(snapshot);
+  const other={...active,draft:{...active.draft,revision:0,text:'Other workspace draft'}};
+  const retained={...snapshot,workspace:'other-workspace',data:{...snapshot.data,server:other.draft,text:other.draft.text}};
+  assert.equal(app.currentPreservedTarget(other,[...preserved,retained],retained.workspace),other);
+});
+test('reload applies a caret only to its captured text or the exact acknowledged draft revision',async()=>{
+  const checkpoint=app.captureDevCheckpoint();assert.ok(checkpoint.composerStateKey);
+  const preserved=await readReloadState(checkpoint.composerStateKey,new AbortController().signal) as ComposerReloadState[];
+  const captured=checkpoint.targets[0],snapshot=preserved[0];assert.ok(captured);assert.ok(snapshot);
+  const selection={start:2,end:7,direction:'backward' as const},entry={...captured,selection},revision=entry.draftRevision+1;
+  assert.equal(app.restoredDevSelection(entry,'Newer unrelated draft text',revision,preserved),undefined);
+  assert.equal(app.restoredDevSelection(entry,snapshot.data.text,revision,preserved),selection);
+  assert.equal(app.restoredDevSelection({...entry,draftRevision:revision},'Newer unrelated draft text',revision,preserved),selection);
+});

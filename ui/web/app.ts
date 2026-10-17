@@ -1999,9 +1999,9 @@ async function readPreservedComposers(checkpoint:DevReloadCheckpoint,signal:Abor
   if(!Array.isArray(value)||value.length>LIMITS.conversationTabs||!value.every(validComposerReloadState)||new Set(value.map(item=>JSON.stringify([item.workspace,item.targetKey]))).size!==value.length)throw new Error('Preserved draft bytes are unavailable.');
   return value;
 }
-function currentPreservedTarget(saved:TargetState,preserved:ComposerReloadState[]):TargetState {
+export function currentPreservedTarget(saved:TargetState,preserved:ComposerReloadState[],workspace:string):TargetState {
   const current=state.targets.get(saved.targetKey);
-  return current&&current.draft.revision>saved.draft.revision&&preserved.some(value=>value.workspace===state.workspace?.id&&value.targetKey===saved.targetKey)?{...saved,draft:current.draft}:saved;
+  return workspace===state.workspace?.id&&current&&current.draft.revision>saved.draft.revision&&preserved.some(value=>value.workspace===workspace&&value.targetKey===saved.targetKey)?{...saved,draft:current.draft}:saved;
 }
 async function restorePreservedComposers(values:ComposerReloadState[],acknowledged:TargetState[],signal:AbortSignal,current:()=>boolean):Promise<boolean> {
   const saved:TargetState[]=[];
@@ -2013,7 +2013,7 @@ async function restorePreservedComposers(values:ComposerReloadState[],acknowledg
   }
   if(!current())return false;
   for(const [index,value] of values.entries()){
-    const captured=saved[index];if(!captured)return false;const target=currentPreservedTarget(captured,values);
+    const captured=saved[index];if(!captured)return false;const target=currentPreservedTarget(captured,values,value.workspace);
     if(value.workspace===state.workspace?.id)state={...state,targets:new Map(state.targets).set(target.targetKey,target)};
     const controller=conversationController(target.target,value.workspace);controller.saved=target;controller.composer.restoreReload(value,target);
   }
@@ -2035,11 +2035,16 @@ async function restoreDevReading(owned: ConversationController[], signal: AbortS
   }
   return current();
 }
-function restoreDevControls(checkpoint: DevReloadCheckpoint, owned: ConversationController[]): boolean {
-  if (checkpoint.targets.some((entry, index) => !!entry.selection && (!owned[index] || entry.selection.end > (owned[index]?.composer.editor.value.length ?? 0)))) return false;
+export function restoredDevSelection(entry:DevCheckpointEntry,text:string,revision:number|undefined,preserved:ComposerReloadState[]):DevCheckpointEntry['selection'] {
+  const captured=preserved.find(value=>value.workspace===state.workspace?.id&&value.targetKey===entry.targetKey);
+  return captured&&captured.data.text!==text&&entry.draftRevision!==revision?undefined:entry.selection;
+}
+function restoreDevControls(checkpoint: DevReloadCheckpoint, owned: ConversationController[],preserved:ComposerReloadState[]): boolean {
+  const ranges=checkpoint.targets.map((entry,index)=>{const controller=owned[index];return controller?restoredDevSelection(entry,controller.composer.editor.value,controller.composer.serverDraftRevision,preserved):entry.selection;});
+  if (ranges.some((selection,index) => !!selection && (!owned[index] || selection.end > (owned[index]?.composer.editor.value.length ?? 0)))) return false;
   const control = checkpoint.focusedControl, focused = control ? owned.find(controller => controller.saved?.targetKey === control.targetKey) : undefined;
   if (control && (!focused?.elements.root.isConnected || focused.elements.root.closest('[hidden],[inert]') || control.kind === 'message' && control.targetKey !== checkpoint.messageRecipient)) return false;
-  for (const [index, controller] of owned.entries()) {const selection = checkpoint.targets[index]?.selection; if (selection) controller.composer.restoreRange(selection);}
+  for (const [index, controller] of owned.entries()) {const selection = ranges[index]; if (selection) controller.composer.restoreRange(selection);}
   focused?.composer.editor.focus({preventScroll: true}); return true;
 }
 export async function restoreDevCheckpoint(checkpoint: DevReloadCheckpoint, signal: AbortSignal): Promise<boolean> {
@@ -2086,7 +2091,7 @@ async function restoreDevState(checkpoint: DevReloadCheckpoint, signal: AbortSig
     `/api/workspaces/${encodeURIComponent(checkpoint.workspaceId)}/targets/${encodeURIComponent(entry.targetKey)}`, 'GET', undefined, undefined, signal)));
   if (!current() || !devRecordsCurrent(checkpoint.targets, savedTargets,preserved)) return false;
   if (!checkpoint.targets.every(entry=>devRestoreSourceCurrent(entry,preserved.some(value=>value.workspace===checkpoint.workspaceId&&value.targetKey===entry.targetKey)))) return false;
-  savedTargets=savedTargets.map(saved=>currentPreservedTarget(saved,preserved));
+  savedTargets=savedTargets.map(saved=>currentPreservedTarget(saved,preserved,checkpoint.workspaceId));
   const owned = savedTargets.map(saved => {state = {...state, targets: new Map(state.targets).set(saved.targetKey, saved)}; const controller = conversationController(saved.target); controller.saved = saved; return controller;});
   if (!await restoreDevRecipient(checkpoint, savedTargets, signal) || !current()) return false;
   if(!restoreDevInspections(checkpoint))return false;
@@ -2097,7 +2102,7 @@ async function restoreDevState(checkpoint: DevReloadCheckpoint, signal: AbortSig
 async function finishDevRestore(checkpoint:DevReloadCheckpoint,owned:ConversationController[],savedTargets:TargetState[],preserved:ComposerReloadState[],signal:AbortSignal,current:()=>boolean):Promise<boolean> {
   if(preserved.length){if(!await restorePreservedComposers(preserved,savedTargets,signal,current)||!current())return false;renderAll();}
   const refreshed=savedTargets.flatMap(saved=>{const value=targetState(saved.target);return value?[value]:[];});
-  return current()&&devRecordsCurrent(checkpoint.targets,refreshed,preserved)&&restoreDevControls(checkpoint,owned)&&current();
+  return current()&&devRecordsCurrent(checkpoint.targets,refreshed,preserved)&&restoreDevControls(checkpoint,owned,preserved)&&current();
 }
 function restoreDevInspections(checkpoint:DevReloadCheckpoint):boolean {
   const tabs=paneLeaves(currentLayout().root).flatMap(pane=>pane.tabs).filter(tab=>tab.kind==='agent');
