@@ -1925,7 +1925,7 @@ function bind(): void {
 export function devHold(): DevReloadHold | undefined {
   if (browserControl.applying || selectionQueue.unsettled) return 'input';
   if (composingFields.size) return 'ime';
-  if (!connected || resynchronizing) return 'offline';
+  if (!connected&&!document.hidden || resynchronizing) return 'offline';
   if (modal.openNow || contextMenu.openNow) return 'modal';
   if (document.documentElement.classList.contains('resizing')) return 'resize';
   const selection = document.getSelection(); if (selection && !selection.isCollapsed) return 'selection';

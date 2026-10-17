@@ -4,13 +4,13 @@ import { pathToFileURL } from 'node:url';
 import { Registry, type RegistryOptions } from './registry.mts';
 import { LocalHttp, assetMap, type Asset } from './http.mts';
 import {Files} from './files.mts';
-import { ApiError } from './errors.mts';
+import { ApiError,errorView } from './errors.mts';
 import { DevelopmentBuild } from './development-build.mts';
 import { DiagnosticDisk, DiagnosticSink } from './diagnostics.mts';
 import { collectIdentity } from './version.mts';
 import { identityLabel, type UiIdentity } from '../shared/version.ts';
 import type {BackendHealthFacts} from '../shared/health.ts';
-import {LifecycleLog} from './lifecycle-log.mts';
+import {LifecycleLog,redactLifecycle} from './lifecycle-log.mts';
 import {parseArgs, type Options} from './options.mts';
 export {parseArgs} from './options.mts';
 import {Control} from './control.mts';
@@ -102,7 +102,6 @@ export async function startBackend(options:Options, injection:Partial<Pick<Regis
     const cancelRelease=()=>{releaseAttempt++;preparedRelease=false;http.resumeAdmission();};
     const prepareRelease=async()=> {
       const attempt=++releaseAttempt;
-      if (generations && !generations.transitionReady()) throw new ApiError('not_ready', 'A connected page must adopt the current generation before another release.', 503);
       await Promise.all([...registry.sessions.values()].filter(session => !session.client.exited).map(session => session.prepareDetach()));
       if(attempt!==releaseAttempt)throw new ApiError('not_ready','The release attempt was canceled.',503);
       await http.fence();
@@ -142,6 +141,10 @@ export async function main(args=process.argv.slice(2), opener:(url:string)=>Prom
   process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);process.on('unhandledRejection',rejection);process.on('uncaughtException',exception);
   return {...app,close};
 }
+function releaseBlockReason(error:unknown):{code:string;message:string}{
+  const view=errorView(error),code=/^[a-z][a-z0-9_]{0,63}$/.test(view.code)?view.code:'internal';
+  return {code,message:redactLifecycle(view.message)};
+}
 function shutdownBlockCode(error:unknown):string {
   if(error&&typeof error==='object'&&'code' in error&&typeof error.code==='string'&&/^[a-z][a-z0-9_]{0,63}$/.test(error.code))return error.code;
   return 'handoff_blocked';
@@ -178,7 +181,11 @@ async function cli() {
   const appControl=(kind:string)=>{
     if(!app)return;
     switch(kind){
-      case 'drain':void app.prepareRelease().then(()=>process.send?.({kind:'fenced'}),()=>process.send?.({kind:'drain-blocked'}));break;
+      case 'drain':void app.prepareRelease().then(()=>process.send?.({kind:'fenced'}),error=>{
+        const reason=releaseBlockReason(error);process.send?.({kind:'drain-blocked',...reason});
+        app?.log?.record('unavailable',`Release drain refused (${reason.code}): ${error instanceof Error?error.message:reason.message}`);
+        process.stderr.write(`Release drain refused (${reason.code}): ${reason.message}\n`);
+      });break;
       case 'drain-cancel':app.cancelRelease();break;
       case 'detach':void app.detach(true).then(()=>{process.send?.({kind:'drained'});process.exit(0);},()=>{process.send?.({kind:'detach-failed'});process.exit(1);});break;
       case 'whole-stop':void app.close().then(()=>process.exit(0),error=>process.send?.({kind:'stop-blocked',code:shutdownBlockCode(error)}));break;

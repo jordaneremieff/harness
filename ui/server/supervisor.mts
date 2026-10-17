@@ -17,6 +17,12 @@ type SupervisorOptions = {module?:string;ready?:(message:BackendReady)=>void;out
   release?:Release;releaseRoot?:string;lastGood?:string;
   observeOwnerRecord?:(notice:Extract<OwnerNotice,{kind:'record'}>)=>void};
 type Running = {child:ChildProcess; attachment:string; connected?:boolean; wire:OwnerWire; release?:Release; intentional:boolean; exited:Promise<void>; resolveExit:()=>void; ready:Promise<BackendReady>; resolveReady:(v:BackendReady)=>void; rejectReady:(e:Error)=>void; prewarmed:Promise<void>; resolveWarm:()=>void; rejectWarm:(e:Error)=>void; drain?:{resolve:()=>void;reject:(e:Error)=>void}; stop?:{reject:(e:Error)=>void}; timer?:NodeJS.Timeout};
+function drainBlockError(code:unknown,message:unknown):Error{
+  const reason=typeof message==='string'?redactLifecycle(message):'';
+  if(!reason)return new Error('The active backend refused a short release drain.');
+  const category=typeof code==='string'&&/^[a-z][a-z0-9_]{0,63}$/.test(code)?code:'not_ready';
+  return Object.assign(new Error(`The active backend refused a short release drain (${category}): ${reason}`),{code:category});
+}
 function groupExists(pid:number,signal:NonNullable<SupervisorOptions['signal']>) {try {signal(-pid,0);return true;} catch(error) {if((error as NodeJS.ErrnoException).code==='ESRCH')return false;throw new Error('Owned process cleanup is unavailable.');}}
 function killGroup(pid:number,signal:NonNullable<SupervisorOptions['signal']>) {try {signal(-pid,'SIGKILL');} catch(error) {if((error as NodeJS.ErrnoException).code!=='ESRCH')throw error;}}
 async function cleanupGroup(pid:number,signal:NonNullable<SupervisorOptions['signal']>,now:()=>number,limit:number) {
@@ -94,11 +100,11 @@ export function supervise(options:Options,hooks:SupervisorOptions={}) {
     clearTimeout(run.timer);selected.port=Number(new URL(ready.url).port||80);unavailable=false;run.resolveReady(ready);hooks.ready?.(ready);
     if(fallbackSelection&&hooks.releaseRoot&&run.release){fallbackSelection=false;void writeSelection(hooks.releaseRoot,run.release.manifest.id).catch(()=>output('The restored release selection could not be retained.'));}
   };
-  const backendControl=(run:Running,kind?:string,code?:unknown)=>{
+  const backendControl=(run:Running,kind?:string,code?:unknown,message?:unknown)=>{
     switch(kind){
       case 'prewarmed':clearTimeout(run.timer);run.resolveWarm();break;
       case 'prewarm-failed':run.rejectWarm(new Error('Candidate prewarm failed.'));break;
-      case 'drain-blocked':run.drain?.reject(new Error('The active backend refused a short release drain.'));break;
+      case 'drain-blocked':run.drain?.reject(drainBlockError(code,message));break;
       case 'fenced':run.drain?.resolve();break;
       case 'stop-blocked':run.stop?.reject(Object.assign(new Error('Primary recovery or writer exit blocks clean shutdown; the owner and Pi remain active.'),{code:typeof code==='string'&&/^[a-z][a-z0-9_]{0,63}$/.test(code)?code:'shutdown_blocked'}));break;
       case 'restart':if(current===run&&!switching){run.intentional=true;run.timer=setTimeout(()=>{if(run.child.pid)killGroup(run.child.pid,signal);},hooks.graceMs??5000);void run.exited.then(()=>{if(!stopping&&!stopped){restarts++;launch(false,activeRelease);}});}break;
@@ -123,11 +129,11 @@ export function supervise(options:Options,hooks:SupervisorOptions={}) {
     child.once('spawn',()=> {if(stopped) {child.kill('SIGTERM');return;} child.send({kind:prewarm?'prewarm':'start',options:selected,restarts,owner:true,ownerState:ownerHello?.state,release},error=>{if(error)child.kill('SIGTERM');});run.timer=setTimeout(()=>{output('The backend did not confirm startup.');child.kill('SIGKILL');},45000);});
     child.on('error',()=> {output('The backend process failed.');if(!child.pid) {unavailable=true;run.rejectReady(new Error('Backend spawn failed.'));run.rejectWarm(new Error('Backend spawn failed.'));run.resolveExit();}else child.kill('SIGTERM');});
     child.on('message',(message:unknown)=> {
-      const v=message as {kind?:string;state?:OwnerStateIdentity;code?:unknown};
+      const v=message as {kind?:string;state?:OwnerStateIdentity;code?:unknown;message?:unknown};
       if(v.kind==='owner-connect'&&v.state) {void attachOwner(run,v.state);return;}
       const ready=readyMessage(message);
       if(ready){backendReady(run,ready);return;}
-      backendControl(run,v.kind,v.code);
+      backendControl(run,v.kind,v.code,v.message);
     });
     child.once('exit',(code,termination)=> {void watchExit(run,code,termination).catch(()=> {unavailable=true;run.resolveExit();cleanupBlocked.push(run);if(current===run)current=undefined;if(candidate===run)candidate=undefined;output('Backend group cleanup blocked replacement; the raw owner remains available.');});});
     return run;

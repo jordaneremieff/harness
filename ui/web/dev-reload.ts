@@ -260,10 +260,25 @@ export class DevReload {
   }
   private async initialize(signal: AbortSignal): Promise<void> {
     const raw = this.hooks.readCheckpoint();
-    if (raw === null || raw === undefined) {this.pendingAck = true; await this.ack(signal);}
+    if (raw === null || raw === undefined) await this.initialLease(signal);
     else if (!await this.restore(raw, signal)) return;
     if (this.stopped || signal.aborted || this.fatal) return;
-    this.initialized = true; this.notice('idle'); this.connect();
+    this.initialized = true; this.notice('idle');
+    if(this.leaseMissing)this.queued=true;else this.connect();
+  }
+  private async initialLease(signal:AbortSignal):Promise<void>{
+    this.pendingAck=true;
+    try{await this.ack(signal);return;}catch(error){if(!(error instanceof ReloadFailure&&error.status===409))throw error;}
+    const controller=this.controller;if(!controller)throw new ReloadFailure('host');
+    const result=await this.readLease(controller);if(this.stopped||signal.aborted)return;
+    if(result.lease==='missing'){
+      this.leaseMissing=true;this.pendingAck=false;this.ackBlocked=false;this.latest=result.build;this.serial++;return;
+    }
+    if(result.lease==='replaced'){
+      if(result.client===this.client)throw new ReloadFailure('invalid-assets');
+      this.env.replaceClient(result.client);this.client=result.client;
+    }
+    await this.ack(signal);
   }
   private async restore(raw: unknown, signal: AbortSignal): Promise<boolean> {
       const checkpoint = validateDevReloadCheckpoint(raw, this.generation, this.env.clock.now());
@@ -356,12 +371,12 @@ export class DevReload {
         if (token !== this.sourceToken || this.stopped) return;
         this.receive(data);
       }, () => {if (token === this.sourceToken && !this.stopped) this.lost();});
+      void this.applyLatest();
     } catch {this.lost();}
   }
   private lost(code: DevReloadNotice['code'] = 'offline'): void {
     this.closeSource(); this.clearRetry();
-    const delay = RETRIES[this.attempts++];
-    if (delay === undefined) {this.notice('offline', code); return;}
+    const delay = RETRIES[Math.min(this.attempts++,RETRIES.length-1)]??6000;
     this.notice('reconnecting', code === 'capacity' ? code : 'none');
     this.retry = this.env.clock.set(() => {this.retry = undefined; this.connect(true);}, delay);
   }
