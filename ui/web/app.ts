@@ -911,7 +911,6 @@ async function refreshSnapshot(signal?: AbortSignal): Promise<void> {
 }
 function stream(signal?: AbortSignal): Promise<void> {
   signal?.throwIfAborted();
-  if (document.hidden) return Promise.reject(new Error('The page is hidden.'));
   source?.close(); connectionId = undefined;
   if (!state.workspace || !state.cursor) return Promise.reject(new Error('No current workspace baseline.'));
   const ready = {resolve: () => {}, reject: (_error: unknown) => {}};
@@ -939,7 +938,7 @@ export function renderConnection(): void {
   else setText(node, 'Connection lost. Reconnecting…');
 }
 async function resync(signal: AbortSignal): Promise<void> {
-  signal.throwIfAborted(); if (document.hidden) throw new Error('The page is hidden.');
+  signal.throwIfAborted();
   if (resynchronizing) return resynchronizing;
   source?.close(); connected = false; renderAvailability(); devRestoreWake?.();
   const task = (async () => {
@@ -1015,7 +1014,7 @@ function renderRosterEvent(event: ReceivedEvent): void {
     const data = event.envelope.data as EventData['agent.availability'];
     if (!Number.isSafeInteger(data.connectionEpoch) || data.connectionEpoch <= 0 || data.connectionEpoch < (state.agentEpochs.get(data.identity) ?? 0)) return;
     const controller = state.workspace ? controllers.get(controllerKey(state.workspace.id, {kind: 'agent', identity: data.identity})) : undefined;
-    if (controller && (data.state !== 'live' || !controller.connectionError && (!controller.connection || controller.connection.availability === 'live'))) {
+    if (controller) {
       controller.connection = {availability: data.state, capabilities: data.capabilities, reason: data.reason}; controller.connectionError = undefined;
     }
     messageTarget.availabilityChanged(data);
@@ -1890,7 +1889,7 @@ function bind(): void {
   }, {capture: true, passive: true});
   window.addEventListener('pagehide', event => {if (!event.persisted && !devNavigating) devReload?.destroy();});
   setRequestTiming((start, end) => {diagnostics.measure('control-roundtrip', start, end);});
-  diagnostics.setHidden(document.hidden); if (document.hidden) connectionRecovery.suspend();
+  diagnostics.setHidden(document.hidden);
   document.addEventListener('contextmenu', appContextMenu);
 
   byId('tabs-open-primary').addEventListener('click', selectPrimary);
@@ -1925,11 +1924,6 @@ function bind(): void {
   window.addEventListener('beforeunload', event => { if (!filesViews.canDispose || [...controllers.values()].some(controller => !controller.composer.canDispose)) event.preventDefault(); });
   document.addEventListener('visibilitychange', () => {
     diagnostics.setHidden(document.hidden); for (const controller of controllers.values()) controller.transcript.visibilityChanged();
-    if (document.hidden) {
-      connectionRecovery.suspend(); source?.close(); source = undefined; connectionId = undefined;
-      streamWait?.reject(new Error('The page is hidden.')); streamWait = undefined; resynchronizing = undefined;
-      connected = false; renderAvailability(); devRestoreWake?.();
-    } else connectionRecovery.resume();
   });
 }
 export function devHold(): DevReloadHold | undefined {
