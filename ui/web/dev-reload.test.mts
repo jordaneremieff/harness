@@ -127,7 +127,7 @@ test('drain storage stylesheet and transport catches preserve original exception
   }
 });
 test('exception snapshots bound each field explicitly without splitting a surrogate pair or retaining the thrown object', () => {
-  const error = {name: 'n'.repeat(257), message: 'm'.repeat(4095) + '😀tail', stack: 's'.repeat(16385)};
+  const error = {name: 'n'.repeat(257), message: `${'m'.repeat(4095)}😀tail`, stack: 's'.repeat(16385)};
   const captured = devReloadError(error); error.message = 'changed';
   assert.equal(captured.name.length, 256); assert.equal(captured.message.length, 4095); assert.equal(captured.stack.length, 16384);
   assert.deepEqual(captured.truncated, ['name', 'message', 'stack']);
@@ -135,6 +135,20 @@ test('exception snapshots bound each field explicitly without splitting a surrog
   assert.equal(devReloadError('Synthetic rejection').message, 'Synthetic rejection'); assert.equal(devReloadError(undefined).message, 'undefined');
   const hostile = new Proxy({}, {getPrototypeOf() {throw new Error('unreadable prototype');}, get() {throw new Error('unreadable property');}});
   assert.doesNotThrow(() => devReloadError(hostile)); assert.match(devReloadError(hostile).stack, /unavailable/);
+});
+
+for (const lease of ['missing', 'replaced'] as const) test(`queued ${lease} lease recovery preserves a fatal capture diagnostic`, async t => {
+  const f = new Fixture(), drain = deferred<void>(), error = new TypeError('Synthetic queued capture failure');
+  f.drain = () => drain.promise; f.hooks.captureCheckpoint = () => {throw error;};
+  const dev = f.dev(); t.after(() => dev.destroy()); await dev.ready;
+  f.fetch = path => response(200, {ok: true, data: path === '/api/dev/lease' ? {lease, ...(lease === 'replaced' ? {client: NEW} : {}), build: build(2, B, 'reload')} : build(0, A, 'reload')});
+  f.emit(build(1, B, 'reload')); await flush(); assert.equal(f.drains, 1);
+  dev.reconnect(); await flush(); assert.equal(f.posts.filter(post => post.path === '/api/dev/lease').length, 0);
+  drain.resolve(); await flush();
+  const failure = f.notices.find(notice => notice.state === 'failed' && notice.code === 'host' && notice.error?.message === error.message);
+  assert.ok(failure); assert.equal(f.notices.at(-1), failure); assert.equal(failure.error?.stack, error.stack);
+  assert.equal(f.posts.filter(post => post.path === '/api/dev/lease').length, 0); assert.equal(f.client, OLD);
+  assert.equal(f.acks().length, 1); assert.equal(f.releases().length, 0); assert.equal(f.navigations.length, 0);
 });
 
 test('already-current ready publications settle quietly through the real update path',async()=> {

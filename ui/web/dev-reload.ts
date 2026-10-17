@@ -35,7 +35,7 @@ export function devReloadPresentation(notice: DevReloadNotice): {text: string; d
   const labels: Record<DevReloadNotice['state'], string> = {idle:'', applied:'', ready:'Updating…', building:'Updating…', navigating:'Updating…', held:'Update paused', deferred:'Update paused', failed:'Update unavailable', offline:'Update unavailable', 'restart-required':'Restart required', reconnecting:'Reconnecting updates…'};
   const retry = notice.retryable && (notice.state === 'deferred' || notice.state === 'offline' || notice.state === 'failed' && ['stylesheet', 'drain', 'ack'].includes(notice.code));
   const error = notice.error;
-  const detail = `${notice.state} (${notice.code})` + (error ? `\nName: ${error.name}\nMessage: ${error.message}\nStack:\n${error.stack || '[not supplied]'}${error.truncated.length ? `\nTruncated fields: ${error.truncated.join(', ')}` : ''}` : '');
+  const detail = `${notice.state} (${notice.code})${error ? `\nName: ${error.name}\nMessage: ${error.message}\nStack:\n${error.stack || '[not supplied]'}${error.truncated.length ? `\nTruncated fields: ${error.truncated.join(', ')}` : ''}` : ''}`;
   return {text:labels[notice.state], detail, retry};
 }
 export interface DevReloadHooks {
@@ -352,7 +352,7 @@ export class DevReload {
     const controller = new AbortController(); this.linkController = controller;
     try {
       const result = await this.readCurrentLease(token, controller);
-      if (!result || token !== this.sourceToken || this.stopped) return;
+      if (!result || token !== this.sourceToken || this.stopped || this.fatal) return;
       if (result.lease !== 'missing') {
         if (result.lease === 'replaced') {this.latest = undefined; this.serial++;}
         this.openSource(token); return;
@@ -362,21 +362,26 @@ export class DevReload {
       this.notice(result.build.status, result.build.code);
       if (this.work) this.queued = true; else await this.applyLatest();
     } catch (error) {
-      if (token === this.sourceToken && !this.stopped) this.linkFailed(error);
+      if (token === this.sourceToken && !this.stopped && !this.fatal) this.linkFailed(error);
     } finally {if (this.linkController === controller) this.linkController = undefined;}
   }
   private async readCurrentLease(token: number, controller: AbortController): Promise<ReturnType<typeof parseLeaseResult> | undefined> {
-    while (this.work) {await this.work; if (token !== this.sourceToken || this.stopped) return;}
-    if (token !== this.sourceToken || this.stopped) return;
+    const current = (signal?: AbortSignal) => token === this.sourceToken && !this.stopped && !this.fatal && !controller.signal.aborted && !signal?.aborted;
+    while (this.work) {await this.work; if (!current()) return;}
+    if (!current()) return;
     let result: ReturnType<typeof parseLeaseResult> | undefined;
     let failure: {error: unknown} | undefined;
     await this.run(async signal => {
       try {
-        await this.retryPendingAck(signal); result = await this.readLease(controller);
-        if (result.lease === 'replaced' && token === this.sourceToken && !this.stopped && !signal.aborted) {
+        await this.retryPendingAck(signal);
+        if (!current(signal)) return;
+        const lease = await this.readLease(controller);
+        if (!current(signal)) return;
+        result = lease;
+        if (result.lease === 'replaced') {
           if (result.client === this.client) throw new ReloadFailure('invalid-assets');
           this.env.replaceClient(result.client); this.client = result.client; this.pendingAck = true;
-          await this.ack(signal); this.notice('applied');
+          await this.ack(signal); if (current(signal)) this.notice('applied');
         }
       }
       catch (error) {failure = {error};}
