@@ -1,5 +1,6 @@
 #!/usr/bin/env -S node
 import { createHash, randomUUID } from 'node:crypto';
+import assert from 'node:assert/strict';
 import { readFile, writeFile, rename } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
@@ -10,14 +11,25 @@ import {fileURLToPath} from 'node:url';
 
 /** Executable RPC fixture used by browser and process-boundary regression tests. */
 const args = process.argv.slice(2);
+function detachedReceipt(output: string, port: number, token: string): string {
+  assert.ok(Buffer.byteLength(output) <= 16384);
+  const fields = output.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\d\d:\d\d:\d\d\s+\d{4})\s+(.+)$/); assert.ok(fields);
+  const group = Number(fields[3]), uid = Number(fields[4]);
+  assert.equal(Number(fields[1]),process.pid); assert.equal(uid,process.getuid?.()); assert.ok(Number.isSafeInteger(group) && group > 1);
+  assert.match(token,/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/);
+  assert.equal(fields[6]?.match(/(?:^|\s)UI_TEST_OWNER_TOKEN=([a-f0-9-]+)(?:\s|$)/)?.[1],token);
+  assert.ok(fields[5] && fields[5].length <= 32); assert.ok(Number.isSafeInteger(port) && port > 0 && port <= 65535);
+  const encoded = JSON.stringify({pid:process.pid,group,uid,started:fields[5],token,signature:createHash('sha256').update(fields[6] as string).digest('hex'),port});
+  assert.ok(Buffer.byteLength(encoded) <= 1024); return encoded;
+}
 async function detachedChild(): Promise<never> {
   const token = process.env.UI_TEST_OWNER_TOKEN; if (!token) throw new Error('A private fixture owner token is required.');
   const server = createServer(socket => {let input: Buffer = Buffer.alloc(0); socket.on('data', data => {if (input.length + data.length > 128) {socket.destroy(); return;} input = Buffer.concat([input,data]); if (input.at(-1) === 10) {if (input.toString('utf8') === `${token}\n`) process.exit(0); socket.destroy();}});});
   server.listen(0,'127.0.0.1'); await once(server,'listening');
   const address = server.address(); if (!address || typeof address === 'string') throw new Error('The fixture socket did not bind.');
-  const identity = execFileSync('ps',['eww','-p',String(process.pid),'-o','pid=,ppid=,pgid=,uid=,lstart=,command='],{encoding:'utf8',maxBuffer:16384,timeout:2000,env:{PATH:process.env.PATH,LC_ALL:'C'}});
+  const receipt = detachedReceipt(execFileSync('ps',['eww','-p',String(process.pid),'-o','pid=,ppid=,pgid=,uid=,lstart=,command='],{encoding:'utf8',maxBuffer:16384,timeout:2000,env:{PATH:process.env.PATH,LC_ALL:'C'}}),address.port,token);
   const path = resolve(process.cwd(),'owner-recovery-orphan.json');
-  await writeFile(`${path}.pending`,JSON.stringify({pid:process.pid,port:address.port,identity})); await rename(`${path}.pending`,path);
+  await writeFile(`${path}.pending`,receipt); await rename(`${path}.pending`,path);
   process.send?.({ready:true}); return new Promise<never>(() => {});
 }
 async function detachedParent(): Promise<void> {

@@ -104,7 +104,7 @@ function processIds(flag: '-P' | '-g', pid: number): number[] {
 }
 const processIO: ProcessIO = {probe: processProbe, members: group => processIds('-g',group), signal: group => {try {process.kill(-group,'SIGKILL');} catch (error) {if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;}}};
 // Reparenting changes PPID, not the retained birth and run-ownership evidence.
-function sameIdentity(expected: ProcessIdentity, current: ProcessIdentity | undefined): boolean {
+function sameIdentity(expected: Omit<ProcessIdentity,'parent'>, current: ProcessIdentity | undefined): boolean {
   return !!current && expected.pid === current.pid && expected.group === current.group && expected.uid === current.uid && expected.started === current.started && expected.signature === current.signature && expected.token === current.token;
 }
 function remember(records: Map<number, ProcessIdentity>, token: string, pid: number) {
@@ -335,14 +335,25 @@ for (const mismatch of ['reused','ownership-changed','unavailable','unknown-memb
   assert.throws(() => retireExited(records,io),/exit is unverified/); assert.equal(records.size,1);
   io.members = () => []; retireExited(records,io); assert.equal(records.size,0);
 });
+type DetachedReceipt = Omit<ProcessIdentity,'parent'> & {port: number};
+async function readDetachedReceipt(cwd: string): Promise<DetachedReceipt> {
+  const proof = JSON.parse((await boundedFile(join(cwd,'owner-recovery-orphan.json'),1024)).toString('utf8')) as DetachedReceipt;
+  assert.ok(proof && typeof proof === 'object' && !Array.isArray(proof));
+  assert.deepEqual(Object.keys(proof).sort(),['group','pid','port','signature','started','token','uid']);
+  for (const id of [proof.pid,proof.group]) assert.ok(Number.isSafeInteger(id) && id > 1);
+  assert.ok(Number.isSafeInteger(proof.uid) && proof.uid >= 0); assert.ok(Number.isSafeInteger(proof.port) && proof.port > 0 && proof.port <= 65535);
+  assert.ok(typeof proof.started === 'string' && proof.started.length <= 32); assert.match(proof.started,/^\S+\s+\S+\s+\d+\s+\d\d:\d\d:\d\d\s+\d{4}$/);
+  assert.match(proof.token,/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/); assert.match(proof.signature,/^[a-f0-9]{64}$/);
+  return proof;
+}
 async function finishDetachedFixture(cwd: string, token: string) {
-  const proof = JSON.parse((await boundedFile(join(cwd,'owner-recovery-orphan.json'),32768)).toString('utf8')) as {pid:number;port:number;identity:string};
+  const proof = await readDetachedReceipt(cwd);
   const starting = JSON.parse((await boundedFile(join(cwd,'owner-recovery-orphan-starting.json'),4096)).toString('utf8')); assert.equal(starting.pid,proof.pid);
-  const identity = processIdentity(proof.identity); assert.equal(identity.pid,proof.pid); assert.equal(identity.token,token); assert.ok(sameIdentity(identity,processProbe(proof.pid)));
+  assert.equal(proof.token,token); assert.ok(sameIdentity(proof,processProbe(proof.pid)));
   const socket = createConnection({host:'127.0.0.1',port:proof.port});
   try {socket.resume(); await Promise.all([once(socket,'connect',{signal:AbortSignal.timeout(5000)}).then(() => {socket.write(`${token}\n`);}), once(socket,'end',{signal:AbortSignal.timeout(5000)})]);}
   finally {socket.destroy();}
-  assert.deepEqual(processIds('-g',identity.group),[]); assert.equal(present(proof.pid),false); assert.equal(present(-identity.group),false);
+  assert.deepEqual(processIds('-g',proof.group),[]); assert.equal(present(proof.pid),false); assert.equal(present(-proof.group),false);
 }
 test('launcher exit with a detached child refuses cleanup and retains state until verified fixture teardown', {timeout:15000}, async context => {
   const cwd = await realpath(await mkdtemp(join(tmpdir(),'or-orphan-'))), token = randomUUID(); let cleaned = false, verified = false;
@@ -353,6 +364,9 @@ test('launcher exit with a detached child refuses cleanup and retains state unti
     assert.equal(cleaned,false); assert.ok((await lstat(cwd)).isDirectory());
     const refusal = JSON.parse((await boundedFile(join(cwd,'cleanup-unverified.json'),65536)).toString('utf8'));
     assert.equal(refusal.verified,false); assert.equal(refusal.retainedDirectory,cwd); assert.equal(refusal.reportPath,join(cwd,'cleanup-unverified.json')); assert.match(JSON.stringify(refusal.reasons),/coverage is incomplete/);
+    const receipt = await readDetachedReceipt(cwd);
+    assert.deepEqual(Object.keys(receipt).sort(),['group','pid','port','signature','started','token','uid']);
+    assert.equal(Object.hasOwn(receipt,'identity'),false); assert.doesNotMatch(JSON.stringify(receipt),/UI_TEST_OWNER_TOKEN=|PATH=|PI_CODING_AGENT_DIR=/);
   } finally {
     await finishDetachedFixture(cwd,token); verified = true; await rm(cwd,{recursive:true,force:true});
   }
