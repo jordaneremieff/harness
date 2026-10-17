@@ -65,7 +65,7 @@ test('compact extension status counts hidden cells and native expansion retains 
   // Expectations use the display labels while preserving source and action checks.
   assert.equal(summary.tag, 'summary'); assert.equal(summary.textContent, 'first · 2 more');
   assert.equal(summary.children[0]?.tag, 'svg'); assert.equal(summary.children[0]?.attributes.get('viewBox'), '0 0 16 16');
-  assert.equal(summary.children[0]?.children[0]?.attributes.get('d'), 'M3 8h10 M8 3v10');
+  assert.equal(summary.children[0]?.children[0]?.attributes.get('d'), 'M6 3l5 5-5 5');
   assert.match(summary.attributes.get('aria-label') ?? '', /3 extension statuses\. Expand for details\./);
   assert.equal(list.children.length, 0);
   disclosure.open = true; disclosure.dispatchEvent(new Event('toggle'));
