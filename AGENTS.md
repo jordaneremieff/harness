@@ -113,6 +113,10 @@
 - One-pass standard: complete each task fully in the current pass. Deferral,
   staged completion, and promised follow-up passes read as reasonable
   engineering to a generic reviewer; they are failures under this standard.
+  A defect demonstrated on the unchanged baseline is a separately owned task
+  and does not block an independently complete iteration unless the iteration
+  worsens it, depends on its repair, or the operator requires its repair for
+  release. Preserve safety requirements and the required defect dispositions.
 - Before closing work: scoped tests for the changed slices and their import
   consumers, `npm run lint`, `npm run typecheck`, `npm run check`, and README
   claims updated to match reality in the same change. Run the full suite with
