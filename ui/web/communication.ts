@@ -10,7 +10,7 @@ import type {NamedDestination} from './tool-sentences.ts';
 import {conversationIdentityText} from './tabs.ts';
 
 type Shell = {node: HTMLElement; header: HTMLElement; heading: HTMLElement; actions: HTMLElement; body: HTMLElement};
-type Hooks = {reply?: (message:MessageView)=>{text:string;open():void}|undefined; subject?: (identity:string)=>NamedDestination|undefined; result?: (identity:string,selector:ResultSelector)=>void; reference?: (query: ReferenceQuery, active: (node: HTMLElement) => boolean) => HTMLElement; active(): boolean; current(): MessageView; protected(node: HTMLElement): boolean; raw(message: MessageView): string; expanded(key: string): boolean; disclosure(key: string, open: boolean): void; layout(): void};
+type Hooks = {inputContent?: (message:MessageView, root:HTMLElement)=>boolean; reply?: (message:MessageView)=>{text:string;open():void}|undefined; subject?: (identity:string)=>NamedDestination|undefined; result?: (identity:string,selector:ResultSelector)=>void; reference?: (query: ReferenceQuery, active: (node: HTMLElement) => boolean) => HTMLElement; active(): boolean; current(): MessageView; protected(node: HTMLElement): boolean; raw(message: MessageView): string; expanded(key: string): boolean; disclosure(key: string, open: boolean): void; layout(): void};
 type Ready = Extract<CommunicationPresentation, {state: 'ready'}>;
 type Row = [string, string, QualifiedReference?];
 function qualified(label: string, text: string, owner: string, field: ReferenceField): Row { return [label, text, {text, owner, field}]; }
@@ -110,6 +110,7 @@ export class CommunicationCard {
   private originalCopy?: HTMLButtonElement;
   private bodyValue?: string;
   private bodyFormatted?: boolean;
+  private bodyAttachments = false;
   private factsValue = '';
   private referencesValue = '';
   private rawValue = '';
@@ -179,7 +180,12 @@ export class CommunicationCard {
     const ready = value.state === 'ready'; const original = ready ? value.value.body.text : this.hooks.raw(message);
     const formatted = ready || unassociatedInput(message);
     this.text.classList.toggle('communication-quoted', !formatted);
-    if (original !== this.bodyValue || formatted !== this.bodyFormatted) { this.bodyValue = original; this.bodyFormatted = formatted; this.renderText(original, formatted); }
+    if (unassociatedInput(message) && this.hooks.inputContent?.(message, this.text)) {
+      this.bodyValue = original; this.bodyFormatted = formatted; this.bodyAttachments = true; this.text.removeAttribute('aria-label'); return;
+    }
+    if (this.bodyAttachments || original !== this.bodyValue || formatted !== this.bodyFormatted) {
+      this.bodyValue = original; this.bodyFormatted = formatted; this.bodyAttachments = false; this.renderText(original, formatted);
+    }
   }
   private renderText(original: string, formatted: boolean): void {
     if (formatted) { this.text.replaceChildren(...markdownDom(original).childNodes); this.text.removeAttribute('aria-label'); return; }

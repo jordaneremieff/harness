@@ -773,12 +773,17 @@ export class Transcript {
   private updateCommunication(cached: MessageNode, message: MessageView, entryId: string): void {
     if (!cached.communication) {
       const generation = this.generation;
-      cached.communication = new CommunicationCard(cached, {subject:this.hooks.subject, reply:message=>{const task=this.tasks.replies.get(message);return task?.tool?{text:this.sentence(task.tool),open:()=>this.openTaskAnswer(task)}:undefined;}, active: () => !this.deferred && generation === this.generation && cached.node.isConnected && !this.hidden() && this.index.entries.get(entryId)?.messages?.includes(cached.source) === true, current: () => cached.source, result:this.hooks.result, protected: node => this.protectedNode(node), raw: source => partText(source.parts), expanded: key => this.expanded.has(key), disclosure: (key, open) => this.sourcePreference(key, open), layout: () => this.sourceLayout(entryId), reference: this.hooks.references ? (text, active) => this.hooks.references?.render(text, active) ?? element('span', undefined, typeof text === 'string' ? text : text.text) : undefined}, communicationDisclosureKeys(entryId, message.id));
+      cached.communication = new CommunicationCard(cached, {inputContent:(message,root)=>this.communicationInput(cached,message,root,entryId),subject:this.hooks.subject, reply:message=>{const task=this.tasks.replies.get(message);return task?.tool?{text:this.sentence(task.tool),open:()=>this.openTaskAnswer(task)}:undefined;}, active: () => !this.deferred && generation === this.generation && cached.node.isConnected && !this.hidden() && this.index.entries.get(entryId)?.messages?.includes(cached.source) === true, current: () => cached.source, result:this.hooks.result, protected: node => this.protectedNode(node), raw: source => partText(source.parts), expanded: key => this.expanded.has(key), disclosure: (key, open) => this.sourcePreference(key, open), layout: () => this.sourceLayout(entryId), reference: this.hooks.references ? (text, active) => this.hooks.references?.render(text, active) ?? element('span', undefined, typeof text === 'string' ? text : text.text) : undefined}, communicationDisclosureKeys(entryId, message.id));
     }
     if (cached.communication.sync(message)) {
       this.messageError(cached, message);
     }
     this.registerContent(cached.body);
+  }
+  private communicationInput(cached: MessageNode, message: MessageView, root: HTMLElement, entryId: string): boolean {
+    const supplied = message.parts.some((_part, index) => attachmentParts(message, index).some(part => part.type === 'image' && !!part.attachment));
+    if (!supplied) { this.pruneParts(cached, new Set()); return false; }
+    this.reconcileContent(root, this.messagePartNodes(cached, message, entryId)); return true;
   }
   private cancelTaskReads(): void {for(const [id,controller] of this.taskReads){controller.abort();this.taskReadStamps.delete(id);}this.taskReads.clear();}
   private readVisibleTaskAnswers(visible:ReadonlySet<string>):void {
@@ -1087,6 +1092,19 @@ export class Transcript {
     const error = this.messageError(cached, message);
     if (this.communicationMessage(cached, message, entryId)) return cached;
     setText(cached.heading, bounded(presentMessage(message).label, 4096));
+    const children = this.messagePartNodes(cached, message, entryId, selected);
+    if (message.coverage.truncated || message.coverage.omitted > 0 || !message.coverage.complete) {
+      const reason = bounded(message.coverage.reason ?? '', 4096, 6).trim();
+      const notice = element('p', 'secondary message-coverage', reason || 'Some message content is not shown.');
+      children.push(notice);
+    }
+    const displayed = this.groupThinking(cached, children);
+    if (cached.inspection) { this.updateOrdinarySource(cached, message); displayed.push(cached.inspection); }
+    this.reconcileContent(cached.body, displayed);
+    this.updateMessageLayout(cached, displayed, error);
+    cached.source = message; return cached;
+  }
+  private messagePartNodes(cached: MessageNode, message: MessageView, entryId: string, selected?: ReadonlySet<number>): HTMLElement[] {
     const children: HTMLElement[] = []; const keys = new Set<string>();
     message.parts.forEach((_part, index) => {
       if (selected && !selected.has(index)) return;
@@ -1098,17 +1116,7 @@ export class Transcript {
         if (node) children.push(node);
       });
     });
-    this.pruneParts(cached, keys);
-    if (message.coverage.truncated || message.coverage.omitted > 0 || !message.coverage.complete) {
-      const reason = bounded(message.coverage.reason ?? '', 4096, 6).trim();
-      const notice = element('p', 'secondary message-coverage', reason || 'Some message content is not shown.');
-      children.push(notice);
-    }
-    const displayed = this.groupThinking(cached, children);
-    if (cached.inspection) { this.updateOrdinarySource(cached, message); displayed.push(cached.inspection); }
-    this.reconcileContent(cached.body, displayed);
-    this.updateMessageLayout(cached, displayed, error);
-    cached.source = message; return cached;
+    this.pruneParts(cached, keys); return children;
   }
   private groupThinking(message: MessageNode, children: HTMLElement[]): HTMLElement[] {
     this.showThinkingSummaries(message);

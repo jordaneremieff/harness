@@ -2787,3 +2787,51 @@ test('sent attachment display accepts late receipt metadata without replacing an
   view.set([{...updated, messages: updated.messages.map(message => ({...message}))}]); flush();
   assert.equal(root.querySelector('img'), img); assert.doesNotMatch(root.textContent, /\/server\/owned.bin/); view.reset();
 });
+
+function nativeSentImage(): EntryView {
+  const text = 'Describe this picture.\n\nAttached image "sample.png" (image/png): /fixture/retained.bin';
+  return {id: '17', kind: 'pi.user', messages: [{id: '17:message:0', role: 'user', state: 'final', coverage, communication: {state: 'unresolved'},
+    parts: [{type: 'text', text}], attachments: [{part: 0, start: text.indexOf('Attached image'), end: text.length,
+      image: {type: 'image', mimeType: 'image/png', digest: 'a'.repeat(64), bytes: 512, width: 32, height: 16, alt: 'sample.png',
+        attachment: {workspaceId: '11111111-1111-1111-1111-111111111111', targetKey: '22222222-2222-2222-2222-222222222222'}}}]}]};
+}
+function nativeImageTranscript() {return new Transcript('primary', {presentation: () => {}, reading: () => {}, image: part => imageUrl(part, {kind: 'agent', identity: 'fixture:7'})});}
+
+test('native unresolved input displays verified attachments while Source and both Copy actions retain exact text', async t => {
+  setup(); const view = nativeImageTranscript(), source = nativeSentImage(), message = source.messages?.[0]; assert.ok(message);
+  const original = structuredClone(message.parts), text = message.parts[0]?.type === 'text' ? message.parts[0].text : '';
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator'), copied: string[] = [];
+  Object.defineProperty(globalThis, 'navigator', {configurable: true, value: {clipboard: {writeText: async (text: string) => {copied.push(text);}}}});
+  t.after(() => {if (descriptor) Object.defineProperty(globalThis, 'navigator', descriptor); else Reflect.deleteProperty(globalThis, 'navigator'); view.reset();});
+  view.set([source]); flush();
+  const card = node('primary-transcript').querySelector('.communication-card'); assert.ok(card);
+  assert.equal(card.dataset.state, 'unresolved'); assert.equal(card.querySelector('.message-role')?.textContent, 'Input');
+  const img = card.querySelector('img'); assert.ok(img); assert.equal(Reflect.get(img, 'alt'), 'sample.png');
+  assert.doesNotMatch(card.textContent, /\/fixture\/retained.bin/);
+  messageAction(card, 'Copy').run(); await Promise.resolve(); assert.equal(copied[0], text);
+  messageAction(card, 'Source').run();
+  const raw = card.querySelector('.communication-source')?.querySelector('.raw'); assert.ok(raw); assert.equal(raw.textContent, text);
+  const originalCopy = card.querySelector('.communication-original-toolbar')?.querySelector('.copy'); assert.ok(originalCopy);
+  originalCopy.click(); await Promise.resolve(); assert.equal(copied[1], text);
+  assert.deepEqual(message.parts, original); assert.deepEqual(message.communication, {state: 'unresolved'});
+});
+
+test('native unresolved input reconciles late attachment metadata and preserves an unchanged image node', () => {
+  setup(); const view = nativeImageTranscript(), source = nativeSentImage(), message = source.messages?.[0]; assert.ok(message);
+  const plain = {...source, messages: [{...message, attachments: undefined}]};
+  view.set([plain]); flush(); const root = node('primary-transcript'); assert.equal(root.querySelector('img'), null);
+  view.set([source]); flush(); const img = root.querySelector('img'); assert.ok(img);
+  view.set([{...source, messages: [{...message}]}]); flush(); assert.equal(root.querySelector('img'), img);
+  view.set([plain]); flush(); assert.equal(root.querySelector('img'), null); assert.match(root.textContent, /\/fixture\/retained.bin/); view.reset();
+});
+
+test('native unresolved input keeps protected, incomplete, invalid and unavailable sources text-only', () => {
+  for (const kind of ['incomplete', 'protected', 'range', 'unavailable'] as const) {
+    setup(); const view = nativeImageTranscript(), source = nativeSentImage(), message = source.messages?.[0]; assert.ok(message);
+    if (kind === 'incomplete') message.coverage = {...coverage, complete: false, truncated: true};
+    if (kind === 'protected' && message.parts[0]?.type === 'text') message.parts[0].redacted = true;
+    if (kind === 'range' && message.attachments?.[0]) message.attachments[0].start = -1;
+    if (kind === 'unavailable') message.communication = {state: 'unavailable', reason: 'invalid'};
+    view.set([source]); flush(); assert.equal(node('primary-transcript').querySelector('img'), null, kind); view.reset();
+  }
+});
