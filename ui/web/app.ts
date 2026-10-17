@@ -10,7 +10,7 @@ import {FileWatch} from './file-watch.ts';
 import {movedWorkspaceFiles, type FileMove} from './file-identity.ts';
 import {FilesViews} from './files-views.ts';
 import {FileRootChoice} from './file-root.ts';
-import { activeTab, agentIdentityTails, agentName, closeTab, duplicateTabTails, FileBrowseState, layoutTarget, openTab, switchTab, tabForTarget, tabKey, workspaceLayout } from './tabs.ts';
+import { activeTab, ConversationCaptions, conversationIdentityText, type CaptionRow, closeTab, duplicateTabTails, FileBrowseState, layoutTarget, openTab, switchTab, tabForTarget, tabKey, workspaceLayout } from './tabs.ts';
 import { paneLeaves, paneById, activatePaneTab, movePaneTab, resizePaneSplit, minimumPaneSize, paneSplitGeometry, splitPane, normalizePaneLayout, samePaneLayout, type PaneLeaf } from './pane-layout.ts';
 import { TabStrip } from './tabs-view.ts';
 import { cardAction, controlIcon, type CardIcon } from './card-icons.ts';
@@ -171,7 +171,7 @@ function conversationController(target: Target): ConversationController {
   controller.composer = new Composer(elements, {prepareInput: () => !controller.passive, imageState: refreshComposerImages, imageInput: captured => composerImageInput(controller, captured), recovery: () => recovery.open(), layoutHeight: () => stableViews().height(elements.root), enterSends: () => state.workspace?.enterSendsMessages === true, timing: (start, end) => {if (controller.workspaceId === state.workspace?.id && !elements.root.closest('[hidden],[inert]')) diagnostics.measure('editor-echo', start, end);}, submitted: result => showOperation(result, workspaceId), unknownCommand: (text, literal) => target.kind === 'primary' && sameTarget(primaryTarget(), target) ? actions.unknown(text, literal) : false,
     ...(target.kind === 'primary' ? {commands: () => actions.commandOptions(), moreCommands: (captured: Target) => actions.continueCommands(captured)} : {}),
     retained: (workspace, captured) => { if (workspace === state.workspace?.id && captured.kind === 'agent') renderMessageResume(captured.identity); }});
-  controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {references, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
+  controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {references, subject: toolSubjectCaption, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
     presentation: (expanded, thinking, view) => { controller.showThinking = thinking; void savePresentation(controllerCapture(controller), expanded, thinking, view); },
     reading: reading => { void saveReading(controllerCapture(controller), reading); },
     ...(target.kind === 'primary' ? {fork: (message: import('../shared/api.ts').MessageView, entry: string) => { if (sameTarget(target, primaryTarget())) actions.fork(entry, rawText(message.parts)); }, output: (more: import('../shared/api.ts').OutputContinuation) => loadControllerOutput(controller, more)} : {}),
@@ -268,7 +268,7 @@ const workbenchStatus = new WorkbenchStatus();
 const controlAttribution = element('span','secondary');controlAttribution.id = 'control-attribution';controlAttribution.setAttribute('role','status');controlAttribution.hidden = true;workbenchStatus.node.append(controlAttribution);
 const messageTarget = new MessageTarget({workspace: () => state.workspace, prepare: prepareMessageTarget, paint: renderMessagePanel});
 const references = new ReferenceResolver(resolveReference, destination => { void navigateReference(destination).catch(showError); });
-const actions: Actions = new Actions({snapshot: currentSnapshot, primary, modelChanged: renderAvailability, get composer() { return primaryComposer(); }, commandsChanged: () => {const target = primaryTarget(); if (target && state.workspace) controllers.get(controllerKey(state.workspace.id, target))?.composer.commandsChanged();}, modal, selection, reload: reloadSelection, result: showOperation, rosterRefresh: refreshRoster, hasTranscript: () => !!focusedTranscript(), find: () => captureFind(), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, view: (tools, expand) => focusedTranscript()?.expandLoaded(tools, expand), selectPrimary, agentStatus: row => presentation({kind: 'agent', identity: row.identity}).activity, conversationFacts: identity => agentFacts(agentRow(identity), state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame), copyAgent: () => { void copy(selectedAgent() ?? '', agentNode('view-notice')); }, inspectAgent,resultLookup:()=>inspectAgent(selectedAgent(),'result'),
+const actions: Actions = new Actions({snapshot: currentSnapshot, primary, modelChanged: renderAvailability, get composer() { return primaryComposer(); }, commandsChanged: () => {const target = primaryTarget(); if (target && state.workspace) controllers.get(controllerKey(state.workspace.id, target))?.composer.commandsChanged();}, modal, selection, reload: reloadSelection, result: showOperation, rosterRefresh: refreshRoster, hasTranscript: () => !!focusedTranscript(), find: () => captureFind(), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, view: (tools, expand) => focusedTranscript()?.expandLoaded(tools, expand), selectPrimary, agentCaption: identity => {return presentationCaptions().get(identity);}, agentStatus: row => presentation({kind: 'agent', identity: row.identity}).activity, conversationFacts: identity => agentFacts(agentRow(identity), state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame), copyAgent: () => { void copy(selectedAgent() ?? '', agentNode('view-notice')); }, inspectAgent,resultLookup:()=>inspectAgent(selectedAgent(),'result'),
   tabs: {close: () => { const tab = activeTab(currentLayout()); if (tab) applyLayout(closeTab(currentLayout(), tabKey(tab))); }, switch: direction => applyLayout(switchTab(currentLayout(), direction)), layout: currentLayout},
 });
 const fileBrowse = new FileBrowseState();
@@ -476,24 +476,24 @@ function agentRow(identity: string): AgentRow | undefined {
   const availability = state.agentAvailability.get(identity);
   return row && availability ? {...row, availability: availability.state, capabilities: availability.capabilities} : row;
 }
-let namesRoster = state.roster, namesConversations = state.conversations, identityTails = new Map<string, string>();
-function presentationIdentityTails(): Map<string, string> {
-  if (namesRoster !== state.roster || namesConversations !== state.conversations) {
-    namesRoster = state.roster; namesConversations = state.conversations;
-    const names = new Map([...state.roster.values()].map(row => [row.identity, {identity:row.identity, name:agentName(row.name, row.handle, row.identity)}]));
-    for (const conversation of state.conversations.values()) if (conversation.target.kind === 'agent') {const identity = conversation.target.identity, row = state.roster.get(identity); names.set(identity, {identity, name:agentName(row?.name, row?.handle, identity, conversation.frame?.status.name)});}
-    identityTails = agentIdentityTails([...names.values()]);
-  }
-  return identityTails;
+const conversationCaptions = new ConversationCaptions();
+let namesRoster: typeof state.roster | undefined, namesConversations: typeof state.conversations | undefined, namesWorkspace: typeof state.workspace;
+function presentationCaptions(): ConversationCaptions {
+  if (namesRoster === state.roster && namesConversations === state.conversations && namesWorkspace === state.workspace) return conversationCaptions;
+  namesRoster = state.roster; namesConversations = state.conversations; namesWorkspace = state.workspace;
+  const names = new Map<string, CaptionRow>([...state.roster.values()].map(row => [row.identity, row]));
+  for (const pane of paneLeaves(currentLayout().root)) for (const tab of pane.tabs) if (tab.kind === 'agent' && !names.has(tab.identity)) names.set(tab.identity, {identity: tab.identity});
+  for (const conversation of state.conversations.values()) if (conversation.target.kind === 'agent') {const identity = conversation.target.identity; names.set(identity, {...state.roster.get(identity), identity, reported: conversation.frame?.status.name});}
+  conversationCaptions.update([...names.values()]); return conversationCaptions;
 }
-function targetIdentityTail(target?: Target): string | undefined {return target?.kind === 'agent' ? presentationIdentityTails().get(target.identity) : undefined;}
+function targetCaption(target?: Target) {return target?.kind === 'agent' ? presentationCaptions().get(target.identity) : undefined;}
 function presentation(target?: Target): ConversationPresentation {
   const row = target?.kind === 'agent' ? agentRow(target.identity) : undefined;
   const controller = target && state.workspace ? controllers.get(controllerKey(state.workspace.id, target)) : undefined;
   const conversation = target ? state.conversations.get(targetIdentity(target)) : undefined;
   const tool = target?.kind === 'primary' ? [...conversation?.tools.values() ?? []].findLast(item => item.phase !== 'end') : undefined;
   return conversationPresentation({target, primary: target?.kind === 'primary' ? state.primaries.get(target.key) : undefined,
-    row, identityTail: targetIdentityTail(target), availability: target?.kind === 'agent' && !controller?.connection && !controller?.connectionError ? state.agentAvailability.get(target.identity) : undefined,
+    row, caption: targetCaption(target), availability: target?.kind === 'agent' && !controller?.connection && !controller?.connectionError ? state.agentAvailability.get(target.identity) : undefined,
     negotiated: target?.kind === 'agent' && controller?.connection ? {identity: target.identity, ...controller.connection} : undefined,
     entries: conversation ? conversationBlocks(conversation) : undefined,
     frame: target ? state.conversations.get(targetIdentity(target))?.frame : undefined, tool: tool ? {name: tool.name, argument: tool.argumentText ?? ''} : undefined, connected});
@@ -1611,6 +1611,14 @@ function referenceIdentities(query: ReferenceQuery): ReferenceDestination[] {
   if (state.roster.has(text)) destinations.push({target: {kind: 'agent', identity: text}});
   for (const view of state.primaries.values()) if (view.sessionId === text || view.key === text) destinations.push({target: {kind: 'primary', key: view.key, epoch: view.epoch}});
   return destinations;
+}
+function toolSubjectCaption(value: string): {text: string; title: string; open?: () => void} | undefined {
+  const destinations = referenceIdentities(value), destination = destinations.length === 1 ? destinations[0] : undefined;
+  if (!destination) return destinations.length || conversationIdentityText(value) ? {text: 'Unresolved conversation', title: value} : undefined;
+  return {text: presentationName(presentation(destination.target)), title: value, open: () => {
+    const current = referenceIdentities(value);
+    if (current.length === 1 && current[0] && sameTarget(current[0].target, destination.target)) void navigateReference(current[0]).catch(showError);
+  }};
 }
 function resolveReference(query: ReferenceQuery): ReferenceResolution {
   const destinations = referenceIdentities(query);

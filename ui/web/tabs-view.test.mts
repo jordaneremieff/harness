@@ -50,7 +50,7 @@ function fixture(tabs: ConversationTab[] = [{kind:'primary'}, {kind:'agent',iden
 test('retained tabs preserve identity, accessible target controls and selected state through repaint', () => {
   const f=fixture(); const nodes=[...f.root().children]; nodes[0]?.focus(); f.strip.render(); assert.deepEqual(f.root().children,nodes); assert.equal(f.doc.activeElement,nodes[0]);
   assert.equal(nodes[0]?.attributes.get('role'),'tab'); assert.equal(nodes[0]?.attributes.get('aria-controls'),'content-pane-1'); assert.equal(nodes[0]?.attributes.get('aria-selected'),'true');
-  assert.equal(nodes[1]?.tabIndex,-1); assert.equal(nodes[1]?.querySelector('.tab-state'),null); assert.equal(nodes[1]?.querySelector('.tab-dot')?.children[0]?.attributes.get('class'),'card-icon card-icon-success'); assert.equal(nodes[1]?.querySelector('.tab-close')?.attributes.get('aria-label'),'Close agent:a tab');
+  assert.equal(nodes[1]?.tabIndex,-1); assert.equal(nodes[1]?.querySelector('.tab-state'),null); assert.equal(nodes[1]?.querySelector('.tab-dot')?.hidden,true); assert.equal(nodes[1]?.querySelector('.tab-dot')?.children.length,0); assert.equal(nodes[1]?.querySelector('.tab-close')?.attributes.get('aria-label'),'Close agent:a tab');
 });
 test('mixed split axes move the same keyed nodes into any target-independent group', () => {
   const f=fixture(); const original=[...f.root().children]; f.split('pane-1','x','agent:b'); f.split('pane-1','y','primary');
@@ -102,18 +102,18 @@ test('toolbar steps address only the requested pane and stop at its tab boundari
   f.strip.step('pane-1', -1); assert.equal(f.calls.at(-1), 'pane-1:primary');
   const before = f.calls.length; f.strip.step('pane-1', -1); assert.equal(f.calls.length, before);
 });
-test('shared sidebar status SVGs keep authored labels and retained nodes through repaint', () => {
+test('sidebar text status keeps authored labels and retained nodes through repaint', () => {
   let status: ReturnType<TabHooks['status']> = {label: 'Ready', glyph: '✓', tone:'success'}; const f = fixture(undefined, {status: () => status});
   const row = f.rows()[0]; const state = row?.querySelector('.conversation-state'); assert.ok(row); assert.ok(state);
-  const ready = state.children[0]; assert.equal(ready?.attributes.get('class'), 'card-icon card-icon-success');
-  f.strip.render(); assert.equal(state.children[0], ready);
+  assert.equal(state.hidden, true); assert.equal(state.children.length, 0);
+  f.strip.render(); assert.equal(row.querySelector('.conversation-state'), state);
   status = {label: 'Working · Read', glyph: '●', tone:'info'}; f.strip.render();
-  assert.equal(f.rows()[0], row); assert.equal(state.children.length, 1); assert.equal(state.children[0]?.attributes.get('class'), 'card-icon card-icon-working');
+  assert.equal(f.rows()[0], row); assert.equal(state.children.length, 0); assert.equal(state.textContent, 'Working · Read'); assert.equal(state.hidden, false);
   assert.equal(state.title, 'Working · Read'); assert.match(row.attributes.get('aria-label') ?? '', /Working · Read/);
   assert.equal(f.root().children[0]?.querySelector('.tab-dot')?.dataset.tone, 'info');
 });
 test('tabs and sidebar marks carry explicit semantic tones without interpreting glyphs or words',()=> {
-  for(const tone of ['info','success','warning','error','secondary'] as const) {const f=fixture([{kind:'agent',identity:'exact'}],{label:()=> 'Agent',status:()=>({label:'Same words',glyph:'?',tone})});assert.equal(f.root().children[0]?.querySelector('.tab-dot')?.dataset.tone,tone);assert.equal(f.rows()[0]?.querySelector('.conversation-state')?.dataset.tone,tone);assert.equal(f.root().children[0]?.querySelector('.tab-identity')?.textContent,'xact');event(f.rows()[0],'click');assert.equal(f.calls.at(-1),'pane-1:agent:exact');f.strip.destroy();}
+  for(const tone of ['info','success','warning','error','secondary'] as const) {const f=fixture([{kind:'agent',identity:'exact'}],{label:()=> 'Agent',status:()=>({label:'Same words',glyph:'?',tone})});assert.equal(f.root().children[0]?.querySelector('.tab-dot')?.dataset.tone,tone);assert.equal(f.rows()[0]?.querySelector('.conversation-state')?.dataset.tone,tone);assert.equal(f.root().children[0]?.querySelector('.tab-identity')?.textContent,'');event(f.rows()[0],'click');assert.equal(f.calls.at(-1),'pane-1:agent:exact');f.strip.destroy();}
 });
 test('owned drag moves across panes, retains the target node and does not accept an external drag', () => {
   const f=fixture(); f.split('pane-1','x','agent:b'); const source=f.root().children[1]; const target=f.root('pane-2').children[0]; assert.ok(source); assert.ok(target);
@@ -133,25 +133,25 @@ test('each group fits its own status/width and overflow; narrowness does not rem
   for (const node of f.root().children) node.clientWidth=130; f.strip.render();
   assert.equal(f.root().styleValues.has('--tab-share'),false); assert.equal(f.root('pane-2').styleValues.has('--tab-share'),false);
   assert.equal(f.overflow.get('pane-1'),true); assert.equal(f.overflow.get('pane-2'),false);
-  for (const node of f.root().children) {assert.equal(node.querySelector('.tab-state'),null); assert.equal(node.querySelector('.tab-dot')?.title,'Custom activity'); assert.equal(node.querySelector('.tab-dot')?.children[0]?.attributes.get('class'),'card-icon card-icon-unknown'); assert.equal(node.querySelector('.tab-label')?.textContent,'A very long conversation name'); assert.match(node.attributes.get('aria-label')??'',/Custom activity/);}
+  for (const node of f.root().children) {assert.equal(node.querySelector('.tab-state'),null); assert.equal(node.querySelector('.tab-dot')?.title,'Custom activity'); assert.equal(node.querySelector('.tab-dot')?.textContent,'Custom activity'); assert.equal(node.querySelector('.tab-label')?.textContent,'A very long conversation name'); assert.match(node.attributes.get('aria-label')??'',/Custom activity/);}
 });
 test('repeated resize retains full exceptional status instead of erasing it', () => {
   const f=fixture([{kind:'primary'},{kind:'agent',identity:'a'}], {label:tab=>tab.kind==='primary'?'Primary':'Parser',status:()=>({label:'Working · bash',glyph:'○'})});
   const node=f.root().children[0]; const state=node?.querySelector('.tab-dot'); assert.ok(node); assert.ok(state);
-  const mark=state.children[0]; assert.equal(mark?.attributes.get('class'),'card-icon card-icon-disconnected');
+  const mark=state; assert.equal(state.textContent,'Working · bash');
   node.clientWidth=280; const observer=Observer.instances.at(-1); assert.ok(observer);
-  for (let i=0;i<3;i++) {observer.resize(); assert.equal(state.children[0],mark); assert.equal(state.title,'Working · bash');}
+  for (let i=0;i<3;i++) {observer.resize(); assert.equal(node.querySelector('.tab-dot'),mark); assert.equal(state.title,'Working · bash');}
   assert.equal(node.querySelector('.tab-label')?.textContent,'Primary');
   assert.equal(f.root().children[1]?.querySelector('.tab-label')?.textContent,'Parser');
   assert.equal(node.attributes.get('aria-label'),'Primary, Working · bash'); assert.match(node.title,/Working · bash/);
   assert.equal(node.querySelector('.tab-state'),null);
-  node.clientWidth=400; observer.resize(); assert.equal(state.children[0],mark);
-  node.clientWidth=280; observer.resize(); observer.resize(); assert.equal(state.children[0],mark);
+  node.clientWidth=400; observer.resize(); assert.equal(node.querySelector('.tab-dot'),mark);
+  node.clientWidth=280; observer.resize(); observer.resize(); assert.equal(node.querySelector('.tab-dot'),mark);
 });
 test('full status labels stay authoritative and status repaint preserves retained focus', () => {
   let status={label:'Custom',glyph:'●'}; const f=fixture(undefined,{status:()=>status}); const node=f.root().children[1]; assert.ok(node); node.focus();
-  assert.equal(node.querySelector('.tab-dot')?.title,'Custom'); assert.equal(node.querySelector('.tab-dot')?.children[0]?.attributes.get('class'),'card-icon card-icon-working'); status={label:'Working',glyph:'○'}; f.strip.render();
-  assert.equal(node.querySelector('.tab-dot')?.title,'Working'); assert.equal(node.querySelector('.tab-dot')?.children[0]?.attributes.get('class'),'card-icon card-icon-disconnected'); assert.equal(f.doc.activeElement,node); assert.match(node.attributes.get('aria-label')??'',/Working/);
+  assert.equal(node.querySelector('.tab-dot')?.title,'Custom'); assert.equal(node.querySelector('.tab-dot')?.textContent,'Custom'); status={label:'Working',glyph:'○'}; f.strip.render();
+  assert.equal(node.querySelector('.tab-dot')?.title,'Working'); assert.equal(node.querySelector('.tab-dot')?.textContent,'Working'); assert.equal(f.doc.activeElement,node); assert.match(node.attributes.get('aria-label')??'',/Working/);
 });
 test('active reveal scrolls only its local host and repaint preserves manual strip position and draft selection', () => {
   const f=fixture(Array.from({length:11},(_,i)=>({kind:'agent',identity:String(i)}))); f.set(activatePaneTab(f.layout(),'pane-1','agent:10'));
@@ -191,13 +191,13 @@ test('a sole oversized tab exposes strip overflow without erasing its name or ex
   f.strip.requestReveal(); f.strip.render();
   assert.equal(host.dataset.sole, 'true'); assert.equal(f.overflow.get('pane-1'), true); assert.equal(host.scrollLeft, 0);
   assert.equal(node.querySelector('.tab-label')?.textContent, name); assert.equal(node.querySelector('.tab-dot')?.title, 'Failed');
-  assert.equal(node.querySelector('.tab-dot')?.children[0]?.attributes.get('class'), 'card-icon card-icon-error'); assert.equal(node.querySelector('.tab-state'), null); assert.ok(node.querySelector('.tab-close'));
+  assert.equal(node.querySelector('.tab-dot')?.textContent, 'Failed'); assert.equal(node.querySelector('.tab-state'), null); assert.ok(node.querySelector('.tab-close'));
   assert.match(node.attributes.get('aria-label') ?? '', /complete caption retained, Failed/);
 });
-test('a sole tab fills the strip and Ready never competes with its name', () => {
+test('a sole tab retains its caption and Ready never competes with its name', () => {
   const f = fixture([{kind:'primary'}], {label:()=> 'Long named conversation'});
   const node = f.root().children[0]; assert.ok(node); assert.equal(f.root().dataset.sole,'true');
-  assert.equal(node.querySelector('.tab-label')?.textContent,'Long named conversation'); assert.equal(node.querySelector('.tab-state'),null); assert.equal(node.querySelector('.tab-dot')?.children[0]?.attributes.get('class'),'card-icon card-icon-success');
+  assert.equal(node.querySelector('.tab-label')?.textContent,'Long named conversation'); assert.equal(node.querySelector('.tab-state'),null); assert.equal(node.querySelector('.tab-dot')?.hidden,true);
   assert.match(node.attributes.get('aria-label') ?? '', /Long named conversation, Ready/);
   assert.equal(node.querySelector('.tab-close')?.children[0]?.attributes.get('class'),'card-icon card-icon-close');
 });

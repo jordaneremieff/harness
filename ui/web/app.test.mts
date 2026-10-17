@@ -927,10 +927,11 @@ test('unnamed same-prefix agents keep distinct tab footer and native message lab
   const identities=['12345678-aaaa-4bbb-8ccc-000000001001','12345678-aaaa-4bbb-8ccc-000000002002'],first=identities[0];assert.ok(first);
   const layout=singlePane(identities.map(identity=>({kind:'agent' as const,identity}))),workspace={id:'readable-identities',revision:1,selectedTarget:{kind:'agent' as const,identity:first},conversationLayout:layout};
   await arrive({workspace,primaries:[],roster:identities.map(identity=>agentFixture(identity,{name:identity,handle:undefined}))});
-  const nodes=tabsNode().children;assert.deepEqual(nodes.map(node=>node.querySelector('.tab-label')?.textContent),['Agent','Agent']);assert.deepEqual(nodes.map(node=>node.querySelector('.tab-identity')?.textContent),['1001','2002']);
-  assert.equal(byId('workbench-scope').textContent,'Agent · 1001');assert.match(agentControl('recipient').textContent,/Agent · 1001$/);const editor=agentControl('editor');
+  const nodes=tabsNode().children;assert.deepEqual(nodes.map(node=>node.querySelector('.tab-label')?.textContent),['Unnamed conversation','Unnamed conversation']);
+  const tails = nodes.map(node=>node.querySelector('.tab-identity')?.textContent); assert.equal(new Set(tails).size,2); for (const tail of tails) assert.match(tail ?? '', /^\d+$/);
+  const firstTail = tails[0]; assert.equal(byId('workbench-scope').textContent,`Unnamed conversation · ${firstTail}`);assert.equal(agentControl('recipient').textContent,`Message Unnamed conversation · ${firstTail}`);const editor=agentControl('editor');
   await arrive({workspace:{...workspace,revision:2},primaries:[],roster:[...identities].reverse().map(identity=>agentFixture(identity,{name:'Review'}))});
-  assert.equal(agentControl('editor'),editor);assert.equal(byId('workbench-scope').textContent,'Review · 1001');assert.match(agentControl('recipient').textContent,/Review · 1001$/);assert.deepEqual(app.state.workspace?.selectedTarget,{kind:'agent',identity:first});
+  assert.equal(agentControl('editor'),editor);assert.equal(byId('workbench-scope').textContent,`Review · ${firstTail}`);assert.equal(agentControl('recipient').textContent,`Message Review · ${firstTail}`);assert.deepEqual(app.state.workspace?.selectedTarget,{kind:'agent',identity:first});
 });
 test('Primary and agent name collisions never expose a suffix from the internal Primary key', async () => {
   const identity = 'primary-name-peer', target = {kind: 'primary' as const, key: 'p', epoch: 8451};
@@ -976,25 +977,27 @@ test('pane strips expose local navigation, a direct new-tab chooser and a separa
   assert.equal(contextMenu.openNow, false); assert.equal(byId('modal-title').textContent, 'Go to conversation'); byId('modal-close').click();
   app.openTabActions('pane-1'); for (const name of ['Split right', 'Split down', 'Close tab']) assert.ok(menuNode().children.some(node => node.textContent === name)); contextMenu.close();
 });
-test('pane tab-list choices disambiguate identical names and states through exact target tails', async () => {
+test('pane tab-list choices disambiguate identical names without changing exact targets', async () => {
   const cases = [
-    {identities: ['left-source:choice-one', 'right-source:choice-two'], labels: ['Review · choice-one', 'Review · choice-two']},
-    {identities: ['left-source:shared-choice', 'right-source:shared-choice'], labels: ['Review · ft-source:shared-choice', 'Review · ht-source:shared-choice']},
+    {identities: ['left-source:choice-one', 'right-source:choice-two']},
+    {identities: ['left-source:shared-choice', 'right-source:shared-choice']},
   ];
   for (const [index, item] of cases.entries()) {
     const [first, second] = item.identities; assert.ok(first); assert.ok(second);
     const layout = singlePane([{kind: 'primary'}, {kind: 'agent', identity: first}, {kind: 'agent', identity: second}, {kind: 'agent', identity: 'unique-choice'}]);
     await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', conversationLayout: layout}, primaries: [primaryFixture({epoch: 8406 + index})], roster: [agentFixture(first, {name: 'Review'}), agentFixture(second, {name: 'Review'}), agentFixture('unique-choice', {name: 'Unique full name'})]});
+    const labels = tabsNode().children.filter(node=>node.dataset.tabKey === `agent:${first}` || node.dataset.tabKey === `agent:${second}`).map(node=>`${node.querySelector('.tab-label')?.textContent} · ${node.querySelector('.tab-identity')?.textContent}`);
+    assert.equal(new Set(labels).size, 2); for (const label of labels) assert.match(label, /^Review · \d+$/);
     app.openTabsList('pane-1');
-    const rows = menuNode().children.filter(node => item.labels.includes(node.textContent)); assert.equal(rows.length, 2);
+    const rows = menuNode().children.filter(node => labels.includes(node.textContent)); assert.equal(rows.length, 2);
     assert.equal(rows[0]?.getAttribute('aria-description'), rows[1]?.getAttribute('aria-description'));
-    assert.deepEqual(rows.map(row => row.textContent), item.labels);
-    assert.deepEqual(rows.map(row => row.getAttribute('aria-label') ?? row.textContent), item.labels);
+    assert.deepEqual(rows.map(row => row.textContent), labels);
+    assert.deepEqual(rows.map(row => row.getAttribute('aria-label') ?? row.textContent), labels);
     assert.ok(rows.every(row => row.getAttribute('role') === 'menuitemradio'));
     assert.ok(menuNode().children.some(row => row.textContent === 'Unique full name'));
     rows[1]?.click(); await settle(); assert.deepEqual(app.state.workspace?.selectedTarget, {kind: 'agent', identity: second});
-    app.openTabsList('pane-1'); const selected = menuNode().children.find(row => row.textContent === item.labels[1]); assert.equal(selected?.getAttribute('aria-checked'), 'true');
-    const other = menuNode().children.find(row => row.textContent === item.labels[0]); assert.ok(other); other.click(); await settle();
+    app.openTabsList('pane-1'); const selected = menuNode().children.find(row => row.textContent === labels[1]); assert.equal(selected?.getAttribute('aria-checked'), 'true');
+    const other = menuNode().children.find(row => row.textContent === labels[0]); assert.ok(other); other.click(); await settle();
     assert.deepEqual(app.state.workspace?.selectedTarget, {kind: 'agent', identity: first}); contextMenu.close();
   }
 });
@@ -1386,7 +1389,7 @@ test('the conversation list reuses exact tab activation without a new navigation
   const layout = singlePane([{kind: 'primary'}, {kind: 'agent', identity: 'list-a'}, {kind: 'agent', identity: 'list-b'}]);
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', conversationLayout: layout}, primaries: [primaryFixture({epoch: 715})], roster: [agentFixture('list-a', {name: 'Review'}), agentFixture('list-b', {name: 'Review'})]});
   const rows = byId('sidebar-conversations').querySelectorAll('.conversation-row'); assert.equal(rows.length, 3); assert.notEqual(rows[1]?.textContent, rows[2]?.textContent); assert.notEqual(rows[1]?.getAttribute('aria-label'), rows[2]?.getAttribute('aria-label'));
-  for (const [index, row] of rows.entries()) {const status = row.querySelector('.conversation-state'); assert.ok(status); assert.equal(status.getAttribute('aria-hidden'), 'true'); assert.equal(status.querySelector('svg')?.getAttribute('class'), index === 0 ? 'card-icon card-icon-working' : 'card-icon card-icon-unknown'); assert.equal(status.title, index === 0 ? 'Working' : 'Connection not checked'); assert.match(row.getAttribute('aria-label') ?? '', index === 0 ? /Working/ : /Connection not checked/);}
+  for (const [index, row] of rows.entries()) {const status = row.querySelector('.conversation-state'); assert.ok(status); assert.equal(status.getAttribute('aria-hidden'), 'true'); assert.equal(status.querySelector('svg'), null); assert.equal(status.textContent, index === 0 ? 'Working' : 'Connection not checked'); assert.equal(status.title, index === 0 ? 'Working' : 'Connection not checked'); assert.match(row.getAttribute('aria-label') ?? '', index === 0 ? /Working/ : /Connection not checked/);}
   rows[2]?.click(); await settle(); assert.deepEqual(app.state.workspace?.selectedTarget, {kind: 'agent', identity: 'list-b'}); assert.equal(hostDocument.activeElement, agentControl('editor')); assert.equal(rows[2]?.getAttribute('aria-current'), 'true');
 });
 

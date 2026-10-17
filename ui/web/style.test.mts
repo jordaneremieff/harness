@@ -20,7 +20,7 @@ test('content hues share scoped Markdown rules and leave metadata and identity t
   assert.match(rule('.communication-card[data-state=ready] .communication-header > .communication-sender'),/color: var\(--md-em\)/);
   assert.match(rule('.markdown-content:is(h1, h2, h3, h4, h5, h6)'),/color: var\(--md-heading\)/);assert.match(rule('.markdown-content .markdown-inline-code'),/color: var\(--md-code\)/);
   assert.doesNotMatch(css,/\.file-content th, \.file-content td|\.file-content blockquote/);
-  assert.match(rule('.row-identity'),/flex: none; max-width: none/);assert.doesNotMatch(rule('.row-identity'),/overflow: hidden|text-overflow: ellipsis/);
+  assert.match(rule('.row-identity'),/max-width: 40%; overflow: hidden; text-overflow: ellipsis/);
   assert.match(rule('.conversation-identity'),/white-space: nowrap/);
 });
 test('shared Markdown adjacency never overrides heading or post-heading margins', () => {
@@ -147,7 +147,7 @@ test('small radius, one floating shadow and no gradients or motion', () => {
   assert.doesNotMatch(css, /animation:|transition:|scroll-behavior:\s*smooth|backdrop-filter|filter:|text-shadow|gradient/);
 });
 test('neutral tools keep lifecycle accents in marks and errors while source diffs retain colors', () => {
-  assert.match(rule('.tool-shell'), /border-left: 2px solid var\(--rule\);[^}]*background: var\(--canvas\)/);
+  assert.match(rule('.tool-shell'), /padding: 12px; border: 1px solid var\(--rule\); border-radius: 4px; background: var\(--raised\)/);
   assert.doesNotMatch(css, /\.tool-shell\[data-status=success\]/);
   assert.match(rule('.tool-status.success'), /color: var\(--success\)/);
   assert.match(rule('.tool-shell[data-status=error]'), /border-left-color: var\(--error\)/);
@@ -162,11 +162,11 @@ test('neutral tools keep lifecycle accents in marks and errors while source diff
 test('tool status labels have natural width and disclosure marks stay separate from status', () => {
   assert.match(rule('.tool-status'), /flex: none; min-width: 16px; width: auto/);
   assert.doesNotMatch(rule('.tool-status'), /(?:^|;\s*)width: 12px/);
-  assert.match(rule('.tool-card > summary'), /display: grid; grid-template-columns: 16px minmax\(0,1fr\)/);
+  assert.match(rule('.tool-card > summary'), /display: grid; grid-template-columns: 28px minmax\(0,1fr\) var\(--tool-actions\)/);
   assert.match(rule('.card-disclosure::before'), /content: none/);
   assert.match(rule('.card-disclosure > .card-icon-disclosure'), /display: inline-block/);
-  assert.match(rule('details[open] > .card-disclosure > .card-icon-disclosure path'), /d: path\('M3 8h10'\)/);
-  assert.match(rule('.tool-card > summary > .tool-tier, .tool-card > summary > .tool-preview, .tool-card > summary > .tool-preview-qualification'), /grid-column: 2/);
+  assert.match(rule('details[open] > .card-disclosure > .card-icon-disclosure'), /transform: rotate\(90deg\)/);
+  assert.match(rule('.tool-card > summary > .tool-tier, .tool-card > summary > .tool-target, .tool-card > summary > .tool-secondary, .tool-card > summary > .tool-preview, .tool-card > summary > .tool-preview-qualification'), /grid-column: 2/);
   assert.match(rule('.tool-preview'), /color: var\(--fg\)/);
   assert.match(rule('.tool-secondary'), /color: var\(--muted\)/);
   assert.match(rule('.tool-output-info'), /max-width: 100%; color: var\(--muted\); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere/);
@@ -180,7 +180,7 @@ test('structured content uses readable prose, wrapped fields, compact tables and
   assert.doesNotMatch(summary, /background:|border:|min-height:|max-height:|overflow: hidden/);
   assert.match(rule('summary::before'), /content: none/);
   assert.match(rule('.card-disclosure > .card-icon-disclosure'), /display: inline-block/);
-  assert.match(rule('details[open] > .card-disclosure > .card-icon-disclosure path'), /d: path\('M3 8h10'\)/);
+  assert.match(rule('details[open] > .card-disclosure > .card-icon-disclosure'), /transform: rotate\(90deg\)/);
   assert.match(media('@media (pointer:coarse)'), /button, summary,[^{}]+\{ min-height: 44px; min-width: 44px/);
   assert.match(rule('.tool-source > pre'), /white-space: pre-wrap; overflow-wrap: anywhere/);
   assert.match(rule('.tool-shell .kv'), /grid-template-columns: minmax\(6ch,max-content\) minmax\(0,1fr\)/);
@@ -210,11 +210,12 @@ test('compact message headers retain keyboard actions within their own reserved 
   assert.match(rule('.message.tool-only'), /margin: 0/); assert.match(rule('.tool-shell'), /margin: 0;/);
   const header = rule('.message:is(.thinking-only, .tool-only) > .message-header');
   assert.match(header, /position: absolute; top: 2px; right: 2px/); assert.doesNotMatch(header, /transform:/);
-  assert.match(rule('.message.tool-only > .message-body > .tool-shell:first-child .tool-tier'), /padding-right: 48px/);
-  assert.match(rule('.message.tool-only > .message-body > .tool-shell:first-child > .tool-copy'), /right: 28px/);
+  assert.match(rule('.message.tool-only > .message-body > .tool-shell:first-child'), /--tool-actions: 64px/);
+  assert.match(rule('.message.tool-only > .message-body > .tool-shell:first-child > .tool-copy'), /justify-self: start/);
   assert.doesNotMatch(header, /display: none|overflow: hidden|bottom:/);
   assert.match(rule('.message:is(.thinking-only, .tool-only) > .message-body'), /margin-top: 0/);
-  assert.match(rule('.tool-copy'), /top: 2px; right: 2px/);
+  assert.match(rule('.tool-copy'), /grid-column: 2; grid-row: 1; align-self: start/);
+  assert.doesNotMatch(rule('.tool-copy'), /position: absolute/);
   assert.doesNotMatch(css, /padding-right: 184px|padding-top: 34px|padding-top: 54px/);
   const coarse = media('@media (pointer:coarse)');
   assert.match(coarse, /\.message:is\(\.thinking-only, \.tool-only\) > \.message-header \{ position: static; transform: none; min-height: 44px/);
@@ -259,9 +260,11 @@ test('the sidebar resizes through a persisted width and the column sits beside i
   assert.match(rule('.resizer:focus-visible::after'), /border-color: var\(--accent\)/);
   assert.match(rule('.agent-message-panel'), /height: var\(--panel-height, auto\)/);
   assert.doesNotMatch(rule('.composer textarea'), /max-height|--composer-height/);
-  assert.match(rule('.conversation'), /padding: 0 var\(--gutter\)/);
+  assert.match(rule('.conversation'), /--work-gutter: 24px/);
   assert.doesNotMatch(rule('.workspace'), /padding-left|margin-left/);
-  assert.match(rule('.conversation > :not(.transcript-region), .transcript > .entry, .transcript > button'), /width: 100%/); assert.doesNotMatch(css, /--column/);
+  assert.match(rule('.conversation > :not(.transcript-region)'), /width: calc\(100% - 2 \* var\(--work-gutter\)\); max-width: 960px/);
+  assert.match(rule('.transcript > .entry, .transcript > button'), /width: 100%; max-width: 960px/);
+  assert.doesNotMatch(css, /\.spacer[^{}]*\{[^}]*max-width: 960px/);
   assert.doesNotMatch(rule('.conversation'), /margin-inline: auto|margin: 0 auto|margin-left: auto; margin-right: auto/);
 });
 test('lean chrome: gutter-marked user turns, no pills, one-line roster rows and no duplicate title band', () => {
@@ -337,7 +340,7 @@ test('three direct utility controls retain named SVG slots and a separate unread
 test('card actions and expanded content share fixed geometry without label-width drift', () => {
   assert.match(rule('.card-action'), /width: 24px; height: 24px; min-width: 24px; min-height: 24px/);
   assert.match(rule('.card-icon'), /width: 16px; height: 16px/);
-  assert.match(rule('.tool-tier'), /padding-right: 24px/);
+  assert.match(rule('.tool-copy'), /width: 28px; height: 28px; min-width: 28px; min-height: 28px/);
   assert.match(rule('.tool-expanded'), /margin: var\(--s1\) 0 0 var\(--s4\)/);
   assert.match(rule('.tool-expanded .card-disclosure > .card-icon-disclosure'), /left: -24px; margin: -8px 0 0/);
   assert.match(rule('.tool-expanded .source-disclosure > summary.source-header'), /padding: 2px 32px 2px 0/);
@@ -345,18 +348,18 @@ test('card actions and expanded content share fixed geometry without label-width
 });
 test('multiline tool targets retain a first-line header and centered one-line controls', () => {
   const tier = rule('.tool-tier');
-  assert.match(tier, /align-items: flex-start/);
-  assert.doesNotMatch(tier, /align-items: center/);
-  assert.match(rule('.tool-name, .tool-target'), /padding-top: 2px/);
+  assert.match(tier, /align-items: baseline/);
+  assert.doesNotMatch(tier, /justify-content: space-between/);
+  assert.match(rule('.tool-name'), /padding-top: 2px/);
   assert.match(rule('.tool-secondary'), /padding-top: 2px/);
-  assert.match(rule('.tool-status'), /align-items: center; min-height: 24px/);
-  assert.match(rule('.tool-card > summary > .card-icon-disclosure'), /margin: var\(--s1\) 0 0/);
+  assert.match(rule('.tool-status'), /align-items: center; min-height: 28px/);
+  assert.match(rule('.tool-card > summary > .card-icon-disclosure'), /width: 28px; height: 28px; padding: 6px; margin: 0/);
   assert.match(rule('.tool-target'), /white-space: normal; overflow-wrap: anywhere/);
   assert.doesNotMatch(rule('.tool-target'), /line-clamp|text-overflow: ellipsis|overflow: hidden/);
 });
 test('partial output qualification shares the tool summary content column rather than its marker column', () => {
-  assert.match(rule('.tool-card > summary'), /grid-template-columns: 16px minmax\(0,1fr\)/);
-  const content = rule('.tool-card > summary > .tool-tier, .tool-card > summary > .tool-preview, .tool-card > summary > .tool-preview-qualification');
+  assert.match(rule('.tool-card > summary'), /grid-template-columns: 28px minmax\(0,1fr\) var\(--tool-actions\)/);
+  const content = rule('.tool-card > summary > .tool-tier, .tool-card > summary > .tool-target, .tool-card > summary > .tool-secondary, .tool-card > summary > .tool-preview, .tool-card > summary > .tool-preview-qualification');
   assert.match(content, /grid-column: 2; min-width: 0/);
   assert.match(rule('.tool-card > summary > .card-icon-disclosure'), /grid-column: 1/);
   assert.match(rule('.tool-preview-qualification'), /color: var\(--muted\);[^}]*font-size: 12px/);
@@ -472,32 +475,33 @@ test('native text flow preserves scroll boundaries without line paint clipping',
   assert.match(rule('.transcript :is(pre, table)'), /overscroll-behavior: contain/);
   assert.match(rule('.transcript :is(.message-body, .tool-content, .tool-expanded, .tool-result-part, .tool-record, .structured, details)'), /min-width: 0; max-width: 100%/);
 });
-test('editor text and prose share the pane gutter without horizontal correction offsets', () => {
-  assert.match(rule('.conversation'), /padding: 0 var\(--gutter\)/);
-  assert.match(rule('.transcript'), /padding: var\(--s3\) 0/);
+test('editor text and prose share a bounded left-aligned column without moving the native editor', () => {
+  assert.match(rule('.conversation > :not(.transcript-region)'), /max-width: 960px; margin-inline: var\(--work-gutter\)/);
+  assert.match(rule('.transcript'), /padding: var\(--s3\) var\(--work-gutter\)/);
+  assert.match(css, /@container conversation \(max-width: 700px\)[\s\S]*?--work-gutter: 16px/);
+  assert.match(rule('.transcript-region > .empty-state'), /left: var\(--work-gutter\); right: var\(--work-gutter\); max-width: 960px/);
   assert.match(rule('.composer-input'), /padding: var\(--s2\) 0 2px; border: 0; border-top: 1px solid var\(--rule\)/);
   assert.match(rule('.composer textarea'), /padding: 0; border: 0/);
   for (const selector of ['.transcript', '.composer-input', '.composer textarea']) {
     assert.doesNotMatch(rule(selector), /margin-left: -|translateX|left: -/);
   }
 });
-test('exceptional tab state remains readable and a sole tab fills its available width', () => {
-  assert.match(rule('.tab-dot'), /flex: none; width: 14px; height: 14px/);
+test('exceptional tab state remains readable while names use bounded tab widths', () => {
+  assert.match(rule('.tab-dot'), /max-width: 12ch; overflow: hidden/);
   assert.doesNotMatch(css, /\.tab-state\s*\{/);
-  assert.match(rule('.conversation-tabs[data-sole=true] > .conversation-tab'), /flex: 1 0 auto; max-width: none/);
+  assert.match(rule('.conversation-tabs[data-sole=true] > .conversation-tab'), /flex: 0 1 240px/);
   assert.match(rule('.conversation-tabs'), /min-width: 0; overflow-x: auto/);
-  assert.match(rule('.tab-label'), /flex: 1 0 auto/);
+  assert.match(rule('.tab-label'), /flex: 1 1 auto/);
   assert.match(rule('.conversation-tab'), /overflow: hidden/);
-  assert.match(rule('.tab-label'), /min-width: 8ch; white-space: nowrap/);
-  assert.doesNotMatch(rule('.tab-label'), /text-overflow:|overflow:/);
-  assert.match(rule('.tab-close'), /flex: none; width: 24px/);
+  assert.match(rule('.tab-label'), /text-overflow: ellipsis; white-space: nowrap/);
+  assert.match(rule('.tab-close'), /flex: none; width: 28px/);
 });
 test('neutral tabs and split panes retain 320px tracks with divider-aware equal-width defaults', async () => {
   const layout = await readFile(new URL('./pane-layout.ts', import.meta.url), 'utf8');
   assert.match(layout, /export const MIN_PANE_WIDTH = 320;/); assert.match(layout, /export const MIN_PANE_HEIGHT = 240;/); assert.match(layout, /export const PANE_DIVIDER = 4;/);
   assert.match(layout, /if \(node\.kind === 'pane'\) return \{width: MIN_PANE_WIDTH, height: MIN_PANE_HEIGHT\}/);
   assert.match(rule('.conversation-tabs'), /min-width: 0; overflow-x: auto/);
-  assert.match(rule('.tab-label'), /min-width: 8ch; white-space: nowrap/);
+  assert.match(rule('.tab-label'), /min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap/);
   assert.match(rule('.tab-dot'), /color: var\(--muted\)/);
   assert.doesNotMatch(rule('.tab-dot'), /background:|border:|border-radius:/);
   assert.match(rule('.conversation-tab[aria-selected=true]'), /background: transparent;[^}]*box-shadow: inset 0 -2px var\(--edge\)/);
@@ -523,14 +527,12 @@ test('neutral tabs and split panes retain 320px tracks with divider-aware equal-
   assert.match(rule('.composer-bar'), /flex-wrap: wrap/);
   assert.match(media('@media (forced-colors:active)'), /\.conversation-tab\[aria-selected=true\][^{]*\{ outline: 2px solid Highlight/);
 });
-test('full tab names remain intrinsic and every name keeps an eight-ch minimum', () => {
+test('long tab names ellipsize without crowding their status and close action', () => {
   const tab = rule('.conversation-tab');
   assert.match(tab, /flex: 0 0 auto/);
-  assert.match(tab, /min-width: calc\(8ch \+ var\(--tab-chrome,74px\) \+ var\(--tab-identity-width,0px\)\)/);
-  assert.match(tab, /max-width: none/);
-  assert.match(rule('.tab-label'), /flex: 1 0 auto; min-width: 8ch; white-space: nowrap/);
-  assert.doesNotMatch(rule('.tab-label'), /text-overflow:|overflow:/);
-  assert.match(rule('.tab-dot'), /width: 14px; height: 14px/);
+  assert.match(tab, /min-width: 140px; max-width: 240px/);
+  assert.match(rule('.tab-label'), /flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis/);
+  assert.match(rule('.tab-dot'), /max-width: 12ch/);
   assert.match(media('@media (pointer:coarse)'), /\.conversation-tab \{ --tab-chrome: 90px; \}/);
   assert.match(rule('.conversation-tabs'), /scrollbar-color: transparent transparent/);
   assert.match(rule('.tab-close'), /flex: none/);
@@ -685,7 +687,7 @@ test('mixed thinking and tool turns use compact spacing and raw inspections have
 });
 
 test('navigation identities stay separate from ellipsis and overflow controls remain quiet', () => {
-  assert.match(rule('.tab-identity'), /flex: none;.*font-size: 12px/);
+  assert.match(rule('.tab-identity'), /flex: 0 1 auto;.*max-width: 40%;.*font-size: 12px/);
   assert.match(rule('.pane-actions'), /display: inline-flex; flex: none;[^}]*min-width: 24px; min-height: 24px;[^}]*color: var\(--muted\)/);
   assert.match(rule('.pane-actions:hover, .pane-actions[aria-expanded=true]'), /background: var\(--raised\); color: var\(--fg\)/);
   assert.doesNotMatch(rule('.pane-actions'), /overflow: hidden|text-overflow:|display: none/);
@@ -799,7 +801,7 @@ test('empty-session guidance has a distinct heading and caption inside the trans
   assert.match(app, /region\.append\(absent, scroller\)/);
   assert.doesNotMatch(html, /id="primary-empty"|id="primary-empty-heading"|id="primary-empty-caption"/);
   assert.match(rule('.transcript-region'), /position: relative/);
-  assert.match(rule('.transcript-region > .empty-state'), /position: absolute; top: 0; left: 0/);
+  assert.match(rule('.transcript-region > .empty-state'), /position: absolute; top: 0; left: var\(--work-gutter\)/);
   assert.match(rule('.conversation > .transcript-region > .empty-state'), /grid-area: 1 \/ 1; align-self: start; padding-top: 24px/);
   assert.match(rule('.conversation > .transcript-region > .empty-state > h2'), /color: var\(--fg\); font-size: 18px; font-weight: 600/);
   assert.match(rule('.conversation > .transcript-region > .empty-state > p:not(:empty)'), /margin-top: 8px; font-size: 15px/);

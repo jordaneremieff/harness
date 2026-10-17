@@ -44,7 +44,7 @@ const decorativeHairlines = new Set([
 	".code-block > .copy|border",
 	".thinking > .stream-text|border-left",
 	".thinking-content|border-left",
-	".tool-shell|border-left",
+	".tool-shell|border",
 	".composer-detail-body|border-top",
 	".tool-copy|border",
 	".output-pages button|border",

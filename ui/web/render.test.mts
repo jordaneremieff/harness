@@ -339,7 +339,9 @@ test('callId joins call and results across entries with one bounded disclosure a
   const card = cards[0]; assert.ok(card); assert.equal(card.querySelector('.tool-name')?.textContent, 'read'); assert.equal(card.querySelector('.tool-target')?.textContent, '/full/path');
   assert.equal(card.querySelector('.tool-secondary')?.textContent, 'lines 1–10');
   assert.equal(card.parentNode?.dataset.status, 'success'); assert.equal(card.querySelector('.tool-tier')?.children[0], card.querySelector('.tool-name'));
-  assert.equal(card.querySelector('.tool-status')?.attributes.role, 'img'); assert.equal(card.querySelector('.tool-status')?.attributes['aria-label'], 'success');
+  assert.equal(card.querySelector('.tool-status')?.attributes.role, undefined); assert.equal(card.querySelector('.tool-status')?.textContent, 'Done');
+  assert.deepEqual(card.querySelector('.tool-tier')?.children.map(child=>child.className), ['tool-name','tool-status success']);
+  assert.equal(card.querySelector('.tool-target')?.parentNode, card.querySelector('summary')); assert.equal(card.querySelector('.tool-status')?.querySelector('svg'), null);
   assert.doesNotMatch(card.textContent, /The tool completed without output\.|Working|Tool error/); assert.ok((card.querySelector('.tool-preview')?.textContent.length ?? Infinity) < 2000);
   assert.match(card.querySelector('.tool-preview')?.textContent ?? '', /…$/); assert.ok((card.querySelector('.tool-preview')?.textContent.length ?? Infinity) <= 1200);
   assert.equal(card.querySelector('.tool-preview')?.parentNode, card.querySelector('summary'));
@@ -350,7 +352,7 @@ test('callId joins call and results across entries with one bounded disclosure a
   assert.equal(card.querySelector('summary')?.querySelectorAll('.card-icon-disclosure').length, 1); assert.equal(card.parentNode?.querySelectorAll('.tool-copy').length, 1);
   view.set(entries, new Map([['call-1', {callId: 'call-1', name: 'read', phase: 'end' as const, parts: [{type: 'text' as const, text: 'failure cause'}], isError: true}]])); flush();
   assert.equal(node('primary-transcript').querySelector('.tool-card'), card); assert.match(card.textContent, /failure cause/);
-  assert.equal(card.querySelector('.tool-status')?.attributes['aria-label'], 'error');
+  assert.equal(card.querySelector('.tool-status')?.textContent, 'Error');
   assert.equal(card.parentNode?.dataset.status, 'error'); assert.match(card.querySelector('.tool-status')?.textContent ?? '', /Error/);
 });
 test('collapsed cards prefer supplied structured summaries and keep exact raw copy, timing and arguments', async () => {
@@ -505,12 +507,12 @@ test('roster preserves order, visible duplicate identities, keyed rows and data-
   try {
     const selected: string[] = []; const view = new Roster(row => selected.push(row.identity), () => {}, undefined, undefined, rosterStatus); const one = {...row('one', 'same'), modifiedAt}; const two = row('two', 'same');
     view.set([one, two]); flush(); const first = node('roster').children[0]; assert.ok(first); const age = first.querySelector('time'); assert.equal(age?.textContent, '10m'); assert.match(first.querySelector('.row-select')?.attributes['aria-label'] ?? '', /one/);
-    assert.equal(first.querySelector('.row-identity')?.textContent, 'one');
+    assert.equal(first.querySelector('.row-identity')?.textContent, '1');
     assert.equal(first.querySelector('.row-word'), null); assert.equal(first.querySelector('.row-detail'), null); assert.equal(first.dataset.live, 'true');
     assert.equal(first.querySelector('.row-model'), null); assert.equal(first.querySelector('.row-activity'), null);
     assert.equal(first.querySelector('.row-select')?.title, 'Connection not checked');
     assert.equal(first.querySelector('.row-select')?.attributes['aria-description'], 'Connection not checked');
-    assert.equal(node('roster').children[1]?.querySelector('.row-identity')?.textContent, 'two');
+    assert.equal(node('roster').children[1]?.querySelector('.row-identity')?.textContent, '2');
     clock = modifiedAt + 900000; view.set([two, one], undefined, 'two'); flush(); assert.equal(node('roster').children[0], first); assert.equal(age?.textContent, '10m');
     first.querySelector('.row-select')?.dispatch('click'); assert.deepEqual(selected, ['one']);
     view.set([{...one, latestReply: 'new'}, two]); flush(); assert.equal(node('roster').children[0], first); assert.equal(age?.textContent, '15m');
@@ -1815,6 +1817,29 @@ test('expanded source disclosures avoid the raw inspection scroll cap', () => {
   assert.match(limits.querySelector('pre')?.textContent ?? '', /65536 characters/);
   assert.equal(card.querySelector('.tool-name')?.textContent, 'custom'); assert.equal(card.querySelector('.tool-status')?.textContent, 'Done');
 });
+test('authored subject captions preserve exact arguments, output and guarded navigation', async () => {
+  setup(); const root = '00000000-0000-4000-8000-000000000001', child = `${root}:7906`, calls: string[] = [], copies: string[] = [];
+  let label = 'Review · 2', resolved = true;
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', {configurable:true,value:{clipboard:{writeText:async(text:string)=>{copies.push(text);}}}});
+  const view = new Transcript('primary', {presentation:()=>{},reading:()=>{},subject:value=>value === child ? {text:label,title:value,...(resolved ? {open:()=>calls.push(value)} : {})} : undefined});
+  try {
+    const output = `Exact supplied identity ${child}`, source = contentEntry('caption-source', {sessionId:child}, output);
+    view.set([source]); flush(); const card = node('primary-transcript').querySelector('.tool-card'), shell = card?.parentNode; assert.ok(card && shell);
+    const target = card.querySelector('.tool-target'), link = target?.querySelector('.tool-subject-link'); assert.ok(target && link);
+    assert.equal(link.textContent,label); assert.equal(target.title,child); assert.equal(card.open,false);
+    const click = () => link.dispatch('click',{preventDefault:()=>{},stopPropagation:()=>{}});
+    click(); assert.deepEqual(calls,[child]); assert.equal(card.open,false);
+    card.open=true; card.dispatch('toggle'); flush();
+    const args = card.querySelector('.tool-arguments'); assert.ok(args); args.open=true; args.dispatch('toggle'); flush(); assert.match(args.textContent,new RegExp(child));
+    shell.querySelector('.tool-copy')?.dispatch('click',{stopPropagation:()=>{}}); await Promise.resolve(); assert.deepEqual(copies,[output]);
+    view.defer(()=>view.set([source])); click(); assert.deepEqual(calls,[child]); flush();
+    label='Renamed review'; view.set([source]); flush(); assert.equal(target.querySelector('.tool-subject-link'),link); assert.equal(link.textContent,label);
+    resolved=false; view.set([source]); flush(); assert.equal(target.querySelector('.tool-subject-link'),null); assert.equal(target.textContent,label);
+    assert.equal(JSON.stringify(source).includes(child),true); assert.equal(source.messages[0]?.parts[0]?.type,'toolCall');
+  } finally {view.destroy(); if(previous)Object.defineProperty(globalThis,'navigator',previous);else Reflect.deleteProperty(globalThis,'navigator');}
+});
+
 test('tool subjects mark known character and line cuts without changing complete unknown endings', () => {
   const targetFor = (name: string, key: string, value: string): FakeNode => {
     setup(); const view = transcript(); const source = contentEntry('subject-cut', {[key]: value}, 'output');

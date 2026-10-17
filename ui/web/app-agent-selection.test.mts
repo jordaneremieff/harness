@@ -4,6 +4,31 @@ import type { ProjectedFrame } from '../shared/api.ts';
 import {createAppFixture} from './app-fixture.mts';
 const {app, arrive, settle, event, hostDocument, byId, agentControl, primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, observation, singlePane, coverage, transportLog} = await createAppFixture();
 
+test('public root and child captions agree across subjects, tabs, roster, chooser and exact recipients', async () => {
+  const root = '00000000-0000-4000-8000-000000000101', child = `${root}:7906`, unknown = '00000000-0000-4000-8000-000000000909';
+  const target = {kind:'agent' as const,identity:root}, childTarget = {kind:'agent' as const,identity:child};
+  const rows = [agentFixture(root,{name:'Review',handle:'main-review'}),agentFixture(child,{name:'Review',handle:'branch-review'})];
+  const tool = (identity:string,id:string) => entryFixture(id,[messageFixture(id,[{type:'toolCall',callId:id,name:'custom',arguments:{value:{sessionId:identity},truncated:false}},{type:'toolResult',callId:id,name:'custom',isError:false,parts:[textPart(`Exact supplied ${identity}`)]}])]);
+  const entries = [tool(child,'known-subject'),tool(unknown,'unknown-subject'),tool('arbitrary target','literal-subject')];
+  const frame:ProjectedFrame = {revision:1,observedAt:'',live:[],entries,nextBefore:null,coverage,status:{busy:false}};
+  await arrive({workspace:{id:'root-child-captions',revision:1,selectedTarget:target,conversationLayout:singlePane([target,childTarget],`agent:${root}`)},primaries:[],roster:rows,
+    targets:[targetFixture('root-draft',target,{draft:{revision:3,text:'Root draft',mode:'followUp',persisted:true}}),targetFixture('child-draft',childTarget,{draft:{revision:7,text:'Child draft',mode:'prompt',persisted:true}})],observations:[observation(root,frame)]});
+  const rootEditor=app.agentComposer().editor; rootEditor.setSelectionRange(1,4,'backward');
+  const known = agentControl('root').querySelector('[data-entry-id="known-subject"]'), unresolved=agentControl('root').querySelector('[data-entry-id="unknown-subject"]'); assert.ok(known && unresolved);
+  const link=known.querySelector('.tool-subject-link'); assert.ok(link); assert.equal(link.textContent,'Review · branch-review'); assert.equal(known.querySelector('.tool-target')?.title,child);
+  assert.equal(unresolved.querySelector('.tool-target')?.textContent,'Unresolved conversation'); assert.equal(unresolved.querySelector('.tool-subject-link'),null); assert.equal(unresolved.querySelector('.tool-target')?.title,unknown);
+  assert.equal(agentControl('root').querySelector('[data-entry-id="literal-subject"] .tool-target')?.textContent,'arbitrary target');
+  const tab=byId('sidebar-conversations').querySelector(`[data-tab-key="agent:${child}"]`); assert.ok(tab); assert.equal(tab.querySelector('.conversation-name')?.textContent,'Review'); assert.equal(tab.querySelector('.conversation-identity')?.textContent,'branch-review');
+  const rosterRow=byId('roster').querySelector(`[data-identity="${child}"]`); assert.ok(rosterRow); assert.equal(rosterRow.querySelector('.row-name')?.textContent,'Review'); assert.equal(rosterRow.querySelector('.row-identity')?.textContent,'branch-review');
+  link.click(); await settle(); assert.deepEqual(app.state.workspace?.selectedTarget,childTarget); assert.equal(app.agentComposer().editor.value,'Child draft'); assert.equal(agentControl('recipient').textContent,'Draft for Review · branch-review');
+  app.appKey({key:'p',metaKey:true,preventDefault:()=>{}} as KeyboardEvent); await settle();
+  const choices=byId('modal-body').querySelectorAll('.palette-row'); assert.ok(choices.some(row=>row.getAttribute('aria-label')?.startsWith('Review, branch-review,'))); assert.ok(choices.some(row=>row.title===root));
+  byId('modal-close').click(); const rootRow=rows[0]; assert.ok(rootRow); await app.selectAgent(rootRow); await settle(); assert.equal(app.agentComposer().editor,rootEditor); assert.equal(rootEditor.value,'Root draft'); assert.deepEqual([rootEditor.selectionStart,rootEditor.selectionEnd,rootEditor.selectionDirection],[1,4,'backward']);
+  assert.equal(transportLog.some(call=>call.path.includes('/inputs') || call.path.endsWith('/start')),false);
+  await arrive({workspace:{id:'root-child-captions',revision:2,selectedTarget:target,conversationLayout:singlePane([target,childTarget],`agent:${root}`)},primaries:[],roster:rows.map(row=>({...row,name:'Renamed review'})),observations:[observation(root,frame)]});
+  assert.equal(agentControl('root').querySelector('.tool-subject-link')?.textContent,'Renamed review · branch-review'); assert.equal(app.agentComposer().editor,rootEditor);
+});
+
 test('passive draft hydration leaves focus unchanged, while explicit focus and rerenders preserve native ranges', async () => {
   const target = {kind: 'agent', identity: 'caret-agent'} as const;
   const saved = targetFixture('caret-target', target, {draft: {revision: 4, text: 'saved draft', mode: 'followUp', persisted: true}, reading: {revision: 3, anchorId: 'caret-entry', offsetPx: 17, followTail: false}});

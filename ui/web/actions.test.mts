@@ -765,29 +765,27 @@ test('empty palette agents put live and working agents first with stable roster 
   assert.deepEqual(rankPalette(actions.paletteEntries(), 'stored').filter(match => match.item.source === 'agent').map(match => match.item.name), ['A stored', 'Z stored', 'Y working']);
 });
 
-test('duplicate agent names receive conversation or shortest unique identity tails only', () => {
+test('duplicate agent names receive stable session qualifiers without identity tails', () => {
   const base = {storageId: 'store', cwd: '/project', modifiedAt: Date.now(), state: 'idle', owner: 'unknown' as const, availability: 'stored' as const, partial: false};
   const pairs = [
-    ['Four', 'rootaaaa', 'rootbbbb', 'aaaa', 'bbbb'],
-    ['Five', 'rootxaaaa', 'rootyaaaa', 'xaaaa', 'yaaaa'],
-    ['Eight', 'rootxabcdefg', 'rootyabcdefg', 'xabcdefg', 'yabcdefg'],
-    ['Full', 'firstzabcdefgh', 'secondzabcdefgh', 'tzabcdefgh', 'dzabcdefgh'],
-    ['Conversation', 'store:conversation-a', 'store:conversation-b', 'conversation-a', 'conversation-b'],
+    ['Four', 'rootaaaa', 'rootbbbb'],
+    ['Five', 'rootxaaaa', 'rootyaaaa'],
+    ['Eight', 'rootxabcdefg', 'rootyabcdefg'],
+    ['Full', 'firstzabcdefgh', 'secondzabcdefgh'],
+    ['Conversation', 'store:conversation-a', 'store:conversation-b'],
   ] as const;
   const rows = pairs.flatMap(([name, first, second]) => [{...base, name, identity: first}, {...base, name, identity: second}]);
   rows.push({...base, name: 'Unique', identity: 'anotheraaaa'});
   const actions = new Actions(context({agents: () => rows})); const agents = actions.paletteEntries().filter(item => item.source === 'agent');
-  for (const [name, first, second, firstTail, secondTail] of pairs) {
-    assert.equal(agents.find(item => item.title === first)?.tail, firstTail); assert.equal(agents.find(item => item.title === second)?.tail, secondTail);
+  for (const [index, [name, first, second]] of pairs.entries()) {
+    assert.equal(agents.find(item => item.title === first)?.tail, String(index * 2 + 1)); assert.equal(agents.find(item => item.title === second)?.tail, String(index * 2 + 2));
     assert.equal(agents.find(item => item.title === first)?.name, name);
   }
-  assert.equal('firstzabcdefgh'.slice(-9), 'secondzabcdefgh'.slice(-9));
-  assert.notEqual('firstzabcdefgh'.slice(-10), 'secondzabcdefgh'.slice(-10));
   assert.equal(new Set(agents.filter(item => item.name === 'Full').map(item => item.tail)).size, 2);
   assert.deepEqual(rows.map(row => row.identity), [...pairs.flatMap(([, first, second]) => [first, second]), 'anotheraaaa']);
   assert.equal(agents.find(item => item.name === 'Unique')?.tail, undefined);
   const handles = new Actions(context({agents: () => [{...base, handle: 'builder', identity: 'first1111'}, {...base, handle: 'builder', identity: 'second2222'}]}));
-  assert.deepEqual(handles.paletteEntries().filter(item => item.source === 'agent').map(item => item.tail), ['1111', '2222']);
+  assert.deepEqual(handles.paletteEntries().filter(item => item.source === 'agent').map(item => item.tail), ['1', '2']);
 });
 test('unnamed palette and Go to agents share readable captions and exact routes', () => {
   const base = {storageId: 'store', cwd: '/project', modifiedAt: Date.now(), state: 'idle', owner: 'unknown' as const, availability: 'stored' as const, partial: false};
@@ -795,10 +793,10 @@ test('unnamed palette and Go to agents share readable captions and exact routes'
   const rows = ids.map(identity => ({...base, identity, name: identity})); let selected = '';
   const actions = new Actions(context({agents: () => rows, selectAgent: row => {selected = row.identity;}}));
   for (const entries of [actions.paletteEntries().filter(item => item.source === 'agent'), actions.gotoEntries().filter(item => item.source === 'agent')]) {
-    assert.deepEqual(entries.map(item => item.name), ['Agent', 'Agent']); assert.deepEqual(entries.map(item => item.tail), ['0001', '0002']);
+    assert.deepEqual(entries.map(item => item.name), ['Unnamed conversation', 'Unnamed conversation']); assert.deepEqual(entries.map(item => item.tail), ['1', '2']);
     assert.deepEqual(entries.map(item => item.title), ids); entries[1]?.run(); assert.equal(selected, ids[1]);
   }
-  const first = rows[0]; assert.ok(first); const singleton = new Actions(context({agents: () => [first]})); assert.equal(singleton.gotoEntries().find(item => item.source === 'agent')?.tail, '0001');
+  const first = rows[0]; assert.ok(first); const singleton = new Actions(context({agents: () => [first]})); assert.equal(singleton.gotoEntries().find(item => item.source === 'agent')?.tail, undefined);
 });
 
 test('duplicate palette rows render dim-tail spans and retain exact keyboard selection after repaint', async () => {
@@ -812,7 +810,7 @@ test('duplicate palette rows render dim-tail spans and retain exact keyboard sel
     field.value = 'Builder'; field.dispatchEvent(new Event('input')); assert.equal(list.children.length, 2);
     for (const [index, row] of list.children.entries()) {
       const name = row.children[0]; assert.ok(name); const tail = name.children.at(-1); assert.ok(tail);
-      assert.equal(tail.className, 'palette-identity'); assert.equal(tail.tagName, 'span'); assert.equal(tail.textContent, index === 0 ? ' conversation-a' : ' conversation-b');
+      assert.equal(tail.className, 'palette-identity'); assert.equal(tail.tagName, 'span'); assert.equal(tail.textContent, index === 0 ? ' 1' : ' 2');
       assert.equal(name.children[0]?.className, 'palette-title'); assert.equal(name.children[0]?.children[0]?.tagName, 'mark');
     }
     key(field, 'ArrowDown'); assert.equal(list.children[1]?.attributes.get('aria-selected'), 'true');
@@ -917,7 +915,7 @@ test('Goto lists only the primary and loaded agents and preserves identity-based
   const rows = [{...base, identity: 'agent-first', name: 'Same name'}, {...base, identity: 'agent-second', name: 'Same name'}]; let selected = ''; let primaries = 0;
   const actions = new Actions(context({primary: () => ({...primary, sessionName: 'Primary project'}), agents: () => rows, selectAgent: row => {selected = row.identity;}, selectPrimary: () => {primaries++;}}));
   const entries = actions.gotoEntries(); assert.deepEqual(entries.map(row => row.source), ['primary', 'agent', 'agent']);
-  assert.deepEqual(entries.filter(row => row.source === 'agent').map(row => row.tail), ['irst', 'cond']);
+  assert.deepEqual(entries.filter(row => row.source === 'agent').map(row => row.tail), ['1', '2']);
   entries[0]?.run(); assert.equal(primaries, 1); entries[2]?.run(); assert.equal(selected, 'agent-second');
   assert.equal(new Actions(context({primary: () => undefined, agents: () => rows})).gotoEntries().some(row => row.source === 'primary'), false);
 });
@@ -993,7 +991,7 @@ test('finders label their purpose and separate duplicate identity from the ellip
     assert.equal(line?.className, 'palette-input-row'); assert.equal(field.className, 'palette-input'); assert.equal(field.placeholder, 'Search conversations');
     const row = list.children.find(row => row.title === 'second0034'); assert.ok(row);
     assert.equal(row.dataset.kind, 'conversation'); assert.equal(row.children[0]?.children[0]?.className, 'palette-title'); assert.equal(row.children[0]?.children[1]?.className, 'palette-identity');
-    assert.match(row.attributes.get('aria-label') ?? '', /Review companion, 0034/);
+    assert.match(row.attributes.get('aria-label') ?? '', /Review companion, 2/);
     field.value = 'nothingmatches'; field.dispatchEvent(new Event('input'));
     assert.match(textOf(list.children[0] as FakeNode), /No results for “nothingmatches”/); assert.equal(field.attributes.has('aria-activedescendant'), false);
     f.actions.palette(); assert.equal(f.body.children[0]?.children[2]?.placeholder, 'Search commands and agents');

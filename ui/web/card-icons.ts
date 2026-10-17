@@ -6,7 +6,7 @@ const paths: Record<CardIcon, string> = {
   copy: 'M6 5V2h8v9h-3 M2 5h8v9H2Z',
   wrap: 'M2 3h12 M2 7h9a3 3 0 0 1 0 6H7 M9 11l-2 2 2 2 M2 11h2',
   chevron: 'M6 3l5 5-5 5',
-  disclosure: 'M3 8h10 M8 3v10',
+  disclosure: 'M6 3l5 5-5 5',
   success: 'M3 8l3 3 7-7',
   error: 'M8 2v7 M8 12v1',
   working: 'M8 2a6 6 0 1 1-6 6',

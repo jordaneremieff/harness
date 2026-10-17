@@ -42,8 +42,10 @@ export class FileBrowseState {
     this.transient.set(pane,key);return openPaneTab(next,pane,tab);
   }
 }
-export function duplicateTabTails(tabs:ConversationTab[],label:(tab:ConversationTab)=>string):Map<string,string> {
-  const tails = agentIdentityTails(tabs.filter((tab):tab is Extract<ConversationTab,{kind:'agent'}>=>tab.kind === 'agent').map(tab=>({name:label(tab),identity:tab.identity})));
+export function duplicateTabTails(tabs:ConversationTab[],label:(tab:ConversationTab)=>string,captions = new ConversationCaptions()):Map<string,string> {
+  const agents = tabs.filter((tab):tab is Extract<ConversationTab,{kind:'agent'}>=>tab.kind === 'agent');
+  captions.update(agents.map(tab=>({name:label(tab),identity:tab.identity})));
+  const tails = new Map<string,string>(agents.flatMap(tab => {const tail = captions.get(tab.identity).tail; return tail ? [[tab.identity,tail]] : [];}));
   for (const tab of tabs) {
     if (tab.kind !== 'file') continue;
     const peers = tabs.filter((peer):peer is Extract<ConversationTab,{kind:'file'}>=>peer.kind === 'file' && label(peer) === label(tab));
@@ -62,8 +64,62 @@ export function duplicateTabTails(tabs:ConversationTab[],label:(tab:Conversation
   }
   return tails;
 }
-export function agentName(name: string | undefined, handle: string | undefined, identity: string, reported?: string): string {
-  return [reported, name, handle].find(value => !!value?.trim() && value.trim() !== identity) ?? 'Agent';
+const identityPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}(?::[2-9]\d*|:1\d+)?$/i;
+export function conversationIdentityText(value: string): boolean {return identityPattern.test(value);}
+function usefulName(value: string | undefined, identity: string): string | undefined {
+  const text = value?.trim(); return text && text !== identity && !conversationIdentityText(text) ? text : undefined;
+}
+function firstMessageTitle(firstMessage: string | undefined, identity: string): string | undefined {
+  const excerpt = usefulName(firstMessage?.slice(0, 162).trim().split(/\r?\n/, 1)[0], identity);
+  if (!excerpt) return;
+  const points = Array.from(excerpt);
+  return points.length > 80 ? `${points.slice(0, 79).join('')}…` : excerpt;
+}
+export function agentName(name: string | undefined, handle: string | undefined, identity: string, reported?: string, firstMessage?: string): string {
+  for (const value of [reported, name, handle]) {const text = usefulName(value, identity); if (text) return text;}
+  return firstMessageTitle(firstMessage, identity) ?? 'Unnamed conversation';
+}
+export type CaptionRow = {identity: string; name?: string; handle?: string; reported?: string; firstMessage?: string; cwd?: string};
+export type ConversationCaption = {name: string; tail?: string; source?: 'first-message'};
+/** Display qualifiers belong to this browser session, never to routing or persisted identity. */
+export class ConversationCaptions {
+  private ordinals = new Map<string, number>();
+  private nextOrdinal = 1;
+  private captions = new Map<string, ConversationCaption>();
+  update(rows: readonly CaptionRow[]): void {
+    const unique = [...new Map(rows.map(row => [row.identity, row])).values()];
+    this.captions = new Map(unique.map(row => [row.identity, {name: agentName(row.name, row.handle, row.identity, row.reported, row.firstMessage),
+      ...(![row.reported, row.name, row.handle].some(value => usefulName(value, row.identity)) && firstMessageTitle(row.firstMessage, row.identity) ? {source: 'first-message' as const} : {})}]));
+    const groups = new Map<string, CaptionRow[]>();
+    for (const row of unique) {const name = this.get(row.identity).name, group = groups.get(name) ?? []; group.push(row); groups.set(name, group);}
+    for (const group of groups.values()) if (group.length > 1) this.qualify(group);
+  }
+  private meaningfulTail(row: CaptionRow, group: CaptionRow[]): string | undefined {
+    const handle = usefulName(row.handle, row.identity);
+    if (handle && handle !== this.get(row.identity).name && group.filter(peer => usefulName(peer.handle, peer.identity) === handle).length === 1) return handle;
+    const parts = row.cwd?.split('/').filter(Boolean) ?? [];
+    for (let length = 1; length <= parts.length; length++) {
+      const suffix = parts.slice(-length).join('/');
+      if (group.filter(peer => peer.cwd?.split('/').filter(Boolean).slice(-length).join('/') === suffix).length === 1) return suffix;
+    }
+    if (parts.length && group.filter(peer => peer.cwd === row.cwd).length === 1) return `/${parts.join('/')}`;
+  }
+  private qualify(group: CaptionRow[]): void {
+    for (const row of group) this.get(row.identity).tail = this.meaningfulTail(row, group);
+    const tails = identityCounts(group.flatMap(row => this.get(row.identity).tail ? [this.get(row.identity).tail as string] : []));
+    for (const row of group) {
+      const caption = this.get(row.identity);
+      if (caption.tail && tails.get(caption.tail) === 1) continue;
+      if (!this.ordinals.has(row.identity)) {
+        while (tails.has(String(this.nextOrdinal))) this.nextOrdinal++;
+        this.ordinals.set(row.identity, this.nextOrdinal++);
+      }
+      let qualifier = [caption.tail, String(this.ordinals.get(row.identity))].filter(Boolean).join(' · ');
+      while (tails.has(qualifier)) qualifier = `Label ${qualifier}`;
+      caption.tail = qualifier; tails.set(qualifier, 1);
+    }
+  }
+  get(identity: string): ConversationCaption {return this.captions.get(identity) ?? {name: 'Unnamed conversation'};}
 }
 function storageTail(identity: string, length: number): string {
   const colon = identity.lastIndexOf(':');
@@ -89,14 +145,15 @@ function identityGroup(group: string[], labels: Map<string,string>): void {
 }
 type NamedIdentity = {name: string; identity: string};
 /** Generic captions keep their supplied names; only duplicate captions need tails. */
-export function duplicateIdentityTails(rows: NamedIdentity[]): Map<string, string> {return identityTails(rows, false);}
-/** Agent captions reject identity fallbacks and keep unnamed singleton suffixes. */
+export function duplicateIdentityTails(rows: NamedIdentity[]): Map<string, string> {return identityTails(rows);}
+/** Standalone consumers use the same caption rules; app consumers share one session allocator. */
 export function agentIdentityTails(rows: NamedIdentity[]): Map<string, string> {
-  return identityTails(rows.map(row=>({...row,name:agentName(row.name,undefined,row.identity)})), true);
+  const captions = new ConversationCaptions(); captions.update(rows);
+  return new Map(rows.flatMap(row => {const tail = captions.get(row.identity).tail; return tail ? [[row.identity, tail]] : [];}));
 }
-function identityTails(rows: NamedIdentity[], agents: boolean): Map<string, string> {
+function identityTails(rows: NamedIdentity[]): Map<string, string> {
   const groups=new Map<string,Set<string>>(),labels=new Map<string,string>();
   for(const {name,identity} of rows){const group=groups.get(name)??new Set<string>();group.add(identity);groups.set(name,group);}
-  for(const [name,identities]of groups)if(identities.size>1||agents&&name==='Agent')identityGroup([...identities],labels);
+  for(const identities of groups.values())if(identities.size>1)identityGroup([...identities],labels);
   return labels;
 }

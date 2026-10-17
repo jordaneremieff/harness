@@ -1,7 +1,7 @@
 import type { EntryView, ImageView, JsonDisplay, MessageView, PartView, PresentationView, ReadingView, TranscriptView } from '../shared/api.ts';
 import type {ResultSelector} from '../shared/inspection.ts';
 import { button, copy, details, element, rawText, setText } from './dom.ts';
-import { cardAction, cardActionLabel, cardDisclosure, cardIcon } from './card-icons.ts';
+import { cardAction, cardActionLabel, cardDisclosure } from './card-icons.ts';
 import { contextMenu, nativeEditingTarget, type ContextItem } from './context-menu.ts';
 import { markdownDom, sourceHeader, sourceWrap } from './safe-markdown.ts';
 import { highlight, languageFromPath } from './highlight.ts';
@@ -24,7 +24,8 @@ import { captureAnchor, layoutItems, restoreAnchor, visibleWindow, updateHeights
 import type { LayoutItem, VirtualLayout } from './virtual.ts';
 
 export type TranscriptElements = {transcript: HTMLElement; latest: HTMLElement; earlier?: HTMLElement};
-export type ViewHooks = {result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
+export type ToolSubjectCaption = {text: string; title?: string; open?: () => void};
+export type ViewHooks = {subject?: (value: string) => ToolSubjectCaption | undefined; result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
 const RAW_LIMIT = 65536;
 function selectionCopy(origin: HTMLElement): ContextItem[] {
   const selection = document.getSelection();
@@ -166,7 +167,7 @@ type MessageNode = {communication?: CommunicationCard; node: HTMLElement; header
 type EventPage = {node: HTMLElement; rows: HTMLElement; page: number; previous: HTMLButtonElement; next: HTMLButtonElement; cache: Map<string, {source: EntryView; node: HTMLElement}>};
 type SessionNode = {source?: SessionGroup; details: HTMLDetailsElement; events: EventPage; notices: EventPage};
 type EntryNode = {node: HTMLElement; messages: Map<string, MessageNode>; source?: EntryView; custom?: HTMLElement; session?: SessionNode; groupHeader?: HTMLElement};
-type ToolNode = {card: HTMLElement; node: HTMLDetailsElement; copy: HTMLButtonElement; title: HTMLElement; target: HTMLElement; glyph: HTMLElement; meta: HTMLElement; preview: HTMLElement; qualification: HTMLElement; expanded: HTMLElement; info: HTMLElement; source?: JoinedTool; inspectionSources?: Map<HTMLDetailsElement, JoinedTool>; presentation?: HTMLElement; argumentsDocument?: HTMLElement; argumentsSource?: JoinedTool; output?: HTMLElement; images?: HTMLElement; contentSource?: JoinedTool; viewport?: HTMLElement; pageViewports?: Set<HTMLElement>; resultDocument?: HTMLElement; documentSource?: JoinedTool; previewBudget?: PreviewBudget; outputNotice?: {node: HTMLElement; source: JoinedTool}; inspections?: {arguments: HTMLDetailsElement; output: HTMLDetailsElement; details: HTMLDetailsElement}};
+type ToolNode = {subject?: ToolSubjectCaption; card: HTMLElement; node: HTMLDetailsElement; copy: HTMLButtonElement; title: HTMLElement; target: HTMLElement; glyph: HTMLElement; meta: HTMLElement; preview: HTMLElement; qualification: HTMLElement; expanded: HTMLElement; info: HTMLElement; source?: JoinedTool; inspectionSources?: Map<HTMLDetailsElement, JoinedTool>; presentation?: HTMLElement; argumentsDocument?: HTMLElement; argumentsSource?: JoinedTool; output?: HTMLElement; images?: HTMLElement; contentSource?: JoinedTool; viewport?: HTMLElement; pageViewports?: Set<HTMLElement>; resultDocument?: HTMLElement; documentSource?: JoinedTool; previewBudget?: PreviewBudget; outputNotice?: {node: HTMLElement; source: JoinedTool}; inspections?: {arguments: HTMLDetailsElement; output: HTMLDetailsElement; details: HTMLDetailsElement}};
 export type TranscriptGeometry = {generation: number; followTail: boolean; anchor: {id: string; offsetPx: number} | null; scrollTop: number};
 export type FindStatus = {total: number; position: number; moved: boolean; end: 'none' | 'first' | 'last' | 'unavailable' | null};
 export type FindSession = {next: (query: string) => FindStatus; previous: (query: string) => FindStatus; reset: () => void; close: () => void};
@@ -1202,9 +1203,9 @@ export class Transcript {
   }
   private createTool(source: JoinedTool): ToolNode {
     const card = element('div', 'tool-shell'); const node = element('details', 'tool-card'); card.append(node); const summary = element('summary');
-    const tier = element('span', 'tool-tier'); const glyph = element('span', 'tool-status'); glyph.setAttribute('role', 'img');
+    const tier = element('span', 'tool-tier'); const glyph = element('span', 'tool-status');
     const title = element('span', 'tool-name'); const target = element('span', 'tool-target'); const meta = element('span', 'tool-secondary');
-    tier.append(title, target, glyph, meta); cardDisclosure(summary); summary.append(tier);
+    tier.append(title, glyph); cardDisclosure(summary); summary.append(tier, target, meta);
     const preview = element('div', 'tool-preview'); const qualification = element('p', 'tool-preview-qualification', 'Partial output'); qualification.hidden = true;
     const expanded = element('div', 'tool-expanded'); const info = element('p', 'secondary tool-output-info'); expanded.append(info); summary.append(preview, qualification); node.append(summary, expanded);
     node.dataset.disclosure = `tool:${source.callId}`; node.open = this.expanded.has(`tool:${source.callId}`);
@@ -1227,11 +1228,11 @@ export class Transcript {
   private updateTool(source: JoinedTool): HTMLElement {
     const tool = this.tools.get(source.callId) ?? this.createTool(source);
     const previous = tool.source; tool.source = source;
+    this.toolHeading(tool, source);
     if (previous === source) { if (tool.node.open && tool.documentSource !== source) this.expandTool(tool); return tool.card; }
     tool.card.dataset.status = source.status;
-    this.toolHeading(tool, source);
-    tool.glyph.replaceChildren(cardIcon(source.status === 'success' ? 'success' : source.status === 'error' ? 'error' : source.status === 'working' ? 'working' : 'unknown'), element('span', 'tool-status-label', this.toolStatusMark(source.status)));
-    tool.glyph.className = `tool-status ${source.status}`; tool.glyph.setAttribute('aria-label', source.status === 'missing' ? 'No result recorded' : source.status);
+    setText(tool.glyph, this.toolStatusMark(source.status));
+    tool.glyph.className = `tool-status ${source.status}`;
     this.toolMetadata(tool, source);
     const explanation = [metadata(source), outputExplanation(source), source.args?.truncated ? 'Some arguments are not available.' : ''].filter(Boolean).join('\n');
     tool.qualification.hidden = !this.partialToolOutput(source);
@@ -1275,8 +1276,21 @@ export class Transcript {
   }
   private toolHeading(tool: ToolNode, source: JoinedTool): void {
     setText(tool.title, source.name);
-    setText(tool.target, subject(source));
-    tool.target.hidden = !tool.target.textContent; tool.target.title = bounded(subject(source, RAW_LIMIT, Number.MAX_SAFE_INTEGER));
+    const args = record(source.args), value = args.sessionId ?? args.target;
+    const eligible = typeof value === 'string' && subject(source, RAW_LIMIT, Number.MAX_SAFE_INTEGER) === value;
+    const caption = eligible ? this.hooks.subject?.(value) : undefined; tool.subject = caption;
+    const text = caption?.text ?? subject(source);
+    let link = tool.target.querySelector<HTMLButtonElement>('.tool-subject-link');
+    if (caption?.open) {
+      if (!link) {
+        const generation = this.generation;
+        link = button('', () => {if (tool.source && this.currentToolSource(tool, tool.source, generation)) tool.subject?.open?.();}, 'tool-subject-link');
+        link.addEventListener('click', event => {event.preventDefault(); event.stopPropagation();});
+        tool.target.replaceChildren(link);
+      }
+      setText(link, text);
+    } else {if (link) tool.target.replaceChildren(); setText(tool.target, text);}
+    tool.target.hidden = !text; tool.target.title = caption?.title ?? bounded(subject(source, RAW_LIMIT, Number.MAX_SAFE_INTEGER));
   }
   private toolContent(tool: ToolNode): void {
     const source = tool.source; if (!source) return;

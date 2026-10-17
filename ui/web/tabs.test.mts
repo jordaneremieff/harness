@@ -1,16 +1,50 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type {ConversationTab, Workspace} from '../shared/api.ts';
-import {activeTab, agentIdentityTails, agentName, closeTab, duplicateIdentityTails, duplicateTabTails, FileBrowseState, layoutTarget, MAX_TABS, openTab, switchTab, tabForTarget, workspaceLayout} from './tabs.ts';
+import {activeTab, ConversationCaptions, conversationIdentityText, agentIdentityTails, agentName, closeTab, duplicateIdentityTails, duplicateTabTails, FileBrowseState, layoutTarget, MAX_TABS, openTab, switchTab, tabForTarget, workspaceLayout} from './tabs.ts';
 import {createPaneLayout, paneById, paneLeaves, splitPane} from './pane-layout.ts';
 const agent = (identity: string): ConversationTab => ({kind: 'agent', identity});
 const base = () => createPaneLayout([{kind: 'primary'}]);
 const workspace = (layout = base()): Workspace => ({id: 'fixture', revision: 0, primaryKey: 'primary-key', conversationLayout: layout});
 
+test('caption priority uses exact public names, first-message excerpts and honest absence', () => {
+  const identity = '00000000-0000-4000-8000-000000000001';
+  assert.equal(agentName(' Name ', 'handle', identity, ' Reported '), 'Reported');
+  assert.equal(agentName(identity, 'writer', identity, '  '), 'writer');
+  assert.equal(agentName(identity, undefined, identity, undefined, ' First request\nLater content'), 'First request');
+  assert.equal(agentName(undefined, undefined, identity, undefined, '😀'.repeat(100)), `${'😀'.repeat(79)}…`);
+  assert.equal(agentName(undefined, undefined, identity, undefined, identity), 'Unnamed conversation');
+  assert.equal(conversationIdentityText(`${identity}:7906`), true); assert.equal(conversationIdentityText(`prefix ${identity}`), false);
+});
+test('caption qualifiers preserve distinct root and child ownership across reorder and rename', () => {
+  const captions = new ConversationCaptions(), root = 'root', child = 'root:7906';
+  const rows = [{identity: root, name: 'Review'}, {identity: child, name: 'Review'}, {identity: 'excerpt', firstMessage: 'Review the result\nMore prose'}, {identity: 'unknown'}];
+  captions.update(rows); const first = {...captions.get(root)}, second = {...captions.get(child)};
+  assert.deepEqual(first, {name: 'Review', tail: '1'}); assert.deepEqual(second, {name: 'Review', tail: '2'});
+  assert.equal(captions.get('excerpt').source, 'first-message'); assert.equal(captions.get('unknown').name, 'Unnamed conversation');
+  captions.update([...rows].reverse()); assert.deepEqual(captions.get(root), first); assert.deepEqual(captions.get(child), second);
+  captions.update([{identity: child}, {identity: root, name: 'Root name'}]); assert.equal(captions.get(child).name, 'Unnamed conversation');
+  captions.update(rows.map(row => row.identity === root || row.identity === child ? {...row, name: 'Renamed'} : row));
+  assert.equal(captions.get(root).tail, first.tail); assert.equal(captions.get(child).tail, second.tail);
+  assert.deepEqual(rows.slice(0, 2).map(row => row.identity), [root, child]);
+});
+test('duplicate captions prefer distinct public handles and folder suffixes before ordinals', () => {
+  const captions = new ConversationCaptions();
+  captions.update([{identity:'a',name:'Review',handle:'reader'},{identity:'b',name:'Review',handle:'writer'},{identity:'c',name:'Build',cwd:'/projects/one'},{identity:'d',name:'Build',cwd:'/projects/two'}]);
+  assert.deepEqual(['a','b','c','d'].map(identity=>captions.get(identity).tail), ['reader','writer','one','two']);
+  captions.update([{identity:'a',name:'Same',cwd:'/1'},{identity:'b',name:'Same'}]);
+  assert.notEqual(captions.get('a').tail, captions.get('b').tail);
+  const retained = new ConversationCaptions(); retained.update([{identity:'a',name:'Same'},{identity:'b',name:'Same'}]);
+  retained.update([{identity:'a',name:'Renamed'},{identity:'c',name:'Renamed',cwd:'/1'}]);
+  assert.equal(retained.get('a').tail,'Label 1'); assert.equal(retained.get('c').tail,'1');
+  retained.update([{identity:'a',name:'Folder'},{identity:'c',name:'Folder',cwd:'/projects'},{identity:'d',name:'Folder',cwd:'/work/projects'}]);
+  assert.equal(retained.get('c').tail,'/projects'); assert.equal(retained.get('d').tail,'work/projects');
+});
+
 test('unnamed and duplicate agent names retain unique nonrouting suffixes across storage identities',()=> {
   const ids=['00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000002'];
   const rows=ids.map(identity=>({identity,name:identity})), tails=agentIdentityTails(rows);
-  assert.deepEqual(ids.map(id=>tails.get(id)),['0001','0002']);assert.equal(agentName(ids[0],'writer',ids[0]??''),'writer');assert.equal(agentName('  ',undefined,ids[0]??''),'Agent');
+  assert.deepEqual(ids.map(id=>tails.get(id)),['1','2']);assert.equal(agentName(ids[0],'writer',ids[0]??''),'writer');assert.equal(agentName('  ',undefined,ids[0]??''),'Unnamed conversation');
   const conversations=ids.map(identity=>({identity:`${identity}:2`,name:'Review'})), same=duplicateIdentityTails(conversations);
   assert.deepEqual(conversations.map(row=>same.get(row.identity)),['0001:2','0002:2']);
   const reversed=duplicateIdentityTails([...conversations].reverse());for(const row of conversations)assert.equal(same.get(row.identity),reversed.get(row.identity));
@@ -19,7 +53,7 @@ test('unnamed and duplicate agent names retain unique nonrouting suffixes across
 });
 test('generic blank or identity captions do not adopt agent singleton suffixes', () => {
   for (const name of ['', 'session-1234']) assert.equal(duplicateIdentityTails([{name, identity: 'session-1234'}]).size, 0);
-  assert.equal(agentIdentityTails([{name: '', identity: 'session-1234'}]).get('session-1234'), '1234');
+  assert.equal(agentIdentityTails([{name: '', identity: 'session-1234'}]).get('session-1234'), undefined);
 });
 test('Primary captions never derive an agent suffix from the internal tab key', () => {
   const tails = duplicateTabTails([{kind: 'primary'}, agent('store:conversation')], () => 'Review');

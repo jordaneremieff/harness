@@ -160,15 +160,15 @@ test('working roster rows replace the age with the current tool and keep the arg
   assert.equal(node.dataset.tool, 'false'); assert.equal(age.textContent, 'now'); assert.equal(age.disabled, false); assert.equal(node.offsetHeight, height);
   roster.set([row('one', {state: 'working'})]); f.flush(); assert.notEqual(age.textContent, 'bash');
 });
-test('roster has sibling native actions and preserves retained, idle and working glyphs', t => {
+test('roster has sibling native actions and plain retained, idle and working status', t => {
   const modifiedAt = Date.UTC(2026, 9, 8, 12);
   t.mock.method(Date, 'now', () => modifiedAt + 600000);
   const fixture = setup(); const selected: string[] = [];
   const roster = new Roster(value => selected.push(value.identity), () => {});
   roster.set([row('stored', {availability: 'stored', modifiedAt}), row('idle', {state: 'idle'}), row('working')], undefined, 'idle'); fixture.flush();
   const [stored, idle, working] = fixture.node.children; assert.ok(stored); assert.ok(idle); assert.ok(working);
-  assert.equal(stored.query('row-state').dataset.glyph, '○');
-  assert.equal(idle.query('row-state').dataset.glyph, '○'); assert.equal(working.query('row-state').dataset.glyph, '●');
+  assert.equal(stored.query('row-state').textContent, 'stored');
+  assert.equal(idle.query('row-state').textContent, 'idle'); assert.equal(working.query('row-state').textContent, 'working');
   assert.equal(stored.query('row-state').attributes['aria-hidden'], 'true');
   assert.equal(stored.query('row-state').dataset.tone, 'secondary');
   assert.equal(stored.query('row-name').textContent, 'Agent');
@@ -181,7 +181,7 @@ test('roster has sibling native actions and preserves retained, idle and working
   assert.equal(idle.attributes['aria-current'], undefined); assert.equal(idle.query('row-select').attributes['aria-current'], 'page');
   assert.equal(stored.query('row-select').attributes['aria-current'], 'false');
   assert.equal(select.children.length, 1);
-  assert.deepEqual(select.children[0]?.children.map(child => child.className), ['row-state', 'row-name', 'row-identity muted']);
+  assert.deepEqual(select.children[0]?.children.map(child => child.className), ['row-name', 'row-identity muted', 'row-state']);
   assert.equal(stored.dataset.live, 'false'); assert.equal(idle.dataset.live, 'true'); assert.equal(working.dataset.live, 'true');
   for (const removed of ['row-word', 'row-detail', 'row-model', 'row-activity']) assert.throws(() => stored.query(removed));
   assert.equal(idle.query('row-select').title, 'idle'); assert.equal(working.query('row-select').title, 'working');
@@ -194,13 +194,13 @@ test('roster has sibling native actions and preserves retained, idle and working
   age.click(); assert.equal(age.textContent, '10m'); assert.deepEqual(selected, []); assert.equal(age.dataset.absolute, 'false');
   select.click(); assert.deepEqual(selected, ['stored']);
 });
-test('liveness attributes update on the same keyed row without a visible state word', () => {
+test('liveness attributes and status update on the same keyed row', () => {
   const f = setup(); const roster = new Roster(() => {}, () => {});
   roster.set([row('one')]); f.flush(); const wrapper = required(f.node.children[0]); assert.equal(wrapper.dataset.live, 'true');
   for (const availability of ['stored', 'unavailable', 'incompatible'] as const) {
     roster.set([row('one', {availability})]); f.flush();
     assert.equal(f.node.children[0], wrapper); assert.equal(wrapper.dataset.live, 'false');
-    assert.equal(wrapper.query('row-state').dataset.glyph, '○'); assert.equal(wrapper.query('row-state').dataset.tone, 'secondary');
+    assert.equal(wrapper.query('row-state').textContent, availability); assert.equal(wrapper.query('row-state').dataset.tone, 'secondary');
     assert.match(wrapper.query('row-select').title, new RegExp(availability));
     assert.match(wrapper.query('row-select').attributes['aria-label'] ?? '', new RegExp(availability)); assert.throws(() => wrapper.query('row-word'));
   }
@@ -255,34 +255,35 @@ test('activity line never repeats the status and keeps distinct details', () => 
   assert.equal(activityLine({...live, latestReply: 'working'}, 'working'), 'working');
   assert.equal(activityLine({...live, availability: 'stored'} as AgentRow, 'stored'), 'stored');
 });
-test('duplicate loaded names keep names first with distinguishing identity text', () => {
+test('duplicate loaded names keep names first with distinct session qualifiers', () => {
   const fixture = setup(); const roster = new Roster(() => {}, () => {});
   roster.set([row('storage:one'), row('storage:two'), row('unique', {name: 'Only'})]); fixture.flush();
   const [one, two, unique] = fixture.node.children; assert.ok(one); assert.ok(two); assert.ok(unique);
-  assert.equal(one.query('row-heading').query('row-identity').textContent, 'one');
-  assert.equal(two.query('row-heading').query('row-identity').textContent, 'two');
+  assert.equal(one.query('row-heading').query('row-identity').textContent, '1');
+  assert.equal(two.query('row-heading').query('row-identity').textContent, '2');
   assert.equal(unique.query('row-identity').hidden, true);
   fixture.search.value = 'storage:one'; fixture.search.dispatch('input'); fixture.flush();
   assert.equal(one.query('row-identity').hidden, false);
   fixture.search.value = ''; roster.set([row('storage:one')]); fixture.flush();
-  assert.equal(one.query('row-identity').hidden, false); assert.equal(one.query('row-identity').textContent,'one');
+  assert.equal(one.query('row-identity').hidden, true); assert.equal(one.query('row-identity').textContent,'');
   roster.set([row('first:shared'), row('second:shared')]); fixture.flush();
-  assert.equal(fixture.node.children[0]?.query('row-identity').textContent, 'irst:shared');
-  assert.equal(fixture.node.children[1]?.query('row-identity').textContent, 'cond:shared');
+  assert.equal(fixture.node.children[0]?.query('row-identity').textContent, '3');
+  assert.equal(fixture.node.children[1]?.query('row-identity').textContent, '4');
   assert.equal(fixture.node.children[0]?.query('row-identity').title, 'Agent ID: first:shared');
   assert.equal(fixture.node.children[1]?.query('row-identity').title, 'Agent ID: second:shared');
 });
-test('shared-prefix duplicates use the shortest unique identity tail and retain full identity metadata', () => {
+test('shared-prefix duplicates use unique display ordinals and retain full identity metadata', () => {
   const f = setup(); const roster = new Roster(() => {}, () => {});
-  for (const {identities, labels} of [
-    {identities: ['00000000-0000-abcd', '00000000-0000-wxyz'], labels: ['abcd', 'wxyz']},
-    {identities: ['00000000-a1234', '00000000-b1234'], labels: ['a1234', 'b1234']},
-    {identities: ['00000000-a1234567', '00000000-b1234567'], labels: ['a1234567', 'b1234567']},
-    {identities: ['00000000-abcd', 'storage:abcd'], labels: ['-abcd', 'abcd']},
-    {identities: ['00000000-storage:conversation-one', '00000000-storage:conversation-two'], labels: ['conversation-one', 'conversation-two']},
+  let ordinal = 1;
+  for (const {identities} of [
+    {identities: ['00000000-0000-abcd', '00000000-0000-wxyz']},
+    {identities: ['00000000-a1234', '00000000-b1234']},
+    {identities: ['00000000-a1234567', '00000000-b1234567']},
+    {identities: ['00000000-abcd', 'storage:abcd']},
+    {identities: ['00000000-storage:conversation-one', '00000000-storage:conversation-two']},
   ]) {
     roster.set(identities.map(identity => row(identity))); f.flush();
-    assert.deepEqual(f.node.children.map(child => child.query('row-identity').textContent), labels);
+    assert.deepEqual(f.node.children.map(child => child.query('row-identity').textContent), [String(ordinal++), String(ordinal++)]);
     for (const [index, child] of f.node.children.entries()) {
       const identity = required(identities[index]);
       assert.equal(child.query('row-identity').title, `Agent ID: ${identity}`); assert.ok(child.title.includes(identity));
@@ -291,25 +292,25 @@ test('shared-prefix duplicates use the shortest unique identity tail and retain 
     }
   }
 });
-test('identity suffix uniqueness uses all loaded duplicates and extends beyond short collisions', () => {
+test('display ordinal uniqueness uses all loaded duplicates and survives search', () => {
   const f = setup(); const roster = new Roster(() => {}, () => {});
   const rows = [row('00000000-a1234'), row('00000000-b1234'), row('other-a1234', {name: 'Only'})];
   roster.set(rows); f.flush(); const first = required(f.node.children[0]); const select = first.query('row-select');
-  assert.equal(first.query('row-identity').textContent, 'a1234'); assert.equal(f.node.children[2]?.query('row-identity').hidden, true);
+  assert.equal(first.query('row-identity').textContent, '1'); assert.equal(f.node.children[2]?.query('row-identity').hidden, true);
   f.search.value = '00000000-a1234'; f.search.dispatch('input'); f.flush();
-  assert.equal(f.node.children[0], first); assert.equal(first.query('row-identity').textContent, 'a1234'); assert.equal(first.query('row-select'), select);
+  assert.equal(f.node.children[0], first); assert.equal(first.query('row-identity').textContent, '1'); assert.equal(first.query('row-select'), select);
   f.search.value = ''; const collision = ['first-12345678', 'second-12345678'];
   roster.set(collision.map(identity => row(identity))); f.flush();
-  assert.deepEqual(f.node.children.map(child => child.query('row-identity').textContent), ['t-12345678','d-12345678']);
+  assert.deepEqual(f.node.children.map(child => child.query('row-identity').textContent), ['3','4']);
 });
-test('canonical-ID names become distinct Agent captions without changing routing or filtering tails',()=> {
+test('identity-shaped names become honest captions without changing routing or search',()=> {
   const f=setup(),selected:string[]=[],ids=['00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000002'];
   const roster=new Roster(value=>selected.push(value.identity),()=>{},undefined,undefined,()=>({glyph:'?',label:'Unknown',tone:'warning'}));
   const rows=ids.map(identity=>row(identity,{name:identity}));roster.set(rows);f.flush();
-  assert.deepEqual(f.node.children.map(child=>child.query('row-name').textContent),['Agent','Agent']);assert.deepEqual(f.node.children.map(child=>child.query('row-identity').textContent),['0001','0002']);
+  assert.deepEqual(f.node.children.map(child=>child.query('row-name').textContent),['Unnamed conversation','Unnamed conversation']);assert.deepEqual(f.node.children.map(child=>child.query('row-identity').textContent),['1','2']);
   for(const child of f.node.children)assert.equal(child.query('row-state').dataset.tone,'warning');
-  f.search.value=ids[0]??'';f.search.dispatch('input');f.flush();assert.equal(f.node.children[0]?.query('row-identity').textContent,'0001');f.node.children[0]?.query('row-select').click();assert.deepEqual(selected,[ids[0]]);
-  f.search.value='';roster.set([...rows].reverse());f.flush();assert.equal(f.node.children.find(child=>child.dataset.identity===ids[0])?.query('row-identity').textContent,'0001');
+  f.search.value=ids[0]??'';f.search.dispatch('input');f.flush();assert.equal(f.node.children[0]?.query('row-identity').textContent,'1');f.node.children[0]?.query('row-select').click();assert.deepEqual(selected,[ids[0]]);
+  f.search.value='';roster.set([...rows].reverse());f.flush();assert.equal(f.node.children.find(child=>child.dataset.identity===ids[0])?.query('row-identity').textContent,'1');
 });
 test('empty roster discovery failure keeps the reason in the list and retry in the footer', () => {
   const fixture = setup(); const actions: Array<string | undefined> = [];
@@ -517,10 +518,10 @@ test('the visible scoped list uses a 20 pixel estimate and preserves selected vi
   assert.equal(f.node.query('roster-more'), more); assert.equal(f.document.activeElement, more);
   f.node.query('roster-older').click(); assert.equal(f.node.scrollTop, bottom);
 });
-test('status words stay in metadata while live glyphs remain visible', () => {
+test('plain status words retain their full metadata', () => {
   const f = setup(); const roster = new Roster(() => {}, () => {});
   roster.set(['done', 'failed', 'idle', 'unknown'].map(state => row(state, {state}))); f.flush();
-  assert.deepEqual(f.node.children.map(child => child.query('row-state').dataset.glyph), ['✓', '!', '○', '○']);
+  assert.deepEqual(f.node.children.map(child => child.query('row-state').textContent), ['done', 'failed', 'idle', 'unknown']);
   assert.deepEqual(f.node.children.map(child => child.query('row-select').title), ['done', 'failed', 'idle', 'unknown']);
   for (const child of f.node.children) { assert.equal(child.dataset.live, 'true'); assert.throws(() => child.query('row-word')); }
 });

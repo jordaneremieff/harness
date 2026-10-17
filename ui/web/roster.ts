@@ -1,11 +1,11 @@
 import type { AgentRow, CachedRoster } from '../shared/api.ts';
 import {cardAction, cardActionLabel} from './card-icons.ts';
-import { byId, button, details, element, setText, statusGlyph } from './dom.ts';
+import { byId, button, details, element, setText } from './dom.ts';
 import { captureAnchor, layoutItems, restoreAnchor, visibleWindow } from './virtual.ts';
 import type { LayoutItem, VirtualLayout } from './virtual.ts';
 import { absoluteTime, compactAge, isValidTimestamp, previewText, relativeTime, timestampDetails } from './format.ts';
 import { reconcileChildren } from './render.ts';
-import {agentIdentityTails, agentName} from './tabs.ts';
+import {ConversationCaptions, agentName} from './tabs.ts';
 import type {PresentationTone} from './conversation-presentation.ts';
 
 export type CachedPageSearch = {load: (cursor: string, signal: AbortSignal) => Promise<CachedRoster>; merge: (page: CachedRoster) => void};
@@ -13,7 +13,7 @@ const SEARCH_PAGE_LIMIT = 20;
 const ROW_HEIGHT = 20;
 const RECENT_AGE = 24 * 60 * 60 * 1000;
 type RowNode = {node: HTMLElement; select: HTMLButtonElement; state: HTMLElement; name: HTMLElement; identity: HTMLElement; ageButton: HTMLButtonElement; message: HTMLButtonElement; age: HTMLTimeElement; source: AgentRow; absolute: boolean};
-function rowName(row: AgentRow): string {return agentName(row.name, row.handle, row.identity);}
+function rowName(row: AgentRow): string {return agentName(row.name, row.handle, row.identity, undefined, row.firstMessage);}
 export type RosterStatus = {glyph: string; label: string; tone?: PresentationTone; name?: string; tail?: string; tool?: AgentRow['currentTool']};
 function modelText(row: AgentRow): string {
   if (!row.model) return '';
@@ -43,7 +43,8 @@ export class Roster {
   private gaps = new Map<string, HTMLElement>();
   private rows: AgentRow[] = [];
   private tails = new Map<string, string>();
-  private displayName(row: AgentRow): string {const status = this.resolvedStatus(row), name = status.name ?? rowName(row), tail = status.tail ?? this.tails.get(row.identity); return tail ? `${name} · ${tail}` : name;}
+  private captions = new ConversationCaptions();
+  private displayName(row: AgentRow): string {const status = this.resolvedStatus(row), name = status.name ?? rowName(row), tail = status.name !== undefined ? status.tail : this.tails.get(row.identity); return tail ? `${name} · ${tail}` : name;}
   private selected?: string;
   private message?: (identity: string) => void;
   private resumes = new Set<string>();
@@ -189,7 +190,7 @@ export class Roster {
   }
   private filtered(): AgentRow[] {
     const query = this.query();
-    return this.rows.filter(row => `${row.identity} ${row.name ?? ''} ${row.handle ?? ''} ${modelText(row)}`.toLocaleLowerCase().includes(query));
+    return this.rows.filter(row => `${this.displayName(row)} ${row.identity} ${row.name ?? ''} ${row.handle ?? ''} ${modelText(row)}`.toLocaleLowerCase().includes(query));
   }
   private pins(): Set<string> {
     const pins = new Set<string>(); if (this.selected) pins.add(this.selected);
@@ -223,7 +224,8 @@ export class Roster {
     this.layout = layoutItems(rows.map(row => row.identity), this.heights, ROW_HEIGHT);
     if (anchor) pins.add(anchor.id);
     const selected = rows.length > 100 ? visibleWindow(this.layout, this.node.scrollTop, this.node.clientHeight, {pins}).items : this.layout.items;
-    this.tails = agentIdentityTails(this.rows.map(row => ({name:rowName(row), identity:row.identity})));
+    this.captions.update(this.rows);
+    this.tails = new Map(this.rows.flatMap(row => {const tail = this.captions.get(row.identity).tail; return tail ? [[row.identity, tail]] : [];}));
     const children = this.children(selected, rows, this.tails);
     const controls = this.controls(olderCount, query);
     if (!rows.length && !olderCount) children.push(this.emptyState());
@@ -269,7 +271,7 @@ export class Roster {
     const select = button('', () => { const current = this.cache.get(row.identity)?.source; if (current) this.select(current); }, 'row-select');
     node.dataset.identity = row.identity;
     const heading = element('span', 'row-heading'); const state = element('span', 'row-state'); state.setAttribute('aria-hidden', 'true');
-    const name = element('span', 'row-name'); const identity = element('code', 'row-identity muted'); heading.append(state, name, identity);
+    const name = element('span', 'row-name'); const identity = element('code', 'row-identity muted'); heading.append(name, identity, state);
     const age = element('time', 'timestamp');
     const ageButton = button('', () => { cached.absolute = !cached.absolute; this.updateAge(cached, true); }, 'row-age'); ageButton.append(age);
     const message = cardAction('message', 'Message', () => this.message?.(row.identity), 'row-message');
@@ -279,8 +281,8 @@ export class Roster {
   }
   private row(row: AgentRow, identity: string): RowNode {
     const cached = this.cache.get(row.identity) ?? this.createRow(row);
-    const state = this.resolvedStatus(row); statusGlyph(cached.state, state.glyph); cached.state.title = state.label; cached.state.dataset.tone = state.tone ?? 'secondary'; setText(cached.name, state.name ?? rowName(row));
-    identity = state.tail ?? identity; setText(cached.identity, identity); cached.identity.hidden = !identity; cached.identity.title = `Agent ID: ${row.identity}`;
+    const state = this.resolvedStatus(row); setText(cached.state, ['Ready', 'Connected', 'Not connected'].includes(state.label) ? '' : state.label); cached.state.hidden = !cached.state.textContent; cached.state.title = state.label; cached.state.dataset.tone = state.tone ?? 'secondary'; setText(cached.name, state.name ?? rowName(row));
+    identity = state.name !== undefined ? state.tail ?? '' : identity; setText(cached.identity, identity); cached.identity.hidden = !identity; cached.identity.title = `Agent ID: ${row.identity}`;
     cached.identity.setAttribute('aria-label', cached.identity.title);
     cached.node.dataset.live = String(row.availability === 'live');
     cached.node.dataset.tool = String(!!state.tool);
@@ -302,7 +304,7 @@ export class Roster {
       cached.ageButton.hidden = false; cached.ageButton.disabled = true; cached.ageButton.tabIndex = -1;
       setText(cached.age, tool.name); cached.age.dateTime = '';
       const description = `${tool.name} · ${tool.argument}`;
-      cached.ageButton.title = description; cached.ageButton.setAttribute('aria-label', `Current tool for ${rowName(row)} · ${tool.name}`);
+      cached.ageButton.title = description; cached.ageButton.setAttribute('aria-label', `Current tool for ${this.displayName(row)} · ${tool.name}`);
       cached.ageButton.setAttribute('aria-description', description); return;
     }
     const label = cached.absolute ? absoluteTime(row.modifiedAt) : relativeTime(row.modifiedAt, now);
@@ -312,7 +314,7 @@ export class Roster {
     setText(cached.age, valid ? cached.absolute ? label : compactAge(row.modifiedAt, now) : '');
     const details = valid ? timestampDetails(row.modifiedAt) : {exact: '', display: ''}; cached.age.dateTime = details.exact;
     cached.ageButton.title = valid ? `${details.exact} · ${details.display}` : '';
-    cached.ageButton.setAttribute('aria-label', valid ? `Timestamp for ${rowName(row)} · ${label}` : '');
+    cached.ageButton.setAttribute('aria-label', valid ? `Timestamp for ${this.displayName(row)} · ${label}` : '');
     cached.ageButton.setAttribute('aria-description', details.display);
   }
 }

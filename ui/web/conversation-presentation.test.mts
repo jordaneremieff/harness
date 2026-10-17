@@ -21,8 +21,8 @@ test('presentation tones come from source states without changing readiness',()=
 });
 test('agent display names reject identity fallbacks and retain shared suffixes in accessible names',()=> {
   const identity='00000000-0000-4000-8000-000000000099', target={kind:'agent' as const,identity};
-  const unnamed=conversationPresentation({target,row:{...row,identity,name:identity,handle:undefined},connected:true});assert.equal(unnamed.name,'Agent');assert.equal(presentationName(unnamed),'Agent · 0099');
-  const named=conversationPresentation({target,row:{...row,identity,name:'Review',handle:'reviewer'},identityTail:'0099:2',frame:{...frame(false),status:{busy:false,name:' '}},connected:true});assert.equal(named.name,'Review');assert.equal(presentationName(named),'Review · 0099:2');assert.equal(target.identity,identity);
+  const unnamed=conversationPresentation({target,row:{...row,identity,name:identity,handle:undefined},connected:true});assert.equal(unnamed.name,'Unnamed conversation');assert.equal(presentationName(unnamed),'Unnamed conversation');
+  const named=conversationPresentation({target,row:{...row,identity,name:'Review',handle:'reviewer'},caption:{name:'Review',tail:'2'},frame:{...frame(false),status:{busy:false,name:' '}},connected:true});assert.equal(named.name,'Review');assert.equal(presentationName(named),'Review · 2');assert.equal(target.identity,identity);
 });
 test('retry, response outcome and provider blocks do not change input readiness or connection', () => {
   const current = frame(true); current.status.retry = {attempt: 2, at: 1700000060000, error: 'unclassified provider detail'};

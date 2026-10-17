@@ -10,7 +10,7 @@ import { ApiError, operation, request, reserve } from './transport.ts';
 import type { Composer } from './composer.ts';
 import { rankCommands } from './command-menu-state.ts';
 import { DECORATION_BYTES, DECORATION_LINES, DECORATION_SPANS } from './composer-syntax.ts';
-import { agentIdentityTails, agentName as agentDisplayName } from './tabs.ts';
+import { ConversationCaptions, type ConversationCaption } from './tabs.ts';
 import { compactAge } from './format.ts';
 import { navigateOptions } from './list-navigation.ts';
 import { responseOutcome } from './conversation-presentation.ts';
@@ -54,7 +54,6 @@ function paletteEmpty(query: string, incomplete: boolean): HTMLElement {
   const message = element('p', 'secondary', `No results${query.trim() ? ` for “${query.trim()}”` : ''}.${incomplete ? ' The list is incomplete.' : ''}`);
   message.setAttribute('role', 'status'); return message;
 }
-function agentName(row: AgentRow): string { return agentDisplayName(row.name, row.handle, row.identity); }
 function revealPaletteRow(container: HTMLElement, row: HTMLElement): void {
   if (container.clientHeight <= 0 || container.scrollHeight <= container.clientHeight) return;
   const top = container.getBoundingClientRect().top + container.clientTop;
@@ -84,8 +83,9 @@ function findStatusText(result: FindStatus | undefined, query: string): string {
 }
 export type SelectionChange = Partial<Omit<Workspace, 'selectedTarget'>> & {selectedTarget?: Target | null};
 export type ActionContext = {snapshot: () => Snapshot | undefined; primary: () => PrimaryView | undefined; composer: Composer; commandsChanged: () => void; modelChanged?: () => void; modal: Modal;
-  selection: (change: SelectionChange) => Promise<void>; reload: () => Promise<void>; result: (result: OperationView) => void; rosterRefresh: () => void; hasTranscript: () => boolean; find: () => FindSession | undefined; recovery: () => void; primaryEntries: () => EntryView[]; agents: () => AgentRow[]; selectedAgent: () => Pick<AgentRow, 'identity' | 'capabilities'> | undefined; selectAgent: (row: AgentRow) => void; selectPrimary: () => void; notices: () => void; sidebar: (visible: boolean) => void; view: (tools: boolean, expand: boolean) => void; copyAgent: () => void; inspectAgent: () => void; resultLookup?: () => void; agentStatus: (row: AgentRow) => string; conversationFacts?: (identity: string) => readonly ReportedFact[]; tabs?: {close: () => void; switch: (direction: number) => void; layout: () => ConversationLayout}};
+  selection: (change: SelectionChange) => Promise<void>; reload: () => Promise<void>; result: (result: OperationView) => void; rosterRefresh: () => void; hasTranscript: () => boolean; find: () => FindSession | undefined; recovery: () => void; primaryEntries: () => EntryView[]; agents: () => AgentRow[]; selectedAgent: () => Pick<AgentRow, 'identity' | 'capabilities'> | undefined; selectAgent: (row: AgentRow) => void; selectPrimary: () => void; notices: () => void; sidebar: (visible: boolean) => void; view: (tools: boolean, expand: boolean) => void; copyAgent: () => void; inspectAgent: () => void; resultLookup?: () => void; agentCaption?: (identity: string) => ConversationCaption; agentStatus: (row: AgentRow) => string; conversationFacts?: (identity: string) => readonly ReportedFact[]; tabs?: {close: () => void; switch: (direction: number) => void; layout: () => ConversationLayout}};
 export class Actions {
+  private captions = new ConversationCaptions();
   private resources = new Map<string, Promise<ResourcePage>>();
   private commands: CommandView[] = [];
   private resourceTarget = '';
@@ -273,7 +273,13 @@ export class Actions {
     const row = this.ctx.agents().find(item => item.identity === captured);
     const body = this.ctx.modal.open('Conversation details');
     body.append(element('p', 'identity', captured), cardAction('copy', 'Copy agent ID', () => { void copy(captured, body); }));
-    if (row) body.append(details('Reported agent metadata', rawText(row)));
+    const child = /:([1-9]\d*)$/.exec(captured)?.[1];
+    body.append(element('p', 'secondary', child ? `Conversation ${child}` : 'Main conversation'));
+    if (row) {
+      this.captions.update(this.ctx.agents());
+      if ((this.ctx.agentCaption?.(captured) ?? this.captions.get(captured)).source === 'first-message') body.append(element('p', 'secondary', 'The conversation title is an excerpt from its first message.'));
+      body.append(details('Reported agent metadata', rawText(row)));
+    }
     const facts = element('div', 'conversation-facts'); renderFacts(facts, this.ctx.conversationFacts?.(captured) ?? []); body.append(facts);
   }
   modelPicker(): void {
@@ -372,8 +378,8 @@ export class Actions {
   }
   private agentEntries(chooseTarget?: (target: Target) => void): PaletteEntry[] {
     const now = Date.now(); const agents = this.ctx.agents().filter(row => !chooseTarget || !!row.identity);
-    const tails = agentIdentityTails(agents.map(row => ({name: agentName(row), identity: row.identity})));
-    return agents.slice().sort((a, b) => agentOrder(a) - agentOrder(b)).map(row => ({name: agentName(row), tail: tails.get(row.identity), description: [this.ctx.agentStatus(row), compactAge(row.modifiedAt, now)].filter(Boolean).join(' · '), search: [row.identity, ...row.handle ? [row.handle] : []], title: row.identity, source: 'agent', enabled: true, run: () => chooseTarget ? chooseTarget({kind: 'agent', identity: row.identity}) : this.ctx.selectAgent(row)}));
+    this.captions.update(agents);
+    return agents.slice().sort((a, b) => agentOrder(a) - agentOrder(b)).map(row => ({...(this.ctx.agentCaption?.(row.identity) ?? this.captions.get(row.identity)), description: [this.ctx.agentStatus(row), compactAge(row.modifiedAt, now)].filter(Boolean).join(' · '), search: [row.identity, ...row.handle ? [row.handle] : []], title: row.identity, source: 'agent', enabled: true, run: () => chooseTarget ? chooseTarget({kind: 'agent', identity: row.identity}) : this.ctx.selectAgent(row)}));
   }
   sessionMenuEntries(agent = false): PaletteEntry[] {
     const names = new Set(agent ? ['Conversation details', 'Copy agent ID', 'View activity…', 'Result lookup…', 'Saved drafts and messages', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Appearance', 'Help'] : ['New session', 'Sessions', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Saved drafts and messages', 'Appearance', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Model', 'Thinking', 'Review message']);
@@ -393,7 +399,7 @@ export class Actions {
     const entries = chooseTarget ? this.agentEntries(chooseTarget) : this.paletteEntries().filter(item => item.source === 'agent'); const primary = this.ctx.primary();
     if (primary && (!chooseTarget || primary.key)) {
       const target = this.target(primary);
-      entries.unshift({name: primary.extension?.title ?? primary.sessionName ?? primary.sessionId ?? 'Primary', description: 'Primary', source: 'primary', enabled: true, title: `primary:${primary.key}:${primary.epoch}`, search: ['primary', primary.key, primary.cwd, ...(primary.sessionId ? [primary.sessionId] : [])], run: () => chooseTarget ? chooseTarget(target) : this.ctx.selectPrimary()});
+      entries.unshift({name: primary.extension?.title ?? primary.sessionName ?? 'Primary', description: 'Primary', source: 'primary', enabled: true, title: `primary:${primary.key}:${primary.epoch}`, search: ['primary', primary.key, primary.cwd, ...(primary.sessionId ? [primary.sessionId] : [])], run: () => chooseTarget ? chooseTarget(target) : this.ctx.selectPrimary()});
     }
     return entries;
   }

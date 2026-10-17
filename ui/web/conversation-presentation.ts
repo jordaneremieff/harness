@@ -1,6 +1,6 @@
 import type { AgentRow, EntryView, EventData, MessageView, PrimaryView, ProjectedFrame, ResponseOutcome, Target, TargetPreparation } from '../shared/api.ts';
 import {absoluteTime} from './format.ts';
-import {agentIdentityTails, agentName} from './tabs.ts';
+import {agentName, type ConversationCaption} from './tabs.ts';
 export type PresentationTone = 'info' | 'success' | 'warning' | 'error' | 'secondary';
 
 export type AgentViewState = {hasEntries: boolean; connected: boolean; loading: boolean; ready: boolean; complete?: boolean; availability?: AgentRow['availability']; input?: boolean; checked?: boolean; reason?: string; error?: {code?: string; message: string}; startAttempt?: {pending: boolean; reason?: string}; connectionError?: string};
@@ -34,7 +34,7 @@ export type ConversationPresentation = {
   model?: {provider: string; modelId: string}; thinking?: string; retainedModel: boolean; retainedThinking: boolean;
   tool?: AgentRow['currentTool']; detail?: string; responseOutcome?: ResponseOutcome;
 };
-export type PresentationSource = {target?: Target; primary?: PrimaryView; row?: AgentRow; identityTail?: string;
+export type PresentationSource = {target?: Target; primary?: PrimaryView; row?: AgentRow; identityTail?: string; caption?: ConversationCaption;
   availability?: EventData['agent.availability']; negotiated?: Pick<TargetPreparation, 'availability' | 'capabilities'> & {identity: string}; frame?: ProjectedFrame; entries?: readonly EntryView[]; tool?: AgentRow['currentTool']; connected: boolean};
 /** The newest conversational record owns its response outcome; tool errors do not. */
 export function responseOutcome(entries: readonly EntryView[] = []): ResponseOutcome | undefined {
@@ -126,8 +126,8 @@ function agentPresentation(source: PresentationSource, identity: string): Conver
   const live = checked && state === 'live';
   const busy = live && frame?.status.busy === true, retained = !live;
   const settings = agentSettings(row, frame);
-  const name = agentName(row?.name, row?.handle, identity, frame?.status.name);
-  const identityTail = source.identityTail ?? agentIdentityTails([{name, identity}]).get(identity);
+  const name = source.caption?.name ?? agentName(row?.name, row?.handle, identity, frame?.status.name, row?.firstMessage);
+  const identityTail = source.caption?.tail ?? source.identityTail;
   const outcome = responseOutcome(frame?.entries);
   const tone = agentTone(state,source.connected,live,busy,input,frame,outcome);
   return {...emptyPresentation(source.connected), ...settings, name, identityTail, tone, cwd: row?.cwd,

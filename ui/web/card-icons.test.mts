@@ -34,10 +34,12 @@ test('action feedback changes accessible text without replacing its icon or cont
   assert.equal(label?.textContent, 'Copied'); assert.equal(node.attributes['aria-label'], 'Copied retained result');
   assert.equal(node.title, 'Copied retained result');
 }));
-test('a disclosure keeps its label and uses a mark distinct from tree navigation', () => withDocument(() => {
+test('a disclosure keeps its label and uses a chevron rather than the add mark', () => withDocument(() => {
   const summary = new Node(); summary.textContent = 'Arguments'; cardDisclosure(summary as unknown as HTMLElement);
   assert.equal(summary.textContent, 'Arguments'); assert.equal(summary.children.length, 1);
   assert.equal(summary.children[0]?.attributes.class, 'card-icon card-icon-disclosure');
+  assert.equal(summary.children[0]?.children[0]?.attributes.d, 'M6 3l5 5-5 5');
+  assert.notEqual(summary.children[0]?.children[0]?.attributes.d, (cardIcon('plus') as unknown as Node).children[0]?.attributes.d);
   const icon = summary.children[0]; cardDisclosure(summary as unknown as HTMLElement);
   assert.equal(summary.children.length, 1); assert.equal(summary.children[0], icon);
 }));
