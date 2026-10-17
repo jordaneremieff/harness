@@ -1,6 +1,6 @@
 import { LIMITS, draftHasContent, draftImageFingerprint, sameDraftTuple } from '../shared/api.ts';
 import { ComposerAttachments, attachmentSummary, includedText, missingImageIndexes, previewAttachment } from './composer-attachments.ts';
-import type { AttachmentItem } from './composer-attachments.ts';
+import type { AttachmentItem, AttachmentReloadState } from './composer-attachments.ts';
 import { insertNativeText } from './native-insertion.ts';
 import { ComposerOverlay } from './composer-overlay.ts';
 import type { DraftImage, DraftView, OperationView, RecoveryInput, Target, TargetIndex, TargetState, UnconfirmedInput } from '../shared/api.ts';
@@ -14,11 +14,11 @@ import { clampSelection, draftPresentation, editorSelectionKey, readEditorSelect
 import type { EditorSelection } from './draft-presentation.ts';
 export type { CommandOption } from './command-menu-state.ts';
 import { inputOperation, operationLabel } from './operation-label.ts';
-import { acknowledgeDraft, beginDraftSave, captureSubmission, createDraft, draftSaved, editDraft, receiveDraft, rejectDraftSave, resolveDraftConflict, settleSubmission } from './draft-state.ts';
+import { acknowledgeDraft, beginDraftSave, captureSubmission, createDraft, draftSaved, editDraft, receiveDraft, rejectDraftSave, resolveDraftConflict, restoreLocalDraft, settleSubmission } from './draft-state.ts';
 import type { DraftSave, DraftState, Submission } from './draft-state.ts';
 import { ApiError, draftImageUrl, errorMessage, operation, request, reserve } from './transport.ts';
 
-export type ComposerHooks = {captured?: (submission:Submission)=>void; failed?: (operationId:string,uncertain:boolean)=>void; prepareInput?: () => boolean; imageState?: (workspace: string, state: TargetState) => void; imageInput?: (target: Target) => {allowed: boolean; reason?: string}; recovery?: () => void; layoutHeight?: () => number | undefined; timing?: (start: number, end: number) => void; submitted: (operation: OperationView) => void; unknownCommand: (text: string, sendLiteral: () => void) => boolean; enterSends?: () => boolean; commands?: () => CommandInventory; moreCommands?: (target: Target) => Promise<void>; retained?: (workspace: string, target: Target, retained: boolean) => void};
+export type ComposerHooks = {changed?:()=>void; captured?: (submission:Submission)=>void; failed?: (operationId:string,uncertain:boolean)=>void; prepareInput?: () => boolean; imageState?: (workspace: string, state: TargetState) => void; imageInput?: (target: Target) => {allowed: boolean; reason?: string}; recovery?: () => void; layoutHeight?: () => number | undefined; timing?: (start: number, end: number) => void; submitted: (operation: OperationView) => void; unknownCommand: (text: string, sendLiteral: () => void) => boolean; enterSends?: () => boolean; commands?: () => CommandInventory; moreCommands?: (target: Target) => Promise<void>; retained?: (workspace: string, target: Target, retained: boolean) => void};
 export type ComposerElements = {root: HTMLFormElement; editor: HTMLTextAreaElement; recipient: HTMLElement; receipt: HTMLElement;
   receiptDetails: HTMLElement; modes: HTMLElement; send: HTMLButtonElement; save: HTMLElement; commandMenu?: HTMLElement; overlay?: HTMLElement; attachments?: HTMLElement; attach?: HTMLButtonElement; picker?: HTMLInputElement};
 /** Creates one editor; the detached save/receipt-detail nodes belong in the shared footer. */
@@ -53,6 +53,15 @@ export function createComposerElements(instanceId: string): ComposerElements {
 }
 type Edit = {text: string; mode: string; images: DraftImage[]; edit: number};
 type InsertionCapture = {buffer: Buffer; edit: number; text: string; start: number; end: number; direction: 'forward' | 'backward' | 'none'};
+export type ComposerReloadState = {workspace:string;targetKey:string;target:Target;data:Omit<DraftState,'inFlight'|'submissions'>;review:boolean;selection?:EditorSelection;localCopy?:string;insertionCopy?:string;saveError?:string;attachments?:AttachmentReloadState;inclusions:Array<{id:number;edit:number;text:string;start:number;end:number;direction:'forward'|'backward'|'none'}>};
+export function validComposerReloadState(value:unknown):value is ComposerReloadState {
+  if(!value||typeof value!=='object')return false;
+  const state=value as ComposerReloadState;
+  if(typeof state.workspace!=='string'||typeof state.targetKey!=='string'||!state.target||!['agent','primary'].includes(state.target.kind)||typeof state.review!=='boolean'||!Array.isArray(state.inclusions))return false;
+  const data=state.data;
+  if(!data||typeof data.text!=='string'||!['prompt','steer','followUp'].includes(data.mode)||!Number.isSafeInteger(data.edit)||!Number.isSafeInteger(data.savedEdit))return false;
+  try{return !!data.server&&data.server.persisted===true&&Number.isSafeInteger(data.server.revision)&&Array.isArray(data.images)&&!!createDraft({...data.server,images:data.images});}catch{return false;}
+}
 type SendConsent = {buffer: Buffer; edit: number; revision: number; tuple: Edit; operations: Set<string>; used?: true; differentMessage?: true};
 type Pending = {submission: Submission; original?: UnconfirmedInput; uncertain: boolean; cleanup?: DraftView; settling?: Promise<void>};
 type Buffer = {selection?: EditorSelection; workspace: string; state: TargetState; data: DraftState; saving?: Promise<DraftView>; submitting: boolean;
@@ -195,9 +204,26 @@ export class Composer {
   get serverDraftRevision(): number | undefined { return this.current?.data.server.revision; }
   get reloadHold(): 'ime' | 'conflict' | 'uncertain' | undefined {
     if (this.composing) return 'ime';
-    if ([...this.buffers.values()].some(buffer => buffer.review || buffer.saveError || buffer.attachments?.pending || buffer.insertionCopy !== undefined)) return 'conflict';
     if ([...this.buffers.values()].some(buffer => buffer.submitting || buffer.pending.size > 0 || buffer.state.unconfirmed.some(item => !buffer.resolved.has(item.operationId)))) return 'uncertain';
     return undefined;
+  }
+  captureReload(): ComposerReloadState[] {
+    if(this.reloadHold)throw new Error('An active input operation still owns this draft.');
+    this.rememberSelection();
+    return [...this.buffers.values()].map(buffer=>{
+      const attachments=buffer.attachments?.captureReload();
+      const {inFlight:_save,submissions:_submissions,...data}=buffer.data;
+      return {workspace:buffer.workspace,targetKey:buffer.state.targetKey,target:structuredClone(buffer.state.target),data:structuredClone(data),review:buffer.review,selection:buffer.selection&&{...buffer.selection},localCopy:buffer.localCopy,insertionCopy:buffer.insertionCopy,saveError:buffer.saveError,attachments,inclusions:[...(buffer.inclusions??[])].map(([id,{buffer:_owner,...value}])=>({id,...value}))};
+    });
+  }
+  restoreReload(value: ComposerReloadState, saved: TargetState): void {
+    if(!validComposerReloadState(value)||value.targetKey!==saved.targetKey||!sameTarget(value.target,saved.target))throw new Error('The preserved draft does not match this recipient.');
+    this.attach(value.workspace,saved);const buffer=this.current;if(!buffer)throw new Error('The preserved draft recipient is unavailable.');
+    buffer.data=restoreLocalDraft(value.data,saved.draft,value.review);
+    buffer.review=!!buffer.data.conflict||value.review&&!draftSaved(buffer.data);buffer.localCopy=value.localCopy;buffer.insertionCopy=value.insertionCopy;buffer.saveError=draftSaved(buffer.data)?undefined:value.saveError;buffer.selection=value.selection?.text===buffer.data.text?clampSelection(value.selection,buffer.data.text,buffer.data.server.revision,buffer.data.edit,buffer.data.images):undefined;
+    buffer.inclusions=new Map(value.inclusions.map(({id,...capture})=>[id,{...capture,buffer}]));
+    if(value.attachments)this.fileOwner(buffer).restoreReload(value.attachments);
+    this.editor.value=buffer.data.text;this.restoreSelection(buffer);this.paint(buffer);this.receipt(buffer);
   }
   /** Flushes retained drafts only; captured delivery operations are never replayed. */
   async drain(signal: AbortSignal): Promise<void> {
@@ -247,6 +273,11 @@ export class Composer {
   setText(text: string): void {
     this.overlay?.invalidate(); this.editor.value = text; this.change(text); this.editor.setSelectionRange(text.length, text.length); this.rememberSelection();
   }
+  restoreRange(value:Pick<EditorSelection,'start'|'end'|'direction'>):void {
+    const buffer=this.current;if(!buffer)return;
+    buffer.selection={...value,text:buffer.data.text,revision:buffer.data.server.revision,edit:buffer.data.edit,imageFingerprint:draftImageFingerprint(buffer.data.images),scrollTop:buffer.selection?.scrollTop??this.editor.scrollTop,scrollLeft:buffer.selection?.scrollLeft??this.editor.scrollLeft};
+    this.restoreSelection(buffer);this.persistSelection(buffer);
+  }
   focus(): void {
     if (this.destroyed) return;
     if (this.editor.disabled) { this.focusRequest = {origin: document.activeElement}; return; }
@@ -269,6 +300,7 @@ export class Composer {
     const previous = buffer.data;
     buffer.data = editDraft(buffer.data, text, mode);
     if (buffer.data === previous) {this.rememberSelection(); return;}
+    this.hooks.changed?.();
     if (text === previous.text) this.rebaseSelection(buffer, previous);
     this.textLimit = new TextEncoder().encode(text).length > LIMITS.textBytes;
     if (this.textLimit) buffer.saveError = 'Text exceeds the saved text limit. The saved draft is unchanged. Shorten the text to save and send.';
@@ -311,6 +343,7 @@ export class Composer {
   }
   addFiles(files: readonly File[], captured = this.insertionCapture()): void {
     if (!captured || this.destroyed) return;
+    this.rememberSelection();
     const buffer = captured.buffer, attachments = this.fileOwner(buffer), before = new Set(attachments.items);
     try {attachments.add(files);} catch (error) {this.failureNotice(buffer, 'Files were not added.', error);}
     buffer.inclusions ??= new Map();
@@ -333,6 +366,7 @@ export class Composer {
       },
       changed: () => {
         if (this.destroyed) return;
+        this.hooks.changed?.();
         const pending = new Set(buffer.attachments?.items.map(item => item.id));
         for (const id of buffer.inclusions?.keys() ?? []) if (!pending.has(id)) buffer.inclusions?.delete(id);
         this.paint(buffer); this.receipt(buffer); this.flush(buffer);

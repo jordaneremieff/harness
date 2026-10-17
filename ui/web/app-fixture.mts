@@ -6,6 +6,7 @@ import type { Composer } from './composer.ts';
 import { createPaneLayout, validPaneLayout } from './pane-layout.ts';
 import { tabKey } from './tabs.ts';
 import { targetIdentity } from './state.ts';
+import {Factory as ReloadStorageFactory} from './reload-storage.fixture.mts';
 
 export type Fixture = {workspace: Workspace; primaries: PrimaryView[]; roster: AgentRow[]; targets?: TargetState[]; confirmed?: boolean;
   selectedPage?: Snapshot['selectedPage']; observations?: Snapshot['observations']; history?: EntryView[]; pendingOperations?: OperationView[]};
@@ -365,7 +366,7 @@ class HostResizeObserver {
 function installHost(): void {
   Object.assign(globalThis, {
     document: hostDocument, HTMLElement: HostNode, window: view, location: {href: 'http://ui.test/app?workspace=w', hash: ''},
-    history: {replaceState() {}}, sessionStorage: hostSessionStorage, matchMedia: (query: string) => ({matches: query === '(min-width: 900px)' && host.viewport >= 900 || query === '(max-width: 599px)' && host.viewport < 600, addEventListener() {}, removeEventListener() {}}),
+    history: {replaceState() {}}, sessionStorage: hostSessionStorage, indexedDB:new ReloadStorageFactory(), matchMedia: (query: string) => ({matches: query === '(min-width: 900px)' && host.viewport >= 900 || query === '(max-width: 599px)' && host.viewport < 600, addEventListener() {}, removeEventListener() {}}),
     getComputedStyle: view.getComputedStyle, requestAnimationFrame: hostRequestAnimationFrame, cancelAnimationFrame: hostCancelAnimationFrame,
     ResizeObserver: application ? HostResizeObserver : class {observe(): void {} unobserve(): void {} disconnect(): void {}},
     MutationObserver: class {observe(): void {} disconnect(): void {}},

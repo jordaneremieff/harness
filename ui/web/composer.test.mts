@@ -119,6 +119,29 @@ function fixture(prefix: 'primary' | 'agent' = 'primary', commands?: () => Comma
 }
 
 const image = (name = 'one.png', digit = 'a'): DraftImage => ({name, digest: digit.repeat(64), mimeType: 'image/png', bytes: 67, width: 1, height: 1});
+test('reload preserves unsaved draft, caret and failed File bytes without retry or input',async()=>{
+  const f=fixture('agent',undefined,false);const saved=f.connect(state('preserved',draft(0,'','followUp'),true));
+  f.composer.setText('Exact unsaved draft');f.composer.editor.setSelectionRange(2,7,'backward');
+  f.composer.addFiles([new File(['invalid image bytes'],'invalid.png',{type:'image/png',lastModified:123})]);await turn();
+  assert.equal(f.composer.reloadHold,undefined);
+  const snapshot=f.composer.captureReload()[0];assert.ok(snapshot);assert.equal(snapshot.attachments?.items[0]?.state,'failed');
+  const g=fixture('agent',undefined,false);g.connect(saved);g.composer.restoreReload(structuredClone(snapshot),saved);
+  const restored=g.composer.captureReload()[0];assert.ok(restored);
+  assert.equal(g.composer.editor.value,'Exact unsaved draft');
+  assert.deepEqual([g.composer.editor.selectionStart,g.composer.editor.selectionEnd,g.composer.editor.selectionDirection],[2,7,'backward']);
+  assert.equal(await restored.attachments?.items[0]?.file?.text(),'invalid image bytes');
+  assert.equal(restored.attachments?.items[0]?.error,snapshot.attachments?.items[0]?.error);
+  assert.equal(g.calls.some(call=>call.path.endsWith('/inputs')||call.path.endsWith('/images')),false);
+  f.composer.destroy();g.composer.destroy();
+});
+test('reload retains local text beside a newer server draft without overwriting either',()=>{
+  const f=fixture('agent',undefined,false);f.connect(state('preserved',draft(0,'','followUp'),true));f.composer.setText('Local draft');
+  const snapshot=f.composer.captureReload()[0];assert.ok(snapshot);
+  const g=fixture('agent',undefined,false),saved=state('preserved',draft(1,'Newer remote draft','followUp'),true);g.connect(saved);g.composer.restoreReload(snapshot,saved);
+  assert.equal(g.composer.editor.value,'Local draft');assert.equal(g.composer.state?.draft.text,'Newer remote draft');
+  assert.equal(g.calls.some(call=>call.method==='PUT'||call.path.endsWith('/inputs')),false);
+  f.composer.destroy();g.composer.destroy();
+});
 test('native Send does not await draft save or observation and a late save preserves later edits', async () => {
   for (const [newer,late] of [[false,'ack'],[true,'ack'],[false,'fenced'],[true,'fenced']] as const) {
   const f=fixture('agent',undefined,false);const saved=f.connect(state('native-send',draft(0,'','followUp'),true));

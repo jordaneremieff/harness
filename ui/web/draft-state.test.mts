@@ -2,10 +2,17 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { DraftView, StoredDraft, Target } from '../shared/api.ts';
 import { acknowledgeDraft, applyEditorSuggestion, beginDraftSave, captureSubmission, createDraft, draftSaved,
-  editDraft, receiveDraft, rejectDraftSave, resolveDraftConflict, settleSubmission, useEditorSuggestion } from './draft-state.ts';
+  editDraft, receiveDraft, rejectDraftSave, resolveDraftConflict, restoreLocalDraft, settleSubmission, useEditorSuggestion } from './draft-state.ts';
 const view = (revision = 0, text = '', mode = 'prompt'): DraftView => ({revision, text, mode, images: [], persisted: true});
 const target: Target = {kind: 'primary', key: 'p', epoch: 1};
 
+test('local reload state retains edits and does not resurrect an obsolete saved draft',()=>{
+  const local={server:view(1,'Saved text'),text:'Saved text',mode:'prompt',images:[],edit:0,savedEdit:0};
+  const newer=view(2,'Newer server text'),clean=restoreLocalDraft(local,newer);assert.equal(clean.text,newer.text);assert.equal(draftSaved(clean),true);
+  const edited={...local,text:'Local unsaved text',edit:1},conflict=restoreLocalDraft(edited,newer);
+  assert.equal(conflict.text,edited.text);assert.equal(conflict.server.text,newer.text);assert.equal(conflict.conflict?.revision,newer.revision);assert.equal(conflict.submissions.size,0);
+  const confirmed=restoreLocalDraft(edited,view(2,edited.text));assert.equal(draftSaved(confirmed),true);assert.equal(confirmed.conflict,undefined);
+});
 test('a draft save never replaces newer edits and sends only one revision at a time', () => {
   let state = editDraft(createDraft(view()), 'first');
   const save = beginDraftSave(state); assert.ok(save.request); state = save.state;

@@ -18,7 +18,7 @@ export type DevCheckpointEntry = {
 };
 export type DevReloadView = {
   workspaceId: string; focusedPane: string; targets: DevCheckpointEntry[]; messageRecipient?: string;
-  focusedControl?: {targetKey: string; kind: 'composer' | 'message'}; files?:DevFileCheckpoint[]; inspections?:InspectionCheckpoint[];
+  focusedControl?: {targetKey: string; kind: 'composer' | 'message'}; files?:DevFileCheckpoint[]; inspections?:InspectionCheckpoint[]; composerStateKey?:string;
 };
 export type DevReloadCheckpoint = DevReloadView & {
   version: 1; generation: string; oldClient: string; capturedAt: number; interactionRevision: number;
@@ -119,6 +119,7 @@ function inspectionList(value:unknown):boolean {
   return value===undefined||Array.isArray(value)&&value.length<=128&&value.every(validInspectionCheckpoint)&&new Set(value.map(item=>item.identity)).size===value.length;
 }
 function checkpointViews(value:Record<string,unknown>):boolean {
+  if(value.composerStateKey!==undefined&&(typeof value.composerStateKey!=='string'||!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value.composerStateKey)))return false;
   if(!fileCheckpointState(value.files,value.focusedControl)||!inspectionList(value.inspections))return false;
   const inspections=(value.inspections??[]) as InspectionCheckpoint[];
   return (value.targets as DevCheckpointEntry[]).every(entry=>{const target=entry.target;return target.kind!=='agent'||!('retained' in target)||inspections.some(item=>item.identity===target.identity);});
@@ -131,7 +132,7 @@ function fileCheckpointState(files:unknown,focusedControl:unknown):boolean {
 }
 /** Structural validation does not replace the host's checks against freshly hydrated state. */
 export function validateDevReloadCheckpoint(value: unknown, generation: string, now: number): DevReloadCheckpoint | null {
-  if (!record(value, ['version', 'generation', 'oldClient', 'capturedAt', 'interactionRevision', 'workspaceId', 'focusedPane', 'targets'], ['focusedControl', 'messageRecipient', 'files', 'inspections'])) return null;
+  if (!record(value, ['version', 'generation', 'oldClient', 'capturedAt', 'interactionRevision', 'workspaceId', 'focusedPane', 'targets'], ['focusedControl', 'messageRecipient', 'files', 'inspections', 'composerStateKey'])) return null;
   if (value.version !== 1 || value.generation !== generation || !GENERATION.test(generation) || typeof value.oldClient !== 'string' || !CLIENT.test(value.oldClient)) return null;
   if (!integer(now) || !integer(value.capturedAt) || value.capturedAt > now || now - value.capturedAt > TTL || !integer(value.interactionRevision)) return null;
   if (!id(value.workspaceId) || value.workspaceId.length > 128 || !id(value.focusedPane) || value.focusedPane.length > 128 || !targetList(value.targets)) return null;
@@ -215,7 +216,7 @@ export class DevReload {
     const limit = new Promise<never>((_resolve, reject) => {
       abort = () => {if (timer !== undefined) this.env.clock.clear(timer); reject(new ReloadFailure('timeout'));};
       signal.addEventListener('abort', abort, {once: true});
-      timer = this.env.clock.set(() => {this.notice('failed', 'timeout'); reject(new ReloadFailure('timeout')); controller?.abort();}, DEADLINE);
+      timer = this.env.clock.set(() => {this.notice('failed', 'timeout');this.retryRecovery(); reject(new ReloadFailure('timeout')); controller?.abort();}, DEADLINE);
       if (signal.aborted) abort();
     });
     try {return await Promise.race([promise, limit]);}
@@ -227,6 +228,7 @@ export class DevReload {
     const task = Promise.resolve().then(() => this.stopped || controller.signal.aborted ? undefined : action(controller.signal)).catch(error => {
       if (!(error instanceof ReloadFailure)) this.fatal = true;
       if (!this.stopped && !controller.signal.aborted) this.notice('failed', error instanceof ReloadFailure ? error.code : 'host');
+      if(error instanceof ReloadFailure&&['ack','drain','stylesheet','offline','capacity','timeout'].includes(error.code))this.retryRecovery();
     }).finally(() => {
       if (this.controller === controller) this.controller = undefined;
       if (this.work === task) this.work = undefined;
@@ -257,6 +259,11 @@ export class DevReload {
     if (!integer(state.revision) || typeof state.safe !== 'boolean' || state.reason !== undefined && !HOLDS.includes(state.reason)) throw new ReloadFailure('host');
     if (!state.safe || revision !== undefined && state.revision !== revision) {this.notice('deferred', state.reason ?? 'input');this.retryHeldBuild(); return null;}
     return state;
+  }
+  private retryRecovery():void {
+    if(this.retry!==undefined||this.stopped||this.fatal)return;
+    const delay=RETRIES[Math.min(this.attempts++,RETRIES.length-1)]??6000;
+    this.retry=this.env.clock.set(()=>{this.retry=undefined;void this.resume();},delay);
   }
   private retryHeldBuild():void{
     const build=this.latest;
@@ -435,10 +442,10 @@ export class DevReload {
     } finally {candidate.discard();}
   }
   private async reload(build: DevBuild, revision: number, serial: number, signal: AbortSignal): Promise<void> {
-    try {await this.bounded(this.hooks.drain(signal), signal);} catch {if (this.current(serial, signal)) this.notice('failed', 'drain'); return;}
+    try {await this.bounded(this.hooks.drain(signal), signal);} catch {if (this.current(serial, signal)) {this.notice('failed', 'drain');this.retryRecovery();} return;}
     if (!this.current(serial, signal) || !this.interaction(revision)) return;
     const view = this.hooks.captureCheckpoint();
-    if (!record(view, ['workspaceId', 'focusedPane', 'targets'], ['focusedControl', 'messageRecipient', 'files', 'inspections'])) {this.notice('failed', 'checkpoint'); return;}
+    if (!record(view, ['workspaceId', 'focusedPane', 'targets'], ['focusedControl', 'messageRecipient', 'files', 'inspections', 'composerStateKey'])) {this.notice('failed', 'checkpoint'); return;}
     const checkpoint = validateDevReloadCheckpoint({...view, version: 1, generation: build.generation, oldClient: this.client, capturedAt: this.env.clock.now(), interactionRevision: revision}, build.generation, this.env.clock.now());
     const workspace = new URL(this.env.href()).searchParams.get('workspace');
     if (!checkpoint || checkpoint.workspaceId !== workspace) {this.notice('failed', 'checkpoint'); return;}

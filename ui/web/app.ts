@@ -21,7 +21,8 @@ import { thinkingExpanded } from './transcript-presentation.ts';
 import { contextMenu, nativeEditingTarget, paneMenuItems, type ContextItem } from './context-menu.ts';
 import { ProjectPicker } from './picker.ts';
 import type { SelectionChange } from './actions.ts';
-import { Composer, createComposerElements } from './composer.ts';
+import { Composer, createComposerElements, validComposerReloadState, type ComposerReloadState } from './composer.ts';
+import {writeReloadState,readReloadState,deleteReloadState} from './reload-storage.ts';
 import { WorkbenchStatus } from './workbench-status.ts';
 import { VersionStatus } from './version-status.ts';
 import { HealthStatus } from './health-status.ts';
@@ -110,6 +111,8 @@ let paneSelectionRevision = 0;
 let devRestoreOwner: object | undefined;
 let devRestoreWake: (() => void) | undefined;
 let devNavigating = false;
+let reloadStateKey:string|undefined;
+let preparedReloadState:{key:string;revision:number;workspace:string}|undefined;
 const devCheckpointKey = 'ui:dev-checkpoint';
 type ConversationController = {workspaceId: string; target: Target; instanceId: string; root: HTMLElement; nodes: Map<string, HTMLElement>;
   elements: import('./composer.ts').ComposerElements; composer: Composer; transcript: Transcript; inspection?: AgentInspection; saved?: TargetState; geometry?: ReturnType<Transcript['captureGeometry']>; messageRetention?: object;
@@ -147,8 +150,8 @@ export function stableViews(): StableViews {
 }
 function viewPane(node: HTMLElement): HTMLElement | null {return stableViews().slot(node)?.closest<HTMLElement>('.pane-leaf') ?? null;}
 function focusViewPane(event:Event):void {const pane = viewPane(event.target as HTMLElement);if (pane?.dataset.paneId) updatePaneFocus(pane.dataset.paneId,event);}
-function conversationController(target: Target): ConversationController {
-  const workspaceId = state.workspace?.id; if (!workspaceId) throw new Error('No workspace is selected.');
+function conversationController(target: Target, workspaceId = state.workspace?.id): ConversationController {
+  if (!workspaceId) throw new Error('No workspace is selected.');
   const key = controllerKey(workspaceId, target); const existing = controllers.get(key); if (existing) return existing;
   collectControllers(); if (controllers.size >= LIMITS.conversationTabs) throw new Error('Close a settled conversation before opening another.');
   const instanceId = `conversation-${++controllerSerial}`; const root = element('section', 'conversation'); root.id = instanceId; root.hidden = true; root.inert = true;
@@ -172,7 +175,7 @@ function conversationController(target: Target): ConversationController {
   root.append(observed, notice, region, above, elements.root, below); stableViews().mount(root);
   if (target.kind === 'agent') root.insertBefore(createAgentState(add), region);
   const controller = {workspaceId, target: {...target}, instanceId, root, nodes, elements, abort: new AbortController(), historyAbort: new AbortController(), cursor: null, before: null, loading: false, preparing: false, passive: true, historyReady: false, historyBoundaryLoaded: false, initialized: false, showThinking: true} as ConversationController;
-  controller.composer = new Composer(elements, {captured: submission=>{const conversation=state.conversations.get(targetIdentity(controller.target));inputEchoes.capture(workspaceId,submission,conversation?conversationBlocks(conversation):[]);renderController(controller);},failed:(id,uncertain)=>{inputEchoes.failed(id,uncertain);renderController(controller);},prepareInput: () => !controller.passive, imageState: refreshComposerImages, imageInput: captured => composerImageInput(controller, captured), recovery: () => recovery.open(), layoutHeight: () => stableViews().height(elements.root), enterSends: () => state.workspace?.enterSendsMessages === true, timing: (start, end) => {if (controller.workspaceId === state.workspace?.id && !elements.root.closest('[hidden],[inert]')) diagnostics.measure('editor-echo', start, end);}, submitted: result => {inputEchoes.settle(result);showOperation(result, workspaceId);renderController(controller);}, unknownCommand: (text, literal) => target.kind === 'primary' && sameTarget(primaryTarget(), target) ? actions.unknown(text, literal) : false,
+  controller.composer = new Composer(elements, {changed:()=>{devInteractionRevision++;},captured: submission=>{const conversation=state.conversations.get(targetIdentity(controller.target));inputEchoes.capture(workspaceId,submission,conversation?conversationBlocks(conversation):[]);renderController(controller);},failed:(id,uncertain)=>{inputEchoes.failed(id,uncertain);renderController(controller);},prepareInput: () => !controller.passive, imageState: refreshComposerImages, imageInput: captured => composerImageInput(controller, captured), recovery: () => recovery.open(), layoutHeight: () => stableViews().height(elements.root), enterSends: () => state.workspace?.enterSendsMessages === true, timing: (start, end) => {if (controller.workspaceId === state.workspace?.id && !elements.root.closest('[hidden],[inert]')) diagnostics.measure('editor-echo', start, end);}, submitted: result => {inputEchoes.settle(result);showOperation(result, workspaceId);renderController(controller);}, unknownCommand: (text, literal) => target.kind === 'primary' && sameTarget(primaryTarget(), target) ? actions.unknown(text, literal) : false,
     ...(target.kind === 'primary' ? {commands: () => actions.commandOptions(), moreCommands: (captured: Target) => actions.continueCommands(captured)} : {}),
     retained: (workspace, captured) => { if (workspace === state.workspace?.id && captured.kind === 'agent') renderMessageResume(captured.identity); }});
   controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {references, subject: toolSubjectCaption, readTaskResult:async(reference,signal)=>{const value=await request<AgentInspectionView>(`/api/agents/${encodeURIComponent(reference.sessionId)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',{view:'result',submissionId:reference.submissionId,...(reference.requestId?{requestId:reference.requestId}:{})},undefined,AbortSignal.any([signal,controller.abort.signal,AbortSignal.timeout(15_000)]));if(value.view!=='result')throw new Error('The task result view changed.');return value;}, activity:()=>{if (footerController === controller) renderWorkbenchStatus();}, cwd: () => target.kind === 'primary' ? state.primaries.get(target.key)?.cwd : state.roster.get(target.identity)?.cwd, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
@@ -1917,7 +1920,7 @@ function bind(): void {
 
   document.addEventListener('keydown', appKey);
   window.addEventListener('resize', () => { renderNavigation(); for (const controller of controllers.values()) controller.composer.resize(); roster.schedule(); });
-  window.addEventListener('beforeunload', event => { if (!filesViews.canDispose || [...controllers.values()].some(controller => !controller.composer.canDispose)) event.preventDefault(); });
+  window.addEventListener('beforeunload', event => { if (!(devNavigating&&preparedReloadState?.revision===devInteractionRevision&&preparedReloadState.workspace===state.workspace?.id) && (!filesViews.canDispose || [...controllers.values()].some(controller => !controller.composer.canDispose))) event.preventDefault(); });
   document.addEventListener('visibilitychange', () => {
     diagnostics.setHidden(document.hidden); for (const controller of controllers.values()) controller.transcript.visibilityChanged();
   });
@@ -1940,9 +1943,15 @@ async function waitForSignal<T>(promise: Promise<T>, signal: AbortSignal): Promi
 }
 export async function drainDev(signal: AbortSignal): Promise<void> {
   signal.throwIfAborted();await waitForSignal(filesViews.drain(),signal); await waitForSignal(selectionQueue.drain(), signal);
-  await Promise.all([...controllers.values()].map(controller => controller.composer.drain(signal)));
   await waitForSignal(preferences.drain(), signal); signal.throwIfAborted();
-  if (selectionQueue.unsettled || preferences.pending || [...controllers.values()].some(controller => controller.composer.unsaved || controller.composer.reloadHold)) throw new Error('Retained writes changed during the drain.');
+  if (selectionQueue.unsettled || preferences.pending || [...controllers.values()].some(controller => controller.composer.reloadHold)) throw new Error('Retained writes changed during the drain.');
+  const revision=devInteractionRevision,workspace=state.workspace?.id,key=reloadStateKey??crypto.randomUUID();
+  if(!workspace)throw new Error('No workspace owns the preserved draft.');
+  const snapshots=[...controllers.values()].flatMap(controller=>controller.composer.captureReload());
+  reloadStateKey=key;
+  await writeReloadState(key,snapshots,signal);signal.throwIfAborted();
+  if(revision!==devInteractionRevision||workspace!==state.workspace?.id)throw new Error('The draft changed during preservation.');
+  reloadStateKey=key;preparedReloadState={key,revision,workspace};
 }
 function devEntry(controller: ConversationController): DevCheckpointEntry {
   const saved = controller.saved; if (!saved || !sameTarget(saved.target, controller.target)) throw new Error('Target preservation metadata is unavailable.');
@@ -1963,26 +1972,52 @@ export function captureDevCheckpoint(): ReturnType<DevReloadHooks['captureCheckp
   const messageRecipient = recipient ? owned.find(controller => controller.target.kind === 'agent' && controller.target.identity === recipient.identity)?.saved?.targetKey : undefined;
   if (recipient && (!messageTarget.valid(recipient) || !messageRecipient)) throw new Error('Message preservation metadata changed.');
   const focused = owned.find(controller => controller.composer.editor === document.activeElement);
-  return {workspaceId, focusedPane: currentLayout().focusedPane, targets,files:filesViews.checkpoint(state.workspace as Workspace),...(inspections.length?{inspections}:{}), ...(messageRecipient ? {messageRecipient} : {}),
+  return {workspaceId, focusedPane: currentLayout().focusedPane, targets,...(preparedReloadState?.revision===devInteractionRevision&&preparedReloadState.workspace===workspaceId?{composerStateKey:preparedReloadState.key}:{}),files:filesViews.checkpoint(state.workspace as Workspace),...(inspections.length?{inspections}:{}), ...(messageRecipient ? {messageRecipient} : {}),
     ...(focused?.saved ? {focusedControl: {targetKey: focused.saved.targetKey, kind: focused.saved.targetKey === messageRecipient ? 'message' : 'composer'}} : {})};
 }
-function devTargetMatches(entry: DevCheckpointEntry, saved: TargetState): boolean {
+function devTargetMatches(entry: DevCheckpointEntry, saved: TargetState, preservedDraft=false): boolean {
   if (saved.targetKey !== entry.targetKey || !sameTarget(saved.target, entry.target.kind === 'primary' ? entry.target : {kind: 'agent', identity: entry.target.identity})) return false;
-  if (saved.draft.revision !== entry.draftRevision || saved.reading.revision !== entry.readingRevision || (saved.presentation?.revision ?? 0) !== entry.presentationRevision || saved.unconfirmed.length) return false;
-  if (entry.imageFingerprint !== draftImageFingerprint(saved.draft.images)) return false;
+  if (!preservedDraft&&saved.draft.revision !== entry.draftRevision || saved.reading.revision !== entry.readingRevision || (saved.presentation?.revision ?? 0) !== entry.presentationRevision || saved.unconfirmed.length) return false;
+  if (!preservedDraft&&entry.imageFingerprint !== draftImageFingerprint(saved.draft.images)) return false;
   if (entry.target.kind === 'primary') return state.primaries.get(entry.target.key)?.epoch === entry.target.epoch;
   if('retained' in entry.target)return true;
   const epoch = state.conversations.get(targetIdentity(saved.target))?.connectionEpoch;
   return !!epoch && Number.isSafeInteger(epoch) && epoch > 0;
 }
-function devRecordsCurrent(entries: DevCheckpointEntry[], values: TargetState[]): boolean {
-  return entries.length === values.length && entries.every((entry, index) => {const saved = values[index]; return !!saved && devTargetMatches(entry, saved);});
+function devRecordsCurrent(entries: DevCheckpointEntry[], values: TargetState[], preserved:ComposerReloadState[]=[]): boolean {
+  return entries.length === values.length && entries.every((entry, index) => {const saved = values[index]; return !!saved && devTargetMatches(entry, saved,preserved.some(value=>value.workspace===state.workspace?.id&&value.targetKey===entry.targetKey));});
 }
-function devRestoreSourceCurrent(entry: DevCheckpointEntry): boolean {
+function devRestoreSourceCurrent(entry: DevCheckpointEntry, preserved=false): boolean {
   const target: Target = entry.target.kind === 'primary' ? entry.target : {kind: 'agent', identity: entry.target.identity};
-  const saved = targetState(target); if (saved && !devTargetMatches(entry, saved)) return false;
+  const saved = targetState(target); if (saved && !devTargetMatches(entry, saved,preserved)) return false;
   const controller = controllers.get(controllerKey(state.workspace?.id ?? '', target));
-  return !controller || !controller.composer.unsaved && (controller.composer.serverDraftRevision ?? entry.draftRevision) === entry.draftRevision;
+  return !controller || !controller.composer.unsaved && (preserved||(controller.composer.serverDraftRevision ?? entry.draftRevision) === entry.draftRevision);
+}
+async function readPreservedComposers(checkpoint:DevReloadCheckpoint,signal:AbortSignal):Promise<ComposerReloadState[]> {
+  if(!checkpoint.composerStateKey)return [];
+  const value=await readReloadState(checkpoint.composerStateKey,signal);
+  if(!Array.isArray(value)||value.length>LIMITS.conversationTabs||!value.every(validComposerReloadState)||new Set(value.map(item=>JSON.stringify([item.workspace,item.targetKey]))).size!==value.length)throw new Error('Preserved draft bytes are unavailable.');
+  return value;
+}
+function currentPreservedTarget(saved:TargetState,preserved:ComposerReloadState[]):TargetState {
+  const current=state.targets.get(saved.targetKey);
+  return current&&current.draft.revision>saved.draft.revision&&preserved.some(value=>value.workspace===state.workspace?.id&&value.targetKey===saved.targetKey)?{...saved,draft:current.draft}:saved;
+}
+async function restorePreservedComposers(values:ComposerReloadState[],acknowledged:TargetState[],signal:AbortSignal,current:()=>boolean):Promise<boolean> {
+  const saved:TargetState[]=[];
+  for(const value of values){
+    const existing=value.workspace===state.workspace?.id?acknowledged.find(saved=>saved.targetKey===value.targetKey):undefined;
+    const target=existing??await request<TargetState>(`/api/workspaces/${encodeURIComponent(value.workspace)}/targets/${encodeURIComponent(value.targetKey)}`,'GET',undefined,undefined,signal);
+    if(!current()||target.targetKey!==value.targetKey||!sameTarget(target.target,value.target))return false;
+    saved.push(target);
+  }
+  if(!current())return false;
+  for(const [index,value] of values.entries()){
+    const captured=saved[index];if(!captured)return false;const target=currentPreservedTarget(captured,values);
+    if(value.workspace===state.workspace?.id)state={...state,targets:new Map(state.targets).set(target.targetKey,target)};
+    const controller=conversationController(target.target,value.workspace);controller.saved=target;controller.composer.restoreReload(value,target);
+  }
+  return current();
 }
 async function restoreDevRecipient(checkpoint: DevReloadCheckpoint, values: TargetState[], signal: AbortSignal): Promise<boolean> {
   if (!checkpoint.messageRecipient) return !messageTarget.current;
@@ -2004,7 +2039,7 @@ function restoreDevControls(checkpoint: DevReloadCheckpoint, owned: Conversation
   if (checkpoint.targets.some((entry, index) => !!entry.selection && (!owned[index] || entry.selection.end > (owned[index]?.composer.editor.value.length ?? 0)))) return false;
   const control = checkpoint.focusedControl, focused = control ? owned.find(controller => controller.saved?.targetKey === control.targetKey) : undefined;
   if (control && (!focused?.elements.root.isConnected || focused.elements.root.closest('[hidden],[inert]') || control.kind === 'message' && control.targetKey !== checkpoint.messageRecipient)) return false;
-  for (const [index, controller] of owned.entries()) {const selection = checkpoint.targets[index]?.selection; if (selection) controller.composer.editor.setSelectionRange(selection.start, selection.end, selection.direction);}
+  for (const [index, controller] of owned.entries()) {const selection = checkpoint.targets[index]?.selection; if (selection) controller.composer.restoreRange(selection);}
   focused?.composer.editor.focus({preventScroll: true}); return true;
 }
 export async function restoreDevCheckpoint(checkpoint: DevReloadCheckpoint, signal: AbortSignal): Promise<boolean> {
@@ -2045,18 +2080,24 @@ async function restoreDevState(checkpoint: DevReloadCheckpoint, signal: AbortSig
     devRestoreWake = wake; signal.addEventListener('abort', abort, {once: true}); wake();
   })) return false;
   const current = () => original() && [...epochs].every(([identity, epoch]) => epoch !== undefined && epochFor(identity) === epoch);
+  const preserved=checkpoint.composerStateKey?await readPreservedComposers(checkpoint,signal):[];
   if (!current()) return false;
-  const savedTargets = await Promise.all(checkpoint.targets.map(entry => request<TargetState>(
+  let savedTargets = await Promise.all(checkpoint.targets.map(entry => request<TargetState>(
     `/api/workspaces/${encodeURIComponent(checkpoint.workspaceId)}/targets/${encodeURIComponent(entry.targetKey)}`, 'GET', undefined, undefined, signal)));
-  if (!current() || !devRecordsCurrent(checkpoint.targets, savedTargets)) return false;
-  if (!checkpoint.targets.every(devRestoreSourceCurrent)) return false;
+  if (!current() || !devRecordsCurrent(checkpoint.targets, savedTargets,preserved)) return false;
+  if (!checkpoint.targets.every(entry=>devRestoreSourceCurrent(entry,preserved.some(value=>value.workspace===checkpoint.workspaceId&&value.targetKey===entry.targetKey)))) return false;
+  savedTargets=savedTargets.map(saved=>currentPreservedTarget(saved,preserved));
   const owned = savedTargets.map(saved => {state = {...state, targets: new Map(state.targets).set(saved.targetKey, saved)}; const controller = conversationController(saved.target); controller.saved = saved; return controller;});
   if (!await restoreDevRecipient(checkpoint, savedTargets, signal) || !current()) return false;
   if(!restoreDevInspections(checkpoint))return false;
   renderAll(); if (!await restoreDevReading(owned, signal, current)) return false;
   if (!state.workspace || !await waitForSignal(filesViews.restore(state.workspace,checkpoint.files ?? [],current),signal) || !current()) return false;
-  const refreshed = savedTargets.flatMap(saved => {const value = targetState(saved.target); return value ? [value] : [];});
-  return current() && devRecordsCurrent(checkpoint.targets, refreshed) && restoreDevControls(checkpoint, owned) && current();
+  return finishDevRestore(checkpoint,owned,savedTargets,preserved,signal,current);
+}
+async function finishDevRestore(checkpoint:DevReloadCheckpoint,owned:ConversationController[],savedTargets:TargetState[],preserved:ComposerReloadState[],signal:AbortSignal,current:()=>boolean):Promise<boolean> {
+  if(preserved.length){if(!await restorePreservedComposers(preserved,savedTargets,signal,current)||!current())return false;renderAll();}
+  const refreshed=savedTargets.flatMap(saved=>{const value=targetState(saved.target);return value?[value]:[];});
+  return current()&&devRecordsCurrent(checkpoint.targets,refreshed,preserved)&&restoreDevControls(checkpoint,owned)&&current();
 }
 function restoreDevInspections(checkpoint:DevReloadCheckpoint):boolean {
   const tabs=paneLeaves(currentLayout().root).flatMap(pane=>pane.tabs).filter(tab=>tab.kind==='agent');
@@ -2085,7 +2126,7 @@ async function initializeDevReload(current:()=>boolean): Promise<void> {
   const notice = element('span', 'secondary'); notice.setAttribute('role', 'status');
   devReload = new DevReload({interaction: () => {const reason = devHold(); return {revision: devInteractionRevision, safe: !reason, ...(reason ? {reason} : {})};}, drain: drainDev,
     captureCheckpoint: captureDevCheckpoint, writeCheckpoint: checkpoint => sessionStorage.setItem(devCheckpointKey, JSON.stringify(checkpoint)),
-    readCheckpoint: () => {const value = sessionStorage.getItem(devCheckpointKey); return value === null ? null : JSON.parse(value);}, restoreCheckpoint: restoreDevCheckpoint, clearCheckpoint: () => sessionStorage.removeItem(devCheckpointKey),
+    readCheckpoint: () => {const value = sessionStorage.getItem(devCheckpointKey);if(value===null)return null;const checkpoint=JSON.parse(value);reloadStateKey=checkpoint?.composerStateKey;return checkpoint;}, restoreCheckpoint: restoreDevCheckpoint, clearCheckpoint: () => {sessionStorage.removeItem(devCheckpointKey);const key=reloadStateKey;reloadStateKey=undefined;preparedReloadState=undefined;if(key)void deleteReloadState(key).catch(()=>{});},
     captureCssState: captureDevCssState, afterCssApply: applyDevCssState,
     status: status => {
       devNavigating = status.state === 'navigating'; notice.replaceChildren();

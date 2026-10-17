@@ -117,6 +117,11 @@ test('missing or malformed metadata is inert, including the deferred browser def
   }
   const f = new Fixture(); const dev = new DevReload(f.hooks); await dev.ready; assert.equal(dev.active, false); assert.deepEqual(f.trace, []);
 });
+test('initial acknowledgment failure retries automatically before a stream or navigation',async()=>{
+  const f=new Fixture();let attempts=0;f.fetch=()=>++attempts===1?response(503):response();const dev=f.dev();await dev.ready;
+  assert.equal(f.sources.length,0);assert.equal(f.clock.timers.size,1);f.clock.advance(250);await flush();
+  assert.equal(f.sources.length,1);assert.equal(f.acks().length,2);assert.equal(f.navigations.length,0);dev.destroy();
+});
 test('initial acknowledgment precedes the only build stream and uses the exact page lease', async () => {
   const f = new Fixture(); const dev = f.dev(); await dev.ready;
   assert.deepEqual(f.acks()[0]?.body, {client: OLD, generation: A, cssGeneration: A});
@@ -155,7 +160,7 @@ test('CSS rechecks interaction after the geometry capture hook', async () => {
   const f = new Fixture(); await f.dev().ready; f.hooks.captureCssState = () => {f.state.revision++; return null;};
   f.emit(); await flush(); f.loaded(); await flush(); assert.equal(f.styles[0]?.candidate.applied, false); assert.equal(f.acks().length, 1);
 });
-test('uncertain CSS acknowledgment keeps installed styles and blocks later builds until explicit retry', async () => {
+test('uncertain CSS acknowledgment keeps installed styles and blocks later builds until acknowledgment recovery', async () => {
   const f = new Fixture(); const dev = f.dev(); await dev.ready;
   f.fetch = () => Promise.reject(new Error('synthetic')); f.emit(); await flush(); f.loaded(); await flush();
   assert.equal(f.styles[0]?.candidate.applied, true); assert.equal(f.styles[0]?.candidate.discarded, false); assert.equal(f.notices.at(-1)?.code, 'ack');
@@ -200,6 +205,11 @@ test('inspection checkpoints retain read selectors and reject orphaned retained 
   assert.equal(validateDevReloadCheckpoint({...value,inspections:[{...value.inspections[0],cursor:{before:Infinity}}]},B,NOW),null);
   assert.equal(validateDevReloadCheckpoint({...value,inspections:[value.inspections[0],value.inspections[0]]},B,NOW),null);
 });
+test('reload checkpoint carries only a validated native-storage UUID reference',async()=>{
+  const f=new Fixture();await f.dev().ready;const key='11111111-2222-3333-4444-555555555555';f.hooks.captureCheckpoint=()=>({...view(),composerStateKey:key});
+  f.emit(build(1,B,'reload'));await flush();assert.equal((f.stored as DevReloadCheckpoint).composerStateKey,key);assert.equal(f.navigations.length,1);
+  for(const value of ['../other','',123])assert.equal(validateDevReloadCheckpoint({...checkpoint(),composerStateKey:value},B,NOW),null);
+});
 test('reload refuses malformed file checkpoints before persistence and navigation', async () => {
   for (const files of [null, [{tab: {kind: 'file', rootId: 'r', path: 'source.ts'}, position: {scrollTop: 0, scrollLeft: 0}, digest: 'invalid', focused: false}]]) {
     const f = new Fixture(); const captured = view(); Object.defineProperty(captured, 'files', {value: files});
@@ -220,13 +230,15 @@ test('interaction during drainage refuses navigation and a fresh safe-point resu
   assert.equal(f.navigations.length, 0); assert.equal(f.stored, null);
   f.drain = async () => {}; await dev.resume(); assert.equal(f.navigations.length, 1); assert.equal(f.drains, 2);
 });
-test('failed or timed out drainage holds the old page and aborts late work', async () => {
+test('failed or timed out drainage retains the old page and retries after late work is fenced', async () => {
   const failure = new Fixture(); await failure.dev().ready; failure.drain = async () => {throw new Error('synthetic');}; failure.emit(build(1, B, 'reload')); await flush();
   assert.equal(failure.notices.at(-1)?.code, 'drain'); assert.equal(failure.navigations.length, 0);
   const f = new Fixture(); await f.dev().ready; const drain = deferred<void>(); let signal: AbortSignal | undefined;
   f.drain = value => {signal = value; return drain.promise;}; f.emit(build(1, B, 'reload')); await flush(); f.clock.advance(10_000); await flush();
-  assert.equal(signal?.aborted, true); assert.equal(f.notices.at(-1)?.code, 'timeout'); assert.equal(f.clock.timers.size, 0);
+  assert.equal(signal?.aborted, true); assert.equal(f.notices.at(-1)?.code, 'timeout'); assert.equal(f.clock.timers.size, 1);
   drain.resolve(); await flush(); assert.equal(f.navigations.length, 0); assert.equal(f.stored, null);
+  f.drain=async()=>{};f.clock.advance(250);await flush();assert.equal(f.navigations.length,1);
+  failure.drain=async()=>{};failure.clock.advance(250);await flush();assert.equal(failure.navigations.length,1);
 });
 test('storage refusal and interaction during checkpoint write prevent navigation', async () => {
   for (const change of [false, true]) {
@@ -343,14 +355,14 @@ test('reconnect closes before replacement, refuses closed-source events and neve
   old.emit(build(99, C)); old.lost(); await flush(); assert.equal(f.styles.length, 0); assert.equal(f.clock.timers.size, 0);
   dev.reconnect(); await flush(); assert.equal(f.sources[1]?.closed, 1); assert.equal(f.sources.length, 3); assert.equal(f.releases().length, 0);
 });
-test('four reconnect delays end offline with no native retry or extra timer until explicit reconnect', async () => {
+test('stream reconnect retries continue at a capped delay without input or release effects', async () => {
   const f = new Fixture(); const dev = f.dev(); await dev.ready;
   for (const delay of [250, 1000, 3000, 6000]) {
     f.sources.at(-1)?.lost(); assert.equal(f.clock.timers.size, 1); const before = f.sources.length;
     f.clock.advance(delay - 1); assert.equal(f.sources.length, before); f.clock.advance(1); await flush(); assert.equal(f.sources.length, before + 1);
   }
-  f.sources.at(-1)?.lost(); assert.equal(f.notices.at(-1)?.state, 'offline'); assert.equal(f.clock.timers.size, 0); assert.equal(f.sources.length, 5);
-  dev.reconnect(); await flush(); assert.equal(f.sources.length, 6); assert.equal(f.releases().length, 0);
+  f.sources.at(-1)?.lost(); assert.equal(f.notices.at(-1)?.state, 'reconnecting'); assert.equal(f.clock.timers.size, 1); assert.equal(f.sources.length, 5);
+  f.clock.advance(5999);assert.equal(f.sources.length,5);f.clock.advance(1);await flush();assert.equal(f.sources.length,6);assert.equal(f.releases().length,0);dev.destroy();
 });
 test('reconnect reconciles retained CSS acknowledgment before strict lease comparison, with or without a lost server effect', async () => {
   for (const applied of [false, true]) {
@@ -504,15 +516,16 @@ test('lease identity refusals and HTTP refusals never become missing-lease recov
     dev.reconnect(); await flush(); assert.equal(f.notices.at(-1)?.code, 'invalid-assets'); assert.equal(f.navigations.length, 0);
   }
 });
-test('capacity and network failures exhaust only four lease checks without navigation or identity recreation', async () => {
+test('capacity and network failures retry capped lease checks without navigation or identity recreation', async () => {
   for (const capacity of [true, false]) {
     const f = new Fixture(); const dev = f.dev(); await dev.ready;
     f.fetch = () => capacity ? response(429) : Promise.reject(new Error('offline'));
     f.sources[0]?.lost();
     for (const delay of [250, 1000, 3000, 6000]) {f.clock.advance(delay); await flush();}
     assert.equal(f.posts.filter(post => post.path === '/api/dev/lease').length, 4);
-    assert.equal(f.notices.at(-1)?.state, 'offline'); assert.equal(f.notices.at(-1)?.code, capacity ? 'capacity' : 'offline');
-    assert.equal(f.clock.timers.size, 0); assert.equal(f.drains, 0); assert.equal(f.navigations.length, 0);
+    assert.equal(f.notices.at(-1)?.state, 'reconnecting'); assert.equal(f.notices.at(-1)?.code, capacity ? 'capacity' : 'none');
+    assert.equal(f.clock.timers.size, 1); assert.equal(f.drains, 0); assert.equal(f.navigations.length, 0);
+    f.fetch=()=>response(200,{ok:true,data:{lease:'present',build:build(0,A,'reload')}});f.clock.advance(6000);await flush();assert.equal(f.sources.length,2);dev.destroy();
   }
 });
 test('cancelled and timed-out lease checks cannot navigate from late responses', async () => {
@@ -555,14 +568,14 @@ test('invalid payload cancels a valid pending candidate and refuses its late com
   const f = new Fixture(); await f.dev().ready; f.emit(); await flush(); f.sources[0]?.receive('bad-json'); await flush(); f.loaded(); await flush();
   assert.equal(f.styles[0]?.signal.aborted, true); assert.equal(f.styles[0]?.candidate.discarded, true); assert.equal(f.styles[0]?.candidate.applied, false); assert.equal(f.acks().length, 1);
 });
-test('stylesheet and acknowledgment deadlines preserve installed state without automatic retries', async () => {
+test('stylesheet and acknowledgment deadlines retain installed state and retry acknowledgment automatically', async () => {
   const loading = new Fixture(); await loading.dev().ready; loading.emit(); await flush(); loading.clock.advance(10_000); await flush(); loading.loaded(); await flush();
   assert.equal(loading.styles[0]?.candidate.discarded, true); assert.equal(loading.acks().length, 1); assert.equal(loading.notices.at(-1)?.code, 'timeout');
   const f = new Fixture(); const dev = f.dev(); await dev.ready; const pending = deferred<Awaited<ReturnType<DevReloadEnvironment['fetch']>>>(); f.fetch = () => pending.promise;
   f.emit(); await flush(); f.loaded(); await flush(); f.clock.advance(10_000); await flush();
-  assert.equal(f.styles[0]?.candidate.applied, true); assert.equal(f.acks()[1]?.init.signal?.aborted, true); assert.equal(f.clock.timers.size, 0);
+  assert.equal(f.styles[0]?.candidate.applied, true); assert.equal(f.acks()[1]?.init.signal?.aborted, true); assert.equal(f.clock.timers.size, 1);
   f.emit(build(2, C)); await flush(); assert.equal(f.styles.length, 1); assert.equal(f.acks().length, 2); pending.resolve(await response()); await flush();
-  f.fetch = () => response(); const retry = dev.resume(); await flush(); f.loaded(1); await retry; assert.equal(f.acks().length, 4);
+  f.fetch = () => response(); f.clock.advance(250);await flush(); f.loaded(1);await flush();assert.equal(f.acks().length, 4);dev.destroy();
 });
 test('a burst during drainage coalesces to one latest checkpoint and navigation', async () => {
   const f = new Fixture(); await f.dev().ready; const drain = deferred<void>(); f.drain = () => drain.promise; f.emit(build(1, B, 'reload')); await flush();

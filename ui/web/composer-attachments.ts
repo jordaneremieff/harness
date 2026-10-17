@@ -22,6 +22,7 @@ export function attachmentSummary(workspace: string, targetKey: string, images: 
 }
 export type AttachmentTarget = {workspace: string; targetKey: string; target: Target};
 export type AttachmentItem = {id: number; name: string; file?: File; state: 'preparing' | 'including' | 'failed' | 'text'; prepared?: string; error?: string; abort: AbortController};
+export type AttachmentReloadState = {items:Array<Omit<AttachmentItem,'abort'>&{lastModified?:number}>;local:Array<{file:Blob;image:DraftImage}>};
 type AttachmentHooks = {images: () => readonly DraftImage[]; add: (image: DraftImage) => void; changed: () => void; refusal: () => string | undefined};
 const fileJobs: (() => Promise<void>)[] = [];
 let activeFiles = 0;
@@ -126,6 +127,17 @@ export class ComposerAttachments {
   private running = false;
   private renewals = new Set<AbortController>();
   constructor(target: AttachmentTarget, hooks: AttachmentHooks) {this.target = {...target, target: {...target.target}}; this.hooks = hooks;}
+  captureReload(): AttachmentReloadState {
+    this.suspend();
+    return {items:this.items.map(({abort: _abort,...item})=>({...item,lastModified:item.file?.lastModified})),local:[...this.local.values()].map(value=>({...value,image:{...value.image}}))};
+  }
+  restoreReload(value: AttachmentReloadState): void {
+    if(this.pending||this.local.size||!Array.isArray(value.items)||value.items.length>LIMITS.imagesPerDraft||!Array.isArray(value.local)||value.local.length>LIMITS.imagesPerDraft)throw new Error('Attachment preservation state changed.');
+    for(const item of value.items)if(!Number.isSafeInteger(item.id)||item.id<1||typeof item.name!=='string'||!item.file||!(item.file instanceof Blob)||!['failed','text'].includes(item.state))throw new Error('Attachment preservation bytes are unavailable.');
+    for(const item of value.local)if(!(item.file instanceof Blob)||typeof item.image?.digest!=='string')throw new Error('Image preservation bytes are unavailable.');
+    for(const item of value.items){this.serial=Math.max(this.serial,item.id);this.items.push({...item,file:new File([item.file as Blob],item.name,{type:item.file?.type,lastModified:item.lastModified}),abort:new AbortController()});}
+    for(const item of value.local)this.local.set(item.image.digest,{file:item.file,image:{...item.image}});
+  }
   get pending(): boolean {return this.items.length > 0;}
   get busy(): boolean {return this.items.some(item => item.state === 'preparing' || item.state === 'including');}
   add(files: readonly File[]): void {
