@@ -1,6 +1,6 @@
 #!/usr/bin/env -S node
 import { createHash, randomUUID } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, rename } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
@@ -18,6 +18,34 @@ const queue = {steering: [] as string[], followUp: [] as string[]};
 let dialogId: string | undefined;
 let serial = Promise.resolve();
 let timestamp = 1;
+let recoveryPhase = 0;
+let recoveryMessage: Record<string, unknown> | undefined;
+const commandEvidence: string[] = []; let evidenceOverflow = false;
+async function saveCommandEvidence(): Promise<void> {
+  if (!recoveryPhase) return;
+  const file = resolve(process.cwd(), 'owner-recovery-commands.json');
+  await writeFile(`${file}.pending`, JSON.stringify({pid: process.pid, sessionId, commands: commandEvidence, overflow: evidenceOverflow}));
+  await rename(`${file}.pending`, file);
+}
+async function recordCommand(record: Record<string, unknown>): Promise<void> {
+  if (commandEvidence.length < 256 && typeof record.type === 'string' && record.type.length <= 64) commandEvidence.push(record.type);
+  else evidenceOverflow = true;
+  await saveCommandEvidence();
+}
+async function recoveryDialog(): Promise<void> {
+  dialogId = randomUUID(); await emit({type: 'extension_ui_request', id: dialogId, method: 'confirm', title: 'Owner recovery fixture', message: recoveryPhase === 1 ? 'Advance partial text?' : 'Inject the unmatched response?'});
+}
+async function advanceRecovery(): Promise<void> {
+  recoveryPhase++;
+  await saveCommandEvidence();
+  if (recoveryPhase === 2) {
+    await emit({type: 'message_update', assistantMessageEvent: {type: 'text_delta', contentIndex: 0, delta: ' after'}});
+    await recoveryDialog();
+  } else {
+    dialogId = undefined;
+    await emit({type: 'response', id: 'owner-recovery-unmatched', command: 'get_state', success: true, data: {}});
+  }
+}
 async function emit(value: unknown): Promise<void> {
   await new Promise<void>((done) => process.stdout.write(`${JSON.stringify(value)}\n`, () => done()));
 }
@@ -31,9 +59,11 @@ async function append(message: unknown): Promise<void> {
 async function finish(): Promise<void> {
   if (!running) return;
   dialogId = undefined; running = false;
-  const final = { role: 'assistant', timestamp: timestamp++, content: [{ type: 'text', text: 'Fixture work completed.' }], stopReason: 'stop' };
-  await emit({ type: 'message_start', message: final }); await emit({ type: 'message_end', message: final }); await append(final);
+  const final = recoveryMessage ? {...recoveryMessage, content: [{type: 'text', text: recoveryPhase >= 2 ? 'before after' : 'before'}], stopReason: 'stop'} : { role: 'assistant', timestamp: timestamp++, content: [{ type: 'text', text: 'Fixture work completed.' }], stopReason: 'stop' };
+  if (!recoveryMessage) await emit({ type: 'message_start', message: final });
+  await emit({ type: 'message_end', message: final }); await append(final);
   await emit({ type: 'agent_end', messages: [final], willRetry: false }); await emit({ type: 'agent_settled', aborted: false });
+  recoveryMessage = undefined; recoveryPhase = 0;
 }
 try {
   if (args.includes('--session')) {
@@ -51,6 +81,12 @@ async function prompt(record: Record<string, unknown>): Promise<void> {
   await emit({ type: 'message_start', message: user }); await emit({ type: 'message_end', message: user }); await append(user);
   const assistant = { role: 'assistant', timestamp: timestamp++, content: [], stopReason: 'pending' };
   await emit({ type: 'message_start', message: assistant });
+  if (record.message === '/fixture owner-recovery') {
+    recoveryPhase = 1; recoveryMessage = assistant; await saveCommandEvidence();
+    await emit({type: 'message_update', assistantMessageEvent: {type: 'text_start', contentIndex: 0}});
+    await emit({type: 'message_update', assistantMessageEvent: {type: 'text_delta', contentIndex: 0, delta: 'before'}});
+    await recoveryDialog(); return;
+  }
   if (record.message === '/fixture stream') {
     await emit({type: 'message_update', assistantMessageEvent: {type: 'text_start', contentIndex: 0}});
     await new Promise<void>((done, reject) => {
@@ -97,7 +133,8 @@ async function command(record: Record<string, unknown>): Promise<void> {
     case 'new_session': case 'fork': sessionId = randomUUID(); sessionFile = resolve(process.cwd(), `fixture-${sessionId}.jsonl`); entries = []; leafId = null; await response(record, { cancelled: false }); return;
     case 'switch_session': sessionFile = String(record.sessionPath); await response(record, { cancelled: false }); return;
     case 'compact': await emit({ type: 'compaction_start', reason: 'manual' }); await emit({ type: 'compaction_end', reason: 'manual', aborted: false }); await response(record, {}); return;
-    case 'extension_ui_response': if (record.id === dialogId) await finish(); return;
+    case 'extension_ui_response':
+      if (record.id === dialogId) {if ((recoveryPhase === 1 || recoveryPhase === 2) && record.confirmed === true) await advanceRecovery(); else await finish();} return;
     case 'prompt': await prompt(record); return;
     default: await response(record); return;
   }
@@ -109,7 +146,7 @@ process.stdin.on('data', (bytes) => {
   for (;;) {
     const lf = input.indexOf('\n'); if (lf < 0) break;
     const line = input.slice(0, lf); input = input.slice(lf + 1);
-    serial = serial.then(() => command(JSON.parse(line))).catch(() => emit({ type: 'extension_error', error: 'Fixture command failed.' }));
+    serial = serial.then(async () => {const record = JSON.parse(line); await recordCommand(record); await command(record);}).catch(() => emit({ type: 'extension_error', error: 'Fixture command failed.' }));
   }
 });
 process.stdin.on('end', () => { void serial.then(() => process.stdout.end()); });
