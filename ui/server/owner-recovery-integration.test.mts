@@ -222,7 +222,7 @@ function publicApi(initial: string, signal: AbortSignal) {
     assert.ok(Buffer.byteLength(html) <= 2 * 1024 * 1024);
     const meta = html.match(/<meta name="ui-identity" content="([^"]+)"/); assert.ok(meta);
     const identity = readIdentity(meta[1] ?? null);
-    assert.equal(identity.git?.commit, release.manifest.sourceCommit); assert.equal(identity.git?.modified, false); assert.equal(identity.assets?.digest, release.manifest.assetDigest);
+    assert.equal(identity.git?.commit, release.manifest.sourceCommit); assert.equal(identity.git?.modified, false); assert.equal(identity.assets?.digest, release.manifest.generation);
   }
   return {call, mutation, version, use: (next: string) => {url = next;}, hydrate: async () => {const boot = await call<Bootstrap>('/api/bootstrap'); workspace = boot.workspace.id; return boot;}};
 }
