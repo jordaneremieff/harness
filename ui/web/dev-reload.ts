@@ -255,8 +255,13 @@ export class DevReload {
   private interaction(revision?: number): DevInteraction | null {
     const state = this.hooks.interaction();
     if (!integer(state.revision) || typeof state.safe !== 'boolean' || state.reason !== undefined && !HOLDS.includes(state.reason)) throw new ReloadFailure('host');
-    if (!state.safe || revision !== undefined && state.revision !== revision) {this.notice('deferred', state.reason ?? 'input'); return null;}
+    if (!state.safe || revision !== undefined && state.revision !== revision) {this.notice('deferred', state.reason ?? 'input');this.retryHeldBuild(); return null;}
     return state;
+  }
+  private retryHeldBuild():void{
+    const build=this.latest;
+    if(this.retry!==undefined||this.stopped||this.fatal||!this.initialized||this.ackBlocked||!build||build.status!=='ready'||this.upToDate(build))return;
+    this.retry=this.env.clock.set(()=>{this.retry=undefined;if(this.work)this.queued=true;else void this.applyLatest();},250);
   }
   private async initialize(signal: AbortSignal): Promise<void> {
     const raw = this.hooks.readCheckpoint();
@@ -444,7 +449,7 @@ export class DevReload {
     if (!this.current(serial, signal) || !this.interaction(revision)) return;
     this.env.navigate(url.href); this.stop();
   }
-  /** Retry a held update or uncertain CSS acknowledgment only on an explicit safe-point notification. */
+  /** Host safe points and explicit acknowledgment recovery share the same guarded update path. */
   async resume(): Promise<void> {
     if (!this.active || this.stopped || this.fatal) return;
     if (this.work) {this.queued = true; await this.work; return;}
