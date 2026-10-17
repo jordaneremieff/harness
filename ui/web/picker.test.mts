@@ -523,7 +523,7 @@ test('chooser style bindings keep closed facts on the title line and separate li
   assert.match(css, /\.picker-session-details\[open\] \{[^}]*grid-column: 1 \/ -1; grid-row: 2;/);
   assert.match(css, /\.picker-session-meta:empty \{ display: none; \}/);
   assert.match(css, /\.picker-footer \{[^}]*border-top: 1px solid var\(--edge\);/);
-  assert.match(css, /\.agent-row \.row-identity \{ grid-column: 2; grid-row: 2; \}/);
+  assert.match(css, /\.agent-row \.row-identity \{ grid-column: 1; grid-row: 2; max-width: 100%; \}/);
 });
 
 
