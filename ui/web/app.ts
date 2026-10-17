@@ -1956,8 +1956,7 @@ export async function drainDev(signal: AbortSignal): Promise<void> {
 function devEntry(controller: ConversationController): DevCheckpointEntry {
   const saved = controller.saved; if (!saved || !sameTarget(saved.target, controller.target)) throw new Error('Target preservation metadata is unavailable.');
   const epoch = controller.target.kind === 'agent' ? state.conversations.get(targetIdentity(controller.target))?.connectionEpoch : undefined;
-  const retained=controller.target.kind==='agent'&&(!epoch||!Number.isSafeInteger(epoch))&&controller.inspection?.active;
-  if (controller.target.kind === 'agent' && (!epoch || !Number.isSafeInteger(epoch))&&!retained) throw new Error('Agent observation metadata is unavailable.');
+  const retained=controller.target.kind==='agent'&&(!epoch||!Number.isSafeInteger(epoch)||epoch<1);
   const editor = controller.composer.editor;
   return {targetKey: saved.targetKey, target: controller.target.kind === 'primary' ? {...controller.target} : retained?{...controller.target,retained:true}:{...controller.target, connectionEpoch: epoch as number},
     draftRevision: controller.composer.serverDraftRevision ?? saved.draft.revision, imageFingerprint: draftImageFingerprint(controller.composer.state?.draft.images ?? saved.draft.images), readingRevision: saved.reading.revision, presentationRevision: saved.presentation?.revision ?? 0,
@@ -1997,6 +1996,8 @@ async function readPreservedComposers(checkpoint:DevReloadCheckpoint,signal:Abor
   if(!checkpoint.composerStateKey)return [];
   const value=await readReloadState(checkpoint.composerStateKey,signal);
   if(!Array.isArray(value)||value.length>LIMITS.conversationTabs||!value.every(validComposerReloadState)||new Set(value.map(item=>JSON.stringify([item.workspace,item.targetKey]))).size!==value.length)throw new Error('Preserved draft bytes are unavailable.');
+  for(const entry of checkpoint.targets){const target=entry.target;
+    if(target.kind==='agent'&&'retained' in target&&!checkpoint.inspections?.some(item=>item.identity===target.identity)&&!value.some(item=>item.workspace===checkpoint.workspaceId&&item.targetKey===entry.targetKey&&sameTarget(item.target,target)))throw new Error('The preserved Agent target is unavailable.');}
   return value;
 }
 export function currentPreservedTarget(saved:TargetState,preserved:ComposerReloadState[],workspace:string):TargetState {
@@ -2026,8 +2027,9 @@ async function restoreDevRecipient(checkpoint: DevReloadCheckpoint, values: Targ
   const captured = messageTarget.current;
   return !!captured && messageTarget.valid(captured) && captured.prepared?.targetState.targetKey === checkpoint.messageRecipient;
 }
-async function restoreDevReading(owned: ConversationController[], signal: AbortSignal, current: () => boolean): Promise<boolean> {
+async function restoreDevReading(owned: ConversationController[], signal: AbortSignal, current: () => boolean, checkpoint:DevReloadCheckpoint): Promise<boolean> {
   for (const controller of owned) {
+    if(checkpoint.targets.some(entry=>entry.targetKey===controller.saved?.targetKey&&entry.target.kind==='agent'&&'retained' in entry.target))continue;
     const reading = controller.saved?.reading;
     if (controller.root.hidden || !reading?.anchorId || reading.followTail) continue;
     await waitForSignal(loadControllerHistory(controller), signal);
@@ -2095,7 +2097,7 @@ async function restoreDevState(checkpoint: DevReloadCheckpoint, signal: AbortSig
   const owned = savedTargets.map(saved => {state = {...state, targets: new Map(state.targets).set(saved.targetKey, saved)}; const controller = conversationController(saved.target); controller.saved = saved; return controller;});
   if (!await restoreDevRecipient(checkpoint, savedTargets, signal) || !current()) return false;
   if(!restoreDevInspections(checkpoint))return false;
-  renderAll(); if (!await restoreDevReading(owned, signal, current)) return false;
+  renderAll(); if (!await restoreDevReading(owned, signal, current, checkpoint)) return false;
   if (!state.workspace || !await waitForSignal(filesViews.restore(state.workspace,checkpoint.files ?? [],current),signal) || !current()) return false;
   return finishDevRestore(checkpoint,owned,savedTargets,preserved,signal,current);
 }

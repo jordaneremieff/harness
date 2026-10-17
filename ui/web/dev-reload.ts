@@ -126,7 +126,7 @@ function checkpointViews(value:Record<string,unknown>):boolean {
   if(value.composerStateKey!==undefined&&(typeof value.composerStateKey!=='string'||!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value.composerStateKey)))return false;
   if(!fileCheckpointState(value.files,value.focusedControl)||!inspectionList(value.inspections))return false;
   const inspections=(value.inspections??[]) as InspectionCheckpoint[];
-  return (value.targets as DevCheckpointEntry[]).every(entry=>{const target=entry.target;return target.kind!=='agent'||!('retained' in target)||inspections.some(item=>item.identity===target.identity);});
+  return (value.targets as DevCheckpointEntry[]).every(entry=>{const target=entry.target;return target.kind!=='agent'||!('retained' in target)||value.composerStateKey!==undefined||inspections.some(item=>item.identity===target.identity);});
 }
 function fileCheckpointState(files:unknown,focusedControl:unknown):boolean {
   if (files === undefined) return true;

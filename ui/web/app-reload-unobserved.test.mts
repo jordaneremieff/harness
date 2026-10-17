@@ -1,0 +1,46 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {createAppFixture} from './app-fixture.mts';
+import {Composer, createComposerElements, type ComposerReloadState} from './composer.ts';
+import {readReloadState} from './reload-storage.ts';
+import {ComposerAttachments} from './composer-attachments.ts';
+import {validateDevReloadCheckpoint, type DevReloadCheckpoint} from './dev-reload.ts';
+const browser = await createAppFixture();
+
+test('missing Agent observation metadata preserves the exact target draft and File without input or retry', async t => {
+  const identity = 'unobserved-agent', target = {kind: 'agent' as const, identity}, workspace = 'unobserved-workspace';
+  const saved = browser.targetFixture('unobserved-target', target, {reading: {revision: 2, anchorId: 'unavailable-entry', offsetPx: 18, followTail: false}});
+  await browser.arrive({workspace: {id: workspace, revision: 1, selectedTarget: target}, primaries: [], roster: [browser.agentFixture(identity, {availability: 'stored'})], targets: [saved], observations: [], confirmed: false});
+  const composer = browser.app.agentComposer(), editor = browser.agentControl('editor');
+  composer.setText('Exact local draft without an Agent connection.');
+  const file = new File(['unchanged invalid image bytes'], 'owned.png', {type: 'image/png', lastModified: 456});
+  composer.addFiles([file]); await browser.settle(); editor.focus(); editor.setSelectionRange(6, 17, 'forward');
+  assert.equal(browser.app.state.conversations.get(JSON.stringify(['agent', identity]))?.connectionEpoch, undefined);
+  t.mock.method(ComposerAttachments.prototype, 'retry', () => {assert.fail('Restoration never retries a File.');});
+  const start = browser.transportLog.length, signal = AbortSignal.timeout(3000);
+  await browser.app.drainDev(signal);
+  const now = Date.now(), generation = 'a'.repeat(64);
+  const checkpoint: DevReloadCheckpoint = {...browser.app.captureDevCheckpoint(), version: 1, generation, oldClient: 'b'.repeat(24), capturedAt: now, interactionRevision: 0};
+  assert.deepEqual(checkpoint.targets[0]?.target, {...target, retained: true}); assert.equal(checkpoint.targets[0]?.targetKey, saved.targetKey);
+  assert.deepEqual(validateDevReloadCheckpoint(checkpoint, generation, now), checkpoint); assert.ok(checkpoint.composerStateKey);
+  const snapshots = await readReloadState(checkpoint.composerStateKey, signal) as ComposerReloadState[];
+  const captured = snapshots.find(value => value.workspace === workspace && value.targetKey === saved.targetKey); assert.ok(captured);
+  assert.deepEqual(captured.target, target); assert.equal(captured.data.text, editor.value);
+  const elements = createComposerElements('restored-unobserved'), fresh = new Composer(elements, {submitted() {assert.fail('Restoration never submits input.');}, unknownCommand: () => false});
+  const current = browser.app.state.targets.get(saved.targetKey); assert.ok(current);
+  t.after(() => fresh.destroy()); fresh.restoreReload(captured, current);
+  assert.equal(fresh.editor.value, 'Exact local draft without an Agent connection.'); assert.deepEqual(fresh.state?.target, target);
+  const transferred = fresh.captureReload()[0]?.attachments?.items[0]; assert.ok(transferred?.file);
+  assert.equal(transferred.state, 'failed'); assert.equal(await transferred.file.text(), await file.text()); assert.equal(transferred.file.lastModified, 456);
+  // Dispose the old fixture's File item before the real app restoration reads the committed transfer.
+  const remove = browser.agentControl('root').querySelectorAll('button').find(node => node.textContent === 'Remove owned.png'); assert.ok(remove); remove.click(); await browser.settle();
+  assert.equal(await browser.app.restoreDevCheckpoint(checkpoint, signal), true);
+  const restored = composer.captureReload().find(value => value.workspace === workspace && value.targetKey === saved.targetKey); assert.ok(restored);
+  assert.equal(editor.value, captured.data.text); assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [6, 17, 'forward']);
+  assert.deepEqual(browser.app.state.workspace?.selectedTarget, target); assert.deepEqual(restored.target, target);
+  assert.equal(restored.attachments?.items[0]?.state, 'failed'); assert.equal(restored.attachments?.items[0]?.error, captured.attachments?.items[0]?.error);
+  const restoredFile = restored.attachments?.items[0]?.file; assert.ok(restoredFile); assert.notEqual(restoredFile, file);
+  assert.equal(await restoredFile.text(), await file.text()); assert.equal(restoredFile.name, file.name); assert.equal(restoredFile.type, file.type); assert.equal(restoredFile.lastModified, file.lastModified);
+  assert.equal(browser.app.state.conversations.get(JSON.stringify(['agent', identity]))?.connectionEpoch, undefined);
+  assert.equal(browser.transportLog.slice(start).filter(row => row.method !== 'GET' && /operations|images|input/.test(row.path)).length, 0);
+});
