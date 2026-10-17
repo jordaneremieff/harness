@@ -73,10 +73,11 @@ export function resolveDraftConflict(state: DraftState, choice: 'local' | 'serve
   return {...state, text: state.server.text, mode: state.server.mode, images: imageCopy(state.server.images), recoveryOrigin: state.server.recoveryOrigin, conflict: undefined, edit, savedEdit: edit};
 }
 export function restoreLocalDraft(local:Omit<DraftState,'inFlight'|'submissions'>,saved:DraftView,review=false):DraftState {
-  const same=sameDraftTuple(local,saved),edited=review||!sameDraftTuple(local,local.server);
+  const same=sameDraftTuple(local,saved),edited=review||local.edit!==local.savedEdit||!sameDraftTuple(local,local.server);
   if(!edited&&!same)return createDraft(saved);
   const conflict=same?undefined:saved.revision!==local.server.revision?saved:local.conflict;
-  return {...structuredClone(local),server:saved,savedEdit:same?local.edit:-1,submissions:new Map(),conflict};
+  const confirmed=same&&(!edited||saved.revision>local.server.revision);
+  return {...structuredClone(local),server:saved,savedEdit:confirmed?local.edit:-1,submissions:new Map(),conflict};
 }
 export function captureSubmission(state: DraftState, target: Target, operationId: string, differentMessage?: true): {state: DraftState; submission?: Submission} {
   const guard = state.server.recoverySendGuard;

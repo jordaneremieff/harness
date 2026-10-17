@@ -13,6 +13,12 @@ test('local reload state retains edits and does not resurrect an obsolete saved 
   assert.equal(conflict.text,edited.text);assert.equal(conflict.server.text,newer.text);assert.equal(conflict.conflict?.revision,newer.revision);assert.equal(conflict.submissions.size,0);
   const confirmed=restoreLocalDraft(edited,view(2,edited.text));assert.equal(draftSaved(confirmed),true);assert.equal(confirmed.conflict,undefined);
 });
+test('reload retains an undo edit while an older save still targets the same server revision',()=>{
+  const saved=view(1,'Original text'),local={server:saved,text:saved.text,mode:saved.mode,images:[],edit:2,savedEdit:0};
+  const restored=restoreLocalDraft(local,saved);assert.equal(draftSaved(restored),false);
+  const late=receiveDraft(restored,view(2,'Older intermediate edit'),true);
+  assert.equal(late.text,'Original text');assert.equal(late.conflict?.text,'Older intermediate edit');
+});
 test('a draft save never replaces newer edits and sends only one revision at a time', () => {
   let state = editDraft(createDraft(view()), 'first');
   const save = beginDraftSave(state); assert.ok(save.request); state = save.state;
