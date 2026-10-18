@@ -23,15 +23,16 @@ function listBlock(node: Extract<MarkdownBlock, {type: 'list'}>): HTMLElement {
   return list;
 }
 /** Wrap changes only the scrollport's whitespace mode, not its text nodes. */
-export function sourceWrap(pre: HTMLElement): HTMLButtonElement {
+export function sourceWrap(pre: HTMLElement, subject = 'source lines'): HTMLButtonElement {
   pre.dataset.wrap = 'true';
-  const wrap = cardAction('wrap', 'Wrap', () => {
+  const label = subject === 'source lines' ? 'Wrap' : `Wrap ${subject}`;
+  const wrap = cardAction('wrap', label, () => {
     pre.dispatchEvent(new Event('source-wrap', {bubbles: true}));
     const wrapped = pre.dataset.wrap !== 'true';
     pre.dataset.wrap = String(wrapped); wrap.setAttribute('aria-pressed', String(wrapped));
-    wrap.title = wrapped ? 'Do not wrap source lines' : 'Wrap source lines';
+    wrap.title = `${wrapped ? 'Do not wrap' : 'Wrap'} ${subject}`;
   }, 'source-wrap');
-  wrap.setAttribute('aria-pressed', 'true'); cardActionLabel(wrap, 'Wrap', 'Wrap source lines'); wrap.title = 'Do not wrap source lines';
+  wrap.setAttribute('aria-pressed', 'true'); cardActionLabel(wrap, label, `Wrap ${subject}`); wrap.title = `Do not wrap ${subject}`;
   return wrap;
 }
 /** Controls stay outside the source's scrollport and never replace its text nodes. */

@@ -1614,10 +1614,37 @@ test('expanded image output keeps supplied part order before actions and quieter
   assert.equal(area.querySelector('.tool-output-text')?.hidden, true); assert.equal(area.querySelector('.tool-output-text')?.textContent, '');
   assert.equal(technical.open, false); assert.ok(technical.querySelector('.tool-arguments')); assert.ok(technical.querySelector('.tool-raw-output')); assert.ok(technical.querySelector('.tool-output-info'));
   assert.equal(actions.querySelectorAll('.tool-copy').length, 1); assert.equal(technical.querySelectorAll('.tool-copy').length, 0);
+  assert.equal(parts.querySelectorAll('.source-header').length, 0); assert.equal(parts.querySelectorAll('.source-wrap').length, 0);
+  const texts=parts.querySelectorAll('.tool-result-text'), wraps=actions.querySelectorAll('.tool-result-wrap');
+  assert.equal(wraps.length,2);assert.deepEqual(wraps.map(control=>control.attributes['aria-label']),['Wrap text 1','Wrap text 2']);
+  assert.ok(wraps.every(control=>control.attributes['aria-pressed']==='true'));const firstText=texts[0]?.children[0];
+  wraps[0]?.dispatch('click');flush();assert.equal(texts[0]?.dataset.wrap,'false');assert.equal(texts[1]?.dataset.wrap,'true');assert.equal(wraps[0]?.title,'Wrap text 1');
+  wraps[1]?.dispatch('click');flush();assert.equal(texts[1]?.dataset.wrap,'false');assert.equal(wraps[1]?.attributes['aria-pressed'],'false');
+  wraps[0]?.dispatch('click');flush();assert.equal(texts[0]?.dataset.wrap,'true');assert.equal(texts[0]?.children[0],firstText);assert.equal(wraps[0]?.title,'Do not wrap text 1');
+  view.set([source]);flush();assert.deepEqual(actions.querySelectorAll('.tool-result-wrap'),wraps);assert.equal(wraps[1]?.attributes['aria-pressed'],'false');
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator'); let copied = '';
   Object.defineProperty(globalThis, 'navigator', {configurable: true, value: {clipboard: {writeText: async (text: string) => {copied = text;}}}});
   try {actions.querySelector('.tool-copy')?.dispatch('click', {stopPropagation() {}}); await Promise.resolve(); assert.equal(copied, 'Supplied introduction\nRetained image description\nSupplied conclusion');}
   finally {if(previous)Object.defineProperty(globalThis,'navigator',previous);else Reflect.deleteProperty(globalThis,'navigator');}
+  view.destroy();
+});
+test('rich result actions retain focused controls and retire them with their exact text parts', () => {
+  setup();const view=transcript();
+  const image:PartView={type:'image',mimeType:'image/png',digest:'a'.repeat(64),width:2,height:2,bytes:20,alt:'Retained image'};
+  const source=(parts:PartView[],failed=false)=>{const value=contentEntry('wrap-owner',{},'',failed);const result=value.messages[0]?.parts.find(part=>part.type==='toolResult');assert.ok(result);result.parts=parts;return value;};
+  view.set([source([{type:'text',text:'Long result '.repeat(1000)},image])]);flush();
+  const card=node('primary-transcript').querySelector('.tool-card');assert.ok(card);card.open=true;card.dispatch('toggle');flush();
+  const actions=card.querySelector('.tool-output-actions'),area=card.querySelector('.tool-result');assert.ok(actions);assert.ok(area);
+  const wrap=actions.querySelector('.tool-result-wrap'),text=area.querySelector('.tool-result-text');assert.ok(wrap);assert.ok(text);
+  assert.equal(wrap.attributes['aria-label'],'Wrap source lines');assert.equal(text.closest('.source-header'),null);assert.equal(area.contains(wrap),false);
+  wrap.dispatch('click');flush();wrap.focus();const replacement=source([image],true);view.set([replacement]);flush();
+  assert.equal(actions.querySelector('.tool-result-wrap'),wrap);assert.equal(area.querySelector('.tool-result-text'),text);assert.equal(wrap.attributes['aria-pressed'],'false');
+  fakeDocument.activeElement=null;view.set([replacement]);flush();
+  assert.equal(actions.querySelectorAll('.tool-result-wrap').length,0);assert.equal(area.querySelectorAll('.tool-result-text').length,0);assert.equal(area.querySelectorAll('.image-part').length,1);
+  assert.equal(card.parentNode?.dataset.status,'error');assert.equal(actions.querySelectorAll('.tool-copy').length,1);assert.ok(card.querySelector('.tool-raw-output'));
+  view.set([source([{type:'text',text:'Failed retained text'},image],true)]);flush();assert.equal(actions.querySelectorAll('.tool-result-wrap').length,1);assert.match(area.textContent,/Failed retained text/);
+  view.set([source([{type:'text',text:'Plain retained text'}])]);flush();assert.equal(actions.querySelectorAll('.tool-result-wrap').length,0);
+  assert.equal(actions.querySelector('.source-wrap')?.hidden,false);assert.equal(area.querySelector('.tool-output-text')?.hidden,false);assert.match(area.textContent,/Plain retained text/);
   view.destroy();
 });
 test('structured result parts preserve plain text, image and omission order without duplicate images', () => {

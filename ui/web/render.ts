@@ -1593,10 +1593,15 @@ export class Transcript {
   }
   private updateResultDocument(tool: ToolNode, source: JoinedTool, pre: HTMLElement): void {
     if (tool.documentSource?.result !== source.result || tool.documentSource?.status !== source.status || tool.documentSource?.args !== source.args) {
-      if (tool.resultDocument && this.protectedNode(tool.resultDocument)) return;
-      this.retireNode(tool.resultDocument);
+      const controls = [...tool.actions.querySelectorAll<HTMLElement>('.tool-result-wrap')];
+      if (tool.resultDocument && (this.protectedNode(tool.resultDocument) || controls.some(control => this.protectedNode(control)))) return;
+      this.retireNode(tool.resultDocument); for (const control of controls) control.remove();
       tool.resultDocument = this.documentResult(source) ? this.resultParts(tool, source) : undefined;
-      if (tool.resultDocument) pre.after(tool.resultDocument);
+      if (tool.resultDocument) {
+        const texts = [...tool.resultDocument.querySelectorAll<HTMLElement>('.tool-result-text')];
+        texts.forEach((text, index) => {const control = sourceWrap(text, texts.length > 1 ? `text ${index + 1}` : undefined); control.classList.add('tool-result-wrap'); tool.actions.append(control);});
+        pre.after(tool.resultDocument);
+      }
     }
     tool.documentSource = source;
     pre.hidden = !!tool.resultDocument;
