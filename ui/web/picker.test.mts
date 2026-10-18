@@ -33,7 +33,7 @@ class Node {
   setSelectionRange(start: number, end: number): void { this.selectionStart = start; this.selectionEnd = end; }
 }
 function descendants(node: Node): Node[] { return node.children.flatMap(child => [child, ...descendants(child)]); }
-const catalogPresentation: ConstructorParameters<typeof ProjectPicker>[0]['agentPresentation'] = row => ({name: row.name ?? 'Unnamed conversation', activity: 'Connection not checked', tone: 'warning', cwd: row.cwd});
+const catalogPresentation: ConstructorParameters<typeof ProjectPicker>[0]['agentPresentation'] = row => ({name: row.name ?? 'Unnamed conversation', activity: 'Running', tone: 'warning', cwd: row.cwd});
 const saved: SavedSessionPage = {items: [{id: 's', path: '/project/s.jsonl', project: '/project', revision: 'r', title: 'Saved title', titleState: 'ready', modifiedAt: '2026-01-01T00:00:00Z', size: 10}], total: 1, omitted: 0, nextCursor: null, titleCursor: null, observedAt: '2026-01-01T00:00:00Z'};
 for (const [name, page] of [
   ['complete', saved],
@@ -171,7 +171,7 @@ test('Durable picker rows use projected names and truthful state with native key
   const original = Object.getOwnPropertyDescriptor(globalThis, 'HTMLButtonElement');
   Object.defineProperty(globalThis, 'HTMLButtonElement', {configurable: true, value: Node});
   t.after(() => {if (original) Object.defineProperty(globalThis, 'HTMLButtonElement', original); else Reflect.deleteProperty(globalThis, 'HTMLButtonElement');});
-  const name = 'Complete projected conversation name '.repeat(8), activity = 'Connection not checked; retained history remains available';
+  const name = 'Complete projected conversation name '.repeat(8), activity = 'Running; retained history remains available';
   const qualifier = 'qualifier'.repeat(70), folderPath = `/${'unbroken-folder'.repeat(80)}`;
   const setup = directPicker(t, undefined, saved, undefined, {roster: catalogRoster([catalogRow('first'), catalogRow('second')]), published: noPublished,
     presentation: row => ({name: row.identity === 'first' ? name : 'Unnamed conversation', identityTail: row.identity === 'first' ? qualifier : undefined, activity, tone: 'warning', cwd: folderPath})});
