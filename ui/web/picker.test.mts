@@ -808,6 +808,20 @@ test('a saved file a terminal writes reads "Open in a terminal" with Resume disa
   select.click(); await settle();
   assert.equal(setup.calls.filter(call => call.path === '/api/primaries').length, 1);
 });
+test('a file that left the registered list after its terminal exited returns to the folder list on Refresh and on reopen', async t => {
+  const held = {...ordinarySample, writer: 'live' as const};
+  const catalog = {roster: catalogRoster(), published: {...noPublished, items: [held], total: 1}};
+  const page = {...saved, items: [held]};
+  const setup = directPicker(t, undefined, page, undefined, catalog); setup.picker.open(); await settle();
+  const registered = () => setup.body.querySelector('.picker-registered-list')?.querySelectorAll('.picker-select').length;
+  assert.equal(registered(), 1); assert.equal(setup.body.querySelector('.picker-folder-ordinary')?.querySelectorAll('.picker-select').length, 0, 'a registered file lists once');
+  page.items = [{...ordinarySample}]; catalog.published = {...noPublished}; setup.picker.writersChanged(); await settle();
+  assert.equal(registered(), 0);
+  let select = rowOf(setup);
+  assert.equal(select.disabled, false); assert.match(select.textContent, /The terminal session ended\. Resume here\./);
+  setup.modal.close(); setup.picker.open(); await settle();
+  select = rowOf(setup); assert.equal(select.disabled, false); assert.match(select.textContent, /The terminal session ended\. Resume here\./);
+});
 test('a file that was never held reads as before and the window regaining focus makes no row claim', async t => {
   const setup = directPicker(t, undefined, saved, undefined, {roster: catalogRoster(), published: noPublished}); setup.picker.open(); await settle();
   const select = rowOf(setup);

@@ -298,7 +298,7 @@ export class ProjectPicker {
     const searchRow = element('div', 'picker-search-row'); searchRow.append(pickerField(search)); body.append(searchRow);
     const results = element('div', 'picker-results'); body.append(results);
     const publishedPaths=new Set<string>();
-    const paintCatalog = this.catalog(results,signal,token,()=>search.field.value,()=>search.field.focus(),paths=>{for(const path of paths)publishedPaths.add(path);paint();});
+    const paintCatalog = this.catalog(results,signal,token,()=>search.field.value,()=>search.field.focus(),paths=>{if(paths){publishedPaths.clear();for(const path of paths)publishedPaths.add(path);}paint();});
     const ordinary = element('section', 'picker-folder-ordinary'), heading = groupHeading('Ordinary sessions in this folder'); ordinary.append(heading.node, safety);
     const list = element('div', 'picker-sessions'); const coverage = element('p', 'secondary'); coverage.id = 'picker-coverage'; coverage.setAttribute('aria-live', 'polite');
     const error = element('p', 'error'); error.setAttribute('role', 'alert');
@@ -387,7 +387,7 @@ export class ProjectPicker {
     });
     save(); paint(); for (const page of data?.pendingTitles ?? []) void fillTitles(page); search.field.focus();
   }
-  private catalog(body:HTMLElement,signal:AbortSignal,token:number,query:()=>string,focusSearch:()=>void,changed:(paths:string[])=>void):()=>void {
+  private catalog(body:HTMLElement,signal:AbortSignal,token:number,query:()=>string,focusSearch:()=>void,changed:(paths?:string[])=>void):()=>void {
     const durable=element('section','picker-durable'), durableHeading=groupHeading('Durable conversations');
     const roster = this.ctx.snapshot()?.roster, list = element('div', 'picker-durable-list');
     const coverage = element('p', 'secondary picker-durable-coverage', durableCoverage(roster)); coverage.hidden = !coverage.textContent;
@@ -430,7 +430,7 @@ export class ProjectPicker {
     const readPublished=()=>void request<SavedSessionPage>('/api/sessions/published','GET',undefined,undefined,signal).then(page=>{
       if(!this.owns(token)||signal.aborted)return;
       this.noteWriters(page.items);this.published=page;loaded=true;failed=false;this.ctx.titlesChanged?.();changed(page.items.map(item=>item.path));
-    }).catch(()=>{if(this.owns(token)&&!signal.aborted){failed=true;changed([]);}});
+    }).catch(()=>{if(this.owns(token)&&!signal.aborted){failed=true;changed();}});
     this.reloadPublished=readPublished;readPublished();
     return paint;
   }
