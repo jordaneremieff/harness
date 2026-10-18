@@ -883,8 +883,10 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
 .workbench-status .receipt-details { opacity: 0; pointer-events: none; }
 .workbench-status:hover .receipt-details, .workbench-status:focus-within .receipt-details, .workbench-status .receipt-details:has(details[open]) { opacity: 1; pointer-events: auto; }
 .receipt-details summary { display: block; color: var(--muted); }
-.receipt-save-failure { display: flex; flex-wrap: wrap; align-items: center; gap: 0 var(--s2); min-width: 0; }
+.receipt-save-failure { display: flex; flex-wrap: wrap; align-items: center; gap: 0 var(--s2); min-width: 0; overflow: visible; }
 .receipt-save-failure > p { margin: 0; }
+.receipt .receipt-save-failure > .receipt-retry { padding: 2px 0; color: var(--muted); font-size: 12px; }
+.receipt .receipt-save-failure > .receipt-retry:hover:not(:disabled) { background: transparent; color: var(--fg); }
 .receipt-details pre { position: absolute; right: 0; bottom: calc(100% + 6px); left: 0; z-index: 5; max-height: 30dvh; padding: 8px 12px; overflow: auto; border: 1px solid var(--rule); border-radius: 4px; background: var(--raised); color: var(--fg); white-space: pre-wrap; box-shadow: var(--shadow); }
 .composer-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; flex: 0 1 auto; gap: var(--s1); min-width: 0; min-height: 24px; }
 @container conversation (max-width: 480px) {

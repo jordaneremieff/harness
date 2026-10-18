@@ -1058,3 +1058,8 @@ test('every sidebar heading and row starts its content at the same 12px edge', (
   assert.match(rule('.file-row'), /padding: 2px var\(--s3\) 2px calc\(var\(--s3\) \+ var\(--file-depth,0\) \* 14px\)/);
   assert.match(rule('.agent-row .row-select'), /padding: 4px var\(--s2\) 4px var\(--s3\)/); assert.match(rule('.nav-search'), /margin: var\(--s1\) var\(--s3\)/);
 });
+
+test('the draft-save failure row wraps, stays visible and offers a quiet text retry', () => {
+  assert.match(rule('.receipt-save-failure'), /display: flex; flex-wrap: wrap;/); assert.match(rule('.receipt-save-failure'), /overflow: visible;/);
+  assert.match(rule('.receipt .receipt-save-failure > .receipt-retry'), /padding: 2px 0; color: var\(--muted\); font-size: 12px;/);
+});

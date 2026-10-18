@@ -5,7 +5,7 @@ import { insertNativeText } from './native-insertion.ts';
 import { ComposerOverlay } from './composer-overlay.ts';
 import type { DraftImage, DraftView, OperationView, RecoveryInput, Target, TargetIndex, TargetState, UnconfirmedInput } from '../shared/api.ts';
 import { announce, button, copy, element, rawText, setText } from './dom.ts';
-import { cardAction, cardActionLabel } from './card-icons.ts';
+import { cardAction } from './card-icons.ts';
 import {contextMenu} from './context-menu.ts';
 import { exactInput, recoveryLabel } from './recovery.ts';
 import { targetReceipts } from './receipt.ts';
@@ -875,9 +875,9 @@ export class Composer {
     }), button('Copy prepared text', () => { void copy(buffer.insertionCopy ?? '', slot); }), button('Discard prepared text', () => {buffer.insertionCopy = undefined; buffer.notice = ''; this.receipt(buffer);}));
     this.inputReceiptNotice(buffer, records.find(inputOperation), slot);
     if (!buffer.saveError || buffer.review) return;
-    const retry = cardAction('restart', 'Retry draft save', () => { if (this.current !== buffer || this.admissionBlocked || buffer.saving) return; if (buffer.notice === buffer.saveError || buffer.noticeDetails === buffer.saveError) { buffer.notice = ''; buffer.noticeDetails = undefined; } buffer.saveError = undefined; this.render(); this.receipt(buffer); this.flush(buffer); });
+    const retry = button('Try again', () => { if (this.current !== buffer || this.admissionBlocked || buffer.saving) return; if (buffer.notice === buffer.saveError || buffer.noticeDetails === buffer.saveError) { buffer.notice = ''; buffer.noticeDetails = undefined; } buffer.saveError = undefined; this.render(); this.receipt(buffer); this.flush(buffer); }, 'receipt-retry');
+    retry.setAttribute('aria-label', 'Retry draft save'); retry.title = 'Retry draft save';
     retry.disabled = this.admissionBlocked || !!buffer.saving || new TextEncoder().encode(buffer.data.text).length > LIMITS.textBytes;
-    cardActionLabel(retry, 'Try again', 'Retry draft save'); const label = retry.querySelector('.card-action-label'); if (label) label.className = 'card-action-label';
     const failure = element('div', 'receipt-save-failure'); failure.append(element('p', 'warning', 'Draft not saved.'), this.details(buffer.saveError), retry); slot.append(failure);
   }
   private inputReceiptNotice(buffer: Buffer, record: OperationView | undefined, slot: HTMLElement): void {

@@ -944,7 +944,7 @@ test('a matching stream acknowledgment stays quiet if its later HTTP response is
 test('save Retry clears the matching save failure after an acknowledged retry', async () => {
   const f = fixture(); f.connect(); f.composer.setText('text'); f.fail(f.pick('PUT', '/draft'), 'host_unavailable'); await turn();
   assert.equal(f.node('save').textContent, 'Draft not saved'); assert.match(f.node('receipt').textContent, /host_unavailable/);
-  const control = f.node('receipt').find('Retry draft save'); assert.ok(control); const row = control.parentElement; assert.ok(row); assert.equal(row.className, 'receipt-save-failure'); assert.equal(f.node('receipt').children.length, 1); assert.match(row.textContent, /^Draft not saved\.\nDetails/); assert.match(row.textContent, /Try again$/);
+  const control = f.node('receipt').find('Retry draft save'); assert.ok(control); const row = control.parentElement; assert.ok(row); assert.equal(row.className, 'receipt-save-failure'); assert.equal(control.textContent, 'Try again'); assert.equal(control.children.length, 0); assert.equal(control.getAttribute('aria-label'), 'Retry draft save'); assert.equal(f.node('receipt').children.length, 1); assert.match(row.textContent, /^Draft not saved\.\nDetails/); assert.match(row.textContent, /Try again$/);
   f.click('Retry draft save'); f.saved('text'); await turn();
   assert.equal(f.node('receipt').textContent, ''); assert.equal(f.node('save').textContent, ''); assert.equal(f.calls.length, 0);
 });
