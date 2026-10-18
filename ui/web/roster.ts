@@ -32,7 +32,7 @@ export function rosterPreview(source: string): string {
   return previewText(words, 1, 180).text;
 }
 function rowName(row: AgentRow): string {return agentName(row.name, row.handle, row.identity, undefined, row.firstMessage);}
-export type RosterStatus = {activity?: string; glyph: string; label: string; tone?: PresentationTone; name?: string; tail?: string; tool?: AgentRow['currentTool']};
+export type RosterStatus = {hideVisibleRosterState?: boolean; activity?: string; glyph: string; label: string; tone?: PresentationTone; name?: string; tail?: string; tool?: AgentRow['currentTool']};
 function modelText(row: AgentRow): string {
   if (!row.model) return '';
   const thinking = row.model.thinkingLevel ?? row.thinkingLevel;
@@ -297,19 +297,22 @@ export class Roster {
     const cached = {node, select, state, name, preview, identity, ageButton, message, age, source: row, absolute: false}; this.cache.set(row.identity, cached);
     return cached;
   }
+  private updatePreview(cached: RowNode, source?: string): void {
+    if (cached.previewSource !== source) {cached.previewSource = source; setText(cached.preview, rosterPreview(source ?? '')); cached.preview.title = cached.preview.textContent ?? '';}
+    cached.preview.hidden = !cached.preview.textContent;
+  }
   private row(row: AgentRow, identity: string): RowNode {
     const cached = this.cache.get(row.identity) ?? this.createRow(row);
-    const state = this.resolvedStatus(row); setText(cached.state, state.activity || (state.label==='Ready'?'Idle':state.label)); cached.state.hidden = !cached.state.textContent; cached.state.title = state.label; cached.state.dataset.tone = state.tone ?? 'secondary'; setText(cached.name, state.name ?? rowName(row));
+    const state = this.resolvedStatus(row); setText(cached.state, state.activity || (state.label==='Ready'?'Idle':state.label)); cached.state.hidden = state.hideVisibleRosterState === true || !cached.state.textContent; cached.state.title = state.label; cached.state.dataset.tone = state.tone ?? 'secondary'; setText(cached.name, state.name ?? rowName(row));
     const caption=this.captions.get(row.identity);cached.name.title=caption.source==='first-message'?'Title from first message, not a supplied name':'Conversation name';
-    if (cached.previewSource !== row.latestReply) {cached.previewSource = row.latestReply; setText(cached.preview, rosterPreview(row.latestReply ?? ''));}
-    cached.preview.hidden=!cached.preview.textContent;
+    this.updatePreview(cached, row.latestReply);
     identity = state.name !== undefined ? state.tail ?? '' : identity; setText(cached.identity, identity); cached.identity.hidden = !identity; cached.identity.title = `Agent ID: ${row.identity}`;
     cached.identity.setAttribute('aria-label', cached.identity.title);
     cached.node.dataset.live = String(row.availability === 'live');
     cached.node.dataset.tool = String(!!state.tool);
     const reported = !state.tool && row.currentTool ? `Last reported tool · ${row.currentTool.name} · ${row.currentTool.argument}` : '';
     const description = [modelText(row), activityLine({...row, currentTool: state.tool}, state.label), reported, publishedRetryDescription(row)].filter(Boolean).join('\n');
-    cached.select.title = description; cached.select.setAttribute('aria-description', description);
+    cached.select.title = description; cached.select.setAttribute('aria-description', [description, cached.preview.textContent ? `Preview: ${cached.preview.textContent}` : ''].filter(Boolean).join('\n'));
     cached.select.setAttribute('aria-current', row.identity === this.selected ? 'page' : 'false');
     cached.select.setAttribute('aria-label', `${this.displayName(row)} · ${row.identity} · ${state.label}`);
     cached.node.setAttribute('aria-label', this.displayName(row));

@@ -33,14 +33,11 @@ export function filterSessions(items: SavedSession[], search: string): SavedSess
   const query = search.trim().toLocaleLowerCase();
   return query ? items.filter(item => `${item.title}\n${item.id}\n${item.path}`.toLocaleLowerCase().includes(query)) : items;
 }
-export function sessionCoverage(list: SessionList, matches: number, search: string): string {
-  const coverage = `${list.items.length} of ${list.total} sessions shown${list.omitted ? ` · ${list.omitted} ${list.omitted === 1 ? 'session is' : 'sessions are'} not listed.` : ''}`;
-  return search.trim() ? `${matches} matches in loaded sessions · ${coverage}` : coverage;
+export function sessionCoverage(list: SavedSessionPage): string {
+  return `${list.items.length} of ${list.total} sessions loaded${list.omitted ? ` · ${list.omitted} ${list.omitted === 1 ? 'candidate file is' : 'candidate files are'} outside the discovery limit.` : ''}`;
 }
-export function sessionEmptyMessage(list: SessionList): string {
-  if (list.nextCursor) return 'No loaded sessions match. Use More saved sessions to search further.';
-  if (!list.items.length && list.omitted) return 'No sessions were loaded. The inventory is incomplete.';
-  return list.items.length ? 'No saved sessions match this search.' : 'No saved sessions in this project.';
+export function sessionEmptyMessage(search: string): string {
+  return search.trim() ? 'No matches in this group.' : 'No loaded sessions in this group.';
 }
 export function savedPathValid(path: string): boolean {
   return path.startsWith('/') && path.length <= 4096 && !/[\u0000-\u001f\u007f]/.test(path);

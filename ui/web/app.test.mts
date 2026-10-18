@@ -254,10 +254,13 @@ test('Primary reload keeps an inactive live claim unchecked until exact Message 
   assert.match(tabsNode().querySelector('[data-tab-key="agent:reload-claim"]')?.title ?? '', /Connection not checked/);
   await app.reload(); await settle();
   assert.match(tabsNode().querySelector('[data-tab-key="agent:reload-claim"]')?.title ?? '', /Connection not checked/);
+  const row = byId('roster').querySelector('[data-identity="reload-claim"]'); assert.ok(row);
+  assert.equal(row.querySelector('.row-state')?.hidden, true); assert.match(row.querySelector('.row-select')?.getAttribute('aria-label') ?? '', /Connection not checked/);
   const before = transportLog.length;
   globalThis.fetch = async (input, init) => new URL(String(input), 'http://ui.test').pathname.endsWith('/targets') && init?.method === 'POST' ? Response.json({ok: true, data: {targetState: saved, availability: 'unavailable', capabilities: {history: true, observe: false, input: false, abort: false, configure: false}, reason: 'Claim socket is absent'}}) : original(input, init);
   const message = byId('roster').querySelector('[data-identity="reload-claim"]')?.querySelector('.row-message'); assert.ok(message); message.click(); await settle();
   assert.equal(messageControl('send').disabled, true); assert.match(tabsNode().querySelector('[data-tab-key="agent:reload-claim"]')?.title ?? '', /Unavailable/);
+  assert.equal(row.querySelector('.row-state')?.hidden, false); assert.equal(row.querySelector('.row-state')?.textContent, 'Unavailable');
   assert.doesNotMatch(byId('workbench-status-agent').textContent, /Connected|Ready/); assert.equal(app.state.workspace?.primaryKey, 'p');
   assert.equal(transportLog.slice(before).some(call => call.path.endsWith('/start') || call.path.includes('/inputs')), false);
   byId('agent-message-close').click(); await settle();

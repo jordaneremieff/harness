@@ -458,7 +458,7 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .agent-row .row-name { grid-column: 1; grid-row: 1; }
 .agent-row .row-identity { grid-column: 1 / -1; grid-row: 2; }
 .agent-row .row-state { grid-column: 1 / -1; grid-row: 3; width: auto; justify-content: flex-start; text-align: left; }
-.agent-row .row-preview { grid-column: 1 / -1; grid-row: 4; color: var(--muted); font-size: 12px; }
+.agent-row .row-preview { grid-column: 1 / -1; grid-row: 4; color: var(--muted); font-size: 12px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; text-overflow: ellipsis; }
 .row-age, .row-message { position: static; grid-row: 1; z-index: 1; padding: 0 6px; color: var(--muted); font-size: 12px; text-align: right; white-space: nowrap; }
 .agent-row > .row-age { grid-column: 2; width: 64px; height: auto; min-height: 24px; max-width: 64px; }
 .row-age time { white-space: nowrap; }
@@ -1128,7 +1128,14 @@ dialog textarea:focus-visible { outline: 2px solid var(--accent); outline-offset
 .picker-project-row strong { display: block; font-weight: 400; }
 .picker-project-status { min-height: 20px; color: var(--muted); font-size: 12px; }
 .picker-project-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
-.picker-footer { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--edge); }
+.picker-footer { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--edge); }
+.picker-footer > p { margin: 0; }
+.picker-group-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.picker-group-heading > h2 { margin: 0; }
+.picker-group-heading > .picker-list-details { min-width: 0; max-width: 100%; }
+.picker-group-heading > .picker-list-details[open] { flex-basis: 100%; }
+.picker-list-facts { white-space: pre-line; overflow-wrap: anywhere; }
+#picker-more { display: inline-flex; gap: 4px; width: auto; padding-inline: 4px; }
 .picker-folder, .picker-file { margin-top: 16px; }
 .picker-folder > :not(summary), .picker-file > :not(summary) { margin-top: 8px; }
 .picker-folder > button, .picker-file > button { padding: 6px 12px; border: 1px solid var(--edge); font-size: 13px; }

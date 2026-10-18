@@ -32,7 +32,7 @@ function agentConnectionStatus(source: AgentViewState): string {
 export type ConversationPresentation = {
   name: string; identityTail?: string; tone: PresentationTone; cwd?: string; activity: string; input: boolean; busy: boolean; lastObserved: boolean; guidance: string;
   model?: {provider: string; modelId: string}; thinking?: string; retainedModel: boolean; retainedThinking: boolean;
-  tool?: AgentRow['currentTool']; detail?: string; responseOutcome?: ResponseOutcome;
+  tool?: AgentRow['currentTool']; detail?: string; responseOutcome?: ResponseOutcome; hideVisibleRosterState?: boolean;
 };
 export type PresentationSource = {target?: Target; primary?: PrimaryView; row?: AgentRow; identityTail?: string; caption?: ConversationCaption;
   availability?: EventData['agent.availability']; negotiated?: Pick<TargetPreparation, 'availability' | 'capabilities'> & {identity: string}; frame?: ProjectedFrame; entries?: readonly EntryView[]; tool?: AgentRow['currentTool']; connected: boolean};
@@ -135,6 +135,7 @@ function agentPresentation(source: PresentationSource, identity: string): Conver
   const tone = agentTone(state,source.connected,checked,live,busy,input,frame,outcome);
   return {...emptyPresentation(source.connected), ...settings, name, identityTail, tone, cwd: row?.cwd,
     activity: agentActivity(state, input, frame, source.connected, checked), input, busy, guidance: input ? '' : state === 'stored' ? 'Use Start agent to connect this agent.' : 'Messages are unavailable for this agent.', retainedModel: settings.retainedModel || retained && !!settings.model, retainedThinking: settings.retainedThinking || retained && !!settings.thinking,
+    hideVisibleRosterState: source.connected && state === 'live' && !checked,
     detail: live ? agentFailureDetails(frame) : undefined,
     responseOutcome: responseOutcome(frame?.entries), tool: live ? frameTool(frame) : undefined};
 }

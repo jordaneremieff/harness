@@ -45,19 +45,16 @@ test('every cached page retains its pending title completion across More and ret
   assert.deepEqual(filled.pendingTitles.map(page => page.titleCursor), ['two']);
   assert.deepEqual(mergeSessions(list, page([item('new')])).pendingTitles, []);
 });
-test('coverage separates loaded-list matches from total store coverage', () => {
+test('coverage describes loaded records rather than filtered or deduplicated rows', () => {
   const list = mergeSessions(undefined, page(Array.from({length: 20}, (_, index) => item(String(index)))));
-  assert.equal(sessionCoverage(list, 20, ''), '20 of 1259 sessions shown');
-  assert.equal(sessionCoverage(list, 2, 'id'), '2 matches in loaded sessions · 20 of 1259 sessions shown');
-  assert.match(sessionCoverage({...list, omitted: 3}, 20, ''), /3 sessions are not listed/);
+  assert.equal(sessionCoverage(list), '20 of 1259 sessions loaded');
+  assert.equal(sessionCoverage({...list, omitted: 1}), '20 of 1259 sessions loaded · 1 candidate file is outside the discovery limit.');
+  assert.equal(sessionCoverage({...list, omitted: 3}), '20 of 1259 sessions loaded · 3 candidate files are outside the discovery limit.');
 });
-test('empty search only offers More when another saved-session page exists', () => {
-  const list = mergeSessions(undefined, page([item('one')]));
-  assert.match(sessionEmptyMessage(list), /Use More/);
-  assert.equal(sessionEmptyMessage({...list, nextCursor: null}), 'No saved sessions match this search.');
-  assert.equal(sessionEmptyMessage({...list, items: [], nextCursor: null}), 'No saved sessions in this project.');
-  assert.match(sessionEmptyMessage({...list, items: []}), /Use More/);
-  assert.equal(sessionEmptyMessage({...list, items: [], nextCursor: null, omitted: 2}), 'No sessions were loaded. The inventory is incomplete.');
+test('settled group emptiness stays distinct from an unmatched query without paging instructions', () => {
+  assert.equal(sessionEmptyMessage(''), 'No loaded sessions in this group.');
+  assert.equal(sessionEmptyMessage('   '), 'No loaded sessions in this group.');
+  assert.equal(sessionEmptyMessage('unmatched'), 'No matches in this group.');
 });
 test('manual Resume requires an absolute nonempty path', () => {
   for (const path of ['', 'relative.jsonl', '   ', '/bad\0path', `/${'x'.repeat(4096)}`]) assert.equal(savedPathValid(path), false);

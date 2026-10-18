@@ -15,10 +15,24 @@ function pickerField(control: {label: HTMLLabelElement; field: HTMLElement}, vis
   const line = element('div', 'picker-input-row');
   control.label.className = visibleLabel ? 'picker-field-label' : 'sr-only'; line.append(control.label, control.field); return line;
 }
-function sessionSearchEmpty(data: SessionList, query: string): string {
-  if (!query.trim()) return sessionEmptyMessage(data);
-  const incomplete = !!data.nextCursor || !!data.omitted || data.items.some(item => item.titleState !== 'ready');
-  return `No ${incomplete ? 'loaded ' : ''}sessions match “${query.trim()}”.${data.nextCursor ? ' Use More saved sessions to search further.' : incomplete ? ' The list is incomplete.' : ''}`;
+function partialSessions(page: SavedSessionPage): boolean {
+  return !!page.nextCursor || !!page.omitted || page.items.some(item => item.titleState !== 'ready');
+}
+function savedListDetails(page: SavedSessionPage, registered = false): string {
+  const count = registered ? `${page.items.length} of ${page.total} sessions loaded${page.omitted ? ` · ${page.omitted} discovery records are unavailable or outside the bound.` : ''}` : sessionCoverage(page);
+  return [count, page.nextCursor ? 'More records are available.' : '', page.items.some(item => item.titleState !== 'ready') ? 'Some loaded titles are pending or unavailable.' : '', `Saved list · ${relativeTime(page.observedAt, Date.now())}`].filter(Boolean).join('\n');
+}
+function groupHeading(name: string, qualifier?: string) {
+  const node = element('div', 'picker-group-heading'), disclosure = element('details', 'picker-list-details');
+  const summary = element('summary'), content = element('p', 'secondary picker-list-facts');
+  disclosure.append(summary, content); node.append(element('h2', undefined, name));
+  if (qualifier) node.append(element('span', 'secondary', qualifier));
+  node.append(disclosure);
+  const update = (text: string, partial: boolean) => {
+    const label = partial ? 'Partial list' : 'List details'; summary.textContent = label; cardDisclosure(summary);
+    summary.setAttribute('aria-label', `${label}: ${name}`); content.textContent = text; disclosure.hidden = !text;
+  };
+  update('', false); return {node, disclosure, summary, update};
 }
 function projectCoverage(page: RecentProjectPage): string {
   if (!page.nextCursor && !page.omitted) return '';
@@ -35,23 +49,15 @@ function ordinaryResumeWarning(): HTMLElement {
 }
 function durableCoverage(roster?: CachedRoster): string {
   const notes: string[] = [];
-  if (!roster?.rows.length) notes.push('No loaded Durable conversations.');
   if (!roster || roster.scan.state === 'not-started') notes.push('The Durable catalog is not loaded.');
   else if (roster.scan.state === 'running') notes.push('Loading Durable conversations…');
   else if (roster.error || roster.scan.state === 'failed') notes.push('The Durable catalog could not refresh.');
   if (roster?.stale) notes.push('Saved Durable catalog; current coverage is not confirmed.');
-  if (roster && (roster.nextCursor || !roster.scan.complete || roster.scan.skipped || roster.scan.omitted)) notes.push('The loaded Durable catalog is incomplete.');
   return notes.join(' ');
 }
-
-function registeredCoverage(page: SavedSessionPage | undefined, failed: boolean, matches: number, query: string): string {
-  if (failed) return 'Registered ordinary sessions are unavailable. Refresh the session picker.';
-  if (!page) return 'Loading registered ordinary sessions…';
-  const notes: string[] = [];
-  if (!matches) notes.push(query.trim() ? `No loaded registered ordinary sessions match “${query.trim()}”.` : 'No loaded registered ordinary sessions.');
-  if (page.nextCursor || page.omitted || page.items.some(item => item.titleState !== 'ready')) notes.push('The loaded registered ordinary list is incomplete.');
-  if (page.omitted) notes.push(`${page.omitted} discovery records are unavailable or outside the bound.`);
-  return notes.join(' ');
+function durableListDetails(roster?: CachedRoster): string {
+  if (!roster) return '';
+  return [`${roster.rows.length} Durable conversations loaded.`, `${roster.scan.visited} discovery records visited; ${roster.scan.skipped} skipped; ${roster.scan.omitted} omitted.`, roster.observedAt ? `Saved list · ${relativeTime(roster.observedAt, Date.now())}` : '', roster.error?.message ?? ''].filter(Boolean).join('\n');
 }
 
 type Context = {snapshot(): Snapshot | undefined; primary(): PrimaryView | undefined; modal: Modal;
@@ -260,30 +266,25 @@ export class ProjectPicker {
     const results = element('div', 'picker-results'); body.append(results);
     const publishedPaths=new Set<string>();
     const paintCatalog = this.catalog(results,signal,token,()=>search.field.value,()=>search.field.focus(),paths=>{for(const path of paths)publishedPaths.add(path);paint();});
-    const ordinary = element('section', 'picker-folder-ordinary'); ordinary.append(element('h2', undefined, 'Ordinary sessions in this folder'), safety);
+    const ordinary = element('section', 'picker-folder-ordinary'), heading = groupHeading('Ordinary sessions in this folder'); ordinary.append(heading.node, safety);
     const list = element('div', 'picker-sessions'); const coverage = element('p', 'secondary'); coverage.id = 'picker-coverage'; coverage.setAttribute('aria-live', 'polite');
     const error = element('p', 'error'); error.setAttribute('role', 'alert');
     let data = first ? mergeSessions(undefined, first) : existing;
     let render = 0; let loading = 0; const titleRequests = new Set<string>();
     const more = cardAction('next', 'More saved sessions', () => { void load(data?.nextCursor ?? undefined); }); more.id = 'picker-more';
-    const freshness = element('details', 'picker-list-details');
-    const observed = element('p', 'secondary'); const listSummary = element('summary', undefined, 'List details'); cardDisclosure(listSummary);
-    freshness.append(listSummary, observed); freshness.hidden = true;
-    const updateCoverage = (matches: number) => {
-      if (!data) return;
-      const incomplete = !!data.nextCursor || !!data.omitted || data.items.some(item => item.titleState !== 'ready');
-      coverage.textContent = incomplete ? sessionCoverage(data, matches, search.field.value) : search.field.value.trim() ? `${matches} matches in loaded sessions` : '';
-      coverage.hidden = !coverage.textContent;
-      observed.textContent = `Saved list · ${relativeTime(data.observedAt, Date.now())}`;
+    const moreLabel = more.querySelector('.card-action-label'); if (moreLabel) moreLabel.className = 'card-action-label';
+    const updateCoverage = () => {
+      const count = results.querySelectorAll('.picker-durable-select, .picker-select').length;
+      coverage.textContent = search.field.value.trim() ? `${count} ${count === 1 ? 'match' : 'matches'} in loaded sessions` : `${count} loaded ${count === 1 ? 'session' : 'sessions'}`;
+      if (data) heading.update(savedListDetails(data), partialSessions(data));
     };
     const paint = () => {
       const focusedPath = [...list.querySelectorAll<HTMLButtonElement>('.picker-select')].find(row=>row===document.activeElement)?.dataset.sessionPath;
       const version = ++render; paintCatalog(); list.replaceChildren();
-      if (!data) return;
+      if (!data) { updateCoverage(); return; }
       const matches = filterSessions(data.items, search.field.value).filter(item=>!publishedPaths.has(item.path));
       const tails = duplicateIdentityTails(data.items.map(item => ({name: sessionLabel(item), identity: item.id})));
       if (focusedPath && !matches.some(item => item.path === focusedPath)) { search.field.focus(); error.textContent = 'The selected session is no longer in this loaded list.'; }
-      updateCoverage(matches.length);
       more.hidden = !data.nextCursor; safety.hidden = !matches.some(item => !sessionOwner(this.ctx.snapshot()?.primaries ?? [], item.path));
       let offset = 0;
       const batch = () => {
@@ -291,12 +292,12 @@ export class ProjectPicker {
         const fragment = document.createDocumentFragment();
         const latest = new Map(data?.items.map(item => [item.path, item]));
         const rows = matches.slice(offset, offset + 20).map(item => this.row(latest.get(item.path) ?? item, tails.get(item.id)));
-        fragment.append(...rows); list.append(fragment); offset += 20;
+        fragment.append(...rows); list.append(fragment); offset += 20; updateCoverage();
         if (focusedPath) rows.find(row => row.querySelector<HTMLButtonElement>('.picker-select')?.dataset.sessionPath === focusedPath)?.querySelector<HTMLButtonElement>('.picker-select')?.focus();
         if (offset < matches.length) requestAnimationFrame(batch);
       };
       batch();
-      if (!matches.length) list.append(element('p', 'secondary', `This folder: ${sessionSearchEmpty(data, search.field.value)}`));
+      if (!matches.length) list.append(element('p', 'secondary', sessionEmptyMessage(search.field.value)));
     };
     const save = () => {
       if (!data) return;
@@ -323,7 +324,7 @@ export class ProjectPicker {
         data = mergeSessionTitles(data, filled); save();
         if (search.field.value.trim()) paint(); else {
           this.patchTitles(list, data);
-          updateCoverage(data.items.length);
+          updateCoverage();
         }
       } catch (cause) { if (!signal.aborted && this.owns(token)) { error.textContent = 'Some session titles did not load. Use Refresh.'; this.error(cause, ''); } }
     };
@@ -332,15 +333,14 @@ export class ProjectPicker {
     const options = cardAction('more', 'Saved session options', () => {
       const box = options.getBoundingClientRect();
       contextMenu.open(options, {x: box.left, y: box.bottom}, 'Saved session options', [
-        {key: 'details', label: 'List details', run: () => { freshness.hidden = false; freshness.open = true; listSummary.focus(); }},
+        {key: 'details', label: 'List details', run: () => { heading.disclosure.hidden = false; heading.disclosure.open = true; heading.summary.focus(); }},
         {key: 'file', label: 'Session file…', run: () => { file.hidden = false; file.open = true; file.querySelector<HTMLInputElement>('#picker-session-path')?.focus(); }},
       ], () => this.owns(token));
     });
     options.setAttribute('aria-haspopup', 'menu'); options.setAttribute('aria-expanded', 'false');
     searchRow.append(options);
-    const utilities = element('div', 'picker-project-actions picker-footer');
-    utilities.append(coverage, freshness, more);
-    ordinary.append(list, error, utilities, file); results.append(ordinary);
+    const footer = element('div', 'picker-project-actions picker-footer'); footer.append(coverage);
+    ordinary.append(list, error, more, file); results.append(ordinary); body.append(footer);
     results.addEventListener('keydown', event => {
       if (event.target instanceof HTMLButtonElement && event.target.matches('.picker-select, .picker-durable-select')) this.navigate(event, results);
     });
@@ -352,13 +352,14 @@ export class ProjectPicker {
     save(); paint(); for (const page of data?.pendingTitles ?? []) void fillTitles(page); search.field.focus();
   }
   private catalog(body:HTMLElement,signal:AbortSignal,token:number,query:()=>string,focusSearch:()=>void,changed:(paths:string[])=>void):()=>void {
-    const durable=element('section','picker-durable');durable.append(element('h2',undefined,'Durable conversations'));
+    const durable=element('section','picker-durable'), durableHeading=groupHeading('Durable conversations');
     const roster = this.ctx.snapshot()?.roster, list = element('div', 'picker-durable-list');
     const coverage = element('p', 'secondary picker-durable-coverage', durableCoverage(roster)); coverage.hidden = !coverage.textContent;
-    durable.append(list, coverage);
-    const ordinary=element('section','picker-ordinary'), safety=ordinaryResumeWarning(), registered=element('div','picker-registered-list');
+    durableHeading.update(durableListDetails(roster), !!roster && (!!roster.nextCursor || !roster.scan.complete || !!roster.scan.skipped || !!roster.scan.omitted));
+    durable.append(durableHeading.node, coverage, list);
+    const ordinary=element('section','picker-ordinary'), safety=ordinaryResumeWarning(), registered=element('div','picker-registered-list'), registeredHeading=groupHeading('Registered ordinary sessions', 'All folders');
     const status=element('p','secondary'); status.setAttribute('aria-live','polite');
-    ordinary.append(element('h2',undefined,'Registered ordinary sessions'),element('p','secondary','All folders. Conversion copies saved context only. The source session stays unchanged.'), safety, registered, status);
+    ordinary.append(registeredHeading.node, status, safety, registered);
     body.append(durable,ordinary);
     let published:SavedSessionPage|undefined, failed=false;
     const selectable=()=>[...list.querySelectorAll<HTMLButtonElement>('.picker-durable-select'),...registered.querySelectorAll<HTMLButtonElement>('.picker-select')];
@@ -366,6 +367,10 @@ export class ProjectPicker {
       if(!focused)return;
       const replacement=selectable().find(row=>focused.dataset.agentIdentity ? row.dataset.agentIdentity===focused.dataset.agentIdentity : row.dataset.sessionPath===focused.dataset.sessionPath);
       if(replacement)replacement.focus();else focusSearch();
+    };
+    const updateRegisteredDetails=()=> {
+      registeredHeading.update(published ? savedListDetails(published, true) : '', !!published && partialSessions(published));
+      status.textContent=failed ? 'Registered ordinary sessions are unavailable. Refresh the session picker.' : published ? '' : 'Loading registered ordinary sessions…'; status.hidden=!status.textContent;
     };
     const paint=()=> {
       const focused=selectable().find(row=>row===document.activeElement);
@@ -375,18 +380,19 @@ export class ProjectPicker {
         return !needle || [presentationName(view),row.identity,view.cwd].some(value=>value?.toLocaleLowerCase().includes(needle));
       });
       list.replaceChildren(...matches.map(row=>this.durableRow(row)));
-      if(!matches.length && needle)list.append(element('p','secondary',`No loaded Durable conversations match “${query().trim()}”.`));
+      if(!matches.length && roster?.scan.state === 'ready' && !roster.error)list.append(element('p','secondary',sessionEmptyMessage(query())));
       const items=filterSessions(published?.items ?? [],query());
       const tails=duplicateIdentityTails((published?.items ?? []).map(item=>({name:sessionLabel(item),identity:item.id})));
       registered.replaceChildren(...items.map(item=>this.row(item,tails.get(item.id))));
       safety.hidden=!items.some(item=>!sessionOwner(this.ctx.snapshot()?.primaries ?? [],item.path));
-      status.textContent=registeredCoverage(published,failed,items.length,query()); status.hidden=!status.textContent;
+      if(published && !items.length)registered.append(element('p','secondary',sessionEmptyMessage(query())));
+      updateRegisteredDetails();
       restoreFocus(focused);
     };
     void request<SavedSessionPage>('/api/sessions/published','GET',undefined,undefined,signal).then(page=>{
       if(!this.owns(token)||signal.aborted)return;
       published=page; changed(page.items.map(item=>item.path));
-    }).catch(()=>{if(this.owns(token)&&!signal.aborted){failed=true;paint();}});
+    }).catch(()=>{if(this.owns(token)&&!signal.aborted){failed=true;changed([]);}});
     return paint;
   }
   private durableRow(row: AgentRow): HTMLElement {
@@ -437,7 +443,8 @@ export class ProjectPicker {
     details.append(summary, element('p', 'picker-session-full-title', item.title), element('p', 'identity', item.project), element('p', 'identity', item.id), element('p', 'identity', item.path), element('p', 'secondary', sessionSize(item.size)));
     if (!opened) details.append(element('p', 'secondary', 'Stop the terminal session before Resume. Active processes keep independent branches.'));
     const convert=button('Convert to Durable',()=>{void this.run(()=>this.convert(item),cause=>this.error(cause,'The conversion did not return a confirmed conversation.'));},'quiet');
-    convert.title='Create a new Durable conversation from saved context. The ordinary session stays unchanged.';
+    convert.title='Creates a new Durable conversation from saved context. Leaves the ordinary session unchanged.';
+    convert.setAttribute('aria-description', convert.title);
     row.append(select, age, convert, details); return row;
   }
   private navigate(event: KeyboardEvent, list: HTMLElement): void {

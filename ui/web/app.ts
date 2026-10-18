@@ -436,7 +436,7 @@ const recovery = new Recovery({snapshot: currentSnapshot, reload, modal});
 const roster = new Roster(row => { void selectAgent(row).catch(showError); }, action => { if (action === 'refresh') refreshRoster(); else moreRoster(); }, {
   load: (cursor, signal) => request<import('../shared/api.ts').CachedRoster>(`/api/agents?limit=20&cursor=${encodeURIComponent(cursor)}`, 'GET', undefined, undefined, signal),
   merge: page => { state = mergeRosterPage(state, page); renderRoster(); },
-}, openAgentMessage, row => { const view = presentation({kind: 'agent', identity: row.identity}); return {glyph: presentationGlyph(view), label: view.activity, activity: state.workspace ? controllers.get(controllerKey(state.workspace.id,{kind:'agent',identity:row.identity}))?.transcript.activitySentence() : undefined, tool: view.tool, tone:view.tone, name:view.name, tail:view.identityTail}; });
+}, openAgentMessage, row => { const view = presentation({kind: 'agent', identity: row.identity}); return {glyph: presentationGlyph(view), label: view.activity, hideVisibleRosterState: view.hideVisibleRosterState, activity: state.workspace ? controllers.get(controllerKey(state.workspace.id,{kind:'agent',identity:row.identity}))?.transcript.activitySentence() : undefined, tool: view.tool, tone:view.tone, name:view.name, tail:view.identityTail}; });
 function openAgentMessage(identity: string): void {
   let controller: ConversationController; try {controller = conversationController({kind: 'agent', identity});} catch (error) {showError(error); return;}
   controller.messageRetention = {};

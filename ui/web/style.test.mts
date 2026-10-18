@@ -30,6 +30,16 @@ test('roster name-first headings reserve a full name row without the old glyph t
   assert.match(rule('.agent-row > .row-age'), /grid-column: 2; width: 64px; height: auto/);
 });
 
+test('only the optional roster preview has a two-line visual clamp', () => {
+  const preview = rule('.agent-row .row-preview');
+  assert.match(preview, /font-size: 12px/); assert.match(preview, /display: -webkit-box/);
+  assert.match(preview, /-webkit-box-orient: vertical/); assert.match(preview, /-webkit-line-clamp: 2/);
+  assert.match(preview, /overflow: hidden; text-overflow: ellipsis/);
+  const text = rule('.agent-row .row-name, .agent-row .row-identity, .agent-row .row-state, .agent-row .row-preview');
+  assert.match(text, /overflow-wrap: anywhere/); assert.doesNotMatch(text, /line-clamp/);
+  for (const name of ['.agent-row .row-name', '.agent-row .row-state', '.agent-row .row-identity']) assert.doesNotMatch(rule(name), /line-clamp|overflow: hidden/);
+  assert.match(rule('[hidden]'), /display: none !important/);
+});
 test('sidebar disclosures use rotating chevrons and discovery stays a named action', () => {
   assert.match(rule('.section-toggle > .card-icon'), /width: 12px; height: 12px/);
   assert.match(rule('.section-toggle[aria-expanded=true] > .card-icon-chevron'), /transform: rotate\(90deg\)/);

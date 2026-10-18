@@ -572,6 +572,24 @@ test('roster keeps callback truth and its bounded excerpt in distinct heading fi
   assert.ok(heading.query('row-preview').textContent.startsWith('Supplied reply')); assert.ok(heading.query('row-preview').textContent.length <= 181);
   assert.match(node.query('row-select').attributes['aria-label'] ?? '', /truthful/); assert.equal(node.query('row-message').parentNode, node);
 });
+test('quiet roster state preserves canonical accessibility, full preview and keyed actions', () => {
+  const f = setup(); let hidden = true, label = 'Connection not checked';
+  const roster = new RosterView(() => {}, () => {}, undefined, () => {}, () => ({label, glyph: '?', hideVisibleRosterState: hidden}));
+  const source = row('quiet', {latestReply: `**Long** ${'unbroken'.repeat(30)}`, currentTool: {name: 'read', argument: 'source.ts'}});
+  roster.set([source]); f.flush();
+  const node = required(f.node.children[0]), select = node.query('row-select'), preview = node.query('row-preview'), state = node.query('row-state'), message = node.query('row-message'), age = node.query('row-age');
+  assert.equal(state.hidden, true); assert.equal(state.textContent, label);
+  assert.match(select.title, /Connection not checked/); assert.match(select.attributes['aria-label'], /Connection not checked/); assert.match(select.attributes['aria-description'], /Connection not checked/);
+  assert.equal(preview.textContent, rosterPreview(source.latestReply ?? '')); assert.equal(preview.title, preview.textContent);
+  assert.ok(select.attributes['aria-description'].includes(preview.textContent)); assert.equal(preview.hidden, false);
+  select.focus(); hidden = false;
+  for (label of ['Working', 'Retrying', 'Response failed', 'Not connected', 'Unavailable', 'Connection lost; activity unknown']) {
+    roster.set([source]); f.flush(); assert.equal(f.node.children[0], node); assert.equal(state.hidden, false); assert.equal(state.textContent, label);
+    assert.equal(node.query('row-preview'), preview); assert.equal(node.query('row-message'), message); assert.equal(node.query('row-age'), age); assert.equal(f.document.activeElement, select);
+  }
+  hidden = true; label = 'Connection not checked'; roster.set([source]); f.flush(); assert.equal(state.hidden, true);
+  roster.set([{...source, latestReply: ''}]); f.flush(); assert.equal(preview.hidden, true); assert.equal(preview.title, ''); assert.doesNotMatch(select.attributes['aria-description'], /Preview:/);
+});
 test('resolved status overrides live catalog state and removes a stale tool without replacing the row', () => {
   const f = setup(); let label = 'Working';
   const roster = new RosterView(() => {}, () => {}, undefined, undefined, () => ({label, glyph: label === 'Working' ? '●' : '○', tool: label === 'Working' ? {name: 'read', argument: 'file.ts'} : undefined}));

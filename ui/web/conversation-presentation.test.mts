@@ -27,6 +27,26 @@ test('unchecked live claims stay neutral without admitting input or hiding real 
   const stopped = frame(false); stopped.entries = [{id: 'stop', kind: 'message', messages: [{id: 'stopped', role: 'assistant', state: 'final', parts: [], stopReason: 'aborted', coverage: stopped.coverage}]}];
   const view = conversationPresentation({target, row, negotiated, frame: stopped, connected: true}); assert.equal(view.tone, 'warning'); assert.equal(view.activity, 'Stopped'); assert.equal(view.input, true);
 });
+test('only an unchecked live catalog claim hides the roster state, never its canonical fact', () => {
+  for (const state of ['working', 'failed', 'done']) {
+    const view = conversationPresentation({target, row: {...row, state}, connected: true});
+    assert.equal(view.hideVisibleRosterState, true); assert.equal(view.activity, 'Connection not checked'); assert.equal(view.input, false);
+  }
+  for (const availability of ['stored', 'unavailable', 'incompatible'] as const) {
+    assert.equal(conversationPresentation({target, row: {...row, availability}, connected: true}).hideVisibleRosterState, false);
+  }
+  assert.equal(conversationPresentation({target, row, connected: false}).hideVisibleRosterState, false);
+  assert.equal(conversationPresentation({target, connected: true}).hideVisibleRosterState, false);
+  assert.equal(conversationPresentation({target, row: {...row, identity: 'other'}, connected: true}).hideVisibleRosterState, false);
+  assert.equal(conversationPresentation({target, row, negotiated: {...negotiated, identity: 'other'}, connected: true}).hideVisibleRosterState, true);
+  assert.equal(conversationPresentation({target, row, availability: {identity: row.identity, state: 'live', capabilities: row.capabilities}, connected: true}).hideVisibleRosterState, false);
+  const retry = frame(true); retry.status.retry = {attempt: 2, at: 1700000060000, error: 'retry detail'};
+  const failed = frame(false); failed.entries = [{id: 'error', kind: 'message', messages: [{id: 'error', role: 'assistant', state: 'final', parts: [], stopReason: 'error', coverage: failed.coverage}]}];
+  for (const current of [undefined, frame(false), frame(true), retry, failed]) {
+    assert.equal(conversationPresentation({target, row, negotiated, frame: current, connected: true}).hideVisibleRosterState, false);
+  }
+  assert.equal(conversationPresentation({connected: true}).hideVisibleRosterState, undefined);
+});
 test('agent display names reject identity fallbacks and retain shared suffixes in accessible names',()=> {
   const identity='00000000-0000-4000-8000-000000000099', target={kind:'agent' as const,identity};
   const unnamed=conversationPresentation({target,row:{...row,identity,name:identity,handle:undefined},connected:true});assert.equal(unnamed.name,'Unnamed conversation');assert.equal(presentationName(unnamed),'Unnamed conversation');
