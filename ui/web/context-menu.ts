@@ -1,9 +1,9 @@
-import {cardIcon} from './card-icons.ts';
+import {cardIcon, type CardIcon} from './card-icons.ts';
 import { announce, button, element } from './dom.ts';
 import { tabKey } from './tabs.ts';
 import { canSplitPane, closePane, MAX_PANES, movePaneTab, paneById, paneLeaves, samePaneLayout, type PaneAxis, type PaneLayout, type PaneSpace } from './pane-layout.ts';
 
-export type ContextItem = {key?: string; label: string; run: () => void; enabled?: boolean; checked?: boolean; checkbox?: boolean; description?: string; disabledReason?: string; separatorBefore?: boolean; heading?: string};
+export type ContextItem = {key?: string; icon?: CardIcon; hint?: string; label: string; run: () => void; enabled?: boolean; checked?: boolean; checkbox?: boolean; description?: string; disabledReason?: string; separatorBefore?: boolean; heading?: string};
 function itemRole(item: ContextItem): string { return item.checked === undefined ? 'menuitem' : item.checkbox ? 'menuitemcheckbox' : 'menuitemradio'; }
 export type MenuPoint = {x: number; y: number};
 export function menuPosition(point: MenuPoint, size: {width: number; height: number}, viewport: {width: number; height: number}): MenuPoint {
@@ -42,6 +42,8 @@ export class ContextMenu {
       row.className = 'context-menu-item';
       row.setAttribute('role', itemRole(item));
       if (item.checked !== undefined) {row.setAttribute('aria-checked', String(item.checked)); const check = cardIcon('success'); check.classList.add('choice-check'); row.prepend(check);}
+      if (item.icon) {const icon = cardIcon(item.icon); icon.classList.add('context-menu-icon'); row.prepend(icon);}
+      if (item.hint) {const hint = element('span', 'context-menu-hint'); hint.textContent = item.hint; hint.setAttribute('aria-hidden', 'true'); row.prepend(hint); row.setAttribute('aria-keyshortcuts', item.hint);}
       if (item.description) {row.setAttribute('aria-description', item.description); row.title = item.description;}
       row.setAttribute('aria-disabled', String(item.enabled === false)); row.tabIndex = -1;
       if (item.disabledReason && item.enabled === false) { const note = element('span', 'context-menu-note'); note.textContent = item.disabledReason; row.append(note); }

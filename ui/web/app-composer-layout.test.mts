@@ -32,13 +32,14 @@ test('conversation state and split width changes retain editor ancestry, draft i
   const editor = agentControl('editor'), chain = ancestors(editor), root = agentControl('root'), form = agentControl('composer');
   const primaryEditor = primaryControl('editor'), primaryChain = ancestors(primaryEditor);
   for (const control of [primaryControl, agentControl]) {
-    const latest = control('latest'), line = control('composer').querySelector('.composer-line');
-    assert.ok(line); const bar = line.querySelector('.composer-bar'); assert.ok(bar);
-    const attach = line.querySelector('.attach'), picker = line.querySelector('input'); assert.ok(attach); assert.ok(picker);
-    const intake=line.querySelector('.composer-intake'),sources=line.querySelector('.attachment-sources');assert.ok(intake);assert.ok(sources);
-    assert.equal(sources.getAttribute('aria-label'),'Attachment sources');assert.equal(sources.getAttribute('aria-haspopup'),'menu');
+    const latest = control('latest'), form = control('composer'), surface = form.querySelector('.composer-input'), line = form.querySelector('.composer-line'), meta = form.querySelector('.composer-meta');
+    assert.ok(surface); assert.ok(line); assert.ok(meta); const bar = line.querySelector('.composer-bar'); assert.ok(bar);
+    const intake = surface.querySelector('.composer-intake'), sources = intake?.querySelector('.attachment-sources'), attach = intake?.querySelector('.attach'), picker = intake?.querySelector('input'); assert.ok(intake); assert.ok(sources); assert.ok(attach); assert.ok(picker);
+    assert.equal(sources.getAttribute('aria-label'),'Add to message');assert.equal(sources.getAttribute('aria-haspopup'),'menu'); assert.equal(attach.hidden, true);
     assert.deepEqual(intake.children,[attach,sources,picker]);
-    assert.equal(latest.parentNode, line); assert.deepEqual(line.children, [intake, latest, bar]);
+    // One surface holds the add control, the editor and the send controls in that tab order; Latest sits below it.
+    const order = surface.children.filter(node => [intake, control('editor').parentNode, line].includes(node));
+    assert.deepEqual(order, [intake, control('editor').parentNode, line]); assert.equal(latest.parentNode, meta); assert.equal(meta.parentNode, form);
     const submit = bar.querySelector('.composer-submit'); assert.ok(submit);
     assert.deepEqual(bar.children, [control('stop'), submit]); assert.deepEqual(submit.children, [control('modes'), control('start'), control('send')]);
     assert.equal(control('editor').rows, 3);

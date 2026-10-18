@@ -793,7 +793,13 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
 .queued-message { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .queued-message[data-mode=steer] { color: var(--fg); }
 .composer { position: relative; container: composer / inline-size; flex: none; margin: 0 0 var(--s2); }
-.composer-input { position: relative; padding: 0; border: 1px solid var(--edge); border-radius: 0; background: var(--canvas); }
+.composer-input { position: relative; display: grid; grid-template-columns: auto minmax(0,1fr); padding: 0; border: 1px solid var(--edge); border-radius: 4px; background: var(--canvas); }
+.composer-input > .composer-surface { grid-column: 1 / -1; grid-row: 1; }
+.composer-input > .composer-attachments { grid-column: 1 / -1; grid-row: 2; }
+.composer-input > .composer-state { grid-column: 1 / -1; grid-row: 3; }
+.composer-input > .composer-intake { grid-column: 1; grid-row: 4; align-self: end; margin: 0; padding: 0 var(--s1) var(--s1); }
+.composer-input > .composer-line { grid-column: 2; grid-row: 4; align-self: end; padding: 0 var(--s2) var(--s1) 0; }
+.composer-meta { display: flex; align-items: center; justify-content: space-between; gap: var(--s2); min-height: 24px; padding-top: 2px; color: var(--muted); font-size: 12px; }
 .composer textarea { display: block; width: 100%; min-width: 0; min-height: 24px; padding: var(--s3); border: 0; background: transparent; color: var(--fg); caret-color: var(--accent); font-size: 16px; line-height: 1.6; resize: none; }
 .composer-surface { position: relative; }
 .composer-overlay { position: absolute; top: 0; left: 0; overflow: auto; scrollbar-width: none; pointer-events: none; color: var(--fg); }
@@ -842,8 +848,7 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
 .attachment-dialog > img { display: block; max-width: 100%; max-height: 65dvh; margin: 8px auto; object-fit: contain; }
 .composer-intake { display: inline-flex; flex: none; align-items: center; margin-right: auto; }
 .attach { min-height: 28px; padding: 2px 6px; color: var(--muted); font-size: 13px; }
-.attachment-sources { min-width: 24px; min-height: 28px; }
-.attachment-sources .card-icon { transform: rotate(90deg); }
+.attachment-sources { width: 28px; height: 28px; min-width: 28px; min-height: 28px; }
 .working-file-filter { display: block; width: 100%; margin: 8px 0; }
 .working-file-list { max-height: 36dvh; overflow: auto; }
 .working-file-row { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 28px; text-align: left; }
@@ -878,10 +883,9 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
 .modes { display: flex; flex: none; white-space: nowrap; }
 .modes select { min-height: 24px; max-width: 18ch; padding: 0 4px; border: 0; background: transparent; color: var(--muted); font-size: 13px; }
 .send, .stop { display: inline-flex; flex: none; align-items: center; justify-content: center; min-height: 28px; padding: 2px 8px; font-size: 13px; white-space: nowrap; }
-.send { color: var(--fg); }
-.send:not(:disabled) { font-weight: 600; background: var(--raised); }
-.send:not(:disabled):hover { background: var(--canvas); }
-.send:disabled { color: var(--dim); font-weight: 400; }
+.send { color: var(--fg); font-weight: 500; }
+.send:not(:disabled):hover { background: var(--raised); }
+.send:disabled { color: var(--muted); }
 .stop { color: var(--error); }
 .stop:hover { background: var(--err-bg); }
 .receipt { display: flex; flex-wrap: wrap; gap: 2px 12px; max-height: 30dvh; margin-bottom: 6px; overflow: auto; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
@@ -901,6 +905,8 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
 .context-menu-item > .choice-check { color: var(--muted); position: absolute; top: 50%; left: 10px; margin-top: -8px; }
 .context-menu-item[aria-checked=false] > .choice-check { visibility: hidden; }
 .context-menu-item { position: relative; text-align: left; }
+.context-menu-hint { float: right; margin-left: var(--s3); color: var(--muted); font-family: var(--mono); font-size: 12px; }
+.context-menu-icon { display: inline-block; vertical-align: middle; margin: -2px var(--s2) 0 0; color: var(--muted); }
 .context-menu-note { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; }
 .context-menu-separator { margin: 4px 0; border-top: 1px solid var(--rule); }
 

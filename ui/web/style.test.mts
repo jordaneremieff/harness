@@ -452,15 +452,16 @@ test('prose table cells wrap at words while wide data keeps horizontal scroll an
 });
 test('composer actions keep Attach left and submission right with one padded keyboard-focus boundary', () => {
   assert.match(rule('.composer-intake'), /display: inline-flex; flex: none; align-items: center; margin-right: auto/); assert.doesNotMatch(rule('.attach'), /flex: 1|flex-grow/);
-  assert.match(rule('.attachment-sources'),/min-width: 24px; min-height: 28px/);
+  assert.match(rule('.attachment-sources'),/width: 28px; height: 28px; min-width: 28px; min-height: 28px/);
   assert.match(rule('.working-file-list'),/max-height: 36dvh; overflow: auto/);
   assert.match(rule('.working-file-row .file-name'),/white-space: normal; overflow-wrap: anywhere/);
   assert.doesNotMatch(rule('.composer-bar'), /margin-left: auto/);
   assert.match(rule('.composer-submit'), /flex: none; flex-wrap: nowrap/);
-  assert.match(rule('.send:not(:disabled)'), /font-weight: 600; background: var\(--raised\)/);
-  assert.match(rule('.send'), /color: var\(--fg\)/);
+  assert.match(rule('.send'), /color: var\(--fg\); font-weight: 500/); assert.match(rule('.send:disabled'), /color: var\(--muted\)/);
+  assert.doesNotMatch(rule('.send'), /background:/);
   assert.match(rule('.composer textarea'), /min-width: 0/);
-  assert.match(rule('.composer-input'), /border-radius: 0/);
+  assert.match(rule('.composer-input'), /display: grid; grid-template-columns: auto minmax\(0,1fr\)/); assert.match(rule('.composer-input'), /border-radius: 4px/);
+  assert.match(rule('.composer-input > .composer-intake'), /grid-column: 1; grid-row: 4/); assert.match(rule('.composer-input > .composer-line'), /grid-column: 2; grid-row: 4/);
 });
 test('narrow composer controls wrap only as needed and retain right alignment with unbroken control labels', () => {
   const narrow = [...css.matchAll(/@container conversation \(max-width: 480px\) \{([\s\S]*?)\n\}/g)].map(match => match[1]).join('\n');
@@ -615,7 +616,7 @@ test('Latest occupies the existing composer control line outside the transcript 
   assert.match(app, /const scroller = add\('transcript', 'div', 'transcript'\)/);
   assert.match(app, /const latest = add\('latest', 'button', 'latest'\)/);
   assert.match(app, /region\.append\(absent, scroller\)/);
-  assert.match(app, /composerLine\.insertBefore\(latest, composerLine\.querySelector\('\.composer-bar'\)\)/);
+  assert.match(app, /elements\.meta\?\.append\(latest\)/);
   assert.doesNotMatch(html, /id="(?:primary|agent)-(?:transcript|latest)"/);
 });
 test('native text flow preserves scroll boundaries without line paint clipping', () => {
@@ -710,11 +711,11 @@ test('one workbench footer owns wrapped facts without composer-local settings', 
   const factory = composer.slice(composer.indexOf('export function createComposerElements('), composer.indexOf('\ntype Edit ='));
   assert.match(factory, /const root = element\('form', 'composer'\); root\.id = id/);
   assert.match(factory, /const id = `composer-\$\{encodeURIComponent\(instanceId\)\}`/);
-  assert.match(factory, /root\.append\(resize, receipt, input, line\)/);
+  assert.match(factory, /root\.append\(resize, receipt, input, meta\)/);
   assert.match(factory, /submit\.append\(modes, start, send\)/);
   assert.match(factory, /bar\.append\(stop, submit\)/);
   assert.match(factory, /intake\.append\(attach,sources,picker\)/);
-  assert.match(factory, /line\.append\(intake, bar\)/);
+  assert.match(factory, /line\.append\(bar\)/);
   assert.doesNotMatch(factory, /composer-settings|usage-details|workbench-status-facts|root\.append\([^)]*\b(?:save|receiptDetails)\b/);
   assert.doesNotMatch(html, /<form id="(?:primary|agent)-composer"/);
   const app = await readFile(new URL('./app.ts', import.meta.url), 'utf8');

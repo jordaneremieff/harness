@@ -186,6 +186,10 @@ test('passive attachment and availability never reserve input while explicit act
     f.composer.destroy();
   }
 });
+test('the Send tooltip names the key that sends', () => {
+  const key = (enterSends: boolean) => {const f = fixture('primary', undefined, true, undefined, () => enterSends); f.connect(); const title = f.node('send').title; f.composer.destroy(); return title;};
+  assert.equal(key(true), 'Send · Enter'); assert.match(key(false), /^Send · (⌘Enter|Ctrl\+Enter)$/);
+});
 test('a recipient that cannot receive input reserves nothing and prepares once it can', async () => {
   const f = fixture('agent'); const saved = state('suppressed', draft(1, 'Draft for a stored agent', 'followUp'), true);
   f.composer.setState({line: 'Not running. Start it to send a message.', action: {label: 'Start', run: () => {}}});

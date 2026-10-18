@@ -171,7 +171,7 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
   const latest = add('latest', 'button', 'latest') as HTMLButtonElement; latest.type = 'button'; latest.textContent = 'Latest'; latest.setAttribute('aria-label', 'Latest message'); latest.hidden = true;
   nodes.set('transcript-region',region);region.append(absent, scroller); const above = add('widgets-above', 'div', 'widgets'), below = add('widgets-below', 'div', 'widgets');
   const elements = createComposerElements(instanceId); elements.root.hidden = false;
-  const composerLine = elements.root.querySelector('.composer-line') as HTMLElement; composerLine.insertBefore(latest, composerLine.querySelector('.composer-bar'));
+  elements.meta?.append(latest);
   for (const [name, node] of Object.entries(elements)) if (node) nodes.set(name === 'root' ? 'composer' : name, node);
   const stop = elements.root.querySelector<HTMLButtonElement>('.stop'); if (!stop) throw new Error('Stop control is missing.'); nodes.set('stop', stop); nodes.set('abort', stop);
   const resize = elements.root.querySelector<HTMLElement>('.resizer'); if (resize) nodes.set('composer-resizer', resize);

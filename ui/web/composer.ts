@@ -21,7 +21,7 @@ import { ApiError, draftImageUrl, errorMessage, operation, request, reserve } fr
 
 export type ComposerHooks = {workingFile?:(stage:(files:readonly File[])=>boolean)=>void; changed?:()=>void; captured?: (submission:Submission)=>void; failed?: (operationId:string,uncertain:boolean)=>void; prepareInput?: () => boolean; imageState?: (workspace: string, state: TargetState) => void; imageInput?: (target: Target) => {allowed: boolean; reason?: string}; recovery?: () => void; layoutHeight?: () => number | undefined; timing?: (start: number, end: number) => void; submitted: (operation: OperationView) => void; unknownCommand: (text: string, sendLiteral: () => void) => boolean; enterSends?: () => boolean; commands?: () => CommandInventory; moreCommands?: (target: Target) => Promise<void>; retained?: (workspace: string, target: Target, retained: boolean) => void};
 export type ComposerElements = {root: HTMLFormElement; editor: HTMLTextAreaElement; recipient: HTMLElement; receipt: HTMLElement;
-  receiptDetails: HTMLElement; modes: HTMLElement; send: HTMLButtonElement; save: HTMLElement; commandMenu?: HTMLElement; overlay?: HTMLElement; attachments?: HTMLElement; attach?: HTMLButtonElement; sources?: HTMLButtonElement; picker?: HTMLInputElement; state?: HTMLElement; start?: HTMLButtonElement};
+  receiptDetails: HTMLElement; modes: HTMLElement; send: HTMLButtonElement; save: HTMLElement; meta?: HTMLElement; commandMenu?: HTMLElement; overlay?: HTMLElement; attachments?: HTMLElement; attach?: HTMLButtonElement; sources?: HTMLButtonElement; picker?: HTMLInputElement; state?: HTMLElement; start?: HTMLButtonElement};
 /** An agent-specific line inside the composer, with at most one action in the Send position and optional exact details. */
 export type ComposerStateView = {line: string; action?: {label: string; title?: string; pending?: boolean; disabled?: boolean; run: () => void}; blocksSend?: boolean; detail?: string; showDetail?: () => void};
 /** Creates one editor; the detached save/receipt-detail nodes belong in the shared footer. */
@@ -39,7 +39,7 @@ export function createComposerElements(instanceId: string): ComposerElements {
   const attachments = element('div', 'composer-attachments'); attachments.hidden = true; attachments.setAttribute('aria-label', 'Attachments');
   const state = element('p', 'composer-state'); state.id = `${id}-state`; state.hidden = true; state.setAttribute('role', 'status');
   const stateLine = element('span', 'composer-state-line'), stateDetail = element('button', 'composer-state-detail', 'Details'); stateLine.id = `${id}-state-line`; stateDetail.id = `${id}-state-detail`; stateDetail.type = 'button'; stateDetail.hidden = true; state.append(stateLine, stateDetail);
-  const input = element('div', 'composer-input'); input.append(commandMenu, recipient, surface, attachments, state);
+  const input = element('div', 'composer-input');
   const modes = element('div', 'modes'); modes.id = `${id}-modes`; modes.hidden = true; modes.setAttribute('role', 'group'); modes.setAttribute('aria-label', 'Delivery while working');
   const delivery = element('select'); delivery.setAttribute('aria-label', 'Delivery while working'); delivery.title = 'Next step reaches the next step of the current work. After response follows the current response.';
   delivery.setAttribute('aria-description', delivery.title);
@@ -50,17 +50,20 @@ export function createComposerElements(instanceId: string): ComposerElements {
   const stop = element('button', 'stop', 'Stop'); stop.id = `${id}-stop`; stop.type = 'button'; stop.hidden = true;
   const send = element('button', 'send', 'Send'); send.id = `${id}-send`; send.type = 'submit'; send.disabled = true;
   send.setAttribute('aria-label', 'Send message'); stop.setAttribute('aria-label', 'Stop response');
-  const attach = element('button', 'attach', 'Attach'); attach.type = 'button'; attach.setAttribute('aria-label', 'Attach files');
+  const attach = element('button', 'attach', 'Attach'); attach.type = 'button'; attach.hidden = true; attach.tabIndex = -1; attach.setAttribute('aria-label', 'Upload files');
   const picker = element('input'); picker.type = 'file'; picker.multiple = true; picker.hidden = true; picker.tabIndex = -1; picker.setAttribute('aria-label', 'Choose attachments');
-  const sources = cardAction('chevron', 'Attachment sources', () => {}, 'attachment-sources');
+  const sources = cardAction('plus', 'Add to message', () => {}, 'attachment-sources');
   sources.setAttribute('aria-haspopup','menu'); sources.setAttribute('aria-expanded','false');
   const intake = element('span','composer-intake'); intake.append(attach,sources,picker);
   const start = element('button', 'send start', 'Start'); start.id = `${id}-start`; start.type = 'button'; start.hidden = true;
   const submit = element('div', 'composer-submit'); submit.append(modes, start, send);
-  const bar = element('div', 'composer-bar'); bar.append(stop, submit); const line = element('div', 'composer-line'); line.append(intake, bar); root.append(resize, receipt, input, line);
+  const bar = element('div', 'composer-bar'); bar.append(stop, submit); const line = element('div', 'composer-line'); line.append(bar);
+  // The add control leads the tab order, then the editor, then the send controls; the grid places them visually.
+  input.append(commandMenu, recipient, intake, surface, attachments, state, line);
+  const meta = element('div', 'composer-meta'); root.append(resize, receipt, input, meta);
   const save = element('span', 'draft-state'); save.id = `${id}-save`;
   const receiptDetails = element('span', 'receipt-details'); receiptDetails.id = `${id}-receipt-details`;
-  return {root, editor, recipient, receipt, receiptDetails, modes, send, save, commandMenu, overlay, attachments, attach, sources, picker, state, start};
+  return {root, editor, recipient, receipt, receiptDetails, modes, send, save, meta, commandMenu, overlay, attachments, attach, sources, picker, state, start};
 }
 type Edit = {text: string; mode: string; images: DraftImage[]; edit: number};
 type InsertionCapture = {buffer: Buffer; edit: number; text: string; start: number; end: number; direction: 'forward' | 'backward' | 'none'};
@@ -378,9 +381,9 @@ export class Composer {
     const origin=this.elements.sources, captured=this.insertionCapture(); if (!origin) return;
     const current=()=>!this.destroyed && this.current===captured?.buffer;
     const box=origin.getBoundingClientRect();
-    contextMenu.open(origin,{x:box.left,y:box.bottom},'Attachment sources',[
-      {label:'Choose local files…',run:()=>this.elements.attach?.click()},
-      {label:'Choose working-folder file…',enabled:!!captured && !!this.hooks.workingFile,disabledReason:captured?'Working-folder files are unavailable.':'Draft is not loaded. Open this conversation first.',
+    contextMenu.open(origin,{x:box.left,y:box.bottom},'Add to message',[
+      {label:'Upload files…',icon:'file',run:()=>this.elements.attach?.click()},
+      {label:'Working-folder file…',icon:'folder',hint:'@',enabled:!!captured && !!this.hooks.workingFile,disabledReason:captured?'Working-folder files are unavailable.':'Draft is not loaded. Open this conversation first.',
         run:()=>{if(captured)this.hooks.workingFile?.(files=>current() && this.addFiles(files,captured));}},
     ],current);
   }
@@ -623,7 +626,12 @@ export class Composer {
     this.elements.modes.hidden = !this.current || !this.ready || !this.connected || !this.busy || !this.deliverySupported;
     this.elements.send.hidden = !!this.stateView?.action;
     const reason = this.sendGuidance();
-    const send = this.elements.send; send.setAttribute('aria-description', reason); send.title = reason || 'Send';
+    const send = this.elements.send; send.setAttribute('aria-description', reason); send.title = reason || `Send · ${this.sendKeyName()}`;
+  }
+  /** The key that sends, named as the keyboard shows it: Enter when the setting is on, otherwise the platform modifier plus Enter. */
+  private sendKeyName(): string {
+    if (this.hooks.enterSends?.()) return 'Enter';
+    return /Mac|iPhone|iPad/.test(globalThis.navigator?.platform ?? '') ? '⌘Enter' : 'Ctrl+Enter';
   }
   private sendGuidance(): string {
     if (!this.ready) return this.current?.state.target.kind === 'agent' ? this.recipientGuidance : 'This conversation is not ready for messages.';
