@@ -735,7 +735,7 @@ test('prompt excerpts retain full supplied details and ordinary Resume cautions 
   assert.equal(rows[1]?.querySelector('.picker-session-title')?.textContent, title);
   assert.equal(rows[0]?.querySelector('.picker-session-folder')?.textContent, 'project'); assert.ok(rows[0]?.querySelector('.picker-age'));
   const file = descendants(setup.body).find(node => node.className === 'picker-file'); assert.ok(file); file.open = true; file.dispatch('toggle');
-  const durable=setup.body.querySelector('.picker-durable'),registered=setup.body.querySelector('.picker-ordinary'),ordinary=setup.body.querySelector('.picker-folder-ordinary');assert.ok(durable&&registered&&ordinary);assert.equal(durable.querySelector('.picker-safety'),null);assert.equal(registered.querySelector('.picker-safety'),null);assert.equal(ordinary.children.some(node=>node.classList.contains('picker-safety')),false);const groupSafety=setup.body.children.find(node=>node.classList.contains('picker-safety'));assert.ok(groupSafety);assert.equal(groupSafety.hidden,false);assert.equal(groupSafety.textContent,'Stop a terminal session before you resume it here.');const fileSafety=file.querySelector('.picker-safety');assert.ok(fileSafety);assert.equal(fileSafety.hidden,false);assert.match(fileSafety.textContent,/^Stop a terminal session before you resume it here\./);assert.equal(setup.calls.some(call=>call.path==='/api/primaries'||call.path==='/api/agents/convert'),false);
+  const durable=setup.body.querySelector('.picker-durable'),registered=setup.body.querySelector('.picker-ordinary'),ordinary=setup.body.querySelector('.picker-folder-ordinary');assert.ok(durable&&registered&&ordinary);assert.equal(durable.querySelector('.picker-safety'),null);assert.equal(registered.querySelector('.picker-safety'),null);assert.equal(ordinary.children.some(node=>node.classList.contains('picker-safety')),false);const groupSafety=setup.body.children.find(node=>node.classList.contains('picker-safety'));assert.ok(groupSafety);assert.equal(groupSafety.hidden,true,'The list line steps aside while the form is open');assert.equal(groupSafety.textContent,'Stop a terminal session before you resume it here.');const fileSafety=file.querySelector('.picker-safety');assert.ok(fileSafety);assert.equal(fileSafety.hidden,false);assert.match(fileSafety.textContent,/^Stop a terminal session before you resume it here\./);assert.equal(setup.calls.some(call=>call.path==='/api/primaries'||call.path==='/api/agents/convert'),false);
 });
 test('different prompts with identical compact captions retain distinct exact-identity tails', async t => {
   const item = saved.items[0]; assert.ok(item); const prefix = 'Same visible prompt '.repeat(5);
@@ -857,4 +857,24 @@ test('the Resume text control resumes the same session as the whole-row button',
   assert.equal(control.disabled, false); assert.equal(setup.calls.some(call => call.path === '/api/primaries'), false);
   control.click(); await settle();
   assert.equal(setup.calls.filter(call => call.path === '/api/primaries').length, 1);
+});
+test('an opened row has no Resume control while the row itself still selects its session', async t => {
+  const setup = directPicker(t, {...active, sessionFile: saved.items[0].path}); setup.picker.open(); await settle();
+  const row = sessionRow(setup);
+  assert.equal(row.children.some(node => node.className === 'quiet picker-resume'), false);
+  assert.match(row.querySelector('.picker-select')?.textContent ?? '', /In this window/);
+  assert.equal(row.children.some(node => node.textContent === 'Convert to Durable'), true);
+  row.querySelector('.picker-select')?.click(); await settle();
+  assert.equal(setup.calls.some(call => call.path === '/api/primaries'), false, 'Selecting an open session starts nothing');
+});
+test('opening the Session file form leaves exactly one visible Resume caution and closing it restores the list line', async t => {
+  const setup = directPicker(t, undefined, saved, undefined, {roster: catalogRoster(), published: noPublished}); setup.picker.open(); await settle();
+  const file = setup.body.querySelector('.picker-file'); assert.ok(file);
+  const cautions = () => descendants(setup.body).filter(node => node.classList.contains('picker-safety') && node.hidden !== true && !(file.hidden && file.querySelector('.picker-safety') === node));
+  assert.equal(cautions().length, 1); assert.equal(setup.body.children.some(node => node.classList.contains('picker-safety') && node.hidden === false), true);
+  file.hidden = false; file.open = true; file.dispatch('toggle');
+  assert.equal(cautions().length, 1, 'Only the form caution remains');
+  assert.equal(setup.body.children.some(node => node.classList.contains('picker-safety') && node.hidden === false), false);
+  file.open = false; file.dispatch('toggle');
+  assert.equal(cautions().length, 1); assert.equal(setup.body.children.some(node => node.classList.contains('picker-safety') && node.hidden === false), true);
 });

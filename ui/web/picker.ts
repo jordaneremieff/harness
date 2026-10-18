@@ -296,8 +296,8 @@ export class ProjectPicker {
     }
     const {body, token, signal} = this.begin(`Sessions in ${this.projectName(project)}`); this.shownProject = project;
     this.sessionContext(body, project);
-    const safety = ordinaryResumeWarning(); let folderResumable = false, catalogResumable = false;
-    const syncSafety = () => { safety.hidden = !(folderResumable || catalogResumable); };
+    const safety = ordinaryResumeWarning(); let folderResumable = false, catalogResumable = false, fileFormOpen = false;
+    const syncSafety = () => { safety.hidden = fileFormOpen || !(folderResumable || catalogResumable); };
     const partialGroups = new Set<string>(), partialNote = element('p', 'secondary picker-partial', 'Partial list'); partialNote.hidden = true;
     const markPartial = (group: string, partial: boolean) => { if (partial) partialGroups.add(group); else partialGroups.delete(group); partialNote.hidden = !partialGroups.size; };
     const search = input('Search sessions'); search.field.id = 'picker-search'; search.label.htmlFor = search.field.id; search.field.placeholder = 'Search sessions';
@@ -371,7 +371,7 @@ export class ProjectPicker {
     };
     const refresh = cardAction('restart', 'Refresh saved sessions', () => { void load(); this.reloadPublished?.(); }); searchRow.append(refresh);
     this.reloadWriters = () => { if (this.owns(token)) { void load(); this.reloadPublished?.(); } };
-    const file = this.sessionFile(project, search.field); file.hidden = true;
+    const file = this.sessionFile(project, search.field, open => { fileFormOpen = open; syncSafety(); }); file.hidden = true;
     const options = cardAction('more', 'Saved session options', () => {
       const box = options.getBoundingClientRect();
       contextMenu.open(options, {x: box.left, y: box.bottom}, 'Saved session options', [
@@ -494,6 +494,7 @@ export class ProjectPicker {
     const convert=button('Convert to Durable',()=>{void this.run(()=>this.convert(item),cause=>this.error(cause,'The conversion did not return a confirmed conversation.'));},'quiet');
     convert.title='Creates a new Durable conversation from saved context. Leaves the ordinary session unchanged.';
     convert.setAttribute('aria-description', convert.title);
+    if (opened) { row.append(select, age, convert, details); return row; }
     const resume = button('Resume', () => this.resume(item.project, item.path), 'quiet picker-resume'); resume.disabled = writer;
     if (writer) { resume.title = WRITER_HELD; resume.setAttribute('aria-description', WRITER_HELD); }
     row.append(select, age, resume, convert, details); return row;
@@ -509,7 +510,8 @@ export class ProjectPicker {
     const index = event.key === 'Home' ? 0 : event.key === 'End' ? rows.length - 1 : event.key === 'ArrowDown' ? (current + 1) % rows.length : (current < 0 ? rows.length - 1 : (current - 1 + rows.length) % rows.length);
     rows[index]?.focus();
   }
-  private sessionFile(project: string, search: HTMLElement): HTMLDetailsElement {
+  /** The form carries its own caution, so `formToggled` lets the list-level line step aside while the form is open. */
+  private sessionFile(project: string, search: HTMLElement, formToggled: (open: boolean) => void = () => {}): HTMLDetailsElement {
     const disclosure = element('details', 'picker-file'); const summary = element('summary', 'secondary', 'Session file…'); cardDisclosure(summary); disclosure.append(summary);
     const session = input('Session file'); session.field.id = 'picker-session-path'; session.label.htmlFor = session.field.id;
     const error = element('p', 'error'); error.id = 'picker-file-error'; error.setAttribute('role', 'alert'); session.field.setAttribute('aria-describedby', error.id);
@@ -519,7 +521,7 @@ export class ProjectPicker {
       this.resume(project, session.field.value, cause => { error.textContent = cause instanceof Error ? cause.message : String(cause); session.field.focus(); });
     };
     disclosure.append(ordinaryResumeWarning(), pickerField(session, true), error, button('Resume session', resume, 'main-action'));
-    disclosure.addEventListener('toggle', () => { disclosure.hidden = !disclosure.open; if (disclosure.open) session.field.focus(); else search.focus(); });
+    disclosure.addEventListener('toggle', () => { disclosure.hidden = !disclosure.open; formToggled(disclosure.open); if (disclosure.open) session.field.focus(); else search.focus(); });
     session.field.addEventListener('keydown', event => { if (event instanceof KeyboardEvent && event.key === 'Enter') { event.preventDefault(); resume(); } });
     return disclosure;
   }
