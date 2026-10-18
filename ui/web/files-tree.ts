@@ -42,7 +42,7 @@ export class FilesTree {
   }
   private scheduleRefresh():void {
     if (this.frame || !this.dirty.size || this.refreshing >= 2) return;
-    this.frame = requestAnimationFrame(()=> {this.frame = 0;while (this.dirty.size && this.refreshing < 2) {const path = this.dirty.values().next().value as string;this.dirty.delete(path);this.refreshing++;const generation = this.generation;void this.load(path).finally(()=> {if (generation === this.generation) {this.refreshing--;this.scheduleRefresh();}});}});
+    this.frame = requestAnimationFrame(()=> {this.frame = 0;while (this.dirty.size && this.refreshing < 2) {const path = this.dirty.values().next().value as string;this.dirty.delete(path);if (path && !this.directories.get(path)?.expanded) continue;this.refreshing++;const generation = this.generation;void this.load(path).finally(()=> {if (generation === this.generation) {this.refreshing--;this.scheduleRefresh();}});}});
   }
   remap(move:FileMove):void {
     if (move.rootId !== this.root?.id) return;

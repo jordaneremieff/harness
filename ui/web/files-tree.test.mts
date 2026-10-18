@@ -50,6 +50,24 @@ test('incomplete empty listings and mismatched responses never claim an empty fo
   const tree = new FilesTree(host as unknown as HTMLElement,{page:async()=>page('',[],false),select:()=>{},escape:()=>{}});tree.setRoot(root);await settle();assert.match(host.textContent,/incomplete/);assert.doesNotMatch(host.textContent,/No files/);
   const mismatch = new FilesTree(host as unknown as HTMLElement,{page:async()=>({...page('',[]),rootId:'wrong'}),select:()=>{},escape:()=>{}});mismatch.setRoot(root);await settle();assert.match(host.textContent,/identity/);assert.doesNotMatch(host.textContent,/No files/);
 });
+for (const pending of ['queued', 'loading'] as const) test(`collapse survives a ${pending} directory refresh`,async context=> {
+  const host=node();context.after(()=>host.remove());const frames=new Map<number,FrameRequestCallback>();let frame=0;
+  context.mock.method(globalThis,'requestAnimationFrame',(callback:FrameRequestCallback)=>{frames.set(++frame,callback);return frame;});
+  context.mock.method(globalThis,'cancelAnimationFrame',(id:number)=>{frames.delete(id);});
+  const flush=()=>{const queued=[...frames.values()];frames.clear();for(const callback of queued)callback(0);};
+  const reads:string[]=[],scopes:string[][]=[];let finish!:(value:FileDirectoryPage)=>void;
+  const delayed=new Promise<FileDirectoryPage>(resolve=>{finish=resolve;});
+  const children=page('folder',[{name:'child',path:'folder/child',kind:'file'}]);
+  const tree=new FilesTree(host as unknown as HTMLElement,{page:async(_root,path)=>{reads.push(path);return !path?page('',[{name:'folder',path:'folder',kind:'directory'}]):pending==='loading'&&reads.length===2?delayed:children;},scope:()=>{scopes.push(tree.disclosed());},select:()=>{},escape:()=>{}});
+  tree.setRoot(root);await settle();assert.deepEqual(reads,['']);
+  row(host,'folder').click();await settle();tree.invalidate('r',['folder']);
+  row(host,'folder').click();assert.equal(row(host,'folder').getAttribute('aria-expanded'),'false');
+  finish(children);await settle();flush();await settle();
+  assert.equal(row(host,'folder').getAttribute('aria-expanded'),'false');assert.equal(host.querySelector('[data-path="folder/child"]'),null);
+  assert.deepEqual(tree.disclosed(),['']);assert.deepEqual(scopes.at(-1),['']);assert.deepEqual(reads,['','folder']);
+  row(host,'folder').click();assert.ok(row(host,'folder/child'));tree.invalidate('r',['folder']);flush();await settle();
+  assert.equal(row(host,'folder').getAttribute('aria-expanded'),'true');assert.deepEqual(reads,['','folder','folder']);assert.ok(row(host,'folder/child'));
+});
 test('same root in another workspace invalidates every late directory outcome',async context=> {
   const host = node();context.after(()=>host.remove());let reject!:(error:Error)=>void,reads = 0;
   const old = new Promise<FileDirectoryPage>((_resolve,no)=> {reject=no;});
