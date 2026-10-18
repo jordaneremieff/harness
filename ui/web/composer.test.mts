@@ -186,6 +186,23 @@ test('passive attachment and availability never reserve input while explicit act
     f.composer.destroy();
   }
 });
+test('a typed @ file is staged, only its token leaves the draft, and a changed draft stages nothing', async t => {
+  const f = fixture(); const scope = scopedNodes('mention', true); const menu = new NodeFake(); menu.id = 'mention-files';
+  const elements = {...scope.elements, fileMenu: menu} as unknown as ComposerElements; let staged: File[] = []; let release: (() => boolean) | undefined;
+  const composer = new Composer(elements, {submitted() {}, unknownCommand: () => false,
+    fileSearch: (query) => Promise.resolve({rootId: 'r', query, scope: '', rows: [{name: 'a.txt', path: 'src/a.txt', kind: 'file'}, {name: 'lib', path: 'lib', kind: 'directory'}], more: false, coverage: {complete: true, visited: 2, skipped: 0}}),
+    fileStage: (_path, _signal, _current, stage) => new Promise<boolean>(resolve => { release = () => { const ok = stage([new File(['body'], 'a.txt')]); resolve(ok); return ok; }; })});
+  const editor = scope.node('editor'); composer.attach('w', state('m', draft(1, 'see @a now'))); composer.availability(true, true, false);
+  const open = async () => { editor.focus(); editor.setSelectionRange(6, 6); editor.fire('select'); t.mock.timers.tick(100); await Promise.resolve(); await Promise.resolve(); };
+  await open(); assert.equal(menu.hidden, false);
+  const key = (name: string) => editor.fire('keydown', {key: name});
+  assert.equal(key('Enter').defaultPrevented, true); assert.ok(release); const before = composer.state?.draft.text;
+  assert.equal(release(), true); staged = []; assert.equal(editor.value, 'see  now'); assert.notEqual(before, editor.value);
+  assert.equal(menu.hidden, true, 'the list closes once the token is gone');
+  // A draft edited while the file was being read stages nothing and keeps the edit.
+  composer.setText('see @a now'); await open(); key('Enter'); assert.ok(release); editor.value = 'see @a now!'; editor.fire('input');
+  assert.equal(release(), false); assert.equal(editor.value, 'see @a now!'); void staged; composer.destroy(); void f;
+});
 test('the Send tooltip names the key that sends', () => {
   const key = (enterSends: boolean) => {const f = fixture('primary', undefined, true, undefined, () => enterSends); f.connect(); const title = f.node('send').title; f.composer.destroy(); return title;};
   assert.equal(key(true), 'Send · Enter'); assert.match(key(false), /^Send · (⌘Enter|Ctrl\+Enter)$/);

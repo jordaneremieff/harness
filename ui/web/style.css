@@ -949,6 +949,12 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
   .command-source { grid-column: 2; grid-row: 1; max-width: 10ch; }
   .command-desc { grid-column: 1 / -1; grid-row: 2; white-space: normal; overflow: visible; overflow-wrap: anywhere; }
 }
+.mention-option { grid-template-columns: minmax(0,1fr) auto; }
+.mention-option .command-name { display: flex; align-items: center; gap: var(--s2); font-family: var(--sans); }
+.mention-option .command-name > .card-icon { flex: none; color: var(--muted); }
+.mention-option .command-name > span { overflow: hidden; text-overflow: ellipsis; }
+.mention-directory { max-width: 32ch; text-align: right; }
+.mention-more { font-style: normal; }
 .command-empty, .command-hint { padding: 6px 14px; color: var(--muted); font-size: 13px; }
 
 .empty-state { color: var(--muted); }

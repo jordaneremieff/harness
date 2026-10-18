@@ -10,6 +10,9 @@ import {contextMenu} from './context-menu.ts';
 import { exactInput, recoveryLabel } from './recovery.ts';
 import { targetReceipts } from './receipt.ts';
 import { CommandMenu } from './command-menu.ts';
+import { FileMentionMenu } from './file-mention.ts';
+import type { MentionToken } from './file-mention-state.ts';
+import type { FileSearchResult, FileSearchRow } from '../shared/files.ts';
 import type { CommandInventory } from './command-menu-state.ts';
 import { clampSelection, draftPresentation, editorSelectionKey, readEditorSelection, SLOW_SAVE_MS } from './draft-presentation.ts';
 import type { EditorSelection } from './draft-presentation.ts';
@@ -19,9 +22,9 @@ import { acknowledgeDraft, beginDraftSave, captureSubmission, createDraft, draft
 import type { DraftSave, DraftState, Submission } from './draft-state.ts';
 import { ApiError, draftImageUrl, errorMessage, operation, request, reserve } from './transport.ts';
 
-export type ComposerHooks = {workingFile?:(stage:(files:readonly File[])=>boolean)=>void; changed?:()=>void; captured?: (submission:Submission)=>void; failed?: (operationId:string,uncertain:boolean)=>void; prepareInput?: () => boolean; imageState?: (workspace: string, state: TargetState) => void; imageInput?: (target: Target) => {allowed: boolean; reason?: string}; recovery?: () => void; layoutHeight?: () => number | undefined; timing?: (start: number, end: number) => void; submitted: (operation: OperationView) => void; unknownCommand: (text: string, sendLiteral: () => void) => boolean; enterSends?: () => boolean; commands?: () => CommandInventory; moreCommands?: (target: Target) => Promise<void>; retained?: (workspace: string, target: Target, retained: boolean) => void};
+export type ComposerHooks = {fileSearch?: (query: string, signal: AbortSignal) => Promise<FileSearchResult> | undefined; fileStage?: (path: string, signal: AbortSignal, current: () => boolean, stage: (files: readonly File[]) => boolean) => Promise<boolean>; workingFile?:(stage:(files:readonly File[])=>boolean)=>void; changed?:()=>void; captured?: (submission:Submission)=>void; failed?: (operationId:string,uncertain:boolean)=>void; prepareInput?: () => boolean; imageState?: (workspace: string, state: TargetState) => void; imageInput?: (target: Target) => {allowed: boolean; reason?: string}; recovery?: () => void; layoutHeight?: () => number | undefined; timing?: (start: number, end: number) => void; submitted: (operation: OperationView) => void; unknownCommand: (text: string, sendLiteral: () => void) => boolean; enterSends?: () => boolean; commands?: () => CommandInventory; moreCommands?: (target: Target) => Promise<void>; retained?: (workspace: string, target: Target, retained: boolean) => void};
 export type ComposerElements = {root: HTMLFormElement; editor: HTMLTextAreaElement; recipient: HTMLElement; receipt: HTMLElement;
-  receiptDetails: HTMLElement; modes: HTMLElement; send: HTMLButtonElement; save: HTMLElement; meta?: HTMLElement; model?: HTMLButtonElement; thinking?: HTMLButtonElement; settings?: HTMLElement; commandMenu?: HTMLElement; overlay?: HTMLElement; attachments?: HTMLElement; attach?: HTMLButtonElement; sources?: HTMLButtonElement; picker?: HTMLInputElement; state?: HTMLElement; start?: HTMLButtonElement};
+  receiptDetails: HTMLElement; modes: HTMLElement; send: HTMLButtonElement; save: HTMLElement; fileMenu?: HTMLElement; meta?: HTMLElement; model?: HTMLButtonElement; thinking?: HTMLButtonElement; settings?: HTMLElement; commandMenu?: HTMLElement; overlay?: HTMLElement; attachments?: HTMLElement; attach?: HTMLButtonElement; sources?: HTMLButtonElement; picker?: HTMLInputElement; state?: HTMLElement; start?: HTMLButtonElement};
 /** An agent-specific line inside the composer, with at most one action in the Send position and optional exact details. */
 export type ComposerStateView = {line: string; action?: {label: string; title?: string; pending?: boolean; disabled?: boolean; run: () => void}; blocksSend?: boolean; detail?: string; showDetail?: () => void};
 /** Creates one editor; the detached save/receipt-detail nodes belong in the shared footer. */
@@ -34,6 +37,7 @@ export function createComposerElements(instanceId: string): ComposerElements {
   resize.setAttribute('role', 'separator'); resize.setAttribute('aria-orientation', 'horizontal'); resize.setAttribute('aria-label', 'Resize message box'); resize.setAttribute('aria-controls', editor.id);
   const receipt = element('div', 'receipt'); receipt.id = `${id}-receipt`; receipt.setAttribute('role', 'status');
   const commandMenu = element('div', 'command-menu'); commandMenu.id = `${id}-commands`; commandMenu.hidden = true;
+  const fileMenu = element('div', 'command-menu file-menu'); fileMenu.id = `${id}-files`; fileMenu.hidden = true;
   const overlay = element('div', 'composer-overlay'); overlay.setAttribute('aria-hidden', 'true'); overlay.hidden = true;
   const surface = element('div', 'composer-surface'); surface.append(overlay, editor);
   const attachments = element('div', 'composer-attachments'); attachments.hidden = true; attachments.setAttribute('aria-label', 'Attachments');
@@ -59,14 +63,14 @@ export function createComposerElements(instanceId: string): ComposerElements {
   const submit = element('div', 'composer-submit'); submit.append(modes, start, send);
   const bar = element('div', 'composer-bar'); bar.append(stop, submit); const line = element('div', 'composer-line'); line.append(bar);
   // The add control leads the tab order, then the editor, then the send controls; the grid places them visually.
-  input.append(commandMenu, recipient, intake, surface, attachments, state, line);
+  input.append(commandMenu, fileMenu, recipient, intake, surface, attachments, state, line);
   const model = element('button', 'composer-model'), thinking = element('button', 'composer-thinking'), settingsText = element('span', 'composer-settings-text');
   model.id = `${id}-model`; thinking.id = `${id}-thinking`; settingsText.id = `${id}-settings-text`; model.type = thinking.type = 'button'; model.hidden = thinking.hidden = settingsText.hidden = true;
   const settings = element('div', 'composer-settings'); settings.id = `${id}-settings`; settings.setAttribute('role', 'group'); settings.setAttribute('aria-label', 'Model and thinking'); settings.append(model, thinking, settingsText);
   const meta = element('div', 'composer-meta'); meta.append(settings); root.append(resize, receipt, input, meta);
   const save = element('span', 'draft-state'); save.id = `${id}-save`;
   const receiptDetails = element('span', 'receipt-details'); receiptDetails.id = `${id}-receipt-details`;
-  return {root, editor, recipient, receipt, receiptDetails, modes, send, save, meta, model, thinking, settings, commandMenu, overlay, attachments, attach, sources, picker, state, start};
+  return {root, editor, recipient, receipt, receiptDetails, modes, send, save, fileMenu, meta, model, thinking, settings, commandMenu, overlay, attachments, attach, sources, picker, state, start};
 }
 type Edit = {text: string; mode: string; images: DraftImage[]; edit: number};
 type InsertionCapture = {buffer: Buffer; edit: number; text: string; start: number; end: number; direction: 'forward' | 'backward' | 'none'};
@@ -107,6 +111,8 @@ export class Composer {
   private destroyed = false;
   private hooks: ComposerHooks;
   private commandMenu?: CommandMenu;
+  private fileMenu?: FileMentionMenu;
+  private mentionAbort?: AbortController;
   private composing = false;
   private suppressEnter = false;
   private compositionTurn?: ReturnType<typeof setTimeout>;
@@ -151,6 +157,8 @@ export class Composer {
       const target = this.current?.state.target;
       return target ? moreCommands(target) : Promise.reject(new Error('No message recipient is selected.'));
     } : undefined);
+    const fileSearch = hooks.fileSearch;
+    if (elements.fileMenu && fileSearch && hooks.fileStage) this.fileMenu = new FileMentionMenu(this.editor, elements.fileMenu, {search: (query, signal) => this.current ? fileSearch(query, signal) : undefined, accept: (token, row) => this.mention(token, row)});
     this.listen(this.editor, 'pointerup', () => {
       this.rememberSelection();
       if (this.editor.offsetHeight !== this.sizedHeight) this.setManualHeight(this.editor.offsetHeight);
@@ -169,7 +177,7 @@ export class Composer {
   /** Removes DOM work without cancelling captured saves or receipt settlement. */
   destroy(): void {
     if (this.destroyed) return; this.rememberSelection(); this.destroyed = true;
-    for (const cleanup of this.cleanup) cleanup(); this.cleanup = []; this.commandMenu?.destroy(); this.overlay?.destroy();
+    for (const cleanup of this.cleanup) cleanup(); this.cleanup = []; this.commandMenu?.destroy(); this.fileMenu?.destroy(); this.mentionAbort?.abort(); this.overlay?.destroy();
     for (const buffer of this.buffers.values()) {clearTimeout(buffer.slowTimer); buffer.slowTimer = undefined; buffer.attachments?.destroy();}
     this.elements.receipt.replaceChildren(); this.elements.receiptDetails.replaceChildren();
   }
@@ -209,7 +217,7 @@ export class Composer {
     if (document.activeElement === this.editor) this.rememberSelection();
     const previousTarget = this.current?.state.target;
     this.overlay?.invalidate();
-    if (!state) { this.commandMenu?.reset(); }
+    if (!state) { this.commandMenu?.reset(); this.fileMenu?.reset(); }
     if (!state) { this.current = undefined; this.editor.value = ''; this.slot().replaceChildren(); this.elements.receiptDetails.replaceChildren(); this.render(); return; }
     const key = JSON.stringify([workspace, state.targetKey, state.target]);
     let buffer = this.buffers.get(key);
@@ -221,7 +229,7 @@ export class Composer {
       buffer.state = {...state, draft: buffer.data.server}; this.receive(buffer, state.draft);
     }
     const switched = this.current !== buffer; this.current = buffer;
-    if (switched || !sameTarget(state.target, previousTarget)) this.commandMenu?.reset();
+    if (switched || !sameTarget(state.target, previousTarget)) { this.commandMenu?.reset(); this.fileMenu?.reset(); this.mentionAbort?.abort(); }
     this.hydrate(buffer, state);
     if (switched) { this.editor.value = buffer.data.text; this.editor.scrollTop = 0; this.editor.scrollLeft = 0; this.restoreSelection(buffer); }
     this.paint(buffer); this.prepare(buffer);
@@ -236,7 +244,7 @@ export class Composer {
       if (this.hooks.prepareInput?.() !== false && buffer.state.target.kind === 'primary' && busy && buffer.data.mode === 'prompt' && !buffer.submitting) this.change(buffer.data.text, 'steer');
       this.prepare(buffer);
     }
-    this.resize(); this.render(); if (buffer) {this.paintAttachments(buffer); this.receipt(buffer);} this.commandMenu?.update(); if (!this.admissionBlocked) for (const item of this.buffers.values()) this.flush(item);
+    this.resize(); this.render(); if (buffer) {this.paintAttachments(buffer); this.receipt(buffer);} this.commandMenu?.update(); this.fileMenu?.update(); if (!this.admissionBlocked) for (const item of this.buffers.values()) this.flush(item);
   }
   receipts(operations: Iterable<OperationView>): void { this.operations = [...operations]; this.receipt(this.current); this.render(); }
   get serverDraftRevision(): number | undefined { return this.current?.data.server.revision; }
@@ -343,7 +351,7 @@ export class Composer {
     this.textLimit = new TextEncoder().encode(text).length > LIMITS.textBytes;
     if (this.textLimit) buffer.saveError = 'Text exceeds the saved text limit. The saved draft is unchanged. Shorten the text to save and send.';
     else if (buffer.saveError === 'Text exceeds the saved text limit. The saved draft is unchanged. Shorten the text to save and send.') buffer.saveError = undefined;
-    this.rememberSelection(); this.notifyRetained(buffer); this.resize(); this.render(); if (this.textLimit) this.receipt(buffer); this.commandMenu?.update(); this.flush(buffer);
+    this.rememberSelection(); this.notifyRetained(buffer); this.resize(); this.render(); if (this.textLimit) this.receipt(buffer); this.commandMenu?.update(); this.fileMenu?.update(); this.flush(buffer);
   }
   private insertionCapture(buffer = this.current): InsertionCapture | undefined {
     if (!buffer) return;
@@ -389,6 +397,26 @@ export class Composer {
       {label:'Working-folder file…',icon:'folder',hint:'@',enabled:!!captured && !!this.hooks.workingFile,disabledReason:captured?'Working-folder files are unavailable.':'Draft is not loaded. Open this conversation first.',
         run:()=>{if(captured)this.hooks.workingFile?.(files=>current() && this.addFiles(files,captured));}},
     ],current);
+  }
+  /** A chosen folder narrows the typed path; a chosen file is staged, and only its typed token is removed. */
+  private mention(token: MentionToken, row: FileSearchRow): void {
+    const buffer = this.current, stageFile = this.hooks.fileStage; if (!buffer || !stageFile) return;
+    const snapshot = {edit: buffer.data.edit, text: this.editor.value, typed: this.editor.value.slice(token.start, token.end)};
+    const intact = () => this.current === buffer && !this.destroyed && !this.composing && !this.elements.root.closest('[hidden],[inert]') && buffer.data.edit === snapshot.edit && this.editor.value === snapshot.text;
+    if (!intact()) return;
+    if (row.kind === 'directory') {
+      const inserted = insertNativeText(this.editor, `@${row.path}/`, token.start, token.end); this.change(inserted.text);
+      if (inserted.status !== 'inserted') { buffer.notice = 'The folder could not be written into the draft. Your draft is unchanged.'; this.receipt(buffer); }
+      return;
+    }
+    this.mentionAbort?.abort(); const abort = new AbortController(); this.mentionAbort = abort;
+    const stage = (files: readonly File[]): boolean => {
+      if (!intact() || this.editor.value.slice(token.start, token.end) !== snapshot.typed) { buffer.notice = 'The draft changed. No file was added.'; this.receipt(buffer); return false; }
+      const removed = insertNativeText(this.editor, '', token.start, token.end); this.change(removed.text);
+      if (removed.status !== 'inserted') { buffer.notice = 'The file reference could not be removed from the draft. No file was added.'; this.receipt(buffer); return false; }
+      buffer.notice = ''; return this.addFiles(files, this.insertionCapture(buffer));
+    };
+    void stageFile(row.path, abort.signal, intact, stage).catch(error => { if (!abort.signal.aborted && this.current === buffer) this.failureNotice(buffer, 'The file was not added.', error); });
   }
   addFiles(files: readonly File[], captured = this.insertionCapture()): boolean {
     if (!captured || this.destroyed) return false;
@@ -545,6 +573,7 @@ export class Composer {
     if (this.compositionKey(event)) return;
     if (event.defaultPrevented) return;
     if (this.commandMenu?.key(event)) return;
+    if (this.fileMenu?.key(event)) return;
     const modifierSend = (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey;
     const ordinarySend = this.hooks.enterSends?.() && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey;
     if (event.key === 'Enter' && (modifierSend || ordinarySend)) {
@@ -968,7 +997,7 @@ export class Composer {
     if (consent && !this.consentMatches(buffer, consent)) return;
     if (consent) consent.used = true;
     this.rememberSelection(); const focusOrigin = document.activeElement;
-    this.commandMenu?.close();
+    this.commandMenu?.close(); this.fileMenu?.close();
     const snapshot: Edit = {text: buffer.data.text, mode: buffer.state.target.kind === 'primary' && !this.busy ? 'prompt' : this.deliveryMode(buffer.data.mode) ?? buffer.data.mode, images: buffer.data.images.map(image => ({...image})), edit: buffer.data.edit};
     const confirmation = {target: {...buffer.state.target}, revision: buffer.data.server.revision, mode: buffer.data.mode};
     if (!literal && buffer.state.target.kind === 'primary' && this.hooks.unknownCommand(snapshot.text, () => {

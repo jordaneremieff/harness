@@ -7,7 +7,7 @@ import {AgentInspection} from './agent-inspection.ts';
 import {taskReference, type ConversationTask} from './conversation-tasks.ts';
 import type {AgentInspectionView, ResultSelector} from '../shared/inspection.ts';
 import type { ConversationLayout, WorkspaceTab as ConversationTab, FileTab } from '../shared/api.ts';
-import type {FileDirectoryPage, FileRootSelection, FileText, FileDraftState, FileDraft, FileSave, FileMutation, FileWatchState, FileWatchScope, FileChanges} from '../shared/files.ts';
+import type {FileDirectoryPage, FileSearchResult, FileRootSelection, FileText, FileDraftState, FileDraft, FileSave, FileMutation, FileWatchState, FileWatchScope, FileChanges} from '../shared/files.ts';
 import {FilesTree, type FileTreeAction} from './files-tree.ts';
 import {FileWatch} from './file-watch.ts';
 import {movedWorkspaceFiles, type FileMove} from './file-identity.ts';
@@ -181,7 +181,7 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
   if (target.kind === 'agent') root.insertBefore(createHistoryNote(add), region);
   const controller = {workspaceId, target: {...target}, instanceId, root, nodes, elements, abort: new AbortController(), historyAbort: new AbortController(), cursor: null, before: null, loading: false, preparing: false, passive: true, historyReady: false, historyBoundaryLoaded: false, initialized: false, showThinking: true} as ConversationController;
   wireSettingPickers(target, elements);
-  controller.composer = new Composer(elements, {workingFile:stage=>composerWorkingFile(controller,stage),changed:()=>{devInteractionRevision++;},captured: submission=>{const conversation=state.conversations.get(targetIdentity(controller.target));inputEchoes.capture(workspaceId,submission,conversation?conversationBlocks(conversation):[]);renderController(controller);},failed:(id,uncertain)=>{inputEchoes.failed(id,uncertain);renderController(controller);},prepareInput: () => !controller.passive, imageState: refreshComposerImages, imageInput: captured => composerImageInput(controller, captured), recovery: () => recovery.open(), layoutHeight: () => stableViews().height(elements.root), enterSends: () => state.workspace?.enterSendsMessages === true, timing: (start, end) => {if (controller.workspaceId === state.workspace?.id && !elements.root.closest('[hidden],[inert]')) diagnostics.measure('editor-echo', start, end);}, submitted: result => {inputEchoes.settle(result);showOperation(result, workspaceId);renderController(controller);}, unknownCommand: (text, literal) => target.kind === 'primary' && sameTarget(primaryTarget(), target) ? actions.unknown(text, literal) : false,
+  controller.composer = new Composer(elements, {workingFile:stage=>composerWorkingFile(controller,stage),fileSearch:(query,signal)=>searchWorkingFiles(controller,query,signal),fileStage:(path,signal,present,stage)=>stageMentionedFile(controller,path,signal,present,stage),changed:()=>{devInteractionRevision++;},captured: submission=>{const conversation=state.conversations.get(targetIdentity(controller.target));inputEchoes.capture(workspaceId,submission,conversation?conversationBlocks(conversation):[]);renderController(controller);},failed:(id,uncertain)=>{inputEchoes.failed(id,uncertain);renderController(controller);},prepareInput: () => !controller.passive, imageState: refreshComposerImages, imageInput: captured => composerImageInput(controller, captured), recovery: () => recovery.open(), layoutHeight: () => stableViews().height(elements.root), enterSends: () => state.workspace?.enterSendsMessages === true, timing: (start, end) => {if (controller.workspaceId === state.workspace?.id && !elements.root.closest('[hidden],[inert]')) diagnostics.measure('editor-echo', start, end);}, submitted: result => {inputEchoes.settle(result);showOperation(result, workspaceId);renderController(controller);}, unknownCommand: (text, literal) => target.kind === 'primary' && sameTarget(primaryTarget(), target) ? actions.unknown(text, literal) : false,
     ...(target.kind === 'primary' ? {commands: () => actions.commandOptions(), moreCommands: (captured: Target) => actions.continueCommands(captured)} : {}),
     retained: (workspace, captured) => { if (workspace === state.workspace?.id && captured.kind === 'agent') renderMessageResume(captured.identity); }});
   controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {operatorInput: target.kind === 'primary', references, subject: toolSubjectCaption, readTaskResult:async(reference,signal)=>{const value=await request<AgentInspectionView>(`/api/agents/${encodeURIComponent(reference.sessionId)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',{view:'result',submissionId:reference.submissionId,...(reference.requestId?{requestId:reference.requestId}:{})},undefined,AbortSignal.any([signal,controller.abort.signal,AbortSignal.timeout(15_000)]));if(value.view!=='result')throw new Error('The task result view changed.');return value;}, activity:()=>{if (footerController === controller) renderWorkbenchStatus();}, cwd: () => target.kind === 'primary' ? state.primaries.get(target.key)?.cwd : state.roster.get(target.identity)?.cwd, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
@@ -374,13 +374,20 @@ export function addFileToMessage(rootId:string,path:string):void {
   modal.body.append(element('p','file-message-fact',`Saved file: ${sourcePath}`),element('p','secondary','Uses the saved file. Unsaved editor changes are not included. Text files up to 32 KiB. After adding, use Include text in the selected conversation. Nothing is sent.'),label,select,destinationDetail);
   modal.actions(button('Cancel',()=>modal.close()),add); select.focus();
 }
-function composerWorkingFile(controller:ConversationController,stage:(files:readonly File[])=>boolean):void {
+/** The placeholder names the recipient and the typed trigger that currently works. */
+function messagePlaceholder(name:string):string {return `Message ${name}${fileRoot.selection?.root?' · @ files':''}`;}
+/** The working folder, workspace and a freshness check shared by the folder chooser and typed file suggestions. */
+function workingFileContext(controller:ConversationController) {
   const workspace=controller.workspaceId,selection=fileRoot.selection,root=selection?.root;
   const target={...controller.target},layout=JSON.stringify(currentLayout()),revision=paneSelectionRevision;
   const message=controller.elements.root.dataset.messagePanel?messageTarget.current:undefined;
   const current=()=>state.workspace?.id===workspace&&!controller.abort.signal.aborted&&controllers.get(controllerKey(workspace,target))===controller
     &&sameTarget(controller.composer.target,target)&&!!controller.composer.state&&fileRoot.selection===selection&&!fileRoot.loading
     &&paneSelectionRevision===revision&&JSON.stringify(currentLayout())===layout&&(!message||messageTarget.current===message&&messageTarget.valid(message));
+  return {workspace,root,target,current};
+}
+function composerWorkingFile(controller:ConversationController,stage:(files:readonly File[])=>boolean):void {
+  const {workspace,root,target,current}=workingFileContext(controller);
   if(!root||!current()) {
     modal.open('Choose working-folder file').append(element('p','secondary',fileRoot.loading?'Loading working folder. Try again after it loads.':fileRoot.error??(!root?'Choose a working folder first.':'Draft is not loaded or its destination changed. Open this conversation first.')));
     modal.actions(button('Close',()=>modal.close()));return;
@@ -389,6 +396,17 @@ function composerWorkingFile(controller:ConversationController,stage:(files:read
   chooseWorkingFile(modal,root,caption,fileMessageIdentity(target),{current,
     page:(path,cursor,signal)=>request<FileDirectoryPage>(`/api/files/roots/${encodeURIComponent(root.id)}/directory?path=${encodeURIComponent(path)}&workspace=${encodeURIComponent(workspace)}${cursor?`&cursor=${encodeURIComponent(cursor)}`:''}`,'GET',undefined,undefined,signal),
     stage:(path,signal,presented)=>stageSavedFile(workspace,root.id,path,signal,()=>current()&&presented(),stage)});
+}
+/** Typed `@` suggestions search the saved working folder only when it is loaded for this exact conversation. */
+function searchWorkingFiles(controller:ConversationController,query:string,signal:AbortSignal):Promise<FileSearchResult>|undefined {
+  const {workspace,root,current}=workingFileContext(controller); if(!root||!current())return undefined;
+  return request<FileSearchResult>(`/api/files/roots/${encodeURIComponent(root.id)}/search?q=${encodeURIComponent(query)}&workspace=${encodeURIComponent(workspace)}`,'GET',undefined,undefined,signal).then(result=> {
+    if(result.rootId!==root.id||!current())throw new Error('The working folder or destination changed. Type the file name again.');return result;
+  });
+}
+function stageMentionedFile(controller:ConversationController,path:string,signal:AbortSignal,present:()=>boolean,stage:(files:readonly File[])=>boolean):Promise<boolean> {
+  const {workspace,root,current}=workingFileContext(controller); if(!root||!current())return Promise.resolve(false);
+  return stageSavedFile(workspace,root.id,path,signal,()=>current()&&present(),stage);
 }
 async function stageSavedFile(workspace:string,rootId:string,path:string,signal:AbortSignal,current:()=>boolean,stage:(files:readonly File[])=>boolean):Promise<boolean> {
   const check=()=>{if(fileRoot.selection?.root?.id!==rootId||!current())throw new Error('The file folder or destination changed. Choose Add to message again.');};
@@ -632,14 +650,14 @@ function refreshCaptionConsumers(): void {
     controller.transcript.refreshSubjects();
     const view = presentation(controller.target);
     renderComposerSettings(controller, view);
-  controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + presentationName(view), controllerGuidance(controller, view), `Message ${presentationName(view)}`);
+  controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + presentationName(view), controllerGuidance(controller, view), messagePlaceholder(presentationName(view)));
   }
   const captured = messageTarget.current;
   if (captured && messageTarget.valid(captured)) {
     const name = presentationName(presentation({kind: 'agent', identity: captured.identity})), ready = messageTarget.ready;
     setText(byId('agent-message-name'), name);
     const controller = controllers.get(controllerKey(captured.workspaceId, {kind: 'agent', identity: captured.identity}));
-    controller?.composer.recipient((ready ? 'Message ' : 'Draft for ') + name, ready || !captured.prepared || captured.invalidated ? '' : 'This agent is not ready for messages.', `Message ${name}`);
+    controller?.composer.recipient((ready ? 'Message ' : 'Draft for ') + name, ready || !captured.prepared || captured.invalidated ? '' : 'This agent is not ready for messages.', messagePlaceholder(name));
   }
   tabStrip.render(); roster.schedule(); renderIdentity();
 }
@@ -1238,7 +1256,7 @@ function renderController(controller: ConversationController, deferred = false, 
     controller.composer.attach(controller.workspaceId, saved);
   } else prepareController(controller);
   controller.composer.receipts(state.operations.values());
-  const view = presentation(controller.target); controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + presentationName(view), controllerGuidance(controller, view), `Message ${presentationName(view)}`);
+  const view = presentation(controller.target); controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + presentationName(view), controllerGuidance(controller, view), messagePlaceholder(presentationName(view)));
   controller.composer.availability(connected, !!saved && (controller.target.kind === 'agent' || view.input), view.busy, selecting, view.input);
   if (firstDraft && !controller.passive && !controller.root.hidden && sameTarget(layoutTarget(currentLayout(), primaryTarget()) ?? undefined, controller.target) && document.activeElement === document.body) controller.composer.focus();
   controller.elements.root.hidden = !saved;renderInspection(controller); renderObserved(controller, controller.target.kind === 'agent' || connected || !view.activity);
@@ -1415,7 +1433,7 @@ function renderMessagePanel(): void {
     state = {...state, targets: new Map(state.targets).set(saved.targetKey, saved)}; controller.saved = saved; controller.composer.attach(captured.workspaceId, saved);
   } else controller.composer.attachRetained(captured.workspaceId, target);
   placeMessageEditor(controller, panel);
-  const ready = messageTarget.ready; controller.composer.recipient((ready ? 'Message ' : 'Draft for ') + name, ready || !captured.prepared || captured.invalidated ? '' : 'This agent is not ready for messages.', `Message ${name}`);
+  const ready = messageTarget.ready; controller.composer.recipient((ready ? 'Message ' : 'Draft for ') + name, ready || !captured.prepared || captured.invalidated ? '' : 'This agent is not ready for messages.', messagePlaceholder(name));
   controller.composer.availability(connected, !!controller.saved, view.busy, selecting, view.input); controller.composer.receipts(state.operations.values()); controllerNode(controller, 'stop').hidden = true;
   renderWorkbenchStatus();
 }
@@ -1472,7 +1490,7 @@ function controllerGuidance(controller: ConversationController, view: Conversati
   return controller.target.kind === 'agent' ? '' : view.guidance;
 }
 function renderAgentRecipient(identity: string, view: ConversationPresentation = presentation({kind: 'agent', identity})): void {
-  agentComposer().recipient(`${view.input ? 'Message' : 'Draft for'} ${presentationName(view)}`, '', `Message ${presentationName(view)}`);
+  agentComposer().recipient(`${view.input ? 'Message' : 'Draft for'} ${presentationName(view)}`, '', messagePlaceholder(presentationName(view)));
 }
 function renderStoredAgent(identity: string, _row?: AgentRow): void {
   renderAgentState(conversationController({kind: 'agent', identity}));
