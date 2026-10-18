@@ -40,7 +40,7 @@ export function transcriptImage(part: ImageView, url?: string, changed: () => vo
   const caption = element('figcaption', 'transcript-image-caption', imageCaption(part));
   const status = element('p', 'transcript-image-status');
   figure.append(caption, status);
-  if (!safeUrl(url)) { setText(status, 'This image is not available.'); return figure; }
+  if (!safeUrl(url)) { setText(status, 'Preview unavailable in this view'); return figure; }
   const previewUrl = url;
   const openPreview = (): void => { if (preview && invoker) preview(part, previewUrl, invoker); };
   const invoker: HTMLButtonElement | undefined = preview ? button('Preview image', openPreview) : undefined;

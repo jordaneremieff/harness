@@ -122,7 +122,7 @@ export class EventProjection {
         const m = object(entry.message); const fingerprint = rawMessageIdentity(m); this.rememberRaw(fingerprint); const base = key(m); const ordinal = this.counts.get(base) ?? 0; this.counts.set(base, ordinal + 1); const signature = `${base}#${ordinal}`;
         const id = this.ids.get(signature) ?? `message:${text(entry.id)}`;
         this.ids.set(signature, id);
-        const message = projectMessage(m, id, 'final', undefined, {communicationSource: {entryId: text(entry.id), timestamp: entry.timestamp}}); this.messages.push(message);
+        const message = projectMessage(m, id, 'final', {entryId: text(entry.id), message: 0}, {communicationSource: {entryId: text(entry.id), timestamp: entry.timestamp}}); this.messages.push(message);
         this.put({ id: text(entry.id), kind: 'message', messages: [message] });
       } else this.put(projectEntry(entry, text(entry.id)));
     }
@@ -251,7 +251,7 @@ export class EventProjection {
       if(prior){this.consumeEnded(fingerprint,prior);return;}
       const id = ids?.shift() ?? `message:${entryId}`;
       if (ids && !ids.length) this.endedMessages.delete(fingerprint);
-      const message = projectMessage(messageRaw, id, 'final', undefined, {communicationSource: {entryId, timestamp: raw.timestamp}});
+      const message = projectMessage(messageRaw, id, 'final', {entryId, message: 0}, {communicationSource: {entryId, timestamp: raw.timestamp}});
       this.rememberRaw(fingerprint);this.installCommittedMessage(entryId,message);return;
     }
     const entry = projectEntry(raw); this.put(entry); this.emit('primary.entry', {entry});

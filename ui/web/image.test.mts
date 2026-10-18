@@ -148,6 +148,6 @@ test('missing source and foreign, inline, and malformed URLs never create an ima
   dom();
   for (const url of [undefined, 'https://example.test/image.png', '//example.test/x', 'data:image/png;base64,AAAA', 'blob:test', '/api/primaries/key/history/image?x=1#fragment']) {
     const figure = transcriptImage(image, url) as unknown as FakeNode;
-    assert.ok(!figure.children.some(node => node.tag === 'img')); assert.match(figure.textContent, /This image is not available/);
+    assert.ok(!figure.children.some(node => node.tag === 'img')); assert.match(figure.textContent, /Preview unavailable in this view/);
   }
 });

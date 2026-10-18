@@ -107,3 +107,16 @@ test('live tool result facts reach both the tool event and cached message withou
   const part = projection.messages[0]?.parts[0]; assert.ok(part?.type === 'toolResult'); assert.deepEqual(part.output, tool.output);
   assert.doesNotMatch(JSON.stringify(emitted), /private|never display|credentials/);
 });
+test('a sent image in a saved or newly committed user message keeps the exact entry source for its bytes', () => {
+  const image = {type: 'image', mimeType: 'image/png', digest: 'a'.repeat(64), bytes: 1024, width: 96, height: 64};
+  const message = {role: 'user', timestamp: 1700000000000, content: [{type: 'text', text: 'Describe this'}, image]};
+  const sourceOf = (value: ReturnType<typeof create>['projection']) => {
+    const part = value.messages[0]?.parts.find(item => item.type === 'image'); return part?.type === 'image' ? part.source : undefined;
+  };
+  const saved = create().projection; saved.snapshot({entries: [{id: 'saved-user', parentId: null, type: 'message', message}], leafId: 'saved-user'});
+  assert.deepEqual(sourceOf(saved), {entryId: 'saved-user', message: 0, part: 1});
+  const live = create().projection;
+  live.reduce({type: 'message_start', message}); live.reduce({type: 'message_end', message}); assert.equal(sourceOf(live), undefined);
+  live.reduce({type: 'entry_appended', entry: {id: 'committed-user', parentId: null, type: 'message', message}});
+  assert.deepEqual(sourceOf(live), {entryId: 'committed-user', message: 0, part: 1});
+});

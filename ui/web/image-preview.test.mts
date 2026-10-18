@@ -121,6 +121,6 @@ test('the inline image opens the same preview as the button and unavailable imag
   button.dispatchEvent(new Event('click')); img.dispatchEvent(new Event('click'));
   assert.deepEqual(calls.map(call => call.url), [url, url]); assert.ok(calls.every(call => call.invoker === button));
   const missing = transcriptImage({...image, source: undefined}, undefined, () => {}, () => { assert.fail('unavailable image opened a preview'); }) as unknown as FakeNode;
-  assert.equal(missing.find('button'), undefined); assert.match(missing.textContent, /This image is not available/);
+  assert.equal(missing.find('button'), undefined); assert.match(missing.textContent, /Preview unavailable in this view/);
   const plain = transcriptImage(image, url) as unknown as FakeNode; assert.equal(plain.find('button', 'Preview image'), undefined);
 });
