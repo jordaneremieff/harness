@@ -778,7 +778,7 @@ export class Transcript {
   private updateCommunication(cached: MessageNode, message: MessageView, entryId: string): void {
     if (!cached.communication) {
       const generation = this.generation;
-      cached.communication = new CommunicationCard(cached, {inputContent:(message,root)=>this.communicationInput(cached,message,root,entryId),subject:this.hooks.subject, operatorInput:this.hooks.operatorInput, reply:message=>{const task=this.tasks.replies.get(message);return task?.tool?{text:this.sentence(task.tool),open:()=>this.openTaskAnswer(task)}:undefined;}, active: () => !this.deferred && generation === this.generation && cached.node.isConnected && !this.hidden() && this.index.entries.get(entryId)?.messages?.includes(cached.source) === true, current: () => cached.source, result:this.hooks.result, protected: node => this.protectedNode(node), raw: source => partText(source.parts), expanded: key => this.expanded.has(key), disclosure: (key, open) => this.sourcePreference(key, open), layout: () => this.sourceLayout(entryId), reference: this.hooks.references ? (text, active) => this.hooks.references?.render(text, active) ?? element('span', undefined, typeof text === 'string' ? text : text.text) : undefined}, communicationDisclosureKeys(entryId, message.id));
+      cached.communication = new CommunicationCard(cached, {inputContent:(message,root)=>this.communicationInput(cached,message,root,entryId),subject:this.hooks.subject, operatorInput:this.hooks.operatorInput, structured:display=>presentResult(display,this.presentationContext()), reply:message=>{const task=this.tasks.replies.get(message);return task?.tool?{text:this.sentence(task.tool),open:()=>this.openTaskAnswer(task)}:undefined;}, active: () => !this.deferred && generation === this.generation && cached.node.isConnected && !this.hidden() && this.index.entries.get(entryId)?.messages?.includes(cached.source) === true, current: () => cached.source, result:this.hooks.result, protected: node => this.protectedNode(node), raw: source => partText(source.parts), expanded: key => this.expanded.has(key), disclosure: (key, open) => this.sourcePreference(key, open), layout: () => this.sourceLayout(entryId), reference: this.hooks.references ? (text, active) => this.hooks.references?.render(text, active) ?? element('span', undefined, typeof text === 'string' ? text : text.text) : undefined}, communicationDisclosureKeys(entryId, message.id));
     }
     if (cached.communication.sync(message)) {
       this.messageError(cached, message);
@@ -1440,7 +1440,7 @@ export class Transcript {
   /** Public caption changes repaint retained headings without rebuilding transcript content. */
   refreshSubjects(): void {
     if (this.destroyed || this.deferred) return;
-    for (const tool of this.tools.values()) if (tool.source && this.node.contains(tool.card)) this.toolHeading(tool, tool.source);
+    for (const tool of this.tools.values()) if (tool.source && this.node.contains(tool.card)) { this.toolHeading(tool, tool.source); if (!tool.node.open) this.toolContent(tool); }
     for(const entry of this.cache.values())for(const message of entry.messages.values())message.communication?.refreshSender();
   }
   private toolHeading(tool: ToolNode, source: JoinedTool): void {
@@ -1461,12 +1461,17 @@ export class Transcript {
     } else {if (link) tool.target.replaceChildren(); setText(tool.target, text);}
     tool.target.hidden = !text; tool.target.title = caption?.title ?? bounded(subject(source, RAW_LIMIT, Number.MAX_SAFE_INTEGER));
   }
+  /** Compact previews name a conversation only when the shared caption rule already knows its name. */
+  private nameResolver(): (identity: string) => string | undefined {
+    return identity => { const caption = this.hooks.subject?.(identity); return caption?.name && caption.provenance ? caption.name : undefined; };
+  }
   private toolContent(tool: ToolNode): void {
     const source = tool.source; if (!source) return;
     if (!this.protectedNode(tool.preview)) {
-      const supplied = presentToolPreview(source) ?? presentResultPreview(source);
+      const resolve = this.nameResolver();
+      const supplied = presentToolPreview(source) ?? presentResultPreview(source, resolve);
       if (supplied) this.replaceContent(tool.preview, supplied);
-      else setText(tool.preview, resultPreview(source.result ?? []));
+      else setText(tool.preview, resultPreview(source.result ?? [], {resolve, tidy: source.status !== 'error'}));
       tool.preview.classList.toggle('tool-error', source.status === 'error');
       tool.previewSource = source;
     }

@@ -969,3 +969,19 @@ test('fenced documents do not duplicate outer copy or raw inspection controls', 
   assert.equal(node.querySelectorAll('pre')[0]?.childNodes[0]?.childNodes[0]?.tag, 'code');
   bounded(node);
 });
+
+const display = (value: unknown) => ({value, truncated: false});
+test('compact summaries leave identifiers out and name a conversation only when the name is known', () => {
+  const session = 'ead53d8c-af9d-0bda-1416-21a6ba18ab6c:57';
+  assert.equal(structuredResultPreview(display({result: {sessionId: session, submissionId: 16781, requestId: 'agent-deliver:20034'}, conversationId: 4250})), '');
+  assert.equal(structuredResultPreview(display({threadId: 'ead53d8c-af9d-0bda-1416-21a6ba18ab6c/6e47146e288681286069a74bf69cfd6e', sequence: 292, deduped: false})), 'sequence: 292 · deduped: false');
+  assert.equal(structuredResultPreview(display({result: {sessionId: session, submissionId: 20039}}), identity => identity === session ? 'Web UI lead' : undefined), 'Web UI lead');
+  assert.equal(structuredResultPreview(display({status: 'queued', owner: session, digestLike: 'a'.repeat(40)})), 'status: queued');
+  assert.equal(structuredResultPreview(display({nested: {role: 'assistant', id: 4}})), 'nested');
+  assert.equal(structuredResultPreview(display(session)), ''); assert.equal(structuredResultPreview(display(session), () => 'Builder'), 'Builder');
+  assert.equal(structuredResultPreview(display({})), 'Empty object');
+});
+test('expanded fields keep every identifier', () => {
+  const root = result({result: {sessionId: 'ead53d8c-af9d-0bda-1416-21a6ba18ab6c:57', submissionId: 16781}});
+  assert.match(root.textContent, /ead53d8c-af9d-0bda-1416-21a6ba18ab6c:57/); assert.match(root.textContent, /16781/);
+});

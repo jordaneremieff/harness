@@ -1,4 +1,4 @@
-import type { Communication, CommunicationPresentation, MessageView } from '../shared/api.ts';
+import type { Communication, CommunicationPresentation, JsonDisplay, MessageView } from '../shared/api.ts';
 import type {ResultSelector} from '../shared/inspection.ts';
 import { button, copy, element, rawText, setText } from './dom.ts';
 import { cardAction, cardActionLabel } from './card-icons.ts';
@@ -10,7 +10,7 @@ import type {NamedDestination} from './tool-sentences.ts';
 import {conversationIdentityText} from './tabs.ts';
 
 type Shell = {node: HTMLElement; header: HTMLElement; heading: HTMLElement; actions: HTMLElement; body: HTMLElement};
-type Hooks = {operatorInput?: boolean; inputContent?: (message:MessageView, root:HTMLElement)=>boolean; reply?: (message:MessageView)=>{text:string;open():void}|undefined; subject?: (identity:string)=>NamedDestination|undefined; result?: (identity:string,selector:ResultSelector)=>void; reference?: (query: ReferenceQuery, active: (node: HTMLElement) => boolean) => HTMLElement; active(): boolean; current(): MessageView; protected(node: HTMLElement): boolean; raw(message: MessageView): string; expanded(key: string): boolean; disclosure(key: string, open: boolean): void; layout(): void};
+type Hooks = {operatorInput?: boolean; structured?: (display: JsonDisplay) => HTMLElement | undefined; inputContent?: (message:MessageView, root:HTMLElement)=>boolean; reply?: (message:MessageView)=>{text:string;open():void}|undefined; subject?: (identity:string)=>NamedDestination|undefined; result?: (identity:string,selector:ResultSelector)=>void; reference?: (query: ReferenceQuery, active: (node: HTMLElement) => boolean) => HTMLElement; active(): boolean; current(): MessageView; protected(node: HTMLElement): boolean; raw(message: MessageView): string; expanded(key: string): boolean; disclosure(key: string, open: boolean): void; layout(): void};
 type Ready = Extract<CommunicationPresentation, {state: 'ready'}>;
 type Row = [string, string, QualifiedReference?];
 function qualified(label: string, text: string, owner: string, field: ReferenceField): Row { return [label, text, {text, owner, field}]; }
@@ -190,7 +190,19 @@ export class CommunicationCard {
       this.bodyValue = original; this.bodyFormatted = formatted; this.bodyAttachments = false; this.renderText(original, formatted);
     }
   }
+  /** A body that is one JSON object reads as labeled fields; the exact text stays in Copy and Source. */
+  private fields(original: string): HTMLElement | undefined {
+    const text = original.trim();
+    if (!this.hooks.structured || text.length > 32768 || !text.startsWith('{') || !text.endsWith('}')) return undefined;
+    try {
+      const value: unknown = JSON.parse(text);
+      return typeof value === 'object' && value !== null && !Array.isArray(value) ? this.hooks.structured({value, truncated: false}) : undefined;
+    } catch { return undefined; }
+  }
   private renderText(original: string, formatted: boolean): void {
+    const fields = formatted ? this.fields(original) : undefined;
+    this.text.classList.toggle('communication-fields', !!fields);
+    if (fields) { this.text.replaceChildren(fields); this.text.removeAttribute('aria-label'); return; }
     if (formatted) { this.text.replaceChildren(...markdownDom(original).childNodes); this.text.removeAttribute('aria-label'); return; }
     setText(this.text, original || 'No retained text');
     this.text.removeAttribute('aria-label');

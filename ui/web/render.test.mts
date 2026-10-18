@@ -3013,3 +3013,39 @@ test('native unresolved input keeps protected, incomplete, invalid and unavailab
     view.set([source]); flush(); assert.equal(node('primary-transcript').querySelector('img'), null, kind); view.reset();
   }
 });
+
+test('a collapsed agent card reads as a sentence with no identifiers, and the opened card keeps every value', () => {
+  setup();
+  const session = 'ead53d8c-af9d-0bda-1416-21a6ba18ab6c:57', value = {result: {sessionId: session, submissionId: 20039, requestId: 'agent-deliver:20034'}, conversationId: 4250};
+  let known = false;
+  const view = new Transcript('primary', {presentation: () => {}, reading: () => {}, subject: identity => known && identity === session ? {text: 'Web UI lead', name: 'Web UI lead', provenance: 'reported' as const} : undefined});
+  const call = {id: 'send', kind: 'message', messages: [{...message('send-message', ''), parts: [{type: 'toolCall' as const, callId: 'send-1', name: 'agent_send', arguments: {value: {sessionId: session, message: 'Start round five'}, truncated: false}}]}]};
+  const unknown = {type: 'toolResult' as const, callId: 'send-1', name: 'agent_send', isError: false, parts: [{type: 'text' as const, text: JSON.stringify(value), structured: {value, truncated: false}}]};
+  const result = {id: 'send-result', kind: 'message', messages: [{...message('send-result-message', ''), role: 'toolResult', parts: [unknown]}]};
+  view.set([call, result]); flush();
+  const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card);
+  assert.equal(card.querySelector('.tool-preview')?.hidden, true);
+  assert.doesNotMatch(card.querySelector('summary')?.textContent ?? '', /ead53d8c|20039|20034|4250|submissionId|{/);
+  const wrapped = {...unknown, parts: [{type: 'text' as const, text: 'Admitted to conversation 57; the answer will report back. Result: {"submissionId":20039}'}]};
+  view.set([call, {...result, messages: [{...message('send-result-message', ''), role: 'toolResult', parts: [wrapped]}]}]); flush();
+  assert.equal(card.querySelector('.tool-preview')?.textContent, 'Admitted to conversation 57; the answer will report back.');
+  known = true;
+  const named = {...unknown, parts: [{type: 'text' as const, text: '{}', structured: {value: {sessionId: session}, truncated: false}}]};
+  view.set([call, {...result, messages: [{...message('send-result-message', ''), role: 'toolResult', parts: [named]}]}]); flush();
+  assert.equal(card.querySelector('.tool-preview')?.textContent, 'Web UI lead');
+  card.open = true; view.set([call, result]); flush();
+  assert.match(card.textContent, /ead53d8c-af9d-0bda-1416-21a6ba18ab6c:57/); assert.match(card.textContent, /20039/); assert.match(card.textContent, /agent-deliver:20034/);
+});
+
+test('a message body that is one JSON object reads as labeled fields while its exact text stays copyable', () => {
+  setup(); const view = transcript(); const body = '{"title":"Web UI next iteration","purpose":"Polish the composer","members":3}';
+  view.set([communicationEntry('ready', body, '')]); flush();
+  const card = node('primary-transcript').querySelector('.communication-card'); const text = card?.querySelector('.communication-text'); assert.ok(card && text);
+  assert.equal(text.classList.contains('communication-fields'), true);
+  assert.match(text.textContent, /Web UI next iteration/); assert.match(text.textContent, /Polish the composer/); assert.doesNotMatch(text.textContent, /\{"title"/);
+  view.set([communicationEntry('ready', 'Plain words {"title":"kept as text"}', '')]); flush();
+  const plain = node('primary-transcript').querySelector('.communication-text'); assert.ok(plain);
+  assert.equal(plain.classList.contains('communication-fields'), false); assert.match(plain.textContent, /Plain words/);
+  view.set([communicationEntry('ready', '[1,2]', '')]); flush();
+  assert.equal(node('primary-transcript').querySelector('.communication-text')?.classList.contains('communication-fields'), false);
+});

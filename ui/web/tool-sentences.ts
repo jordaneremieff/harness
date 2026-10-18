@@ -53,6 +53,19 @@ function awaitWords({args}:SentenceInput):Words {
   const suffix=count===undefined?' agent results':` ${count} agent ${count===1?'result':'results'}`;
   return words('Waited for','Waiting for','Wait for',suffix);
 }
+function collaborateWords({args}:SentenceInput):Words {
+  switch(args.action){
+    case 'post':return words('Posted to a thread','Posting to a thread','Post to a thread',quote(args.message));
+    case 'create':return words('Created a thread','Creating a thread','Create a thread',quote(args.title));
+    case 'revise':return words('Revised a thread','Revising a thread','Revise a thread',quote(args.title));
+    case 'read':return words('Read a thread','Reading a thread','Read a thread');
+    case 'join':return words('Joined a thread','Joining a thread','Join a thread');
+    case 'leave':return words('Left a thread','Leaving a thread','Leave a thread');
+    case 'close':return words('Closed a thread','Closing a thread','Close a thread');
+    case 'list':return words('Listed threads','Listing threads','List threads');
+    default:return words('Used a thread','Using a thread','Use a thread');
+  }
+}
 function readImages(parts:readonly PartView[], types = new Set<string>()): {count:number;types:Set<string>} {
   let count=0;for(const part of parts){if(part.type==='image'){count++;types.add(part.mimeType==='image/png'?'PNG':'JPEG');}else if(part.type==='toolResult')count+=readImages(part.parts,types).count;}return {count,types};
 }
@@ -81,7 +94,7 @@ function webWords({args}:SentenceInput):Words {
   return words('Read','Reading','Read',url?` ${url.host}${first(url.pathname,80)}`:' a web page');
 }
 const templates:Record<string,(input:SentenceInput)=>Words>={
-  agent_send:sendWords,agent_steer:sendWords,agent_inspect:inspectWords,agent_await:awaitWords,
+  agent_send:sendWords,agent_steer:sendWords,agent_inspect:inspectWords,agent_await:awaitWords,agent_collaborate:collaborateWords,
   agent_spawn:({args})=>words('Started','Starting','Start',` ${first(args.name)||'a new agent'}${quote(args.prompt)}`),
   agent_abort:({args,identity,name})=>typeof args.timerId==='number'?words('Canceled a timer','Canceling a timer','Cancel a timer',identity?` for ${name}`:''):words('Stopped work','Stopping work','Stop work',identity?` in ${name}`:''),
   agent_status:()=>words('Checked agent status','Checking agent status','Check agent status'),

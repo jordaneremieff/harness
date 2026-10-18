@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
-import { presentResultPreview, presentTool, presentToolPreview, readRange, cardPreviewLimits, resultPreview } from './cards.ts';
+import { presentResultPreview, presentTool, presentToolPreview, readRange, cardPreviewLimits, resultPreview, withoutTrailingJson } from './cards.ts';
 import type { PartView } from '../shared/api.ts';
 import type { PresentationContext, ToolPresentationSource } from './transcript-presentation.ts';
 
@@ -282,4 +282,19 @@ test('prose previews keep the shortened-text mark and bound their own nodes', ()
   assert.equal(table.textContent, 'A · B 1 · two');
   const quote = node(presentResultPreview(readSource('a.md', '> quoted **text**\n\n1. one\n2. two')));
   assert.equal(quote.textContent, 'quoted text 1. one 2. two');
+});
+
+test('a prose line that ends in a labeled JSON literal reads as the sentence alone, and other lines stay literal', () => {
+  const line = 'Admitted to conversation 57; the answer will report back. Result: {"sessionId":"ead53d8c-af9d-0bda-1416-21a6ba18ab6c:57","submissionId":20039}';
+  assert.equal(withoutTrailingJson(line), 'Admitted to conversation 57; the answer will report back.');
+  assert.equal(withoutTrailingJson('{"a":1}'), '{"a":1}'); assert.equal(withoutTrailingJson('ok {"a":1}'), 'ok {"a":1}');
+  assert.equal(withoutTrailingJson('Value is [1, 2'), 'Value is [1, 2'); assert.equal(withoutTrailingJson('lowercase start here {"a":1}'), 'lowercase start here {"a":1}');
+  assert.equal(resultPreview([{type: 'text', text: line}], {tidy: true}), 'Admitted to conversation 57; the answer will report back.');
+  assert.equal(resultPreview([{type: 'text', text: line}]), line);
+  assert.equal(resultPreview([{type: 'text', text: line, redacted: true}], {tidy: true}), line);
+});
+test('a collapsed result made only of identifiers shows nothing, and a known name stands in for an identity', () => {
+  const session = 'ead53d8c-af9d-0bda-1416-21a6ba18ab6c:57';
+  const part: PartView = {type: 'text', text: JSON.stringify({sessionId: session, submissionId: 1}), structured: {value: {sessionId: session, submissionId: 1}, truncated: false}};
+  assert.equal(resultPreview([part]), ''); assert.equal(resultPreview([part], {resolve: identity => identity === session ? 'Web UI lead' : undefined}), 'Web UI lead');
 });

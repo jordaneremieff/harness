@@ -85,7 +85,18 @@ function summaryArray(value: unknown[], truncated: boolean): string {
   if (truncated) return 'Array preview limited';
   return `${value.length} ${value.length === 1 ? 'item' : 'items'}`;
 }
-type SummaryField = {key: string; value: unknown; rank: number};
+type SummaryField = {key: string; value: unknown; rank: number; label?: string};
+/** Resolves an opaque conversation or thread identity to a name the reader already knows, when one is known. */
+export type NameResolver = (identity: string) => string | undefined;
+const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const opaqueValue = new RegExp(`^(?:${UUID}(?:[:/][0-9a-z]+)*|[0-9a-f]{16,})$`, 'i');
+const identifierKey = /(?:^|_)ids?$/;
+/** An identifier is a field named for one, or a value shaped like one: a UUID with optional qualifiers, or a long hex digest. */
+function identifierField(key: string, value: unknown): boolean {
+  const last = key.slice(key.lastIndexOf('.') + 1);
+  if (identifierKey.test(words(last)) && (typeof value === 'string' || typeof value === 'number')) return true;
+  return typeof value === 'string' && value.length <= 256 && opaqueValue.test(value);
+}
 function summaryPayload(value: unknown): boolean { return typeof value === 'string' && value.length > 0 || container(value); }
 function summaryFlag(value: unknown): boolean { return value === true || typeof value === 'number' && value > 0 || summaryPayload(value); }
 function summaryRank(key: string, value: unknown, metadata: boolean): number {
@@ -100,6 +111,9 @@ class ResultSummary {
   private limited = false;
   private readonly seen = new WeakSet<object>();
   private readonly facts: SummaryField[] = [];
+  private omitted = false;
+  private readonly resolve: NameResolver | undefined;
+  constructor(resolve?: NameResolver) {this.resolve = resolve;}
   private entries(value: Record<string, unknown>, metadata: boolean): SummaryField[] {
     const fields: SummaryField[] = []; let visited = 0;
     for (const key in value) {
@@ -111,39 +125,51 @@ class ResultSummary {
     }
     return fields.sort((a, b) => a.rank - b.rank);
   }
-  private collect(value: Record<string, unknown>, path: string, depth: number, metadata: boolean, flag: boolean): void {
-    if (depth > DEPTH || this.seen.has(value)) {this.limited = true; return;}
+  /** Reports whether every field was an identifier left out of the line. */
+  private collect(value: Record<string, unknown>, path: string, depth: number, metadata: boolean, flag: boolean): boolean {
+    if (depth > DEPTH || this.seen.has(value)) {this.limited = true; return false;}
     this.seen.add(value);
-    for (const field of this.entries(value, metadata)) this.collectField(field, path, depth, metadata, flag);
+    const fields = this.entries(value, metadata); let identifiers = 0;
+    for (const field of fields) if (this.collectField(field, path, depth, metadata, flag)) identifiers++;
+    return identifiers > 0 && identifiers === fields.length;
   }
-  private collectField(field: SummaryField, path: string, depth: number, metadata: boolean, flag: boolean): void {
+  private identity(key: string, value: unknown): void {
+    const name = typeof value === 'string' ? this.resolve?.(value) : undefined;
+    if (name) this.facts.push({key, value: name, rank: 2, label: prefix(name, 80, 1).replace(/[\r\n\t]/g, ' ')}); else this.omitted = true;
+  }
+  /** Identifiers never appear in a compact line, except as the name of a conversation or thread the reader already knows. Returns true when the field was an identifier. */
+  private collectField(field: SummaryField, path: string, depth: number, metadata: boolean, flag: boolean): boolean {
     const key = pathFor(path, prefix(field.key, 80, 1)); const rank = flag ? 0 : field.rank;
+    if (identifierField(key, field.value)) { this.identity(key, field.value); return true; }
     const fact = {key, value: field.value, rank};
     if (!depth || rank <= 1) this.facts.push(fact);
-    if (!record(field.value)) return;
+    if (!record(field.value)) return false;
     const before = this.facts.length;
-    this.collect(field.value, key, depth + 1, metadata || metadataKey(field.key), flag || rank === 0);
-    if (this.facts.length > before) {
+    const identifiers = this.collect(field.value, key, depth + 1, metadata || metadataKey(field.key), flag || rank === 0);
+    if (this.facts.length > before || identifiers) {
       const index = this.facts.indexOf(fact); if (index !== -1) this.facts.splice(index, 1);
     }
+    return false;
   }
   text(value: Record<string, unknown>, truncated: boolean): string {
     this.collect(value, '', 0, false, false);
     const useful = this.facts.some(field => field.rank < 4);
     const readable = this.facts.find(field => field.rank === 1 && typeof field.value === 'string');
-    const facts = this.facts.filter(field => !useful || field.rank < 4).sort((a, b) => a.rank - b.rank).slice(0, 3).map(field => field === readable ? prefix(String(field.value), 240, 2) : summaryFact(field.key, field.value, truncated));
+    const facts = this.facts.filter(field => !useful || field.rank < 4).sort((a, b) => a.rank - b.rank).slice(0, 3).map(field => field === readable ? prefix(String(field.value), 240, 2) : field.label ?? summaryFact(field.key, field.value, truncated));
     const notice = [truncated ? 'Partial preview.' : '', this.limited ? 'Summary scan limited.' : ''].filter(Boolean).join(' ');
     const suffix = notice ? ` · ${notice}` : '';
+    if (!facts.length && this.omitted) return '';
     return prefix(facts.length ? facts.join(' · ') : 'Empty object', 240 - suffix.length, 2) + suffix;
   }
 }
 /** Summarize only decoded own data; bounded classification never parses raw output. */
-export function structuredResultPreview(display: JsonDisplay | undefined): string | undefined {
+export function structuredResultPreview(display: JsonDisplay | undefined, resolve?: NameResolver): string | undefined {
   if (!record(display)) return undefined;
   const value = own(display, 'value'); const truncated = own(display, 'truncated') === true;
   if (value === undefined) return undefined;
   if (Array.isArray(value)) return summaryArray(value, truncated);
-  if (record(value)) return new ResultSummary().text(value, truncated);
+  if (record(value)) return new ResultSummary(resolve).text(value, truncated);
+  if (typeof value === 'string' && identifierField('', value)) return resolve?.(value) ?? '';
   const suffix = truncated ? ' · Partial preview.' : '';
   return prefix(scalar(value), 240 - suffix.length, 2) + suffix;
 }
