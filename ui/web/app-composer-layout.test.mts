@@ -37,12 +37,12 @@ test('conversation state and split width changes retain editor ancestry, draft i
     const intake = surface.querySelector('.composer-intake'), sources = intake?.querySelector('.attachment-sources'), attach = intake?.querySelector('.attach'), picker = intake?.querySelector('input'); assert.ok(intake); assert.ok(sources); assert.ok(attach); assert.ok(picker);
     assert.equal(sources.getAttribute('aria-label'),'Add to message');assert.equal(sources.getAttribute('aria-haspopup'),'menu'); assert.equal(attach.hidden, true);
     assert.deepEqual(intake.children,[attach,sources,picker]);
-    // One surface holds the add control, the editor and the send controls in that tab order; Latest sits below it.
+    // One surface holds the add control, the editor and one control row in that tab order; Latest leads the row.
     const order = surface.children.filter(node => [intake, control('editor').parentNode, line].includes(node));
-    assert.deepEqual(order, [intake, control('editor').parentNode, line]); assert.equal(latest.parentNode, meta); assert.equal(meta.children[0], latest, 'Latest leads the line under the surface'); assert.equal(meta.parentNode, form);
+    assert.deepEqual(order, [intake, control('editor').parentNode, line]); assert.equal(latest.parentNode, meta); assert.equal(meta.children[0], latest, 'Latest leads the control row'); assert.equal(meta.parentNode, line); assert.deepEqual(line.children, [meta, bar]); assert.equal(form.querySelectorAll('.composer-input ~ *').length, 0, 'nothing sits under the box');
     const submit = bar.querySelector('.composer-submit'); assert.ok(submit);
     assert.deepEqual(bar.children, [control('stop'), submit]); assert.deepEqual(submit.children, [control('modes'), control('start'), control('send')]);
-    assert.equal(control('editor').rows, 3);
+    assert.equal(control('editor').rows, 1);
     assert.equal(control('transcript').parentNode?.contains(latest), false);
     assert.equal(control('editor').parentNode?.classList.contains('composer-surface'), true);
   }

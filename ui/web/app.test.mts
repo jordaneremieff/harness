@@ -1113,7 +1113,7 @@ test('every stored appearance value reads as dark, light or system and a missing
 });
 test('editors keep accessible recipient labels and recipient placeholders', async () => {
   const row=agentFixture('labels-agent'); await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:{kind:'agent',identity:row.identity},conversationLayout:twoPanes(row.identity)},primaries:[primaryFixture({epoch:709})],roster:[row]});
-  for(const control of [primaryControl,agentControl]){const editor=control('editor') as HostNode & {placeholder:string}; assert.equal(editor.placeholder.replace(' · @ files','').replace(' · / commands',''),`${control('recipient').textContent.replace(/^Draft for /, 'Message ')}…`); assert.match(editor.placeholder,/ · @ files( · \/ commands)?…$/,'a loaded working folder names the typed @ trigger'); assert.equal(editor.placeholder.includes(' · / commands'),control===primaryControl,'the slash trigger is named only where the recipient lists commands'); assert.equal((control('recipient') as HostNode & {htmlFor:string}).htmlFor,editor.id); assert.match(control('recipient').textContent,/^Message /);}
+  for(const control of [primaryControl,agentControl]){const editor=control('editor') as HostNode & {placeholder:string}; assert.equal(editor.placeholder,`${control('recipient').textContent.replace(/^Draft for /, 'Message ')}…`); assert.doesNotMatch(editor.placeholder,/@ files|\/ commands/,'the placeholder names only the recipient'); assert.equal((control('recipient') as HostNode & {htmlFor:string}).htmlFor,editor.id); assert.match(control('recipient').textContent,/^Message /);}
 });
 
 test('pane tabs keep separate menus and focused facts while both target owners stay retained', async () => {
@@ -1646,7 +1646,7 @@ test('a connected agent without input retains a draft without a false disconnect
   const row = agentFixture('no-input', {availability: 'live', capabilities: {input: false}});
   await arrive({workspace: {id: 'w', revision: 1, selectedTarget: {kind: 'agent', identity: row.identity}, panelVisible: true}, primaries: [], roster: [row], targets: [targetFixture('no-input', {kind: 'agent', identity: row.identity})]});
   assert.match(hostDocument.title, /Read only$/); assert.equal(agentControl('editor').disabled, false); assert.equal(agentControl('send').disabled, true);
-  assert.equal(agentControl('send').attributes.get('aria-describedby'), agentControl('state').id); assert.match(agentControl('state-line').textContent, /Messages are read only/); assert.doesNotMatch(agentControl('state-line').textContent, /connected/);
+  assert.equal(agentControl('send').attributes.get('aria-describedby'), agentControl('state-line').id); assert.match(agentControl('state-line').textContent, /Messages are read only/); assert.doesNotMatch(agentControl('state-line').textContent, /connected/);
 });
 
 test('the sidebar avoids a duplicate Primary destination and retains its closed-tab return action', async () => {
@@ -1790,11 +1790,11 @@ test('uncertain stored Start remains attach-only across navigation and keeps the
   await app.startStoredAgent('w', identity); await settle();
   assert.equal(agentControl('state-line').textContent, 'Start did not complete.'); assert.equal(agentControl('start').textContent, 'Try again'); assert.equal(agentControl('start').hidden, false); assert.match(startDetail(), /Readiness was not confirmed\./);
   assert.equal(agentControl('history-reload').disabled, false); assert.equal(editor.value, 'Agent launch keep'); assert.equal(editor.disabled, false);
-  assert.equal(agentControl('send').attributes.get('aria-describedby'), agentControl('state').id);
+  assert.equal(agentControl('send').attributes.get('aria-describedby'), agentControl('state-line').id);
   assert.equal(hostDocument.activeElement, editor); assert.deepEqual([editor.selectionStart, editor.selectionEnd], [2, 7]);
   await app.startStoredAgent('w', identity); await storedLaunchFixture('other-start'); await storedLaunchFixture(identity); await app.startStoredAgent('w', identity);
   assert.equal(agentControl('start').textContent, 'Try again'); assert.equal(agentControl('state-line').textContent, 'Start did not complete.');
-  assert.equal(agentControl('send').attributes.get('aria-describedby'), agentControl('state').id);
+  assert.equal(agentControl('send').attributes.get('aria-describedby'), agentControl('state-line').id);
   const starts = transportLog.slice(before).filter(call => call.path.endsWith('/start')); assert.equal(starts.length, 1);
   const retryCalls = transportLog.length; agentControl('history-reload').click(); await settle();
   assert.deepEqual(transportLog.slice(retryCalls).map(call => [call.method, call.path]), [['GET', '/api/agents/uncertain-start/history']]);
@@ -1845,9 +1845,23 @@ test('a read-only agent disables Send, describes it with the state line, and kee
   const identity = 'read-only-send', target = {kind: 'agent' as const, identity};
   await arrive({workspace: {id: 'w', revision: 1, selectedTarget: target, panelVisible: true}, primaries: [], roster: [agentFixture(identity, {availability: 'incompatible', capabilities: {input: false}})], targets: [targetFixture('read-only-send', target, {draft: {revision: 3, text: 'Draft kept while read only', mode: 'followUp', persisted: true}})]});
   assert.equal(agentControl('state-line').textContent, 'This agent cannot run here. Messages are read only.'); assert.equal(agentControl('start').hidden, true);
-  assert.equal(agentControl('send').hidden, false); assert.equal(agentControl('send').disabled, true); assert.equal(agentControl('send').attributes.get('aria-describedby'), agentControl('state').id);
+  assert.equal(agentControl('send').hidden, false); assert.equal(agentControl('send').disabled, true); assert.equal(agentControl('send').attributes.get('aria-describedby'), agentControl('state-line').id);
   assert.equal(agentControl('editor').disabled, false); assert.equal(agentControl('editor').value, 'Draft kept while read only');
   const before = transportLog.length; await app.agentComposer().send(); await settle(); assert.equal(transportLog.slice(before).some(call => call.path.includes('/inputs')), false);
+});
+
+test('the control row shows no sentence for an ordinary state and a short label with an info icon for an exceptional one', async () => {
+  const identity = 'quiet-state', target = {kind: 'agent' as const, identity};
+  const visible = () => agentControl('state').querySelector('.composer-state-label');
+  await arrive({workspace: {id: 'w', revision: 1, selectedTarget: target, panelVisible: true}, primaries: [], roster: [agentFixture(identity, {availability: 'stored'})], targets: [targetFixture('quiet-state', target, {draft: {revision: 1, text: '', mode: 'followUp', persisted: true}})]});
+  const state = agentControl('state'), meta = agentControl('meta');
+  assert.equal(state.parentNode, meta); assert.equal(state.classList.contains('sr-only'), true, 'an ordinary state paints no visible text');
+  assert.equal(agentControl('state-line').textContent, 'Not running. Start it to send a message.'); assert.equal(visible()?.hidden, true); assert.equal(agentControl('state-detail').hidden, true);
+  assert.equal(agentControl('start').hidden, false); assert.equal(agentControl('start').textContent, 'Start'); assert.equal(agentControl('send').hidden, true);
+  assert.equal(agentControl('editor').rows, 1); assert.equal((agentControl('editor') as HostNode & {placeholder: string}).placeholder.includes('commands'), false);
+  await arrive({workspace: {id: 'w', revision: 2, selectedTarget: target, panelVisible: true}, primaries: [], roster: [agentFixture(identity, {availability: 'incompatible', capabilities: {input: false}})], targets: [targetFixture('quiet-state', target, {draft: {revision: 1, text: '', mode: 'followUp', persisted: true}})]});
+  assert.equal(state.classList.contains('sr-only'), false); assert.equal(visible()?.textContent, 'Read only'); assert.equal(visible()?.title, 'This agent cannot run here. Messages are read only.');
+  assert.equal(visible()?.getAttribute('aria-hidden'), 'true'); assert.equal(agentControl('state-line').textContent, 'This agent cannot run here. Messages are read only.');
 });
 
 async function reconnectFixture(identities: string[], visible: string) {
@@ -1883,6 +1897,7 @@ test('a failed preparation after reconnect says the agent could not be reached a
   const before = transportLog.length; await recovery.recover(); await settle();
   assert.equal(agentControl('state-line').textContent, 'Could not reach the agent.'); assert.equal(agentControl('start').textContent, 'Check agent'); assert.equal(agentControl('start').hidden, false);
   assert.equal(agentControl('send').hidden, true); assert.equal(agentControl('state-detail').hidden, false);
+  assert.equal(agentControl('state-detail').getAttribute('aria-label'), 'Details'); assert.ok(agentControl('state-detail').querySelector('.card-icon-info'), 'Details is the info icon'); assert.equal(agentControl('state').querySelector('.composer-state-label')?.textContent, 'Could not reach the agent');
   agentControl('state-detail').click(); assert.match(byId('modal-body').textContent, /agent socket is closed/); byId('modal-close').click();
   const failed = preparations(before, identity).length; await settle(); assert.equal(preparations(before, identity).length, failed);
   fail = false; agentControl('start').click(); await settle();

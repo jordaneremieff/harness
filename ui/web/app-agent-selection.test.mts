@@ -95,7 +95,7 @@ function assertAgentComposition(): void {
   assert.equal(note.querySelectorAll('svg').length, 0); assert.equal(note.querySelectorAll('details').length, 0); assert.equal(note.querySelectorAll('h2').length, 0);
   assert.equal(root.querySelectorAll('.agent-start-help').length, 0); assert.equal(agentControl('view-notice').textContent, ''); assert.equal(agentControl('empty').hidden, true);
   assert.doesNotMatch(visibleText(root), /Stored metadata|History is disconnected|History could not be loaded|A start can resume|Check connection|Start in Pi|Start agent|not connected/i);
-  assert.equal(agentControl('state').parentNode, agentControl('composer').querySelector('.composer-input'));
+  assert.equal(agentControl('state').parentNode, agentControl('meta'));
 }
 test('whole agent views retain messages independently of running, idle and incompatible hosts in both themes', async () => {
   const original = globalThis.fetch;

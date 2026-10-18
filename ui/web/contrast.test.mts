@@ -50,6 +50,7 @@ const decorativeHairlines = new Set([
 	".output-pages button|border",
 	".receipt-details pre|border",
 	".modes|border",
+	".send|border",
 	".command-menu|border",
 	"dialog|border",
   "dialog[open][data-variant=find]|border-top",

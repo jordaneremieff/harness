@@ -258,8 +258,9 @@ test('file message source and exact destination details wrap within the dialog',
 });
 test('model and thinking leave the footer for separate readable targets under the composer', () => {
   assert.doesNotMatch(html, /id="(?:model-button|thinking-button|model-value|thinking-value|agent-status)"|workbench-model/);
-  assert.match(rule('.composer-settings'), /margin-left: auto/); assert.match(rule('.composer-model, .composer-thinking'), /min-height: 24px;[^}]*white-space: nowrap/);
-  assert.match(rule('.composer-meta'), /display: flex; align-items: center; justify-content: space-between/);
+  assert.match(rule('.composer-settings'), /margin-left: auto/); assert.match(rule('.composer-model, .composer-thinking'), /min-height: 28px;[^}]*white-space: nowrap/);
+  assert.match(rule('.composer-meta'), /display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: center/);
+  assert.match(rule('.composer-model'), /min-width: 10ch/);
   assert.match(media('@media (pointer:coarse)'), /\.composer-model, \.composer-thinking, \.icon-button/);
   assert.equal((html.match(/<footer id="workbench-status"/g) ?? []).length, 1);
   assert.match(rule('.workbench-status'), /flex-wrap: wrap/); assert.match(rule('.workbench-version'), /margin-left: auto/);
@@ -456,11 +457,11 @@ test('composer actions keep Attach left and submission right with one padded key
   assert.match(rule('.working-file-row .file-name'),/white-space: normal; overflow-wrap: anywhere/);
   assert.doesNotMatch(rule('.composer-bar'), /margin-left: auto/);
   assert.match(rule('.composer-submit'), /flex: none; flex-wrap: nowrap/);
-  assert.match(rule('.send'), /color: var\(--fg\); font-weight: 500/); assert.match(rule('.send:disabled'), /color: var\(--muted\)/);
-  assert.doesNotMatch(rule('.send'), /background:/);
+  assert.match(rule('.send'), /padding: 0 12px;[^}]*background: var\(--raised\); color: var\(--fg\); font-weight: 500/); assert.match(rule('.send:disabled'), /background: transparent; color: var\(--muted\)/);
+  assert.doesNotMatch(rule('.stop'), /background:/);
   assert.match(rule('.composer textarea'), /min-width: 0/);
   assert.match(rule('.composer-input'), /display: grid; grid-template-columns: auto minmax\(0,1fr\)/); assert.match(rule('.composer-input'), /border-radius: 4px/);
-  assert.match(rule('.composer-input > .composer-intake'), /grid-column: 1; grid-row: 4/); assert.match(rule('.composer-input > .composer-line'), /grid-column: 2; grid-row: 4/);
+  assert.match(rule('.composer-input > .composer-intake'), /grid-column: 1; grid-row: 3/); assert.match(rule('.composer-input > .composer-line'), /grid-column: 2; grid-row: 3/);
 });
 test('narrow composer controls wrap only as needed and retain right alignment with unbroken control labels', () => {
   const narrow = [...css.matchAll(/@container conversation \(max-width: 480px\) \{([\s\S]*?)\n\}/g)].map(match => match[1]).join('\n');
@@ -702,11 +703,11 @@ test('one workbench footer owns wrapped facts while settings sit under the compo
   const factory = composer.slice(composer.indexOf('export function createComposerElements('), composer.indexOf('\ntype Edit ='));
   assert.match(factory, /const root = element\('form', 'composer'\); root\.id = id/);
   assert.match(factory, /const id = `composer-\$\{encodeURIComponent\(instanceId\)\}`/);
-  assert.match(factory, /root\.append\(resize, receipt, input, meta\)/);
+  assert.match(factory, /root\.append\(resize, receipt, input\)/);
   assert.match(factory, /submit\.append\(modes, start, send\)/);
   assert.match(factory, /bar\.append\(stop, submit\)/);
   assert.match(factory, /intake\.append\(attach,sources,picker\)/);
-  assert.match(factory, /line\.append\(bar\)/);
+  assert.match(factory, /line\.append\(meta, bar\)/);
   assert.doesNotMatch(factory, /usage-details|workbench-status-facts|root\.append\([^)]*\b(?:save|receiptDetails)\b/);
   assert.doesNotMatch(html, /<form id="(?:primary|agent)-composer"/);
   const app = await readFile(new URL('./app.ts', import.meta.url), 'utf8');
@@ -866,9 +867,10 @@ test('drawer and overflow controls share accessible inline stroke icons', async 
 test('the history note and composer state are plain lines with flat actions', () => {
   assert.match(rule('.history-note'), /flex: none/); assert.match(rule('.history-note > p'), /font-weight: 400/);
   assert.match(rule('.history-note'), /display: flex; flex: none; flex-wrap: wrap/);
-  assert.match(rule('.history-note > button, #agent-message-retry, .composer-state-detail'), /border: 0; border-radius: 0/);
-  assert.doesNotMatch(rule('.history-note > button, #agent-message-retry, .composer-state-detail'), /box-shadow|background/); assert.doesNotMatch(css, /agent-start-help|agent-absent|\.agent-state/);
-  assert.match(rule('.composer-state'), /display: flex; flex-wrap: wrap/); assert.doesNotMatch(rule('.composer-state'), /border|background|box-shadow/);
+  assert.match(rule('.history-note > button, #agent-message-retry'), /border: 0; border-radius: 0/);
+  assert.doesNotMatch(rule('.history-note > button, #agent-message-retry'), /box-shadow|background/); assert.doesNotMatch(css, /agent-start-help|agent-absent|\.agent-state/);
+  assert.match(rule('.composer-state'), /display: inline-flex; flex: 0 1 auto; align-items: center/); assert.doesNotMatch(rule('.composer-state'), /border|background|box-shadow/);
+  assert.match(rule('.composer-state-label'), /overflow: hidden; text-overflow: ellipsis; white-space: nowrap/); assert.doesNotMatch(css, /\.composer-state-line \{/);
   assert.match(rule('.conversation'), /display: flex; flex-direction: column;[^}]*min-height: 0/);
   assert.match(rule('.transcript-region'), /display: grid; grid-template-rows: minmax\(0,1fr\); flex: 1;[^}]*min-height: 0/);
   assert.doesNotMatch(css, /\.conversation\.agent-empty > \.transcript-region\s*\{/);
@@ -878,7 +880,7 @@ test('the history note and composer state are plain lines with flat actions', ()
 });
 
 test('Message connection recovery shares flat state actions and retains native focus', () => {
-  const action = rule('.history-note > button, #agent-message-retry, .composer-state-detail');
+  const action = rule('.history-note > button, #agent-message-retry');
   assert.match(action, /padding: 4px 0; border: 0; border-radius: 0/);
   assert.doesNotMatch(action, /outline|box-shadow|background/);
   assert.match(rule(':focus-visible'), /outline: 2px solid var\(--accent\)/);
@@ -974,7 +976,8 @@ test('phone drawer sections keep usable content inside one outer scroll owner', 
 test('phone footer keeps direct settings and identity while full facts stay in the existing disclosure', () => {
   const phone = media('@media (max-width:599px)');
   assert.match(phone,/\.workbench-status > \.workbench-status-facts \{ display: contents/);
-  assert.match(phone,/\.composer-meta \{ flex-wrap: wrap; \}/); assert.match(phone,/\.composer-settings \{ flex: 1 1 100%; margin-left: 0; \}/);
+  assert.doesNotMatch(phone,/\.composer-meta \{|\.composer-settings \{/);
+  assert.match(media('@container composer (max-width: 340px)'), /\.composer-settings \{ flex: 1 1 100%; margin-left: 0; \}/);
   assert.match(phone,/\.composer-details > summary > span:not\(\.composer-details-label\) \{ display: none/);
   assert.match(phone,/\.composer-details-label \{[^}]*min-width: 44px; min-height: 44px/);
   assert.match(phone,/\.workbench-status \.workbench-version \{ max-width: 14ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap/);

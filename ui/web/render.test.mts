@@ -2574,10 +2574,10 @@ test('static workbench markup owns one footer and keeps composer actions without
   assert.match(factory, /const modes = element\('div', 'modes'\); modes\.id = `\$\{id\}-modes`/);
   assert.match(factory, /const recipient = element\('label', 'sr-only', 'Message'\); recipient\.id = `\$\{id\}-recipient`; recipient\.htmlFor = editor\.id/);
   assert.match(factory, /const surface = element\('div', 'composer-surface'\); surface\.append\(overlay, editor\)/);
-  assert.match(factory, /const input = element\('div', 'composer-input'\)/); assert.match(factory, /input\.append\(commandMenu, fileMenu, recipient, intake, surface, attachments, state, line\)/);
+  assert.match(factory, /const input = element\('div', 'composer-input'\)/); assert.match(factory, /input\.append\(commandMenu, fileMenu, recipient, intake, surface, attachments, line\)/);
   assert.match(factory, /const intake = element\('span','composer-intake'\); intake\.append\(attach,sources,picker\)/);
   assert.match(factory, /cardAction\('plus', 'Add to message'/);
-  assert.match(factory, /root\.append\(resize, receipt, input, meta\)/); assert.match(factory, /line\.append\(bar\)/); assert.match(factory, /bar\.append\(stop, submit\)/); assert.match(factory, /submit\.append\(modes, start, send\)/);
+  assert.match(factory, /root\.append\(resize, receipt, input\)/); assert.match(factory, /meta\.append\(recallHint, state, settings\); line\.append\(meta, bar\)/); assert.match(factory, /bar\.append\(stop, submit\)/); assert.match(factory, /submit\.append\(modes, start, send\)/);
   assert.doesNotMatch(factory, /composer-guidance|usage-details|class="statusline"|root\.append\([^)]*receiptDetails/);
   assert.equal([...html.matchAll(/id="focused-composer-status" class="workbench-draft-state"/g)].length, 1);
 });

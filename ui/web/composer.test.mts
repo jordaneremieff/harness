@@ -864,7 +864,7 @@ test('editor height grows locally, caps long drafts, shrinks, and preserves expl
     const paint = () => {for (const frame of f.frames.splice(0)) frame();};
     f.composer.setText(Array(10).fill('line').join('\n')); paint(); assert.equal(editor.style.height, '243px');
     f.composer.setText(Array(20).fill('line').join('\n')); paint(); assert.equal(editor.style.height, '243px');
-    f.composer.setText('one'); paint(); assert.equal(editor.style.height, '85.5px');
+    f.composer.setText('one'); paint(); assert.equal(editor.style.height, '40.5px');
     editor.style.height = '180px'; editor.fire('pointerup'); f.composer.setText('two'); paint(); assert.equal(editor.style.height, '180px');
     f.composer.setManualHeight(600); paint(); assert.equal(editor.style.height, '540px'); assert.equal(editor.style.maxHeight, '540px');
     f.composer.setText('short'); paint(); assert.equal(editor.style.height, '540px');
@@ -874,7 +874,7 @@ test('editor height grows locally, caps long drafts, shrinks, and preserves expl
     f.node('composer').hidden = true; f.composer.setManualHeight(600); paint(); assert.equal(editor.style.height, '301px');
     f.node('composer').hidden = false; f.composer.resize(); paint(); assert.equal(editor.style.height, '540px');
     f.composer.setManualHeight(0); paint(); assert.equal(editor.style.height, '40.5px');
-    f.composer.setManualHeight(undefined); paint(); assert.equal(editor.style.height, '85.5px'); assert.equal(editor.style.maxHeight, '243px');
+    f.composer.setManualHeight(undefined); paint(); assert.equal(editor.style.height, '40.5px'); assert.equal(editor.style.maxHeight, '243px');
     for (const px of [NaN, Infinity, -1]) assert.throws(() => f.composer.setManualHeight(px), RangeError);
     assert.equal(f.calls.length, 1);
   } finally {

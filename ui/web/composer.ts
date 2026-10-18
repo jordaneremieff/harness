@@ -5,7 +5,7 @@ import { insertNativeText } from './native-insertion.ts';
 import { ComposerOverlay } from './composer-overlay.ts';
 import type { DraftImage, DraftView, OperationView, RecoveryInput, Target, TargetIndex, TargetState, UnconfirmedInput } from '../shared/api.ts';
 import { announce, button, copy, element, rawText, setText } from './dom.ts';
-import { cardAction } from './card-icons.ts';
+import { cardAction, controlIcon } from './card-icons.ts';
 import {contextMenu} from './context-menu.ts';
 import { exactInput, recoveryLabel } from './recovery.ts';
 import { targetReceipts } from './receipt.ts';
@@ -26,13 +26,13 @@ import { ApiError, draftImageUrl, errorMessage, operation, request, reserve } fr
 export type ComposerHooks = {recallItems?: () => readonly string[]; fileSearch?: (query: string, signal: AbortSignal) => Promise<FileSearchResult> | undefined; fileStage?: (path: string, signal: AbortSignal, current: () => boolean, stage: (files: readonly File[]) => boolean) => Promise<boolean>; workingFile?:(stage:(files:readonly File[])=>boolean)=>void; changed?:()=>void; captured?: (submission:Submission)=>void; failed?: (operationId:string,uncertain:boolean)=>void; prepareInput?: () => boolean; imageState?: (workspace: string, state: TargetState) => void; imageInput?: (target: Target) => {allowed: boolean; reason?: string}; recovery?: () => void; layoutHeight?: () => number | undefined; timing?: (start: number, end: number) => void; submitted: (operation: OperationView) => void; unknownCommand: (text: string, sendLiteral: () => void) => boolean; enterSends?: () => boolean; commands?: (deliberate: boolean) => CommandInventory; moreCommands?: (target: Target) => Promise<void>; retained?: (workspace: string, target: Target, retained: boolean) => void};
 export type ComposerElements = {root: HTMLFormElement; editor: HTMLTextAreaElement; recipient: HTMLElement; receipt: HTMLElement;
   receiptDetails: HTMLElement; modes: HTMLElement; send: HTMLButtonElement; save: HTMLElement; fileMenu?: HTMLElement; recallHint?: HTMLElement; meta?: HTMLElement; model?: HTMLButtonElement; thinking?: HTMLButtonElement; settings?: HTMLElement; commandMenu?: HTMLElement; overlay?: HTMLElement; attachments?: HTMLElement; attach?: HTMLButtonElement; sources?: HTMLButtonElement; picker?: HTMLInputElement; state?: HTMLElement; start?: HTMLButtonElement};
-/** An agent-specific line inside the composer, with at most one action in the Send position and optional exact details. */
-export type ComposerStateView = {line: string; action?: {label: string; title?: string; pending?: boolean; disabled?: boolean; run: () => void}; blocksSend?: boolean; detail?: string; showDetail?: () => void};
+/** An agent-specific state in the composer's control row, with at most one action in the Send position and optional exact details. `line` is the full sentence for assistive technology; `label` is the short visible text, empty for an ordinary state. */
+export type ComposerStateView = {line: string; label?: string; action?: {label: string; title?: string; pending?: boolean; disabled?: boolean; run: () => void}; blocksSend?: boolean; detail?: string; showDetail?: () => void};
 /** Creates one editor; the detached save/receipt-detail nodes belong in the shared footer. */
 export function createComposerElements(instanceId: string): ComposerElements {
   const id = `composer-${encodeURIComponent(instanceId)}`;
   const root = element('form', 'composer'); root.id = id; root.hidden = true;
-  const editor = element('textarea'); editor.id = `${id}-editor`; editor.rows = 3; editor.placeholder = 'Write a message…'; editor.spellcheck = false;
+  const editor = element('textarea'); editor.id = `${id}-editor`; editor.rows = 1; editor.placeholder = 'Write a message…'; editor.spellcheck = false;
   const recipient = element('label', 'sr-only', 'Message'); recipient.id = `${id}-recipient`; recipient.htmlFor = editor.id;
   const resize = element('div', 'resizer'); resize.id = `${id}-resizer`; resize.dataset.axis = 'y'; resize.tabIndex = 0;
   resize.setAttribute('role', 'separator'); resize.setAttribute('aria-orientation', 'horizontal'); resize.setAttribute('aria-label', 'Resize message box'); resize.setAttribute('aria-controls', editor.id);
@@ -43,7 +43,9 @@ export function createComposerElements(instanceId: string): ComposerElements {
   const surface = element('div', 'composer-surface'); surface.append(overlay, editor);
   const attachments = element('div', 'composer-attachments'); attachments.hidden = true; attachments.setAttribute('aria-label', 'Attachments');
   const state = element('p', 'composer-state'); state.id = `${id}-state`; state.hidden = true; state.setAttribute('role', 'status');
-  const stateLine = element('span', 'composer-state-line'), stateDetail = element('button', 'composer-state-detail', 'Details'); stateLine.id = `${id}-state-line`; stateDetail.id = `${id}-state-detail`; stateDetail.type = 'button'; stateDetail.hidden = true; state.append(stateLine, stateDetail);
+  // The full sentence stays in the accessibility tree; only an exceptional state shows its short label.
+  const stateLabel = element('span', 'composer-state-label'), stateLine = element('span', 'sr-only composer-state-line'), stateDetail = element('button', 'composer-state-detail');
+  stateLabel.setAttribute('aria-hidden', 'true'); stateLine.id = `${id}-state-line`; stateDetail.id = `${id}-state-detail`; stateDetail.type = 'button'; stateDetail.hidden = true; controlIcon(stateDetail, 'info', 'Details'); state.append(stateLabel, stateLine, stateDetail);
   const input = element('div', 'composer-input');
   const modes = element('div', 'modes'); modes.id = `${id}-modes`; modes.hidden = true; modes.setAttribute('role', 'group'); modes.setAttribute('aria-label', 'Delivery while working');
   const delivery = element('select'); delivery.setAttribute('aria-label', 'Delivery while working'); delivery.title = 'Next step reaches the next step of the current work. After response follows the current response.';
@@ -62,16 +64,16 @@ export function createComposerElements(instanceId: string): ComposerElements {
   const intake = element('span','composer-intake'); intake.append(attach,sources,picker);
   const start = element('button', 'send start', 'Start'); start.id = `${id}-start`; start.type = 'button'; start.hidden = true;
   const submit = element('div', 'composer-submit'); submit.append(modes, start, send);
-  const bar = element('div', 'composer-bar'); bar.append(stop, submit); const line = element('div', 'composer-line'); line.append(bar);
-  // The add control leads the tab order, then the editor, then the send controls; the grid places them visually.
-  input.append(commandMenu, fileMenu, recipient, intake, surface, attachments, state, line);
+  const bar = element('div', 'composer-bar'); bar.append(stop, submit); const line = element('div', 'composer-line');
+  // The add control leads the tab order, then the editor, then the control row; the grid places them visually.
   const model = element('button', 'composer-model'), thinking = element('button', 'composer-thinking'), settingsText = element('span', 'composer-settings-text');
   model.id = `${id}-model`; thinking.id = `${id}-thinking`; settingsText.id = `${id}-settings-text`; model.type = thinking.type = 'button'; model.hidden = thinking.hidden = settingsText.hidden = true;
   const settings = element('div', 'composer-settings'); settings.id = `${id}-settings`; settings.setAttribute('role', 'group'); settings.setAttribute('aria-label', 'Model and thinking'); const separator = element('span', 'composer-settings-separator', '·'); separator.setAttribute('aria-hidden', 'true'); separator.hidden = true;
   settings.append(model, separator, thinking, settingsText);
   const recallHint = element('div', 'composer-recall-hint'); recallHint.hidden = true; recallHint.setAttribute('role', 'status'); recallHint.setAttribute('aria-live', 'polite');
   const recallSpoken = element('span', 'sr-only composer-recall-spoken'), recallVisible = element('span', 'composer-recall-visible'); recallVisible.setAttribute('aria-hidden', 'true'); recallHint.append(recallVisible, recallSpoken);
-  const meta = element('div', 'composer-meta'); meta.append(recallHint, settings); root.append(resize, receipt, input, meta);
+  const meta = element('div', 'composer-meta'); meta.append(recallHint, state, settings); line.append(meta, bar);
+  input.append(commandMenu, fileMenu, recipient, intake, surface, attachments, line); root.append(resize, receipt, input);
   const save = element('span', 'draft-state'); save.id = `${id}-save`;
   const receiptDetails = element('span', 'receipt-details'); receiptDetails.id = `${id}-receipt-details`;
   return {root, editor, recipient, receipt, receiptDetails, modes, send, save, fileMenu, recallHint, meta, model, thinking, settings, commandMenu, overlay, attachments, attach, sources, picker, state, start};
@@ -204,13 +206,18 @@ export class Composer {
   }
   private paintState(view?: ComposerStateView): void {
     const {state, start} = this.elements; if (!state || !start) return;
-    const line = state.querySelector<HTMLElement>('.composer-state-line'), detail = state.querySelector<HTMLButtonElement>('.composer-state-detail');
-    state.hidden = !view; setText(line as HTMLElement, view?.line ?? '');
-    if (detail) { detail.hidden = !view?.detail || !view.showDetail; detail.onclick = view?.showDetail ? () => view.showDetail?.() : null; }
+    this.paintStateText(state, view);
     start.hidden = !view?.action; start.disabled = !!view?.action?.disabled; start.setAttribute('aria-busy', String(!!view?.action?.pending));
     setText(start, view?.action?.label ?? 'Start'); start.title = view?.action?.title ?? ''; start.onclick = view?.action ? () => view.action?.run() : null;
-    for (const control of [start, this.elements.send]) { if (view) control.setAttribute('aria-describedby', state.id); else control.removeAttribute('aria-describedby'); }
+    for (const control of [start, this.elements.send]) { if (view) control.setAttribute('aria-describedby', `${state.id}-line`); else control.removeAttribute('aria-describedby'); }
     this.render();
+  }
+  private paintStateText(state: HTMLElement, view?: ComposerStateView): void {
+    const line = state.querySelector<HTMLElement>('.composer-state-line'), label = state.querySelector<HTMLElement>('.composer-state-label'), detail = state.querySelector<HTMLButtonElement>('.composer-state-detail');
+    state.hidden = !view; setText(line as HTMLElement, view?.line ?? '');
+    if (label) {setText(label, view?.label ?? ''); label.hidden = !view?.label; label.title = view?.label ? view.line : '';}
+    if (detail) { detail.hidden = !view?.detail || !view.showDetail; detail.onclick = view?.showDetail ? () => view.showDetail?.() : null; }
+    state.classList.toggle('sr-only', !view?.label && detail?.hidden !== false);
   }
   private get sendSuppressed(): boolean { return !!this.stateView?.action || !!this.stateView?.blocksSend; }
   /** Undefined restores automatic growth; explicit sizes retain their preferred pixel height. */
@@ -703,7 +710,7 @@ export class Composer {
       const style = getComputedStyle(this.editor); const line = Number.parseFloat(style.lineHeight);
       const extra = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom) + Number.parseFloat(style.borderTopWidth) + Number.parseFloat(style.borderBottomWidth);
       const short = matchMedia('(max-height: 599px)').matches;
-      const baseline = (this.manualHeight === undefined ? 3 : 1) * line + extra;
+      const baseline = line + extra;
       const available = this.hooks.layoutHeight?.() ?? this.elements.root.parentElement?.clientHeight ?? this.elements.root.clientHeight;
       const autoCap = Math.min(10 * line + extra, available * (short ? 0.25 : 0.3));
       const cap = Math.max(baseline, this.manualHeight === undefined ? autoCap : available * 0.6);
