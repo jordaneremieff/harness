@@ -518,11 +518,12 @@ const threadExplorer = new ThreadExplorer({
   name: threadName,
   open: item => openThread(item),
 });
-/** The focused pane's conversation hosts the reader; when that pane shows a file, the first pane with a conversation does. */
+/** The reader sits on a conversation: the focused pane's, else the pane that last showed one while focused, else any pane that shows one. */
+let lastConversationPane: string | undefined;
 function threadHostController(): ConversationController | undefined {
   const workspace = state.workspace; if (!workspace) return undefined;
-  const layout = currentLayout(), focused = paneById(layout, layout.focusedPane);
-  for (const pane of [...(focused ? [focused] : []), ...paneLeaves(layout.root)]) {
+  const layout = currentLayout(), focused = paneById(layout, layout.focusedPane), last = lastConversationPane ? paneById(layout, lastConversationPane) : undefined;
+  for (const pane of [...(focused ? [focused] : []), ...(last ? [last] : []), ...paneLeaves(layout.root)]) {
     const tab = pane.tabs.find(item => tabKey(item) === pane.active), target = tab ? controllerTarget(tab) : undefined;
     const controller = target ? controllers.get(controllerKey(workspace.id, target)) : undefined;
     if (controller) return controller;
@@ -532,7 +533,7 @@ function threadHostController(): ConversationController | undefined {
 function openThread(item: ThreadListItem): void {
   const controller = threadHostController();
   if (!controller) { modal.open('Open a conversation first').append(element('p', undefined, 'A thread opens beside a conversation. Open one, then choose the thread again.')); return; }
-  if (threadHost && threadHost !== controller) { const previous = threadHost; threadReader.node.remove(); threadHost = undefined; if (controllers.has(controllerKey(previous.workspaceId, previous.target))) renderInspection(previous); }
+  if (threadHost && threadHost !== controller) closeThread(false);
   if (controller.inspection?.active) controller.inspection.conversation();
   threadHost = controller; threadOpener = item.id;
   controller.root.insertBefore(threadReader.node, controllerNode(controller, 'transcript-region'));
@@ -1265,6 +1266,7 @@ export function renderNavigation(): void {
   byId('sidebar-show').setAttribute('aria-expanded', String(visible));
   if (drawerClosed && !visible && byId('sidebar').contains(document.activeElement)) byId('sidebar-show').focus({preventScroll: true});
   const layout = currentLayout(); const tab = activeTab(layout);
+  if (tab && tab.kind !== 'file') lastConversationPane = layout.focusedPane;
   renderPaneTree(layout); renderSessionEntry(!!tab); byId('conversation-panes').hidden = !hasConversation();
   tabStrip.render(); renderIdentity();
   byId('primary-row').hidden = !primary() || paneLeaves(layout.root).some(pane => pane.tabs.some(tab => tab.kind === 'primary'));

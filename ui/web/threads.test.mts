@@ -27,12 +27,13 @@ test('the collapsed count marks a cut list', () => {
 });
 
 test('quiet lines state coverage, cuts and agents that cannot list threads', () => {
-  assert.deepEqual(overviewLines(overview()), ['Listed by 2 of 2 running agents']);
-  assert.deepEqual(overviewLines(overview({hosts: {total: 1, answered: 1, unavailable: 0, failed: 0, notRunning: 0}})), ['Listed by 1 of 1 running agent']);
+  assert.deepEqual(overviewLines(overview()), []);
+  assert.deepEqual(overviewLines(overview({hosts: {total: 2, answered: 1, unavailable: 1, failed: 0, notRunning: 0}})), ['Listed by 1 of 2 running agents', '1 agent does not offer threads']);
+  assert.deepEqual(overviewLines(overview({hosts: {total: 1, answered: 0, unavailable: 0, failed: 1, notRunning: 0}})), ['Listed by 0 of 1 running agent', '1 agent did not answer']);
   assert.deepEqual(overviewLines(overview({hosts: {total: 4, answered: 1, unavailable: 2, failed: 1, notRunning: 3}, truncated: true, omitted: 9, rosterComplete: false})), [
     'Listed by 1 of 4 running agents · Showing the newest 1 threads; 9 more not shown · Agent list incomplete',
     '2 agents do not offer threads', '1 agent did not answer', 'Agents that are not running do not list their threads (3)']);
-  assert.deepEqual(overviewLines(overview({truncated: true})), ['Listed by 2 of 2 running agents · Some threads are not shown']);
+  assert.deepEqual(overviewLines(overview({truncated: true})), ['Some threads are not shown']);
   assert.deepEqual(overviewLines(overview({hosts: {total: 0, answered: 0, unavailable: 0, failed: 0, notRunning: 0}})), []);
 });
 

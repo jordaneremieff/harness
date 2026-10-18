@@ -53,7 +53,7 @@ export class ThreadExplorer {
     this.hooks = hooks;
     try { this.collapsed = sessionStorage.getItem(SECTION_KEY) !== 'false'; } catch { this.collapsed = true; }
     this.heading.addEventListener('click', () => this.toggle(!this.collapsed));
-    this.refreshButton.addEventListener('click', () => { void this.load(); });
+    this.refreshButton.addEventListener('click', () => { if (!this.collapsed) void this.load(); });
     this.filter.addEventListener('input', () => this.paint());
     this.filter.addEventListener('keydown', event => {
       if (event.key !== 'Escape' || !this.filter.value) return;
@@ -109,7 +109,7 @@ export class ThreadExplorer {
     this.heading.setAttribute('aria-expanded', String(!this.collapsed));
     this.body.hidden = this.collapsed;
     const count = threadCount(overview); setText(this.count, count); this.count.hidden = !this.collapsed || !count;
-    this.refreshButton.disabled = this.loading;
+    this.refreshButton.disabled = this.loading || this.collapsed;
     const query = this.filter.value.trim();
     this.filterBox.hidden = !(overview && (overview.items.length > THREAD_FILTER_THRESHOLD || query));
     this.lastNames = this.nameSignature();
@@ -163,7 +163,9 @@ export type ReaderHooks = {
   /** Leaves the reader and shows the pane's conversation again. */
   back(): void;
 };
-type Cached = {item: ThreadListItem; thread?: ThreadView; events: ThreadEventView[]; observedAt?: string; scroll: number | 'end'};
+type Cached = {item: ThreadListItem; thread?: ThreadView; events: ThreadEventView[]; observedAt?: string};
+/** Scroll positions outlive the cached content, so a thread read long ago still reopens where it was left. */
+const SCROLL_LIMIT = 50;
 type Failure = {kind: 'unavailable'} | {kind: 'failed'; message: string};
 const CACHE_LIMIT = 8;
 
@@ -189,6 +191,8 @@ export class ThreadReader {
   private earlierController?: AbortController;
   private serial = 0;
   private earlierSerial = 0;
+  private readonly scrolls = new Map<string, number | 'end'>();
+  private restorePending = false;
   private framed = '';
   private lastNames = '';
   private loadedAt = 0;
@@ -217,7 +221,8 @@ export class ThreadReader {
   open(item: ThreadListItem): void {
     this.rememberScroll(); this.cancel(); this.failure = undefined;
     const cached = this.cache.get(item.id);
-    this.entry = cached ? {...cached, item} : {item, events: [], scroll: 'end'};
+    this.entry = cached ? {...cached, item} : {item, events: []};
+    this.restorePending = !cached?.events.length && this.scrollOf(item.id) !== 'end';
     this.cache.delete(item.id); this.cache.set(item.id, this.entry);
     while (this.cache.size > CACHE_LIMIT) this.cache.delete(this.cache.keys().next().value as string);
     this.rows.clear(); this.framed = '';
@@ -244,14 +249,18 @@ export class ThreadReader {
     return [...ids].map(id => `${id}=${this.hooks.name(id) ?? ''}`).join('|');
   }
   private rememberScroll(): void {
-    const entry = this.entry; if (!entry || this.node.hidden) return;
+    const entry = this.entry; if (!entry || this.node.hidden || this.restorePending) return;
     const node = this.scroller;
-    entry.scroll = node.scrollHeight - node.scrollTop - node.clientHeight <= 24 ? 'end' : node.scrollTop;
+    this.scrolls.delete(entry.item.id);
+    this.scrolls.set(entry.item.id, node.scrollHeight - node.scrollTop - node.clientHeight <= 24 ? 'end' : node.scrollTop);
+    while (this.scrolls.size > SCROLL_LIMIT) this.scrolls.delete(this.scrolls.keys().next().value as string);
   }
   private restoreScroll(): void {
     const entry = this.entry; if (!entry) return;
-    this.scroller.scrollTop = entry.scroll === 'end' ? this.scroller.scrollHeight : entry.scroll;
+    const scroll = this.scrollOf(entry.item.id);
+    this.scroller.scrollTop = scroll === 'end' ? this.scroller.scrollHeight : scroll;
   }
+  private scrollOf(id: string): number | 'end' { return this.scrolls.get(id) ?? 'end'; }
   async refresh(): Promise<void> {
     const entry = this.entry; if (!entry) return;
     this.controller?.abort();
@@ -292,10 +301,8 @@ export class ThreadReader {
   }
   private take(entry: Cached, page: ThreadPageView, older: boolean): void {
     if (page.thread.id !== entry.item.id) throw new Error('The host answered for a different thread.');
-    const wasEnd = entry.scroll === 'end';
     entry.thread = page.thread; entry.observedAt = page.observedAt;
     entry.events = older ? prependEvents(pageEvents(page), entry.events) : mergeEvents(entry.events, pageEvents(page));
-    if (!older && wasEnd) entry.scroll = 'end';
   }
   private paintControls(): void {
     this.refreshButton.disabled = this.loading || this.loadingEarlier;
@@ -318,7 +325,8 @@ export class ThreadReader {
     for (const key of [...this.rows.keys()]) if (!present.has(key)) this.rows.delete(key);
     this.notice.replaceChildren(...this.noticeNodes(entry));
     this.paintControls();
-    if (wasEnd && entry.scroll === 'end') this.scroller.scrollTop = this.scroller.scrollHeight;
+    if (this.restorePending && entry.thread) { this.restorePending = false; this.restoreScroll(); }
+    else if (wasEnd && this.scrollOf(entry.item.id) === 'end') this.scroller.scrollTop = this.scroller.scrollHeight;
   }
   private statusText(thread: ThreadView | undefined): string {
     if (!thread) return this.loading ? 'Reading thread…' : '';

@@ -43,6 +43,9 @@ test('the section reads nothing until it is opened and lists open threads before
   fixtureControl.threadHandler = () => overview;
   await settle();
   assert.deepEqual(threadCalls(), []);
+  assert.equal(byId('threads-refresh').disabled, true);
+  byId('threads-refresh').click(); await settle();
+  assert.deepEqual(threadCalls(), []);
   assert.equal(byId('threads-heading').getAttribute('aria-expanded'), 'false');
   assert.equal(byId('threads-section-body').hidden, true);
   byId('threads-heading').click(); await settle();
@@ -53,7 +56,8 @@ test('the section reads nothing until it is opened and lists open threads before
   assert.deepEqual(rows.map(row => text(row.querySelector('.row-title') ?? row)), ['Release plan', 'Long thread', 'Unavailable thread', 'Lost thread', 'Old audit']);
   assert.match(text(rows[4]), /closed · 2 · /);
   assert.equal(rows[4].classList.contains('closed'), true);
-  assert.match(text(byId('threads-footer')), /Listed by 1 of 1 running agent/);
+  assert.equal(byId('threads-refresh').disabled, false);
+  assert.doesNotMatch(text(byId('threads-footer')), /Listed by/);
   assert.match(text(byId('threads-footer')), /Agents that are not running do not list their threads \(2\)/);
   assert.equal(byId('threads-filter-box').hidden, true);
 });
@@ -165,4 +169,65 @@ test('a list failure and a host that cannot list are reported without hiding the
   assert.match(footer, /Listed by 1 of 3 running agents · Showing the newest 5 threads; 4 more not shown · Agent list incomplete/);
   assert.match(footer, /1 agent does not offer threads/); assert.match(footer, /1 agent did not answer/);
   assert.match(footer, /Builder: does not offer threads/); assert.match(footer, /Designer: did not answer \(The host did not answer in time\.\)/);
+});
+
+function scrollerOf(): HostNodeLike {
+  const node = reader()?.querySelector('.thread-scroll') as HostNodeLike | null | undefined; assert.ok(node);
+  Object.defineProperty(node, 'scrollHeight', {value: 2000, configurable: true}); return node;
+}
+type HostNodeLike = {scrollTop: number; dispatch(name: string): void};
+const closeReader = async () => { reader()?.dispatch('keydown', {key: 'Escape', isComposing: false}); await settle(); };
+const rowButton = (title: string) => {
+  const row = byId('threads-list').querySelectorAll('button').find(item => text(item).startsWith(title)); assert.ok(row, title); return row;
+};
+
+test('a thread reopens at its scroll position after another thread and after moving to another pane', async () => {
+  fixtureControl.threadHandler = url => url.pathname === '/api/threads/read' ? page(events, {id: url.searchParams.get('threadId') ?? THREAD}) : overview;
+  rowButton('Release plan').click(); await settle();
+  let scroller = scrollerOf(); scroller.scrollTop = 500; scroller.dispatch('scroll');
+  rowButton('Long thread').click(); await settle();
+  scroller = scrollerOf(); scroller.scrollTop = 0; scroller.dispatch('scroll');
+  rowButton('Release plan').click(); await settle();
+  assert.equal(scrollerOf().scrollTop, 500);
+  await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'agent', identity: BUILDER}, conversationLayout: twoPanes(BUILDER, 'primary-pane')},
+    primaries: [primaryFixture()], roster: [agentFixture(BUILDER, {name: 'Builder'}), agentFixture(DESIGNER, {name: 'Designer'}), agentFixture(STORAGE, {name: 'Web UI manager'})]});
+  rowButton('Long thread').click(); await settle();
+  scrollerOf().scrollTop = 0; reader()?.querySelector('.thread-scroll')?.dispatch('scroll');
+  rowButton('Release plan').click(); await settle();
+  assert.equal(scrollerOf().scrollTop, 500);
+  assert.equal(hostDocument.querySelectorAll('.thread-reader').length, 1);
+  await closeReader();
+});
+
+test('a thread evicted from the content cache refetches and still reopens at its scroll position', async () => {
+  const many = Array.from({length: 10}, (_, index): ThreadListItem => ({id: id(String.fromCharCode(102 + index)), storageId: STORAGE, title: `Thread ${index}`, purpose: '', updatedAt: Date.now() - index * 1000, closed: false, members: 2}));
+  fixtureControl.threadHandler = url => url.pathname === '/api/threads/read' ? page(events, {id: url.searchParams.get('threadId') ?? THREAD}) : {...overview, items: many};
+  byId('threads-refresh').click(); await settle();
+  rowButton('Thread 0').click(); await settle();
+  const scroller = scrollerOf(); scroller.scrollTop = 700; scroller.dispatch('scroll');
+  for (let index = 1; index <= 9; index++) { rowButton(`Thread ${index}`).click(); await settle(); }
+  const before = threadCalls().filter(call => call.path.startsWith('/api/threads/read')).length;
+  rowButton('Thread 0').click(); await settle();
+  assert.equal(threadCalls().filter(call => call.path.startsWith('/api/threads/read')).length, before + 1);
+  assert.equal(scrollerOf().scrollTop, 700);
+  await closeReader();
+});
+
+test('opening from a focused file pane uses the last conversation pane and leaves the file pane alone', async () => {
+  fixtureControl.threadHandler = url => url.pathname === '/api/threads/read' ? page(events) : overview;
+  const file = {kind: 'file' as const, rootId: 'r', path: 'a.md'};
+  await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'agent', identity: BUILDER}, conversationLayout: {root: {kind: 'split', id: 'split-file', axis: 'x', ratio: 50,
+    first: {kind: 'pane', id: 'conversation-pane', tabs: [{kind: 'agent', identity: BUILDER}], active: `agent:${BUILDER}`},
+    second: {kind: 'pane', id: 'file-pane', tabs: [file], active: `file:${JSON.stringify([file.rootId, file.path])}`}}, focusedPane: 'conversation-pane'}},
+    primaries: [primaryFixture()], roster: [agentFixture(BUILDER, {name: 'Builder'}), agentFixture(STORAGE, {name: 'Web UI manager'})]});
+  await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'agent', identity: BUILDER}, conversationLayout: {root: {kind: 'split', id: 'split-file', axis: 'x', ratio: 50,
+    first: {kind: 'pane', id: 'conversation-pane', tabs: [{kind: 'agent', identity: BUILDER}], active: `agent:${BUILDER}`},
+    second: {kind: 'pane', id: 'file-pane', tabs: [file], active: `file:${JSON.stringify([file.rootId, file.path])}`}}, focusedPane: 'file-pane'}},
+    primaries: [primaryFixture()], roster: [agentFixture(BUILDER, {name: 'Builder'}), agentFixture(STORAGE, {name: 'Web UI manager'})]}, true);
+  byId('threads-refresh').click(); await settle();
+  rowButton('Release plan').click(); await settle();
+  assert.ok(reader());
+  assert.equal(byId('modal-body').textContent, '');
+  assert.equal(hostDocument.querySelectorAll('.thread-reader').length, 1);
+  await closeReader();
 });

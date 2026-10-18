@@ -28,7 +28,7 @@ export function overviewLines(overview: ThreadOverview): string[] {
   const lines: string[] = [];
   const {hosts} = overview;
   const coverage: string[] = [];
-  if (hosts.total > 0) coverage.push(`Listed by ${hosts.answered} of ${hosts.total} running ${hosts.total === 1 ? 'agent' : 'agents'}`);
+  if (hosts.total > 0 && hosts.answered < hosts.total) coverage.push(`Listed by ${hosts.answered} of ${hosts.total} running ${hosts.total === 1 ? 'agent' : 'agents'}`);
   if (overview.omitted > 0) coverage.push(`Showing the newest ${overview.items.length} threads; ${overview.omitted} more not shown`);
   else if (overview.truncated) coverage.push('Some threads are not shown');
   if (!overview.rosterComplete) coverage.push('Agent list incomplete');
