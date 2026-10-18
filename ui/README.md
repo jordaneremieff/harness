@@ -363,7 +363,7 @@ Pi RPC does not render custom terminal panels, headers or footers. Their command
 | Bare `/stash` browser | Ask Primary to discover and read artifacts with `stash_list` and `stash_read`. `/stash help` describes the supported command paths. Reading an artifact does not start agent work. |
 | Custom terminal status footer | The browser footer uses its own public conversation facts. It does not reproduce the terminal footer or treat an absent custom footer as an extension-load failure. |
 
-Generic extension select, confirm, input and editor requests are different: Pi RPC supplies them and the browser has dialog handlers. A custom-panel limitation does not establish that all extension dialogs require the terminal. Extension-specific guards still decide whether an authentic command reaches those requests.
+Generic extension select, confirm, input and editor requests are different: Pi RPC supplies them and the browser has dialog handlers. The dialog names its Primary by the conversation caption (the supplied name, or **Primary**), never by a raw ID; the exact session ID stays in the heading's tooltip and accessible description, and the answer still goes to the same exact target. A custom-panel limitation does not establish that all extension dialogs require the terminal. Extension-specific guards still decide whether an authentic command reaches those requests.
 
 ## Phone-width layout
 

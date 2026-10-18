@@ -14,7 +14,8 @@ export class ExtensionDialogs {
   private get: () => UiState;
   private put: (state: UiState) => void;
   private primary: () => PrimaryView | undefined;
-  constructor(modal: Modal, get: () => UiState, put: (state: UiState) => void, primary: () => PrimaryView | undefined) { this.modal = modal; this.get = get; this.put = put; this.primary = primary; }
+  private caption: (primary: PrimaryView) => string;
+  constructor(modal: Modal, get: () => UiState, put: (state: UiState) => void, primary: () => PrimaryView | undefined, caption: (primary: PrimaryView) => string = () => 'Primary') { this.modal = modal; this.get = get; this.put = put; this.primary = primary; this.caption = caption; }
   update(): void {
     const primary = this.primary(); if (!primary) return;
     const target: Extract<Target, {kind: 'primary'}> = {kind: 'primary', key: primary.key, epoch: primary.epoch};
@@ -32,7 +33,8 @@ export class ExtensionDialogs {
       else submit({cancelled: true});
     });
     this.shownToken = this.modal.token;
-    body.append(element('p', 'target-label', `Primary: ${primary.sessionName ?? primary.sessionId ?? primary.key}`));
+    const label = element('p', 'target-label', stripControls(this.caption(primary)));
+    const exact = `Conversation ID: ${primary.sessionId ?? primary.key}`; label.setAttribute('title', exact); label.setAttribute('aria-description', exact); body.append(label);
     if (dialog.message) body.append(element('p', undefined, stripControls(dialog.message)));
     if (dialog.deadline) body.append(element('p', 'secondary', `Respond before ${new Date(dialog.deadline).toLocaleString()}.`));
     const cancel = button('Cancel', () => submit({cancelled: true}));

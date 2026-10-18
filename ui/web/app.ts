@@ -604,7 +604,7 @@ async function prepareMessageTarget(workspaceId: string, target: Extract<Target,
     throw error;
   }
 }
-const extensionDialogs = new ExtensionDialogs(modal, () => state, next => { state = next; }, primary);
+const extensionDialogs = new ExtensionDialogs(modal, () => state, next => { state = next; }, primary, item => presentationName(presentation({kind: 'primary', key: item.key, epoch: item.epoch})));
 const connectionRecovery = new ConnectionRecovery({attempt: resync, paint: (phase, error) => {
   connectionPhase = phase; connectionError = error; connected = phase === 'healthy'; renderConnection();
   if (connected) {renderAll(); void finishStartup().catch(showError);} else renderAvailability();

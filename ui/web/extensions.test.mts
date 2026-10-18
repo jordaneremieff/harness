@@ -26,7 +26,7 @@ class FakeNode extends EventTarget {
   focus(): void {}
   querySelectorAll(): FakeNode[] {return this.children.flatMap(node => [...(node.type === 'button' ? [node] : []), ...node.querySelectorAll()]);}
 }
-function fixture(dialog: DialogView) {
+function fixture(dialog: DialogView, caption?: (value: PrimaryView) => string, view: PrimaryView = primary) {
   Object.defineProperty(globalThis, 'document', {configurable: true, value: {createElement: () => new FakeNode()}});
   let state = {...createState(), dialogs: enqueueDialog(createState().dialogs, target, dialog)};
   const closed = gate<void>(); const failed = gate<unknown>();
@@ -36,7 +36,7 @@ function fixture(dialog: DialogView) {
     actions(...nodes: FakeNode[]) {this.body.append(...nodes);},
     close() {this.openNow = false; closed.resolve();}, error(error: unknown) {failed.resolve(error);},
   };
-  const ui = new ExtensionDialogs(modal as unknown as Modal, () => state, value => {state = value;}, () => primary); ui.update();
+  const ui = new ExtensionDialogs(modal as unknown as Modal, () => state, value => {state = value;}, () => view, caption); ui.update();
   return {modal, ui, closed, failed, get state() {return state;}};
 }
 function response(data: unknown): Response {return {json: async () => ({ok: true, data})} as Response;}
@@ -79,6 +79,15 @@ test('Primary extension status does not replace the active conversation browser 
   statusFixture(); document.title = 'Pi · Selected agent';
   extensionStatus({...primary, extension: {title: 'Background Primary', statuses: {one: 'Useful fact'}, widgets: {}}});
   assert.equal(document.title, 'Pi · Selected agent');
+});
+test('the dialog heading names the conversation by its caption and keeps the exact ID in its description', () => {
+  const unnamed = fixture(select, undefined, {...primary, sessionId: 'session-uuid-1'});
+  const heading = unnamed.modal.body.children.find(node => node.className === 'target-label'); assert.ok(heading);
+  assert.equal(heading.textContent, 'Primary'); assert.doesNotMatch(heading.textContent, /session-uuid-1/);
+  assert.equal(heading.attributes.get('title'), 'Conversation ID: session-uuid-1'); assert.equal(heading.attributes.get('aria-description'), 'Conversation ID: session-uuid-1');
+  const named = fixture(select, value => value.sessionName ?? 'Primary', {...primary, sessionId: 'session-uuid-2', sessionName: 'Project agent'});
+  const namedHeading = named.modal.body.children.find(node => node.className === 'target-label'); assert.ok(namedHeading);
+  assert.equal(namedHeading.textContent, 'Project agent'); assert.equal(namedHeading.attributes.get('title'), 'Conversation ID: session-uuid-2');
 });
 test('dialog deadlines name the response deadline without replacing supplied content', () => {
   const deadline = '2030-01-01T00:00:00.000Z';
