@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { EntryView, MessageView, PartView } from '../shared/api.ts';
-import { entryVisible, messageAriaLabel, presentEntry, presentMessage } from './entry-presentation.ts';
+import { entryVisible, messageAriaLabel, presentEntry, presentMessage, sessionEventsSummary } from './entry-presentation.ts';
 import type { PresentationContext } from './transcript-presentation.ts';
 
 const coverage = {complete: true, truncated: false, omitted: 0};
@@ -73,4 +73,15 @@ test('a dotted type name never labels a row and raw inspection keeps the origina
     assert.equal(bare.textContent, 'Record · count');
     assert.equal(presentEntry({id: 'd', kind: 'custom', head: 'v1.2 status', data: {value: 'ok', truncated: false}}, context).textContent, 'v1.2 status · ok');
   } finally { if (old) Object.defineProperty(globalThis, 'document', old); else Reflect.deleteProperty(globalThis, 'document'); }
+});
+test('the session events line names the settings or counts each kind, never a bare count', () => {
+  const model: EntryView = {id: 'm', kind: 'model_change', data: {value: {provider: 'p', modelId: 'claude-haiku-5-5'}, truncated: false}};
+  const thinking: EntryView = {id: 't', kind: 'thinking_level_change', data: {value: {thinkingLevel: 'low'}, truncated: false}};
+  const custom: EntryView = {id: 'c', kind: 'custom', data: {value: {a: 1}, truncated: false}};
+  assert.equal(sessionEventsSummary([model, thinking]), 'Model claude-haiku-5-5 · Thinking low');
+  assert.equal(sessionEventsSummary([thinking]), 'Thinking low');
+  assert.equal(sessionEventsSummary([model, {...thinking, id: 't2'}, {...model, id: 'm2'}, {...thinking, id: 't3'}, {...model, id: 'm3'}]), '5 settings changes');
+  assert.equal(sessionEventsSummary([model, custom, {...custom, id: 'c2'}]), '1 settings change, 2 extension records');
+  assert.equal(sessionEventsSummary([{id: 'u', kind: 'vendor.thing'}, {id: 'v', kind: 'unknown_kind'}, {id: 'i', kind: 'session_info'}]), '2 records, 1 session info update');
+  assert.equal(sessionEventsSummary([{...model, data: {value: {provider: 'p'}, truncated: false}}]), '1 settings change');
 });

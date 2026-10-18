@@ -9,7 +9,7 @@ import { highlight, languageFromPath } from './highlight.ts';
 import { transcriptImage } from './image.ts';
 import { thinkingKey, type ThinkingTime, type ToolState } from './state.ts';
 import { isValidTimestamp, previewText } from './format.ts';
-import { entryVisible, messageAriaLabel, presentEntry, presentMessage } from './entry-presentation.ts';
+import { entryVisible, messageAriaLabel, presentEntry, presentMessage, sessionEventsSummary } from './entry-presentation.ts';
 import { cardPreviewLimits, readRange, presentResultPreview, presentToolPreview, resultPreview } from './cards.ts';
 import { thinkingExpanded } from './transcript-presentation.ts';
 import { TranscriptIndex, ToolElapsedClock, toolTime, thinkingLabel, slot, communicationDisclosureKeys } from './transcript-tools.ts';
@@ -1106,7 +1106,7 @@ export class Transcript {
     session.source = group;
     session.details.dataset.disclosure = `events:${group.id}`;
     const summary = session.details.querySelector('summary');
-    if (summary && !this.protectedNode(summary)) setText(summary, `${group.entries.length} session ${group.entries.length === 1 ? 'event' : 'events'}`);
+    if (summary && !this.protectedNode(summary)) setText(summary, sessionEventsSummary(group.entries));
     session.notices.node.hidden = !group.notices.length;
     if (group.notices.length) this.renderEventPage(session.notices, group.notices, 16, true);
     else this.reconcileContent(session.notices.rows, []);

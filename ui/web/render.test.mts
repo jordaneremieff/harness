@@ -1078,7 +1078,7 @@ test('known session changes use quiet system notes with retained data under disc
   setup(); const view = transcript();
   view.set([{id: 'model', kind: 'model_change', data: {value: {provider: 'fixture', modelId: 'test'}, truncated: false}}, {id: 'thinking', kind: 'thinking_level_change', data: {value: {thinkingLevel: 'high'}, truncated: false}}, {id: 'unknown', kind: 'future_change', data: {value: {fact: 'known'}, truncated: false}}]); flush();
   const events = node('primary-transcript').querySelector('.session-events'); assert.ok(events);
-  assert.match(events.textContent, /3 session events/); assert.equal(events.querySelectorAll('.system-note').length, 0);
+  assert.match(events.textContent, /2 settings changes, 1 record/); assert.doesNotMatch(events.textContent, /session events/); assert.equal(events.querySelectorAll('.system-note').length, 0);
   events.open = true; events.dispatch('toggle');
   const notes = node('primary-transcript').querySelectorAll('.system-note'); assert.equal(notes.length, 2);
   assert.match(notes[0]?.textContent ?? '', /model changed to fixture\/test/); assert.match(notes[1]?.textContent ?? '', /thinking changed to high/);
@@ -1439,7 +1439,7 @@ test('session groups fold adjacent visible events and show actionable notices ou
   setup(); const view = transcript();
   view.set([sessionEntry('a', 'quiet'), sessionEntry('b', 'Check the input', 'warning'), entry('empty', ''), sessionEntry('c', 'later')]); flush();
   const root = node('primary-transcript'); const groups = root.querySelectorAll('.session-events');
-  assert.equal(groups.length, 1); assert.match(groups[0]?.textContent ?? '', /3 session events/);
+  assert.equal(groups.length, 1); assert.match(groups[0]?.textContent ?? '', /3 extension records/);
   assert.match(root.textContent, /Check the input/); assert.doesNotMatch(root.textContent, /quiet|later/);
   assert.equal(groups[0]?.querySelectorAll('.custom-entry').length, 0);
   const first = groups[0]; assert.ok(first); first.open = true; first.dispatch('toggle');
@@ -1461,7 +1461,7 @@ test('separate tool and thinking rows omit empty parts without losing source, ev
   assert.deepEqual(compact.querySelector('.tool-source-actions')?.children.map(button => button.textContent), ['Copy arguments', 'Copy ID']);
   assert.equal(compact.querySelector('.tool-details')?.contains(compact.querySelector('.tool-source-actions') as FakeNode), true);
   assert.match(root.textContent, /Check this warning/);
-  assert.equal(root.querySelector('.session-events')?.querySelector('summary')?.textContent, '1 session event');
+  assert.equal(root.querySelector('.session-events')?.querySelector('summary')?.textContent, '1 extension record');
   const thought = root.querySelector('.thinking-only'); assert.ok(thought);
   assert.equal(thought.querySelector('.message-body')?.children.length, 1);
   assert.equal(thought.querySelector('.message-actions')?.hidden, false);
@@ -1598,10 +1598,10 @@ test('compact message updates keep a focused Copy action visible until focus lea
   assert.equal(card.querySelector('.message-menu'), action); assert.equal(messageAction(card, 'Copy').enabled, true);
   fakeDocument.activeElement = null; view.schedule(); flush(); assert.equal(root.querySelector('.message-actions')?.hidden, false); assert.equal(card.querySelector('.message-menu'), action);
 });
-test('single visible session events use a singular caption', () => {
+test('a single visible session event is named by its kind', () => {
   setup(); const view = transcript(); view.set([sessionEntry('single', 'retained event')]); flush();
   const group = node('primary-transcript').querySelector('.session-events'); assert.ok(group);
-  assert.equal(group.querySelector('summary')?.textContent, '1 session event');
+  assert.equal(group.querySelector('summary')?.textContent, '1 extension record');
 });
 test('session find mounts the matching member page and saved member anchors map to its representative', () => {
   setup(); const readings: ReadingView[] = []; const view = new Transcript('primary', {presentation: () => {}, reading: value => readings.push(value)});
@@ -2067,7 +2067,7 @@ test('mixed thinking and tool turns keep separate rows and source actions in bot
     assert.equal(turn.querySelector('.timestamp'), null); messageAction(turn, 'Source').run(); node('primary-editor').focus(); flush();
     assert.match(turn.querySelector('.message-source')?.textContent ?? '', /Retained thought/); assert.match(turn.querySelector('.message-source')?.textContent ?? '', /retained output/);
     assert.match(turn.querySelector('.message-source')?.textContent ?? '', new RegExp(new Date(msg.timestamp).toISOString().replaceAll('.', '\\.'))); assert.ok(root.querySelector('.tool-copy'));
-    assert.equal(root.querySelector('.session-events')?.querySelector('summary')?.textContent, '1 session event');
+    assert.equal(root.querySelector('.session-events')?.querySelector('summary')?.textContent, '1 extension record');
     view.set([{...source, messages: [{...msg, parts: [...msg.parts, {type: 'text', text: 'Visible prose'}]}]}]); flush();
     assert.equal(root.querySelector('.tool-only'), null); assert.match(root.textContent, /Visible prose/);
   }

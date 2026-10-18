@@ -64,3 +64,25 @@ export function presentEntry(entry: EntryView, context: PresentationContext): HT
   }
   return node;
 }
+const eventKinds: Record<string, [string, string]> = {
+  model_change: ['settings change', 'settings changes'], thinking_level_change: ['settings change', 'settings changes'],
+  session_info: ['session info update', 'session info updates'], compaction: ['compaction', 'compactions'],
+  branch_summary: ['branch summary', 'branch summaries'], label: ['label', 'labels'], custom: ['extension record', 'extension records'],
+};
+function settingText(entry: EntryView): string | undefined {
+  const value = entry.data ? record(entry.data) : {};
+  if (entry.kind === 'model_change' && typeof value.modelId === 'string' && value.modelId.trim()) return `Model ${previewText(value.modelId.replace(/\s+/g, ' ').trim(), 1, 60).text}`;
+  if (entry.kind === 'thinking_level_change' && typeof value.thinkingLevel === 'string' && value.thinkingLevel.trim()) return `Thinking ${previewText(value.thinkingLevel.replace(/\s+/g, ' ').trim(), 1, 30).text}`;
+  return undefined;
+}
+/** The collapsed session-events line names what the group holds: the settings themselves for a few changes, otherwise a count per kind. */
+export function sessionEventsSummary(entries: readonly EntryView[]): string {
+  const settings = entries.map(settingText);
+  if (entries.length <= 4 && settings.every((text): text is string => text !== undefined)) return settings.join(' · ');
+  const counts = new Map<string, number>(); const names = new Map<string, [string, string]>();
+  for (const entry of entries) {
+    const name = eventKinds[entry.kind] ?? ['record', 'records'];
+    counts.set(name[0], (counts.get(name[0]) ?? 0) + 1); names.set(name[0], name);
+  }
+  return [...counts].map(([key, count]) => `${count} ${count === 1 ? names.get(key)?.[0] : names.get(key)?.[1]}`).join(', ');
+}
