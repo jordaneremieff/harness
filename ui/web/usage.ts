@@ -32,7 +32,7 @@ function cacheFacts(entries: readonly EntryView[]): UsageFact[] {
   const detail = `Loaded assistant window only (${cache.turns} finalized messages with supplied usage): input ${count(cache.input)}, cache read ${count(cache.cacheRead)}, cache write ${count(cache.cacheWrite)}. Earlier, evicted, tool, and compaction usage is not included. This is not a complete-session aggregate.`;
   if (!cache.turns) return [fact('cacheHitShare', 'Cache not reported', 'Cache usage is not reported for this loaded conversation. No ratio is available.', false)];
   if (!Number.isSafeInteger(prompt) || prompt <= 0) return [fact('cacheHitShare', 'Cache ratio not reported', `${detail} No positive prompt-token denominator is available; no cache ratio is reported.`, false)];
-  return [fact('cacheHitShare', `Cache ${percent(cache.cacheRead / prompt * 100)} · loaded`, detail)];
+  return [fact('cacheHitShare', `Cache ${percent(cache.cacheRead / prompt * 100)}`, detail)];
 }
 function contextFacts(context: PrimaryView['contextUsage'], facts: UsageFact[]): number | null {
   if (!context) { facts.push(fact('context', 'Context unavailable', 'The selected Primary does not report current context usage. This is not a safe remaining budget.')); return null; }

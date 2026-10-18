@@ -4,7 +4,7 @@ import type { AgentRow, Appearance, HandoffView, OperationView, PrimaryControl, 
 import { Actions, COMMAND_INVENTORY_PAGE_LIMIT, rankPalette } from './actions.ts';
 import { Modal } from './modal.ts';
 import { rankCommands } from './command-menu-state.ts';
-import type { ActionContext } from './actions.ts';
+import type { ActionContext, PaletteEntry } from './actions.ts';
 const originalFetch = globalThis.fetch;
 const originalResizeObserver = Object.getOwnPropertyDescriptor(globalThis, 'ResizeObserver');
 class FakeResizeObserver {
@@ -97,7 +97,7 @@ test('a refused control retains its typed outcome and raises its actual error', 
   assert.equal(emitted?.state, 'rejected');
 });
 class FakeNode extends EventTarget {
-  title = ''; tagName = ''; children: FakeNode[] = []; textContent = ''; className = ''; type = ''; id = ''; value = ''; disabled = false; hidden = false; tabIndex = 0; dataset: Record<string, string> = {}; attributes = new Map<string, string>();
+  title = ''; tagName = ''; children: FakeNode[] = []; textContent = ''; className = ''; type = ''; id = ''; value = ''; disabled = false; hidden = false; checked = false; tabIndex = 0; dataset: Record<string, string> = {}; attributes = new Map<string, string>();
   classList = {add: (name: string) => {this.className = `${this.className} ${name}`.trim();}};
   append(...nodes: FakeNode[]): void {this.children.push(...nodes);}
   prepend(...nodes: FakeNode[]): void {this.children.unshift(...nodes);}
@@ -506,19 +506,36 @@ function paletteFixture(overrides: Partial<ActionContext> = {}) {
 function key(node: FakeNode, name: string, options: Record<string, unknown> = {}) {
   const event = new Event('keydown', {cancelable: true}); Object.assign(event, {key: name, ...options}); node.dispatchEvent(event); return event;
 }
-test('Enter send preference is a checked Commands choice and saves the inverse workspace value', async () => {
-  let selected: unknown;
-  for (const enabled of [false, true]) {
-    const f = paletteFixture({snapshot: () => ({workspace: {enterSendsMessages: enabled}} as Snapshot), selection: async value => {selected = value;}});
+test('Message input opens the workspace preference without mutation and the native checkbox saves its value', async () => {
+  for (const enabled of [undefined, false, true]) {
+    const selections: unknown[] = [], workspace = {enterSendsMessages: enabled};
+    const f = paletteFixture({snapshot: () => ({workspace} as Snapshot), selection: async value => {selections.push(value); workspace.enterSendsMessages = value.enterSendsMessages;}});
     try {
-      const item = f.actions.paletteEntries().find(row => row.name === 'Enter sends messages'); assert.ok(item); assert.equal(item.checked, enabled);
-      item.run(); await Promise.resolve(); assert.deepEqual(selected, {enterSendsMessages: !enabled});
-      f.actions.palette(); const list = f.body.children.find(node => node.className === 'palette-list');
-      const row = list?.children.find(node => node.attributes.get('aria-label')?.startsWith('Enter sends messages')); assert.ok(row);
-      assert.equal(row.attributes.get('aria-checked'), String(enabled));
-      assert.equal(row.children.find(node => node.className.includes('palette-check'))?.style.visibility, enabled ? 'visible' : 'hidden');
+      const entries = f.actions.paletteEntries(), item = entries.find(row => row.name === 'Message input…'); assert.ok(item);
+      assert.equal(entries.some(row => row.name === 'Enter sends messages'), false);
+      assert.equal(rankPalette(entries, 'Enter sends messages')[0]?.item, item);
+      for (const alias of ['newline', 'Shift+Enter', 'Ctrl+Enter', 'Command+Enter']) assert.equal(rankPalette(entries, alias)[0]?.item, item);
+      item.run(); assert.deepEqual(selections, []); assert.match(textOf(f.body), /Applies to this workspace/);
+      assert.match(textOf(f.body), /When off, Enter adds a new line.*Shift\+Enter adds a new line.*Command\+Enter sends/);
+      const label = f.body.children.find(node => node.className === 'message-input-setting'), field = label?.children[0]; assert.ok(field);
+      assert.equal(label?.tagName, 'label'); assert.equal(field.type, 'checkbox'); assert.equal(field.checked, enabled === true);
+      field.checked = enabled !== true; field.dispatchEvent(new Event('change')); assert.equal(field.disabled, true);
+      await new Promise<void>(resolve => setImmediate(resolve)); assert.deepEqual(selections, [{enterSendsMessages: enabled !== true}]); assert.equal(field.disabled, false);
     } finally {f.restore();}
   }
+});
+test('Message input retains the checkbox and reports a failed preference without a second mutation', async () => {
+  let writes = 0; const failure = new Error('Preference unavailable'), errors: unknown[] = [];
+  const f = paletteFixture({snapshot: () => ({workspace: {enterSendsMessages: false}} as Snapshot), selection: async () => {if (++writes === 1) throw failure;}});
+  f.modal.error = error => {errors.push(error); const note = new FakeNode(); note.textContent = 'The preference was not saved.'; f.error.append(note);};
+  try {
+    f.actions.messageInput(); const field = f.body.children.find(node => node.className === 'message-input-setting')?.children[0]; assert.ok(field);
+    field.checked = true; field.dispatchEvent(new Event('change')); field.dispatchEvent(new Event('change'));
+    await new Promise<void>(resolve => setImmediate(resolve)); assert.equal(writes, 1); assert.deepEqual(errors, [failure]); assert.equal(field.checked, false); assert.equal(field.disabled, false);
+    assert.match(textOf(f.error), /not saved/); field.checked = true; field.dispatchEvent(new Event('change')); assert.equal(textOf(f.error), '');
+    await new Promise<void>(resolve => setImmediate(resolve)); assert.equal(writes, 2); assert.equal(field.checked, true); assert.equal(field.disabled, false); assert.equal(textOf(f.error), ''); assert.equal(f.body.children.find(node => node.className === 'message-input-setting')?.children[0], field);
+    f.modal.open('Other'); field.dispatchEvent(new Event('change')); assert.equal(writes, 2);
+  } finally {f.restore();}
 });
 test('agent presentation control defaults on and the quiet Commands choice saves its inverse',()=> {
   for(const value of [undefined,true,false]) {
@@ -531,7 +548,7 @@ test('agent presentation control defaults on and the quiet Commands choice saves
 test('palette covers every displaced control and session availability follows the menu', () => {
   const actions = new Actions(context());
   const names = actions.paletteEntries().filter(item => item.source === 'app').map(item => item.name);
-  assert.deepEqual(names, ['New session', 'Sessions', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Saved drafts and messages', 'Appearance', 'Enter sends messages', 'Agent presentation control', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Notifications', 'Refresh agents', 'Insert /agent new', 'Hide sidebar', 'Show sidebar', 'Projects', 'Model', 'Thinking']);
+  assert.deepEqual(names, ['New session', 'Sessions', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Saved drafts and messages', 'Appearance', 'Message input…', 'Agent presentation control', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Notifications', 'Refresh agents', 'Insert /agent new', 'Hide sidebar', 'Show sidebar', 'Projects', 'Model', 'Thinking']);
   const absent = new Actions(context({primary: () => undefined})).paletteEntries();
   const disabled = absent.filter(item => !item.enabled).map(item => item.name);
   assert.deepEqual(disabled, ['Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Model', 'Thinking']);
@@ -581,11 +598,45 @@ test('palette uses ranked rows, marked names and input-owned keyboard selection'
     assert.equal(list.attributes.get('role'), 'listbox'); assert.equal(list.children[0]?.attributes.get('aria-selected'), 'true');
     assert.equal(field.attributes.get('aria-activedescendant'), list.children[0]?.id);
     assert.deepEqual(list.children[0]?.children[0]?.children.map(node => node.tagName), ['mark', 'mark']);
-    assert.deepEqual(list.children[0]?.children.map(node => node.className), ['palette-name', 'palette-desc', 'palette-source']);
+    assert.deepEqual(list.children[0]?.children.map(node => node.className), ['palette-name', 'palette-desc']);
     assert.equal(list.children[0]?.attributes.get('role'), 'option');
     assert.equal(key(field, 'ArrowDown').defaultPrevented, true); assert.equal(focused, field);
     assert.equal(list.children[1]?.attributes.get('aria-selected'), 'true'); key(field, 'ArrowUp'); key(field, 'Enter');
     assert.equal(selected, 'exact'); assert.equal(f.isOpen(), false);
+  } finally {f.restore();}
+});
+test('palette relevance orders empty queries but never outranks exact disabled search matches', () => {
+  const entry = (name: string, priority: number, enabled = true): PaletteEntry => ({name, priority, enabled, description: '', source: 'app', run() {}});
+  const entries = [entry('disabled', 0, false), entry('other', 2), entry('workspace', 1), entry('current', 0)];
+  assert.deepEqual(rankPalette(entries, '').map(match => match.item.name), ['current', 'workspace', 'other', 'disabled']);
+  const search = [entry('find', 0, false), entry('find Z', 0), entry('find A', 1), entry('find B', 0, false)];
+  assert.deepEqual(rankPalette(search, 'find').map(match => match.item.name), ['find', 'find Z', 'find A', 'find B']);
+  assert.equal(new Actions(context({primary: () => undefined, hasTranscript: () => true})).paletteEntries().find(item => item.name === 'Find text')?.priority, 0);
+});
+test('agent-selected palette keeps ready Primary actions available but puts their priority after current actions', async () => {
+  globalThis.fetch = async () => commandResponse(['imported'], null);
+  let compactions = 0; const actions = new Actions(context({selectedAgent: () => ({identity: 'selected'}), hasTranscript: () => true}));
+  actions.compact = () => {compactions++;}; await actions.load('commands'); const entries = actions.paletteEntries();
+  for (const name of ['Compact…', 'Fork from message…', 'Model', 'Thinking']) {const item = entries.find(entry => entry.name === name); assert.ok(item); assert.equal(item.enabled, true); assert.equal(item.priority, 2);}
+  const imported = entries.find(item => item.name === 'Insert /imported'); assert.ok(imported); assert.equal(imported.priority, 2);
+  assert.equal(entries.find(item => item.name === 'Message input…')?.priority, 1); assert.equal(entries.find(item => item.name === 'Tasks')?.priority, 0);
+  const ranked = rankPalette(entries, '').map(match => match.item.name); assert.ok(ranked.indexOf('Tasks') < ranked.indexOf('Compact…'));
+  entries.find(item => item.name === 'Compact…')?.run(); assert.equal(compactions, 1);
+});
+test('palette omits App badges while preserving unavailable reasons and meaningful sources', async () => {
+  const f = paletteFixture(); try {
+    const entries = [
+      {name: 'Current', description: 'Current action', source: 'app', enabled: true, priority: 0, run() {}},
+      {name: 'Model', description: 'Choose model', source: 'app', enabled: false, disabledReason: 'Requires a ready Primary', run() {}},
+      {name: 'Extension', description: 'Extension action', source: 'extension', enabled: true, run() {}},
+      {name: 'Agent name', description: 'Agent status', source: 'agent', enabled: true, run() {}},
+    ];
+    f.actions.paletteEntries = () => entries; f.actions.palette(); await f.actions.load('commands'); await Promise.resolve();
+    const list = f.body.children[1]; assert.ok(list); const rows = list.children;
+    const current = rows.find(row => textOf(row.children[0] as FakeNode) === 'Current'); assert.ok(current); assert.equal(current.children.some(node => node.className === 'palette-source'), false);
+    const model = rows.find(row => textOf(row.children[0] as FakeNode) === 'Model'); assert.ok(model); assert.equal(model.disabled, true); assert.equal(model.title, 'Requires a ready Primary'); assert.equal(model.attributes.get('aria-description'), model.title); assert.match(model.attributes.get('aria-label') ?? '', /Requires a ready Primary/); assert.equal(model.children[1]?.textContent, model.title);
+    for (const source of ['extension', 'agent']) assert.ok(rows.find(row => row.dataset.source === source)?.children.some(node => node.className === 'palette-source'));
+    assert.equal(entries[0]?.source, 'app'); assert.equal(entries[1]?.description, 'Choose model');
   } finally {f.restore();}
 });
 test('palette keyboard selection scrolls only the nearest list edge and keeps input focus', () => {
@@ -738,15 +789,15 @@ test('non-browser discovered commands retain palette rows even with a browser al
   assert.equal(actions.commandOptions().items.find(item => item.name === 'model')?.source, 'app');
 });
 
-test('an empty palette groups actions, Pi commands and agents without alphabetic interleaving', () => {
-  const entry = (name: string, source: string) => ({name, source, description: '', enabled: true, run: () => {}});
-  const items = [entry('Z agent', 'agent'), entry('/z-command', 'extension'), entry('Z action', 'app'), entry('/a-command', 'skill'), entry('A agent', 'agent'), entry('A action', 'app')];
+test('an empty palette uses declared priorities without rewriting source data or alphabetic interleaving', () => {
+  const entry = (name: string, source: string, priority = 2) => ({name, source, priority, description: '', enabled: true, run: () => {}});
+  const items = [entry('Z agent', 'agent'), entry('/z-command', 'extension'), entry('Z action', 'app', 0), entry('/a-command', 'skill'), entry('A agent', 'agent'), entry('A action', 'app', 1)];
   for (const query of ['', '   ']) {
     const result = rankPalette(items, query);
-    assert.deepEqual(result.map(match => match.item.name), ['Z action', 'A action', '/z-command', '/a-command', 'Z agent', 'A agent']);
+    assert.deepEqual(result.map(match => match.item.name), ['Z action', 'A action', 'Z agent', '/z-command', '/a-command', 'A agent']);
     assert.equal(result.every(match => match.marks.length === 0), true);
   }
-  assert.deepEqual(rankPalette(items, 'a'), rankCommands(items, 'a'));
+  assert.deepEqual(rankPalette(items, 'a').map(match => match.rank), rankCommands(items, 'a').map(match => match.rank));
   assert.equal(rankPalette(items, 'A agent')[0]?.item.name, 'A agent');
 });
 test('empty palette agents put live and working agents first with stable roster order', () => {

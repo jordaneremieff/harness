@@ -210,6 +210,16 @@ test('tool status labels have natural width and disclosure marks stay separate f
   assert.match(rule('.tool-output-info'), /max-width: 100%; color: var\(--muted\); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere/);
   assert.doesNotMatch(rule('.tool-output-info'), /cursor: pointer|text-overflow: ellipsis|line-clamp/);
 });
+test('footer settings use separate readable native targets without another composer row', () => {
+  assert.match(html, /id="model-button"[^>]*><span class="workbench-control-label">Model:<\/span> <span id="model-value"/);
+  assert.match(html, /id="thinking-button"[^>]*><span class="workbench-control-label">Thinking:<\/span> <span id="thinking-value"/);
+  assert.equal((html.match(/<footer id="workbench-status"/g) ?? []).length, 1);
+  assert.match(rule('.workbench-status'), /flex-wrap: wrap/); assert.match(rule('.workbench-version'), /margin-left: auto/);
+  assert.match(rule('.workbench-model'), /gap: 4px 8px/); assert.match(rule('.workbench-status-facts'), /gap: 2px 16px/);
+  assert.match(rule('.workbench-model button'), /min-height: 24px/); assert.match(rule('.workbench-model button'), /max-width: 100%/); assert.match(rule('.workbench-control-label'), /color: var\(--muted\)/); assert.match(rule('.workbench-control-value'), /overflow-wrap: anywhere/);
+  assert.match(media('@media (pointer:coarse)'), /\.workbench-model button \{ min-width: 44px; min-height: 44px;/);
+  assert.match(rule('.palette-row[data-source=app]'), /grid-template-columns: minmax\(0,30%\) minmax\(0,1fr\)/);
+});
 test('Durable picker choices use full-width native rows with wrapping state and shared focus', () => {
   assert.match(rule('.picker-durable-list'), /display: grid; grid-template-columns: minmax\(0,1fr\)/);
   const row = rule('.picker-durable-select'); assert.match(row, /display: grid; grid-template-columns: minmax\(0,1fr\); gap: 2px; width: 100%; min-width: 0; min-height: 44px/);

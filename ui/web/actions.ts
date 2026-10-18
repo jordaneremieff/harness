@@ -30,7 +30,7 @@ const appCommands: CommandOption[] = [
   {name: 'thinking', description: 'Choose the thinking level for Primary', source: 'app'},
 ];
 
-export type PaletteEntry = CommandOption & {enabled: boolean; run: () => void; search?: string[]; title?: string; tail?: string; checked?: boolean};
+export type PaletteEntry = CommandOption & {enabled: boolean; run: () => void; search?: string[]; title?: string; tail?: string; checked?: boolean; priority?: number; disabledReason?: string};
 function choice(label: string, selected: boolean, run: () => void): HTMLButtonElement {
   const node = button('', run, 'option-choice');
   const check = cardIcon('success'); check.classList.add('choice-check'); check.style.visibility = selected ? 'visible' : 'hidden';
@@ -45,6 +45,25 @@ function paletteName(item: PaletteEntry, marks: number[], conversation: boolean)
   for (let offset = 0; offset < item.name.length; offset++) title.append(element(selected.has(offset) ? 'mark' : 'span', undefined, item.name[offset]));
   if (item.tail) name.append(element('span', conversation ? 'palette-identity' : 'palette-tail', ` ${item.tail}`));
   return name;
+}
+function paletteDescription(row: HTMLElement, item: PaletteEntry): string {
+  const reason = item.enabled ? undefined : item.disabledReason;
+  row.title = reason ?? item.title ?? '';
+  if (reason) row.setAttribute('aria-description', reason);
+  row.setAttribute('aria-label', [item.name, item.tail, item.description, reason].filter(Boolean).join(', '));
+  return reason ?? item.description;
+}
+function paletteRow(item: PaletteEntry, marks: number[], conversation: boolean, run: () => void): HTMLButtonElement {
+  const row = button('', run, 'palette-row'); row.tabIndex = -1; row.dataset.source = item.source;
+  row.setAttribute('role', 'option'); row.setAttribute('aria-disabled', String(!item.enabled)); row.disabled = !item.enabled;
+  if (conversation) row.dataset.kind = 'conversation';
+  row.append(paletteName(item, marks, conversation), element('span', 'palette-desc', paletteDescription(row, item)));
+  if (item.source !== 'app') row.append(element('span', 'palette-source', commandSource(item.source)));
+  if (item.checked !== undefined) {
+    row.setAttribute('aria-checked', String(item.checked));
+    const check = cardIcon('success'); check.classList.add('palette-check'); check.style.visibility = item.checked ? 'visible' : 'hidden'; row.append(check);
+  }
+  return row;
 }
 function rosterIncomplete(snapshot?: Snapshot): boolean {
   const roster = snapshot?.roster;
@@ -62,17 +81,17 @@ function revealPaletteRow(container: HTMLElement, row: HTMLElement): void {
   const next = Math.max(0, Math.min(container.scrollHeight - container.clientHeight, container.scrollTop + delta));
   if (next !== container.scrollTop) container.scrollTop = next;
 }
-function paletteSourceOrder(item: CommandOption): number { return item.source === 'app' ? 0 : item.source === 'agent' ? 2 : 1; }
+function palettePriority(item: PaletteEntry): number { return item.enabled ? item.priority ?? 2 : 3; }
 function agentOrder(row: AgentRow): number { return row.availability === 'live' || row.state === 'working' ? 0 : 1; }
 export function rankPalette(entries: PaletteEntry[], query: string): CommandMatch[] {
-  if (!query.trim()) return entries.map(item => ({item, rank: 1, marks: []})).sort((a, b) => paletteSourceOrder(a.item) - paletteSourceOrder(b.item));
+  if (!query.trim()) return entries.map(item => ({item, rank: 1, marks: []})).sort((a, b) => palettePriority(a.item) - palettePriority(b.item));
   const matches = new Map<CommandOption, CommandMatch>(rankCommands(entries, query).map(match => [match.item, match]));
   for (const item of entries) {
     const alias = rankCommands((item.search ?? []).map(name => ({name, description: '', source: item.source})), query)[0];
     const visible = matches.get(item);
     if (alias && (!visible || alias.rank < visible.rank)) matches.set(item, {item, rank: alias.rank, marks: visible?.marks ?? []});
   }
-  return [...matches.values()].sort((a, b) => a.rank - b.rank || a.item.name.localeCompare(b.item.name));
+  return [...matches.values()].sort((a, b) => a.rank - b.rank || palettePriority(a.item as PaletteEntry) - palettePriority(b.item as PaletteEntry) || a.item.name.localeCompare(b.item.name));
 }
 function findStatusText(result: FindStatus | undefined, query: string): string {
   if (!result || result.end === 'unavailable') return 'Captured conversation is unavailable.';
@@ -318,9 +337,24 @@ export class Actions {
       list.addEventListener('keydown', event => navigateOptions(event, list)); modal.body.append(list); list.querySelector<HTMLButtonElement>('button')?.focus();
     }, false, 'Thinking levels could not be loaded.');
   }
+  messageInput(): void {
+    const modal = this.ctx.modal; modal.open('Message input'); const token = modal.token;
+    const label = element('label', 'message-input-setting'), field = element('input'); field.type = 'checkbox'; field.checked = this.ctx.snapshot()?.workspace.enterSendsMessages === true;
+    label.append(field, element('span', undefined, 'Enter sends messages'));
+    modal.body.append(element('p', 'secondary', 'Applies to this workspace.'), label, element('p', 'secondary', 'When off, Enter adds a new line. When on, Enter sends. Shift+Enter adds a new line. Ctrl+Enter or Command+Enter sends.'));
+    field.addEventListener('change', () => {
+      if (!modal.owns(token) || field.disabled) return;
+      const previous = this.ctx.snapshot()?.workspace.enterSendsMessages === true; field.disabled = true;
+      modal.node.querySelector('#modal-error')?.replaceChildren();
+      void this.ctx.selection({enterSendsMessages: field.checked}).catch(error => {
+        if (modal.owns(token)) {field.checked = previous; modal.error(error, 'The preference was not saved.');}
+      }).finally(() => {if (modal.owns(token)) field.disabled = false;});
+    });
+    field.focus();
+  }
   paletteEntries(): PaletteEntry[] {
     const primary = this.ctx.primary(); const agent = this.ctx.selectedAgent(); const transcript = this.ctx.hasTranscript();
-    const entry = (name: string, description: string, run: () => void, enabled = true, alias?: string): PaletteEntry => ({name, description, source: 'app', enabled, run, ...(alias ? {search: [alias, `/${alias}`]} : {})});
+    const entry = (name: string, description: string, run: () => void, enabled = true, alias?: string, disabledReason = 'Requires a Primary session'): PaletteEntry => ({name, description, source: 'app', enabled, run, ...(!enabled ? {disabledReason} : {}), ...(alias ? {search: [alias, `/${alias}`]} : {})});
     const entries = [
       entry('New session', 'Start a new session', () => this.newSession(), true, 'new'),
       entry('Sessions', 'Resume a saved session', () => this.projectPicker(), true, 'resume'),
@@ -329,33 +363,29 @@ export class Actions {
       entry('Automatic retry…', 'Enable or disable Pi retry', () => this.automaticSettings('autoRetry'), !!primary),
       entry('Automatic compaction…', 'Enable or disable Pi compaction', () => this.automaticSettings('autoCompaction'), !!primary),
       entry('Continue in terminal…', 'Continue this session in the terminal', () => this.handoff(), !!primary),
-      entry('Conversation details', 'Identity, reported facts and diagnostics', () => agent ? this.conversationDetails(agent.identity) : this.sessionDetails(primary), !!primary || !!agent),
+      entry('Conversation details', 'Identity, reported facts and diagnostics', () => agent ? this.conversationDetails(agent.identity) : this.sessionDetails(primary), !!primary || !!agent, undefined, 'Requires a selected conversation'),
       entry('Saved drafts and messages', 'Review saved text', () => this.ctx.recovery()),
       {...entry('Appearance', 'Choose a theme', () => this.appearance()), search: ['theme', ...appearanceChoices.flatMap(([value, label]) => [value, label, ...(label.startsWith('Catppuccin ') ? [`Catppuccin ${value}`] : [])])]},
-      {...entry('Enter sends messages', 'Change the message box Enter action', () => {
-        void this.ctx.selection({enterSendsMessages: this.ctx.snapshot()?.workspace.enterSendsMessages !== true}).catch(error => {
-          this.ctx.modal.open('Message preference'); this.ctx.modal.error(error, 'The preference was not saved.');
-        });
-      }), checked: this.ctx.snapshot()?.workspace.enterSendsMessages === true},
+      {...entry('Message input…', 'Set the message box Enter action', () => this.messageInput()), search: ['Enter sends messages', 'Enter', 'newline', 'Shift+Enter', 'Ctrl+Enter', 'Command+Enter']},
       {...entry('Agent presentation control', 'Allow agents to arrange this workspace and show notices', () => {
         void this.ctx.selection({agentControl:this.ctx.snapshot()?.workspace.agentControl === false}).catch(error=> {
           this.ctx.modal.open('Agent presentation control');this.ctx.modal.error(error,'The preference was not saved.');
         });
       }),checked:this.ctx.snapshot()?.workspace.agentControl !== false},
       entry('Help', 'Browser controls and terminal fallback', () => this.help()),
-      entry('Expand loaded tools', 'Expand loaded tool output', () => this.ctx.view(true, true), transcript),
-      entry('Collapse loaded tools', 'Collapse loaded tool output', () => this.ctx.view(true, false), transcript),
-      entry('Show thinking', 'Show loaded thinking text', () => this.ctx.view(false, true), transcript),
-      entry('Hide thinking', 'Hide loaded thinking text', () => this.ctx.view(false, false), transcript),
-      entry('Find text', 'Find text in this session', () => this.find(), transcript),
+      entry('Expand loaded tools', 'Expand loaded tool output', () => this.ctx.view(true, true), transcript, undefined, 'Requires a conversation transcript'),
+      entry('Collapse loaded tools', 'Collapse loaded tool output', () => this.ctx.view(true, false), transcript, undefined, 'Requires a conversation transcript'),
+      entry('Show thinking', 'Show loaded thinking text', () => this.ctx.view(false, true), transcript, undefined, 'Requires a conversation transcript'),
+      entry('Hide thinking', 'Hide loaded thinking text', () => this.ctx.view(false, false), transcript, undefined, 'Requires a conversation transcript'),
+      entry('Find text', 'Find text in this session', () => this.find(), transcript, undefined, 'Requires a conversation transcript'),
       entry('Notifications', 'Read and dismiss notices', () => this.ctx.notices()),
       entry('Refresh agents', 'Refresh the agent list', () => this.ctx.rosterRefresh()),
       entry('Insert /agent new', 'Insert the command into the Primary draft', () => this.prepareText('/agent new')),
       entry('Hide sidebar', 'Hide the conversation sidebar', () => this.ctx.sidebar(false)),
       entry('Show sidebar', 'Show the conversation sidebar', () => this.ctx.sidebar(true)),
       entry('Projects', 'Choose a project', () => this.openProject()),
-      entry('Model', 'Choose Primary model', () => this.modelPicker(), primary?.lifecycle === 'ready', 'model'),
-      entry('Thinking', 'Choose the thinking level for Primary', () => this.thinkingPicker(), primary?.lifecycle === 'ready', 'thinking'),
+      entry('Model', 'Choose Primary model', () => this.modelPicker(), primary?.lifecycle === 'ready', 'model', 'Requires a ready Primary'),
+      entry('Thinking', 'Choose the thinking level for Primary', () => this.thinkingPicker(), primary?.lifecycle === 'ready', 'thinking', 'Requires a ready Primary'),
     ];
     if (this.ctx.tabs) {
       const tabs = this.ctx.tabs;
@@ -368,13 +398,23 @@ export class Actions {
       entries.push(entry('Copy agent ID', agent.identity, () => this.ctx.copyAgent()));
 
     }
-    entries.push(entry('Tasks','Recorded asks and available answers',this.ctx.resultLookup??(()=>this.ctx.inspectAgent()),!!(agent||primary)));
+    entries.push(entry('Tasks','Recorded asks and available answers',this.ctx.resultLookup??(()=>this.ctx.inspectAgent()),!!(agent||primary), undefined, 'Requires a selected conversation'));
     if (primary?.lifecycle === 'ready' && this.resourceTarget === `${primary.key}:${primary.epoch}:${primary.lifecycle}`) {
       for (const command of this.commands.filter(item => item.name !== 'resume')) {
         entries.push({...command, name: `Insert /${command.name}`, search: [`/${command.name}`], enabled: true, run: () => this.prepareText(`/${command.name}`)});
       }
     }
-    return [...entries, ...this.agentEntries()];
+    const conversation = new Set(['Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Copy agent ID', 'Tasks', 'Close conversation tab']);
+    const primaryActions = new Set(['Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Model', 'Thinking', 'Review message', 'Insert /agent new']);
+    const workspace = new Set(['New session', 'Sessions', 'Saved drafts and messages', 'Appearance', 'Message input…', 'Agent presentation control', 'Help', 'Notifications', 'Refresh agents', 'Hide sidebar', 'Show sidebar', 'Projects', 'Next conversation tab', 'Previous conversation tab']);
+    return [...entries.map(item => {
+      let priority = 2;
+      if (item.source === 'app') {
+        if (conversation.has(item.name) || !agent && primaryActions.has(item.name)) priority = 0;
+        else if (workspace.has(item.name)) priority = 1;
+      }
+      return {...item, priority};
+    }), ...this.agentEntries()];
   }
   private agentEntries(chooseTarget?: (target: Target) => void): PaletteEntry[] {
     const now = Date.now(); const agents = this.ctx.agents().filter(row => !chooseTarget || !!row.identity);
@@ -382,14 +422,14 @@ export class Actions {
     return agents.slice().sort((a, b) => agentOrder(a) - agentOrder(b)).map(row => ({...(this.ctx.agentCaption?.(row.identity) ?? this.captions.get(row.identity)), description: [this.ctx.agentStatus(row), compactAge(row.modifiedAt, now)].filter(Boolean).join(' · '), search: [row.identity, ...row.handle ? [row.handle] : []], title: row.identity, source: 'agent', enabled: true, run: () => chooseTarget ? chooseTarget({kind: 'agent', identity: row.identity}) : this.ctx.selectAgent(row)}));
   }
   sessionMenuEntries(agent = false): PaletteEntry[] {
-    const names = new Set(agent ? ['Conversation details', 'Copy agent ID', 'Tasks', 'Saved drafts and messages', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Appearance', 'Help'] : ['New session', 'Sessions', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Tasks', 'Saved drafts and messages', 'Appearance', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Model', 'Thinking', 'Review message']);
+    const names = new Set(agent ? ['Conversation details', 'Copy agent ID', 'Tasks', 'Saved drafts and messages', 'Message input…', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Appearance', 'Help'] : ['New session', 'Sessions', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Tasks', 'Saved drafts and messages', 'Message input…', 'Appearance', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Model', 'Thinking', 'Review message']);
     return this.paletteEntries().filter(item => item.source === 'app' && names.has(item.name));
   }
   sessionMenu(agent = false): void {
     const modal = this.ctx.modal; modal.open(agent ? 'Agent actions' : 'Session actions');
     const list = element('div', 'options session-menu');
     for (const item of this.sessionMenuEntries(agent)) {
-      const row = button(item.name, () => { if (!item.enabled) return; modal.close(); item.run(); }); row.disabled = !item.enabled; list.append(row);
+      const row = button(item.name, () => { if (!item.enabled) return; modal.close(); item.run(); }); row.disabled = !item.enabled; row.title = item.disabledReason ?? item.description; list.append(row);
     }
     list.append(button('Commands…', () => this.palette()));
     list.addEventListener('keydown', event => navigateOptions(event, list)); modal.body.append(list);
@@ -453,16 +493,8 @@ export class Actions {
       matches = rankPalette(entries, search.field.value.trim());
       active = Math.max(0, matches.findIndex(match => match.item.name === previous?.name && match.item.source === previous?.source && (match.item as PaletteEntry).title === previous?.title)); list.replaceChildren();
       matches.forEach((match, index) => {
-        const item = match.item as PaletteEntry; const row = button('', () => run(index), 'palette-row'); row.id = `palette-option-${index}`; row.tabIndex = -1;
-        if (item.title) row.title = item.title;
-        row.setAttribute('role', 'option'); row.setAttribute('aria-disabled', String(!item.enabled)); row.disabled = !item.enabled;
-        const conversation = mode === 'goto' || item.source === 'agent'; if (conversation) row.dataset.kind = 'conversation';
-        row.setAttribute('aria-label', [item.name, item.tail, item.description].filter(Boolean).join(', '));
-        row.append(paletteName(item, match.marks, conversation), element('span', 'palette-desc', item.description), element('span', 'palette-source', commandSource(item.source)));
-        if (item.checked !== undefined) {
-          row.setAttribute('aria-checked', String(item.checked));
-          const check = cardIcon('success'); check.classList.add('palette-check'); check.style.visibility = item.checked ? 'visible' : 'hidden'; row.append(check);
-        }
+        const item = match.item as PaletteEntry;
+        const row = paletteRow(item, match.marks, mode === 'goto' || item.source === 'agent', () => run(index)); row.id = `palette-option-${index}`;
         list.append(row);
       });
       if (!matches.length) list.append(paletteEmpty(search.field.value, mode === 'commands' && (!this.commandsLoaded || this.commandsIncomplete) || rosterIncomplete(this.ctx.snapshot())));

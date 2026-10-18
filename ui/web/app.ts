@@ -1166,9 +1166,9 @@ export function primaryChrome(item?: PrimaryView): void {
   renderIdentity();
   primaryNavigation(item);
   renderTabActions();
-  const model = byId<HTMLButtonElement>('model-button'); model.disabled = item?.lifecycle !== 'ready'; model.hidden = !item?.model && item?.lifecycle !== 'ready'; setText(model, item?.model ? item.model.id : 'Choose model'); model.title = item?.model ? `${item.model.provider}/${item.model.id} · Primary` : 'Choose Primary model'; model.setAttribute('aria-label', item?.model ? `Model for Primary: ${item.model.provider}/${item.model.id}` : 'Choose Primary model');
+  const model = byId<HTMLButtonElement>('model-button'); model.disabled = item?.lifecycle !== 'ready'; model.hidden = !item?.model && item?.lifecycle !== 'ready'; setText(byId('model-value'), item?.model ? item.model.id : 'Choose model'); model.title = item?.model ? `${item.model.provider}/${item.model.id} · Primary` : 'Choose Primary model'; model.setAttribute('aria-label', item?.model ? `Model for Primary: ${item.model.provider}/${item.model.id}` : 'Choose Primary model');
   renderPrimaryUsage(item);
-  const thinking = byId<HTMLButtonElement>('thinking-button'); thinking.hidden = !item?.thinkingLevel; thinking.disabled = item?.lifecycle !== 'ready'; setText(thinking, item?.thinkingLevel ?? ''); thinking.title = item?.thinkingLevel ? `Thinking level: ${item.thinkingLevel}` : 'Choose thinking level'; thinking.setAttribute('aria-label', item?.thinkingLevel ? `Thinking level for Primary: ${item.thinkingLevel}` : 'Choose Primary thinking level');
+  const thinking = byId<HTMLButtonElement>('thinking-button'); thinking.hidden = !item?.thinkingLevel; thinking.disabled = item?.lifecycle !== 'ready'; setText(byId('thinking-value'), item?.thinkingLevel ?? ''); thinking.title = item?.thinkingLevel ? `Thinking level: ${item.thinkingLevel}` : 'Choose thinking level'; thinking.setAttribute('aria-label', item?.thinkingLevel ? `Thinking level for Primary: ${item.thinkingLevel}` : 'Choose Primary thinking level');
 }
 function renderPrimaryUsage(item?: PrimaryView): void {
   const usage = usageFacts(item, item ? primaryBlocks(state, item.key) : undefined);
@@ -1736,7 +1736,7 @@ function conversationMenuItems(target: Target): ContextItem[] {
     'Find text': () => actions.find(() => captureFind(controller)),
   };
   return actions.sessionMenuEntries(target.kind === 'agent').filter(item => !['Sessions', 'Appearance', 'Help', 'Hide thinking', 'Model', 'Thinking'].includes(item.name))
-    .map(item => ({label: item.name, enabled: local[item.name] ? true : item.enabled, run: local[item.name] ?? item.run,
+    .map(item => ({label: item.name, enabled: local[item.name] ? true : item.enabled, run: local[item.name] ?? item.run, description: item.description, disabledReason: item.disabledReason,
       ...(item.name === 'Show thinking' ? {checked: shown, checkbox: true} : {})}));
 }
 function agentMenuItems(identity: string): ContextItem[] {
@@ -1760,9 +1760,15 @@ export function openConversationActions(paneId: string = focusedPane, key?: stri
   if (!trigger) return;
   const view = owner.transcript.node.dataset.view === 'grouped' ? 'grouped' : 'chronological';
   const choices: ContextItem[] = (['chronological', 'grouped'] as const).map(mode => ({label: mode === 'chronological' ? 'View: Conversation' : 'View: Grouped', checked: view === mode, run: () => owner.transcript.setView(mode)}));
-  const entries = tab.kind === 'agent' ? agentMenuItems(tab.identity) : conversationMenuItems(target);
-  const first = entries[0]; if (first) entries[0] = {...first, separatorBefore: true};
-  const box = trigger.getBoundingClientRect(); contextMenu.open(trigger, {x: box.right, y: box.bottom}, 'Conversation actions', [...choices, ...entries, {label: 'Commands…', separatorBefore: true, run: () => actions.palette()}],
+  const entries = (tab.kind === 'agent' ? agentMenuItems(tab.identity) : conversationMenuItems(target)).filter(item => item.label !== 'Show conversation');
+  const groups: [string, ContextItem[]][] = [
+    ['View', [...choices, ...['Show thinking', 'Find text', 'Expand loaded tools', 'Collapse loaded tools'].flatMap(name => entries.filter(item => item.label === name))]],
+    ['Messages and tasks', ['Message', 'Review message', 'Tasks', 'Saved drafts and messages', 'Message input…'].flatMap(name => entries.filter(item => item.label === name))],
+    ['Session', ['New session', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…'].flatMap(name => entries.filter(item => item.label === name))],
+    ['Details', ['Conversation details', 'Copy agent ID'].flatMap(name => entries.filter(item => item.label === name))],
+  ];
+  const grouped = groups.flatMap(([heading, items], group) => items.map((item, index) => index === 0 ? {...item, heading, separatorBefore: group > 0} : item));
+  const box = trigger.getBoundingClientRect(); contextMenu.open(trigger, {x: box.right, y: box.bottom}, 'Conversation actions', [...grouped, {label: 'Commands…', separatorBefore: true, run: () => actions.palette()}],
     () => state.workspace?.id === workspace && samePaneLayout(currentLayout(), current) && sameTarget(controllerTarget(tab), target) && (target.kind === 'primary' || state.roster.has(target.identity)));
 }
 function paneSpace(id: string): {width: number; height: number; divider: number} { const box = paneRegions.get(id)?.node.getBoundingClientRect(); return {width: box?.width ?? 0, height: box?.height ?? 0, divider: 4}; }

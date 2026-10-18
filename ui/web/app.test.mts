@@ -1329,10 +1329,33 @@ test('agent and Primary pane menus expose supported actions while text inputs ke
 });
 test('status settings label model and thinking while retaining picker accessible names', () => {
   app.primaryChrome({cwd: '/fixture', lifecycle: 'ready', model: {provider: 'provider', id: 'model', name: 'Model', reasoning: false, input: ['text']}, thinkingLevel: 'high'} as PrimaryView);
-  assert.equal(byId('model-button').textContent, 'model'); assert.equal(byId('model-button').title, 'provider/model · Primary'); assert.equal(byId('model-button').attributes.get('aria-label'), 'Model for Primary: provider/model');
-  assert.equal(byId('thinking-button').textContent, 'high'); assert.equal(byId('thinking-button').attributes.get('aria-label'), 'Thinking level for Primary: high');
+  assert.equal(byId('model-value').textContent, 'model'); assert.equal(byId('model-button').title, 'provider/model · Primary'); assert.equal(byId('model-button').attributes.get('aria-label'), 'Model for Primary: provider/model');
+  assert.equal(byId('thinking-value').textContent, 'high'); assert.equal(byId('thinking-button').attributes.get('aria-label'), 'Thinking level for Primary: high');
 });
 
+test('local conversation actions group existing controls and open workspace input settings without navigation', async () => {
+  const identity = 'grouped-menu-agent';
+  await arrive({workspace: {id: 'grouped-menu', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'agent', identity}, conversationLayout: twoPanes(identity)}, primaries: [primaryFixture({epoch: 715})], roster: [agentFixture(identity, {capabilities: {input: true, inspect: true}})]});
+  const selected = app.state.workspace?.selectedTarget, saves = selectionSaves.length, requests = transportLog.length;
+  app.openConversationActions('agent-pane'); const menu = menuNode();
+  assert.deepEqual(menu.children.filter(node => node.className === 'context-menu-heading').map(node => node.textContent), ['View', 'Messages and tasks', 'Details']);
+  const labels = menu.children.filter(node => node.tagName === 'button').map(node => node.textContent);
+  assert.deepEqual(labels, ['View: Conversation', 'View: Grouped', 'Show thinking', 'Find text', 'Expand loaded tools', 'Collapse loaded tools', 'Message', 'Tasks', 'Saved drafts and messages', 'Message input…', 'Conversation details', 'Copy agent ID', 'Commands…']);
+  assert.equal(labels.includes('Show conversation'), false); assert.equal(labels.includes('New session'), false);
+  menu.children.find(node => node.textContent === 'Message input…')?.click();
+  assert.equal(byId('modal-title').textContent, 'Message input'); assert.match(byId('modal-body').textContent, /Applies to this workspace/);
+  assert.deepEqual(app.state.workspace?.selectedTarget, selected); assert.equal(selectionSaves.length, saves); assert.equal(transportLog.length, requests);
+  byId('modal-close').click(); app.focusPane('primary-pane'); await settle(); app.openConversationActions('primary-pane');
+  assert.deepEqual(menuNode().children.filter(node => node.className === 'context-menu-heading').map(node => node.textContent), ['View', 'Messages and tasks', 'Session', 'Details']);
+  const primaryLabels = menuNode().children.filter(node => node.tagName === 'button').map(node => node.textContent);
+  assert.ok(primaryLabels.indexOf('New session') > primaryLabels.indexOf('Message input…')); assert.ok(primaryLabels.indexOf('Conversation details') > primaryLabels.indexOf('Continue in terminal…')); assert.equal(primaryLabels.at(-1), 'Commands…'); contextMenu.close();
+});
+test('footer settings preserve exact long values and existing eligibility without replacing controls', () => {
+  const model = byId('model-button'), thinking = byId('thinking-button'), id = 'long-model-value'.repeat(60);
+  app.primaryChrome(primaryFixture({model: {provider: 'provider', id, name: id, reasoning: true, input: ['text']}, thinkingLevel: 'high'}));
+  assert.equal(byId('model-button'), model); assert.equal(byId('thinking-button'), thinking); assert.equal(byId('model-value').textContent, id); assert.equal(model.disabled, false); assert.equal(thinking.hidden, false);
+  app.primaryChrome(primaryFixture({lifecycle: 'starting', model: undefined, thinkingLevel: undefined})); assert.equal(model.hidden, true); assert.equal(model.disabled, true); assert.equal(thinking.hidden, true);
+});
 test('the Primary composer uses the projected conversation name without replacing its editor', async () => {
   const item=primaryFixture({epoch:41,sessionName:'Named conversation',activity:'idle'});await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:{kind:'primary',key:'p',epoch:41}},primaries:[item],roster:[]});const editor=primaryControl('editor');assert.equal(primaryControl('recipient').textContent,'Message Named conversation');assert.equal(byId('primary-row-state').dataset.glyph,'✓'); assert.ok(byId('primary-row-state').querySelector('.card-icon-success'));event('primary.state',{...item,sessionName:'Renamed conversation'},{kind:'primary',key:'p',epoch:41});assert.equal(primaryControl('recipient').textContent,'Message Renamed conversation');assert.equal(primaryControl('editor'),editor);
 });

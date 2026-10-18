@@ -48,7 +48,7 @@ test('cache share uses loaded prompt tokens including writes, never RPC session 
   const supplied = {...primary, usage: {cost: 0, tokens: {input: 10, output: 9000, cacheRead: 30, cacheWrite: 20, total: 9060}}};
   assert.equal(usageFacts(supplied).facts.some(fact => fact.key === 'cacheHitShare'), false);
   const result = usageFacts(supplied, [entry('loaded', {input: 10, cacheRead: 30, cacheWrite: 20})]);
-  assert.equal(result.facts.find(fact => fact.key === 'cacheHitShare')?.text, 'Cache 50% · loaded');
+  assert.equal(result.facts.find(fact => fact.key === 'cacheHitShare')?.text, 'Cache 50%');
   const empty = usageFacts(supplied, [entry('zero', {input: 0, cacheRead: 0, cacheWrite: 0})]);
   assert.equal(empty.facts.find(fact => fact.key === 'cacheHitShare')?.summary, false);
   assert.match(empty.facts.find(fact => fact.key === 'cacheHitShare')?.detail ?? '', /input 0, cache read 0, cache write 0.*No positive prompt-token denominator/);
@@ -58,7 +58,7 @@ test('loaded assistant cache share excludes tool and compaction usage and never 
   const rows = [entry('hit', {input: 10, cacheRead: 30, cacheWrite: 20}), entry('tool', {input: 1000, cacheRead: 9000, cacheWrite: 0}, 'toolResult'),
     {id: 'compaction', kind: 'compaction', data: {value: {usage: {input: 10000, cacheRead: 20000, cacheWrite: 0}}, truncated: false}}, entry('uncached', {input: 60, cacheRead: 0, cacheWrite: 0})];
   const facts = usageFacts({...primary, usage}, rows).facts; const share = facts.find(fact => fact.key === 'cacheHitShare');
-  assert.equal(share?.text, 'Cache 25% · loaded'); assert.match(share?.detail ?? '', /Loaded assistant window only.*2 finalized/);
+  assert.equal(share?.text, 'Cache 25%'); assert.match(share?.detail ?? '', /Loaded assistant window only.*2 finalized/);
   assert.match(share?.detail ?? '', /not a complete-session/); assert.equal(facts.some(fact => fact.text === '●'), false);
 });
 test('missing and zero denominator cache stay detail-only while supplied zero share stays visible', () => {
@@ -69,7 +69,7 @@ test('missing and zero denominator cache stay detail-only while supplied zero sh
     assert.match(result.facts[0]?.detail ?? '', /not reported|no cache ratio is reported/); assert.equal(usageSummary(undefined, rows), '');
   }
   const zero = usageFacts(undefined, [entry('uncached', {input: 10, cacheRead: 0, cacheWrite: 20})]);
-  assert.equal(zero.facts[0]?.summary, true); assert.equal(zero.facts[0]?.text, 'Cache 0% · loaded');
+  assert.equal(zero.facts[0]?.summary, true); assert.equal(zero.facts[0]?.text, 'Cache 0%');
 });
 test('stable entry references reuse the scan and replacement windows do not retain evicted turns', () => {
   const row = entry('first', {input: 10, cacheRead: 30, cacheWrite: 20}); const message = row.messages?.[0] as MessageView;
@@ -77,7 +77,7 @@ test('stable entry references reuse the scan and replacement windows do not reta
   const rows = [row]; const first = usageFacts(primary, rows); const afterFirst = reads;
   assert.deepEqual(usageFacts(primary, rows), first); assert.equal(reads, afterFirst, 'Cached facts do not rescan supplied usage');
   const replacement = usageFacts(primary, [entry('replacement', {input: 10, cacheRead: 0, cacheWrite: 20})]);
-  assert.equal(replacement.facts.find(fact => fact.key === 'cacheHitShare')?.text, 'Cache 0% · loaded');
+  assert.equal(replacement.facts.find(fact => fact.key === 'cacheHitShare')?.text, 'Cache 0%');
   assert.equal(replacement.facts.some(fact => fact.text === '●'), false);
 });
 test('duplicate retained message identity contributes usage once', () => {
@@ -95,7 +95,7 @@ test('recipient changes do not transfer Primary context or cost into agent facts
   const current = usageFacts({...primary, usage, contextUsage: {tokens: 0, percent: 0, contextWindow: 1000}}, rows);
   assert.equal(current.contextFraction, 0); assert.equal(current.facts[0]?.text, 'Context 0%');
   const agent = usageFacts(undefined, rows); assert.equal(agent.contextFraction, null);
-  assert.deepEqual(agent.facts.map(fact => fact.key), ['cacheHitShare']); assert.equal(agent.facts[0]?.text, 'Cache 75% · loaded');
+  assert.deepEqual(agent.facts.map(fact => fact.key), ['cacheHitShare']); assert.equal(agent.facts[0]?.text, 'Cache 75%');
   assert.deepEqual(usageFacts(undefined, []).facts.filter(fact => fact.summary), []);
   assert.deepEqual(usageFacts({...primary, usage, contextUsage: {tokens: 0, percent: 0, contextWindow: 1000}}, rows), current);
 });
