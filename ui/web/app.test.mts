@@ -1423,6 +1423,19 @@ test('a child conversation without its own name reads as its parent name plus it
   const own = app.toolSubjectCaption(named); assert.equal(own?.name, 'Observed worker'); assert.equal(own?.derived, undefined);
   assert.equal(app.toolSubjectCaption(orphan)?.derived, undefined); assert.equal(app.toolSubjectCaption(orphan)?.text, 'Unresolved conversation');
 });
+test('Up in an empty Primary draft recalls earlier loaded user messages and no carrier text', async () => {
+  const ask = (id: string, text: string, extra: object = {}) => entryFixture(id, [{...messageFixture(`${id}-m`, [textPart(text)]), role: 'user', ...extra}]);
+  const target = {kind: 'primary' as const, key: 'p', epoch: 9811};
+  await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: target}, primaries: [primaryFixture({epoch: 9811, lifecycle: 'ready'})], roster: [], targets: [targetFixture('recall-primary', target, {draft: {revision: 1, text: '', mode: 'prompt', persisted: true}})], history: [ask('h1', 'first ask'), ask('h2', 'a report', {communication: {state: 'unresolved'}}), ask('h3', 'second ask')]});
+  await settle(); const editor = primaryControl('editor') as HostNode & {value: string}, logged = transportLog.length;
+  // The native insert replaces the selected range with the prepared text, as the browser would.
+  Object.defineProperty(hostDocument, 'execCommand', {configurable: true, value: (_command: string, _ui: boolean, value: string) => {const target = hostDocument.activeElement as unknown as typeof editor; const at = target.selectionStart; target.value = target.value.slice(0, at) + value + target.value.slice(target.selectionEnd); target.setSelectionRange(at + value.length, at + value.length); target.dispatch('input'); return true;}});
+  editor.focus(); editor.dispatch('keydown', {key: 'ArrowUp'}); assert.equal(editor.value, 'second ask');
+  editor.setSelectionRange(0, 0); editor.dispatch('keydown', {key: 'ArrowUp'}); assert.equal(editor.value, 'first ask');
+  editor.dispatch('keydown', {key: 'Escape'}); assert.equal(editor.value, '');
+  assert.equal(transportLog.slice(logged).some(call => call.path.includes('/inputs') || call.path.includes('/operations')), false, 'recall sends nothing');
+  Reflect.deleteProperty(hostDocument, 'execCommand');
+});
 test('Primary model and thinking are picker buttons under its composer with accessible names', async () => {
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({cwd: '/fixture', lifecycle: 'ready', model: {provider: 'provider', id: 'model', name: 'Model', reasoning: false, input: ['text']}, thinkingLevel: 'high'})], roster: []});
   const model = primaryControl('model'), thinking = primaryControl('thinking');

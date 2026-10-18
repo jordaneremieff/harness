@@ -815,6 +815,8 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
 .composer-model:not(:disabled):hover, .composer-thinking:not(:disabled):hover { color: var(--fg); background: var(--raised); }
 .composer-settings-separator { flex: none; color: var(--muted); font-size: 12px; }
 .composer-settings-text { min-width: 0; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+.composer-recall-hint { min-width: 0; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.composer-meta[data-recall=true] > .latest { display: none; }
 .composer-meta { display: flex; align-items: center; justify-content: space-between; gap: var(--s2); min-height: 24px; padding-top: 2px; color: var(--muted); font-size: 12px; }
 .composer textarea { display: block; width: 100%; min-width: 0; min-height: 24px; padding: var(--s3); border: 0; background: transparent; color: var(--fg); caret-color: var(--accent); font-size: 16px; line-height: 1.6; resize: none; }
 .composer-surface { position: relative; }

@@ -12,6 +12,7 @@ import { targetReceipts } from './receipt.ts';
 import { CommandMenu } from './command-menu.ts';
 import { FileMentionMenu } from './file-mention.ts';
 import type { MentionToken } from './file-mention-state.ts';
+import { onEdge, recallLabel, type Recall } from './message-recall.ts';
 import type { FileSearchResult, FileSearchRow } from '../shared/files.ts';
 import type { CommandInventory } from './command-menu-state.ts';
 import { clampSelection, draftPresentation, editorSelectionKey, readEditorSelection, SLOW_SAVE_MS } from './draft-presentation.ts';
@@ -22,9 +23,9 @@ import { acknowledgeDraft, beginDraftSave, captureSubmission, createDraft, draft
 import type { DraftSave, DraftState, Submission } from './draft-state.ts';
 import { ApiError, draftImageUrl, errorMessage, operation, request, reserve } from './transport.ts';
 
-export type ComposerHooks = {fileSearch?: (query: string, signal: AbortSignal) => Promise<FileSearchResult> | undefined; fileStage?: (path: string, signal: AbortSignal, current: () => boolean, stage: (files: readonly File[]) => boolean) => Promise<boolean>; workingFile?:(stage:(files:readonly File[])=>boolean)=>void; changed?:()=>void; captured?: (submission:Submission)=>void; failed?: (operationId:string,uncertain:boolean)=>void; prepareInput?: () => boolean; imageState?: (workspace: string, state: TargetState) => void; imageInput?: (target: Target) => {allowed: boolean; reason?: string}; recovery?: () => void; layoutHeight?: () => number | undefined; timing?: (start: number, end: number) => void; submitted: (operation: OperationView) => void; unknownCommand: (text: string, sendLiteral: () => void) => boolean; enterSends?: () => boolean; commands?: () => CommandInventory; moreCommands?: (target: Target) => Promise<void>; retained?: (workspace: string, target: Target, retained: boolean) => void};
+export type ComposerHooks = {recallItems?: () => readonly string[]; fileSearch?: (query: string, signal: AbortSignal) => Promise<FileSearchResult> | undefined; fileStage?: (path: string, signal: AbortSignal, current: () => boolean, stage: (files: readonly File[]) => boolean) => Promise<boolean>; workingFile?:(stage:(files:readonly File[])=>boolean)=>void; changed?:()=>void; captured?: (submission:Submission)=>void; failed?: (operationId:string,uncertain:boolean)=>void; prepareInput?: () => boolean; imageState?: (workspace: string, state: TargetState) => void; imageInput?: (target: Target) => {allowed: boolean; reason?: string}; recovery?: () => void; layoutHeight?: () => number | undefined; timing?: (start: number, end: number) => void; submitted: (operation: OperationView) => void; unknownCommand: (text: string, sendLiteral: () => void) => boolean; enterSends?: () => boolean; commands?: () => CommandInventory; moreCommands?: (target: Target) => Promise<void>; retained?: (workspace: string, target: Target, retained: boolean) => void};
 export type ComposerElements = {root: HTMLFormElement; editor: HTMLTextAreaElement; recipient: HTMLElement; receipt: HTMLElement;
-  receiptDetails: HTMLElement; modes: HTMLElement; send: HTMLButtonElement; save: HTMLElement; fileMenu?: HTMLElement; meta?: HTMLElement; model?: HTMLButtonElement; thinking?: HTMLButtonElement; settings?: HTMLElement; commandMenu?: HTMLElement; overlay?: HTMLElement; attachments?: HTMLElement; attach?: HTMLButtonElement; sources?: HTMLButtonElement; picker?: HTMLInputElement; state?: HTMLElement; start?: HTMLButtonElement};
+  receiptDetails: HTMLElement; modes: HTMLElement; send: HTMLButtonElement; save: HTMLElement; fileMenu?: HTMLElement; recallHint?: HTMLElement; meta?: HTMLElement; model?: HTMLButtonElement; thinking?: HTMLButtonElement; settings?: HTMLElement; commandMenu?: HTMLElement; overlay?: HTMLElement; attachments?: HTMLElement; attach?: HTMLButtonElement; sources?: HTMLButtonElement; picker?: HTMLInputElement; state?: HTMLElement; start?: HTMLButtonElement};
 /** An agent-specific line inside the composer, with at most one action in the Send position and optional exact details. */
 export type ComposerStateView = {line: string; action?: {label: string; title?: string; pending?: boolean; disabled?: boolean; run: () => void}; blocksSend?: boolean; detail?: string; showDetail?: () => void};
 /** Creates one editor; the detached save/receipt-detail nodes belong in the shared footer. */
@@ -68,10 +69,12 @@ export function createComposerElements(instanceId: string): ComposerElements {
   model.id = `${id}-model`; thinking.id = `${id}-thinking`; settingsText.id = `${id}-settings-text`; model.type = thinking.type = 'button'; model.hidden = thinking.hidden = settingsText.hidden = true;
   const settings = element('div', 'composer-settings'); settings.id = `${id}-settings`; settings.setAttribute('role', 'group'); settings.setAttribute('aria-label', 'Model and thinking'); const separator = element('span', 'composer-settings-separator', '·'); separator.setAttribute('aria-hidden', 'true'); separator.hidden = true;
   settings.append(model, separator, thinking, settingsText);
-  const meta = element('div', 'composer-meta'); meta.append(settings); root.append(resize, receipt, input, meta);
+  const recallHint = element('div', 'composer-recall-hint'); recallHint.hidden = true; recallHint.setAttribute('role', 'status'); recallHint.setAttribute('aria-live', 'polite');
+  const recallSpoken = element('span', 'sr-only composer-recall-spoken'), recallVisible = element('span', 'composer-recall-visible'); recallVisible.setAttribute('aria-hidden', 'true'); recallHint.append(recallVisible, recallSpoken);
+  const meta = element('div', 'composer-meta'); meta.append(recallHint, settings); root.append(resize, receipt, input, meta);
   const save = element('span', 'draft-state'); save.id = `${id}-save`;
   const receiptDetails = element('span', 'receipt-details'); receiptDetails.id = `${id}-receipt-details`;
-  return {root, editor, recipient, receipt, receiptDetails, modes, send, save, fileMenu, meta, model, thinking, settings, commandMenu, overlay, attachments, attach, sources, picker, state, start};
+  return {root, editor, recipient, receipt, receiptDetails, modes, send, save, fileMenu, recallHint, meta, model, thinking, settings, commandMenu, overlay, attachments, attach, sources, picker, state, start};
 }
 type Edit = {text: string; mode: string; images: DraftImage[]; edit: number};
 type InsertionCapture = {buffer: Buffer; edit: number; text: string; start: number; end: number; direction: 'forward' | 'backward' | 'none'};
@@ -113,6 +116,8 @@ export class Composer {
   private hooks: ComposerHooks;
   private commandMenu?: CommandMenu;
   private fileMenu?: FileMentionMenu;
+  private recall?: Recall;
+  private recalling = false;
   private mentionAbort?: AbortController;
   private composing = false;
   private suppressEnter = false;
@@ -230,7 +235,7 @@ export class Composer {
       buffer.state = {...state, draft: buffer.data.server}; this.receive(buffer, state.draft);
     }
     const switched = this.current !== buffer; this.current = buffer;
-    if (switched || !sameTarget(state.target, previousTarget)) { this.commandMenu?.reset(); this.fileMenu?.reset(); this.mentionAbort?.abort(); }
+    if (switched || !sameTarget(state.target, previousTarget)) { this.commandMenu?.reset(); this.fileMenu?.reset(); this.mentionAbort?.abort(); this.recall = undefined; this.renderRecall(); }
     this.hydrate(buffer, state);
     if (switched) { this.editor.value = buffer.data.text; this.editor.scrollTop = 0; this.editor.scrollLeft = 0; this.restoreSelection(buffer); }
     this.paint(buffer); this.prepare(buffer);
@@ -344,6 +349,7 @@ export class Composer {
   private base(buffer: Buffer): string { return `/api/workspaces/${encoded(buffer.workspace)}/targets/${encoded(buffer.state.targetKey)}`; }
   private change(text: string, mode = this.current?.data.mode): void {
     const buffer = this.current; if (!buffer) return;
+    if (this.recall && !this.recalling && text !== this.recall.shown) {this.recall = undefined; this.renderRecall();}
     const previous = buffer.data;
     buffer.data = editDraft(buffer.data, text, mode);
     if (buffer.data === previous) {this.rememberSelection(); return;}
@@ -575,11 +581,61 @@ export class Composer {
     if (event.defaultPrevented) return;
     if (this.commandMenu?.key(event)) return;
     if (this.fileMenu?.key(event)) return;
+    if (this.recallKey(event)) return;
     const modifierSend = (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey;
     const ordinarySend = this.hooks.enterSends?.() && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey;
     if (event.key === 'Enter' && (modifierSend || ordinarySend)) {
       event.preventDefault(); if (!event.repeat && this.current && !this.textLimit) void this.send();
     }
+  }
+  /** Up in an empty draft browses earlier messages from the loaded conversation; any edit keeps the text and ends browsing. */
+  private recallKey(event: KeyboardEvent): boolean {
+    const source = this.hooks.recallItems;
+    if (!this.current || !source || this.composing || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || this.editor.disabled) return false;
+    if (this.recall && this.editor.value !== this.recall.shown) {this.recall = undefined; this.renderRecall();}
+    if (event.key === 'Escape' && this.recall) {event.preventDefault(); this.leaveRecall(true); return true;}
+    const up = event.key === 'ArrowUp';
+    if ((!up && event.key !== 'ArrowDown') || this.editor.selectionStart !== this.editor.selectionEnd) return false;
+    if (!(this.recall ? this.onRecallEdge(up) : up && this.beginRecall(source))) return false;
+    event.preventDefault(); this.stepRecall(up ? -1 : 1); return true;
+  }
+  private onRecallEdge(up: boolean): boolean { return onEdge(this.editor.value, this.editor.selectionStart, up ? 'first' : 'last'); }
+  private beginRecall(source: () => readonly string[]): boolean {
+    const items = [...source()], text = this.editor.value, caret = this.editor.selectionStart;
+    if (text !== '' || !items.length) return false;
+    this.recall = {items, index: items.length, snapshot: {text, start: caret, end: caret, direction: this.editor.selectionDirection ?? 'none', scrollTop: this.editor.scrollTop}, shown: ''};
+    return true;
+  }
+  private stepRecall(delta: number): void {
+    const recall = this.recall; if (!recall) return;
+    const next = recall.index + delta;
+    if (next >= recall.items.length) {this.leaveRecall(true); return;}
+    if (next >= 0) this.placeRecalled(recall, next);
+  }
+  private placeRecalled(recall: Recall, index: number): void {
+    const text = recall.items[index] ?? '', buffer = this.current;
+    this.recalling = true;
+    try {
+      const inserted = insertNativeText(this.editor, text, 0, this.editor.value.length); this.change(inserted.text);
+      if (inserted.status !== 'inserted') {this.recall = undefined; if (buffer) {buffer.notice = 'The earlier message could not be placed. Your draft is unchanged.'; this.receipt(buffer);} this.renderRecall(); return;}
+    } finally {this.recalling = false;}
+    recall.index = index; recall.shown = text; this.renderRecall();
+  }
+  private leaveRecall(restore: boolean): void {
+    const recall = this.recall; this.recall = undefined;
+    if (recall && restore) {
+      const {snapshot} = recall; this.recalling = true;
+      try {const inserted = insertNativeText(this.editor, snapshot.text, 0, this.editor.value.length); this.change(inserted.text);} finally {this.recalling = false;}
+      this.editor.setSelectionRange(snapshot.start, snapshot.end, snapshot.direction); this.editor.scrollTop = snapshot.scrollTop;
+    }
+    this.renderRecall();
+  }
+  private renderRecall(): void {
+    const {recallHint, meta} = this.elements; if (!recallHint) return;
+    const recall = this.recall; recallHint.hidden = !recall;
+    if (meta) {if (recall) meta.dataset.recall = 'true'; else delete meta.dataset.recall;}
+    const label = recall ? recallLabel(recall.index, recall.items.length) : undefined;
+    setText(recallHint.querySelector<HTMLElement>('.composer-recall-visible') as HTMLElement, label?.visible ?? ''); setText(recallHint.querySelector<HTMLElement>('.composer-recall-spoken') as HTMLElement, label?.spoken ?? '');
   }
   private prepare(buffer: Buffer): void {
     if (this.destroyed || this.admissionBlocked || !this.ready || this.sendSuppressed || this.hooks.prepareInput?.() === false || buffer !== this.current || buffer.reservation || buffer.submitting) return;

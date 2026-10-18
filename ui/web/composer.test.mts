@@ -186,6 +186,26 @@ test('passive attachment and availability never reserve input while explicit act
     f.composer.destroy();
   }
 });
+test('Up in an empty draft browses earlier messages and Escape or Down past the newest restores the draft', async () => {
+  const f = fixture(); const scope = scopedNodes('recall', true);
+  let items: string[] = ['first', 'second\nline two'];
+  const composer = new Composer(scope.elements, {submitted() {}, unknownCommand: () => false, recallItems: () => items});
+  const editor = scope.node('editor'); composer.attach('w', state('r', draft(1, ''))); composer.availability(true, true, false);
+  const press = (key: string) => editor.fire('keydown', {key});
+  editor.focus(); assert.equal(press('ArrowUp').defaultPrevented, true); assert.equal(editor.value, 'second\nline two');
+  assert.equal(press('ArrowUp').defaultPrevented, false, 'the caret is on the last line, so the arrow stays native'); assert.equal(editor.value, 'second\nline two');
+  editor.setSelectionRange(0, 0); assert.equal(press('ArrowUp').defaultPrevented, true); assert.equal(editor.value, 'first');
+  assert.equal(press('ArrowDown').defaultPrevented, true); assert.equal(editor.value, 'second\nline two');
+  assert.equal(press('ArrowDown').defaultPrevented, true); assert.equal(editor.value, '', 'past the newest message the draft is restored');
+  assert.equal(composer.state?.draft.text, '');
+  press('ArrowUp'); assert.equal(editor.value, 'second\nline two'); assert.equal(press('Escape').defaultPrevented, true); assert.equal(editor.value, '');
+  press('ArrowUp'); editor.value = 'second\nline two edited'; editor.fire('input');
+  editor.setSelectionRange(0, 0); assert.equal(press('ArrowUp').defaultPrevented, false, 'an edit ends browsing and keeps the text'); assert.equal(editor.value, 'second\nline two edited');
+  assert.equal(press('Escape').defaultPrevented, false);
+  composer.setText(''); items = []; assert.equal(press('ArrowUp').defaultPrevented, false, 'nothing to recall leaves the key native');
+  items = ['again']; composer.setText('draft'); editor.setSelectionRange(0, 0); assert.equal(press('ArrowUp').defaultPrevented, false, 'only an empty draft starts browsing');
+  composer.destroy(); void f;
+});
 test('a typed @ file is staged, only its token leaves the draft, and a changed draft stages nothing', async t => {
   const f = fixture(); const scope = scopedNodes('mention', true); const menu = new NodeFake(); menu.id = 'mention-files';
   const elements = {...scope.elements, fileMenu: menu} as unknown as ComposerElements; let staged: File[] = []; let release: (() => boolean) | undefined;
