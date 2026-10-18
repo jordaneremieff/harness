@@ -40,6 +40,23 @@ test('only the optional roster preview has a two-line visual clamp', () => {
   for (const name of ['.agent-row .row-name', '.agent-row .row-state', '.agent-row .row-identity']) assert.doesNotMatch(rule(name), /line-clamp|overflow: hidden/);
   assert.match(rule('[hidden]'), /display: none !important/);
 });
+test('result answer actions use content width and normal-flow height instead of icon-only geometry', () => {
+  const row = rule('.communication-results'), action = rule('.communication-results > .card-action');
+  assert.match(row, /display: flex; flex-wrap: wrap; gap:/);
+  assert.match(action, /display: inline-flex; align-items: center; gap: 6px/);
+  assert.match(action, /width: auto; height: auto; max-width: 100%/);
+  assert.match(action, /white-space: normal; overflow-wrap: normal; word-break: normal/);
+  assert.doesNotMatch(action, /(?:^|;)\s*(?:min-width|min-height|position|overflow|text-overflow):|line-clamp/);
+  assert.match(rule('.card-action'), /width: 24px; height: 24px; min-width: 24px; min-height: 24px/);
+  assert.match(media('@media (pointer:coarse)'), /\.card-action, \.section-toggle[^{}]+\{ min-height: 44px; min-width: 44px/);
+});
+test('direct conversation actions stay trailing and retain shared desktop and coarse targets', () => {
+  assert.match(rule('.inspection-navigation'), /display: flex/);
+  const action = rule('.inspection-navigation > .conversation-actions');
+  assert.match(action, /margin-left: auto; padding: 0/); assert.doesNotMatch(action, /opacity|visibility|display: none/);
+  assert.match(rule('.card-action'), /width: 24px; height: 24px; min-width: 24px; min-height: 24px/);
+  assert.match(media('@media (pointer:coarse)'), /\.card-action, \.section-toggle[^{}]+\{ min-height: 44px; min-width: 44px/);
+});
 test('sidebar disclosures use rotating chevrons and discovery stays a named action', () => {
   assert.match(rule('.section-toggle > .card-icon'), /width: 12px; height: 12px/);
   assert.match(rule('.section-toggle[aria-expanded=true] > .card-icon-chevron'), /transform: rotate\(90deg\)/);

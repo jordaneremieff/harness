@@ -203,6 +203,15 @@ function attachInspection(controller:ConversationController,region:HTMLElement):
       tasks:()=>inspectionTaskRows(controller),entryKey:id=>target.kind==='agent'?controller.transcript.loadedReference({text:String(id),owner:target.identity,field:'entryId'},target.identity):undefined,history:target.kind==='agent',showConversation:(entry,identity)=>{if(identity&&(controller.target.kind!=='agent'||identity!==controller.target.identity)){void navigateReference({target:{kind:'agent',identity},entryId:entry},true).catch(showError);return;}const owner=controller.target.kind==='agent'?controller.target.identity:state.primaries.get(controller.target.key)?.sessionId;const loaded=owner?controller.transcript.loadedReference({text:entry,owner,field:'entryId'},owner):undefined;controller.transcript.revealEntry(loaded??entry);},moreConversation:()=>{void loadControllerHistory(controller,true);},
       changed:()=>{devInteractionRevision++;if(controller.inspection?.active)controller.passive=true;renderController(controller);},current:()=>controller.workspaceId===state.workspace?.id&&!controller.abort.signal.aborted,
       restore:()=>{const value=sessionStorage.getItem(storageKey);return value?JSON.parse(value):null;},save:value=>{if(value)sessionStorage.setItem(storageKey,JSON.stringify(value));else sessionStorage.removeItem(storageKey);}});
+    const actionsButton = cardAction('more', 'Conversation actions', () => {
+      if (controller.workspaceId !== state.workspace?.id || controller.abort.signal.aborted) return;
+      const pane = paneById(currentLayout(), root.dataset.paneId ?? '');
+      const tab = pane?.tabs.find(tab => tabKey(tab) === pane.active && sameTarget(controllerTarget(tab), controller.target));
+      if (pane && tab) openConversationActions(pane.id, tabKey(tab), actionsButton);
+    }, 'conversation-actions');
+    actionsButton.setAttribute('aria-haspopup', 'menu'); actionsButton.setAttribute('aria-expanded', 'false');
+    for (const name of ['pointerdown', 'focusin']) actionsButton.addEventListener(name, event => event.stopPropagation());
+    controller.inspection.navigation.append(actionsButton);
     root.insertBefore(controller.inspection.navigation,region);root.insertBefore(controller.inspection.node,region);
 }
 function inspectionTaskRows(controller:ConversationController):ConversationTask[]{
@@ -1802,11 +1811,11 @@ function agentMenuItems(identity: string): ContextItem[] {
   items.push(...conversationMenuItems({kind: 'agent', identity}).filter(item => !items.some(existing => existing.label === item.label)));
   return items;
 }
-export function openConversationActions(paneId: string = focusedPane, key?: string): void {
+export function openConversationActions(paneId: string = focusedPane, key?: string, origin?: HTMLElement): void {
   const workspace = state.workspace?.id, layout = currentLayout(), pane = paneById(layout, paneId);
   const tab = pane?.tabs.find(tab => tabKey(tab) === (key ?? pane.active)), target = tab && controllerTarget(tab);
   if (!workspace || !tab || !target) return;
-  const current = layout, owner = conversationController(target), trigger = paneRegions.get(paneId)?.menu;
+  const current = layout, owner = conversationController(target), trigger = origin ?? paneRegions.get(paneId)?.menu;
   if (!trigger) return;
   const view = owner.transcript.node.dataset.view === 'grouped' ? 'grouped' : 'chronological';
   const choices: ContextItem[] = (['chronological', 'grouped'] as const).map(mode => ({label: mode === 'chronological' ? 'View: Conversation' : 'View: Grouped', checked: view === mode, run: () => owner.transcript.setView(mode)}));

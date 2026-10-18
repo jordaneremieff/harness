@@ -26,10 +26,26 @@ test('exact result reads use the producer identity and native references without
   globalThis.fetch=async(path,init)=>{if(/\/agents\/[^/]+\/inspect(?:\?|$)/.test(String(path))){requests.push({path:String(path),body:JSON.parse(String(init?.body))});return Response.json({ok:true,data:{view:'result',identity,readAt:'now',status:'done',submissionId:9,requestId:'producer-request',answerEntryId:17,answer:{text:'Exact producer answer',shortened:false,protected:false},usage:{value:{},truncated:false}}});}return original(path,init);};
   const message:MessageView={id:'result-message',role:'custom',state:'final',parts:[{type:'text',text:'Transport paragraph'}],coverage:f.coverage,communication:{state:'ready',origin:{kind:'ordinary-custom',customType:'agent.peer',renderEntryId:'result-message'},value:{format:'agent.communication/1',sender:{identity,name:'Worker'},body:{text:'Task complete',complete:false,redacted:false},recordedAt:1700000000000,kind:'result',metadata:{status:'done',references:[{submissionId:9,requestId:'producer-request',answerEntryId:'17'}],omittedReferences:0}}}};
   const primary=primaryFixture({epoch:7011});await arrive({workspace:{id:'result-link',revision:1,primaryKey:primary.key,conversationLayout:singlePane()},primaries:[primary],roster:[agentFixture(identity,{availability:'stored'})],targets:[targetFixture('link-primary',{kind:'primary',key:primary.key,epoch:primary.epoch}),targetFixture('link-agent',target)],history:[f.entryFixture('result-entry',[message])]});
-  const before=transportLog.length;app.inspectAgent(identity,'result',{submissionId:9,requestId:'producer-request'});await settle();
+  const before=transportLog.length, action=primaryControl('root').querySelector('.communication-results .card-action');assert.ok(action);
+  assert.equal(action.getAttribute('aria-label'),'Show full answer');assert.equal(action.querySelector('.card-action-label')?.textContent,'Show full answer');
+  action.click();await settle();
   assert.equal(requests.length,1);assert.match(requests[0]?.path??'',new RegExp(encodeURIComponent(identity)));assert.deepEqual(requests[0]?.body,{view:'result',submissionId:9,requestId:'producer-request'});assert.match(activeInspection().textContent,/Exact producer answer/);assert.deepEqual(transportLog.slice(before).filter(row=>row.method==='POST'&&/\/(targets|inputs|start|abort)$/.test(row.path)),[]);
 });
 
+test('complete and incomplete result cards retain named numbered answer actions for every reference',async()=>{
+  for(const complete of [false,true])for(const count of [1,2]){
+    const references=Array.from({length:count},(_,index)=>({submissionId:20+index,requestId:`answer-${index}`}));
+    const message:MessageView={id:`answer-${complete}-${count}`,role:'custom',state:'final',parts:[{type:'text',text:'Transport'}],coverage:f.coverage,communication:{state:'ready',origin:{kind:'ordinary-custom',customType:'agent.peer',renderEntryId:`answer-${complete}-${count}`},value:{format:'agent.communication/1',sender:{identity,name:'Worker'},body:{text:'Answer body',complete,redacted:false},recordedAt:1700000000000,kind:'result',metadata:{status:'done',references,omittedReferences:0}}}};
+    const primary=primaryFixture({epoch:7020});
+    await arrive({workspace:{id:`answer-label-${complete}-${count}`,revision:1,primaryKey:primary.key,conversationLayout:singlePane()},primaries:[primary],roster:[agentFixture(identity)],history:[f.entryFixture(`answer-entry-${complete}-${count}`,[message])]});
+    const row=primaryControl('root').querySelector('.communication-results');assert.ok(row);assert.equal(row.hidden,false);assert.equal(row.children.length,count);
+    row.children.forEach((action,index)=>{
+      const label=`${complete?'Open answer':'Show full answer'}${count>1?` ${index+1}`:''}`;
+      assert.equal(action.getAttribute('aria-label'),label);assert.equal(action.title,label);
+      assert.equal(action.querySelector('.card-action-label')?.textContent,label);assert.ok(action.querySelector('.card-icon-search'));
+    });
+  }
+});
 test('retained Tasks stays reachable when an agent lacks a live inspect capability',async t=>{
   const original=globalThis.fetch;t.after(()=>{globalThis.fetch=original;});const reads:unknown[]=[];
   globalThis.fetch=async(path,init)=>{if(/\/agents\/[^/]+\/inspect(?:\?|$)/.test(String(path))){reads.push(JSON.parse(String(init?.body)));return Response.json({ok:true,data:source()});}return original(path,init);};
