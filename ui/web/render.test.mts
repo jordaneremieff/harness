@@ -2452,8 +2452,13 @@ test('whole-workbench status retains controls and selects only the focused fact 
   get('workbench-status-primary').append(model);
   const status = new WorkbenchStatus(id => get(id) as unknown as HTMLElement);
   status.update('primary', 'Primary', 'Working', 'primary-key'); const footer = root.querySelector('.workbench-status'); assert.ok(footer); assert.equal(footer.parentNode, root); assert.equal(footer.querySelectorAll('.workbench-status-facts')[0]?.children.includes(model), true);
+  status.update('primary', 'Primary', 'Working', 'primary-key', 'Running a command with a long supplied description');
+  const activity = get('workbench-activity'), activityState = activity.querySelector('.workbench-activity-state'), activityText = activity.querySelector('.workbench-activity-text'); assert.ok(activityState && activityText);
+  assert.equal(activityState.textContent, 'Working'); assert.equal(activityText.textContent, ' · Running a command with a long supplied description'); assert.equal(activity.title, activity.textContent); assert.equal(activity.attributes['aria-label'], activity.textContent);
+  assert.equal(get('primary-status-summary').textContent, `Primary · ${activity.textContent}`);
+  status.update('primary', 'Primary', 'Working', 'primary-key', 'Running another command'); assert.equal(activity.querySelector('.workbench-activity-state'), activityState); assert.equal(activity.querySelector('.workbench-activity-text'), activityText);
   const groups = footer.querySelectorAll('.workbench-status-facts'); assert.equal(groups.length, 2); assert.deepEqual(groups.map(group => group.hidden), [false, true]);
-  status.update('agent', 'Peer', 'Idle', 'exact-agent-identity'); assert.deepEqual(groups.map(group => group.hidden), [true, false]); assert.equal(footer.querySelector('.workbench-scope')?.title, 'exact-agent-identity'); assert.equal(groups[0]?.children.includes(model), true);
+  status.update('agent', 'Peer', 'Idle', 'exact-agent-identity'); assert.deepEqual(groups.map(group => group.hidden), [true, false]); assert.equal(footer.querySelector('.workbench-scope')?.title, 'Peer\nexact-agent-identity'); assert.equal(groups[0]?.children.includes(model), true);
 });
 test('static workbench markup owns one footer and keeps composer actions without fact rings', () => {
   const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');

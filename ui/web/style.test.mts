@@ -268,6 +268,19 @@ test('footer settings use separate readable native targets without another compo
   assert.match(media('@media (pointer:coarse)'), /\.workbench-model button \{ min-width: 44px; min-height: 44px;/);
   assert.match(rule('.palette-row[data-source=app]'), /grid-template-columns: minmax\(0,30%\) minmax\(0,1fr\)/);
 });
+test('desktop status reserves controls and identity while only long text slots shorten', () => {
+  const desktop=media('@media (min-width:1000px)');
+  assert.match(desktop,/\.workbench-status \{ flex-wrap: nowrap;/);assert.doesNotMatch(desktop,/\.workbench-status \{[^}]*overflow:/);
+  assert.match(desktop,/\.workbench-version \{ flex: none; max-width: none; white-space: nowrap;/);
+  assert.match(desktop,/#workbench-scope \{[^}]*text-overflow: ellipsis; white-space: nowrap;/);
+  assert.match(desktop,/\.workbench-model button \{[^}]*flex-wrap: nowrap;[^}]*min-width: 10ch;/);
+  assert.match(desktop,/\.workbench-activity-state \{ flex: none;/);assert.match(desktop,/\.workbench-activity-text \{[^}]*text-overflow: ellipsis;/);
+  assert.match(desktop,/\.workbench-status \.composer-details \{[^}]*min-width: 8ch;/);
+  assert.match(desktop,/\.workbench-status:has\([^}]*workbench-draft-state[^}]*file-retained-drafts[^}]*control-attribution[^}]*\{ flex-wrap: wrap;/);
+  assert.match(desktop,/\.workbench-activity\[data-notice=true\] \{[^}]*white-space: normal;/);
+  assert.match(desktop,/\.workbench-status\[data-pane=file\] \{ flex-wrap: wrap;/);assert.match(desktop,/\.workbench-status\[data-pane=file\] > \.workbench-activity \{[^}]*white-space: normal;/);
+  for(const id of ['primary-status-summary','primary-settings-detail','agent-status-summary','agent-settings-detail'])assert.match(html,new RegExp(`<p id="${id}"></p>`));
+});
 test('Durable picker choices use full-width native rows with wrapping state and shared focus', () => {
   assert.match(rule('.picker-durable-list'), /display: grid; grid-template-columns: minmax\(0,1fr\)/);
   const row = rule('.picker-durable-select'); assert.match(row, /display: grid; grid-template-columns: minmax\(0,1fr\); gap: 2px; width: 100%; min-width: 0; min-height: 44px/);
@@ -968,11 +981,10 @@ test('phone footer keeps direct settings and identity while full facts stay in t
   assert.match(phone,/\.workbench-status \.workbench-model > button \{ min-width: 44px/);
   assert.match(phone,/\.composer-details > summary > span:not\(\.composer-details-label\) \{ display: none/);
   assert.match(phone,/\.composer-details-label \{[^}]*min-width: 44px; min-height: 44px/);
-  assert.match(phone,/\.workbench-status \.phone-status-facts \{ display: block/);
   assert.match(phone,/\.workbench-status \.workbench-version \{ max-width: 14ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap/);
   assert.match(phone,/\.workbench-activity\[data-notice=true\] \{ display: block/);
-  for(const id of ['primary-status-summary','agent-status-summary','agent-settings-detail']) assert.match(html,new RegExp(`id="${id}" class="phone-status-facts"`));
-  assert.match(rule('.phone-status-facts'),/display: none/);
+  for(const id of ['primary-status-summary','agent-status-summary','agent-settings-detail']) assert.match(html,new RegExp(`<p id="${id}"></p>`));
+  assert.doesNotMatch(css, /\.phone-status-facts/);
 });
 test('phone chrome removes redundant tab arrows and coarse tree names retain explicit touch controls', () => {
   const phone = media('@media (max-width:599px)'),coarse = media('@media (pointer:coarse)');

@@ -606,9 +606,7 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .composer-detail-body { position: relative; width: 100%; max-height: 30dvh; margin-top: 8px; padding-top: 8px; overflow: auto; border-top: 1px solid var(--rule); overflow-wrap: anywhere; }
 .composer-detail-body p { margin: 0; }
 .composer-detail-body > * + *, .usage-detail + .usage-detail { margin-top: 8px; }
-.composer-detail-body > .phone-status-facts + :not(.phone-status-facts) { margin-top: 0; }
 .composer-extension:has(> #extension-status:empty) { display: none; }
-.phone-status-facts { display: none; }
 .workbench-status { position: relative; display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: 2px var(--s4); min-width: 0; min-height: 26px; padding: 0 var(--s3); border-top: 1px solid var(--rule); background: var(--side); color: var(--muted); font-family: var(--sans); font-size: 12px; line-height: 1.5; }
 #workbench-scope { flex: 0 1 auto; min-width: 8ch; max-width: 100%; color: var(--fg); overflow-wrap: anywhere; }
 .workbench-version { flex: 0 1 auto; margin-left: auto; min-width: 0; max-width: 100%; padding: 2px 6px; border: 0; background: transparent; color: var(--muted); font-family: var(--mono); font-size: 12px; text-align: right; overflow-wrap: anywhere; }
@@ -643,6 +641,30 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .workbench-status .composer-details > summary:hover { background: var(--raised); color: var(--fg); }
 .workbench-status .composer-details-label { margin-left: 0; }
 .workbench-status .composer-detail-body { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 5; width: min(640px,calc(100vw - 32px)); max-height: 30dvh; margin: 0; padding: 12px; border: 1px solid var(--rule); border-radius: 4px; background: var(--raised); color: var(--fg); box-shadow: var(--shadow); }
+@media (min-width:1000px) {
+  .workbench-status { flex-wrap: nowrap; column-gap: 12px; }
+  #workbench-scope { flex: 0 1 18ch; min-width: 6ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .workbench-version { flex: none; max-width: none; white-space: nowrap; }
+  .workbench-status-facts { flex: 1 1 0; flex-wrap: nowrap; gap: 8px; }
+  .workbench-model { flex: 1 1 0; flex-wrap: nowrap; min-width: 24ch; gap: 4px; }
+  .workbench-model button { flex: 1 1 0; flex-wrap: nowrap; min-width: 10ch; white-space: nowrap; }
+  .workbench-model #thinking-button { flex: 0 1 17ch; min-width: 12ch; }
+  .workbench-control-value, .workbench-status-facts .agent-settings { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .workbench-status-facts .agent-settings { flex: 1 1 0; min-width: 0; }
+  .workbench-activity { flex: none; white-space: nowrap; }
+  .workbench-activity:has(> .workbench-activity-text) { flex: 0 1 28ch; min-width: 10ch; gap: 0; }
+  .workbench-activity:has(> .workbench-activity-text)[data-busy=true]::before { margin-right: 8px; }
+  .workbench-activity-state { flex: none; }
+  .workbench-activity-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .workbench-status .composer-details { flex: 0 1 auto; min-width: 8ch; max-width: 28ch; }
+  .workbench-status .composer-details > summary { flex-wrap: nowrap; gap: 4px; }
+  .workbench-status .composer-details > summary > span:not(.composer-details-label) { overflow: hidden; }
+  .workbench-status:has(> .workbench-activity[data-notice=true], > .workbench-draft-state > :not(:empty):not([hidden]), > #file-retained-drafts:not([hidden]), > #control-attribution:not([hidden])) { flex-wrap: wrap; }
+  .workbench-status:has(> .workbench-draft-state > :not(:empty):not([hidden])) .workbench-status-facts { flex-basis: auto; }
+  .workbench-status > .workbench-activity[data-notice=true] { flex: 1 1 auto; white-space: normal; }
+  .workbench-status[data-pane=file] { flex-wrap: wrap; }
+  .workbench-status[data-pane=file] > .workbench-activity { flex: 0 1 auto; white-space: normal; }
+}
 .usage-details { display: block; }
 .usage-group { display: inline-flex; flex: none; align-items: center; gap: 4px; white-space: nowrap; }
 .workspace-alert { display: flex; flex-wrap: wrap; flex: none; gap: 0 12px; max-height: 25dvh; margin-top: 8px; padding: 6px 10px; overflow: auto; border-left: 2px solid var(--warning); border-radius: 0 4px 4px 0; background: var(--run-bg); color: var(--fg); font-size: 13px; }
@@ -1124,8 +1146,12 @@ dialog textarea:focus-visible { outline: 2px solid var(--accent); outline-offset
 .picker-input-row { display: flex; flex: 1; align-items: center; gap: 12px; min-width: 0; }
 .picker-input { width: 100%; min-width: 0; padding: 6px 8px; font-size: 13px; }
 .picker-heading { color: var(--muted); font-size: 12px; font-weight: 600; }
-.picker-path { overflow-wrap: anywhere; }
+.picker-path { min-width: 0; overflow-wrap: anywhere; }
 .picker-path > summary { color: var(--muted); font-size: 13px; }
+.picker-context { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: start; gap: 12px; }
+.picker-context > .picker-path > summary { display: flex; align-items: center; min-height: 24px; }
+.picker-context-actions { display: flex; align-items: center; gap: 8px; }
+@media (pointer: coarse) { .picker-context > .picker-path > summary { min-height: 44px; } }
 .picker-projects { flex: none; max-height: min(240px,25dvh); }
 .picker-project-row strong { display: block; font-weight: 400; }
 .picker-project-status { min-height: 20px; color: var(--muted); font-size: 12px; }
@@ -1234,8 +1260,6 @@ dialog[data-variant=menu]::backdrop { background: transparent; }
   .workbench-status .composer-details > summary { gap: 0; padding: 0; }
   .workbench-status .composer-details > summary > span:not(.composer-details-label) { display: none; }
   .workbench-status .composer-details-label { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; }
-  .workbench-status .phone-status-facts { display: block; }
-  .workbench-status .composer-detail-body > .phone-status-facts + :not(.phone-status-facts) { margin-top: 8px; }
   .workbench-status #agent-status { display: none; }
   .workbench-status .workbench-health { padding-inline: var(--s1); }
   .workbench-status .workbench-version { max-width: 14ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

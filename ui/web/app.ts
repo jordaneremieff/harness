@@ -51,7 +51,7 @@ import { inputOperation, operationLabel } from './operation-label.ts';
 import { PreferenceQueue } from './preference-queue.ts';
 import { BrowserDiagnostics } from './diagnostics.ts';
 import {DevReload, devReloadPresentation, type DevReloadCheckpoint, type DevReloadHooks, type DevCheckpointEntry, type DevReloadHold, type DevReloadNotice} from './dev-reload.ts';
-import { conversationPresentation, presentationGlyph, presentationName, projectIdentity, composerFolder, agentViewStatus } from './conversation-presentation.ts';
+import { conversationPresentation, presentationGlyph, presentationName, projectIdentity, composerFolder, agentViewStatus, settingsLabel } from './conversation-presentation.ts';
 import type { ConversationPresentation } from './conversation-presentation.ts';
 import { newerOperation, mergeOperationMap } from './operation-state.ts';
 import { ApiError, connect, errorMessage, operation, request, setRequestTiming } from './transport.ts';
@@ -631,8 +631,8 @@ function fileStatusNotice():string {return fileActionStatus || fileWatch.status;
 function updateConversationStatus(target: Target | undefined, view: ConversationPresentation, notice: string): void {
   const controller = target && state.workspace ? controllers.get(controllerKey(state.workspace.id, target)) : undefined;
   const action = view.busy && view.activity === 'Working' ? controller?.transcript.activitySentence() : undefined;
-  workbenchStatus.update(target?.kind ?? 'primary', presentationName(view), notice || action || view.activity, target?.kind === 'agent' ? target.identity : target?.key);
-  const activity = byId('workbench-activity'); activity.title = notice ? '' : view.detail ?? '';
+  workbenchStatus.update(target?.kind ?? 'primary', presentationName(view), notice || view.activity, target?.kind === 'agent' ? target.identity : target?.key, notice ? undefined : action);
+  const activity = byId('workbench-activity'); if (!notice && view.detail) activity.title += `\n${view.detail}`;
   activity.dataset.busy = String(!notice && view.busy); activity.dataset.tone = view.tone;
   activity.setAttribute('role', 'status');
 }
@@ -1243,6 +1243,7 @@ export function primaryChrome(item?: PrimaryView): void {
   renderTabActions();
   const model = byId<HTMLButtonElement>('model-button'); model.disabled = item?.lifecycle !== 'ready'; model.hidden = !item?.model && item?.lifecycle !== 'ready'; setText(byId('model-value'), item?.model ? item.model.id : 'Choose model'); model.title = item?.model ? `${item.model.provider}/${item.model.id} · Primary` : 'Choose Primary model'; model.setAttribute('aria-label', item?.model ? `Model for Primary: ${item.model.provider}/${item.model.id}` : 'Choose Primary model');
   renderPrimaryUsage(item);
+  const settings = byId('primary-settings-detail'); setText(settings, [item?.model ? `Model ${item.model.provider}/${item.model.id}` : '', item?.thinkingLevel ? `Thinking ${item.thinkingLevel}` : ''].filter(Boolean).join(' · ')); settings.hidden = !settings.textContent;
   const thinking = byId<HTMLButtonElement>('thinking-button'); thinking.hidden = !item?.thinkingLevel; thinking.disabled = item?.lifecycle !== 'ready'; setText(byId('thinking-value'), item?.thinkingLevel ?? ''); thinking.title = item?.thinkingLevel ? `Thinking level: ${item.thinkingLevel}` : 'Choose thinking level'; thinking.setAttribute('aria-label', item?.thinkingLevel ? `Thinking level for Primary: ${item.thinkingLevel}` : 'Choose Primary thinking level');
 }
 function renderPrimaryUsage(item?: PrimaryView): void {
@@ -1384,11 +1385,11 @@ function renderAgent(deferredTranscript = false): void {
 }
 export function agentChrome(identity: string, _row?: AgentRow): void { renderController(conversationController({kind: 'agent', identity})); renderIdentity(); }
 function renderAgentSettings(view: ConversationPresentation, target: Extract<Target, {kind: 'agent'}>): void {
-  setText(byId('agent-status'), [view.model ? `Model ${view.model.modelId}${view.retainedModel ? ' (retained)' : ''}` : '', view.thinking ? `Thinking ${view.thinking}${view.retainedThinking ? ' (retained)' : ''}` : ''].filter(Boolean).join(' · '));
-  byId('agent-status').hidden = !view.model && !view.thinking; byId('agent-status').title = view.model ? `${view.model.provider}/${view.model.modelId}` : '';
+  const status = byId('agent-status'), full = settingsLabel(view, true);
+  setText(status, settingsLabel(view)); status.hidden = !view.model && !view.thinking; status.title = full; status.setAttribute('aria-label', full);
   const phone = matchMedia('(max-width: 599px)').matches, detail = byId('agent-settings-detail');
-  setText(detail, [[byId('agent-status').textContent, byId('agent-status').title].filter(Boolean).join(' · '), view.detail].filter(Boolean).join('\n'));
-  detail.classList.toggle('phone-status-facts', !view.detail || phone);
+  const retained = !!view.model && view.retainedModel || !!view.thinking && view.retainedThinking;
+  setText(detail, [full, retained ? 'Last observed settings are not confirmed current.' : '', view.detail].filter(Boolean).join('\n')); detail.hidden = !detail.textContent;
   const conversation = state.conversations.get(targetIdentity(target)); const usage = usageFacts(undefined, conversation ? conversationBlocks(conversation) : []);
   byId('agent-usage-summary').replaceChildren(...usageNodes(usage, true)); byId('agent-usage').replaceChildren(...usageNodes(usage, false));
   byId('agent-usage-details').hidden = !phone && !usage.facts.length && !view.cwd && !view.model && !view.thinking && !view.detail;
@@ -1836,7 +1837,7 @@ export function openConversationActions(paneId: string = focusedPane, key?: stri
   const current = layout, owner = conversationController(target), trigger = origin ?? paneRegions.get(paneId)?.menu;
   if (!trigger) return;
   const view = owner.transcript.node.dataset.view === 'grouped' ? 'grouped' : 'chronological';
-  const choices: ContextItem[] = (['chronological', 'grouped'] as const).map(mode => ({label: mode === 'chronological' ? 'View: Conversation' : 'View: Grouped', checked: view === mode, run: () => owner.transcript.setView(mode)}));
+  const choices: ContextItem[] = (['chronological', 'grouped'] as const).map(mode => ({label: mode === 'chronological' ? 'Conversation' : 'Grouped', description: mode === 'chronological' ? 'View: Conversation' : 'View: Grouped', checked: view === mode, run: () => owner.transcript.setView(mode)}));
   const entries = (tab.kind === 'agent' ? agentMenuItems(tab.identity) : conversationMenuItems(target)).filter(item => item.label !== 'Show conversation');
   const groups: [string, ContextItem[]][] = [
     ['View', [...choices, ...['Show thinking', 'Find text', 'Expand loaded tools', 'Collapse loaded tools'].flatMap(name => entries.filter(item => item.label === name))]],

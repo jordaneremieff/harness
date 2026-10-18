@@ -150,7 +150,7 @@ test('agent settings retain model and thinking text from the exact frame without
   byId('model-value').textContent = 'Primary model'; byId('thinking-value').textContent = 'high';
   app.agentChrome('selected', row); assert.equal(byId('agent-status').textContent, 'Model selected-agent-long-model-name · Thinking medium');
   app.state.conversations.clear(); app.agentChrome('selected', row);
-  assert.equal(byId('agent-status').textContent, 'Model roster-model (retained) · Thinking low (retained)');
+  assert.equal(byId('agent-status').textContent, 'Last observed: Model roster-model · Thinking low');
   assert.equal(byId('model-value').textContent, 'Primary model'); assert.equal(byId('thinking-value').textContent, 'high');
 });
 test('a fresh agent selection retains each earlier control and prepares only its addressed owner', async () => {

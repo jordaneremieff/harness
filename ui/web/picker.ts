@@ -150,19 +150,26 @@ export class ProjectPicker {
     this.show(cwd);
   }
   openProject(origin?: HTMLElement): void { this.selectProject(origin); }
-  private sessionActions(project: string): void {
-    this.actions(...(this.inline ? [] : [cardAction('folder', 'Change working folder', () => this.selectProject())]), cardAction('plus', 'New session', () => { void this.run(() => this.start(project)); }));
+  private sessionContext(body: HTMLElement, project: string): void {
+    const projectDetails = element('details', 'picker-path');
+    const folderSummary = element('summary', 'secondary', 'Working folder'); cardDisclosure(folderSummary);
+    projectDetails.append(folderSummary, element('p', 'identity', project));
+    const buttons = [...(this.inline ? [] : [cardAction('folder', 'Change working folder', () => this.selectProject())]), cardAction('plus', 'New session', () => { void this.run(() => this.start(project)); })];
+    if (this.inline) { body.append(projectDetails); this.actions(...buttons); return; }
+    const context = element('div', 'picker-context'), actions = element('div', 'picker-context-actions');
+    actions.append(...buttons); context.append(projectDetails, actions); body.append(context);
   }
   private show(project?: string): void {
     if (!project) { this.selectProject(); return; }
     const {body, token} = this.begin(`Sessions in ${this.projectName(project)}`); this.shownProject = project;
+    this.sessionContext(body, project);
     body.append(element('p', 'secondary', 'Loading sessions…'));
-    this.sessionActions(project);
     void this.sessions(project).catch(cause => {
       if (!this.owns(token)) return;
-      body.replaceChildren(element('p', 'error', 'Sessions could not be loaded.'), cardAction('restart', 'Retry saved sessions', () => this.show(project)));
+      body.replaceChildren(); this.sessionContext(body, project);
+      body.append(element('p', 'error', 'Sessions could not be loaded.'), cardAction('restart', 'Retry saved sessions', () => this.show(project)));
       if (this.inlineError && !this.inline) body.append(this.inlineError);
-      this.sessionActions(project); this.error(cause, '');
+      this.error(cause, '');
     });
   }
   private selectProject(origin?: HTMLElement, cursor?: string): void {
@@ -257,11 +264,7 @@ export class ProjectPicker {
       if (!this.owns(initialToken) || choosing !== this.choosing) return;
     }
     const {body, token, signal} = this.begin(`Sessions in ${this.projectName(project)}`); this.shownProject = project;
-    const projectDetails = element('details', 'picker-path');
-    const folderSummary = element('summary', 'secondary', 'Working folder'); cardDisclosure(folderSummary);
-    projectDetails.append(folderSummary, element('p', 'identity', project));
-    body.append(projectDetails);
-    this.sessionActions(project);
+    this.sessionContext(body, project);
     const safety = ordinaryResumeWarning();
     const search = input('Search sessions'); search.field.id = 'picker-search'; search.label.htmlFor = search.field.id; search.field.placeholder = 'Search sessions';
     const searchRow = element('div', 'picker-search-row'); searchRow.append(pickerField(search)); body.append(searchRow);

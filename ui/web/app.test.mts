@@ -154,7 +154,7 @@ test('development drain preserves exact local draft bytes after view preferences
   const before = transportLog.length, pe = p('editor'), ae = a('editor'); pe.value = 'Primary queued draft'; pe.dispatch('input'); ae.value = 'Agent queued draft'; ae.dispatch('input');
   pe.setSelectionRange(2, 7, 'backward'); pe.dispatch('select'); ae.setSelectionRange(1, 6, 'forward'); ae.dispatch('select');
   const scroller = p('transcript'); scroller.scrollTop = 180; scroller.dispatch('scroll'); flushFrames(); scroller.dispatch('scrollend');
-  app.openConversationActions('primary-pane'); const grouped = menuNode().children.find(node => node.textContent === 'View: Grouped'); assert.ok(grouped); grouped.click(); await settle();
+  app.openConversationActions('primary-pane'); const grouped = menuNode().children.find(node => node.textContent === 'Grouped'); assert.ok(grouped); grouped.click(); await settle();
   app.applyLayout(singlePane()); await settle(); assert.equal(agent.canDispose, false);
   const aborted = new AbortController(); aborted.abort(new Error('Drain cancelled')); await assert.rejects(app.drainDev(aborted.signal), /Drain cancelled/);
   let done = false; const drain = app.drainDev(new AbortController().signal).then(() => {done = true;}); await settle(); assert.equal(done, false);
@@ -821,7 +821,7 @@ test('preference completions keep their captured request and leave a newer targe
     await arrive({workspace: {id:'w',revision:1,primaryKey:'p',selectedTarget:target}, primaries:[primaryFixture({epoch})],roster:[],targets:[targetFixture(key,target)]});
     let finish: (response: Response) => void = () => { throw new Error('No pending preference'); };
     browser.preferenceSave = () => new Promise(resolve => { finish = resolve; });
-    const before = transportLog.length; app.openConversationActions(); const grouped = menuNode().children.find(node => node.textContent === 'View: Grouped'); assert.ok(grouped); grouped.click(); await settle();
+    const before = transportLog.length; app.openConversationActions(); const grouped = menuNode().children.find(node => node.textContent === 'Grouped'); assert.ok(grouped); grouped.click(); await settle();
     const call = transportLog.slice(before).find(item => item.path.endsWith('/presentation')); assert.ok(call);
     assert.equal(call.path, `/api/workspaces/w/targets/${key}/presentation`);
     assert.equal((call.body as Record<string,unknown>).transcriptView, 'grouped');
@@ -834,7 +834,7 @@ test('preference completions keep their captured request and leave a newer targe
   const target = {kind:'primary' as const,key:'p',epoch:8300};
   await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:target},primaries:[primaryFixture({epoch:target.epoch})],roster:[],targets:[targetFixture('preference-current',target)]});
   browser.preferenceSave = async () => Response.json({ok:false,error:{code:'capacity',message:'Current preference refused',retry:'manual'}});
-  app.openConversationActions(); const grouped = menuNode().children.find(node => node.textContent === 'View: Grouped'); assert.ok(grouped); grouped.click(); await settle();
+  app.openConversationActions(); const grouped = menuNode().children.find(node => node.textContent === 'Grouped'); assert.ok(grouped); grouped.click(); await settle();
   assert.match(primaryControl('view-notice').textContent, /View preferences not saved/);
   assert.match(primaryControl('view-notice').textContent, /Restore saved view/);
 });
@@ -929,7 +929,7 @@ test('the app delegates composer recovery without a duplicate renderer or hook',
 });
 
 test('visible controls supplement the palette without a header band or title click action', async () => {
-  for(const id of ['session-open','session-new','agent-new','commands-button','notifications-button','appearance-button'])assert.ok(byId(id)); assert.doesNotMatch(html,/window-actions|pane-heading|key-hint|id="notices-button"/); assert.ok(source.includes('focusedTranscript()?.expandLoaded')); assert.ok(source.includes("byId('notices-count').hidden = !unread")); assert.ok(source.includes("const activity = byId('workbench-activity'); activity.title = notice ? '' : view.detail ?? ''")); assert.ok(source.includes("!view.busy && view.responseOutcome === 'failed'")); assert.doesNotMatch(source, /Retrying after/); assert.ok(source.includes('if (item?.lastError)')); assert.doesNotMatch(source, /byId\('(?:session-title|agent-name)'\)\.addEventListener\('click'/); for (const binding of ["byId('session-new').addEventListener('click'", "byId('agent-refresh').addEventListener('click', refreshRoster)", "byId('agent-new').addEventListener('click'", "byId('commands-button').addEventListener('click', () => actions.palette())", "byId('notifications-button').addEventListener('click', notices)", "byId('appearance-button').addEventListener('click', () => actions.appearance())"]) assert.ok(source.includes(binding));
+  for(const id of ['session-open','session-new','agent-new','commands-button','notifications-button','appearance-button'])assert.ok(byId(id)); assert.doesNotMatch(html,/window-actions|pane-heading|key-hint|id="notices-button"/); assert.ok(source.includes('focusedTranscript()?.expandLoaded')); assert.ok(source.includes("byId('notices-count').hidden = !unread")); assert.ok(source.includes("const activity = byId('workbench-activity'); if (!notice && view.detail) activity.title +=")); assert.ok(source.includes("!view.busy && view.responseOutcome === 'failed'")); assert.doesNotMatch(source, /Retrying after/); assert.ok(source.includes('if (item?.lastError)')); assert.doesNotMatch(source, /byId\('(?:session-title|agent-name)'\)\.addEventListener\('click'/); for (const binding of ["byId('session-new').addEventListener('click'", "byId('agent-refresh').addEventListener('click', refreshRoster)", "byId('agent-new').addEventListener('click'", "byId('commands-button').addEventListener('click', () => actions.palette())", "byId('notifications-button').addEventListener('click', notices)", "byId('appearance-button').addEventListener('click', () => actions.appearance())"]) assert.ok(source.includes(binding));
 });
 
 test('project identity names both direct controls with a launch-directory fallback', async () => {
@@ -1118,9 +1118,9 @@ test('editors keep accessible recipient labels and recipient placeholders', asyn
 test('pane tabs keep separate menus and focused facts while both target owners stay retained', async () => {
   const identity='agent-pane',agent={kind:'agent' as const,identity}; await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:agent,conversationLayout:twoPanes(identity)},primaries:[primaryFixture({epoch:710})],roster:[agentFixture(identity)],observations:[observation(identity)],targets:[targetFixture('pane-p',{kind:'primary',key:'p',epoch:710},{draft:{revision:1,text:'Primary draft',mode:'steer',persisted:true}}),targetFixture('pane-a',agent,{draft:{revision:1,text:'Agent draft',mode:'prompt',persisted:true}})]});
   const p=controls(app.primaryComposer()),a=controls(app.agentComposer()),pe=p('editor'),ae=a('editor'); pe.setSelectionRange(1,3); ae.setSelectionRange(2,4); byId('primary-usage-details').open=true;
-  app.focusPane('primary-pane'); await settle(); assert.equal(hostDocument.activeElement,pe); assert.equal(byId('workbench-status').dataset.pane,'primary'); assert.equal(byId('workbench-status-primary').hidden,false); assert.equal(byId('workbench-status-agent').hidden,true); assert.equal(byId('workbench-scope').title,'p'); assert.equal(app.state.conversations.get(JSON.stringify(['agent',identity]))?.connectionEpoch,1);
+  app.focusPane('primary-pane'); await settle(); assert.equal(hostDocument.activeElement,pe); assert.equal(byId('workbench-status').dataset.pane,'primary'); assert.equal(byId('workbench-status-primary').hidden,false); assert.equal(byId('workbench-status-agent').hidden,true); assert.equal(byId('workbench-scope').title,`${byId('workbench-scope').textContent}\np`); assert.equal(app.state.conversations.get(JSON.stringify(['agent',identity]))?.connectionEpoch,1);
   for(const pane of ['primary-pane','agent-pane']){app.openTabActions(pane);assert.equal(menuNode().getAttribute('aria-label'),'Tab and view actions');contextMenu.close();}
-  app.focusPane('agent-pane');await settle();assert.equal(hostDocument.activeElement,ae);assert.equal(byId('workbench-scope').title,identity);assert.equal(byId('workbench-status-primary').hidden,true);assert.equal(byId('workbench-status-agent').hidden,false);assert.equal(a('editor'),ae);assert.equal(p('editor'),pe);assert.deepEqual([pe.selectionStart,pe.selectionEnd],[1,3]);assert.deepEqual([ae.selectionStart,ae.selectionEnd],[2,4]);assert.equal(byId('primary-usage-details').open,true);
+  app.focusPane('agent-pane');await settle();assert.equal(hostDocument.activeElement,ae);assert.equal(byId('workbench-scope').title,`${byId('workbench-scope').textContent}\n${identity}`);assert.equal(byId('workbench-status-primary').hidden,true);assert.equal(byId('workbench-status-agent').hidden,false);assert.equal(a('editor'),ae);assert.equal(p('editor'),pe);assert.deepEqual([pe.selectionStart,pe.selectionEnd],[1,3]);assert.deepEqual([ae.selectionStart,ae.selectionEnd],[2,4]);assert.equal(byId('primary-usage-details').open,true);
 });
 
 test('pointer pane focus holds footer geometry before paint and leaves native actions in their existing phase', async t => {
@@ -1169,7 +1169,7 @@ test('pointer pane focus holds footer geometry before paint and leaves native ac
 test('footer facts follow a Message recipient while Primary stays selected', async () => {
   const recipient=agentFixture('footer-recipient'),target={kind:'primary' as const,key:'p',epoch:8600}; await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:target},primaries:[primaryFixture({epoch:8600})],roster:[recipient],targets:[targetFixture('footer-p',target),targetFixture('footer-b',{kind:'agent',identity:recipient.identity},{draft:{revision:1,text:'Recipient draft',mode:'prompt',persisted:true}})]});
   byId('roster').querySelector('[data-identity="footer-recipient"]')?.querySelector('.row-message')?.click(); await settle(); const editor=messageControl('editor');editor.focus();editor.setSelectionRange(2,6); const disclosure=byId('agent-usage-details');disclosure.open=true;
-  assert.equal(byId('workbench-status').dataset.pane,'agent');assert.equal(byId('workbench-scope').title,recipient.identity);assert.deepEqual(app.state.workspace?.selectedTarget,target);assert.equal(editor.value,'Recipient draft');assert.equal(byId('workbench-status-primary').hidden,true);assert.equal(byId('workbench-status-agent').hidden,false);app.renderConnection();assert.equal(byId('workbench-scope').title,recipient.identity);assert.equal(messageControl('editor'),editor);assert.equal(hostDocument.activeElement,editor);assert.deepEqual([editor.selectionStart,editor.selectionEnd],[2,6]);assert.equal(disclosure.open,true);byId('agent-message-close').click();await settle();
+  assert.equal(byId('workbench-status').dataset.pane,'agent');assert.equal(byId('workbench-scope').title,`${byId('workbench-scope').textContent}\n${recipient.identity}`);assert.deepEqual(app.state.workspace?.selectedTarget,target);assert.equal(editor.value,'Recipient draft');assert.equal(byId('workbench-status-primary').hidden,true);assert.equal(byId('workbench-status-agent').hidden,false);app.renderConnection();assert.equal(byId('workbench-scope').title,`${byId('workbench-scope').textContent}\n${recipient.identity}`);assert.equal(messageControl('editor'),editor);assert.equal(hostDocument.activeElement,editor);assert.deepEqual([editor.selectionStart,editor.selectionEnd],[2,6]);assert.equal(disclosure.open,true);byId('agent-message-close').click();await settle();
 });
 test('explicit observed conversation activation focuses its editor while incidental repaint retains Primary focus', async () => {
   const identity='row-focus',target={kind:'agent' as const,identity}; await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:target,conversationLayout:twoPanes(identity)},primaries:[primaryFixture({epoch:778})],roster:[agentFixture(identity)],observations:[observation(identity)],targets:[targetFixture('row-p',{kind:'primary',key:'p',epoch:778},{draft:{revision:1,text:'Primary row draft',mode:'steer',persisted:true}}),targetFixture('row-a',target,{draft:{revision:1,text:'Agent row draft',mode:'prompt',persisted:true}})]});
@@ -1391,6 +1391,9 @@ test('direct conversation actions capture each inactive pane without navigation 
     trigger.click(); const thinking = menuNode().children.find(node => node.textContent === 'Show thinking'); assert.ok(thinking); const shown = thinking.getAttribute('aria-checked'); thinking.click(); await settle();
     trigger.click(); assert.notEqual(menuNode().children.find(node => node.textContent === 'Show thinking')?.getAttribute('aria-checked'), shown); contextMenu.close();
     assert.equal(app.focusedPane, focused); assert.deepEqual(app.state.workspace?.selectedTarget, selected);
+    const transcript=root.querySelector('.transcript'),other=roots[index===0?1:0].querySelector('.transcript');assert.ok(transcript&&other);const otherView=other.dataset.view;
+    trigger.click();const grouped=menuNode().children.find(node=>node.textContent==='Grouped');assert.ok(grouped);assert.equal(grouped.getAttribute('aria-description'),'View: Grouped');assert.equal(grouped.getAttribute('role'),'menuitemradio');grouped.click();await settle();assert.equal(transcript.dataset.view,'grouped');assert.equal(other.dataset.view,otherView);
+    app.openTabActions(inactive);const route=menuNode().children.find(node=>node.textContent==='Conversation actions…');assert.ok(route);route.click();const conversation=menuNode().children.find(node=>node.textContent==='Conversation');assert.ok(conversation);assert.equal(conversation.title,'View: Conversation');assert.equal(menuNode().children.find(node=>node.textContent==='Grouped')?.getAttribute('aria-checked'),'true');conversation.click();await settle();assert.equal(transcript.dataset.view,'chronological');assert.equal(other.dataset.view,otherView);assert.deepEqual(app.state.workspace?.selectedTarget,selected);
     assert.equal(root.dataset.paneId, inactive);
   }
   assert.equal(primaryControl('editor'), editors[0]); assert.equal(agentControl('editor'), editors[1]);
@@ -1401,9 +1404,9 @@ test('direct conversation menu rejects an action after its captured layout chang
   const identity = 'stale-direct-menu', layout = twoPanes(identity);
   await arrive({workspace: {id: 'stale-direct', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'agent', identity}, conversationLayout: layout}, primaries: [primaryFixture({epoch: 717})], roster: [agentFixture(identity)]});
   const trigger = agentControl('root').querySelector('.conversation-actions'); assert.ok(trigger); trigger.click();
-  const details = menuNode().children.find(node => node.textContent === 'Conversation details'); assert.ok(details);
+  const details = menuNode().children.find(node => node.textContent === 'Grouped'); assert.ok(details);const transcript=agentControl('transcript'),view=transcript.dataset.view;
   app.applyLayout({...layout, focusedPane: 'primary-pane'}); await settle(); const before = transportLog.length;
-  details.click(); await settle(); assert.equal(transportLog.length, before); assert.match(byId('announcements').textContent, /changed.*again/); assert.equal(contextMenu.openNow, false);
+  details.click(); await settle(); assert.equal(transcript.dataset.view,view); assert.equal(transportLog.length, before); assert.match(byId('announcements').textContent, /changed.*again/); assert.equal(contextMenu.openNow, false);
 });
 test('status settings label model and thinking while retaining picker accessible names', () => {
   app.primaryChrome({cwd: '/fixture', lifecycle: 'ready', model: {provider: 'provider', id: 'model', name: 'Model', reasoning: false, input: ['text']}, thinkingLevel: 'high'} as PrimaryView);
@@ -1418,7 +1421,8 @@ test('local conversation actions group existing controls and open workspace inpu
   app.openConversationActions('agent-pane'); const menu = menuNode();
   assert.deepEqual(menu.children.filter(node => node.className === 'context-menu-heading').map(node => node.textContent), ['View', 'Messages and tasks', 'Details']);
   const labels = menu.children.filter(node => node.tagName === 'button').map(node => node.textContent);
-  assert.deepEqual(labels, ['View: Conversation', 'View: Grouped', 'Show thinking', 'Find text', 'Expand loaded tools', 'Collapse loaded tools', 'Message', 'Tasks', 'Saved drafts and messages', 'Message input…', 'Conversation details', 'Copy agent ID', 'Commands…']);
+  assert.deepEqual(labels, ['Conversation', 'Grouped', 'Show thinking', 'Find text', 'Expand loaded tools', 'Collapse loaded tools', 'Message', 'Tasks', 'Saved drafts and messages', 'Message input…', 'Conversation details', 'Copy agent ID', 'Commands…']);
+  for (const label of ['Conversation', 'Grouped']) {const choice = menu.children.find(node => node.textContent === label); assert.ok(choice); assert.equal(choice.getAttribute('role'), 'menuitemradio'); assert.equal(choice.getAttribute('aria-description'), `View: ${label}`); assert.equal(choice.title, `View: ${label}`); assert.equal(choice.getAttribute('aria-checked'), String(label === 'Conversation'));}
   assert.equal(labels.includes('Show conversation'), false); assert.equal(labels.includes('New session'), false);
   menu.children.find(node => node.textContent === 'Message input…')?.click();
   assert.equal(byId('modal-title').textContent, 'Message input'); assert.match(byId('modal-body').textContent, /Applies to this workspace/);
@@ -1431,8 +1435,9 @@ test('local conversation actions group existing controls and open workspace inpu
 test('footer settings preserve exact long values and existing eligibility without replacing controls', () => {
   const model = byId('model-button'), thinking = byId('thinking-button'), id = 'long-model-value'.repeat(60);
   app.primaryChrome(primaryFixture({model: {provider: 'provider', id, name: id, reasoning: true, input: ['text']}, thinkingLevel: 'high'}));
+  assert.equal(byId('primary-settings-detail').textContent,`Model provider/${id} · Thinking high`);assert.equal(byId('primary-settings-detail').hidden,false);
   assert.equal(byId('model-button'), model); assert.equal(byId('thinking-button'), thinking); assert.equal(byId('model-value').textContent, id); assert.equal(model.disabled, false); assert.equal(thinking.hidden, false);
-  app.primaryChrome(primaryFixture({lifecycle: 'starting', model: undefined, thinkingLevel: undefined})); assert.equal(model.hidden, true); assert.equal(model.disabled, true); assert.equal(thinking.hidden, true);
+  app.primaryChrome(primaryFixture({lifecycle: 'starting', model: undefined, thinkingLevel: undefined})); assert.equal(model.hidden, true); assert.equal(model.disabled, true); assert.equal(thinking.hidden, true);assert.equal(byId('primary-settings-detail').hidden,true);assert.equal(byId('primary-settings-detail').textContent,'');
 });
 test('loaded prompt metadata updates Primary captions without input or target changes', async context => {
   const item=primaryFixture({epoch:42,sessionId:'caption-session',sessionFile:'/fixture/caption-session.jsonl',sessionName:undefined,extension:undefined,activity:'idle'});
@@ -1581,7 +1586,8 @@ test('Message panel settings describe its captured agent instead of a prior agen
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'primary', key: 'p', epoch: 1}}, primaries: [primaryFixture({model: {provider: 'primary-provider', id: 'primary-model', name: 'Primary model', reasoning: false, input: ['text']}})], roster: [row]});
   const agent = byId('roster').children.find(node => node.dataset.identity === row.identity); assert.ok(agent); const message = agent.querySelector('.row-message'); assert.ok(message); message.click(); await settle();
   assert.equal(byId('agent-message-panel').hidden, false); assert.equal(byId('agent-status').hidden, false);
-  assert.equal(byId('agent-status').textContent, 'Model recipient-model (retained) · Thinking low (retained)'); assert.equal(byId('agent-status').title, 'agent-provider/recipient-model');
+  assert.equal(byId('agent-status').textContent, 'Last observed: Model recipient-model · Thinking low'); assert.equal(byId('agent-status').title, 'Last observed: Model agent-provider/recipient-model · Thinking low');
+  assert.equal(byId('agent-status').getAttribute('aria-label'), byId('agent-status').title); assert.match(byId('agent-settings-detail').textContent, /Last observed settings are not confirmed current\./); assert.equal(byId('agent-settings-detail').hidden, false); assert.equal(byId('agent-settings-detail').classList.contains('phone-status-facts'), false);
   assert.equal(messageControl('recipient').textContent, 'Message Recipient'); assert.equal(primaryControl('root').hidden, false);
   const editor = messageControl('editor'); editor.value = 'Keep the recipient draft'; editor.dispatch('input'); editor.focus(); editor.setSelectionRange(3, 8);
   event('agent.availability', {identity: row.identity, connectionEpoch: app.state.agentEpochs.get(row.identity) ?? 1, state: 'live', capabilities: {input: false}});
@@ -1825,8 +1831,8 @@ test('failed-session recovery leaves retained text and unconfirmed input under t
 test('accepted working activity owns the tool while retained settings stay composer-local', async () => {
   const row=agentFixture('tool-agent',{state:'working',currentTool:{name:'read',argument:'src/current-file.ts'},model:{provider:'fixture',modelId:'model'}});
   await arrive({workspace:{id:'w',revision:1,selectedTarget:{kind:'agent',identity:row.identity},panelVisible:true},primaries:[],roster:[row],observations:[observation(row.identity,{revision:1,observedAt:'now',entries:[],live:[],nextBefore:null,status:{busy:true},coverage})]});
-  assert.equal(tabsNode().children.find(node => node.attributes.get('aria-selected') === 'true')?.querySelector('.tab-dot')?.title, 'Working'); assert.equal(byId('agent-status').textContent,'Model model (retained)');
-  assert.equal(byId('agent-status').title,'fixture/model'); assert.doesNotMatch(html, /agent-pane-heading/);
+  assert.equal(tabsNode().children.find(node => node.attributes.get('aria-selected') === 'true')?.querySelector('.tab-dot')?.title, 'Working'); assert.equal(byId('agent-status').textContent,'Last observed model model');
+  assert.equal(byId('agent-status').title,'Last observed model fixture/model'); assert.doesNotMatch(html, /agent-pane-heading/);
   app.openConversationActions(); const menu = hostDocument.body.children.find(node => node.className === 'context-menu'); assert.ok(menu);
   const detailsAction = menu.children.find(node => node.textContent === 'Conversation details'); assert.ok(detailsAction); detailsAction.click();
   assert.match(byId('modal-body').textContent, /Last reported tool/); assert.match(byId('modal-body').textContent, /src\/current-file.ts/); byId('modal-close').click();
@@ -1863,16 +1869,16 @@ test('Message panel uses its captured loaded cache and ignores unaccepted late f
   byId('roster').children.find(node => node.dataset.identity === row.identity)?.querySelector('.row-message')?.click(); await settle();
   const editor = messageControl('editor'); editor.value = 'Keep captured draft'; editor.dispatch('input'); await settle(); editor.focus(); editor.setSelectionRange(2, 7);
   const details = byId('agent-usage-details'); Reflect.set(details, 'open', true);
-  assert.equal(byId('workbench-status').dataset.pane, 'agent'); assert.equal(byId('workbench-scope').title, row.identity);
+  assert.equal(byId('workbench-status').dataset.pane, 'agent'); assert.equal(byId('workbench-scope').title, `${byId('workbench-scope').textContent}\n${row.identity}`);
   assert.equal(byId('workbench-status-primary').hidden, true); assert.equal(byId('workbench-status-agent').hidden, false);
   assert.equal(app.state.workspace?.selectedTarget?.kind, 'primary');
   const before = transportLog.length;
   event('agent.frame', {identity: row.identity, connectionEpoch: 0, frame: {...frame, revision: 2, status: {busy: false, model: {provider: 'unaccepted', modelId: 'late-model'}}}}); flushFrames(); await settle();
-  assert.equal(byId('agent-status').textContent, 'Model live-model · Thinking low (retained)');
+  assert.equal(byId('agent-status').textContent, 'Model live-model · Last observed thinking low');
   assert.match(byId('agent-usage-summary').textContent, /Cache 50%/); assert.match(byId('agent-usage').textContent, /Loaded assistant window only/); assert.doesNotMatch(byId('agent-usage').textContent, /Primary|whole-session cost|context window/);
   assert.equal(byId('agent-folder').textContent, 'Saved folder /saved/recipient');
   event('agent.frame', {identity: 'other-recipient', connectionEpoch: 1, frame: {...frame, status: {busy: true, model: {provider: 'other', modelId: 'not-recipient'}}}}); flushFrames(); await settle();
-  assert.equal(byId('agent-status').textContent, 'Model live-model · Thinking low (retained)');
+  assert.equal(byId('agent-status').textContent, 'Model live-model · Last observed thinking low');
   assert.equal(messageControl('editor'), editor); assert.equal(editor.value, 'Keep captured draft'); assert.deepEqual([editor.selectionStart, editor.selectionEnd], [2, 7]); assert.equal(hostDocument.activeElement, editor);
   assert.equal(byId('agent-usage-details'), details); assert.equal(Reflect.get(details, 'open'), true);
   assert.equal(transportLog.slice(before).filter(call => call.path.includes('/inputs') || call.path.endsWith('/targets')).length, 0);
@@ -1904,7 +1910,7 @@ test('three exact owners isolate drafts, carets, roots and accepted frames throu
   assert.equal(messageControl('composer'), forms[2]); assert.equal(messageControl('editor'), editors[2]); assert.equal(forms[2]?.parentNode, roots[2]); assert.equal(app.stableViews().slot(forms[2] as unknown as HTMLElement)?.id,'agent-message-editor-slot'); assert.deepEqual(app.state.workspace?.selectedTarget, a); editors[2]?.focus();
   event('agent.frame', {identity: a.identity, connectionEpoch: 11, frame: frame(a.identity, 2)}); event('agent.frame', {identity: b.identity, connectionEpoch: 20, frame: frame(b.identity, 2)}); await settle();
   assert.match(ac('transcript').textContent, /three-a frame 2/); assert.doesNotMatch(ac('transcript').textContent, /three-b frame/);
-  assert.match(bc('transcript').textContent, /three-b frame 2/); assert.doesNotMatch(bc('transcript').textContent, /three-a frame/); assert.equal(messageControl('stop').hidden, true); assert.equal(byId('workbench-scope').title,b.identity); assert.match(byId('agent-status').textContent,/three-b-model-2/); assert.equal(hostDocument.activeElement,editors[2]);
+  assert.match(bc('transcript').textContent, /three-b frame 2/); assert.doesNotMatch(bc('transcript').textContent, /three-a frame/); assert.equal(messageControl('stop').hidden, true); assert.equal(byId('workbench-scope').title,`${byId('workbench-scope').textContent}\n${b.identity}`); assert.match(byId('agent-status').textContent,/three-b-model-2/); assert.equal(hostDocument.activeElement,editors[2]);
   event('agent.frame', {identity: b.identity, connectionEpoch: 19, frame: frame('stale-b', 99)}); await settle(); assert.doesNotMatch(bc('transcript').textContent, /stale-b/);
   for (const [index, owner] of owners.entries()) { assert.equal(owner('root'), roots[index]); assert.equal(owner('editor'), editors[index]); assert.equal(owner('composer'), forms[index]); assert.deepEqual([editors[index]?.selectionStart, editors[index]?.selectionEnd], [index + 1, index + 5]); assert.equal(editors[index]?.selectionDirection,index === 1 ? 'backward' : 'forward'); }
   assert.deepEqual(editors.map(editor => editor.value), ['Primary exact draft local', 'Alpha exact draft local', 'Beta exact draft local']);
@@ -1993,7 +1999,7 @@ test('queued view writes keep the old workspace acknowledgment despite a same-ke
     const scroller = primaryControl('transcript');
     const change = async (value: number) => {
       if (kind === 'reading') {scroller.scrollTop = value; scroller.dispatch('scroll'); flushFrames(); scroller.dispatch('scrollend');}
-      else {app.openConversationActions(); const item = menuNode().children.find(node => node.textContent === (value === 120 ? 'View: Grouped' : 'View: Conversation')); assert.ok(item); item.click();}
+      else {app.openConversationActions(); const item = menuNode().children.find(node => node.textContent === (value === 120 ? 'Grouped' : 'Conversation')); assert.ok(item); item.click();}
       await settle();
     };
     await change(120); assert.equal(requests.length, 1); await change(240); assert.equal(requests.length, 1);

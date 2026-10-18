@@ -583,6 +583,18 @@ test('sidebar session entry focuses the existing first-use list without discardi
   assert.equal(search.selectionStart, 1); assert.equal(search.selectionEnd, 3); assert.equal(setup.calls.length, calls);
 });
 
+for (const failed of [false,true]) test(`modal context keeps its exact folder and actions together with list failure ${failed}`,async t => {
+  const setup=directPicker(t),project=`/projects/${'long-folder-'.repeat(24)}`;if(failed)setup.failList();
+  setup.picker.open(project);
+  assert.equal(setup.body.querySelectorAll('.picker-context').length,1);assert.equal(setup.body.querySelectorAll('.dialog-actions').length,0);
+  await settle();const context=setup.body.querySelector('.picker-context');assert.ok(context);
+  const path=context.children[0],actions=context.children[1];assert.ok(path&&actions);assert.equal(path.tag,'details');assert.equal(path.children[0]?.textContent,'Working folder');assert.equal(path.children[1]?.textContent,project);assert.equal(actions.className,'picker-context-actions');
+  assert.deepEqual(actions.children.map(node=>node.attributes['aria-label']),['Change working folder','New session']);assert.deepEqual(actions.children.map(node=>node.title),['Change working folder','New session']);
+  assert.equal(setup.body.querySelectorAll('.picker-context').length,1);assert.equal(setup.body.querySelectorAll('.dialog-actions').length,0);
+  const search=setup.body.querySelector('.picker-search-row');if(failed)assert.match(setup.body.textContent,/Sessions could not be loaded/);else {assert.ok(search);assert.ok(setup.body.children.indexOf(context)<setup.body.children.indexOf(search));}
+  const calls=setup.calls.length;path.open=true;path.dispatch('toggle');path.open=false;path.dispatch('toggle');assert.equal(setup.calls.length,calls);assert.equal(setup.calls.some(call=>call.path==='/api/primaries'),false);
+  actions.children[1]?.click();await settle();assert.deepEqual(setup.calls.find(call=>call.path==='/api/primaries')?.body,{cwd:project});assert.equal(setup.reloads,1);
+});
 test('chooser controls stay with their title, search and list disclosure while row facts remain reachable', async t => {
   const setup = directPicker(t); const root = new Node('main');
   setup.picker.mount(root as unknown as HTMLElement, '/project'); await settle();
@@ -590,6 +602,7 @@ test('chooser controls stay with their title, search and list disclosure while r
   assert.equal(header.children[0]?.tag, 'h1'); assert.match(header.children[0]?.textContent ?? '', /Sessions in project/);
   assert.equal(header.children[1]?.className, 'dialog-actions');
   assert.deepEqual(header.children[1]?.children.map(node => node.attributes['aria-label']), ['New session']);
+  assert.equal(root.querySelectorAll('.picker-context').length,0);assert.equal(descendants(root).some(node=>node.attributes['aria-label']==='Change working folder'),false);
   const nodes = descendants(root); const searchRow = nodes.find(node => node.className === 'picker-search-row'); assert.ok(searchRow);
   assert.equal(searchRow.children[0]?.className, 'picker-input-row'); assert.equal(searchRow.children[1]?.attributes['aria-label'], 'Refresh saved sessions');
   assert.equal(searchRow.children[2]?.attributes['aria-label'], 'Saved session options');
@@ -704,6 +717,10 @@ test('different prompts with identical compact captions retain distinct exact-id
 test('chooser style bindings preserve ordinary actions and full-width Durable rows', () => {
   const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8');
   assert.match(css, /\.picker-header \{[^}]*align-items: center;[^}]*justify-content: space-between;/);
+  assert.match(css, /\.picker-context \{[^}]*grid-template-columns: minmax\(0,1fr\) auto;[^}]*align-items: start;/);
+  assert.match(css, /\.picker-path \{ min-width: 0; overflow-wrap: anywhere; \}/);
+  assert.match(css, /\.picker-context-actions \{ display: flex; align-items: center; gap: 8px; \}/);
+  assert.match(css, /@media \(pointer: coarse\) \{ \.picker-context > \.picker-path > summary \{ min-height: 44px;/);
   assert.match(css, /\.picker-session \{[^}]*grid-template-columns: minmax\(0,1fr\) auto auto auto;/);
   assert.match(css, /\.picker-session-details\[open\] \{[^}]*grid-column: 1 \/ -1; grid-row: 2;/);
   assert.match(css, /\.picker-session-meta:empty \{ display: none; \}/);

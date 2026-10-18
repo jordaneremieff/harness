@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { AgentRow, ProjectedFrame, PrimaryView, SavedSession } from '../shared/api.ts';
-import { composerFolder, conversationPresentation, presentationGlyph, presentationName, projectIdentity, projectLabels, agentViewStatus, responseOutcome } from './conversation-presentation.ts';
+import { composerFolder, conversationPresentation, presentationGlyph, presentationName, projectIdentity, projectLabels, agentViewStatus, responseOutcome, settingsLabel } from './conversation-presentation.ts';
 const row: AgentRow = {identity: 'agent:one', storageId: 'agent', cwd: '/projects/work', name: 'Worker', modifiedAt: 0,
   state: 'unavailable', owner: 'unknown', availability: 'live', partial: false,
   capabilities: {input: true, observe: true, history: true, abort: true, configure: false}};
@@ -10,6 +10,19 @@ const frame = (busy: boolean): ProjectedFrame => ({revision: 1, observedAt: 'now
 const target = {kind: 'agent' as const, identity: row.identity};
 assert.ok(row.capabilities);
 const negotiated = {identity: row.identity, availability: 'live' as const, capabilities: row.capabilities};
+test('settings labels qualify only displayed last-observed fields and retain full model identity', () => {
+  const base = {model:{provider:'provider',modelId:'long-model'},thinking:'high',retainedModel:false,retainedThinking:false};
+  const cases = [
+    [base,'Model long-model · Thinking high'],
+    [{...base,retainedModel:true,retainedThinking:true},'Last observed: Model long-model · Thinking high'],
+    [{...base,retainedModel:true},'Last observed model long-model · Thinking high'],
+    [{...base,retainedThinking:true},'Model long-model · Last observed thinking high'],
+    [{...base,thinking:undefined,retainedModel:true,retainedThinking:true},'Last observed model long-model'],
+    [{...base,model:undefined,retainedModel:true,retainedThinking:true},'Last observed thinking high'],
+    [{...base,model:undefined,thinking:undefined,retainedModel:true,retainedThinking:true},''],
+  ] as const;
+  for (const [view, label] of cases) { assert.equal(settingsLabel(view),label); assert.equal(settingsLabel(view,true),label.replace('long-model','provider/long-model')); }
+});
 test('Primary captions prefer current names and qualify only exact ready prompt metadata',()=> {
   const primary={key:'p',epoch:1,sessionId:'session',sessionFile:'/sessions/session.jsonl',lifecycle:'ready',activity:'idle'} as PrimaryView;
   const savedSession:SavedSession={id:'session',path:primary.sessionFile as string,project:'/project',revision:'r',modifiedAt:'2026-01-01T00:00:00Z',size:20,title:'A supplied first message '.repeat(8),titleSource:'prompt',titleState:'ready'};

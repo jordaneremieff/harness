@@ -108,10 +108,10 @@ test('keyboard facts, secondary buttons and non-primary pointers do not acquire 
   assert.equal(primary.hidden, true);
 });
 
-test('phone status disclosures retain the current exact name and activity without changing the desktop status', t => {
+test('status disclosures and tooltips retain the current exact name and activity', t => {
   const {status,nodes} = fixture(t);status.update('agent','Exact agent','Not connected','exact-agent');
   for(const owner of ['primary','agent']) assert.equal(nodes.get(`${owner}-status-summary`)?.textContent,'Exact agent · Not connected');
-  assert.equal(nodes.get('workbench-scope')?.textContent,'Exact agent');assert.equal(nodes.get('workbench-activity')?.textContent,'Not connected');
+  assert.equal(nodes.get('workbench-scope')?.textContent,'Exact agent');assert.equal(nodes.get('workbench-scope')?.title,'Exact agent\nexact-agent');assert.equal(nodes.get('workbench-activity')?.textContent,'Not connected');assert.equal(nodes.get('workbench-activity')?.title,'Not connected');assert.equal(nodes.get('workbench-activity')?.attributes.get('aria-label'),'Not connected');
   status.update('primary','Primary','Ready');assert.equal(nodes.get('primary-status-summary')?.textContent,'Primary · Ready');
 });
 test('hidden or invalid footer geometry creates no hold or cleanup frame', t => {

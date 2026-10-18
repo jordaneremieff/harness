@@ -7,6 +7,7 @@ import type { Bootstrap } from '../shared/api.ts';
 class FakeNode extends EventTarget {
   textContent = ''; open = false; isConnected = true; focused = false; disabled = false; buttons: FakeNode[] = [];
   children: FakeNode[] = []; className = '';
+  readonly classList = {add: (name: string) => {this.className = [...new Set([...this.className.split(' ').filter(Boolean), name])].join(' ');}};
   dataset: Record<string, string> = {}; properties = new Map<string, string>(); box = {left: 0, top: 0, right: 0, bottom: 0};
   style = {setProperty: (name: string, value: string) => { this.properties.set(name, value); }};
   getBoundingClientRect(): {left: number; top: number; right: number; bottom: number} {return this.box;}

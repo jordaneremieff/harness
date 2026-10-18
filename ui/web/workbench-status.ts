@@ -1,4 +1,4 @@
-import {byId, setText} from './dom.ts';
+import {byId, element, setText} from './dom.ts';
 
 type Pane = 'primary' | 'agent' | 'file';
 const geometryProperties = ['height', 'min-height', 'max-height', 'overflow-x', 'overflow-y'] as const;
@@ -45,11 +45,17 @@ export class WorkbenchStatus {
       else this.node.style.removeProperty(name);
     }
   }
-  update(pane: Pane, name: string, activity: string, identity?: string): void {
-    setText(this.scope, name); this.scope.title = identity ?? name;
+  update(pane: Pane, name: string, activity: string, identity?: string, detail?: string): void {
+    setText(this.scope, name); this.scope.title = identity ? `${name}\n${identity}` : name;
     this.scope.setAttribute('aria-label', identity ? `${name}: ${identity}` : name);
-    setText(this.activity, activity); this.activity.hidden = !activity;
-    for (const summary of this.summaries) setText(summary, [name, activity].filter(Boolean).join(' · '));
+    const fullActivity = [activity, detail].filter(Boolean).join(' · ');
+    if (detail) {
+      let state = this.activity.querySelector<HTMLElement>('.workbench-activity-state'), text = this.activity.querySelector<HTMLElement>('.workbench-activity-text');
+      if (!state || !text) { state = element('span', 'workbench-activity-state'); text = element('span', 'workbench-activity-text'); this.activity.replaceChildren(state, text); }
+      setText(state, activity); setText(text, ` · ${detail}`);
+    } else setText(this.activity, activity);
+    this.activity.hidden = !fullActivity; this.activity.title = fullActivity; this.activity.setAttribute('aria-label', fullActivity);
+    for (const summary of this.summaries) setText(summary, [name, fullActivity].filter(Boolean).join(' · '));
     this.node.dataset.pane = pane;
     for (const [owner, group] of this.groups) group.hidden = owner !== pane;
   }

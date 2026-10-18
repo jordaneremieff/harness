@@ -35,6 +35,12 @@ export type ConversationPresentation = {
   model?: {provider: string; modelId: string}; thinking?: string; retainedModel: boolean; retainedThinking: boolean;
   tool?: AgentRow['currentTool']; detail?: string; responseOutcome?: ResponseOutcome; hideVisibleRosterState?: boolean;
 };
+export function settingsLabel(view: Pick<ConversationPresentation, 'model' | 'thinking' | 'retainedModel' | 'retainedThinking'>, fullModel = false): string {
+  const both = !!view.model && !!view.thinking && view.retainedModel && view.retainedThinking;
+  const model = view.model ? `${!both && view.retainedModel ? 'Last observed model' : 'Model'} ${fullModel ? `${view.model.provider}/` : ''}${view.model.modelId}` : '';
+  const thinking = view.thinking ? `${!both && view.retainedThinking ? 'Last observed thinking' : 'Thinking'} ${view.thinking}` : '';
+  return `${both ? 'Last observed: ' : ''}${[model, thinking].filter(Boolean).join(' · ')}`;
+}
 export type PresentationSource = {target?: Target; primary?: PrimaryView; savedSession?: SavedSession; row?: AgentRow; identityTail?: string; caption?: ConversationCaption;
   availability?: EventData['agent.availability']; negotiated?: Pick<TargetPreparation, 'availability' | 'capabilities'> & {identity: string}; frame?: ProjectedFrame; entries?: readonly EntryView[]; tool?: AgentRow['currentTool']; connected: boolean};
 /** The newest conversational record owns its response outcome; tool errors do not. */
