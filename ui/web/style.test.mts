@@ -210,6 +210,10 @@ test('tool status labels have natural width and disclosure marks stay separate f
   assert.match(rule('.tool-output-info'), /max-width: 100%; color: var\(--muted\); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere/);
   assert.doesNotMatch(rule('.tool-output-info'), /cursor: pointer|text-overflow: ellipsis|line-clamp/);
 });
+test('image load details keep long request identities wrapped inside a bounded disclosure', () => {
+  assert.match(rule('.transcript-image-details'), /min-width: 0; max-width: 100%/);
+  assert.match(rule('.transcript-image-diagnostics'), /max-width: 100%; max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere/);
+});
 test('file message source and exact destination details wrap within the dialog', () => {
   assert.match(rule('.file-message-fact'), /min-width: 0; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere/);
   assert.match(rule('.file-message-destination'), /width: 100%; min-width: 0; max-width: 100%/);

@@ -35,27 +35,46 @@ export function transcriptImage(part: ImageView, url?: string, changed: () => vo
   const status = element('p', 'transcript-image-status');
   figure.append(caption, status);
   if (!safeUrl(url)) { setText(status, 'This image is not available.'); return figure; }
-  const image = element('img', 'transcript-image-content');
-  image.alt = part.alt; image.width = part.width; image.height = part.height;
-  image.loading = 'lazy'; image.decoding = 'async'; image.referrerPolicy = 'no-referrer';
-  let active = false;
-  const clear = () => {
+  type AttemptKind = 'initial' | 'automatic' | 'manual';
+  type Outcome = {time:string; attempt:number; kind:AttemptKind; outcome:'started'|'load'|'error'|'release'; complete:boolean; naturalWidth:number; naturalHeight:number};
+  const disclosure = element('details','transcript-image-details'), log = element('pre','transcript-image-diagnostics'); disclosure.hidden = true;
+  disclosure.append(element('summary',undefined,'Load details'),log);
+  const outcomes:Outcome[] = []; let omitted = 0, errors = 0, serial = 0, kind:AttemptKind = 'initial', result = 'loading';
+  let image:HTMLImageElement|undefined, active = false, automaticUsed = false;
+  const record = (outcome:Outcome['outcome'], observed:HTMLImageElement):void => {
+    outcomes.push({time:new Date().toISOString(),attempt:serial,kind,outcome,complete:observed.complete,naturalWidth:observed.naturalWidth,naturalHeight:observed.naturalHeight});
+    if (outcomes.length > 8) {outcomes.shift(); omitted++;}
+    disclosure.hidden = errors === 0;
+    log.textContent = JSON.stringify({url,digest:part.digest,result,errors,cause:errors ? 'The image error event did not expose an HTTP or decode cause.' : undefined,omitted,outcomes},null,2);
+  };
+  const clear = ():void => {
+    const previous = image; image = undefined;
     // Chromium can retain an offscreen image tree if src is cleared without removing the image.
-    image.removeAttribute('src'); image.remove(); image.hidden = true;
+    if (previous) {previous.removeAttribute('src'); previous.remove(); previous.hidden = true;}
   };
-  const slot: ImageSlot = {release: () => {
-    active = false; clear(); retry.hidden = false;
-    setText(status, 'Reload this image to view it.'); changed();
+  const slot:ImageSlot = {release:()=> {
+    if (!active || !image) return;
+    result = 'released'; record('release',image); active = false; clear(); retry.hidden = false;
+    setText(status,'Reload this image to view it.'); changed();
   }};
-  const activate = () => {
-    if (document.activeElement === retry) { figure.tabIndex = -1; figure.focus({preventScroll: true}); }
-    reserve(slot); active = true;
-    if (image.parentElement !== figure) figure.insertBefore(image, retry);
-    image.hidden = false; retry.hidden = true; setText(status, 'Loading image…'); image.src = url; changed();
+  const activate = (attemptKind:AttemptKind):void => {
+    if (attemptKind === 'manual' && document.activeElement === retry) {figure.tabIndex = -1; figure.focus({preventScroll:true});}
+    clear(); reserve(slot); active = true; kind = attemptKind; serial++; result = attemptKind === 'automatic' ? 'retrying' : 'loading';
+    const attempt = element('img','transcript-image-content'); image = attempt;
+    attempt.alt = part.alt; attempt.width = part.width; attempt.height = part.height;
+    attempt.loading = 'lazy'; attempt.decoding = 'async'; attempt.referrerPolicy = 'no-referrer';
+    attempt.addEventListener('load',()=> {if (!active || image !== attempt) return; result = 'loaded'; record('load',attempt); setText(status,''); retry.hidden = true; changed();});
+    attempt.addEventListener('error',()=> {
+      if (!active || image !== attempt) return;
+      result = 'error'; errors++; record('error',attempt);
+      const automatic = attemptKind === 'initial' && !automaticUsed && figure.isConnected && !figure.closest('[hidden],[inert]') && !document.hidden;
+      active = false; clear();
+      if (automatic) {automaticUsed = true; activate('automatic');}
+      else {setText(status,'The image could not be loaded.'); retry.hidden = false; changed();}
+    });
+    record('started',attempt); figure.insertBefore(attempt,retry); retry.hidden = true;
+    setText(status,attemptKind === 'automatic' ? 'Retrying image…' : 'Loading image…'); attempt.src = url; changed();
   };
-  const retry = button('Reload image', activate);
-  retry.hidden = true;
-  image.addEventListener('load', () => { if (!active) return; setText(status, ''); retry.hidden = true; changed(); });
-  image.addEventListener('error', () => { if (!active) return; active = false; clear(); setText(status, 'The image could not be loaded.'); retry.hidden = false; changed(); });
-  figure.append(image, retry); activate(); return figure;
+  const retry = button('Reload image',()=>activate('manual')); retry.hidden = true;
+  figure.append(retry,disclosure); activate('initial'); return figure;
 }

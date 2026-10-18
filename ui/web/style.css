@@ -750,6 +750,8 @@ pre[data-wrap=false], .tool-source > pre[data-wrap=false] { white-space: pre; ov
 .transcript-image-caption { margin-top: 6px; color: var(--muted); font-family: var(--sans); font-size: 12px; overflow-wrap: anywhere; }
 .transcript-image-status { color: var(--fg); font-family: var(--sans); font-size: 13px; overflow-wrap: anywhere; }
 .transcript-image-status:empty { display: none; }
+.transcript-image-details { min-width: 0; max-width: 100%; }
+.transcript-image-diagnostics { max-width: 100%; max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .transcript-image button { height: 28px; max-width: 100%; margin-top: 6px; padding: 2px 8px; border: 1px solid var(--edge); color: var(--fg); font-family: var(--sans); font-size: 13px; }
 .transcript-image button:hover { background: var(--raised); }
 
