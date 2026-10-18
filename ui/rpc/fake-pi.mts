@@ -11,6 +11,8 @@ import {fileURLToPath} from 'node:url';
 
 /** Executable RPC fixture used by browser and process-boundary regression tests. */
 const args = process.argv.slice(2);
+/** macOS appends kernel exec strings to a young process's ps eww text and drops them later; identity covers only the arguments and environment. */
+const kernelExecStrings = /\s(?:pfz|stack_guard|malloc_entropy|ptr_munge|main_stack|executable_file|dyld_file|executable_cdhash|executable_boothash|arm64e_abi|th_port|security_config)=\S*/g;
 function detachedReceipt(output: string, port: number, token: string): string {
   assert.ok(Buffer.byteLength(output) <= 16384);
   const fields = output.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\d\d:\d\d:\d\d\s+\d{4})\s+(.+)$/); assert.ok(fields);
@@ -19,7 +21,7 @@ function detachedReceipt(output: string, port: number, token: string): string {
   assert.match(token,/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/);
   assert.equal(fields[6]?.match(/(?:^|\s)UI_TEST_OWNER_TOKEN=([a-f0-9-]+)(?:\s|$)/)?.[1],token);
   assert.ok(fields[5] && fields[5].length <= 32); assert.ok(Number.isSafeInteger(port) && port > 0 && port <= 65535);
-  const encoded = JSON.stringify({pid:process.pid,group,uid,started:fields[5],token,signature:createHash('sha256').update(fields[6] as string).digest('hex'),port});
+  const encoded = JSON.stringify({pid:process.pid,group,uid,started:fields[5],token,signature:createHash('sha256').update((fields[6] as string).replace(kernelExecStrings, "")).digest('hex'),port});
   assert.ok(Buffer.byteLength(encoded) <= 1024); return encoded;
 }
 async function detachedChild(): Promise<never> {

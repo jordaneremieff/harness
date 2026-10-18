@@ -84,11 +84,13 @@ function present(pid: number): boolean {
 }
 type ProcessIdentity = {pid: number; parent: number; group: number; uid: number; started: string; signature: string; token: string};
 type ProcessIO = {probe: (pid: number) => ProcessIdentity | undefined; members: (group: number) => number[]; signal: (group: number) => void};
+/** macOS appends kernel exec strings to a young process's ps eww text and drops them later; identity covers only the arguments and environment. */
+const kernelExecStrings = /\s(?:pfz|stack_guard|malloc_entropy|ptr_munge|main_stack|executable_file|dyld_file|executable_cdhash|executable_boothash|arm64e_abi|th_port|security_config)=\S*/g;
 function processIdentity(text: string): ProcessIdentity {
   assert.ok(Buffer.byteLength(text) <= 16384);
   const fields = text.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\d\d:\d\d:\d\d\s+\d{4})\s+(.+)$/); assert.ok(fields);
   const token = fields[6]?.match(/(?:^|\s)UI_TEST_OWNER_TOKEN=([a-f0-9-]+)(?:\s|$)/)?.[1]; assert.ok(token, 'Owned run token is unavailable.');
-  return {pid: Number(fields[1]), parent: Number(fields[2]), group: Number(fields[3]), uid: Number(fields[4]), started: fields[5] as string, signature: sha256(fields[6] as string), token};
+  return {pid: Number(fields[1]), parent: Number(fields[2]), group: Number(fields[3]), uid: Number(fields[4]), started: fields[5] as string, signature: sha256((fields[6] as string).replace(kernelExecStrings, "")), token};
 }
 function processProbe(pid: number): ProcessIdentity | undefined {
   assert.ok(Number.isSafeInteger(pid) && pid > 1);
