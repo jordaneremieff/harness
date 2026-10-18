@@ -1267,13 +1267,13 @@ export class Transcript {
       return tool?.slot === slot(entryId, message.source.id, index) ? this.updateTool(tool) : undefined;
     }
     const previous = message.parts.get(key);
-    if (previous?.source === part && previous.partial === partial) { if (part.type === 'thinking') this.thinkingTitle(previous.node, message.source.id, index, partial); return previous.node; }
+    if (previous?.source === part && previous.partial === partial) { if (part.type === 'thinking') this.thinkingTitle(previous.node, message.source, index, partial); return previous.node; }
     const node = previous?.node ?? this.createPart(part, entryId, message.source.id, index);
     const pages = node.querySelector<HTMLElement>('.output-pages'); if (pages) { this.releaseFrames(pages); pages.remove(); }
     this.partContent(node, part, partial, previous);
     if (part.type === 'thinking') {
       node.dataset.streaming = String(partial && !part.redacted && !!part.text.trim());
-      (node as HTMLDetailsElement).open = this.thinkingOpen(node); this.thinkingTitle(node, message.source.id, index, partial);
+      (node as HTMLDetailsElement).open = this.thinkingOpen(node); this.thinkingTitle(node, message.source, index, partial);
     }
     if ((part.type === 'text' || part.type === 'thinking') && part.more) {
       const source = part; const generation = this.generation;
@@ -1414,8 +1414,8 @@ export class Transcript {
     tool.meta.hidden = true;
   }
   /** The title carries the browser-observed span; a streaming block keeps counting through the shared clock. */
-  private thinkingTitle(node: HTMLElement, messageId: string, index: number, partial: boolean): void {
-    const key = thinkingKey(messageId, index), time = this.thinkingTimes.get(key), streaming = partial && time !== undefined && time.end === undefined;
+  private thinkingTitle(node: HTMLElement, message: MessageView, index: number, partial: boolean): void {
+    const key = thinkingKey(message, index), time = this.thinkingTimes.get(key), streaming = partial && time !== undefined && time.end === undefined;
     const summary = node.querySelector('summary'); if (summary) setText(summary, thinkingLabel(time, streaming));
     if (streaming) this.liveThinking.set(key, node); else this.liveThinking.delete(key);
   }

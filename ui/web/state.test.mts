@@ -143,6 +143,31 @@ test('an agent frame starts a thinking span for a live block and a later frame e
   state = reduceEvent(state, event(3, 'agent.frame', {identity: 'a', connectionEpoch: 2, frame: frame(4, [], [live([{type: 'thinking', text: 'ab'}, {type: 'text', text: 'done'}])])}));
   assert.deepEqual(times(), {start: 2000, end: 8000});
 });
+test('an agent turn keeps its observed thinking span across live frames and the host commit, and the next turn starts fresh', t => {
+  let now = 1000; t.mock.method(Date, 'now', () => now);
+  const snap = snapshot(); snap.workspace.selectedTarget = {kind: 'agent', identity: 'a'};
+  snap.workspace.conversationLayout = {root: {kind: 'pane', id: 'left', tabs: [{kind: 'agent', identity: 'a'}], active: 'agent:a'}, focusedPane: 'left'};
+  snap.observations = [{identity: 'a', connectionEpoch: 2, frame: frame(1, [], [])}];
+  type Parts = import('../shared/api.ts').PartView[];
+  // The host publishes the in-flight assistant message under one fixed live id for every turn; the committed copy has its own id and the same timestamp.
+  const live = (timestamp: number, parts: Parts): EntryView => ({id: 'live:generation', kind: 'pi.assistant', messages: [{id: 'live:generation:message:0', role: 'assistant', state: 'partial', timestamp, parts, coverage}]});
+  const saved = (id: string, timestamp: number, parts: Parts): EntryView => ({id, kind: 'pi.assistant', messages: [{id: `${id}:message:0`, role: 'assistant', state: 'final', timestamp, stopReason: 'stop', parts, coverage}]});
+  const think = (text: string): Parts => [{type: 'thinking', text}], answered = (text: string): Parts => [...think(text), {type: 'text', text: 'Answer'}];
+  let state = replaceSnapshot(createState(), snap), revision = 1, sequence = 0;
+  const send = (entries: EntryView[], liveEntries: EntryView[]) => { state = reduceEvent(state, event(++sequence, 'agent.frame', {identity: 'a', connectionEpoch: 2, frame: frame(++revision, entries, liveEntries)})); };
+  const spans = () => state.conversations.get(targetIdentity({kind: 'agent', identity: 'a'}))?.thinking;
+  send([], [live(500, think('weigh'))]); assert.deepEqual(spans()?.get('live:generation:message:0@500:0'), {start: 1000});
+  now = 3000; send([], [live(500, think('weigh more'))]); assert.deepEqual(spans()?.get('live:generation:message:0@500:0'), {start: 1000});
+  now = 6000; send([], [live(500, answered('weigh more'))]); assert.deepEqual(spans()?.get('live:generation:message:0@500:0'), {start: 1000, end: 6000});
+  now = 7000; send([saved('101', 500, answered('weigh more'))], []);
+  assert.deepEqual(spans()?.get('101:message:0:0'), {start: 1000, end: 6000}, 'the committed message carries the observed span');
+  assert.equal(spans()?.has('live:generation:message:0@500:0'), false);
+  now = 9000; send([saved('101', 500, answered('weigh more'))], [live(900, think('next turn'))]);
+  assert.deepEqual(spans()?.get('live:generation:message:0@900:0'), {start: 9000}, 'a later turn does not inherit the earlier span');
+  now = 12000; send([saved('101', 500, answered('weigh more')), saved('102', 900, think('next turn'))], []);
+  assert.deepEqual(spans()?.get('102:message:0:0'), {start: 9000, end: 12000}, 'a block that streamed with nothing after it ends with the commit');
+  assert.deepEqual(spans()?.get('101:message:0:0'), {start: 1000, end: 6000});
+});
 test('a thinking block gets a span only when this browser saw it start, and it ends with later content or the final message', t => {
   let now = 1000; t.mock.method(Date, 'now', () => now);
   const part = (text: string) => ({type: 'thinking' as const, text}), reply = (text: string) => ({type: 'text' as const, text});

@@ -15,7 +15,11 @@ export interface ToolState {
 }
 /** A browser-observed span of one thinking block; only blocks whose start this browser saw have one. */
 export interface ThinkingTime { start: number; end?: number }
-export function thinkingKey(messageId: string, index: number): string { return `${messageId}:${index}`; }
+/** A live message reuses one id for every turn, so its start time joins the key; a saved message keeps its own id. */
+export function thinkingKey(message: Pick<MessageView, 'id' | 'timestamp'>, index: number): string {
+  const live = message.id.startsWith('live:') && Number.isSafeInteger(message.timestamp);
+  return `${message.id}${live ? `@${message.timestamp}` : ''}:${index}`;
+}
 export interface Conversation {
   thinking?: ReadonlyMap<string, ThinkingTime>;
   target: Target; entries: ReadonlyMap<string, EntryView>; entryOrder: string[]; historyCursor?: string | null;
@@ -244,6 +248,7 @@ function applyFrame(state: UiState, identity: string, connectionEpoch: number, f
     const tools = new Map<string,ToolState>((frame.status.tools ?? []).map(tool=>[tool.callId,{callId:tool.callId,name:tool.name,phase:'update',nativeStatus:tool.status}]));
     const now = Date.now(); let thinking = merged.thinking;
     for (const entry of [...frame.live, ...(thinking?.size ? frame.entries : [])]) for (const message of entry.messages ?? []) thinking = observeThinking(thinking, message, now);
+    thinking = commitLiveThinking(thinking, frame.entries, now);
     return {...merged, tools, thinking, live: reconcileLiveEntries(merged.entries, frame.live, old.live), frame, connectionEpoch};
   });
 }
@@ -463,12 +468,42 @@ function thinkingSpan(known: ThinkingTime | undefined, message: MessageView, lat
   if (!known) return message.state === 'partial' && !later ? {start: now} : undefined;
   return known.end === undefined && (later || message.state === 'final') ? {...known, end: now} : known;
 }
+type LiveSpan = {key: string; index: number; time: ThinkingTime};
+function liveSpans(times: ReadonlyMap<string, ThinkingTime>): Map<number, LiveSpan[]> {
+  const live = new Map<number, LiveSpan[]>();
+  for (const [key, time] of times) {
+    const match = /^live:.*@(\d+):(\d+)$/.exec(key); if (!match) continue;
+    const stamp = Number(match[1]), found = live.get(stamp) ?? []; found.push({key, index: Number(match[2]), time}); live.set(stamp, found);
+  }
+  return live;
+}
+function moveSpans(next: Map<string, ThinkingTime>, message: MessageView, spans: readonly LiveSpan[], now: number): void {
+  for (const {key, index, time} of spans) {
+    if (message.parts[index]?.type === 'thinking') next.set(thinkingKey(message, index), time.end === undefined ? {...time, end: now} : time);
+    next.delete(key);
+  }
+}
+/**
+ * The host commits a streamed message under a new id and drops its live copy. The assistant timestamp is the
+ * same on both, so spans observed on the live copy move to the committed message instead of vanishing.
+ */
+export function commitLiveThinking(times: ReadonlyMap<string, ThinkingTime> | undefined, committed: readonly EntryView[], now: number): ReadonlyMap<string, ThinkingTime> | undefined {
+  const live = times ? liveSpans(times) : undefined;
+  if (!times || !live?.size) return times;
+  let next: Map<string, ThinkingTime> | undefined;
+  for (const message of committed.flatMap(entry => entry.messages ?? [])) {
+    const spans = message.role === 'assistant' && message.state === 'final' && message.timestamp !== undefined ? live.get(message.timestamp) : undefined;
+    if (!spans) continue;
+    next ??= new Map(times); moveSpans(next, message, spans, now); live.delete(message.timestamp as number);
+  }
+  return next ?? times;
+}
 export function observeThinking(times: ReadonlyMap<string, ThinkingTime> | undefined, message: MessageView, now: number): ReadonlyMap<string, ThinkingTime> | undefined {
   let next = times; let later = false;
   for (let index = message.parts.length - 1; index >= 0; index--) {
     const part = message.parts[index]; if (!part) continue;
     if (part.type !== 'thinking') { later ||= endsThinking(part); continue; }
-    const key = thinkingKey(message.id, index), known = next?.get(key), span = thinkingSpan(known, message, later, now);
+    const key = thinkingKey(message, index), known = next?.get(key), span = thinkingSpan(known, message, later, now);
     if (span && span !== known) next = new Map(next ?? []).set(key, span);
   }
   return next;

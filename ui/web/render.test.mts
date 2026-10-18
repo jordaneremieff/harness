@@ -1011,6 +1011,16 @@ test('a thinking title counts while it streams, settles to its observed span, an
   view.set([block('partial')], new Map(), new Map([['thought:0', {start: 100_000}]])); flush(); view.set([block('final')], new Map(), new Map([['thought:0', {start: 100_000}]])); flush();
   assert.equal(title(), 'Thinking', 'a span the browser never saw end shows no invented duration'); view.reset();
 });
+test('a live agent thinking block finds its span by message id and timestamp, and the committed copy by its own id', t => {
+  t.mock.timers.enable({apis: ['setInterval', 'Date'], now: 100_000}); setup(); const view = transcript();
+  const title = () => node('primary-transcript').querySelector('.thinking')?.querySelector('summary')?.textContent;
+  const live = {id: 'live:generation', kind: 'pi.assistant', messages: [{...message('live:generation:message:0', '', 'partial'), timestamp: 500, parts: [{type: 'thinking' as const, text: 'weighing'}]}]};
+  view.set([live], new Map(), new Map([['live:generation:message:0@500:0', {start: 100_000}]])); flush(); assert.equal(title(), 'Thinking 0s');
+  t.mock.timers.tick(3000); assert.equal(title(), 'Thinking 3s');
+  view.set([live], new Map(), new Map([['live:generation:message:0:0', {start: 1}]])); flush(); assert.equal(title(), 'Thinking', 'a span keyed without the turn timestamp is not this block');
+  const saved = {id: '101', kind: 'pi.assistant', messages: [{...message('101:message:0', '', 'final'), timestamp: 500, parts: [{type: 'thinking' as const, text: 'weighing'}]}]};
+  view.set([saved], new Map(), new Map([['101:message:0:0', {start: 100_000, end: 106_000}]])); flush(); assert.equal(title(), 'Thought for 6s'); view.reset();
+});
 test('final thinking uses safe Markdown while partial and redacted thinking remain plain text', () => {
   setup(); const view = transcript();
   const retained = (state: 'partial' | 'final', redacted = false) => ({id: 'thought', kind: 'message', messages: [{...message('thought', '', state), parts: [{type: 'thinking' as const, text: '**reason**\n<script>inert</script>', redacted}]}]});
