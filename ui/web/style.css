@@ -1084,7 +1084,7 @@ dialog[open][data-variant=picker] { display: flex; flex-direction: column; overf
 dialog[data-variant=picker] .modal-heading, dialog[data-variant=picker] .dialog-actions { flex: none; }
 dialog[data-variant=picker] #modal-body { display: flex; flex-direction: column; min-height: 0; overflow: auto; }
 dialog[data-variant=picker] #modal-body > :not(.picker-results) { flex: none; }
-.picker-session { position: relative; display: grid; grid-template-columns: minmax(0,1fr) auto auto auto; align-items: center; gap: 0 12px; }
+.picker-session { position: relative; display: grid; grid-template-columns: minmax(0,1fr) auto auto auto auto; align-items: center; gap: 0 12px; }
 .picker-select { display: flex; flex-direction: column; align-items: stretch; gap: 2px; width: 100%; min-width: 0; padding: 6px 10px; border-left: 2px solid transparent; border-radius: 0; text-align: left; white-space: nowrap; }
 .picker-select:hover { background: var(--canvas); }
 .picker-select:focus-visible { border-left-color: var(--accent); outline: none; background: var(--canvas); }

@@ -58,7 +58,8 @@ for (const [name, page] of [
     const label = nodes.find(node => node.tag === 'label' && node.htmlFor === search.id); assert.ok(label);
     assert.equal(label.className, 'sr-only'); assert.equal(label.textContent, 'Search sessions');
     const ordinary = nodes.find(node => node.className === 'picker-folder-ordinary'); assert.ok(ordinary);
-    assert.match(ordinary.querySelector('.picker-safety')?.textContent ?? '', /^Before ordinary Resume/);
+    const notes = body.children.filter(node => node.classList.contains('picker-safety')); assert.equal(notes.length, 1, 'The Resume caution appears once in the dialog body');
+    assert.equal(notes[0]?.textContent, 'Stop a terminal session before you resume it here.'); assert.equal(notes[0]?.title, 'Before ordinary Resume, stop the terminal session. Each active process keeps its own in-memory branch; this window does not read later writes from another active process.'); assert.equal(body.children.includes(notes[0] as Node), true);
     const searchRow = body.children.find(node => node.className === 'picker-search-row'); assert.ok(searchRow);
     const line = searchRow.children[0]; assert.ok(line); assert.equal(line.className, 'picker-input-row'); assert.equal(search.className, 'picker-input');
     assert.equal(line.children.length, 2); assert.equal(search.id, label.htmlFor);
@@ -67,7 +68,9 @@ for (const [name, page] of [
     assert.equal(coverage.className, 'secondary'); assert.equal(coverage.attributes['aria-live'], 'polite');
     const freshness = ordinary.querySelector('.picker-list-details'); assert.ok(freshness);
     assert.match(freshness.textContent, /Saved list · now/);
-    assert.match(freshness.textContent, /sessions loaded/); assert.equal(freshness.children[0]?.textContent, name === 'complete' ? 'List details' : 'Partial list');
+    assert.match(freshness.textContent, /sessions loaded/); assert.equal(freshness.children[0]?.textContent, 'List details');
+    const partialNote = nodes.filter(node => node.classList.contains('picker-partial')); assert.equal(partialNote.length, 1); assert.equal(partialNote[0]?.textContent, 'Partial list'); assert.equal(partialNote[0]?.hidden, name === 'complete');
+    assert.equal(nodes.find(node => node.className === 'picker-project-actions picker-footer')?.children.includes(partialNote[0] as Node), true, 'Partial list sits in the footer beside the loaded count');
     assert.equal(coverage.textContent, '1 loaded session'); assert.equal(coverage.hidden, false);
     assert.equal(body.children.filter(node => node.textContent.includes('Saved list ·')).length, 1);
     assert.ok(nodes.find(node => node.tag === 'button' && node.attributes['aria-label'] === 'Refresh saved sessions'));
@@ -192,13 +195,15 @@ test('ordinary Resume warnings stay inside their groups and exact-file disclosur
   const published = {...saved, items: [{...ordinarySample, path: '/published/session.jsonl'}]};
   const setup = directPicker(t, undefined, saved, undefined, {roster: catalogRoster(), published}); setup.picker.open(); await settle();
   const registered = setup.body.querySelector('.picker-ordinary'), folder = setup.body.querySelector('.picker-folder-ordinary'); assert.ok(registered); assert.ok(folder);
-  assert.equal(setup.body.children.some(node => node.classList.contains('picker-safety')), false);
-  assert.match(registered.querySelector('.picker-safety')?.textContent ?? '', /^Before ordinary Resume/); assert.equal(registered.querySelector('.picker-safety')?.hidden, false);
-  assert.equal(folder.querySelector('.picker-safety')?.hidden, false); assert.ok(registered.querySelector('.picker-session'));
-  const file = folder.querySelector('.picker-file'); assert.ok(file); assert.match(file.querySelector('.picker-safety')?.textContent ?? '', /^Before ordinary Resume/);
+  const once = setup.body.children.filter(node => node.classList.contains('picker-safety')); assert.equal(once.length, 1); assert.equal(once[0]?.hidden, false);
+  assert.equal(once[0]?.textContent, 'Stop a terminal session before you resume it here.'); assert.equal(once[0]?.title, 'Before ordinary Resume, stop the terminal session. Each active process keeps its own in-memory branch; this window does not read later writes from another active process.');
+  assert.equal(registered.querySelector('.picker-safety'), null); assert.equal(folder.children.some(node => node.classList.contains('picker-safety')), false); assert.ok(registered.querySelector('.picker-session'));
+  const file = folder.querySelector('.picker-file'); assert.ok(file); assert.match(file.querySelector('.picker-safety')?.textContent ?? '', /^Stop a terminal session before you resume it here\./);
+  assert.equal(registered.querySelector('.picker-session-details')?.textContent.includes('Before ordinary Resume, stop the terminal session. Each active process keeps its own in-memory branch; this window does not read later writes from another active process.'), true, 'Each row keeps the full text in Details');
+  assert.equal(registered.querySelector('.picker-select')?.attributes['aria-description'], 'Before ordinary Resume, stop the terminal session. Each active process keeps its own in-memory branch; this window does not read later writes from another active process.', 'and in its accessible description');
   const convert = descendants(registered).find(node => node.tag === 'button' && node.textContent === 'Convert to Durable'); assert.ok(convert); assert.equal(convert.title, 'Creates a new Durable conversation from saved context. Leaves the ordinary session unchanged.');
   const search = setup.body.querySelector('#picker-search'); assert.ok(search); search.value = 'no match'; search.dispatch('input');
-  assert.equal(folder.querySelector('.picker-safety')?.hidden, true); assert.equal(registered.querySelector('.picker-safety')?.hidden, true);
+  assert.equal(once[0]?.hidden, true);
   assert.equal(setup.calls.some(call => call.path === '/api/primaries' || call.path === '/api/agents/convert'), false);
 });
 function pickerKeyboard(t:TestContext) {
@@ -217,7 +222,7 @@ test('one query filters every loaded group without fetching or weakening coverag
   assert.deepEqual(rows().map(row=>row.dataset.agentIdentity??row.dataset.sessionPath),['designer','other','/registered.jsonl',ordinarySample.path]);
   for(const [query,expected] of [['Web UI designer','designer'],['Registered planning','/registered.jsonl'],['Saved title',ordinarySample.path]] as const) {
     search.value=query;search.dispatch('input');assert.deepEqual(rows().map(row=>row.dataset.agentIdentity??row.dataset.sessionPath),[expected]);
-    assert.match(results.querySelector('.picker-durable')?.querySelector('.picker-list-details')?.textContent??'',/Partial list/);assert.match(results.querySelector('.picker-ordinary')?.querySelector('.picker-list-details')?.textContent??'',/Partial list/);
+    assert.equal(setup.body.querySelector('.picker-partial')?.hidden,false);assert.equal(results.querySelector('.picker-durable')?.querySelector('.picker-list-details')?.children[0]?.textContent,'List details');assert.equal(results.querySelector('.picker-ordinary')?.querySelector('.picker-list-details')?.children[0]?.textContent,'List details');
     assert.equal(setup.body.querySelector('#picker-coverage')?.textContent, '1 match in loaded sessions');
   }
   search.value='Folder alias';search.dispatch('input');assert.equal(rows().length,0);
@@ -258,7 +263,7 @@ test('Durable coverage remains local and a ready blank ordinary title displays a
   const roster = {...catalogRoster(), stale: true, nextCursor: 'more', scan: {...catalogRoster().scan, complete: false}};
   const setup = directPicker(t, undefined, pending, undefined, {roster, published: noPublished, titlePage: filled}); setup.picker.open(); await settle(); await settle();
   const durable = setup.body.querySelector('.picker-durable'); assert.ok(durable); const notice = durable.querySelector('.picker-durable-coverage'); assert.ok(notice);
-  assert.match(durable.querySelector('.picker-durable-list')?.textContent ?? '', /No loaded sessions in this group/); assert.match(notice.textContent, /Saved Durable catalog/); assert.match(durable.querySelector('.picker-list-details')?.textContent ?? '', /Partial list/);
+  assert.match(durable.querySelector('.picker-durable-list')?.textContent ?? '', /No loaded sessions in this group/); assert.match(notice.textContent, /Saved Durable catalog/); assert.equal(setup.body.querySelector('.picker-partial')?.hidden, false);
   const folder = setup.body.querySelector('.picker-folder-ordinary'); assert.ok(folder); assert.equal(folder.querySelector('.picker-session-title')?.textContent, 'No title');
   assert.equal(filled.items[0]?.title, ''); assert.equal(pending.items[0]?.titleState, 'pending'); assert.ok(setup.calls.some(call => call.path.includes('&titles=titles')));
 });
@@ -333,7 +338,7 @@ test('group disclosures preserve exact coverage while unsettled states never cla
   assert.match(durable.querySelector('.picker-durable-coverage')?.textContent ?? '', /could not refresh.*Saved Durable catalog/);
   assert.doesNotMatch(durable.querySelector('.picker-durable-list')?.textContent ?? '', /No matches|No loaded/);
   const facts = durable.querySelector('.picker-list-details'); assert.ok(facts);
-  assert.equal(facts.open, false); assert.match(facts.textContent, /Partial list.*0 Durable conversations loaded/);
+  assert.equal(facts.open, false); assert.match(facts.textContent, /List details.*0 Durable conversations loaded/); assert.equal(setup.body.querySelector('.picker-partial')?.hidden, false);
   assert.match(facts.textContent, /3 skipped; 4 omitted/); assert.match(facts.textContent, /Exact catalog failure/);
   assert.match(facts.children[0]?.attributes['aria-label'] ?? '', /Durable conversations/);
   assert.match(registered.querySelector('.picker-list-details')?.textContent ?? '', /62 discovery records are unavailable or outside the bound/);
@@ -367,7 +372,7 @@ test('current project opens its session list and a saved row directly admits one
   const setup = directPicker(t, active); setup.picker.open(); await settle();
   assert.equal(setup.calls.some(call => call.path.includes('/api/projects')), false);
   assert.equal(descendants(setup.body).some(node => node.textContent === 'Open project'), false);
-  const ordinary=setup.body.querySelector('.picker-folder-ordinary');assert.ok(ordinary);const safety=ordinary.querySelector('.picker-safety');assert.ok(safety);assert.match(safety.textContent,/^Before ordinary Resume, stop the terminal session\./);assert.equal(safety.hidden,false);
+  const ordinary=setup.body.querySelector('.picker-folder-ordinary');assert.ok(ordinary);const safety=setup.body.children.find(node=>node.classList.contains('picker-safety'));assert.ok(safety);assert.equal(safety.textContent,'Stop a terminal session before you resume it here.');assert.equal(safety.hidden,false);
   const row = descendants(setup.body).find(node => node.className === 'picker-select'); assert.ok(row);
   row.click(); row.click(); await settle();
   assert.deepEqual(setup.calls.filter(call => call.path === '/api/primaries').map(call => call.body), [{cwd: '/project', sessionFile: '/project/s.jsonl'}]);
@@ -642,8 +647,8 @@ test('chooser controls stay with their title, search and list disclosure while r
   assert.equal(file.children[0]?.textContent, 'Session file…');
   const row = nodes.find(node => node.className === 'picker-session'); assert.ok(row);
   assert.equal(row.children[0]?.className, 'picker-select'); assert.equal(row.children[1]?.className, 'picker-age quiet');
-  const convert=row.children[2];assert.ok(convert);assert.equal(convert.tag,'button');assert.equal(convert.textContent,'Convert to Durable');assert.equal(convert.title,'Creates a new Durable conversation from saved context. Leaves the ordinary session unchanged.');assert.equal(convert.attributes['aria-description'],convert.title);const facts=row.querySelector('.picker-session-details');assert.ok(facts);assert.equal(row.children[3],facts);assert.equal(facts.tag,'details');assert.equal(facts.children[0]?.attributes['aria-label'],'Details for Saved title');assert.equal(setup.calls.some(call=>call.path==='/api/primaries'||call.path==='/api/agents/convert'),false);
-  assert.deepEqual(facts.children.slice(1).map(node => node.textContent), ['Saved title', '/project', 's', '/project/s.jsonl', '10 B', 'Stop the terminal session before Resume. Active processes keep independent branches.']);
+  const resume=row.children[2];assert.ok(resume);assert.equal(resume.tag,'button');assert.equal(resume.textContent,'Resume');assert.equal(resume.disabled,false);const convert=row.children[3];assert.ok(convert);assert.equal(convert.tag,'button');assert.equal(convert.textContent,'Convert to Durable');assert.equal(convert.title,'Creates a new Durable conversation from saved context. Leaves the ordinary session unchanged.');assert.equal(convert.attributes['aria-description'],convert.title);const facts=row.querySelector('.picker-session-details');assert.ok(facts);assert.equal(row.children[4],facts);assert.equal(facts.tag,'details');assert.equal(facts.children[0]?.attributes['aria-label'],'Details for Saved title');assert.equal(setup.calls.some(call=>call.path==='/api/primaries'||call.path==='/api/agents/convert'),false);
+  assert.deepEqual(facts.children.slice(1).map(node => node.textContent), ['Saved title', '/project', 's', '/project/s.jsonl', '10 B', 'Before ordinary Resume, stop the terminal session. Each active process keeps its own in-memory branch; this window does not read later writes from another active process.']);
   file.open = true; file.dispatch('toggle');
   assert.ok(descendants(root).find(node => node.id === 'picker-session-path')); assert.equal(setup.modal.token, 0);
 });
@@ -730,7 +735,7 @@ test('prompt excerpts retain full supplied details and ordinary Resume cautions 
   assert.equal(rows[1]?.querySelector('.picker-session-title')?.textContent, title);
   assert.equal(rows[0]?.querySelector('.picker-session-folder')?.textContent, 'project'); assert.ok(rows[0]?.querySelector('.picker-age'));
   const file = descendants(setup.body).find(node => node.className === 'picker-file'); assert.ok(file); file.open = true; file.dispatch('toggle');
-  const durable=setup.body.querySelector('.picker-durable'),registered=setup.body.querySelector('.picker-ordinary'),ordinary=setup.body.querySelector('.picker-folder-ordinary');assert.ok(durable&&registered&&ordinary);assert.equal(durable.querySelector('.picker-safety'),null);assert.equal(setup.body.children.some(node=>node.classList.contains('picker-safety')),false);assert.equal(registered.querySelector('.picker-safety')?.hidden,true);const groupSafety=ordinary.children.find(node=>node.classList.contains('picker-safety'));assert.ok(groupSafety);assert.equal(groupSafety.hidden,false);assert.match(groupSafety.textContent,/^Before ordinary Resume, stop the terminal session\./);const fileSafety=file.querySelector('.picker-safety');assert.ok(fileSafety);assert.equal(fileSafety.hidden,false);assert.match(fileSafety.textContent,/^Before ordinary Resume, stop the terminal session\./);assert.equal(setup.calls.some(call=>call.path==='/api/primaries'||call.path==='/api/agents/convert'),false);
+  const durable=setup.body.querySelector('.picker-durable'),registered=setup.body.querySelector('.picker-ordinary'),ordinary=setup.body.querySelector('.picker-folder-ordinary');assert.ok(durable&&registered&&ordinary);assert.equal(durable.querySelector('.picker-safety'),null);assert.equal(registered.querySelector('.picker-safety'),null);assert.equal(ordinary.children.some(node=>node.classList.contains('picker-safety')),false);const groupSafety=setup.body.children.find(node=>node.classList.contains('picker-safety'));assert.ok(groupSafety);assert.equal(groupSafety.hidden,false);assert.equal(groupSafety.textContent,'Stop a terminal session before you resume it here.');const fileSafety=file.querySelector('.picker-safety');assert.ok(fileSafety);assert.equal(fileSafety.hidden,false);assert.match(fileSafety.textContent,/^Stop a terminal session before you resume it here\./);assert.equal(setup.calls.some(call=>call.path==='/api/primaries'||call.path==='/api/agents/convert'),false);
 });
 test('different prompts with identical compact captions retain distinct exact-identity tails', async t => {
   const item = saved.items[0]; assert.ok(item); const prefix = 'Same visible prompt '.repeat(5);
@@ -747,7 +752,7 @@ test('chooser style bindings preserve ordinary actions and full-width Durable ro
   assert.match(css, /\.picker-path \{ min-width: 0; overflow-wrap: anywhere; \}/);
   assert.match(css, /\.picker-context-actions \{ display: flex; align-items: center; gap: 8px; \}/);
   assert.match(css, /@media \(pointer: coarse\) \{ \.picker-context > \.picker-path > summary \{ min-height: 44px;/);
-  assert.match(css, /\.picker-session \{[^}]*grid-template-columns: minmax\(0,1fr\) auto auto auto;/);
+  assert.match(css, /\.picker-session \{[^}]*grid-template-columns: minmax\(0,1fr\) auto auto auto auto;/);
   assert.match(css, /\.picker-session-details\[open\] \{[^}]*grid-column: 1 \/ -1; grid-row: 2;/);
   assert.match(css, /\.picker-session-meta:empty \{ display: none; \}/);
   assert.match(css, /\.picker-footer \{[^}]*border-top: 1px solid var\(--edge\);/);
@@ -793,16 +798,21 @@ test('loaded project rows share shortest unique suffixes and preserve exact dire
   assert.equal(setup.calls.some(call => call.path === '/api/primaries'), false);
 });
 
+const sessionRow = (setup: ReturnType<typeof directPicker>) => { const row = setup.body.querySelector('.picker-folder-ordinary')?.querySelector('.picker-session'); assert.ok(row); return row; };
 const rowOf = (setup: ReturnType<typeof directPicker>) => { const select = setup.body.querySelector('.picker-folder-ordinary')?.querySelector('.picker-select'); assert.ok(select); return select; };
 test('a saved file a terminal writes reads "Open in a terminal" with Resume disabled, then enables with one line once the terminal ends', async t => {
   const page = {...saved, items: [{...ordinarySample, writer: 'live' as const}]};
   const setup = directPicker(t, undefined, page, undefined, {roster: catalogRoster(), published: noPublished}); setup.picker.open(); await settle();
   let select = rowOf(setup);
-  assert.equal(select.disabled, true); assert.match(select.textContent, /Open in a terminal/); assert.match(select.textContent, /Resume here when the terminal exits\./);
+  assert.equal(select.disabled, true); assert.match(select.textContent, /Open in a terminal · Resume when it exits/); assert.doesNotMatch(select.textContent, /Resume here when the terminal exits\./);
+  assert.equal(select.querySelectorAll('.picker-session-meta').length, 1, 'The held state reads on one line');
   assert.doesNotMatch(select.textContent, /The terminal session ended/);
+  let resumeControl = sessionRow(setup).children.find(node => node.className === 'quiet picker-resume'); assert.ok(resumeControl); assert.equal(resumeControl.textContent, 'Resume'); assert.equal(resumeControl.disabled, true);
+  assert.equal(resumeControl.title, 'Resume here when the terminal exits.'); assert.equal(resumeControl.attributes['aria-description'], 'Resume here when the terminal exits.');
+  assert.equal(sessionRow(setup).children.indexOf(resumeControl), sessionRow(setup).children.findIndex(node => node.textContent === 'Convert to Durable') - 1, 'Resume sits before Convert to Durable');
   assert.equal(setup.calls.some(call => call.path === '/api/primaries'), false);
   page.items = [{...ordinarySample}]; setup.picker.writersChanged(); await settle();
-  select = rowOf(setup);
+  select = rowOf(setup); resumeControl = sessionRow(setup).children.find(node => node.className === 'quiet picker-resume'); assert.equal(resumeControl?.disabled, false);
   assert.equal(select.disabled, false); assert.match(select.textContent, /The terminal session ended\. Resume here\./); assert.doesNotMatch(select.textContent, /Open in a terminal/);
   assert.equal(setup.calls.some(call => call.path === '/api/primaries'), false, 'release alone resumes nothing');
   select.click(); await settle();
@@ -840,4 +850,11 @@ test('a refusal at Resume shows the writer sentence and turns the row to its hel
   rowOf(setup).click(); await settle(); await settle();
   assert.match(setup.error, /^A terminal session is writing this file\. Resume when it ends\./);
   assert.equal(rowOf(setup).disabled, true); assert.match(rowOf(setup).textContent, /Open in a terminal/);
+});
+test('the Resume text control resumes the same session as the whole-row button', async t => {
+  const setup = directPicker(t, undefined, {...saved, items: [{...ordinarySample}]}, undefined, {roster: catalogRoster(), published: noPublished}); setup.picker.open(); await settle();
+  const control = sessionRow(setup).children.find(node => node.className === 'quiet picker-resume'); assert.ok(control);
+  assert.equal(control.disabled, false); assert.equal(setup.calls.some(call => call.path === '/api/primaries'), false);
+  control.click(); await settle();
+  assert.equal(setup.calls.filter(call => call.path === '/api/primaries').length, 1);
 });
