@@ -203,6 +203,14 @@ slice's original development records, verifies each full-tree boundary again,
 and pushes once. One sibling synchronization follows. Each selected branch now
 contains the combined shipped changes, not only its own changes.
 
+The rebuild resets a branch, so it runs only on a branch that still holds what the promotion saw: the same
+head and a clean worktree. The gates take minutes, and the owner may commit or edit meanwhile. If the branch moved or
+its worktree changed, the command leaves that branch exactly as it is, names the reason in that slice's `left` field,
+and prints `Left unchanged`. The promotion itself continues, because the promoted commits are already on `main`. The
+next synchronization rebases a clean branch onto `main` and drops the commits that are now on `main`; a dirty branch
+is deferred until its owner commits. A rollback after a failed gate follows the same rule: it does not reset a branch
+that changed meanwhile, and the `recover` text says how to inspect it.
+
 This removes repeated shared gate sets, pushes, and synchronization runs from
 separate promotions. It does not cache gate results or measure elapsed-time
 savings.

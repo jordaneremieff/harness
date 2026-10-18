@@ -1442,3 +1442,92 @@ process.exitCode = result.status ?? 1;
 		}
 	});
 });
+
+describe("promotion while the branch changes during the gates", () => {
+	const script = fileURLToPath(new URL("./worktrees.mts", import.meta.url));
+	let root: string;
+	const gitAt = (cwd: string, args: readonly string[], env: NodeJS.ProcessEnv): string =>
+		execFileSync("git", args, { cwd, env, encoding: "utf8" }).trim();
+
+	/** One promotable slice whose gate runs `duringGates` in the slice worktree, as an owner working while the gates run. */
+	const run = (duringGates: string) => {
+		root = realpathSync(mkdtempSync(join(tmpdir(), "worktree-moving-")));
+		const repo = join(root, "harness");
+		const worktrees = join(root, "harness.worktrees");
+		const agent = join(root, "agent");
+		const tree = join(worktrees, "demo");
+		const env: NodeJS.ProcessEnv = {
+			...process.env,
+			PI_HARNESS_ROOT: repo,
+			PI_WORKTREE_ROOT: worktrees,
+			PI_AGENT_DIR: agent,
+			PI_SETTINGS_PATH: join(agent, "settings.json"),
+			GIT_AUTHOR_NAME: "Fixture",
+			GIT_AUTHOR_EMAIL: "fixture@example.com",
+			GIT_COMMITTER_NAME: "Fixture",
+			GIT_COMMITTER_EMAIL: "fixture@example.com",
+		};
+		const git = (args: readonly string[], cwd: string = repo): string => gitAt(cwd, args, env);
+		mkdirSync(repo, { recursive: true });
+		mkdirSync(agent, { recursive: true });
+		git(["init", "-q", "-b", "main"]);
+		mkdirSync(join(repo, "extensions/demo"), { recursive: true });
+		writeFileSync(join(repo, "extensions/demo/index.ts"), "export default function demo() { return {}; }\n");
+		writeFileSync(join(repo, "package.json"), '{"name":"harness","scripts":{}}\n');
+		git(["add", "-A"]);
+		git(["commit", "-q", "-m", "feat(demo): initial"]);
+		writeFileSync(join(agent, "settings.json"), `${JSON.stringify({ packages: [{ source: repo, extensions: [] }] })}\n`);
+		git(["branch", "extension/demo", "main"]);
+		git(["worktree", "add", "-q", tree, "extension/demo"]);
+		writeFileSync(join(tree, "extensions/demo/index.ts"), "export default function demo() { return { ok: true }; }\n");
+		git(["add", "-A"], tree);
+		git(["commit", "-q", "-m", "fix(demo): return a value"], tree);
+		const before = git(["rev-parse", "extension/demo"]);
+		const code = `const { execFileSync } = require("node:child_process"); const { writeFileSync } = require("node:fs"); const tree = ${JSON.stringify(tree)}; const git = (...args) => execFileSync("git", ["-C", tree, ...args], { stdio: "pipe" });\n${duringGates}`;
+		const gates = JSON.stringify([{ name: "test", command: [process.execPath, "-e", code] }]);
+		const output = execFileSync(process.execPath, [script, "promote", "demo", "--json"], {
+			cwd: repo,
+			env: { ...env, PI_PROMOTE_GATES: gates },
+			encoding: "utf8",
+		});
+		const report: SerializedPromotionReport & { slices: Array<{ left?: string }> } = JSON.parse(output);
+		return { report, git, tree, before, repo };
+	};
+	after(() => {
+		if (root) rmSync(root, { recursive: true, force: true });
+	});
+
+	it("keeps a commit made after the gates started and lets the next sync rebase drop the promoted commit", () => {
+		const { report, git, tree, before } = run(
+			`writeFileSync(tree + "/extensions/demo/during.ts", "export const during = 1;\\n"); git("add", "-A"); git("commit", "-q", "-m", "feat(demo): made during the gates");`,
+		);
+		assert.equal(report.ok, true);
+		assert.match(report.slices[0].left ?? "", /moved while the promotion ran/);
+		assert.deepEqual(git(["log", "--format=%s", "main..extension/demo"]).split("\n"), ["feat(demo): made during the gates"]);
+		assert.match(git(["show", "extension/demo:extensions/demo/index.ts"]), /ok: true/);
+		assert.equal(readFileSync(join(tree, "extensions/demo/during.ts"), "utf8"), "export const during = 1;\n");
+		assert.notEqual(git(["rev-parse", "extension/demo"]), before);
+		assert.match(git(["show", "main:extensions/demo/index.ts"]), /ok: true/);
+		assert.equal(git(["status", "--porcelain"], tree), "");
+	});
+
+	it("keeps uncommitted edits made after the gates started and leaves the branch where it was", () => {
+		const { report, git, tree, before } = run(
+			`writeFileSync(tree + "/extensions/demo/index.ts", "export default function demo() { return { editing: true }; }\\n"); writeFileSync(tree + "/notes.txt", "unsaved\\n");`,
+		);
+		assert.equal(report.ok, true);
+		assert.match(report.slices[0].left ?? "", /uncommitted tracked changes or untracked files/);
+		assert.equal(git(["rev-parse", "extension/demo"]), before);
+		assert.match(readFileSync(join(tree, "extensions/demo/index.ts"), "utf8"), /editing: true/);
+		assert.equal(readFileSync(join(tree, "notes.txt"), "utf8"), "unsaved\n");
+		assert.match(git(["show", "main:extensions/demo/index.ts"]), /ok: true/);
+	});
+
+	it("rebuilds an untouched branch on main as before", () => {
+		const { report, git, tree } = run("");
+		assert.equal(report.ok, true);
+		assert.equal(report.slices[0].left, undefined);
+		assert.equal(git(["rev-parse", "extension/demo"]), git(["rev-parse", "main"]));
+		assert.equal(git(["status", "--porcelain"], tree), "");
+	});
+});

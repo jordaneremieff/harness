@@ -119,6 +119,8 @@ interface SlicePromotionReport {
 	kind: SliceKindName;
 	branch: string;
 	promoted: string[];
+	/** Why the branch was left as it is instead of being rebuilt on main. */
+	left?: string;
 	held: Array<string | HeldPlanEntry>;
 	wouldPromote?: PromotionPlanEntry[];
 	gates: GateResults;
@@ -1125,6 +1127,28 @@ interface PromotionSelection {
 	prepared: PreparedPromotion;
 	record: WorktreeRecord;
 	before: string;
+	/** The branch head this promotion itself produced (after a batch rebase or rebuild). */
+	settled?: string;
+	/** True while this promotion itself rewrites the branch, so its own half-finished state is not mistaken for outside work. */
+	rebuilding?: boolean;
+}
+
+/**
+ * A branch may be rebuilt or rolled back only while it still holds what this promotion saw: the same head and a clean
+ * worktree. Gates run for minutes, and the owner may commit or edit meanwhile; a hard reset would drop that work.
+ */
+function branchMovedReason(selection: PromotionSelection): string | undefined {
+	const { path, branch } = selection.record;
+	if (selection.rebuilding) return undefined;
+	const paused = pausedGitOperation(path);
+	if (paused) return paused;
+	if (git(path, ["symbolic-ref", "--short", "HEAD"], { accept: [0, 1, 128] }).stdout.trim() !== branch) {
+		return `${branch} is no longer checked out in ${path}`;
+	}
+	const head = git(path, ["rev-parse", branch]).stdout.trim();
+	if (head !== (selection.settled ?? selection.before)) return `${branch} moved while the promotion ran`;
+	if (isDirty(path)) return `${path} has uncommitted tracked changes or untracked files made while the promotion ran`;
+	return undefined;
 }
 
 function preparePromotions(
@@ -1257,6 +1281,9 @@ function restorePromotionBranch(selection: PromotionSelection, rebasing: boolean
 	try {
 		abort = rebasing && Boolean(pausedGitOperation(path)?.includes("rebase-"));
 		if (abort) git(path, noHooks(["rebase", "--abort"]));
+		if (!rebasing && branchMovedReason(selection) !== undefined) {
+			return `${branch} changed during the promotion and was not reset; inspect ${path}, then git -C ${path} reset --hard ${selection.before} only if nothing there is needed`;
+		}
 		git(path, noHooks(["reset", "--hard", selection.before]));
 		if (
 			pausedGitOperation(path) ||
@@ -1289,6 +1316,42 @@ function promotionResourceGates(
 			return { branch: selection.record.branch, reason: `${resource.failure.gate} failed: ${resource.failure.detail}` };
 	}
 	return undefined;
+}
+
+/** Rebuilds a promoted branch on main, or leaves it untouched and records why when it changed meanwhile. */
+function rebuildUnlessMoved(
+	context: HarnessContext,
+	selection: PromotionSelection,
+	slices: SlicePromotionReport[],
+	changed: Set<PromotionSelection>,
+): boolean {
+	const left = branchMovedReason(selection);
+	if (left !== undefined) {
+		const slice = slices.find((candidate) => candidate.branch === selection.record.branch);
+		if (slice) slice.left = left;
+		return false;
+	}
+	changed.add(selection);
+	selection.rebuilding = true;
+	rebuildPromotedBranch(context, selection.record, selection.before);
+	selection.rebuilding = false;
+	selection.settled = git(selection.record.path, ["rev-parse", selection.record.branch]).stdout.trim();
+	return true;
+}
+
+function rebuildPromotedBranches(
+	context: HarnessContext,
+	selected: PromotionSelection[],
+	slices: SlicePromotionReport[],
+	changed: Set<PromotionSelection>,
+	progress: (stage: string, branch: string) => void,
+): void {
+	for (const selection of selected) {
+		progress("sync", selection.record.branch);
+		if (!rebuildUnlessMoved(context, selection, slices, changed)) continue;
+		progress("verify", selection.record.branch);
+		assertPromotionBoundary(context, selection.record.branch, [selection.record.devRecordRoot]);
+	}
 }
 
 async function applyPromotions(
@@ -1346,6 +1409,7 @@ async function applyPromotions(
 				rebasing = selection;
 				git(context.repoRoot, noHooks(["rebase", "main"]), { cwd: record.path });
 				rebasing = undefined;
+				selection.settled = git(record.path, ["rev-parse", record.branch]).stdout.trim();
 			}
 			stage = "cherry-pick";
 			const shipping = promotionCommits(context.repoRoot, entry.branch, roots).filter(
@@ -1374,14 +1438,10 @@ async function applyPromotions(
 				return abandon(failure.reason);
 			}
 		}
-		for (const selection of selected) {
-			failedSlice = selection.record.branch;
-			stage = "sync";
-			changed.add(selection);
-			rebuildPromotedBranch(context, selection.record, selection.before);
-			stage = "verify";
-			assertPromotionBoundary(context, selection.record.branch, [selection.record.devRecordRoot]);
-		}
+		rebuildPromotedBranches(context, selected, slices, changed, (next, branch) => {
+			stage = next;
+			failedSlice = branch;
+		});
 	} catch (error) {
 		return abandon(error instanceof Error ? error.message : String(error));
 	}
@@ -1414,6 +1474,12 @@ function printSliceOutcomes(slices: SlicePromotionReport[]): void {
 		);
 }
 
+function printLeftBranches(slices: SlicePromotionReport[]): void {
+	for (const slice of slices) {
+		if (slice.left) console.log(`Left unchanged: ${slice.branch} (${slice.left}); the next sync rebases it onto main`);
+	}
+}
+
 function printPromotionOutcome(report: PromotionReport): void {
 	const promoted = report.promoted ?? [];
 	const held = report.held ?? [];
@@ -1422,6 +1488,7 @@ function printPromotionOutcome(report: PromotionReport): void {
 		console.log(`Nothing to promote from ${report.slices?.map((slice) => slice.branch).join(", ") ?? report.name}`);
 	else console.log(`Promoted to main: ${promoted.join(", ")}`);
 	if (held.length > 0) console.log(`Held on the branch: ${held.join(", ")}`);
+	printLeftBranches(report.slices ?? []);
 	if (report.mainAfter && report.mainBefore && report.mainAfter !== report.mainBefore) {
 		console.log(`main ${report.mainBefore.slice(0, 7)} -> ${report.mainAfter.slice(0, 7)}`);
 	}
