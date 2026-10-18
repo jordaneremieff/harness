@@ -98,9 +98,16 @@ class FakeNode {
     if (this.className === 'agent-row') return 20;
     return 20;
   }
+  /** A positioned element is its children's offset parent, so their offsetTop starts at zero inside it. */
+  positioned = false;
   get offsetTop(): number {
     const peers = this.parentNode?.children ?? [];
-    return (this.parentNode?.offsetTop ?? 0) + peers.slice(0, peers.indexOf(this)).reduce((sum, node) => sum + node.offsetHeight, 0);
+    return (this.parentNode && !this.parentNode.positioned ? this.parentNode.offsetTop : 0) + peers.slice(0, peers.indexOf(this)).reduce((sum, node) => sum + node.offsetHeight, 0);
+  }
+  /** Position on the page, whatever the offset parent is, less the scroll of every ancestor. */
+  get pageTop(): number {
+    const peers = this.parentNode?.children ?? [];
+    return (this.parentNode ? this.parentNode.pageTop - this.parentNode.scrollTop : 0) + peers.slice(0, peers.indexOf(this)).reduce((sum, node) => sum + node.offsetHeight, 0);
   }
   get scrollHeight(): number { return this.children.reduce((sum, child) => sum + child.offsetHeight, 0); }
   get isConnected(): boolean { return roots.includes(this) || !!this.parentNode?.isConnected; }
@@ -139,7 +146,7 @@ class FakeNode {
     return found;
   }
   getBoundingClientRect(): {top: number; bottom: number; left: number; right: number; width: number; height: number} {
-    return {top: this.offsetTop, bottom: this.offsetTop + this.offsetHeight, left: 0, right: this.clientWidth, width: this.clientWidth, height: this.offsetHeight};
+    return {top: this.pageTop, bottom: this.pageTop + this.offsetHeight, left: 0, right: this.clientWidth, width: this.clientWidth, height: this.offsetHeight};
   }
   click(): void { this.dispatch('click'); }
   focus(): void {
@@ -3133,5 +3140,17 @@ test('an older page keeps the first visible entry in place, with the earlier row
     view.set(Array.from({length: 60}, (_, index) => entry(`n${index}`))); flush(); view.historyAvailable(lead);
     scroll.to(2000); container.dispatch('scrollend'); flush(); settleFrames();
     for (const target of [1300, 900, 4100, 4000]) { scroll.to(target); flush(); flush(); flush(); assert.equal(container.scrollTop, target, `lead ${lead}: scrolled to ${target}`); }
+  }
+});
+test('the layout origin is the same whichever ancestor is the offset parent of the transcript', () => {
+  for (const positioned of [false, true]) {
+    setup(); const earlier = new FakeNode('button'); ids.set('primary-earlier', earlier); roots.push(earlier);
+    const parent = new FakeNode('div'), header = new FakeNode('div'); roots.push(parent); header.measured = 50;
+    const view = transcript(); const container = node('primary-transcript'); parent.append(header, container); container.positioned = positioned;
+    view.set(Array.from({length: 30}, (_, index) => entry(`n${index}`))); flush(); view.historyAvailable(true);
+    const scroll = scrollable(container); scroll.to(900); container.dispatch('scrollend'); flush();
+    const origin = Reflect.get(view, 'layoutOrigin').call(view) as number;
+    assert.equal(origin, earlier.offsetHeight, `transcript positioned: ${positioned}`);
+    scroll.to(1200); assert.equal(Reflect.get(view, 'layoutOrigin').call(view), origin, 'scrolling does not change the origin');
   }
 });

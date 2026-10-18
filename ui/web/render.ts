@@ -567,7 +567,8 @@ export class Transcript {
   /** Layout positions start at the first laid-out item; the earlier-history row and padding above it are not part of the layout. */
   private layoutOrigin(): number {
     const first = Array.from(this.node.children).find(child => child !== this.lead) as HTMLElement | undefined;
-    return first ? Math.max(0, first.offsetTop - this.node.offsetTop) : 0;
+    // Rectangles and scroll position do not depend on which ancestor is the offset parent.
+    return first ? Math.max(0, first.getBoundingClientRect().top - this.node.getBoundingClientRect().top + this.node.scrollTop - this.node.clientTop) : 0;
   }
   private geometryAnchor(override?: {id: string; offsetPx: number} | null): {id: string; offsetPx: number} | null {
     if (this.follow) return null;
