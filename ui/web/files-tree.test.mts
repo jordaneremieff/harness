@@ -17,6 +17,29 @@ test('disclosure preserves selected files and roving focus skips unsupported and
   tree.selectFile('r','folder/child');row(host,'folder').click();await settle();assert.equal(row(host,'folder').tabIndex,0);assert.equal(host.querySelector('[data-path="folder/child"]'),null);
   host.dispatch('keydown',{target:row(host,'folder'),key:'ArrowDown'});assert.equal(hostDocument.activeElement,row(host,'file'));
 });
+test('only regular .DS_Store files disappear from root and nested keyboard rows',async context=> {
+  const host=node();context.after(()=>host.remove());const reads:string[]=[],selected:string[]=[];
+  const rootEntries:FileEntry[]=[{name:'node_modules',path:'node_modules',kind:'directory'},{name:'.DS_Store',path:'.DS_Store',kind:'file'},{name:'.gitignore',path:'.gitignore',kind:'file'},{name:'.env',path:'.env',kind:'file'},{name:'.ds_store',path:'.ds_store',kind:'file'},{name:'.DS_Store.backup',path:'.DS_Store.backup',kind:'file'}];
+  const tree=new FilesTree(host as unknown as HTMLElement,{page:async(_root,path)=>{reads.push(path);return page(path,path?[{name:'.DS_Store',path:'node_modules/.DS_Store',kind:'file'},{name:'package.js',path:'node_modules/package.js',kind:'file'},{name:'nested',path:'node_modules/nested',kind:'directory'}]:rootEntries);},select:(_root,path)=>selected.push(path),escape:()=>{}});
+  tree.setRoot(root);await settle();assert.deepEqual(reads,['']);assert.equal(host.querySelector('[data-path=".DS_Store"]'),null);
+  for(const path of ['node_modules','.gitignore','.env','.ds_store','.DS_Store.backup'])assert.ok(row(host,path));
+  row(host,'node_modules').focus();host.dispatch('keydown',{target:row(host,'node_modules'),key:'ArrowDown'});assert.equal(hostDocument.activeElement,row(host,'.gitignore'));
+  row(host,'node_modules').click();await settle();assert.deepEqual(reads,['','node_modules']);assert.equal(host.querySelector('[data-path="node_modules/.DS_Store"]'),null);
+  row(host,'node_modules').focus();host.dispatch('keydown',{target:row(host,'node_modules'),key:'ArrowRight'});assert.equal(hostDocument.activeElement,row(host,'node_modules/package.js'));row(host,'node_modules/package.js').click();assert.deepEqual(selected,['node_modules/package.js']);assert.equal(rootEntries.length,6);
+});
+for(const path of ['', 'folder'])test(`filtered ${path?'nested':'root'} pages preserve incomplete status and their next cursor`,async context=>{
+  const host=node();context.after(()=>host.remove());const prefix=path?`${path}/`:'';const cursors:(string|undefined)[]=[];
+  const first={...page(path,[{name:'.DS_Store',path:`${prefix}.DS_Store`,kind:'file'}],false),nextCursor:'next-page'};
+  const tree=new FilesTree(host as unknown as HTMLElement,{page:async(_root,requested,cursor)=>{if(path&&!requested)return page('',[{name:'folder',path,kind:'directory'}]);cursors.push(cursor);return cursor?page(path,[{name:'.gitignore',path:`${prefix}.gitignore`,kind:'file'}]):first;},select:()=>{},escape:()=>{}});
+  tree.setRoot(root);await settle();if(path){row(host,path).click();await settle();}
+  assert.equal(host.querySelector(`[data-path="${prefix}.DS_Store"]`),null);assert.match(host.textContent,/incomplete/);assert.doesNotMatch(host.textContent,/No (?:visible )?files/);
+  const more=host.querySelector('.file-tree-more');assert.ok(more);more.click();await settle();assert.deepEqual(cursors,[undefined,'next-page']);assert.ok(row(host,`${prefix}.gitignore`));assert.equal(first.entries.length,1);assert.equal(first.nextCursor,'next-page');
+});
+test('a complete filtered folder says no visible files and preserves same-named nonfiles',async context=>{
+  const host=node();context.after(()=>host.remove());let entries:FileEntry[]=[{name:'.DS_Store',path:'.DS_Store',kind:'file'}];
+  const tree=new FilesTree(host as unknown as HTMLElement,{page:async()=>page('',entries),select:()=>{},escape:()=>{}});tree.setRoot(root);await settle();assert.match(host.textContent,/No visible files in this folder/);assert.doesNotMatch(host.textContent,/No files in this folder/);assert.equal(host.tabIndex,0);
+  for(const kind of ['directory','symlink','other'] as const){entries=[{name:'.DS_Store',path:'.DS_Store',kind}];tree.setRoot(root,kind);await settle();assert.ok(row(host,'.DS_Store'));}
+});
 test('Right on an expanded empty folder stays there rather than reaching its sibling',async context=> {
   const host = node();context.after(()=>host.remove());
   const tree = new FilesTree(host as unknown as HTMLElement,{page:async(_root,path)=>page(path,path ? [] : [{name:'empty',path:'empty',kind:'directory'},{name:'sibling',path:'sibling',kind:'file'}]),select:()=>{},escape:()=>{}});

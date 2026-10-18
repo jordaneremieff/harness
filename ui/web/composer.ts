@@ -425,8 +425,11 @@ export class Composer {
       thumbnail.addEventListener('error', () => {buffer.imageErrors ??= new Set(); buffer.imageErrors.add(image.digest); this.paint(buffer);});
       thumbnail.src = draftImageUrl(buffer.workspace, buffer.state.targetKey, image.digest); preview.append(thumbnail);
     } else preview.textContent = 'Preview';
-    const status = unavailable ? 'Image unavailable' : refusal ? 'Needs attention' : buffer.state.target.kind === 'agent' ? 'Acceptance unknown' : '';
-    const explanation = [refusal, `${image.width} × ${image.height} pixels. Image references, host image support and provider acceptance are separate facts. Intake permission or stored bytes do not confirm provider acceptance.`].filter(Boolean).join('\n');
+    const status = unavailable ? 'Image unavailable' : refusal ? 'Needs attention' : '';
+    const limitation = buffer.state.target.kind === 'agent' && !unavailable && !refusal
+      ? "The image is available in this draft. The model's ability to use images is not confirmed."
+      : 'Image references, host image support and provider acceptance are separate facts. Intake permission or stored bytes do not confirm provider acceptance.';
+    const explanation = [refusal, `${image.width} × ${image.height} pixels. ${limitation}`].filter(Boolean).join('\n');
     row.append(preview, this.attachmentInfo(image.name, image.mimeType === 'image/png' ? 'PNG' : 'JPEG', image.bytes, status, explanation, !!unavailable || !!refusal), cardAction('close', `Remove ${image.name}`, () => {
       const previous = buffer.data; buffer.data = editDraft(buffer.data, buffer.data.text, buffer.data.mode, buffer.data.images.filter(item => item.digest !== image.digest));
       buffer.attachments?.forget(image.digest); buffer.imageErrors?.delete(image.digest); this.rebaseSelection(buffer, previous); this.paint(buffer); this.receipt(buffer); this.flush(buffer); announce(`Removed ${image.name}`);

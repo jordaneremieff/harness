@@ -336,14 +336,24 @@ type FileMessageDestination = {target:Target; key:string; caption:string; contro
 function fileMessageDestinations(workspace:string):FileMessageDestination[] {
   const targets = new Map<string,Target>();
   for (const pane of paneLeaves(currentLayout().root)) for (const tab of pane.tabs) {const target = controllerTarget(tab); if (target) targets.set(targetIdentity(target), target);}
-  return [...targets].map(([key,target]) => {
+  const destinations = [...targets].map(([key,target]) => {
     const controller = controllers.get(controllerKey(workspace,target));
     const loaded = controller?.workspaceId === workspace && !controller.abort.signal.aborted && sameTarget(controller.composer.target,target) && !!controller.composer.state;
     return {key,target:{...target},caption:presentationName(presentation(target)),controller,reason:loaded ? undefined : 'Draft is not loaded. Open this conversation first.'};
   });
+  return destinations.map(item => destinations.some(other => other.key !== item.key && other.caption === item.caption)
+    ? {...item,caption:`${item.caption} · ${item.target.kind === 'primary' ? 'Ordinary Primary' : 'Durable'}`} : item);
 }
 function fileMessageCurrent(workspace:string,destination:FileMessageDestination):boolean {
   return state.workspace?.id === workspace && fileMessageDestinations(workspace).some(item => item.key === destination.key && item.controller === destination.controller && !item.reason);
+}
+function fileMessageIdentity(target:Target):HTMLDetailsElement {
+  const disclosure = element('details', 'file-message-identity');
+  const primary = target.kind === 'primary' ? state.primaries.get(target.key) : undefined;
+  const identity = target.kind === 'agent' ? `Durable conversation ID: ${target.identity}`
+    : `Ordinary Primary\nSession ID: ${primary?.key === target.key && primary.epoch === target.epoch ? primary.sessionId ?? 'Unavailable' : 'Unavailable'}\nPrimary key: ${target.key}\nEpoch: ${target.epoch}\nTogether these identify the exact Primary target.`;
+  disclosure.append(element('summary', undefined, 'Conversation identity'), element('p', 'secondary file-message-fact', identity));
+  return disclosure;
 }
 export function addFileToMessage(rootId:string,path:string):void {
   const workspace = state.workspace?.id; if (!workspace) return;
@@ -352,14 +362,18 @@ export function addFileToMessage(rootId:string,path:string):void {
   const rootPath = fileRoot.selection?.root?.id === rootId ? fileRoot.selection.root.path : rootId, sourcePath = `${rootPath.endsWith('/') ? rootPath : `${rootPath}/`}${path}`;
   select.id = 'file-message-destination'; label.htmlFor = select.id;
   const placeholder = element('option',undefined,'Choose an open conversation'); placeholder.value = ''; select.append(placeholder);
-  for (const item of destinations) {const option = element('option',undefined,`${item.caption}${item.reason ? ` · ${item.reason}` : ''}`); option.value = item.key; option.disabled = !!item.reason; option.title = item.key; select.append(option);}
+  for (const item of destinations) {const option = element('option',undefined,`${item.caption}${item.reason ? ` · ${item.reason}` : ''}`); option.value = item.key; option.disabled = !!item.reason; option.title = item.caption; select.append(option);}
   const tab = activeTab(currentLayout()), focused = tab && controllerTarget(tab);
   const preferred = focused && destinations.find(item => sameTarget(item.target,focused) && !!item.controller && item.controller.root.isConnected && !item.controller.root.closest('[hidden],[inert]'));
   select.value = preferred?.key ?? '';
-  const destinationDetail = element('p','secondary file-message-fact');
+  const destinationDetail = element('div','file-message-detail');
   const current = ():FileMessageDestination|undefined => destinations.find(item => item.key === select.value);
   const add = button('Add file',()=> {const destination = current(); if (destination && !destination.reason) void stageFileMessage(workspace,rootId,path,sourcePath,destination,token,abort,add,select);});
-  const paint = ():void => {const item = current(); add.disabled = !item || !!item.reason; destinationDetail.textContent = item ? `${item.caption}\n${item.key}${item.reason ? `\n${item.reason}` : ''}` : destinations.length ? 'Choose an existing open conversation.' : 'No open conversation is available.';};
+  const paint = ():void => {
+    const item = current(); add.disabled = !item || !!item.reason; destinationDetail.replaceChildren();
+    if (item) {destinationDetail.append(fileMessageIdentity(item.target));if (item.reason) destinationDetail.append(element('p','secondary',item.reason));}
+    else destinationDetail.append(element('p','secondary',destinations.length ? 'Choose an existing open conversation.' : 'No open conversation is available.'));
+  };
   select.addEventListener('change',paint); paint();
   modal.body.append(element('p','file-message-fact',`Saved file: ${sourcePath}`),element('p','secondary','Uses the saved file. Unsaved editor changes are not included. Text files up to 32 KiB. After adding, use Include text in the selected conversation. Nothing is sent.'),label,select,destinationDetail);
   modal.actions(button('Cancel',()=>modal.close()),add); select.focus();
@@ -376,7 +390,7 @@ async function stageFileMessage(workspace:string,rootId:string,path:string,sourc
     if (!destination.controller?.composer.addFiles([new File([saved.text],name,{type:'text/plain'})])) throw new Error('The file was not staged. Review the selected conversation draft.');
     const receipt = `File staged for ${destination.caption}. Use Include text in that conversation. Nothing was sent.`;
     modal.open('Add file to message');
-    modal.body.append(element('p','file-message-fact',`Saved file: ${sourcePath}`),element('p','secondary file-message-fact',`${destination.caption}\n${destination.key}`),element('p','file-message-fact',receipt));
+    modal.body.append(element('p','file-message-fact',`Saved file: ${sourcePath}`),fileMessageIdentity(destination.target),element('p','file-message-fact',receipt));
     const close = button('Close',()=>modal.close()); modal.actions(close); close.focus(); announce(receipt);
   } catch(error) {if (modal.owns(token)) modal.error(error,'The file was not added.');}
   finally {if (modal.owns(token)) {add.disabled = false; select.disabled = false;}}

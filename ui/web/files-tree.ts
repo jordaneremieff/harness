@@ -13,7 +13,7 @@ function namingLabel(action:Naming['action']):string {switch (action) {case 'mov
 export type FileTreeRow = {entry: FileEntry; depth: number; parent: string};
 export function visibleFileRows(directories: ReadonlyMap<string, Directory>, path = '', depth = 0): FileTreeRow[] {
   const directory = directories.get(path); if (!directory?.expanded) return [];
-  return directory.entries.flatMap(entry => [{entry, depth, parent: path}, ...(entry.kind === 'directory' ? visibleFileRows(directories, entry.path, depth + 1) : [])]);
+  return directory.entries.flatMap(entry => entry.kind === 'file' && entry.name === '.DS_Store' ? [] : [{entry, depth, parent: path}, ...(entry.kind === 'directory' ? visibleFileRows(directories, entry.path, depth + 1) : [])]);
 }
 export type FilesTreeHooks = {page(rootId: string, path: string, cursor?: string): Promise<FileDirectoryPage>; select(rootId: string, path: string): void; keep?(rootId:string,path:string):void; addToMessage?(rootId:string,path:string):void; escape(): void; scope?():Promise<void>|void;status?(message:string):void;operation?(rootId:string,action:FileTreeAction,path:string,value?:string):Promise<undefined|(()=>void)>};
 /** Disclosed directories retain their rows while bounded disk changes refresh their pages. */
@@ -133,7 +133,7 @@ export class FilesTree {
     if (!this.root) return [element('p', 'file-tree-status', 'Choose a working folder.')];
     const base = this.directories.get(''); if (!base) return [];
     const children: HTMLElement[] = [];
-    if (!rows.length && !base.loading && !base.error && !base.incomplete) children.push(element('p', 'file-tree-status', 'No files in this folder.'));
+    if (!rows.length && !base.loading && !base.error && !base.incomplete && !base.nextCursor) children.push(element('p', 'file-tree-status', base.entries.length ? 'No visible files in this folder.' : 'No files in this folder.'));
     return [...children, ...this.directoryStatus('', base, 0)];
   }
   private paint(): void {

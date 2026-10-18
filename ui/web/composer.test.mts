@@ -291,10 +291,12 @@ test('attachment rows retain image identity and expose capability uncertainty th
   const saved = f.connect(state('a', {...draft(4, 'Exact draft', 'followUp'), images: [wide]}, true));
   const editor = f.node('editor'); editor.focus(); editor.setSelectionRange(2, 7, 'backward');
   let row = f.node('attachments').children[0]; assert.ok(row);
-  assert.ok(row.find('wide-landscape.png')); assert.ok(row.find('PNG · 6.0 KiB')); assert.ok(row.find('Acceptance unknown'));
+  assert.ok(row.find('wide-landscape.png')); assert.ok(row.find('PNG · 6.0 KiB')); assert.equal(row.find('Acceptance unknown'), undefined);
   const thumbnail = row.querySelector('img') as unknown as HTMLImageElement; assert.equal(thumbnail.width, 48); assert.equal(thumbnail.height, 48);
   const details = row.querySelector('.attachment-details'); assert.ok(details); assert.equal(details.open, false);
-  assert.match(details.textContent, /host image support and provider acceptance are separate/); assert.doesNotMatch(row.textContent, /This host accepts image input/);
+  assert.match(details.textContent, /4096 × 4 pixels\. The image is available in this draft\. The model's ability to use images is not confirmed\./);
+  assert.equal(details.querySelector('summary')?.textContent.trim(), 'Details'); assert.equal(details.querySelector('summary')?.getAttribute('aria-label'), 'Attachment details for wide-landscape.png');
+  details.open = true; assert.equal(f.calls.length, 0); assert.equal(f.submitted.length, 0); assert.doesNotMatch(row.textContent, /This host accepts image input/);
   assert.ok(row.find('Remove wide-landscape.png'));
   allowed = false; f.composer.availability(true, true, false);
   row = f.node('attachments').children[0]; assert.ok(row?.find('Needs attention')); assert.match(row.textContent, /Exact image capability explanation/);

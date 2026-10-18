@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {createAppFixture} from './app-fixture.mts';
-const {app, arrive, settle, byId, hostDocument, beforeUnload, primaryFixture, primaryControl, agentFixture, targetFixture, transportLog, paneNode, documentHandlers, event} = await createAppFixture();
+const {app, arrive, settle, byId, hostDocument, beforeUnload, primaryFixture, primaryControl, agentFixture, targetFixture, transportLog, paneNode, documentHandlers, event, twoPanes} = await createAppFixture();
 import {activeTab,tabKey} from './tabs.ts';
 import {splitPane,paneLeaves} from './pane-layout.ts';
 import {contextMenu} from './context-menu.ts';
@@ -23,9 +23,23 @@ test('Add file stages exact saved bytes in the named draft without reading or ch
   const root=app.fileRoot.selection?.root?.id;assert.ok(root);const editor=primaryControl('editor'),parent=editor.parentNode;editor.setSelectionRange(2,5,'backward');const composer=app.primaryComposer(),selection=structuredClone(app.state.workspace?.selectedTarget),before=transportLog.length;
   const previous=globalThis.fetch;let reads=0;globalThis.fetch=async(input,init)=> {const url=new URL(String(input),'http://ui.test');if(url.pathname.endsWith('/text')) {reads++;assert.equal(init?.method ?? 'GET','GET');return Response.json({ok:true,data:{rootId:root,path:'saved.md',text:savedText,revision:{size:new TextEncoder().encode(savedText).length,mtimeMs:1,digest:'a'.repeat(64)}}});}return previous(input,init);};
   app.addFileToMessage(root,'saved.md');assert.equal(reads,0);assert.equal(byId('modal-title').textContent,'Add file to message');const select=byId('file-message-destination');assert.notEqual(select.value,'');assert.match(byId('modal-body').textContent,/Uses the saved file.*Unsaved editor changes are not included/);
-  byId('modal-body').querySelectorAll('button').find(node=>node.textContent==='Add file')?.click();await settle();assert.equal(reads,1);assert.equal(byId('modal').open,true);assert.match(byId('modal-body').textContent,/File staged.*Use Include text.*Nothing was sent/);assert.deepEqual(byId('modal-body').querySelectorAll('button').map(node=>node.textContent),['Close']);
+  byId('modal-body').querySelectorAll('button').find(node=>node.textContent==='Add file')?.click();await settle();assert.equal(reads,1);assert.equal(byId('modal').open,true);assert.match(byId('modal-body').textContent,/File staged.*Use Include text.*Nothing was sent/);assert.deepEqual(byId('modal-body').querySelectorAll('button').map(node=>node.textContent),['Close']);const identity=byId('modal-body').querySelector('.file-message-identity');assert.ok(identity);assert.equal(identity.open,false);assert.match(identity.textContent,/Primary key: p\nEpoch: 920/);assert.equal(byId('modal-body').textContent.includes(select.value),false);
   const staged=composer.captureReload()[0]?.attachments?.items[0];assert.ok(staged?.file);assert.deepEqual(new Uint8Array(await staged.file.arrayBuffer()),new TextEncoder().encode(savedText));assert.equal(staged.name,'saved.md');assert.equal(staged.state,'text');assert.equal(editor.value,'Keep recipient text');assert.equal(editor.parentNode,parent);assert.deepEqual([editor.selectionStart,editor.selectionEnd,editor.selectionDirection],[2,5,'backward']);assert.deepEqual(app.state.workspace?.selectedTarget,selection);assert.match(byId('announcements').textContent,/File staged.*Include text/);
   assert.equal(transportLog.slice(before).some(call=>call.path.endsWith('/inputs')||call.path.endsWith('/start')||call.path.endsWith('/prepare')||call.method==='PUT'&&call.path.endsWith('/text')),false);byId('modal-close').click();
+});
+test('file destinations show one qualified name and collapsed exact ordinary or Durable identity',async context=>{
+  fileTransport(context);const target={kind:'primary' as const,key:'p',epoch:930},identity='10000000-0000-4000-8000-000000000001:2',agent={kind:'agent' as const,identity};
+  await arrive({workspace:{id:'file-readable-destination',revision:1,primaryKey:'p',selectedTarget:target,conversationLayout:twoPanes(identity,'primary-pane')},primaries:[primaryFixture({epoch:930,sessionName:'Shared destination',sessionId:'ordinary-native-session'})],roster:[agentFixture(identity,{name:'Shared destination'})],targets:[targetFixture('readable-primary',target),targetFixture('readable-agent',agent)]});
+  const root=app.fileRoot.selection?.root?.id;assert.ok(root);const editor=primaryControl('editor'),text=editor.value,before=transportLog.length;
+  app.addFileToMessage(root,'saved.md');const select=byId('file-message-destination'),options=select.children.filter(item=>!!item.value),body=byId('modal-body');
+  assert.equal(options.length,2);assert.deepEqual(options.map(item=>item.textContent),['Shared destination · Ordinary Primary','Shared destination · Durable']);assert.deepEqual(options.map(item=>item.title),options.map(item=>item.textContent));
+  assert.doesNotMatch(body.querySelector('.file-message-detail')?.textContent??'',/Shared destination/);
+  let disclosure=body.querySelector('.file-message-identity');assert.ok(disclosure);assert.equal(disclosure.open,false);assert.equal(disclosure.querySelector('summary')?.textContent,'Conversation identity');
+  assert.match(disclosure.textContent,/Ordinary Primary\nSession ID: ordinary-native-session\nPrimary key: p\nEpoch: 930\nTogether these identify the exact Primary target\./);assert.equal(body.textContent.includes(select.value),false);
+  select.value=options[1]?.value??'';select.dispatch('change');disclosure=body.querySelector('.file-message-identity');assert.ok(disclosure);assert.equal(disclosure.open,false);assert.equal(disclosure.querySelector('p')?.textContent,`Durable conversation ID: ${identity}`);assert.equal(body.textContent.includes(select.value),false);
+  disclosure.open=true;assert.equal(transportLog.length,before);assert.equal(primaryControl('editor'),editor);assert.equal(editor.value,text);
+  select.value=options[0]?.value??'';app.state.primaries.set('p',primaryFixture({epoch:931,sessionId:'later-native-session'}));select.dispatch('change');assert.match(body.querySelector('.file-message-identity')?.textContent??'',/Session ID: Unavailable/);assert.doesNotMatch(body.textContent,/later-native-session/);
+  byId('modal-close').click();assert.equal(editor.value,text);assert.equal(transportLog.length,before);
 });
 test('file-focused Add requires an explicit open destination and never substitutes unsaved file text',async context=> {
   fileTransport(context);const target={kind:'primary' as const,key:'p',epoch:921};
