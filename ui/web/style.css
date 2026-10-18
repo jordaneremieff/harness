@@ -491,13 +491,13 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
   .workbench-control-value { max-width: 32ch; }
   .workbench-update { flex: 0 10 auto; overflow: hidden; white-space: nowrap; }
   .workbench-control-value, .workbench-status-facts .agent-settings { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .workbench-status-facts .agent-settings { flex: 1 1 0; min-width: 0; }
+  .workbench-status-facts .agent-settings { flex: none; max-width: 60ch; }
   .workbench-activity { flex: none; white-space: nowrap; }
   .workbench-activity:has(> .workbench-activity-text) { flex: 0 1 28ch; min-width: 10ch; gap: 0; }
   .workbench-activity:has(> .workbench-activity-text)[data-busy=true]::before { margin-right: 8px; }
   .workbench-activity-state { flex: none; }
   .workbench-activity-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .workbench-status .composer-details { flex: 0 1 auto; min-width: 8ch; max-width: 48ch; }
+  .workbench-status .composer-details { flex: none; max-width: none; }
   .workbench-status .composer-details > summary { flex-wrap: nowrap; gap: 4px; }
   .workbench-status .composer-details > summary > span:not(.composer-details-label) { overflow: hidden; }
   .workbench-status:has(> .workbench-activity[data-notice=true], > .workbench-draft-state > :not(:empty):not([hidden]), > #file-retained-drafts:not([hidden]), > #control-attribution:not([hidden])) { flex-wrap: wrap; }

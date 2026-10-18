@@ -29,6 +29,8 @@ test('native storage refusal reaches the reload notice and captured page record 
   t.after(() => dev.destroy()); await dev.ready; assert.ok(publish); publish(JSON.stringify(build)); await browser.settle();
   assert.equal(last?.code, 'drain'); assert.equal(last?.error?.name, error.name); assert.equal(last?.error?.message, error.message);
   const captured = JSON.parse(JSON.stringify({state: {notices: [{text: notice.textContent, title: Reflect.get(notice, 'title'), hidden: notice.hidden}]}}));
+  // The footer shows the action alone; the reason lives in its title and accessible name.
+  assert.equal(notice.textContent, 'Retry update'); const retry = notice.querySelector('button'); assert.ok(retry); assert.match(retry.title, /Update unavailable/); assert.match(retry.getAttribute('aria-label') ?? '', /^Retry update\. Update unavailable/);
   assert.ok(captured.state.notices[0].title.includes(error.message)); assert.ok(captured.state.notices[0].title.includes(Reflect.get(error, 'stack')));
   assert.deepEqual(JSON.parse(notice.dataset.reloadError), last?.error);
   assert.equal(browser.agentControl('editor').value, 'Retain this synthetic draft.');

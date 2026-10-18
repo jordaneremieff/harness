@@ -2300,8 +2300,12 @@ export function renderDevReloadNotice(notice: HTMLElement, status: DevReloadNoti
   devNavigating = status.state === 'navigating'; notice.replaceChildren();
   const view = devReloadPresentation(status); notice.hidden = !view.text && !view.retry; notice.title = view.detail;
   if (status.error) notice.dataset.reloadError = JSON.stringify(status.error); else delete notice.dataset.reloadError;
-  if (view.text) notice.append(element('span', undefined, view.text));
-  if (view.retry) notice.append(button('Retry update', () => {if (status.state === 'offline') devReload?.reconnect(); void devReload?.resume();}));
+  // The reason moves into the action's title and accessible name so the footer shows only the short action.
+  if (view.retry) {
+    const retry = button('Retry update', () => {if (status.state === 'offline') devReload?.reconnect(); void devReload?.resume();});
+    retry.title = [view.text, view.detail].filter(Boolean).join('. '); if (view.text) retry.setAttribute('aria-label', `Retry update. ${view.text}`);
+    notice.append(retry);
+  } else if (view.text) notice.append(element('span', undefined, view.text));
   if (!notice.isConnected) workbenchStatus.node.append(notice);
 }
 function updateDiagnostics(): void {
