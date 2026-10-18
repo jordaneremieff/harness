@@ -1011,8 +1011,8 @@ test('pane strips expose local navigation, a direct new-tab chooser and a separa
   const pane = paneNode('pane-1'); const bar = pane.querySelector('.tab-bar'); assert.ok(bar);
   assert.deepEqual(bar.children.filter(node => node.classList.contains('pane-tab-nav') || node.classList.contains('conversation-tabs') || node.classList.contains('pane-actions') || node.classList.contains('pane-menu')).map(node => node.getAttribute('aria-label')), ['Previous tab', 'Next tab', 'Tabs', 'New tab', 'Tabs in this pane', 'Conversation actions']);
   const [previous, next] = pane.querySelectorAll('.pane-tab-nav'); assert.ok(previous); assert.ok(next);
-  assert.equal(previous.disabled, true); assert.equal(next.disabled, false); next.click(); await settle();
-  assert.deepEqual(app.state.workspace?.selectedTarget, {kind: 'agent', identity: 'strip-a'}); assert.equal(previous.disabled, false);
+  assert.equal(previous.disabled, true); assert.equal(previous.hidden, true); assert.equal(next.disabled, false); assert.equal(next.hidden, false); next.click(); await settle();
+  assert.deepEqual(app.state.workspace?.selectedTarget, {kind: 'agent', identity: 'strip-a'}); assert.equal(previous.disabled, false); assert.equal(previous.hidden, false);
   const list = pane.querySelector('.pane-menu'); assert.ok(list); list.click();
   assert.equal(menuNode().getAttribute('aria-label'), 'Tabs in this pane');
   for (const name of ['First full tab name', 'Second full tab name', 'Split right', 'Split down', 'Close tab']) assert.ok(menuNode().children.some(node => node.textContent === name), name);
@@ -1201,7 +1201,7 @@ test('sidebar sections retain their collapsed state per workspace and tab and fi
   app.renderSidebarSections(); assert.equal(byId('agents-heading').attributes.get('aria-expanded'), 'false');
   assert.equal(byId('agents-section-body').hidden, true); assert.equal(byId('primary-section-body').hidden, true);
   app.setSidebarSection('agents', false);
-  assert.equal(byId('agents-section-body').hidden, false); assert.equal(values.get('ui:sections:w:agents'), 'false');
+  assert.equal(byId('agents-section-body').hidden, false); assert.equal(values.get('ui:sections:w:agents'), 'false'); assert.equal(byId('agents-count').hidden, true);
   app.setSidebarSection('agents', true); assert.equal(values.get('ui:sections:w:agents'), 'true');
   app.setSidebarSection('files', true); assert.equal(values.get('ui:sections:w:files'), 'true');
   assert.equal(byId('files-heading').getAttribute('aria-expanded'), 'false'); assert.equal(byId('files-section-body').hidden, true);
@@ -1225,7 +1225,7 @@ test('sidebar sections retain their collapsed state per workspace and tab and fi
   assert.doesNotMatch(html, /id="primary-heading"/);
   assert.match(html, /id="session-open"[^>]*aria-haspopup="dialog">Find session…/);
   assert.match(html, /id="tabs-open-session"[^>]*>Find session…/);
-  for (const section of ['files', 'agents']) assert.ok(byId(`${section}-heading`).querySelector('.card-icon-chevron'));
+  for (const section of ['files', 'agents']) { assert.equal(byId(`${section}-heading`).querySelector('svg'), null); assert.ok(byId(`${section}-count`)); }
   assert.match(html, /id="agents-heading" class="section-toggle"[^>]*aria-controls="agents-section-body">AGENTS/);
 });
 test('palette key aliases prevent browser defaults and preserve IME, repeat and open-dialog guards', async () => {

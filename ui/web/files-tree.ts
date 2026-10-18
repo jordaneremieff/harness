@@ -36,6 +36,8 @@ export class FilesTree {
   refresh(): void {this.invalidate(this.root?.id ?? '',[],true);}
   disclosed():string[] {return [...this.directories].filter(([path,directory])=>!path || directory.expanded).map(([path])=>path);}
   rootId():string|undefined {return this.root?.id;}
+  /** Loaded top-level entries; a following page is reported so a count never claims to be complete. */
+  rootCount():{count:number;more:boolean}|undefined {const top=this.directories.get('');return top?{count:top.entries.length,more:top.nextCursor!==null}:undefined;}
   invalidate(rootId:string,paths:string[],rescan = false):void {
     if (rootId !== this.root?.id) return;const dirty = new Set(paths);
     for (const [path,directory] of this.directories) if ((!path || directory.expanded) && (rescan || dirty.has(path))) {if (directory.loading) directory.again = true;else this.dirty.add(path);}
@@ -106,7 +108,7 @@ export class FilesTree {
   private rowButton(entry: FileEntry): HTMLButtonElement {
     const existing = this.buttons.get(entry.path); if (existing) return existing;
     const button = element('button', 'file-row'); button.type = 'button'; button.dataset.path = entry.path;
-    const disclosure = cardIcon('chevron');disclosure.classList.add('file-disclosure');button.append(disclosure,cardIcon(entry.kind === 'directory' ? 'folder' : 'file'),element('span','file-name',entry.name));
+    button.append(cardIcon(entry.kind === 'directory' ? 'folder' : 'file'),element('span','file-name',entry.name));
     this.buttons.set(entry.path, button); button.addEventListener('click', () => {const current = this.entry(button.dataset.path ?? '');if (current) this.choose(current);});button.addEventListener('dblclick',()=> {const current = this.entry(button.dataset.path ?? '');if (current?.kind === 'file' && this.root) this.hooks.keep?.(this.root.id,current.path);}); return button;
   }
   private paintRow({entry, depth}: FileTreeRow, tabStop?: string): HTMLButtonElement {
@@ -116,10 +118,9 @@ export class FilesTree {
     button.disabled = entry.kind === 'other' || entry.kind === 'symlink';
     const expanded = this.directories.get(entry.path)?.expanded ?? false;
     if (entry.kind === 'directory') button.setAttribute('aria-expanded', String(expanded)); else button.removeAttribute('aria-expanded');
-    const disclosure = button.children[0] as SVGSVGElement;disclosure.dataset.hidden = String(entry.kind !== 'directory');disclosure.dataset.expanded = String(expanded);
-    this.paintRowIcon(button.children[1] as SVGSVGElement,entry.kind === 'directory' ? 'folder' : 'file');setText(button.children[2] as HTMLElement,entry.name);return button;
+    this.paintRowIcon(button.children[0] as SVGSVGElement,entry.kind === 'directory' ? expanded ? 'folder-open' : 'folder' : 'file');setText(button.children[1] as HTMLElement,entry.name);return button;
   }
-  private paintRowIcon(icon:SVGSVGElement,name:'file'|'folder'):void {
+  private paintRowIcon(icon:SVGSVGElement,name:'file'|'folder'|'folder-open'):void {
     if (icon.classList.contains(`card-icon-${name}`)) return;
     const next = cardIcon(name);icon.setAttribute('class',next.getAttribute('class') ?? '');icon.querySelector('path')?.setAttribute('d',next.querySelector('path')?.getAttribute('d') ?? '');
   }

@@ -409,7 +409,7 @@ test('callId joins call and results across entries with one bounded disclosure a
   assert.equal(card.querySelector('pre')?.textContent, 'x'.repeat(5000));
   const raw = card.querySelectorAll('details').find(node => node.querySelector('summary')?.textContent === 'Raw output');
   assert.ok(raw); raw.open = true; raw.dispatch('toggle'); assert.equal(raw.querySelector('pre')?.textContent, 'x'.repeat(5000));
-  assert.equal(card.querySelector('summary')?.querySelectorAll('.card-icon-disclosure').length, 1); assert.equal(card.parentNode?.querySelectorAll('.tool-copy').length, 1);
+  assert.equal(card.querySelector('summary')?.querySelectorAll('.card-icon-disclosure').length, 0); assert.equal(card.parentNode?.querySelectorAll('.tool-copy').length, 1);
   view.set(entries, new Map([['call-1', {callId: 'call-1', name: 'read', phase: 'end' as const, parts: [{type: 'text' as const, text: 'failure cause'}], isError: true}]])); flush();
   assert.equal(node('primary-transcript').querySelector('.tool-card'), card); assert.match(card.textContent, /failure cause/);
   assert.equal(card.querySelector('.tool-status')?.textContent, 'Failed');
@@ -426,7 +426,7 @@ test('collapsed cards prefer supplied structured summaries and keep exact raw co
   const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card);
   assert.equal(card.querySelector('.tool-preview')?.textContent, 'count: 2 · valid: false');
   assert.equal(card.querySelector('.tool-secondary')?.textContent, 'lines 40–47 · 37 ms');
-  assert.equal(card.querySelector('summary')?.querySelectorAll('.card-icon-disclosure').length, 1);
+  assert.equal(card.querySelector('summary')?.querySelectorAll('.card-icon-disclosure').length, 0);
   const action = card.parentNode?.querySelector('.tool-copy'); assert.ok(action); assert.equal(action.textContent, 'Copy output');
   let copied = ''; const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
   Object.defineProperty(globalThis, 'navigator', {configurable: true, value: {clipboard: {writeText: async (text: string) => { copied = text; }}}});

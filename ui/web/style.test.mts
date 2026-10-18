@@ -57,12 +57,13 @@ test('conversation actions live in the pane tab row and keep shared desktop and 
   assert.match(rule('.card-action'), /width: 24px; height: 24px; min-width: 24px; min-height: 24px/);
   assert.match(media('@media (pointer:coarse)'), /\.card-action, \.section-toggle[^{}]+\{ min-height: 44px; min-width: 44px/);
 });
-test('sidebar disclosures use rotating chevrons and discovery stays a named action', () => {
-  assert.match(rule('.section-toggle > .card-icon'), /width: 12px; height: 12px/);
-  assert.match(rule('.section-toggle[aria-expanded=true] > .card-icon-chevron'), /transform: rotate\(90deg\)/);
-  assert.doesNotMatch(css, /\.section-toggle::before|\.section-toggle\[aria-expanded=false\]::before/);
-  assert.match(rule('.session-catalog'), /font-size: 13px/);
-  assert.match(html, /id="session-open"[^>]*>Find session…/);
+test('sidebar headings are text controls with counts and the finder is the first row of SESSIONS', () => {
+  assert.doesNotMatch(css, /\.section-toggle > \.card-icon|card-icon-chevron|\.section-toggle::before/);
+  assert.match(rule('.section-toggle:hover'), /color: var\(--fg\)/); assert.match(rule('.section-toggle .count'), /margin-left: var\(--s2\)/);
+  assert.match(html, /id="files-count"/); assert.match(html, /id="agents-count"/);
+  assert.match(html, /<h2 id="sessions-heading" class="nav-heading">SESSIONS<\/h2>/);
+  assert.match(rule('.session-catalog'), /color: var\(--muted\)/);
+  assert.match(html, /id="session-open" class="nav-row session-catalog"[^>]*>Find session…/);
   assert.match(html, /id="session-new"[^>]*data-control-icon="plus"[^>]*aria-label="New session"/);
 });
 
@@ -236,12 +237,12 @@ test('tool status labels have natural width and disclosure marks stay separate f
   assert.match(rule('.tool-status'), /flex: none/);
   assert.doesNotMatch(rule('.tool-status'), /overflow: hidden|text-overflow:|line-clamp/);
   assert.doesNotMatch(rule('.tool-status'), /(?:^|;\s*)width: 12px/);
-  assert.match(rule('.tool-card > summary'), /display: grid; grid-template-columns: 16px minmax\(0,1fr\) auto/);
+  assert.match(rule('.tool-card > summary'), /display: grid; grid-template-columns: minmax\(0,1fr\) auto/);
   assert.match(rule('.card-disclosure::before'), /content: none/);
-  assert.match(rule('.card-disclosure > .card-icon-disclosure'), /display: inline-block/);
-  assert.match(rule('details[open] > .card-disclosure > .card-icon-disclosure'), /transform: rotate\(90deg\)/);
-  assert.match(rule('.tool-card > summary > .tool-tier'), /grid-column: 2; grid-row: 1; min-width: 0/);
-  assert.match(rule('.tool-card > summary > :is(.tool-preview, .tool-preview-qualification)'), /grid-column: 2 \/ -1/);
+  assert.doesNotMatch(css, /card-icon-disclosure/);
+  assert.match(rule('.tool-card > summary > .tool-tier'), /grid-column: 1; grid-row: 1; min-width: 0/);
+  assert.match(rule('.tool-card > summary > :is(.tool-preview, .tool-preview-qualification)'), /grid-column: 1 \/ -1/);
+  assert.match(rule('.tool-shell:hover'), /border-color: var\(--edge\)/);
   assert.match(rule('.tool-preview'), /color: var\(--fg\)/);
   assert.match(rule('.tool-secondary'), /color: var\(--muted\)/);
   assert.match(rule('.tool-output-info'), /max-width: 100%; color: var\(--muted\); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere/);
@@ -314,8 +315,6 @@ test('structured content uses readable prose, wrapped fields, compact tables and
   assert.match(summary, /font-size: 12px; overflow-wrap: anywhere/);
   assert.doesNotMatch(summary, /background:|border:|min-height:|max-height:|overflow: hidden/);
   assert.match(rule('summary::before'), /content: none/);
-  assert.match(rule('.card-disclosure > .card-icon-disclosure'), /display: inline-block/);
-  assert.match(rule('details[open] > .card-disclosure > .card-icon-disclosure'), /transform: rotate\(90deg\)/);
   assert.match(media('@media (pointer:coarse)'), /button, summary,[^{}]+\{ min-height: 44px; min-width: 44px/);
   assert.match(rule('.tool-source > pre'), /white-space: pre-wrap; overflow-wrap: anywhere/);
   assert.match(rule('.tool-shell .kv'), /grid-template-columns: minmax\(6ch,max-content\) minmax\(0,1fr\)/);
@@ -489,26 +488,23 @@ test('card actions and expanded content share fixed geometry without label-width
   assert.match(rule('.card-action'), /width: 24px; height: 24px; min-width: 24px; min-height: 24px/);
   assert.match(rule('.card-icon'), /width: 16px; height: 16px/);
   assert.match(rule('.tool-output-actions > button'), /min-height: 24px; padding: 2px 4px; color: var\(--muted\)/);
-  assert.match(rule('.tool-expanded'), /margin: 4px 0 8px 24px/);
-  assert.match(rule('.tool-expanded .card-disclosure > .card-icon-disclosure'), /left: -24px; margin: -8px 0 0/);
+  assert.match(rule('.tool-expanded'), /margin: 4px 0 8px 0/);
   assert.match(rule('.tool-expanded .source-disclosure > summary.source-header'), /padding: 2px 32px 2px 0/);
   assert.match(rule('button'), /border: 0; border-radius: 4px; background: transparent/);
 });
-test('multiline tool targets retain an inline status and a separate disclosure', () => {
+test('multiline tool targets retain an inline status inside the whole-card control', () => {
   const tier = rule('.tool-tier');
   assert.match(tier, /align-items: baseline/);
   assert.doesNotMatch(tier, /justify-content: space-between/);
   assert.match(rule('.tool-secondary'), /padding-top: 2px/);
   assert.match(rule('.tool-status'), /flex: none; color: var\(--muted\); font-size: 12px/);
-  assert.match(rule('.tool-card > summary > .card-icon-disclosure'), /width: 16px; height: 16px; margin-right: 0; align-self: center/);
   assert.match(rule('.tool-target'), /white-space: normal; overflow-wrap: anywhere/);
   assert.doesNotMatch(rule('.tool-target'), /line-clamp|text-overflow: ellipsis|overflow: hidden/);
 });
-test('partial output qualification shares the tool summary content column rather than its marker column', () => {
-  assert.match(rule('.tool-card > summary'), /grid-template-columns: 16px minmax\(0,1fr\) auto/);
-  assert.match(rule('.tool-card > summary > :is(.tool-preview, .tool-preview-qualification)'), /grid-column: 2 \/ -1/);
-  assert.match(rule('.tool-card > summary > .tool-tier'), /grid-column: 2; grid-row: 1; min-width: 0/);
-  assert.match(rule('.tool-card > summary > .card-icon-disclosure'), /grid-column: 1/);
+test('partial output qualification shares the full tool summary width', () => {
+  assert.match(rule('.tool-card > summary'), /grid-template-columns: minmax\(0,1fr\) auto/);
+  assert.match(rule('.tool-card > summary > :is(.tool-preview, .tool-preview-qualification)'), /grid-column: 1 \/ -1/);
+  assert.match(rule('.tool-card > summary > .tool-tier'), /grid-column: 1; grid-row: 1; min-width: 0/);
   assert.match(rule('.tool-preview-qualification'), /color: var\(--muted\);[^}]*font-size: 12px/);
   assert.doesNotMatch(rule('.tool-preview-qualification'), /display: none|visibility: hidden/);
 });
@@ -551,7 +547,7 @@ test('expanded output retains bounded native scrollports with fixed gutters', ()
   assert.match(output, /box-sizing: border-box; width: fit-content; min-width: min\(24ch,100%\); max-width: 100%; max-height: 480px/);
   assert.match(output, /padding: var\(--s1\) var\(--s2\); border: 0/);
   assert.match(output, /border-radius: 3px; background: var\(--code\)/);
-  assert.match(rule('.tool-expanded'), /margin: 4px 0 8px 24px/);
+  assert.match(rule('.tool-expanded'), /margin: 4px 0 8px 0/);
   assert.match(rule('pre'), /line-height: 1\.5; white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: hidden; overflow-y: auto/);
   assert.doesNotMatch(output, /(?:^|;\s*)(?:height|line-height):|padding-(?:top|bottom|block):|overflow(?:-y)?:|clip-path:|transform:|margin:/);
   assert.doesNotMatch(css, /\.tool-output-frame/);
@@ -1057,4 +1053,10 @@ test('chrome labels stay quiet and content color is reserved for syntax, links a
   assert.match(rule('.markdown-content .markdown-inline-code'), /padding: 0 3px/);
   assert.doesNotMatch(css, /\.markdown-content em \{/);
   assert.match(rule('.message-actions'), /margin-left: auto/);
+});
+test('every sidebar heading and row starts its content at the same 12px edge', () => {
+  assert.match(rule('.nav-heading-row'), /padding: 0 8px 0 var\(--s3\)/); assert.match(rule('.conversation-heading, .conversation-group-title'), /padding: 0 var\(--s3\)/);
+  assert.match(rule('.nav-row, .row-select'), /padding: 2px 64px 2px var\(--s3\)/); assert.match(rule('.conversation-row'), /padding: 2px var\(--s3\);/);
+  assert.match(rule('.file-row'), /padding: 2px var\(--s3\) 2px calc\(var\(--s3\) \+ var\(--file-depth,0\) \* 14px\)/);
+  assert.match(rule('.agent-row .row-select'), /padding: 4px var\(--s2\) 4px var\(--s3\)/); assert.match(rule('.nav-search'), /margin: var\(--s1\) var\(--s3\)/);
 });

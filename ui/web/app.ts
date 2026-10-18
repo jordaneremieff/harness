@@ -320,7 +320,7 @@ export const filesViews = new FilesViews(stableViews,(workspace,tab,signal)=>req
 function fileDocumentRoute(workspace:string,tab:FileTab,kind:'draft'|'text'):string {return `/api/files/roots/${encodeURIComponent(tab.rootId)}/${kind}?path=${encodeURIComponent(tab.path)}&workspace=${encodeURIComponent(workspace)}`;}
 export const filesTree = new FilesTree(byId('files-tree'),{
   page:(rootId,path,cursor)=> {const workspace = state.workspace?.id;if (!workspace) return Promise.reject(new Error('No workspace is selected.'));return request<FileDirectoryPage>(`/api/files/roots/${encodeURIComponent(rootId)}/directory?path=${encodeURIComponent(path)}&workspace=${encodeURIComponent(workspace)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);},
-  select:chooseFile,keep:(rootId,path)=>fileBrowse.keep(tabKey({kind:'file',rootId,path})),addToMessage:addFileToMessage,escape:focusEditor,scope:()=>watchFiles(),status:message=> {fileActionStatus = message;renderWorkbenchStatus();},operation:fileTreeOperation});
+  select:chooseFile,keep:(rootId,path)=>fileBrowse.keep(tabKey({kind:'file',rootId,path})),addToMessage:addFileToMessage,escape:focusEditor,scope:()=>{renderSectionCounts();return watchFiles();},status:message=> {fileActionStatus = message;renderWorkbenchStatus();},operation:fileTreeOperation});
 export const fileRoot = new FileRootChoice({get:workspace=>request<FileRootSelection>(`/api/workspaces/${encodeURIComponent(workspace)}/files/root`),put:(workspace,path,revision)=>request<FileRootSelection>(`/api/workspaces/${encodeURIComponent(workspace)}/files/root`,'PUT',{path,expectedRevision:revision})},()=> {renderFiles();renderIdentity();});
 export function chooseFile(rootId:string,path:string,focus = true):void {
   if (!state.workspace) return;
@@ -561,6 +561,15 @@ export function renderSidebarSections(): void {
     byId(`${section}-heading`).setAttribute('aria-expanded', String(!sidebarSections[section]));
     byId(`${section}-section-body`).hidden = sidebarSections[section];
   }
+  renderSectionCounts();
+}
+/** A collapsed heading carries the size of what it hides; an expanded one shows the list itself. */
+export function renderSectionCounts(): void {
+  const files = filesTree.rootCount(), agents = state.rosterOrder.length;
+  const labels = {files: files ? `${files.count}${files.more ? '+' : ''}` : '', agents: agents ? `${agents}${state.rosterMeta?.nextCursor ? '+' : ''}` : ''};
+  for (const section of ['files', 'agents'] as const) {
+    const count = byId(`${section}-count`); setText(count, labels[section]); count.hidden = !sidebarSections[section] || !labels[section];
+  }
 }
 export function setSidebarSection(section: 'agents' | 'files', collapsed: boolean): void {
   renderSidebarSections(); sidebarSections[section] = collapsed;
@@ -791,7 +800,8 @@ function mountPaneLeaf(leaf: PaneLeaf, layout: ConversationLayout): HTMLElement 
     content.addEventListener('focusin', () => updatePaneFocus(leaf.id));
   }
   const activeIndex = leaf.tabs.findIndex(tab => tabKey(tab) === leaf.active);
-  pane.previous.disabled = activeIndex <= 0; pane.next.disabled = activeIndex < 0 || activeIndex >= leaf.tabs.length - 1;
+  // Step arrows exist only for a direction that has a tab to reach.
+  pane.previous.hidden = pane.previous.disabled = activeIndex <= 0; pane.next.hidden = pane.next.disabled = activeIndex < 0 || activeIndex >= leaf.tabs.length - 1;
   pane.plus.disabled = !state.workspace; pane.menu.disabled = !leaf.tabs.length;
   const activeTab = leaf.tabs[activeIndex]; pane.actions.hidden = !activeTab || activeTab.kind === 'file'; pane.actions.disabled = pane.actions.hidden || !state.workspace;
   pane.node.dataset.focused = String(leaf.id === layout.focusedPane);
@@ -1337,6 +1347,7 @@ export function renderPrimaryQueue(queue?: EventData['primary.queue']): void {
 }
 function renderRoster(): void {
   tabStrip.render(); renderIdentity();
+  renderSectionCounts();
   roster.set(state.rosterOrder.flatMap(id => { const row = state.roster.get(id); return row ? [row] : []; }), state.rosterMeta, selectedAgent());
   for (const identity of state.roster.keys()) renderMessageResume(identity);
   refreshCaptionConsumers();
@@ -2021,7 +2032,6 @@ function bind(): void {
     controlIcon(node, node.dataset.controlIcon as CardIcon, node.getAttribute('aria-label') ?? node.textContent ?? '');
     if (count) node.append(count);
   }
-  for (const section of ['files', 'agents']) byId(`${section}-heading`).prepend(cardIcon('chevron'));
   byId('files-heading').addEventListener('click',()=>setSidebarSection('files',!sidebarSections.files));
   byId('files-refresh').addEventListener('click',()=>filesTree.refresh());
   // Programmatic restoration also emits trusted scroll/select events; input intent must still change the revision.
