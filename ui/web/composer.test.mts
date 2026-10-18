@@ -186,6 +186,15 @@ test('passive attachment and availability never reserve input while explicit act
     f.composer.destroy();
   }
 });
+test('a recipient that cannot receive input reserves nothing and prepares once it can', async () => {
+  const f = fixture('agent'); const saved = state('suppressed', draft(1, 'Draft for a stored agent', 'followUp'), true);
+  f.composer.setState({line: 'Not running. Start it to send a message.', action: {label: 'Start', run: () => {}}});
+  f.connect(saved); await turn(); f.composer.availability(true, true, false); await turn();
+  assert.equal(f.reservations(), 0);
+  f.composer.setState(undefined); await turn(); assert.equal(f.reservations(), 1);
+  f.composer.setState({line: 'This agent cannot run here.', blocksSend: true}); f.composer.availability(true, true, false); await turn(); assert.equal(f.reservations(), 1);
+  f.composer.destroy();
+});
 test('explicit send reserves a passive draft and passive settlement never prepares another input', async () => {
   const f = fixture('agent', undefined, false, undefined, undefined, undefined, () => false);
   const saved = f.connect(state('passive-send', draft(2, 'Deliberate message', 'followUp'), true));

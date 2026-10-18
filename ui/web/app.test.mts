@@ -1632,7 +1632,7 @@ test('the sidebar avoids a duplicate Primary destination and retains its closed-
   assert.equal(paneLeaves(app.state.workspace?.conversationLayout?.root ?? singlePane([]).root)[0]?.tabs[0]?.kind, 'primary');
 });
 
-test('stored connection checks keep both drafts and reserve only exact-target input', async () => {
+test('stored connection checks keep both drafts and reserve no input while Start is offered', async () => {
   const target = {kind: 'agent' as const, identity: 'stored-check'};
   const primaryTarget = {kind: 'primary' as const, key: 'p', epoch: 2};
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: target, panelVisible: true}, primaries: [primaryFixture({epoch: 2})], roster: [agentFixture(target.identity, {availability: 'stored', capabilities: {input: false}})], targets: [targetFixture('check-primary', primaryTarget, {draft: {revision: 7, text: 'Primary keep', mode: 'prompt', persisted: true}}), targetFixture('check-agent', target, {draft: {revision: 7, text: 'Agent keep', mode: 'followUp', persisted: true}})]});
@@ -1641,8 +1641,8 @@ test('stored connection checks keep both drafts and reserve only exact-target in
   assert.equal(byId('agent-usage-details').hidden, false); assert.equal(agentControl('editor').disabled, false); assert.equal(agentControl('start').hidden, false); assert.equal(agentControl('send').hidden, true);
   assert.match(byId('agent-usage').textContent, /Cache usage is not reported/); assert.equal(byId('agent-usage-summary').textContent, '');
   const start = transportLog.length; await app.checkAgentConnection('w', target.identity); await settle();
-  const mutations = transportLog.slice(start).filter(item => item.method === 'POST'); assert.deepEqual(mutations.map(item => item.path), ['/api/workspaces/w/targets','/api/operations']);
-  assert.deepEqual(mutations[0]?.body, {target});assert.deepEqual(mutations[1]?.body,{kind:'agent.input',target});assert.equal(transportLog.slice(start).some(call=>call.path.includes('/inputs')||call.path.endsWith('/start')),false); assert.equal(primaryControl('editor'), primaryEditor); assert.equal(agentControl('editor'), agentEditor);
+  const mutations = transportLog.slice(start).filter(item => item.method === 'POST'); assert.deepEqual(mutations.map(item => item.path), ['/api/workspaces/w/targets']);
+  assert.deepEqual(mutations[0]?.body, {target});assert.equal(transportLog.slice(start).some(call=>call.path.includes('/inputs')||call.path.endsWith('/start')),false); assert.equal(primaryControl('editor'), primaryEditor); assert.equal(agentControl('editor'), agentEditor);
   assert.equal(primaryEditor.value, 'Primary keep'); assert.equal(agentEditor.value, 'Agent keep'); assert.deepEqual(app.state.workspace?.selectedTarget, target);
 });
 

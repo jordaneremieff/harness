@@ -179,6 +179,10 @@ export class Composer {
   setState(view?: ComposerStateView): void {
     if (this.destroyed) return;
     this.stateView = view;
+    if (this.current) this.prepare(this.current);
+    this.paintState(view);
+  }
+  private paintState(view?: ComposerStateView): void {
     const {state, start} = this.elements; if (!state || !start) return;
     const line = state.querySelector<HTMLElement>('.composer-state-line'), detail = state.querySelector<HTMLButtonElement>('.composer-state-detail');
     state.hidden = !view; setText(line as HTMLElement, view?.line ?? '');
@@ -542,7 +546,7 @@ export class Composer {
     }
   }
   private prepare(buffer: Buffer): void {
-    if (this.destroyed || this.admissionBlocked || !this.ready || this.hooks.prepareInput?.() === false || buffer !== this.current || buffer.reservation || buffer.submitting) return;
+    if (this.destroyed || this.admissionBlocked || !this.ready || this.sendSuppressed || this.hooks.prepareInput?.() === false || buffer !== this.current || buffer.reservation || buffer.submitting) return;
     const reservation = {promise: reserve(buffer.state.target.kind === 'primary' ? 'primary.input' : 'agent.input', buffer.state.target), at: Date.now()};
     buffer.reservation = reservation;
     void reservation.promise.catch(error => {
