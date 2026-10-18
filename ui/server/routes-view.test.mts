@@ -62,11 +62,11 @@ test('Enter preference admits booleans only and preserves omission',async()=> {
   assert.equal(f.observed,3);
 });
 test('appearance and sidebar values retain exact validation without changing observation ownership',async()=> {
-  const f=fixture();const choices=['dark','light','system','latte','frappe','macchiato','mocha'] as const;
+  const f=fixture();const choices=['dark','light','system'] as const;
   for(const appearance of choices) assert.equal((await f.select({expectedRevision:0,appearance}) as Workspace).appearance,appearance);
-  await assert.rejects(f.select({expectedRevision:0,appearance:'unknown'}),/appearance/);
+  for(const appearance of ['unknown','latte','frappe','macchiato','mocha']) await assert.rejects(f.select({expectedRevision:0,appearance}),/appearance/);
   for(const sidebarWidth of [200,264,480]) assert.equal((await f.select({expectedRevision:0,sidebarWidth}) as Workspace).sidebarWidth,sidebarWidth);
   for(const sidebarWidth of [null,'264',199,481,200.5,NaN,Infinity,{},[]]) await assert.rejects(f.select({expectedRevision:0,sidebarWidth}),/sidebar width/);
   for(const sidebarVisible of [null,'false',0,{},[]]) await assert.rejects(f.select({expectedRevision:0,sidebarVisible}),/sidebar visibility/);
-  assert.equal(f.observed,10);
+  assert.equal(f.observed,6);
 });

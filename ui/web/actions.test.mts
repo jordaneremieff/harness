@@ -915,23 +915,24 @@ test('session menu keyboard navigation skips disabled rows and reaches the full 
   } finally {f.restore();}
 });
 
-const themes: [Appearance, string][] = [['dark', 'Dark'], ['light', 'Light'], ['system', 'System'], ['latte', 'Catppuccin Latte'], ['frappe', 'Catppuccin Frappé'], ['macchiato', 'Catppuccin Macchiato'], ['mocha', 'Catppuccin Mocha']];
-test('Appearance lists every theme in order and checks the current workspace choice', () => {
-  for (const current of [...themes.map(([value]) => value), undefined]) {
-    const f = paletteFixture({snapshot: () => current ? {workspace: {appearance: current}} as Snapshot : undefined}); try {
+const themes: [Appearance, string][] = [['system', 'System'], ['dark', 'Dark'], ['light', 'Light']];
+test('Appearance lists System, Dark and Light in order and checks the current workspace choice, reading retired values as the mode they looked like', () => {
+  const read: Record<string, Appearance> = {dark: 'dark', light: 'light', system: 'system', latte: 'light', frappe: 'dark', macchiato: 'dark', mocha: 'dark'};
+  for (const current of [...Object.keys(read), undefined]) {
+    const f = paletteFixture({snapshot: () => current ? {workspace: {appearance: current}} as unknown as Snapshot : undefined}); try {
       f.actions.appearance(); const rows = f.body.children[0]; assert.ok(rows);
       assert.equal(rows.attributes.get('role'), 'menu'); assert.equal(rows.attributes.get('aria-label'), 'Appearance');
       assert.deepEqual(rows.children.map(row => textOf(row)), themes.map(([, label]) => label));
       for (const [index, [value]] of themes.entries()) {
         assert.equal(rows.children[index]?.attributes.get('role'), 'menuitemradio');
-        assert.equal(rows.children[index]?.attributes.get('aria-checked'), String(value === (current ?? 'dark')));
+        assert.equal(rows.children[index]?.attributes.get('aria-checked'), String(value === (current ? read[current] : 'system')));
       }
-      assert.equal(focused && textOf(focused), themes.find(([value]) => value === (current ?? 'dark'))?.[1]);
+      assert.equal(focused && textOf(focused), themes.find(([value]) => value === (current ? read[current] : 'system'))?.[1]);
     } finally {f.restore();}
   }
 });
 test('Appearance saves each exact theme value through the existing selection path', async () => {
-  let current: Appearance = 'dark'; const selected: Appearance[] = [];
+  let current: Appearance = 'system'; const selected: Appearance[] = [];
   const f = paletteFixture({snapshot: () => ({workspace: {appearance: current}} as Snapshot), selection: async change => {assert.ok(change.appearance); selected.push(change.appearance); current = change.appearance;}}); try {
     for (const [index, [value]] of themes.entries()) {
       f.actions.appearance(); f.body.children[0]?.children[index]?.dispatchEvent(new Event('click')); await Promise.resolve();
@@ -941,21 +942,31 @@ test('Appearance saves each exact theme value through the existing selection pat
     assert.deepEqual(selected, themes.map(([value]) => value));
   } finally {f.restore();}
 });
-test('Appearance keyboard navigation reaches the other themes without changing the choice', () => {
-  const f = paletteFixture({snapshot: () => ({workspace: {appearance: 'latte'}} as Snapshot)}); try {
+test('Appearance keyboard navigation reaches the other choices without changing the choice', () => {
+  const f = paletteFixture({snapshot: () => ({workspace: {appearance: 'dark'}} as Snapshot)}); try {
     f.actions.appearance(); const rows = f.body.children[0]; assert.ok(rows);
-    key(rows, 'ArrowDown'); assert.equal(focused && textOf(focused), 'Catppuccin Frappé');
-    key(rows, 'End'); assert.equal(focused && textOf(focused), 'Catppuccin Mocha');
-    key(rows, 'Home'); assert.equal(focused && textOf(focused), 'Dark');
-    assert.equal(rows.children[3]?.attributes.get('aria-checked'), 'true');
+    key(rows, 'ArrowDown'); assert.equal(focused && textOf(focused), 'Light');
+    key(rows, 'End'); assert.equal(focused && textOf(focused), 'Light');
+    key(rows, 'Home'); assert.equal(focused && textOf(focused), 'System');
+    assert.equal(rows.children[1]?.attributes.get('aria-checked'), 'true');
   } finally {f.restore();}
+});
+test('Appearance states from the page link whether the user stylesheet is applied', () => {
+  for (const applied of [false, true]) {
+    const f = paletteFixture(); const page = globalThis.document as unknown as {querySelector: (selector: string) => unknown};
+    page.querySelector = selector => applied && selector === 'link[data-user-stylesheet]' ? {} : null;
+    try {
+      f.actions.appearance();
+      assert.equal(textOf(f.body.children[1] as FakeNode), applied ? 'Your stylesheet is applied.' : 'Add your own stylesheet with ui.userStylesheet in harness.json.');
+    } finally {f.restore();}
+  }
 });
 test('theme names discover the single Appearance palette action', () => {
   const actions = new Actions(context()); const entries = actions.paletteEntries();
   const appearance = entries.find(item => item.name === 'Appearance'); assert.ok(appearance);
   assert.equal(appearance.description, 'Choose a theme'); assert.equal(appearance.enabled, true);
   assert.equal(entries.filter(item => item.name === 'Appearance').length, 1); assert.equal(entries.some(item => item.name.startsWith('Theme:')), false);
-  for (const query of ['theme', 'catppuccin', 'Catppuccin Frappe', ...themes.flat()]) {
+  for (const query of ['theme', 'css', 'stylesheet', ...themes.flat()]) {
     assert.ok(rankPalette(entries, query).some(match => match.item === appearance), query);
   }
   let opened = false; actions.appearance = () => {opened = true;}; appearance.run(); assert.equal(opened, true);

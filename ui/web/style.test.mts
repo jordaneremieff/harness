@@ -99,8 +99,8 @@ test('the tool status from active execution receives the information tone', asyn
 });
 
 test('two families: system sans for interface and prose, system monospace for code and status', () => {
-  assert.match(rule(':root'), /--sans: system-ui, -apple-system, "Segoe UI", sans-serif;/);
-  assert.match(rule(':root'), /--mono: ui-monospace, "SF Mono", Menlo, monospace;/);
+  assert.match(rule(':where(:root)'), /--sans: system-ui, -apple-system, "Segoe UI", sans-serif;/);
+  assert.match(rule(':where(:root)'), /--mono: ui-monospace, "SF Mono", Menlo, monospace;/);
   assert.match(rule('html, body'), /font: 400 14px\/1\.5 var\(--sans\)/);
   assert.match(rule('pre, code, kbd, samp'), /font-family: var\(--mono\); font-size: 13px/);
   assert.deepEqual([...new Set(declarations('font-family'))].sort(), ['var(--mono)', 'var(--sans)']);
@@ -814,19 +814,16 @@ test('transcript images retain aspect ratio within the pane and expose readable 
   assert.match(rule('.transcript-image button'), /border: 1px solid var\(--edge\)/);
   assert.doesNotMatch(rule('.transcript-image button'), /min-height:|opacity:|display: none/);
 });
-test('every theme uses blue focus, never lavender or mauve', () => {
-  const focus: Record<string, string> = {':root': '#74b6d8', ':root[data-appearance=light]': '#22698a', ':root[data-appearance=system]': '#22698a', ':root[data-appearance=latte]': '#1a59d5', ':root[data-appearance=frappe]': '#a3bbf1', ':root[data-appearance=macchiato]': '#8baef4', ':root[data-appearance=mocha]': '#89b4fa'};
+test('both themes use blue focus, never lavender or mauve', () => {
+  const focus: Record<string, string> = {':where(:root)': '#a3bbf1', ':where(:root[data-appearance=light])': '#22698a', ':where(:root[data-appearance=system])': '#22698a'};
   for (const [selector, color] of Object.entries(focus)) assert.match(rule(selector), new RegExp(`--accent: ${color};`));
   for (const selector of Object.keys(focus)) {const accent=/--accent: (#[a-f0-9]{6});/i.exec(rule(selector))?.[1]; assert.ok(accent);assert.ok(Number.parseInt(accent.slice(5,7),16)>Number.parseInt(accent.slice(1,3),16),selector);}
 });
-test('Catppuccin flavors map text and subtext onto the text tokens and keep the shared token set', () => {
-  const text: Record<string, [string, string]> = {latte: ['#4c4f69', '#5c5f77'], frappe: ['#c6d0f5', '#b5bfe2'], macchiato: ['#cad3f5', '#b8c0e0'], mocha: ['#cdd6f4', '#bac2de']};
-  for (const [flavor, [fg, muted]] of Object.entries(text)) {
-    const body = rule(`:root[data-appearance=${flavor}]`);
-    assert.match(body, new RegExp(`--fg: ${fg};`), flavor);
-    assert.match(body, new RegExp(`--muted: ${muted};`), flavor);
-    assert.match(body, new RegExp(`color-scheme: ${flavor === 'latte' ? 'light' : 'dark'};`));
-  }
+test('dark is the base set and light is explicit and under the OS light preference', () => {
+  assert.match(rule(':where(:root)'), /color-scheme: dark;/);
+  assert.match(rule(':where(:root[data-appearance=light])'), /color-scheme: light;/);
+  assert.match(rule(':where(:root[data-appearance=system])'), /color-scheme: light;/);
+  assert.match(css, /@media \(prefers-color-scheme: light\) \{\s*:where\(:root\[data-appearance=system\]\)/);
 });
 
 test('mixed thinking and tool turns use compact spacing and raw inspections have one scroll owner', () => {

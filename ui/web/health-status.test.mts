@@ -5,7 +5,7 @@ import {HealthStatus} from './health-status.ts';
 import {Modal} from './modal.ts';
 const snapshot = (): HealthSnapshot => ({startedAt:'2026-10-15T00:00:00.000Z',supervisorRestarts:2,
   services:[{name:'files',state:'ready'},{name:'agents',state:'unavailable'},{name:'rpc',state:'stopped'}],build:{state:'held'},
-  process:{pid:123,uptimeMs:61000,rssBytes:64*1024*1024},requests:{active:1,limit:64},identity:{iteration:'0.8',commit:'a'.repeat(40)}});
+  process:{pid:123,uptimeMs:61000,rssBytes:64*1024*1024},requests:{active:1,limit:64},identity:{iteration:'0.8',commit:'a'.repeat(40)},userStylesheet:{state:'applied'}});
 function deferred<T>() {let resolve!: (value:T)=>void, reject!: (error:Error)=>void;const promise=new Promise<T>((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};}
 async function settle() {await Promise.resolve();await Promise.resolve();}
 function host(context:TestContext) {
@@ -33,7 +33,7 @@ test('health has one footer control, no startup read and one snapshot per explic
   assert.equal(reads,0);assert.equal(h.footer.children.length,2);assert.equal(h.footer.children[0] as unknown,status.node);assert.equal(h.footer.children[1],h.version);
   assert.equal(status.node.textContent,'Health');assert.equal((status.node as unknown as InstanceType<typeof h.Node>).attributes.get('aria-label'),'Read backend health');
   status.node.focus();status.node.dispatchEvent(new Event('click'));assert.equal(reads,1);assert.equal(h.button('Refresh health').disabled,true);status.open();assert.equal(reads,1);await settle();
-  assert.match(h.text(),/Supervisor restarts\n2/);assert.match(h.text(),/61 s/);assert.match(h.text(),/64 MiB/);assert.match(h.text(),/File worker\nready/);assert.match(h.text(),/Agent worker\nunavailable/);assert.match(h.text(),/Primary RPC\nstopped/);
+  assert.match(h.text(),/Supervisor restarts\n2/);assert.match(h.text(),/61 s/);assert.match(h.text(),/64 MiB/);assert.match(h.text(),/File worker\nready/);assert.match(h.text(),/Agent worker\nunavailable/);assert.match(h.text(),/Primary RPC\nstopped/);assert.match(h.text(),/User stylesheet\nApplied/);
   assert.equal(h.button('Refresh health').disabled,false);await settle();assert.equal(reads,1);
   h.button('Refresh health').dispatchEvent(new Event('click'));await settle();assert.equal(reads,2);
   h.button('Close').dispatchEvent(new Event('click'));assert.equal(h.modal.openNow,false);assert.equal(h.active as unknown,status.node);
@@ -53,9 +53,9 @@ test('unavailable and malformed health reads show a fixed error, allow explicit 
   h.button('Refresh health').dispatchEvent(new Event('click'));await settle();assert.match(h.text(),/Supervisor restarts/);assert.equal(reads,3);
 });
 test('health projection rejects unsafe enums, strings and resource counts and drops unrelated properties',()=>{
-  const current=snapshot();assert.deepEqual(readHealthSnapshot({...current,privatePath:'secret',identity:{...current.identity,branch:'secret'}}),current);
+  const current=snapshot();assert.deepEqual(readHealthSnapshot({...current,privatePath:'secret',userStylesheet:{state:'applied',path:'/private/path'},identity:{...current.identity,branch:'secret'}}),current);
   for(const value of [{...current,process:{...current.process,rssBytes:Infinity}},{...current,requests:{active:65,limit:64}},
     {...current,identity:{iteration:'<script>'}},{...current,identity:{iteration:'0.8',commit:'private/path'}},{...current,identity:{iteration:'0.8',assetDigest:'token'}},
-    {...current,supervisorRestarts:1.5},{...current,startedAt:'secret'},{...current,build:{state:'secret'}}]) assert.throws(()=>readHealthSnapshot(value),/unavailable/);
+    {...current,supervisorRestarts:1.5},{...current,startedAt:'secret'},{...current,build:{state:'secret'}},{...current,userStylesheet:{state:'/private/path'}},{...current,userStylesheet:undefined}]) assert.throws(()=>readHealthSnapshot(value),/unavailable/);
   assert.throws(()=>readBackendHealth({...current,services:Array(4).fill(current.services[0])}),/unavailable/);
 });

@@ -23,7 +23,7 @@ test('health projects only bounded named facts and identity hashes, never arbitr
   const app = await fixture(context,{health:()=>({...facts(),privateState:secret,services:facts().services.map(service=>({...service,detail:secret})),build:{state:'static',diagnostic:secret}}),
     identity:{iteration:'0.8',git:{commit:'a'.repeat(40),shortCommit:'aaaaaaa',branch:secret,modified:false,committedAt:'2026-10-15T00:00:00Z'},assets:{digest:'b'.repeat(64)}}});
   const response = await app.read(), text = await response.text();assert.equal(response.status,200);assert.equal(text.includes(secret),false);
-  const snapshot = JSON.parse(text).data;assert.deepEqual(Object.keys(snapshot).sort(),['build','identity','process','requests','services','startedAt','supervisorRestarts']);
+  const snapshot = JSON.parse(text).data;assert.deepEqual(Object.keys(snapshot).sort(),['build','identity','process','requests','services','startedAt','supervisorRestarts','userStylesheet']);
   assert.deepEqual(snapshot.identity,{iteration:'0.8',commit:'a'.repeat(40),assetDigest:'b'.repeat(64)});
   assert.deepEqual(snapshot.build,{state:'static'});assert(snapshot.services.every((service:object)=>Object.keys(service).length===2));
 });

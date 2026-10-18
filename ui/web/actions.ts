@@ -2,6 +2,7 @@ import {cardAction, cardIcon} from './card-icons.ts';
 import { ProjectPicker } from './picker.ts';
 import { savedPathValid } from './picker-state.ts';
 import { renderFacts, type ReportedFact } from './facts.ts';
+import { resolveAppearance } from '../shared/api.ts';
 import type { AgentRow, Appearance, CommandView, ConversationLayout, EntryView, HandoffView, ModelChoice, OperationView, PrimaryControl, PrimaryView, ResourcePage, Snapshot, Target, Workspace } from '../shared/api.ts';
 import { button, copy, details, element, input, rawText } from './dom.ts';
 import type { Modal } from './modal.ts';
@@ -16,10 +17,11 @@ import { navigateOptions } from './list-navigation.ts';
 import { responseOutcome } from './conversation-presentation.ts';
 import type { CommandInventory, CommandOption, CommandMatch } from './command-menu-state.ts';
 export const COMMAND_INVENTORY_PAGE_LIMIT = 8;
-const appearanceChoices: readonly [Appearance, string][] = [
-  ['dark', 'Dark'], ['light', 'Light'], ['system', 'System'], ['latte', 'Catppuccin Latte'],
-  ['frappe', 'Catppuccin Frappé'], ['macchiato', 'Catppuccin Macchiato'], ['mocha', 'Catppuccin Mocha'],
-];
+const appearanceChoices: readonly [Appearance, string][] = [['system', 'System'], ['dark', 'Dark'], ['light', 'Light']];
+/** The server links the user stylesheet into the page only when the file is usable, so the link is the applied state. */
+export function userStylesheetApplied(): boolean {
+  return typeof document !== 'undefined' && document.querySelector?.('link[data-user-stylesheet]') != null;
+}
 type ResourceKind = 'commands' | 'models' | 'thinking';
 const appCommands: CommandOption[] = [
   {name: 'new', description: 'Start a new session', source: 'app'},
@@ -365,7 +367,7 @@ export class Actions {
       entry('Continue in terminal…', 'Continue this session in the terminal', () => this.handoff(), !!primary),
       entry('Conversation details', 'Identity, reported facts and diagnostics', () => agent ? this.conversationDetails(agent.identity) : this.sessionDetails(primary), !!primary || !!agent, undefined, 'Requires a selected conversation'),
       entry('Saved drafts and messages', 'Review saved text', () => this.ctx.recovery()),
-      {...entry('Appearance', 'Choose a theme', () => this.appearance()), search: ['theme', ...appearanceChoices.flatMap(([value, label]) => [value, label, ...(label.startsWith('Catppuccin ') ? [`Catppuccin ${value}`] : [])])]},
+      {...entry('Appearance', 'Choose a theme', () => this.appearance()), search: ['theme', 'stylesheet', 'css', ...appearanceChoices.flat()]},
       {...entry('Message input…', 'Set the message box Enter action', () => this.messageInput()), search: ['Enter sends messages', 'Enter', 'newline', 'Shift+Enter', 'Ctrl+Enter', 'Command+Enter']},
       {...entry('Agent presentation control', 'Allow agents to arrange this workspace and show notices', () => {
         void this.ctx.selection({agentControl:this.ctx.snapshot()?.workspace.agentControl === false}).catch(error=> {
@@ -553,13 +555,13 @@ export class Actions {
   }
   appearance(): void {
     const modal = this.ctx.modal; modal.open('Appearance'); const rows = element('div', 'options');
-    const current = this.ctx.snapshot()?.workspace.appearance ?? 'dark'; let selected: HTMLButtonElement | undefined;
+    const current = resolveAppearance(this.ctx.snapshot()?.workspace.appearance); let selected: HTMLButtonElement | undefined;
     rows.setAttribute('role', 'menu'); rows.setAttribute('aria-label', 'Appearance');
     for (const [appearance, label] of appearanceChoices) {
       const row = choice(label, appearance === current, () => { void modal.run(() => this.ctx.selection({appearance})); }); rows.append(row);
       if (appearance === current) selected = row;
     }
-    rows.addEventListener('keydown', event => navigateOptions(event, rows)); modal.body.append(rows); selected?.focus();
+    rows.addEventListener('keydown', event => navigateOptions(event, rows)); modal.body.append(rows, element('p', 'appearance-note', userStylesheetApplied() ? 'Your stylesheet is applied.' : 'Add your own stylesheet with ui.userStylesheet in harness.json.')); selected?.focus();
   }
   find(findTarget: () => FindSession | undefined = this.ctx.find): void {
     const session = findTarget(); const modal = this.ctx.modal;

@@ -6,7 +6,11 @@ export type BackendHealthFacts = {
   services: {name: 'files' | 'agents' | 'rpc'; state: 'ready' | 'unavailable' | 'stopped'}[];
   build: {state: 'static' | 'ready' | 'building' | 'failed' | 'held' | 'restart-required'};
 };
+/** Fixed words only: none means no stylesheet is configured; the others say whether the configured file is applied or why not. */
+export const USER_STYLESHEET_STATES = ['none', 'applied', 'missing', 'too-large', 'unreadable', 'invalid'] as const;
+export type UserStylesheetState = typeof USER_STYLESHEET_STATES[number];
 export type HealthSnapshot = BackendHealthFacts & {
+  userStylesheet: {state: UserStylesheetState};
   process: {pid: number; uptimeMs: number; rssBytes: number};
   requests: {active: number; limit: number};
   identity: {iteration: string; commit?: string; assetDigest?: string};
@@ -62,7 +66,9 @@ export function readHealthSnapshot(value: unknown): HealthSnapshot {
     if (typeof identity.assetDigest !== 'string' || !/^[a-f0-9]{64}$/.test(identity.assetDigest)) throw failure();
     safeIdentity.assetDigest = identity.assetDigest;
   }
+  const stylesheet = record(snapshot.userStylesheet);
   const limit = integer(requests.limit, 64), active = integer(requests.active, limit);
   return {...readBackendHealth(snapshot), process: {pid: integer(process.pid), uptimeMs: integer(process.uptimeMs), rssBytes: integer(process.rssBytes)},
-    requests: {active, limit}, identity: safeIdentity};
+    requests: {active, limit}, identity: safeIdentity,
+    userStylesheet: {state: choice(stylesheet.state, USER_STYLESHEET_STATES)}};
 }

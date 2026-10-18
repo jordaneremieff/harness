@@ -197,7 +197,7 @@ test('Enter preference is workspace-local, revisioned, optional and durable', as
 test('conversation layouts replace atomically, clone nested values, preserve omission and survive restart', async t => {
   const events: Workspace[] = [];
   const {root, store, workspace, target} = await setup(t, {onChange: (name, data) => {if (name === 'workspace.changed') events.push(data as Workspace);}});
-  assert.equal(workspace.conversationLayout, undefined); assert.equal(workspace.appearance, 'dark');
+  assert.equal(workspace.conversationLayout, undefined); assert.equal(workspace.appearance, 'system');
   const layout: ConversationLayout = {root: {kind: 'split', id: 'split', axis: 'x', ratio: 60, first: {kind: 'pane', id: 'left', tabs: [{kind: 'primary'}], active: 'primary'}, second: {kind: 'pane', id: 'right', tabs: [{kind: 'agent', identity: 'agent-a'}], active: 'agent:agent-a'}}, focusedPane: 'right'};
   const original = structuredClone(layout);
   const saved = await store.updateSelection(workspace.id, {expectedRevision: 0, conversationLayout: layout, selectedTarget: {kind: 'agent', identity: 'agent-a'}});
@@ -209,7 +209,7 @@ test('conversation layouts replace atomically, clone nested values, preserve omi
   const snapshot = store.snapshot(workspace.id); assert.ok(snapshot.workspace.conversationLayout); snapshot.workspace.conversationLayout.focusedPane = 'left';
   assert.deepEqual((await store.workspace(workspace.id)).conversationLayout, original);
   await assert.rejects(store.updateSelection(workspace.id, {expectedRevision: 0, conversationLayout: original}), error => error instanceof StateError && error.code === 'stale_revision');
-  const selected = await store.updateSelection(workspace.id, {expectedRevision: 1, appearance: 'mocha', sidebarWidth: 320});
+  const selected = await store.updateSelection(workspace.id, {expectedRevision: 1, appearance: 'light', sidebarWidth: 320});
   assert.deepEqual(selected.conversationLayout, original); assert.deepEqual(selected.selectedTarget, {kind: 'agent', identity: 'agent-a'});
   const replacement: ConversationLayout = {root: {kind: 'pane', id: 'pane', tabs: [{kind: 'agent', identity: 'agent-b'}], active: 'agent:agent-b'}, focusedPane: 'pane'};
   const replaced = await store.updateSelection(workspace.id, {expectedRevision: 2, conversationLayout: replacement, selectedTarget: {kind: 'agent', identity: 'agent-b'}});
@@ -217,7 +217,7 @@ test('conversation layouts replace atomically, clone nested values, preserve omi
   await store.close(); const reopened = await StateStore.open(root);
   try {
     const restored = await reopened.workspace(workspace.id);
-    assert.deepEqual(restored.conversationLayout, replacement); assert.equal(restored.appearance, 'mocha'); assert.equal(restored.sidebarWidth, 320);
+    assert.deepEqual(restored.conversationLayout, replacement); assert.equal(restored.appearance, 'light'); assert.equal(restored.sidebarWidth, 320);
     const empty: ConversationLayout = {root: {kind: 'pane', id: 'pane', tabs: [], active: null}, focusedPane: 'pane'};
     const closed = await reopened.updateSelection(workspace.id, {expectedRevision: 3, conversationLayout: empty, selectedTarget: null});
     assert.deepEqual(closed.conversationLayout, empty); assert.equal(closed.selectedTarget, undefined);
@@ -286,24 +286,33 @@ test('a malformed saved conversation layout rejects on reopen without rewriting 
   assert.equal(await readFile(path, 'utf8'), bytes);
 });
 
-test('appearance choices persist unchanged and unknown values do not advance the revision', async t => {
+test('appearance choices persist unchanged, a new workspace follows the OS and unknown or retired values are refused on write', async t => {
   const {root, store, workspace} = await setup(t);
-  assert.equal(workspace.appearance, 'dark');
-  const choices = ['dark', 'light', 'system', 'latte', 'frappe', 'macchiato', 'mocha'] as const;
+  assert.equal(workspace.appearance, 'system');
   let revision = workspace.revision;
-  for (const appearance of choices) {
+  for (const appearance of ['dark', 'light', 'system'] as const) {
     const saved = await store.updateSelection(workspace.id, {expectedRevision: revision, appearance});
     revision++;
     assert.equal(saved.appearance, appearance); assert.equal(saved.revision, revision);
     assert.equal(store.snapshot(workspace.id).workspace.appearance, appearance);
     assert.equal(JSON.parse(await readFile(join(root, 'workspaces', `${workspace.id}.json`), 'utf8')).appearance, appearance);
   }
-  await assert.rejects(store.updateSelection(workspace.id, {expectedRevision: revision, appearance: 'unknown' as Appearance}), /appearance/);
+  for (const retired of ['unknown', 'latte', 'frappe', 'macchiato', 'mocha']) await assert.rejects(store.updateSelection(workspace.id, {expectedRevision: revision, appearance: retired as Appearance}), /appearance/);
   assert.equal((await store.workspace(workspace.id)).revision, revision);
-  assert.equal((await store.workspace(workspace.id)).appearance, 'mocha');
-  await store.close(); const reopened = await StateStore.open(root);
-  try { assert.equal(reopened.snapshot(workspace.id).workspace.appearance, 'mocha'); }
-  finally { await reopened.close(); }
+  assert.equal((await store.workspace(workspace.id)).appearance, 'system');
+});
+
+test('a retired stored appearance value stays as stored until the next choice', async t => {
+  const {root, store, workspace} = await setup(t);
+  await store.close();
+  const path = join(root, 'workspaces', `${workspace.id}.json`);
+  await writeFile(path, JSON.stringify({...JSON.parse(await readFile(path, 'utf8')), appearance: 'frappe'}));
+  const reopened = await StateStore.open(root);
+  try {
+    assert.equal(reopened.snapshot(workspace.id).workspace.appearance, 'frappe');
+    const chosen = await reopened.updateSelection(workspace.id, {expectedRevision: workspace.revision, appearance: 'dark'});
+    assert.equal(chosen.appearance, 'dark');
+  } finally { await reopened.close(); }
 });
 
 test('sidebar preference is optional, boolean and independent of observation', async t => {

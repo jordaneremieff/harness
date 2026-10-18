@@ -19,8 +19,6 @@ const inverseFills: string[] = [];
 // The edge token marks controls, status rules and neutral selections; the accent marks focus.
 const graphics = ["edge", "accent"];
 const required = [...foregrounds, ...surfaces, ...graphics, "rule"];
-// Catppuccin flavors are complete alternative palettes with the same tokens.
-const flavors = ["latte", "frappe", "macchiato", "mocha"];
 // Rule hairlines decorate content already identified by text or position.
 // Any new use of the low-contrast rule needs a deliberate classification.
 const decorativeHairlines = new Set([
@@ -222,12 +220,22 @@ const contrastEffects = new Set([
 ]);
 const edgePattern =
 	/^(?:border(?:-(?:top|right|bottom|left|inline|block)(?:-(?:start|end))?)?(?:-color)?|outline(?:-color)?)$/;
+// Token rules carry zero specificity so a later user stylesheet wins by order alone.
+const zeroSpecificity = (selector: string) => {
+	if (!selector.startsWith(":where(")) return false;
+	let depth = 0;
+	for (let i = 0; i < selector.length; i++) {
+		if (selector[i] === "(") depth++;
+		else if (selector[i] === ")" && --depth === 0) return i === selector.length - 1;
+	}
+	return false;
+};
 function themeValues(rules: Rule[]): Record<string, Palette> {
-	const base = rules.filter((r) => r.selector === ":root" && r.contexts.length === 0);
+	const base = rules.filter((r) => r.selector === ":where(:root)" && r.contexts.length === 0);
 	const light = rules.filter(
-		(r) => /^:root\[data-appearance=(?:light|"light"|'light')\]$/.test(r.selector) && r.contexts.length === 0,
+		(r) => /^:where\(:root\[data-appearance=(?:light|"light"|'light')\]\)$/.test(r.selector) && r.contexts.length === 0,
 	);
-	const system = rules.filter((r) => /^:root\[data-appearance=(?:system|"system"|'system')\]$/.test(r.selector));
+	const system = rules.filter((r) => /^:where\(:root\[data-appearance=(?:system|"system"|'system')\]\)$/.test(r.selector));
 	assert.ok(base.length > 0, "Missing default dark theme");
 	assert.ok(light.length > 0, "Missing explicit light theme");
 	assert.ok(system.length > 0, "Missing system theme under light preference");
@@ -237,16 +245,10 @@ function themeValues(rules: Rule[]): Record<string, Palette> {
 			["@media (prefers-color-scheme: light)"],
 			"System override must use the light preference",
 		);
-	const flavorRules = Object.fromEntries(
-		flavors.map((name) => [
-			name,
-			rules.filter((r) => r.selector === `:root[data-appearance=${name}]` && r.contexts.length === 0),
-		]),
-	);
-	for (const name of flavors) assert.ok(flavorRules[name].length > 0, `Missing ${name} theme`);
-	const knownRoots = new Set([...base, ...light, ...system, ...Object.values(flavorRules).flat()]);
-	for (const rule of rules.filter((r) => r.selector.startsWith(":root")))
+	const knownRoots = new Set([...base, ...light, ...system]);
+	for (const rule of rules.filter((r) => r.selector.includes(":root") && r.declarations.some((d) => d.property === "--canvas")))
 		assert.ok(knownRoots.has(rule), `Unmodeled theme selector: ${rule.selector}`);
+	for (const rule of knownRoots) assert.ok(zeroSpecificity(rule.selector), `Theme selector has specificity: ${rule.selector}`);
 	const values = (selected: Rule[]) =>
 		Object.fromEntries(selected.flatMap((r) => r.declarations.map((d) => [d.property, d.value])));
 	const darkValues = values(base);
@@ -258,14 +260,10 @@ function themeValues(rules: Rule[]): Record<string, Palette> {
 	);
 	assert.equal(darkValues["color-scheme"], "dark");
 	assert.equal(lightOverrides["color-scheme"], "light");
-	const themes: Record<string, Palette> = { dark: darkValues, light: { ...darkValues, ...lightOverrides } };
-	for (const name of flavors) {
-		const overrides = values(flavorRules[name]);
-		assert.deepEqual(Object.keys(overrides).sort(), Object.keys(lightOverrides).sort(), `${name} must override every themed token`);
-		assert.equal(overrides["color-scheme"], name === "latte" ? "light" : "dark");
-		themes[name] = { ...darkValues, ...overrides };
-	}
-	return themes;
+	const order = rules.map((r) => r.selector);
+	const lightAt = order.indexOf(light[0]?.selector ?? ""), systemAt = order.indexOf(system[0]?.selector ?? "");
+	assert.ok(order.indexOf(":where(:root)") < lightAt && lightAt < systemAt, "Light and system blocks follow the dark base so order alone decides");
+	return { dark: darkValues, light: { ...darkValues, ...lightOverrides } };
 }
 function matrix(palette: Palette, theme: string, measure: Measure) {
 	for (const name of required) {
@@ -386,7 +384,7 @@ function auditDeclaration(context: Context, property: string, raw: string): bool
 	const value = raw.replace(/\s*!important$/, "");
 	if (property.startsWith("--")) {
 		// Component-local lengths adjust layout; any other local value could change a modeled color.
-		if (!rule.selector.startsWith(":root") && !/^-?[\d.]+(?:px|rem|em)$/.test(value))
+		if (!/^:where\(:root(?:\[data-appearance=(?:light|system)\])?\)$/.test(rule.selector) && !/^-?[\d.]+(?:px|rem|em)$/.test(value))
 			issues.push(`Component-local variable requires explicit analysis: ${source} ${property}`);
 		return false;
 	}
@@ -470,17 +468,17 @@ test("CSS parser preserves nested media, strings, and functions", () => {
   assert.deepEqual(frames[0]?.contexts, ['@keyframes work-pulse']);
   assert.deepEqual(frames[0]?.declarations, [{property: 'transform', value: 'rotate(360deg)'}]);
 });
-test("every required matrix pair is measured in all six themes", () => {
+test("every required matrix pair is measured in both themes", () => {
 	assert.equal(
 		result.measurements.filter((m) => m.kind === "text-matrix").length,
-		foregrounds.length * surfaces.length * (2 + flavors.length),
+		foregrounds.length * surfaces.length * 2,
 	);
-	assert.equal(result.measurements.filter((m) => m.kind === "inverse-text").length, inverseFills.length * (2 + flavors.length));
-	assert.equal(result.measurements.filter((m) => m.kind === "border-matrix").length, surfaces.length * (2 + flavors.length));
-	assert.equal(result.measurements.filter((m) => m.kind === "focus-matrix").length, surfaces.length * (2 + flavors.length));
+	assert.equal(result.measurements.filter((m) => m.kind === "inverse-text").length, inverseFills.length * 2);
+	assert.equal(result.measurements.filter((m) => m.kind === "border-matrix").length, surfaces.length * 2);
+	assert.equal(result.measurements.filter((m) => m.kind === "focus-matrix").length, surfaces.length * 2);
 });
 test("normal text meets 4.5:1; meaningful borders and focus meet 3:1", (context) => {
-	for (const theme of ["dark", "light", ...flavors]) {
+	for (const theme of ["dark", "light"]) {
 		const rows = result.measurements.filter((m) => m.theme === theme);
 		context.diagnostic(
 			`${theme}: text minimum ${minimum(rows.filter((m) => m.threshold === 4.5)).toFixed(6)}; border minimum ${minimum(rows.filter((m) => m.kind.startsWith("border"))).toFixed(6)}; focus minimum ${minimum(rows.filter((m) => m.kind.startsWith("focus"))).toFixed(6)}.`,
@@ -510,7 +508,7 @@ test('decorated editor transparency does not admit hidden text on other surfaces
 });
 test('native insertion caret is measured as graphics without weakening text or ignoring unknown colors', context => {
   const rows = result.measurements.filter(row => row.kind === 'caret-declaration' && row.source.startsWith('.composer textarea '));
-  assert.equal(rows.length, surfaces.length * (2 + flavors.length));
+  assert.equal(rows.length, surfaces.length * 2);
   assert.ok(rows.every(row => row.threshold === 3 && row.ratio >= 3));
   for (const theme of ['dark', 'light']) {
     const palette = result.themes[theme]; const measured = ratio(palette['--accent'], palette['--canvas']);
@@ -518,7 +516,7 @@ test('native insertion caret is measured as graphics without weakening text or i
     assert.ok(measured >= 4.5);
   }
   for (const value of ['#fff', 'transparent', 'auto', 'var(--unexpected)', 'var(--rule)', 'var(--accent, #fff)']) assert.ok(audit(`${css}\n.probe { caret-color: ${value}; }`).issues.some(issue => issue.includes('unmodeled caret color')), value);
-  const weakened = audit(css.replace('--accent: #74b6d8', '--accent: #16181b'));
+  const weakened = audit(css.replace('--accent: #a3bbf1', '--accent: #303446'));
   assert.ok(weakened.measurements.some(row => row.kind === 'caret-declaration' && row.ratio < row.threshold));
   const accentText = audit(`${css}\n.probe { color: var(--accent); }`); assert.deepEqual(accentText.issues, []); assert.ok(accentText.measurements.some(row=>row.source.startsWith('.probe ')&&row.kind==='text-declaration'&&row.threshold===4.5));
 });
@@ -535,19 +533,19 @@ test('source highlights and rendered spans use identical complete foreground tok
 test("all color declarations use modeled semantic tokens", () => assert.deepEqual(result.issues, []));
 test("graphic paint measures selected marks and divider hover/focus without opening a surface exception", () => {
   const rows = result.measurements.filter(row => row.kind === "graphic-paint");
-  assert.equal(rows.length, (graphicBackgrounds.size + graphicForegrounds.size + graphicShadows.size) * surfaces.length * (2 + flavors.length));
+  assert.equal(rows.length, (graphicBackgrounds.size + graphicForegrounds.size + graphicShadows.size) * surfaces.length * 2);
   for (const selector of graphicForegrounds.keys()) {
     const marks = rows.filter(row => row.source.startsWith(`${selector} color:`));
-    assert.equal(marks.length, surfaces.length * (2 + flavors.length));
+    assert.equal(marks.length, surfaces.length * 2);
     assert.ok(marks.every(row => row.ratio >= row.threshold));
   }
   assert.ok(rows.every(row => row.threshold === 3 && row.ratio >= 3));
   const checks = result.measurements.filter(row => row.kind === "text-declaration" && row.source.startsWith(".context-menu-item > .choice-check "));
-  assert.equal(checks.length, surfaces.length * (2 + flavors.length));
+  assert.equal(checks.length, surfaces.length * 2);
   assert.ok(checks.every(row => row.threshold === 4.5 && row.ratio >= 4.5));
   assert.ok(audit(`${css}\n.probe { background: var(--muted); }`).issues.some(issue => issue.includes("non-surface background")));
   assert.ok(audit(`${css}\n.pane-split > .pane-divider:hover::after { background: var(--rule); }`).issues.some(issue => issue.includes("non-surface background")));
-  const weakened = audit(css.replace("--edge: #6b7378", "--edge: #16181b"));
+  const weakened = audit(css.replace("--edge: #8f97b5", "--edge: #303446"));
   assert.ok(weakened.measurements.some(row => row.kind === "graphic-paint" && row.ratio < row.threshold));
 });
 test("hardcoded and unknown text colors, extra pairs, and alpha effects are detected", () => {
@@ -598,9 +596,18 @@ test("contrast thresholds use exact ratios, not rounded display values", () => {
 	assert.equal(ratio("#fff", "#ffffff"), 1);
 	assert.throws(() => ratio("#ffffff80", "#ffffff"), /opaque hex/);
 });
+test("no rule that defines a theme token has nonzero specificity", () => {
+	const defining = parse(css).filter((r) => r.declarations.some((d) => required.includes(d.property.replace(/^--/, ""))));
+	assert.ok(defining.length >= 3);
+	for (const rule of defining) assert.ok(zeroSpecificity(rule.selector), `Token rule has specificity: ${rule.selector}`);
+	assert.equal(zeroSpecificity(":root"), false);
+	assert.equal(zeroSpecificity(":root[data-appearance=light]"), false);
+	assert.equal(zeroSpecificity(":where(:root) .x"), false);
+	assert.equal(zeroSpecificity(":where(:root[data-appearance=light])"), true);
+});
 test("system light overrides match explicit light exactly", () => {
 	assert.throws(
-		() => audit(`${css}\n@media (prefers-color-scheme: light) { :root[data-appearance=system] { --dim: #000000; } }`),
+		() => audit(`${css}\n@media (prefers-color-scheme: light) { :where(:root[data-appearance=system]) { --dim: #000000; } }`),
 		/System light override differs/,
 	);
 });

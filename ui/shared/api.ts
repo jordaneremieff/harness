@@ -105,7 +105,16 @@ export type PrimaryView = {key: string; epoch: number; cwd: string;
   retry?: PrimaryRetry; responseOutcome?: ResponseOutcome;
   extension?: {title?: string; statuses: Record<string, string>; widgets: Record<string, {lines: string[]; placement?: string}>};
 };
-export type Appearance = 'dark' | 'light' | 'system' | 'latte' | 'frappe' | 'macchiato' | 'mocha';
+export const APPEARANCES = ['dark', 'light', 'system'] as const;
+export type Appearance = typeof APPEARANCES[number];
+/** Earlier builds stored four more names. They read as the mode they looked like; the saved value stays as stored until a new choice. */
+const storedAppearances: Readonly<Record<string, Appearance>> = {latte: 'light', frappe: 'dark', macchiato: 'dark', mocha: 'dark'};
+/** Any stored or unknown appearance value becomes one of the three current choices; unknown values follow the OS. */
+export function resolveAppearance(value: unknown): Appearance {
+  if (typeof value !== 'string') return 'system';
+  if ((APPEARANCES as readonly string[]).includes(value)) return value as Appearance;
+  return Object.hasOwn(storedAppearances, value) ? storedAppearances[value] as Appearance : 'system';
+}
 /** Primary tabs follow the workspace primary; closing a tab never stops its conversation. */
 export type ConversationTab = {kind: 'primary'} | {kind: 'agent'; identity: string};
 export type FileTab = {kind: 'file'; rootId: string; path: string; view?: 'preview'};

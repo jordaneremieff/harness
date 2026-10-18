@@ -3,7 +3,7 @@ import { chmod, link, lstat, mkdir, open, opendir, rename, unlink, type FileHand
 import { hostname } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { LIMITS, sameDraftTuple, draftHasContent, validFileTab, workspaceTabKey, type FilePosition } from '../shared/api.ts';
+import { APPEARANCES, LIMITS, sameDraftTuple, draftHasContent, validFileTab, workspaceTabKey, type FilePosition } from '../shared/api.ts';
 import type {DraftImage, DraftPut, StoredDraft, RecoveryInput, RetainedInput, RetainedAdmission, InputCopy, RecoveryOrigin, RecoverySendGuard, QueueRecovery, ImageUploadView} from '../shared/api.ts';
 import {normalizeDraftImages, imageName} from './validate.mts';
 import {DraftImages, sameImageContent} from './draft-images.mts';
@@ -149,7 +149,7 @@ function validateSelection(input: SelectionInput): void {
       if (input.panelVisible !== undefined && typeof input.panelVisible !== 'boolean') throw new StateError('invalid_request', 'Invalid panel visibility');
       if (input.sidebarVisible !== undefined && typeof input.sidebarVisible !== 'boolean') throw new StateError('invalid_request', 'Invalid sidebar visibility');
       if (input.sidebarWidth !== undefined && (!Number.isSafeInteger(input.sidebarWidth) || input.sidebarWidth < LIMITS.sidebarWidthMin || input.sidebarWidth > LIMITS.sidebarWidthMax)) throw new StateError('invalid_request', 'Invalid sidebar width');
-      if (input.appearance !== undefined && !['dark', 'light', 'system', 'latte', 'frappe', 'macchiato', 'mocha'].includes(input.appearance)) throw new StateError('invalid_request', 'Invalid appearance');
+      if (input.appearance !== undefined && !(APPEARANCES as readonly string[]).includes(input.appearance)) throw new StateError('invalid_request', 'Invalid appearance');
       validateEnterPreference(input.enterSendsMessages);
       validateAgentControl(input.agentControl);
       if (input.conversationLayout !== undefined) validateConversationLayout(input.conversationLayout);
@@ -435,7 +435,7 @@ export class StateStore {
   }
   private async createWorkspaceRecord(): Promise<Workspace> {
     if (this.workspaces.size >= LIMITS.workspaces) throw new StateError('capacity', 'Workspace limit reached', 429);
-    const value: Workspace = {id: randomUUID(), revision: 0, panelVisible: true, appearance: 'dark'};
+    const value: Workspace = {id: randomUUID(), revision: 0, panelVisible: true, appearance: 'system'};
     await this.atomic(`workspaces/${value.id}.json`, value, 8192); this.workspaces.set(value.id, value);
     this.changed('workspace.changed', value, value.id); return structuredClone(value);
   }

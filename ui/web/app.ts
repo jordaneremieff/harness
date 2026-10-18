@@ -1,5 +1,5 @@
 import type { AgentHistoryPage, AgentRow, Bootstrap, EventData, HistoryPage, OperationView, PrimaryView, ProjectedFrame, Snapshot, Target, TargetState, Workspace } from '../shared/api.ts';
-import { draftHasContent, draftImageFingerprint, LIMITS } from '../shared/api.ts';
+import { draftHasContent, draftImageFingerprint, LIMITS, resolveAppearance } from '../shared/api.ts';
 import { Actions } from './actions.ts';
 import {InputEchoes} from './input-echoes.ts';
 const inputEchoes=new InputEchoes();
@@ -1163,7 +1163,7 @@ function updateDraft(event: EventData['draft.changed']): void {
 }
 function renderAll(): void {
   if (!state.workspace) return;
-  document.documentElement.dataset.appearance = state.workspace.appearance ?? 'dark';
+  document.documentElement.dataset.appearance = resolveAppearance(state.workspace.appearance);
   renderNavigation();
   if (messageTarget.current && !messageTarget.valid(messageTarget.current)) closeMessagePanel(false);
   renderPrimary(); renderRoster(); renderAgent(); renderMessagePanel(); refreshPaneSizes(); noticesBadge(); extensionDialogs.update(); refreshCaptionConsumers();

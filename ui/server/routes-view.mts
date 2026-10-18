@@ -1,4 +1,4 @@
-import { LIMITS, type OperationKind } from '../shared/api.ts';
+import { APPEARANCES, LIMITS, type OperationKind } from '../shared/api.ts';
 import type { Registry } from './registry.mts';
 import type { RequestContext } from './http.mts';
 import { ApiError } from './errors.mts';
@@ -103,7 +103,7 @@ function selectionFields(body:Record<string,unknown>,primaryKey:string|undefined
     ...(body.agentControl!==undefined?{agentControl:v.boolean(body.agentControl,'agent control setting')}:{}),
     ...(conversationLayout!==undefined?{conversationLayout:structuredClone(conversationLayout)}:{}),
     ...(body.filePositions!==undefined?{filePositions:structuredClone(body.filePositions) as import('../shared/api.ts').Workspace['filePositions']}:{}),
-    ...(body.appearance!==undefined?{appearance:v.choice(body.appearance,['dark','light','system','latte','frappe','macchiato','mocha'],'appearance')}: {})};
+    ...(body.appearance!==undefined?{appearance:v.choice(body.appearance,APPEARANCES,'appearance')}: {})};
 }
 async function operations(registry:Registry,context:RequestContext) {
   const {parts,body,method}=context;

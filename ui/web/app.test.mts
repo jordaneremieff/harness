@@ -1102,12 +1102,13 @@ test('queued primary input renders labeled text, preserves full titles and clear
   assert.ok(source.includes('renderPrimaryQueue(conversation?.queue)')); assert.ok(source.includes("name === 'primary.recovery' || name === 'primary.queue'"));
 });
 
-test('every theme uses the existing appearance dataset path and dark stays the default', async () => {
+test('every stored appearance value reads as dark, light or system and a missing value follows the OS', async () => {
   const assignment = source.match(/document\.documentElement\.dataset\.appearance = ([^;]+);/); assert.ok(assignment);
-  assert.equal(assignment[1], "state.workspace.appearance ?? 'dark'");
-  for (const appearance of ['dark', 'light', 'system', 'latte', 'frappe', 'macchiato', 'mocha', undefined]) {
+  assert.equal(assignment[1], 'resolveAppearance(state.workspace.appearance)');
+  const expected: Record<string, string> = {dark: 'dark', light: 'light', system: 'system', latte: 'light', frappe: 'dark', macchiato: 'dark', mocha: 'dark'};
+  for (const appearance of [...Object.keys(expected), undefined]) {
     await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', ...(appearance ? {appearance} : {})}, primaries: [primaryFixture()], roster: []});
-    assert.equal(hostDocument.documentElement.dataset.appearance, appearance ?? 'dark');
+    assert.equal(hostDocument.documentElement.dataset.appearance, appearance ? expected[appearance] : 'system');
   }
 });
 test('editors keep accessible recipient labels and recipient placeholders', async () => {

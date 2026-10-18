@@ -10,6 +10,7 @@ import { DiagnosticDisk, DiagnosticSink } from './diagnostics.mts';
 import { collectIdentity } from './version.mts';
 import { identityLabel, type UiIdentity } from '../shared/version.ts';
 import type {BackendHealthFacts} from '../shared/health.ts';
+import {readUserStylesheet, type UserStylesheetSource} from './user-stylesheet.mts';
 import {LifecycleLog,redactLifecycle} from './lifecycle-log.mts';
 import {parseArgs, type Options} from './options.mts';
 export {parseArgs} from './options.mts';
@@ -50,9 +51,11 @@ async function releaseGenerations(assets:Map<string,Asset>,release:BackendReleas
   if(release.previous){const manifest=await manifestAt(release.previous);previous=new AssetGeneration(await assetMap(resolve(release.previous,'ui')),new Map(Object.entries(manifest.imports)));}
   return new AssetGenerations(initial,previous);
 }
+/** The configured file is read on each use; tests inject a source. */
+const userStylesheetSource=(override?:UserStylesheetSource):UserStylesheetSource=>override??readUserStylesheet;
 function requireAbsoluteCwd(cwd:string):void {if(!isAbsolute(cwd))throw new ApiError('invalid_request','The project directory must be absolute.');}
 /** Test injection changes adapters, not the public HTTP route or request boundary. */
-export async function startBackend(options:Options, injection:Partial<Pick<RegistryOptions,'agents'|'primary'|'measure'|'connectOwner'>> & {assets?:Map<string,Asset>; assetRoot?:string; identity?:UiIdentity; supervisorRestarts?:number; onRestart?:()=>void; release?:{directory:string;manifest:ReleaseManifest;previous?:string}}={}) {
+export async function startBackend(options:Options, injection:Partial<Pick<RegistryOptions,'agents'|'primary'|'measure'|'connectOwner'>> & {userStylesheet?:UserStylesheetSource; assets?:Map<string,Asset>; assetRoot?:string; identity?:UiIdentity; supervisorRestarts?:number; onRestart?:()=>void; release?:{directory:string;manifest:ReleaseManifest;previous?:string}}={}) {
   const startedAt=new Date().toISOString(),paths=statePaths(),stateDir=options.stateDir??paths.stateDir;
   requireAbsoluteCwd(options.cwd);
   let development:Awaited<ReturnType<typeof DevelopmentBuild.open>>|undefined;
@@ -80,7 +83,7 @@ export async function startBackend(options:Options, injection:Partial<Pick<Regis
       services:serviceHealth(registry,files,stopping),
       build:{state:generations?.status().status??'static'},
       ...(registry.options.owner ? {owner:{pid:process.ppid,incarnation:registry.options.owner.hello.ownerIncarnation,protocol:registry.options.owner.hello.protocol},backend:{pid:process.pid,...(release?{release:release.manifest.id}:{})}} : {})});
-    const http=new LocalHttp(registry,assets,undefined,{generations,diagnostics,identity,files,health,control:{service:control}});startupHttp=http;
+    const http=new LocalHttp(registry,assets,undefined,{generations,diagnostics,identity,files,health,control:{service:control},userStylesheet:userStylesheetSource(injection.userStylesheet)});startupHttp=http;
     const url=await http.listen(options.port);
     await controlDiscovery.publish(stateDir,http.boundary.origin,registry.journal.bootId);
     development?.generations.observe(status=> {

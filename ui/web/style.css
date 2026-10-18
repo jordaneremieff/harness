@@ -1,44 +1,45 @@
 /* Two families on a fixed scale (12 meta, 13 code and controls, 14 interface and thinking, 15 empty and file views, 16 prose and composer, 18 headings).
-   Color tokens follow the Pi terminal theme; every text pair is tested for AA in all six themes. */
-:root {
+   Two color sets carry every themed token: dark and light. Every text pair is tested for AA in both.
+   Token selectors have zero specificity, so a user stylesheet linked after this file overrides them by order alone. */
+:where(:root) {
   color-scheme: dark;
-  --canvas: #16181b;
-  --side: #1b1e22;
-  --raised: #22262b;
-  --code: #1e2125;
-  --run-bg: #202327;
-  --ok-bg: #1b2620;
-  --err-bg: #2c1e1f;
-  --add-bg: #1c2a22;
-  --del-bg: #2f1f20;
-  --fg: #e8eaeb;
-  --muted: #a9b0b4;
-  --dim: #949ca1;
-  --success: #6cc193;
-  --error: #f08a8b;
-  --warning: #d9a43a;
-  --link: #74b6d8;
-  --accent: #74b6d8;
-  --info: #74b6d8;
-  --syntax-keyword: #74b6d8;
-  --syntax-string: #de8d5a;
-  --syntax-number: #6cc193;
-  --syntax-comment: #9da5a9;
-  --syntax-fn: #d9a43a;
-  --syntax-type: #a798d7;
-  --syntax-property: #5db3ba;
-  --syntax-operator: #74b2b8;
-  --syntax-punct: #a9b0b4;
-  --md-heading: #d9a43a;
-  --md-em: #a798d7;
-  --md-strong: #e8eaeb;
-  --md-link: #74b6d8;
-  --md-code: #a798d7;
-  --md-marker: #a798d7;
-  --edge: #6b7378;
-  --rule: #3d444a;
-  --backdrop: #0000008c;
-  --shadow: 0 8px 28px #00000073;
+  --canvas: #303446;
+  --side: #292c3c;
+  --raised: #3a3e51;
+  --code: #292c3c;
+  --run-bg: #393d50;
+  --ok-bg: #3e474e;
+  --err-bg: #463d4d;
+  --add-bg: #434d51;
+  --del-bg: #4b404f;
+  --fg: #c6d0f5;
+  --muted: #b5bfe2;
+  --dim: #b1badc;
+  --success: #a6d189;
+  --error: #eea9aa;
+  --warning: #e5c890;
+  --link: #a3bbf1;
+  --accent: #a3bbf1;
+  --info: #a3bbf1;
+  --syntax-keyword: #d2aeea;
+  --syntax-string: #a6d189;
+  --syntax-number: #f1ac88;
+  --syntax-comment: #b4bad6;
+  --syntax-fn: #a3bbf1;
+  --syntax-type: #e5c890;
+  --syntax-property: #babbf1;
+  --syntax-operator: #99d1db;
+  --syntax-punct: #b5bfe2;
+  --md-heading: #a3bbf1;
+  --md-em: #d2aeea;
+  --md-strong: #c6d0f5;
+  --md-link: #a3bbf1;
+  --md-code: #f1ac88;
+  --md-marker: #d2aeea;
+  --edge: #8f97b5;
+  --rule: #535971;
+  --backdrop: #232634a6;
+  --shadow: 0 8px 28px #23263499;
   --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, monospace;
   --s1: 4px;
@@ -47,7 +48,7 @@
   --s4: 16px;
   --gutter: 20px;
 }
-:root[data-appearance=light] {
+:where(:root[data-appearance=light]) {
   color-scheme: light;
   --canvas: #fcfcfb;
   --side: #f4f4f3;
@@ -88,7 +89,7 @@
   --shadow: 0 8px 28px #0000002e;
 }
 @media (prefers-color-scheme: light) {
-  :root[data-appearance=system] {
+  :where(:root[data-appearance=system]) {
     color-scheme: light;
     --canvas: #fcfcfb;
     --side: #f4f4f3;
@@ -128,168 +129,6 @@
     --backdrop: #0000004d;
     --shadow: 0 8px 28px #0000002e;
   }
-}
-
-/* Catppuccin flavors (MIT palette): text and subtext carry text, semantic hues shift only as far as AA needs. */
-:root[data-appearance=latte] {
-  color-scheme: light;
-  --canvas: #eff1f5;
-  --side: #e6e9ef;
-  --raised: #fafbfc;
-  --code: #e6e9ef;
-  --run-bg: #dfe2e9;
-  --ok-bg: #dee9e1;
-  --err-bg: #eddfe6;
-  --add-bg: #d7e6d9;
-  --del-bg: #ecd8e0;
-  --fg: #4c4f69;
-  --muted: #5c5f77;
-  --dim: #5d6078;
-  --success: #2c6e1e;
-  --error: #c30e35;
-  --warning: #a54107;
-  --link: #1a59d5;
-  --accent: #1a59d5;
-  --info: #1a59d5;
-  --syntax-keyword: #7d35dc;
-  --syntax-string: #2d6f1e;
-  --syntax-number: #a64207;
-  --syntax-comment: #5e6074;
-  --syntax-fn: #1a58d4;
-  --syntax-type: #885712;
-  --syntax-property: #4d5bab;
-  --syntax-operator: #036891;
-  --syntax-punct: #5c5f77;
-  --md-heading: #1a58d4;
-  --md-em: #7d35dc;
-  --md-strong: #4c4f69;
-  --md-link: #1a58d4;
-  --md-code: #a64207;
-  --md-marker: #7d35dc;
-  --edge: #797c91;
-  --rule: #b5bac8;
-  --backdrop: #4c4f694d;
-  --shadow: 0 8px 28px #4c4f692e;
-}
-:root[data-appearance=frappe] {
-  color-scheme: dark;
-  --canvas: #303446;
-  --side: #292c3c;
-  --raised: #3a3e51;
-  --code: #292c3c;
-  --run-bg: #393d50;
-  --ok-bg: #3e474e;
-  --err-bg: #463d4d;
-  --add-bg: #434d51;
-  --del-bg: #4b404f;
-  --fg: #c6d0f5;
-  --muted: #b5bfe2;
-  --dim: #b1badc;
-  --success: #a6d189;
-  --error: #eea9aa;
-  --warning: #e5c890;
-  --link: #a3bbf1;
-  --accent: #a3bbf1;
-  --info: #a3bbf1;
-  --syntax-keyword: #d2aeea;
-  --syntax-string: #a6d189;
-  --syntax-number: #f1ac88;
-  --syntax-comment: #b4bad6;
-  --syntax-fn: #a3bbf1;
-  --syntax-type: #e5c890;
-  --syntax-property: #babbf1;
-  --syntax-operator: #99d1db;
-  --syntax-punct: #b5bfe2;
-  --md-heading: #a3bbf1;
-  --md-em: #d2aeea;
-  --md-strong: #c6d0f5;
-  --md-link: #a3bbf1;
-  --md-code: #f1ac88;
-  --md-marker: #d2aeea;
-  --edge: #8f97b5;
-  --rule: #535971;
-  --backdrop: #232634a6;
-  --shadow: 0 8px 28px #23263499;
-}
-:root[data-appearance=macchiato] {
-  color-scheme: dark;
-  --canvas: #24273a;
-  --side: #1e2030;
-  --raised: #2f3247;
-  --code: #1e2030;
-  --run-bg: #2e3146;
-  --ok-bg: #343c45;
-  --err-bg: #3c3345;
-  --add-bg: #394449;
-  --del-bg: #423548;
-  --fg: #cad3f5;
-  --muted: #b8c0e0;
-  --dim: #a5adcb;
-  --success: #a6da95;
-  --error: #ef95a3;
-  --warning: #eed49f;
-  --link: #8baef4;
-  --accent: #8baef4;
-  --info: #8baef4;
-  --syntax-keyword: #c6a0f6;
-  --syntax-string: #a6da95;
-  --syntax-number: #f5a97f;
-  --syntax-comment: #a6aecb;
-  --syntax-fn: #8caff4;
-  --syntax-type: #eed49f;
-  --syntax-property: #b7bdf8;
-  --syntax-operator: #91d7e3;
-  --syntax-punct: #b8c0e0;
-  --md-heading: #8caff4;
-  --md-em: #c6a0f6;
-  --md-strong: #cad3f5;
-  --md-link: #8caff4;
-  --md-code: #f5a97f;
-  --md-marker: #c6a0f6;
-  --edge: #868ca8;
-  --rule: #484e68;
-  --backdrop: #181926a6;
-  --shadow: 0 8px 28px #18192699;
-}
-:root[data-appearance=mocha] {
-  color-scheme: dark;
-  --canvas: #1e1e2e;
-  --side: #181825;
-  --raised: #292a3b;
-  --code: #181825;
-  --run-bg: #28293a;
-  --ok-bg: #2e363c;
-  --err-bg: #382b3d;
-  --add-bg: #343e40;
-  --del-bg: #3e2e40;
-  --fg: #cdd6f4;
-  --muted: #bac2de;
-  --dim: #a6adc8;
-  --success: #a6e3a1;
-  --error: #f38ba8;
-  --warning: #f9e2af;
-  --link: #89b4fa;
-  --accent: #89b4fa;
-  --info: #89b4fa;
-  --syntax-keyword: #cba6f7;
-  --syntax-string: #a6e3a1;
-  --syntax-number: #fab387;
-  --syntax-comment: #a6adc8;
-  --syntax-fn: #89b4fa;
-  --syntax-type: #f9e2af;
-  --syntax-property: #b4befe;
-  --syntax-operator: #89dceb;
-  --syntax-punct: #bac2de;
-  --md-heading: #89b4fa;
-  --md-em: #cba6f7;
-  --md-strong: #cdd6f4;
-  --md-link: #89b4fa;
-  --md-code: #fab387;
-  --md-marker: #cba6f7;
-  --edge: #80859d;
-  --rule: #44465e;
-  --backdrop: #11111ba6;
-  --shadow: 0 8px 28px #11111b99;
 }
 
 /* Base */
@@ -1134,6 +973,7 @@ dialog textarea:focus-visible { outline: 2px solid var(--accent); outline-offset
 .options > button:focus-visible { border-left-color: var(--accent); outline: none; background: var(--canvas); }
 .options > button[aria-checked=true], .options > button[aria-current=true] { font-weight: 600; }
 .options button .secondary { display: block; color: var(--muted); font-size: 13px; font-weight: 400; }
+.appearance-note { margin: 8px 10px 0; color: var(--muted); font-size: 12px; }
 .option-choice { display: flex; align-items: center; gap: 8px; }
 .choice-value { min-width: 0; overflow-wrap: anywhere; }
 .recovery-target { display: grid; grid-template-columns: minmax(0,1fr) minmax(12ch,20ch); align-items: start; gap: 12px; }

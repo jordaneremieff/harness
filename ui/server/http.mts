@@ -19,7 +19,8 @@ import { readHealthSnapshot, type BackendHealthFacts, type HealthSnapshot } from
 import { identityDocument } from './version.mts';
 import {CONTROL_LIMITS, CONTROL_ROUTES} from '../shared/control.ts';
 import type {Control} from './control.mts';
-export type DevelopmentHttp = {control?:{service:Control};generations?:AssetGenerations;diagnostics?:DiagnosticSink;identity?:UiIdentity;files?:Files;health?:()=>BackendHealthFacts};
+import type {UserStylesheet, UserStylesheetSource} from './user-stylesheet.mts';
+export type DevelopmentHttp = {control?:{service:Control};generations?:AssetGenerations;diagnostics?:DiagnosticSink;identity?:UiIdentity;files?:Files;health?:()=>BackendHealthFacts;userStylesheet?:UserStylesheetSource};
 
 export type RequestContext = {method: string; parts: string[]; url: URL; body: Record<string, unknown>;
   operationId?: string; workspace?: string; signal?: AbortSignal};
@@ -222,7 +223,7 @@ export class LocalHttp {
       this.boundary.validate(request);
       const rawPath = (request.url ?? '/').split('?')[0] ?? '/'; pathParts(rawPath);
       const url = new URL(request.url ?? '/', this.boundary.origin);
-      if (this.staticRoute(response, url, request.method ?? 'GET')) return;
+      if (await this.pageRoute(response, url, request.method ?? 'GET')) return;
       this.rate(url.pathname.startsWith('/api/control/')&&url.pathname!==CONTROL_ROUTES.ack?'agent-control':'loopback');
       if (this.active >= 64) throw new ApiError('capacity', 'Too many requests are active.', 429, 'read');
       this.active++;
@@ -244,7 +245,7 @@ export class LocalHttp {
     if (!isFileRoute(parts)) matchRoute(method, parts);
     if (this.savedImageRoute(method, parts, 'POST', 6)) return this.uploadImage(request, response, url, parts);
     const body = await requestBody(request,method,parts);
-    if (url.pathname === '/api/health') return respond(response, this.health());
+    if (url.pathname === '/api/health') return respond(response, await this.health());
     if (url.pathname === '/api/events') return this.events(request, response, url);
     if (await this.savedMetadata(url, response)) return;
     await this.validateResume(method, url, body);
@@ -278,14 +279,15 @@ export class LocalHttp {
     if(this.controlWaits>=CONTROL_LIMITS.outstanding)throw new ApiError('capacity','Presentation receipt wait capacity is full.',429);
     this.controlWaits++;try {respond(response,await service.wait(id));}finally {this.controlWaits--;}
   }
-  private health(): HealthSnapshot {
+  private async health(): Promise<HealthSnapshot> {
     try {
       if (!this.development.health) throw new Error('unavailable');
       const identity = this.development.identity;
       return readHealthSnapshot({...this.development.health(),
         process: {pid: process.pid, uptimeMs: Math.floor(process.uptime() * 1000), rssBytes: process.memoryUsage.rss()},
         requests: {active: this.active, limit: 64},
-        identity: {iteration: identity?.iteration ?? UI_ITERATION, commit: identity?.git?.commit, assetDigest: identity?.assets?.digest}});
+        identity: {iteration: identity?.iteration ?? UI_ITERATION, commit: identity?.git?.commit, assetDigest: identity?.assets?.digest},
+        userStylesheet: {state: this.development.userStylesheet ? (await this.development.userStylesheet()).state : 'none'}});
     } catch {throw new ApiError('not_ready', 'Backend health details are unavailable.', 503, 'read');}
   }
   private savedImageRoute(method: string, parts: string[], expectedMethod: string, length: number): boolean {
@@ -363,27 +365,50 @@ export class LocalHttp {
     if(url.pathname==='/api/dev/ack'||url.pathname==='/api/dev/release') {requireMethod(method,'POST');await this.developmentAck(generations,request,response,url);return true;}
     return false;
   }
-  private staticRoute(response:ServerResponse,url:URL,method:string):boolean {
+  private staticRoute(response:ServerResponse,url:URL,method:string,sheet?:UserStylesheet):boolean {
     const generations = this.development.generations;
-    if (generations && (url.pathname === '/' || url.pathname.startsWith('/_ui/'))) {this.generationAsset(generations,response,url,method); return true;}
+    if (generations && (url.pathname === '/' || url.pathname.startsWith('/_ui/'))) {this.generationAsset(generations,response,url,method,sheet); return true;}
     const asset = this.assets.get(url.pathname);
     if (!asset) return false;
-    this.staticAsset(method,url.pathname === '/' ? this.versionDocument(asset) : asset,response); return true;
+    this.staticAsset(method,url.pathname === '/' ? this.styled(this.versionDocument(asset),sheet) : asset,response); return true;
   }
-  private generationAsset(generations:AssetGenerations,response:ServerResponse,url:URL,method:string) {
+  private generationAsset(generations:AssetGenerations,response:ServerResponse,url:URL,method:string,sheet?:UserStylesheet) {
     if(method!=='GET'&&method!=='HEAD') throw new ApiError('invalid_request','The asset does not accept this method.',405);
-    if(url.pathname==='/') return this.generationPage(generations,response,url,method);
+    if(url.pathname==='/') return this.generationPage(generations,response,url,method,sheet);
     const match=/^\/_ui\/([a-f0-9]{64})(\/.*)$/.exec(url.pathname);
     const route=match?.[2];
     if(route==='/'||route==='/index.html') throw new ApiError('invalid_request','Browser documents require the leased root route.',404);
     const asset=match?generations.asset(match[1]??'',route??''):undefined;
     if(!asset) throw new ApiError('not_ready','The browser generation is unavailable.',409);this.staticAsset(method,asset,response);
   }
-  private generationPage(generations:AssetGenerations,response:ServerResponse,url:URL,method:string) {
+  private generationPage(generations:AssetGenerations,response:ServerResponse,url:URL,method:string,sheet?:UserStylesheet) {
     const id=url.searchParams.get('generation')??generations.status().generation;
-    if(method==='HEAD') {const asset=generations.documentHead(id);if(!asset) throw new ApiError('not_ready','The browser generation is unavailable.',409);this.staticAsset(method,this.versionDocument(asset,generations.identity(id)),response);return;}
-    try {const page=generations.document(id);response.setHeader('X-UI-Generation',page.generation);this.staticAsset(method,this.versionDocument(page.asset,generations.identity(id)),response);}
+    if(method==='HEAD') {const asset=generations.documentHead(id);if(!asset) throw new ApiError('not_ready','The browser generation is unavailable.',409);this.staticAsset(method,this.styled(this.versionDocument(asset,generations.identity(id)),sheet),response);return;}
+    try {const page=generations.document(id);response.setHeader('X-UI-Generation',page.generation);this.staticAsset(method,this.styled(this.versionDocument(page.asset,generations.identity(id)),sheet),response);}
     catch {throw new ApiError('capacity','The browser generation or page capacity is unavailable.',409);}
+  }
+  /** Static assets, the document and the user stylesheet; the stylesheet is read again for each page and each sheet request. */
+  private async pageRoute(response: ServerResponse, url: URL, method: string): Promise<boolean> {
+    const source = this.development.userStylesheet;
+    const sheet = source && (url.pathname === '/' || url.pathname === '/user.css') ? await source() : undefined;
+    if (sheet && url.pathname === '/user.css') {this.userStylesheet(response, method, sheet); return true;}
+    return this.staticRoute(response, url, method, sheet);
+  }
+  /** The document links the user stylesheet last in the head, and only when the file is usable now. */
+  private styled(asset: Asset, sheet?: UserStylesheet): Asset {
+    if (sheet?.state !== 'applied') return asset;
+    const html = asset.data.toString('utf8');
+    const close = /<\/head>/i;
+    if (!close.test(html)) return asset;
+    const data = Buffer.from(html.replace(close, '<link rel="stylesheet" href="/user.css" data-user-stylesheet></head>'));
+    if (data.length > ASSET_FILE_BYTES) throw new ApiError('capacity', 'The user stylesheet link exceeds the browser document bound.', 503);
+    return {type: asset.type, data};
+  }
+  private userStylesheet(response: ServerResponse, method: string, sheet: UserStylesheet) {
+    if (method !== 'GET' && method !== 'HEAD') throw new ApiError('invalid_request', 'The asset does not accept this method.', 405);
+    if (sheet.state !== 'applied') throw new ApiError('invalid_request', 'No user stylesheet is applied.', 404);
+    response.writeHead(200, {'Content-Type': MIME['.css'], 'Content-Length': sheet.data.length, 'Cache-Control': 'no-cache'});
+    response.end(method === 'HEAD' ? undefined : sheet.data);
   }
   private versionDocument(asset: Asset, build?: {digest: string; builtAt?: string}): Asset {
     const identity = this.development.identity; if (!identity) return asset;
