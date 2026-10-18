@@ -41,7 +41,7 @@ export class ExtensionDialogs {
     if (dialog.method === 'select') {
       this.options(dialog, body, submit); this.modal.actions(cancel);
     } else if (dialog.method === 'confirm') {
-      const no = button('No', () => submit({confirmed: false})); this.modal.actions(cancel, no, button('Yes', () => submit({confirmed: true}))); no.focus(); return;
+      const no = button('No', () => submit({confirmed: false})); this.modal.actions(no, button('Yes', () => submit({confirmed: true}))); no.focus(); return;
     } else {
       const field = input(dialog.method === 'editor' ? 'Text' : dialog.placeholder ?? 'Value', dialog.prefill ?? '', dialog.method === 'editor');
       body.append(field.label, field.field); this.modal.actions(cancel, button(dialog.method === 'editor' ? 'Save' : 'Choose', () => submit({value: field.field.value}), 'main-action'));

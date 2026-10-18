@@ -89,6 +89,15 @@ test('the dialog heading names the conversation by its caption and keeps the exa
   const namedHeading = named.modal.body.children.find(node => node.className === 'target-label'); assert.ok(namedHeading);
   assert.equal(namedHeading.textContent, 'Project agent'); assert.equal(namedHeading.attributes.get('title'), 'Conversation ID: session-uuid-2');
 });
+test('a confirm dialog offers only No and Yes, and Escape still sends the cancel response', async () => {
+  const f = fixture({id: 'c', method: 'confirm', title: 'Sure?'}); const bodies: unknown[] = [];
+  globalThis.fetch = async (path, init) => {if (String(path) === '/api/operations') return response({operationId: 'op'}); bodies.push(JSON.parse(String(init?.body))); return response({id: 'op', kind: 'primary.dialog', state: 'completed', target, createdAt: '', updatedAt: ''});};
+  assert.deepEqual(f.modal.body.querySelectorAll().map(node => node.textContent), ['No', 'Yes']);
+  f.modal.cancelAction?.(); await f.closed.promise; assert.deepEqual(bodies, [{epoch: 1, cancelled: true}]);
+  const other = fixture({id: 'i', method: 'input', title: 'Name'});
+  assert.deepEqual(other.modal.body.querySelectorAll().map(node => node.textContent), ['Cancel', 'Choose']);
+  assert.deepEqual(fixture(select).modal.body.querySelectorAll().map(node => node.textContent), ['Safe label', 'Cancel']);
+});
 test('dialog deadlines name the response deadline without replacing supplied content', () => {
   const deadline = '2030-01-01T00:00:00.000Z';
   const f = fixture({...select, deadline, message: 'Supplied message'});
