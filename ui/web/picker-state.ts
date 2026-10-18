@@ -8,6 +8,14 @@ export function sessionLabel(item: SavedSession): string {
   return excerpt.text + (excerpt.truncated ? '…' : '');
 }
 
+/** A newer loaded snapshot supersedes older title evidence, even when its title is unavailable. */
+export function loadedPrimarySession(primary: PrimaryView | undefined, pages: readonly SavedSessionPage[]): SavedSession | undefined {
+  if (!primary?.sessionId || !primary.sessionFile) return;
+  const matches = pages.flatMap(page => page.items.filter(item => item.path === primary.sessionFile).map(item => ({item, at: page.observedAt}))).sort((a,b) => b.at.localeCompare(a.at));
+  const latest = matches[0]; if (!latest || latest.item.id !== primary.sessionId) return;
+  if (matches.some(other => other.at === latest.at && (other.item.id !== latest.item.id || other.item.revision !== latest.item.revision || other.item.modifiedAt !== latest.item.modifiedAt || other.item.size !== latest.item.size || other.item.titleState !== latest.item.titleState || other.item.titleSource !== latest.item.titleSource || other.item.title !== latest.item.title))) return;
+  return latest.item;
+}
 export type SessionList = SavedSessionPage & {pendingTitles: SavedSessionPage[]};
 export function mergeSessions(previous: SessionList | undefined, page: SavedSessionPage, append = false): SessionList {
   const items = new Map((append ? previous?.items ?? [] : []).map(item => [item.path, item]));
@@ -21,7 +29,7 @@ export function mergeSessionTitles(list: SessionList, page: SavedSessionPage): S
   const items = list.items.map(item => {
     const update = updates.get(item.path);
     if (item.titleState === 'ready' && update?.titleState !== 'ready') return item;
-    return update?.revision === item.revision && update.modifiedAt === item.modifiedAt && update.size === item.size ? {...item, title: update.title, titleSource: update.titleSource, titleState: update.titleState} : item;
+    return update?.id === item.id && update.revision === item.revision && update.modifiedAt === item.modifiedAt && update.size === item.size ? {...item, title: update.title, titleSource: update.titleSource, titleState: update.titleState} : item;
   });
   const current = new Map(items.map(item => [item.path, item]));
   const pendingTitles = list.pendingTitles.filter(page => page.items.some(item => {

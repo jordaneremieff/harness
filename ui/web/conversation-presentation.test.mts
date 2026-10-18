@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { AgentRow, ProjectedFrame, PrimaryView } from '../shared/api.ts';
+import type { AgentRow, ProjectedFrame, PrimaryView, SavedSession } from '../shared/api.ts';
 import { composerFolder, conversationPresentation, presentationGlyph, presentationName, projectIdentity, projectLabels, agentViewStatus, responseOutcome } from './conversation-presentation.ts';
 const row: AgentRow = {identity: 'agent:one', storageId: 'agent', cwd: '/projects/work', name: 'Worker', modifiedAt: 0,
   state: 'unavailable', owner: 'unknown', availability: 'live', partial: false,
@@ -10,6 +10,19 @@ const frame = (busy: boolean): ProjectedFrame => ({revision: 1, observedAt: 'now
 const target = {kind: 'agent' as const, identity: row.identity};
 assert.ok(row.capabilities);
 const negotiated = {identity: row.identity, availability: 'live' as const, capabilities: row.capabilities};
+test('Primary captions prefer current names and qualify only exact ready prompt metadata',()=> {
+  const primary={key:'p',epoch:1,sessionId:'session',sessionFile:'/sessions/session.jsonl',lifecycle:'ready',activity:'idle'} as PrimaryView;
+  const savedSession:SavedSession={id:'session',path:primary.sessionFile as string,project:'/project',revision:'r',modifiedAt:'2026-01-01T00:00:00Z',size:20,title:'A supplied first message '.repeat(8),titleSource:'prompt',titleState:'ready'};
+  const source={target:{kind:'primary' as const,key:'p',epoch:1},primary,savedSession,connected:true};
+  const prompt=conversationPresentation(source);assert.equal(prompt.name,`${savedSession.title.slice(0,64).trimEnd()}…`);assert.equal(prompt.nameDetail,`Title from first message, not a supplied name\n${savedSession.title}`);assert.equal(prompt.input,true);
+  assert.equal(conversationPresentation({...source,primary:{...primary,sessionName:'Current name'}}).name,'Current name');
+  assert.equal(conversationPresentation({...source,primary:{...primary,sessionName:'Current name',extension:{title:'Current extension title',statuses:{},widgets:{}}}}).name,'Current extension title');
+  for(const changed of [{titleState:'pending' as const},{titleState:'unavailable' as const},{id:'different'},{path:'/other'},{titleSource:'name' as const,title:'Old saved name'},{title:'   '}]){const view=conversationPresentation({...source,savedSession:{...savedSession,...changed}});assert.equal(view.name,'Primary');assert.equal(view.nameDetail,undefined);}
+  assert.equal(conversationPresentation({...source,savedSession:undefined}).name,'Primary');
+  const cleared={...primary,sessionName:''};assert.equal(conversationPresentation({...source,primary:cleared}).name,prompt.name);assert.equal(conversationPresentation({...source,primary:cleared,savedSession:{...savedSession,titleSource:'name'}}).name,'Primary');
+  const stopped=conversationPresentation({...source,primary:{...primary,lifecycle:'stopped'}});assert.equal(stopped.name,prompt.name);assert.equal(stopped.activity,'Stopped');assert.equal(stopped.input,false);
+  assert.equal(conversationPresentation({...source,target:{kind:'primary',key:'p',epoch:2}}).name,'Primary');assert.equal(conversationPresentation({...source,target:undefined}).name,'Primary');
+});
 test('presentation tones come from source states without changing readiness',()=> {
   const states=[['ready','running','info'],['ready','compacting','info'],['ready','idle','success'],['ready','retrying','warning'],['ready','unknown','warning'],['stopped','idle','warning'],['failed','idle','error'],['starting','unknown','info']];
   for(const [lifecycle,activity,tone]of states){const primary={key:'p',epoch:1,lifecycle,activity} as PrimaryView;const view=conversationPresentation({target:{kind:'primary',key:'p',epoch:1},primary,connected:true});assert.equal(view.tone,tone,`${lifecycle}/${activity}`);assert.equal(view.input,lifecycle==='ready');}

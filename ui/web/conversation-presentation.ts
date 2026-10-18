@@ -1,5 +1,6 @@
-import type { AgentRow, EntryView, EventData, MessageView, PrimaryView, ProjectedFrame, ResponseOutcome, Target, TargetPreparation } from '../shared/api.ts';
+import type { AgentRow, EntryView, EventData, MessageView, PrimaryView, ProjectedFrame, ResponseOutcome, SavedSession, Target, TargetPreparation } from '../shared/api.ts';
 import {absoluteTime} from './format.ts';
+import {sessionLabel} from './picker-state.ts';
 import {agentName, type ConversationCaption} from './tabs.ts';
 export type PresentationTone = 'info' | 'success' | 'warning' | 'error' | 'secondary';
 
@@ -30,11 +31,11 @@ function agentConnectionStatus(source: AgentViewState): string {
   return '';
 }
 export type ConversationPresentation = {
-  name: string; identityTail?: string; tone: PresentationTone; cwd?: string; activity: string; input: boolean; busy: boolean; lastObserved: boolean; guidance: string;
+  name: string; nameDetail?: string; identityTail?: string; tone: PresentationTone; cwd?: string; activity: string; input: boolean; busy: boolean; lastObserved: boolean; guidance: string;
   model?: {provider: string; modelId: string}; thinking?: string; retainedModel: boolean; retainedThinking: boolean;
   tool?: AgentRow['currentTool']; detail?: string; responseOutcome?: ResponseOutcome; hideVisibleRosterState?: boolean;
 };
-export type PresentationSource = {target?: Target; primary?: PrimaryView; row?: AgentRow; identityTail?: string; caption?: ConversationCaption;
+export type PresentationSource = {target?: Target; primary?: PrimaryView; savedSession?: SavedSession; row?: AgentRow; identityTail?: string; caption?: ConversationCaption;
   availability?: EventData['agent.availability']; negotiated?: Pick<TargetPreparation, 'availability' | 'capabilities'> & {identity: string}; frame?: ProjectedFrame; entries?: readonly EntryView[]; tool?: AgentRow['currentTool']; connected: boolean};
 /** The newest conversational record owns its response outcome; tool errors do not. */
 export function responseOutcome(entries: readonly EntryView[] = []): ResponseOutcome | undefined {
@@ -64,13 +65,18 @@ function primaryTone(item: PrimaryView, outcome: ResponseOutcome | undefined, co
   if (item.activity === 'unknown') return 'warning';
   return outcome === 'failed' ? 'error' : outcome === 'stopped' ? 'warning' : 'success';
 }
+function primaryCaption(item: PrimaryView, saved?: SavedSession): Pick<ConversationPresentation, 'name' | 'nameDetail'> {
+  const supplied = item.extension?.title?.trim() ? item.extension.title : item.sessionName?.trim() ? item.sessionName : undefined;
+  const prompt = !supplied && saved?.id === item.sessionId && saved?.path === item.sessionFile && saved?.titleState === 'ready' && saved.titleSource === 'prompt' && saved.title.trim() ? saved : undefined;
+  return {name: supplied ?? (prompt ? sessionLabel(prompt) : 'Primary'), nameDetail: prompt ? `Title from first message, not a supplied name\n${prompt.title}` : undefined};
+}
 function primaryPresentation(source: PresentationSource, target: Extract<Target, {kind: 'primary'}>): ConversationPresentation {
   const base = emptyPresentation(source.connected); const item = source.primary;
   if (!item || item.key !== target.key || item.epoch !== target.epoch) return base;
   const ready = item.lifecycle === 'ready';
   const outcome = item.responseOutcome ?? responseOutcome(source.entries);
   const activity = source.connected ? primaryActivity(item, outcome) : 'Connection lost; activity unknown';
-  return {...base, name: item.extension?.title ?? item.sessionName ?? 'Primary', identityTail:source.identityTail, cwd: item.cwd, activity, tone: primaryTone(item, outcome, source.connected),
+  return {...base, ...primaryCaption(item, source.savedSession), identityTail:source.identityTail, cwd: item.cwd, activity, tone: primaryTone(item, outcome, source.connected),
     input: ready, busy: source.connected && ready && ['running', 'compacting', 'retrying'].includes(item.activity), responseOutcome: outcome,
     detail: item.activity === 'retrying' && item.retry ? `Next retry time is estimated from backend receipt plus ${item.retry.delayMs} ms.\n${item.retry.error}` : undefined,
     model: item.model ? {provider: item.model.provider, modelId: item.model.id} : undefined, thinking: item.thinkingLevel,

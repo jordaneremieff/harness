@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { PrimaryView, SavedSession, SavedSessionPage } from '../shared/api.ts';
-import { filterSessions, mergeSessions, mergeSessionTitles, savedPathValid, sessionCoverage, sessionEmptyMessage, sessionOwner, sessionSize, sessionLabel } from './picker-state.ts';
+import { filterSessions, loadedPrimarySession, mergeSessions, mergeSessionTitles, savedPathValid, sessionCoverage, sessionEmptyMessage, sessionOwner, sessionSize, sessionLabel } from './picker-state.ts';
 const item = (id: string, title = id): SavedSession => ({id, title, revision: id, path: `/sessions/${id}.jsonl`, project: '/project', modifiedAt: '2026-01-01T00:00:00Z', size: 1024});
 const page = (items: SavedSession[]): SavedSessionPage => ({items, total: 1259, omitted: 0, nextCursor: 'next', titleCursor: null, observedAt: '2026-01-01T00:00:00Z'});
 test('local search matches title, exact identity and saved path, not unloaded sessions', () => {
@@ -29,6 +29,19 @@ test('async title completion updates exact file versions without dropping loaded
   assert.equal(mergeSessionTitles(list, page([{...one, revision: 'replacement', title: 'Wrong inode', titleState: 'ready'}])).items[0]?.titleState, 'pending'); assert.equal(updated.nextCursor, list.nextCursor);
   assert.equal(updated.observedAt, list.observedAt);
   assert.equal(list.items[0]?.titleState, 'pending');
+});
+test('Primary metadata selects the newest exact snapshot before checking title eligibility', () => {
+  const prompt={...item('one','First message'),titleSource:'prompt' as const,titleState:'ready' as const};
+  const primary={sessionId:prompt.id,sessionFile:prompt.path} as PrimaryView, old=page([prompt]);
+  assert.equal(loadedPrimarySession(primary,[old]),prompt);assert.equal(loadedPrimarySession({...primary,sessionId:'other'},[old]),undefined);assert.equal(loadedPrimarySession({...primary,sessionFile:'/other'},[old]),undefined);
+  for(const state of ['pending','unavailable'] as const){const newer={...old,observedAt:'2026-01-02T00:00:00Z',items:[{...prompt,revision:'new',titleState:state}]};assert.equal(loadedPrimarySession(primary,[newer,old]),newer.items[0]);}
+  const wrong={...old,observedAt:'2026-01-02T00:00:00Z',items:[{...prompt,id:'other'}]};assert.equal(loadedPrimarySession(primary,[wrong,old]),undefined);
+  for(const changed of [{revision:'other'},{title:'Contradictory prompt'},{id:'other'},{size:4096},{modifiedAt:'2026-01-02T00:00:00Z'}])assert.equal(loadedPrimarySession(primary,[old,page([{...prompt,...changed}])]),undefined);
+  assert.equal(loadedPrimarySession(primary,[old,page([{...prompt}])]),prompt);
+  const pending={...prompt,titleState:'pending' as const},list=mergeSessions(undefined,page([pending]));
+  const mismatch=mergeSessionTitles(list,page([{...prompt,id:'wrong'}]));assert.equal(mismatch.items[0]?.titleState,'pending');
+  const refreshed=mergeSessions(list,{...old,observedAt:'2026-01-02T00:00:00Z',items:[{...pending,revision:'new'}]});
+  assert.equal(mergeSessionTitles(refreshed,old).items[0]?.titleState,'pending');
 });
 test('late failed completions do not downgrade a ready title at the same file revision', () => {
   const ready = {...item('one'), title: 'Ready title', titleState: 'ready' as const};

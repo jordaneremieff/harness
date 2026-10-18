@@ -107,7 +107,7 @@ function directPicker(t: TestContext, active?: PrimaryView, page: SavedSessionPa
   });
   const calls: {path: string; body?: unknown}[] = []; const selections: SelectionChange[] = []; const steps: string[] = [];
   const state = {primaries: active ? [active] : [], launchCwd: '/project', ...(catalog ? {roster: catalog.roster} : {})} as unknown as Bootstrap;
-  let reloads = 0; let failure = false; let listFailure = false; let closed = false; let error = ''; let running = false;
+  let reloads = 0; let titleChanges = 0; let failure = false; let listFailure = false; let closed = false; let error = ''; let running = false;
   const modal = {
     node: {dataset: {} as Record<string, string>}, body, token: 0, close: () => {closed = true;},
     open: () => { modal.token++; body.replaceChildren(); closed = false; return body; },
@@ -131,10 +131,10 @@ function directPicker(t: TestContext, active?: PrimaryView, page: SavedSessionPa
     else if (path.includes('/api/projects')) data = {items: [], total: 0, omitted: 0, nextCursor: null, observedAt: saved.observedAt};
     return new Response(JSON.stringify({ok: true, data}), {status: 200, headers: {'content-type': 'application/json'}});
   };
-  const picker = new ProjectPicker({agentPresentation: catalog?.presentation ?? catalogPresentation, modal: modal as unknown as Modal, snapshot: () => state, primary: () => active,selectOpened,
+  const picker = new ProjectPicker({agentPresentation: catalog?.presentation ?? catalogPresentation, modal: modal as unknown as Modal, snapshot: () => state, primary: () => active,selectOpened,titlesChanged:()=>{titleChanges++;},
     selection: async change => { steps.push('selection'); selections.push(change); }, reload: async () => { steps.push('reload'); reloads++; }});
   const click = (label: string) => { const node = descendants(body).find(node => node.tag === 'button' && node.textContent === label); assert.ok(node, label); node.click(); };
-  return {picker, modal, body, calls, state, selections, steps, click, fail: () => { failure = true; }, failList: () => { listFailure = true; }, get reloads() { return reloads; }, get closed() { return closed; }, get error() { return error || descendants(body).find(node => node.id === 'picker-file-error')?.textContent || descendants(body).find(node => node.className === 'picker-error')?.textContent || ''; }};
+  return {picker, modal, body, calls, state, selections, steps, click, fail: () => { failure = true; }, failList: () => { listFailure = true; }, get reloads() { return reloads; }, get titleChanges() { return titleChanges; }, get closed() { return closed; }, get error() { return error || descendants(body).find(node => node.id === 'picker-file-error')?.textContent || descendants(body).find(node => node.className === 'picker-error')?.textContent || ''; }};
 }
 const settle = () => new Promise<void>(resolve => setImmediate(resolve));
 function catalogRow(identity: string): AgentRow {return {identity, storageId: identity, name: 'Published name', cwd: '/project', modifiedAt: 0, state: 'working', owner: 'unknown', availability: 'live', partial: false};}
@@ -253,6 +253,26 @@ test('global count follows late titles, local pages and the current query', asyn
   assert.equal(coverage.textContent, '1 match in loaded sessions'); assert.equal(more.disabled, false); assert.equal(more.hidden, true);
   search.value = ''; search.dispatch('input'); assert.equal(coverage.textContent, '2 loaded sessions');
   assert.equal(setup.body.querySelectorAll('.picker-select').length, 2);
+});
+test('loaded Primary metadata follows title completion and newer registered evidence without extra retrieval',async t=> {
+  const pending={...ordinarySample,title:'',titleSource:'prompt' as const,titleState:'pending' as const};
+  const primary={key:'p',epoch:1,cwd:'/project',sessionId:pending.id,sessionFile:pending.path,lifecycle:'ready'} as PrimaryView;
+  const setup=directPicker(t,primary,{...saved,items:[pending],titleCursor:'titles'}), original=globalThis.fetch;
+  const titles=Promise.withResolvers<Response>(),registered=Promise.withResolvers<Response>();
+  globalThis.fetch=async(input,init)=>String(input).includes('&titles=')?titles.promise:String(input)==='/api/sessions/published'?registered.promise:original(input,init);
+  setup.picker.open();await settle();assert.equal(setup.picker.savedSession(primary)?.titleState,'pending');
+  titles.resolve(Response.json({ok:true,data:{...saved,items:[{...pending,title:'First prompt',titleState:'ready'}]}}));await settle();
+  assert.equal(setup.picker.savedSession(primary)?.title,'First prompt');const changed=setup.titleChanges;
+  registered.resolve(Response.json({ok:true,data:{...saved,observedAt:'2026-01-02T00:00:00Z',items:[{...pending,revision:'new',titleState:'unavailable'}]}}));await settle();
+  assert.equal(setup.picker.savedSession(primary)?.titleState,'unavailable');assert.ok(setup.titleChanges>changed);
+  let refresh=Promise.withResolvers<Response>();globalThis.fetch=async(input,init)=>String(input)==='/api/sessions/published'?refresh.promise:original(input,init);
+  setup.picker.open();await settle();assert.equal(setup.picker.savedSession(primary)?.titleState,'unavailable');
+  assert.match(setup.body.querySelector('.picker-ordinary')?.textContent??'',/Loading registered ordinary sessions/);assert.equal(setup.body.querySelector('.picker-registered-list')?.children.length,0);
+  refresh.reject(new Error('offline'));await settle();assert.equal(setup.picker.savedSession(primary)?.titleState,'unavailable');assert.match(setup.body.querySelector('.picker-ordinary')?.textContent??'',/Registered ordinary sessions are unavailable/);
+  refresh=Promise.withResolvers<Response>();setup.picker.open();await settle();setup.modal.close();
+  refresh.resolve(Response.json({ok:true,data:{...saved,items:[{...pending,title:'Old prompt',titleState:'ready'}]}}));await settle();assert.equal(setup.picker.savedSession(primary)?.titleState,'unavailable');
+  assert.equal(setup.picker.savedSession({...primary,sessionId:'other'}),undefined);assert.equal(setup.picker.savedSession({...primary,sessionFile:'/other'}),undefined);
+  assert.equal(setup.calls.some(call=>call.path==='/api/primaries'||call.path.includes('/api/operations')),false);
 });
 test('late registered duplicate removal changes the same visible set and global count', async t => {
   const catalog = searchCatalog(), duplicate = {...ordinarySample, path: '/registered.jsonl', title: 'Folder alias'};

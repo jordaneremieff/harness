@@ -1434,6 +1434,23 @@ test('footer settings preserve exact long values and existing eligibility withou
   assert.equal(byId('model-button'), model); assert.equal(byId('thinking-button'), thinking); assert.equal(byId('model-value').textContent, id); assert.equal(model.disabled, false); assert.equal(thinking.hidden, false);
   app.primaryChrome(primaryFixture({lifecycle: 'starting', model: undefined, thinkingLevel: undefined})); assert.equal(model.hidden, true); assert.equal(model.disabled, true); assert.equal(thinking.hidden, true);
 });
+test('loaded prompt metadata updates Primary captions without input or target changes', async context => {
+  const item=primaryFixture({epoch:42,sessionId:'caption-session',sessionFile:'/fixture/caption-session.jsonl',sessionName:undefined,extension:undefined,activity:'idle'});
+  const target={kind:'primary' as const,key:item.key,epoch:item.epoch};await arrive({workspace:{id:'w',revision:1,primaryKey:item.key,selectedTarget:target},primaries:[item],roster:[]});
+  const editor=primaryControl('editor'),text=editor.value,selection=[editor.selectionStart,editor.selectionEnd], original=globalThis.fetch;
+  const prompt='Describe the exact current session '.repeat(5), response={items:[{id:item.sessionId,path:item.sessionFile,project:item.cwd,revision:'caption-r1',title:prompt,titleSource:'prompt',titleState:'ready',modifiedAt:'2026-01-01T00:00:00Z',size:10}],total:1,omitted:0,nextCursor:null,titleCursor:null,observedAt:'2026-01-02T00:00:00Z'};
+  context.mock.method(globalThis,'fetch',async(input,init)=>String(input).startsWith('/api/sessions/published')?Response.json({ok:true,data:response}):String(input).startsWith('/api/sessions?')?Response.json({ok:true,data:{...response,items:[],total:0}}):original(input,init));
+  context.after(()=>byId('modal-close').click());assert.equal(byId('primary-row-title').textContent,'Primary');
+  const requests=transportLog.length;byId('session-open').click();await settle();
+  const label=`${prompt.slice(0,64).trimEnd()}…`;assert.equal(byId('primary-row-title').textContent,label);assert.equal(primaryControl('recipient').textContent,`Message ${label}`);
+  const row=byId('primary-row');assert.match(row.title,/Session ID: caption-session/);assert.ok(row.title.includes(prompt));assert.match(row.attributes.get('aria-description')??'',/Title from first message, not a supplied name/);
+  event('primary.state',{...item,sessionName:'Native name'},target);assert.equal(byId('primary-row-title').textContent,'Native name');assert.doesNotMatch(row.title,/Title from first message/);
+  event('primary.state',{...item,sessionName:''},target);assert.equal(byId('primary-row-title').textContent,label);
+  const newer=response.items[0];assert.ok(newer);response.observedAt='2026-01-03T00:00:00Z';newer.revision='caption-r2';newer.titleState='unavailable';byId('session-open').click();await settle();assert.equal(byId('primary-row-title').textContent,'Primary');assert.doesNotMatch(row.title,/Title from first message/);
+  event('primary.state',{...item,sessionFile:'/fixture/other.jsonl'},target);assert.equal(byId('primary-row-title').textContent,'Primary');
+  assert.equal(primaryControl('editor'),editor);assert.equal(editor.value,text);assert.deepEqual([editor.selectionStart,editor.selectionEnd],selection);assert.deepEqual(app.state.workspace?.selectedTarget,target);
+  assert.equal(transportLog.slice(requests).some(call=>call.method==='POST'),false);
+});
 test('the Primary composer uses the projected conversation name without replacing its editor', async () => {
   const item=primaryFixture({epoch:41,sessionName:'Named conversation',activity:'idle'});await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:{kind:'primary',key:'p',epoch:41}},primaries:[item],roster:[]});const editor=primaryControl('editor');assert.equal(primaryControl('recipient').textContent,'Message Named conversation');assert.equal(byId('primary-row-state').dataset.glyph,'✓'); assert.ok(byId('primary-row-state').querySelector('.card-icon-success'));event('primary.state',{...item,sessionName:'Renamed conversation'},{kind:'primary',key:'p',epoch:41});assert.equal(primaryControl('recipient').textContent,'Message Renamed conversation');assert.equal(primaryControl('editor'),editor);
 });

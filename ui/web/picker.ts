@@ -7,7 +7,7 @@ import { contextMenu, type ContextItem } from './context-menu.ts';
 import { duplicateIdentityTails } from './tabs.ts';
 import { absoluteTime, relativeTime } from './format.ts';
 import type { Modal } from './modal.ts';
-import { filterSessions, mergeSessions, mergeSessionTitles, savedPathValid, sessionCoverage, sessionEmptyMessage, sessionOwner, sessionSize, sessionLabel, type SessionList } from './picker-state.ts';
+import { filterSessions, loadedPrimarySession, mergeSessions, mergeSessionTitles, savedPathValid, sessionCoverage, sessionEmptyMessage, sessionOwner, sessionSize, sessionLabel, type SessionList } from './picker-state.ts';
 import { operation, request, reserve } from './transport.ts';
 
 function pickerField(control: {label: HTMLLabelElement; field: HTMLElement}, visibleLabel = false): HTMLElement {
@@ -62,12 +62,14 @@ function durableListDetails(roster?: CachedRoster): string {
 
 type Context = {snapshot(): Snapshot | undefined; primary(): PrimaryView | undefined; modal: Modal;
   agentPresentation(row: AgentRow): Pick<ConversationPresentation, 'name' | 'identityTail' | 'activity' | 'tone' | 'cwd'>;
-  selection(change: SelectionChange): Promise<void>; reload(): Promise<void>; selectOpened?(): (key:string)=>Promise<void>; selectConverted?(): (identity:string)=>Promise<void>; project?(): string | undefined; projectsChanged?(): void; workingFolder?(path:string):Promise<void>};
+  selection(change: SelectionChange): Promise<void>; reload(): Promise<void>; selectOpened?(): (key:string)=>Promise<void>; selectConverted?(): (identity:string)=>Promise<void>; project?(): string | undefined; projectsChanged?(): void; titlesChanged?(): void; workingFolder?(path:string):Promise<void>};
 
 /** Metadata caches belong to the picker, never to execution or writer ownership. */
 export class ProjectPicker {
   private ctx: Context;
   private cached = new Map<string, SessionList>();
+  private published?: SavedSessionPage;
+  savedSession(primary?: PrimaryView): SavedSession | undefined { return loadedPrimarySession(primary, [...this.cached.values(), ...(this.published ? [this.published] : [])]); }
   private conversions = new Map<string,{id:string;revision:string}>();
   private projects?: RecentProjectPage;
   private pending = new AbortController();
@@ -303,6 +305,7 @@ export class ProjectPicker {
       if (!data) return;
       this.cached.delete(project); this.cached.set(project, data);
       if (this.cached.size > 8) this.cached.delete(this.cached.keys().next().value ?? '');
+      this.ctx.titlesChanged?.();
     };
     const load = async (cursor?: string) => {
       const generation = ++loading; const current = () => this.owns(token) && generation === loading;
@@ -361,7 +364,7 @@ export class ProjectPicker {
     const status=element('p','secondary'); status.setAttribute('aria-live','polite');
     ordinary.append(registeredHeading.node, status, safety, registered);
     body.append(durable,ordinary);
-    let published:SavedSessionPage|undefined, failed=false;
+    let loaded=false,failed=false;
     const selectable=()=>[...list.querySelectorAll<HTMLButtonElement>('.picker-durable-select'),...registered.querySelectorAll<HTMLButtonElement>('.picker-select')];
     const restoreFocus=(focused?:HTMLButtonElement)=> {
       if(!focused)return;
@@ -369,6 +372,7 @@ export class ProjectPicker {
       if(replacement)replacement.focus();else focusSearch();
     };
     const updateRegisteredDetails=()=> {
+      const published=loaded?this.published:undefined;
       registeredHeading.update(published ? savedListDetails(published, true) : '', !!published && partialSessions(published));
       status.textContent=failed ? 'Registered ordinary sessions are unavailable. Refresh the session picker.' : published ? '' : 'Loading registered ordinary sessions…'; status.hidden=!status.textContent;
     };
@@ -381,6 +385,7 @@ export class ProjectPicker {
       });
       list.replaceChildren(...matches.map(row=>this.durableRow(row)));
       if(!matches.length && roster?.scan.state === 'ready' && !roster.error)list.append(element('p','secondary',sessionEmptyMessage(query())));
+      const published=loaded?this.published:undefined;
       const items=filterSessions(published?.items ?? [],query());
       const tails=duplicateIdentityTails((published?.items ?? []).map(item=>({name:sessionLabel(item),identity:item.id})));
       registered.replaceChildren(...items.map(item=>this.row(item,tails.get(item.id))));
@@ -391,7 +396,7 @@ export class ProjectPicker {
     };
     void request<SavedSessionPage>('/api/sessions/published','GET',undefined,undefined,signal).then(page=>{
       if(!this.owns(token)||signal.aborted)return;
-      published=page; changed(page.items.map(item=>item.path));
+      this.published=page;loaded=true;this.ctx.titlesChanged?.();changed(page.items.map(item=>item.path));
     }).catch(()=>{if(this.owns(token)&&!signal.aborted){failed=true;changed([]);}});
     return paint;
   }

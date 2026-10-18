@@ -453,7 +453,7 @@ function fileTreeOperation(rootId:string,action:FileTreeAction,path:string,value
   const pane = currentLayout().focusedPane,input = document.activeElement;
   return mutateFile(workspace,rootId,action,path,value,()=>state.workspace?.id === workspace && currentLayout().focusedPane === pane && document.activeElement === input);
 }
-const picker = new ProjectPicker({snapshot: currentSnapshot, primary, modal, agentPresentation:row=>presentation({kind:'agent',identity:row.identity}), selection:change=>{if(change.selectedTarget?.kind==='agent')conversationController(change.selectedTarget).passive=false;return selection(change);}, reload, selectOpened:capturePrimarySelection, selectConverted:captureNativeSelection, project: projectPath, projectsChanged: renderIdentity,workingFolder:path=>fileRoot.choose(path)});
+const picker = new ProjectPicker({snapshot: currentSnapshot, primary, modal, agentPresentation:row=>presentation({kind:'agent',identity:row.identity}), selection:change=>{if(change.selectedTarget?.kind==='agent')conversationController(change.selectedTarget).passive=false;return selection(change);}, reload, selectOpened:capturePrimarySelection, selectConverted:captureNativeSelection, project: projectPath, projectsChanged: renderIdentity,titlesChanged:primaryTitlesChanged,workingFolder:path=>fileRoot.choose(path)});
 actions.projectPicker = () => picker.open(projectPath());
 const recovery = new Recovery({snapshot: currentSnapshot, reload, modal});
 const roster = new Roster(row => { void selectAgent(row).catch(showError); }, action => { if (action === 'refresh') refreshRoster(); else moreRoster(); }, {
@@ -583,10 +583,11 @@ let captionReferenceKey = '', paintedCaptionReferenceKey = '';
 function captionReferences(): string {
   if (captionReferenceRoster !== state.roster || captionReferencePrimaries !== state.primaries) {
     captionReferenceRoster = state.roster; captionReferencePrimaries = state.primaries;
-    captionReferenceKey = JSON.stringify([[...state.roster.keys()].sort(), [...state.primaries.values()].map(value => [value.key, value.epoch, value.sessionId, value.extension?.title ?? value.sessionName ?? 'Primary']).sort((a,b)=>String(a[0]).localeCompare(String(b[0])))]);
+    captionReferenceKey = JSON.stringify([[...state.roster.keys()].sort(), [...state.primaries.values()].map(value => [value.key, value.epoch, value.sessionId, presentationName(presentation({kind:'primary',key:value.key,epoch:value.epoch}))]).sort((a,b)=>String(a[0]).localeCompare(String(b[0])))]);
   }
   return captionReferenceKey;
 }
+function primaryTitlesChanged(): void { captionReferencePrimaries = undefined; refreshCaptionConsumers(); primaryNavigation(primary()); }
 function refreshCaptionConsumers(): void {
   const captions = presentationCaptions(), references = captionReferences();
   if (captionPaintRevision === captions.revision && paintedCaptionReferenceKey === references) return;
@@ -612,7 +613,8 @@ function presentation(target?: Target): ConversationPresentation {
   const controller = target && state.workspace ? controllers.get(controllerKey(state.workspace.id, target)) : undefined;
   const conversation = target ? state.conversations.get(targetIdentity(target)) : undefined;
   const tool = target?.kind === 'primary' ? [...conversation?.tools.values() ?? []].findLast(item => item.phase !== 'end') : undefined;
-  return conversationPresentation({target, primary: target?.kind === 'primary' ? state.primaries.get(target.key) : undefined,
+  const item = target?.kind === 'primary' ? state.primaries.get(target.key) : undefined;
+  return conversationPresentation({target, primary: item, savedSession: picker.savedSession(item),
     row, caption: targetCaption(target), availability: target?.kind === 'agent' && !controller?.connection && !controller?.connectionError ? state.agentAvailability.get(target.identity) : undefined,
     negotiated: target?.kind === 'agent' && controller?.connection ? {identity: target.identity, ...controller.connection} : undefined,
     entries: conversation ? conversationBlocks(conversation) : undefined,
@@ -1274,7 +1276,9 @@ function primaryNavigation(item?: PrimaryView): void {
   const glyph = presentationGlyph(view);
   const status = byId('primary-row-state'); setText(status, glyph);
   status.dataset.tone = view.tone;
-  setText(byId('primary-row-title'), item?.extension?.title ?? item?.sessionName ?? item?.sessionId ?? 'no session');
+  setText(byId('primary-row-title'), item ? view.name : 'no session');
+  const detail = item ? [view.name, item.sessionId ? `Session ID: ${item.sessionId}` : '', view.nameDetail].filter(Boolean).join('\n') : 'No session';
+  const row = byId('primary-row'); row.title = detail; row.setAttribute('aria-description', detail);
   setText(byId('primary-row-meta'), item && view.activity !== 'Ready' ? primaryState(item) : '');
 }
 function primaryActivity(item?: PrimaryView, target?: Target): void {
