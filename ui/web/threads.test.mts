@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type {ThreadEventView, ThreadFrameView, ThreadListItem, ThreadOverview} from '../shared/api.ts';
-import {emptyListText, eventTime, exchangeRows, filterThreads, frameChanges, mergeEvents, noteFitsInline, olderBoundary, overviewLines, prependEvents, purposeNeedsExpansion, threadCount} from './threads.ts';
+import {emptyListText, eventTime, exchangeRows, filterThreads, frameChanges, mergeEvents, noteFitsInline, olderBoundary, overviewLines, prependEvents, purposeNeedsExpansion, threadCount, threadMeta} from './threads.ts';
 
 const frame = (overrides: Partial<ThreadFrameView> = {}): ThreadFrameView => ({title: 'Plan', purpose: 'Ship it', authority: 'Operator', source: '', restrictions: 'None', acceptance: 'Works', integrator: 'root', ...overrides});
 const item = (id: string, title: string, overrides: Partial<ThreadListItem> = {}): ThreadListItem => ({id, storageId: 'root', title, purpose: '', updatedAt: 1000, closed: false, members: 2, ...overrides});
@@ -106,4 +106,13 @@ test('event times, long notes and long purposes are classified by size', () => {
   assert.equal(purposeNeedsExpansion('short'), false);
   assert.equal(purposeNeedsExpansion('a\nb\nc\nd'), true);
   assert.equal(purposeNeedsExpansion('x'.repeat(300)), true);
+});
+
+test('a list row states its members and an age that reads as an age', () => {
+  const now = Date.parse('2026-10-19T12:00:00Z'), at = (ms: number) => now - ms;
+  assert.equal(threadMeta(item('a', 'One', {members: 20, updatedAt: at(2 * 60_000)}), now), '20 members · 2m ago');
+  assert.equal(threadMeta(item('a', 'One', {members: 1, updatedAt: at(16 * 3600_000)}), now), '1 member · 16h ago');
+  assert.equal(threadMeta(item('a', 'One', {members: 6, closed: true, updatedAt: at(11 * 86400_000)}), now), 'Closed · 6 members · 11d ago');
+  assert.equal(threadMeta(item('a', 'One', {members: 2, updatedAt: at(5000)}), now), '2 members · just now');
+  assert.match(threadMeta(item('a', 'One', {members: 2, updatedAt: at(90 * 86400_000)}), now), /^2 members · [A-Z][a-z]{2} \d+$/);
 });

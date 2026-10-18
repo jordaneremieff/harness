@@ -54,7 +54,7 @@ test('the section reads nothing until it is opened and lists open threads before
   assert.equal(byId('threads-section-body').hidden, false);
   const rows = byId('threads-list').querySelectorAll('button');
   assert.deepEqual(rows.map(row => text(row.querySelector('.row-title') ?? row)), ['Release plan', 'Long thread', 'Unavailable thread', 'Lost thread', 'Old audit']);
-  assert.match(text(rows[4]), /closed · 2 · /);
+  assert.match(text(rows[4]), /Closed · 2 members · 3d ago$/); assert.match(text(rows[0]), /3 members · 1m ago$/);
   assert.equal(rows[4].classList.contains('closed'), true);
   assert.equal(byId('threads-refresh').disabled, false);
   assert.doesNotMatch(text(byId('threads-footer')), /Listed by/);
@@ -230,5 +230,19 @@ test('opening from a focused file pane uses the last conversation pane and leave
   assert.ok(reader());
   assert.equal(byId('modal-body').textContent, '');
   assert.equal(hostDocument.querySelectorAll('.thread-reader').length, 1);
+  await closeReader();
+});
+
+test('a member with no known name reads as a short conversation id, never as an unnamed agent', async () => {
+  const unknown = '01a149eb-cedf-7392-8808-5d73a0416bbe';
+  fixtureControl.threadHandler = url => url.pathname === '/api/threads/read' ? page([event(1, 'create', STORAGE, {frame: frame(), message: ''}), event(2, 'contribution', unknown, {message: 'Hello'})],
+    {id: url.searchParams.get('threadId') ?? THREAD, integrator: unknown, members: [{identity: unknown, contribution: 'Coordinates', joinedAt: 1}]}) : overview;
+  byId('threads-refresh').click(); await settle();
+  rowButton('Release plan').click(); await settle();
+  const node = reader(); assert.ok(node);
+  assert.match(text(node.querySelector('.thread-status') as never), /Integrator Conversation 01a149eb/);
+  assert.deepEqual(node.querySelectorAll('.thread-person').map(person => text(person)), ['Conversation 01a149eb']);
+  assert.equal(node.querySelectorAll('.thread-person')[0]?.title, unknown);
+  assert.doesNotMatch(text(node), /Unnamed agent/);
   await closeReader();
 });

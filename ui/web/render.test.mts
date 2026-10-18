@@ -1053,7 +1053,7 @@ test('a sender without a public name shows the loaded conversation caption, neve
   view.set([communicationEntry('ready', 'Body', '')]); flush(); const heading = node('primary-transcript').querySelector('.communication-sender'); assert.ok(heading);
   assert.equal(heading.textContent, 'Web UI lead · task 96'); assert.equal(heading.title, '10000000-0000-4000-8000-000000000001'); view.reset();
   const unnamed = new Transcript('primary', {presentation: () => {}, reading: () => {}, subject: () => ({text: 'Unnamed conversation', open: () => {}})});
-  unnamed.set([communicationEntry('ready', 'Body', '')]); flush(); assert.equal(node('primary-transcript').querySelector('.communication-sender')?.textContent, 'Unnamed agent'); unnamed.reset();
+  unnamed.set([communicationEntry('ready', 'Body', '')]); flush(); assert.equal(node('primary-transcript').querySelector('.communication-sender')?.textContent, 'Conversation 10000000'); unnamed.reset();
 });
 test('a derived child caption labels a sender without a name and keeps the identity in the title', () => {
   setup(); const view = new Transcript('primary', {presentation: () => {}, reading: () => {}, subject: identity => ({text: 'Web UI manager · 22260', derived: true, title: identity})});
@@ -2335,7 +2335,7 @@ test('communication headers use supplied identities rather than missing-name pro
   setup(); const view = transcript(); const source = communicationEntry('ready', 'Body', ''); view.set([source]); flush();
   const card = node('primary-transcript').querySelector('.communication-card'); assert.ok(card);
   const heading = card.querySelector('.communication-sender'); assert.ok(heading);
-  assert.equal(heading.textContent, 'Unnamed agent'); assert.equal(heading.title, '10000000-0000-4000-8000-000000000001');
+  assert.equal(heading.textContent, 'Conversation 10000000'); assert.equal(heading.title, '10000000-0000-4000-8000-000000000001');
   assert.doesNotMatch(heading.textContent, /unavailable/);
   view.set([communicationEntry()]); flush(); assert.equal(card.querySelector('.communication-sender'), heading); assert.equal(heading.textContent, 'Peer');
   assert.equal(heading.title, '10000000-0000-4000-8000-000000000001'); view.reset();
@@ -2417,7 +2417,7 @@ test('Source restores one target-local disclosure and preserves transport loss w
 });
 test('non-ready associations show literal previews without promoting sender or kind claims', () => {
   setup(); const view = transcript(); view.set([communicationEntry('ready', '', '')]); flush(); const article = node('primary-transcript').querySelector('.communication-card'); assert.ok(article);
-  assert.equal(article.querySelector('.communication-sender')?.textContent, 'Unnamed agent'); assert.equal(messageAction(article, 'Copy').enabled, false);
+  assert.equal(article.querySelector('.communication-sender')?.textContent, 'Conversation 10000000'); assert.equal(messageAction(article, 'Copy').enabled, false);
   const actions = article.querySelector('.message-actions');
   for (const state of ['unresolved', 'unavailable'] as const) {
     view.set([communicationEntry(state)]); flush(); assert.equal(article.dataset.state, state); assert.equal(article.querySelector('.communication-sender')?.textContent, ''); assert.equal(article.querySelector('.communication-sender')?.hidden, true); assert.equal(article.querySelector('.communication-unverified')?.attributes['aria-label'], 'Source unverified'); assert.equal(article.querySelector('.communication-unverified')?.hidden, false); assert.equal(article.querySelector('.communication-kind'), null); assert.equal(article.querySelector('.communication-copy'), null); assert.match(messageAction(article, 'Copy').description ?? '', /source unverified/); assert.equal(article.querySelector('.message-actions'), actions);

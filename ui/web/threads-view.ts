@@ -1,27 +1,26 @@
 import type {ErrorView, ThreadEventView, ThreadListItem, ThreadOverview, ThreadPageView, ThreadView} from '../shared/api.ts';
 import {button, byId, details, element, setText} from './dom.ts';
-import {absoluteTime, compactAge} from './format.ts';
+import {absoluteTime} from './format.ts';
 import {navigateOptions} from './list-navigation.ts';
 import {markdownDom} from './safe-markdown.ts';
 import {
   FRAME_LABELS, THREAD_FILTER_THRESHOLD, emptyListText, eventTime, exchangeRows, filterThreads, mergeEvents, noteFitsInline, olderBoundary,
-  overviewLines, pageEvents, prependEvents, purposeNeedsExpansion, threadCount, type ExchangeRow, type FrameChange, type ThreadNameFor} from './threads.ts';
+  overviewLines, pageEvents, prependEvents, purposeNeedsExpansion, threadCount, threadMeta, type ExchangeRow, type FrameChange, type ThreadNameFor} from './threads.ts';
 
 const SECTION_KEY = 'ui:sections:threads';
-const UNNAMED = 'Unnamed agent';
 const OPERATOR = 'Operator';
 const NOT_OFFERED = 'Threads are not available from this agent host.';
 const REFRESH_AFTER_MS = 10_000;
 
-/** A name the browser already holds for a conversation identity, or nothing. */
-export type KnownName = (identity: string) => string | undefined;
+/** The label for a conversation identity. It always answers: a short identity stands in when the browser holds no name. */
+export type KnownName = (identity: string) => string;
 function errorView(error: unknown): ErrorView | undefined {
   const view = (error as {view?: ErrorView} | undefined)?.view;
   return view && typeof view.code === 'string' ? view : undefined;
 }
 function errorText(error: unknown): string { return error instanceof Error ? error.message : 'The request failed.'; }
 function nameFor(known: KnownName): ThreadNameFor {
-  return (identity, origin) => origin === 'operator' ? OPERATOR : known(identity) ?? UNNAMED;
+  return (identity, origin) => origin === 'operator' ? OPERATOR : known(identity);
 }
 
 export type ExplorerHooks = {
@@ -101,7 +100,7 @@ export class ThreadExplorer {
   }
   private nameSignature(): string {
     const ids = [...(this.overview?.storages ?? [])].filter(state => state.state !== 'answered').map(state => state.storageId);
-    return ids.map(id => `${id}=${this.hooks.name(id) ?? ''}`).join('|');
+    return ids.map(id => `${id}=${this.hooks.name(id)}`).join('|');
   }
   private paint(): void {
     const overview = this.overview;
@@ -137,18 +136,17 @@ export class ThreadExplorer {
     return lines;
   }
   private troubleLine(state: ThreadOverview['storages'][number]): string {
-    const name = this.hooks.name(state.storageId) ?? state.storageId;
+    const name = this.hooks.name(state.storageId);
     return `${name}: ${state.state === 'unavailable' ? 'does not offer threads' : `did not answer${state.message ? ` (${state.message})` : ''}`}`;
   }
   private row(item: ThreadListItem, now: number): HTMLElement {
     const entry = element('li', 'thread-item');
     const row = element('button', `nav-row thread-row${item.closed ? ' closed' : ''}`);
     row.type = 'button'; row.dataset.threadId = item.id;
-    const age = compactAge(item.updatedAt, now);
-    const members = `${item.members} ${item.members === 1 ? 'member' : 'members'}`;
-    row.append(element('span', 'row-title', item.title || 'Untitled thread'), element('span', 'row-meta', [item.closed ? 'closed' : '', String(item.members), age].filter(Boolean).join(' · ')));
-    row.title = [item.title, item.purpose, `${item.closed ? 'Closed' : 'Open'} · ${members}`, item.updatedAt ? `Updated ${absoluteTime(item.updatedAt)}` : ''].filter(Boolean).join('\n');
-    row.setAttribute('aria-label', `${item.title || 'Untitled thread'}, ${item.closed ? 'closed' : 'open'}, ${members}${age ? `, updated ${age}` : ''}`);
+    const meta = threadMeta(item, now);
+    row.append(element('span', 'row-title', item.title || 'Untitled thread'), element('span', 'row-meta', meta));
+    row.title = [item.title, item.purpose, meta, item.updatedAt ? `Updated ${absoluteTime(item.updatedAt)}` : ''].filter(Boolean).join('\n');
+    row.setAttribute('aria-label', `${item.title || 'Untitled thread'}, ${meta}`);
     if (item.id === this.current) row.setAttribute('aria-current', 'page');
     row.addEventListener('click', () => this.hooks.open(item, row));
     entry.append(row); return entry;
@@ -246,7 +244,7 @@ export class ThreadReader {
   private nameSignature(): string {
     const entry = this.entry; if (!entry) return '';
     const ids = new Set<string>([...entry.events.map(event => event.sender), ...(entry.thread?.members.map(member => member.identity) ?? []), ...(entry.thread?.integrator ? [entry.thread.integrator] : [])]);
-    return [...ids].map(id => `${id}=${this.hooks.name(id) ?? ''}`).join('|');
+    return [...ids].map(id => `${id}=${this.hooks.name(id)}`).join('|');
   }
   private rememberScroll(): void {
     const entry = this.entry; if (!entry || this.node.hidden || this.restorePending) return;
@@ -330,7 +328,7 @@ export class ThreadReader {
   }
   private statusText(thread: ThreadView | undefined): string {
     if (!thread) return this.loading ? 'Reading thread…' : '';
-    const integrator = thread.integrator ? this.hooks.name(thread.integrator) ?? UNNAMED : '';
+    const integrator = thread.integrator ? this.hooks.name(thread.integrator) : '';
     const updated = thread.updatedAt ? `Updated ${eventTime(thread.updatedAt, Date.now())}` : '';
     return [thread.closed ? 'Closed' : 'Open', `${thread.members.length} ${thread.members.length === 1 ? 'member' : 'members'}`, integrator ? `Integrator ${integrator}` : '', updated, this.loading ? 'Refreshing…' : ''].filter(Boolean).join(' · ');
   }
@@ -373,7 +371,7 @@ export class ThreadReader {
     const list = element('ul', 'thread-member-list');
     for (const member of thread.members) {
       const item = element('li', 'thread-member');
-      const label = this.hooks.name(member.identity) ?? UNNAMED;
+      const label = this.hooks.name(member.identity);
       const who = button(label, () => this.hooks.openMember(member.identity), 'thread-person');
       who.title = member.identity; who.setAttribute('aria-label', `Open ${label}`);
       item.append(who);
@@ -405,7 +403,7 @@ export class ThreadReader {
     const item = element('li', 'thread-event thread-message');
     item.dataset.kind = row.carried ? 'carried-authority' : 'contribution';
     const head = element('div', 'thread-event-head');
-    const label = row.origin === 'operator' ? OPERATOR : this.hooks.name(row.sender) ?? UNNAMED;
+    const label = row.origin === 'operator' ? OPERATOR : this.hooks.name(row.sender);
     if (row.origin === 'operator') head.append(element('span', 'thread-sender', label));
     else { const who = button(label, () => this.hooks.openMember(row.sender), 'thread-sender'); who.title = row.sender; who.setAttribute('aria-label', `Open ${label}`); head.append(who); }
     if (row.carried) head.append(element('span', 'thread-kind', 'Carried authority'));

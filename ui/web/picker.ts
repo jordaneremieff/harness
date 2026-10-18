@@ -69,6 +69,14 @@ export class ProjectPicker {
   private ctx: Context;
   private cached = new Map<string, SessionList>();
   private published?: SavedSessionPage;
+  /** The title of a Pi session whose metadata this picker already holds. It makes no request. */
+  sessionTitle(id: string): string | undefined {
+    for (const page of [...this.cached.values(), ...(this.published ? [this.published] : [])]) {
+      const item = page.items.find(candidate => candidate.id === id);
+      if (item && item.titleState !== 'pending' && item.title) return sessionLabel(item);
+    }
+    return undefined;
+  }
   savedSession(primary?: PrimaryView): SavedSession | undefined { return loadedPrimarySession(primary, [...this.cached.values(), ...(this.published ? [this.published] : [])]); }
   private conversions = new Map<string,{id:string;revision:string}>();
   private projects?: RecentProjectPage;

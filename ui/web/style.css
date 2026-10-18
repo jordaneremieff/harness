@@ -1169,8 +1169,9 @@ dialog[data-variant=menu]::backdrop { background: transparent; }
 .threads-body > :not(.threads-list) { flex: none; }
 .threads-list { flex: 0 1 auto; min-height: 0; max-height: min(28dvh, 240px); margin: 0; padding: 0; overflow-x: hidden; overflow-y: auto; list-style: none; scrollbar-width: thin; scrollbar-color: var(--edge) transparent; }
 .thread-item { margin: 0; }
-.thread-row .row-title { flex: 1 1 auto; }
-.thread-row .row-meta { flex: none; }
+.thread-row { flex-direction: column; align-items: stretch; justify-content: center; gap: 0; height: auto; min-height: 40px; padding-block: 4px; }
+.thread-row .row-title { flex: none; }
+.thread-row .row-meta { flex: none; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .thread-row.closed .row-title { color: var(--muted); }
 .threads-footer { flex-direction: column; gap: 2px; }
 .threads-footer > :is(.threads-note, details, .threads-retry) { margin: 0; }

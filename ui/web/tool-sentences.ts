@@ -1,7 +1,7 @@
 import type {JoinedTool} from './transcript-tools.ts';
 import type {PartView} from '../shared/api.ts';
 
-export type NamedDestination = {text: string; name?: string; provenance?: 'reported' | 'supplied' | 'handle'; derived?: boolean; title?: string; open?: () => void};
+export type NamedDestination = {text: string; name?: string; provenance?: 'reported' | 'supplied' | 'handle'; derived?: boolean; fallback?: string; title?: string; open?: () => void};
 export type SentenceContext = {nestedCount?:number; cwd?: string; subject?: (identity: string) => NamedDestination | undefined};
 type Words = {done: string; active: string; action: string};
 const text = (value: unknown): string => typeof value === 'string' ? value : '';

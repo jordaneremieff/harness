@@ -141,6 +141,16 @@ function catalogRow(identity: string): AgentRow {return {identity, storageId: id
 function catalogRoster(rows: AgentRow[] = []): CachedRoster {return {rows, scan: {state: 'ready', complete: true, visited: rows.length, skipped: 0, omitted: 0}, stale: false};}
 const noPublished = {...saved, items: [], total: 0};
 const ordinarySample = saved.items[0]; assert.ok(ordinarySample);
+test('the picker answers a session title from metadata it already holds and makes no request for an unknown one', async t => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'HTMLButtonElement');
+  Object.defineProperty(globalThis, 'HTMLButtonElement', {configurable: true, value: Node});
+  t.after(() => {if (original) Object.defineProperty(globalThis, 'HTMLButtonElement', original); else Reflect.deleteProperty(globalThis, 'HTMLButtonElement');});
+  const pending = {...ordinarySample, id: 'p', path: '/project/p.jsonl', title: 'Hidden', titleState: 'pending' as const};
+  const setup = directPicker(t, undefined, saved, undefined, {roster: catalogRoster([]), published: {...saved, items: [...saved.items, pending], total: 2}});
+  assert.equal(setup.picker.sessionTitle('s'), undefined);
+  setup.picker.open(); await settle();
+  assert.equal(setup.picker.sessionTitle('s'), 'Saved title'); assert.equal(setup.picker.sessionTitle('p'), undefined); assert.equal(setup.picker.sessionTitle('unknown'), undefined);
+});
 test('an unchecked live connection leaves no visible state line but stays in the row title and accessible name; meaningful states stay visible', async t => {
   const original = Object.getOwnPropertyDescriptor(globalThis, 'HTMLButtonElement');
   Object.defineProperty(globalThis, 'HTMLButtonElement', {configurable: true, value: Node});

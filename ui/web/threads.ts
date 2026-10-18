@@ -1,3 +1,4 @@
+import { compactAge } from './format.ts';
 import type {ThreadEventView, ThreadFrameView, ThreadListItem, ThreadOverview, ThreadPageView} from '../shared/api.ts';
 
 /** Above this many threads the explorer offers a filter field. */
@@ -17,6 +18,13 @@ export function filterThreads(items: readonly ThreadListItem[], query: string): 
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);
   if (!words.length) return [...items];
   return items.filter(item => { const text = `${item.title}\n${item.purpose}\n${item.id}`.toLowerCase(); return words.every(word => text.includes(word)); });
+}
+/** The second line of a list row: state, member count and an age that reads as an age. */
+export function threadMeta(item: ThreadListItem, now: number): string {
+  const members = `${item.members} ${item.members === 1 ? 'member' : 'members'}`;
+  const age = compactAge(item.updatedAt, now);
+  const when = !age ? '' : age === 'now' ? 'just now' : /^\d+[a-z]+$/.test(age) ? `${age} ago` : age;
+  return [item.closed ? 'Closed' : '', members, when].filter(Boolean).join(' · ');
 }
 /** The collapsed heading carries the list size; a cut list adds a plus sign. */
 export function threadCount(overview: ThreadOverview | undefined): string {

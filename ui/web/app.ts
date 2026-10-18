@@ -502,11 +502,14 @@ const roster = new Roster(row => { void selectAgent(row).catch(showError); }, ac
 }, openAgentMessage, row => { const view = presentation({kind: 'agent', identity: row.identity}); return {glyph: presentationGlyph(view), label: view.activity, hideVisibleState: view.hideVisibleState, activity: state.workspace ? controllers.get(controllerKey(state.workspace.id,{kind:'agent',identity:row.identity}))?.transcript.activitySentence() : undefined, tool: view.tool, tone:view.tone, name:view.name, tail:view.identityTail}; });
 /** Threads: the sidebar explorer, and one reader placed in the pane that was focused when a thread was opened. It is not part of the saved layout. */
 let threadHost: ConversationController | undefined, threadOpener: string | undefined;
-function threadName(identity: string): string | undefined {
-  const caption = toolSubjectCaption(identity); if (!caption) return undefined;
-  if (caption.name) return caption.name;
-  return /^(Unresolved|Unnamed)\b/.test(caption.text) ? undefined : caption.text;
+/** Known name, then a Pi session title the browser already holds, then the short identity. Never a kind the browser does not know. */
+function threadName(identity: string): string {
+  const caption = toolSubjectCaption(identity);
+  if (caption?.name) return caption.name;
+  if (caption && !/^(Unresolved|Unnamed)\b/.test(caption.text)) return caption.text;
+  return identityFallback(identity);
 }
+function identityFallback(identity: string): string { return picker.sessionTitle(identity) ?? `Conversation ${identity.slice(0, 8)}`; }
 const threadReader = new ThreadReader({
   page: (threadId, before, signal) => request<ThreadPageView>(`/api/threads/read?threadId=${encodeURIComponent(threadId)}&limit=${THREAD_PAGE_EVENTS}${before === undefined ? '' : `&before=${before}`}`, 'GET', undefined, undefined, AbortSignal.any([signal, AbortSignal.timeout(30_000)])),
   name: threadName,
@@ -1940,7 +1943,8 @@ function derivedChildName(identity: string): string | undefined {
 }
 export function toolSubjectCaption(value: string): ToolSubjectCaption | undefined {
   const caption = subjectCaption(value), derived = caption?.name ? undefined : derivedChildName(value);
-  return derived ? {...caption, text: derived, title: value, derived: true} : caption;
+  if (derived) return {...caption, text: derived, title: value, derived: true};
+  return caption && !caption.name && conversationIdentityText(value) ? {...caption, fallback: identityFallback(value)} : caption;
 }
 function subjectCaption(value: string): ToolSubjectCaption | undefined {
   const loadedName=presentationCaptions().knownName(value);

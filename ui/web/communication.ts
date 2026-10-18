@@ -165,7 +165,8 @@ export class CommunicationCard {
     const supplied=sender.name?.trim();
     if (supplied && supplied!==sender.identity && !conversationIdentityText(supplied)) return supplied;
     if (loaded?.derived) return loaded.text;
-    return loaded?.open && loaded.text && !loaded.text.startsWith('Unnamed') ? loaded.text : 'Unnamed agent';
+    if (loaded?.open && loaded.text && !loaded.text.startsWith('Unnamed')) return loaded.text;
+    return loaded?.fallback ?? `Conversation ${sender.identity.slice(0, 8)}`;
   }
   private header(value: CommunicationPresentation, message: MessageView): void {
     this.shell.node.dataset.state = value.state;
