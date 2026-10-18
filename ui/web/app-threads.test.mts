@@ -265,3 +265,25 @@ test('scrolling up to the top of the exchange reads the next older page once and
   scroller.scrollTop = 10; scroller.dispatch('scroll'); await settle(); assert.equal(reads(), before + 1);
   await closeReader();
 });
+
+for (const [name, letter, removesRow] of [['while older events remain', 'x', false], ['when the older page is the last', 'w', true]] as const) {
+  test(`loading an older page keeps the first visible event where it was ${name}`, async () => {
+    const thread = id(letter), more = (events.length + 2);
+    const all = Array.from({length: more}, (_, index) => event(index + 1, 'contribution', BUILDER, {message: `event ${index + 1}`}));
+    const newest = page(all.slice(removesRow ? 2 : 4), {id: thread, sequence: more}); newest.nextBefore = removesRow ? 3 : 5; newest.coverage = {complete: false};
+    const older = page(all.slice(removesRow ? 0 : 2, removesRow ? 2 : 4), {id: thread, sequence: more}); older.nextBefore = removesRow ? null : 3; older.coverage = {complete: removesRow};
+    fixtureControl.threadHandler = url => url.pathname !== '/api/threads/read' ? {...overview, items: [...overview.items, {id: thread, storageId: STORAGE, title: `Anchor ${letter}`, purpose: '', updatedAt: Date.now(), closed: false, members: 2}]} : url.searchParams.get('before') ? older : newest;
+    byId('threads-refresh').click(); await settle();
+    rowButton(`Anchor ${letter}`).click(); await settle();
+    const node = reader(); assert.ok(node);
+    const scroller = node.querySelector('.thread-scroll') as unknown as {scrollTop: number; getBoundingClientRect(): {top: number}} | null; assert.ok(scroller);
+    scroller.scrollTop = 500;
+    const anchor = node.querySelector('.thread-exchange')?.children[0]; assert.ok(anchor);
+    const viewportTop = () => anchor.getBoundingClientRect().top - scroller.scrollTop;
+    const before = viewportTop();
+    const button = node.querySelector('.thread-earlier'); assert.ok(button); button.click(); await settle();
+    assert.equal(node.querySelector('.thread-earlier-row')?.hidden, removesRow);
+    assert.ok(Math.abs(viewportTop() - before) <= 1, `the first visible event moved by ${viewportTop() - before}px`);
+    await closeReader();
+  });
+}

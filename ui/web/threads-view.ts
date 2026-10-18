@@ -294,15 +294,30 @@ export class ThreadReader {
     try {
       const page = await this.hooks.page(entry.item.id, before, controller.signal);
       if (serial !== this.earlierSerial) return;
-      const node = this.scroller, height = node.scrollHeight, top = node.scrollTop;
+      const node = this.scroller, anchor = this.anchorRow();
       this.take(entry, page, true); this.paint();
-      node.scrollTop = top + (node.scrollHeight - height); this.lastTop = node.scrollTop;
+      this.holdAnchor(anchor); this.lastTop = node.scrollTop;
     } catch (error) {
       if (serial !== this.earlierSerial || controller.signal.aborted) return;
       this.failure = this.classify(error);
     } finally {
       if (serial === this.earlierSerial) { this.loadingEarlier = false; this.earlierController = undefined; this.paint(); }
     }
+  }
+  /** The first event row at or below the top edge of the exchange, with its position, so a prepend can keep it where it was. */
+  private anchorRow(): {sequence: string; top: number} | undefined {
+    const edge = this.scroller.getBoundingClientRect().top;
+    for (const row of Array.from(this.exchange.children) as HTMLElement[]) {
+      const rect = row.getBoundingClientRect();
+      if (rect.bottom > edge && row.dataset.sequence) return {sequence: row.dataset.sequence, top: rect.top};
+    }
+    return undefined;
+  }
+  /** Scrolls by however far the anchor row moved, whatever changed above or below it. */
+  private holdAnchor(anchor: {sequence: string; top: number} | undefined): void {
+    if (!anchor) return;
+    const row = (Array.from(this.exchange.children) as HTMLElement[]).find(candidate => candidate.dataset.sequence === anchor.sequence);
+    if (row) this.scroller.scrollTop += row.getBoundingClientRect().top - anchor.top;
   }
   private classify(error: unknown): Failure {
     return errorView(error)?.code === 'threads_unavailable' ? {kind: 'unavailable'} : {kind: 'failed', message: errorText(error)};
