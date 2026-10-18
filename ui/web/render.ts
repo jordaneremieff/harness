@@ -1,6 +1,7 @@
 import type { EntryView, ImageView, JsonDisplay, MessageView, PartView, PresentationView, ReadingView, TranscriptView } from '../shared/api.ts';
 import type {ResultInspection, ResultSelector} from '../shared/inspection.ts';
-import { button, copy, details, element, rawText, setText } from './dom.ts';
+import { announce, button, copy, details, element, rawText, setText } from './dom.ts';
+import { ArrivalCounter, latestLabel } from './arrivals.ts';
 import { cardAction, cardActionLabel, cardDisclosure } from './card-icons.ts';
 import { contextMenu, nativeEditingTarget, type ContextItem } from './context-menu.ts';
 import { markdownDom, sourceHeader, sourceWrap } from './safe-markdown.ts';
@@ -30,8 +31,12 @@ import type { LayoutItem, VirtualLayout } from './virtual.ts';
 
 export type TranscriptElements = {transcript: HTMLElement; latest: HTMLElement; earlier?: HTMLElement};
 export type ToolSubjectCaption = NamedDestination;
-export type ViewHooks = {operatorInput?: boolean; readTaskResult?: (reference:TaskReference,signal:AbortSignal)=>Promise<ResultInspection>; activity?: (text:string)=>void; cwd?: () => string | undefined; subject?: (value: string) => ToolSubjectCaption | undefined; result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; preview?: (part: ImageView, url: string, invoker: HTMLElement) => () => void; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
+export type ViewHooks = {earlier?: () => void; operatorInput?: boolean; readTaskResult?: (reference:TaskReference,signal:AbortSignal)=>Promise<ResultInspection>; activity?: (text:string)=>void; cwd?: () => string | undefined; subject?: (value: string) => ToolSubjectCaption | undefined; result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; preview?: (part: ImageView, url: string, invoker: HTMLElement) => () => void; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
 const RAW_LIMIT = 65536;
+/** Scrolling up within this many pixels of the first loaded row reads the next older page. */
+const EARLIER_ZONE_PX = 240;
+/** After an older page lands, the anchor is held in place this long while rows around it settle. */
+const ANCHOR_HOLD_MS = 500;
 const TASK_READ_CONCURRENCY = 4;
 const toolStateLabels:Record<JoinedTool['status'],string>={success:'',preparing:'Preparing call',working:'Working',pending:'Queued',error:'Failed',ended:'Ended without result',available:'Result available',missing:'No result recorded'};
 function selectionCopy(origin: HTMLElement): ContextItem[] {
@@ -241,6 +246,10 @@ export class Transcript {
   private observers: MutationObserver[] = [];
   /** The earlier-history control is the first line inside the scroller, above the virtual window. */
   private lead?: HTMLElement;
+  private earlierAvailable = false;
+  private hold?: {anchor: {id: string; offsetPx: number}; until: number; queued: boolean};
+  private lastScrollTop = 0;
+  private readonly arrivals = new ArrivalCounter();
   constructor(elements: TranscriptElements, hooks: ViewHooks) {
     this.hooks = {...hooks, presentation: (expanded, showThinking) => hooks.presentation(expanded, showThinking, this.view)};
     this.node = elements.transcript; this.latest = elements.latest;
@@ -277,13 +286,16 @@ export class Transcript {
     this.lead = elements.earlier;
     this.listen(this.node, 'scroll', () => {
       if (this.hidden()) return;
-      if (this.node.scrollTop === this.writtenScrollTop) {this.writtenScrollTop = undefined; return;}
+      if (this.node.scrollTop === this.writtenScrollTop) {this.writtenScrollTop = undefined; this.lastScrollTop = this.node.scrollTop; return;}
       this.writtenScrollTop = undefined;
       this.scrolling.add(this.node); this.reflowAnchor = undefined; this.restoring = undefined;
       this.follow = this.node.scrollHeight - this.node.scrollTop - this.node.clientHeight < 48 && !this.hasSelection();
-      this.latest.hidden = this.follow;
+      this.syncLatest();
+      this.readEarlier(this.node.scrollTop < this.lastScrollTop);
+      this.lastScrollTop = this.node.scrollTop;
       this.schedule();
     }, {passive: true});
+    this.listen(this.node, 'wheel', event => this.readEarlier((event as WheelEvent).deltaY < 0), {passive: true});
     this.listen(this.node, 'scrollend', event => {
       if (event.target !== this.node) return;
       this.writtenScrollTop = undefined; this.scrolling.delete(this.node); this.queueGeometry(); this.saveReading();
@@ -409,7 +421,7 @@ export class Transcript {
     this.clearFind(); this.findRevision++;
     this.generation++; this.entries = []; this.displayed = []; this.cache.clear(); this.tools.clear(); this.liveThinking.clear(); this.thinkingTimes = new Map(); this.index = new TranscriptIndex(); this.joined = this.index.joined; this.rows = new TranscriptRows(); this.tasks = new ConversationTasks(); this.visible.clear(); this.dirtyLayout = true; this.pins.clear(); this.heights.clear(); this.gaps.clear();
     this.expanded.clear(); this.showThinking = true; this.follow = true; this.readingRevision = 0;
-    this.layout = layoutItems([], this.heights, 140); this.restoring = undefined; this.node.replaceChildren(...(this.lead ? [this.lead] : [])); this.scrollTo(0);
+    this.layout = layoutItems([], this.heights, 140); this.restoring = undefined; this.node.replaceChildren(...(this.lead ? [this.lead] : [])); this.scrollTo(0); this.hold = undefined; this.arrivals.reset(); this.syncLatest();
   }
   defer(refresh: () => void, receivedAt?: number): void {
     if (this.destroyed) return;
@@ -425,6 +437,8 @@ export class Transcript {
     this.thinkingTimes = thinking;
     this.receivedAt = undefined; this.streamPending = false; this.deferred = undefined;
     const sessions = new Map(this.index.sessions);
+    const prepended = this.entries.length > 0 && entries[0]?.id !== this.entries[0]?.id && entries.some(candidate => candidate.id === this.entries[0]?.id);
+    if (prepended && !this.follow) this.holdAnchor(this.geometryAnchor());
     this.entries = entries; this.index.update(entries, tools, this.visibilityPredicate, {incrementalVisibility: true}); this.retireForks(); this.reconcileSessions(sessions);
     for (const id of this.index.changed) {
       const entry = this.index.entries.get(id);
@@ -432,6 +446,8 @@ export class Transcript {
     }
     this.chronological = entries;
     this.tasks.update(entries,this.joined);
+    const arrived = this.arrivals.observe(entries, !this.follow, this.hooks.operatorInput === true);
+    if (arrived > 0) { this.syncLatest(); if (this.arrivals.count === arrived) announce('New messages below'); }
     this.deriveRows(); this.prune(); this.schedule();
   }
   taskRows(): readonly ConversationTask[] {return [...this.tasks.sent,...this.tasks.asked];}
@@ -482,6 +498,7 @@ export class Transcript {
     for (const member of group.entries) { const head = this.index.sessionOwners.get(member.id); if (head) this.expanded.add(`events:${head}`); }
   }
   historyAvailable(available: boolean): void {
+    this.earlierAvailable = available;
     if (!this.lead || this.lead.hidden === !available) return;
     const anchor = !this.follow && !this.restoring ? this.anchor() : null;
     this.lead.hidden = !available;
@@ -556,6 +573,7 @@ export class Transcript {
   private scrollTo(position: number): void {
     const before = this.node.scrollTop; this.node.scrollTop = position;
     if (this.node.scrollTop !== before) this.writtenScrollTop = this.node.scrollTop;
+    this.lastScrollTop = this.node.scrollTop;
   }
   captureGeometry(): TranscriptGeometry {
     return {generation: this.generation, followTail: this.follow, anchor: this.follow ? null : this.geometryAnchor(), scrollTop: this.node.scrollTop};
@@ -766,8 +784,40 @@ export class Transcript {
     if (this.follow && !this.hasSelection()) this.scrollTo(this.node.scrollHeight);
     else this.restorePosition(anchor);
     if (!this.restoring) this.reflowAnchor = this.follow ? null : this.anchor();
-    this.latest.hidden = this.follow;
+    this.syncLatest();
   }
+  /** The control that returns to the end shows what arrived while the reader was away; it hides at the end. */
+  private syncLatest(): void {
+    if (this.follow) this.arrivals.clear();
+    this.latest.hidden = this.follow;
+    const label = latestLabel(this.arrivals.count);
+    if (this.latest.textContent !== label.text) this.latest.textContent = label.text;
+    this.latest.setAttribute('aria-label', label.accessible);
+  }
+  /** An upward move that ends near the first loaded row asks for the next older page; the loader keeps its own one-page-at-a-time guard. */
+  private readEarlier(upward: boolean): void {
+    if (upward && this.earlierAvailable && !this.hidden() && this.node.scrollTop <= EARLIER_ZONE_PX) this.hooks.earlier?.();
+  }
+  /** Rows around the anchor can still change height for a moment after older entries land. Until the reader moves or the time passes, each frame puts the anchor back where it was. */
+  private holdAnchor(anchor: {id: string; offsetPx: number} | null): void {
+    if (!anchor) return;
+    const queued = this.hold?.queued ?? false;
+    this.hold = {anchor, until: performance.now() + ANCHOR_HOLD_MS, queued};
+    if (!queued) this.stepHold();
+  }
+  private stepHold(): void {
+    const hold = this.hold; if (!hold) return;
+    hold.queued = true;
+    this.frame(() => {
+      hold.queued = false;
+      if (this.hold !== hold) return;
+      if (this.follow || this.scrolling.has(this.node) || performance.now() > hold.until) { this.hold = undefined; return; }
+      if (!this.hidden()) this.restorePosition(hold.anchor);
+      this.stepHold();
+    });
+  }
+  /** Rows the reader can scroll through, for judging how much a page added. */
+  rowCount(): number { return this.displayed.length; }
   private refreshMountedCommunications(): void {
     for (const entry of this.cache.values()) for (const message of entry.messages.values()) {
       if (this.protectedNode(message.node)) continue;

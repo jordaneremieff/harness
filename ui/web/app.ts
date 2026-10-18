@@ -124,7 +124,7 @@ let preparedReloadState:{key:string;revision:number;workspace:string}|undefined;
 const devCheckpointKey = 'ui:dev-checkpoint';
 type ConversationController = {workspaceId: string; target: Target; instanceId: string; root: HTMLElement; nodes: Map<string, HTMLElement>;
   elements: import('./composer.ts').ComposerElements; composer: Composer; transcript: Transcript; inspection?: AgentInspection; readingGeometry?: ReturnType<Transcript['captureGeometry']>; saved?: TargetState; geometry?: ReturnType<Transcript['captureGeometry']>; messageRetention?: object;
-  abort: AbortController; historyAbort: AbortController; cursor: string | null; before: number | null; loading: boolean; preparing: boolean; passive?: boolean; historyReading?: TargetState['reading']; historyReady: boolean; historyBoundaryLoaded: boolean; historyComplete?: boolean; historyError?: {code?: string; message: string}; hasEntries?: boolean; initialized: boolean; showThinking: boolean; historyWork?: Promise<void>; connectionError?: string; connection?: Pick<import('../shared/api.ts').TargetPreparation, 'availability' | 'capabilities' | 'reason'> & {stale?: true}; refreshing?: boolean; resizer?: Resizer};
+  abort: AbortController; historyAbort: AbortController; cursor: string | null; before: number | null; loading: boolean; preparing: boolean; passive?: boolean; historyReading?: TargetState['reading']; historyReady: boolean; historyBoundaryLoaded: boolean; historyComplete?: boolean; historyError?: {code?: string; message: string}; hasEntries?: boolean; initialized: boolean; showThinking: boolean; historyWork?: Promise<void>; connectionError?: string; connection?: Pick<import('../shared/api.ts').TargetPreparation, 'availability' | 'capabilities' | 'reason'> & {stale?: true}; refreshing?: boolean; resizer?: Resizer; fillingEarlier?: boolean};
 const controllers = new Map<string, ConversationController>();
 const agentStarts = new Map<string, {pending: boolean; reason?: string}>();
 let controllerSerial = 0;
@@ -189,7 +189,7 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
     ...(target.kind === 'primary' ? {commands: () => actions.commandOptions(), moreCommands: (captured: Target) => actions.continueCommands(captured)} : {}),
     ...agentCommandHooks(controller),
     retained: (workspace, captured) => { if (workspace === state.workspace?.id && captured.kind === 'agent') renderMessageResume(captured.identity); }});
-  controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {operatorInput: target.kind === 'primary', references, subject: toolSubjectCaption, readTaskResult:async(reference,signal)=>{const value=await request<AgentInspectionView>(`/api/agents/${encodeURIComponent(reference.sessionId)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',{view:'result',submissionId:reference.submissionId,...(reference.requestId?{requestId:reference.requestId}:{})},undefined,AbortSignal.any([signal,controller.abort.signal,AbortSignal.timeout(15_000)]));if(value.view!=='result')throw new Error('The task result view changed.');return value;}, activity:()=>{if (footerController === controller) renderWorkbenchStatus();}, cwd: () => target.kind === 'primary' ? state.primaries.get(target.key)?.cwd : state.roster.get(target.identity)?.cwd, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
+  controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {earlier: () => loadEarlierRows(controller), operatorInput: target.kind === 'primary', references, subject: toolSubjectCaption, readTaskResult:async(reference,signal)=>{const value=await request<AgentInspectionView>(`/api/agents/${encodeURIComponent(reference.sessionId)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',{view:'result',submissionId:reference.submissionId,...(reference.requestId?{requestId:reference.requestId}:{})},undefined,AbortSignal.any([signal,controller.abort.signal,AbortSignal.timeout(15_000)]));if(value.view!=='result')throw new Error('The task result view changed.');return value;}, activity:()=>{if (footerController === controller) renderWorkbenchStatus();}, cwd: () => target.kind === 'primary' ? state.primaries.get(target.key)?.cwd : state.roster.get(target.identity)?.cwd, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
     presentation: (expanded, thinking, view) => { controller.showThinking = thinking; void savePresentation(controllerCapture(controller), expanded, thinking, view); },
     reading: reading => { void saveReading(controllerCapture(controller), reading); },
     ...(target.kind === 'primary' ? {fork: (message: import('../shared/api.ts').MessageView, entry: string) => { if (sameTarget(target, primaryTarget())) actions.fork(entry, rawText(message.parts)); }, output: (more: import('../shared/api.ts').OutputContinuation) => loadControllerOutput(controller, more)} : {}),
@@ -1753,6 +1753,26 @@ function mergeControllerHistory(controller: ConversationController, page: Histor
   else throw new Error('History response does not match its target.');
   controller.historyReady = true; controller.historyComplete = page.coverage.complete && !page.coverage.truncated && page.coverage.omitted === 0; controller.historyError = undefined; controller.transcript.historyAvailable(target.kind === 'primary' ? controller.cursor !== null : controller.before !== null); renderController(controller);
   if (target.kind === 'primary' && sameTarget(target, primaryTarget())) renderPrimaryUsage(primary());
+}
+/** Rows one upward trigger tries to add, and the pages it may read to get them. */
+const EARLIER_FILL = {rows: 10, pages: 3};
+function earlierBoundary(controller: ConversationController): string | number | null {return controller.target.kind === 'primary' ? controller.cursor : controller.before;}
+function hasEarlierHistory(controller: ConversationController): boolean {return earlierBoundary(controller) !== null;}
+/** One upward scroll near the top keeps reading 50-entry pages until they add enough rows, the page limit is reached, or no earlier history remains. */
+function loadEarlierRows(controller: ConversationController): void {
+  if (controller.fillingEarlier || controller.abort.signal.aborted || !hasEarlierHistory(controller)) return;
+  controller.fillingEarlier = true;
+  void (async () => {
+    let rows = 0;
+    try {
+      for (let pages = 0; pages < EARLIER_FILL.pages && rows < EARLIER_FILL.rows && hasEarlierHistory(controller) && !controller.abort.signal.aborted; pages++) {
+        const before = controller.transcript.rowCount(), boundary = earlierBoundary(controller);
+        await loadControllerHistory(controller, true);
+        if (earlierBoundary(controller) === boundary) break;
+        rows += Math.max(0, controller.transcript.rowCount() - before);
+      }
+    } finally {controller.fillingEarlier = false;}
+  })();
 }
 function loadControllerHistory(controller: ConversationController, earlier = false, restoring = false): Promise<void> {
   if (restoring && !controller.loading) return runControllerHistory(controller, earlier, true);

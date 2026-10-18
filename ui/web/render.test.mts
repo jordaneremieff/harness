@@ -2773,7 +2773,7 @@ test('retained Transcript disposal removes listeners and cancels queued work wit
     assert.equal(f.rafs.size, 3);
     const queuedFrames = [...f.rafs.values()], queuedTimers = [...f.timeouts.values(), ...f.intervals.values()];
     const targets = [root, latest, f.fonts, ...f.media]; const queuedListeners = [...targets.flatMap(f.listeners), ...[...documentHandlers.values()].flat()];
-    assert.equal(queuedListeners.length, 13); const observations = resize.observations;
+    assert.equal(queuedListeners.length, 14); const observations = resize.observations;
     view.destroy(); const disconnected = [resize.disconnects, ...f.mutations.map(observer => observer.disconnects)];
     const counts = [root.moves, root.writes, latest.writes, readings.length, presentations.length, region.textContent, original.textContent];
     view.destroy(); assert.deepEqual([resize.disconnects, ...f.mutations.map(observer => observer.disconnects)], disconnected);
@@ -2802,7 +2802,7 @@ test('two independent scoped Transcript roots keep Source, reading and shared si
     assert.equal(left.presentations.length, 0); assert.equal(right.presentations.length, 1); f.drain();
     left.root.dispatch('scrollend'); assert.equal(left.readings.length, 1); assert.equal(right.readings.length, 0);
     left.view.destroy(); const rightResize = f.resizes[1]; assert.ok(rightResize); assert.equal(rightResize.disconnects, 0); assert.equal(rightResize.targets.has(right.root as unknown as Element), true);
-    assert.equal(f.listeners(left.root).length, 0); assert.equal(f.listeners(right.root).length, 5); assert.equal([...documentHandlers.values()].flat().length, 3);
+    assert.equal(f.listeners(left.root).length, 0); assert.equal(f.listeners(right.root).length, 6); assert.equal([...documentHandlers.values()].flat().length, 3);
     assert.equal(f.listeners(f.fonts).length, 2); assert.equal(f.media.every(target => f.listeners(target).length === 1), true);
     assert.equal(f.mutations.filter(observer => observer.disconnects === 0).length, 2);
     const leftCounts = [left.root.moves, left.root.writes, left.latest.writes, left.readings.length, left.presentations.length];
@@ -3048,4 +3048,82 @@ test('a message body that is one JSON object reads as labeled fields while its e
   assert.equal(plain.classList.contains('communication-fields'), false); assert.match(plain.textContent, /Plain words/);
   view.set([communicationEntry('ready', '[1,2]', '')]); flush();
   assert.equal(node('primary-transcript').querySelector('.communication-text')?.classList.contains('communication-fields'), false);
+});
+
+function scrollable(container: FakeNode, start = 0): {to: (value: number) => void} {
+  let scrollTop = start;
+  Object.defineProperty(container, 'scrollTop', {configurable: true, get: () => scrollTop, set: value => { scrollTop = Math.max(0, Math.min(value, Math.max(0, container.scrollHeight - container.clientHeight))); }});
+  return {to: value => { scrollTop = value; container.dispatch('scroll'); }};
+}
+test('an upward scroll or wheel near the first loaded row asks for earlier history, and nothing else does', () => {
+  setup(); let asked = 0; const view = new Transcript('primary', {presentation: () => {}, reading: () => {}, earlier: () => { asked++; }});
+  const container = node('primary-transcript'); const scroll = scrollable(container);
+  view.set(Array.from({length: 100}, (_, index) => entry(`e${index}`))); flush();
+  scroll.to(6000); scroll.to(300); assert.equal(asked, 0, 'no earlier history is known yet');
+  view.historyAvailable(true); scroll.to(2000); scroll.to(1000); assert.equal(asked, 0, 'far from the first row');
+  scroll.to(200); assert.equal(asked, 1, 'upward and inside the zone');
+  scroll.to(260); assert.equal(asked, 1, 'downward moves ask for nothing');
+  scroll.to(240); assert.equal(asked, 2, 'the zone edge counts');
+  container.dispatch('wheel', {deltaY: 40}); assert.equal(asked, 2, 'a downward wheel asks for nothing');
+  scroll.to(0); assert.equal(asked, 3); container.dispatch('wheel', {deltaY: -40}); assert.equal(asked, 4, 'an upward wheel at the very top still asks');
+  view.historyAvailable(false); scroll.to(200); scroll.to(100); container.dispatch('wheel', {deltaY: -40}); assert.equal(asked, 4, 'no earlier page remains');
+});
+test('a programmatic position change does not ask for earlier history and does not hide an upward move from the next scroll', () => {
+  setup(); let asked = 0; const view = new Transcript('primary', {presentation: () => {}, reading: () => {}, earlier: () => { asked++; }});
+  const container = node('primary-transcript'); const scroll = scrollable(container);
+  view.historyAvailable(true); view.configure(undefined, {revision: 1, anchorId: 'e50', offsetPx: 0, followTail: false});
+  view.set(Array.from({length: 100}, (_, index) => entry(`e${index}`))); flush();
+  assert.equal(asked, 0); const restored = container.scrollTop; assert.ok(restored > 3000);
+  scroll.to(restored - 100); assert.equal(asked, 0, 'upward but far from the first row');
+});
+test('the Latest control counts what arrives while the reader is away, announces it once, and clears at the end', () => {
+  setup(); const view = transcript(); const container = node('primary-transcript'); const latest = node('primary-latest'); const scroll = scrollable(container);
+  const all = Array.from({length: 60}, (_, index) => entry(`e${index}`)); view.set(all); flush();
+  assert.equal(latest.hidden, true);
+  scroll.to(2000); flush(); assert.equal(latest.hidden, false); assert.equal(latest.textContent, 'Latest');
+  view.set([...all, entry('e60')]); flush();
+  assert.equal(latest.textContent, '1 new \u00b7 Latest'); assert.equal(latest.attributes['aria-label'], 'Latest message, 1 new'); assert.equal(node('announcements').textContent, 'New messages below');
+  node('announcements').textContent = '';
+  view.set([...all, entry('e60'), entry('e61')]); flush();
+  assert.equal(latest.textContent, '2 new \u00b7 Latest'); assert.equal(node('announcements').textContent, '', 'later arrivals stay silent');
+  latest.dispatch('click'); flush(); assert.equal(latest.hidden, true); assert.equal(latest.textContent, 'Latest'); assert.equal(latest.attributes['aria-label'], 'Latest message');
+  scroll.to(1500); flush(); view.set([...all, entry('e60'), entry('e61'), entry('e62')]); flush();
+  assert.equal(latest.textContent, '1 new \u00b7 Latest', 'the count restarted after the return');
+});
+test('older pages, growth of a known message, and arrivals while following do not raise the count', () => {
+  setup(); const view = transcript(); const container = node('primary-transcript'); const latest = node('primary-latest'); const scroll = scrollable(container);
+  const all = Array.from({length: 60}, (_, index) => entry(`e${index + 10}`)); view.set(all); flush();
+  view.set([...all, entry('e70')]); flush(); assert.equal(latest.textContent, 'Latest', 'following the end counts nothing');
+  scroll.to(2000); flush();
+  view.set([entry('e8'), entry('e9'), ...all, entry('e70')]); flush(); assert.equal(latest.textContent, 'Latest', 'older entries above the known ones');
+  const grown = [entry('e8'), entry('e9'), ...all, {...entry('e70'), messages: [message('m-e70', 'Longer text now')]}]; view.set(grown); flush(); assert.equal(latest.textContent, 'Latest');
+});
+test('in a Primary conversation the operator\'s own message does not count', () => {
+  setup(); const view = new Transcript('primary', {presentation: () => {}, reading: () => {}, operatorInput: true}); const container = node('primary-transcript'); const latest = node('primary-latest'); const scroll = scrollable(container);
+  const all = Array.from({length: 60}, (_, index) => entry(`e${index}`)); view.set(all); flush(); scroll.to(2000); flush();
+  view.set([...all, {id: 'mine', kind: 'message', messages: [{...message('m-mine', 'my question'), role: 'user'}]}]); flush(); assert.equal(latest.textContent, 'Latest');
+  view.set([...all, {id: 'mine', kind: 'message', messages: [{...message('m-mine', 'my question'), role: 'user'}]}, entry('reply')]); flush(); assert.equal(latest.textContent, '1 new \u00b7 Latest');
+});
+const settleFrames = (): void => { for (let pass = 0; frames.length && pass < 6; pass++) flush(); };
+function olderPageFixture(lastPage: boolean) {
+  setup(); const earlier = new FakeNode('button'); ids.set('primary-earlier', earlier); roots.push(earlier);
+  const view = transcript(); const container = node('primary-transcript'); const scroll = scrollable(container);
+  const newer = Array.from({length: 60}, (_, index) => entry(`n${index}`));
+  const withOlder = [...Array.from({length: 50}, (_, index) => entry(`o${index}`)), ...newer];
+  view.set(newer); flush(); view.historyAvailable(true);
+  scroll.to(2000); container.dispatch('scrollend'); flush(); settleFrames();
+  const anchor = Reflect.get(view, 'anchor').call(view) as {id: string; offsetPx: number} | null; assert.ok(anchor);
+  const top = (id: string) => { const row = container.children.find(child => child.dataset.entryId === id); assert.ok(row, `${id} is mounted`); return row.offsetTop - container.offsetTop - container.scrollTop; };
+  const grow = (height: number) => { for (const row of container.children) if (row.dataset.entryId) row.measured = height; };
+  const before = top(anchor.id), moved = () => top(anchor.id) - before;
+  view.historyAvailable(!lastPage);
+  return {view, withOlder, moved, grow, label: `last page ${lastPage}`};
+}
+test('an older page keeps the first visible entry in place, with the earlier row shown or removed, and after the rows around it grow', () => {
+  for (const lastPage of [false, true]) {
+    const f = olderPageFixture(lastPage);
+    f.view.set(f.withOlder); settleFrames(); assert.ok(Math.abs(f.moved()) <= 1, `older page, ${f.label}: moved ${f.moved()}px`);
+    f.grow(190); flush(); flush(); assert.ok(Math.abs(f.moved()) <= 1, `rows grew after the page landed, ${f.label}: moved ${f.moved()}px`);
+    f.grow(205); f.view.set(f.withOlder); settleFrames(); assert.ok(Math.abs(f.moved()) <= 1, `rows grew, ${f.label}: moved ${f.moved()}px`);
+  }
 });
