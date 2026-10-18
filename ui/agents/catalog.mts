@@ -24,6 +24,10 @@ export class AgentCatalog {
 	private rows: CatalogRow[] = [];
 	private incompletePublications = 0;
 	private scan = initialScan();
+	/** Whether a scan has run, is running, or ended: a catalog that has finished one scan is not empty because it is new. */
+	get scanState(): CatalogScan["state"] {
+		return this.scan.state;
+	}
 	private observedAt?: string;
 	private stale = false;
 	private revision = 0;

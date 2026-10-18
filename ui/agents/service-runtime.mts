@@ -72,7 +72,7 @@ export class AgentService {
   readonly #links = new Map<string, Promise<HostLink>>();
   readonly #inputs = new Map<string, InputRecord>();
   #closed = false;
-  #scanned = false;
+  #firstScan?: Promise<void>;
   #closing?: Promise<void>;
   constructor(options: AgentServiceOptions, catalogFactory: (options: ConstructorParameters<typeof AgentCatalog>[0]) => AgentCatalog = options => new AgentCatalog(options), readerFactory: (options: ConstructorParameters<typeof RetainedReader>[0]) => RetainedReader = options => new RetainedReader(options)) {
     if (!/^[a-zA-Z0-9._:-]{1,128}$/.test(options.installationId)) throw new AgentError("invalid_request", "Invalid UI installation identity.");
@@ -88,14 +88,18 @@ export class AgentService {
   refresh(scanId?: string): Promise<CatalogScan> {
     this.#ready();
     const scan = this.#catalog.refresh(scanId);
-    void scan.then(() => { this.#scanned = true; }, () => {});
+    this.#firstScan ??= scan.then(() => {}, () => {});
     return scan;
   }
-  /** Right after a start the catalog is still empty until its first scan ends. A request for an agent the catalog does not know yet waits for that scan once; a missing agent after it fails as before. */
+  /** Right after a start the catalog is empty until its first scan ends. One shared promise, settled on success or failure, lets every request for a not-yet-known agent wait for that scan; once it settled, a missing agent is refused at once and no request starts a scan. */
   async #catalogLoaded(identity: string): Promise<void> {
-    if (this.#scanned) return;
-    try { this.#record(identity); return; } catch { /* Unknown so far: wait for the first scan. */ }
-    try { await this.#catalog.refresh(); this.#scanned = true; } catch { /* A failed scan leaves the usual refusal. */ }
+    try { this.#record(identity); return; } catch { /* Unknown so far. */ }
+    if (!this.#firstScan) {
+      const state = this.#catalog.scanState;
+      if (state === "ready" || state === "failed") return;
+      this.#firstScan = Promise.resolve().then(() => this.#catalog.refresh()).then(() => {}, () => {});
+    }
+    await this.#firstScan;
   }
   select(workspaceId: string, identity?: string, connectionEpoch?: number): Promise<void> { this.#ready(); return this.#observations.select(workspaceId, identity, connectionEpoch); }
   hide(workspaceId: string, identity?: string): Promise<void> { return this.#observations.hide(workspaceId, identity); }

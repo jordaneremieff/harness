@@ -122,7 +122,7 @@ test("a result for another command name or a malformed result is an uncertain pr
 	assert.equal(link.supports("status"), true);
 });
 
-async function catalogService(t: test.TestContext, scan: (known: () => void) => Promise<void>) {
+async function catalogService(t: test.TestContext, scan: (known: () => void) => Promise<void>, scanState?: string) {
 	const root = await fs.mkdtemp(join(tmpdir(), "ui-commands-"));
 	t.after(() => fs.rm(root, { recursive: true, force: true }));
 	const record: CatalogRecord = { storageId: STORAGE, cwd: root, agentDir: root, packageDir: root, storagePath: join(root, "agent.sqlite"),
@@ -135,7 +135,7 @@ async function catalogService(t: test.TestContext, scan: (known: () => void) => 
 	t.after(() => host.close());
 	let loaded = false, scans = 0;
 	const agents = new AgentService({ store: root, stateDir: root, installationId: "synthetic" },
-		() => ({ get: (id: string) => loaded && id === STORAGE ? record : undefined, refresh: async () => { scans++; await scan(() => { loaded = true; }); return {}; }, close: async () => {} }) as unknown as AgentCatalog,
+		() => ({ get: (id: string) => loaded && id === STORAGE ? record : undefined, scanState, refresh: async () => { scans++; await scan(() => { loaded = true; }); return {}; }, close: async () => {} }) as unknown as AgentCatalog,
 		() => ({ request: async () => { throw new Error("Unexpected retained read"); }, close: async () => {} }) as unknown as RetainedReader);
 	t.after(() => agents.close());
 	return { agents, host, scans: () => scans };
@@ -158,4 +158,38 @@ test("an agent missing after the first scan is refused as before and does not tr
 	await assert.rejects(s.agents.inventory(STORAGE), (error: unknown) => (error as { code?: string }).code === "host_unavailable" && /not in the retained catalog/.test((error as Error).message));
 	await assert.rejects(s.agents.inventory(STORAGE), code("host_unavailable"));
 	assert.equal(s.scans(), 1); assert.equal(s.host.calls.length, 0);
+});
+
+const refused = (error: unknown): boolean => (error as { code?: string }).code === "host_unavailable" && /not in the retained catalog/.test((error as Error).message);
+test("two concurrent requests for an agent the catalog does not know yet cause exactly one scan", { timeout: 10000 }, async t => {
+	let release: () => void = () => {};
+	const s = await catalogService(t, known => new Promise<void>(resolve => { release = () => { known(); resolve(); }; }));
+	const first = s.agents.inventory(STORAGE), second = s.agents.inventory(STORAGE);
+	await new Promise(resolve => setImmediate(resolve));
+	assert.equal(s.scans(), 1);
+	release();
+	assert.equal((await first).contributions.length, 1); assert.equal((await second).contributions.length, 1);
+	assert.equal(s.scans(), 1);
+});
+test("after a failed first scan a later request for an unknown agent starts no scan and is refused", { timeout: 10000 }, async t => {
+	const s = await catalogService(t, async () => { throw new Error("The store is unreadable."); });
+	await assert.rejects(s.agents.inventory(STORAGE), refused);
+	await assert.rejects(s.agents.inventory(STORAGE), refused);
+	await assert.rejects(s.agents.inventory(`${STORAGE}:2`), refused);
+	assert.equal(s.scans(), 1); assert.equal(s.host.calls.length, 0);
+});
+test("a request that arrives after the startup scan ended starts no scan", { timeout: 10000 }, async t => {
+	const s = await catalogService(t, async known => { known(); });
+	await s.agents.refresh(); assert.equal(s.scans(), 1);
+	assert.equal((await s.agents.inventory(STORAGE)).contributions.length, 1);
+	assert.equal(s.scans(), 1);
+	const empty = await catalogService(t, async () => {});
+	await empty.agents.refresh(); await assert.rejects(empty.agents.inventory(STORAGE), refused); assert.equal(empty.scans(), 1);
+});
+test("a catalog that reports a finished scan is not scanned again by a request", { timeout: 10000 }, async t => {
+	for (const state of ["ready", "failed"]) {
+		const s = await catalogService(t, async () => {}, state);
+		await assert.rejects(s.agents.inventory(STORAGE), refused);
+		assert.equal(s.scans(), 0, state);
+	}
 });
