@@ -72,6 +72,7 @@ export class AgentService {
   readonly #links = new Map<string, Promise<HostLink>>();
   readonly #inputs = new Map<string, InputRecord>();
   #closed = false;
+  #scanned = false;
   #closing?: Promise<void>;
   constructor(options: AgentServiceOptions, catalogFactory: (options: ConstructorParameters<typeof AgentCatalog>[0]) => AgentCatalog = options => new AgentCatalog(options), readerFactory: (options: ConstructorParameters<typeof RetainedReader>[0]) => RetainedReader = options => new RetainedReader(options)) {
     if (!/^[a-zA-Z0-9._:-]{1,128}$/.test(options.installationId)) throw new AgentError("invalid_request", "Invalid UI installation identity.");
@@ -84,7 +85,18 @@ export class AgentService {
     this.#observations = new ObservationManager({ getLink: identity => this.#link(identity, true, true), onFrame: options.onFrame ?? (() => {}), onAvailability: options.onAvailability, projectFrame: options.frameProjection });
   }
   roster(options: { cursor?: string; limit?: number } = {}): CatalogPage { return this.#catalog.page(options); }
-  refresh(scanId?: string): Promise<CatalogScan> { this.#ready(); return this.#catalog.refresh(scanId); }
+  refresh(scanId?: string): Promise<CatalogScan> {
+    this.#ready();
+    const scan = this.#catalog.refresh(scanId);
+    void scan.then(() => { this.#scanned = true; }, () => {});
+    return scan;
+  }
+  /** Right after a start the catalog is still empty until its first scan ends. A request for an agent the catalog does not know yet waits for that scan once; a missing agent after it fails as before. */
+  async #catalogLoaded(identity: string): Promise<void> {
+    if (this.#scanned) return;
+    try { this.#record(identity); return; } catch { /* Unknown so far: wait for the first scan. */ }
+    try { await this.#catalog.refresh(); this.#scanned = true; } catch { /* A failed scan leaves the usual refusal. */ }
+  }
   select(workspaceId: string, identity?: string, connectionEpoch?: number): Promise<void> { this.#ready(); return this.#observations.select(workspaceId, identity, connectionEpoch); }
   hide(workspaceId: string, identity?: string): Promise<void> { return this.#observations.hide(workspaceId, identity); }
   reconnect(workspaceId: string, identity: string, connectionEpoch?: number): Promise<void> {
@@ -146,6 +158,7 @@ export class AgentService {
     if (options.limit !== undefined) params.limit = options.limit;
     if (options.before !== undefined) params.before = options.before;
     validateThreadParams("collaboration-read", params);
+    await this.#catalogLoaded(identity);
     if (threadId.split("/")[0] !== this.#record(identity).storageId) throw new AgentError("invalid_request", "The thread belongs to a different agent storage.");
     signal?.throwIfAborted();
     return (await (await this.#threadLink(identity)).request("collaboration-read", params, {}, signal)) as ThreadPage;
@@ -281,6 +294,8 @@ export class AgentService {
     if (active.has(storageId)) throw new AgentError("host_unavailable", "Retained host endpoint changed while observed. Reconnect the observation explicitly.");
   }
   async #link(identity: string, reconnect = false, protectObservation = false): Promise<HostLink> {
+    this.#ready();
+    await this.#catalogLoaded(identity);
     this.#ready();
     const record = this.#record(identity);
     const endpoint = deriveEndpoint(record);

@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import { hostname, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { HostLink } from "./client.mts";
 import { ContractError, decodeInput, decodeResponse, RESERVED_COMMANDS, type JsonObject } from "./contract.mts";
 import { commandReply, descriptor, FakeHost, STORAGE, statusReply } from "./fake-host.mts";
+import type { RetainedReader } from "./retained-read.mts";
+import { type AgentCatalog, AgentService, type CatalogRecord, deriveEndpoint } from "./service-runtime.mts";
 
 const code = (expected: string) => (error: unknown): boolean => {
 	assert.equal((error as { code?: string }).code, expected);
@@ -115,4 +120,42 @@ test("a result for another command name or a malformed result is an uncertain pr
 	});
 	assert.equal(link.supports("command"), false);
 	assert.equal(link.supports("status"), true);
+});
+
+async function catalogService(t: test.TestContext, scan: (known: () => void) => Promise<void>) {
+	const root = await fs.mkdtemp(join(tmpdir(), "ui-commands-"));
+	t.after(() => fs.rm(root, { recursive: true, force: true }));
+	const record: CatalogRecord = { storageId: STORAGE, cwd: root, agentDir: root, packageDir: root, storagePath: join(root, "agent.sqlite"),
+		model: { provider: "synthetic", modelId: "synthetic" }, thinkingLevel: "off", createdAt: "2026-01-01T00:00:00.000Z" };
+	const endpoint = deriveEndpoint(record);
+	await fs.mkdir(dirname(endpoint.socketPath), { recursive: true });
+	await fs.mkdir(dirname(endpoint.claimPath), { recursive: true });
+	await fs.writeFile(endpoint.claimPath, JSON.stringify({ sessionId: STORAGE, cwd: root, host: hostname(), createdAt: record.createdAt, pid: process.pid }));
+	const host = await FakeHost.start({ endpoint });
+	t.after(() => host.close());
+	let loaded = false, scans = 0;
+	const agents = new AgentService({ store: root, stateDir: root, installationId: "synthetic" },
+		() => ({ get: (id: string) => loaded && id === STORAGE ? record : undefined, refresh: async () => { scans++; await scan(() => { loaded = true; }); return {}; }, close: async () => {} }) as unknown as AgentCatalog,
+		() => ({ request: async () => { throw new Error("Unexpected retained read"); }, close: async () => {} }) as unknown as RetainedReader);
+	t.after(() => agents.close());
+	return { agents, host, scans: () => scans };
+}
+test("a command list asked before the first catalog scan ends waits for that scan and then reads the host", { timeout: 10000 }, async t => {
+	let release: () => void = () => {};
+	const s = await catalogService(t, known => new Promise<void>(resolve => { release = () => { known(); resolve(); }; }));
+	let settled = false;
+	const pending = s.agents.inventory(STORAGE).finally(() => { settled = true; });
+	await new Promise(resolve => setImmediate(resolve));
+	assert.equal(settled, false); assert.equal(s.host.calls.length, 0);
+	release();
+	const inventory = await pending;
+	assert.equal(inventory.contributions[0]?.name, "fixture-contribution");
+	assert.equal(s.scans(), 1);
+	await s.agents.inventory(STORAGE); assert.equal(s.scans(), 1, "a later read does not scan again");
+});
+test("an agent missing after the first scan is refused as before and does not trigger another scan", { timeout: 10000 }, async t => {
+	const s = await catalogService(t, async () => {});
+	await assert.rejects(s.agents.inventory(STORAGE), (error: unknown) => (error as { code?: string }).code === "host_unavailable" && /not in the retained catalog/.test((error as Error).message));
+	await assert.rejects(s.agents.inventory(STORAGE), code("host_unavailable"));
+	assert.equal(s.scans(), 1); assert.equal(s.host.calls.length, 0);
 });
