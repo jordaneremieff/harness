@@ -998,6 +998,19 @@ test('read headers keep the recorded tool name and supplied path across disclosu
   const args = card.querySelector('.tool-arguments'); assert.ok(args); args.open = true; args.dispatch('toggle'); assert.equal(JSON.parse(args.querySelector('pre')?.textContent ?? '{}').path, path);
   card.open = false; card.dispatch('toggle'); flush(); assert.equal(card.querySelector('.tool-target')?.title, path);
 });
+test('a thinking title counts while it streams, settles to its observed span, and plain history says Thinking', t => {
+  t.mock.timers.enable({apis: ['setInterval', 'Date'], now: 100_000}); setup(); const view = transcript();
+  const block = (state: 'partial' | 'final') => ({id: 'thought', kind: 'message', messages: [{...message('thought', '', state), parts: [{type: 'thinking' as const, text: 'weighing options'}]}]});
+  const title = () => node('primary-transcript').querySelector('.thinking')?.querySelector('summary')?.textContent;
+  view.set([block('partial')], new Map(), new Map([['thought:0', {start: 100_000}]])); flush(); assert.equal(title(), 'Thinking 0s');
+  t.mock.timers.tick(4000); assert.equal(title(), 'Thinking 4s');
+  view.set([block('partial')], new Map(), new Map([['thought:0', {start: 100_000, end: 112_000}]])); flush(); assert.equal(title(), 'Thought for 12s');
+  t.mock.timers.tick(5000); assert.equal(title(), 'Thought for 12s');
+  view.set([block('final')], new Map(), new Map([['thought:0', {start: 100_000, end: 165_000}]])); flush(); assert.equal(title(), 'Thought for 1m 5s');
+  view.set([block('final')]); flush(); assert.equal(title(), 'Thinking');
+  view.set([block('partial')], new Map(), new Map([['thought:0', {start: 100_000}]])); flush(); view.set([block('final')], new Map(), new Map([['thought:0', {start: 100_000}]])); flush();
+  assert.equal(title(), 'Thinking', 'a span the browser never saw end shows no invented duration'); view.reset();
+});
 test('final thinking uses safe Markdown while partial and redacted thinking remain plain text', () => {
   setup(); const view = transcript();
   const retained = (state: 'partial' | 'final', redacted = false) => ({id: 'thought', kind: 'message', messages: [{...message('thought', '', state), parts: [{type: 'thinking' as const, text: '**reason**\n<script>inert</script>', redacted}]}]});

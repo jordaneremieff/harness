@@ -128,6 +128,44 @@ test('tool start receipt captures client time once and update/end retain it', t 
   now = 5000; state = reduceEvent(state, tool(5, 'start'));
   assert.equal(state.conversations.get(targetIdentity(target))?.tools.get('c')?.observedStart, 5000);
 });
+test('an agent frame starts a thinking span for a live block and a later frame ends it', t => {
+  let now = 2000; t.mock.method(Date, 'now', () => now);
+  const snap = snapshot(); snap.workspace.selectedTarget = {kind: 'agent', identity: 'a'};
+  snap.workspace.conversationLayout = {root: {kind: 'pane', id: 'left', tabs: [{kind: 'agent', identity: 'a'}], active: 'agent:a'}, focusedPane: 'left'};
+  snap.observations = [{identity: 'a', connectionEpoch: 2, frame: frame(1, [], [])}];
+  const live = (parts: import('../shared/api.ts').PartView[], state: 'partial' | 'final' = 'partial'): EntryView => ({id: 'live-thought', kind: 'message', messages: [{id: 'live-m', role: 'assistant', state, parts, coverage}]});
+  let state = replaceSnapshot(createState(), snap);
+  const times = () => state.conversations.get(targetIdentity({kind: 'agent', identity: 'a'}))?.thinking?.get('live-m:0');
+  state = reduceEvent(state, event(1, 'agent.frame', {identity: 'a', connectionEpoch: 2, frame: frame(2, [], [live([{type: 'thinking', text: 'a'}])])}));
+  assert.deepEqual(times(), {start: 2000}); now = 6000;
+  state = reduceEvent(state, event(2, 'agent.frame', {identity: 'a', connectionEpoch: 2, frame: frame(3, [], [live([{type: 'thinking', text: 'ab'}])])}));
+  assert.deepEqual(times(), {start: 2000}); now = 8000;
+  state = reduceEvent(state, event(3, 'agent.frame', {identity: 'a', connectionEpoch: 2, frame: frame(4, [], [live([{type: 'thinking', text: 'ab'}, {type: 'text', text: 'done'}])])}));
+  assert.deepEqual(times(), {start: 2000, end: 8000});
+});
+test('a thinking block gets a span only when this browser saw it start, and it ends with later content or the final message', t => {
+  let now = 1000; t.mock.method(Date, 'now', () => now);
+  const part = (text: string) => ({type: 'thinking' as const, text}), reply = (text: string) => ({type: 'text' as const, text});
+  const msg = (state: 'partial' | 'final', parts: import('../shared/api.ts').PartView[]) => ({id: 'thought', role: 'assistant', state, parts, coverage});
+  const times = (state: ReturnType<typeof baseline>) => state.conversations.get(targetIdentity(target))?.thinking?.get('thought:0');
+  let state = reduceEvent(baseline(), event(1, 'primary.message', {message: msg('partial', [part('')])}, {target}));
+  assert.deepEqual(times(state), {start: 1000}); now = 4000;
+  state = reduceEvent(state, event(2, 'primary.delta', {messageId: 'thought', index: 0, kind: 'thinking', delta: 'weighing'}, {target}));
+  assert.deepEqual(times(state), {start: 1000}); now = 9000;
+  state = reduceEvent(state, event(3, 'primary.message', {message: msg('partial', [part('weighing'), reply('Answer')])}, {target}));
+  assert.deepEqual(times(state), {start: 1000, end: 9000}); now = 12000;
+  state = reduceEvent(state, event(4, 'primary.message', {message: msg('final', [part('weighing'), reply('Answer')])}, {target}));
+  assert.deepEqual(times(state), {start: 1000, end: 9000});
+  // A finished message seen for the first time, or one already past its thinking, has no observed start.
+  const history: EntryView = {id: 'old', kind: 'message', messages: [{...msg('final', [part('earlier')]), id: 'thought'}]};
+  assert.equal(times(mergePrimaryPage(baseline(), target, [history])), undefined);
+  assert.equal(times(reduceEvent(baseline(), event(1, 'primary.message', {message: msg('final', [part('x')])}, {target}))), undefined);
+  assert.equal(times(reduceEvent(baseline(), event(1, 'primary.message', {message: msg('partial', [part('x'), reply('late join')])}, {target}))), undefined);
+  // The final message alone ends a block that streamed without later content.
+  state = reduceEvent(baseline(), event(1, 'primary.message', {message: msg('partial', [part('a')])}, {target})); now = 15000;
+  state = reduceEvent(state, event(2, 'primary.message', {message: msg('final', [part('a')])}, {target}));
+  assert.deepEqual(times(state), {start: 12000, end: 15000});
+});
 test('history, snapshot baselines, argument deltas and updates do not infer a tool start', () => {
   const call: EntryView = {id: 'call', kind: 'message', messages: [{id: 'm', role: 'assistant', state: 'final', coverage,
     parts: [{type: 'toolCall', callId: 'c', name: 'read', arguments: {value: {}, truncated: false}}]}]};

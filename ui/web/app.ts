@@ -1243,7 +1243,7 @@ function renderController(controller: ConversationController, deferred = false, 
   refreshStaleConnection(controller);
   const paint = () => {
     const conversation = state.conversations.get(targetIdentity(controller.target)); const entries = inputEchoes.entries(controller.workspaceId,controller.target,conversation ? conversationBlocks(conversation) : []);
-    controller.transcript.set(entries, conversation?.tools); const hasEntries = entries.some(entry => !['model_change', 'thinking_level_change'].includes(entry.kind) && entryVisible(entry));
+    controller.transcript.set(entries, conversation?.tools, conversation?.thinking); const hasEntries = entries.some(entry => !['model_change', 'thinking_level_change'].includes(entry.kind) && entryVisible(entry));
     controller.hasEntries = hasEntries; renderControllerEmpty(controller);
     if (controller.target.kind === 'agent') {
       if (!controller.historyBoundaryLoaded && conversation?.frame) controller.before = conversation.frame.nextBefore;

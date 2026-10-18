@@ -13,7 +13,11 @@ export interface ToolState {
   callId: string; name: string; phase: 'start' | 'update' | 'end'; arguments?: JsonDisplay;
   argumentText?: string; parts?: PartView[]; isError?: boolean; durationMs?: number; observedStart?: number; output?: ToolOutputInfo; nativeStatus?: 'pending'|'running'|'done';
 }
+/** A browser-observed span of one thinking block; only blocks whose start this browser saw have one. */
+export interface ThinkingTime { start: number; end?: number }
+export function thinkingKey(messageId: string, index: number): string { return `${messageId}:${index}`; }
 export interface Conversation {
+  thinking?: ReadonlyMap<string, ThinkingTime>;
   target: Target; entries: ReadonlyMap<string, EntryView>; entryOrder: string[]; historyCursor?: string | null;
   messages: ReadonlyMap<string, MessageView>; messageOrder: string[];
   tools: ReadonlyMap<string, ToolState>; live: EntryView[]; messageBlocks: ReadonlyMap<string, EntryView>;
@@ -228,7 +232,7 @@ function admitAgentEpoch(state: UiState, identity: string, epoch: number): UiSta
   if (epoch === state.agentEpochs.get(identity)) return state.conversations.get(targetIdentity({kind: 'agent', identity}))?.connectionEpoch === epoch ? state : undefined;
   const agentEpochs = new Map(state.agentEpochs).set(identity, epoch);
   const agentAvailability = new Map(state.agentAvailability); agentAvailability.delete(identity);
-  return updateConversation({...state, agentEpochs, agentAvailability}, {kind: 'agent', identity}, old => ({...old, tools:new Map(),live: [], frame: undefined, connectionEpoch: epoch}));
+  return updateConversation({...state, agentEpochs, agentAvailability}, {kind: 'agent', identity}, old => ({...old, tools:new Map(),thinking: undefined,live: [], frame: undefined, connectionEpoch: epoch}));
 }
 function applyFrame(state: UiState, identity: string, connectionEpoch: number, frame: ProjectedFrame): UiState {
   if (!Number.isSafeInteger(frame.revision) || frame.revision < 0 || frame.attachmentRevision !== undefined && (!Number.isSafeInteger(frame.attachmentRevision) || frame.attachmentRevision < 0)) return state;
@@ -238,7 +242,9 @@ function applyFrame(state: UiState, identity: string, connectionEpoch: number, f
   return updateConversation(next, {kind: 'agent', identity}, old => {
     const merged = mergeEntries(old, frame.entries, false);
     const tools = new Map<string,ToolState>((frame.status.tools ?? []).map(tool=>[tool.callId,{callId:tool.callId,name:tool.name,phase:'update',nativeStatus:tool.status}]));
-    return {...merged, tools,live: reconcileLiveEntries(merged.entries, frame.live, old.live), frame, connectionEpoch};
+    const now = Date.now(); let thinking = merged.thinking;
+    for (const entry of [...frame.live, ...(thinking?.size ? frame.entries : [])]) for (const message of entry.messages ?? []) thinking = observeThinking(thinking, message, now);
+    return {...merged, tools, thinking, live: reconcileLiveEntries(merged.entries, frame.live, old.live), frame, connectionEpoch};
   });
 }
 function releaseInvisibleAgents(state: UiState): UiState {
@@ -247,7 +253,7 @@ function releaseInvisibleAgents(state: UiState): UiState {
   for (const conversation of state.conversations.values()) {
     const target = conversation.target;
     if (target.kind !== 'agent' || visible.has(target.identity) || conversation.connectionEpoch === undefined) continue;
-    next = updateConversation(next, target, old => ({...old, tools:new Map(),live: [], frame: undefined, connectionEpoch: undefined}));
+    next = updateConversation(next, target, old => ({...old, tools:new Map(),thinking: undefined,live: [], frame: undefined, connectionEpoch: undefined}));
     const agentAvailability = new Map(next.agentAvailability); agentAvailability.delete(target.identity); next = {...next, agentAvailability};
   }
   return next;
@@ -258,7 +264,7 @@ function discardTransient(state: UiState): UiState {
     const messages = new Map([...value.messages].filter(([, message]) => message.state === 'final'));
     const messageOrder = value.messageOrder.filter(id => messages.has(id));
     const messageBlocks = new Map([...value.messageBlocks].filter(([id]) => messages.has(id)));
-    conversations.set(key, { ...value, messages, messageOrder, messageBlocks, tools: new Map(), live: [], frame: undefined });
+    conversations.set(key, { ...value, messages, messageOrder, messageBlocks, tools: new Map(), thinking: undefined, live: [], frame: undefined });
   }
   return { ...state, conversations };
 }
@@ -447,6 +453,26 @@ function messageBlock(message: MessageView, tools: ReadonlyMap<string, ToolState
   }
   return { id: `message:${message.id}`, kind: 'message', messages: [parts === message.parts ? message : { ...message, parts }] };
 }
+/** A block starts when its streaming message first shows it and ends with later content or the final message; blocks first seen already finished get no span. */
+function endsThinking(part: PartView): boolean {
+  if (part.type === 'thinking' || part.type === 'omitted') return false;
+  return part.type !== 'text' || !!part.text.trim();
+}
+/** One block's span: it opens while the message streams with nothing after it, and closes with later content or the final message. */
+function thinkingSpan(known: ThinkingTime | undefined, message: MessageView, later: boolean, now: number): ThinkingTime | undefined {
+  if (!known) return message.state === 'partial' && !later ? {start: now} : undefined;
+  return known.end === undefined && (later || message.state === 'final') ? {...known, end: now} : known;
+}
+export function observeThinking(times: ReadonlyMap<string, ThinkingTime> | undefined, message: MessageView, now: number): ReadonlyMap<string, ThinkingTime> | undefined {
+  let next = times; let later = false;
+  for (let index = message.parts.length - 1; index >= 0; index--) {
+    const part = message.parts[index]; if (!part) continue;
+    if (part.type !== 'thinking') { later ||= endsThinking(part); continue; }
+    const key = thinkingKey(message.id, index), known = next?.get(key), span = thinkingSpan(known, message, later, now);
+    if (span && span !== known) next = new Map(next ?? []).set(key, span);
+  }
+  return next;
+}
 function applyMessage(conversation: Conversation, message: MessageView): Conversation {
   const messages = new Map(conversation.messages); messages.set(message.id, message);
   const tools = new Map(conversation.tools);
@@ -457,7 +483,7 @@ function applyMessage(conversation: Conversation, message: MessageView): Convers
       name: part.name, parts: part.parts, isError: part.isError, output: part.output, phase: message.state === 'final' ? 'end' : 'update' });
   }
   const messageBlocks = new Map(conversation.messageBlocks); messageBlocks.set(message.id, messageBlock(message, tools));
-  return { ...conversation, messages, tools, messageBlocks,
+  return { ...conversation, messages, tools, messageBlocks, thinking: observeThinking(conversation.thinking, message, Date.now()),
     messageOrder: conversation.messages.has(message.id) ? conversation.messageOrder : [...conversation.messageOrder, message.id] };
 }
 function applyTool(conversation: Conversation, event: EventData['primary.tool']): Conversation {
@@ -558,7 +584,7 @@ function applyAgentEvent(state: UiState, event: UiEvent): UiState {
 }
 function applyAgentAvailability(state: UiState, data: EventData['agent.availability']): UiState {
   let next = admitAgentEpoch(state, data.identity, data.connectionEpoch); if (!next) return state;
-  if (data.state !== 'live') next = updateConversation(next,{kind:'agent',identity:data.identity},old=>({...old,tools:new Map()}));
+  if (data.state !== 'live') next = updateConversation(next,{kind:'agent',identity:data.identity},old=>({...old,tools:new Map(),thinking:undefined}));
   const agentAvailability = new Map(next.agentAvailability).set(data.identity, data);
   const row = state.roster.get(data.identity);
   const roster = new Map(state.roster);

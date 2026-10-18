@@ -6,12 +6,12 @@ import { contextMenu, nativeEditingTarget, type ContextItem } from './context-me
 import { markdownDom, sourceHeader, sourceWrap } from './safe-markdown.ts';
 import { highlight, languageFromPath } from './highlight.ts';
 import { transcriptImage } from './image.ts';
-import type { ToolState } from './state.ts';
+import { thinkingKey, type ThinkingTime, type ToolState } from './state.ts';
 import { isValidTimestamp, previewText } from './format.ts';
 import { entryVisible, messageAriaLabel, presentEntry, presentMessage } from './entry-presentation.ts';
 import { cardPreviewLimits, readRange, presentResultPreview, presentToolPreview, resultPreview } from './cards.ts';
 import { thinkingExpanded } from './transcript-presentation.ts';
-import { TranscriptIndex, ToolElapsedClock, toolTime, slot, communicationDisclosureKeys } from './transcript-tools.ts';
+import { TranscriptIndex, ToolElapsedClock, toolTime, thinkingLabel, slot, communicationDisclosureKeys } from './transcript-tools.ts';
 import { CommunicationCard, messageCopyText, messageCopyDescription } from './communication.ts';
 import type { TranscriptGroups } from './transcript-groups.ts';
 import {TranscriptRows, type StepRun} from './transcript-rows.ts';
@@ -191,6 +191,8 @@ export class Transcript {
   private pendingView?: TranscriptView;
   private cache = new Map<string, EntryNode>();
   private tools = new Map<string, ToolNode>();
+  private thinkingTimes: ReadonlyMap<string, ThinkingTime> = new Map();
+  private liveThinking = new Map<string, HTMLElement>();
   private elapsed = new ToolElapsedClock(() => this.paintElapsed());
   private index = new TranscriptIndex();
   private joined = this.index.joined;
@@ -404,7 +406,7 @@ export class Transcript {
     this.geometryTimer = undefined; this.geometryDirty.clear(); this.outputNodes.clear();
     this.resize?.disconnect(); if (!this.destroyed) this.resize?.observe(this.node); this.sizes = new WeakMap(); this.scrolling = new WeakSet(); this.reflowAnchor = undefined; this.writtenScrollTop = undefined;
     this.clearFind(); this.findRevision++;
-    this.generation++; this.entries = []; this.displayed = []; this.cache.clear(); this.tools.clear(); this.index = new TranscriptIndex(); this.joined = this.index.joined; this.rows = new TranscriptRows(); this.tasks = new ConversationTasks(); this.visible.clear(); this.dirtyLayout = true; this.pins.clear(); this.heights.clear(); this.gaps.clear();
+    this.generation++; this.entries = []; this.displayed = []; this.cache.clear(); this.tools.clear(); this.liveThinking.clear(); this.thinkingTimes = new Map(); this.index = new TranscriptIndex(); this.joined = this.index.joined; this.rows = new TranscriptRows(); this.tasks = new ConversationTasks(); this.visible.clear(); this.dirtyLayout = true; this.pins.clear(); this.heights.clear(); this.gaps.clear();
     this.expanded.clear(); this.showThinking = true; this.follow = true; this.readingRevision = 0;
     this.layout = layoutItems([], this.heights, 140); this.restoring = undefined; this.node.replaceChildren(...(this.lead ? [this.lead] : [])); this.scrollTo(0);
   }
@@ -418,7 +420,8 @@ export class Transcript {
     }
     this.schedule();
   }
-  set(entries: EntryView[], tools: ReadonlyMap<string, ToolState> = new Map()): void {
+  set(entries: EntryView[], tools: ReadonlyMap<string, ToolState> = new Map(), thinking: ReadonlyMap<string, ThinkingTime> = new Map()): void {
+    this.thinkingTimes = thinking;
     this.receivedAt = undefined; this.streamPending = false; this.deferred = undefined;
     const sessions = new Map(this.index.sessions);
     this.entries = entries; this.index.update(entries, tools, this.visibilityPredicate, {incrementalVisibility: true}); this.retireForks(); this.reconcileSessions(sessions);
@@ -1264,13 +1267,13 @@ export class Transcript {
       return tool?.slot === slot(entryId, message.source.id, index) ? this.updateTool(tool) : undefined;
     }
     const previous = message.parts.get(key);
-    if (previous?.source === part && previous.partial === partial) return previous.node;
+    if (previous?.source === part && previous.partial === partial) { if (part.type === 'thinking') this.thinkingTitle(previous.node, message.source.id, index, partial); return previous.node; }
     const node = previous?.node ?? this.createPart(part, entryId, message.source.id, index);
     const pages = node.querySelector<HTMLElement>('.output-pages'); if (pages) { this.releaseFrames(pages); pages.remove(); }
     this.partContent(node, part, partial, previous);
     if (part.type === 'thinking') {
       node.dataset.streaming = String(partial && !part.redacted && !!part.text.trim());
-      (node as HTMLDetailsElement).open = this.thinkingOpen(node);
+      (node as HTMLDetailsElement).open = this.thinkingOpen(node); this.thinkingTitle(node, message.source.id, index, partial);
     }
     if ((part.type === 'text' || part.type === 'thinking') && part.more) {
       const source = part; const generation = this.generation;
@@ -1410,9 +1413,20 @@ export class Transcript {
     setText(tool.meta, [source.parentCallId ? `Within ${source.parentCallId}` : '', source.name === 'read' ? readRange(record(source.args)) : '', toolTime(source)].filter(Boolean).join(' · '));
     tool.meta.hidden = true;
   }
+  /** The title carries the browser-observed span; a streaming block keeps counting through the shared clock. */
+  private thinkingTitle(node: HTMLElement, messageId: string, index: number, partial: boolean): void {
+    const key = thinkingKey(messageId, index), time = this.thinkingTimes.get(key), streaming = partial && time !== undefined && time.end === undefined;
+    const summary = node.querySelector('summary'); if (summary) setText(summary, thinkingLabel(time, streaming));
+    if (streaming) this.liveThinking.set(key, node); else this.liveThinking.delete(key);
+  }
   private paintElapsed(): boolean {
     if (this.hidden() || document.hidden || !this.node.isConnected) return false;
     let active = false;
+    for (const [key, node] of this.liveThinking) {
+      const time = this.thinkingTimes.get(key), summary = node.querySelector('summary');
+      if (!this.node.contains(node) || !summary || time === undefined || time.end !== undefined) { this.liveThinking.delete(key); continue; }
+      setText(summary, thinkingLabel(time, true)); active = true;
+    }
     this.hooks.activity?.(this.activitySentence());
     for (const tool of this.tools.values()) {
       if (tool.source?.status !== 'working' || tool.source.observedStart === undefined || !this.node.contains(tool.card)) continue;

@@ -11,6 +11,16 @@ export function toolTime(tool: JoinedTool, now = Date.now()): string {
   return seconds < 60 ? `${seconds}s elapsed` : `${Math.floor(seconds / 60)}m ${seconds % 60}s elapsed`;
 }
 /** One clock per transcript; the paint callback returns false when no timed tool is visible. */
+function span(ms: number, settled: boolean): string {
+  const seconds = Math.floor(Math.max(0, ms) / 1000);
+  return seconds < 1 ? settled ? '<1s' : '0s' : seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+/** Only a block whose start this browser observed shows a time; saved history says Thinking alone. */
+export function thinkingLabel(time: {start: number; end?: number} | undefined, streaming: boolean, now = Date.now()): string {
+  if (!time) return 'Thinking';
+  if (time.end !== undefined) return `Thought for ${span(time.end - time.start, true)}`;
+  return streaming ? `Thinking ${span(now - time.start, false)}` : 'Thinking';
+}
 export class ToolElapsedClock {
   private timer?: ReturnType<typeof setInterval>;
   private paint: () => boolean;

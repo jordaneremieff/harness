@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { EntryView, PartView } from '../shared/api.ts';
-import { actionableEntry, slot, communicationDisclosureKeys, TranscriptIndex, ToolElapsedClock, toolTime } from './transcript-tools.ts';
+import { actionableEntry, slot, communicationDisclosureKeys, TranscriptIndex, ToolElapsedClock, toolTime, thinkingLabel } from './transcript-tools.ts';
 
 const coverage = {complete: true, truncated: false, omitted: 0};
 function entry(id: string, parts: PartView[]): EntryView { return {id, kind: 'message', messages: [{id, role: 'assistant', state: 'final', parts, coverage}]}; }
@@ -278,4 +278,10 @@ test('actionable detection ignores inherited properties and accessors without in
   assert.equal(actionableEntry(event('object', {status: {toString: 'not callable'}})), false);
   assert.equal(actionableEntry(event('actions', {actions: [{label: 'Retry'}]})), true);
   assert.equal(actionableEntry(event('error', {error: 'Retained error'})), true);
+});
+test('thinking titles use only observed spans', () => {
+  assert.equal(thinkingLabel(undefined, true), 'Thinking'); assert.equal(thinkingLabel({start: 1000}, true, 1000), 'Thinking 0s');
+  assert.equal(thinkingLabel({start: 1000}, true, 5999), 'Thinking 4s'); assert.equal(thinkingLabel({start: 1000}, true, 62000), 'Thinking 1m 1s');
+  assert.equal(thinkingLabel({start: 1000}, false, 9000), 'Thinking', 'an unsettled span on a finished message is not invented');
+  assert.equal(thinkingLabel({start: 1000, end: 1400}, false), 'Thought for <1s'); assert.equal(thinkingLabel({start: 1000, end: 13000}, false), 'Thought for 12s');
 });
