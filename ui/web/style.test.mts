@@ -449,7 +449,10 @@ test('prose table cells wrap at words while wide data keeps horizontal scroll an
   assert.match(rule('.tool-rows'), /max-width: 100%; overflow-x: auto/);
 });
 test('composer actions keep Attach left and submission right with one padded keyboard-focus boundary', () => {
-  assert.match(rule('.attach'), /margin-right: auto/); assert.doesNotMatch(rule('.attach'), /flex: 1|flex-grow/);
+  assert.match(rule('.composer-intake'), /display: inline-flex; flex: none; align-items: center; margin-right: auto/); assert.doesNotMatch(rule('.attach'), /flex: 1|flex-grow/);
+  assert.match(rule('.attachment-sources'),/min-width: 24px; min-height: 28px/);
+  assert.match(rule('.working-file-list'),/max-height: 36dvh; overflow: auto/);
+  assert.match(rule('.working-file-row .file-name'),/white-space: normal; overflow-wrap: anywhere/);
   assert.doesNotMatch(rule('.composer-bar'), /margin-left: auto/);
   assert.match(rule('.composer-submit'), /flex: none; flex-wrap: nowrap/);
   assert.match(rule('.send:not(:disabled)'), /font-weight: 600; background: var\(--raised\)/);
@@ -711,7 +714,8 @@ test('one workbench footer owns wrapped facts without composer-local settings', 
   assert.match(factory, /root\.append\(resize, receipt, input, line\)/);
   assert.match(factory, /submit\.append\(modes, send\)/);
   assert.match(factory, /bar\.append\(stop, submit\)/);
-  assert.match(factory, /line\.append\(attach, picker, bar\)/);
+  assert.match(factory, /intake\.append\(attach,sources,picker\)/);
+  assert.match(factory, /line\.append\(intake, bar\)/);
   assert.doesNotMatch(factory, /composer-settings|usage-details|workbench-status-facts|root\.append\([^)]*\b(?:save|receiptDetails)\b/);
   assert.doesNotMatch(html, /<form id="(?:primary|agent)-composer"/);
   const app = await readFile(new URL('./app.ts', import.meta.url), 'utf8');

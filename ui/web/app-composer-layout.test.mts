@@ -35,7 +35,10 @@ test('conversation state and split width changes retain editor ancestry, draft i
     const latest = control('latest'), line = control('composer').querySelector('.composer-line');
     assert.ok(line); const bar = line.querySelector('.composer-bar'); assert.ok(bar);
     const attach = line.querySelector('.attach'), picker = line.querySelector('input'); assert.ok(attach); assert.ok(picker);
-    assert.equal(latest.parentNode, line); assert.deepEqual(line.children, [attach, picker, latest, bar]);
+    const intake=line.querySelector('.composer-intake'),sources=line.querySelector('.attachment-sources');assert.ok(intake);assert.ok(sources);
+    assert.equal(sources.getAttribute('aria-label'),'Attachment sources');assert.equal(sources.getAttribute('aria-haspopup'),'menu');
+    assert.deepEqual(intake.children,[attach,sources,picker]);
+    assert.equal(latest.parentNode, line); assert.deepEqual(line.children, [intake, latest, bar]);
     const submit = bar.querySelector('.composer-submit'); assert.ok(submit);
     assert.deepEqual(bar.children, [control('stop'), submit]); assert.deepEqual(submit.children, [control('modes'), control('send')]);
     assert.equal(control('editor').rows, 3);

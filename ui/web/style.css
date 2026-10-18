@@ -1001,7 +1001,15 @@ pre.tool-document { font-family: var(--mono); }
 .attachment-digest { display: block; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .attachment-dialog { max-width: min(90vw,900px); max-height: 90dvh; padding: 16px; background: var(--canvas); color: var(--fg); }
 .attachment-dialog > img { display: block; max-width: 100%; max-height: 65dvh; margin: 8px auto; object-fit: contain; }
-.attach { margin-right: auto; min-height: 28px; padding: 2px 6px; color: var(--muted); font-size: 13px; }
+.composer-intake { display: inline-flex; flex: none; align-items: center; margin-right: auto; }
+.attach { min-height: 28px; padding: 2px 6px; color: var(--muted); font-size: 13px; }
+.attachment-sources { min-width: 24px; min-height: 28px; }
+.attachment-sources .card-icon { transform: rotate(90deg); }
+.working-file-filter { display: block; width: 100%; margin: 8px 0; }
+.working-file-list { max-height: 36dvh; overflow: auto; }
+.working-file-row { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 28px; text-align: left; }
+.working-file-row[aria-pressed=true] { background: var(--raised); font-weight: 500; }
+.working-file-row .file-name { white-space: normal; overflow-wrap: anywhere; }
 @media (pointer: coarse) { .attach, .attachment-row button, .attachment-dialog button, .attachment-details > summary { min-width: 44px; min-height: 44px; } }
 .composer-line { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--s1) var(--s2); min-height: 24px; padding: 0; border: 0; border-radius: 0; background: transparent; }
 .statusline { display: flex; flex-wrap: wrap; align-items: center; flex: 0 1 auto; gap: 2px 12px; min-width: 0; color: var(--muted); font-family: var(--mono); font-size: 12px; white-space: nowrap; }

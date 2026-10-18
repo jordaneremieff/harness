@@ -13,6 +13,7 @@ import {FileWatch} from './file-watch.ts';
 import {movedWorkspaceFiles, type FileMove} from './file-identity.ts';
 import {FilesViews} from './files-views.ts';
 import {FileRootChoice} from './file-root.ts';
+import {chooseWorkingFile} from './working-file-chooser.ts';
 import { activeTab, ConversationCaptions, conversationIdentityText, type CaptionRow, closeTab, duplicateTabTails, FileBrowseState, layoutTarget, openTab, switchTab, tabForTarget, tabKey, workspaceLayout } from './tabs.ts';
 import { paneLeaves, paneById, activatePaneTab, movePaneTab, resizePaneSplit, minimumPaneSize, paneSplitGeometry, splitPane, normalizePaneLayout, samePaneLayout, type PaneLeaf } from './pane-layout.ts';
 import { TabStrip } from './tabs-view.ts';
@@ -176,7 +177,7 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
   root.append(observed, notice, region, above, elements.root, below); stableViews().mount(root);
   if (target.kind === 'agent') root.insertBefore(createAgentState(add), region);
   const controller = {workspaceId, target: {...target}, instanceId, root, nodes, elements, abort: new AbortController(), historyAbort: new AbortController(), cursor: null, before: null, loading: false, preparing: false, passive: true, historyReady: false, historyBoundaryLoaded: false, initialized: false, showThinking: true} as ConversationController;
-  controller.composer = new Composer(elements, {changed:()=>{devInteractionRevision++;},captured: submission=>{const conversation=state.conversations.get(targetIdentity(controller.target));inputEchoes.capture(workspaceId,submission,conversation?conversationBlocks(conversation):[]);renderController(controller);},failed:(id,uncertain)=>{inputEchoes.failed(id,uncertain);renderController(controller);},prepareInput: () => !controller.passive, imageState: refreshComposerImages, imageInput: captured => composerImageInput(controller, captured), recovery: () => recovery.open(), layoutHeight: () => stableViews().height(elements.root), enterSends: () => state.workspace?.enterSendsMessages === true, timing: (start, end) => {if (controller.workspaceId === state.workspace?.id && !elements.root.closest('[hidden],[inert]')) diagnostics.measure('editor-echo', start, end);}, submitted: result => {inputEchoes.settle(result);showOperation(result, workspaceId);renderController(controller);}, unknownCommand: (text, literal) => target.kind === 'primary' && sameTarget(primaryTarget(), target) ? actions.unknown(text, literal) : false,
+  controller.composer = new Composer(elements, {workingFile:stage=>composerWorkingFile(controller,stage),changed:()=>{devInteractionRevision++;},captured: submission=>{const conversation=state.conversations.get(targetIdentity(controller.target));inputEchoes.capture(workspaceId,submission,conversation?conversationBlocks(conversation):[]);renderController(controller);},failed:(id,uncertain)=>{inputEchoes.failed(id,uncertain);renderController(controller);},prepareInput: () => !controller.passive, imageState: refreshComposerImages, imageInput: captured => composerImageInput(controller, captured), recovery: () => recovery.open(), layoutHeight: () => stableViews().height(elements.root), enterSends: () => state.workspace?.enterSendsMessages === true, timing: (start, end) => {if (controller.workspaceId === state.workspace?.id && !elements.root.closest('[hidden],[inert]')) diagnostics.measure('editor-echo', start, end);}, submitted: result => {inputEchoes.settle(result);showOperation(result, workspaceId);renderController(controller);}, unknownCommand: (text, literal) => target.kind === 'primary' && sameTarget(primaryTarget(), target) ? actions.unknown(text, literal) : false,
     ...(target.kind === 'primary' ? {commands: () => actions.commandOptions(), moreCommands: (captured: Target) => actions.continueCommands(captured)} : {}),
     retained: (workspace, captured) => { if (workspace === state.workspace?.id && captured.kind === 'agent') renderMessageResume(captured.identity); }});
   controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {references, subject: toolSubjectCaption, readTaskResult:async(reference,signal)=>{const value=await request<AgentInspectionView>(`/api/agents/${encodeURIComponent(reference.sessionId)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',{view:'result',submissionId:reference.submissionId,...(reference.requestId?{requestId:reference.requestId}:{})},undefined,AbortSignal.any([signal,controller.abort.signal,AbortSignal.timeout(15_000)]));if(value.view!=='result')throw new Error('The task result view changed.');return value;}, activity:()=>{if (footerController === controller) renderWorkbenchStatus();}, cwd: () => target.kind === 'primary' ? state.primaries.get(target.key)?.cwd : state.roster.get(target.identity)?.cwd, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
@@ -378,16 +379,37 @@ export function addFileToMessage(rootId:string,path:string):void {
   modal.body.append(element('p','file-message-fact',`Saved file: ${sourcePath}`),element('p','secondary','Uses the saved file. Unsaved editor changes are not included. Text files up to 32 KiB. After adding, use Include text in the selected conversation. Nothing is sent.'),label,select,destinationDetail);
   modal.actions(button('Cancel',()=>modal.close()),add); select.focus();
 }
+function composerWorkingFile(controller:ConversationController,stage:(files:readonly File[])=>boolean):void {
+  const workspace=controller.workspaceId,selection=fileRoot.selection,root=selection?.root;
+  const target={...controller.target},layout=JSON.stringify(currentLayout()),revision=paneSelectionRevision;
+  const message=controller.elements.root.dataset.messagePanel?messageTarget.current:undefined;
+  const current=()=>state.workspace?.id===workspace&&!controller.abort.signal.aborted&&controllers.get(controllerKey(workspace,target))===controller
+    &&sameTarget(controller.composer.target,target)&&!!controller.composer.state&&fileRoot.selection===selection&&!fileRoot.loading
+    &&paneSelectionRevision===revision&&JSON.stringify(currentLayout())===layout&&(!message||messageTarget.current===message&&messageTarget.valid(message));
+  if(!root||!current()) {
+    modal.open('Choose working-folder file').append(element('p','secondary',fileRoot.loading?'Loading working folder. Try again after it loads.':fileRoot.error??(!root?'Choose a working folder first.':'Draft is not loaded or its destination changed. Open this conversation first.')));
+    modal.actions(button('Close',()=>modal.close()));return;
+  }
+  const caption=presentationName(presentation(target));
+  chooseWorkingFile(modal,root,caption,fileMessageIdentity(target),{current,
+    page:(path,cursor,signal)=>request<FileDirectoryPage>(`/api/files/roots/${encodeURIComponent(root.id)}/directory?path=${encodeURIComponent(path)}&workspace=${encodeURIComponent(workspace)}${cursor?`&cursor=${encodeURIComponent(cursor)}`:''}`,'GET',undefined,undefined,signal),
+    stage:(path,signal,presented)=>stageSavedFile(workspace,root.id,path,signal,()=>current()&&presented(),stage)});
+}
+async function stageSavedFile(workspace:string,rootId:string,path:string,signal:AbortSignal,current:()=>boolean,stage:(files:readonly File[])=>boolean):Promise<boolean> {
+  const check=()=>{if(fileRoot.selection?.root?.id!==rootId||!current())throw new Error('The file folder or destination changed. Choose Add to message again.');};
+  if(signal.aborted)return false;check();
+  const saved=await request<FileText>(`/api/files/roots/${encodeURIComponent(rootId)}/text?path=${encodeURIComponent(path)}&workspace=${encodeURIComponent(workspace)}`,'GET',undefined,undefined,signal);
+  if(signal.aborted)return false;check();
+  if(saved.rootId!==rootId||saved.path!==path)throw new Error('The file folder or destination changed. Choose Add to message again.');
+  const name=path.split('/').at(-1)??'';includedText(new TextEncoder().encode(saved.text),name);
+  if(!stage([new File([saved.text],name,{type:'text/plain'})]))throw new Error('The file was not staged. Review the selected conversation draft.');
+  return true;
+}
 async function stageFileMessage(workspace:string,rootId:string,path:string,sourcePath:string,destination:FileMessageDestination,token:number,abort:AbortController,add:HTMLButtonElement,select:HTMLSelectElement):Promise<void> {
   if (!modal.owns(token) || add.disabled) return;
   add.disabled = true; select.disabled = true; modal.node.querySelector('#modal-error')?.replaceChildren();
   try {
-    if (fileRoot.selection?.root?.id !== rootId || !fileMessageCurrent(workspace,destination)) throw new Error('The file folder or destination changed. Choose Add to message again.');
-    const saved = await request<FileText>(`/api/files/roots/${encodeURIComponent(rootId)}/text?path=${encodeURIComponent(path)}&workspace=${encodeURIComponent(workspace)}`,'GET',undefined,undefined,abort.signal);
-    if (!modal.owns(token) || abort.signal.aborted) return;
-    if (fileRoot.selection?.root?.id !== rootId || saved.rootId !== rootId || saved.path !== path || !fileMessageCurrent(workspace,destination)) throw new Error('The file folder or destination changed. Choose Add to message again.');
-    const name = path.split('/').at(-1) ?? ''; includedText(new TextEncoder().encode(saved.text),name);
-    if (!destination.controller?.composer.addFiles([new File([saved.text],name,{type:'text/plain'})])) throw new Error('The file was not staged. Review the selected conversation draft.');
+    if(!await stageSavedFile(workspace,rootId,path,abort.signal,()=>modal.owns(token)&&fileMessageCurrent(workspace,destination),files=>destination.controller?.composer.addFiles(files)??false))return;
     const receipt = `File staged for ${destination.caption}. Use Include text in that conversation. Nothing was sent.`;
     modal.open('Add file to message');
     modal.body.append(element('p','file-message-fact',`Saved file: ${sourcePath}`),fileMessageIdentity(destination.target),element('p','file-message-fact',receipt));

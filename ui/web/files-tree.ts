@@ -11,9 +11,10 @@ function createAction(action:FileTreeAction):boolean {return action === 'file' |
 function parentPath(path:string):string {return path.split('/').slice(0,-1).join('/');}
 function namingLabel(action:Naming['action']):string {switch (action) {case 'move':return 'Destination path from working folder';case 'rename':return 'New name';case 'directory':return 'New folder name';case 'file':return 'New file name';}}
 export type FileTreeRow = {entry: FileEntry; depth: number; parent: string};
+export function visibleFileEntry(entry:FileEntry):boolean {return entry.kind !== 'file' || entry.name !== '.DS_Store';}
 export function visibleFileRows(directories: ReadonlyMap<string, Directory>, path = '', depth = 0): FileTreeRow[] {
   const directory = directories.get(path); if (!directory?.expanded) return [];
-  return directory.entries.flatMap(entry => entry.kind === 'file' && entry.name === '.DS_Store' ? [] : [{entry, depth, parent: path}, ...(entry.kind === 'directory' ? visibleFileRows(directories, entry.path, depth + 1) : [])]);
+  return directory.entries.flatMap(entry => !visibleFileEntry(entry) ? [] : [{entry, depth, parent: path}, ...(entry.kind === 'directory' ? visibleFileRows(directories, entry.path, depth + 1) : [])]);
 }
 export type FilesTreeHooks = {page(rootId: string, path: string, cursor?: string): Promise<FileDirectoryPage>; select(rootId: string, path: string): void; keep?(rootId:string,path:string):void; addToMessage?(rootId:string,path:string):void; escape(): void; scope?():Promise<void>|void;status?(message:string):void;operation?(rootId:string,action:FileTreeAction,path:string,value?:string):Promise<undefined|(()=>void)>};
 /** Disclosed directories retain their rows while bounded disk changes refresh their pages. */

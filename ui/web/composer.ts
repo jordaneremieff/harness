@@ -6,6 +6,7 @@ import { ComposerOverlay } from './composer-overlay.ts';
 import type { DraftImage, DraftView, OperationView, RecoveryInput, Target, TargetIndex, TargetState, UnconfirmedInput } from '../shared/api.ts';
 import { announce, button, copy, element, rawText, setText } from './dom.ts';
 import { cardAction } from './card-icons.ts';
+import {contextMenu} from './context-menu.ts';
 import { exactInput, recoveryLabel } from './recovery.ts';
 import { targetReceipts } from './receipt.ts';
 import { CommandMenu } from './command-menu.ts';
@@ -18,9 +19,9 @@ import { acknowledgeDraft, beginDraftSave, captureSubmission, createDraft, draft
 import type { DraftSave, DraftState, Submission } from './draft-state.ts';
 import { ApiError, draftImageUrl, errorMessage, operation, request, reserve } from './transport.ts';
 
-export type ComposerHooks = {changed?:()=>void; captured?: (submission:Submission)=>void; failed?: (operationId:string,uncertain:boolean)=>void; prepareInput?: () => boolean; imageState?: (workspace: string, state: TargetState) => void; imageInput?: (target: Target) => {allowed: boolean; reason?: string}; recovery?: () => void; layoutHeight?: () => number | undefined; timing?: (start: number, end: number) => void; submitted: (operation: OperationView) => void; unknownCommand: (text: string, sendLiteral: () => void) => boolean; enterSends?: () => boolean; commands?: () => CommandInventory; moreCommands?: (target: Target) => Promise<void>; retained?: (workspace: string, target: Target, retained: boolean) => void};
+export type ComposerHooks = {workingFile?:(stage:(files:readonly File[])=>boolean)=>void; changed?:()=>void; captured?: (submission:Submission)=>void; failed?: (operationId:string,uncertain:boolean)=>void; prepareInput?: () => boolean; imageState?: (workspace: string, state: TargetState) => void; imageInput?: (target: Target) => {allowed: boolean; reason?: string}; recovery?: () => void; layoutHeight?: () => number | undefined; timing?: (start: number, end: number) => void; submitted: (operation: OperationView) => void; unknownCommand: (text: string, sendLiteral: () => void) => boolean; enterSends?: () => boolean; commands?: () => CommandInventory; moreCommands?: (target: Target) => Promise<void>; retained?: (workspace: string, target: Target, retained: boolean) => void};
 export type ComposerElements = {root: HTMLFormElement; editor: HTMLTextAreaElement; recipient: HTMLElement; receipt: HTMLElement;
-  receiptDetails: HTMLElement; modes: HTMLElement; send: HTMLButtonElement; save: HTMLElement; commandMenu?: HTMLElement; overlay?: HTMLElement; attachments?: HTMLElement; attach?: HTMLButtonElement; picker?: HTMLInputElement};
+  receiptDetails: HTMLElement; modes: HTMLElement; send: HTMLButtonElement; save: HTMLElement; commandMenu?: HTMLElement; overlay?: HTMLElement; attachments?: HTMLElement; attach?: HTMLButtonElement; sources?: HTMLButtonElement; picker?: HTMLInputElement};
 /** Creates one editor; the detached save/receipt-detail nodes belong in the shared footer. */
 export function createComposerElements(instanceId: string): ComposerElements {
   const id = `composer-${encodeURIComponent(instanceId)}`;
@@ -47,11 +48,14 @@ export function createComposerElements(instanceId: string): ComposerElements {
   send.setAttribute('aria-label', 'Send message'); stop.setAttribute('aria-label', 'Stop response');
   const attach = element('button', 'attach', 'Attach'); attach.type = 'button'; attach.setAttribute('aria-label', 'Attach files');
   const picker = element('input'); picker.type = 'file'; picker.multiple = true; picker.hidden = true; picker.tabIndex = -1; picker.setAttribute('aria-label', 'Choose attachments');
+  const sources = cardAction('chevron', 'Attachment sources', () => {}, 'attachment-sources');
+  sources.setAttribute('aria-haspopup','menu'); sources.setAttribute('aria-expanded','false');
+  const intake = element('span','composer-intake'); intake.append(attach,sources,picker);
   const submit = element('div', 'composer-submit'); submit.append(modes, send);
-  const bar = element('div', 'composer-bar'); bar.append(stop, submit); const line = element('div', 'composer-line'); line.append(attach, picker, bar); root.append(resize, receipt, input, line);
+  const bar = element('div', 'composer-bar'); bar.append(stop, submit); const line = element('div', 'composer-line'); line.append(intake, bar); root.append(resize, receipt, input, line);
   const save = element('span', 'draft-state'); save.id = `${id}-save`;
   const receiptDetails = element('span', 'receipt-details'); receiptDetails.id = `${id}-receipt-details`;
-  return {root, editor, recipient, receipt, receiptDetails, modes, send, save, commandMenu, overlay, attachments, attach, picker};
+  return {root, editor, recipient, receipt, receiptDetails, modes, send, save, commandMenu, overlay, attachments, attach, sources, picker};
 }
 type Edit = {text: string; mode: string; images: DraftImage[]; edit: number};
 type InsertionCapture = {buffer: Buffer; edit: number; text: string; start: number; end: number; direction: 'forward' | 'backward' | 'none'};
@@ -328,6 +332,7 @@ export class Composer {
         if (captured && this.current === captured.buffer && (document.activeElement === attach || document.activeElement === picker || document.activeElement === document.body)) this.focus();
       });
     }
+    if (this.elements.sources) this.listen(this.elements.sources,'click',()=>this.attachmentSources());
     this.listen(this.editor, 'paste', event => {
       const files = Array.from(event.clipboardData?.files ?? []); if (!files.length) return;
       const captured = this.insertionCapture(); if (!captured) return;
@@ -344,6 +349,16 @@ export class Composer {
       if (text) this.insertPrepared(captured, text);
       this.addFiles(files, captured);
     });
+  }
+  private attachmentSources():void {
+    const origin=this.elements.sources, captured=this.insertionCapture(); if (!origin) return;
+    const current=()=>!this.destroyed && this.current===captured?.buffer;
+    const box=origin.getBoundingClientRect();
+    contextMenu.open(origin,{x:box.left,y:box.bottom},'Attachment sources',[
+      {label:'Choose local files…',run:()=>this.elements.attach?.click()},
+      {label:'Choose working-folder file…',enabled:!!captured && !!this.hooks.workingFile,disabledReason:captured?'Working-folder files are unavailable.':'Draft is not loaded. Open this conversation first.',
+        run:()=>{if(captured)this.hooks.workingFile?.(files=>current() && this.addFiles(files,captured));}},
+    ],current);
   }
   addFiles(files: readonly File[], captured = this.insertionCapture()): boolean {
     if (!captured || this.destroyed) return false;
