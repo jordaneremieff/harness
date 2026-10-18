@@ -256,14 +256,14 @@ test('file message source and exact destination details wrap within the dialog',
   assert.match(rule('.file-message-fact'), /min-width: 0; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere/);
   assert.match(rule('.file-message-destination'), /width: 100%; min-width: 0; max-width: 100%/);
 });
-test('footer settings use separate readable native targets without another composer row', () => {
-  assert.match(html, /id="model-button"[^>]*><span class="workbench-control-label">Model:<\/span> <span id="model-value"/);
-  assert.match(html, /id="thinking-button"[^>]*><span class="workbench-control-label">Thinking:<\/span> <span id="thinking-value"/);
+test('model and thinking leave the footer for separate readable targets under the composer', () => {
+  assert.doesNotMatch(html, /id="(?:model-button|thinking-button|model-value|thinking-value|agent-status)"|workbench-model/);
+  assert.match(rule('.composer-settings'), /margin-left: auto/); assert.match(rule('.composer-model, .composer-thinking'), /min-height: 24px;[^}]*white-space: nowrap/);
+  assert.match(rule('.composer-meta'), /display: flex; align-items: center; justify-content: space-between/);
+  assert.match(media('@media (pointer:coarse)'), /\.composer-model, \.composer-thinking, \.icon-button/);
   assert.equal((html.match(/<footer id="workbench-status"/g) ?? []).length, 1);
   assert.match(rule('.workbench-status'), /flex-wrap: wrap/); assert.match(rule('.workbench-version'), /margin-left: auto/);
-  assert.match(rule('.workbench-model'), /gap: 4px 8px/); assert.match(rule('.workbench-status-facts'), /gap: 2px 16px/);
-  assert.match(rule('.workbench-model button'), /min-height: 24px/); assert.match(rule('.workbench-model button'), /max-width: 100%/); assert.match(rule('.workbench-control-label'), /color: var\(--muted\)/); assert.match(rule('.workbench-control-value'), /overflow-wrap: anywhere/);
-  assert.match(media('@media (pointer:coarse)'), /\.workbench-model button \{ min-width: 44px; min-height: 44px;/);
+  assert.match(rule('.workbench-status-facts'), /gap: 2px 16px/);
   assert.match(rule('.palette-row[data-source=app]'), /grid-template-columns: minmax\(0,30%\) minmax\(0,1fr\)/);
 });
 test('agent settings details preserve line boundaries without changing other footer text', () => {
@@ -279,8 +279,7 @@ test('desktop status reserves controls and identity while only long text slots s
   assert.match(desktop,/\.workbench-version \{ flex: none; max-width: none; white-space: nowrap;/);
   assert.match(desktop,/#workbench-scope \{[^}]*text-overflow: ellipsis; white-space: nowrap;/);
   // Setting labels keep their full text; only the update notice, scope and details give way when space runs short.
-  assert.match(desktop,/\.workbench-model button \{ flex: none; flex-wrap: nowrap; white-space: nowrap; \}/);assert.doesNotMatch(desktop,/\.workbench-model[^{]*\{[^}]*min-width: \d+ch/);
-  assert.match(desktop,/\.workbench-update \{ flex: 0 10 auto; overflow: hidden; white-space: nowrap; \}/);assert.match(desktop,/\.workbench-status \.composer-details \{ flex: none; max-width: none; \}/);assert.match(desktop,/\.workbench-status-facts \.agent-settings \{ flex: none; max-width: 60ch; \}/);
+  assert.match(desktop,/\.workbench-update \{ flex: 0 10 auto; overflow: hidden; white-space: nowrap; \}/);assert.match(desktop,/\.workbench-status \.composer-details \{ flex: none; max-width: none; \}/);
   assert.match(rule('.workbench-update'),/display: inline-flex; align-items: center; gap: 8px/);
   assert.match(rule('.inspection-content button, .agent-inspection > button'),/padding: 2px 0/);
   assert.match(desktop,/\.workbench-activity-state \{ flex: none;/);assert.match(desktop,/\.workbench-activity-text \{[^}]*text-overflow: ellipsis;/);
@@ -693,17 +692,10 @@ test('long tab names ellipsize without crowding their status and close action', 
   assert.match(coarse, /button, summary,[^{}]*\{ min-height: 44px; min-width: 44px; \}/);
   assert.match(coarse, /\.tab-close \{ opacity: 1; \}/);
 });
-test('one workbench footer owns wrapped facts without composer-local settings', async () => {
-  const settings = rule('.agent-settings'); assert.match(settings, /min-width: 0/); assert.match(settings, /max-width: 100%/); assert.match(settings, /white-space: normal/); assert.match(settings, /overflow-wrap: anywhere/);
-  assert.doesNotMatch(settings, /overflow: hidden|text-overflow: ellipsis|line-clamp/);
+test('one workbench footer owns wrapped facts while settings sit under the composer', async () => {
   assert.match(rule('.workbench-status'), /display: flex;[^}]*flex-wrap: wrap/);
   assert.match(rule('.workbench-status'), /font-size: 12px; line-height: 1\.5;/);
   assert.match(rule('.workbench-status-facts'), /flex-wrap: wrap/);
-  assert.match(rule('.workbench-model button'), /min-width: 0;/);
-  const coarseModel = [...media('@media (pointer:coarse)').matchAll(/([^{}]+)\{([^{}]+)\}/g)].find(match => match[1].split(',').some(selector => selector.trim() === '.workbench-model button'));
-  assert.ok(coarseModel, 'Coarse model controls require the same selector specificity as their desktop minimum.');
-  assert.match(coarseModel[2], /^\s*min-height: 44px; min-width: 44px;\s*$/);
-  assert.ok(css.indexOf('@media (pointer:coarse)') > css.indexOf('.workbench-model button {'), 'Equal-specificity coarse minima must follow the desktop rule.');
   assert.equal([...html.matchAll(/<footer id="workbench-status"/g)].length, 1);
   assert.equal([...html.matchAll(/id="focused-composer-status" class="workbench-draft-state"/g)].length, 1);
   assert.ok(html.indexOf('<footer id="workbench-status"') > html.indexOf('</main>'));
@@ -716,12 +708,11 @@ test('one workbench footer owns wrapped facts without composer-local settings', 
   assert.match(factory, /bar\.append\(stop, submit\)/);
   assert.match(factory, /intake\.append\(attach,sources,picker\)/);
   assert.match(factory, /line\.append\(bar\)/);
-  assert.doesNotMatch(factory, /composer-settings|usage-details|workbench-status-facts|root\.append\([^)]*\b(?:save|receiptDetails)\b/);
+  assert.doesNotMatch(factory, /usage-details|workbench-status-facts|root\.append\([^)]*\b(?:save|receiptDetails)\b/);
   assert.doesNotMatch(html, /<form id="(?:primary|agent)-composer"/);
   const app = await readFile(new URL('./app.ts', import.meta.url), 'utf8');
   assert.match(app, /const slot = byId\('focused-composer-status'\), nodes = controller \? \[controller\.elements\.save, controller\.elements\.receiptDetails\] : \[\]/);
   assert.match(app, /slot\.replaceChildren\(\.\.\.nodes\)/);
-  assert.doesNotMatch(css, /\.composer-settings\s*\{/);
 });
 
 test('receipt details are quiet at rest and available on footer hover, focus, expansion and coarse pointers', () => {
@@ -753,7 +744,7 @@ test('project and pane controls have unique identities without a global toolbar 
   const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]); assert.equal(ids.length, new Set(ids).size);
   assert.doesNotMatch(html, /project-bar|pane-heading|id="tab-bar"|id="statusbar"/);
   assert.match(html, /class="sidebar-footer"/); assert.match(rule('.connection-banner'), /flex-wrap: wrap/);
-  for (const id of ['project-button','compact-project-button','commands-button','notifications-button','appearance-button','connection','model-button','thinking-button','primary-usage']) assert.equal([...html.matchAll(new RegExp(`id="${id}"`, 'g'))].length, 1, id);
+  for (const id of ['project-button','compact-project-button','commands-button','notifications-button','appearance-button','connection','primary-usage']) assert.equal([...html.matchAll(new RegExp(`id="${id}"`, 'g'))].length, 1, id);
 });
 
 test('supplied roles stay inline metadata and expanded thinking separates from prose only', () => {
@@ -983,8 +974,7 @@ test('phone drawer sections keep usable content inside one outer scroll owner', 
 test('phone footer keeps direct settings and identity while full facts stay in the existing disclosure', () => {
   const phone = media('@media (max-width:599px)');
   assert.match(phone,/\.workbench-status > \.workbench-status-facts \{ display: contents/);
-  assert.match(phone,/\.workbench-status \.workbench-model \{ flex: 1; flex-wrap: nowrap/);
-  assert.match(phone,/\.workbench-status \.workbench-model > button \{ min-width: 44px/);
+  assert.match(phone,/\.composer-meta \{ flex-wrap: wrap; \}/); assert.match(phone,/\.composer-settings \{ flex: 1 1 100%; margin-left: 0; \}/);
   assert.match(phone,/\.composer-details > summary > span:not\(\.composer-details-label\) \{ display: none/);
   assert.match(phone,/\.composer-details-label \{[^}]*min-width: 44px; min-height: 44px/);
   assert.match(phone,/\.workbench-status \.workbench-version \{ max-width: 14ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap/);

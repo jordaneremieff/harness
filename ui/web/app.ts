@@ -179,6 +179,7 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
   root.append(observed, notice, region, above, elements.root, below); stableViews().mount(root);
   if (target.kind === 'agent') root.insertBefore(createHistoryNote(add), region);
   const controller = {workspaceId, target: {...target}, instanceId, root, nodes, elements, abort: new AbortController(), historyAbort: new AbortController(), cursor: null, before: null, loading: false, preparing: false, passive: true, historyReady: false, historyBoundaryLoaded: false, initialized: false, showThinking: true} as ConversationController;
+  wireSettingPickers(target, elements);
   controller.composer = new Composer(elements, {workingFile:stage=>composerWorkingFile(controller,stage),changed:()=>{devInteractionRevision++;},captured: submission=>{const conversation=state.conversations.get(targetIdentity(controller.target));inputEchoes.capture(workspaceId,submission,conversation?conversationBlocks(conversation):[]);renderController(controller);},failed:(id,uncertain)=>{inputEchoes.failed(id,uncertain);renderController(controller);},prepareInput: () => !controller.passive, imageState: refreshComposerImages, imageInput: captured => composerImageInput(controller, captured), recovery: () => recovery.open(), layoutHeight: () => stableViews().height(elements.root), enterSends: () => state.workspace?.enterSendsMessages === true, timing: (start, end) => {if (controller.workspaceId === state.workspace?.id && !elements.root.closest('[hidden],[inert]')) diagnostics.measure('editor-echo', start, end);}, submitted: result => {inputEchoes.settle(result);showOperation(result, workspaceId);renderController(controller);}, unknownCommand: (text, literal) => target.kind === 'primary' && sameTarget(primaryTarget(), target) ? actions.unknown(text, literal) : false,
     ...(target.kind === 'primary' ? {commands: () => actions.commandOptions(), moreCommands: (captured: Target) => actions.continueCommands(captured)} : {}),
     retained: (workspace, captured) => { if (workspace === state.workspace?.id && captured.kind === 'agent') renderMessageResume(captured.identity); }});
@@ -629,7 +630,8 @@ function refreshCaptionConsumers(): void {
     if (controller.workspaceId !== state.workspace?.id) continue;
     controller.transcript.refreshSubjects();
     const view = presentation(controller.target);
-    controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + presentationName(view), controllerGuidance(controller, view), `Message ${presentationName(view)}`);
+    renderComposerSettings(controller, view);
+  controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + presentationName(view), controllerGuidance(controller, view), `Message ${presentationName(view)}`);
   }
   const captured = messageTarget.current;
   if (captured && messageTarget.valid(captured)) {
@@ -1139,6 +1141,7 @@ function renderRosterEvent(event: ReceivedEvent): void {
     const controller = state.workspace ? controllers.get(controllerKey(state.workspace.id, {kind: 'agent', identity: data.identity})) : undefined;
     if (controller) {
       controller.connection = {availability: data.state, capabilities: data.capabilities, reason: data.reason}; controller.connectionError = undefined;
+      renderComposerSettings(controller, presentation(controller.target));
     }
     messageTarget.availabilityChanged(data);
   }
@@ -1277,6 +1280,26 @@ function applyPreparation(controller: ConversationController, prepared: import('
   }
   renderController(controller); renderRoster(); renderWorkbenchStatus();
 }
+/** Model and thinking sit under the composer: pickers for the Primary, passive facts for an agent. */
+function wireSettingPickers(target: Target, elements: import('./composer.ts').ComposerElements): void {
+  if (target.kind !== 'primary') return;
+  elements.model?.addEventListener('click', () => actions.modelPicker()); elements.thinking?.addEventListener('click', () => actions.thinkingPicker());
+}
+function renderComposerSettings(controller: ConversationController, view: ConversationPresentation): void {
+  const {model, thinking, settings} = controller.elements; const text = settings?.querySelector<HTMLElement>('.composer-settings-text');
+  if (!model || !thinking || !text) return;
+  if (controller.target.kind === 'primary') renderPrimarySettings(model, thinking, view); else renderAgentSettingsText(model, thinking, view, text);
+  if (controller.target.kind === 'primary') text.hidden = true;
+}
+function renderPrimarySettings(model: HTMLButtonElement, thinking: HTMLButtonElement, view: ConversationPresentation): void {
+  const ready = view.input, id = view.model ? `${view.model.provider}/${view.model.modelId}` : '';
+  model.hidden = !view.model && !ready; model.disabled = !ready; setText(model, view.model?.modelId ?? 'Choose model'); model.title = id ? `${id} · Primary` : 'Choose Primary model'; model.setAttribute('aria-label', id ? `Model for Primary: ${id}` : 'Choose Primary model');
+  thinking.hidden = !view.thinking; thinking.disabled = !ready; setText(thinking, view.thinking ?? ''); thinking.title = view.thinking ? `Thinking level: ${view.thinking}` : 'Choose thinking level'; thinking.setAttribute('aria-label', view.thinking ? `Thinking level for Primary: ${view.thinking}` : 'Choose Primary thinking level');
+}
+function renderAgentSettingsText(model: HTMLButtonElement, thinking: HTMLButtonElement, view: ConversationPresentation, text: HTMLElement): void {
+  model.hidden = thinking.hidden = true; const full = settingsLabel(view, true);
+  setText(text, [view.model?.modelId, view.thinking].filter(Boolean).join(' · ')); text.hidden = !text.textContent; text.title = full; text.setAttribute('aria-label', full);
+}
 function controllerPreparationFailed(controller: ConversationController, error: unknown): void {
   if (controller.target.kind === 'agent') {controller.connectionError = errorMessage(error); renderAgentState(controller);}
   else if (!targetState(controller.target)) showStatusError(controllerNode(controller, 'view-notice'), 'Conversation could not be prepared.', error, 'preparation-error');
@@ -1286,10 +1309,10 @@ export function primaryChrome(item?: PrimaryView): void {
   renderIdentity();
   primaryNavigation(item);
   renderTabActions();
-  const model = byId<HTMLButtonElement>('model-button'); model.disabled = item?.lifecycle !== 'ready'; model.hidden = !item?.model && item?.lifecycle !== 'ready'; setText(byId('model-value'), item?.model ? item.model.id : 'Choose model'); model.title = item?.model ? `${item.model.provider}/${item.model.id} · Primary` : 'Choose Primary model'; model.setAttribute('aria-label', item?.model ? `Model for Primary: ${item.model.provider}/${item.model.id}` : 'Choose Primary model');
+  const owner = item && state.workspace ? controllers.get(controllerKey(state.workspace.id, {kind: 'primary', key: item.key, epoch: item.epoch})) : undefined;
+  if (owner) renderComposerSettings(owner, presentation(owner.target));
   renderPrimaryUsage(item);
   const settings = byId('primary-settings-detail'); setText(settings, [item?.model ? `Model ${item.model.provider}/${item.model.id}` : '', item?.thinkingLevel ? `Thinking ${item.thinkingLevel}` : ''].filter(Boolean).join(' · ')); settings.hidden = !settings.textContent;
-  const thinking = byId<HTMLButtonElement>('thinking-button'); thinking.hidden = !item?.thinkingLevel; thinking.disabled = item?.lifecycle !== 'ready'; setText(byId('thinking-value'), item?.thinkingLevel ?? ''); thinking.title = item?.thinkingLevel ? `Thinking level: ${item.thinkingLevel}` : 'Choose thinking level'; thinking.setAttribute('aria-label', item?.thinkingLevel ? `Thinking level for Primary: ${item.thinkingLevel}` : 'Choose Primary thinking level');
 }
 function renderPrimaryUsage(item?: PrimaryView): void {
   const usage = usageFacts(item, item ? primaryBlocks(state, item.key) : undefined);
@@ -1431,8 +1454,8 @@ function renderAgent(deferredTranscript = false): void {
 }
 export function agentChrome(identity: string, _row?: AgentRow): void { renderController(conversationController({kind: 'agent', identity})); renderIdentity(); }
 function renderAgentSettings(view: ConversationPresentation, target: Extract<Target, {kind: 'agent'}>): void {
-  const status = byId('agent-status'), full = settingsLabel(view, true);
-  setText(status, settingsLabel(view)); status.hidden = !view.model && !view.thinking; status.title = full; status.setAttribute('aria-label', full);
+  const full = settingsLabel(view, true), owner = state.workspace ? controllers.get(controllerKey(state.workspace.id, target)) : undefined;
+  if (owner) renderComposerSettings(owner, view);
   const phone = matchMedia('(max-width: 599px)').matches, detail = byId('agent-settings-detail');
   const retained = !!view.model && view.retainedModel || !!view.thinking && view.retainedThinking;
   setText(detail, [full, retained ? 'Last observed settings are not confirmed current.' : '', view.detail].filter(Boolean).join('\n')); detail.hidden = !detail.textContent;
@@ -2065,7 +2088,7 @@ function bind(): void {
   byId('agent-new').addEventListener('click', () => actions.prepareText('/agent new'));
 
   byId('agents-heading').addEventListener('click', () => setSidebarSection('agents', !sidebarSections.agents));
-  byId('model-button').addEventListener('click', () => actions.modelPicker()); byId('thinking-button').addEventListener('click', () => actions.thinkingPicker());
+
   byId('agent-message-close').addEventListener('click', () => closeMessagePanel());
   byId('primary-row').addEventListener('click', selectPrimary);
   byId('sidebar-show').addEventListener('click', () => toggleSidebar(matchMedia('(min-width: 900px)').matches ? byId('sidebar').hidden : !drawerOpen));

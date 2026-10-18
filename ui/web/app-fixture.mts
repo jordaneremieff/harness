@@ -397,7 +397,7 @@ async function settle(): Promise<void> { for (let round = 0; round < 4; round++)
 function controls(composer: Composer): (key: string) => HostNode {
   const editor = composer.editor as unknown as HostNode, form = editor.closest('form'); assert.ok(form);
   const root = form.closest('.conversation');
-  const selectors: Record<string, string> = {queued: '.queued-list'};
+  const selectors: Record<string, string> = {queued: '.queued-list', meta: '.composer-meta'};
   return key => {
     if (key === 'editor') return editor;
     if (key === 'composer') return form;

@@ -21,7 +21,7 @@ import { ApiError, draftImageUrl, errorMessage, operation, request, reserve } fr
 
 export type ComposerHooks = {workingFile?:(stage:(files:readonly File[])=>boolean)=>void; changed?:()=>void; captured?: (submission:Submission)=>void; failed?: (operationId:string,uncertain:boolean)=>void; prepareInput?: () => boolean; imageState?: (workspace: string, state: TargetState) => void; imageInput?: (target: Target) => {allowed: boolean; reason?: string}; recovery?: () => void; layoutHeight?: () => number | undefined; timing?: (start: number, end: number) => void; submitted: (operation: OperationView) => void; unknownCommand: (text: string, sendLiteral: () => void) => boolean; enterSends?: () => boolean; commands?: () => CommandInventory; moreCommands?: (target: Target) => Promise<void>; retained?: (workspace: string, target: Target, retained: boolean) => void};
 export type ComposerElements = {root: HTMLFormElement; editor: HTMLTextAreaElement; recipient: HTMLElement; receipt: HTMLElement;
-  receiptDetails: HTMLElement; modes: HTMLElement; send: HTMLButtonElement; save: HTMLElement; meta?: HTMLElement; commandMenu?: HTMLElement; overlay?: HTMLElement; attachments?: HTMLElement; attach?: HTMLButtonElement; sources?: HTMLButtonElement; picker?: HTMLInputElement; state?: HTMLElement; start?: HTMLButtonElement};
+  receiptDetails: HTMLElement; modes: HTMLElement; send: HTMLButtonElement; save: HTMLElement; meta?: HTMLElement; model?: HTMLButtonElement; thinking?: HTMLButtonElement; settings?: HTMLElement; commandMenu?: HTMLElement; overlay?: HTMLElement; attachments?: HTMLElement; attach?: HTMLButtonElement; sources?: HTMLButtonElement; picker?: HTMLInputElement; state?: HTMLElement; start?: HTMLButtonElement};
 /** An agent-specific line inside the composer, with at most one action in the Send position and optional exact details. */
 export type ComposerStateView = {line: string; action?: {label: string; title?: string; pending?: boolean; disabled?: boolean; run: () => void}; blocksSend?: boolean; detail?: string; showDetail?: () => void};
 /** Creates one editor; the detached save/receipt-detail nodes belong in the shared footer. */
@@ -60,10 +60,13 @@ export function createComposerElements(instanceId: string): ComposerElements {
   const bar = element('div', 'composer-bar'); bar.append(stop, submit); const line = element('div', 'composer-line'); line.append(bar);
   // The add control leads the tab order, then the editor, then the send controls; the grid places them visually.
   input.append(commandMenu, recipient, intake, surface, attachments, state, line);
-  const meta = element('div', 'composer-meta'); root.append(resize, receipt, input, meta);
+  const model = element('button', 'composer-model'), thinking = element('button', 'composer-thinking'), settingsText = element('span', 'composer-settings-text');
+  model.id = `${id}-model`; thinking.id = `${id}-thinking`; settingsText.id = `${id}-settings-text`; model.type = thinking.type = 'button'; model.hidden = thinking.hidden = settingsText.hidden = true;
+  const settings = element('div', 'composer-settings'); settings.id = `${id}-settings`; settings.setAttribute('role', 'group'); settings.setAttribute('aria-label', 'Model and thinking'); settings.append(model, thinking, settingsText);
+  const meta = element('div', 'composer-meta'); meta.append(settings); root.append(resize, receipt, input, meta);
   const save = element('span', 'draft-state'); save.id = `${id}-save`;
   const receiptDetails = element('span', 'receipt-details'); receiptDetails.id = `${id}-receipt-details`;
-  return {root, editor, recipient, receipt, receiptDetails, modes, send, save, meta, commandMenu, overlay, attachments, attach, sources, picker, state, start};
+  return {root, editor, recipient, receipt, receiptDetails, modes, send, save, meta, model, thinking, settings, commandMenu, overlay, attachments, attach, sources, picker, state, start};
 }
 type Edit = {text: string; mode: string; images: DraftImage[]; edit: number};
 type InsertionCapture = {buffer: Buffer; edit: number; text: string; start: number; end: number; direction: 'forward' | 'backward' | 'none'};

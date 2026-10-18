@@ -2545,18 +2545,18 @@ test('static workbench markup owns one footer and keeps composer actions without
   assert.match(factory, /const intake = element\('span','composer-intake'\); intake\.append\(attach,sources,picker\)/);
   assert.match(factory, /cardAction\('plus', 'Add to message'/);
   assert.match(factory, /root\.append\(resize, receipt, input, meta\)/); assert.match(factory, /line\.append\(bar\)/); assert.match(factory, /bar\.append\(stop, submit\)/); assert.match(factory, /submit\.append\(modes, start, send\)/);
-  assert.doesNotMatch(factory, /composer-settings|composer-guidance|usage-details|class="statusline"|root\.append\([^)]*receiptDetails/);
+  assert.doesNotMatch(factory, /composer-guidance|usage-details|class="statusline"|root\.append\([^)]*receiptDetails/);
   assert.equal([...html.matchAll(/id="focused-composer-status" class="workbench-draft-state"/g)].length, 1);
 });
 test('workbench and communication CSS retain direct compact controls and keyboard targets', () => {
   const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8');
-  for (const selector of ['.workbench-status {', '.workbench-model {', '.workbench-draft-state {', '.workbench-activity {', '.communication-unverified {']) assert.ok(css.includes(selector), selector);
+  for (const selector of ['.workbench-status {', '.composer-settings {', '.workbench-draft-state {', '.workbench-activity {', '.communication-unverified {']) assert.ok(css.includes(selector), selector);
   assert.match(css, /\.workbench-status \{[^}]*display: flex;[^}]*flex: none;/); assert.match(css, /\.message-actions \{[^}]*display: flex;[^}]*min-height: 24px;[^}]*opacity: 0; pointer-events: none;/);
   assert.match(css, /\.message:hover > \.message-header > \.message-actions, \.message:focus-within > \.message-header > \.message-actions \{ opacity: 1; pointer-events: auto;/);
   assert.match(css, /\.message-menu \{ min-width: 24px; min-height: 24px/);
   assert.match(css, /\.message-menu, \.communication-unverified, \.message-source-close, \.pane-actions, \.context-menu > \.context-menu-item \{ min-height: 44px; min-width: 44px/);
   assert.doesNotMatch(css, /\.communication-header > \.communication-trust\s*\{/);
-  assert.doesNotMatch(css, /\.composer-settings\b/); assert.doesNotMatch(css, /\.composer-details > summary\s*\{[^}]*display:\s*none/);
+  assert.doesNotMatch(css, /\.composer-details > summary\s*\{[^}]*display:\s*none/);
   assert.match(css, /\.workbench-status \.composer-details > summary \{[^}]*min-height:\s*44px;[^}]*min-width:\s*44px/);
 });
 test('communication preserves selected contribution through refresh and deferred removal', () => {

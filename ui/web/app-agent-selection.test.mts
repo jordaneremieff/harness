@@ -154,18 +154,18 @@ test('agent settings retain model and thinking text from the exact frame without
     status: {busy: false, model: {provider: 'provider', modelId: 'selected-agent-long-model-name'}, thinkingLevel: 'medium'}};
   await arrive({workspace: {id: 'agent-settings', revision: 2, primaryKey: 'p', selectedTarget: {kind: 'agent', identity: 'selected'}}, primaries: [primaryFixture()], roster: [row], observations: [observation('selected', frame)]});
   event('agent.availability', {identity: row.identity, connectionEpoch: app.state.agentEpochs.get(row.identity), state: 'live', capabilities: row.capabilities}); await settle();
-  byId('model-value').textContent = 'Primary model'; byId('thinking-value').textContent = 'high';
-  app.agentChrome('selected', row); assert.equal(byId('agent-status').textContent, 'Model selected-agent-long-model-name · Thinking medium');
+  const settings = () => agentControl('settings-text'); const primaryModel = primaryControl('model').textContent;
+  app.agentChrome('selected', row); assert.equal(settings()?.textContent, 'selected-agent-long-model-name · medium'); assert.equal(settings()?.title, 'Model provider/selected-agent-long-model-name · Thinking medium');
   const detail=byId('agent-settings-detail'),limit='Last observed settings are not confirmed current.';
   assert.equal(detail.textContent,'Model provider/selected-agent-long-model-name · Thinking medium');assert.equal(detail.hidden,false);
   app.state.conversations.clear(); app.agentChrome('selected', row);
-  assert.equal(byId('agent-status').textContent, 'Last observed: Model roster-model · Thinking low');
+  assert.equal(settings()?.textContent, 'roster-model · low'); assert.equal(settings()?.title, 'Last observed: Model other/roster-model · Thinking low');
   assert.deepEqual(detail.textContent.split('\n'),['Last observed: Model other/roster-model · Thinking low',limit]);
   for(const [fields,text] of [[{model:undefined},'Last observed thinking low'],[{thinkingLevel:undefined},'Last observed model other/roster-model'],[{model:undefined,thinkingLevel:undefined},'']] as const){
     app.state.roster.set(row.identity,{...row,...fields});app.agentChrome(row.identity);
     assert.equal(byId('agent-settings-detail'),detail);assert.deepEqual(detail.textContent.split('\n'),text?[text,limit]:['']);assert.equal(detail.hidden,!text);
   }
-  assert.equal(byId('model-value').textContent, 'Primary model'); assert.equal(byId('thinking-value').textContent, 'high');
+  assert.equal(primaryControl('model').textContent, primaryModel); assert.doesNotMatch(primaryControl('model').textContent, /selected-agent|roster-model/);
 });
 test('a fresh agent selection retains each earlier control and prepares only its addressed owner', async () => {
   const a = agentFixture('a'), b = agentFixture('b'); const targetA = targetFixture('saved-a', {kind: 'agent', identity: 'a'}), targetB = targetFixture('saved-b', {kind: 'agent', identity: 'b'});

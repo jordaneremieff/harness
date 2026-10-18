@@ -453,15 +453,10 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .health-facts { display: grid; grid-template-columns: minmax(8ch, 1fr) minmax(0, 2fr); gap: 4px 12px; }
 .health-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .workbench-status-facts { display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: center; gap: 2px 16px; min-width: 0; max-width: 100%; }
-.workbench-model { display: flex; flex: 0 1 auto; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; max-width: 100%; }
-.workbench-model button { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 4px; min-width: 0; max-width: 100%; min-height: 24px; padding: 2px 6px; color: var(--fg); font-size: 12px; white-space: normal; overflow-wrap: anywhere; }
-.workbench-control-label { flex: none; color: var(--muted); }
-.workbench-control-value { min-width: 0; overflow-wrap: anywhere; }
 .message-input-setting { display: flex; align-items: center; gap: 8px; }
 .message-input-setting input { flex: none; width: auto; }
 .file-message-fact { min-width: 0; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
 .file-message-destination { width: 100%; min-width: 0; max-width: 100%; }
-.workbench-model button:not(:disabled):hover { background: var(--raised); }
 .workbench-update { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
 .workbench-update[hidden] { display: none; }
 .workbench-activity { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
@@ -486,12 +481,7 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
   #workbench-scope { flex: none; max-width: 18ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .workbench-version { flex: none; max-width: none; white-space: nowrap; }
   .workbench-status-facts { flex: 0 1 auto; flex-wrap: wrap; min-width: min-content; gap: 2px 8px; }
-  .workbench-model { flex: none; flex-wrap: nowrap; gap: 4px; }
-  .workbench-model button { flex: none; flex-wrap: nowrap; white-space: nowrap; }
-  .workbench-control-value { max-width: 32ch; }
   .workbench-update { flex: 0 10 auto; overflow: hidden; white-space: nowrap; }
-  .workbench-control-value, .workbench-status-facts .agent-settings { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .workbench-status-facts .agent-settings { flex: none; max-width: 60ch; }
   .workbench-activity { flex: none; white-space: nowrap; }
   .workbench-activity:has(> .workbench-activity-text) { flex: 1 1 0; min-width: 10ch; gap: 0; }
   .workbench-activity:has(> .workbench-activity-text)[data-busy=true]::before { margin-right: 8px; }
@@ -799,6 +789,11 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
 .composer-input > .composer-state { grid-column: 1 / -1; grid-row: 3; }
 .composer-input > .composer-intake { grid-column: 1; grid-row: 4; align-self: end; margin: 0; padding: 0 var(--s1) var(--s1); }
 .composer-input > .composer-line { grid-column: 2; grid-row: 4; align-self: end; padding: 0 var(--s2) var(--s1) 0; }
+.composer-settings { display: flex; flex: 0 1 auto; align-items: center; gap: var(--s1); min-width: 0; margin-left: auto; }
+.composer-model, .composer-thinking { min-width: 0; min-height: 24px; padding: 2px 6px; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.composer-model:not(:disabled):hover, .composer-thinking:not(:disabled):hover { color: var(--fg); background: var(--raised); }
+.composer-thinking:not([hidden])::before { content: "·"; margin-right: var(--s2); }
+.composer-settings-text { min-width: 0; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
 .composer-meta { display: flex; align-items: center; justify-content: space-between; gap: var(--s2); min-height: 24px; padding-top: 2px; color: var(--muted); font-size: 12px; }
 .composer textarea { display: block; width: 100%; min-width: 0; min-height: 24px; padding: var(--s3); border: 0; background: transparent; color: var(--fg); caret-color: var(--accent); font-size: 16px; line-height: 1.6; resize: none; }
 .composer-surface { position: relative; }
@@ -859,9 +854,6 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
 .statusline { display: flex; flex-wrap: wrap; align-items: center; flex: 0 1 auto; gap: 2px 12px; min-width: 0; color: var(--muted); font-family: var(--mono); font-size: 12px; white-space: nowrap; }
 .statusline > :empty, .statusline > [hidden] { display: none; }
 .statusline:not(:has(> :not(:empty):not([hidden]))) { display: none; }
-.agent-settings { flex: 0 1 auto; min-width: 0; max-width: 100%; color: var(--muted); font-family: var(--mono); font-size: 12px; white-space: normal; overflow-wrap: anywhere; }
-.agent-settings:empty { display: none; }
-.workbench-status-facts .agent-settings { font-family: var(--sans); }
 .usage-fact { flex: none; white-space: nowrap; }
 .statusline > .draft-state { flex: none; color: var(--warning); }
 .receipt-details:has(details[open]) { opacity: 1; pointer-events: auto; }
@@ -1096,6 +1088,8 @@ dialog[data-variant=menu]::backdrop { background: transparent; }
   .app.drawer-open .composer[data-message-panel=true] { z-index: 11; container-name: composer conversation; }
 }
 @media (max-width:599px) {
+  .composer-meta { flex-wrap: wrap; }
+  .composer-settings { flex: 1 1 100%; margin-left: 0; }
   .workspace, .stable-views { --gutter: 16px; }
   .app.drawer-open .sidebar-scroll { display: block; flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
   .app.drawer-open .sidebar-conversations { max-height: none; overflow: visible; }
@@ -1108,9 +1102,6 @@ dialog[data-variant=menu]::backdrop { background: transparent; }
   .workbench-status { gap: 0 var(--s1); padding-inline: var(--s2); }
   .workbench-status:not([data-pane=file]) > :is(.workbench-scope, .workbench-activity) { display: none; }
   .workbench-status > .workbench-status-facts { display: contents; }
-  .workbench-status .workbench-model { flex: 1; flex-wrap: nowrap; gap: 0; }
-  .workbench-status .workbench-model > button { min-width: 44px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .workbench-status .workbench-model > #model-button { flex: 1; }
   .workbench-status .composer-details { flex: none; }
   .workbench-status .composer-details > summary { gap: 0; padding: 0; }
   .workbench-status .composer-details > summary > span:not(.composer-details-label) { display: none; }
@@ -1145,7 +1136,7 @@ dialog[data-variant=menu]::backdrop { background: transparent; }
   .file-naming > .file-name-input { flex-basis: calc(100% - 24px); }
   .file-naming > .file-name-actions { margin-left: auto; }
   .sidebar-footer > .icon-button > .card-icon { margin-inline: 10px; }
-  button, summary, .row-age, .row-message, .message-actions button, .transcript-actions button, .latest, .source-header button, .source-disclosure > .source-wrap, .tool-copy, .workbench-model button, .icon-button { min-height: 44px; min-width: 44px; }
+  button, summary, .row-age, .row-message, .message-actions button, .transcript-actions button, .latest, .source-header button, .source-disclosure > .source-wrap, .tool-copy, .composer-model, .composer-thinking, .icon-button { min-height: 44px; min-width: 44px; }
   .source-disclosure > summary.source-header { min-height: 49px; }
   .card-action, .section-toggle, .modes select, .attachment-row > button, .source-header button.card-action, .source-disclosure > .source-wrap.card-action { min-height: 44px; min-width: 44px; }
   .message-menu, .communication-unverified, .message-source-close, .pane-actions, .context-menu > .context-menu-item { min-height: 44px; min-width: 44px; }
@@ -1162,7 +1153,6 @@ dialog[data-variant=menu]::backdrop { background: transparent; }
   .pane-split > .pane-divider[data-axis=y]::before { height: 44px; }
   .tab-close { opacity: 1; }
   .workbench-status .receipt-details { opacity: 1; pointer-events: auto; }
-  .workbench-model button { min-width: 44px; min-height: 44px; }
   .conversation-tab { min-width: max(140px,calc(8ch + var(--tab-chrome,66px) + var(--tab-identity-width,0px))); min-height: 44px; }
   .nav-heading-row { height: auto; min-height: 44px; }
   .nav-heading-row { flex-wrap: wrap; }
