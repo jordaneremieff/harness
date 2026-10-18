@@ -22,6 +22,7 @@ import { contextMenu, nativeEditingTarget, paneMenuItems, type ContextItem } fro
 import { ProjectPicker } from './picker.ts';
 import type { SelectionChange } from './actions.ts';
 import { Composer, createComposerElements, validComposerReloadState, type ComposerReloadState } from './composer.ts';
+import { includedText } from './composer-attachments.ts';
 import {writeReloadState,readReloadState,deleteReloadState} from './reload-storage.ts';
 import { WorkbenchStatus } from './workbench-status.ts';
 import { VersionStatus } from './version-status.ts';
@@ -316,11 +317,60 @@ export const filesViews = new FilesViews(stableViews,(workspace,tab,signal)=>req
 function fileDocumentRoute(workspace:string,tab:FileTab,kind:'draft'|'text'):string {return `/api/files/roots/${encodeURIComponent(tab.rootId)}/${kind}?path=${encodeURIComponent(tab.path)}&workspace=${encodeURIComponent(workspace)}`;}
 export const filesTree = new FilesTree(byId('files-tree'),{
   page:(rootId,path,cursor)=> {const workspace = state.workspace?.id;if (!workspace) return Promise.reject(new Error('No workspace is selected.'));return request<FileDirectoryPage>(`/api/files/roots/${encodeURIComponent(rootId)}/directory?path=${encodeURIComponent(path)}&workspace=${encodeURIComponent(workspace)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);},
-  select:chooseFile,keep:(rootId,path)=>fileBrowse.keep(tabKey({kind:'file',rootId,path})),escape:focusEditor,scope:()=>watchFiles(),status:message=> {fileActionStatus = message;renderWorkbenchStatus();},operation:fileTreeOperation});
+  select:chooseFile,keep:(rootId,path)=>fileBrowse.keep(tabKey({kind:'file',rootId,path})),addToMessage:addFileToMessage,escape:focusEditor,scope:()=>watchFiles(),status:message=> {fileActionStatus = message;renderWorkbenchStatus();},operation:fileTreeOperation});
 export const fileRoot = new FileRootChoice({get:workspace=>request<FileRootSelection>(`/api/workspaces/${encodeURIComponent(workspace)}/files/root`),put:(workspace,path,revision)=>request<FileRootSelection>(`/api/workspaces/${encodeURIComponent(workspace)}/files/root`,'PUT',{path,expectedRevision:revision})},()=> {renderFiles();renderIdentity();});
 export function chooseFile(rootId:string,path:string,focus = true):void {
   if (!state.workspace) return;
   try {applyLayout(fileBrowse.choose(currentLayout(),{kind:'file',rootId,path},key=> {const tab = paneLeaves(currentLayout().root).flatMap(pane=>pane.tabs).find(tab=>tabKey(tab) === key);if (tab?.kind !== 'file') return false;const owner = filesViews.owner(state.workspace?.id ?? '',tab);return !!owner && (owner.loading || owner.modified || owner.unsaved);}));if (focus) focusEditor();} catch (error) {showError(error);}
+}
+type FileMessageDestination = {target:Target; key:string; caption:string; controller?:ConversationController; reason?:string};
+function fileMessageDestinations(workspace:string):FileMessageDestination[] {
+  const targets = new Map<string,Target>();
+  for (const pane of paneLeaves(currentLayout().root)) for (const tab of pane.tabs) {const target = controllerTarget(tab); if (target) targets.set(targetIdentity(target), target);}
+  return [...targets].map(([key,target]) => {
+    const controller = controllers.get(controllerKey(workspace,target));
+    const loaded = controller?.workspaceId === workspace && !controller.abort.signal.aborted && sameTarget(controller.composer.target,target) && !!controller.composer.state;
+    return {key,target:{...target},caption:presentationName(presentation(target)),controller,reason:loaded ? undefined : 'Draft is not loaded. Open this conversation first.'};
+  });
+}
+function fileMessageCurrent(workspace:string,destination:FileMessageDestination):boolean {
+  return state.workspace?.id === workspace && fileMessageDestinations(workspace).some(item => item.key === destination.key && item.controller === destination.controller && !item.reason);
+}
+export function addFileToMessage(rootId:string,path:string):void {
+  const workspace = state.workspace?.id; if (!workspace) return;
+  const abort = new AbortController(); modal.open('Add file to message',undefined,()=>abort.abort()); const token = modal.token;
+  const destinations = fileMessageDestinations(workspace), select = element('select','file-message-destination'), label = element('label',undefined,'Destination conversation');
+  const rootPath = fileRoot.selection?.root?.id === rootId ? fileRoot.selection.root.path : rootId, sourcePath = `${rootPath.endsWith('/') ? rootPath : `${rootPath}/`}${path}`;
+  select.id = 'file-message-destination'; label.htmlFor = select.id;
+  const placeholder = element('option',undefined,'Choose an open conversation'); placeholder.value = ''; select.append(placeholder);
+  for (const item of destinations) {const option = element('option',undefined,`${item.caption}${item.reason ? ` · ${item.reason}` : ''}`); option.value = item.key; option.disabled = !!item.reason; option.title = item.key; select.append(option);}
+  const tab = activeTab(currentLayout()), focused = tab && controllerTarget(tab);
+  const preferred = focused && destinations.find(item => sameTarget(item.target,focused) && !!item.controller && item.controller.root.isConnected && !item.controller.root.closest('[hidden],[inert]'));
+  select.value = preferred?.key ?? '';
+  const destinationDetail = element('p','secondary file-message-fact');
+  const current = ():FileMessageDestination|undefined => destinations.find(item => item.key === select.value);
+  const add = button('Add file',()=> {const destination = current(); if (destination && !destination.reason) void stageFileMessage(workspace,rootId,path,sourcePath,destination,token,abort,add,select);});
+  const paint = ():void => {const item = current(); add.disabled = !item || !!item.reason; destinationDetail.textContent = item ? `${item.caption}\n${item.key}${item.reason ? `\n${item.reason}` : ''}` : destinations.length ? 'Choose an existing open conversation.' : 'No open conversation is available.';};
+  select.addEventListener('change',paint); paint();
+  modal.body.append(element('p','file-message-fact',`Saved file: ${sourcePath}`),element('p','secondary','Uses the saved file. Unsaved editor changes are not included. Text files up to 32 KiB. After adding, use Include text in the selected conversation. Nothing is sent.'),label,select,destinationDetail);
+  modal.actions(button('Cancel',()=>modal.close()),add); select.focus();
+}
+async function stageFileMessage(workspace:string,rootId:string,path:string,sourcePath:string,destination:FileMessageDestination,token:number,abort:AbortController,add:HTMLButtonElement,select:HTMLSelectElement):Promise<void> {
+  if (!modal.owns(token) || add.disabled) return;
+  add.disabled = true; select.disabled = true; modal.node.querySelector('#modal-error')?.replaceChildren();
+  try {
+    if (fileRoot.selection?.root?.id !== rootId || !fileMessageCurrent(workspace,destination)) throw new Error('The file folder or destination changed. Choose Add to message again.');
+    const saved = await request<FileText>(`/api/files/roots/${encodeURIComponent(rootId)}/text?path=${encodeURIComponent(path)}&workspace=${encodeURIComponent(workspace)}`,'GET',undefined,undefined,abort.signal);
+    if (!modal.owns(token) || abort.signal.aborted) return;
+    if (fileRoot.selection?.root?.id !== rootId || saved.rootId !== rootId || saved.path !== path || !fileMessageCurrent(workspace,destination)) throw new Error('The file folder or destination changed. Choose Add to message again.');
+    const name = path.split('/').at(-1) ?? ''; includedText(new TextEncoder().encode(saved.text),name);
+    if (!destination.controller?.composer.addFiles([new File([saved.text],name,{type:'text/plain'})])) throw new Error('The file was not staged. Review the selected conversation draft.');
+    const receipt = `File staged for ${destination.caption}. Use Include text in that conversation. Nothing was sent.`;
+    modal.open('Add file to message');
+    modal.body.append(element('p','file-message-fact',`Saved file: ${sourcePath}`),element('p','secondary file-message-fact',`${destination.caption}\n${destination.key}`),element('p','file-message-fact',receipt));
+    const close = button('Close',()=>modal.close()); modal.actions(close); close.focus(); announce(receipt);
+  } catch(error) {if (modal.owns(token)) modal.error(error,'The file was not added.');}
+  finally {if (modal.owns(token)) {add.disabled = false; select.disabled = false;}}
 }
 function renderFiles():void {
   const workspace = state.workspace;if (!workspace) return;

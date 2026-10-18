@@ -621,6 +621,8 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .workbench-control-value { min-width: 0; overflow-wrap: anywhere; }
 .message-input-setting { display: flex; align-items: center; gap: 8px; }
 .message-input-setting input { flex: none; width: auto; }
+.file-message-fact { min-width: 0; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
+.file-message-destination { width: 100%; min-width: 0; max-width: 100%; }
 .workbench-model button:not(:disabled):hover { background: var(--raised); }
 .workbench-activity { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
 .workbench-activity[data-tone=info] { color: var(--info); }

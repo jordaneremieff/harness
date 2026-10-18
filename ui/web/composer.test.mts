@@ -119,6 +119,11 @@ function fixture(prefix: 'primary' | 'agent' = 'primary', commands?: () => Comma
 }
 
 const image = (name = 'one.png', digit = 'a'): DraftImage => ({name, digest: digit.repeat(64), mimeType: 'image/png', bytes: 67, width: 1, height: 1});
+test('file admission reports its existing buffer and stages saved text without insertion or delivery',async()=> {
+  const f=fixture('agent',undefined,false),file=new File(['\ufeffSaved\r\nbytes\n'],'saved.md',{type:'text/plain'});
+  assert.equal(f.composer.addFiles([file]),false);f.connect(state('text-owner',draft(0,'Keep this draft','followUp'),true));f.composer.editor.setSelectionRange(2,5,'backward');
+  assert.equal(f.composer.addFiles([file]),true);await turn();const captured=f.composer.captureReload()[0];assert.ok(captured);assert.equal(captured.attachments?.items[0]?.state,'text');assert.deepEqual(new Uint8Array(await captured.attachments?.items[0]?.file?.arrayBuffer()),new TextEncoder().encode('\ufeffSaved\r\nbytes\n'));assert.equal(f.composer.editor.value,'Keep this draft');assert.deepEqual([f.composer.editor.selectionStart,f.composer.editor.selectionEnd,f.composer.editor.selectionDirection],[2,5,'backward']);assert.equal(f.calls.some(call=>call.path.endsWith('/inputs')||call.path.endsWith('/images')),false);assert.equal(f.composer.addFiles([file,file,file,file]),false);f.composer.destroy();assert.equal(f.composer.addFiles([file]),false);
+});
 test('reload preserves unsaved draft, caret and failed File bytes without retry or input',async()=>{
   const f=fixture('agent',undefined,false);const saved=f.connect(state('preserved',draft(0,'','followUp'),true));
   f.composer.setText('Exact unsaved draft');f.composer.editor.setSelectionRange(2,7,'backward');

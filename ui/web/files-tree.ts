@@ -15,7 +15,7 @@ export function visibleFileRows(directories: ReadonlyMap<string, Directory>, pat
   const directory = directories.get(path); if (!directory?.expanded) return [];
   return directory.entries.flatMap(entry => [{entry, depth, parent: path}, ...(entry.kind === 'directory' ? visibleFileRows(directories, entry.path, depth + 1) : [])]);
 }
-export type FilesTreeHooks = {page(rootId: string, path: string, cursor?: string): Promise<FileDirectoryPage>; select(rootId: string, path: string): void; keep?(rootId:string,path:string):void; escape(): void; scope?():Promise<void>|void;status?(message:string):void;operation?(rootId:string,action:FileTreeAction,path:string,value?:string):Promise<undefined|(()=>void)>};
+export type FilesTreeHooks = {page(rootId: string, path: string, cursor?: string): Promise<FileDirectoryPage>; select(rootId: string, path: string): void; keep?(rootId:string,path:string):void; addToMessage?(rootId:string,path:string):void; escape(): void; scope?():Promise<void>|void;status?(message:string):void;operation?(rootId:string,action:FileTreeAction,path:string,value?:string):Promise<undefined|(()=>void)>};
 /** Disclosed directories retain their rows while bounded disk changes refresh their pages. */
 export class FilesTree {
   readonly node: HTMLElement;
@@ -196,6 +196,7 @@ export class FilesTree {
     const root = this.root,entry = this.entry(origin.closest<HTMLElement>('[data-path]')?.dataset.path ?? '');
     if (entry && entry.kind !== 'file' && entry.kind !== 'directory') return;
     const items = [{label:'New file',run:()=>this.name('file',entry)},{label:'New folder',run:()=>this.name('directory',entry)}];
+    if (entry?.kind === 'file' && this.hooks.addToMessage) items.push({label:'Add to message…',run:()=>this.hooks.addToMessage?.(root.id,entry.path)});
     if (entry) items.push({label:'Rename',run:()=>this.name('rename',entry)},{label:'Move',run:()=>this.name('move',entry)},{label:'Move to Trash',run:()=>this.trash(entry)});
     contextMenu.open(origin,point,'File actions',items,()=>this.root === root && (!entry || !!this.entry(entry.path)));
   }

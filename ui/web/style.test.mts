@@ -210,6 +210,10 @@ test('tool status labels have natural width and disclosure marks stay separate f
   assert.match(rule('.tool-output-info'), /max-width: 100%; color: var\(--muted\); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere/);
   assert.doesNotMatch(rule('.tool-output-info'), /cursor: pointer|text-overflow: ellipsis|line-clamp/);
 });
+test('file message source and exact destination details wrap within the dialog', () => {
+  assert.match(rule('.file-message-fact'), /min-width: 0; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere/);
+  assert.match(rule('.file-message-destination'), /width: 100%; min-width: 0; max-width: 100%/);
+});
 test('footer settings use separate readable native targets without another composer row', () => {
   assert.match(html, /id="model-button"[^>]*><span class="workbench-control-label">Model:<\/span> <span id="model-value"/);
   assert.match(html, /id="thinking-button"[^>]*><span class="workbench-control-label">Thinking:<\/span> <span id="thinking-value"/);

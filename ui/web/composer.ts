@@ -345,14 +345,15 @@ export class Composer {
       this.addFiles(files, captured);
     });
   }
-  addFiles(files: readonly File[], captured = this.insertionCapture()): void {
-    if (!captured || this.destroyed) return;
+  addFiles(files: readonly File[], captured = this.insertionCapture()): boolean {
+    if (!captured || this.destroyed) return false;
     this.rememberSelection();
     const buffer = captured.buffer, attachments = this.fileOwner(buffer), before = new Set(attachments.items);
-    try {attachments.add(files);} catch (error) {this.failureNotice(buffer, 'Files were not added.', error);}
+    let admitted = true;
+    try {attachments.add(files);} catch (error) {admitted = false; this.failureNotice(buffer, 'Files were not added.', error);}
     buffer.inclusions ??= new Map();
     for (const item of attachments.items) if (!before.has(item)) buffer.inclusions.set(item.id, captured);
-    this.paintAttachments(buffer); this.receipt(buffer);
+    this.paintAttachments(buffer); this.receipt(buffer); return admitted;
   }
   private fileOwner(buffer: Buffer): ComposerAttachments {
     buffer.attachments ??= new ComposerAttachments({workspace: buffer.workspace, targetKey: buffer.state.targetKey, target: buffer.state.target}, {

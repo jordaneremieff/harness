@@ -8,14 +8,20 @@ import {contextMenu} from './context-menu.ts';
 import type {FileDirectoryPage,FileEntry} from '../shared/files.ts';
 const root = {id:'r',path:'/project',name:'project'};
 function page(path:string,entries:FileEntry[]):FileDirectoryPage {return {rootId:'r',path,entries,revision:'v',nextCursor:null,coverage:{complete:true,visited:entries.length}};}
-function fixture(context:test.TestContext,operation:(action:FileTreeAction,path:string,value?:string)=>Promise<undefined|(()=>void)>) {
+function fixture(context:test.TestContext,operation:(action:FileTreeAction,path:string,value?:string)=>Promise<undefined|(()=>void)>,addToMessage?:(root:string,path:string)=>void) {
   const node = new HostNode('div');byId('workspace').append(node);context.after(()=> {node.remove();contextMenu.close();});
   const statuses:string[] = [];let entries:FileEntry[] = [{name:'folder',path:'folder',kind:'directory'},{name:'note.md',path:'note.md',kind:'file'}];
-  const tree = new FilesTree(node as unknown as HTMLElement,{page:async(_root,path)=>page(path,path ? [] : entries),select:()=>{},escape:()=>{},operation:async(_root,action,path,value)=>operation(action,path,value),status:message=>statuses.push(message)});tree.setRoot(root);
+  const tree = new FilesTree(node as unknown as HTMLElement,{page:async(_root,path)=>page(path,path ? [] : entries),select:()=>{},escape:()=>{},addToMessage,operation:async(_root,action,path,value)=>operation(action,path,value),status:message=>statuses.push(message)});tree.setRoot(root);
   return {node,tree,statuses,entries:(value:FileEntry[])=> {entries = value;}};
 }
 function row(node:HostNode,path:string):HostNode {const found = node.querySelector(`[data-path="${path}"]`);assert.ok(found);return found;}
 function field(node:HostNode):HostNode {const input = node.querySelector('.file-name-input');assert.ok(input);return input;}
+test('Add to message captures only a regular file before destructive operations',async context=> {
+  const added:unknown[] = [],mutations:unknown[] = [];const {node,entries,tree} = fixture(context,async(...args)=> {mutations.push(args);},(...args)=>added.push(args));await settle();
+  const file = row(node,'note.md');file.dispatch('contextmenu',{clientX:10,clientY:10});let menu = hostDocument.body.querySelector('.context-menu');assert.ok(menu);const labels = menu.children.map(item=>item.textContent);assert.ok(labels.indexOf('Add to message…') < labels.indexOf('Move to Trash'));menu.children.find(item=>item.textContent === 'Add to message…')?.click();assert.deepEqual(added,[['r','note.md']]);assert.deepEqual(mutations,[]);
+  row(node,'folder').dispatch('contextmenu',{clientX:10,clientY:10});menu = hostDocument.body.querySelector('.context-menu');assert.ok(menu);assert.equal(menu.children.some(item=>item.textContent === 'Add to message…'),false);contextMenu.close();
+  entries([{name:'link',path:'link',kind:'symlink'}]);tree.invalidate('r',['']);await settle();row(node,'link').dispatch('contextmenu',{clientX:10,clientY:10});assert.equal(contextMenu.openNow,false);
+});
 test('keyboard rename, new file, folder and move use a retained inline input',async context=> {
   const calls:unknown[] = [];const {node,tree,entries} = fixture(context,async(...args)=> {calls.push(args);});await settle();
   const original = row(node,'note.md');original.focus();node.dispatch('keydown',{target:original,key:'F2'});const input = field(node);assert.equal(input.value,'note.md');input.value = 'typed.ts';input.setSelectionRange(2,5);entries([{name:'early',path:'early',kind:'file'},{name:'note.md',path:'note.md',kind:'file'}]);tree.invalidate('r',['']);await settle();
