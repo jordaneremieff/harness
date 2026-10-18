@@ -20,7 +20,7 @@ const empty: CatalogPage = {rows: [], nextCursor: null, coverage: {complete: tru
 const forbidden = async (): Promise<never> => {throw new Error('No native agent work belongs in this fixture');};
 const agents: AgentAdapter = {roster: () => empty, rosterRow: () => undefined, imageInputAvailable: () => false,
   refresh: async () => empty.scan, prepare: forbidden, select: forbidden, reconnect: forbidden, history: forbidden,
-  image: forbidden, inspect: forbidden, submit: forbidden, retrySubmit: forbidden, abort: forbidden,
+  image: forbidden, inspect: forbidden, threads: forbidden, thread: forbidden, submit: forbidden, retrySubmit: forbidden, abort: forbidden,
   configure: () => {throw new Error('No native agent configuration');}, hide: async () => {}, disconnectWorkspace: async () => {}, close: async () => {}};
 
 async function fixture(t: TestContext, response: unknown, cli = false) {

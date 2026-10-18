@@ -7,7 +7,7 @@ type JsonValue = null | boolean | number | string | JsonValue[] | JsonObject;
 export type JsonObject = { [key: string]: JsonValue };
 export type OperationContract = Readonly<{ request: string; response: string; durable?: string }>;
 export type OperationName = "dashboard" | "snapshot" | "inspect" | "observe-open" | "observe-frame"
-	| "observe-close" | "changes" | "task-submit" | "abort" | "configure";
+	| "observe-close" | "changes" | "task-submit" | "abort" | "configure" | "collaboration-list" | "collaboration-read";
 export type RuntimeDescriptor = {
 	format: "pi.agent.contract/1"; release: string;
 	upstream: { codingAgent: string; durable: string };
@@ -36,12 +36,25 @@ export type Admission = JsonObject & { submissionId: number; conversationId: num
 	identity: string; result: JsonObject & { sessionId: string; submissionId: number; requestId?: string } };
 export type AbortReceipt = JsonObject & { conversationId: number; identity: string; background: boolean };
 export type InspectResult = JsonObject & { view: string; sessionId: string; conversationId: number };
+export type ThreadSummary = { id: string; title: string; purpose: string; updatedAt: number; closed: boolean; members: number };
+export type ThreadList = { items: ThreadSummary[]; nextCursor: string | null;
+	coverage: { complete: boolean; visited: number; omitted: number; unavailable?: number } };
+export type ThreadMember = { identity: string; contribution: string; joinedAt: number };
+export type ThreadFrame = { title: string; purpose: string; authority: string; source: string; restrictions: string;
+	acceptance: string; integrator: string };
+export type ThreadRecord = ThreadFrame & { id: string; creator: string; createdAt: number; updatedAt: number; revision: number;
+	closed: boolean; sequence: number; members: ThreadMember[] };
+export type ThreadEvent = { threadId: string; sequence: number; at: number; sender: string; origin: "model" | "operator";
+	kind: string; message: string; source: string; replyTo: number | null; revision: number; notify: string[] };
+export type ThreadPage = { thread: ThreadRecord; events: ThreadEvent[]; nextBefore: number | null; pending: number;
+	coverage: { complete: boolean; bytes: number } };
 type Context = { identity?: string; requestId?: string; token?: string };
 type Responses = {
 	dashboard: Summary[]; snapshot: Snapshot; inspect: InspectResult;
 	"observe-open": JsonObject & { token: string; frame: ConversationFrame | JsonObject };
 	"observe-frame": ConversationFrame | JsonObject; "observe-close": JsonObject & { closed: boolean };
 	changes: JsonObject; "task-submit": Admission; abort: AbortReceipt; configure: never;
+	"collaboration-list": ThreadList; "collaboration-read": ThreadPage;
 };
 
 export class ContractError extends Error {
@@ -146,6 +159,7 @@ export const supportedOperations: Readonly<Record<OperationName, OperationContra
 	"observe-close": contract("observe-close"), changes: contract("changes"),
 	"task-submit": contract("task-submit", "1.0.0", "task-submit/1.2.0"), abort: contract("abort"),
 	configure: contract("configure", "1.3.0"),
+	"collaboration-list": contract("collaboration-list"), "collaboration-read": contract("collaboration-read"),
 });
 function operation(value: JsonValue): OperationContract {
 	const o = object(value); only(o, ["request", "response", "durable"]);
@@ -496,6 +510,69 @@ function admission(value: JsonValue, context: Context): Admission {
 function abort(value: JsonValue, context: Context): AbortReceipt {
 	const o = object(value); target(o, "identity", context); boolean(o.background); return o as AbortReceipt;
 }
+const threadIdPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\/[0-9a-f]{32}$/;
+const participantPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}(?::[1-9]\d*)?$/;
+function threadId(value: unknown): asserts value is string {
+	string(value, 128); requireValue(threadIdPattern.test(value), "Invalid thread identity");
+}
+function participant(value: unknown): asserts value is string {
+	string(value, 512); requireValue(participantPattern.test(value), "Invalid thread participant identity");
+}
+function listCursor(value: unknown): asserts value is string {
+	string(value, 16); requireValue(/^(?:0|[1-9]\d*)$/.test(value) && Number.isSafeInteger(Number(value)), "Invalid thread list cursor");
+}
+function threadSummary(value: JsonValue): void {
+	const o = object(value); only(o, ["id", "title", "purpose", "updatedAt", "closed", "members"]);
+	threadId(o.id); string(o.title, 160); string(o.purpose, 160); integer(o.updatedAt); boolean(o.closed); integer(o.members, 0, 64);
+}
+function threadList(value: JsonValue): ThreadList {
+	const o = object(value); only(o, ["items", "nextCursor", "coverage"]);
+	array(o.items, threadSummary, 20); if (o.nextCursor !== null) listCursor(o.nextCursor);
+	const c = object(o.coverage); only(c, ["complete", "visited", "omitted", "unavailable"]);
+	boolean(c.complete); integer(c.visited, 0, 64); integer(c.omitted); optional(c, ["unavailable"], v => integer(v));
+	requireValue(c.complete === (o.nextCursor === null), "Thread list continuation disagrees with its coverage");
+	return o as ThreadList;
+}
+function threadFrame(o: JsonObject): void {
+	fields(o, ["title"], v => string(v, 160)); fields(o, ["purpose", "authority", "restrictions", "acceptance"], v => string(v, 4000));
+	string(o.source, 2000); participant(o.integrator);
+}
+function threadMember(value: JsonValue): void {
+	const o = object(value); only(o, ["identity", "contribution", "joinedAt"]);
+	participant(o.identity); string(o.contribution, 256, true); integer(o.joinedAt);
+}
+function threadRecord(value: JsonValue): ThreadRecord {
+	const o = object(value);
+	only(o, ["title", "purpose", "authority", "source", "restrictions", "acceptance", "integrator", "id", "creator", "createdAt", "updatedAt", "revision", "closed", "sequence", "members"]);
+	threadFrame(o); threadId(o.id); participant(o.creator); fields(o, ["createdAt", "updatedAt", "sequence"], v => integer(v));
+	integer(o.revision, 1); boolean(o.closed); array(o.members, threadMember, 64);
+	requireValue((o.updatedAt as number) >= (o.createdAt as number), "Thread updates precede its creation");
+	return o as ThreadRecord;
+}
+function threadEvent(value: JsonValue): void {
+	const o = object(value);
+	only(o, ["threadId", "sequence", "at", "sender", "origin", "kind", "message", "source", "replyTo", "revision", "notify"]);
+	threadId(o.threadId); integer(o.sequence, 1); integer(o.at); participant(o.sender); choice(o.origin, ["model", "operator"]);
+	string(o.kind, 32); string(o.message, 24 * 1024); string(o.source, 2000, true); integer(o.revision, 1);
+	if (o.replyTo !== null) { integer(o.replyTo, 1); requireValue(o.replyTo < (o.sequence as number), "Reply names a later event"); }
+	array(o.notify, participant, 16);
+}
+function threadPage(value: JsonValue): ThreadPage {
+	const o = object(value); only(o, ["thread", "events", "nextBefore", "pending", "coverage"]);
+	const thread = threadRecord(o.thread); array(o.events, threadEvent, 20);
+	const events = o.events as unknown as ThreadEvent[];
+	for (let i = 0; i < events.length; i++) {
+		requireValue(events[i].threadId === thread.id, "Event belongs to another thread");
+		requireValue(events[i].sequence <= thread.sequence && events[i].revision <= thread.revision, "Event is newer than its thread");
+		if (i > 0) requireValue(events[i].sequence === events[i - 1].sequence + 1, "Thread events are not consecutive");
+	}
+	nullableId(o.nextBefore); integer(o.pending);
+	const c = object(o.coverage); only(c, ["complete", "bytes"]); boolean(c.complete); integer(c.bytes, 0, 48 * 1024);
+	requireValue(c.complete === (o.nextBefore === null), "Thread continuation disagrees with its coverage");
+	if (o.nextBefore !== null) requireValue(events.length > 0 && o.nextBefore === events[0].sequence, "Thread continuation does not name the oldest event");
+	else requireValue(events.length === 0 || events[0].sequence === 1, "Complete thread page omits its first event");
+	return o as ThreadPage;
+}
 export function decodeResponse<M extends OperationName>(member: M, value: unknown, context: Context = {}): Responses[M] {
 	if (member === "configure") unavailable("Configure is unavailable: execution selection is not decoded");
 	const v = json(value);
@@ -507,6 +584,7 @@ export function decodeResponse<M extends OperationName>(member: M, value: unknow
 			o.frame = frameValue(object(o.frame), context); return o; },
 		"observe-close": () => { const o = object(v); boolean(o.closed); return o; },
 		changes: () => changes(v), "task-submit": () => admission(v, context), abort: () => abort(v, context),
+		"collaboration-list": () => threadList(v), "collaboration-read": () => threadPage(v),
 	};
 	const decoder = decoders[member as Exclude<OperationName, "configure">];
 	requireValue(Object.hasOwn(decoders, member) && decoder, "Unsupported operation"); return decoder() as Responses[M];
@@ -588,8 +666,19 @@ export function decodeInput(member: OperationName, value: unknown, context: Cont
 		optional(o, ["before"], v => integer(v, 1)); optional(o, ["limit"], v => integer(v, 1, 200));
 		optional(o, ["maxBytes"], v => integer(v, 1, 1048576)); return o; }
 	if (member === "inspect") { inspectInput(o); return o; }
+	const threadInput = threadInputs[member];
+	if (threadInput) { threadInput(o); return o; }
 	unavailable("Changes is a subscription gate, not a request operation");
 }
+function threadListInput(o: JsonObject): void {
+	only(o, ["cursor", "limit", "query"]); optional(o, ["cursor"], listCursor); optional(o, ["limit"], v => integer(v, 1, 20));
+	optional(o, ["query"], v => { string(v, 256); requireValue(v.trim().length > 0, "Blank thread query"); });
+}
+function threadReadInput(o: JsonObject): void {
+	only(o, ["threadId", "limit", "before"]); threadId(o.threadId);
+	optional(o, ["limit"], v => integer(v, 1, 20)); optional(o, ["before"], v => integer(v, 1));
+}
+const threadInputs: Partial<Record<OperationName, (o: JsonObject) => void>> = { "collaboration-list": threadListInput, "collaboration-read": threadReadInput };
 function observeInput(o: JsonObject): void {
 	only(o, ["token", "scope", "sessionId"]); token(o.token); choice(o.scope, ["conversation", "tasks"]);
 	if (o.scope === "conversation") identity(o.sessionId);

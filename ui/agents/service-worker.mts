@@ -1,8 +1,8 @@
 import { parentPort, workerData } from "node:worker_threads";
 import { nativeImage } from "./images.mts";
 import { AgentError } from "./client.mts";
-import { AgentService, type HistoryOptions, type InspectOptions, type SubmitInput } from "./service-runtime.mts";
-import { transferFrame, transferInspect, transferSnapshot } from "./transfer.mts";
+import { AgentService, type HistoryOptions, type InspectOptions, type SubmitInput, type ThreadListOptions, type ThreadReadOptions } from "./service-runtime.mts";
+import { transferFrame, transferInspect, transferSnapshot, transferThread } from "./transfer.mts";
 
 interface Request { id: number; member: string; args: unknown[] }
 const port = parentPort;
@@ -35,6 +35,8 @@ async function invoke(member: string, args: unknown[], signal?: AbortSignal): Pr
     case "history": return transferSnapshot(await service.history(identity, args[1] as HistoryOptions, signal));
     case "image": return nativeImage(service, identity, args[1], args[2]);
     case "inspect": return transferInspect(await service.inspect(identity, args[1] as InspectOptions, signal));
+    case "threads": return transferThread(await service.threads(identity, args[1] as ThreadListOptions, signal));
+    case "thread": return transferThread(await service.thread(identity, args[1] as string, args[2] as ThreadReadOptions, signal));
     case "submit": return service.submit(identity, args[1] as SubmitInput);
     case "retrySubmit": return service.retrySubmit(identity, args[1] as SubmitInput);
     case "abort": return service.abort(identity);
@@ -50,7 +52,7 @@ port.on("message", (request: Request) => {
     return;
   }
   pending++;
-  const controller = ["history", "inspect"].includes(request.member) ? new AbortController() : undefined;
+  const controller = ["history", "inspect", "threads", "thread"].includes(request.member) ? new AbortController() : undefined;
   if (controller) reads.set(request.id,controller);
   void invoke(request.member, request.args, controller?.signal).then(result => port.postMessage({ id: request.id, result }),
     error => port.postMessage({ id: request.id, error: errorValue(error) })).finally(() => {

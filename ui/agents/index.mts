@@ -8,21 +8,23 @@ import { AgentError } from "./client.mts";
 import type { SubmitInput } from "./client.mts";
 import type { CatalogPage, CatalogRow, CatalogScan } from "./catalog.mts";
 import { compareRosterRows } from "./catalog-state.mts";
-import type { AbortReceipt, Admission, InspectResult, Snapshot } from "./contract.mts";
+import type { AbortReceipt, Admission, InspectResult, Snapshot, ThreadList, ThreadPage } from "./contract.mts";
 import type {
 	AgentServiceOptions as RuntimeOptions,
 	HistoryOptions,
 	InspectOptions,
+	ThreadListOptions,
+	ThreadReadOptions,
 	UnavailableConfiguration,
 } from "./service-runtime.mts";
 export type AgentServiceOptions = Omit<RuntimeOptions, "frameProjection" | "onImageInput">;
 export { AgentError, HostLink } from "./client.mts";
 export { AgentCatalog, deriveEndpoint, readClaim } from "./catalog.mts";
 export type { CatalogPage, CatalogRecord, CatalogScan, CatalogRow } from "./catalog.mts";
-export type { AbortReceipt, Admission, ConversationFrame, InspectResult, Snapshot } from "./contract.mts";
+export type { AbortReceipt, Admission, ConversationFrame, InspectResult, Snapshot, ThreadEvent, ThreadFrame, ThreadList, ThreadMember, ThreadPage, ThreadRecord, ThreadSummary } from "./contract.mts";
 export type { SubmitInput } from "./client.mts";
 export type { AvailabilityListener, AvailabilityState } from "./observation.mts";
-export type { HistoryOptions, InspectOptions, UnavailableConfiguration } from "./service-runtime.mts";
+export type { HistoryOptions, InspectOptions, ThreadListOptions, ThreadReadOptions, UnavailableConfiguration } from "./service-runtime.mts";
 
 type WorkerPort = {
 	on(event: "message", listener: (message: Response) => void): unknown;
@@ -424,6 +426,14 @@ export class AgentService {
 	async inspect(identity: string, options: InspectOptions, signal?: AbortSignal): Promise<InspectResult> {
 		this.#ready();
 		return this.#request("inspect", [identity, options], signal);
+	}
+	async threads(identity: string, options: ThreadListOptions = {}, signal?: AbortSignal): Promise<ThreadList> {
+		this.#ready();
+		return this.#request("threads", [identity, options], signal);
+	}
+	async thread(identity: string, threadId: string, options: ThreadReadOptions = {}, signal?: AbortSignal): Promise<ThreadPage> {
+		this.#ready();
+		return this.#request("thread", [identity, threadId, options], signal);
 	}
 	#input(identity: string, input: SubmitInput): { digest: string; prior?: InputReceipt; captured: SubmitInput } {
 		const captured = captureSubmitInput(input);

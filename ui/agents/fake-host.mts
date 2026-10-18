@@ -100,6 +100,44 @@ export function blockedResult(identity = STORAGE, requestId = "input-example"): 
 			errorTruncated: false, source: "provider", timestamp: 0,
 			originalResults: [{ sessionId: identity, submissionId: 7, requestId }], omittedOriginalResults: 0 } };
 }
+export const THREAD = `${STORAGE}/${"a".repeat(32)}`;
+const THREAD_FRAME = { title: "Protocol design", purpose: "Keep peers useful", authority: "Operator task", source: "Operator task source",
+	restrictions: "No external changes", acceptance: "Exchange survives restart", integrator: STORAGE };
+function threadEvent(sequence: number, fields: JsonObject): JsonObject {
+	return { threadId: THREAD, sequence, at: 1_800_000_000_000 + sequence, sender: STORAGE, origin: "model", source: "", replyTo: null,
+		revision: sequence >= 4 ? 2 : 1, notify: [], ...fields } as JsonObject;
+}
+/** Fabricated thread events in the shape the collaboration read returns; values are independent of the UI decoder. */
+export function threadEvents(): JsonObject[] {
+	return [
+		threadEvent(1, { kind: "create", message: JSON.stringify({ ...THREAD_FRAME, purpose: "Keep peers" }), source: "Operator task source" }),
+		threadEvent(2, { kind: "join", sender: CHILD, message: "Challenge" }),
+		threadEvent(3, { kind: "contribution", message: "Hello", replyTo: 1, notify: [CHILD] }),
+		threadEvent(4, { kind: "revise", message: JSON.stringify(THREAD_FRAME), source: "Operator task source" }),
+		threadEvent(5, { kind: "carried-authority", message: "Authority", source: "Operator" }),
+	];
+}
+export function threadRecord(): JsonObject {
+	return { ...THREAD_FRAME, id: THREAD, creator: STORAGE, createdAt: 1_800_000_000_000, updatedAt: 1_800_000_000_005, revision: 2, closed: false,
+		sequence: 5, members: [{ identity: STORAGE, contribution: "Lead", joinedAt: 1_800_000_000_000 }, { identity: CHILD, contribution: "Challenge", joinedAt: 1_800_000_000_002 }] };
+}
+export function threadList(): JsonObject {
+	const thread = threadRecord();
+	return { items: [{ id: THREAD, title: thread.title, purpose: String(thread.purpose).slice(0, 160), updatedAt: thread.updatedAt, closed: false, members: 2 }],
+		nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } };
+}
+/** Pages newest first by exclusive boundary, like the host: events older than `before`, oldest first within the page. */
+export function threadPage(input: JsonObject): JsonObject {
+	if (input.threadId !== THREAD) throw new ChordError("invalid", "Thread not found", { reason: "thread" });
+	const limit = typeof input.limit === "number" ? input.limit : 10;
+	const before = typeof input.before === "number" ? input.before : 6;
+	const events = threadEvents().filter(event => (event.sequence as number) < before).slice(-limit);
+	const oldest = events.length ? (events[0].sequence as number) : before;
+	const nextBefore = oldest > 1 ? oldest : null;
+	const page: JsonObject = { thread: threadRecord(), events, nextBefore, pending: 0, coverage: { complete: nextBefore === null, bytes: 0 } };
+	(page.coverage as JsonObject).bytes = Buffer.byteLength(JSON.stringify(page));
+	return page;
+}
 export async function descriptor(): Promise<JsonObject> {
 	const metadata = JSON.parse(
 		await readFile(new URL("../../node_modules/@earendil-works/pi-durable/package.json", import.meta.url), "utf8"),
@@ -519,6 +557,10 @@ export class FakeHost {
 				};
 			case "dashboard":
 				return [];
+			case "collaboration-list":
+				return threadList();
+			case "collaboration-read":
+				return threadPage(input);
 			default:
 				return {};
 		}

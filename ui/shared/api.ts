@@ -194,6 +194,16 @@ export type HandoffRequest = {epoch: number; mode: 'settle' | 'abort'; clearQueu
 export type HandoffView = {cwd: string; sessionFile: string; executable: string; argv: string[]; command: string};
 export type HistoryPage = {target: Target; items: EntryView[]; nextCursor: string | null; coverage: DisplayCoverage};
 export type AgentHistoryPage = {target: Target; entries: EntryView[]; nextBefore: number | null; coverage: DisplayCoverage; revision: string};
+/** Threads belong to the storage that created them. Identities are external conversation identities; display names come from the roster. */
+export type ThreadSummaryView = {id: string; title: string; purpose: string; updatedAt: number; closed: boolean; members: number};
+export type ThreadListPage = {storageId: string; items: ThreadSummaryView[]; nextCursor: string | null; coverage: {complete: boolean; visited: number}; observedAt: string};
+export type ThreadFrameView = {title: string; purpose: string; authority: string; source: string; restrictions: string; acceptance: string; integrator: string};
+export type ThreadMemberView = {identity: string; contribution: string; joinedAt: number};
+/** A create or revise event carries its frame in `frame` and leaves `message` empty; every other event carries prose in `message`. */
+export type ThreadEventView = {sequence: number; at: number; sender: string; origin: "model" | "operator"; kind: string; message: string; source: string;
+  replyTo: number | null; revision: number; notify: string[]; frame?: ThreadFrameView};
+export type ThreadView = ThreadFrameView & {id: string; creator: string; createdAt: number; updatedAt: number; revision: number; closed: boolean; sequence: number; members: ThreadMemberView[]};
+export type ThreadPageView = {storageId: string; thread: ThreadView; events: ThreadEventView[]; nextBefore: number | null; pending: number; coverage: {complete: boolean}; observedAt: string};
 export type ResourcePage = {items: CommandView[] | ModelChoice[] | string[]; nextCursor: string | null; revision: string};
 export type NoticeView = {id: string; target?: Target; workspaceId?: string; level: 'info' | 'warning' | 'error'; code?: string; message: string};
 export type AgentObservationView = {identity: string; connectionEpoch: number; availability?: EventData['agent.availability']; frame?: ProjectedFrame; omitted?: true};
@@ -240,6 +250,7 @@ export const ROUTES = [
   'GET /api/primaries/:key/diagnostics', 'POST /api/primaries/:key/inputs', 'POST /api/primaries/:key/stop',
   'POST /api/primaries/:key/session', 'POST /api/primaries/:key/control', 'POST /api/primaries/:key/dialogs/:dialogId', 'POST /api/primaries/:key/handoff',
   'GET /api/agents', 'POST /api/agents/refresh', 'GET /api/agents/:identity/history', 'GET /api/agents/:identity/history/image', 'POST /api/agents/:identity/inspect',
+  'GET /api/agents/:identity/threads', 'GET /api/agents/:identity/threads/read',
   'POST /api/agents/:identity/inputs', 'POST /api/agents/:identity/abort', 'POST /api/agents/:identity/configure',
   'POST /api/workspaces/:id/targets', 'PUT /api/workspaces/:id/selection', 'GET /api/workspaces/:id/targets/:targetKey', 'PUT /api/workspaces/:id/targets/:targetKey/draft',
   'POST /api/workspaces/:id/targets/:targetKey/images', 'GET /api/workspaces/:id/targets/:targetKey/images/:digest',

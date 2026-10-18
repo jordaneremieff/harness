@@ -4,14 +4,14 @@ import { captureSubmitInput, submitInputDigest, type NativeInputMessage, type Na
 import { readVerifiedDraftImages, verifiedImageReferences } from "../server/draft-images.mts";
 import { imageMessageDigest, imageReferenceMessage } from "../server/images.mts";
 import { isAbsolute } from "node:path";
-import { decodeInput, type AbortReceipt, type Admission, type ConversationFrame, type InspectResult, type JsonObject, type Snapshot } from "./contract.mts";
+import { decodeInput, type AbortReceipt, type Admission, type ConversationFrame, type InspectResult, type JsonObject, type Snapshot, type ThreadList, type ThreadPage } from "./contract.mts";
 import { ObservationManager, type AvailabilityListener } from "./observation.mts";
 import { RetainedReader } from "./retained-read.mts";
 import { retainedReaderPath } from "../server/agent-start.mts";
 export { AgentError, HostLink } from "./client.mts";
 export { AgentCatalog, deriveEndpoint, readClaim } from "./catalog.mts";
 export type { CatalogPage, CatalogRecord, CatalogScan, CatalogRow } from "./catalog.mts";
-export type { AbortReceipt, Admission, ConversationFrame, InspectResult, Snapshot } from "./contract.mts";
+export type { AbortReceipt, Admission, ConversationFrame, InspectResult, Snapshot, ThreadEvent, ThreadFrame, ThreadList, ThreadMember, ThreadPage, ThreadRecord, ThreadSummary } from "./contract.mts";
 export type { SubmitInput } from "./client.mts";
 export type { AvailabilityListener, AvailabilityState } from "./observation.mts";
 
@@ -27,6 +27,8 @@ export interface AgentServiceOptions {
   onImageInput?: (storageId: string, identity: string | undefined, available: boolean) => void;
 }
 export interface HistoryOptions { before?: number; limit?: number; maxBytes?: number }
+export interface ThreadListOptions { cursor?: string; limit?: number; query?: string }
+export interface ThreadReadOptions { limit?: number; before?: number }
 export interface InspectOptions {
   view: "history" | "activity" | "exact" | "result";
   cursor?: JsonObject; source?: 'user'; limit?: number; entryId?: number; offset?: number; submissionId?: number; requestId?: string; operationId?: string;
@@ -125,6 +127,27 @@ export class AgentService {
       const {sessionId: _target, ...readParams} = params;
       return this.#reader.request("inspect", identity, readParams, signal);
     }
+  }
+  /** Threads live in the storage that created them; the identity selects that storage's live host. No retained fallback exists. */
+  async threads(identity: string, options: ThreadListOptions = {}, signal?: AbortSignal): Promise<ThreadList> {
+    this.#ready();
+    const params: JsonObject = {};
+    if (options.cursor !== undefined) params.cursor = options.cursor;
+    if (options.limit !== undefined) params.limit = options.limit;
+    if (options.query !== undefined) params.query = options.query;
+    validateThreadParams("collaboration-list", params);
+    signal?.throwIfAborted();
+    return (await (await this.#link(identity)).request("collaboration-list", params, {}, signal)) as ThreadList;
+  }
+  async thread(identity: string, threadId: string, options: ThreadReadOptions = {}, signal?: AbortSignal): Promise<ThreadPage> {
+    this.#ready();
+    const params: JsonObject = { threadId };
+    if (options.limit !== undefined) params.limit = options.limit;
+    if (options.before !== undefined) params.before = options.before;
+    validateThreadParams("collaboration-read", params);
+    if (threadId.split("/")[0] !== this.#record(identity).storageId) throw new AgentError("invalid_request", "The thread belongs to a different agent storage.");
+    signal?.throwIfAborted();
+    return (await (await this.#link(identity)).request("collaboration-read", params, {}, signal)) as ThreadPage;
   }
   submit(identity: string, input: SubmitInput): Promise<Admission> { return this.#input(identity, input, false); }
   /** Explicit reconciliation repeats only the captured key and freshly verified content. */
@@ -281,6 +304,10 @@ function retainedEligible(error: unknown, linked: boolean): boolean {
 function validateInspectParams(params: JsonObject, identity: string): void {
   try { decodeInput("inspect", params, { identity }); }
   catch (error) { throw new AgentError("invalid_request", error instanceof Error ? error.message : "Invalid result selector."); }
+}
+function validateThreadParams(member: "collaboration-list" | "collaboration-read", params: JsonObject): void {
+  try { decodeInput(member, params); }
+  catch (error) { throw new AgentError("invalid_request", error instanceof Error ? error.message : "Invalid thread request."); }
 }
 function bounded(value: number, min: number, max: number, name: string): void {
   if (!Number.isSafeInteger(value) || value < min || value > max) throw new AgentError("invalid_request", `${name} is outside its bound.`);

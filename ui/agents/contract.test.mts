@@ -52,6 +52,8 @@ function descriptor(): JsonObject {
 			"task-submit": { request: "task-submit/1.0.0", response: "task-submit/1.2.0" },
 			abort: { request: "abort/1.0.0", response: "abort/1.0.0" },
 			configure: { request: "configure/1.3.0", response: "configure/1.3.0" },
+			"collaboration-list": { request: "collaboration-list/1.0.0", response: "collaboration-list/1.0.0" },
+			"collaboration-read": { request: "collaboration-read/1.0.0", response: "collaboration-read/1.0.0" },
 		},
 	};
 }

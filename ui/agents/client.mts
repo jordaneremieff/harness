@@ -234,6 +234,7 @@ function assertResponseContext(member: OperationName, value: unknown, params: Js
     if (expected !== undefined && response[field] !== expected) throw new AgentError("protocol_error", `Host returned a different ${field}.`);
   };
   if (member === "abort") equal("background", params.background ?? false);
+  if (member.startsWith("collaboration-")) assertThreadContext(member as "collaboration-list" | "collaboration-read", response, params);
   if (member === "inspect") {
     equal("view", params.view ?? "history");
     if (params.view === "result") {
@@ -241,6 +242,22 @@ function assertResponseContext(member: OperationName, value: unknown, params: Js
     }
     if (params.view === "exact") { equal("entryId", params.entryId); equal("offset", params.offset ?? 0); }
   }
+}
+/** Thread pages answer the request that selected them: same thread, within the page size, ending at the requested boundary. */
+function assertThreadContext(member: "collaboration-list" | "collaboration-read", response: Record<string, unknown>, params: JsonObject): void {
+  const refuse = (message: string): never => { throw new AgentError("protocol_error", message); };
+  const limit = typeof params.limit === "number" ? params.limit : 10;
+  if (member === "collaboration-list") {
+    if ((response.items as unknown[]).length > limit) refuse("Host returned more threads than requested.");
+    return;
+  }
+  const thread = response.thread as { id: string; sequence: number };
+  const events = response.events as { sequence: number }[];
+  if (thread.id !== params.threadId) refuse("Host returned a different thread.");
+  if (events.length > limit) refuse("Host returned more events than requested.");
+  const newest = events.at(-1)?.sequence;
+  const boundary = typeof params.before === "number" ? params.before : thread.sequence + 1;
+  if (newest !== undefined && newest !== boundary - 1) refuse("Host returned a page that does not end at the requested boundary.");
 }
 function subscriptionFailure(error: unknown): AgentError {
   if (error instanceof AgentError) return error;

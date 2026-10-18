@@ -32,7 +32,7 @@ function agents() {
   let detached!: () => void; const disconnected = new Promise<void>(resolve => { detached = resolve; });
   const forbidden = async (): Promise<never> => { throw new Error('No native agent work belongs in this fixture'); };
   const adapter: AgentAdapter = {roster: () => empty, rosterRow: () => undefined, imageInputAvailable: () => false, refresh: async () => { counts.refresh++; return empty.scan; },
-    prepare: forbidden, select: forbidden, reconnect: forbidden, history: forbidden, image: forbidden, inspect: forbidden, submit: forbidden, retrySubmit: forbidden, abort: forbidden,
+    prepare: forbidden, select: forbidden, reconnect: forbidden, history: forbidden, image: forbidden, inspect: forbidden, threads: forbidden, thread: forbidden, submit: forbidden, retrySubmit: forbidden, abort: forbidden,
     configure: () => { throw new Error('No native agent configuration'); }, hide: async () => {},
     disconnectWorkspace: async () => { counts.disconnect++; detached(); }, close: async () => { counts.close++; }};
   return {adapter, counts, disconnected};

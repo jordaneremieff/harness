@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { projectEntry, projectFrame } from "../server/projection.mts";
 import { decodeFrame, type ConversationFrame, type Snapshot } from "./contract.mts";
 import { frame } from "./fake-host.mts";
-import { transferFrame, transferInspect, transferSnapshot } from "./transfer.mts";
+import { transferFrame, transferInspect, transferSnapshot, transferThread } from "./transfer.mts";
 
 const sourceCoverage = { complete: true, entries: 1, bytes: 65536, hiddenExcluded: 7,
   entryLimitReached: false, byteLimitReached: false };
@@ -197,4 +197,10 @@ test("inspection preserves exact offsets and opaque continuation beside bounded 
   assert.equal(JSON.stringify(result).includes("hidden-value"), false);
   assert.throws(() => transferInspect({ view: "history", sessionId: "fixture", conversationId: 1,
     nextCursor: { text: "x".repeat(4096) } }), /cursor exceeds/);
+});
+
+test("thread transfers pass bounded values unchanged and refuse an oversized worker result", () => {
+  const value = { items: [], nextCursor: null, coverage: { complete: true, visited: 0, omitted: 0 } };
+  assert.equal(transferThread(value), value);
+  assert.throws(() => transferThread({ text: "x".repeat(256 * 1024) }), { code: "protocol_error" });
 });

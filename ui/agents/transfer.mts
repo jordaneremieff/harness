@@ -64,6 +64,11 @@ export function transferInspect(source: InspectResult): InspectResult {
   assertTransferBound(result);
   return result;
 }
+/** Thread reads are bounded by the host; the worker still refuses an oversized transfer. */
+export function transferThread<T>(source: T): T {
+  assertTransferBound(source);
+  return source;
+}
 function displayBoundary(source: number | null, nativeCount: number, entries: EntryView[]): number | null {
   if (entries.length === nativeCount || !entries.length) return source;
   const first = Number(entries[0]?.id);
