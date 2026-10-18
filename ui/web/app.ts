@@ -691,6 +691,7 @@ function updateConversationStatus(target: Target | undefined, view: Conversation
   const action = view.busy && view.activity === 'Working' ? controller?.transcript.activitySentence() : undefined;
   workbenchStatus.update(target?.kind ?? 'primary', presentationName(view), notice || view.activity, target?.kind === 'agent' ? target.identity : target?.key, notice ? undefined : action);
   const activity = byId('workbench-activity'); if (!notice && view.detail) activity.title += `\n${view.detail}`;
+  if (notice && notice === fileWatch.status && fileWatch.detail) activity.title += `\n${fileWatch.detail}`;
   activity.dataset.busy = String(!notice && view.busy); activity.dataset.tone = view.tone;
   activity.setAttribute('role', 'status');
 }
@@ -724,6 +725,7 @@ function reviewRetainedDrafts():void {
 }
 function renderFileWorkbenchStatus(tab:FileTab):void {
   footerController = undefined;byId('workbench-activity').dataset.busy = 'false';const owner = state.workspace && filesViews.owner(state.workspace.id,tab);workbenchStatus.update('file',tab.path,fileActionStatus || owner?.status || fileWatch.status,tab.path);
+  if (fileWatch.detail && !fileActionStatus && !owner?.status) {const activity = byId('workbench-activity');activity.title = `${activity.title}\n${fileWatch.detail}`;}
   const slot = byId('focused-composer-status');slot.replaceChildren();
   if (owner?.conflict) {const controls = element('span','file-status-actions');controls.append(button('Re-read file',()=> {void owner.reread();}),button('Keep editing',()=>focusEditor()));slot.append(controls);}
   byId<HTMLAnchorElement>('skip-composer').href = '#files-tree';
