@@ -1416,6 +1416,13 @@ test('direct conversation menu rejects an action after its captured layout chang
   app.applyLayout({...layout, focusedPane: 'primary-pane'}); await settle(); const before = transportLog.length;
   details.click(); await settle(); assert.equal(transcript.dataset.view,view); assert.equal(transportLog.length, before); assert.match(byId('announcements').textContent, /changed.*again/); assert.equal(contextMenu.openNow, false);
 });
+test('a child conversation without its own name reads as its parent name plus its number', async () => {
+  const root = '10000000-0000-4000-8000-0000000000aa', named = `${root}:31`, bare = `${root}:22260`, orphan = '10000000-0000-4000-8000-0000000000bb:7';
+  await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture()], roster: [agentFixture(root, {name: 'Web UI manager'}), agentFixture(named, {name: 'Observed worker'})]});
+  const derived = app.toolSubjectCaption(bare); assert.equal(derived?.text, 'Web UI manager · 22260'); assert.equal(derived?.derived, true); assert.equal(derived?.title, bare);
+  const own = app.toolSubjectCaption(named); assert.equal(own?.name, 'Observed worker'); assert.equal(own?.derived, undefined);
+  assert.equal(app.toolSubjectCaption(orphan)?.derived, undefined); assert.equal(app.toolSubjectCaption(orphan)?.text, 'Unresolved conversation');
+});
 test('Primary model and thinking are picker buttons under its composer with accessible names', async () => {
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({cwd: '/fixture', lifecycle: 'ready', model: {provider: 'provider', id: 'model', name: 'Model', reasoning: false, input: ['text']}, thinkingLevel: 'high'})], roster: []});
   const model = primaryControl('model'), thinking = primaryControl('thinking');

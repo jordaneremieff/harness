@@ -1847,7 +1847,17 @@ function referenceIdentities(query: ReferenceQuery): ReferenceDestination[] {
   for (const view of state.primaries.values()) if (view.sessionId === text || view.key === text) destinations.push({target: {kind: 'primary', key: view.key, epoch: view.epoch}});
   return destinations;
 }
-function toolSubjectCaption(value: string): ToolSubjectCaption | undefined {
+/** A child conversation without a name of its own reads as its parent's name plus its number. */
+function derivedChildName(identity: string): string | undefined {
+  const split = identity.lastIndexOf(':'); if (split < 0 || !conversationIdentityText(identity)) return undefined;
+  const parent = presentationCaptions().knownName(identity.slice(0, split))?.name;
+  return parent ? `${parent} · ${identity.slice(split + 1)}` : undefined;
+}
+export function toolSubjectCaption(value: string): ToolSubjectCaption | undefined {
+  const caption = subjectCaption(value), derived = caption?.name ? undefined : derivedChildName(value);
+  return derived ? {...caption, text: derived, title: value, derived: true} : caption;
+}
+function subjectCaption(value: string): ToolSubjectCaption | undefined {
   const loadedName=presentationCaptions().knownName(value);
   const destinations = referenceIdentities(value), destination = destinations.length === 1 ? destinations[0] : undefined;
   if (!destination) return loadedName?{text:loadedName.name,...loadedName,title:value}:destinations.length || conversationIdentityText(value) ? {text: 'Unresolved conversation', title: value} : undefined;

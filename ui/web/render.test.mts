@@ -1055,6 +1055,11 @@ test('a sender without a public name shows the loaded conversation caption, neve
   const unnamed = new Transcript('primary', {presentation: () => {}, reading: () => {}, subject: () => ({text: 'Unnamed conversation', open: () => {}})});
   unnamed.set([communicationEntry('ready', 'Body', '')]); flush(); assert.equal(node('primary-transcript').querySelector('.communication-sender')?.textContent, 'Unnamed agent'); unnamed.reset();
 });
+test('a derived child caption labels a sender without a name and keeps the identity in the title', () => {
+  setup(); const view = new Transcript('primary', {presentation: () => {}, reading: () => {}, subject: identity => ({text: 'Web UI manager · 22260', derived: true, title: identity})});
+  view.set([communicationEntry('ready', 'Body', '')]); flush(); const heading = node('primary-transcript').querySelector('.communication-sender'); assert.ok(heading);
+  assert.equal(heading.textContent, 'Web UI manager · 22260'); assert.equal(heading.title, '10000000-0000-4000-8000-000000000001'); view.reset();
+});
 test('response stop states remain visible without a supplied error message', () => {
   setup(); const view = transcript();
   view.set(['error', 'aborted'].map(stopReason => ({id: stopReason, kind: 'message', messages: [{...message(stopReason, ''), parts: [], stopReason}]}))); flush();

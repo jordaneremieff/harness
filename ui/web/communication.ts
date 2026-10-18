@@ -164,6 +164,7 @@ export class CommunicationCard {
     if (loaded?.name && loaded.provenance) return loaded.name;
     const supplied=sender.name?.trim();
     if (supplied && supplied!==sender.identity && !conversationIdentityText(supplied)) return supplied;
+    if (loaded?.derived) return loaded.text;
     return loaded?.open && loaded.text && !loaded.text.startsWith('Unnamed') ? loaded.text : 'Unnamed agent';
   }
   private header(value: CommunicationPresentation, message: MessageView): void {
