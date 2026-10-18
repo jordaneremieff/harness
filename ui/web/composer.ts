@@ -107,6 +107,7 @@ export class Composer {
   private recipientGuidance = 'This agent is not ready for messages.';
   private busy = false;
   private deliverySupported = false;
+  private waiting = false;
   private operations: OperationView[] = [];
   private admittedSaves = new WeakMap<DraftSave,Submission>();
   private sizePending = false;
@@ -249,6 +250,11 @@ export class Composer {
     this.receipt(buffer); this.flush(buffer);
   }
   updateDraft(draft: DraftView): void { if (this.current) { this.receive(this.current, draft); this.paint(this.current); this.receipt(this.current); } }
+  /** An open extension dialog holds the pending send; the composer says so instead of reading as a stalled send. Delivery is unchanged. */
+  awaitingAnswer(waiting: boolean): void {
+    if (this.waiting === waiting) return; this.waiting = waiting;
+    if (this.current) this.receipt(this.current);
+  }
   availability(connected: boolean, ready: boolean, busy: boolean, gated = false, deliverySupported = ready): void {
     this.connected = connected; this.ready = ready; this.busy = busy; this.gated = gated; this.deliverySupported = deliverySupported;
     if (!connected) for (const buffer of this.buffers.values()) buffer.attachments?.suspend();
@@ -909,7 +915,8 @@ export class Composer {
   }
   private receiptNotices(buffer: Buffer, records: OperationView[], slot: HTMLElement): void {
     const ordinary = buffer.lastOperation?.state === 'accepted' && buffer.notice === 'Message sent';
-    if (buffer.notice && !ordinary && buffer.notice !== buffer.saveError) slot.append(element('p', 'warning', buffer.notice));
+    const notice = this.waiting && buffer.submitting && (buffer.notice === 'Sending…' || buffer.notice.startsWith('Running /')) ? 'Waiting for your answer' : buffer.notice;
+    if (notice && !ordinary && buffer.notice !== buffer.saveError) slot.append(element('p', 'warning', notice));
     if (buffer.noticeDetails && !buffer.saveError) slot.append(this.details(buffer.noticeDetails));
     if (buffer.insertionCopy !== undefined) slot.append(button('Insert prepared text', () => {
       const captured = this.insertionCapture(); if (captured?.buffer === buffer && buffer.insertionCopy !== undefined) this.insertPrepared(captured, buffer.insertionCopy);

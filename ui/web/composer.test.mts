@@ -1270,3 +1270,17 @@ test('Primary and a recipient without commands never run a command from the draf
   const none = fixture('agent', () => ({state: 'unavailable', items: [], message: 'Start the agent to run commands.'}), true); none.connect(state('run', draft(0, '', 'followUp'), true));
   none.composer.setText('/ping'); assert.equal(none.node('send').textContent, 'Send');
 });
+test('an open extension dialog changes the pending send line to Waiting for your answer without changing delivery', async () => {
+  const f = fixture('primary'); const saved = f.connect(state('dialog-wait', draft(0, '', 'prompt')));
+  f.composer.setText('/approval-probe'); await turn(); const firstSave = f.pick('PUT', '/draft');
+  const sending = f.composer.send(); const request = await f.waitCall('POST', '/inputs');
+  assert.match(f.node('receipt').textContent, /Sending…/); assert.doesNotMatch(f.node('receipt').textContent, /Waiting for your answer/);
+  f.composer.awaitingAnswer(true);
+  assert.match(f.node('receipt').textContent, /Waiting for your answer/); assert.doesNotMatch(f.node('receipt').textContent, /Sending…/);
+  f.composer.awaitingAnswer(false);
+  assert.match(f.node('receipt').textContent, /Sending…/); assert.doesNotMatch(f.node('receipt').textContent, /Waiting for your answer/);
+  f.composer.awaitingAnswer(true);
+  assert.equal(request.body.message, '/approval-probe'); f.admit(saved); await turn(); f.ok(f.pick('GET', '/dialog-wait'), {...saved, draft: draft(2, '', 'prompt')}); await sending; f.ok(firstSave, draft(1, '/approval-probe', 'prompt')); await turn();
+  assert.doesNotMatch(f.node('receipt').textContent, /Waiting for your answer|Sending…/);
+  f.composer.destroy();
+});

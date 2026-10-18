@@ -604,7 +604,7 @@ async function prepareMessageTarget(workspaceId: string, target: Extract<Target,
     throw error;
   }
 }
-const extensionDialogs = new ExtensionDialogs(modal, () => state, next => { state = next; }, primary, item => presentationName(presentation({kind: 'primary', key: item.key, epoch: item.epoch})));
+const extensionDialogs = new ExtensionDialogs(modal, () => state, next => { state = next; }, primary, item => presentationName(presentation({kind: 'primary', key: item.key, epoch: item.epoch})), syncAwaitingAnswer);
 const connectionRecovery = new ConnectionRecovery({attempt: resync, paint: (phase, error) => {
   connectionPhase = phase; connectionError = error; connected = phase === 'healthy'; renderConnection();
   if (connected) {renderAll(); void finishStartup().catch(showError);} else renderAvailability();
@@ -1257,6 +1257,11 @@ function renderObservedAgent(data: EventData['agent.frame'], receivedAt?: number
   tabStrip.render(); renderIdentity();
   if (footerController?.target.kind === 'agent' && footerController.target.identity === data.identity) renderAgentSettings(presentation(target), target);
 }
+function awaitingAnswer(target: Target): boolean { return sameTarget(target, primaryTarget()) && extensionDialogs.awaiting(); }
+function syncAwaitingAnswer(): void {
+  const target = primaryTarget(); if (!target || !state.workspace) return;
+  controllers.get(controllerKey(state.workspace.id, target))?.composer.awaitingAnswer(awaitingAnswer(target));
+}
 function applyExtension(event: ReceivedEvent): void {
   const data = event.envelope.data as EventData['extension.request'];
   if ('id' in data) { extensionDialogs.update(); return; }
@@ -1343,6 +1348,7 @@ function renderController(controller: ConversationController, deferred = false, 
   controller.composer.receipts(state.operations.values());
   const view = presentation(controller.target); controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + presentationName(view), controllerGuidance(controller, view), messagePlaceholder(presentationName(view)));
   controller.composer.availability(connected, !!saved && (controller.target.kind === 'agent' || view.input), view.busy, selecting, view.input);
+  controller.composer.awaitingAnswer(awaitingAnswer(controller.target));
   if (firstDraft && !controller.passive && !controller.root.hidden && sameTarget(layoutTarget(currentLayout(), primaryTarget()) ?? undefined, controller.target) && document.activeElement === document.body) controller.composer.focus();
   controller.elements.root.hidden = !saved;renderInspection(controller); renderObserved(controller, controller.target.kind === 'agent' || connected || !view.activity);
   controllerNode(controller, 'stop').hidden = !canStopController(controller);

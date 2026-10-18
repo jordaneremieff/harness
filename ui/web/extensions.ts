@@ -15,8 +15,17 @@ export class ExtensionDialogs {
   private put: (state: UiState) => void;
   private primary: () => PrimaryView | undefined;
   private caption: (primary: PrimaryView) => string;
-  constructor(modal: Modal, get: () => UiState, put: (state: UiState) => void, primary: () => PrimaryView | undefined, caption: (primary: PrimaryView) => string = () => 'Primary') { this.modal = modal; this.get = get; this.put = put; this.primary = primary; this.caption = caption; }
+  private waiting = false;
+  private changed: () => void;
+  constructor(modal: Modal, get: () => UiState, put: (state: UiState) => void, primary: () => PrimaryView | undefined, caption: (primary: PrimaryView) => string = () => 'Primary', changed: () => void = () => {}) { this.modal = modal; this.get = get; this.put = put; this.primary = primary; this.caption = caption; this.changed = changed; }
+  /** True while a pending dialog waits for an answer from this Primary conversation. */
+  awaiting(): boolean {
+    const primary = this.primary(); if (!primary) return false;
+    return !!activeDialog(this.get().dialogs, {kind: 'primary', key: primary.key, epoch: primary.epoch});
+  }
+  private publish(): void { const next = this.awaiting(); if (next !== this.waiting) { this.waiting = next; this.changed(); } }
   update(): void {
+    this.publish();
     const primary = this.primary(); if (!primary) return;
     const target: Extract<Target, {kind: 'primary'}> = {kind: 'primary', key: primary.key, epoch: primary.epoch};
     const item = activeDialog(this.get().dialogs, target);
@@ -81,7 +90,7 @@ export class ExtensionDialogs {
       id = await reserve('primary.dialog', item.target);
       const result = respondDialog(this.get().dialogs, item.target, item.dialog.id, value);
       if (!result.command) { await request(`/api/operations/${encodeURIComponent(id)}`, 'DELETE'); return; }
-      this.put({...this.get(), dialogs: result.state});
+      this.put({...this.get(), dialogs: result.state}); this.publish();
       if (this.modal.owns(token)) this.modal.body.append(element('p', 'secondary', 'Sending response…'));
       await operation('primary.dialog', `/api/primaries/${encodeURIComponent(item.target.key)}/dialogs/${encodeURIComponent(item.dialog.id)}`, result.command.response, item.target, id);
       if (this.shown === key) { this.shown = undefined; if (this.modal.owns(token)) this.modal.close(); } this.update();

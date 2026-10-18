@@ -26,7 +26,7 @@ class FakeNode extends EventTarget {
   focus(): void {}
   querySelectorAll(): FakeNode[] {return this.children.flatMap(node => [...(node.type === 'button' ? [node] : []), ...node.querySelectorAll()]);}
 }
-function fixture(dialog: DialogView, caption?: (value: PrimaryView) => string, view: PrimaryView = primary) {
+function fixture(dialog: DialogView, caption?: (value: PrimaryView) => string, view: PrimaryView = primary, changed?: () => void) {
   Object.defineProperty(globalThis, 'document', {configurable: true, value: {createElement: () => new FakeNode()}});
   let state = {...createState(), dialogs: enqueueDialog(createState().dialogs, target, dialog)};
   const closed = gate<void>(); const failed = gate<unknown>();
@@ -36,7 +36,7 @@ function fixture(dialog: DialogView, caption?: (value: PrimaryView) => string, v
     actions(...nodes: FakeNode[]) {this.body.append(...nodes);},
     close() {this.openNow = false; closed.resolve();}, error(error: unknown) {failed.resolve(error);},
   };
-  const ui = new ExtensionDialogs(modal as unknown as Modal, () => state, value => {state = value;}, () => view, caption); ui.update();
+  const ui = new ExtensionDialogs(modal as unknown as Modal, () => state, value => {state = value;}, () => view, caption, changed); ui.update();
   return {modal, ui, closed, failed, get state() {return state;}};
 }
 function response(data: unknown): Response {return {json: async () => ({ok: true, data})} as Response;}
@@ -97,6 +97,16 @@ test('a confirm dialog offers only No and Yes, and Escape still sends the cancel
   const other = fixture({id: 'i', method: 'input', title: 'Name'});
   assert.deepEqual(other.modal.body.querySelectorAll().map(node => node.textContent), ['Cancel', 'Choose']);
   assert.deepEqual(fixture(select).modal.body.querySelectorAll().map(node => node.textContent), ['Safe label', 'Cancel']);
+});
+test('the awaiting state follows the open dialog for this Primary and clears once it is answered', async () => {
+  let changes = 0; const f = fixture(select, undefined, primary, () => {changes++;});
+  assert.equal(f.ui.awaiting(), true); assert.equal(changes, 1);
+  f.ui.update(); assert.equal(changes, 1, 'An unchanged state does not notify again');
+  globalThis.fetch = async path => String(path) === '/api/operations' ? response({operationId: 'op'}) : response({id: 'op', kind: 'primary.dialog', state: 'completed', target, createdAt: '', updatedAt: ''});
+  const choice = f.modal.body.querySelectorAll().find(node => node.textContent === 'Safe label'); assert.ok(choice);
+  choice.dispatchEvent(new Event('click')); await f.closed.promise;
+  assert.equal(f.ui.awaiting(), false); assert.equal(changes, 2);
+  assert.equal(fixture(select, undefined, {...primary, key: 'other', epoch: 9}).ui.awaiting(), false, 'A dialog for another Primary does not count');
 });
 test('dialog deadlines name the response deadline without replacing supplied content', () => {
   const deadline = '2030-01-01T00:00:00.000Z';
