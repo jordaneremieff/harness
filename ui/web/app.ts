@@ -17,7 +17,7 @@ import {chooseWorkingFile} from './working-file-chooser.ts';
 import { activeTab, ConversationCaptions, conversationIdentityText, type CaptionRow, closeTab, duplicateTabTails, FileBrowseState, layoutTarget, openTab, switchTab, tabForTarget, tabKey, workspaceLayout } from './tabs.ts';
 import { paneLeaves, paneById, activatePaneTab, movePaneTab, resizePaneSplit, minimumPaneSize, paneSplitGeometry, splitPane, normalizePaneLayout, samePaneLayout, type PaneLeaf } from './pane-layout.ts';
 import { TabStrip } from './tabs-view.ts';
-import { cardAction, cardIcon, controlIcon, type CardIcon } from './card-icons.ts';
+import { cardAction, controlIcon, type CardIcon } from './card-icons.ts';
 import { thinkingExpanded } from './transcript-presentation.ts';
 import { contextMenu, nativeEditingTarget, paneMenuItems, type ContextItem } from './context-menu.ts';
 import { ProjectPicker } from './picker.ts';
@@ -2285,7 +2285,7 @@ async function finishStartup(): Promise<void> {
 }
 async function initializeDevReload(current:()=>boolean): Promise<void> {
   if (devReload) {await devReload.ready; if (!current()) return; devReload.reconnect(); await devReload.resume(); return;}
-  const notice = element('span', 'secondary'); notice.setAttribute('role', 'status');
+  const notice = element('span', 'secondary workbench-update'); notice.setAttribute('role', 'status');
   devReload = new DevReload({interaction: () => {const reason = devHold(); return {revision: devInteractionRevision, safe: !reason, ...(reason ? {reason} : {})};}, drain: drainDev,
     captureCheckpoint: captureDevCheckpoint, writeCheckpoint: checkpoint => sessionStorage.setItem(devCheckpointKey, JSON.stringify(checkpoint)),
     readCheckpoint: () => {const value = sessionStorage.getItem(devCheckpointKey);if(value===null)return null;const checkpoint=JSON.parse(value);reloadStateKey=checkpoint?.composerStateKey;return checkpoint;}, restoreCheckpoint: restoreDevCheckpoint, clearCheckpoint: () => {sessionStorage.removeItem(devCheckpointKey);const key=reloadStateKey;reloadStateKey=undefined;preparedReloadState=undefined;if(key)void deleteReloadState(key).catch(()=>{});},

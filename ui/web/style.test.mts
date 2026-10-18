@@ -275,7 +275,11 @@ test('desktop status reserves controls and identity while only long text slots s
   assert.match(desktop,/\.workbench-status \{ flex-wrap: nowrap;/);assert.doesNotMatch(desktop,/\.workbench-status \{[^}]*overflow:/);
   assert.match(desktop,/\.workbench-version \{ flex: none; max-width: none; white-space: nowrap;/);
   assert.match(desktop,/#workbench-scope \{[^}]*text-overflow: ellipsis; white-space: nowrap;/);
-  assert.match(desktop,/\.workbench-model button \{[^}]*flex-wrap: nowrap;[^}]*min-width: 10ch;/);
+  // Setting labels keep their full text; only the update notice, scope and details give way when space runs short.
+  assert.match(desktop,/\.workbench-model button \{ flex: none; flex-wrap: nowrap; white-space: nowrap; \}/);assert.doesNotMatch(desktop,/\.workbench-model[^{]*\{[^}]*min-width: \d+ch/);
+  assert.match(desktop,/\.workbench-update \{ flex: 0 10 auto; overflow: hidden; white-space: nowrap; \}/);assert.match(desktop,/\.workbench-status \.composer-details \{[^}]*max-width: 48ch;/);
+  assert.match(rule('.workbench-update'),/display: inline-flex; align-items: center; gap: 8px/);
+  assert.match(rule('.inspection-content button, .agent-inspection > button'),/padding: 2px 0/);
   assert.match(desktop,/\.workbench-activity-state \{ flex: none;/);assert.match(desktop,/\.workbench-activity-text \{[^}]*text-overflow: ellipsis;/);
   assert.match(desktop,/\.workbench-status \.composer-details \{[^}]*min-width: 8ch;/);
   assert.match(desktop,/\.workbench-status:has\([^}]*workbench-draft-state[^}]*file-retained-drafts[^}]*control-attribution[^}]*\{ flex-wrap: wrap;/);

@@ -292,3 +292,22 @@ test('hiding a surviving controller cancels resume ownership and rejects its lat
   assert.notEqual(app.state.conversations.get(targetIdentity(h.target))?.entries.has('saved-anchor'), true);
   assert.deepEqual(app.state.targets.get(h.saved.targetKey)?.reading, h.reading);
 });
+test('a tab whose page-load read was aborted by a tab switch reads again when it is selected again', async t => {
+  const original = globalThis.fetch, held = Promise.withResolvers<Response>(); let reads = 0;
+  const A = {kind: 'agent' as const, identity: 'reselect-a'}, B = {kind: 'agent' as const, identity: 'reselect-b'};
+  t.after(() => {globalThis.fetch = original;});
+  globalThis.fetch = async (input, init) => {
+    const path = new URL(String(input), 'http://ui.test').pathname;
+    // The selection write is answered locally, so the server state never changes.
+    if (init?.method === 'PUT' && path.endsWith('/selection') && app.state.workspace) return Response.json({ok: true, data: {...app.state.workspace, ...JSON.parse(String(init.body)), revision: app.state.workspace.revision + 1}});
+    if (path !== `/api/agents/${A.identity}/history`) return original(input, init);
+    reads++;
+    if (reads > 1) return Response.json({ok: true, data: {target: A, entries: [row('answer')], nextBefore: null, coverage, revision: 'r'}});
+    return held.promise;
+  };
+  await arrive({workspace: {id: 'reselect', revision: 1, selectedTarget: A, conversationLayout: fixtureHost.singlePane([A, B])}, primaries: [], roster: [agentFixture(A.identity, {availability: 'stored', capabilities: {input: false}}), agentFixture(B.identity, {availability: 'stored', capabilities: {input: false}})], targets: [targetFixture('reselect-ta', A), targetFixture('reselect-tb', B)]});
+  await settle(); assert.equal(agentControl('history-note-line').textContent, 'Loading messages…'); assert.equal(reads, 1);
+  const tab = async (identity: string) => {const node = fixtureHost.paneNode(app.focusedPane).querySelector('.conversation-tabs')?.querySelector(`[data-tab-key="agent:${identity}"]`); assert.ok(node); node.click(); await settle();};
+  await tab(B.identity); held.reject(new DOMException('aborted', 'AbortError')); await settle(); await tab(A.identity);
+  assert.equal(reads, 2); assert.equal(agentControl('history-note-line').textContent, ''); assert.match(agentControl('transcript').textContent, /answer/);
+});

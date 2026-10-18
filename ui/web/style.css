@@ -510,7 +510,7 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .inspection-entry > h3 { color: var(--info); }
 .inspection-text { min-width: 0; }
 .inspection-status, .inspection-facts, .inspection-coverage { flex: none; margin: 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
-.inspection-content button, .agent-inspection > button { align-self: start; padding: 2px var(--s2); }
+.inspection-content button, .agent-inspection > button { align-self: start; padding: 2px 0; }
 .communication-results { display: flex; flex-wrap: wrap; gap: var(--s2); }
 .communication-results > .card-action { display: inline-flex; align-items: center; gap: 6px; width: auto; height: auto; max-width: 100%; padding: 2px 6px; text-align: left; white-space: normal; overflow-wrap: normal; word-break: normal; }
 .communication-results:empty { display: none; }
@@ -622,6 +622,8 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .file-message-fact { min-width: 0; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
 .file-message-destination { width: 100%; min-width: 0; max-width: 100%; }
 .workbench-model button:not(:disabled):hover { background: var(--raised); }
+.workbench-update { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
+.workbench-update[hidden] { display: none; }
 .workbench-activity { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
 .workbench-activity[data-tone=info] { color: var(--info); }
 .workbench-activity[data-tone=warning] { color: var(--warning); }
@@ -644,9 +646,10 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
   #workbench-scope { flex: 0 1 18ch; min-width: 6ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .workbench-version { flex: none; max-width: none; white-space: nowrap; }
   .workbench-status-facts { flex: 1 1 0; flex-wrap: nowrap; gap: 8px; }
-  .workbench-model { flex: 1 1 0; flex-wrap: nowrap; min-width: 24ch; gap: 4px; }
-  .workbench-model button { flex: 1 1 0; flex-wrap: nowrap; min-width: 10ch; white-space: nowrap; }
-  .workbench-model #thinking-button { flex: 0 1 17ch; min-width: 12ch; }
+  .workbench-model { flex: none; flex-wrap: nowrap; gap: 4px; }
+  .workbench-model button { flex: none; flex-wrap: nowrap; white-space: nowrap; }
+  .workbench-control-value { max-width: 32ch; }
+  .workbench-update { flex: 0 10 auto; overflow: hidden; white-space: nowrap; }
   .workbench-control-value, .workbench-status-facts .agent-settings { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .workbench-status-facts .agent-settings { flex: 1 1 0; min-width: 0; }
   .workbench-activity { flex: none; white-space: nowrap; }
@@ -654,7 +657,7 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
   .workbench-activity:has(> .workbench-activity-text)[data-busy=true]::before { margin-right: 8px; }
   .workbench-activity-state { flex: none; }
   .workbench-activity-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .workbench-status .composer-details { flex: 0 1 auto; min-width: 8ch; max-width: 28ch; }
+  .workbench-status .composer-details { flex: 0 1 auto; min-width: 8ch; max-width: 48ch; }
   .workbench-status .composer-details > summary { flex-wrap: nowrap; gap: 4px; }
   .workbench-status .composer-details > summary > span:not(.composer-details-label) { overflow: hidden; }
   .workbench-status:has(> .workbench-activity[data-notice=true], > .workbench-draft-state > :not(:empty):not([hidden]), > #file-retained-drafts:not([hidden]), > #control-attribution:not([hidden])) { flex-wrap: wrap; }
