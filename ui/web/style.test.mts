@@ -272,7 +272,10 @@ test('agent settings details preserve line boundaries without changing other foo
 });
 test('desktop status reserves controls and identity while only long text slots shorten', () => {
   const desktop=media('@media (min-width:1000px)');
-  assert.match(desktop,/\.workbench-status \{ flex-wrap: nowrap;/);assert.doesNotMatch(desktop,/\.workbench-status \{[^}]*overflow:/);
+  // The row wraps instead of drawing items over each other; only the activity text shrinks, with an ellipsis.
+  assert.match(desktop,/\.workbench-status \{ flex-wrap: wrap;/);assert.doesNotMatch(desktop,/\.workbench-status \{[^}]*overflow:/);
+  assert.match(desktop,/\.workbench-status-facts \{ flex: 0 1 auto; flex-wrap: wrap; min-width: min-content;/);assert.doesNotMatch(desktop,/\.workbench-status-facts \{[^}]*(flex: 1 1 0|nowrap)/);
+  assert.match(desktop,/\.workbench-activity:has\(> \.workbench-activity-text\) \{ flex: 1 1 0; min-width: 10ch;/);assert.match(desktop,/#workbench-scope \{ flex: none; max-width: 18ch;/);
   assert.match(desktop,/\.workbench-version \{ flex: none; max-width: none; white-space: nowrap;/);
   assert.match(desktop,/#workbench-scope \{[^}]*text-overflow: ellipsis; white-space: nowrap;/);
   // Setting labels keep their full text; only the update notice, scope and details give way when space runs short.

@@ -482,10 +482,10 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .workbench-status .composer-details-label { margin-left: 0; }
 .workbench-status .composer-detail-body { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 5; width: min(640px,calc(100vw - 32px)); max-height: 30dvh; margin: 0; padding: 12px; border: 1px solid var(--rule); border-radius: 4px; background: var(--raised); color: var(--fg); box-shadow: var(--shadow); }
 @media (min-width:1000px) {
-  .workbench-status { flex-wrap: nowrap; column-gap: 12px; }
-  #workbench-scope { flex: 0 1 18ch; min-width: 6ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .workbench-status { flex-wrap: wrap; column-gap: 12px; }
+  #workbench-scope { flex: none; max-width: 18ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .workbench-version { flex: none; max-width: none; white-space: nowrap; }
-  .workbench-status-facts { flex: 1 1 0; flex-wrap: nowrap; gap: 8px; }
+  .workbench-status-facts { flex: 0 1 auto; flex-wrap: wrap; min-width: min-content; gap: 2px 8px; }
   .workbench-model { flex: none; flex-wrap: nowrap; gap: 4px; }
   .workbench-model button { flex: none; flex-wrap: nowrap; white-space: nowrap; }
   .workbench-control-value { max-width: 32ch; }
@@ -493,7 +493,7 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
   .workbench-control-value, .workbench-status-facts .agent-settings { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .workbench-status-facts .agent-settings { flex: none; max-width: 60ch; }
   .workbench-activity { flex: none; white-space: nowrap; }
-  .workbench-activity:has(> .workbench-activity-text) { flex: 0 1 28ch; min-width: 10ch; gap: 0; }
+  .workbench-activity:has(> .workbench-activity-text) { flex: 1 1 0; min-width: 10ch; gap: 0; }
   .workbench-activity:has(> .workbench-activity-text)[data-busy=true]::before { margin-right: 8px; }
   .workbench-activity-state { flex: none; }
   .workbench-activity-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
