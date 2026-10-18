@@ -4,31 +4,36 @@ import {sessionLabel} from './picker-state.ts';
 import {agentName, type ConversationCaption} from './tabs.ts';
 export type PresentationTone = 'info' | 'success' | 'warning' | 'error' | 'secondary';
 
-export type AgentViewState = {hasEntries: boolean; connected: boolean; loading: boolean; ready: boolean; complete?: boolean; availability?: AgentRow['availability']; input?: boolean; checked?: boolean; reason?: string; error?: {code?: string; message: string}; startAttempt?: {pending: boolean; reason?: string}; connectionError?: string};
-/** Reading retained messages and admitting new work have independent outcomes. */
-export function agentViewStatus(source: AgentViewState): {text: string; detail: string; start: boolean} {
-  const history = agentHistoryStatus(source), connection = agentConnectionStatus(source.connectionError === source.error?.message ? {...source, connectionError: undefined} : source);
-  const text = (source.startAttempt ? [connection, history] : [history, connection]).filter(Boolean).join(' · ');
-  return {text, detail: [source.error?.message, source.startAttempt?.reason, source.connectionError, source.reason].filter(Boolean).join('\n'), start: source.availability === 'stored' && !source.startAttempt};
+export type AgentHistoryState = {hasEntries: boolean; connected: boolean; loading: boolean; ready: boolean; complete?: boolean; error?: {code?: string; message: string}};
+export type AgentStartAttempt = {pending: boolean; reason?: string};
+export type AgentComposerSource = {connected: boolean; availability?: AgentRow['availability']; input?: boolean; checked?: boolean; reason?: string; startAttempt?: AgentStartAttempt; connectionError?: string; blocked?: string};
+/** Reading retained messages is separate from admitting new work; the history note covers only the first. */
+export type AgentHistoryNote = {text: string; detail: string; reload: boolean};
+export function agentHistoryNote(source: AgentHistoryState): AgentHistoryNote {
+  const error = source.error;
+  if (error) {
+    const format = ['contract_mismatch', 'incompatible'].includes(error.code ?? '');
+    return {text: format ? 'Saved messages use an unsupported format.' : 'Saved messages could not be read.', detail: error.message, reload: true};
+  }
+  if (source.hasEntries) return {text: '', detail: '', reload: false};
+  if (source.loading) return {text: 'Loading messages…', detail: '', reload: false};
+  if (!source.connected) return {text: 'Messages are unavailable while the browser is disconnected.', detail: '', reload: false};
+  if (!source.ready) return {text: 'Messages not loaded.', detail: '', reload: false};
+  if (source.complete) return {text: 'No messages yet.', detail: '', reload: false};
+  return {text: 'Saved messages could not be confirmed.', detail: '', reload: true};
 }
-function agentHistoryStatus(source: AgentViewState): string {
-  if (source.error?.code === 'source_unreadable') return 'History unavailable: saved messages could not be read.';
-  if (source.error) return ['contract_mismatch', 'incompatible'].includes(source.error.code ?? '') ? 'History unavailable: saved messages use an unsupported format.' : 'History unavailable: saved messages could not be read.';
-  if (source.loading) return source.hasEntries ? 'Updating messages…' : 'Loading messages…';
-  if (source.hasEntries) return '';
-  if (!source.connected) return 'History unavailable: the browser is disconnected.';
-  if (!source.ready) return 'Messages not loaded.';
-  return source.ready && source.complete ? 'No messages yet.' : 'History unavailable: saved messages could not be confirmed.';
-}
-function agentConnectionStatus(source: AgentViewState): string {
-  if (source.startAttempt) return source.startAttempt.pending ? 'Starting agent…' : 'Start not confirmed. Retry only reads saved messages.';
-  if (source.connectionError) return 'Agent connection is unavailable.';
-  if (!source.connected && source.hasEntries) return 'The browser is disconnected.';
-  if (source.availability === 'live' && source.checked === false) return 'Connection not checked.';
-  if (source.availability === 'live' && source.input === false) return 'Messages are read-only.';
-  if (source.availability === 'incompatible') return 'This agent cannot connect; messages remain read-only.';
-  if (source.availability === 'stored' || source.availability === 'unavailable') return 'Agent is not connected.';
-  return '';
+export type AgentComposerState = {kind: 'start' | 'starting' | 'failed' | 'read-only' | 'notice'; line: string; action?: {label: string; pending?: boolean; disabled?: boolean}; detail: string};
+/** What the composer must say before the draft can be sent; undefined means the agent accepts messages as usual. */
+export function agentComposerState(source: AgentComposerSource): AgentComposerState | undefined {
+  const attempt = source.startAttempt, detail = [attempt?.reason, source.connectionError, source.reason].filter(Boolean).join('\n');
+  if (attempt?.pending) return {kind: 'starting', line: 'Starting the agent…', action: {label: 'Starting…', pending: true, disabled: true}, detail};
+  if (attempt) return {kind: 'failed', line: 'Start did not complete.', action: {label: 'Try again', disabled: !source.connected}, detail};
+  if (!source.connected) return undefined;
+  if (source.connectionError || source.availability === 'incompatible' || source.availability === 'unavailable') return {kind: 'read-only', line: 'This agent cannot run here. Messages are read only.', detail};
+  if (source.availability === 'stored') return {kind: 'start', line: 'Not running. Start it to send a message.', action: {label: 'Start'}, detail};
+  if (source.availability === 'live' && source.checked && source.input === false) return {kind: 'read-only', line: 'Messages are read only.', detail};
+  if (source.blocked) return {kind: 'notice', line: 'Provider blocked. Configure this agent through Primary.', detail: source.blocked};
+  return undefined;
 }
 export type ConversationPresentation = {
   name: string; nameDetail?: string; identityTail?: string; tone: PresentationTone; cwd?: string; activity: string; input: boolean; busy: boolean; lastObserved: boolean; guidance: string;
@@ -42,7 +47,7 @@ export function settingsLabel(view: Pick<ConversationPresentation, 'model' | 'th
   return `${both ? 'Last observed: ' : ''}${[model, thinking].filter(Boolean).join(' · ')}`;
 }
 export type PresentationSource = {target?: Target; primary?: PrimaryView; savedSession?: SavedSession; row?: AgentRow; identityTail?: string; caption?: ConversationCaption;
-  availability?: EventData['agent.availability']; negotiated?: Pick<TargetPreparation, 'availability' | 'capabilities'> & {identity: string}; frame?: ProjectedFrame; entries?: readonly EntryView[]; tool?: AgentRow['currentTool']; connected: boolean};
+  availability?: EventData['agent.availability']; negotiated?: Pick<TargetPreparation, 'availability' | 'capabilities'> & {identity: string}; frame?: ProjectedFrame; entries?: readonly EntryView[]; tool?: AgentRow['currentTool']; start?: AgentStartAttempt; connected: boolean};
 /** The newest conversational record owns its response outcome; tool errors do not. */
 export function responseOutcome(entries: readonly EntryView[] = []): ResponseOutcome | undefined {
   const message = lastConversationMessage(entries);
@@ -93,15 +98,20 @@ function agentSettings(row?: AgentRow, frame?: ProjectedFrame): Pick<Conversatio
     thinking: frame?.status.thinkingLevel ?? row?.thinkingLevel ?? row?.model?.thinkingLevel,
     retainedModel: !frame?.status.model && !!row?.model, retainedThinking: frame?.status.thinkingLevel === undefined && !!(row?.thinkingLevel ?? row?.model?.thinkingLevel)};
 }
-function agentActivity(state: AgentRow['availability'], input: boolean, frame: ProjectedFrame | undefined, connected: boolean, checked: boolean): string {
+function startActivity(state: AgentRow['availability'], start: AgentStartAttempt | undefined): string | undefined {
+  if (!start || state === 'live') return undefined;
+  return start.pending ? 'Starting…' : 'Start failed';
+}
+function agentActivity(state: AgentRow['availability'], input: boolean, frame: ProjectedFrame | undefined, connected: boolean, checked: boolean, start?: AgentStartAttempt): string {
   if (!connected) return 'Connection lost; activity unknown';
+  const attempt = startActivity(state, start); if (attempt) return attempt;
   if (state === 'live' && !checked) return 'Connection not checked';
-  if (state !== 'live') return {stored: 'Not connected', incompatible: 'Connection unavailable', unavailable: 'Unavailable'}[state];
+  if (state !== 'live') return {stored: 'Not running', incompatible: 'Read only', unavailable: 'Read only'}[state];
   if (Array.isArray(frame?.status.compactions?.value) && frame.status.compactions.value.length) return 'Compacting…';
   if (frame?.status.retry && frame.status.busy) return `Retrying · attempt ${frame.status.retry.attempt} · next ${retryTime(frame.status.retry.at)}`;
   if (frame?.status.busy) return 'Working';
   if (frame?.status.providerBlock) return 'Provider blocked';
-  return outcomeLabel(responseOutcome(frame?.entries)) ?? (frame && input ? 'Ready' : 'Connected');
+  return outcomeLabel(responseOutcome(frame?.entries)) ?? (input ? 'Ready' : 'Read only');
 }
 function frameTool(frame?: ProjectedFrame): AgentRow['currentTool'] {
   if (!frame?.status.busy) return undefined;
@@ -125,8 +135,9 @@ function agentFailureDetails(frame?: ProjectedFrame): string | undefined {
   const block = frame?.status.providerBlock; if (!block) return;
   return ['Configure this agent through Primary.', block.error, block.errorRedacted ? 'Some diagnostic text was redacted.' : '', block.errorTruncated ? 'The diagnostic is shortened.' : ''].filter(Boolean).join('\n');
 }
-function agentTone(state: AgentRow['availability'], connected: boolean, checked: boolean, live: boolean, busy: boolean, input: boolean, frame?: ProjectedFrame, outcome?: ResponseOutcome): PresentationTone {
-  if(state==='stored')return 'secondary';
+function storedTone(start: AgentStartAttempt | undefined): PresentationTone { return start && !start.pending ? 'warning' : 'secondary'; }
+function agentTone(state: AgentRow['availability'], connected: boolean, checked: boolean, live: boolean, busy: boolean, input: boolean, frame?: ProjectedFrame, outcome?: ResponseOutcome, start?: AgentStartAttempt): PresentationTone {
+  if(state==='stored')return storedTone(start);
   if(connected&&state==='live'&&!checked)return 'secondary';
   if(!connected||!live)return 'warning';
   if(frame?.status.retry||frame?.status.providerBlock)return 'warning';
@@ -144,9 +155,9 @@ function agentPresentation(source: PresentationSource, identity: string): Conver
   const name = source.caption?.name ?? agentName(row?.name, row?.handle, identity, frame?.status.name, row?.firstMessage);
   const identityTail = source.caption?.tail ?? source.identityTail;
   const outcome = responseOutcome(frame?.entries);
-  const tone = agentTone(state,source.connected,checked,live,busy,input,frame,outcome);
+  const tone = agentTone(state,source.connected,checked,live,busy,input,frame,outcome,source.start);
   return {...emptyPresentation(source.connected), ...settings, name, identityTail, tone, cwd: row?.cwd,
-    activity: agentActivity(state, input, frame, source.connected, checked), input, busy, guidance: input ? '' : state === 'stored' ? 'Use Start agent to connect this agent.' : 'Messages are unavailable for this agent.', retainedModel: settings.retainedModel || retained && !!settings.model, retainedThinking: settings.retainedThinking || retained && !!settings.thinking,
+    activity: agentActivity(state, input, frame, source.connected, checked, source.start), input, busy, guidance: input ? '' : state === 'stored' ? 'Start this agent to send.' : 'Messages are unavailable for this agent.', retainedModel: settings.retainedModel || retained && !!settings.model, retainedThinking: settings.retainedThinking || retained && !!settings.thinking,
     hideVisibleRosterState: source.connected && state === 'live' && !checked,
     detail: live ? agentFailureDetails(frame) : undefined,
     responseOutcome: responseOutcome(frame?.entries), tool: live ? frameTool(frame) : undefined};
@@ -161,8 +172,8 @@ export function presentationName(view: Pick<ConversationPresentation, 'name' | '
 export function presentationGlyph(view: ConversationPresentation): string {
   if (view.busy) return '●';
   if (['Ready', 'Connected'].includes(view.activity)) return '✓';
-  if (view.activity === 'Not connected') return '○';
-  if (['Stopped', 'Response failed', 'Provider blocked', 'Unavailable', 'Connection unavailable', 'Session stopped'].includes(view.activity)) return '!';
+  if (['Not running', 'Read only'].includes(view.activity)) return '○';
+  if (['Stopped', 'Response failed', 'Provider blocked', 'Start failed', 'Session stopped'].includes(view.activity)) return '!';
   return '?';
 }
 /** Composer folders come only from this recipient, never the window launch directory. */

@@ -7,20 +7,19 @@ import {reconcileChildren} from './render.ts';
 import {taskReference, type ConversationTask, type TaskReference, type TaskAnswer} from './conversation-tasks.ts';
 
 type Mode=InspectionCheckpoint['mode'];
+const HISTORY_WINDOW=100;
 type TaskNode={node:HTMLElement;select:HTMLButtonElement;body:HTMLElement;row:ConversationTask;open:boolean;answerText?:string;result?:ResultInspection;reason?:string};
 export type InspectionHooks={read(request:InspectRequest,signal:AbortSignal):Promise<AgentInspectionView>;
   readResult?:(identity:string,selector:ResultSelector,signal:AbortSignal)=>Promise<AgentInspectionView>;
   tasks?:()=>readonly ConversationTask[];entryKey?:(native:number)=>string|undefined;history?:boolean;showConversation?:(entry:string,identity?:string)=>void;moreConversation?:()=>void;
-  changed():void;current():boolean;restore():unknown;save(value:InspectionCheckpoint|null):void};
+  returned?():void;changed():void;current():boolean;restore():unknown;save(value:InspectionCheckpoint|null):void};
 /** Tasks are selected from recorded asks and exact public references, never from typed internal keys. */
 export class AgentInspection {
-  readonly navigation=element('div','inspection-navigation');
   readonly node=element('section','agent-inspection');
+  private readonly header=element('div','inspection-header');
   readonly scroller=element('div','inspection-content');
   private readonly status=element('p','inspection-status inspection-read-status');
   private readonly content=element('div');
-  private readonly conversationButton:HTMLButtonElement;
-  private readonly resultButton:HTMLButtonElement;
   private readonly refresh:HTMLButtonElement;
   private readonly hooks:InspectionHooks;
   private readonly identity:string;
@@ -47,10 +46,10 @@ export class AgentInspection {
   constructor(identity:string,hooks:InspectionHooks){
     this.identity=identity;this.hooks=hooks;this.node.hidden=true;
     this.scroller.tabIndex=0;this.scroller.setAttribute('aria-label','Conversation tasks');this.status.setAttribute('role','status');
-    this.conversationButton=button('Conversation',()=>this.conversation());this.resultButton=button('Tasks',()=>this.open('result'));
-    this.navigation.setAttribute('aria-label','Conversation views');this.navigation.append(this.conversationButton,this.resultButton);
+    const back=button('Back to conversation',()=>{this.conversation();this.hooks.returned?.();});back.className='inspection-back';
+    this.header.append(element('h2','inspection-title','Sent and received tasks'),back);
     this.refresh=button('Refresh tasks',()=>{this.cancel();this.readKeys.clear();this.history=undefined;this.historyAll=undefined;if(this.hasSelector())void this.load();else void this.loadTasks();});
-    this.scroller.append(this.content);this.node.append(this.status,this.refresh,this.scroller);
+    this.scroller.append(this.content);this.node.append(this.header,this.status,this.refresh,this.scroller);
     this.scroller.addEventListener('scroll',()=>{this.scrollTop=this.scroller.scrollTop;});this.scroller.addEventListener('scrollend',()=>this.persist());
     try{const saved=hooks.restore();if(validInspectionCheckpoint(saved)&&saved.identity===identity)this.restore(saved);}catch{/* Storage is optional. */}
     this.paintMode();
@@ -74,10 +73,10 @@ export class AgentInspection {
     if(this.visible===visible)return;this.visible=visible;if(!visible){this.cancel();return;}
     if(this.mode&&!this.loaded){if(this.hasSelector()||this.mode==='exact')void this.load();else void this.loadTasks();}this.scroller.scrollTop=this.scrollTop;
   }
-  destroy():void{this.cancel();this.navigation.remove();this.node.remove();}
+  destroy():void{this.cancel();this.node.remove();}
   private hasSelector():boolean{return Object.keys(this.selector).length>0;}
   private protectedContent():boolean{const selection=document.getSelection();return !!selection&&!selection.isCollapsed&&this.content.contains(selection.anchorNode);}
-  private paintMode():void{this.node.hidden=!this.mode;this.conversationButton.setAttribute('aria-pressed',String(!this.mode));this.resultButton.setAttribute('aria-pressed',String(!!this.mode));this.node.dataset.view=this.mode??'conversation';if(!this.mode)setText(this.status,'');}
+  private paintMode():void{this.node.hidden=!this.mode;this.node.dataset.view=this.mode??'conversation';if(!this.mode)setText(this.status,'');}
   private persist():void{try{this.hooks.save(this.checkpoint()??null);}catch{/* The current tab retains its state. */}}
   private cancel():void{this.serial++;this.controller?.abort();this.controller=undefined;this.pending=false;this.refresh.disabled=false;}
   private current(serial:number,signal:AbortSignal):boolean{return !signal.aborted&&serial===this.serial&&this.visible&&this.hooks.current();}
@@ -94,7 +93,7 @@ export class AgentInspection {
     const page=await this.hooks.read({view:'history',source:'user',limit:20,...(cursor?{cursor}:{})},signal);
     if(!this.current(serial,signal))return false;
     if(page.view!=='history'||page.identity!==this.identity)throw Error('The task history target changed.');this.history=page;
-    const all=await this.hooks.read({view:'history',limit:100},signal);
+    const all=await this.hooks.read({view:'history',limit:HISTORY_WINDOW},signal);
     if(!this.current(serial,signal))return false;
     if(all.view!=='history'||all.identity!==this.identity)throw Error('The reply history target changed.');this.historyAll=all;return true;
   }
@@ -158,7 +157,7 @@ export class AgentInspection {
   private taskSection(rows:readonly ConversationTask[],asked:boolean,title:string):HTMLElement{
     let section=this.sections.get(asked);if(!section){section=element('section','task-section');section.append(element('h3',undefined,title),element('div','task-rows'));this.sections.set(asked,section);}
     const selected=rows.filter(row=>!!row.asked===asked).slice(0,this.shown),list=section.querySelector<HTMLElement>('.task-rows'),children=selected.map(row=>this.taskRow(row));
-    if(!children.length)children.push(element('p','secondary',asked?'No recorded inputs in the loaded history.':'No linked sent tasks in the loaded conversation.'));
+    if(!children.length)children.push(element('p','secondary',asked?(this.history?`No inputs found in the last ${HISTORY_WINDOW} messages.`:'No inputs found in the loaded messages.'):'No sent tasks found in the loaded messages.'));
     if(list)reconcileChildren(list,children);return section;
   }
   private createTaskNode(row:ConversationTask):TaskNode{

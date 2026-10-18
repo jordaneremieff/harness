@@ -49,7 +49,7 @@ test('native retry and block facts cross the worker boundary into separate quiet
   let display = projectFrame(transferFrame(source));
   await f.arrive({workspace: {id: 'native-failure', revision: 1, selectedTarget: agentTarget}, primaries: [], roster: [row], observations: [f.observation(identity, display)], targets: [f.targetFixture('native-failure', agentTarget, {draft: {revision: 1, text: 'Unsent native draft', mode: 'followUp', images: [], persisted: true}})]});
   const epoch = f.app.state.agentEpochs.get(identity); f.event('agent.availability', {identity, connectionEpoch: epoch, state: 'live', capabilities: row.capabilities}); await f.settle();
-  assert.match(f.byId('workbench-activity').textContent, /^Retrying · attempt 2 · next /); assert.equal(f.agentControl('agent-state').hidden, true);
+  assert.match(f.byId('workbench-activity').textContent, /^Retrying · attempt 2 · next /); assert.equal(f.agentControl('state').hidden, true);
   source.revision = 2; source.status.live = {generation: {attempt: 3}};
   display = projectFrame(transferFrame(source)); f.event('agent.frame', {identity, connectionEpoch: epoch, frame: display}); await f.settle();
   assert.equal(f.byId('workbench-activity').textContent, 'Working');
@@ -58,8 +58,8 @@ test('native retry and block facts cross the worker boundary into separate quiet
   assert.equal(f.byId('workbench-activity').textContent, 'Response failed');
   source.revision = 4; source.status.providerBlock = blockedResult(identity).providerBlock;
   display = projectFrame(transferFrame(source)); f.event('agent.frame', {identity, connectionEpoch: epoch, frame: display}); await f.settle();
-  assert.equal(f.byId('workbench-activity').textContent, 'Provider blocked'); assert.equal(f.agentControl('agent-state-line').textContent, 'Configure this agent through Primary.');
-  assert.equal(f.agentControl('editor').value, 'Unsent native draft'); assert.doesNotMatch(f.agentControl('agent-state-line').textContent, /quota|error|disconnected/i);
+  assert.equal(f.byId('workbench-activity').textContent, 'Provider blocked'); assert.equal(f.agentControl('state-line').textContent, 'Provider blocked. Configure this agent through Primary.');
+  assert.equal(f.agentControl('editor').value, 'Unsent native draft'); assert.doesNotMatch(f.agentControl('state-line').textContent, /quota|error|disconnected/i);
 });
 test('message-free native status details follow the current target without reported model or usage', async () => {
   const source = nativeFrame(1); source.status.providerBlock = blockedResult(source.storageId).providerBlock;

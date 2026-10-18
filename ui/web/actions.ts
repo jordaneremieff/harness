@@ -398,13 +398,13 @@ export class Actions {
       entries.push(entry('Copy agent ID', agent.identity, () => this.ctx.copyAgent()));
 
     }
-    entries.push(entry('Tasks','Recorded asks and available answers',this.ctx.resultLookup??(()=>this.ctx.inspectAgent()),!!(agent||primary), undefined, 'Requires a selected conversation'));
+    entries.push(entry('Sent and received tasks…','Recorded asks and available answers',this.ctx.resultLookup??(()=>this.ctx.inspectAgent()),!!(agent||primary), undefined, 'Requires a selected conversation'));
     if (primary?.lifecycle === 'ready' && this.resourceTarget === `${primary.key}:${primary.epoch}:${primary.lifecycle}`) {
       for (const command of this.commands.filter(item => item.name !== 'resume')) {
         entries.push({...command, name: `Insert /${command.name}`, search: [`/${command.name}`], enabled: true, run: () => this.prepareText(`/${command.name}`)});
       }
     }
-    const conversation = new Set(['Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Copy agent ID', 'Tasks', 'Close conversation tab']);
+    const conversation = new Set(['Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Copy agent ID', 'Sent and received tasks…', 'Close conversation tab']);
     const primaryActions = new Set(['Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Model', 'Thinking', 'Review message', 'Insert /agent new']);
     const workspace = new Set(['New session', 'Sessions', 'Saved drafts and messages', 'Appearance', 'Message input…', 'Agent presentation control', 'Help', 'Notifications', 'Refresh agents', 'Hide sidebar', 'Show sidebar', 'Projects', 'Next conversation tab', 'Previous conversation tab']);
     return [...entries.map(item => {
@@ -422,7 +422,7 @@ export class Actions {
     return agents.slice().sort((a, b) => agentOrder(a) - agentOrder(b)).map(row => ({...(this.ctx.agentCaption?.(row.identity) ?? this.captions.get(row.identity)), description: [this.ctx.agentStatus(row), compactAge(row.modifiedAt, now)].filter(Boolean).join(' · '), search: [row.identity, ...row.handle ? [row.handle] : []], title: row.identity, source: 'agent', enabled: true, run: () => chooseTarget ? chooseTarget({kind: 'agent', identity: row.identity}) : this.ctx.selectAgent(row)}));
   }
   sessionMenuEntries(agent = false): PaletteEntry[] {
-    const names = new Set(agent ? ['Conversation details', 'Copy agent ID', 'Tasks', 'Saved drafts and messages', 'Message input…', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Appearance', 'Help'] : ['New session', 'Sessions', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Tasks', 'Saved drafts and messages', 'Message input…', 'Appearance', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Model', 'Thinking', 'Review message']);
+    const names = new Set(agent ? ['Conversation details', 'Copy agent ID', 'Sent and received tasks…', 'Saved drafts and messages', 'Message input…', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Appearance', 'Help'] : ['New session', 'Sessions', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Sent and received tasks…', 'Saved drafts and messages', 'Message input…', 'Appearance', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Model', 'Thinking', 'Review message']);
     return this.paletteEntries().filter(item => item.source === 'app' && names.has(item.name));
   }
   sessionMenu(agent = false): void {

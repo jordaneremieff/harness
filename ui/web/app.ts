@@ -52,7 +52,7 @@ import { inputOperation, operationLabel } from './operation-label.ts';
 import { PreferenceQueue } from './preference-queue.ts';
 import { BrowserDiagnostics } from './diagnostics.ts';
 import {DevReload, devReloadPresentation, type DevReloadCheckpoint, type DevReloadHooks, type DevCheckpointEntry, type DevReloadHold, type DevReloadNotice} from './dev-reload.ts';
-import { conversationPresentation, presentationGlyph, presentationName, projectIdentity, composerFolder, agentViewStatus, settingsLabel } from './conversation-presentation.ts';
+import { conversationPresentation, presentationGlyph, presentationName, projectIdentity, composerFolder, agentHistoryNote, agentComposerState, settingsLabel } from './conversation-presentation.ts';
 import type { ConversationPresentation } from './conversation-presentation.ts';
 import { newerOperation, mergeOperationMap } from './operation-state.ts';
 import { ApiError, connect, errorMessage, operation, request, setRequestTiming } from './transport.ts';
@@ -117,9 +117,10 @@ let reloadStateKey:string|undefined;
 let preparedReloadState:{key:string;revision:number;workspace:string}|undefined;
 const devCheckpointKey = 'ui:dev-checkpoint';
 type ConversationController = {workspaceId: string; target: Target; instanceId: string; root: HTMLElement; nodes: Map<string, HTMLElement>;
-  elements: import('./composer.ts').ComposerElements; composer: Composer; transcript: Transcript; inspection?: AgentInspection; saved?: TargetState; geometry?: ReturnType<Transcript['captureGeometry']>; messageRetention?: object;
+  elements: import('./composer.ts').ComposerElements; composer: Composer; transcript: Transcript; inspection?: AgentInspection; readingGeometry?: ReturnType<Transcript['captureGeometry']>; saved?: TargetState; geometry?: ReturnType<Transcript['captureGeometry']>; messageRetention?: object;
   abort: AbortController; historyAbort: AbortController; cursor: string | null; before: number | null; loading: boolean; preparing: boolean; passive?: boolean; historyReading?: TargetState['reading']; historyReady: boolean; historyBoundaryLoaded: boolean; historyComplete?: boolean; historyError?: {code?: string; message: string}; hasEntries?: boolean; initialized: boolean; showThinking: boolean; historyWork?: Promise<void>; connectionError?: string; connection?: Pick<import('../shared/api.ts').TargetPreparation, 'availability' | 'capabilities' | 'reason'>; resizer?: Resizer};
 const controllers = new Map<string, ConversationController>();
+const agentStarts = new Map<string, {pending: boolean; reason?: string}>();
 let controllerSerial = 0;
 function controllerKey(workspace: string, target: Target): string { return JSON.stringify([workspace, targetIdentity(target)]); }
 function controllerNode(controller: ConversationController, key: string): HTMLElement {
@@ -175,7 +176,7 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
   const resize = elements.root.querySelector<HTMLElement>('.resizer'); if (resize) nodes.set('composer-resizer', resize);
   const activity = add('activity', 'p', 'exception'); activity.setAttribute('role', 'status'); const queued = element('ul', 'queued-list'); queued.hidden = true; queued.setAttribute('aria-label', 'Queued messages'); nodes.set('queued', queued); elements.root.prepend(activity, queued);
   root.append(observed, notice, region, above, elements.root, below); stableViews().mount(root);
-  if (target.kind === 'agent') root.insertBefore(createAgentState(add), region);
+  if (target.kind === 'agent') root.insertBefore(createHistoryNote(add), region);
   const controller = {workspaceId, target: {...target}, instanceId, root, nodes, elements, abort: new AbortController(), historyAbort: new AbortController(), cursor: null, before: null, loading: false, preparing: false, passive: true, historyReady: false, historyBoundaryLoaded: false, initialized: false, showThinking: true} as ConversationController;
   controller.composer = new Composer(elements, {workingFile:stage=>composerWorkingFile(controller,stage),changed:()=>{devInteractionRevision++;},captured: submission=>{const conversation=state.conversations.get(targetIdentity(controller.target));inputEchoes.capture(workspaceId,submission,conversation?conversationBlocks(conversation):[]);renderController(controller);},failed:(id,uncertain)=>{inputEchoes.failed(id,uncertain);renderController(controller);},prepareInput: () => !controller.passive, imageState: refreshComposerImages, imageInput: captured => composerImageInput(controller, captured), recovery: () => recovery.open(), layoutHeight: () => stableViews().height(elements.root), enterSends: () => state.workspace?.enterSendsMessages === true, timing: (start, end) => {if (controller.workspaceId === state.workspace?.id && !elements.root.closest('[hidden],[inert]')) diagnostics.measure('editor-echo', start, end);}, submitted: result => {inputEchoes.settle(result);showOperation(result, workspaceId);renderController(controller);}, unknownCommand: (text, literal) => target.kind === 'primary' && sameTarget(primaryTarget(), target) ? actions.unknown(text, literal) : false,
     ...(target.kind === 'primary' ? {commands: () => actions.commandOptions(), moreCommands: (captured: Target) => actions.continueCommands(captured)} : {}),
@@ -202,18 +203,9 @@ function attachInspection(controller:ConversationController,region:HTMLElement):
       read:(body,signal)=>target.kind==='agent'?request<AgentInspectionView>(`/api/agents/${encodeURIComponent(target.identity)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',body,undefined,AbortSignal.any([signal,AbortSignal.timeout(15_000)])):Promise.reject(new Error('Primary tasks use recorded conversation history.')),
       readResult:async(identity,selector,signal)=>{const value=await request<AgentInspectionView>(`/api/agents/${encodeURIComponent(identity)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',{view:'result',...selector},undefined,AbortSignal.any([signal,AbortSignal.timeout(15_000)]));if(value.view==='result')controller.transcript.acceptTaskResult(value);return value;},
       tasks:()=>inspectionTaskRows(controller),entryKey:id=>target.kind==='agent'?controller.transcript.loadedReference({text:String(id),owner:target.identity,field:'entryId'},target.identity):undefined,history:target.kind==='agent',showConversation:(entry,identity)=>{if(identity&&(controller.target.kind!=='agent'||identity!==controller.target.identity)){void navigateReference({target:{kind:'agent',identity},entryId:entry},true).catch(showError);return;}const owner=controller.target.kind==='agent'?controller.target.identity:state.primaries.get(controller.target.key)?.sessionId;const loaded=owner?controller.transcript.loadedReference({text:entry,owner,field:'entryId'},owner):undefined;controller.transcript.revealEntry(loaded??entry);},moreConversation:()=>{void loadControllerHistory(controller,true);},
-      changed:()=>{devInteractionRevision++;if(controller.inspection?.active)controller.passive=true;renderController(controller);},current:()=>controller.workspaceId===state.workspace?.id&&!controller.abort.signal.aborted,
+      returned:()=>{controllerNode(controller,'transcript').focus({preventScroll:true});},changed:()=>{devInteractionRevision++;if(controller.inspection?.active)controller.passive=true;renderController(controller);},current:()=>controller.workspaceId===state.workspace?.id&&!controller.abort.signal.aborted,
       restore:()=>{const value=sessionStorage.getItem(storageKey);return value?JSON.parse(value):null;},save:value=>{if(value)sessionStorage.setItem(storageKey,JSON.stringify(value));else sessionStorage.removeItem(storageKey);}});
-    const actionsButton = cardAction('more', 'Conversation actions', () => {
-      if (controller.workspaceId !== state.workspace?.id || controller.abort.signal.aborted) return;
-      const pane = paneById(currentLayout(), root.dataset.paneId ?? '');
-      const tab = pane?.tabs.find(tab => tabKey(tab) === pane.active && sameTarget(controllerTarget(tab), controller.target));
-      if (pane && tab) openConversationActions(pane.id, tabKey(tab), actionsButton);
-    }, 'conversation-actions');
-    actionsButton.setAttribute('aria-haspopup', 'menu'); actionsButton.setAttribute('aria-expanded', 'false');
-    for (const name of ['pointerdown', 'focusin']) actionsButton.addEventListener(name, event => event.stopPropagation());
-    controller.inspection.navigation.append(actionsButton);
-    root.insertBefore(controller.inspection.navigation,region);root.insertBefore(controller.inspection.node,region);
+    root.insertBefore(controller.inspection.node,region);
 }
 function inspectionTaskRows(controller:ConversationController):ConversationTask[]{
   const rows=[...controller.transcript.taskRows()];
@@ -230,10 +222,12 @@ function renderInspection(controller:ConversationController):void {
   const projected=!!controller.elements.root.dataset.messagePanel;
   if(controller.target.kind==='agent')inspection.observe(state.conversations.get(targetIdentity(controller.target))?.frame,connected&&state.agentAvailability.get(controller.target.identity)?.state==='live');
   else inspection.observe(undefined,connected);
-  controllerNode(controller,'transcript-region').hidden=inspection.active;
+  const region=controllerNode(controller,'transcript-region');
+  if(inspection.active&&!region.hidden)controller.readingGeometry=controller.transcript.captureGeometry();
+  region.hidden=inspection.active;
+  if(!inspection.active&&controller.readingGeometry){const geometry=controller.readingGeometry;controller.readingGeometry=undefined;controller.transcript.applyGeometry(geometry);}
   controller.elements.root.hidden=!controller.saved||inspection.active&&!projected;
-  if(controller.target.kind==='agent')controllerNode(controller,'agent-state').hidden=inspection.active||controllerNode(controller,'agent-state').hidden;
-  inspection.navigation.hidden=projected&&controller.root.dataset.messageOnly==='true';
+  if(controller.target.kind==='agent')controllerNode(controller,'history-note').hidden=inspection.active||!controllerNode(controller,'history-note-line').textContent;
   inspection.visibility(inspection.active&&!controller.root.hidden&&!controller.root.inert&&controller.workspaceId===state.workspace?.id);
   controller.root.classList.toggle('inspection-active',inspection.active);
 }
@@ -265,15 +259,13 @@ function composerImageInput(controller: ConversationController, target: Target):
   }
   return {allowed: true};
 }
-function createAgentState(add: (name: string, tag: 'div' | 'p' | 'button', css?: string) => HTMLElement): HTMLElement {
-  const status = add('agent-state', 'div', 'agent-state'); status.hidden = true; status.setAttribute('aria-label', 'Agent status');
-  const line = add('agent-state-line', 'p'); line.setAttribute('role', 'status');
-  const row = add('agent-state-actions', 'div', 'agent-state-actions');
-  for (const [key, label] of [['history-retry', 'Retry'], ['start', 'Start agent'], ['start-in-pi', 'Start in Pi']] as const) {
-    const action = add(key, 'button') as HTMLButtonElement; action.type = 'button'; action.textContent = label; row.append(action);
-    if (key === 'start') action.title = 'Start agent. This can resume unfinished work before the agent is ready.';
+function createHistoryNote(add: (name: string, tag: 'div' | 'p' | 'button', css?: string) => HTMLElement): HTMLElement {
+  const note = add('history-note', 'div', 'history-note'); note.hidden = true;
+  const line = add('history-note-line', 'p'); line.setAttribute('role', 'status');
+  for (const [key, label] of [['history-reload', 'Reload messages'], ['history-details', 'Details']] as const) {
+    const action = add(key, 'button') as HTMLButtonElement; action.type = 'button'; action.textContent = label; action.hidden = true; note.append(action);
   }
-  status.append(line, row); return status;
+  note.prepend(line); return note;
 }
 function controllerCapture(controller: ConversationController): TranscriptTarget | undefined {
   return controller.saved ? {workspaceId: controller.workspaceId, saved: controller.saved, controller} : undefined;
@@ -302,7 +294,7 @@ const actions: Actions = new Actions({snapshot: currentSnapshot, primary, modelC
   tabs: {close: () => { const tab = activeTab(currentLayout()); if (tab) applyLayout(closeTab(currentLayout(), tabKey(tab))); }, switch: direction => applyLayout(switchTab(currentLayout(), direction)), layout: currentLayout},
 });
 const fileBrowse = new FileBrowseState();
-const paneRegions = new Map<string, {node: HTMLElement; tabs: HTMLElement; content: HTMLElement; plus: HTMLButtonElement; menu: HTMLButtonElement; previous: HTMLButtonElement; next: HTMLButtonElement}>();
+const paneRegions = new Map<string, {node: HTMLElement; tabs: HTMLElement; content: HTMLElement; plus: HTMLButtonElement; menu: HTMLButtonElement; actions: HTMLButtonElement; previous: HTMLButtonElement; next: HTMLButtonElement}>();
 const paneSplits = new Map<string, {node: HTMLElement; handle: HTMLElement; resizer?: Resizer; extent?: number}>();
 const tabStrip = new TabStrip({layout: currentLayout, activate: activateConversationTab, close: key => applyLayout(closeTab(currentLayout(), key)),
   move: (key, pane, index) => {fileBrowse.keep(key);applyLayout(movePaneTab(currentLayout(), key, pane, index));}, label: tabLabel,unnamed:unnamedTab,keep:key=>fileBrowse.keep(key),
@@ -625,11 +617,14 @@ function refreshCaptionConsumers(): void {
     const name = presentationName(presentation({kind: 'agent', identity: captured.identity})), ready = messageTarget.ready;
     setText(byId('agent-message-name'), name);
     const controller = controllers.get(controllerKey(captured.workspaceId, {kind: 'agent', identity: captured.identity}));
-    controller?.composer.recipient((ready ? 'Message ' : 'Draft for ') + name, ready || !captured.prepared || captured.invalidated ? '' : 'Connect this agent to send.', `Message ${name}`);
+    controller?.composer.recipient((ready ? 'Message ' : 'Draft for ') + name, ready || !captured.prepared || captured.invalidated ? '' : 'This agent is not ready for messages.', `Message ${name}`);
   }
   tabStrip.render(); roster.schedule(); renderIdentity();
 }
 function targetCaption(target?: Target) {return target?.kind === 'agent' ? presentationCaptions().get(target.identity) : undefined;}
+function startAttempt(target?: Target): {pending: boolean; reason?: string} | undefined {
+  return target?.kind === 'agent' && state.workspace ? agentStarts.get(agentStartKey(state.workspace.id, target.identity)) : undefined;
+}
 function presentation(target?: Target): ConversationPresentation {
   const row = target?.kind === 'agent' ? agentRow(target.identity) : undefined;
   const controller = target && state.workspace ? controllers.get(controllerKey(state.workspace.id, target)) : undefined;
@@ -640,6 +635,7 @@ function presentation(target?: Target): ConversationPresentation {
     row, caption: targetCaption(target), availability: target?.kind === 'agent' && !controller?.connection && !controller?.connectionError ? state.agentAvailability.get(target.identity) : undefined,
     negotiated: target?.kind === 'agent' && controller?.connection ? {identity: target.identity, ...controller.connection} : undefined,
     entries: conversation ? conversationBlocks(conversation) : undefined,
+    start: startAttempt(target),
     frame: target ? state.conversations.get(targetIdentity(target))?.frame : undefined, tool: tool ? {name: tool.name, argument: tool.argumentText ?? ''} : undefined, connected});
 }
 function tabPresentation(tab: ConversationTab): ConversationPresentation { return presentation(controllerTarget(tab)); }
@@ -775,7 +771,8 @@ function mountPaneLeaf(leaf: PaneLeaf, layout: ConversationLayout): HTMLElement 
     const next = cardAction('next', 'Next tab', () => tabStrip.step(leaf.id, 1), 'icon-button pane-tab-nav');
     const plus = cardAction('plus', 'New tab', () => choosePaneTarget(leaf.id), 'icon-button pane-actions'); plus.setAttribute('aria-haspopup', 'dialog');
     const menu = cardAction('chevron', 'Tabs in this pane', () => openTabsList(leaf.id), 'icon-button pane-menu'); menu.setAttribute('aria-haspopup', 'menu');
-    bar.append(previous, next, tabs, plus, menu); node.append(bar, content); byId('conversation-panes').append(node); pane = {node, tabs, content, plus, menu, previous, next}; paneRegions.set(leaf.id, pane);
+    const actions = cardAction('more', 'Conversation actions', () => openConversationActions(leaf.id, undefined, actions), 'icon-button pane-actions pane-conversation-actions'); actions.setAttribute('aria-haspopup', 'menu'); actions.setAttribute('aria-expanded', 'false');
+    bar.append(previous, next, tabs, plus, menu, actions); node.append(bar, content); byId('conversation-panes').append(node); pane = {node, tabs, content, plus, menu, actions, previous, next}; paneRegions.set(leaf.id, pane);
     node.addEventListener('contextmenu', event => {
       if (event.defaultPrevented || !(event.target instanceof HTMLElement) || nativeEditingTarget(event.target) || event.target.closest('.transcript,.file-reading')) return;
       event.preventDefault(); openPaneMenu(leaf.id, event, event.target.closest<HTMLElement>('.conversation-tab')?.dataset.tabKey);
@@ -786,6 +783,7 @@ function mountPaneLeaf(leaf: PaneLeaf, layout: ConversationLayout): HTMLElement 
   const activeIndex = leaf.tabs.findIndex(tab => tabKey(tab) === leaf.active);
   pane.previous.disabled = activeIndex <= 0; pane.next.disabled = activeIndex < 0 || activeIndex >= leaf.tabs.length - 1;
   pane.plus.disabled = !state.workspace; pane.menu.disabled = !leaf.tabs.length;
+  const activeTab = leaf.tabs[activeIndex]; pane.actions.hidden = !activeTab || activeTab.kind === 'file'; pane.actions.disabled = pane.actions.hidden || !state.workspace;
   pane.node.dataset.focused = String(leaf.id === layout.focusedPane);
   return pane.node;
 }
@@ -1367,7 +1365,7 @@ function renderMessagePanel(): void {
     state = {...state, targets: new Map(state.targets).set(saved.targetKey, saved)}; controller.saved = saved; controller.composer.attach(captured.workspaceId, saved);
   } else controller.composer.attachRetained(captured.workspaceId, target);
   placeMessageEditor(controller, panel);
-  const ready = messageTarget.ready; controller.composer.recipient((ready ? 'Message ' : 'Draft for ') + name, ready || !captured.prepared || captured.invalidated ? '' : 'Connect this agent to send.', `Message ${name}`);
+  const ready = messageTarget.ready; controller.composer.recipient((ready ? 'Message ' : 'Draft for ') + name, ready || !captured.prepared || captured.invalidated ? '' : 'This agent is not ready for messages.', `Message ${name}`);
   controller.composer.availability(connected, !!controller.saved, view.busy, selecting, view.input); controller.composer.receipts(state.operations.values()); controllerNode(controller, 'stop').hidden = true;
   renderWorkbenchStatus();
 }
@@ -1419,7 +1417,6 @@ function renderAgentSettings(view: ConversationPresentation, target: Extract<Tar
   renderComposerFolder('agent-folder', composerFolder(view, true));
 }
 let checkingAgent: string | undefined;
-const agentStarts = new Map<string, {pending: boolean; reason?: string}>();
 function agentStartKey(workspace: string, identity: string): string { return JSON.stringify([workspace, identity]); }
 function controllerGuidance(controller: ConversationController, view: ConversationPresentation): string {
   return controller.target.kind === 'agent' ? '' : view.guidance;
@@ -1430,35 +1427,37 @@ function renderAgentRecipient(identity: string, view: ConversationPresentation =
 function renderStoredAgent(identity: string, _row?: AgentRow): void {
   renderAgentState(conversationController({kind: 'agent', identity}));
   if (!messageTarget.current) renderAgentRecipient(identity);
+  renderWorkbenchStatus(); tabStrip.render();
 }
 function renderAgentState(controller: ConversationController): void {
   if (controller.target.kind !== 'agent') return;
   const {identity} = controller.target, workspace = controller.workspaceId;
   const availability = controller.connection || controller.connectionError ? undefined : state.agentAvailability.get(identity), row = agentRow(identity), attempt = agentStarts.get(agentStartKey(workspace, identity));
-  const view = agentViewStatus({hasEntries: !!controller.hasEntries, connected, loading: controller.loading, ready: controller.historyReady, complete: controller.historyComplete, error: controller.historyError, availability: availability?.state ?? row?.availability, input: presentation(controller.target).input, checked: !!controller.connection || !!availability, reason: controller.connection?.reason ?? availability?.reason, startAttempt: attempt, connectionError: controller.connectionError});
-  const status = controllerNode(controller, 'agent-state'), line = controllerNode(controller, 'agent-state-line');
-  const current = presentation(controller.target), blocked = current.activity === 'Provider blocked';
-  const text = [view.text, blocked ? 'Configure this agent through Primary.' : ''].filter(Boolean).join(' · ');
-  status.hidden = !text; setText(line, text); line.title = [view.detail, current.detail].filter(Boolean).join('\n'); controller.elements.send.setAttribute('aria-describedby', line.id);
+  const history = agentHistoryNote({hasEntries: !!controller.hasEntries, connected, loading: controller.loading, ready: controller.historyReady, complete: controller.historyComplete, error: controller.historyError});
+  const note = controllerNode(controller, 'history-note'), line = controllerNode(controller, 'history-note-line');
+  setText(line, history.text); note.hidden = !history.text || !!controller.inspection?.active;
+  const reload = controllerNode(controller, 'history-reload') as HTMLButtonElement, details = controllerNode(controller, 'history-details') as HTMLButtonElement;
+  reload.hidden = !history.reload; reload.disabled = !connected || controller.loading || !!checkingAgent || attempt?.pending === true; reload.onclick = () => {void retryAgentRead(controller);};
+  details.hidden = !history.detail; details.onclick = () => showDetails('Saved messages', history.detail);
+  const current = presentation(controller.target);
+  const composerState = agentComposerState({connected, availability: availability?.state ?? row?.availability, input: current.input, checked: !!controller.connection || !!availability, reason: controller.connection?.reason ?? availability?.reason, startAttempt: attempt, connectionError: controller.connectionError, blocked: current.activity === 'Provider blocked' ? current.detail : undefined});
   controllerNode(controller, 'empty').hidden = true; controller.root.classList.toggle('agent-empty', !controller.hasEntries);
-  const start = controllerNode(controller, 'start') as HTMLButtonElement; start.hidden = !view.start; start.disabled = !connected || !!checkingAgent;
-  start.onclick = () => {void startStoredAgent(workspace, identity);};
-  const terminal = controllerNode(controller, 'start-in-pi') as HTMLButtonElement; terminal.hidden = (availability?.state ?? row?.availability) === 'live' || !!attempt; terminal.disabled = !connected;
-  terminal.onclick = () => {if (workspace === state.workspace?.id && selectedAgent() === identity) showAgentCommand(identity);};
-  const retry = controllerNode(controller, 'history-retry') as HTMLButtonElement;
-  retry.disabled = !connected || controller.loading || !!checkingAgent || attempt?.pending === true;
-  retry.onclick = () => {void retryAgentRead(controller);};
+  controller.composer.setState(composerState && {line: composerState.line, detail: composerState.detail || undefined, showDetail: () => showDetails('Agent details', composerState.detail),
+    ...(composerState.action ? {action: {...composerState.action, ...(composerState.kind === 'start' ? {title: 'Start agent. This can resume unfinished work before the agent is ready.'} : {}), disabled: composerState.action.disabled || !connected || !!checkingAgent, run: () => {void (attempt && !attempt.pending ? checkAgentConnection(workspace, identity) : startStoredAgent(workspace, identity));}}} : {})});
+}
+function showDetails(title: string, detail: string): void {
+  modal.open(title); modal.body.append(element('pre', undefined, detail));
 }
 async function retryAgentRead(controller: ConversationController): Promise<void> {
   if (!connected || controller.target.kind !== 'agent' || controller.workspaceId !== state.workspace?.id || controller.loading) return;
   await loadControllerHistory(controller);
 }
 function showAgentCommand(identity: string): void {
-  const command = `/agent attach ${identity}`; modal.open('Start in Pi');
+  const command = `/agent attach ${identity}`; modal.open('Open in Pi terminal');
   modal.body.append(element('pre', undefined, command), button('Copy command', () => {void copy(command, modal.body);}));
 }
 function focusStoredEditor(): void {
-  if (agentNode('agent-state').contains(document.activeElement)) agentComposer().editor.focus({preventScroll: true});
+  if (agentNode('start').contains(document.activeElement)) agentComposer().editor.focus({preventScroll: true});
 }
 export async function startStoredAgent(workspace: string, identity: string): Promise<void> {
   const key = agentStartKey(workspace, identity);
@@ -1848,7 +1847,7 @@ function agentMenuItems(identity: string): ContextItem[] {
     {label: 'Copy agent ID', run: () => { void copy(identity, agentNode('view-notice')); }},
     {label: 'Conversation details', run: () => actions.conversationDetails(identity)},
   ];
-  items.push({label: 'Tasks', run: () => inspectAgent(identity)});
+  items.push({label: 'Sent and received tasks…', run: () => inspectAgent(identity)}, {label: 'Open in Pi terminal…', run: () => showAgentCommand(identity)});
   items.push(...conversationMenuItems({kind: 'agent', identity}).filter(item => !items.some(existing => existing.label === item.label)));
   return items;
 }
@@ -1856,15 +1855,15 @@ export function openConversationActions(paneId: string = focusedPane, key?: stri
   const workspace = state.workspace?.id, layout = currentLayout(), pane = paneById(layout, paneId);
   const tab = pane?.tabs.find(tab => tabKey(tab) === (key ?? pane.active)), target = tab && controllerTarget(tab);
   if (!workspace || !tab || !target) return;
-  const current = layout, owner = conversationController(target), trigger = origin ?? paneRegions.get(paneId)?.menu;
+  const current = layout, owner = conversationController(target), trigger = origin ?? paneRegions.get(paneId)?.actions;
   if (!trigger) return;
   const view = owner.transcript.node.dataset.view === 'grouped' ? 'grouped' : 'chronological';
   const choices: ContextItem[] = (['chronological', 'grouped'] as const).map(mode => ({label: mode === 'chronological' ? 'Conversation' : 'Grouped', description: mode === 'chronological' ? 'View: Conversation' : 'View: Grouped', checked: view === mode, run: () => owner.transcript.setView(mode)}));
   const entries = (tab.kind === 'agent' ? agentMenuItems(tab.identity) : conversationMenuItems(target)).filter(item => item.label !== 'Show conversation');
   const groups: [string, ContextItem[]][] = [
     ['View', [...choices, ...['Show thinking', 'Find text', 'Expand loaded tools', 'Collapse loaded tools'].flatMap(name => entries.filter(item => item.label === name))]],
-    ['Messages and tasks', ['Message', 'Review message', 'Tasks', 'Saved drafts and messages', 'Message input…'].flatMap(name => entries.filter(item => item.label === name))],
-    ['Session', ['New session', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…'].flatMap(name => entries.filter(item => item.label === name))],
+    ['Messages and tasks', ['Message', 'Review message', 'Sent and received tasks…', 'Saved drafts and messages', 'Message input…'].flatMap(name => entries.filter(item => item.label === name))],
+    ['Session', ['New session', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Open in Pi terminal…'].flatMap(name => entries.filter(item => item.label === name))],
     ['Details', ['Conversation details', 'Copy agent ID'].flatMap(name => entries.filter(item => item.label === name))],
   ];
   const grouped = groups.flatMap(([heading, items], group) => items.map((item, index) => index === 0 ? {...item, heading, separatorBefore: group > 0} : item));

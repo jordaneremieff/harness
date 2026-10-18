@@ -501,10 +501,9 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .conversation[data-message-only=true] > .composer { pointer-events: auto; }
 .conversation[data-message-only=true] > :not(.composer) { display: none; }
 
-.inspection-navigation { display: flex; flex: none; gap: var(--s2); padding-block: var(--s2); }
-.inspection-navigation > button { padding: 2px var(--s2); color: var(--muted); }
-.inspection-navigation > .conversation-actions { margin-left: auto; padding: 0; }
-.inspection-navigation > button[aria-pressed=true] { color: var(--fg); box-shadow: inset 0 -2px var(--accent); }
+.inspection-header { display: flex; flex: none; align-items: baseline; justify-content: space-between; gap: var(--s2); }
+.inspection-title { margin: 0; color: var(--muted); font-size: 13px; font-weight: 500; }
+.inspection-back { padding: 2px var(--s2); color: var(--muted); }
 .agent-inspection { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; gap: var(--s2); padding-block: var(--s2); }
 .agent-inspection[hidden] { display: none; }
 .inspection-identity { display: flex; flex: none; align-items: baseline; gap: var(--s2); min-width: 0; font-size: 12px; }
@@ -586,10 +585,14 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .conversation > :not(.transcript-region) { width: calc(100% - 2 * var(--work-gutter)); max-width: 960px; margin-inline: var(--work-gutter); }
 .transcript > .entry, .transcript > button { width: 100%; max-width: 960px; }
 .last-observed { color: var(--muted); font-size: 12px; }
-.agent-state { flex: none; padding-block: 12px 8px; color: var(--muted); font-size: 13px; }
-.agent-state > p { margin: 0; font-size: inherit; font-weight: 400; overflow-wrap: anywhere; }
-.agent-state-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-top: 4px; }
-.agent-state-actions > button, #agent-message-retry { padding: 4px 0; border: 0; border-radius: 0; }
+.history-note { display: flex; flex: none; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; padding-block: 12px 8px; color: var(--muted); font-size: 13px; }
+.history-note[hidden] { display: none; }
+.history-note > p { margin: 0; font-size: inherit; font-weight: 400; overflow-wrap: anywhere; }
+.history-note > button, #agent-message-retry, .composer-state-detail { padding: 4px 0; border: 0; border-radius: 0; }
+.composer-state { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; margin: 0; padding: 6px 8px 0; color: var(--muted); font-size: 13px; }
+.composer-state[hidden] { display: none; }
+.composer-state-line { min-width: 0; overflow-wrap: anywhere; }
+.composer-state-detail { color: var(--muted); font-size: 13px; text-decoration: underline; }
 .conversation.agent-empty .transcript { padding-block: 0; }
 .last-observed { padding-top: 8px; }
 .inline-session-chooser { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; padding: 24px var(--gutter); }

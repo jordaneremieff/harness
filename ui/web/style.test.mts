@@ -50,10 +50,10 @@ test('result answer actions use content width and normal-flow height instead of 
   assert.match(rule('.card-action'), /width: 24px; height: 24px; min-width: 24px; min-height: 24px/);
   assert.match(media('@media (pointer:coarse)'), /\.card-action, \.section-toggle[^{}]+\{ min-height: 44px; min-width: 44px/);
 });
-test('direct conversation actions stay trailing and retain shared desktop and coarse targets', () => {
-  assert.match(rule('.inspection-navigation'), /display: flex/);
-  const action = rule('.inspection-navigation > .conversation-actions');
-  assert.match(action, /margin-left: auto; padding: 0/); assert.doesNotMatch(action, /opacity|visibility|display: none/);
+test('conversation actions live in the pane tab row and keep shared desktop and coarse targets', () => {
+  assert.doesNotMatch(css, /inspection-navigation/);
+  assert.match(rule('.pane-actions'), /display: inline-flex; flex: none/); assert.doesNotMatch(rule('.pane-actions'), /opacity|visibility|display: none/);
+  assert.match(rule('.inspection-header'), /display: flex; flex: none/);
   assert.match(rule('.card-action'), /width: 24px; height: 24px; min-width: 24px; min-height: 24px/);
   assert.match(media('@media (pointer:coarse)'), /\.card-action, \.section-toggle[^{}]+\{ min-height: 44px; min-width: 44px/);
 });
@@ -712,7 +712,7 @@ test('one workbench footer owns wrapped facts without composer-local settings', 
   assert.match(factory, /const root = element\('form', 'composer'\); root\.id = id/);
   assert.match(factory, /const id = `composer-\$\{encodeURIComponent\(instanceId\)\}`/);
   assert.match(factory, /root\.append\(resize, receipt, input, line\)/);
-  assert.match(factory, /submit\.append\(modes, send\)/);
+  assert.match(factory, /submit\.append\(modes, start, send\)/);
   assert.match(factory, /bar\.append\(stop, submit\)/);
   assert.match(factory, /intake\.append\(attach,sources,picker\)/);
   assert.match(factory, /line\.append\(intake, bar\)/);
@@ -867,7 +867,7 @@ test('drawer and overflow controls share accessible inline stroke icons', async 
   assert.match(app, /cardAction\('plus', 'New tab', \(\) => choosePaneTarget\(leaf\.id\)/);
   assert.match(app, /plus\.setAttribute\('aria-haspopup', 'dialog'\)/);
   assert.match(app, /cardAction\('chevron', 'Tabs in this pane'/);
-  assert.match(app, /bar\.append\(previous, next, tabs, plus, menu\); node\.append\(bar, content\)/);
+  assert.match(app, /bar\.append\(previous, next, tabs, plus, menu, actions\); node\.append\(bar, content\)/);
   assert.match(rule('.pane-menu > .card-icon'), /transform: rotate\(90deg\)/);
   assert.match(app, /cardAction\('previous', 'Previous tab'/); assert.match(app, /cardAction\('next', 'Next tab'/);
   assert.match(rule('.pane-actions'), /align-items: center; justify-content: center; min-width: 24px; min-height: 24px/);
@@ -876,11 +876,12 @@ test('drawer and overflow controls share accessible inline stroke icons', async 
   assert.doesNotMatch(css, /\.tab-overflow\s*\{|\.tab-actions\s*\{/);
 });
 
-test('agent status uses one plain line and a flat action row in normal flow', () => {
-  assert.match(rule('.agent-state'), /flex: none/); assert.match(rule('.agent-state > p'), /font-weight: 400/);
-  assert.match(rule('.agent-state-actions'), /display: flex; flex-wrap: wrap; align-items: center; gap: 16px/);
-  assert.match(rule('.agent-state-actions > button, #agent-message-retry'), /border: 0; border-radius: 0/);
-  assert.doesNotMatch(rule('.agent-state-actions > button, #agent-message-retry'), /box-shadow|background/); assert.doesNotMatch(css, /agent-start-help|agent-absent/);
+test('the history note and composer state are plain lines with flat actions', () => {
+  assert.match(rule('.history-note'), /flex: none/); assert.match(rule('.history-note > p'), /font-weight: 400/);
+  assert.match(rule('.history-note'), /display: flex; flex: none; flex-wrap: wrap/);
+  assert.match(rule('.history-note > button, #agent-message-retry, .composer-state-detail'), /border: 0; border-radius: 0/);
+  assert.doesNotMatch(rule('.history-note > button, #agent-message-retry, .composer-state-detail'), /box-shadow|background/); assert.doesNotMatch(css, /agent-start-help|agent-absent|\.agent-state/);
+  assert.match(rule('.composer-state'), /display: flex; flex-wrap: wrap/); assert.doesNotMatch(rule('.composer-state'), /border|background|box-shadow/);
   assert.match(rule('.conversation'), /display: flex; flex-direction: column;[^}]*min-height: 0/);
   assert.match(rule('.transcript-region'), /display: grid; grid-template-rows: minmax\(0,1fr\); flex: 1;[^}]*min-height: 0/);
   assert.doesNotMatch(css, /\.conversation\.agent-empty > \.transcript-region\s*\{/);
@@ -890,7 +891,7 @@ test('agent status uses one plain line and a flat action row in normal flow', ()
 });
 
 test('Message connection recovery shares flat state actions and retains native focus', () => {
-  const action = rule('.agent-state-actions > button, #agent-message-retry');
+  const action = rule('.history-note > button, #agent-message-retry, .composer-state-detail');
   assert.match(action, /padding: 4px 0; border: 0; border-radius: 0/);
   assert.doesNotMatch(action, /outline|box-shadow|background/);
   assert.match(rule(':focus-visible'), /outline: 2px solid var\(--accent\)/);

@@ -40,7 +40,7 @@ test('conversation state and split width changes retain editor ancestry, draft i
     assert.deepEqual(intake.children,[attach,sources,picker]);
     assert.equal(latest.parentNode, line); assert.deepEqual(line.children, [intake, latest, bar]);
     const submit = bar.querySelector('.composer-submit'); assert.ok(submit);
-    assert.deepEqual(bar.children, [control('stop'), submit]); assert.deepEqual(submit.children, [control('modes'), control('send')]);
+    assert.deepEqual(bar.children, [control('stop'), submit]); assert.deepEqual(submit.children, [control('modes'), control('start'), control('send')]);
     assert.equal(control('editor').rows, 3);
     assert.equal(control('transcript').parentNode?.contains(latest), false);
     assert.equal(control('editor').parentNode?.classList.contains('composer-surface'), true);

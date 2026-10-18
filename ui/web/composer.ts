@@ -21,7 +21,9 @@ import { ApiError, draftImageUrl, errorMessage, operation, request, reserve } fr
 
 export type ComposerHooks = {workingFile?:(stage:(files:readonly File[])=>boolean)=>void; changed?:()=>void; captured?: (submission:Submission)=>void; failed?: (operationId:string,uncertain:boolean)=>void; prepareInput?: () => boolean; imageState?: (workspace: string, state: TargetState) => void; imageInput?: (target: Target) => {allowed: boolean; reason?: string}; recovery?: () => void; layoutHeight?: () => number | undefined; timing?: (start: number, end: number) => void; submitted: (operation: OperationView) => void; unknownCommand: (text: string, sendLiteral: () => void) => boolean; enterSends?: () => boolean; commands?: () => CommandInventory; moreCommands?: (target: Target) => Promise<void>; retained?: (workspace: string, target: Target, retained: boolean) => void};
 export type ComposerElements = {root: HTMLFormElement; editor: HTMLTextAreaElement; recipient: HTMLElement; receipt: HTMLElement;
-  receiptDetails: HTMLElement; modes: HTMLElement; send: HTMLButtonElement; save: HTMLElement; commandMenu?: HTMLElement; overlay?: HTMLElement; attachments?: HTMLElement; attach?: HTMLButtonElement; sources?: HTMLButtonElement; picker?: HTMLInputElement};
+  receiptDetails: HTMLElement; modes: HTMLElement; send: HTMLButtonElement; save: HTMLElement; commandMenu?: HTMLElement; overlay?: HTMLElement; attachments?: HTMLElement; attach?: HTMLButtonElement; sources?: HTMLButtonElement; picker?: HTMLInputElement; state?: HTMLElement; start?: HTMLButtonElement};
+/** An agent-specific line inside the composer, with at most one action in the Send position and optional exact details. */
+export type ComposerStateView = {line: string; action?: {label: string; title?: string; pending?: boolean; disabled?: boolean; run: () => void}; detail?: string; showDetail?: () => void};
 /** Creates one editor; the detached save/receipt-detail nodes belong in the shared footer. */
 export function createComposerElements(instanceId: string): ComposerElements {
   const id = `composer-${encodeURIComponent(instanceId)}`;
@@ -35,7 +37,9 @@ export function createComposerElements(instanceId: string): ComposerElements {
   const overlay = element('div', 'composer-overlay'); overlay.setAttribute('aria-hidden', 'true'); overlay.hidden = true;
   const surface = element('div', 'composer-surface'); surface.append(overlay, editor);
   const attachments = element('div', 'composer-attachments'); attachments.hidden = true; attachments.setAttribute('aria-label', 'Attachments');
-  const input = element('div', 'composer-input'); input.append(commandMenu, recipient, surface, attachments);
+  const state = element('p', 'composer-state'); state.id = `${id}-state`; state.hidden = true; state.setAttribute('role', 'status');
+  const stateLine = element('span', 'composer-state-line'), stateDetail = element('button', 'composer-state-detail', 'Details'); stateLine.id = `${id}-state-line`; stateDetail.id = `${id}-state-detail`; stateDetail.type = 'button'; stateDetail.hidden = true; state.append(stateLine, stateDetail);
+  const input = element('div', 'composer-input'); input.append(commandMenu, recipient, surface, attachments, state);
   const modes = element('div', 'modes'); modes.id = `${id}-modes`; modes.hidden = true; modes.setAttribute('role', 'group'); modes.setAttribute('aria-label', 'Delivery while working');
   const delivery = element('select'); delivery.setAttribute('aria-label', 'Delivery while working'); delivery.title = 'Next step reaches the next step of the current work. After response follows the current response.';
   delivery.setAttribute('aria-description', delivery.title);
@@ -51,11 +55,12 @@ export function createComposerElements(instanceId: string): ComposerElements {
   const sources = cardAction('chevron', 'Attachment sources', () => {}, 'attachment-sources');
   sources.setAttribute('aria-haspopup','menu'); sources.setAttribute('aria-expanded','false');
   const intake = element('span','composer-intake'); intake.append(attach,sources,picker);
-  const submit = element('div', 'composer-submit'); submit.append(modes, send);
+  const start = element('button', 'send start', 'Start'); start.id = `${id}-start`; start.type = 'button'; start.hidden = true;
+  const submit = element('div', 'composer-submit'); submit.append(modes, start, send);
   const bar = element('div', 'composer-bar'); bar.append(stop, submit); const line = element('div', 'composer-line'); line.append(intake, bar); root.append(resize, receipt, input, line);
   const save = element('span', 'draft-state'); save.id = `${id}-save`;
   const receiptDetails = element('span', 'receipt-details'); receiptDetails.id = `${id}-receipt-details`;
-  return {root, editor, recipient, receipt, receiptDetails, modes, send, save, commandMenu, overlay, attachments, attach, sources, picker};
+  return {root, editor, recipient, receipt, receiptDetails, modes, send, save, commandMenu, overlay, attachments, attach, sources, picker, state, start};
 }
 type Edit = {text: string; mode: string; images: DraftImage[]; edit: number};
 type InsertionCapture = {buffer: Buffer; edit: number; text: string; start: number; end: number; direction: 'forward' | 'backward' | 'none'};
@@ -83,7 +88,7 @@ export class Composer {
   private gated = false;
   private get admissionBlocked(): boolean { return !this.connected || this.gated; }
   private ready = false;
-  private recipientGuidance = 'Connect this agent to send.';
+  private recipientGuidance = 'This agent is not ready for messages.';
   private busy = false;
   private deliverySupported = false;
   private operations: OperationView[] = [];
@@ -101,6 +106,7 @@ export class Composer {
   private compositionTurn?: ReturnType<typeof setTimeout>;
   private overlay?: ComposerOverlay;
   private textLimit = false;
+  private stateView?: ComposerStateView;
   private focusRequest?: {origin: Element | null};
   private attachmentPaint = '';
   private pickerCapture?: InsertionCapture;
@@ -161,7 +167,7 @@ export class Composer {
     for (const buffer of this.buffers.values()) {clearTimeout(buffer.slowTimer); buffer.slowTimer = undefined; buffer.attachments?.destroy();}
     this.elements.receipt.replaceChildren(); this.elements.receiptDetails.replaceChildren();
   }
-  recipient(label: string, guidance = 'Connect this agent to send.', placeholder = label): void {
+  recipient(label: string, guidance = 'This agent is not ready for messages.', placeholder = label): void {
     setText(this.elements.recipient, label);
     this.editor.placeholder = `${placeholder}…`;
     this.editor.setAttribute('aria-label', label);
@@ -169,6 +175,20 @@ export class Composer {
   }
   placement(_sidebar: boolean): void { this.resize(); this.renderControls(); }
   commandsChanged(): void { this.commandMenu?.update(); }
+  /** Shows the recipient's state inside the composer; an action takes the Send position and the draft stays editable. */
+  setState(view?: ComposerStateView): void {
+    if (this.destroyed) return;
+    this.stateView = view;
+    const {state, start} = this.elements; if (!state || !start) return;
+    const line = state.querySelector<HTMLElement>('.composer-state-line'), detail = state.querySelector<HTMLButtonElement>('.composer-state-detail');
+    state.hidden = !view; setText(line as HTMLElement, view?.line ?? '');
+    if (detail) { detail.hidden = !view?.detail || !view.showDetail; detail.onclick = view?.showDetail ? () => view.showDetail?.() : null; }
+    start.hidden = !view?.action; start.disabled = !!view?.action?.disabled; start.setAttribute('aria-busy', String(!!view?.action?.pending));
+    setText(start, view?.action?.label ?? 'Start'); start.title = view?.action?.title ?? ''; start.onclick = view?.action ? () => view.action?.run() : null;
+    for (const control of [start, this.elements.send]) { if (view) control.setAttribute('aria-describedby', state.id); else control.removeAttribute('aria-describedby'); }
+    this.render();
+  }
+  private get sendSuppressed(): boolean { return !!this.stateView?.action; }
   /** Undefined restores automatic growth; explicit sizes retain their preferred pixel height. */
   setManualHeight(px: number | undefined): void {
     if (px !== undefined && (!Number.isFinite(px) || px < 0)) throw new RangeError('Invalid composer height');
@@ -589,7 +609,7 @@ export class Composer {
     const buffer = this.current; const mode = buffer?.data.mode;
     this.elements.root.hidden = !buffer; this.editor.disabled = !buffer;
     this.renderControls();
-    this.elements.send.disabled = !buffer || !this.ready || buffer.submitting || this.textLimit || this.pendingBlocks(buffer) || buffer.data.server.recoverySendGuard?.state === 'blocked' || buffer.data.server.recoverySendGuard?.state === 'unavailable' || !draftHasContent({text: buffer.data.text.trim(), images: buffer.data.images});
+    this.elements.send.disabled = !buffer || !this.ready || this.sendSuppressed || buffer.submitting || this.textLimit || this.pendingBlocks(buffer) || buffer.data.server.recoverySendGuard?.state === 'blocked' || buffer.data.server.recoverySendGuard?.state === 'unavailable' || !draftHasContent({text: buffer.data.text.trim(), images: buffer.data.images});
     const active = this.deliveryMode(mode);
     const delivery = this.delivery(); if (delivery) delivery.value = active === 'followUp' ? 'followUp' : 'steer';
     setText(this.elements.save, this.saveSummary(buffer));
@@ -597,7 +617,7 @@ export class Composer {
   private renderControls(): void {
     if (this.destroyed) return;
     this.elements.modes.hidden = !this.current || !this.ready || !this.connected || !this.busy || !this.deliverySupported;
-    this.elements.send.hidden = false;
+    this.elements.send.hidden = !!this.stateView?.action;
     const reason = this.sendGuidance();
     const send = this.elements.send; send.setAttribute('aria-description', reason); send.title = reason || 'Send';
   }
@@ -929,7 +949,7 @@ export class Composer {
     return false;
   }
   async send(literal = false, consent?: SendConsent): Promise<void> {
-    const buffer = this.current; if (this.composing || this.suppressEnter || this.textLimit || !buffer || this.blocked(buffer, consent)) return;
+    const buffer = this.current; if (this.composing || this.suppressEnter || this.textLimit || this.sendSuppressed || !buffer || this.blocked(buffer, consent)) return;
     if (consent && !this.consentMatches(buffer, consent)) return;
     if (consent) consent.used = true;
     this.rememberSelection(); const focusOrigin = document.activeElement;

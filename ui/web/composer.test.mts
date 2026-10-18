@@ -789,7 +789,7 @@ test('literal confirmation refuses changed text, saved revision, and target epoc
 test('an unavailable agent keeps an editable draft and visible disabled Send without an acquisition dependency', () => {
   const f = fixture('agent'); f.connect(state('a', draft(1, 'retained', 'steer'), true));
   f.composer.availability(true, false, true); assert.equal(f.composer.editor.value, 'retained');
-  assert.equal(f.node('send').hidden, false); assert.equal(f.node('acquire'), undefined); assert.equal(f.node('modes').hidden, true); assert.equal(f.node('send').attrs.get('aria-description'), 'Connect this agent to send.');
+  assert.equal(f.node('send').hidden, false); assert.equal(f.node('acquire'), undefined); assert.equal(f.node('modes').hidden, true); assert.equal(f.node('send').attrs.get('aria-description'), 'This agent is not ready for messages.');
   assert.equal(f.node('send').disabled, true);
   f.composer.availability(false, false, false); assert.equal(f.node('send').hidden, false); assert.equal(f.node('send').disabled, true); assert.equal(f.node('acquire'), undefined);
 });
@@ -1034,7 +1034,7 @@ test('ready agent Send requires a nonempty draft and readiness never submits inp
   f.composer.availability(true, true, false); assert.equal(f.calls.length, 0);
   f.composer.availability(true, false, false); f.composer.recipient('Draft for Review companion');
   assert.equal(f.node('recipient').textContent, 'Draft for Review companion'); assert.equal(f.node('send').hidden, false);
-  assert.equal(f.node('send').attrs.get('aria-description'), 'Connect this agent to send.'); assert.deepEqual(f.composer.target, a.target);
+  assert.equal(f.node('send').attrs.get('aria-description'), 'This agent is not ready for messages.'); assert.deepEqual(f.composer.target, a.target);
   f.composer.recipient('Draft for Review companion', 'Messages are unavailable for this agent.');
   assert.equal(f.node('send').attrs.get('aria-description'), 'Messages are unavailable for this agent.'); assert.equal(f.node('send').hidden, false);
   f.composer.recipient('Draft for Review companion', ''); assert.equal(f.node('send').attrs.get('aria-description'), '');

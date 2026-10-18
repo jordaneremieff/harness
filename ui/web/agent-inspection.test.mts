@@ -30,3 +30,13 @@ test('an unavailable result keeps its native reason without inventing selector I
 test('wrong target and contradictory result selectors are explicit read failures',async()=>{
   const f=fixture(async()=>({view:'result',identity:'another',readAt:'now',status:'done',submissionId:99,usage:{value:{},truncated:false}}));f.inspection.open('result',{submissionId:3});f.inspection.visibility(true);await settle();assert.match(f.inspection.node.textContent??'',/answer target changed/);f.inspection.destroy();
 });
+test('the task list names itself, returns to the conversation, and says what its empty lists searched',async()=>{
+  let returned=0;const calls:InspectRequest[]=[];
+  const inspection=new AgentInspection(identity,{read:async input=>{calls.push(input);return {view:'history',identity,readAt:'now',entries:[],coverage:{complete:true,truncated:false,omitted:0},detail:{text:'',shortened:false,protected:false}} as unknown as AgentInspectionView;},current:()=>true,changed:()=>{},returned:()=>{returned++;},restore:()=>null,save:()=>{}});
+  inspection.open('result');inspection.visibility(true);await settle();
+  const node=inspection.node as unknown as HostNode;
+  assert.equal(node.querySelector('.inspection-title')?.textContent,'Sent and received tasks');assert.equal(node.querySelector('.inspection-navigation'),null);
+  const text=node.textContent??'';assert.match(text,/No inputs found in the last 100 messages\./);assert.match(text,/No sent tasks found in the loaded messages\./);
+  assert.equal(calls.some(call=>call.view==='history'&&call.limit===100),true);
+  click(inspection,'Back to conversation');assert.equal(inspection.active,false);assert.equal(returned,1);inspection.destroy();
+});

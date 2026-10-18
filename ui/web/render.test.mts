@@ -2498,10 +2498,10 @@ test('static workbench markup owns one footer and keeps composer actions without
   assert.match(factory, /const modes = element\('div', 'modes'\); modes\.id = `\$\{id\}-modes`/);
   assert.match(factory, /const recipient = element\('label', 'sr-only', 'Message'\); recipient\.id = `\$\{id\}-recipient`; recipient\.htmlFor = editor\.id/);
   assert.match(factory, /const surface = element\('div', 'composer-surface'\); surface\.append\(overlay, editor\)/);
-  assert.match(factory, /const input = element\('div', 'composer-input'\); input\.append\(commandMenu, recipient, surface, attachments\)/);
+  assert.match(factory, /const input = element\('div', 'composer-input'\); input\.append\(commandMenu, recipient, surface, attachments, state\)/);
   assert.match(factory, /const intake = element\('span','composer-intake'\); intake\.append\(attach,sources,picker\)/);
   assert.match(factory, /cardAction\('chevron', 'Attachment sources'/);
-  assert.match(factory, /root\.append\(resize, receipt, input, line\)/); assert.match(factory, /line\.append\(intake, bar\)/); assert.match(factory, /bar\.append\(stop, submit\)/); assert.match(factory, /submit\.append\(modes, send\)/);
+  assert.match(factory, /root\.append\(resize, receipt, input, line\)/); assert.match(factory, /line\.append\(intake, bar\)/); assert.match(factory, /bar\.append\(stop, submit\)/); assert.match(factory, /submit\.append\(modes, start, send\)/);
   assert.doesNotMatch(factory, /composer-settings|composer-guidance|usage-details|class="statusline"|root\.append\([^)]*receiptDetails/);
   assert.equal([...html.matchAll(/id="focused-composer-status" class="workbench-draft-state"/g)].length, 1);
 });
