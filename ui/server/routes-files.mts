@@ -2,6 +2,7 @@ import {LIMITS} from '../shared/api.ts';
 import type {HttpBackend, RequestContext} from './http.mts';
 import type {Files,FileResponse} from './files.mts';
 import {filePath} from './file-access.mts';
+import {searchQuery} from './file-search.mts';
 import {ApiError} from './errors.mts';
 import {validateFileRevision, validateFileDraftText, validateFileEncoding} from './file-state.mts';
 import * as v from './validate.mts';
@@ -102,9 +103,13 @@ async function treeRequest(files:Files,backend:HttpBackend,context:RequestContex
   return response;
 }
 async function readRequest(files:Files,backend:HttpBackend,context:RequestContext) {
-  const {parts,method,url,signal} = context;queryFields(url,parts[4] === 'directory' ? ['path','workspace','limit','cursor'] : ['path','workspace']);
+  const {parts,method,url,signal} = context;queryFields(url,parts[4] === 'directory' ? ['path','workspace','limit','cursor'] : parts[4] === 'search' ? ['q','workspace'] : ['path','workspace']);
   if (context.operationId) throw new ApiError('invalid_request','File requests do not accept an operation key.');
   await backend.workspace(v.string(url.searchParams.get('workspace'),'workspace ID'));
+  if (parts[4] === 'search') {
+    if (method !== 'GET') throw new ApiError('invalid_request','The file route does not accept this request.',405);
+    return files.request({kind:'search',rootId:v.string(parts[3],'root ID'),query:searchQuery(url.searchParams.get('q') ?? '')},signal);
+  }
   const rootId = v.string(parts[3],'root ID'),path = filePath(url.searchParams.get('path'),parts[4] === 'directory');
   if (method !== 'GET') return mutationRequest(files,rootId,path,context);
   if (parts[4] === 'text' || parts[4] === 'draft') return files.request({kind:parts[4],rootId,path},signal);
@@ -119,7 +124,7 @@ export async function dispatchFiles(files:Files,backend:HttpBackend,context:Requ
   }
   if (parts[1] === 'files' && parts[2] === 'roots') {
     if (['entries','move','entry'].includes(parts[4] ?? '')) return treeRequest(files,backend,context);
-    if (['directory','text','draft'].includes(parts[4] ?? '')) return readRequest(files,backend,context);
+    if (['directory','text','draft','search'].includes(parts[4] ?? '')) return readRequest(files,backend,context);
   }
   throw new ApiError('invalid_request','The file route does not accept this request.',405);
 }

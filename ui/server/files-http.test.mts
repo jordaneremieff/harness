@@ -34,6 +34,9 @@ test('loopback file routes preserve source and enforce strict draft/save request
   const text = await call(`${base}/text?workspace=${workspace}&path=text.md`);assert.equal(text.status,200);const value = (await text.json() as {data:FileText}).data;assert.equal(value.text,source);assert.equal('writable' in value,false);
   const escaped = await call(`${base}/text?workspace=${workspace}&path=escaped.txt`);assert.equal(escaped.status,200);assert.ok((await escaped.text()).length > 1024*1024);
   assert.equal((await call(`${base}/directory?workspace=${workspace}&path=&limit=1`)).status,200);
+  const found = await call(`${base}/search?workspace=${workspace}&q=text`);assert.equal(found.status,200);assert.deepEqual((await found.json() as {data:{rows:{path:string}[]}}).data.rows.map(row=>row.path),['text.md']);
+  for (const route of [`${base}/search?workspace=${workspace}&q=a&q=b`,`${base}/search?workspace=${workspace}&q=${'x'.repeat(201)}`,`${base}/search?workspace=${workspace}&q=a&path=b`]) assert.equal((await call(route)).status,400,route);
+  assert.equal((await call(`${base}/search?workspace=${workspace}&q=text`,'POST',{})).status,405);
   assert.equal((await call(`${base}/text?workspace=${workspace}&path=missing`)).status,404);
   for (const route of [`${base}/text?workspace=${workspace}&path=../secret`,`${base}/text?workspace=${workspace}&path=text.md&path=text.md`,`${base}/text?workspace=${workspace}&path=text.md&unknown=1`,`${base}/directory?workspace=${workspace}&path=&limit=201`,`${base}/search?workspace=${workspace}&path=`]) assert.ok((await call(route)).status >= 400,route);
   assert.equal((await call(`${base}/text?workspace=${workspace}&path=text.md`,'PUT',{text:'changed'})).status,400);

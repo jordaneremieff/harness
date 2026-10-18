@@ -5,7 +5,7 @@ import {movedFilePath, type FileRevision, type FileEncoding, type FileWatchScope
 export type FileJob = {kind:'open'; directory:string} | {kind:'roots'} | {kind:'selection'; workspace:string} |
   {kind:'select'; workspace:string; path:string; expectedRevision:number} |
   {kind:'directory'; rootId:string; path:string; limit:number; cursor?:string} |
-  {kind:'text'; rootId:string; path:string} | {kind:'draft'; rootId:string; path:string} |
+  {kind:'search'; rootId:string; query:string} | {kind:'text'; rootId:string; path:string} | {kind:'draft'; rootId:string; path:string} |
   {kind:'put-draft'; rootId:string; path:string; expectedRevision:number; base:FileRevision; text:string; encoding:FileEncoding} |
   {kind:'save'; rootId:string; path:string; expectedRevision:number} |
   {kind:'watch'; workspace:string; clientId:string; roots:FileWatchScope[]} | {kind:'watch-state';workspace:string;clientId:string} | {kind:'unwatch';workspace:string;clientId:string} |

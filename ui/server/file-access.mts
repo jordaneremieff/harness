@@ -8,6 +8,7 @@ import {ApiError,fileIdentityUncertain} from './errors.mts';
 
 export type RegisteredRoot = FileRoot & {dev: number; ino: number};
 const excluded = new Set(['.git', '.hg', '.svn', '.bzr']);
+export const excludedNames: ReadonlySet<string> = excluded;
 const cursorKey = randomBytes(32);
 export function filePath(value: unknown, empty = true): string {
   if (typeof value !== 'string' || value.length > LIMITS.pathChars || (!empty && !value) || isAbsolute(value) || value.includes('\\') || /[\u0000-\u001f\u007f]|%2f|%5c|%2e/i.test(value) || /[\ud800-\udfff]/u.test(value.replace(/[\ud800-\udbff][\udc00-\udfff]/g, ''))) throw new ApiError('invalid_request', 'The relative file path is invalid.');
@@ -123,7 +124,7 @@ export async function writeText(root:RegisteredRoot,path:string,base:FileRevisio
 }
 function kind(entry: {isDirectory():boolean;isFile():boolean;isSymbolicLink():boolean}): FileEntry['kind'] {return entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : entry.isSymbolicLink() ? 'symlink' : 'other';}
 function compare(a:FileEntry,b:FileEntry) {return Number(b.kind === 'directory') - Number(a.kind === 'directory') || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);}
-function childPath(parent:string,name:string):string|undefined {
+export function childPath(parent:string,name:string):string|undefined {
   try {return filePath(parent ? `${parent}/${name}` : name,false);} catch {return undefined;}
 }
 async function enumerate(root: RegisteredRoot,path:string,entryLimit:number,byteLimit:number) {

@@ -2,6 +2,7 @@ import {parentPort} from 'node:worker_threads';
 import {LIMITS} from '../shared/api.ts';
 import {FileState} from './file-state.mts';
 import {directoryPage, fileFailure, readText} from './file-access.mts';
+import {searchFiles} from './file-search.mts';
 import {ApiError, errorView,fileIdentityUncertain} from './errors.mts';
 import type {FileJob} from './files.mts';
 import {FileWatches} from './file-watch.mts';
@@ -19,6 +20,7 @@ async function execute(job:FileJob):Promise<unknown> {
     case 'save':return state.saveDraft(job.rootId,job.path,job.expectedRevision);
     case 'watch':return watches.replace(job.workspace,job.clientId,job.roots);
     case 'watch-state':return watches.state(job.workspace,job.clientId);
+    case 'search':return searchFiles(state.root(job.rootId),job.query);
     case 'unwatch':await watches.release(job.workspace,job.clientId);return null;
     case 'move':return moveEntry(state,watches,job);
     case 'create':watches.assertMove(job.rootId,'',job.path);return state.create(job.rootId,job.path,job.entryKind);

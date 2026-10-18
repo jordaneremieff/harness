@@ -2,6 +2,10 @@ export type FileRoot = {id: string; path: string; name: string};
 export type FileRootSelection = {revision: number; root: FileRoot | null};
 export type FileEntry = {name: string; path: string; kind: 'directory' | 'file' | 'symlink' | 'other'};
 export type FileCoverage = {complete: boolean; visited: number; reason?: string};
+/** One name-search row; discovery never reads file contents. */
+export type FileSearchRow = {name: string; path: string; kind: 'directory' | 'file'};
+export type FileSearchCoverage = {complete: boolean; visited: number; skipped: number; reason?: string};
+export type FileSearchResult = {rootId: string; query: string; scope: string; rows: FileSearchRow[]; more: boolean; coverage: FileSearchCoverage};
 export type FileDirectoryPage = {rootId: string; path: string; entries: FileEntry[]; revision: string; nextCursor: string | null; coverage: FileCoverage};
 export type FileRevision = {size: number; mtimeMs: number; digest: string};
 /** Exact decoded UTF-8 source, independent of display normalization. */
