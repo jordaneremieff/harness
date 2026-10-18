@@ -1188,7 +1188,8 @@ dialog[data-variant=menu]::backdrop { background: transparent; }
 .thread-refresh { flex: none; }
 .thread-scroll { flex: 1; min-height: 0; min-width: 0; overflow-x: hidden; overflow-y: auto; overflow-anchor: none; overflow-wrap: anywhere; scrollbar-width: thin; scrollbar-color: var(--rule) transparent; }
 .thread-scroll:focus-visible { outline-offset: -2px; }
-.thread-scroll > button { display: block; }
+.thread-earlier-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--s2); margin-top: var(--s2); }
+.thread-earlier-row > .thread-note { margin: 0; }
 .thread-scroll summary { width: fit-content; max-width: 100%; padding: 2px 6px 2px 0; color: var(--muted); font-size: 13px; }
 .thread-scroll summary:hover { color: var(--fg); }
 .thread-purpose { max-height: 4.5em; overflow: hidden; font-size: 14px; line-height: 1.5; }

@@ -122,17 +122,18 @@ test('a member name opens that conversation and leaves the reader', async () => 
 });
 
 test('older events load on request and join the loaded ones', async () => {
-  const newest = page(events.slice(2), {id: MORE}); newest.nextBefore = 3; newest.coverage = {complete: false};
+  const newest = page(events.slice(2), {id: MORE, sequence: 6}); newest.nextBefore = 3; newest.coverage = {complete: false};
   const older = page(events.slice(0, 2), {id: MORE});
   fixtureControl.threadHandler = url => url.pathname !== '/api/threads/read' ? overview : url.searchParams.get('before') ? older : newest;
   byId('threads-list').querySelectorAll('button')[1]?.click(); await settle();
   const node = reader(); assert.ok(node);
   assert.equal(node.querySelector('.thread-exchange')?.children.length, 4);
-  const earlier = node.querySelector('.thread-earlier'); assert.ok(earlier); assert.equal(earlier.hidden, false);
+  const row = node.querySelector('.thread-earlier-row'), earlier = node.querySelector('.thread-earlier'); assert.ok(row); assert.ok(earlier); assert.equal(row.hidden, false);
+  assert.match(text(row), /^Older events not loaded\.\s*Load earlier events$/); assert.match(text(node.querySelector('.thread-status') as never), /Newest 4 of 6 events/);
   earlier.click(); await settle();
   assert.match(threadCalls().at(-1)?.path ?? '', /before=3/);
   assert.equal(node.querySelector('.thread-exchange')?.children.length, 6);
-  assert.equal(node.querySelector('.thread-earlier')?.hidden, true);
+  assert.equal(node.querySelector('.thread-earlier-row')?.hidden, true); assert.doesNotMatch(text(node.querySelector('.thread-status') as never), /Newest/);
   node.dispatch('keydown', {key: 'Escape', isComposing: false}); await settle();
 });
 
@@ -244,5 +245,23 @@ test('a member with no known name reads as a short conversation id, never as an 
   assert.deepEqual(node.querySelectorAll('.thread-person').map(person => text(person)), ['Conversation 01a149eb']);
   assert.equal(node.querySelectorAll('.thread-person')[0]?.title, unknown);
   assert.doesNotMatch(text(node), /Unnamed agent/);
+  await closeReader();
+});
+
+const FRESH = id('y');
+test('scrolling up to the top of the exchange reads the next older page once and keeps the reading position', async () => {
+  const newest = page(events.slice(2), {id: FRESH, sequence: 6}); newest.nextBefore = 3; newest.coverage = {complete: false};
+  const older = page(events.slice(0, 2), {id: FRESH, sequence: 6});
+  fixtureControl.threadHandler = url => url.pathname !== '/api/threads/read' ? {...overview, items: [...overview.items, {id: FRESH, storageId: STORAGE, title: 'Fresh thread', purpose: '', updatedAt: Date.now(), closed: false, members: 2}]} : url.searchParams.get('before') ? older : newest;
+  byId('threads-refresh').click(); await settle();
+  rowButton('Fresh thread').click(); await settle();
+  const node = reader(); assert.ok(node);
+  const scroller = node.querySelector('.thread-scroll') as unknown as {scrollTop: number; dispatch(name: string): void} | null; assert.ok(scroller);
+  const reads = () => threadCalls().filter(call => call.path.startsWith('/api/threads/read')).length, before = reads();
+  scroller.scrollTop = 600; scroller.dispatch('scroll'); await settle(); assert.equal(reads(), before);
+  scroller.scrollTop = 40; scroller.dispatch('scroll'); await settle();
+  assert.equal(reads(), before + 1); assert.match(threadCalls().at(-1)?.path ?? '', /before=3/);
+  assert.equal(node.querySelector('.thread-exchange')?.children.length, 6);
+  scroller.scrollTop = 10; scroller.dispatch('scroll'); await settle(); assert.equal(reads(), before + 1);
   await closeReader();
 });

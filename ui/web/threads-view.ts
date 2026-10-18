@@ -166,6 +166,8 @@ type Cached = {item: ThreadListItem; thread?: ThreadView; events: ThreadEventVie
 const SCROLL_LIMIT = 50;
 type Failure = {kind: 'unavailable'} | {kind: 'failed'; message: string};
 const CACHE_LIMIT = 8;
+/** Scrolling up within this many pixels of the top reads the next older page. */
+const EARLIER_EDGE = 120;
 
 /** A read-only view of one thread. One instance serves the whole page and is placed in the pane that opened it. */
 export class ThreadReader {
@@ -177,6 +179,9 @@ export class ThreadReader {
   private readonly scroller = element('div', 'thread-scroll');
   private readonly frame = element('div', 'thread-frame');
   private readonly earlier: HTMLButtonElement;
+  private readonly earlierRow = element('div', 'thread-earlier-row');
+  private readonly earlierNote = element('p', 'thread-note', 'Older events not loaded.');
+  private lastTop = 0;
   private readonly exchange = element('ol', 'thread-exchange');
   private readonly notice = element('div', 'thread-notice');
   private readonly cache = new Map<string, Cached>();
@@ -205,9 +210,14 @@ export class ThreadReader {
     this.earlier = button('Load earlier events', () => { void this.loadEarlier(); }, 'thread-earlier');
     this.scroller.tabIndex = 0; this.scroller.setAttribute('aria-label', 'Thread exchange');
     this.exchange.setAttribute('aria-label', 'Events, oldest first');
-    this.scroller.append(this.frame, this.earlier, this.exchange, this.notice);
+    this.earlierRow.append(this.earlierNote, this.earlier);
+    this.scroller.append(this.frame, this.earlierRow, this.exchange, this.notice);
     this.node.append(header, meta, this.scroller);
-    this.scroller.addEventListener('scroll', () => this.rememberScroll(), {passive: true});
+    this.scroller.addEventListener('scroll', () => {
+      this.rememberScroll();
+      const top = this.scroller.scrollTop, up = top < this.lastTop; this.lastTop = top;
+      if (up && top <= EARLIER_EDGE && !this.failure) void this.loadEarlier();
+    }, {passive: true});
     this.node.addEventListener('keydown', event => {
       if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return;
       event.preventDefault(); event.stopPropagation(); this.hooks.back();
@@ -286,7 +296,7 @@ export class ThreadReader {
       if (serial !== this.earlierSerial) return;
       const node = this.scroller, height = node.scrollHeight, top = node.scrollTop;
       this.take(entry, page, true); this.paint();
-      node.scrollTop = top + (node.scrollHeight - height);
+      node.scrollTop = top + (node.scrollHeight - height); this.lastTop = node.scrollTop;
     } catch (error) {
       if (serial !== this.earlierSerial || controller.signal.aborted) return;
       this.failure = this.classify(error);
@@ -305,7 +315,7 @@ export class ThreadReader {
   private paintControls(): void {
     this.refreshButton.disabled = this.loading || this.loadingEarlier;
     const entry = this.entry, more = entry ? olderBoundary(entry.events) !== null : false;
-    this.earlier.hidden = !more || !!this.failure && !entry?.events.length;
+    this.earlierRow.hidden = !more || !!this.failure && !entry?.events.length;
     this.earlier.disabled = this.loadingEarlier;
     setText(this.earlier, this.loadingEarlier ? 'Loading earlier events…' : 'Load earlier events');
   }
@@ -315,7 +325,7 @@ export class ThreadReader {
     const thread = entry.thread, name = nameFor(this.hooks.name);
     this.lastNames = this.nameSignature();
     setText(this.title, thread?.title || entry.item.title || 'Thread');
-    setText(this.status, this.statusText(thread)); this.status.title = thread?.integrator ? `Integrator ${thread.integrator}` : '';
+    setText(this.status, this.statusText(thread, entry.events)); this.status.title = thread?.integrator ? `Integrator ${thread.integrator}` : '';
     this.paintFrame(thread);
     const wanted = exchangeRows(entry.events, name).map(row => this.rowNode(row));
     this.exchange.replaceChildren(...wanted);
@@ -326,11 +336,12 @@ export class ThreadReader {
     if (this.restorePending && entry.thread) { this.restorePending = false; this.restoreScroll(); }
     else if (wasEnd && this.scrollOf(entry.item.id) === 'end') this.scroller.scrollTop = this.scroller.scrollHeight;
   }
-  private statusText(thread: ThreadView | undefined): string {
+  private statusText(thread: ThreadView | undefined, events: readonly ThreadEventView[]): string {
     if (!thread) return this.loading ? 'Reading thread…' : '';
     const integrator = thread.integrator ? this.hooks.name(thread.integrator) : '';
     const updated = thread.updatedAt ? `Updated ${eventTime(thread.updatedAt, Date.now())}` : '';
-    return [thread.closed ? 'Closed' : 'Open', `${thread.members.length} ${thread.members.length === 1 ? 'member' : 'members'}`, integrator ? `Integrator ${integrator}` : '', updated, this.loading ? 'Refreshing…' : ''].filter(Boolean).join(' · ');
+    const shown = events[0] && events[0].sequence > 1 ? `Newest ${events.length} of ${thread.sequence} events` : '';
+    return [thread.closed ? 'Closed' : 'Open', `${thread.members.length} ${thread.members.length === 1 ? 'member' : 'members'}`, integrator ? `Integrator ${integrator}` : '', shown, updated, this.loading ? 'Refreshing…' : ''].filter(Boolean).join(' · ');
   }
   private noticeNodes(entry: Cached): HTMLElement[] {
     const nodes: HTMLElement[] = [];
