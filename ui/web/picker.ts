@@ -61,7 +61,7 @@ function durableListDetails(roster?: CachedRoster): string {
 }
 
 type Context = {snapshot(): Snapshot | undefined; primary(): PrimaryView | undefined; modal: Modal;
-  agentPresentation(row: AgentRow): Pick<ConversationPresentation, 'name' | 'identityTail' | 'activity' | 'tone' | 'cwd'>;
+  agentPresentation(row: AgentRow): Pick<ConversationPresentation, 'name' | 'identityTail' | 'activity' | 'tone' | 'cwd' | 'hideVisibleState'>;
   selection(change: SelectionChange): Promise<void>; reload(): Promise<void>; selectOpened?(): (key:string)=>Promise<void>; selectConverted?(): (identity:string)=>Promise<void>; project?(): string | undefined; projectsChanged?(): void; titlesChanged?(): void; workingFolder?(path:string):Promise<void>};
 
 /** Metadata caches belong to the picker, never to execution or writer ownership. */
@@ -409,8 +409,9 @@ export class ProjectPicker {
     select.dataset.agentIdentity = row.identity;
     const heading = element('span', 'picker-session-heading'), tail = element('span', 'picker-session-tail', view.identityTail ?? ''); tail.hidden = !tail.textContent;
     heading.append(element('strong', 'picker-session-title', view.name), tail);
-    const state = element('span', 'conversation-state picker-durable-state', view.activity); state.dataset.tone = view.tone;
-    select.append(heading, state);
+    select.append(heading);
+    // An unchecked live connection stays in the title and accessible name; it is not repeated as a visible line on every row.
+    if (!view.hideVisibleState) {const state = element('span', 'conversation-state picker-durable-state', view.activity); state.dataset.tone = view.tone; select.append(state);}
     if (view.cwd) {const folder = element('span', 'picker-session-meta', `Saved folder: ${this.projectName(view.cwd)}`); folder.title = view.cwd; select.append(folder);}
     const caption = presentationName(view);
     select.title = [caption, row.identity, view.activity, view.cwd].filter(Boolean).join('\n');

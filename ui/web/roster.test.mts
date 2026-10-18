@@ -574,7 +574,7 @@ test('roster keeps callback truth and its bounded excerpt in distinct heading fi
 });
 test('quiet roster state preserves canonical accessibility, full preview and keyed actions', () => {
   const f = setup(); let hidden = true, label = 'Connection not checked';
-  const roster = new RosterView(() => {}, () => {}, undefined, () => {}, () => ({label, glyph: '?', hideVisibleRosterState: hidden}));
+  const roster = new RosterView(() => {}, () => {}, undefined, () => {}, () => ({label, glyph: '?', hideVisibleState: hidden}));
   const source = row('quiet', {latestReply: `**Long** ${'unbroken'.repeat(30)}`, currentTool: {name: 'read', argument: 'source.ts'}});
   roster.set([source]); f.flush();
   const node = required(f.node.children[0]), select = node.query('row-select'), preview = node.query('row-preview'), state = node.query('row-state'), message = node.query('row-message'), age = node.query('row-age');

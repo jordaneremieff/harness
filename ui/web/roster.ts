@@ -32,7 +32,7 @@ export function rosterPreview(source: string): string {
   return previewText(words, 1, 180).text;
 }
 function rowName(row: AgentRow): string {return agentName(row.name, row.handle, row.identity, undefined, row.firstMessage);}
-export type RosterStatus = {hideVisibleRosterState?: boolean; activity?: string; glyph: string; label: string; tone?: PresentationTone; name?: string; tail?: string; tool?: AgentRow['currentTool']};
+export type RosterStatus = {hideVisibleState?: boolean; activity?: string; glyph: string; label: string; tone?: PresentationTone; name?: string; tail?: string; tool?: AgentRow['currentTool']};
 function modelText(row: AgentRow): string {
   if (!row.model) return '';
   const thinking = row.model.thinkingLevel ?? row.thinkingLevel;
@@ -303,7 +303,7 @@ export class Roster {
   }
   private row(row: AgentRow, identity: string): RowNode {
     const cached = this.cache.get(row.identity) ?? this.createRow(row);
-    const state = this.resolvedStatus(row); setText(cached.state, state.activity || (state.label==='Ready'?'Idle':state.label)); cached.state.hidden = state.hideVisibleRosterState === true || !cached.state.textContent; cached.state.title = state.label; cached.state.dataset.tone = state.tone ?? 'secondary'; setText(cached.name, state.name ?? rowName(row));
+    const state = this.resolvedStatus(row); setText(cached.state, state.activity || (state.label==='Ready'?'Idle':state.label)); cached.state.hidden = state.hideVisibleState === true || !cached.state.textContent; cached.state.title = state.label; cached.state.dataset.tone = state.tone ?? 'secondary'; setText(cached.name, state.name ?? rowName(row));
     const caption=this.captions.get(row.identity);cached.name.title=caption.source==='first-message'?'Title from first message, not a supplied name':'Conversation name';
     this.updatePreview(cached, row.latestReply);
     identity = state.name !== undefined ? state.tail ?? '' : identity; setText(cached.identity, identity); cached.identity.hidden = !identity; cached.identity.title = `Agent ID: ${row.identity}`;

@@ -45,7 +45,7 @@ export function agentComposerState(source: AgentComposerSource): AgentComposerSt
 export type ConversationPresentation = {
   name: string; nameDetail?: string; identityTail?: string; tone: PresentationTone; cwd?: string; activity: string; input: boolean; busy: boolean; lastObserved: boolean; guidance: string;
   model?: {provider: string; modelId: string}; thinking?: string; retainedModel: boolean; retainedThinking: boolean;
-  tool?: AgentRow['currentTool']; detail?: string; responseOutcome?: ResponseOutcome; hideVisibleRosterState?: boolean;
+  tool?: AgentRow['currentTool']; detail?: string; responseOutcome?: ResponseOutcome; hideVisibleState?: boolean;
 };
 export function settingsLabel(view: Pick<ConversationPresentation, 'model' | 'thinking' | 'retainedModel' | 'retainedThinking'>, fullModel = false): string {
   const both = !!view.model && !!view.thinking && view.retainedModel && view.retainedThinking;
@@ -165,7 +165,7 @@ function agentPresentation(source: PresentationSource, identity: string): Conver
   const tone = agentTone(state,source.connected,checked,live,busy,input,frame,outcome,source.start);
   return {...emptyPresentation(source.connected), ...settings, name, identityTail, tone, cwd: row?.cwd,
     activity: agentActivity(state, input, frame, source.connected, checked, source.start), input, busy, guidance: input ? '' : state === 'stored' ? 'Start this agent to send.' : 'Messages are unavailable for this agent.', retainedModel: settings.retainedModel || retained && !!settings.model, retainedThinking: settings.retainedThinking || retained && !!settings.thinking,
-    hideVisibleRosterState: source.connected && state === 'live' && !checked,
+    hideVisibleState: source.connected && state === 'live' && !checked,
     detail: live ? agentFailureDetails(frame) : undefined,
     responseOutcome: responseOutcome(frame?.entries), tool: live ? frameTool(frame) : undefined};
 }

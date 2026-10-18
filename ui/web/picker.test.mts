@@ -141,6 +141,22 @@ function catalogRow(identity: string): AgentRow {return {identity, storageId: id
 function catalogRoster(rows: AgentRow[] = []): CachedRoster {return {rows, scan: {state: 'ready', complete: true, visited: rows.length, skipped: 0, omitted: 0}, stale: false};}
 const noPublished = {...saved, items: [], total: 0};
 const ordinarySample = saved.items[0]; assert.ok(ordinarySample);
+test('an unchecked live connection leaves no visible state line but stays in the row title and accessible name; meaningful states stay visible', async t => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'HTMLButtonElement');
+  Object.defineProperty(globalThis, 'HTMLButtonElement', {configurable: true, value: Node});
+  t.after(() => {if (original) Object.defineProperty(globalThis, 'HTMLButtonElement', original); else Reflect.deleteProperty(globalThis, 'HTMLButtonElement');});
+  const states: Record<string, {activity: string; hide: boolean}> = {quiet: {activity: 'Running', hide: true}, working: {activity: 'Working', hide: false}, stored: {activity: 'Stored', hide: false}};
+  const setup = directPicker(t, undefined, saved, undefined, {roster: catalogRoster([catalogRow('quiet'), catalogRow('working'), catalogRow('stored')]), published: noPublished,
+    presentation: row => ({name: row.identity, activity: states[row.identity]?.activity ?? '', tone: 'secondary', cwd: '/project', hideVisibleState: states[row.identity]?.hide})});
+  setup.picker.open(); await settle(); const list = setup.body.querySelector('.picker-durable-list'); assert.ok(list);
+  const [quiet, working, stored] = list.children; assert.ok(quiet); assert.ok(working); assert.ok(stored);
+  assert.equal(quiet.querySelector('.picker-durable-state'), null); assert.deepEqual(quiet.children.map(child => child.className), ['picker-session-heading', 'picker-session-meta']);
+  assert.match(quiet.title, /Running/); assert.match(quiet.attributes['aria-label'] ?? '', /Running/);
+  assert.equal(working.querySelector('.picker-durable-state')?.textContent, 'Working'); assert.equal(stored.querySelector('.picker-durable-state')?.textContent, 'Stored');
+  assert.match(quiet.querySelector('.picker-session-meta')?.textContent ?? '', /Saved folder:/);
+  const search = setup.body.querySelector('#picker-search'); assert.ok(search); search.value = 'quiet'; search.dispatch('input');
+  assert.equal(setup.body.querySelectorAll('.picker-durable-select').length, 1);
+});
 test('Durable picker rows use projected names and truthful state with native keyboard selection only', async t => {
   const original = Object.getOwnPropertyDescriptor(globalThis, 'HTMLButtonElement');
   Object.defineProperty(globalThis, 'HTMLButtonElement', {configurable: true, value: Node});
