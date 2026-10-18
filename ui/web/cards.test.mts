@@ -220,7 +220,7 @@ test('a successful Markdown read previews as noninteractive prose without source
   assert.equal(shown.tag, 'span'); assert.equal(shown.className, 'tool-prose-preview');
   const tags = new Set(walk(shown).map(child => child.tag));
   for (const forbidden of ['a', 'button', 'img', 'pre', 'script', 'details', 'summary', 'input']) assert.equal(tags.has(forbidden), false, forbidden);
-  assert.equal(shown.textContent, 'Release notes The bold and soft label with code() and Image not shown: chart. \u2022 first \u2022 second <script>alert(1)</script>');
+  assert.equal(shown.textContent, 'Release notesThe bold and soft label with code() and Image not shown: chart. \u2022 first \u2022 second <script>alert(1)</script>');
   assert.doesNotMatch(shown.textContent, /[#*_[\]]|https:/);
   const classes = walk(shown).map(child => child.className);
   assert.ok(classes.includes('prose-preview-block prose-preview-heading prose-preview-title')); assert.ok(classes.includes('prose-preview-code'));
@@ -235,7 +235,7 @@ test('a leading heading is its own title line and later headings stay inline in 
   const [heading, paragraph] = body.children.filter(child => child.tag === 'span'); assert.ok(heading && paragraph);
   assert.ok(heading.className.split(' ').includes('prose-preview-heading')); assert.equal(heading.className.includes('prose-preview-title'), false);
   assert.equal(heading.textContent, 'B'); assert.equal(paragraph.textContent, 'text');
-  assert.equal(shown.textContent, 'A B text');
+  assert.equal(shown.textContent, 'AB text');
   const plain = node(presentResultPreview(readSource('docs/a.md', 'one\n\ntwo')));
   assert.equal(plain.children.filter(child => child.tag === 'span').length, 1); assert.equal(plain.children.find(child => child.tag === 'span')?.className, 'prose-preview-body'); assert.equal(plain.textContent, 'one two');
 });
@@ -243,7 +243,7 @@ test('frontmatter is omitted from the compact prose projection only', () => {
   setup();
   const front = '---\ntitle: Notes\ntags: [a, b]\nauthor: x\ndate: 2026\nstatus: draft\nkind: note\n---\n# Doc\n\nbody';
   const shown = node(presentResultPreview(readSource('docs/a.md', front)));
-  assert.equal(shown.textContent, 'Doc body'); assert.equal(shown.children.find(child => child.tag === 'span')?.textContent, 'Doc');
+  assert.equal(shown.textContent, 'Docbody'); assert.equal(shown.children.find(child => child.tag === 'span')?.textContent, 'Doc');
   assert.equal(resultPreview(readSource('docs/a.md', front).result ?? []).startsWith('---\ntitle: Notes'), true);
   assert.equal(node(presentResultPreview(readSource('docs/a.md', '---\nnot closed\n\ntext'))).textContent.includes('not closed'), true);
   assert.equal(node(presentResultPreview(readSource('docs/a.md', 'text\n---\nmore'))).textContent.includes('text'), true);

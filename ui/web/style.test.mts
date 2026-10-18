@@ -1034,7 +1034,7 @@ test('prose previews read as short sans text while raw and source previews keep 
   assert.match(prose, /color: var\(--muted\); font-family: var\(--sans\); font-size: 13px; line-height: 20px; font-weight: 400; white-space: normal/);
   assert.match(prose, /-webkit-line-clamp: 3/); assert.match(prose, /overflow: hidden/);
   assert.match(rule('.tool-prose-preview .prose-preview-code'), /font-family: var\(--mono\); font-size: 12px/);
-  assert.match(rule('.tool-prose-preview .prose-preview-title'), /margin: 0; color: var\(--fg\); font-size: 13px; line-height: 20px; font-weight: 500/);
+  assert.match(rule('.tool-prose-preview .prose-preview-title'), /display: block; margin: 0; color: var\(--fg\); font-size: 13px; line-height: 20px; font-weight: 500/);
   assert.doesNotMatch(css, /prose-preview-block \+ \.prose-preview-block/);
   assert.match(rule('.tool-preview'), /font-family: var\(--mono\); font-size: 12px; white-space: pre-wrap/);
   assert.match(rule('.tool-preview > .tool-content-preview'), /font: inherit/);

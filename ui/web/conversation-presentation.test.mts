@@ -146,7 +146,8 @@ test('the composer state names what the draft needs before it can be sent', () =
   const reason = 'Check the agent after the browser reconnects.';
   assert.equal(agentComposerState({...source, availability: 'live', checked: true, input: false, reason})?.line, 'Messages are read only.');
   const connectionError = `task-submit/1.2.0 host unavailable: ${'diagnostic '.repeat(40)}`;
-  const failedCheck = agentComposerState({...source, availability: 'stored', connectionError}); assert.equal(failedCheck?.kind, 'read-only'); assert.equal(failedCheck?.detail, connectionError);
+  const failedCheck = agentComposerState({...source, availability: 'stored', connectionError}); assert.equal(failedCheck?.kind, 'unreachable'); assert.equal(failedCheck?.line, 'Could not reach the agent.'); assert.equal(failedCheck?.action?.label, 'Check agent'); assert.equal(failedCheck?.detail, connectionError);
+  const checking = agentComposerState({...source, availability: 'live', checked: true, input: true, checking: true}); assert.equal(checking?.kind, 'checking'); assert.equal(checking?.line, 'Checking the agent…'); assert.equal(checking?.action, undefined);
   const blocked = agentComposerState({...source, availability: 'live', checked: true, input: true, blocked: 'Quota reached.'});
   assert.deepEqual(blocked, {kind: 'notice', line: 'Provider blocked. Configure this agent through Primary.', detail: 'Quota reached.'});
 });

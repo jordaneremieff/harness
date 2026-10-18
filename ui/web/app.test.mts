@@ -301,7 +301,7 @@ test('Message negotiation overrides a claim across main selection, panel close, 
   assert.equal(agentControl('send').disabled, true); assert.match(tabsNode().querySelector(`[data-tab-key="agent:${b.identity}"]`)?.title ?? '', /Read only/);
   await app.checkAgentConnection('negotiation-owner', b.identity); await settle(); assert.equal(agentControl('send').disabled, false);
   await recovery.disconnect(); assert.equal(agentControl('send').disabled, false); assert.doesNotMatch(tabsNode().querySelector(`[data-tab-key="agent:${b.identity}"]`)?.title ?? '', /Connected|Ready/);
-  await recovery.recover(); assert.equal(agentControl('send').disabled, true);
+  await recovery.recover(); assert.equal(agentControl('send').disabled, false);
   await app.checkAgentConnection('negotiation-owner', b.identity); await settle(); assert.equal(agentControl('send').disabled, false);
   assert.equal(agentControl('editor'), editor); assert.equal(editor.value, savedB.draft.text); assert.match(agentControl('root').textContent, /Saved B history/);
   assert.equal(transportLog.slice(before).some(call => call.path.endsWith('/start') || call.path.includes('/inputs')), false);
@@ -1815,6 +1815,59 @@ test('a read-only agent disables Send, describes it with the state line, and kee
   assert.equal(agentControl('send').hidden, false); assert.equal(agentControl('send').disabled, true); assert.equal(agentControl('send').attributes.get('aria-describedby'), agentControl('state').id);
   assert.equal(agentControl('editor').disabled, false); assert.equal(agentControl('editor').value, 'Draft kept while read only');
   const before = transportLog.length; await app.agentComposer().send(); await settle(); assert.equal(transportLog.slice(before).some(call => call.path.includes('/inputs')), false);
+});
+
+async function reconnectFixture(identities: string[], visible: string) {
+  const targets = identities.map(identity => ({kind: 'agent' as const, identity}));
+  const rows = identities.map(identity => agentFixture(identity));
+  const layout = singlePane(targets, `agent:${visible}`);
+  await arrive({workspace: {id: 'reconnect-w', revision: 1, selectedTarget: targets[0], conversationLayout: layout}, primaries: [], roster: rows, targets: targets.map(target => targetFixture(`saved-${target.identity}`, target, {draft: {revision: 2, text: `Draft ${target.identity}`, mode: 'followUp', persisted: true}}))});
+  for (const row of rows) { event('agent.availability', {identity: row.identity, connectionEpoch: 1, state: 'live', capabilities: row.capabilities}); await settle(); }
+  return {layout, targets, rows};
+}
+const preparations = (from: number, identity?: string) => transportLog.slice(from).filter(call => call.method === 'POST' && call.path.endsWith('/targets') && (!identity || (call.body as {target?: {identity?: string}} | undefined)?.target?.identity === identity));
+
+test('after a browser reconnect a still-running agent shows the normal composer once its target is prepared again', async t => {
+  const recovery = preparationRecovery(); t.after(async () => { await recovery.dispose(); });
+  const identity = 'reconnect-live';
+  await reconnectFixture([identity], identity);
+  assert.equal(agentControl('state').hidden, true); assert.equal(agentControl('send').disabled, false);
+  await recovery.disconnect();
+  const before = transportLog.length; await recovery.recover(); await settle();
+  assert.equal(preparations(before, identity).length, 1);
+  assert.equal(agentControl('state').hidden, true); assert.equal(agentControl('state-line').textContent, ''); assert.equal(agentControl('start').hidden, true);
+  assert.equal(agentControl('send').hidden, false); assert.equal(agentControl('send').disabled, false); assert.equal(agentControl('editor').disabled, false);
+  assert.equal(transportLog.slice(before).some(call => call.path.endsWith('/start') || call.path.includes('/inputs')), false);
+});
+
+test('a failed preparation after reconnect says the agent could not be reached and offers Check agent', async t => {
+  const recovery = preparationRecovery(); const original = globalThis.fetch; let fail = true;
+  t.after(async () => { globalThis.fetch = original; await recovery.dispose(); });
+  const identity = 'reconnect-fail';
+  await reconnectFixture([identity], identity);
+  await recovery.disconnect();
+  globalThis.fetch = async (input, init) => new URL(String(input), 'http://ui.test').pathname.endsWith('/targets') && init?.method === 'POST' && fail ? Response.json({ok: false, error: {code: 'host_unavailable', message: 'The agent socket is closed.', retry: 'manual'}}) : original(input, init);
+  const before = transportLog.length; await recovery.recover(); await settle();
+  assert.equal(agentControl('state-line').textContent, 'Could not reach the agent.'); assert.equal(agentControl('start').textContent, 'Check agent'); assert.equal(agentControl('start').hidden, false);
+  assert.equal(agentControl('send').hidden, true); assert.equal(agentControl('state-detail').hidden, false);
+  agentControl('state-detail').click(); assert.match(byId('modal-body').textContent, /agent socket is closed/); byId('modal-close').click();
+  const failed = preparations(before, identity).length; await settle(); assert.equal(preparations(before, identity).length, failed);
+  fail = false; agentControl('start').click(); await settle();
+  assert.equal(preparations(before, identity).length, failed + 1);
+  assert.equal(agentControl('state').hidden, true); assert.equal(agentControl('send').hidden, false); assert.equal(agentControl('send').disabled, false);
+});
+
+test('a background tab keeps its stale connection and makes no preparation request until it is visible', async t => {
+  const recovery = preparationRecovery(); t.after(async () => { await recovery.dispose(); });
+  const {layout} = await reconnectFixture(['reconnect-front', 'reconnect-back'], 'reconnect-back');
+  app.applyLayout(activatePaneTab(layout, 'pane-1', 'agent:reconnect-back')); await app.selectionQueue.drain(); await settle();
+  app.applyLayout(activatePaneTab(app.state.workspace?.conversationLayout ?? layout, 'pane-1', 'agent:reconnect-front')); await app.selectionQueue.drain(); await settle();
+  for (const identity of ['reconnect-front', 'reconnect-back']) { event('agent.availability', {identity, connectionEpoch: 2, state: 'live', capabilities: agentFixture(identity).capabilities}); await settle(); }
+  await recovery.disconnect();
+  const before = transportLog.length; await recovery.recover(); await settle();
+  assert.equal(preparations(before, 'reconnect-front').length, 1); assert.equal(preparations(before, 'reconnect-back').length, 0);
+  app.applyLayout(activatePaneTab(app.state.workspace?.conversationLayout ?? layout, 'pane-1', 'agent:reconnect-back')); await app.selectionQueue.drain(); await settle();
+  assert.equal(preparations(before, 'reconnect-back').length, 1); assert.equal(preparations(before, 'reconnect-front').length, 1);
 });
 
 test('pending stored Start deduplicates clicks and a stale completion never changes the new recipient or focus', async t => {

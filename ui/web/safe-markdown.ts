@@ -126,7 +126,7 @@ export function markdownPreviewDom(text: string): DocumentFragment {
   for (const node of parsed) previewBlock(node, budget, blocks);
   const fragment = document.createDocumentFragment();
   const title = parsed[0]?.type === 'heading' ? blocks.shift() : undefined;
-  if (title) { title.className = `${title.className} prose-preview-title`; fragment.append(title, document.createTextNode(' ')); }
+  if (title) { title.className = `${title.className} prose-preview-title`; fragment.append(title); }
   const body = element('span', 'prose-preview-body');
   blocks.forEach((block, index) => { if (index) body.append(document.createTextNode(' ')); body.append(block); });
   if (budget.limited) body.append(document.createTextNode('…'));

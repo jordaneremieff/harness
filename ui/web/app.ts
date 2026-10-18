@@ -119,7 +119,7 @@ let preparedReloadState:{key:string;revision:number;workspace:string}|undefined;
 const devCheckpointKey = 'ui:dev-checkpoint';
 type ConversationController = {workspaceId: string; target: Target; instanceId: string; root: HTMLElement; nodes: Map<string, HTMLElement>;
   elements: import('./composer.ts').ComposerElements; composer: Composer; transcript: Transcript; inspection?: AgentInspection; readingGeometry?: ReturnType<Transcript['captureGeometry']>; saved?: TargetState; geometry?: ReturnType<Transcript['captureGeometry']>; messageRetention?: object;
-  abort: AbortController; historyAbort: AbortController; cursor: string | null; before: number | null; loading: boolean; preparing: boolean; passive?: boolean; historyReading?: TargetState['reading']; historyReady: boolean; historyBoundaryLoaded: boolean; historyComplete?: boolean; historyError?: {code?: string; message: string}; hasEntries?: boolean; initialized: boolean; showThinking: boolean; historyWork?: Promise<void>; connectionError?: string; connection?: Pick<import('../shared/api.ts').TargetPreparation, 'availability' | 'capabilities' | 'reason'>; resizer?: Resizer};
+  abort: AbortController; historyAbort: AbortController; cursor: string | null; before: number | null; loading: boolean; preparing: boolean; passive?: boolean; historyReading?: TargetState['reading']; historyReady: boolean; historyBoundaryLoaded: boolean; historyComplete?: boolean; historyError?: {code?: string; message: string}; hasEntries?: boolean; initialized: boolean; showThinking: boolean; historyWork?: Promise<void>; connectionError?: string; connection?: Pick<import('../shared/api.ts').TargetPreparation, 'availability' | 'capabilities' | 'reason'> & {stale?: true}; refreshing?: boolean; resizer?: Resizer};
 const controllers = new Map<string, ConversationController>();
 const agentStarts = new Map<string, {pending: boolean; reason?: string}>();
 let controllerSerial = 0;
@@ -576,10 +576,19 @@ function currentSnapshot(): Snapshot | undefined {
 }
 function primary(): PrimaryView | undefined { return state.workspace?.primaryKey ? state.primaries.get(state.workspace.primaryKey) : undefined; }
 function primaryTarget(): Target | undefined { const item = primary(); return item ? {kind: 'primary', key: item.key, epoch: item.epoch} : undefined; }
+/** A connection kept across a browser disconnect is evidence of the old stream and is ignored until it is prepared again. */
+function liveConnection(controller?: ConversationController): NonNullable<ConversationController['connection']> | undefined {
+  return controller?.connection?.stale ? undefined : controller?.connection;
+}
+function agentNegotiation(target: Target | undefined, controller?: ConversationController) {
+  const live = liveConnection(controller);
+  return target?.kind === 'agent' && live ? {identity: target.identity, ...live} : undefined;
+}
 function agentRow(identity: string): AgentRow | undefined {
   const row = state.roster.get(identity), controller = state.workspace ? controllers.get(controllerKey(state.workspace.id, {kind: 'agent', identity})) : undefined;
   if (row && controller?.connectionError) return {...row, availability: 'unavailable'};
-  if (row && controller?.connection) return {...row, availability: controller.connection.availability, capabilities: controller.connection.capabilities};
+  const negotiated = liveConnection(controller);
+  if (row && negotiated) return {...row, availability: negotiated.availability, capabilities: negotiated.capabilities};
   const availability = state.agentAvailability.get(identity);
   return row && availability ? {...row, availability: availability.state, capabilities: availability.capabilities} : row;
 }
@@ -633,8 +642,8 @@ function presentation(target?: Target): ConversationPresentation {
   const tool = target?.kind === 'primary' ? [...conversation?.tools.values() ?? []].findLast(item => item.phase !== 'end') : undefined;
   const item = target?.kind === 'primary' ? state.primaries.get(target.key) : undefined;
   return conversationPresentation({target, primary: item, savedSession: picker.savedSession(item),
-    row, caption: targetCaption(target), availability: target?.kind === 'agent' && !controller?.connection && !controller?.connectionError ? state.agentAvailability.get(target.identity) : undefined,
-    negotiated: target?.kind === 'agent' && controller?.connection ? {identity: target.identity, ...controller.connection} : undefined,
+    row, caption: targetCaption(target), availability: target?.kind === 'agent' && !liveConnection(controller) && !controller?.connectionError ? state.agentAvailability.get(target.identity) : undefined,
+    negotiated: agentNegotiation(target, controller),
     entries: conversation ? conversationBlocks(conversation) : undefined,
     start: startAttempt(target),
     frame: target ? state.conversations.get(targetIdentity(target))?.frame : undefined, tool: tool ? {name: tool.name, argument: tool.argumentText ?? ''} : undefined, connected});
@@ -1218,6 +1227,7 @@ function renderController(controller: ConversationController, deferred = false, 
   controller.elements.root.hidden = !saved;renderInspection(controller); renderObserved(controller, controller.target.kind === 'agent' || connected || !view.activity);
   controllerNode(controller, 'stop').hidden = !canStopController(controller);
   if (controller.root.hidden) return;
+  refreshStaleConnection(controller);
   const paint = () => {
     const conversation = state.conversations.get(targetIdentity(controller.target)); const entries = inputEchoes.entries(controller.workspaceId,controller.target,conversation ? conversationBlocks(conversation) : []);
     controller.transcript.set(entries, conversation?.tools); const hasEntries = entries.some(entry => !['model_change', 'thinking_level_change'].includes(entry.kind) && entryVisible(entry));
@@ -1241,17 +1251,18 @@ function prepareController(controller: ConversationController): void {
   if (controller.passive) {controller.composer.attachRetained(controller.workspaceId, controller.target); return;}
   if (controller.preparing || controller.abort.signal.aborted) return; controller.preparing = true;
   const connection = source;
-  void request<import('../shared/api.ts').TargetPreparation>(`/api/workspaces/${encodeURIComponent(controller.workspaceId)}/targets`, 'POST', {target: controller.target}, undefined, controller.abort.signal).then(prepared => {
-    if (controller.workspaceId !== state.workspace?.id || controller.abort.signal.aborted || !sameTarget(prepared.targetState.target, controller.target)) return;
-    const current = state.targets.get(prepared.targetState.targetKey); const saved = current && current.draft.revision >= prepared.targetState.draft.revision ? current : prepared.targetState;
-    state = {...state, targets: new Map(state.targets).set(saved.targetKey, saved)}; controller.saved = saved;
-    // Saved drafts outlive the stream; negotiated capabilities belong to its current lifetime.
-    if (preparationCurrent(connection)) {
-      controller.connectionError = undefined;
-      if (controller.target.kind === 'agent') controller.connection = prepared;
-    }
-    renderController(controller); renderRoster(); renderWorkbenchStatus();
-  }).catch(error => {if (preparationCurrent(connection) && !controller.abort.signal.aborted) controllerPreparationFailed(controller, error);}).finally(() => {controller.preparing = false; if (!controller.historyReady && !controller.root.hidden) void loadControllerHistory(controller);});
+  void request<import('../shared/api.ts').TargetPreparation>(`/api/workspaces/${encodeURIComponent(controller.workspaceId)}/targets`, 'POST', {target: controller.target}, undefined, controller.abort.signal).then(prepared => applyPreparation(controller, prepared, connection)).catch(error => {if (preparationCurrent(connection) && !controller.abort.signal.aborted) controllerPreparationFailed(controller, error);}).finally(() => {controller.preparing = false; if (!controller.historyReady && !controller.root.hidden) void loadControllerHistory(controller);});
+}
+function applyPreparation(controller: ConversationController, prepared: import('../shared/api.ts').TargetPreparation, connection: EventSource | undefined): void {
+  if (controller.workspaceId !== state.workspace?.id || controller.abort.signal.aborted || !sameTarget(prepared.targetState.target, controller.target)) return;
+  const current = state.targets.get(prepared.targetState.targetKey); const saved = current && current.draft.revision >= prepared.targetState.draft.revision ? current : prepared.targetState;
+  state = {...state, targets: new Map(state.targets).set(saved.targetKey, saved)}; controller.saved = saved;
+  // Saved drafts outlive the stream; negotiated capabilities belong to its current lifetime.
+  if (preparationCurrent(connection)) {
+    controller.connectionError = undefined;
+    if (controller.target.kind === 'agent') controller.connection = prepared;
+  }
+  renderController(controller); renderRoster(); renderWorkbenchStatus();
 }
 function controllerPreparationFailed(controller: ConversationController, error: unknown): void {
   if (controller.target.kind === 'agent') {controller.connectionError = errorMessage(error); renderAgentState(controller);}
@@ -1433,7 +1444,8 @@ function renderStoredAgent(identity: string, _row?: AgentRow): void {
 function renderAgentState(controller: ConversationController): void {
   if (controller.target.kind !== 'agent') return;
   const {identity} = controller.target, workspace = controller.workspaceId;
-  const availability = controller.connection || controller.connectionError ? undefined : state.agentAvailability.get(identity), row = agentRow(identity), attempt = agentStarts.get(agentStartKey(workspace, identity));
+  const negotiated = liveConnection(controller);
+  const availability = negotiated || controller.connectionError ? undefined : state.agentAvailability.get(identity), row = agentRow(identity), attempt = agentStarts.get(agentStartKey(workspace, identity));
   const history = agentHistoryNote({hasEntries: !!controller.hasEntries, connected, loading: controller.loading, ready: controller.historyReady, complete: controller.historyComplete, error: controller.historyError});
   const note = controllerNode(controller, 'history-note'), line = controllerNode(controller, 'history-note-line');
   setText(line, history.text); note.hidden = !history.text || !!controller.inspection?.active;
@@ -1441,14 +1453,30 @@ function renderAgentState(controller: ConversationController): void {
   reload.hidden = !history.reload; reload.disabled = !connected || controller.loading || !!checkingAgent || attempt?.pending === true; reload.onclick = () => {void retryAgentRead(controller);};
   details.hidden = !history.detail; details.onclick = () => showDetails('Saved messages', history.detail);
   const current = presentation(controller.target);
-  const composerState = agentComposerState({connected, availability: availability?.state ?? row?.availability, input: current.input, checked: !!controller.connection || !!availability, reason: controller.connection?.reason ?? availability?.reason, startAttempt: attempt, connectionError: controller.connectionError, blocked: current.activity === 'Provider blocked' ? current.detail : undefined});
+  const composerState = agentComposerState({connected, availability: availability?.state ?? row?.availability, input: current.input, checked: !!negotiated || !!availability, reason: negotiated?.reason ?? availability?.reason, startAttempt: attempt, connectionError: controller.connectionError, checking: !!controller.refreshing, blocked: current.activity === 'Provider blocked' ? current.detail : undefined});
   controllerNode(controller, 'empty').hidden = true; controller.root.classList.toggle('agent-empty', !controller.hasEntries);
-  controller.composer.setState(composerState && composerStateView(composerState, () => {void (attempt && !attempt.pending ? checkAgentConnection(workspace, identity) : startStoredAgent(workspace, identity));}));
+  controller.composer.setState(composerState && composerStateView(composerState, () => {
+    if (composerState.kind === 'unreachable') prepareAgentConnection(controller);
+    else void (attempt && !attempt.pending ? checkAgentConnection(workspace, identity) : startStoredAgent(workspace, identity));
+  }));
+}
+/** Repeats the target preparation for an agent whose connection facts belong to a closed stream. */
+function prepareAgentConnection(controller: ConversationController): void {
+  if (controller.target.kind !== 'agent' || controller.refreshing || controller.abort.signal.aborted || !connected || controller.workspaceId !== state.workspace?.id) return;
+  controller.refreshing = true; controller.connectionError = undefined; renderAgentState(controller);
+  const connection = source;
+  void request<import('../shared/api.ts').TargetPreparation>(`/api/workspaces/${encodeURIComponent(controller.workspaceId)}/targets`, 'POST', {target: controller.target}, undefined, controller.abort.signal)
+    .then(prepared => applyPreparation(controller, prepared, connection))
+    .catch(error => {if (preparationCurrent(connection) && !controller.abort.signal.aborted) controllerPreparationFailed(controller, error);})
+    .finally(() => {controller.refreshing = false; renderAgentState(controller);});
+}
+function refreshStaleConnection(controller: ConversationController): void {
+  if (controller.connection?.stale && !controller.connectionError && !controller.root.hidden && !controller.root.inert) prepareAgentConnection(controller);
 }
 const ACTION_TITLES: Partial<Record<AgentComposerState['kind'], string>> = {start: 'Start agent. This can resume unfinished work before the agent is ready.', failed: 'Check whether the agent started.'};
 function composerStateView(view: AgentComposerState, run: () => void): ComposerStateView {
   const {action} = view;
-  return {line: view.line, blocksSend: view.kind === 'read-only', detail: view.detail || undefined, showDetail: () => showDetails('Agent details', view.detail),
+  return {line: view.line, blocksSend: view.kind === 'read-only' || view.kind === 'checking', detail: view.detail || undefined, showDetail: () => showDetails('Agent details', view.detail),
     ...(action ? {action: {...action, ...(ACTION_TITLES[view.kind] ? {title: ACTION_TITLES[view.kind]} : {}), disabled: action.disabled || !connected || !!checkingAgent, run}} : {})};
 }
 function showDetails(title: string, detail: string): void {
@@ -1529,7 +1557,7 @@ function agentFacts(row?: AgentRow, frame?: ProjectedFrame): {key: string; label
 }
 function renderAvailability(): void {
   for (const controller of controllers.values()) {
-    if (!connected && controller.connection?.availability === 'live') controller.connection = {...controller.connection, availability: 'unavailable', capabilities: {...controller.connection.capabilities, input: false}, reason: 'Check the agent connection after the browser reconnects.'};
+    if (!connected && controller.connection?.availability === 'live') controller.connection = {...controller.connection, stale: true};
     const view = presentation(controller.target), current = controller.workspaceId === state.workspace?.id; controller.composer.availability(connected && current, current && !!controller.saved && (controller.target.kind === 'agent' || view.input), current && view.busy, selecting, view.input);
     controllerNode(controller, 'stop').hidden = !canStopController(controller); renderControllerEmpty(controller);
   }

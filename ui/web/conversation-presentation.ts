@@ -6,7 +6,7 @@ export type PresentationTone = 'info' | 'success' | 'warning' | 'error' | 'secon
 
 export type AgentHistoryState = {hasEntries: boolean; connected: boolean; loading: boolean; ready: boolean; complete?: boolean; error?: {code?: string; message: string}};
 export type AgentStartAttempt = {pending: boolean; reason?: string};
-export type AgentComposerSource = {connected: boolean; availability?: AgentRow['availability']; input?: boolean; checked?: boolean; reason?: string; startAttempt?: AgentStartAttempt; connectionError?: string; blocked?: string};
+export type AgentComposerSource = {connected: boolean; checking?: boolean; availability?: AgentRow['availability']; input?: boolean; checked?: boolean; reason?: string; startAttempt?: AgentStartAttempt; connectionError?: string; blocked?: string};
 /** Reading retained messages is separate from admitting new work; the history note covers only the first. */
 export type AgentHistoryNote = {text: string; detail: string; reload: boolean};
 export function agentHistoryNote(source: AgentHistoryState): AgentHistoryNote {
@@ -22,14 +22,16 @@ export function agentHistoryNote(source: AgentHistoryState): AgentHistoryNote {
   if (source.complete) return {text: 'No messages yet.', detail: '', reload: false};
   return {text: 'Saved messages could not be confirmed.', detail: '', reload: true};
 }
-export type AgentComposerState = {kind: 'start' | 'starting' | 'failed' | 'read-only' | 'notice'; line: string; action?: {label: string; pending?: boolean; disabled?: boolean}; detail: string};
+export type AgentComposerState = {kind: 'start' | 'starting' | 'failed' | 'checking' | 'unreachable' | 'read-only' | 'notice'; line: string; action?: {label: string; pending?: boolean; disabled?: boolean}; detail: string};
 /** What the composer must say before the draft can be sent; undefined means the agent accepts messages as usual. */
 export function agentComposerState(source: AgentComposerSource): AgentComposerState | undefined {
   const attempt = source.startAttempt, detail = [attempt?.reason, source.connectionError, source.reason].filter(Boolean).join('\n');
   if (attempt?.pending) return {kind: 'starting', line: 'Starting the agent…', action: {label: 'Starting…', pending: true, disabled: true}, detail};
   if (attempt) return {kind: 'failed', line: 'Start did not complete.', action: {label: 'Try again', disabled: !source.connected}, detail};
   if (!source.connected) return undefined;
-  if (source.connectionError || source.availability === 'incompatible' || source.availability === 'unavailable') return {kind: 'read-only', line: 'This agent cannot run here. Messages are read only.', detail};
+  if (source.checking) return {kind: 'checking', line: 'Checking the agent…', detail: ''};
+  if (source.connectionError) return {kind: 'unreachable', line: 'Could not reach the agent.', action: {label: 'Check agent'}, detail};
+  if (source.availability === 'incompatible' || source.availability === 'unavailable') return {kind: 'read-only', line: 'This agent cannot run here. Messages are read only.', detail};
   if (source.availability === 'stored') return {kind: 'start', line: 'Not running. Start it to send a message.', action: {label: 'Start'}, detail};
   if (source.availability === 'live' && source.checked && source.input === false) return {kind: 'read-only', line: 'Messages are read only.', detail};
   if (source.blocked) return {kind: 'notice', line: 'Provider blocked. Configure this agent through Primary.', detail: source.blocked};
