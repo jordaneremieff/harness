@@ -35,6 +35,7 @@ class FakeNode {
   scrollTop = 0;
   clientHeight = 300;
   moves = 0;
+  rowHeight = 20;
   private text = '';
   private handlers = new Map<string, Array<(event: Record<string, unknown>) => void>>();
   readonly tagName: string;
@@ -43,7 +44,7 @@ class FakeNode {
   set textContent(value: string) { this.replaceChildren(); this.text = value; }
   get firstChild(): FakeNode | null { return this.children[0] ?? null; }
   get nextSibling(): FakeNode | null { const peers = this.parentNode?.children ?? []; return peers[peers.indexOf(this) + 1] ?? null; }
-  get offsetHeight(): number { return this.hidden ? 0 : this.style.height ? Number.parseFloat(this.style.height) : 20; }
+  get offsetHeight(): number { return this.hidden ? 0 : this.style.height ? Number.parseFloat(this.style.height) : this.className === 'agent-row' ? this.rowHeight : 20; }
   append(...nodes: FakeNode[]): void { for (const node of nodes) { node.remove(); node.parentNode = this; this.children.push(node); node.moves++; } }
   prepend(node: FakeNode): void { node.remove(); node.parentNode = this; this.children.unshift(node); node.moves++; }
   after(node: FakeNode): void {
@@ -66,10 +67,10 @@ class FakeNode {
     throw new Error(`Missing ${className}`);
   }
 }
-function setup(withRefresh = true) {
+function setup(withRefresh = true, rowHeight = 20) {
   const ids = new Map(['roster', 'agent-search', 'roster-footer', ...(withRefresh ? ['agent-refresh'] : [])].map(id => [id, new FakeNode('div')]));
   const frames: Array<() => void> = [];
-  const document = {activeElement: null as FakeNode | null, createElementNS: (_namespace: string, tag: string) => new FakeNode(tag), createElement: (tag: string) => new FakeNode(tag), getElementById: (id: string) => ids.get(id)};
+  const document = {activeElement: null as FakeNode | null, createElementNS: (_namespace: string, tag: string) => new FakeNode(tag), createElement: (tag: string) => {const node = new FakeNode(tag); node.rowHeight = rowHeight; return node;}, getElementById: (id: string) => ids.get(id)};
   Object.assign(globalThis, {document, requestAnimationFrame: (callback: () => void) => { frames.push(callback); return frames.length; }});
   return {document, node: required(ids.get('roster')), search: required(ids.get('agent-search')), footer: required(ids.get('roster-footer')), flush: () => { const pending = frames.splice(0); for (const callback of pending) callback(); }};
 }
@@ -496,23 +497,23 @@ test('filter visibility never changes and Escape restores the recent scope witho
   assert.equal(old.parentNode, null); assert.equal(f.node.query('roster-older').textContent, 'Show 1 older agent');
   f.search.dispatch('blur'); assert.equal(f.search.hidden, false);
 });
-test('the visible scoped list uses a 20 pixel estimate and preserves selected virtual pins', t => {
+test('the visible scoped list estimates the minimum row height and preserves selected virtual pins', t => {
   const now = 3 * 86400000; t.mock.method(Date, 'now', () => now);
-  const f = setup(); const roster = new Roster(() => {}, () => {});
+  const f = setup(true, 44); const roster = new Roster(() => {}, () => {});
   const live = Array.from({length: 220}, (_, i) => row(`live-${i}`));
   const older = Array.from({length: 100}, (_, i) => row(`old-${i}`, {availability: 'stored', state: 'done'}));
   roster.set([...live, ...older], page([], 'next'), 'live-200'); f.flush();
   const gap = required(f.node.children.find(child => child.className === 'spacer'));
   const pinned = required(f.node.children.find(child => child.dataset.identity === 'live-200'));
   const beforePin = f.node.children.slice(0, f.node.children.indexOf(pinned)).reduce((height, node) => height + node.offsetHeight, 0);
-  assert.equal(beforePin, 200 * 20); assert.ok(Number.parseFloat(gap.style.height ?? '') % 20 === 0);
-  assert.equal(f.node.children.reduce((height, node) => height + node.offsetHeight, 0), 220 * 20 + 20);
+  assert.equal(beforePin, 200 * 44); assert.ok(Number.parseFloat(gap.style.height ?? '') % 44 === 0);
+  assert.equal(f.node.children.reduce((height, node) => height + node.offsetHeight, 0), 220 * 44 + 20);
   assert.equal(f.node.query('roster-older').textContent, 'Show 100 older agents'); assert.ok(f.node.children.filter(child => child.className === 'agent-row').length <= 77);
-  const bottom = 220 * 20 + 20 - f.node.clientHeight;
+  const bottom = 220 * 44 + 20 - f.node.clientHeight;
   f.node.scrollTop = bottom; f.node.dispatch('scroll'); f.flush(); assert.equal(f.node.scrollTop, bottom);
   f.node.query('roster-older').click(); assert.equal(f.node.scrollTop, bottom);
   const more = f.node.query('roster-more'); assert.equal(f.node.children.at(-1), more);
-  const expandedBottom = 320 * 20 + 40 - f.node.clientHeight;
+  const expandedBottom = 320 * 44 + 40 - f.node.clientHeight;
   f.node.scrollTop = expandedBottom; f.node.dispatch('scroll'); f.flush(); assert.equal(f.node.scrollTop, expandedBottom);
   more.focus(); roster.set([...live, ...older], page([], 'next-2'), 'live-200'); f.flush();
   assert.equal(f.node.query('roster-more'), more); assert.equal(f.document.activeElement, more);
@@ -543,6 +544,26 @@ test('Message captures identity across rename and reorder; Resume changes only i
   roster.set([row('a'), row('b')]); f.flush(); assert.equal(action.hidden, false); assert.equal(action.textContent, 'Resume');
 });
 
+test('age toggles request row measurement and retain their deliberate clock through paint', t => {
+  let now = Date.UTC(2026, 9, 8, 12); t.mock.method(Date, 'now', () => now);
+  const f = setup(), roster = new Roster(() => {}, () => {}), source = row('age', {modifiedAt: now - 60000});
+  roster.set([source]); f.flush(); const node = required(f.node.children[0]), age = node.query('row-age');
+  let measurements = 0; Object.defineProperty(node, 'offsetHeight', {get() {measurements++; return 88;}});
+  now += 5 * 60000; age.click(); f.flush(); assert.ok(measurements > 0); assert.equal(age.dataset.absolute, 'true');
+  const previous = measurements; age.click(); f.flush(); assert.ok(measurements > previous); assert.equal(age.textContent, '6m');
+  roster.set([source]); f.flush(); assert.equal(f.node.children[0], node); assert.equal(age.textContent, '6m');
+});
+test('roster keeps callback truth and its bounded excerpt in distinct heading fields', () => {
+  const f = setup(); const label = 'Connection not checked; retained history only';
+  const roster = new RosterView(() => {}, () => {}, undefined, () => {}, () => ({label, glyph: '?', tone: 'warning'}));
+  const source = row('truthful', {name: 'A complete supplied conversation name', availability: 'stored', latestReply: 'Supplied reply '.repeat(80)});
+  roster.set([source]); f.flush(); const node = required(f.node.children[0]), heading = node.query('row-heading');
+  assert.deepEqual(heading.children.map(child => child.className), ['row-name', 'row-identity muted', 'row-state', 'row-preview']);
+  assert.equal(heading.query('row-name').textContent, source.name); assert.equal(heading.query('row-state').textContent, label);
+  assert.equal(heading.query('row-state').dataset.tone, 'warning'); assert.equal(heading.query('row-identity').hidden, true);
+  assert.ok(heading.query('row-preview').textContent.startsWith('Supplied reply')); assert.ok(heading.query('row-preview').textContent.length <= 181);
+  assert.match(node.query('row-select').attributes['aria-label'] ?? '', /truthful/); assert.equal(node.query('row-message').parentNode, node);
+});
 test('resolved status overrides live catalog state and removes a stale tool without replacing the row', () => {
   const f = setup(); let label = 'Working';
   const roster = new RosterView(() => {}, () => {}, undefined, undefined, () => ({label, glyph: label === 'Working' ? '●' : '○', tool: label === 'Working' ? {name: 'read', argument: 'file.ts'} : undefined}));

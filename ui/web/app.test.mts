@@ -1158,12 +1158,17 @@ test('sidebar sections retain their collapsed state per workspace and tab and fi
   app.setSidebarSection('agents', false);
   assert.equal(byId('agents-section-body').hidden, false); assert.equal(values.get('ui:sections:w:agents'), 'false');
   app.setSidebarSection('agents', true); assert.equal(values.get('ui:sections:w:agents'), 'true');
+  app.setSidebarSection('files', true); assert.equal(values.get('ui:sections:w:files'), 'true');
+  assert.equal(byId('files-heading').getAttribute('aria-expanded'), 'false'); assert.equal(byId('files-section-body').hidden, true);
   await arrive({workspace: workspace('w'), primaries: [primaryFixture()], roster: []});
   app.renderSidebarSections(); assert.equal(byId('agents-section-body').hidden, true);
   await arrive({workspace: workspace('other'), primaries: [primaryFixture()], roster: []});
   app.renderSidebarSections(); assert.equal(byId('agents-section-body').hidden, true);
   await arrive({workspace: workspace('w'), primaries: [primaryFixture()], roster: []});
   app.renderSidebarSections(); assert.equal(byId('agents-section-body').hidden, true);
+  assert.equal(byId('files-section-body').hidden, true); app.setSidebarSection('files', false);
+  assert.equal(byId('files-heading').getAttribute('aria-expanded'), 'true'); assert.equal(byId('files-section-body').hidden, false);
+  assert.equal(byId('agents-section-body').hidden, true);
   byId('sidebar').hidden = true; const before = browser.frameCount; app.focusAgentSearch(); await settle();
   assert.equal(byId('sidebar').hidden, false); assert.equal(byId('agents-section-body').hidden, false);
   assert.equal(hostDocument.activeElement, byId('agent-search')); assert.ok(browser.frameCount > before);
@@ -1173,7 +1178,9 @@ test('sidebar sections retain their collapsed state per workspace and tab and fi
   assert.equal(byId('agents-section-body').hidden, true);
   Reflect.set(globalThis, 'sessionStorage', hostSessionStorage);
   assert.doesNotMatch(html, /id="primary-heading"/);
-  assert.match(html, /id="session-open"[^>]*>SESSIONS/);
+  assert.match(html, /id="session-open"[^>]*aria-haspopup="dialog">Find session…/);
+  assert.match(html, /id="tabs-open-session"[^>]*>Find session…/);
+  for (const section of ['files', 'agents']) assert.ok(byId(`${section}-heading`).querySelector('.card-icon-chevron'));
   assert.match(html, /id="agents-heading" class="section-toggle"[^>]*aria-controls="agents-section-body">AGENTS/);
 });
 test('palette key aliases prevent browser defaults and preserve IME, repeat and open-dialog guards', async () => {

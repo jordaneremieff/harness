@@ -10,7 +10,7 @@ import type {PresentationTone} from './conversation-presentation.ts';
 
 export type CachedPageSearch = {load: (cursor: string, signal: AbortSignal) => Promise<CachedRoster>; merge: (page: CachedRoster) => void};
 const SEARCH_PAGE_LIMIT = 20;
-const ROW_HEIGHT = 20;
+const ROW_HEIGHT = 44;
 const RECENT_AGE = 24 * 60 * 60 * 1000;
 type RowNode = {node: HTMLElement; select: HTMLButtonElement; state: HTMLElement; name: HTMLElement; preview: HTMLElement; identity: HTMLElement; ageButton: HTMLButtonElement; message: HTMLButtonElement; age: HTMLTimeElement; source: AgentRow; absolute: boolean};
 function rowName(row: AgentRow): string {return agentName(row.name, row.handle, row.identity, undefined, row.firstMessage);}
@@ -273,7 +273,7 @@ export class Roster {
     const heading = element('span', 'row-heading'); const state = element('span', 'row-state'); state.setAttribute('aria-hidden', 'true');
     const name = element('span', 'row-name'); const identity = element('code', 'row-identity muted'), preview=element('span','row-preview'); heading.append(name, identity, state,preview);
     const age = element('time', 'timestamp');
-    const ageButton = button('', () => { cached.absolute = !cached.absolute; this.updateAge(cached, true); }, 'row-age'); ageButton.append(age);
+    const ageButton = button('', () => { cached.absolute = !cached.absolute; this.updateAge(cached, true); this.schedule(); }, 'row-age'); ageButton.append(age);
     const message = cardAction('message', 'Message', () => this.message?.(row.identity), 'row-message');
     select.append(heading); node.append(select, ageButton, message);
     const cached = {node, select, state, name, preview, identity, ageButton, message, age, source: row, absolute: false}; this.cache.set(row.identity, cached);
@@ -300,6 +300,7 @@ export class Roster {
   }
   private updateAge(cached: RowNode, deliberate = false): void {
     const row = cached.source; const now = deliberate ? Date.now() : this.arrivals.get(row.identity)?.now ?? Date.now();
+    if (deliberate) this.arrivals.set(row.identity, {source: row, now});
     const label = cached.absolute ? absoluteTime(row.modifiedAt) : relativeTime(row.modifiedAt, now);
     const valid = row.modifiedAt > 0 && isValidTimestamp(row.modifiedAt) && !!label;
     cached.ageButton.dataset.absolute = String(cached.absolute);

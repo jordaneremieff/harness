@@ -16,7 +16,7 @@ import {FileRootChoice} from './file-root.ts';
 import { activeTab, ConversationCaptions, conversationIdentityText, type CaptionRow, closeTab, duplicateTabTails, FileBrowseState, layoutTarget, openTab, switchTab, tabForTarget, tabKey, workspaceLayout } from './tabs.ts';
 import { paneLeaves, paneById, activatePaneTab, movePaneTab, resizePaneSplit, minimumPaneSize, paneSplitGeometry, splitPane, normalizePaneLayout, samePaneLayout, type PaneLeaf } from './pane-layout.ts';
 import { TabStrip } from './tabs-view.ts';
-import { cardAction, controlIcon, type CardIcon } from './card-icons.ts';
+import { cardAction, cardIcon, controlIcon, type CardIcon } from './card-icons.ts';
 import { thinkingExpanded } from './transcript-presentation.ts';
 import { contextMenu, nativeEditingTarget, paneMenuItems, type ContextItem } from './context-menu.ts';
 import { ProjectPicker } from './picker.ts';
@@ -1878,6 +1878,7 @@ function bind(): void {
     controlIcon(node, node.dataset.controlIcon as CardIcon, node.getAttribute('aria-label') ?? node.textContent ?? '');
     if (count) node.append(count);
   }
+  for (const section of ['files', 'agents']) byId(`${section}-heading`).prepend(cardIcon('chevron'));
   byId('files-heading').addEventListener('click',()=>setSidebarSection('files',!sidebarSections.files));
   byId('files-refresh').addEventListener('click',()=>filesTree.refresh());
   // Programmatic restoration also emits trusted scroll/select events; input intent must still change the revision.
