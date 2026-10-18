@@ -1072,3 +1072,10 @@ test('sidebar section headings keep their own row in normal flow so no heading d
   assert.match(rule('.threads-section > .nav-heading-row'), /flex: none/); assert.match(rule('.threads-body[hidden]'), /display: none/);
   assert.match(rule('.thread-scroll:focus-visible'), /outline-offset: -2px/); assert.doesNotMatch(css, /data-pointer/);
 });
+test('the transcript scroller is not positioned, because render.ts measures its rows by offsetTop against a shared offset parent', () => {
+  const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter(rule => (rule[1] ?? '').split(',').some(selector => /(?:^|[\s>+~])\.transcript$/.test(selector.trim())));
+  assert.ok(rules.length > 0, 'the transcript scroller has a rule');
+  for (const rule of rules) {
+    assert.doesNotMatch(rule[2] ?? '', /(?:^|[;\s])position\s*:/, `${(rule[1] ?? '').trim()} must not declare position. The offsetTop sites in render.ts (anchor, restorePosition, historyAvailable, revealEntry) assume the scroller and its rows share one offset parent (.transcript-region). Positioning the scroller means moving those sites to rectangle geometry, as layoutOrigin does, in the same change.`);
+  }
+});
