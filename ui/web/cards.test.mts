@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
-import { presentTool, presentToolPreview, readRange, cardPreviewLimits, resultPreview } from './cards.ts';
+import { presentResultPreview, presentTool, presentToolPreview, readRange, cardPreviewLimits, resultPreview } from './cards.ts';
 import type { PartView } from '../shared/api.ts';
 import type { PresentationContext, ToolPresentationSource } from './transcript-presentation.ts';
 
@@ -207,4 +207,57 @@ test('supplied write and edit source labels remain independent of reported succe
 test('incomplete retained arguments have a visible omission warning', () => {
   const {context} = setup(); const value = source('edit', {edits: [{oldText: '[omitted]', newText: 'new'}]}); assert.ok(value.args); value.args = {...value.args, truncated: true};
   assert.match(node(presentTool(value, context)).textContent, /Some arguments are not available/);
+});
+
+function walk(root: Node): Node[] { return [root, ...root.children.flatMap(walk)]; }
+function readSource(path: string, text: string, status = 'success', name = 'read', redacted = false): ToolPresentationSource {
+  return {callId: 'tool', name, args: {value: {path}, truncated: false}, status, result: [{type: 'text', text, ...(redacted ? {redacted: true} : {})}]};
+}
+test('a successful Markdown read previews as noninteractive prose without source punctuation', () => {
+  setup();
+  const text = '# Release notes\nThe **bold** and _soft_ [label](https://example.com/x) with `code()` and ![chart](x.png).\n- first\n- second\n<script>alert(1)</script>';
+  const shown = node(presentResultPreview(readSource('docs/NOTES.MD', text)));
+  assert.equal(shown.tag, 'span'); assert.equal(shown.className, 'tool-prose-preview');
+  const tags = new Set(walk(shown).map(child => child.tag));
+  for (const forbidden of ['a', 'button', 'img', 'pre', 'script', 'details', 'summary', 'input']) assert.equal(tags.has(forbidden), false, forbidden);
+  assert.equal(shown.textContent, 'Release notesThe bold and soft label with code() and Image not shown: chart.\u2022 first\u2022 second<script>alert(1)</script>');
+  assert.doesNotMatch(shown.textContent, /[#*_[\]]|https:/);
+  const classes = walk(shown).map(child => child.className);
+  assert.ok(classes.includes('prose-preview-block prose-preview-heading')); assert.ok(classes.includes('prose-preview-code'));
+  assert.deepEqual(walk(shown).filter(child => child.tag === 'strong' || child.tag === 'em').map(child => [child.tag, child.textContent]), [['strong', 'bold'], ['em', 'soft']]);
+});
+test('prose classification uses only explicit content facts', () => {
+  setup();
+  const markdown = '# Title\n\nBody';
+  assert.equal(presentResultPreview(readSource('src/main.ts', markdown)), undefined);
+  assert.equal(presentResultPreview(readSource('notes', markdown)), undefined);
+  assert.equal(presentResultPreview(readSource('docs/a.md', markdown, 'success', 'bash')), undefined);
+  assert.equal(presentResultPreview(readSource('docs/a.md', markdown, 'error')), undefined);
+  assert.equal(presentResultPreview(readSource('docs/a.md', markdown, 'working')), undefined);
+  assert.equal(presentResultPreview(readSource('docs/a.md', '[protected text]', 'success', 'read', true)), undefined);
+  assert.equal(presentResultPreview({callId: 'tool', name: 'bash', status: 'success', result: [{type: 'text', text: '# not markdown\n**raw**'}]}), undefined);
+  assert.equal(presentResultPreview({callId: 'tool', name: 'read', status: 'success', args: {value: {path: 'a.md'}, truncated: false}, result: []}), undefined);
+  assert.equal(presentResultPreview({callId: 'tool', name: 'read', status: 'success', args: {value: {path: 'a.md'}, truncated: false}, result: [{type: 'text', text: '```\n```'}]}), undefined);
+  assert.equal(presentResultPreview({callId: 'tool', name: 'read', status: 'success', args: {value: {file_path: 'a.markdown'}, truncated: false}, result: [{type: 'text', text: 'Hi'}]})?.textContent, 'Hi');
+});
+test('a structured summary is plain prose text and is never parsed as Markdown', () => {
+  setup();
+  const result: PartView[] = [{type: 'text', text: 'raw retained', structured: {value: {message: '**kept** [x](https://example.com)', count: 2}, truncated: true}}];
+  const shown = node(presentResultPreview({callId: 'tool', name: 'custom', status: 'success', result}));
+  assert.equal(shown.className, 'tool-prose-preview'); assert.equal(shown.children.length, 0);
+  assert.equal(shown.textContent, resultPreview(result)); assert.match(shown.textContent, /\*\*kept\*\*/); assert.match(shown.textContent, /Partial preview\./);
+  assert.equal(presentResultPreview({callId: 'tool', name: 'custom', status: 'error', result}), undefined);
+  assert.equal(presentResultPreview({callId: 'tool', name: 'custom', status: 'success', result: [{type: 'text', text: '[protected text]', redacted: true, structured: {value: {hidden: 'never'}, truncated: false}}]}), undefined);
+});
+test('prose previews keep the shortened-text mark and bound their own nodes', () => {
+  setup();
+  const long = node(presentResultPreview(readSource('a.md', `# Heading\n\n${'word '.repeat(400)}`)));
+  assert.match(long.textContent, /…$/);
+  const dense = `${'*a* '.repeat(200)}`.trim();
+  const bounded = node(presentResultPreview(readSource('a.md', dense)));
+  assert.ok(walk(bounded).length < 400); assert.match(bounded.textContent, /…$/);
+  const table = node(presentResultPreview(readSource('a.md', '| A | B |\n| --- | --- |\n| 1 | `two` |')));
+  assert.equal(table.textContent, 'A · B1 · two');
+  const quote = node(presentResultPreview(readSource('a.md', '> quoted **text**\n\n1. one\n2. two')));
+  assert.equal(quote.textContent, 'quoted text1. one2. two');
 });

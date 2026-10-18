@@ -1347,6 +1347,29 @@ function contentEntry(id: string, args: Record<string, unknown>, text: string, i
     {type: 'toolResult' as const, callId: id, name: 'custom', isError, parts: [{type: 'text' as const, text, ...(structured ? {structured} : {})}] as PartView[]},
   ]}]};
 }
+test('collapsed previews are prose only for Markdown reads and structured summaries', () => {
+  setup(); const view = transcript(); const markdown = '# Plan\nRead the [guide](https://example.com/guide) first.';
+  const entries = ['read', 'bash'].map(name => {
+    const source = contentEntry(`prose-${name}`, {path: 'docs/plan.md'}, markdown); const parts = source.messages[0]?.parts; assert.ok(parts);
+    for (const part of parts) if (part.type === 'toolCall' || part.type === 'toolResult') part.name = name;
+    return source;
+  });
+  const typed = contentEntry('prose-typescript', {path: 'src/plan.ts'}, markdown); for (const part of typed.messages[0]?.parts ?? []) if (part.type === 'toolCall' || part.type === 'toolResult') part.name = 'read';
+  view.set([...entries, typed]); flush();
+  const previews = node('primary-transcript').querySelectorAll('.tool-preview');
+  assert.equal(previews.length, 3);
+  const prose = previews[0]?.querySelector('.tool-prose-preview'); assert.ok(prose);
+  assert.equal(prose.textContent, 'PlanRead the guide first.'); assert.equal(previews[0]?.querySelector('a'), null);
+  assert.equal(previews[1]?.querySelector('.tool-prose-preview'), null); assert.equal(previews[1]?.textContent, markdown);
+  assert.equal(previews[2]?.querySelector('.tool-prose-preview'), null); assert.equal(previews[2]?.textContent, markdown);
+  const summary = contentEntry('prose-summary', {path: 'result.json'}, '{"count":2}', false, {value: {count: 2}, truncated: false});
+  view.set([summary]); flush();
+  assert.equal(node('primary-transcript').querySelector('.tool-preview')?.querySelector('.tool-prose-preview')?.textContent, 'count: 2');
+  const failed = contentEntry('prose-failed', {path: 'docs/plan.md'}, markdown, true); for (const part of failed.messages[0]?.parts ?? []) if (part.type === 'toolCall' || part.type === 'toolResult') part.name = 'read';
+  view.set([failed]); flush();
+  assert.equal(node('primary-transcript').querySelector('.tool-preview')?.querySelector('.tool-prose-preview'), null);
+  assert.equal(node('primary-transcript').querySelector('.tool-preview')?.textContent, markdown);
+});
 test('session groups fold adjacent visible events and show actionable notices outside their lazy body', () => {
   setup(); const view = transcript();
   view.set([sessionEntry('a', 'quiet'), sessionEntry('b', 'Check the input', 'warning'), entry('empty', ''), sessionEntry('c', 'later')]); flush();

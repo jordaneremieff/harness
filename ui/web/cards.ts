@@ -3,7 +3,8 @@ import type { PartView } from '../shared/api.ts';
 import { structuredResultPreview } from './generic-content.ts';
 import type { PresentationContext, ToolPresentationSource } from './transcript-presentation.ts';
 import { previewText } from './format.ts';
-import { highlight, languageFromPath } from './highlight.ts';
+import { highlight, isMarkdownPath, languageFromPath } from './highlight.ts';
+import { markdownPreviewDom } from './safe-markdown.ts';
 import { suppliedDifference, differenceNotice } from './supplied-difference.ts';
 
 const PREVIEW_CHARS = 8192;
@@ -105,17 +106,38 @@ export function readRange(args: Record<string, unknown>): string {
   return Number.isSafeInteger(end) ? `lines ${offset}–${end}` : '';
 }
 
-/** A collapsed result describes supplied structured data or keeps a literal text prefix. */
-export function resultPreview(parts: readonly PartView[]): string {
+type ResultPreviewText = {text: string; summary: boolean; redacted: boolean};
+function resultPreviewText(parts: readonly PartView[]): ResultPreviewText | undefined {
   for (const part of parts) {
-    if (part.type === 'toolResult') { const nested = resultPreview(part.parts); if (nested) return nested; }
+    if (part.type === 'toolResult') { const nested = resultPreviewText(part.parts); if (nested) return nested; }
     if (part.type !== 'text') continue;
-    const text = !part.redacted ? structuredResultPreview(part.structured) ?? part.text : part.text;
+    const summary = !part.redacted ? structuredResultPreview(part.structured) : undefined;
+    const text = summary ?? part.text;
     if (!text) continue;
     const shown = preview(text, 1200, 6);
-    return shown.limited ? `${preview(shown.text, 1199, 6).text}…` : shown.text;
+    return {text: shown.limited ? `${preview(shown.text, 1199, 6).text}…` : shown.text, summary: summary !== undefined, redacted: !!part.redacted};
   }
-  return '';
+  return undefined;
+}
+
+/** A collapsed result describes supplied structured data or keeps a literal text prefix. */
+export function resultPreview(parts: readonly PartView[]): string {
+  return resultPreviewText(parts)?.text ?? '';
+}
+
+/**
+ * Prose previews come only from explicit content facts: a structured summary, or a successful
+ * read of a path with a Markdown extension. Every other result stays a literal text prefix.
+ */
+export function presentResultPreview(source: ToolPresentationSource): HTMLElement | undefined {
+  if (source.status === 'error') return undefined;
+  const shown = resultPreviewText(source.result ?? []); if (!shown) return undefined;
+  const args = record(source.args?.value);
+  const markdown = !shown.summary && !shown.redacted && source.name === 'read' && source.status === 'success' && isMarkdownPath(args.file_path ?? args.path);
+  if (!shown.summary && !markdown) return undefined;
+  const node = element('span', 'tool-prose-preview');
+  if (markdown) node.append(markdownPreviewDom(shown.text)); else node.textContent = shown.text;
+  return node.textContent ? node : undefined;
 }
 
 function collapsedReplacement(source: ToolPresentationSource, args: Record<string, unknown>): HTMLElement | undefined {

@@ -77,6 +77,56 @@ function markdownBlock(node: MarkdownBlock): HTMLElement {
     case 'table': return tableBlock(node);
   }
 }
+const PREVIEW_BLOCKS = 12;
+const PREVIEW_NODES = 160;
+type PreviewBudget = {nodes: number; blocks: number; limited: boolean};
+function previewInline(nodes: MarkdownInline[], budget: PreviewBudget, parent: HTMLElement): void {
+  for (const node of nodes) {
+    if (budget.nodes <= 0) { budget.limited = true; return; }
+    budget.nodes--;
+    if (node.type === 'text') parent.append(document.createTextNode(node.text));
+    else if (node.type === 'code') parent.append(element('code', 'prose-preview-code', node.text));
+    else if (node.type === 'omitted') parent.append(document.createTextNode(node.label));
+    else if (node.type === 'link') previewInline(node.children, budget, parent);
+    else { const emphasis = element(node.type === 'strong' ? 'strong' : 'em'); previewInline(node.children, budget, emphasis); parent.append(emphasis); }
+  }
+}
+function previewSpan(budget: PreviewBudget, out: HTMLElement[], className: string): HTMLElement | undefined {
+  if (budget.blocks <= 0) { budget.limited = true; return undefined; }
+  budget.blocks--; const span = element('span', className); out.push(span); return span;
+}
+function previewCells(cells: MarkdownInline[][], budget: PreviewBudget, out: HTMLElement[]): void {
+  const span = previewSpan(budget, out, 'prose-preview-block'); if (!span) return;
+  cells.forEach((cell, index) => { if (index) span.append(document.createTextNode(' · ')); previewInline(cell, budget, span); });
+}
+function previewTextBlock(node: Extract<MarkdownBlock, {type: 'paragraph' | 'heading' | 'code'}>, budget: PreviewBudget, out: HTMLElement[], lead: string): void {
+  const span = previewSpan(budget, out, node.type === 'heading' ? 'prose-preview-block prose-preview-heading' : 'prose-preview-block'); if (!span) return;
+  if (lead) span.append(document.createTextNode(lead));
+  if (node.type === 'code') span.append(element('code', 'prose-preview-code', node.text)); else previewInline(node.children, budget, span);
+}
+function previewList(node: Extract<MarkdownBlock, {type: 'list'}>, budget: PreviewBudget, out: HTMLElement[]): void {
+  for (const [index, item] of node.items.entries()) {
+    const marker = node.ordered ? `${node.start + index}. ` : '\u2022 ';
+    for (const [at, child] of item.entries()) previewBlock(child, budget, out, at ? '' : marker);
+  }
+}
+function previewBlock(node: MarkdownBlock, budget: PreviewBudget, out: HTMLElement[], lead = ''): void {
+  if (node.type === 'paragraph' || node.type === 'heading' || node.type === 'code') previewTextBlock(node, budget, out, lead);
+  else if (node.type === 'quote') for (const child of node.children) previewBlock(child, budget, out);
+  else if (node.type === 'list') previewList(node, budget, out);
+  else if (node.type === 'table') { previewCells(node.header, budget, out); for (const row of node.rows) previewCells(row, budget, out); }
+}
+/**
+ * A bounded, noninteractive projection of the parser's output for collapsed summaries.
+ * Links keep only their labels, images stay omission labels, and nothing is a control.
+ */
+export function markdownPreviewDom(text: string): DocumentFragment {
+  const budget: PreviewBudget = {nodes: PREVIEW_NODES, blocks: PREVIEW_BLOCKS, limited: false}; const blocks: HTMLElement[] = [];
+  for (const node of parseMarkdown(text)) previewBlock(node, budget, blocks);
+  const fragment = document.createDocumentFragment(); fragment.append(...blocks);
+  if (budget.limited) fragment.append(document.createTextNode('…'));
+  return fragment;
+}
 export function markdownDom(text: string): DocumentFragment {
   const fragment = document.createDocumentFragment(); fragment.append(...parseMarkdown(text).map(block)); return fragment;
 }

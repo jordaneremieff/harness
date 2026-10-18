@@ -30,7 +30,7 @@ test('overlay installs exact inert source, invalidates immediately and restores 
   class Observer {constructor(callback: () => void) {observers.push(callback);} observe() {} disconnect() {}}
   define('ResizeObserver', Observer); define('MutationObserver', Observer);
   define('matchMedia', (query: string) => {const result = Object.assign(new EventTarget(), {matches: query.includes('forced-colors') && forced}); media.set(query, result); return result;});
-  define('getComputedStyle', (node: NodeFake) => ({transform: node.style.transform ?? 'none', zoom: node.style.zoom ?? '1', lineHeight: '24px', fontFamily: 'sans-serif', writingMode: 'horizontal-tb', textAlign: 'start', paddingTop: '12px', paddingBottom: '12px', paddingLeft: '12px', paddingRight: '12px', fontStyle: 'normal', fontWeight: '400', fontSize: '15px', fontKerning: 'none', fontVariantLigatures: 'none'}));
+  define('getComputedStyle', (node: NodeFake) => ({transform: node.style.transform ?? 'none', zoom: node.style.zoom ?? '1', lineHeight: '25.6px', fontFamily: 'sans-serif', writingMode: 'horizontal-tb', textAlign: 'start', paddingTop: '12px', paddingBottom: '12px', paddingLeft: '12px', paddingRight: '12px', fontStyle: 'normal', fontWeight: '400', fontSize: '16px', fontKerning: 'none', fontVariantLigatures: 'none'}));
   define('requestAnimationFrame', (callback: () => void) => {frames.set(++id, callback); return id;}); define('cancelAnimationFrame', (key: number) => frames.delete(key));
   const flush = () => {const ready = [...frames.values()]; frames.clear(); for (const frame of ready) frame();};
   const editor = new NodeFake(), layer = new NodeFake(); const overlay = new ComposerOverlay(editor as unknown as HTMLTextAreaElement, layer as unknown as HTMLElement);
@@ -40,6 +40,7 @@ test('overlay installs exact inert source, invalidates immediately and restores 
   editor.scrollTop = 24; editor.scrollLeft = 7; editor.dispatchEvent(new Event('scroll')); assert.equal(layer.hidden, true); flush();
   assert.equal(layer.scrollLeft, 7); assert.equal(layer.scrollTop, 24); assert.equal(layer.children[0]?.style.transform, undefined); assert.equal(layer.style.width, '320px'); assert.equal(layer.children[0]?.style.fontFamily, 'sans-serif'); assert.equal(layer.children[0]?.style.fontKerning, 'none'); assert.equal(layer.children[0]?.style.fontVariantLigatures, 'none');
   for (const metric of ['paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft']) assert.equal(layer.children[0]?.style[metric], '12px');
+  assert.equal(layer.children[0]?.style.fontSize, '16px'); assert.equal(layer.children[0]?.style.lineHeight, '25.6px'); assert.equal(layer.children[0]?.style.fontWeight, '400');
   observers[1]?.([{attributeName: 'data-appearance', oldValue: null}]); assert.equal(frames.size, 0); assert.equal(layer.hidden, false);
   document.documentElement.setAttribute('data-appearance', 'light');
   observers[0]?.(); observers[1]?.([{attributeName: 'data-appearance', oldValue: 'dark'}]); assert.equal(frames.size, 1); assert.equal(layer.hidden, true); flush(); assert.equal(editor.dataset.decorated, 'true');

@@ -9,7 +9,7 @@ import { transcriptImage } from './image.ts';
 import type { ToolState } from './state.ts';
 import { isValidTimestamp, previewText } from './format.ts';
 import { entryVisible, presentEntry, presentMessage } from './entry-presentation.ts';
-import { cardPreviewLimits, readRange, presentToolPreview, resultPreview } from './cards.ts';
+import { cardPreviewLimits, readRange, presentResultPreview, presentToolPreview, resultPreview } from './cards.ts';
 import { thinkingExpanded } from './transcript-presentation.ts';
 import { TranscriptIndex, ToolElapsedClock, toolTime, slot, communicationDisclosureKeys } from './transcript-tools.ts';
 import { CommunicationCard, messageCopyText, messageCopyDescription } from './communication.ts';
@@ -1445,7 +1445,7 @@ export class Transcript {
   private toolContent(tool: ToolNode): void {
     const source = tool.source; if (!source) return;
     if (!this.protectedNode(tool.preview)) {
-      const supplied = presentToolPreview(source);
+      const supplied = presentToolPreview(source) ?? presentResultPreview(source);
       if (supplied) this.replaceContent(tool.preview, supplied);
       else setText(tool.preview, resultPreview(source.result ?? []));
       tool.preview.classList.toggle('tool-error', source.status === 'error');

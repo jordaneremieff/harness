@@ -44,6 +44,12 @@ export function languageFromPath(path: unknown): string | undefined {
   return file.includes('.') && familyFor(extension) ? extension : undefined;
 }
 
+/** True when the supplied path names a Markdown document by its extension. */
+export function isMarkdownPath(path: unknown): boolean {
+  const language = languageFromPath(path);
+  return language !== undefined && familyFor(language) === 'markdown';
+}
+
 /** A monotonic cursor accounts for UTF-8 bytes and lines as it consumes source. */
 class Scanner {
   at = 0;

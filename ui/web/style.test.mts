@@ -112,13 +112,13 @@ test('two families: system sans for interface and prose, system monospace for co
 });
 test('a bounded type scale separates metadata, controls, prose and headings', () => {
   const glyphs = [...css.matchAll(/(?:^|\n)\s*([^{}]+)\{[^{}]*font-size: (11px|16px);/g)].map(match => [match[1].replace(/\/\*[\s\S]*?\*\//g, '').trim(), match[2]]);
-  assert.deepEqual(glyphs, [['.conversation-heading, .conversation-group-title', '11px'], ['.nav-heading', '11px'], ['.section-toggle', '11px'], ['.task-answer, .step-answer', '16px'], ['.pane-actions', '16px'], ['.message-body', '16px'], ['.message-menu', '16px'], ['.message-source-close', '16px']]);
+  assert.deepEqual(glyphs, [['.conversation-heading, .conversation-group-title', '11px'], ['.nav-heading', '11px'], ['.section-toggle', '11px'], ['.task-answer, .step-answer', '16px'], ['.pane-actions', '16px'], ['.message-body', '16px'], ['.message-menu', '16px'], ['.communication-card > .communication-body', '16px'], ['.message-source-close', '16px'], ['.composer textarea', '16px']]);
   assert.deepEqual([...new Set(declarations('font-size'))].filter(value => value !== '11px' && value !== '16px').sort(), ['12px', '13px', '14px', '15px', '18px', 'inherit']);
   assert.match(rule('.message-role'), /font-size: 12px; line-height: 18px; font-weight: 500/);
-  assert.match(rule('.communication-card > .communication-body'), /font-size: 15px; line-height: 1\.6; font-weight: 400; font-style: normal/);
+  assert.match(rule('.communication-card > .communication-body'), /font-size: 16px; line-height: 1\.6; font-weight: 400; font-style: normal/);
   assert.match(rule('.message-body'), /font-size: 16px; line-height: 1\.6/);
   assert.match(rule('.markdown-content:is(h1)'), /font-size: 18px/);
-  assert.match(rule('.composer textarea'), /font-size: 15px/);
+  assert.match(rule('.composer textarea'), /font-size: 16px; line-height: 1\.6/);
   assert.deepEqual([...new Set(declarations('font-weight'))].sort(), ['400', '500', '600']);
   assert.deepEqual(declarations('font').filter(value => value !== '400 14px/1.5 var(--sans)' && value !== '13px/1.5 var(--mono)' && value !== 'inherit'), []);
 });
@@ -367,7 +367,7 @@ test('ordinary role and actions share a stable header and compact actions retain
   assert.match(rule('.message-role'), /flex: 0 1 auto; min-width: 0/);
   assert.match(rule('.communication-card'), /padding: 0; border: 0; background: transparent; font-family: var\(--sans\)/);
   assert.match(rule('.communication-header > .communication-sender'), /min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap/);
-  assert.match(rule('.communication-card > .communication-body'), /font-size: 15px; line-height: 1\.6; font-weight: 400; font-style: normal/);
+  assert.match(rule('.communication-card > .communication-body'), /font-size: 16px; line-height: 1\.6; font-weight: 400; font-style: normal/);
   assert.doesNotMatch(css, /\.communication-(?:kind|time|trust|copy)\b[^{}]*\{/);
   assert.match(rule('.message-header + .message-body'), /margin-top: 2px/);
   assert.match(rule('.message-actions'), /display: flex; flex: none;[^}]*min-height: 24px; margin-top: 0/);
@@ -1010,4 +1010,40 @@ test('slash rows use the conversation container and full-width descriptions at n
   const rows = css.slice(start, css.indexOf('.command-empty', start));
   assert.match(rows, /\.command-source \{ grid-column: 2; grid-row: 1/);
   assert.match(rows, /\.command-desc \{ grid-column: 1 \/ -1; grid-row: 2; white-space: normal; overflow: visible/);
+});
+
+test('tool titles weigh more than their regular-weight supporting text', () => {
+  assert.match(rule('.tool-name'), /color: inherit;[^}]*font-weight: 500; line-height: 20px/);
+  assert.match(rule('.tool-shell'), /font-family: var\(--sans\); font-size: 13px/);
+  assert.match(rule('.tool-card > summary'), /align-items: baseline/);
+});
+test('thinking keeps one quiet tier for streaming text and completed Markdown', () => {
+  assert.match(rule('.thinking-content'), /color: var\(--muted\); font-size: 14px; line-height: 21px/);
+  assert.match(rule('.thinking > .stream-text'), /color: var\(--muted\); font-size: 14px; line-height: 21px/);
+  assert.match(rule('.thinking .thinking-content :is(strong, em)'), /color: inherit/);
+  assert.match(rule('.thinking .thinking-content strong'), /font-weight: 500/);
+  const heading = rule('.thinking .thinking-content .markdown-content:is(h1, h2, h3, h4, h5, h6)');
+  assert.match(heading, /color: inherit; font-size: inherit; line-height: inherit; font-weight: 500/);
+  assert.match(rule('.thinking .thinking-content .markdown-content:is(h1, h2, h3, h4, h5, h6):first-child'), /margin-top: 0/);
+  assert.match(rule('.markdown-content strong'), /color: var\(--md-strong\)/);
+  assert.match(rule('.markdown-content:is(h1)'), /font-size: 18px/);
+});
+test('prose previews read as short sans text while raw and source previews keep the source tier', () => {
+  const prose = rule('.tool-preview > .tool-prose-preview');
+  assert.match(prose, /color: var\(--muted\); font-family: var\(--sans\); font-size: 13px; line-height: 20px; font-weight: 400; white-space: normal/);
+  assert.match(prose, /-webkit-line-clamp: 3/); assert.match(prose, /overflow: hidden/);
+  assert.match(rule('.tool-prose-preview .prose-preview-code'), /font-family: var\(--mono\); font-size: 12px/);
+  assert.match(rule('.tool-preview'), /font-family: var\(--mono\); font-size: 12px; white-space: pre-wrap/);
+  assert.match(rule('.tool-preview > .tool-content-preview'), /font: inherit/);
+  assert.match(rule('pre.tool-document'), /font-family: var\(--mono\); font-size: 13px; line-height: 1\.5/);
+});
+test('the composer editor and its color layer share the editor-derived reading metrics', async () => {
+  const overlay = await readFile(new URL('./composer-overlay.ts', import.meta.url), 'utf8');
+  const metrics = /const metrics = \[([^\]]+)\] as const;/.exec(overlay)?.[1] ?? '';
+  for (const name of ['fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'paddingTop', 'paddingLeft', 'whiteSpace', 'overflowWrap']) assert.match(metrics, new RegExp(`'${name}'`));
+  assert.match(overlay, /getComputedStyle\(this\.editor\)/);
+  assert.doesNotMatch(overlay, /\b(?:15|16|24|25\.6)px\b/);
+  assert.match(rule('.composer textarea'), /padding: var\(--s3\)/);
+  assert.match(rule('.communication-card > .communication-body'), /font-size: 16px/);
+  assert.match(rule('.task-answer, .step-answer'), /font-size: 16px; line-height: 1\.6/);
 });
