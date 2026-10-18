@@ -30,7 +30,7 @@ import type { LayoutItem, VirtualLayout } from './virtual.ts';
 
 export type TranscriptElements = {transcript: HTMLElement; latest: HTMLElement; earlier?: HTMLElement};
 export type ToolSubjectCaption = NamedDestination;
-export type ViewHooks = {operatorInput?: boolean; readTaskResult?: (reference:TaskReference,signal:AbortSignal)=>Promise<ResultInspection>; activity?: (text:string)=>void; cwd?: () => string | undefined; subject?: (value: string) => ToolSubjectCaption | undefined; result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
+export type ViewHooks = {operatorInput?: boolean; readTaskResult?: (reference:TaskReference,signal:AbortSignal)=>Promise<ResultInspection>; activity?: (text:string)=>void; cwd?: () => string | undefined; subject?: (value: string) => ToolSubjectCaption | undefined; result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; preview?: (part: ImageView, url: string, invoker: HTMLElement) => () => void; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
 const RAW_LIMIT = 65536;
 const TASK_READ_CONCURRENCY = 4;
 const toolStateLabels:Record<JoinedTool['status'],string>={success:'',preparing:'Preparing call',working:'Working',pending:'Queued',error:'Failed',ended:'Ended without result',available:'Result available',missing:'No result recorded'};
@@ -234,6 +234,7 @@ export class Transcript {
   private readonly latest: HTMLElement;
   private hooks: ViewHooks;
   private destroyed = false;
+  private closePreview?: () => void;
   private listenerAbort = new AbortController();
   private listenerCleanup: (() => void)[] = [];
   private frames = new Set<number>();
@@ -334,7 +335,7 @@ export class Transcript {
   destroy(): void {
     this.cancelTaskReads();
     if (this.destroyed) return;
-    this.destroyed = true; this.listenerAbort.abort(); this.cancelRender();
+    this.destroyed = true; this.listenerAbort.abort(); this.cancelRender(); this.dismissPreview();
     for (const remove of this.listenerCleanup) remove(); this.listenerCleanup = [];
     for (const id of this.frames) if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(id);
     this.frames.clear(); this.pending = false;
@@ -397,7 +398,7 @@ export class Transcript {
     this.paint(anchor); this.hooks.presentation([...this.expanded], this.showThinking, this.view); this.saveReading();
   }
   reset(): void {
-    this.cancelTaskReads();this.taskReadStamps.clear();
+    this.cancelTaskReads();this.taskReadStamps.clear();this.dismissPreview();
     this.cancelRender(); if (this.inputFrame !== undefined) this.pending = false;
     this.clearTiming(); this.streamPending = false; this.deferred = undefined; this.chronological = []; this.view = 'chronological'; this.pendingView = undefined;
     this.node.dataset.view = this.view;
@@ -1302,8 +1303,10 @@ export class Transcript {
     const url = this.hooks.image?.(part); const key = JSON.stringify([part.digest, part.source, part.width, part.height, part.bytes, url]);
     if (node.dataset.imageKey === key) return;
     const generation = this.generation; node.className = 'image-part'; node.dataset.imageKey = key;
-    node.replaceChildren(transcriptImage(part, url, () => { if (generation === this.generation) this.schedule(); }));
+    const open = this.hooks.preview, preview = open ? (shown: ImageView, source: string, invoker: HTMLElement) => { this.dismissPreview(); this.closePreview = open(shown, source, invoker); } : undefined;
+    node.replaceChildren(transcriptImage(part, url, () => { if (generation === this.generation) this.schedule(); }, preview));
   }
+  private dismissPreview(): void { const close = this.closePreview; this.closePreview = undefined; close?.(); }
   private thinkingContent(node: HTMLElement, part: Extract<PartView, {type: 'text' | 'thinking'}>, partial: boolean): void {
     const content = node.querySelector('.thinking-content'); if (!content) return;
     content.className = partial ? 'thinking-content stream-text' : 'thinking-content';

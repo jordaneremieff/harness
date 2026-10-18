@@ -33,6 +33,7 @@ import { announce, byId, button, copy, details, element, empty, placeRetained, r
 import {StableViews} from './stable-views.ts';
 import { ExtensionDialogs, extensionStatus } from './extensions.ts';
 import { Modal } from './modal.ts';
+import { openImagePreview } from './image-preview.ts';
 import { Transcript, type ToolSubjectCaption } from './render.ts';
 import { ReferenceResolver, type ReferenceDestination, type ReferenceQuery, type ReferenceResolution } from './references.ts';
 import { imageUrl } from './image.ts';
@@ -187,7 +188,7 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
     presentation: (expanded, thinking, view) => { controller.showThinking = thinking; void savePresentation(controllerCapture(controller), expanded, thinking, view); },
     reading: reading => { void saveReading(controllerCapture(controller), reading); },
     ...(target.kind === 'primary' ? {fork: (message: import('../shared/api.ts').MessageView, entry: string) => { if (sameTarget(target, primaryTarget())) actions.fork(entry, rawText(message.parts)); }, output: (more: import('../shared/api.ts').OutputContinuation) => loadControllerOutput(controller, more)} : {}),
-    image: part => imageUrl(part, controller.target, controller.workspaceId),result:(identity,selector)=>inspectAgent(identity,'result',selector)});
+    image: part => imageUrl(part, controller.target, controller.workspaceId),preview: (part, url, invoker) => openImagePreview(modal, part, url, invoker),result:(identity,selector)=>inspectAgent(identity,'result',selector)});
   bindControllerReadingIntent(controller);
   earlier.addEventListener('click', () => { void loadControllerHistory(controller, true); });
   stop.addEventListener('click', () => { void stopController(controller); });

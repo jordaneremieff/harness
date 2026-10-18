@@ -606,6 +606,27 @@ pre[data-wrap=false], .tool-source > pre[data-wrap=false] { white-space: pre; ov
 .transcript-image-diagnostics { max-width: 100%; max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .transcript-image button { height: 28px; max-width: 100%; margin-top: 6px; padding: 2px 8px; border: 1px solid var(--edge); color: var(--fg); font-family: var(--sans); font-size: 13px; }
 .transcript-image button:hover { background: var(--raised); }
+.transcript-image-caption { display: flex; flex-wrap: wrap; align-items: center; column-gap: var(--s3); }
+.transcript-image-caption button { margin-top: 0; }
+.transcript-image-previewable { cursor: zoom-in; }
+dialog[open][data-variant=image] { display: flex; flex-direction: column; width: min(1120px, calc(100vw - 32px)); max-height: 92dvh; overflow: hidden; }
+dialog[data-variant=image] .modal-heading { flex: none; }
+dialog[data-variant=image] #modal-body { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+dialog[data-variant=image] #modal-body > * + * { margin-top: 0; }
+.image-preview { display: flex; flex: 1; flex-direction: column; gap: var(--s2); min-width: 0; min-height: 0; }
+.image-preview-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s2) var(--s3); }
+.image-preview-info { margin: 0; color: var(--muted); font-family: var(--sans); font-size: 12px; overflow-wrap: anywhere; }
+.image-preview-sizes { display: flex; gap: var(--s1); }
+.image-preview-sizes button, .image-preview > button { height: 28px; padding: 2px 10px; border: 1px solid var(--edge); color: var(--fg); font-family: var(--sans); font-size: 13px; }
+.image-preview-sizes button:hover, .image-preview > button:hover { background: var(--canvas); }
+.image-preview-sizes button[aria-pressed=true] { border-color: var(--accent); font-weight: 600; }
+.image-preview > button { align-self: flex-start; }
+.image-preview-status { margin: 0; color: var(--fg); font-family: var(--sans); font-size: 13px; }
+.image-preview-status:empty { display: none; }
+.image-preview-viewport { flex: 1; min-width: 0; min-height: 0; overflow: auto; border: 1px solid var(--edge); background: var(--canvas); scrollbar-width: thin; }
+.image-preview-content { display: block; margin: 0 auto; }
+.image-preview-fit .image-preview-content { width: auto; height: auto; max-width: 100%; max-height: calc(92dvh - 150px); object-fit: contain; }
+.image-preview-actual .image-preview-content { width: auto; height: auto; max-width: none; max-height: none; margin: 0; }
 
 /* Disclosures: thinking, notes, custom entries */
 summary { cursor: pointer; list-style: none; }

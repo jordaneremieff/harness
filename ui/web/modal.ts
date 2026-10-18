@@ -33,7 +33,7 @@ export class Modal {
     this.node.style.setProperty('--menu-top', `${Math.round(box.bottom + 4)}px`);
     this.node.style.setProperty('--menu-right', `${Math.max(8, Math.round(innerWidth - box.right))}px`);
   }
-  open(title: string, cancel?: () => void, closed?: () => void, variant?: 'find'): HTMLElement {
+  open(title: string, cancel?: () => void, closed?: () => void, variant?: 'find' | 'image'): HTMLElement {
     const previousClose = this.closeAction; this.closeAction = undefined; previousClose?.();
     if (this.node.open && (this.node.dataset.variant === 'find' || variant === 'find')) this.close(false);
     this.revision++; this.presented = true; this.restoreOnClose = true;

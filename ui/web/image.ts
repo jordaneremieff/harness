@@ -28,13 +28,23 @@ function reserve(slot: ImageSlot): void {
   while (slots.length >= 4) slots.shift()?.deref()?.release();
   slots.push(new WeakRef(slot));
 }
+/** Format, source dimensions and size, led by the attachment name when the image is a stored attachment. */
+export function imageCaption(part: ImageView): string {
+  return `${part.attachment ? `${part.alt} · ` : ''}${part.mimeType === 'image/png' ? 'PNG' : 'JPEG'} · ${part.width} × ${part.height} · ${Math.ceil(part.bytes / 1024)} KiB`;
+}
+/** Opens the preview for one validated image URL; the invoker receives focus again when the preview closes. */
+export type ImagePreviewOpen = (part: ImageView, url: string, invoker: HTMLElement) => void;
 /** Native lazy loading leaves offscreen bytes with the server; only four elements hold image URLs. */
-export function transcriptImage(part: ImageView, url?: string, changed: () => void = () => {}): HTMLElement {
+export function transcriptImage(part: ImageView, url?: string, changed: () => void = () => {}, preview?: ImagePreviewOpen): HTMLElement {
   const figure = element('figure', 'transcript-image');
-  const caption = element('figcaption', 'transcript-image-caption', `${part.attachment ? `${part.alt} · ` : ''}${part.mimeType === 'image/png' ? 'PNG' : 'JPEG'} · ${part.width} × ${part.height} · ${Math.ceil(part.bytes / 1024)} KiB`);
+  const caption = element('figcaption', 'transcript-image-caption', imageCaption(part));
   const status = element('p', 'transcript-image-status');
   figure.append(caption, status);
   if (!safeUrl(url)) { setText(status, 'This image is not available.'); return figure; }
+  const previewUrl = url;
+  const openPreview = (): void => { if (preview && invoker) preview(part, previewUrl, invoker); };
+  const invoker: HTMLButtonElement | undefined = preview ? button('Preview image', openPreview) : undefined;
+  if (invoker) caption.append(invoker);
   type AttemptKind = 'initial' | 'automatic' | 'manual';
   type Outcome = {time:string; attempt:number; kind:AttemptKind; outcome:'started'|'load'|'error'|'release'; complete:boolean; naturalWidth:number; naturalHeight:number};
   const disclosure = element('details','transcript-image-details'), log = element('pre','transcript-image-diagnostics'); disclosure.hidden = true;
@@ -60,8 +70,9 @@ export function transcriptImage(part: ImageView, url?: string, changed: () => vo
   const activate = (attemptKind:AttemptKind):void => {
     if (attemptKind === 'manual' && document.activeElement === retry) {figure.tabIndex = -1; figure.focus({preventScroll:true});}
     clear(); reserve(slot); active = true; kind = attemptKind; serial++; result = attemptKind === 'automatic' ? 'retrying' : 'loading';
-    const attempt = element('img','transcript-image-content'); image = attempt;
+    const attempt = element('img',invoker ? 'transcript-image-content transcript-image-previewable' : 'transcript-image-content'); image = attempt;
     attempt.alt = part.alt; attempt.width = part.width; attempt.height = part.height;
+    if (invoker) attempt.addEventListener('click',openPreview);
     attempt.loading = 'lazy'; attempt.decoding = 'async'; attempt.referrerPolicy = 'no-referrer';
     attempt.addEventListener('load',()=> {if (!active || image !== attempt) return; result = 'loaded'; record('load',attempt); setText(status,''); retry.hidden = true; changed();});
     attempt.addEventListener('error',()=> {

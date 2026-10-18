@@ -1842,6 +1842,17 @@ test('supplied diffs and image captions remain readable without a line measureme
   const caption = node('primary-transcript').querySelector('figcaption'); assert.ok(caption); assert.match(caption.textContent, /PNG/);
   assert.equal(caption.hasAttribute('data-rest-lines'), false);
 });
+test('an image preview is requested from the caption action and closes when the transcript is destroyed or reset', () => {
+  setup(); const opened: Array<{url: string; digest: string; invoker: unknown}> = []; let closed = 0;
+  const safe = `/api/primaries/key/history/image?entry=1&message=0&part=0&digest=${'a'.repeat(64)}`;
+  const view = new Transcript('primary', {presentation: () => {}, reading: () => {}, image: () => safe, preview: (part, url, invoker) => { opened.push({url, digest: part.digest, invoker}); return () => { closed++; }; }});
+  view.set([{id: 'preview', kind: 'message', messages: [{...message('preview', ''), parts: [{type: 'image', mimeType: 'image/png', digest: 'a'.repeat(64), width: 2, height: 2, bytes: 20, alt: 'Retained image'}]}]}]); flush();
+  const action = node('primary-transcript').querySelector('figcaption')?.querySelector('button'); assert.ok(action); assert.equal(action.textContent, 'Preview image');
+  action.dispatch('click'); assert.deepEqual(opened.map(item => [item.url, item.digest]), [[safe, 'a'.repeat(64)]]); assert.equal(opened[0]?.invoker, action); assert.equal(closed, 0);
+  action.dispatch('click'); assert.equal(closed, 1); assert.equal(opened.length, 2);
+  view.reset(); assert.equal(closed, 2); view.reset(); assert.equal(closed, 2);
+  action.dispatch('click'); view.destroy(); assert.equal(closed, 3);
+});
 test('shared result budgets retain all part boundaries, raw pages and plain/image/omitted order without raw structured fallback', () => {
   setup(); const view = transcript(); const source = contentEntry('budget', {program: 'argument\nsource'}, '');
   const result = source.messages[0]?.parts.find(part => part.type === 'toolResult'); assert.ok(result);

@@ -167,6 +167,18 @@ test('Find uses a nonmodal dialog and replacement or Escape closes its session o
     assert.equal(modal.openNow, false); assert.equal(closed, 3);
   } finally {fake.restore();}
 });
+test('the image variant is modal, Close restores the invoker and a replacement clears the variant', () => {
+  const fake = setup();
+  try {
+    const modal = new Modal(); let closed = 0;
+    modal.open('Image preview', undefined, () => {closed++;}, 'image');
+    assert.equal(fake.nodes.get('modal')?.dataset.variant, 'image'); assert.equal(fake.nodes.get('modal')?.modal, true);
+    fake.nodes.get('modal-close')?.dispatchEvent(new Event('click'));
+    assert.equal(modal.openNow, false); assert.equal(closed, 1); assert.equal(fake.nodes.get('invoke')?.focused, true);
+    modal.open('Image preview', undefined, () => {closed++;}, 'image'); modal.open('Appearance');
+    assert.equal(closed, 2); assert.equal(fake.nodes.get('modal')?.dataset.variant, undefined);
+  } finally {fake.restore();}
+});
 test('modal failures disclose the exact cause and preserve caller summaries and confirmation actions', () => {
   const fake = setup();
   try {
