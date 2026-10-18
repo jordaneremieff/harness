@@ -10,14 +10,15 @@ const entry = (id: string, messages: MessageView[], changes: Partial<EntryView> 
 test('only complete finished plain user text is recallable', () => {
   assert.equal(recallText(message('hello')), 'hello');
   assert.equal(recallText(message('  ')), undefined);
-  for (const changes of [{role: 'assistant'}, {state: 'partial' as const}, {error: 'failed'}, {communication: {state: 'unresolved' as const}}, {coverage: {...coverage, truncated: true}}, {coverage: {...coverage, omitted: 1}}, {coverage: {...coverage, complete: false}}] as Partial<MessageView>[]) assert.equal(recallText(message('hello', changes)), undefined, JSON.stringify(changes));
+  assert.equal(recallText(message('ordinary agent input', {communication: {state: 'unresolved'}})), 'ordinary agent input', 'the host marks every ordinary agent input unresolved');
+  for (const changes of [{role: 'assistant'}, {state: 'partial' as const}, {error: 'failed'}, {communication: {state: 'unavailable' as const, reason: 'invalid' as const}}, {coverage: {...coverage, truncated: true}}, {coverage: {...coverage, omitted: 1}}, {coverage: {...coverage, complete: false}}] as Partial<MessageView>[]) assert.equal(recallText(message('hello', changes)), undefined, JSON.stringify(changes));
   assert.equal(recallText(message('', {parts: [{type: 'text', text: 'x', redacted: true}]})), undefined);
   assert.equal(recallText(message('', {parts: [{type: 'text', text: 'x', more: {} as never}]})), undefined);
   assert.equal(recallText(message('', {parts: [{type: 'text', text: 'a'}, {type: 'omitted', label: 'x'}]})), undefined);
   assert.equal(recallText(message('look\n\nAttached image "a.png"')), undefined, 'a message that carried an image would lose it');
 });
 test('the list runs oldest first, drops carriers, collapses repeats and keeps the newest within the bounds', () => {
-  const entries = [entry('1', [message('one')]), entry('2', [message('two')]), entry('3', [message('two')]), entry('4', [message('report', {communication: {state: 'unresolved'}})]), entry('5', [message('three')])];
+  const entries = [entry('1', [message('one')]), entry('2', [message('two')]), entry('3', [message('two')]), entry('4', [message('report', {communication: {state: 'unavailable', reason: 'limit'}})]), entry('5', [message('three')])];
   assert.deepEqual(recallItems(entries), ['one', 'two', 'three']);
   const many = Array.from({length: RECALL_LIMITS.entries + 5}, (_, index) => entry(String(index), [message(`m${index}`)]));
   const kept = recallItems(many); assert.equal(kept.length, RECALL_LIMITS.entries); assert.equal(kept.at(-1), `m${RECALL_LIMITS.entries + 4}`);

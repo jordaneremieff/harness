@@ -2,9 +2,9 @@ import type { EntryView, MessageView } from '../shared/api.ts';
 
 export const RECALL_LIMITS = {entries: 50, bytes: 64 * 1024};
 const IMAGE_REFERENCE = /\n\nAttached image /;
-/** Plain, complete, finished user text only: carriers, partial, shortened, redacted and image-bearing records are never recalled. */
+/** Plain, complete, finished user text only: ready or unavailable carriers, partial, shortened, redacted and image-bearing records are never recalled. An unresolved association is ordinary input. */
 export function recallText(message: MessageView): string | undefined {
-  if (message.role !== 'user' || message.communication || message.state !== 'final' || message.error) return undefined;
+  if (message.role !== 'user' || (message.communication && message.communication.state !== 'unresolved') || message.state !== 'final' || message.error) return undefined;
   if (message.coverage.truncated || message.coverage.omitted > 0 || message.coverage.complete === false || message.attachments?.length) return undefined;
   let text = '';
   for (const part of message.parts) {
