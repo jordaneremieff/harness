@@ -550,6 +550,7 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .pane-actions { display: inline-flex; flex: none; align-items: center; justify-content: center; min-width: 24px; min-height: 24px; margin: 2px var(--s1); padding: 0; border-radius: 2px; color: var(--muted); font-size: 16px; line-height: 1; }
 .pane-menu > .card-icon { transform: rotate(90deg); }
 .pane-tab-nav, .pane-menu { flex: none; align-self: center; margin: 2px; color: var(--muted); }
+.pane-tab-nav[data-unreachable=true] { visibility: hidden; }
 .pane-actions:hover, .pane-actions[aria-expanded=true] { background: var(--raised); color: var(--fg); }
 .tab-drop-target { outline: 2px solid var(--edge); outline-offset: -2px; }
 .pane-tree { display: flex; flex: 1; min-width: 0; min-height: 0; }

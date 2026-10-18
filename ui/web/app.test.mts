@@ -1011,8 +1011,8 @@ test('pane strips expose local navigation, a direct new-tab chooser and a separa
   const pane = paneNode('pane-1'); const bar = pane.querySelector('.tab-bar'); assert.ok(bar);
   assert.deepEqual(bar.children.filter(node => node.classList.contains('pane-tab-nav') || node.classList.contains('conversation-tabs') || node.classList.contains('pane-actions') || node.classList.contains('pane-menu')).map(node => node.getAttribute('aria-label')), ['Previous tab', 'Next tab', 'Tabs', 'New tab', 'Tabs in this pane', 'Conversation actions']);
   const [previous, next] = pane.querySelectorAll('.pane-tab-nav'); assert.ok(previous); assert.ok(next);
-  assert.equal(previous.disabled, true); assert.equal(previous.hidden, true); assert.equal(next.disabled, false); assert.equal(next.hidden, false); next.click(); await settle();
-  assert.deepEqual(app.state.workspace?.selectedTarget, {kind: 'agent', identity: 'strip-a'}); assert.equal(previous.disabled, false); assert.equal(previous.hidden, false);
+  assert.equal(previous.disabled, true); assert.equal(previous.dataset.unreachable, 'true'); assert.equal(previous.hidden, false); assert.equal(next.disabled, false); assert.equal(next.dataset.unreachable, 'false'); next.click(); await settle();
+  assert.deepEqual(app.state.workspace?.selectedTarget, {kind: 'agent', identity: 'strip-a'}); assert.equal(previous.disabled, false); assert.equal(previous.dataset.unreachable, 'false');
   const list = pane.querySelector('.pane-menu'); assert.ok(list); list.click();
   assert.equal(menuNode().getAttribute('aria-label'), 'Tabs in this pane');
   for (const name of ['First full tab name', 'Second full tab name', 'Split right', 'Split down', 'Close tab']) assert.ok(menuNode().children.some(node => node.textContent === name), name);

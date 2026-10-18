@@ -1058,6 +1058,9 @@ test('chrome labels stay quiet and content color is reserved for syntax, links a
   assert.doesNotMatch(css, /\.markdown-content em \{/);
   assert.match(rule('.message-actions'), /margin-left: auto/);
 });
+test('an unreachable tab arrow keeps its space and leaves the tab order', () => {
+  assert.match(rule('.pane-tab-nav[data-unreachable=true]'), /visibility: hidden/);
+});
 test('every sidebar heading and row starts its content at the same 12px edge', () => {
   assert.match(rule('.nav-heading-row'), /padding: 0 8px 0 var\(--s3\)/); assert.match(rule('.conversation-heading, .conversation-group-title'), /padding: 0 var\(--s3\)/);
   assert.match(rule('.nav-row, .row-select'), /padding: 2px 64px 2px var\(--s3\)/); assert.match(rule('.conversation-row'), /padding: 2px var\(--s3\);/);

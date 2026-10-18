@@ -801,7 +801,10 @@ function mountPaneLeaf(leaf: PaneLeaf, layout: ConversationLayout): HTMLElement 
   }
   const activeIndex = leaf.tabs.findIndex(tab => tabKey(tab) === leaf.active);
   // Step arrows exist only for a direction that has a tab to reach.
-  pane.previous.hidden = pane.previous.disabled = activeIndex <= 0; pane.next.hidden = pane.next.disabled = activeIndex < 0 || activeIndex >= leaf.tabs.length - 1;
+  // An unreachable direction keeps its space so the tab row does not shift under the pointer; a single tab needs neither arrow.
+  pane.previous.disabled = activeIndex <= 0; pane.next.disabled = activeIndex < 0 || activeIndex >= leaf.tabs.length - 1;
+  pane.previous.dataset.unreachable = String(pane.previous.disabled); pane.next.dataset.unreachable = String(pane.next.disabled);
+  pane.previous.hidden = pane.next.hidden = leaf.tabs.length <= 1;
   pane.plus.disabled = !state.workspace; pane.menu.disabled = !leaf.tabs.length;
   const activeTab = leaf.tabs[activeIndex]; pane.actions.hidden = !activeTab || activeTab.kind === 'file'; pane.actions.disabled = pane.actions.hidden || !state.workspace;
   pane.node.dataset.focused = String(leaf.id === layout.focusedPane);

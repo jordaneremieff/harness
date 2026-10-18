@@ -311,3 +311,22 @@ test('a tab whose page-load read was aborted by a tab switch reads again when it
   await tab(B.identity); held.reject(new DOMException('aborted', 'AbortError')); await settle(); await tab(A.identity);
   assert.equal(reads, 2); assert.equal(agentControl('history-note-line').textContent, ''); assert.match(agentControl('transcript').textContent, /answer/);
 });
+test('a tab switch whose selection save fails still reads the activated tab and leaves no loading note', async t => {
+  const original = globalThis.fetch, held = Promise.withResolvers<Response>(); let reads = 0, failing = false;
+  const A = {kind: 'agent' as const, identity: 'refused-a'}, B = {kind: 'agent' as const, identity: 'refused-b'};
+  t.after(() => {globalThis.fetch = original;});
+  globalThis.fetch = async (input, init) => {
+    const path = new URL(String(input), 'http://ui.test').pathname;
+    if (failing && init?.method === 'PUT' && path.endsWith('/selection')) throw new TypeError('Failed to fetch');
+    if (path !== `/api/agents/${A.identity}/history`) return original(input, init);
+    reads++;
+    if (reads > 1) return Response.json({ok: true, data: {target: A, entries: [row('answer')], nextBefore: null, coverage, revision: 'r'}});
+    return held.promise;
+  };
+  await arrive({workspace: {id: 'refused', revision: 1, selectedTarget: A, conversationLayout: fixtureHost.singlePane([A, B])}, primaries: [], roster: [agentFixture(A.identity, {availability: 'stored', capabilities: {input: false}}), agentFixture(B.identity, {availability: 'stored', capabilities: {input: false}})], targets: [targetFixture('refused-ta', A), targetFixture('refused-tb', B)]});
+  await settle(); assert.equal(agentControl('history-note-line').textContent, 'Loading messages…');
+  failing = true;
+  const tab = async (identity: string) => {const node = fixtureHost.paneNode(app.focusedPane).querySelector('.conversation-tabs')?.querySelector(`[data-tab-key="agent:${identity}"]`); assert.ok(node); node.click(); await settle();};
+  await tab(B.identity); held.reject(new DOMException('aborted', 'AbortError')); await settle(); await tab(A.identity);
+  assert.ok(reads >= 2); assert.notEqual(agentControl('history-note-line').textContent, 'Loading messages…'); assert.match(agentControl('transcript').textContent, /answer/);
+});
