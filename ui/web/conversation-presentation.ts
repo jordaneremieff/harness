@@ -4,23 +4,28 @@ import {sessionLabel} from './picker-state.ts';
 import {agentName, type ConversationCaption} from './tabs.ts';
 export type PresentationTone = 'info' | 'success' | 'warning' | 'error' | 'secondary';
 
-export type AgentHistoryState = {hasEntries: boolean; connected: boolean; loading: boolean; ready: boolean; complete?: boolean; error?: {code?: string; message: string}};
+export type AgentHistoryState = {hasEntries: boolean; connected: boolean; loading: boolean; ready: boolean; complete?: boolean; error?: {code?: string; message: string}; availability?: AgentRow['availability']};
 export type AgentStartAttempt = {pending: boolean; reason?: string};
 export type AgentComposerSource = {connected: boolean; checking?: boolean; availability?: AgentRow['availability']; input?: boolean; checked?: boolean; reason?: string; startAttempt?: AgentStartAttempt; connectionError?: string; blocked?: string};
-/** Reading retained messages is separate from admitting new work; the history note covers only the first. */
-export type AgentHistoryNote = {text: string; detail: string; reload: boolean};
+/** Reading retained messages is separate from admitting new work; the history note covers only the first and shows only while the pane has no messages. */
+export type AgentHistoryNote = {text: string; detail: string; reload: boolean; label: 'Load messages' | 'Reload messages'};
+/** An agent the browser cannot reach for input still has saved messages to read, so its first read is named as such. */
+export function readsSavedMessages(source: Pick<AgentHistoryState, 'connected' | 'availability'>): boolean {
+  return source.connected && (source.availability === 'stored' || source.availability === 'unavailable' || source.availability === 'incompatible');
+}
+function historyNote(text: string, reload: boolean, label: AgentHistoryNote['label'], detail = ''): AgentHistoryNote { return {text, detail, reload, label}; }
 export function agentHistoryNote(source: AgentHistoryState): AgentHistoryNote {
   const error = source.error;
   if (error) {
     const format = ['contract_mismatch', 'incompatible'].includes(error.code ?? '');
-    return {text: format ? 'Saved messages use an unsupported format.' : 'Saved messages could not be read.', detail: error.message, reload: true};
+    return historyNote(format ? 'Saved messages use an unsupported format.' : 'Saved messages could not be read.', true, 'Reload messages', error.message);
   }
-  if (source.hasEntries) return {text: '', detail: '', reload: false};
-  if (source.loading) return {text: 'Loading messages…', detail: '', reload: false};
-  if (!source.connected) return {text: 'Messages are unavailable while the browser is disconnected.', detail: '', reload: false};
-  if (!source.ready) return {text: 'Messages not loaded.', detail: '', reload: false};
-  if (source.complete) return {text: 'No messages yet.', detail: '', reload: false};
-  return {text: 'Saved messages could not be confirmed.', detail: '', reload: true};
+  if (source.hasEntries) return historyNote('', false, 'Load messages');
+  if (source.loading) return historyNote(readsSavedMessages(source) ? 'Reading saved messages…' : 'Loading messages…', false, 'Load messages');
+  if (!source.connected) return historyNote('Messages are unavailable while the browser is disconnected.', false, 'Load messages');
+  if (!source.ready) return historyNote('Messages not loaded.', true, 'Load messages');
+  if (source.complete) return historyNote('No messages yet.', false, 'Load messages');
+  return historyNote('Saved messages could not be confirmed.', true, 'Reload messages');
 }
 export type AgentComposerState = {kind: 'start' | 'starting' | 'failed' | 'checking' | 'unreachable' | 'read-only' | 'notice'; line: string; action?: {label: string; pending?: boolean; disabled?: boolean}; detail: string};
 /** What the composer must say before the draft can be sent; undefined means the agent accepts messages as usual. */

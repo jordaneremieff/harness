@@ -90,7 +90,7 @@ test('cold agent history distinguishes no read, an active read, and a confirmed 
   globalThis.fetch = async(input,init)=> {const path = new URL(String(input),'http://ui.test').pathname;if (path.endsWith('/selection')) await selection.promise;if (path.includes('/agents/cold-status/history')) {reads++;started.resolve();await history.promise;}return original(input,init);};
   const before = transportLog.length,pending = app.selectAgent(row);await settle();
   assert.equal(reads,0);assert.match(agentControl('history-note-line').textContent,/^Messages not loaded\./);assert.doesNotMatch(agentControl('history-note-line').textContent,/Loading|unavailable/);
-  selection.resolve();await started.promise;assert.match(agentControl('history-note-line').textContent,/^Loading messages/);
+  selection.resolve();await started.promise;assert.match(agentControl('history-note-line').textContent,/^Reading saved messages/);
   history.resolve();await pending;await settle();assert.match(agentControl('history-note-line').textContent,/^No messages yet\./);
   assert.equal(transportLog.slice(before).some(call=>call.path.includes('/inputs') || call.path.endsWith('/start')),false);
 });

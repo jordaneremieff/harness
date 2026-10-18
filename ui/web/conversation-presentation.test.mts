@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { AgentRow, ProjectedFrame, PrimaryView, SavedSession } from '../shared/api.ts';
-import { composerFolder, conversationPresentation, presentationGlyph, presentationName, projectIdentity, projectLabels, agentHistoryNote, agentComposerState, responseOutcome, settingsLabel } from './conversation-presentation.ts';
+import { composerFolder, conversationPresentation, presentationGlyph, presentationName, projectIdentity, projectLabels, agentHistoryNote, readsSavedMessages, agentComposerState, responseOutcome, settingsLabel } from './conversation-presentation.ts';
 const row: AgentRow = {identity: 'agent:one', storageId: 'agent', cwd: '/projects/work', name: 'Worker', modifiedAt: 0,
   state: 'unavailable', owner: 'unknown', availability: 'live', partial: false,
   capabilities: {input: true, observe: true, history: true, abort: true, configure: false}};
@@ -99,12 +99,12 @@ test('a newer user or successful assistant record clears an earlier failed respo
 });
 test('history notes report only the read and keep exact diagnostics in detail', () => {
   const source = {hasEntries: false, connected: true, loading: false, ready: false};
-  assert.deepEqual(agentHistoryNote(source), {text: 'Messages not loaded.', detail: '', reload: false});
+  assert.deepEqual(agentHistoryNote(source), {text: 'Messages not loaded.', detail: '', reload: true, label: 'Load messages'});
   const message = 'Required Durable 1.1.0; reader Durable 1.0.3.';
-  assert.deepEqual(agentHistoryNote({...source, error: {code: 'contract_mismatch', message}}), {text: 'Saved messages use an unsupported format.', detail: message, reload: true});
+  assert.deepEqual(agentHistoryNote({...source, error: {code: 'contract_mismatch', message}}), {text: 'Saved messages use an unsupported format.', detail: message, reload: true, label: 'Reload messages'});
   assert.equal(agentHistoryNote({...source, connected: false}).text, 'Messages are unavailable while the browser is disconnected.');
   const incomplete = agentHistoryNote({...source, ready: true, complete: false});
-  assert.deepEqual(incomplete, {text: 'Saved messages could not be confirmed.', detail: '', reload: true});
+  assert.deepEqual(incomplete, {text: 'Saved messages could not be confirmed.', detail: '', reload: true, label: 'Reload messages'});
   assert.equal(agentHistoryNote({...source, ready: true}).text, incomplete.text);
   assert.equal(agentHistoryNote({...source, ready: true, complete: false, hasEntries: true}).text, '');
   assert.equal(agentHistoryNote({...source, ready: true, complete: true}).text, 'No messages yet.');
@@ -120,6 +120,26 @@ test('only an active history read reports loading for a cold retained agent', ()
   assert.equal(agentHistoryNote({...source, loading: true}).text, 'Loading messages…');
   assert.equal(agentHistoryNote({...source, loading: true, hasEntries: true}).text, '');
   assert.equal(agentHistoryNote({...source, ready: true, complete: true}).text, 'No messages yet.');
+});
+test('the first read of a stored or unavailable agent says it reads saved messages, and saved messages with entries show no note', () => {
+  const source = {hasEntries: false, connected: true, loading: false, ready: false, availability: 'stored' as const};
+  assert.deepEqual(agentHistoryNote({...source, loading: true}), {text: 'Reading saved messages…', detail: '', reload: false, label: 'Load messages'});
+  for (const availability of ['unavailable', 'incompatible'] as const) assert.equal(agentHistoryNote({...source, availability, loading: true}).text, 'Reading saved messages…');
+  for (const extra of [{}, {loading: true}, {ready: true, complete: true}, {ready: true, complete: false}]) assert.deepEqual(agentHistoryNote({...source, hasEntries: true, ...extra}), {text: '', detail: '', reload: false, label: 'Load messages'});
+  assert.deepEqual(agentHistoryNote({...source, ready: true, complete: true}), {text: 'No messages yet.', detail: '', reload: false, label: 'Load messages'});
+  assert.deepEqual(agentHistoryNote(source), {text: 'Messages not loaded.', detail: '', reload: true, label: 'Load messages'});
+  const failed = agentHistoryNote({...source, hasEntries: true, ready: true, error: {message: 'Unreadable'}});
+  assert.deepEqual([failed.text, failed.label, failed.reload], ['Saved messages could not be read.', 'Reload messages', true]);
+  assert.equal(agentHistoryNote({...source, ready: true, complete: false}).label, 'Reload messages');
+  assert.equal(readsSavedMessages(source), true); assert.equal(readsSavedMessages({...source, availability: 'live'}), false);
+  assert.equal(readsSavedMessages({...source, connected: false}), false); assert.equal(readsSavedMessages({connected: true}), false);
+});
+test('live agents and a disconnected browser keep the ordinary read wording', () => {
+  const source = {hasEntries: false, connected: true, loading: false, ready: false};
+  for (const availability of [undefined, 'live' as const]) assert.equal(agentHistoryNote({...source, availability, loading: true}).text, 'Loading messages…');
+  const offline = {...source, availability: 'stored' as const, connected: false};
+  assert.equal(agentHistoryNote({...offline, loading: true}).text, 'Loading messages…');
+  assert.deepEqual(agentHistoryNote(offline), {text: 'Messages are unavailable while the browser is disconnected.', detail: '', reload: false, label: 'Load messages'});
 });
 test('unreadable saved messages use plain text, offer a reload, and retain the exact diagnostic', () => {
   const message = 'The retained source is unreadable.';

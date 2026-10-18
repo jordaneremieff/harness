@@ -78,9 +78,9 @@ test('agent view combines pending read, source refusal and confirmed empty in on
   globalThis.fetch = async (input, init) => new URL(String(input), 'http://ui.test').pathname === '/api/agents/history-state/history' ? pending ? held.then(response => response.clone()) : Response.json({ok: true, data: {target: {kind: 'agent', identity: 'history-state'}, entries: [], nextBefore: null, coverage, revision: 'empty'}}) : original(input, init);
   try {
     const arrival = arrive({workspace: {id: 'history-state', revision: 1, selectedTarget: {kind: 'agent', identity: 'history-state'}}, primaries: [], roster: [agentFixture('history-state', {availability: 'stored', capabilities: {input: false}})], targets: [targetFixture('history-state-target', {kind: 'agent', identity: 'history-state'})]});
-    await settle(); assert.equal(agentControl('history-note-line').textContent, 'Loading messages…'); assert.equal(agentControl('history-reload').hidden, true); assert.equal(agentControl('state-line').textContent, 'Not running. Start it to send a message.'); assertAgentComposition();
+    await settle(); assert.equal(agentControl('history-note-line').textContent, 'Reading saved messages…'); assert.equal(agentControl('history-reload').hidden, true); assert.equal(agentControl('state-line').textContent, 'Not running. Start it to send a message.'); assertAgentComposition();
     complete(Response.json({ok: false, error: {code: 'contract_mismatch', message: reason, retry: 'none'}})); await arrival; await settle();
-    assert.equal(agentControl('history-note-line').textContent, 'Saved messages use an unsupported format.'); assert.equal(agentControl('history-reload').hidden, false); assert.equal(agentControl('history-details').hidden, false);
+    assert.equal(agentControl('history-note-line').textContent, 'Saved messages use an unsupported format.'); assert.equal(agentControl('history-reload').hidden, false); assert.equal(agentControl('history-reload').textContent, 'Reload messages'); assert.equal(agentControl('history-details').hidden, false);
     agentControl('history-details').dispatch('click'); assert.match(byId('modal-body').textContent, /Required Durable 1\.1\.0/); byId('modal-close').click(); assertAgentComposition();
     pending = false; agentControl('history-reload').dispatch('click'); await settle();
     assert.equal(agentControl('history-note-line').textContent, 'No messages yet.'); assert.equal(agentControl('history-reload').hidden, true); assertAgentComposition();
@@ -91,7 +91,7 @@ function visibleText(node: ReturnType<typeof agentControl>): string {return node
 function assertAgentComposition(): void {
   const root = agentControl('root'), note = agentControl('history-note');
   assert.equal(root.querySelectorAll('.history-note').length, 1); assert.equal(root.querySelectorAll('.agent-state').length, 0); assert.equal(root.querySelectorAll('.inspection-navigation').length, 0);
-  assert.equal(note.children[0].tagName, 'p'); assert.equal(note.children[0].attributes.get('role'), 'status'); assert.deepEqual(note.children.slice(1).map(button => button.textContent), ['Reload messages', 'Details']);
+  assert.equal(note.children[0].tagName, 'p'); assert.equal(note.children[0].attributes.get('role'), 'status'); assert.match(note.children[1]?.textContent ?? '', /^(Load|Reload) messages$/); assert.equal(note.children[2]?.textContent, 'Details'); assert.equal(note.children.length, 3);
   assert.equal(note.querySelectorAll('svg').length, 0); assert.equal(note.querySelectorAll('details').length, 0); assert.equal(note.querySelectorAll('h2').length, 0);
   assert.equal(root.querySelectorAll('.agent-start-help').length, 0); assert.equal(agentControl('view-notice').textContent, ''); assert.equal(agentControl('empty').hidden, true);
   assert.doesNotMatch(visibleText(root), /Stored metadata|History is disconnected|History could not be loaded|A start can resume|Check connection|Start in Pi|Start agent|not connected/i);
@@ -117,11 +117,35 @@ test('whole agent views retain messages independently of running, idle and incom
       if (availability === 'stored') {assert.match(agentControl('start').title, /resume unfinished work/); const sends = transportLog.length; await app.agentComposer().send(); await settle(); assert.equal(transportLog.slice(sends).some(call => call.path.includes('/inputs')), false);}
       const editor = app.agentComposer().editor, message = agentControl('root').querySelector('[data-entry-id=retained-message]'); assert.ok(message); editor.setSelectionRange(2, 7, 'backward'); editor.focus();
       const before = transportLog.length; failed = true; agentControl('history-reload').dispatch('click'); await settle(); assertAgentComposition();
-      assert.match(visibleText(agentControl('root')), /Exact retained conversation text/); assert.doesNotMatch(visibleText(agentControl('root')), /The saved history read failed/); assert.equal(agentControl('history-note-line').textContent, 'Saved messages could not be read.'); assert.equal(agentControl('root').querySelector('[data-entry-id=retained-message]'), message);
+      assert.match(visibleText(agentControl('root')), /Exact retained conversation text/); assert.doesNotMatch(visibleText(agentControl('root')), /The saved history read failed/); assert.equal(agentControl('history-note-line').textContent, 'Saved messages could not be read.'); assert.equal(agentControl('history-reload').textContent, 'Reload messages'); assert.equal(agentControl('root').querySelector('[data-entry-id=retained-message]'), message);
       agentControl('history-details').dispatch('click'); assert.match(byId('modal-body').textContent, /The saved history read failed\./); byId('modal-close').click();
       failed = false; agentControl('history-reload').dispatch('click'); await settle(); assertAgentComposition(); assert.doesNotMatch(visibleText(agentControl('root')), /read failed/); assert.equal(agentControl('history-note').hidden, true);
       assert.equal(app.agentComposer().editor, editor); assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [2, 7, 'backward']); assert.equal(hostDocument.activeElement, editor);
       assert.equal(transportLog.slice(before).some(call => call.path.endsWith('/start') || call.path.includes('/inputs')), false);
+    }
+  } finally {globalThis.fetch = original;}
+});
+test('Refresh messages sits in Conversation actions for saved agents only and runs the history read', async () => {
+  const original = globalThis.fetch;
+  try {
+    for (const availability of ['live', 'stored', 'incompatible'] as const) {
+      const identity = `menu-${availability}`, target = {kind: 'agent', identity} as const; let reads = 0;
+      const entry = entryFixture('menu-message', [messageFixture('menu-source', [textPart('Retained text')])]);
+      globalThis.fetch = async (input, init) => {
+        if (new URL(String(input), 'http://ui.test').pathname !== `/api/agents/${identity}/history`) return original(input, init);
+        reads++; return Response.json({ok: true, data: {target, entries: [entry], nextBefore: null, coverage, revision: 'menu'}});
+      };
+      const row = agentFixture(identity, {availability, capabilities: {input: availability === 'live'}});
+      await arrive({workspace: {id: identity, revision: 1, selectedTarget: target}, primaries: [], roster: [row], targets: [targetFixture(`menu-${availability}-target`, target)], observations: availability === 'live' ? [observation(identity, {revision: 1, observedAt: '', status: {busy: false}, live: [], entries: [entry], nextBefore: null, coverage})] : []});
+      if (availability === 'live') {event('agent.availability', {identity, connectionEpoch: app.state.agentEpochs.get(identity), state: 'live', capabilities: row.capabilities}); await settle();}
+      assert.equal(agentControl('history-note').hidden, true);
+      app.openConversationActions(); const menu = globalThis.document.querySelector('.context-menu'); assert.ok(menu);
+      const refresh = menu.children.find(item => item.textContent === 'Refresh messages');
+      if (availability === 'live') {assert.equal(refresh, undefined); continue;}
+      assert.ok(refresh); assert.equal(refresh.getAttribute('aria-disabled'), 'false');
+      const before = reads; const sends = transportLog.length; refresh.click(); await settle();
+      assert.equal(reads, before + 1); assert.equal(agentControl('history-note').hidden, true);
+      assert.equal(transportLog.slice(sends).some(call => call.path.endsWith('/start') || call.path.includes('/inputs')), false);
     }
   } finally {globalThis.fetch = original;}
 });

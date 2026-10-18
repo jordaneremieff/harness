@@ -53,7 +53,7 @@ import { inputOperation, operationLabel } from './operation-label.ts';
 import { PreferenceQueue } from './preference-queue.ts';
 import { BrowserDiagnostics } from './diagnostics.ts';
 import {DevReload, devReloadPresentation, type DevReloadCheckpoint, type DevReloadHooks, type DevCheckpointEntry, type DevReloadHold, type DevReloadNotice} from './dev-reload.ts';
-import { conversationPresentation, presentationGlyph, presentationName, projectIdentity, composerFolder, agentHistoryNote, agentComposerState, settingsLabel } from './conversation-presentation.ts';
+import { conversationPresentation, presentationGlyph, presentationName, projectIdentity, composerFolder, agentHistoryNote, readsSavedMessages, agentComposerState, settingsLabel } from './conversation-presentation.ts';
 import type { AgentComposerState, ConversationPresentation } from './conversation-presentation.ts';
 import type { ComposerStateView } from './composer.ts';
 import { newerOperation, mergeOperationMap } from './operation-state.ts';
@@ -1479,16 +1479,23 @@ function renderStoredAgent(identity: string, _row?: AgentRow): void {
   if (!messageTarget.current) renderAgentRecipient(identity);
   renderWorkbenchStatus(); tabStrip.render();
 }
+/** The availability that decides whether this agent's messages are read from saved records. */
+function agentReadAvailability(controller: ConversationController): AgentRow['availability'] | undefined {
+  if (controller.target.kind !== 'agent') return undefined;
+  const negotiated = liveConnection(controller);
+  const availability = negotiated || controller.connectionError ? undefined : state.agentAvailability.get(controller.target.identity);
+  return negotiated?.availability ?? availability?.state ?? agentRow(controller.target.identity)?.availability;
+}
 function renderAgentState(controller: ConversationController): void {
   if (controller.target.kind !== 'agent') return;
   const {identity} = controller.target, workspace = controller.workspaceId;
   const negotiated = liveConnection(controller);
   const availability = negotiated || controller.connectionError ? undefined : state.agentAvailability.get(identity), row = agentRow(identity), attempt = agentStarts.get(agentStartKey(workspace, identity));
-  const history = agentHistoryNote({hasEntries: !!controller.hasEntries, connected, loading: controller.loading, ready: controller.historyReady, complete: controller.historyComplete, error: controller.historyError});
+  const history = agentHistoryNote({hasEntries: !!controller.hasEntries, connected, loading: controller.loading, ready: controller.historyReady, complete: controller.historyComplete, error: controller.historyError, availability: agentReadAvailability(controller)});
   const note = controllerNode(controller, 'history-note'), line = controllerNode(controller, 'history-note-line');
   setText(line, history.text); note.hidden = !history.text || !!controller.inspection?.active;
   const reload = controllerNode(controller, 'history-reload') as HTMLButtonElement, details = controllerNode(controller, 'history-details') as HTMLButtonElement;
-  reload.hidden = !history.reload; reload.disabled = !connected || controller.loading || !!checkingAgent || attempt?.pending === true; reload.onclick = () => {void retryAgentRead(controller);};
+  setText(reload, history.label); reload.hidden = !history.reload; reload.disabled = !connected || controller.loading || !!checkingAgent || attempt?.pending === true; reload.onclick = () => {void retryAgentRead(controller);};
   details.hidden = !history.detail; details.onclick = () => showDetails('Saved messages', history.detail);
   const current = presentation(controller.target);
   const composerState = agentComposerState({connected, availability: availability?.state ?? row?.availability, input: current.input, checked: !!negotiated || !!availability, reason: negotiated?.reason ?? availability?.reason, startAttempt: attempt, connectionError: controller.connectionError, checking: !!controller.refreshing, blocked: current.activity === 'Provider blocked' ? current.detail : undefined});
@@ -1913,6 +1920,12 @@ function conversationMenuItems(target: Target): ContextItem[] {
     .map(item => ({label: item.name, enabled: local[item.name] ? true : item.enabled, run: local[item.name] ?? item.run, description: item.description, disabledReason: item.disabledReason,
       ...(item.name === 'Show thinking' ? {checked: shown, checkbox: true} : {})}));
 }
+/** A saved-message refresh is offered only where messages cannot update live; it runs the same history read as the note's Load action. */
+function savedMessagesItem(identity: string): ContextItem[] {
+  const controller = conversationController({kind: 'agent', identity});
+  if (!readsSavedMessages({connected, availability: agentReadAvailability(controller)})) return [];
+  return [{label: 'Refresh messages', enabled: !controller.loading && !checkingAgent, run: () => { void retryAgentRead(controller); }}];
+}
 function agentMenuItems(identity: string): ContextItem[] {
   const row = agentRow(identity);
   const items: ContextItem[] = [
@@ -1920,6 +1933,7 @@ function agentMenuItems(identity: string): ContextItem[] {
       {label: 'Show conversation', run: () => { void selectAgent(row).catch(showError); }},
       {label: 'Message', enabled: connected && row.availability === 'live' && row.capabilities?.input === true, run: () => openAgentMessage(identity)},
     ] : []),
+    ...savedMessagesItem(identity),
     {label: 'Copy agent ID', run: () => { void copy(identity, agentNode('view-notice')); }},
     {label: 'Conversation details', run: () => actions.conversationDetails(identity)},
   ];
@@ -1938,7 +1952,7 @@ export function openConversationActions(paneId: string = focusedPane, key?: stri
   const entries = (tab.kind === 'agent' ? agentMenuItems(tab.identity) : conversationMenuItems(target)).filter(item => item.label !== 'Show conversation');
   const groups: [string, ContextItem[]][] = [
     ['View', [...choices, ...['Show thinking', 'Find text', 'Expand loaded tools', 'Collapse loaded tools'].flatMap(name => entries.filter(item => item.label === name))]],
-    ['Messages and tasks', ['Message', 'Review message', 'Sent and received tasks…', 'Saved drafts and messages', 'Message input…'].flatMap(name => entries.filter(item => item.label === name))],
+    ['Messages and tasks', ['Message', 'Refresh messages', 'Review message', 'Sent and received tasks…', 'Saved drafts and messages', 'Message input…'].flatMap(name => entries.filter(item => item.label === name))],
     ['Session', ['New session', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Open in Pi terminal…'].flatMap(name => entries.filter(item => item.label === name))],
     ['Details', ['Conversation details', 'Copy agent ID'].flatMap(name => entries.filter(item => item.label === name))],
   ];
