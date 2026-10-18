@@ -25,3 +25,9 @@ test('thread calls read as sentences by action', () => {
   assert.equal(toolLabel(call('create', {title: 'Plan'})), 'Created a thread: “Plan”');
   assert.doesNotMatch(toolSentence(call('post', {message: 'Hi'})), /agent_collaborate|threadId/);
 });
+
+test('a thread call with an unknown or missing action falls back to a generic sentence', () => {
+  const call = (args: Record<string, unknown>): JoinedTool => ({callId: 'c', name: 'agent_collaborate', owner: 'e', slot: 's', status: 'success', args: {value: args, truncated: false}});
+  assert.equal(toolLabel(call({action: 'rename'})), 'Used a thread'); assert.equal(toolLabel(call({})), 'Used a thread');
+  assert.equal(toolLabel(call({action: 'post'})), 'Posted to a thread'); assert.equal(toolLabel({...call({}), args: undefined}), 'Used a thread');
+});
