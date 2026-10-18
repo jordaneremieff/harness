@@ -1359,7 +1359,7 @@ test('collapsed previews are prose only for Markdown reads and structured summar
   const previews = node('primary-transcript').querySelectorAll('.tool-preview');
   assert.equal(previews.length, 3);
   const prose = previews[0]?.querySelector('.tool-prose-preview'); assert.ok(prose);
-  assert.equal(prose.textContent, 'PlanRead the guide first.'); assert.equal(previews[0]?.querySelector('a'), null);
+  assert.equal(prose.textContent, 'Plan Read the guide first.'); assert.equal(previews[0]?.querySelector('a'), null);
   assert.equal(previews[1]?.querySelector('.tool-prose-preview'), null); assert.equal(previews[1]?.textContent, markdown);
   assert.equal(previews[2]?.querySelector('.tool-prose-preview'), null); assert.equal(previews[2]?.textContent, markdown);
   const summary = contentEntry('prose-summary', {path: 'result.json'}, '{"count":2}', false, {value: {count: 2}, truncated: false});

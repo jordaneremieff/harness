@@ -123,7 +123,7 @@ function previewBlock(node: MarkdownBlock, budget: PreviewBudget, out: HTMLEleme
 export function markdownPreviewDom(text: string): DocumentFragment {
   const budget: PreviewBudget = {nodes: PREVIEW_NODES, blocks: PREVIEW_BLOCKS, limited: false}; const blocks: HTMLElement[] = [];
   for (const node of parseMarkdown(text)) previewBlock(node, budget, blocks);
-  const fragment = document.createDocumentFragment(); fragment.append(...blocks);
+  const fragment = document.createDocumentFragment(); blocks.forEach((block, index) => { if (index) fragment.append(document.createTextNode(' ')); fragment.append(block); });
   if (budget.limited) fragment.append(document.createTextNode('…'));
   return fragment;
 }

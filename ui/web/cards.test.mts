@@ -220,7 +220,7 @@ test('a successful Markdown read previews as noninteractive prose without source
   assert.equal(shown.tag, 'span'); assert.equal(shown.className, 'tool-prose-preview');
   const tags = new Set(walk(shown).map(child => child.tag));
   for (const forbidden of ['a', 'button', 'img', 'pre', 'script', 'details', 'summary', 'input']) assert.equal(tags.has(forbidden), false, forbidden);
-  assert.equal(shown.textContent, 'Release notesThe bold and soft label with code() and Image not shown: chart.\u2022 first\u2022 second<script>alert(1)</script>');
+  assert.equal(shown.textContent, 'Release notes The bold and soft label with code() and Image not shown: chart. \u2022 first \u2022 second <script>alert(1)</script>');
   assert.doesNotMatch(shown.textContent, /[#*_[\]]|https:/);
   const classes = walk(shown).map(child => child.className);
   assert.ok(classes.includes('prose-preview-block prose-preview-heading')); assert.ok(classes.includes('prose-preview-code'));
@@ -257,7 +257,7 @@ test('prose previews keep the shortened-text mark and bound their own nodes', ()
   const bounded = node(presentResultPreview(readSource('a.md', dense)));
   assert.ok(walk(bounded).length < 400); assert.match(bounded.textContent, /…$/);
   const table = node(presentResultPreview(readSource('a.md', '| A | B |\n| --- | --- |\n| 1 | `two` |')));
-  assert.equal(table.textContent, 'A · B1 · two');
+  assert.equal(table.textContent, 'A · B 1 · two');
   const quote = node(presentResultPreview(readSource('a.md', '> quoted **text**\n\n1. one\n2. two')));
-  assert.equal(quote.textContent, 'quoted text1. one2. two');
+  assert.equal(quote.textContent, 'quoted text 1. one 2. two');
 });
