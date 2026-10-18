@@ -1,4 +1,5 @@
 import type { EntryView, MessageView } from '../shared/api.ts';
+import { pairedTimestamp } from './state.ts';
 
 /** The most the count shows; a larger count reads as "99+". */
 export const ARRIVAL_CAP = 99;
@@ -23,21 +24,30 @@ export class ArrivalCounter {
   count = 0;
   private readonly seen = new Set<string>();
   private readonly counted = new Set<string>();
+  private readonly liveStamps = new Set<number>();
   private primed = false;
   /** Back at the end: the count restarts, and known messages stay known. */
   clear(): void { this.count = 0; }
   /** A different conversation or an emptied transcript. */
-  reset(): void { this.seen.clear(); this.counted.clear(); this.primed = false; this.count = 0; }
+  reset(): void { this.seen.clear(); this.counted.clear(); this.liveStamps.clear(); this.primed = false; this.count = 0; }
+  /** A streamed agent reply is published under a live id and saved under another; both carry the same role and timestamp, so they are one message here. */
+  private identity(message: MessageView): string {
+    const stamp = pairedTimestamp(message);
+    if (stamp === undefined) return message.id;
+    if (message.id.startsWith('live:')) this.liveStamps.add(stamp);
+    return this.liveStamps.has(stamp) ? `stamp:${stamp}` : message.id;
+  }
   /** Returns how many arrivals this update added. `own` skips the operator's own user messages. */
   observe(entries: readonly EntryView[], away: boolean, own: boolean): number {
-    const boundary = this.primed ? entries.findIndex(entry => (entry.messages ?? []).some(message => this.seen.has(message.id))) : 0;
+    const boundary = this.primed ? entries.findIndex(entry => (entry.messages ?? []).some(message => this.seen.has(this.identity(message)))) : 0;
     let added = 0;
     entries.forEach((entry, index) => {
       if (entry.kind === 'ui.input') return;
       for (const message of entry.messages ?? []) {
-        this.seen.add(message.id);
-        if (this.counted.has(message.id) || !readable(message)) continue;
-        this.counted.add(message.id);
+        const key = this.identity(message);
+        this.seen.add(key);
+        if (this.counted.has(key) || !readable(message)) continue;
+        this.counted.add(key);
         if (this.primed && away && boundary >= 0 && index >= boundary && !(own && message.role === 'user')) added++;
       }
     });

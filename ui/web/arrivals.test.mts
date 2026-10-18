@@ -61,3 +61,20 @@ test('the control reads Latest, or the count with a cap', () => {
   assert.deepEqual(latestLabel(ARRIVAL_CAP), {text: '99 new \u00b7 Latest', accessible: 'Latest message, 99 new'});
   assert.deepEqual(latestLabel(ARRIVAL_CAP + 1), {text: '99+ new \u00b7 Latest', accessible: 'Latest message, more than 99 new'});
 });
+const stamped = (id: string, entry: string, text: string, timestamp: number, state: 'partial' | 'final' = 'final'): EntryView =>
+  ({id: entry, kind: 'message', messages: [{...message(id, [{type: 'text', text}]), state, timestamp}]});
+test('an agent reply streamed under a live id and saved under another counts once, and the next turn under the same live id counts again', () => {
+  const counter = new ArrivalCounter(); const base = [say('a')]; counter.observe(base, true, false);
+  assert.equal(counter.observe([...base, stamped('live:agent', 'live:agent', 'Hel', 100, 'partial')], true, false), 1);
+  assert.equal(counter.count, 1);
+  assert.equal(counter.observe([...base, stamped('saved-7', 'e-7', 'Hello', 100)], true, false), 0, 'the saved copy shares the live message\'s role and timestamp');
+  assert.equal(counter.count, 1);
+  assert.equal(counter.observe([...base, stamped('saved-7', 'e-7', 'Hello', 100), stamped('live:agent', 'live:agent', 'Next', 200, 'partial')], true, false), 1);
+  assert.equal(counter.count, 2);
+  assert.equal(counter.observe([...base, stamped('saved-7', 'e-7', 'Hello', 100), stamped('saved-9', 'e-9', 'Next turn', 200)], true, false), 0);
+  assert.equal(counter.count, 2);
+});
+test('saved assistant messages that share a timestamp stay separate when no live copy preceded them', () => {
+  const counter = new ArrivalCounter(); const base = [say('a')]; counter.observe(base, true, false);
+  assert.equal(counter.observe([...base, stamped('s1', 'e-1', 'One', 300), stamped('s2', 'e-2', 'Two', 300)], true, false), 2);
+});

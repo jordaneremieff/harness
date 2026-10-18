@@ -20,6 +20,10 @@ export function thinkingKey(message: Pick<MessageView, 'id' | 'timestamp'>, inde
   const live = message.id.startsWith('live:') && Number.isSafeInteger(message.timestamp);
   return `${message.id}${live ? `@${message.timestamp}` : ''}:${index}`;
 }
+/** The host commits a streamed assistant message under a new id and drops its live copy; the role and timestamp are the same on both. This is the only place that rule is written. */
+export function pairedTimestamp(message: Pick<MessageView, 'role' | 'timestamp'>): number | undefined {
+  return message.role === 'assistant' && Number.isSafeInteger(message.timestamp) ? message.timestamp : undefined;
+}
 export interface Conversation {
   thinking?: ReadonlyMap<string, ThinkingTime>;
   target: Target; entries: ReadonlyMap<string, EntryView>; entryOrder: string[]; historyCursor?: string | null;
@@ -492,9 +496,9 @@ export function commitLiveThinking(times: ReadonlyMap<string, ThinkingTime> | un
   if (!times || !live?.size) return times;
   let next: Map<string, ThinkingTime> | undefined;
   for (const message of committed.flatMap(entry => entry.messages ?? [])) {
-    const spans = message.role === 'assistant' && message.state === 'final' && message.timestamp !== undefined ? live.get(message.timestamp) : undefined;
+    const stamp = message.state === 'final' ? pairedTimestamp(message) : undefined, spans = stamp !== undefined ? live.get(stamp) : undefined;
     if (!spans) continue;
-    next ??= new Map(times); moveSpans(next, message, spans, now); live.delete(message.timestamp as number);
+    next ??= new Map(times); moveSpans(next, message, spans, now); live.delete(stamp as number);
   }
   return next ?? times;
 }
