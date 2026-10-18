@@ -2,12 +2,14 @@ import {parentPort} from 'node:worker_threads';
 import {LIMITS} from '../shared/api.ts';
 import {FileState} from './file-state.mts';
 import {directoryPage, fileFailure, readText} from './file-access.mts';
-import {searchFiles} from './file-search.mts';
+import {runSearch, SearchSlots, searchFiles} from './file-search.mts';
 import {ApiError, errorView,fileIdentityUncertain} from './errors.mts';
 import type {FileJob} from './files.mts';
 import {FileWatches} from './file-watch.mts';
 let state:FileState|undefined, watches:FileWatches|undefined;
-async function execute(job:FileJob):Promise<unknown> {
+const searches = new SearchSlots();
+const searchKey = (job:Extract<FileJob,{kind:'search'}>) => `${job.workspace}\0${job.rootId}`;
+async function execute(job:FileJob,id:number):Promise<unknown> {
   if (job.kind === 'open') {const loaded = new FileState(job.directory);await loaded.load();state = loaded;watches = new FileWatches(id=>loaded.root(id),(change,workspace)=>parentPort?.postMessage({change,workspace}));return null;}
   if (job.kind === 'close') {watches?.close();return null;}
   if (!state || !watches) throw new ApiError('not_ready','File access is not ready.',503);
@@ -20,7 +22,7 @@ async function execute(job:FileJob):Promise<unknown> {
     case 'save':return state.saveDraft(job.rootId,job.path,job.expectedRevision);
     case 'watch':return watches.replace(job.workspace,job.clientId,job.roots);
     case 'watch-state':return watches.state(job.workspace,job.clientId);
-    case 'search':return searchFiles(state.root(job.rootId),job.query);
+    case 'search': {const root = state.root(job.rootId);return runSearch(searches,searchKey(job),id,cancelled=>searchFiles(root,job.query,cancelled));}
     case 'unwatch':await watches.release(job.workspace,job.clientId);return null;
     case 'move':return moveEntry(state,watches,job);
     case 'create':watches.assertMove(job.rootId,'',job.path);return state.create(job.rootId,job.path,job.entryKind);
@@ -38,9 +40,10 @@ function accessEntry(state:FileState,job:Extract<FileJob,{kind:'directory'|'text
 }
 let tail = Promise.resolve();
 parentPort?.on('message',({id,job}:{id:number;job:FileJob})=> {
+  if (job.kind === 'search') searches.arrive(searchKey(job),id);
   tail = tail.then(async()=> {
     let json:string, status = 200,identityFailure = false,effected = false;
-    try {const data = await execute(job);effected = ['move','create','trash','save'].includes(job.kind);json = JSON.stringify({ok:true,data});if (Buffer.byteLength(json) > LIMITS.fileResponseBytes) throw new ApiError('payload_too_large','The file response exceeds its bound.',413);}
+    try {const data = await execute(job,id);effected = ['move','create','trash','save'].includes(job.kind);json = JSON.stringify({ok:true,data});if (Buffer.byteLength(json) > LIMITS.fileResponseBytes) throw new ApiError('payload_too_large','The file response exceeds its bound.',413);}
     catch (error) {
       let failure = fileFailure(error);
       if (effected) {state?.poisonIdentity();failure = fileIdentityUncertain();}

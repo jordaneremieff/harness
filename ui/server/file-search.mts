@@ -11,6 +11,18 @@ const deferredNames: ReadonlySet<string> = new Set(['node_modules']);
 type Match = {row: FileSearchRow; rank: number; depth: number};
 type Scope = {dir: string; needle: string; byPath: boolean};
 
+export function cancelledSearch(): ApiError { return new ApiError('file_cancelled', 'A newer file search replaced this one.', 409, 'read'); }
+/** Searches for one workspace root replace each other: the newest wins, an unstarted older one never walks, and a running one stops between directories. */
+export class SearchSlots {
+  private latest = new Map<string, number>();
+  arrive(key: string, id: number): void { this.latest.set(key, id); }
+  superseded(key: string, id: number): boolean { return this.latest.has(key) && this.latest.get(key) !== id; }
+  finish(key: string, id: number): void { if (this.latest.get(key) === id) this.latest.delete(key); }
+}
+export async function runSearch<T>(slots: SearchSlots, key: string, id: number, walk: (cancelled: () => boolean) => Promise<T>): Promise<T> {
+  if (slots.superseded(key, id)) throw cancelledSearch();
+  try { return await walk(() => slots.superseded(key, id)); } finally { slots.finish(key, id); }
+}
 export function searchQuery(value: unknown): string {
   if (typeof value !== 'string' || value.length > SEARCH_LIMITS.queryChars || /[\u0000-\u001f\u007f]/.test(value)) throw new ApiError('invalid_request', 'The file search query is invalid.');
   return value;
@@ -60,7 +72,7 @@ async function listing(root: RegisteredRoot, path: string, walk: Walk): Promise<
 }
 const boundNames = {time: 'time', visits: 'entry', matches: 'match', depth: 'depth'} as const;
 type Level = {normal: string[]; deferred: string[]};
-type Search = {root: RegisteredRoot; scope: Scope; walk: Walk; matches: Match[]; deadline: number};
+type Search = {root: RegisteredRoot; scope: Scope; walk: Walk; matches: Match[]; deadline: number; cancelled?: () => boolean};
 function place(search: Search, parent: string, entry: Listed, depth: number, next: Level): void {
   const path = childPath(parent, entry.name); if (path === undefined) {search.walk.skipped++; return;}
   const found = rank(search.scope, entry.name, path);
@@ -70,6 +82,7 @@ function place(search: Search, parent: string, entry: Listed, depth: number, nex
 /** Reads one directory's entries into the match list and the next level; returns whether a bound ended the walk. */
 async function visit(search: Search, parent: string, depth: number, next: Level): Promise<boolean> {
   const {walk, matches} = search;
+  if (search.cancelled?.()) throw cancelledSearch();
   if (Date.now() > search.deadline) {walk.limited = 'time'; return true;}
   if (walk.visited >= SEARCH_LIMITS.visits) {walk.limited = 'visits'; return true;}
   for (const entry of await listing(search.root, parent, walk) ?? []) place(search, parent, entry, depth, next);
@@ -91,9 +104,9 @@ async function walkLevels(search: Search): Promise<void> {
   }
 }
 /** Breadth-first name search under one registered root, bounded in visits, depth, time, matches and response bytes. */
-export async function searchFiles(root: RegisteredRoot, rawQuery: string): Promise<FileSearchResult> {
+export async function searchFiles(root: RegisteredRoot, rawQuery: string, cancelled?: () => boolean): Promise<FileSearchResult> {
   const query = searchQuery(rawQuery), scope = await startScope(root, query);
-  const search: Search = {root, scope, walk: {visited: 0, skipped: 0}, matches: [], deadline: Date.now() + SEARCH_LIMITS.ms};
+  const search: Search = {root, scope, walk: {visited: 0, skipped: 0}, matches: [], deadline: Date.now() + SEARCH_LIMITS.ms, ...(cancelled ? {cancelled} : {})};
   await walkLevels(search);
   const {walk, matches} = search; matches.sort(order);
   const rows = fitRows(matches.map(match => match.row)), reason = coverageReason(walk);

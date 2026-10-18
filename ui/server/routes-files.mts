@@ -108,7 +108,7 @@ async function readRequest(files:Files,backend:HttpBackend,context:RequestContex
   await backend.workspace(v.string(url.searchParams.get('workspace'),'workspace ID'));
   if (parts[4] === 'search') {
     if (method !== 'GET') throw new ApiError('invalid_request','The file route does not accept this request.',405);
-    return files.request({kind:'search',rootId:v.string(parts[3],'root ID'),query:searchQuery(url.searchParams.get('q') ?? '')},signal);
+    return files.request({kind:'search',workspace:v.string(url.searchParams.get('workspace'),'workspace ID'),rootId:v.string(parts[3],'root ID'),query:searchQuery(url.searchParams.get('q') ?? '')},signal);
   }
   const rootId = v.string(parts[3],'root ID'),path = filePath(url.searchParams.get('path'),parts[4] === 'directory');
   if (method !== 'GET') return mutationRequest(files,rootId,path,context);

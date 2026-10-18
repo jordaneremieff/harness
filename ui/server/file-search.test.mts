@@ -4,7 +4,7 @@ import {mkdtemp, mkdir, writeFile, symlink, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {registerRoot} from './file-access.mts';
-import {searchFiles, searchQuery, SEARCH_LIMITS} from './file-search.mts';
+import {runSearch, searchFiles, searchQuery, SearchSlots, SEARCH_LIMITS} from './file-search.mts';
 
 async function tree(context: {after(callback: () => Promise<void>): void}, files: Record<string, string>) {
   const path = await mkdtemp(join(tmpdir(), 'ui-file-search-')); context.after(() => rm(path, {recursive: true, force: true}));
@@ -55,4 +55,21 @@ test('queries are bounded text and the empty query lists the shallowest entries'
   const root = await tree(context, {'a.txt': '', 'b/c.txt': ''});
   assert.throws(() => searchQuery('x'.repeat(SEARCH_LIMITS.queryChars + 1)), {code: 'invalid_request'}); assert.throws(() => searchQuery('a\u0000b'), {code: 'invalid_request'});
   assert.deepEqual((await searchFiles(root, '')).rows.map(row => row.path), ['a.txt', 'b', 'b/c.txt']);
+});
+test('a newer search replaces unstarted ones and stops a running walk, so at most two walks start', async () => {
+  const slots = new SearchSlots(), key = 'workspace\0root', started: number[] = []; let release!: () => void; const gate = new Promise<void>(resolve => {release = resolve;});
+  slots.arrive(key, 1);
+  const first = runSearch(slots, key, 1, async cancelled => {started.push(1); await gate; if (cancelled()) throw new Error('stopped'); return 'first';});
+  slots.arrive(key, 2); slots.arrive(key, 3);
+  // The worker runs queued jobs one after another, so the running walk ends first and then the queue drains.
+  release(); await assert.rejects(first, /stopped/);
+  const second = runSearch(slots, key, 2, async () => {started.push(2); return 'second';});
+  const third = runSearch(slots, key, 3, async cancelled => {started.push(3); return cancelled() ? 'cancelled' : 'third';});
+  await assert.rejects(second, {code: 'file_cancelled'}); assert.equal(await third, 'third');
+  assert.deepEqual(started, [1, 3]); assert.equal(slots.superseded(key, 4), false);
+  const other = new SearchSlots(); other.arrive('a', 1); other.arrive('b', 2); assert.equal(other.superseded('a', 1), false, 'another root keeps its own search');
+});
+test('a search that was replaced stops between directories', async context => {
+  const root = await tree(context, {'a/x.txt': '', 'b/y.txt': '', 'c/z.txt': ''});
+  let checks = 0; await assert.rejects(searchFiles(root, 'txt', () => ++checks > 2), {code: 'file_cancelled'});
 });

@@ -172,7 +172,7 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
   const latest = add('latest', 'button', 'latest') as HTMLButtonElement; latest.type = 'button'; latest.textContent = 'Latest'; latest.setAttribute('aria-label', 'Latest message'); latest.hidden = true;
   nodes.set('transcript-region',region);region.append(absent, scroller); const above = add('widgets-above', 'div', 'widgets'), below = add('widgets-below', 'div', 'widgets');
   const elements = createComposerElements(instanceId); elements.root.hidden = false;
-  elements.meta?.append(latest);
+  elements.meta?.prepend(latest);
   for (const [name, node] of Object.entries(elements)) if (node) nodes.set(name === 'root' ? 'composer' : name, node);
   const stop = elements.root.querySelector<HTMLButtonElement>('.stop'); if (!stop) throw new Error('Stop control is missing.'); nodes.set('stop', stop); nodes.set('abort', stop);
   const resize = elements.root.querySelector<HTMLElement>('.resizer'); if (resize) nodes.set('composer-resizer', resize);
@@ -1305,9 +1305,10 @@ function wireSettingPickers(target: Target, elements: import('./composer.ts').Co
   elements.model?.addEventListener('click', () => actions.modelPicker()); elements.thinking?.addEventListener('click', () => actions.thinkingPicker());
 }
 function renderComposerSettings(controller: ConversationController, view: ConversationPresentation): void {
-  const {model, thinking, settings} = controller.elements; const text = settings?.querySelector<HTMLElement>('.composer-settings-text');
-  if (!model || !thinking || !text) return;
+  const {model, thinking, settings} = controller.elements; const text = settings?.querySelector<HTMLElement>('.composer-settings-text'), separator = settings?.querySelector<HTMLElement>('.composer-settings-separator');
+  if (!model || !thinking || !text || !separator) return;
   if (controller.target.kind === 'primary') renderPrimarySettings(model, thinking, view); else renderAgentSettingsText(model, thinking, view, text);
+  separator.hidden = model.hidden || thinking.hidden;
   if (controller.target.kind === 'primary') text.hidden = true;
 }
 function renderPrimarySettings(model: HTMLButtonElement, thinking: HTMLButtonElement, view: ConversationPresentation): void {

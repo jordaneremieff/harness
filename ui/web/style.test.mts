@@ -615,7 +615,7 @@ test('Latest occupies the existing composer control line outside the transcript 
   assert.match(app, /const scroller = add\('transcript', 'div', 'transcript'\)/);
   assert.match(app, /const latest = add\('latest', 'button', 'latest'\)/);
   assert.match(app, /region\.append\(absent, scroller\)/);
-  assert.match(app, /elements\.meta\?\.append\(latest\)/);
+  assert.match(app, /elements\.meta\?\.prepend\(latest\)/);
   assert.doesNotMatch(html, /id="(?:primary|agent)-(?:transcript|latest)"/);
 });
 test('native text flow preserves scroll boundaries without line paint clipping', () => {

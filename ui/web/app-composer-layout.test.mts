@@ -39,7 +39,7 @@ test('conversation state and split width changes retain editor ancestry, draft i
     assert.deepEqual(intake.children,[attach,sources,picker]);
     // One surface holds the add control, the editor and the send controls in that tab order; Latest sits below it.
     const order = surface.children.filter(node => [intake, control('editor').parentNode, line].includes(node));
-    assert.deepEqual(order, [intake, control('editor').parentNode, line]); assert.equal(latest.parentNode, meta); assert.equal(meta.parentNode, form);
+    assert.deepEqual(order, [intake, control('editor').parentNode, line]); assert.equal(latest.parentNode, meta); assert.equal(meta.children[0], latest, 'Latest leads the line under the surface'); assert.equal(meta.parentNode, form);
     const submit = bar.querySelector('.composer-submit'); assert.ok(submit);
     assert.deepEqual(bar.children, [control('stop'), submit]); assert.deepEqual(submit.children, [control('modes'), control('start'), control('send')]);
     assert.equal(control('editor').rows, 3);

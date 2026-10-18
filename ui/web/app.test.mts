@@ -1427,7 +1427,7 @@ test('Primary model and thinking are picker buttons under its composer with acce
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({cwd: '/fixture', lifecycle: 'ready', model: {provider: 'provider', id: 'model', name: 'Model', reasoning: false, input: ['text']}, thinkingLevel: 'high'})], roster: []});
   const model = primaryControl('model'), thinking = primaryControl('thinking');
   assert.equal(model.textContent, 'model'); assert.equal(model.title, 'provider/model · Primary'); assert.equal(model.attributes.get('aria-label'), 'Model for Primary: provider/model');
-  assert.equal(thinking.textContent, 'high'); assert.equal(thinking.attributes.get('aria-label'), 'Thinking level for Primary: high'); assert.ok(primaryControl('meta').contains(model));
+  assert.equal(thinking.textContent, 'high'); assert.equal(thinking.attributes.get('aria-label'), 'Thinking level for Primary: high'); assert.ok(primaryControl('meta').contains(model)); assert.equal(primaryControl('settings').querySelector('.composer-settings-separator')?.hidden, false);
 });
 
 test('local conversation actions group existing controls and open workspace input settings without navigation', async () => {

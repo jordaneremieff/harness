@@ -66,7 +66,8 @@ export function createComposerElements(instanceId: string): ComposerElements {
   input.append(commandMenu, fileMenu, recipient, intake, surface, attachments, state, line);
   const model = element('button', 'composer-model'), thinking = element('button', 'composer-thinking'), settingsText = element('span', 'composer-settings-text');
   model.id = `${id}-model`; thinking.id = `${id}-thinking`; settingsText.id = `${id}-settings-text`; model.type = thinking.type = 'button'; model.hidden = thinking.hidden = settingsText.hidden = true;
-  const settings = element('div', 'composer-settings'); settings.id = `${id}-settings`; settings.setAttribute('role', 'group'); settings.setAttribute('aria-label', 'Model and thinking'); settings.append(model, thinking, settingsText);
+  const settings = element('div', 'composer-settings'); settings.id = `${id}-settings`; settings.setAttribute('role', 'group'); settings.setAttribute('aria-label', 'Model and thinking'); const separator = element('span', 'composer-settings-separator', '·'); separator.setAttribute('aria-hidden', 'true'); separator.hidden = true;
+  settings.append(model, separator, thinking, settingsText);
   const meta = element('div', 'composer-meta'); meta.append(settings); root.append(resize, receipt, input, meta);
   const save = element('span', 'draft-state'); save.id = `${id}-save`;
   const receiptDetails = element('span', 'receipt-details'); receiptDetails.id = `${id}-receipt-details`;

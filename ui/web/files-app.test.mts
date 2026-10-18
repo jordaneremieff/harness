@@ -26,6 +26,12 @@ async function workingFixture(context:test.TestContext,name:string) {
   const add=()=>{byId('modal-body').querySelector('[data-path="saved.md"]')?.click();const button=byId('modal-body').querySelectorAll('button').find(node=>node.textContent==='Add file');assert.ok(button);button.click();};
   return {root,reads,open,add,composer:app.primaryComposer(),editor:primaryControl('editor'),target};
 }
+test('Escape closes the Add menu and returns focus to the add button',async context=>{
+  const f=await workingFixture(context,'escape');f.composer.attach('working-escape',undefined);
+  const sources=primaryControl('composer').querySelector('.attachment-sources');assert.ok(sources);sources.focus();sources.click();
+  const menu=hostDocument.body.querySelector('.context-menu');assert.ok(menu);menu.dispatch('keydown',{key:'Escape'});
+  assert.equal(hostDocument.body.querySelector('.context-menu'),null);assert.equal(hostDocument.activeElement,sources);
+});
 test('composer sources preserve direct local intake and stage saved text for the captured editor',async context=>{
   const f=await workingFixture(context,'intake'),parent=f.editor.parentNode,form=primaryControl('composer'),formParent=form.parentNode,before=transportLog.length;
   f.editor.setSelectionRange(2,5,'backward');const attach=form.querySelector('.attach'),picker=form.querySelector('.composer-intake')?.querySelector('input');assert.ok(attach);assert.ok(picker);let picks=0;picker.addEventListener('click',()=>picks++);attach.click();assert.equal(picks,1);
