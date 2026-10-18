@@ -1049,7 +1049,8 @@ test('the composer editor and its color layer share the editor-derived reading m
 });
 test('chrome labels stay quiet and content color is reserved for syntax, links and emphasis weight', () => {
   const contentTokens = [...css.matchAll(/(?:^|\n)\s*([^{}]+)\{([^{}]*var\(--md-[^{}]*)\}/g)].map(match => match[1]?.trim() ?? '');
-  assert.deepEqual(contentTokens.filter(selector => !/^(\.syn-md-|\.composer-colors::highlight\(composer-md-)/.test(selector)), ['.markdown-content strong', '.markdown-content a', '.markdown-content:is(blockquote)']);
+  assert.deepEqual(contentTokens.filter(selector => !/^(\.syn-md-|\.composer-colors::highlight\(composer-md-)/.test(selector)), ['.markdown-content strong', '.markdown-content a']);
+  assert.match(rule('.markdown-content:is(blockquote)'), /border-left: 2px solid var\(--rule\)/);
   assert.match(rule('.message-role'), /color: var\(--muted\); font-size: 12px; line-height: 18px; font-weight: 500/);
   assert.doesNotMatch(css, /\.message\[data-role=assistant\] > \.message-header > \.message-role|\.message\.user > \.message-header > \.message-role/);
   assert.doesNotMatch(rule('.markdown-content .markdown-inline-code'), /color:/);
