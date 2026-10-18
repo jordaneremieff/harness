@@ -286,7 +286,8 @@ test('pending input backlinks retain clear evidence after the source and draft a
   await f.operations().remove(id); await f.operations().remove(row.view.id); await f.operations().remove(imageId); await f.operations().remove(pending.id);
 });
 
-test('operation capacity prunes unused anchors before retained copies or live recovery evidence', async t => {
+// Filling and reopening the full durable store needs room for filesystem contention.
+test('operation capacity prunes unused anchors before retained copies or live recovery evidence', {timeout: 60_000}, async t => {
   const f = await fixture(t), staged = await f.upload(), imageId = await admitted(f, f.workspace.id, f.saved.targetKey, staged.image);
   const releasedId = await admitted(f, f.workspace.id, f.saved.targetKey, staged.image);
   const liveId = await f.operations().beginQueueClear(f.workspace.id, f.target, 1);
