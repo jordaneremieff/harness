@@ -54,13 +54,15 @@ test('a source restart before CLI startup completes closes the assigned backend 
     const generations=new AssetGenerations(new AssetGeneration(assets,new Map([['/web/app.js',['../shared/api.js']],['/shared/api.js',[]]])));
     DevelopmentBuild.open=async()=>({generations,build:{start(){generations.restartRequired();generations.restartRequired();},async close(){process.send?.({kind:'fixture-closed'});}}});`);
   const child=fork(fileURLToPath(mainModule),[],{execArgv:['--import',pathToFileURL(preload).href],stdio:['ignore','ignore','ignore','ipc'],env:{...process.env,PI_CODING_AGENT_DIR:agent,PI_AGENT_SESSIONS_DIR:join(root,'agent-sessions')}});
-  const done=once(child,'exit'),messages:string[]=[];child.on('message',value=>{messages.push((value as {kind:string}).kind);});
+  const done=once(child,'exit'),messages:string[]=[];
+  /* Startup time depends on machine load, so the kill deadline starts when startup reports ready: from then on the pending restart must close the backend by itself. */
+  let forced=false,deadline:ReturnType<typeof setTimeout>|undefined;
+  child.on('message',value=>{const kind=(value as {kind:string}).kind;messages.push(kind);if(kind==='ready')deadline=setTimeout(()=>{forced=true;child.kill('SIGKILL');},5000);});
   context.after(async()=>{if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');await done;await rm(root,{recursive:true,force:true});});
-  let forced=false;const deadline=setTimeout(()=>{forced=true;child.kill('SIGKILL');},3000);
   context.after(()=>clearTimeout(deadline));
   child.send({kind:'start',options:{cwd,port:0,pi:'pi',stateDir:state,devReload:true}});
   const [code,signal]=await done;clearTimeout(deadline);
-  assert.equal(forced,false,'The CLI must close without the supervisor kill deadline.');assert.equal(code,0);assert.equal(signal,null);
+  assert.equal(forced,false,'The CLI must close without the supervisor kill deadline after startup completes.');assert.equal(code,0);assert.equal(signal,null);
   assert.equal(messages.filter(kind=>kind==='restart').length,1);assert.equal(messages.filter(kind=>kind==='fixture-closed').length,1);
   assert.ok(messages.indexOf('restart')<messages.indexOf('ready'));
   assert.equal(await access(join(state,'lock.json')).then(()=>true,()=>false),false);
