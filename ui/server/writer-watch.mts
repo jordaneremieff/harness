@@ -29,8 +29,8 @@ export class WriterWatch {
   #start(): void {
     try {
       this.#watcher = watch(join(this.#root, '.primaries'), {persistent: false}, () => this.#check());
-      this.#watcher.on('error', () => this.#stop());
-    } catch { return; }
+      this.#watcher.on('error', () => { this.#stop(); this.#check(); });
+    } catch { /* A missing directory holds no records: the check below proves release. */ }
     this.#check();
   }
   #stop(): void { this.#watcher?.close(); this.#watcher = undefined; }

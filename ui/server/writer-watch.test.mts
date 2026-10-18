@@ -41,9 +41,16 @@ test('a record already gone when the watch starts is reported without waiting fo
   assert.deepEqual(await released, [ID]); watch.close();
 });
 
-test('nothing is watched when nothing is held or the directory is missing', async context => {
+test('nothing is watched when nothing is held', async context => {
   const disposable = await store(context); const watch = new WriterWatch(disposable.root, () => {});
   watch.track([]); assert.equal(watch.active, false);
-  const missing = new WriterWatch(join(disposable.root, 'absent'), () => {}); missing.track([{id: ID, path: disposable.session}]); assert.equal(missing.active, false);
-  watch.close(); missing.close();
+  watch.close();
+});
+
+test('a missing record directory starts no watch and reports the held file released', async context => {
+  const disposable = await store(context);
+  let watch!: WriterWatch;
+  const released = new Promise<string[]>(resolve => { watch = new WriterWatch(join(disposable.root, 'absent'), ids => resolve(ids)); });
+  watch.track([{id: ID, path: disposable.session}]);
+  assert.equal(watch.active, false); assert.deepEqual(await released, [ID]); watch.close();
 });

@@ -159,6 +159,7 @@ const hostIds = new Map<string, HostNode>();
 const documentHandlers = new Map<string, Handler[]>();
 const documentDispatches: string[] = [];
 const windowHandlers = new Map<string, Handler[]>();
+function dispatchWindow(name: string): void { for (const handler of windowHandlers.get(name) ?? []) handler({}); }
 function beforeUnload(): boolean {let prevented = false; for (const handler of windowHandlers.get('beforeunload') ?? []) handler({preventDefault: () => {prevented = true;}}); return prevented;}
 const hostDocument = {
   activeElement: null as HostNode | null,
@@ -454,7 +455,7 @@ export async function createAppFixture(profile: 'application' | 'workspace' = 'w
   }));
   app = await import('./app.ts');
   if (!application) {await settle(); event('ready', {bootId: 'boot'}); await settle();}
-  return {app, host, hostDocument, HostNode, HostResizeObserver, beforeUnload, arrive, settle, event, byId, primaryControl, agentControl, controls, paneNode,
+  return {app, host, hostDocument, HostNode, HostResizeObserver, beforeUnload, dispatchWindow, arrive, settle, event, byId, primaryControl, agentControl, controls, paneNode,
     primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, imagePart, twoPanes, singlePane, observation,
     coverage, transportLog, selectionSaves, hostSessionStorage, startupMetadata, developmentSources, streamSources, documentDispatches,
     flushFrames, documentHandlers, view, snapshotOf, fixturePreparation,

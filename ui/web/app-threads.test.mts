@@ -3,7 +3,7 @@ import test from 'node:test';
 import type {ThreadEventView, ThreadFrameView, ThreadListItem, ThreadOverview, ThreadPageView} from '../shared/api.ts';
 import {createAppFixture} from './app-fixture.mts';
 const harness = await createAppFixture();
-const {app, arrive, settle, byId, hostDocument, primaryFixture, agentFixture, twoPanes, transportLog} = harness;
+const {app, arrive, settle, byId, hostDocument, primaryFixture, agentFixture, twoPanes, transportLog, dispatchWindow, event: emitEvent} = harness as typeof harness & {dispatchWindow(name: string): void};
 const fixtureControl = harness;
 
 const STORAGE = '10000000-0000-4000-8000-000000000001';
@@ -330,4 +330,28 @@ test('rows that grow after they are placed leave the first visible event where i
     Object.defineProperty(prototype, 'offsetHeight', height); prototype.getBoundingClientRect = rect;
     await closeReader();
   }
+});
+
+test('the open session picker re-reads its rows when the window regains focus and when a release event arrives', async context => {
+  const file = {id: 'terminal-session', path: '/fixture/terminal-session.jsonl', project: '/fixture', revision: 'r1', title: 'Terminal session', titleState: 'ready', modifiedAt: '2026-01-01T00:00:00Z', size: 10};
+  let writer: 'live' | undefined = 'live';
+  const body = () => ({items: [{...file, ...(writer ? {writer}: {})}], total: 1, omitted: 0, nextCursor: null, titleCursor: null, observedAt: '2026-01-02T00:00:00Z'});
+  const original = globalThis.fetch; let reads = 0;
+  context.mock.method(globalThis, 'fetch', async (input: string | URL | Request, init?: RequestInit) => {
+    const path = String(input);
+    if (path.startsWith('/api/sessions/published')) return Response.json({ok: true, data: {...body(), items: []}});
+    if (path.startsWith('/api/sessions?')) { reads++; return Response.json({ok: true, data: body()}); }
+    return original(input, init);
+  });
+  context.after(() => byId('modal-close').click());
+  byId('session-open').click(); await settle();
+  const row = () => hostDocument.querySelectorAll('.picker-select').find(node => node.textContent.includes('Terminal session'));
+  assert.ok(row()); assert.equal(row()?.disabled, true); assert.match(row()?.textContent ?? '', /Open in a terminal/);
+  const before = reads; writer = undefined;
+  dispatchWindow('focus'); await settle();
+  assert.ok(reads > before, 'focus re-reads the saved rows');
+  assert.equal(row()?.disabled, false); assert.match(row()?.textContent ?? '', /The terminal session ended\. Resume here\./);
+  writer = 'live'; const afterFocus = reads;
+  emitEvent('sessions.writers', {released: ['terminal-session']}); await settle();
+  assert.ok(reads > afterFocus, 'a release event re-reads the saved rows'); assert.equal(row()?.disabled, true);
 });
