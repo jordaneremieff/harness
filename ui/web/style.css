@@ -585,8 +585,8 @@ a.reference-link[href] { color: var(--link); text-decoration: underline; overflo
 .markdown-content li > * + *, .markdown-content li > ul, .markdown-content li > ol { margin-top: 2px; }
 .markdown-content li + li { margin-top: 2px; }
 .markdown-content .markdown-inline-code { padding: 0 3px; border-radius: 3px; background: var(--code); overflow-wrap: anywhere; }
-.markdown-content strong { color: var(--md-strong); }
-.markdown-content a { color: var(--md-link); text-decoration: underline; }
+.markdown-content strong { color: var(--fg); }
+.markdown-content a { color: var(--link); text-decoration: underline; }
 .markdown-content:is(blockquote) { padding-left: 12px; border-left: 2px solid var(--rule); color: var(--muted); }
 .markdown-content:is(table) { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; font-size: 14px; scrollbar-width: thin; }
 .markdown-content th, .markdown-content td { padding: 4px 16px 4px 0; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; white-space: normal; overflow-wrap: normal; }

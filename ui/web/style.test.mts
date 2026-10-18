@@ -1020,7 +1020,7 @@ test('thinking keeps one quiet tier for streaming text and completed Markdown', 
   const heading = rule('.thinking .thinking-content .markdown-content:is(h1, h2, h3, h4, h5, h6)');
   assert.match(heading, /color: inherit; font-size: inherit; line-height: inherit; font-weight: 500/);
   assert.match(rule('.thinking .thinking-content .markdown-content:is(h1, h2, h3, h4, h5, h6):first-child'), /margin-top: 0/);
-  assert.match(rule('.markdown-content strong'), /color: var\(--md-strong\)/);
+  assert.match(rule('.markdown-content strong'), /color: var\(--fg\)/);
   assert.match(rule('.markdown-content:is(h1)'), /font-size: 18px/);
 });
 test('prose previews read as short sans text while raw and source previews keep the source tier', () => {
@@ -1046,7 +1046,8 @@ test('the composer editor and its color layer share the editor-derived reading m
 });
 test('chrome labels stay quiet and content color is reserved for syntax, links and emphasis weight', () => {
   const contentTokens = [...css.matchAll(/(?:^|\n)\s*([^{}]+)\{([^{}]*var\(--md-[^{}]*)\}/g)].map(match => match[1]?.trim() ?? '');
-  assert.deepEqual(contentTokens.filter(selector => !/^(\.syn-md-|\.composer-colors::highlight\(composer-md-)/.test(selector)), ['.markdown-content strong', '.markdown-content a']);
+  assert.deepEqual(contentTokens.filter(selector => !/^(\.syn-md-|\.composer-colors::highlight\(composer-md-)/.test(selector)), []);
+  assert.match(rule('.markdown-content a'), /color: var\(--link\)/);
   assert.match(rule('.markdown-content:is(blockquote)'), /border-left: 2px solid var\(--rule\)/);
   assert.match(rule('.message-role'), /color: var\(--muted\); font-size: 12px; line-height: 18px; font-weight: 500/);
   assert.doesNotMatch(css, /\.message\[data-role=assistant\] > \.message-header > \.message-role|\.message\.user > \.message-header > \.message-role/);

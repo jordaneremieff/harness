@@ -64,7 +64,7 @@ Override tokens by role:
 | States | `--success`, `--error`, `--warning`, `--info` |
 | Link and accent | `--link` links in content, `--accent` focus, active tab and input rail |
 | Rule and edge | `--edge` control borders and neutral marks, `--rule` hairlines, `--backdrop` dialog dimming, `--shadow` floating surfaces |
-| Syntax | `--syntax-keyword`, `--syntax-string`, `--syntax-number`, `--syntax-comment`, `--syntax-fn`, `--syntax-type`, `--syntax-property`, `--syntax-operator`, `--syntax-punct` |
+| Syntax | `--syntax-keyword`, `--syntax-string`, `--syntax-number`, `--syntax-comment`, `--syntax-fn`, `--syntax-type`, `--syntax-property`, `--syntax-operator`, `--syntax-punct`; Markdown source highlighting uses `--md-heading`, `--md-em`, `--md-strong`, `--md-link`, `--md-code` and `--md-marker` |
 | Diff | `--add-bg` and `--del-bg` row tints, with `--success` and `--error` for text |
 | Type and space | `--sans`, `--mono`, `--s1` to `--s4`, `--gutter` |
 
