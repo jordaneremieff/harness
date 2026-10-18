@@ -605,6 +605,7 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .composer-details-label { flex: none; margin-left: auto; }
 .composer-detail-body { position: relative; width: 100%; max-height: 30dvh; margin-top: 8px; padding-top: 8px; overflow: auto; border-top: 1px solid var(--rule); overflow-wrap: anywhere; }
 .composer-detail-body p { margin: 0; }
+#agent-settings-detail { white-space: pre-line; }
 .composer-detail-body > * + *, .usage-detail + .usage-detail { margin-top: 8px; }
 .composer-extension:has(> #extension-status:empty) { display: none; }
 .workbench-status { position: relative; display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: 2px var(--s4); min-width: 0; min-height: 26px; padding: 0 var(--s3); border-top: 1px solid var(--rule); background: var(--side); color: var(--muted); font-family: var(--sans); font-size: 12px; line-height: 1.5; }

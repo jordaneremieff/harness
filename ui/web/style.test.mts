@@ -268,6 +268,10 @@ test('footer settings use separate readable native targets without another compo
   assert.match(media('@media (pointer:coarse)'), /\.workbench-model button \{ min-width: 44px; min-height: 44px;/);
   assert.match(rule('.palette-row[data-source=app]'), /grid-template-columns: minmax\(0,30%\) minmax\(0,1fr\)/);
 });
+test('agent settings details preserve line boundaries without changing other footer text', () => {
+  assert.equal(rule('#agent-settings-detail').trim(),'white-space: pre-line;');
+  assert.match(rule('.composer-detail-body'),/overflow-wrap: anywhere/);
+});
 test('desktop status reserves controls and identity while only long text slots shorten', () => {
   const desktop=media('@media (min-width:1000px)');
   assert.match(desktop,/\.workbench-status \{ flex-wrap: nowrap;/);assert.doesNotMatch(desktop,/\.workbench-status \{[^}]*overflow:/);
