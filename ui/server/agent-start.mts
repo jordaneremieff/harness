@@ -117,7 +117,7 @@ function readiness(child: ChildProcess, record: CatalogRecord, timeoutMs: number
       child.stdout?.off('data',data);child.stdout?.off('error',lost);child.stdout?.off('end',lost);child.stdout?.off('close',lost); child.off('error',failed); child.off('exit',exited);
       if(error) reject(error); else done();
     };
-    const failed = () => finish(uncertain('Agent start is not confirmed. Check connection; the host was not stopped.'));
+    const failed = () => finish(uncertain('Agent start is not confirmed. Check the agent; the host was not stopped.'));
     const lost = () => finish(uncertain('Agent readiness output was lost. Start is not confirmed; the host was not stopped.'));
     const exited = () => finish(uncertain('The agent process exited before readiness.'));
     const data = (chunk: Buffer) => {
@@ -133,7 +133,7 @@ function readiness(child: ChildProcess, record: CatalogRecord, timeoutMs: number
         return;
       }
     };
-    const timer = setTimeout(()=>finish(uncertain('Agent start is not confirmed. Check connection; the host was not stopped.')),timeoutMs);
+    const timer = setTimeout(()=>finish(uncertain('Agent start is not confirmed. Check the agent; the host was not stopped.')),timeoutMs);
     attempt.cancel = ()=>finish(uncertain('The UI closed before readiness. The host was not stopped.'));
     child.stdout?.on('data',data);child.stdout?.once('error',lost);child.stdout?.once('end',lost);child.stdout?.once('close',lost); child.once('error',failed); child.once('exit',exited);
   });

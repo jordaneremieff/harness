@@ -53,7 +53,8 @@ import { PreferenceQueue } from './preference-queue.ts';
 import { BrowserDiagnostics } from './diagnostics.ts';
 import {DevReload, devReloadPresentation, type DevReloadCheckpoint, type DevReloadHooks, type DevCheckpointEntry, type DevReloadHold, type DevReloadNotice} from './dev-reload.ts';
 import { conversationPresentation, presentationGlyph, presentationName, projectIdentity, composerFolder, agentHistoryNote, agentComposerState, settingsLabel } from './conversation-presentation.ts';
-import type { ConversationPresentation } from './conversation-presentation.ts';
+import type { AgentComposerState, ConversationPresentation } from './conversation-presentation.ts';
+import type { ComposerStateView } from './composer.ts';
 import { newerOperation, mergeOperationMap } from './operation-state.ts';
 import { ApiError, connect, errorMessage, operation, request, setRequestTiming } from './transport.ts';
 import type { ReceivedEvent } from './transport.ts';
@@ -1442,8 +1443,13 @@ function renderAgentState(controller: ConversationController): void {
   const current = presentation(controller.target);
   const composerState = agentComposerState({connected, availability: availability?.state ?? row?.availability, input: current.input, checked: !!controller.connection || !!availability, reason: controller.connection?.reason ?? availability?.reason, startAttempt: attempt, connectionError: controller.connectionError, blocked: current.activity === 'Provider blocked' ? current.detail : undefined});
   controllerNode(controller, 'empty').hidden = true; controller.root.classList.toggle('agent-empty', !controller.hasEntries);
-  controller.composer.setState(composerState && {line: composerState.line, detail: composerState.detail || undefined, showDetail: () => showDetails('Agent details', composerState.detail),
-    ...(composerState.action ? {action: {...composerState.action, ...(composerState.kind === 'start' ? {title: 'Start agent. This can resume unfinished work before the agent is ready.'} : {}), disabled: composerState.action.disabled || !connected || !!checkingAgent, run: () => {void (attempt && !attempt.pending ? checkAgentConnection(workspace, identity) : startStoredAgent(workspace, identity));}}} : {})});
+  controller.composer.setState(composerState && composerStateView(composerState, () => {void (attempt && !attempt.pending ? checkAgentConnection(workspace, identity) : startStoredAgent(workspace, identity));}));
+}
+const ACTION_TITLES: Partial<Record<AgentComposerState['kind'], string>> = {start: 'Start agent. This can resume unfinished work before the agent is ready.', failed: 'Check whether the agent started.'};
+function composerStateView(view: AgentComposerState, run: () => void): ComposerStateView {
+  const {action} = view;
+  return {line: view.line, blocksSend: view.kind === 'read-only', detail: view.detail || undefined, showDetail: () => showDetails('Agent details', view.detail),
+    ...(action ? {action: {...action, ...(ACTION_TITLES[view.kind] ? {title: ACTION_TITLES[view.kind]} : {}), disabled: action.disabled || !connected || !!checkingAgent, run}} : {})};
 }
 function showDetails(title: string, detail: string): void {
   modal.open(title); modal.body.append(element('pre', undefined, detail));
@@ -1485,7 +1491,10 @@ async function confirmCheckedAgent(result: import('../shared/api.ts').TargetPrep
     if (!current()) return;
     requireCurrentPreparation(connection);
     agentStarts.delete(key);
-  } else await reload();
+  } else {
+    await reload();
+    if (agentRow(identity)?.availability === 'stored') agentStarts.delete(key);
+  }
   requireCurrentPreparation(connection);
   if (current()) {const controller = conversationController({kind: 'agent', identity}); controller.connection = result; controller.connectionError = undefined;renderController(controller);renderRoster();}
 }

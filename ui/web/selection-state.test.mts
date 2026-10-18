@@ -203,7 +203,7 @@ test('local preparation retry keeps exact identity and rejects stale recovery ca
   const response = prepared('a'); response.targetState.draft.text = 'retained panel draft';
   f.calls[0]?.result.resolve(response); await pending; const captured = f.message.current; assert.ok(captured);
   assert.equal(f.message.recovery(), undefined); f.message.rosterChanged(rosterEvent('a', 'stored'));
-  const recovery = f.message.recovery(); assert.ok(recovery); assert.equal(recovery.label, 'Check connection');
+  const recovery = f.message.recovery(); assert.ok(recovery); assert.equal(recovery.label, 'Check agent');
   const retry = recovery.run(); assert.equal(f.message.current?.identity, 'a'); assert.equal(f.message.current?.workspaceId, 'w');
   assert.equal(f.message.current?.preparing, true); assert.equal(f.message.recovery(), undefined); assert.equal(f.message.ready, false);
   assert.equal(captured.prepared?.targetState.draft.text, 'retained panel draft');

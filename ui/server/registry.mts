@@ -255,7 +255,7 @@ export class Registry {
     await this.agents.refresh();
     let result: TargetPreparation;
     try { result = await this.prepareTarget(workspace,{kind:'agent',identity}); }
-    catch { throw new ApiError('not_ready','Agent connection is not confirmed. Check connection; the host was not stopped.',503,'read'); }
+    catch { throw new ApiError('not_ready','Agent connection is not confirmed. Check the agent; the host was not stopped.',503,'read'); }
     if(result.availability === 'live') await this.observe(workspace);
     return result;
   }

@@ -112,7 +112,7 @@ test('whole agent views retain messages independently of running, idle and incom
       assertAgentComposition(); assert.match(visibleText(agentControl('root')), /Exact retained conversation text/); assert.equal(app.agentComposer().state?.draft.text, 'Exact editable draft');
       assert.equal(agentControl('editor').disabled, false); assert.equal(agentControl('start').hidden, availability !== 'stored'); assert.equal(agentControl('start').disabled, false);
       assert.equal(agentControl('state').hidden, availability === 'live');
-      assert.equal(agentControl('send').hidden, availability === 'stored'); assert.equal(agentControl('send').disabled, availability === 'stored');
+      assert.equal(agentControl('send').hidden, availability === 'stored'); assert.equal(agentControl('send').disabled, availability !== 'live');
       assert.equal(agentControl('history-note').hidden, true);
       if (availability === 'stored') {assert.match(agentControl('start').title, /resume unfinished work/); const sends = transportLog.length; await app.agentComposer().send(); await settle(); assert.equal(transportLog.slice(sends).some(call => call.path.includes('/inputs')), false);}
       const editor = app.agentComposer().editor, message = agentControl('root').querySelector('[data-entry-id=retained-message]'); assert.ok(message); editor.setSelectionRange(2, 7, 'backward'); editor.focus();

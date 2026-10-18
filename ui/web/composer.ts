@@ -23,7 +23,7 @@ export type ComposerHooks = {workingFile?:(stage:(files:readonly File[])=>boolea
 export type ComposerElements = {root: HTMLFormElement; editor: HTMLTextAreaElement; recipient: HTMLElement; receipt: HTMLElement;
   receiptDetails: HTMLElement; modes: HTMLElement; send: HTMLButtonElement; save: HTMLElement; commandMenu?: HTMLElement; overlay?: HTMLElement; attachments?: HTMLElement; attach?: HTMLButtonElement; sources?: HTMLButtonElement; picker?: HTMLInputElement; state?: HTMLElement; start?: HTMLButtonElement};
 /** An agent-specific line inside the composer, with at most one action in the Send position and optional exact details. */
-export type ComposerStateView = {line: string; action?: {label: string; title?: string; pending?: boolean; disabled?: boolean; run: () => void}; detail?: string; showDetail?: () => void};
+export type ComposerStateView = {line: string; action?: {label: string; title?: string; pending?: boolean; disabled?: boolean; run: () => void}; blocksSend?: boolean; detail?: string; showDetail?: () => void};
 /** Creates one editor; the detached save/receipt-detail nodes belong in the shared footer. */
 export function createComposerElements(instanceId: string): ComposerElements {
   const id = `composer-${encodeURIComponent(instanceId)}`;
@@ -188,7 +188,7 @@ export class Composer {
     for (const control of [start, this.elements.send]) { if (view) control.setAttribute('aria-describedby', state.id); else control.removeAttribute('aria-describedby'); }
     this.render();
   }
-  private get sendSuppressed(): boolean { return !!this.stateView?.action; }
+  private get sendSuppressed(): boolean { return !!this.stateView?.action || !!this.stateView?.blocksSend; }
   /** Undefined restores automatic growth; explicit sizes retain their preferred pixel height. */
   setManualHeight(px: number | undefined): void {
     if (px !== undefined && (!Number.isFinite(px) || px < 0)) throw new RangeError('Invalid composer height');

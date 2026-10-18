@@ -47,7 +47,7 @@ test('presentation tones come from source states without changing readiness',()=
 });
 test('unchecked live claims stay neutral without admitting input or hiding real warnings', () => {
   const unchecked = conversationPresentation({target, row: {...row, state: 'working'}, connected: true});
-  assert.equal(unchecked.activity, 'Connection not checked'); assert.equal(unchecked.tone, 'secondary'); assert.equal(unchecked.input, false); assert.equal(unchecked.busy, false); assert.equal(unchecked.tool, undefined);
+  assert.equal(unchecked.activity, 'Running'); assert.equal(unchecked.tone, 'secondary'); assert.equal(unchecked.input, false); assert.equal(unchecked.busy, false); assert.equal(unchecked.tool, undefined);
   assert.equal(conversationPresentation({target, row, connected: false}).tone, 'warning');
   for (const availability of ['unavailable', 'incompatible'] as const) assert.equal(conversationPresentation({target, row: {...row, availability}, connected: true}).tone, 'warning');
   const stopped = frame(false); stopped.entries = [{id: 'stop', kind: 'message', messages: [{id: 'stopped', role: 'assistant', state: 'final', parts: [], stopReason: 'aborted', coverage: stopped.coverage}]}];
@@ -56,7 +56,7 @@ test('unchecked live claims stay neutral without admitting input or hiding real 
 test('only an unchecked live catalog claim hides the roster state, never its canonical fact', () => {
   for (const state of ['working', 'failed', 'done']) {
     const view = conversationPresentation({target, row: {...row, state}, connected: true});
-    assert.equal(view.hideVisibleRosterState, true); assert.equal(view.activity, 'Connection not checked'); assert.equal(view.input, false);
+    assert.equal(view.hideVisibleRosterState, true); assert.equal(view.activity, 'Running'); assert.equal(view.input, false);
   }
   for (const availability of ['stored', 'unavailable', 'incompatible'] as const) {
     assert.equal(conversationPresentation({target, row: {...row, availability}, connected: true}).hideVisibleRosterState, false);
@@ -88,7 +88,7 @@ test('retry, response outcome and provider blocks do not change input readiness 
   current.status.providerBlock = {blockId: 'b', conversationId: 1, providerSessionId: 'p', epoch: 1, model: {provider: 'fixture', modelId: 'fixture'}, error: 'opaque', errorRedacted: true, errorTruncated: true, source: 'provider', timestamp: 1, originalResults: [], omittedOriginalResults: 0};
   view = conversationPresentation({target, row, negotiated, frame: current, connected: true}); assert.equal(view.activity, 'Provider blocked'); assert.match(view.detail ?? '', /Configure this agent through Primary/); assert.match(view.detail ?? '', /redacted/); assert.match(view.detail ?? '', /shortened/);
   const published = conversationPresentation({target, row: {...row, publishedRetry: {attempt: 2, maxAttempts: 5, delayMs: 60000, error: 'published'}}, connected: true});
-  assert.equal(published.activity, 'Connection not checked'); assert.equal(published.input, false);
+  assert.equal(published.activity, 'Running'); assert.equal(published.input, false);
 });
 test('a newer user or successful assistant record clears an earlier failed response', () => {
   const message = {id: 'failed', role: 'assistant', state: 'final' as const, parts: [], stopReason: 'error', coverage: {complete: true, truncated: false, omitted: 0}};
@@ -192,7 +192,7 @@ test('status glyphs distinguish ready, working, stored, stopped and unknown with
     {...ready, activity: 'Not running'}, {...ready, activity: 'Stopped'}, {...ready, activity: ''}];
   assert.equal(new Set(cases.map(presentationGlyph)).size, cases.length);
   assert.deepEqual(cases.map(presentationGlyph), ['✓', '●', '○', '!', '?']);
-  assert.equal(presentationGlyph({...ready, activity: 'Connected'}), presentationGlyph(ready));
+  assert.equal(presentationGlyph({...ready, activity: 'Connected'}), '?'); assert.equal(presentationGlyph({...ready, activity: 'Running'}), '?');
   for (const activity of ['Start failed', 'Provider blocked', 'Session stopped']) assert.equal(presentationGlyph({...ready, activity}), '!');
   assert.equal(presentationGlyph({...ready, activity: 'Read only'}), '○');
   assert.equal(presentationGlyph({...ready, lastObserved: true}), presentationGlyph(ready));
@@ -255,7 +255,7 @@ test('multiple sessions in one directory and trailing separators share labels wi
 test('a live catalog claim without exact negotiated evidence is unchecked and admits no input', () => {
   const claim = {...row, model: {provider: 'saved', modelId: 'claim-model'}, currentTool: {name: 'read', argument: 'claim.ts'}};
   const view = conversationPresentation({target, row: claim, frame: frame(true), connected: true});
-  assert.equal(view.activity, 'Connection not checked'); assert.equal(view.input, false); assert.equal(view.busy, false); assert.equal(view.tool, undefined); assert.equal(view.retainedModel, true);
+  assert.equal(view.activity, 'Running'); assert.equal(view.input, false); assert.equal(view.busy, false); assert.equal(view.tool, undefined); assert.equal(view.retainedModel, true);
   assert.equal(presentationGlyph(view), '?');
   const other = conversationPresentation({target, row: claim, negotiated: {...negotiated, identity: 'other'}, connected: true});
   assert.equal(other.activity, view.activity); assert.equal(other.input, false);

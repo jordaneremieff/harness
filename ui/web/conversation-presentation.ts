@@ -105,7 +105,7 @@ function startActivity(state: AgentRow['availability'], start: AgentStartAttempt
 function agentActivity(state: AgentRow['availability'], input: boolean, frame: ProjectedFrame | undefined, connected: boolean, checked: boolean, start?: AgentStartAttempt): string {
   if (!connected) return 'Connection lost; activity unknown';
   const attempt = startActivity(state, start); if (attempt) return attempt;
-  if (state === 'live' && !checked) return 'Connection not checked';
+  if (state === 'live' && !checked) return 'Running';
   if (state !== 'live') return {stored: 'Not running', incompatible: 'Read only', unavailable: 'Read only'}[state];
   if (Array.isArray(frame?.status.compactions?.value) && frame.status.compactions.value.length) return 'Compacting…';
   if (frame?.status.retry && frame.status.busy) return `Retrying · attempt ${frame.status.retry.attempt} · next ${retryTime(frame.status.retry.at)}`;
@@ -171,7 +171,7 @@ export function conversationPresentation(source: PresentationSource): Conversati
 export function presentationName(view: Pick<ConversationPresentation, 'name' | 'identityTail'>): string {return view.identityTail ? `${view.name} · ${view.identityTail}` : view.name;}
 export function presentationGlyph(view: ConversationPresentation): string {
   if (view.busy) return '●';
-  if (['Ready', 'Connected'].includes(view.activity)) return '✓';
+  if (view.activity === 'Ready') return '✓';
   if (['Not running', 'Read only'].includes(view.activity)) return '○';
   if (['Stopped', 'Response failed', 'Provider blocked', 'Start failed', 'Session stopped'].includes(view.activity)) return '!';
   return '?';

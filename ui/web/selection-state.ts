@@ -51,7 +51,7 @@ export class MessageTarget {
   recovery(): {label: string; run: () => Promise<void>} | undefined {
     const captured = this.current;
     if (!captured || !this.valid(captured) || captured.preparing || this.ready || (!captured.error && !captured.prepared)) return undefined;
-    return {label: captured.error && !captured.invalidated ? 'Try again' : 'Check connection', run: () => this.retry(captured)};
+    return {label: captured.error && !captured.invalidated ? 'Try again' : 'Check agent', run: () => this.retry(captured)};
   }
   private async retry(captured: MessageCapture): Promise<void> {
     if (!this.valid(captured) || captured.preparing) return;

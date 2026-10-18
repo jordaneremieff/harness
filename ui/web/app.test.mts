@@ -239,7 +239,7 @@ test('failed Message preparation and technical availability reasons stay in exac
   assert.doesNotMatch(byId('agent-message-panel').textContent, /ENOENT|unavailable\.sock/); assert.equal(messageControl('editor'), editor); assert.equal(editor.value, savedB.draft.text); assert.deepEqual([editor.selectionStart, editor.selectionEnd], [2, 7]);
   assert.equal(messageControl('send').disabled, false); assert.equal(messageControl('stop').hidden, true); assert.equal(byId('agent-message-retry').textContent, 'Try again');
   phase = 'reason'; byId('agent-message-retry').click(); await settle(); assert.equal(status.textContent, 'Agent connection is unavailable.'); assert.equal(status.title, reason);
-  assert.doesNotMatch(byId('agent-message-panel').textContent, /task-submit/); assert.equal(byId('agent-message-retry').textContent, 'Check connection'); assert.equal(messageControl('send').disabled, false);
+  assert.doesNotMatch(byId('agent-message-panel').textContent, /task-submit/); assert.equal(byId('agent-message-retry').textContent, 'Check agent'); assert.equal(messageControl('send').disabled, false);
   phase = 'ready'; byId('agent-message-retry').click(); await settle(); assert.equal(status.textContent, ''); assert.equal(status.title, ''); assert.equal(messageControl('send').disabled, false);
   assert.deepEqual(preparations, [targetB, targetB, targetB, targetB]); assert.deepEqual(app.state.workspace?.selectedTarget, targetA); assert.equal(agentControl('editor'), main); assert.equal(main.value, savedA.draft.text); assert.deepEqual([main.selectionStart, main.selectionEnd], [1, 4]);
   assert.equal(messageControl('editor'), editor); assert.equal(editor.value, savedB.draft.text); assert.deepEqual([editor.selectionStart, editor.selectionEnd], [2, 7]);
@@ -251,11 +251,11 @@ test('Primary reload keeps an inactive live claim unchecked until exact Message 
   const b = agentFixture('reload-claim'), target = {kind: 'agent' as const, identity: b.identity}, saved = targetFixture('reload-claim', target);
   const layout = singlePane([{kind: 'primary'}, {kind: 'agent', identity: b.identity}], 'primary');
   await arrive({workspace: {id: 'reload-claim-workspace', revision: 1, primaryKey: 'p', conversationLayout: layout}, primaries: [primaryFixture({epoch: 9808})], roster: [b], targets: [targetFixture('reload-primary', {kind: 'primary', key: 'p', epoch: 9808}), saved], confirmed: false});
-  assert.match(tabsNode().querySelector('[data-tab-key="agent:reload-claim"]')?.title ?? '', /Connection not checked/);
+  assert.match(tabsNode().querySelector('[data-tab-key="agent:reload-claim"]')?.title ?? '', /Running/);
   await app.reload(); await settle();
-  assert.match(tabsNode().querySelector('[data-tab-key="agent:reload-claim"]')?.title ?? '', /Connection not checked/);
+  assert.match(tabsNode().querySelector('[data-tab-key="agent:reload-claim"]')?.title ?? '', /Running/);
   const row = byId('roster').querySelector('[data-identity="reload-claim"]'); assert.ok(row);
-  assert.equal(row.querySelector('.row-state')?.hidden, true); assert.match(row.querySelector('.row-select')?.getAttribute('aria-label') ?? '', /Connection not checked/);
+  assert.equal(row.querySelector('.row-state')?.hidden, true); assert.match(row.querySelector('.row-select')?.getAttribute('aria-label') ?? '', /Running/);
   const before = transportLog.length;
   globalThis.fetch = async (input, init) => new URL(String(input), 'http://ui.test').pathname.endsWith('/targets') && init?.method === 'POST' ? Response.json({ok: true, data: {targetState: saved, availability: 'unavailable', capabilities: {history: true, observe: false, input: false, abort: false, configure: false}, reason: 'Claim socket is absent'}}) : original(input, init);
   const message = byId('roster').querySelector('[data-identity="reload-claim"]')?.querySelector('.row-message'); assert.ok(message); message.click(); await settle();
@@ -287,7 +287,7 @@ test('Message negotiation overrides a claim across main selection, panel close, 
   const editor = agentControl('editor'); editor.setSelectionRange(2, 7); assert.match(agentControl('root').textContent, /Saved B history/);
   app.applyLayout(activatePaneTab(layout, 'pane-1', `agent:${a.identity}`)); await app.selectionQueue.drain(); await settle();
   const before = transportLog.length, message = byId('roster').querySelector(`[data-identity="${b.identity}"]`)?.querySelector('.row-message'); assert.ok(message); message.click(); await settle();
-  assert.equal(byId('agent-message-status').textContent, 'Agent connection is unavailable.'); assert.equal(messageControl('send').disabled, false);
+  assert.equal(byId('agent-message-status').textContent, 'Agent connection is unavailable.'); assert.equal(messageControl('send').disabled, true);
   assert.match(tabsNode().querySelector(`[data-tab-key="agent:${b.identity}"]`)?.title ?? '', /Read only/); assert.doesNotMatch(byId('workbench-status-agent').textContent, /Connected|Ready/);
   assert.equal(messageControl('editor'), editor); assert.equal(editor.value, savedB.draft.text); assert.deepEqual([editor.selectionStart, editor.selectionEnd], [2, 7]); assert.deepEqual(app.state.workspace?.selectedTarget, targetA);
   byId('agent-message-close').click(); await settle(); await app.reload(); await settle();
@@ -298,10 +298,10 @@ test('Message negotiation overrides a claim across main selection, panel close, 
   ready = true; await app.checkAgentConnection('negotiation-owner', b.identity); await settle();
   assert.equal(agentControl('send').disabled, false); assert.match(tabsNode().querySelector(`[data-tab-key="agent:${b.identity}"]`)?.title ?? '', /Connected|Ready/);
   event('agent.availability', {identity: b.identity, connectionEpoch: app.state.agentEpochs.get(b.identity), state: 'unavailable', capabilities, reason: 'Connection closed'}); await settle();
-  assert.equal(agentControl('send').disabled, false); assert.match(tabsNode().querySelector(`[data-tab-key="agent:${b.identity}"]`)?.title ?? '', /Read only/);
+  assert.equal(agentControl('send').disabled, true); assert.match(tabsNode().querySelector(`[data-tab-key="agent:${b.identity}"]`)?.title ?? '', /Read only/);
   await app.checkAgentConnection('negotiation-owner', b.identity); await settle(); assert.equal(agentControl('send').disabled, false);
   await recovery.disconnect(); assert.equal(agentControl('send').disabled, false); assert.doesNotMatch(tabsNode().querySelector(`[data-tab-key="agent:${b.identity}"]`)?.title ?? '', /Connected|Ready/);
-  await recovery.recover(); assert.equal(agentControl('send').disabled, false);
+  await recovery.recover(); assert.equal(agentControl('send').disabled, true);
   await app.checkAgentConnection('negotiation-owner', b.identity); await settle(); assert.equal(agentControl('send').disabled, false);
   assert.equal(agentControl('editor'), editor); assert.equal(editor.value, savedB.draft.text); assert.match(agentControl('root').textContent, /Saved B history/);
   assert.equal(transportLog.slice(before).some(call => call.path.endsWith('/start') || call.path.includes('/inputs')), false);
@@ -397,7 +397,7 @@ test('a rejected Message preparation from the retired stream keeps the lifetime 
   const f = await latePreparationFixture('Message', 'retired-error', t); await interruptPreparation('reconnect', f.recovery);
   f.reject(); await settle(); assert.equal(f.control('send').disabled, false);
   assert.match(byId('agent-message-status').title, /browser connection changed/); assert.doesNotMatch(byId('agent-message-status').title, /Obsolete connection failure/);
-  assert.equal(byId('agent-message-retry').textContent, 'Check connection');
+  assert.equal(byId('agent-message-retry').textContent, 'Check agent');
   await f.fresh(); assert.equal(f.control('send').disabled, false); assert.equal(f.editor.value, f.savedB.draft.text);
 });
 
@@ -1519,7 +1519,7 @@ test('the conversation list reuses exact tab activation without a new navigation
   const layout = singlePane([{kind: 'primary'}, {kind: 'agent', identity: 'list-a'}, {kind: 'agent', identity: 'list-b'}]);
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', conversationLayout: layout}, primaries: [primaryFixture({epoch: 715})], roster: [agentFixture('list-a', {name: 'Review'}), agentFixture('list-b', {name: 'Review'})]});
   const rows = byId('sidebar-conversations').querySelectorAll('.conversation-row'); assert.equal(rows.length, 3); assert.notEqual(rows[1]?.textContent, rows[2]?.textContent); assert.notEqual(rows[1]?.getAttribute('aria-label'), rows[2]?.getAttribute('aria-label'));
-  for (const [index, row] of rows.entries()) {const status = row.querySelector('.conversation-state'); assert.ok(status); assert.equal(status.getAttribute('aria-hidden'), 'true'); assert.equal(status.querySelector('svg'), null); assert.equal(status.textContent, index === 0 ? '•' : ''); assert.equal(status.title, index === 0 ? 'Working' : 'Connection not checked'); assert.match(row.getAttribute('aria-label') ?? '', index === 0 ? /Working/ : /Connection not checked/);}
+  for (const [index, row] of rows.entries()) {const status = row.querySelector('.conversation-state'); assert.ok(status); assert.equal(status.getAttribute('aria-hidden'), 'true'); assert.equal(status.querySelector('svg'), null); assert.equal(status.textContent, index === 0 ? '•' : ''); assert.equal(status.title, index === 0 ? 'Working' : 'Running'); assert.match(row.getAttribute('aria-label') ?? '', index === 0 ? /Working/ : /Running/);}
   rows[2]?.click(); await settle(); assert.deepEqual(app.state.workspace?.selectedTarget, {kind: 'agent', identity: 'list-b'}); assert.equal(hostDocument.activeElement, agentControl('editor')); assert.equal(rows[2]?.getAttribute('aria-current'), 'true');
 });
 
@@ -1594,7 +1594,7 @@ test('Message panel settings describe its captured agent instead of a prior agen
   assert.match(byId('agent-message-status').textContent, /Message access changed/); assert.equal(messageControl('recipient').textContent, 'Draft for Recipient');
   assert.equal(messageControl('send').disabled, false); assert.equal(messageControl('editor'), editor); assert.equal(editor.value, 'Keep the recipient draft'); assert.deepEqual([editor.selectionStart, editor.selectionEnd], [3, 8]);
   assert.equal(hostDocument.activeElement, editor); assert.doesNotMatch(messageControl('send').getAttribute('aria-description') ?? '', /not connected/);
-  const retry = byId('agent-message-retry'); assert.equal(retry.hidden, false); assert.equal(retry.disabled, false); assert.equal(retry.textContent, 'Check connection');
+  const retry = byId('agent-message-retry'); assert.equal(retry.hidden, false); assert.equal(retry.disabled, false); assert.equal(retry.textContent, 'Check agent');
   const preparations = transportLog.filter(call => call.path.endsWith('/targets')).length;
   const inputs = transportLog.filter(call => call.path.includes('/inputs')).length;
   const staleRetry = retry.onclick; retry.focus(); retry.click();
@@ -1791,6 +1791,30 @@ test('exact connection checks clear Start uncertainty independently of observati
   const savedSelection = selections[0]?.body as {selectedTarget?: unknown} | undefined; assert.ok(savedSelection);
   assert.deepEqual(savedSelection.selectedTarget, {kind: 'agent', identity});
   assert.equal(transportLog.slice(before).filter(call => call.path.endsWith('/start') || call.path.includes('/inputs')).length, 0);
+});
+
+test('a check that finds the agent still stored returns the composer to Start', async t => {
+  t.after(() => { browser.startPreparation = undefined; }); const identity = 'still-stored-check'; await storedLaunchFixture(identity);
+  browser.startPreparation = async () => Response.json({ok: false, error: {code: 'not_ready', message: 'No readiness.', retry: 'manual'}});
+  await app.startStoredAgent('w', identity); await settle();
+  assert.equal(agentControl('state-line').textContent, 'Start did not complete.'); assert.equal(agentControl('start').textContent, 'Try again'); assert.equal(agentControl('start').title, 'Check whether the agent started.');
+  const original = globalThis.fetch;
+  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    if (new URL(String(input), 'http://ui.test/app').pathname.endsWith('/targets')) return Response.json({ok: true, data: {targetState: targetFixture('still-stored', {kind: 'agent', identity}), availability: 'stored', capabilities: {input: false}}});
+    return original(input, init);
+  });
+  const before = transportLog.length; await app.checkAgentConnection('w', identity); await settle();
+  assert.equal(agentControl('state-line').textContent, 'Not running. Start it to send a message.'); assert.equal(agentControl('start').textContent, 'Start'); assert.equal(agentControl('start').hidden, false); assert.equal(agentControl('start').disabled, false);
+  assert.equal(transportLog.slice(before).some(call => call.path.endsWith('/start') || call.path.includes('/inputs')), false);
+});
+
+test('a read-only agent disables Send, describes it with the state line, and keeps the draft editable', async () => {
+  const identity = 'read-only-send', target = {kind: 'agent' as const, identity};
+  await arrive({workspace: {id: 'w', revision: 1, selectedTarget: target, panelVisible: true}, primaries: [], roster: [agentFixture(identity, {availability: 'incompatible', capabilities: {input: false}})], targets: [targetFixture('read-only-send', target, {draft: {revision: 3, text: 'Draft kept while read only', mode: 'followUp', persisted: true}})]});
+  assert.equal(agentControl('state-line').textContent, 'This agent cannot run here. Messages are read only.'); assert.equal(agentControl('start').hidden, true);
+  assert.equal(agentControl('send').hidden, false); assert.equal(agentControl('send').disabled, true); assert.equal(agentControl('send').attributes.get('aria-describedby'), agentControl('state').id);
+  assert.equal(agentControl('editor').disabled, false); assert.equal(agentControl('editor').value, 'Draft kept while read only');
+  const before = transportLog.length; await app.agentComposer().send(); await settle(); assert.equal(transportLog.slice(before).some(call => call.path.includes('/inputs')), false);
 });
 
 test('pending stored Start deduplicates clicks and a stale completion never changes the new recipient or focus', async t => {
