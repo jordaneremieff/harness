@@ -70,7 +70,13 @@ test('a dotted type name never labels a row and raw inspection keeps the origina
     const headed = presentEntry({id: 'b', kind: 'custom', head: 'acme.status', data: {value: {text: 'ready'}, truncated: false}}, context);
     assert.equal(headed.textContent, 'Record · ready'); assert.equal(sources[1]?.(), `acme.status\n${JSON.stringify({text: 'ready'})}`);
     const bare = presentEntry({id: 'c', kind: 'x.y', data: {value: {count: 3}, truncated: false}}, context);
-    assert.equal(bare.textContent, 'Record · count');
+    assert.equal(bare.textContent, 'Record');
+    const uuid = '01a150ef-eb01-76be-93eb-e251e623e852', digest = 'ab'.repeat(32);
+    const mixed = presentEntry({id: 'e', kind: 'vendor.thing', data: {value: {id: uuid, digest, state: 'sent'}, truncated: false}}, context);
+    assert.equal(mixed.textContent, 'Record · sent'); assert.doesNotMatch(mixed.textContent, /01a150ef|abab/);
+    const only = presentEntry({id: 'f', kind: 'vendor.thing', data: {value: {sessionId: uuid, ref: `${uuid}:7`, digest}, truncated: false}}, context);
+    assert.equal(only.textContent, 'Record'); assert.equal(sources.at(-1)?.(), `vendor.thing\n${JSON.stringify({sessionId: uuid, ref: `${uuid}:7`, digest})}`);
+    assert.equal(sources.at(-2)?.(), `vendor.thing\n${JSON.stringify({id: uuid, digest, state: 'sent'})}`);
     assert.equal(presentEntry({id: 'd', kind: 'custom', head: 'v1.2 status', data: {value: 'ok', truncated: false}}, context).textContent, 'v1.2 status · ok');
   } finally { if (old) Object.defineProperty(globalThis, 'document', old); else Reflect.deleteProperty(globalThis, 'document'); }
 });

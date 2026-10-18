@@ -92,7 +92,7 @@ const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const opaqueValue = new RegExp(`^(?:${UUID}(?:[:/][0-9a-z]+)*|[0-9a-f]{16,})$`, 'i');
 const identifierKey = /(?:^|_)ids?$/;
 /** An identifier is a field named for one, or a value shaped like one: a UUID with optional qualifiers, or a long hex digest. */
-function identifierField(key: string, value: unknown): boolean {
+export function identifierField(key: string, value: unknown): boolean {
   const last = key.slice(key.lastIndexOf('.') + 1);
   if (identifierKey.test(words(last)) && (typeof value === 'string' || typeof value === 'number')) return true;
   return typeof value === 'string' && value.length <= 256 && opaqueValue.test(value);

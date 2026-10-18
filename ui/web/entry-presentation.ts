@@ -1,6 +1,7 @@
 import type { EntryView, JsonDisplay, MessageView, PartView } from '../shared/api.ts';
 import { element } from './dom.ts';
 import { previewText } from './format.ts';
+import { identifierField } from './generic-content.ts';
 import type { PresentationContext } from './transcript-presentation.ts';
 
 function meaningfulPart(part: PartView): boolean {
@@ -41,8 +42,9 @@ function entryHeading(entry: EntryView): string {
 /** One collapsed line of context: a leading text field, a string value, or the field names. */
 function dataPreview(display: JsonDisplay, anyString = false): string {
   const value = display.value; const fields = record(display);
-  const text = typeof value === 'string' ? value : ['text', 'message', 'summary', 'content', 'label', 'title'].map(key => fields[key]).find(item => typeof item === 'string') ?? (anyString ? Object.values(fields).find(item => typeof item === 'string' && item.trim()) : undefined);
+  const text = typeof value === 'string' ? value : ['text', 'message', 'summary', 'content', 'label', 'title'].map(key => fields[key]).find(item => typeof item === 'string') ?? (anyString ? Object.entries(fields).find(([key, item]) => typeof item === 'string' && item.trim() && !identifierField(key, item))?.[1] : undefined);
   if (typeof text === 'string') return previewText(text.replace(/\s+/g, ' ').trim(), 1, 160).text;
+  if (anyString) return '';
   const keys = Object.keys(fields).slice(0, 4);
   return keys.length ? `${keys.join(', ')}${Object.keys(fields).length > 4 ? ', …' : ''}` : '';
 }
