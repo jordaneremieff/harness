@@ -27,7 +27,11 @@ function record(display: JsonDisplay): Record<string, unknown> {
   const value = display.value;
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
+const dottedType = /^[\w-]+(\.[\w-]+)+$/;
+/** A dotted type name is an internal identifier; the row shows a plain label and raw inspection keeps the type. */
+function dottedHeading(entry: EntryView): boolean { return dottedType.test(entry.head ?? entry.kind); }
 function entryHeading(entry: EntryView): string {
+  if (dottedHeading(entry)) return 'Record';
   const label = entry.head ?? entry.kind;
   if (label === 'custom') return 'custom';
   if (label === 'message') return 'message';
@@ -35,9 +39,9 @@ function entryHeading(entry: EntryView): string {
   return label.replace(/[_-]/g, ' ').replace(/^./, char => char.toUpperCase());
 }
 /** One collapsed line of context: a leading text field, a string value, or the field names. */
-function dataPreview(display: JsonDisplay): string {
+function dataPreview(display: JsonDisplay, anyString = false): string {
   const value = display.value; const fields = record(display);
-  const text = typeof value === 'string' ? value : ['text', 'message', 'summary', 'content', 'label', 'title'].map(key => fields[key]).find(item => typeof item === 'string');
+  const text = typeof value === 'string' ? value : ['text', 'message', 'summary', 'content', 'label', 'title'].map(key => fields[key]).find(item => typeof item === 'string') ?? (anyString ? Object.values(fields).find(item => typeof item === 'string' && item.trim()) : undefined);
   if (typeof text === 'string') return previewText(text.replace(/\s+/g, ' ').trim(), 1, 160).text;
   const keys = Object.keys(fields).slice(0, 4);
   return keys.length ? `${keys.join(', ')}${Object.keys(fields).length > 4 ? ', …' : ''}` : '';
@@ -54,8 +58,8 @@ export function presentEntry(entry: EntryView, context: PresentationContext): HT
   const node = element('section', note ? 'system-note transcript-event' : 'custom-entry transcript-event');
   if (note) node.append(context.inspection(context.bounded(note, 4096), () => context.rawText(data.value)));
   else {
-    const preview = entry.data ? dataPreview(entry.data) : '';
-    node.append(context.inspection(context.bounded(`${entryHeading(entry)}${preview ? ` · ${preview}` : ''}`, 4096), () => context.rawText(data.value)));
+    const preview = entry.data ? dataPreview(entry.data, dottedHeading(entry)) : '';
+    node.append(context.inspection(context.bounded(`${entryHeading(entry)}${preview ? ` · ${preview}` : ''}`, 4096), () => dottedHeading(entry) ? `${entry.head ?? entry.kind}\n${context.rawText(data.value)}` : context.rawText(data.value)));
     if (data.truncated) node.append(element('p', 'warning', `Some output is not available.${data.omittedBytes !== undefined ? ` · ${data.omittedBytes} bytes` : ''}`));
   }
   return node;

@@ -57,3 +57,20 @@ test('entry headings use public head text and session changes keep collapsed ins
     assert.equal(multiline.textContent, 'custom · first line second');
   } finally { if (old) Object.defineProperty(globalThis, 'document', old); else Reflect.deleteProperty(globalThis, 'document'); }
 });
+test('a dotted type name never labels a row and raw inspection keeps the original type', () => {
+  const old = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  Object.defineProperty(globalThis, 'document', {configurable: true, value: {createElement: () => new Node()}});
+  try {
+    const sources: (() => string)[] = [];
+    const context: PresentationContext = {bounded: text => text, rawText: JSON.stringify, structured: () => { throw new Error('Generic entries must not create nested structured disclosures'); },
+      inspection: (title, source) => { sources.push(source); const node = new Node(); node.textContent = title; return node as unknown as HTMLDetailsElement; }};
+    const readable = presentEntry({id: 'a', kind: 'vendor.feature.event', data: {value: {delivery: 'Sent'}, truncated: false}}, context);
+    assert.equal(readable.textContent, 'Record · Sent'); assert.doesNotMatch(readable.textContent, /vendor|feature|\./);
+    assert.equal(sources[0]?.(), `vendor.feature.event\n${JSON.stringify({delivery: 'Sent'})}`);
+    const headed = presentEntry({id: 'b', kind: 'custom', head: 'acme.status', data: {value: {text: 'ready'}, truncated: false}}, context);
+    assert.equal(headed.textContent, 'Record · ready'); assert.equal(sources[1]?.(), `acme.status\n${JSON.stringify({text: 'ready'})}`);
+    const bare = presentEntry({id: 'c', kind: 'x.y', data: {value: {count: 3}, truncated: false}}, context);
+    assert.equal(bare.textContent, 'Record · count');
+    assert.equal(presentEntry({id: 'd', kind: 'custom', head: 'v1.2 status', data: {value: 'ok', truncated: false}}, context).textContent, 'v1.2 status · ok');
+  } finally { if (old) Object.defineProperty(globalThis, 'document', old); else Reflect.deleteProperty(globalThis, 'document'); }
+});
