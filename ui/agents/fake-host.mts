@@ -212,7 +212,7 @@ export async function descriptor(): Promise<JsonObject> {
 		},
 		"status": {
 			"request": "status/1.0.0",
-			"response": "294bb95f3d60b9c9ae2976f291e4f8d41c11d00ec517c1aebcfd9c7af40a3087",
+			"response": "481a5267ce06c0ed2bb89e85e142e3a5d58c78828fb502c46ff815a3cb889197",
 			"durable": durable
 		},
 		"list": {

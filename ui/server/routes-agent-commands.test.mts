@@ -6,11 +6,13 @@ import test, {type TestContext} from 'node:test';
 import {AgentError} from '../agents/index.mts';
 import type {CommandInput, CommandResult, HostInventory} from '../agents/index.mts';
 import {STORAGE} from '../agents/fake-host.mts';
-import {COMMAND_RESULT_BYTES} from '../shared/api.ts';
+import {COMMAND_RESULT_BYTES, ROUTES} from '../shared/api.ts';
 import type {OperationView, Target} from '../shared/api.ts';
 import {boundCommandResult, projectCommandList} from './agent-commands.mts';
 import {ApiError} from './errors.mts';
 import type {RequestContext} from './http.mts';
+import {Journal} from './journal.mts';
+import {LocalHttp} from './http.mts';
 import {Operations} from './operations.mts';
 import type {Registry} from './registry.mts';
 import {dispatchAgent} from './routes-agent.mts';
@@ -111,4 +113,23 @@ test('a request that names a reserved, malformed or extra field never reaches th
     await assert.rejects(run(body), error => error instanceof ApiError, JSON.stringify(body).slice(0, 60));
   }
   assert.equal(calls, 0);
+});
+
+test('the command routes are reachable through the real router, with their query, key and body rules', async t => {
+  const {registry, operations, workspaceId, target} = await harness(t, {
+    inventory: async () => inventory(),
+    command: async (identity: string, input: CommandInput): Promise<CommandResult> => ({name: input.name, conversationId: 1, identity, text: `ran ${input.args ?? ''}`}),
+  });
+  assert.ok(ROUTES.includes('GET /api/agents/:identity/commands')); assert.ok(ROUTES.includes('POST /api/agents/:identity/command'));
+  const http = new LocalHttp({journal: new Journal(), workspace: async () => workspaceId, observe: async () => {}, detached: () => {}, dispatch: context => dispatchAgent(registry, context)}, new Map());
+  const origin = await http.listen(0); t.after(() => http.close());
+  const listed = await fetch(new URL(`/api/agents/${STORAGE}/commands?workspace=${workspaceId}`, origin));
+  const list = await listed.json() as {ok: boolean; data: {items: {name: string; source: string}[]}};
+  assert.equal(listed.status, 200); assert.equal(list.ok, true); assert.deepEqual(list.data.items.map(item => [item.name, item.source]), [['ping', 'alpha'], ['status', 'beta']]);
+  assert.equal((await fetch(new URL(`/api/agents/${STORAGE}/commands`, origin), {method: 'POST', body: '{}', headers: {'Content-Type': 'application/json', Origin: new URL(origin).origin}})).status, 405);
+  const reserved = await operations.reserve(workspaceId, 'agent.command', target);
+  const ran = await fetch(new URL(`/api/agents/${STORAGE}/command?workspace=${workspaceId}`, origin), {method: 'POST', body: JSON.stringify({name: 'ping', args: 'x'}), headers: {'Content-Type': 'application/json', Origin: new URL(origin).origin, 'Idempotency-Key': reserved.id}});
+  const result = await ran.json() as {ok: boolean; data: OperationView};
+  assert.equal(ran.status, 200); assert.equal(result.data.state, 'completed'); assert.deepEqual(result.data.receipt, {kind: 'command', name: 'ping', text: 'ran x', truncated: false});
+  assert.equal((await fetch(new URL(`/api/agents/${STORAGE}/command`, origin))).status, 405);
 });

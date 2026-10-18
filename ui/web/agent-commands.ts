@@ -6,7 +6,7 @@ export type CommandSource = {live: boolean; supported: boolean; epoch: number};
 type Entry = {epoch: number; state: 'loading' | 'ready' | 'failed'; list?: AgentCommandList; message?: string; failedAt?: number};
 function refuse(source: CommandSource): CommandInventory | undefined {
   if (!source.live) return {items: [], state: 'unavailable', message: 'Start the agent to run commands.'};
-  return source.supported ? undefined : {items: [], state: 'unavailable', message: 'This agent host does not offer commands.'};
+  return source.supported ? undefined : {items: [], state: 'unavailable', message: 'This agent host does not offer commands this UI supports.'};
 }
 /** A failed read is tried again by the next deliberate slash, but not on every keystroke. */
 export const COMMAND_RETRY_MS = 5000;
@@ -31,7 +31,7 @@ export class AgentCommandInventory {
     if (entry.state === 'ready' && entry.list) return {items: entry.list.items.map(item => ({...item})), state: 'ready', ...(entry.list.incomplete ? {incomplete: true} : {})};
     if (entry.state === 'loading') return {items: [], state: 'loading'};
     if (deliberate && this.now() - (entry.failedAt ?? 0) >= COMMAND_RETRY_MS) { this.start(source.epoch); return {items: [], state: 'loading'}; }
-    return {items: [], state: 'unavailable', message: entry.message ?? 'Commands could not be loaded.'};
+    return {items: [], state: 'unavailable', message: entry.message ?? 'Commands could not be read.'};
   }
   forget(): void { this.abort?.abort(); this.abort = undefined; this.entry = undefined; }
   private start(epoch: number): void {
@@ -39,7 +39,7 @@ export class AgentCommandInventory {
     const entry: Entry = {epoch, state: 'loading'}; this.entry = entry;
     void this.load(abort.signal).then(list => { entry.list = list; entry.state = 'ready'; }, error => {
       entry.state = 'failed'; entry.failedAt = this.now();
-      entry.message = `Commands could not be loaded. ${error instanceof Error ? error.message : ''}`.trim();
+      entry.message = `Commands could not be read. ${error instanceof Error ? error.message : ''}`.trim();
     }).finally(() => { if (this.entry === entry && !abort.signal.aborted) this.changed(); });
   }
 }

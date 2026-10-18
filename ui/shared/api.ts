@@ -271,6 +271,7 @@ export const ROUTES = [
   'GET /api/agents', 'POST /api/agents/refresh', 'GET /api/agents/:identity/history', 'GET /api/agents/:identity/history/image', 'POST /api/agents/:identity/inspect',
   'GET /api/threads', 'GET /api/threads/read',
   'POST /api/agents/:identity/inputs', 'POST /api/agents/:identity/abort', 'POST /api/agents/:identity/configure',
+  'GET /api/agents/:identity/commands', 'POST /api/agents/:identity/command',
   'POST /api/workspaces/:id/targets', 'PUT /api/workspaces/:id/selection', 'GET /api/workspaces/:id/targets/:targetKey', 'PUT /api/workspaces/:id/targets/:targetKey/draft',
   'POST /api/workspaces/:id/targets/:targetKey/images', 'GET /api/workspaces/:id/targets/:targetKey/images/:digest',
   'PUT /api/workspaces/:id/targets/:targetKey/reading', 'PUT /api/workspaces/:id/targets/:targetKey/presentation',

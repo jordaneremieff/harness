@@ -513,7 +513,7 @@ Each `H-*` is the lowercase hex SHA-256 of `JSON.stringify` of the owning schema
 
 ```text
 H-inspect       d38d5e5a297d6b3738547ab0154cd494602f01c4a898423a076d2d946e430a6b
-H-status        294bb95f3d60b9c9ae2976f291e4f8d41c11d00ec517c1aebcfd9c7af40a3087
+H-status        481a5267ce06c0ed2bb89e85e142e3a5d58c78828fb502c46ff815a3cb889197
 H-list          76e932a0749fd72c9aef6b90635d061e455f84fb57f7f9bd102034cf28887600
 H-dashboard     a89f98f3eb28c78f115c0010581107073600bfb9ec44934ad622aeb5d1cffcd7
 H-profile-read  b78d87440ae527566e0f13603e638dfa057aaa87f2985521e32b9c859baa1889

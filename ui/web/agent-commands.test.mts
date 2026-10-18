@@ -27,13 +27,13 @@ test('a new connection epoch, a lost host and an unsupported host each drop the 
   const stored = f.inventory.inventory({live: false, supported: true, epoch: 4}, true);
   assert.equal(stored.state, 'unavailable'); assert.equal(stored.message, 'Start the agent to run commands.'); assert.equal(f.loads(), 2);
   const none = f.inventory.inventory({live: true, supported: false, epoch: 4}, true);
-  assert.equal(none.state, 'unavailable'); assert.equal(none.message, 'This agent host does not offer commands.');
+  assert.equal(none.state, 'unavailable'); assert.equal(none.message, 'This agent host does not offer commands this UI supports.');
   assert.equal(f.inventory.inventory(live, true).state, 'loading'); assert.equal(f.loads(), 3, 'a live host asks again after a lost one');
 });
 test('a failed read says so and is tried again only by a later deliberate slash after the retry delay', async () => {
   let fail = true; const f = fixture(async () => { if (fail) throw new Error('Host unavailable.'); return list; });
   f.inventory.inventory(live, true); await turn();
-  const failed = f.inventory.inventory(live, true); assert.equal(failed.state, 'unavailable'); assert.match(failed.message ?? '', /^Commands could not be loaded\. Host unavailable\./);
+  const failed = f.inventory.inventory(live, true); assert.equal(failed.state, 'unavailable'); assert.match(failed.message ?? '', /^Commands could not be read\. Host unavailable\./);
   for (let index = 0; index < 5; index++) f.inventory.inventory(live, true); assert.equal(f.loads(), 1, 'keystrokes do not repeat a failed read');
   f.advance(COMMAND_RETRY_MS); assert.equal(f.inventory.inventory(live, false).state, 'unavailable'); assert.equal(f.loads(), 1, 'only a slash retries');
   fail = false; assert.equal(f.inventory.inventory(live, true).state, 'loading'); await turn();
