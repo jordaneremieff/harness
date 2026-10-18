@@ -160,18 +160,18 @@ export function awaitDevTools(child: ChildProcess, timeoutMs = 15_000): Promise<
       child.off("exit", exit);
     };
     const error = (reason: Error) => { cleanup(); reject(reason); };
-    const exit = (code: number | null) => error(new Error(`Brave exited before DevTools readiness (${code})`));
+    const exit = (code: number | null) => error(new Error(`Browser exited before DevTools readiness (${code})`));
     const data = (chunk: Buffer | string) => {
       tail = (tail + chunk.toString()).slice(-8192);
       const match = /DevTools listening on (ws:\/\/[^\s]+)/.exec(tail);
       if (!match || !/\s/.test(tail.slice((match.index ?? 0) + match[0].length))) return;
       try { validateEndpoint(match[1]); cleanup(); resolve(match[1]); } catch (reason) { error(asError(reason)); }
     };
-    const timer = setTimeout(() => error(new Error("Brave DevTools readiness timeout")), timeoutMs);
+    const timer = setTimeout(() => error(new Error("Browser DevTools readiness timeout")), timeoutMs);
     child.stderr?.on("data", data);
     child.once("error", error);
     child.once("exit", exit);
-    if (!child.stderr) error(new Error("Brave stderr is unavailable"));
+    if (!child.stderr) error(new Error("Browser stderr is unavailable"));
   });
 }
 
@@ -232,7 +232,7 @@ export class Page {
   }
 }
 
-export function braveLaunchArgs(profile: string, port: number): string[] {
+export function browserLaunchArgs(profile: string, port: number): string[] {
   return [
     "--headless=new", "--remote-debugging-address=127.0.0.1", `--remote-debugging-port=${port}`,
     `--user-data-dir=${profile}`, "--no-first-run", "--no-default-browser-check",
@@ -241,11 +241,13 @@ export function braveLaunchArgs(profile: string, port: number): string[] {
 }
 
 export type Browser = { cdp: CDP; page: Page; version: Json; profile: string; close(): Promise<void> };
-export async function launchBrave(options: { executable?: string; port?: number; timeoutMs?: number } = {}): Promise<Browser> {
+export async function launchBrowser(options: { port?: number; timeoutMs?: number } = {}): Promise<Browser> {
+  const executable = process.env.PI_UI_BROWSER_EXECUTABLE?.trim();
+  if (!executable) throw new Error('PI_UI_BROWSER_EXECUTABLE must name the explicit browser executable');
   const port = options.port ?? 0;
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("Invalid debugging port");
-  const profile = await mkdtemp(join(tmpdir(), "brave-cdp-"));
-  const child = spawn(options.executable ?? "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser", braveLaunchArgs(profile, port), { stdio: ["ignore", "ignore", "pipe"] });
+  const profile = await mkdtemp(join(tmpdir(), "browser-cdp-"));
+  const child = spawn(executable, browserLaunchArgs(profile, port), { stdio: ["ignore", "ignore", "pipe"] });
   const exited = new Promise<void>((resolve) => { child.once("exit", () => resolve()); child.once("error", () => resolve()); });
   let cdp: CDP | undefined;
   let closePromise: Promise<void> | undefined;

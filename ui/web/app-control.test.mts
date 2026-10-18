@@ -121,12 +121,11 @@ test('addressed journal events advance replay cursors and notices use quiet bott
   event('notice',{level:'info',message:'Helper: Read this bounded notice',code:'control_applied'});await settle();
   assert.equal(byId('control-attribution').textContent,'Helper: Read this bounded notice');assert.equal(byId('modal').open,false);
 });
-test('replayed requests before fresh ready advance the cursor without effects or later execution',async()=> {
-  await setup('replay');const old=command({action:'notice',text:'Do not replay'}),original=globalThis.fetch,acks:ControlAck[]=[],start=transportLog.length;
+test('replayed requests before fresh ready advance the cursor without effects or later execution',async t=> {
+  await setup('replay');const now=Date.now();t.mock.method(Date,'now',()=>now);let recover:(()=>void)|undefined;const timeout=window.setTimeout.bind(window);t.mock.method(window,'setTimeout',(callback,delay,...args)=>{if(delay===250){recover=()=>{if(typeof callback==='function')callback(...args);};return 0;}return timeout(callback,delay,...args);});const old=command({action:'notice',text:'Do not replay'}),original=globalThis.fetch,acks:ControlAck[]=[],start=transportLog.length;
   globalThis.fetch=async(input,init)=> {if(String(input).startsWith('/api/control/ack')) {acks.push(JSON.parse(String(init?.body)));return Response.json({ok:true,data:{}});}return original(input,init);};
-  const visibility=(hidden:boolean)=> {hostDocument.hidden=hidden;for(const handler of f.documentHandlers.get('visibilitychange') ?? [])handler({target:hostDocument});};
   try {
-    visibility(true);visibility(false);await settle();const fresh=f.streamSources.at(-1);assert.ok(fresh);
+    const previous=f.streamSources.at(-1);assert.ok(previous);previous.onerror?.();assert.ok(recover);recover();await settle();const fresh=f.streamSources.at(-1);assert.ok(fresh);assert.notEqual(fresh,previous);
     const before=app.state.cursor;fresh.emit('control.request',old);await settle();const replay=app.state.cursor;assert.notEqual(replay,before);
     assert.equal(acks.length,0);assert.equal(app.state.needsResync,false);
     fresh.emit('ready',{bootId:'boot',connectionId:'replacement'});await settle();

@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { createAgentService, deriveEndpoint } from "./index.mts";
-import { CHILD, STORAGE, deferred, descriptor, FakeHost, receipt, type FakeCall, type FakeHostOptions } from "./fake-host.mts";
+import { CHILD, STORAGE, deferred, descriptor, FakeHost, receipt, type FakeHostOptions } from "./fake-host.mts";
 import { validateImageBytes } from "../server/images.mts";
 import type { SubmitInput } from "./input.mts";
 
@@ -36,10 +36,8 @@ async function fixture(t: TestContext, options: FakeHostOptions = {}) {
 function submitted(images: SubmitInput["images"], operationId = "image", message = "caption", mode: SubmitInput["mode"] = "steer"): SubmitInput {
   return {operationId, message, mode, targetKey, images};
 }
-function parts(call: FakeCall) { const value = call.params?.message; assert.ok(Array.isArray(value)); return value as {type: string; text?: string; mimeType?: string; data?: string}[]; }
-function imageDigest(data: string) { return createHash("sha256").update(Buffer.from(data, "base64")).digest("hex"); }
 
-test("real worker sends exact PNG and JPEG parts with captured metadata and native routing", {timeout: 15000}, async t => {
+test("real worker sends verified PNG and JPEG references with captured metadata and native routing", {timeout: 15000}, async t => {
   const f = await fixture(t), first = await f.saved(), second = await f.saved(jpeg, "image/jpeg");
   assert.equal(f.service.imageInputAvailable(CHILD), false);
   assert.equal((await f.service.prepare(CHILD)).images, true); assert.equal(f.service.imageInputAvailable(CHILD), true);
@@ -49,23 +47,24 @@ test("real worker sends exact PNG and JPEG parts with captured metadata and nati
     const sent = f.service.submit(CHILD, input); input.images[0] = {...first.image, name: "changed.png"};
     await sent; const call = f.host.calls.filter(call => call.member === "task-submit").at(-1); assert.ok(call);
     assert.deepEqual(call.params, {sessionId: CHILD, origin: "operator", requester: "ui:images", replyTo: CHILD, requestId: `ui:${mode}`, whenBusy: mode,
-      message: [{type: "text", text: "caption"}, {type: "image", mimeType: "image/png", data: png.toString("base64")}, {type: "image", mimeType: "image/jpeg", data: jpeg.toString("base64")}]});
+      message: ['caption', `Attached image "pixel.png" (image/png): ${first.path}`, `Attached image "pixel.jpg" (image/jpeg): ${second.path}`].join('\n\n')});
     assert.equal(call.wireRequestId, `ui:${mode}`);
-    assert.deepEqual(parts(call).slice(1).map(part => imageDigest(part.data ?? "")), original.images.map(image => image.digest));
+    assert.deepEqual(await readFile(first.path), png); assert.deepEqual(await readFile(second.path), jpeg); assert.deepEqual(original.images.map(image => image.name), ['pixel.png', 'pixel.jpg']);
     await assert.rejects(f.service.submit(CHILD, input), {code: "operation_conflict"});
   }
   await f.service.submit(CHILD, submitted([first.image], "image-only", ""));
-  const only = f.host.calls.at(-1); assert.ok(only); assert.equal(parts(only).length, 1); assert.equal(parts(only)[0].type, "image");
+  const only = f.host.calls.at(-1); assert.ok(only); assert.equal(only.params?.message, `Attached image "pixel.png" (image/png): ${first.path}`);
   await f.service.submit(CHILD, submitted([], "text-only", "plain")); assert.equal(f.host.calls.at(-1)?.params?.message, "plain");
   await f.service.disconnectWorkspace("unused"); assert.equal(f.service.imageInputAvailable(CHILD), false);
 });
-test("large verified image input crosses the worker and Unix host above one MiB", {timeout: 15000}, async t => {
+test("large verified image input retains exact bytes and sends a target-bound reference", {timeout: 15000}, async t => {
   const f = await fixture(t);
   // Header-policy acceptance is intentional; this does not assert full raster decoding.
   const bytes = Buffer.concat([jpeg.subarray(0, -2), Buffer.alloc(2 * 1024 * 1024), jpeg.subarray(-2)]), saved = await f.saved(bytes, "image/jpeg");
   await f.service.submit(CHILD, submitted([saved.image], "large", ""));
-  const call = f.host.calls.at(-1); assert.ok(call); const part = parts(call)[0];
-  assert.ok((part.data?.length ?? 0) > 1024 * 1024); assert.equal(imageDigest(part.data ?? ""), saved.image.digest);
+  const call = f.host.calls.at(-1); assert.ok(call); assert.ok(bytes.length > 1024 * 1024);
+  assert.deepEqual(call.params, {sessionId: CHILD, origin: 'operator', requester: 'ui:images', replyTo: CHILD, requestId: 'ui:large', whenBusy: 'steer', message: `Attached image "pixel.jpg" (image/jpeg): ${saved.path}`});assert.equal(call.wireRequestId, 'ui:large');
+  const stored=await readFile(saved.path);assert.deepEqual(stored,bytes);assert.equal(createHash('sha256').update(stored).digest('hex'),saved.image.digest);
 });
 test("uncertain images preserve their key and require explicit retry with freshly verified bytes", {timeout: 15000}, async t => {
   const held = deferred<ReturnType<typeof receipt>>(); let attempts = 0;

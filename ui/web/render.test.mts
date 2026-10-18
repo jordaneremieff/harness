@@ -632,7 +632,7 @@ test('roster virtual rows retain selected/focused pins, internal gaps and measur
   view.set(rows, undefined, 'full-identity-200'); flush(); const container = node('roster'); const pinned = container.children.find(child => child.dataset.identity === 'full-identity-200'); assert.ok(pinned);
   pinned.measured = 250; pinned.focus(); view.set(rows, undefined, 'full-identity-0'); flush();
   assert.equal(pinned.isConnected, true); assert.equal(fakeDocument.activeElement, pinned); assert.equal(pinned.offsetHeight, 250);
-  assert.equal(pinned.offsetTop, 200 * 20); assert.ok(container.children.filter(child => child.className === 'spacer').length >= 2);
+  const measuredPrefix = container.children.slice(0, container.children.indexOf(pinned)).reduce((sum, child) => sum + child.offsetHeight, 0); assert.equal(pinned.offsetTop, measuredPrefix); assert.ok(container.children.filter(child => child.className === 'spacer').length >= 2);
   assert.ok(container.children.filter(child => child.className === 'agent-row').length <= 77);
 });
 test('fork appears only at finalized retained user entries and sends the retained entry ID', () => {
@@ -2442,7 +2442,7 @@ test('static workbench markup owns one footer and keeps composer actions without
   assert.match(factory, /element\('select'\)/);
   assert.match(factory, /const modes = element\('div', 'modes'\); modes\.id = `\$\{id\}-modes`/);
   assert.match(factory, /const recipient = element\('label', 'sr-only', 'Message'\); recipient\.id = `\$\{id\}-recipient`; recipient\.htmlFor = editor\.id/);
-  assert.match(factory, /root\.append\(resize, receipt, input, line\)/); assert.match(factory, /bar\.append\(attach, picker, modes, stop, send\)/);
+  assert.match(factory, /root\.append\(resize, receipt, input, line\)/); assert.match(factory, /line\.append\(attach, picker, bar\)/); assert.match(factory, /bar\.append\(stop, submit\)/); assert.match(factory, /submit\.append\(modes, send\)/);
   assert.doesNotMatch(factory, /composer-settings|composer-guidance|usage-details|class="statusline"|root\.append\([^)]*receiptDetails/);
   assert.equal([...html.matchAll(/id="focused-composer-status" class="workbench-draft-state"/g)].length, 1);
 });

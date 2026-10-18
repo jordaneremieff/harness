@@ -92,7 +92,10 @@ function isLoader(expression: ts.Expression, tree: ts.SourceFile, loaders: Set<s
   return name === 'resolve' && (object === 'import.meta' || loaders.has(object));
 }
 function workerPath(node: ts.Expression | undefined, tree: ts.SourceFile) {
-  if (node && ts.isNewExpression(node) && member(node.expression) === 'URL' && node.arguments?.[1]?.getText(tree) === 'import.meta.url') return node.arguments[0];
+  if (node && ts.isNewExpression(node) && member(node.expression) === 'URL') {
+    if (node.arguments?.[1]?.getText(tree) === 'import.meta.url') return node.arguments[0];
+    if (ts.isIdentifier(node.expression) && node.expression.text === 'URL' && node.arguments?.length === 1 && node.arguments[0]?.getText(tree) === 'import.meta.url') return ts.factory.createStringLiteral(`./${path.basename(tree.fileName)}`);
+  }
   return node;
 }
 function resolverAliases(node: ts.Node, resolvers: Set<string>) {
@@ -306,6 +309,11 @@ test('compiler inspection sees literal imports, exports, require, dynamic import
   assert.deepEqual(info.edges.map(e => e.specifier), ['./one.mts', './two.mts', './three.mts', './four.mts', './five.mts', './six.mts']);
 });
 
+test('a worker self URL retains an exact local source edge', () => {
+  const filename=path.join(ui,'server','fixture.mts'),info=analyze('new Worker(new URL(import.meta.url), {workerData: {}});',filename);
+  assert.deepEqual(info,{edges:[{specifier:'./fixture.mts',typeOnly:false}],errors:[]});assert.deepEqual(check(new Map([[filename,info]]),new Set(),new Set()),[]);
+  for(const source of ['new Worker(new URL(name));','new Worker(new URL(import.meta.url + suffix));','new Worker(new URL(import.meta.url, base));'])assert.ok(analyze(source,filename).errors.length,source);
+});
 test('computed, aliased, indirect code loaders and worker escapes demand review', () => {
   for (const source of ["import(name)", "(require)(name)", "(0, eval)(code)", "require('./' + name)", "const load = require; load(name)", "module['require'](name)", "import {createRequire as cr} from 'node:module'; const load = cr(import.meta.url); load(name)", "globalThis['eval'](code)", "new Function(code)", "import.meta.resolve(name)", "new Worker(name)"]) {
     assert.ok(analyze(source, 'fixture.mts').errors.length, source);

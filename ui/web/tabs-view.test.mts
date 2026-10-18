@@ -108,7 +108,7 @@ test('sidebar text status keeps authored labels and retained nodes through repai
   assert.equal(state.hidden, true); assert.equal(state.children.length, 0);
   f.strip.render(); assert.equal(row.querySelector('.conversation-state'), state);
   status = {label: 'Working · Read', glyph: '●', tone:'info'}; f.strip.render();
-  assert.equal(f.rows()[0], row); assert.equal(state.children.length, 0); assert.equal(state.textContent, 'Working · Read'); assert.equal(state.hidden, false);
+  assert.equal(f.rows()[0], row); assert.equal(state.children.length, 0); assert.equal(state.textContent, '•'); assert.equal(state.hidden, false);
   assert.equal(state.title, 'Working · Read'); assert.match(row.attributes.get('aria-label') ?? '', /Working · Read/);
   assert.equal(f.root().children[0]?.querySelector('.tab-dot')?.dataset.tone, 'info');
 });
@@ -133,7 +133,7 @@ test('each group fits its own status/width and overflow; narrowness does not rem
   for (const node of f.root().children) node.clientWidth=130; f.strip.render();
   assert.equal(f.root().styleValues.has('--tab-share'),false); assert.equal(f.root('pane-2').styleValues.has('--tab-share'),false);
   assert.equal(f.overflow.get('pane-1'),true); assert.equal(f.overflow.get('pane-2'),false);
-  for (const node of f.root().children) {assert.equal(node.querySelector('.tab-state'),null); assert.equal(node.querySelector('.tab-dot')?.title,'Custom activity'); assert.equal(node.querySelector('.tab-dot')?.textContent,'Custom activity'); assert.equal(node.querySelector('.tab-label')?.textContent,'A very long conversation name'); assert.match(node.attributes.get('aria-label')??'',/Custom activity/);}
+  for (const node of f.root().children) {assert.equal(node.querySelector('.tab-state'),null); assert.equal(node.querySelector('.tab-dot')?.title,'Custom activity'); assert.equal(node.querySelector('.tab-dot')?.textContent,''); assert.equal(node.querySelector('.tab-label')?.textContent,'A very long conversation name'); assert.match(node.attributes.get('aria-label')??'',/Custom activity/);}
 });
 test('active reveal scrolls only its local host and repaint preserves manual strip position and draft selection', () => {
   const f=fixture(Array.from({length:11},(_,i)=>({kind:'agent',identity:String(i)}))); f.set(activatePaneTab(f.layout(),'pane-1','agent:10'));

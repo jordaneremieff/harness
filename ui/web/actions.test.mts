@@ -548,10 +548,10 @@ test('agent presentation control defaults on and the quiet Commands choice saves
 test('palette covers every displaced control and session availability follows the menu', () => {
   const actions = new Actions(context());
   const names = actions.paletteEntries().filter(item => item.source === 'app').map(item => item.name);
-  assert.deepEqual(names, ['New session', 'Sessions', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Saved drafts and messages', 'Appearance', 'Message input…', 'Agent presentation control', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Notifications', 'Refresh agents', 'Insert /agent new', 'Hide sidebar', 'Show sidebar', 'Projects', 'Model', 'Thinking']);
+  assert.deepEqual(names, ['New session', 'Sessions', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Saved drafts and messages', 'Appearance', 'Message input…', 'Agent presentation control', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Notifications', 'Refresh agents', 'Insert /agent new', 'Hide sidebar', 'Show sidebar', 'Projects', 'Model', 'Thinking', 'Tasks']);
   const absent = new Actions(context({primary: () => undefined})).paletteEntries();
   const disabled = absent.filter(item => !item.enabled).map(item => item.name);
-  assert.deepEqual(disabled, ['Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Model', 'Thinking']);
+  assert.deepEqual(disabled, ['Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Model', 'Thinking', 'Tasks']);
   const starting = new Actions(context({primary: () => ({...primary, lifecycle: 'starting'})})).paletteEntries();
   assert.equal(starting.find(item => item.name === 'New session')?.enabled, true);
   assert.equal(starting.find(item => item.name === 'Model')?.enabled, false);
@@ -571,13 +571,13 @@ test('transcript actions follow the focused view without enabling Primary execut
   for (const name of names) assert.equal(unrelatedPrimary.paletteEntries().find(item => item.name === name)?.enabled, false);
   assert.equal(unrelatedPrimary.paletteEntries().find(item => item.name === 'Compact…')?.enabled, true);
 });
-test('retry requires failure evidence while retained activity stays reachable without live capability', () => {
+test('retry requires failure evidence while retained tasks stay reachable without live capability', () => {
   const actions = new Actions(context({primary: () => ({...primary, lastError: {code: 'failed', message: 'Failure', retry: 'manual'}}), selectedAgent: () => ({identity: 'agent-id'})}));
   assert.equal(actions.paletteEntries().some(item => item.name === 'Review message'), true);
   assert.equal(actions.paletteEntries().some(item => item.name === 'Copy agent ID'), true);
-  assert.equal(actions.paletteEntries().some(item => item.name === 'View activity…'), true);
+  assert.equal(actions.paletteEntries().some(item => item.name === 'Tasks'), true);
   const inspect = new Actions(context({selectedAgent: () => ({identity: 'agent-id', capabilities: {history: true, observe: true, input: false, abort: false, configure: false, inspect: true}})}));
-  assert.equal(inspect.paletteEntries().some(item => item.name === 'View activity…'), true);
+  assert.equal(inspect.paletteEntries().some(item => item.name === 'Tasks'), true);
   assert.equal(new Actions(context()).paletteEntries().some(item => /Copy agent|Inspect agent|Review retry/.test(item.name)), false);
 });
 test('palette uses ranked rows, marked names and input-owned keyboard selection', async () => {
@@ -883,11 +883,11 @@ test('session menus reuse palette availability and preserve primary-only actions
   assert.equal(actions.sessionMenuEntries().some(item => item.name === 'Copy agent ID'), false);
   const selected = new Actions(context({selectedAgent: () => ({identity: 'selected-agent'})}));
   assert.equal(selected.sessionMenuEntries(true).some(item => item.name === 'Copy agent ID'), true);
-  assert.equal(selected.sessionMenuEntries(true).some(item => item.name === 'View activity…'), true);
+  assert.equal(selected.sessionMenuEntries(true).some(item => item.name === 'Tasks'), true);
   assert.equal(selected.sessionMenuEntries(true).some(item => item.name === 'New session'), false);
   const capable = new Actions(context({selectedAgent: () => ({identity: 'selected-agent', capabilities: {history: true, observe: true, input: true, abort: true, configure: false, inspect: true}})}));
 
-  assert.equal(capable.sessionMenuEntries(true).some(item => item.name === 'View activity…'), true);
+  assert.equal(capable.sessionMenuEntries(true).some(item => item.name === 'Tasks'), true);
 });
 test('session menu clicks dispatch named actions and disabled rows reject dispatch', () => {
   const f = paletteFixture(); try {

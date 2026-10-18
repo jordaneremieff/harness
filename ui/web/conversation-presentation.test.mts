@@ -167,7 +167,7 @@ test('availability loss defeats stale activity and another identity never suppli
 });
 test('connection loss marks only last observation and preserves target facts', () => {
   const view = conversationPresentation({target, row, negotiated, frame: frame(true), connected: false});
-  assert.equal(view.activity, 'Working'); assert.equal(view.lastObserved, true);
+  assert.equal(view.activity, 'Connection lost; activity unknown'); assert.equal(view.lastObserved, true); assert.equal(view.busy, false); assert.equal(view.input, false);
   assert.equal(projectIdentity(view, '/launch/path').path, row.cwd);
   assert.deepEqual(projectIdentity({}, '/launch/path'), {path: '/launch/path', name: 'path'});
   assert.deepEqual(projectIdentity({}), {path: undefined, name: 'Working folder'});

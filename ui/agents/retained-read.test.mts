@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { RetainedReader } from "./retained-read.mts";
@@ -9,10 +10,12 @@ import { decodeRetainedDescriptor, decodeRetainedParams, decodeRetainedResponse 
 
 const ROOT = "00000000-0000-4000-8000-000000000001";
 const CHILD = `${ROOT}:2`;
-// Literal public wire examples are independent of the producer and supportedOperations.
-const descriptor = {version:"retained-read/1.0.0",upstream:{codingAgent:"1.2.0",durable:"1.2.0"},operations:{
-  snapshot:{request:"snapshot/1.0.0",response:"snapshot/2.0.0",durable:"1.2.0"},
-  inspect:{request:"inspect/1.1.0",response:"d38d5e5a297d6b3738547ab0154cd494602f01c4a898423a076d2d946e430a6b",durable:"1.2.0"}}};
+const durablePackage = createRequire(import.meta.url).resolve('@earendil-works/pi-durable/package.json');
+const durableVersion: string = JSON.parse(await readFile(durablePackage, 'utf8')).version;
+// Literal operation identities stay independent of the producer and supportedOperations.
+const descriptor = {version:"retained-read/1.0.0",upstream:{codingAgent:"1.2.0",durable:durableVersion},operations:{
+  snapshot:{request:"snapshot/1.0.0",response:"snapshot/2.0.0",durable:durableVersion},
+  inspect:{request:"inspect/1.1.0",response:"d38d5e5a297d6b3738547ab0154cd494602f01c4a898423a076d2d946e430a6b",durable:durableVersion}}};
 const empty = {entries:[],partial:false,revision:"empty",nextBefore:null,
   coverage:{complete:true,entries:0,bytes:0,hiddenExcluded:0,entryLimitReached:false,byteLimitReached:false}};
 const history = {view:"history",sessionId:CHILD,conversationId:2,format:"compact",order:"newestFirst",entries:[],nextCursor:null,detail:""};

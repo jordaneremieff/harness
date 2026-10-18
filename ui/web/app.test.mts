@@ -6,6 +6,8 @@ import { contextMenu } from './context-menu.ts';
 import type { ConversationLayout, PrimaryView, ProjectedFrame, Target, TargetState, Workspace } from '../shared/api.ts';
 import { paneLeaves, movePaneTab, splitPane, activatePaneTab } from './pane-layout.ts';
 import { tabKey } from './tabs.ts';
+import {readReloadState, deleteReloadState} from './reload-storage.ts';
+import type {ComposerReloadState} from './composer.ts';
 
 import {createAppFixture, type Fixture} from './app-fixture.mts';
 const source = await readFile(new URL('./app.ts', import.meta.url), 'utf8');
@@ -23,35 +25,14 @@ function pressContext(target: HostNode): void { target.dispatch('contextmenu', {
 
 function descendants(node: HostNode): HostNode[] { return [...node.children, ...node.children.flatMap(descendants)]; }
 
-test('initial hidden startup and its retired ready wait initialize once after fresh ready and restored checkpoint', async t => {
-  const fetch = globalThis.fetch, restore = Promise.withResolvers<Response>(), ack = Promise.withResolvers<Response>();
-  const devResponse = () => Response.json({ok: true, data: {revision: 1, generation: 'a'.repeat(64), previous: null, change: 'reload', status: 'ready', code: 'none'}});
-  let armed = false, restoreReads = 0, acknowledgments = 0, leaseReads = 0; let restoredResponse: Response | undefined;
-  globalThis.fetch = async (input, init) => {
-    const path = new URL(String(input), 'http://ui.test').pathname;
-    if (path === '/api/dev/diagnostics') return devResponse();
-    if (path === '/api/dev/release') return Response.json({ok:true,data:{release:'released',build:(await devResponse().json()).data}});
-    if (path === '/api/dev/ack') {acknowledgments++; return ack.promise;}
-    if (path === '/api/dev/lease') {leaseReads++;return Response.json({ok:true,data:{lease:'present',build:(await devResponse().json()).data}});}
-    if (armed && (init?.method ?? 'GET') === 'GET' && path.includes('/targets/')) {armed = false; restoreReads++; restoredResponse = await fetch(input, init); return restore.promise;}
-    return fetch(input, init);
-  };
-  t.after(async () => {if (restoredResponse) restore.resolve(restoredResponse); ack.resolve(devResponse()); hostDocument.hidden = false; for (const meta of startupMetadata) meta.remove(); globalThis.fetch = fetch; for (const source of developmentSources) source.close(); await settle();});
-  await settle(); assert.equal(streamSources.length, 0); assert.equal(developmentSources.length, 0); assert.equal(documentDispatches.filter(name => name === 'ui-ready').length, 0);
-  pageHidden(false); await settle(); const initial = streamSources.at(-1); assert.ok(initial); assert.equal(primaryControl('send').disabled, true);
-  pageHidden(true); await settle(); assert.equal(initial.closed, true); initial.emit('ready', {bootId: 'boot'}); await settle(); assert.equal(developmentSources.length, 0); assert.equal(documentDispatches.filter(name => name === 'ui-ready').length, 0);
-  pageHidden(false); await settle(); const fresh = streamSources.at(-1); assert.ok(fresh); assert.notEqual(fresh, initial); assert.equal(primaryControl('send').disabled, true);
-  const checkpoint = {...app.captureDevCheckpoint(), version: 1, generation: 'a'.repeat(64), oldClient: 'b'.repeat(24), capturedAt: Date.now(), interactionRevision: 0};
-  hostSessionStorage.setItem('ui:dev-checkpoint', JSON.stringify(checkpoint)); armed = true;
-  assert.equal(restoreReads, 0); assert.equal(acknowledgments, 0); fresh.emit('ready', {bootId: 'boot'}); await settle();
-  assert.equal(restoreReads, 1); assert.equal(acknowledgments, 0); assert.equal(developmentSources.length, 0); assert.equal(documentDispatches.filter(name => name === 'ui-ready').length, 0); assert.ok(restoredResponse);
-  restore.resolve(restoredResponse); await settle(); assert.equal(acknowledgments, 1); assert.equal(documentDispatches.filter(name => name === 'ui-ready').length, 0);
-  ack.resolve(devResponse()); await settle(); assert.equal(developmentSources.length, 1); assert.equal(documentDispatches.filter(name => name === 'ui-ready').length, 1); assert.equal(hostSessionStorage.getItem('ui:dev-checkpoint'), null);
-  pageHidden(true); pageHidden(false); await settle(); streamSources.at(-1)?.emit('ready', {bootId: 'boot'});pageHidden(true);await settle();
-  assert.equal(leaseReads,0,'A retired main recovery must not restart the development link.');
-  pageHidden(false);await settle();streamSources.at(-1)?.emit('ready',{bootId:'boot'});await settle();
-  assert.equal(leaseReads,1);assert.equal(developmentSources[0]?.closed,true);assert.equal(developmentSources.length,2);assert.equal(developmentSources[1]?.closed,false);
-  assert.equal(acknowledgments, 1); assert.equal(documentDispatches.filter(name => name === 'ui-ready').length, 1);
+test('initial hidden readiness completes once on reveal without replacing the retained stream', async t => {
+  await settle();const initial=streamSources.at(-1);assert.ok(initial);assert.equal(streamSources.length,1);
+  for(const meta of startupMetadata)meta.remove();
+  t.after(async()=>{pageHidden(false);if(!documentDispatches.includes('ui-ready')){const now=Date.now();t.mock.method(Date,'now',()=>now);let recover:(()=>void)|undefined;const timeout=view.setTimeout;t.mock.method(view,'setTimeout',(run,delay)=>{if(delay===250){recover=run;return -1;}return timeout(run,delay);});initial.onerror?.();assert.ok(recover);recover();await settle();streamSources.at(-1)?.emit('ready',{bootId:'boot'});await settle();}});
+  initial.emit('ready',{bootId:'boot'});await settle();pageHidden(false);await settle();
+  assert.equal(documentDispatches.filter(name=>name==='ui-ready').length,1);assert.equal(developmentSources.length,0);assert.equal(initial.closed,false);
+  const editor=primaryControl('editor'),text=editor.value,count=streamSources.length,before=transportLog.length;editor.setSelectionRange(2,7,'backward');pageHidden(true);await settle();pageHidden(false);await settle();
+  assert.equal(streamSources.length,count);assert.equal(initial.closed,false);assert.equal(primaryControl('editor'),editor);assert.equal(editor.value,text);assert.deepEqual([editor.selectionStart,editor.selectionEnd,editor.selectionDirection],[2,7,'backward']);assert.equal(documentDispatches.filter(name=>name==='ui-ready').length,1);assert.equal(transportLog.slice(before).some(call=>call.path.includes('/inputs')||call.path.endsWith('/start')||call.path==='/api/snapshot'||call.path.startsWith('/api/dev/')),false);
 });
 
 test('pane resize notifications defer navigation writes and coalesce into one next frame', async () => {
@@ -95,19 +76,27 @@ test('Primary image controls follow current model input and exact model-change o
   const primary = primaryFixture({epoch: target.epoch, model: {provider: 'fixture', id: 'image-model', name: 'Image model', reasoning: false, input: ['text', 'image']}});
   await arrive({workspace: {id: 'image-model', revision: 1, primaryKey: 'p', selectedTarget: target}, primaries: [primary], roster: [], targets: [targetFixture('image-model-target', target, {draft: {revision: 2, text: '', mode: 'prompt', images: [attachedImage()], persisted: true}})]});
   assert.equal(primaryControl('send').disabled, false);
-  event('primary.state', {...primary, model: {...primary.model, input: ['text']}}); await settle(); assert.equal(primaryControl('send').disabled, true);
+  event('primary.state', {...primary, model: {...primary.model, input: ['text']}}); await settle(); assert.equal(primaryControl('send').disabled, false);
+  assert.match(primaryControl('composer').querySelector('.attachment-details p')?.textContent ?? '', /current model does not report image input/);
   event('primary.state', primary); await settle(); assert.equal(primaryControl('send').disabled, false);
   const pending = {id: 'model-hold', kind: 'primary.control' as const, action: 'model', target, state: 'uncertain' as const, createdAt: '', updatedAt: ''};
-  event('operation.changed', pending); await settle(); assert.equal(primaryControl('send').disabled, true);
-  event('operation.changed', {...pending, state: 'rejected'}); await settle(); assert.equal(primaryControl('send').disabled, false);
+  event('operation.changed', pending); event('primary.state', primary); await settle(); assert.equal(primaryControl('send').disabled, false);
+  assert.match(primaryControl('composer').querySelector('.attachment-details p')?.textContent ?? '', /model change is not confirmed/);
+  event('operation.changed', {...pending, state: 'rejected'}); event('primary.state', primary); await settle(); assert.equal(primaryControl('send').disabled, false);
+  assert.doesNotMatch(primaryControl('composer').querySelector('.attachment-details p')?.textContent ?? '', /model change is not confirmed|current model does not report image input/);
 });
 test('Agent image controls reject stale capabilities without borrowing transcript or roster state', async () => {
   const target = {kind: 'agent' as const, identity: 'image-agent'}, capabilities = {input: true, images: true, history: true, observe: true};
   await arrive({workspace: {id: 'image-agent-workspace', revision: 1, selectedTarget: target, conversationLayout: singlePane([target])}, primaries: [], roster: [agentFixture(target.identity, {capabilities})], observations: [observation(target.identity, undefined, 10)], targets: [targetFixture('image-agent-target', target, {draft: {revision: 2, text: '', mode: 'prompt', images: [attachedImage()], persisted: true}})]});
   assert.equal(agentControl('send').disabled, false); const epoch = app.state.conversations.get(JSON.stringify(['agent', target.identity]))?.connectionEpoch; assert.ok(epoch);
-  event('agent.availability', {identity: target.identity, connectionEpoch: epoch, state: 'live', capabilities: {...capabilities, images: false}}); await settle(); assert.equal(agentControl('send').disabled, true);
-  event('agent.availability', {identity: target.identity, connectionEpoch: epoch - 1, state: 'live', capabilities}); await settle(); assert.equal(agentControl('send').disabled, true);
+  const editor = agentControl('editor');
+  event('agent.availability', {identity: target.identity, connectionEpoch: epoch, state: 'live', capabilities: {...capabilities, images: false}}); await settle(); assert.equal(agentControl('send').disabled, false);
+  assert.equal(app.state.agentAvailability.get(target.identity)?.capabilities.images, false);
+  event('agent.availability', {identity: target.identity, connectionEpoch: epoch - 1, state: 'live', capabilities}); await settle(); assert.equal(agentControl('send').disabled, false);
+  assert.equal(app.state.agentAvailability.get(target.identity)?.connectionEpoch, epoch); assert.equal(app.state.agentAvailability.get(target.identity)?.capabilities.images, false);
   event('agent.availability', {identity: target.identity, connectionEpoch: epoch + 1, state: 'live', capabilities}); await settle(); assert.equal(agentControl('send').disabled, false);
+  assert.equal(app.state.agentAvailability.get(target.identity)?.connectionEpoch, epoch + 1); assert.equal(app.state.agentAvailability.get(target.identity)?.capabilities.images, true);
+  assert.equal(agentControl('editor'), editor); assert.deepEqual(app.agentComposer().state?.draft.images, [attachedImage()]);
 });
 test('development checkpoint captures exact owners and rejects workspace, recipient and revision changes', async t => {
   const saved = await devHookFixture('dev-capture', 9660), original = globalThis.fetch;
@@ -153,24 +142,37 @@ test('development restoration accepts a fresh Agent epoch but refuses later epoc
   }
 });
 
-test('development drain waits for retained drafts, view preferences and selection without transferring buffers', async t => {
-  await devHookFixture('dev-drain', 9662); const primary = app.primaryComposer(), agent = app.agentComposer(), p = controls(primary), a = controls(agent), original = globalThis.fetch;
+test('development drain preserves exact local draft bytes after view preferences and selection settle', async t => {
+  const saved = await devHookFixture('dev-drain', 9662); const primary = app.primaryComposer(), agent = app.agentComposer(), p = controls(primary), a = controls(agent), original = globalThis.fetch;
   const held: {path: string; finish: () => Promise<void>}[] = []; let holding = true;
   globalThis.fetch = async (input, init) => {
     const path = new URL(String(input), 'http://ui.test').pathname;
-    if (holding && init?.method === 'PUT' && /\/(draft|reading|presentation|selection)$/.test(path)) {const response = Promise.withResolvers<Response>(); assert.ok(held.length < 8); held.push({path, finish: async () => {response.resolve(await original(input, init));}}); return response.promise;}
+    if (holding && init?.method === 'PUT' && /\/(draft|reading|presentation|selection)$/.test(path)) {const response = Promise.withResolvers<Response>(); assert.ok(held.length < 8); let finished = false; held.push({path, finish: async () => {if (finished) return; finished = true; response.resolve(await original(input, init));}}); return response.promise;}
     return original(input, init);
   };
-  t.after(async () => {holding = false; await Promise.all(held.map(item => item.finish())); globalThis.fetch = original; await app.drainDev(new AbortController().signal);});
-  const pe = p('editor'), ae = a('editor'); pe.value = 'Primary queued draft'; pe.dispatch('input'); ae.value = 'Agent queued draft'; ae.dispatch('input');
+  t.after(async () => {holding = false; await Promise.all(held.map(item => item.finish())); globalThis.fetch = original; await app.drainDev(new AbortController().signal); const key = app.captureDevCheckpoint().composerStateKey; if (key) await deleteReloadState(key);});
+  const before = transportLog.length, pe = p('editor'), ae = a('editor'); pe.value = 'Primary queued draft'; pe.dispatch('input'); ae.value = 'Agent queued draft'; ae.dispatch('input');
+  pe.setSelectionRange(2, 7, 'backward'); pe.dispatch('select'); ae.setSelectionRange(1, 6, 'forward'); ae.dispatch('select');
   const scroller = p('transcript'); scroller.scrollTop = 180; scroller.dispatch('scroll'); flushFrames(); scroller.dispatch('scrollend');
   app.openConversationActions('primary-pane'); const grouped = menuNode().children.find(node => node.textContent === 'View: Grouped'); assert.ok(grouped); grouped.click(); await settle();
   app.applyLayout(singlePane()); await settle(); assert.equal(agent.canDispose, false);
   const aborted = new AbortController(); aborted.abort(new Error('Drain cancelled')); await assert.rejects(app.drainDev(aborted.signal), /Drain cancelled/);
   let done = false; const drain = app.drainDev(new AbortController().signal).then(() => {done = true;}); await settle(); assert.equal(done, false);
   const selection = held.find(item => item.path.endsWith('/selection')); assert.ok(selection); await selection.finish(); await settle(); assert.equal(done, false);
-  assert.equal(held.filter(item => item.path.endsWith('/draft')).length, 2); assert.ok(held.some(item => item.path.endsWith('/reading'))); assert.ok(held.some(item => item.path.endsWith('/presentation')));
-  holding = false; await Promise.all(held.filter(item => item !== selection).map(item => item.finish())); await drain; await settle();
+  const drafts = held.filter(item => item.path.endsWith('/draft')); assert.equal(drafts.length, 2); assert.ok(held.some(item => item.path.endsWith('/reading'))); assert.ok(held.some(item => item.path.endsWith('/presentation')));
+  holding = false; await Promise.all(held.filter(item => item !== selection && !drafts.includes(item)).map(item => item.finish())); await drain; await settle();
+  assert.equal(done, true); assert.equal(primary.unsaved, true); assert.equal(agent.unsaved, true);
+  const key = app.captureDevCheckpoint().composerStateKey; assert.ok(key);
+  const preserved = await readReloadState(key, new AbortController().signal); assert.ok(Array.isArray(preserved));
+  const records = preserved as ComposerReloadState[]; assert.equal(records.length, 2);
+  for (const [owner, text, start, end, direction] of [[saved.primary, pe.value, 2, 7, 'backward'], [saved.agent, ae.value, 1, 6, 'forward']] as const) {
+    const record = records.find(item => item.targetKey === owner.targetKey); assert.ok(record);
+    assert.equal(record.workspace, 'dev-drain'); assert.deepEqual(record.target, owner.target); assert.equal(record.data.text, text); assert.equal(record.data.mode, owner.draft.mode); assert.deepEqual(record.data.images, owner.draft.images);
+    assert.deepEqual(record.selection && [record.selection.start, record.selection.end, record.selection.direction], [start, end, direction]);
+  }
+  assert.equal(p('editor'), pe); assert.equal(a('editor'), ae); assert.equal(pe.value, 'Primary queued draft'); assert.equal(ae.value, 'Agent queued draft'); assert.equal(app.selectionQueue.unsettled, false);
+  assert.equal(transportLog.slice(before).some(call => call.path.includes('/inputs') || call.path.endsWith('/start')), false);
+  await Promise.all(drafts.map(item => item.finish())); await settle();
   assert.equal(primary.unsaved, false); assert.equal(agent.unsaved, false); assert.equal(pe.value, 'Primary queued draft'); assert.equal(ae.value, 'Agent queued draft'); assert.equal(p('editor'), pe); assert.equal(a('editor'), ae); assert.equal(app.selectionQueue.unsettled, false);
 });
 
@@ -235,9 +237,9 @@ test('failed Message preparation and technical availability reasons stay in exac
   const before = transportLog.length; phase = 'failed'; message.click(); await settle();
   const status = byId('agent-message-status'); assert.equal(status.textContent, 'Message connection is unavailable. Your draft is unchanged.'); assert.equal(status.title, diagnostic);
   assert.doesNotMatch(byId('agent-message-panel').textContent, /ENOENT|unavailable\.sock/); assert.equal(messageControl('editor'), editor); assert.equal(editor.value, savedB.draft.text); assert.deepEqual([editor.selectionStart, editor.selectionEnd], [2, 7]);
-  assert.equal(messageControl('send').disabled, true); assert.equal(messageControl('stop').hidden, true); assert.equal(byId('agent-message-retry').textContent, 'Try again');
+  assert.equal(messageControl('send').disabled, false); assert.equal(messageControl('stop').hidden, true); assert.equal(byId('agent-message-retry').textContent, 'Try again');
   phase = 'reason'; byId('agent-message-retry').click(); await settle(); assert.equal(status.textContent, 'Agent connection is unavailable.'); assert.equal(status.title, reason);
-  assert.doesNotMatch(byId('agent-message-panel').textContent, /task-submit/); assert.equal(byId('agent-message-retry').textContent, 'Check connection'); assert.equal(messageControl('send').disabled, true);
+  assert.doesNotMatch(byId('agent-message-panel').textContent, /task-submit/); assert.equal(byId('agent-message-retry').textContent, 'Check connection'); assert.equal(messageControl('send').disabled, false);
   phase = 'ready'; byId('agent-message-retry').click(); await settle(); assert.equal(status.textContent, ''); assert.equal(status.title, ''); assert.equal(messageControl('send').disabled, false);
   assert.deepEqual(preparations, [targetB, targetB, targetB, targetB]); assert.deepEqual(app.state.workspace?.selectedTarget, targetA); assert.equal(agentControl('editor'), main); assert.equal(main.value, savedA.draft.text); assert.deepEqual([main.selectionStart, main.selectionEnd], [1, 4]);
   assert.equal(messageControl('editor'), editor); assert.equal(editor.value, savedB.draft.text); assert.deepEqual([editor.selectionStart, editor.selectionEnd], [2, 7]);
@@ -262,7 +264,7 @@ test('Primary reload keeps an inactive live claim unchecked until exact Message 
 });
 
 test('Message negotiation overrides a claim across main selection, panel close, availability and reconnect', async t => {
-  const original = globalThis.fetch; t.after(async () => {globalThis.fetch = original; pageHidden(false); await settle(); streamSources.at(-1)?.emit('ready', {bootId: 'boot'}); await settle();});
+  const original = globalThis.fetch, recovery = preparationRecovery(); t.after(async () => {globalThis.fetch = original; byId('agent-message-close').click(); await recovery.dispose();});
   const a = agentFixture('negotiated-a'), b = agentFixture('claimed-b'), targetA = {kind: 'agent' as const, identity: a.identity}, targetB = {kind: 'agent' as const, identity: b.identity};
   const savedA = targetFixture('negotiated-a', targetA), savedB = targetFixture('claimed-b', targetB, {draft: {revision: 4, text: 'Retained B draft', mode: 'followUp', persisted: true}});
   const capabilities = {history: true, observe: false, input: false, abort: false, configure: false}; let ready = false;
@@ -282,21 +284,21 @@ test('Message negotiation overrides a claim across main selection, panel close, 
   const editor = agentControl('editor'); editor.setSelectionRange(2, 7); assert.match(agentControl('root').textContent, /Saved B history/);
   app.applyLayout(activatePaneTab(layout, 'pane-1', `agent:${a.identity}`)); await app.selectionQueue.drain(); await settle();
   const before = transportLog.length, message = byId('roster').querySelector(`[data-identity="${b.identity}"]`)?.querySelector('.row-message'); assert.ok(message); message.click(); await settle();
-  assert.equal(byId('agent-message-status').textContent, 'Agent connection is unavailable.'); assert.equal(messageControl('send').disabled, true);
+  assert.equal(byId('agent-message-status').textContent, 'Agent connection is unavailable.'); assert.equal(messageControl('send').disabled, false);
   assert.match(tabsNode().querySelector(`[data-tab-key="agent:${b.identity}"]`)?.title ?? '', /Unavailable/); assert.doesNotMatch(byId('workbench-status-agent').textContent, /Connected|Ready/);
   assert.equal(messageControl('editor'), editor); assert.equal(editor.value, savedB.draft.text); assert.deepEqual([editor.selectionStart, editor.selectionEnd], [2, 7]); assert.deepEqual(app.state.workspace?.selectedTarget, targetA);
   byId('agent-message-close').click(); await settle(); await app.reload(); await settle();
   assert.match(tabsNode().querySelector(`[data-tab-key="agent:${b.identity}"]`)?.title ?? '', /Unavailable/);
   app.applyLayout(activatePaneTab(app.state.workspace?.conversationLayout ?? layout, 'pane-1', `agent:${b.identity}`)); await app.selectionQueue.drain(); await settle();
   event('agent.availability', {identity: b.identity, connectionEpoch: 2, state: 'live', capabilities: b.capabilities}); await settle();
-  assert.equal(agentControl('send').disabled, true); assert.match(tabsNode().querySelector(`[data-tab-key="agent:${b.identity}"]`)?.title ?? '', /Unavailable/);
+  assert.equal(agentControl('send').disabled, false); assert.match(tabsNode().querySelector(`[data-tab-key="agent:${b.identity}"]`)?.title ?? '', /Connected|Ready/);
   ready = true; await app.checkAgentConnection('negotiation-owner', b.identity); await settle();
   assert.equal(agentControl('send').disabled, false); assert.match(tabsNode().querySelector(`[data-tab-key="agent:${b.identity}"]`)?.title ?? '', /Connected|Ready/);
   event('agent.availability', {identity: b.identity, connectionEpoch: app.state.agentEpochs.get(b.identity), state: 'unavailable', capabilities, reason: 'Connection closed'}); await settle();
-  assert.equal(agentControl('send').disabled, true); assert.match(tabsNode().querySelector(`[data-tab-key="agent:${b.identity}"]`)?.title ?? '', /Unavailable/);
+  assert.equal(agentControl('send').disabled, false); assert.match(tabsNode().querySelector(`[data-tab-key="agent:${b.identity}"]`)?.title ?? '', /Unavailable/);
   await app.checkAgentConnection('negotiation-owner', b.identity); await settle(); assert.equal(agentControl('send').disabled, false);
-  pageHidden(true); await settle(); assert.equal(agentControl('send').disabled, true); assert.doesNotMatch(tabsNode().querySelector(`[data-tab-key="agent:${b.identity}"]`)?.title ?? '', /Connected|Ready/);
-  pageHidden(false); await settle(); streamSources.at(-1)?.emit('ready', {bootId: 'boot'}); await settle(); assert.equal(agentControl('send').disabled, true);
+  await recovery.disconnect(); assert.equal(agentControl('send').disabled, false); assert.doesNotMatch(tabsNode().querySelector(`[data-tab-key="agent:${b.identity}"]`)?.title ?? '', /Connected|Ready/);
+  await recovery.recover(); assert.equal(agentControl('send').disabled, false);
   await app.checkAgentConnection('negotiation-owner', b.identity); await settle(); assert.equal(agentControl('send').disabled, false);
   assert.equal(agentControl('editor'), editor); assert.equal(editor.value, savedB.draft.text); assert.match(agentControl('root').textContent, /Saved B history/);
   assert.equal(transportLog.slice(before).some(call => call.path.endsWith('/start') || call.path.includes('/inputs')), false);
@@ -304,22 +306,46 @@ test('Message negotiation overrides a claim across main selection, panel close, 
   assert.equal(agentControl('send').disabled, true); assert.doesNotMatch(tabsNode().querySelector(`[data-tab-key="agent:${b.identity}"]`)?.title ?? '', /Connected|Ready/);
 });
 
-async function restorePreparationConnection(): Promise<void> {
-  pageHidden(true); pageHidden(false); await settle();
-  streamSources.at(-1)?.emit('ready', {bootId: 'boot'}); await settle();
+function preparationRecovery() {
+  const set = view.setTimeout, clear = view.clearTimeout;
+  const queued = new Map<number, {delay: number; run: () => void}>();
+  let serial = 0, lost = false, attempted = false;
+  view.setTimeout = (run, delay = 0) => {
+    if (delay > 0 && delay <= 750) {const id = --serial; queued.set(id, {delay, run}); return id;}
+    return set(run, delay);
+  };
+  view.clearTimeout = id => {if (typeof id === 'number' && id < 0) queued.delete(id); else clear(id);};
+  const attempt = async () => {
+    if (!lost || attempted) return;
+    const next = [...queued].find(([, item]) => item.delay <= 250); assert.ok(next, 'A lost stream must schedule its bounded recovery.');
+    queued.delete(next[0]); attempted = true; next[1].run(); await settle();
+  };
+  const ready = async () => {
+    const fresh = streamSources.at(-1); assert.ok(fresh); assert.equal(fresh.closed, false);
+    fresh.emit('ready', {bootId: 'boot'}); await settle(); lost = false;
+  };
+  const recover = async () => {pageHidden(false); await settle(); if (!lost) return; await attempt(); await ready();};
+  return {
+    async disconnect() {const old = streamSources.at(-1); assert.ok(old); lost = true; attempted = false; old.onerror?.(); await settle(); return old;},
+    attempt, ready, recover,
+    queued,
+    async dispose() {try {await recover();} finally {queued.clear(); view.setTimeout = set; view.clearTimeout = clear;}},
+  };
 }
-async function interruptPreparation(mode: string): Promise<void> {
+type PreparationRecovery = ReturnType<typeof preparationRecovery>;
+async function restorePreparationConnection(recovery: PreparationRecovery): Promise<void> {await recovery.recover();}
+async function interruptPreparation(mode: string, recovery: PreparationRecovery): Promise<void> {
   if (mode === 'suspend') pageHidden(true);
-  else {streamSources.at(-1)?.onerror?.(); if (mode === 'reconnect') await restorePreparationConnection();}
+  else {await recovery.disconnect(); if (mode === 'reconnect') await restorePreparationConnection(recovery);}
   await settle();
 }
 async function latePreparationFixture(surface: string, mode: string, t: {after: (fn: () => Promise<void>) => void}) {
-  const original = globalThis.fetch, pending = Promise.withResolvers<Response>(); let held = true, requests = 0;
+  const original = globalThis.fetch, pending = Promise.withResolvers<Response>(), recovery = preparationRecovery(); let held = true, requests = 0;
   const prefix = `late-${surface}-${mode}`, a = agentFixture(`${prefix}-a`), b = agentFixture(`${prefix}-b`);
   const targetA = {kind: 'agent' as const, identity: a.identity}, targetB = {kind: 'agent' as const, identity: b.identity};
   const savedA = targetFixture(`${prefix}-a`, targetA, {draft: {revision: 4, text: 'Keep A draft', mode: 'prompt', persisted: true}}), savedB = targetFixture(`${prefix}-b`, targetB, {draft: {revision: 4, text: 'Keep B draft', mode: 'followUp', persisted: true}});
   const response = () => Response.json({ok: true, data: {targetState: savedB, availability: 'live', capabilities: b.capabilities}});
-  t.after(async () => {held = false; pending.resolve(response()); globalThis.fetch = original; byId('agent-message-close').click(); await restorePreparationConnection();});
+  t.after(async () => {held = false; pending.resolve(response()); globalThis.fetch = original; byId('agent-message-close').click(); await settle(); await recovery.dispose();});
   const selected = surface === 'Message' ? targetA : targetB, layout = singlePane([{kind: 'agent', identity: a.identity}, {kind: 'agent', identity: b.identity}], `agent:${b.identity}`);
   await arrive({workspace: {id: prefix, revision: 1, selectedTarget: targetB, conversationLayout: layout}, primaries: [], roster: [a, b], targets: [savedA, savedB], confirmed: false});
   if (surface === 'Message') {app.applyLayout(activatePaneTab(layout, 'pane-1', `agent:${a.identity}`)); await app.selectionQueue.drain(); await settle();}
@@ -338,26 +364,35 @@ async function latePreparationFixture(surface: string, mode: string, t: {after: 
     const message = byId('roster').querySelector(`[data-identity="${b.identity}"]`)?.querySelector('.row-message'); assert.ok(message); message.click();
   } else {browser.fixture = {...browser.fixture, targets: [savedA]}; app.state.targets.delete(savedB.targetKey); app.focusPane(app.focusedPane); await app.selectionQueue.drain();}
   await settle(); const control = surface === 'Message' ? messageControl : agentControl, editor = control('editor'); editor.setSelectionRange(2, 6, 'backward');
-  return {prefix, b, selected, savedA, savedB, mainEditor, control, editor, before, requests: () => requests, resolve: () => pending.resolve(response()), reject: () => pending.resolve(Response.json({ok: false, error: {code: 'host_unavailable', message: 'Obsolete connection failure', retry: 'manual'}})), fresh: async () => {
+  return {prefix, b, selected, savedA, savedB, mainEditor, control, editor, before, recovery, requests: () => requests, resolve: () => pending.resolve(response()), reject: () => pending.resolve(Response.json({ok: false, error: {code: 'host_unavailable', message: 'Obsolete connection failure', retry: 'manual'}})), fresh: async () => {
     held = false; if (surface === 'Message') byId('agent-message-retry').click(); else await app.checkAgentConnection(prefix, b.identity); await settle();
   }};
 }
-for (const surface of ['Message', 'main']) for (const mode of ['disconnect', 'reconnect', 'suspend']) test(`pending ${surface} preparation cannot restore connection after ${mode}`, async t => {
+for (const surface of ['Message', 'main']) for (const mode of ['disconnect', 'reconnect', 'suspend']) test(`pending ${surface} preparation ${mode === 'suspend' ? 'retains its current result while hidden' : `cannot restore connection after ${mode}`}`, async t => {
   const f = await latePreparationFixture(surface, mode, t); assert.equal(f.requests(), 1);
-  await interruptPreparation(mode); assert.equal(f.control('send').disabled, true);
+  const currentSource = streamSources.at(-1), beforeInterrupt = transportLog.length;
+  await interruptPreparation(mode, f.recovery); assert.equal(f.control('send').disabled, false);
   if (surface === 'Message' && mode === 'reconnect') assert.equal(f.requests(), 1);
   f.resolve(); await settle();
-  const unchecked = () => {assert.doesNotMatch(tabsNode().querySelector(`[data-tab-key="agent:${f.b.identity}"]`)?.title ?? '', /Connected|Ready|Working/); assert.equal(f.control('send').disabled, true);};
-  unchecked(); if (mode !== 'reconnect') await restorePreparationConnection(); unchecked(); assert.equal(f.requests(), 1);
-  await f.fresh(); assert.equal(f.requests(), 2); assert.equal(f.control('send').disabled, false);
+  if (mode === 'suspend') {
+    assert.equal(hostDocument.hidden, true); assert.equal(streamSources.at(-1), currentSource); assert.equal(currentSource?.closed, false);
+    assert.equal(f.requests(), 1); assert.match(tabsNode().querySelector(`[data-tab-key="agent:${f.b.identity}"]`)?.title ?? '', /Connected|Ready/);
+    assert.equal(transportLog.slice(beforeInterrupt).some(call => call.path.endsWith('/targets') || call.path.includes('/inputs') || call.path.endsWith('/start')), false);
+    if (surface === 'Message') assert.equal(byId('agent-message-status').textContent, '');
+    pageHidden(false); await settle(); assert.equal(f.requests(), 1);
+  } else {
+    const unchecked = () => {assert.doesNotMatch(tabsNode().querySelector(`[data-tab-key="agent:${f.b.identity}"]`)?.title ?? '', /Connected|Ready|Working/); assert.equal(f.control('send').disabled, false);};
+    unchecked(); if (mode !== 'reconnect') await restorePreparationConnection(f.recovery); unchecked(); assert.equal(f.requests(), 1);
+    await f.fresh(); assert.equal(f.requests(), 2); assert.equal(f.control('send').disabled, false);
+  }
   assert.equal(f.control('editor'), f.editor); assert.equal(f.editor.value, f.savedB.draft.text); assert.deepEqual([f.editor.selectionStart, f.editor.selectionEnd, f.editor.selectionDirection], [2, 6, 'backward']);
   assert.deepEqual(app.state.workspace?.selectedTarget, f.selected); assert.equal(app.state.workspace?.id, f.prefix);
   if (surface === 'Message') {assert.equal(agentControl('editor'), f.mainEditor); assert.equal(f.mainEditor.value, f.savedA.draft.text); assert.deepEqual([f.mainEditor.selectionStart, f.mainEditor.selectionEnd, f.mainEditor.selectionDirection], [1, 5, 'backward']);}
   assert.equal(transportLog.slice(f.before).some(call => call.path.endsWith('/start') || call.path.includes('/inputs')), false);
 });
 test('a rejected Message preparation from the retired stream keeps the lifetime recovery reason', async t => {
-  const f = await latePreparationFixture('Message', 'retired-error', t); await interruptPreparation('reconnect');
-  f.reject(); await settle(); assert.equal(f.control('send').disabled, true);
+  const f = await latePreparationFixture('Message', 'retired-error', t); await interruptPreparation('reconnect', f.recovery);
+  f.reject(); await settle(); assert.equal(f.control('send').disabled, false);
   assert.match(byId('agent-message-status').title, /browser connection changed/); assert.doesNotMatch(byId('agent-message-status').title, /Obsolete connection failure/);
   assert.equal(byId('agent-message-retry').textContent, 'Check connection');
   await f.fresh(); assert.equal(f.control('send').disabled, false); assert.equal(f.editor.value, f.savedB.draft.text);
@@ -365,14 +400,14 @@ test('a rejected Message preparation from the retired stream keeps the lifetime 
 
 test('fresh Message preparation supersedes a pending failure from the retired stream', async t => {
   const f = await latePreparationFixture('Message', 'rejected', t);
-  await interruptPreparation('reconnect'); await f.fresh(); assert.equal(f.requests(), 2); assert.equal(f.control('send').disabled, false);
+  await interruptPreparation('reconnect', f.recovery); await f.fresh(); assert.equal(f.requests(), 2); assert.equal(f.control('send').disabled, false);
   f.reject(); await settle(); assert.equal(f.control('send').disabled, false); assert.equal(byId('agent-message-status').textContent, '');
   assert.match(tabsNode().querySelector(`[data-tab-key="agent:${f.b.identity}"]`)?.title ?? '', /Connected|Ready/);
   assert.equal(f.control('editor'), f.editor); assert.equal(f.editor.value, f.savedB.draft.text); assert.deepEqual([f.editor.selectionStart, f.editor.selectionEnd, f.editor.selectionDirection], [2, 6, 'backward']);
 });
 
 test('an obsolete Message completion cannot replace another recipient in another workspace', async t => {
-  const f = await latePreparationFixture('Message', 'owner', t); await restorePreparationConnection();
+  const f = await latePreparationFixture('Message', 'owner', t); await restorePreparationConnection(f.recovery);
   const c = agentFixture('late-new-c'), targetC = {kind: 'agent' as const, identity: c.identity}, savedC = targetFixture('late-new-c', targetC, {draft: {revision: 5, text: 'Keep new C draft', mode: 'followUp', persisted: true}});
   await arrive({workspace: {id: 'late-new-owner', revision: 1, selectedTarget: f.selected}, primaries: [], roster: [agentFixture(f.selected.identity), c], targets: [f.savedA, savedC], confirmed: false});
   byId('roster').querySelector('[data-identity="late-new-c"]')?.querySelector('.row-message')?.click(); await settle(); const editor = messageControl('editor'); editor.setSelectionRange(1, 4, 'backward');
@@ -441,7 +476,7 @@ test('Message B remains visible while main A retains its writer, caret and readi
   assert.deepEqual(app.state.workspace?.selectedTarget, targetA); assert.equal(agentControl('root'), rootA); assert.equal(rootA.hidden, false);
   assert.equal(agentControl('editor'), editorA); assert.equal(editorA.value, 'Keep main A draft'); assert.deepEqual([editorA.selectionStart, editorA.selectionEnd, editorA.selectionDirection], [2, 7, 'backward']);
   assert.equal(transcriptA.scrollTop, 17); assert.deepEqual(app.state.targets.get(savedA.targetKey)?.reading, reading);
-  const editorB = messageControl('editor'); assert.equal(editorB.value, 'Keep B draft'); assert.equal(messageControl('send').disabled, true); assert.equal(messageControl('stop').hidden, true);
+  const editorB = messageControl('editor'); assert.equal(editorB.value, 'Keep B draft'); assert.equal(messageControl('send').disabled, false); assert.equal(messageControl('stop').hidden, true);
   const preparation = transportLog.slice(before).filter(call => call.path.endsWith('/targets')); assert.equal(preparation.length, 1); assert.deepEqual((preparation[0]?.body as {target?: Target})?.target, targetB);
   editorB.setSelectionRange(1, 5); byId('agent-message-close').click(); await settle();
   assert.equal(message.hidden, false); assert.match(message.getAttribute('aria-label') ?? '', /Resume message to/); message.click(); await settle();
@@ -651,7 +686,7 @@ test('tab reveal and width changes retain target-owned transcript geometry witho
 test('selection admission gate stays separate from transport connectivity', async () => {
   await arrive({workspace:{id:'w',revision:1,primaryKey:'p'},primaries:[primaryFixture({epoch:704})],roster:[]}); app.focusPane(app.focusedPane);await settle();const editor=primaryControl('editor'); editor.value='Gate draft'; editor.dispatch('input');
   const original=globalThis.fetch,response=Promise.withResolvers<Response>(); globalThis.fetch=async(input,init)=>new URL(String(input),'http://ui.test').pathname.endsWith('/selection')?response.promise:original(input,init);
-  try {const pending=app.selectionQueue.select({sidebarWidth:260}); assert.equal(primaryControl('send').disabled,true); assert.equal(editor.disabled,false); assert.equal(byId('connection').hidden,true);
+  try {const pending=app.selectionQueue.select({sidebarWidth:260}); assert.equal(primaryControl('send').disabled,false); assert.equal(editor.disabled,false); assert.equal(byId('connection').hidden,true);
     response.resolve(Response.json({ok:true,data:{...browser.fixture.workspace,revision:browser.fixture.workspace.revision+1,sidebarWidth:260}})); await pending; await settle(); assert.equal(primaryControl('send').disabled,false);
   }finally{globalThis.fetch=original;}
 });
@@ -678,7 +713,7 @@ test('a late action rejection stays under its captured owner after navigation', 
   assert.equal(agentControl('receipt').textContent, 'Agent receipt retained');
   app.primaryComposer().receipts(app.state.operations.values()); assert.equal(caption.parentNode, null); assert.equal(receipt.querySelector('.status-error'), null); assert.equal(receipt.title, '');
 });
-test('connection recovery retains the shell and tab hiding releases observation', async t => {
+test('page visibility retains the shell stream and observation', async t => {
   assert.ok(source.includes('connectionSurfaceFor(connectionPhase)'));
   assert.doesNotMatch(source,/access-view|accessRequired|setUnauthorizedHandler/); assert.doesNotMatch(source, /setInterval/);
   const identity = 'visibility-owner'; await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'agent', identity}, conversationLayout: twoPanes(identity)}, primaries: [primaryFixture({epoch: 9536})], roster: [agentFixture(identity)], observations: [observation(identity)]});
@@ -686,18 +721,20 @@ test('connection recovery retains the shell and tab hiding releases observation'
   const tree = app.state.workspace?.conversationLayout, selected = app.state.workspace?.selectedTarget, saves = selectionSaves.length;
   const retained = () => {assert.deepEqual(app.state.workspace?.conversationLayout, tree); assert.deepEqual(app.state.workspace?.selectedTarget, selected); assert.equal(selectionSaves.length, saves); assert.equal(agentControl('editor'), editor);};
   const visibility = () => {for (const handler of [...documentHandlers.get('visibilitychange') ?? []]) handler({target: hostDocument});};
-  t.after(async () => {hostDocument.hidden = false; visibility(); await settle(); streamSources.at(-1)?.emit('ready', {bootId: 'boot'}); await settle(); retained();});
-  hostDocument.hidden = true; visibility(); await settle(); assert.equal(stream.closed, true); retained();
+  const streamCount = streamSources.length, before = transportLog.length;
+  t.after(async () => {hostDocument.hidden = false; visibility(); await settle(); retained();});
+  hostDocument.hidden = true; visibility(); await settle(); assert.equal(stream.closed, false); retained();
+  assert.equal(streamSources.length, streamCount); assert.equal(transportLog.slice(before).some(call => call.path === '/api/snapshot' || call.path.endsWith('/selection')), false);
   assert.equal(editor.value, 'Hidden tab draft'); assert.deepEqual([editor.selectionStart, editor.selectionEnd], [2, 7]);
 });
 
 test('replacement stream readiness ignores old callbacks and does not wait for history', async context => {
-  const fetch = globalThis.fetch; const set = view.setTimeout;
-  const history = Promise.withResolvers<Response>(); const callbacks: {delay: number; run: () => void}[] = []; let pendingHistoryCalls = 0;
+  const fetch = globalThis.fetch, recovery = preparationRecovery();
+  const history = Promise.withResolvers<Response>(); let pendingHistoryCalls = 0;
   context.after(async () => {
-    globalThis.fetch = fetch; view.setTimeout = set;
+    globalThis.fetch = fetch;
     history.resolve(Response.json({ok: true, data: {target: {kind: 'primary', key: 'p', epoch: 8500}, items: [], nextCursor: null, coverage}}));
-    streamSources.at(-1)?.emit('ready', {bootId: 'boot'}); await settle();
+    await settle(); await recovery.dispose();
   });
   const target = {kind: 'primary' as const, key: 'p', epoch: 8500};
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({epoch: 8500})], roster: [],
@@ -709,15 +746,14 @@ test('replacement stream readiness ignores old callbacks and does not wait for h
     if (new URL(String(input), 'http://ui.test').pathname === '/api/primaries/p/history') { pendingHistoryCalls++; return history.promise; }
     return fetch(input, init);
   };
-  view.setTimeout = (run, delay = 0) => { if (delay > 0 && delay <= 750) { callbacks.push({delay, run}); return -callbacks.length; } return set(run, delay); };
-  a.onerror?.(); assert.equal(a.closed, true); assert.equal(primaryControl('send').disabled, true);
-  const retry = callbacks.find(item => item.delay <= 250); assert.ok(retry); retry.run(); await settle();
+  await recovery.disconnect(); assert.equal(a.closed, true); assert.equal(primaryControl('send').disabled, false); assert.match(hostDocument.title, /Connection lost/);
+  await recovery.attempt();
   const b = streamSources.at(-1); assert.ok(b); assert.notEqual(b, a); assert.equal(b.closed, false);
   assert.equal(pendingHistoryCalls, 1);
   const cursor = app.state.cursor; a.emit('ready', {bootId: 'boot'}); a.emit('notice', {id: 'late-source-notice', message: 'Old source'}); await settle();
-  assert.equal(app.state.cursor, cursor); assert.equal(primaryControl('send').disabled, true);
+  assert.equal(app.state.cursor, cursor); assert.equal(primaryControl('send').disabled, false); assert.match(hostDocument.title, /Connection lost/);
   assert.equal(app.state.notices.some(item => item.id === 'late-source-notice'), false);
-  b.emit('ready', {bootId: 'boot'}); await settle(); assert.equal(primaryControl('send').disabled, false);
+  await recovery.ready(); assert.equal(primaryControl('send').disabled, false);
   assert.equal(primaryControl('editor'), editor); assert.equal(editor.value, 'Retained reconnect draft');
   assert.deepEqual([editor.selectionStart, editor.selectionEnd], [2, 8]); assert.equal(hostDocument.activeElement, editor);
   assert.equal(transportLog.slice(before).filter(call => call.path.includes('/inputs')).length, 0);
@@ -726,43 +762,46 @@ function pageHidden(hidden: boolean): void {
   hostDocument.hidden = hidden;
   for (const handler of [...documentHandlers.get('visibilitychange') ?? []]) handler({target: hostDocument});
 }
-test('hide before recovery ready retires the wait and reveal admits exactly one fresh stream', async t => {
+test('hide before recovery ready retains the wait and reveal keeps that stream', async t => {
+  const recovery = preparationRecovery(); t.after(async () => {await recovery.dispose();});
   const saved = await devHookFixture('hide-ready', 9664), editor = primaryControl('editor'); editor.focus(); editor.setSelectionRange(2, 7, 'backward'); await settle();
   const tree = app.state.workspace?.conversationLayout, target = app.state.workspace?.selectedTarget, saves = selectionSaves.length;
-  t.after(async () => {pageHidden(false); await settle(); streamSources.at(-1)?.emit('ready', {bootId: 'boot'}); await settle();});
-  pageHidden(true); pageHidden(false); await settle(); const pending = streamSources.at(-1); assert.ok(pending); assert.equal(pending.closed, false);
-  const count = streamSources.length; pageHidden(true); await settle(); assert.equal(pending.closed, true); assert.equal(primaryControl('send').disabled, true);
-  const cursor = app.state.cursor; pending.emit('ready', {bootId: 'boot'}); pending.onerror?.(); await settle(); assert.equal(app.state.cursor, cursor); assert.equal(streamSources.length, count);
-  pageHidden(false); await settle(); const fresh = streamSources.at(-1); assert.ok(fresh); assert.notEqual(fresh, pending); assert.equal(streamSources.length, count + 1);
-  pending.emit('notice', {id: 'late-hidden-ready', message: 'Old stream'}); pending.onerror?.(); await settle(); assert.equal(streamSources.length, count + 1);
-  assert.equal(primaryControl('send').disabled, true); fresh.emit('ready', {bootId: 'boot'}); await settle(); assert.equal(primaryControl('send').disabled, false);
+  const old = await recovery.disconnect(); await recovery.attempt(); const pending = streamSources.at(-1); assert.ok(pending); assert.notEqual(pending, old); assert.equal(pending.closed, false);
+  const count = streamSources.length; pageHidden(true); await settle(); assert.equal(pending.closed, false); assert.equal(primaryControl('send').disabled, false);
+  const cursor = app.state.cursor; old.emit('ready', {bootId: 'boot'}); old.emit('notice', {id: 'late-hidden-ready', message: 'Old stream'}); old.onerror?.(); await settle(); assert.equal(app.state.cursor, cursor); assert.equal(streamSources.length, count);
+  await recovery.ready(); assert.equal(hostDocument.hidden, true); assert.equal(primaryControl('send').disabled, false);
+  pageHidden(false); await settle(); assert.equal(streamSources.at(-1), pending); assert.equal(streamSources.length, count); assert.equal(pending.closed, false);
   assert.equal(app.state.notices.some(notice => notice.id === 'late-hidden-ready'), false); assert.equal(primaryControl('editor'), editor);
   assert.equal(editor.value, saved.primary.draft.text); assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [2, 7, 'backward']); assert.equal(hostDocument.activeElement, editor);
   assert.deepEqual(app.state.workspace?.conversationLayout, tree); assert.deepEqual(app.state.workspace?.selectedTarget, target); assert.equal(selectionSaves.length, saves);
 });
-test('hide during recovery reload aborts that owner and ignores its late snapshot after reveal', async t => {
-  await devHookFixture('hide-reload', 9665); const fetch = globalThis.fetch, response = Promise.withResolvers<Response>(); let calls = 0; let oldSignal: AbortSignal | null | undefined;
-  const stale = snapshotOf(browser.fixture, browser.cursorSequence); const before = streamSources.length;
+test('hide during recovery reload retains its owner and reveal does not duplicate the snapshot', async t => {
+  const recovery = preparationRecovery();
+  await devHookFixture('hide-reload', 9665); const fetch = globalThis.fetch, response = Promise.withResolvers<Response>(); let calls = 0; let currentSignal: AbortSignal | null | undefined;
+  const captured = snapshotOf(browser.fixture, browser.cursorSequence), before = streamSources.length, editor = primaryControl('editor'), text = editor.value;
+  editor.focus(); editor.setSelectionRange(2, 7, 'backward');
   globalThis.fetch = async (input, init) => {
-    if (new URL(String(input), 'http://ui.test').pathname === '/api/snapshot' && ++calls === 1) {oldSignal = init?.signal; return response.promise;}
+    if (new URL(String(input), 'http://ui.test').pathname === '/api/snapshot' && ++calls === 1) {currentSignal = init?.signal; return response.promise;}
     return fetch(input, init);
   };
-  t.after(async () => {globalThis.fetch = fetch; response.resolve(Response.json({ok: true, data: stale})); pageHidden(false); await settle(); streamSources.at(-1)?.emit('ready', {bootId: 'boot'}); await settle();});
-  pageHidden(true); pageHidden(false); await settle(); assert.equal(calls, 1); assert.equal(streamSources.length, before);
-  pageHidden(true); await settle(); assert.equal(oldSignal?.aborted, true); assert.equal(streamSources.length, before);
-  pageHidden(false); await settle(); assert.ok(calls >= 2); assert.equal(streamSources.length, before + 1); const fresh = streamSources.at(-1); assert.ok(fresh);
-  fresh.emit('ready', {bootId: 'boot'}); await settle(); const cursor = app.state.cursor, workspace = app.state.workspace;
-  response.resolve(Response.json({ok: true, data: stale})); await settle(); assert.equal(streamSources.length, before + 1); assert.equal(app.state.cursor, cursor); assert.equal(app.state.workspace, workspace); assert.equal(fresh.closed, false); assert.equal(primaryControl('send').disabled, false);
+  t.after(async () => {globalThis.fetch = fetch; response.resolve(Response.json({ok: true, data: captured})); await settle(); await recovery.dispose();});
+  await recovery.disconnect(); await recovery.attempt(); assert.equal(calls, 1); assert.equal(streamSources.length, before);
+  pageHidden(true); await settle(); assert.equal(currentSignal?.aborted, false); assert.equal(streamSources.length, before);
+  response.resolve(Response.json({ok: true, data: captured})); await settle(); assert.equal(streamSources.length, before + 1);
+  const fresh = streamSources.at(-1); assert.ok(fresh); await recovery.ready(); assert.equal(hostDocument.hidden, true);
+  const cursor = app.state.cursor, workspace = app.state.workspace, completedReads=calls; pageHidden(false); await settle();
+  assert.equal(calls, completedReads); assert.equal(streamSources.length, before + 1); assert.equal(app.state.cursor, cursor); assert.equal(app.state.workspace, workspace); assert.equal(fresh.closed, false); assert.equal(primaryControl('send').disabled, false);
+  assert.equal(primaryControl('editor'), editor); assert.equal(editor.value, text); assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [2, 7, 'backward']); assert.equal(hostDocument.activeElement, editor);
 });
-test('hide cancels a queued recovery retry and refuses its late callback before one reveal attempt', async t => {
-  await devHookFixture('hide-retry', 9666); const set = view.setTimeout, clear = view.clearTimeout; let serial = 0;
-  const queued = new Map<number, () => void>();
-  view.setTimeout = (run, delay = 0) => {if (delay > 0 && delay <= 750) {const id = --serial; queued.set(id, run); return id;} return set(run, delay);};
-  view.clearTimeout = id => {if (typeof id === 'number' && id < 0) queued.delete(id); else clear(id);};
-  t.after(async () => {view.setTimeout = set; view.clearTimeout = clear; pageHidden(false); await settle(); streamSources.at(-1)?.emit('ready', {bootId: 'boot'}); await settle();});
-  const current = streamSources.at(-1); assert.ok(current); current.onerror?.(); const retry = [...queued.values()].at(-1); assert.ok(retry); const count = streamSources.length;
-  pageHidden(true); assert.equal(queued.size, 0); retry(); current.onerror?.(); await settle(); assert.equal(streamSources.length, count);
-  pageHidden(false); await settle(); assert.equal(streamSources.length, count + 1); const fresh = streamSources.at(-1); assert.ok(fresh); fresh.emit('ready', {bootId: 'boot'}); await settle(); assert.equal(primaryControl('send').disabled, false);
+test('hide retains a queued recovery retry and reveal does not add another attempt', async t => {
+  const recovery = preparationRecovery(); t.after(async () => {await recovery.dispose();});
+  await devHookFixture('hide-retry', 9666);
+  const current = await recovery.disconnect(), count = streamSources.length;
+  const retry = [...recovery.queued.values()].find(item => item.delay <= 250); assert.ok(retry);
+  pageHidden(true); assert.ok([...recovery.queued.values()].includes(retry)); await recovery.attempt();
+  assert.equal(hostDocument.hidden, true); assert.equal(streamSources.length, count + 1); const fresh = streamSources.at(-1); assert.ok(fresh); assert.notEqual(fresh, current);
+  current.onerror?.(); await settle(); assert.equal(streamSources.length, count + 1);
+  await recovery.ready(); pageHidden(false); await settle(); assert.equal(streamSources.at(-1), fresh); assert.equal(streamSources.length, count + 1); assert.equal(primaryControl('send').disabled, false);
 });
 test('message panel moves the existing form outside the roster without changing the main view', async () => {
   const row=agentFixture('movable-message'); await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:{kind:'agent',identity:row.identity},conversationLayout:twoPanes(row.identity)},primaries:[primaryFixture({epoch:706})],roster:[row]});
@@ -852,8 +891,9 @@ test('individual thinking collapse clears the local all-thinking check before a 
   thinkingChoice().click(); await settle(); assert.equal(disclosure.open, true); assert.equal(thinkingChoice().getAttribute('aria-checked'), 'true');
 });
 test('disconnected thinking changes alternate locally without claiming a saved preference', async context => {
-  context.after(async () => {contextMenu.close(); pageHidden(false); await settle(); streamSources.at(-1)?.emit('ready', {bootId: 'boot'}); await settle();});
-  const saved = await thinkingFixture(8403); pageHidden(true); await settle(); assert.equal(primaryControl('send').disabled, true);
+  const recovery = preparationRecovery();
+  context.after(async () => {contextMenu.close(); await recovery.dispose();});
+  const saved = await thinkingFixture(8403); await recovery.disconnect(); assert.equal(primaryControl('send').disabled, true);
   const before = transportLog.length;
   thinkingChoice().click(); await settle(); assert.equal(thinkingDisclosure().open, true); assert.equal(thinkingChoice().getAttribute('aria-checked'), 'true');
   thinkingChoice().click(); await settle(); assert.equal(thinkingDisclosure().open, false); assert.equal(thinkingChoice().getAttribute('aria-checked'), 'false');
@@ -877,7 +917,7 @@ test('only arrived roster and availability events invalidate message preparation
   assert.match(source, /messageTarget\.current && !messageTarget\.current\.invalidated\) await waitForSignal\(messageTarget\.open\(messageTarget\.current\.identity\), signal\)/);
 });
 test('Resume uses revision-aware reconciliation and restores its exact buffer while prepare is pending', async () => {
-  assert.ok(source.includes('controller?.composer.retained(workspace, target, index)')); assert.ok(source.includes('controller.composer.attachRetained(captured.workspaceId, target)')); assert.ok(source.includes('controller.composer.availability(connected, ready, false, selecting)')); assert.ok(source.includes('current.draft.revision >= prepared.draft.revision'));
+  assert.ok(source.includes('controller?.composer.retained(workspace, target, index)')); assert.ok(source.includes('controller.composer.attachRetained(captured.workspaceId, target)')); assert.ok(source.includes('controller.composer.availability(connected, !!controller.saved, view.busy, selecting, view.input)')); assert.ok(source.includes('current.draft.revision >= prepared.draft.revision'));
 });
 test('the app delegates composer recovery without a duplicate renderer or hook', () => {
   assert.doesNotMatch(source, /function recover\(|recover: recover|exactInput/);
@@ -886,7 +926,7 @@ test('the app delegates composer recovery without a duplicate renderer or hook',
 });
 
 test('visible controls supplement the palette without a header band or title click action', async () => {
-  for(const id of ['session-open','session-new','agent-new','commands-button','notifications-button','appearance-button'])assert.ok(byId(id)); assert.doesNotMatch(html,/window-actions|pane-heading|key-hint|id="notices-button"/); assert.ok(source.includes('focusedTranscript()?.expandLoaded')); assert.ok(source.includes("byId('notices-count').hidden = !unread")); assert.ok(source.includes("byId('workbench-activity').title = notice ? '' : view.detail ?? ''")); assert.ok(source.includes("!view.busy && view.responseOutcome === 'failed'")); assert.doesNotMatch(source, /Retrying after/); assert.ok(source.includes('if (item?.lastError)')); assert.doesNotMatch(source, /byId\('(?:session-title|agent-name)'\)\.addEventListener\('click'/); for (const binding of ["byId('session-new').addEventListener('click'", "byId('agent-refresh').addEventListener('click', refreshRoster)", "byId('agent-new').addEventListener('click'", "byId('commands-button').addEventListener('click', () => actions.palette())", "byId('notifications-button').addEventListener('click', notices)", "byId('appearance-button').addEventListener('click', () => actions.appearance())"]) assert.ok(source.includes(binding));
+  for(const id of ['session-open','session-new','agent-new','commands-button','notifications-button','appearance-button'])assert.ok(byId(id)); assert.doesNotMatch(html,/window-actions|pane-heading|key-hint|id="notices-button"/); assert.ok(source.includes('focusedTranscript()?.expandLoaded')); assert.ok(source.includes("byId('notices-count').hidden = !unread")); assert.ok(source.includes("const activity = byId('workbench-activity'); activity.title = notice ? '' : view.detail ?? ''")); assert.ok(source.includes("!view.busy && view.responseOutcome === 'failed'")); assert.doesNotMatch(source, /Retrying after/); assert.ok(source.includes('if (item?.lastError)')); assert.doesNotMatch(source, /byId\('(?:session-title|agent-name)'\)\.addEventListener\('click'/); for (const binding of ["byId('session-new').addEventListener('click'", "byId('agent-refresh').addEventListener('click', refreshRoster)", "byId('agent-new').addEventListener('click'", "byId('commands-button').addEventListener('click', () => actions.palette())", "byId('notifications-button').addEventListener('click', notices)", "byId('appearance-button').addEventListener('click', () => actions.appearance())"]) assert.ok(source.includes(binding));
 });
 
 test('project identity names both direct controls with a launch-directory fallback', async () => {
@@ -927,7 +967,9 @@ test('unnamed same-prefix agents keep distinct tab footer and native message lab
   const identities=['12345678-aaaa-4bbb-8ccc-000000001001','12345678-aaaa-4bbb-8ccc-000000002002'],first=identities[0];assert.ok(first);
   const layout=singlePane(identities.map(identity=>({kind:'agent' as const,identity}))),workspace={id:'readable-identities',revision:1,selectedTarget:{kind:'agent' as const,identity:first},conversationLayout:layout};
   await arrive({workspace,primaries:[],roster:identities.map(identity=>agentFixture(identity,{name:identity,handle:undefined}))});
-  const nodes=tabsNode().children;assert.deepEqual(nodes.map(node=>node.querySelector('.tab-label')?.textContent),['Unnamed conversation','Unnamed conversation']);
+  const nodes=tabsNode().children;assert.equal(nodes[0]?.querySelector('.tab-label')?.textContent,'Unnamed conversation');
+  assert.equal(nodes[1]?.querySelector('.tab-label')?.textContent,`Unnamed · ${nodes[1]?.querySelector('.tab-identity')?.textContent}`);
+  assert.ok(nodes.every(node => (node.getAttribute('aria-label') ?? '').includes('Unnamed conversation')));
   const tails = nodes.map(node=>node.querySelector('.tab-identity')?.textContent); assert.equal(new Set(tails).size,2); for (const tail of tails) assert.match(tail ?? '', /^\d+$/);
   const firstTail = tails[0]; assert.equal(byId('workbench-scope').textContent,`Unnamed conversation · ${firstTail}`);assert.equal(agentControl('recipient').textContent,`Message Unnamed conversation · ${firstTail}`);const editor=agentControl('editor');
   await arrive({workspace:{...workspace,revision:2},primaries:[],roster:[...identities].reverse().map(identity=>agentFixture(identity,{name:'Review'}))});
@@ -1065,9 +1107,9 @@ test('every theme uses the existing appearance dataset path and dark stays the d
     assert.equal(hostDocument.documentElement.dataset.appearance, appearance ?? 'dark');
   }
 });
-test('editors keep accessible recipient labels and the common placeholder', async () => {
+test('editors keep accessible recipient labels and recipient placeholders', async () => {
   const row=agentFixture('labels-agent'); await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:{kind:'agent',identity:row.identity},conversationLayout:twoPanes(row.identity)},primaries:[primaryFixture({epoch:709})],roster:[row]});
-  for(const control of [primaryControl,agentControl]){const editor=control('editor') as HostNode & {placeholder:string}; assert.equal(editor.placeholder,'Write a message…'); assert.equal((control('recipient') as HostNode & {htmlFor:string}).htmlFor,editor.id); assert.match(control('recipient').textContent,/^Message /);}
+  for(const control of [primaryControl,agentControl]){const editor=control('editor') as HostNode & {placeholder:string}; assert.equal(editor.placeholder,`${control('recipient').textContent.replace(/^Draft for /, 'Message ')}…`); assert.equal((control('recipient') as HostNode & {htmlFor:string}).htmlFor,editor.id); assert.match(control('recipient').textContent,/^Message /);}
 });
 
 test('pane tabs keep separate menus and focused facts while both target owners stay retained', async () => {
@@ -1270,7 +1312,7 @@ test('loaded assistant usage refreshes on completed messages and history, not st
   flushFrames(); await settle();
   assert.ok(usageNode.writes > baseline);
   assert.match(usageNode.textContent, /input 4, cache read 4, cache write 0/);
-  assert.match(byId('primary-usage-summary').textContent, /Cache 50% · loaded/);
+  assert.match(byId('primary-usage-summary').textContent, /Cache 50%/); assert.match(usageNode.textContent, /Loaded assistant window only/);
   assert.doesNotMatch(byId('primary-usage-summary').textContent, /●/);
   assert.ok(descendants(primaryControl('transcript')).some(node => node.textContent.includes('streaming')));
   const final = {...messageFixture('history-usage', [textPart('Earlier usage')]), usage: {input: 9, cacheRead: 3, cacheWrite: 0}};
@@ -1324,8 +1366,8 @@ test('context menus capture inactive tabs and never close a later selection', as
   await arrive(base);const stale=tabsNode().querySelector('[data-tab-key="agent:menu-a"]');assert.ok(stale);pressContext(stale);const staleClose=menuNode().children.find(node=>node.textContent==='Close tab');assert.ok(staleClose);app.applyLayout(activatePaneTab(layout,'pane-1','agent:menu-b'));await settle();const saves=selectionSaves.length;staleClose.click();await settle();assert.equal(selectionSaves.length,saves);assert.deepEqual(app.state.workspace?.selectedTarget,{kind:'agent',identity:'menu-b'});assert.match(byId('announcements').textContent,/changed.*again/);
 });
 test('agent and Primary pane menus expose supported actions while text inputs keep native menus', async () => {
-  await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:{kind:'agent',identity:'context-agent'},conversationLayout:twoPanes('context-agent')},primaries:[primaryFixture({epoch:714})],roster:[agentFixture('context-agent',{capabilities:{input:true,inspect:true}})]});app.openConversationActions('agent-pane');for(const label of ['Show conversation','Message','Copy agent ID','Conversation details','View activity…'])assert.ok(menuNode().children.some(node=>node.textContent===label));assert.equal(menuNode().children.some(node=>node.textContent==='New session'),false);contextMenu.close();assert.equal(hostDocument.activeElement,paneNode('agent-pane').querySelector('.pane-menu'));
-  pressContext(primaryControl('editor'));assert.equal(contextMenu.openNow,false);app.openConversationActions('primary-pane');assert.equal(menuNode().children.some(node=>['Appearance','Help','Model','Thinking','Refresh agent roster'].includes(node.textContent)),false); assert.ok(menuNode().children.some(node=>node.textContent==='Commands…')); const thinking = menuNode().children.find(node=>node.textContent==='Show thinking'); assert.ok(thinking); assert.equal(thinking.getAttribute('role'),'menuitemcheckbox'); assert.equal(thinking.getAttribute('aria-checked'),'false'); assert.equal(menuNode().children.some(node=>node.textContent==='Hide thinking'),false);contextMenu.close();
+  await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:{kind:'agent',identity:'context-agent'},conversationLayout:twoPanes('context-agent')},primaries:[primaryFixture({epoch:714})],roster:[agentFixture('context-agent',{capabilities:{input:true,inspect:true}})]});app.openConversationActions('agent-pane');for(const label of ['Message','Copy agent ID','Conversation details','Tasks'])assert.ok(menuNode().children.some(node=>node.textContent===label));assert.equal(menuNode().children.some(node=>node.textContent==='New session'),false);contextMenu.close();assert.equal(hostDocument.activeElement,paneNode('agent-pane').querySelector('.pane-menu'));
+  pressContext(primaryControl('editor'));assert.equal(contextMenu.openNow,false);app.openConversationActions('primary-pane');assert.equal(menuNode().children.some(node=>['Appearance','Help','Model','Thinking','Refresh agent roster'].includes(node.textContent)),false); assert.ok(menuNode().children.some(node=>node.textContent==='Commands…')); const thinking = menuNode().children.find(node=>node.textContent==='Show thinking'); assert.ok(thinking); assert.equal(thinking.getAttribute('role'),'menuitemcheckbox'); assert.equal(thinking.getAttribute('aria-checked'),'true'); assert.equal(menuNode().children.some(node=>node.textContent==='Hide thinking'),false); assert.equal(menuNode().children.some(node=>node.textContent==='Show conversation'),false);contextMenu.close();
 });
 test('status settings label model and thinking while retaining picker accessible names', () => {
   app.primaryChrome({cwd: '/fixture', lifecycle: 'ready', model: {provider: 'provider', id: 'model', name: 'Model', reasoning: false, input: ['text']}, thinkingLevel: 'high'} as PrimaryView);
@@ -1419,7 +1461,7 @@ test('the conversation list reuses exact tab activation without a new navigation
   const layout = singlePane([{kind: 'primary'}, {kind: 'agent', identity: 'list-a'}, {kind: 'agent', identity: 'list-b'}]);
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', conversationLayout: layout}, primaries: [primaryFixture({epoch: 715})], roster: [agentFixture('list-a', {name: 'Review'}), agentFixture('list-b', {name: 'Review'})]});
   const rows = byId('sidebar-conversations').querySelectorAll('.conversation-row'); assert.equal(rows.length, 3); assert.notEqual(rows[1]?.textContent, rows[2]?.textContent); assert.notEqual(rows[1]?.getAttribute('aria-label'), rows[2]?.getAttribute('aria-label'));
-  for (const [index, row] of rows.entries()) {const status = row.querySelector('.conversation-state'); assert.ok(status); assert.equal(status.getAttribute('aria-hidden'), 'true'); assert.equal(status.querySelector('svg'), null); assert.equal(status.textContent, index === 0 ? 'Working' : 'Connection not checked'); assert.equal(status.title, index === 0 ? 'Working' : 'Connection not checked'); assert.match(row.getAttribute('aria-label') ?? '', index === 0 ? /Working/ : /Connection not checked/);}
+  for (const [index, row] of rows.entries()) {const status = row.querySelector('.conversation-state'); assert.ok(status); assert.equal(status.getAttribute('aria-hidden'), 'true'); assert.equal(status.querySelector('svg'), null); assert.equal(status.textContent, index === 0 ? '•' : ''); assert.equal(status.title, index === 0 ? 'Working' : 'Connection not checked'); assert.match(row.getAttribute('aria-label') ?? '', index === 0 ? /Working/ : /Connection not checked/);}
   rows[2]?.click(); await settle(); assert.deepEqual(app.state.workspace?.selectedTarget, {kind: 'agent', identity: 'list-b'}); assert.equal(hostDocument.activeElement, agentControl('editor')); assert.equal(rows[2]?.getAttribute('aria-current'), 'true');
 });
 
@@ -1491,7 +1533,7 @@ test('Message panel settings describe its captured agent instead of a prior agen
   const editor = messageControl('editor'); editor.value = 'Keep the recipient draft'; editor.dispatch('input'); editor.focus(); editor.setSelectionRange(3, 8);
   event('agent.availability', {identity: row.identity, connectionEpoch: app.state.agentEpochs.get(row.identity) ?? 1, state: 'live', capabilities: {input: false}});
   assert.match(byId('agent-message-status').textContent, /Message access changed/); assert.equal(messageControl('recipient').textContent, 'Draft for Recipient');
-  assert.equal(messageControl('send').disabled, true); assert.equal(messageControl('editor'), editor); assert.equal(editor.value, 'Keep the recipient draft'); assert.deepEqual([editor.selectionStart, editor.selectionEnd], [3, 8]);
+  assert.equal(messageControl('send').disabled, false); assert.equal(messageControl('editor'), editor); assert.equal(editor.value, 'Keep the recipient draft'); assert.deepEqual([editor.selectionStart, editor.selectionEnd], [3, 8]);
   assert.equal(hostDocument.activeElement, editor); assert.doesNotMatch(messageControl('send').getAttribute('aria-description') ?? '', /not connected/);
   const retry = byId('agent-message-retry'); assert.equal(retry.hidden, false); assert.equal(retry.disabled, false); assert.equal(retry.textContent, 'Check connection');
   const preparations = transportLog.filter(call => call.path.endsWith('/targets')).length;
@@ -1524,17 +1566,17 @@ test('the sidebar avoids a duplicate Primary destination and retains its closed-
   assert.equal(paneLeaves(app.state.workspace?.conversationLayout?.root ?? singlePane([]).root)[0]?.tabs[0]?.kind, 'primary');
 });
 
-test('stored connection checks keep both drafts and use only exact-target preparation', async () => {
+test('stored connection checks keep both drafts and reserve only exact-target input', async () => {
   const target = {kind: 'agent' as const, identity: 'stored-check'};
   const primaryTarget = {kind: 'primary' as const, key: 'p', epoch: 2};
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: target, panelVisible: true}, primaries: [primaryFixture({epoch: 2})], roster: [agentFixture(target.identity, {availability: 'stored', capabilities: {input: false}})], targets: [targetFixture('check-primary', primaryTarget, {draft: {revision: 7, text: 'Primary keep', mode: 'prompt', persisted: true}}), targetFixture('check-agent', target, {draft: {revision: 7, text: 'Agent keep', mode: 'followUp', persisted: true}})]});
   const primaryEditor = primaryControl('editor'); const agentEditor = agentControl('editor');
   assert.equal(agentControl('agent-state').hidden, false); agentControl('start-in-pi').click(); assert.match(byId('modal-body').textContent, /agent attach stored-check/); byId('modal-close').click();
-  assert.equal(byId('agent-usage-details').hidden, false); assert.equal(agentControl('editor').disabled, false); assert.equal(agentControl('send').disabled, true);
+  assert.equal(byId('agent-usage-details').hidden, false); assert.equal(agentControl('editor').disabled, false); assert.equal(agentControl('send').disabled, false);
   assert.match(byId('agent-usage').textContent, /Cache usage is not reported/); assert.equal(byId('agent-usage-summary').textContent, '');
   const start = transportLog.length; await app.checkAgentConnection('w', target.identity); await settle();
-  const mutations = transportLog.slice(start).filter(item => item.method === 'POST'); assert.deepEqual(mutations.map(item => item.path), ['/api/workspaces/w/targets']);
-  assert.deepEqual(mutations[0]?.body, {target}); assert.equal(primaryControl('editor'), primaryEditor); assert.equal(agentControl('editor'), agentEditor);
+  const mutations = transportLog.slice(start).filter(item => item.method === 'POST'); assert.deepEqual(mutations.map(item => item.path), ['/api/workspaces/w/targets','/api/operations']);
+  assert.deepEqual(mutations[0]?.body, {target});assert.deepEqual(mutations[1]?.body,{kind:'agent.input',target});assert.equal(transportLog.slice(start).some(call=>call.path.includes('/inputs')||call.path.endsWith('/start')),false); assert.equal(primaryControl('editor'), primaryEditor); assert.equal(agentControl('editor'), agentEditor);
   assert.equal(primaryEditor.value, 'Primary keep'); assert.equal(agentEditor.value, 'Agent keep'); assert.deepEqual(app.state.workspace?.selectedTarget, target);
 });
 
@@ -1584,32 +1626,33 @@ function confirmLaunch(identity: string): Response {
 }
 
 test('Check connection cannot select or accept a result from a retired stream', async t => {
+  const recovery = preparationRecovery();
   const original = globalThis.fetch, pending = Promise.withResolvers<Response>(), b = agentFixture('late-explicit-check'), target = {kind: 'agent' as const, identity: b.identity}, saved = targetFixture('late-explicit-check', target, {draft: {revision: 4, text: 'Keep checked draft', mode: 'followUp', persisted: true}});
-  t.after(async () => {pending.resolve(Response.json({ok: true, data: {targetState: saved, availability: 'live', capabilities: b.capabilities}})); globalThis.fetch = original; await restorePreparationConnection();});
+  t.after(async () => {pending.resolve(Response.json({ok: true, data: {targetState: saved, availability: 'live', capabilities: b.capabilities}})); globalThis.fetch = original; await settle(); await recovery.dispose();});
   await arrive({workspace: {id: 'late-explicit-check', revision: 1, selectedTarget: target}, primaries: [], roster: [b], targets: [saved], confirmed: false});
   const editor = agentControl('editor'); editor.setSelectionRange(2, 6, 'backward');
   globalThis.fetch = async (input, init) => new URL(String(input), 'http://ui.test').pathname.endsWith('/targets') && init?.method === 'POST' ? pending.promise : original(input, init);
-  const selections = selectionSaves.length, checking = app.checkAgentConnection('late-explicit-check', b.identity); await settle(); await interruptPreparation('reconnect');
+  const selections = selectionSaves.length, checking = app.checkAgentConnection('late-explicit-check', b.identity); await settle(); await interruptPreparation('reconnect', recovery);
   pending.resolve(Response.json({ok: true, data: {targetState: saved, availability: 'live', capabilities: b.capabilities}})); await checking; await settle();
-  assert.equal(selectionSaves.length, selections); assert.equal(agentControl('send').disabled, true); assert.doesNotMatch(tabsNode().querySelector('[data-tab-key="agent:late-explicit-check"]')?.title ?? '', /Connected|Ready/);
+  assert.equal(selectionSaves.length, selections); assert.equal(agentControl('send').disabled, false); assert.doesNotMatch(tabsNode().querySelector('[data-tab-key="agent:late-explicit-check"]')?.title ?? '', /Connected|Ready/);
   assert.equal(agentControl('editor'), editor); assert.equal(editor.value, saved.draft.text); assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [2, 6, 'backward']);
 });
 
 test('a stored Start response across stream replacement retains uncertainty without another Start', async t => {
-  const pending = Promise.withResolvers<Response>(), identity = 'late-stored-start';
-  t.after(async () => {pending.resolve(Response.json({ok: false, error: {code: 'not_ready', message: 'Retired start', retry: 'manual'}})); browser.startPreparation = undefined; await restorePreparationConnection();});
+  const pending = Promise.withResolvers<Response>(), identity = 'late-stored-start', recovery = preparationRecovery();
+  t.after(async () => {pending.resolve(Response.json({ok: false, error: {code: 'not_ready', message: 'Retired start', retry: 'manual'}})); browser.startPreparation = undefined; await settle(); await recovery.dispose();});
   await storedLaunchFixture(identity); const editor = agentControl('editor'); editor.setSelectionRange(2, 6, 'backward'); const before = transportLog.length;
-  browser.startPreparation = async () => pending.promise; const starting = app.startStoredAgent('w', identity); await settle(); await interruptPreparation('reconnect');
+  browser.startPreparation = async () => pending.promise; const starting = app.startStoredAgent('w', identity); await settle(); await interruptPreparation('reconnect', recovery);
   pending.resolve(Response.json({ok: true, data: {...fixturePreparation({kind: 'agent', identity}), availability: 'live', capabilities: agentFixture(identity).capabilities}})); await starting; await settle();
-  assert.equal(agentControl('send').disabled, true); assert.match(agentControl('agent-state-line').textContent, /^Start not confirmed/); assert.match(agentControl('agent-state-line').title, /browser connection changed/); assert.equal(agentControl('start').hidden, true);
+  assert.equal(agentControl('send').disabled, false); assert.match(agentControl('agent-state-line').textContent, /^Start not confirmed/); assert.match(agentControl('agent-state-line').title, /browser connection changed/); assert.equal(agentControl('start').hidden, true);
   assert.equal(agentControl('editor'), editor); assert.equal(editor.value, 'Agent launch keep'); assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [2, 6, 'backward']);
   assert.equal(transportLog.slice(before).filter(call => call.path.endsWith('/start')).length, 1); assert.equal(transportLog.slice(before).some(call => call.path.includes('/inputs')), false);
 });
 
 for (const action of ['Check', 'Start']) test(`${action} does not restore preparation after disconnect during snapshot confirmation`, async t => {
-  const original = globalThis.fetch, entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(); let hold = true;
+  const original = globalThis.fetch, entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), recovery = preparationRecovery(); let hold = true;
   const identity = `post-response-${action}`;
-  t.after(async () => {release.resolve(); globalThis.fetch = original; browser.startPreparation = undefined; await restorePreparationConnection();});
+  t.after(async () => {release.resolve(); globalThis.fetch = original; browser.startPreparation = undefined; await settle(); await recovery.dispose();});
   await storedLaunchFixture(identity); const editor = agentControl('editor'); editor.setSelectionRange(2, 6, 'backward');
   globalThis.fetch = async (input, init) => {
     const path = new URL(String(input), 'http://ui.test').pathname;
@@ -1619,8 +1662,8 @@ for (const action of ['Check', 'Start']) test(`${action} does not restore prepar
   };
   browser.startPreparation = async () => confirmLaunch(identity);
   const confirming = action === 'Check' ? app.checkAgentConnection('w', identity) : app.startStoredAgent('w', identity); await entered.promise;
-  streamSources.at(-1)?.onerror?.(); release.resolve(); await confirming; await settle();
-  assert.equal(agentControl('send').disabled, true); assert.doesNotMatch(tabsNode().querySelector(`[data-tab-key="agent:${identity}"]`)?.title ?? '', /Connected|Ready/);
+  await recovery.disconnect(); release.resolve(); await confirming; await settle();
+  assert.equal(agentControl('send').disabled, false); assert.doesNotMatch(tabsNode().querySelector(`[data-tab-key="agent:${identity}"]`)?.title ?? '', /Connected|Ready/);
   assert.equal(agentControl('editor'), editor); assert.equal(editor.value, 'Agent launch keep'); assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [2, 6, 'backward']);
   if (action === 'Start') {assert.match(agentControl('agent-state-line').textContent, /^Start not confirmed/); assert.match(agentControl('agent-state-line').title, /browser connection changed/);}
 });
@@ -1670,7 +1713,7 @@ test('uncertain stored Start remains attach-only across navigation and keeps the
   assert.equal(transportLog.slice(before).filter(call => call.path.includes('/inputs')).length, 0);
 });
 
-test('connection checks retain uncertainty until the selected observation confirms usable input', async t => {
+test('exact connection checks clear Start uncertainty independently of observation', async t => {
   t.after(() => { browser.startPreparation = undefined; }); const identity = 'unobserved-check'; await storedLaunchFixture(identity);
   browser.startPreparation = async () => Response.json({ok: false, error: {code: 'not_ready', message: 'No readiness.', retry: 'manual'}});
   await app.startStoredAgent('w', identity); const editor = agentControl('editor'); editor.focus(); editor.setSelectionRange(2, 7);
@@ -1681,7 +1724,7 @@ test('connection checks retain uncertainty until the selected observation confir
   });
   const before = transportLog.length; await app.checkAgentConnection('w', identity); await settle();
   assert.equal(agentControl('start').hidden, true); assert.equal(agentControl('start-in-pi').hidden, true);
-  assert.match(agentControl('agent-state-line').textContent, /^Start not confirmed\./); assert.equal(agentControl('send').disabled, true);
+  assert.doesNotMatch(agentControl('agent-state-line').textContent, /^Start not confirmed\./); assert.equal(agentControl('send').disabled, false);
   assert.deepEqual(app.state.workspace?.selectedTarget, {kind: 'agent', identity}); assert.equal(editor.value, 'Agent launch keep');
   assert.equal(hostDocument.activeElement, editor); assert.deepEqual([editor.selectionStart, editor.selectionEnd], [2, 7]);
   const selections = transportLog.slice(before).filter(call => call.path.endsWith('/selection')); assert.equal(selections.length, 1);
@@ -1710,7 +1753,7 @@ test('stored Start refuses a wrong prepared recipient or missing input and stale
     const identity = `invalid-start-${invalid}`; await storedLaunchFixture(identity); const before = transportLog.length;
     browser.startPreparation = async () => Response.json({ok: true, data: {targetState: targetFixture('invalid-preparation', {kind: 'agent', identity: invalid === 'wrong-recipient' ? 'different' : identity}), availability: 'live', capabilities: {input: invalid !== 'no-input'}}});
     await app.startStoredAgent('w', identity); await settle(); assert.match(agentControl('agent-state-line').textContent, /^Start not confirmed\./);
-    assert.equal(agentControl('send').disabled, true); assert.equal(agentControl('start').hidden, true);
+    assert.equal(agentControl('send').disabled, false); assert.equal(agentControl('start').hidden, true);
     await app.startStoredAgent('wrong-workspace', identity); await app.startStoredAgent('w', 'different');
     assert.equal(transportLog.slice(before).filter(call => call.path.endsWith('/start')).length, 1);
     assert.equal(transportLog.slice(before).filter(call => call.path.includes('/inputs')).length, 0);
@@ -1773,7 +1816,7 @@ test('Message panel uses its captured loaded cache and ignores unaccepted late f
   const before = transportLog.length;
   event('agent.frame', {identity: row.identity, connectionEpoch: 0, frame: {...frame, revision: 2, status: {busy: false, model: {provider: 'unaccepted', modelId: 'late-model'}}}}); flushFrames(); await settle();
   assert.equal(byId('agent-status').textContent, 'Model live-model · Thinking low (retained)');
-  assert.match(byId('agent-usage-summary').textContent, /Cache 50% · loaded/); assert.doesNotMatch(byId('agent-usage').textContent, /Primary|whole-session cost|context window/);
+  assert.match(byId('agent-usage-summary').textContent, /Cache 50%/); assert.match(byId('agent-usage').textContent, /Loaded assistant window only/); assert.doesNotMatch(byId('agent-usage').textContent, /Primary|whole-session cost|context window/);
   assert.equal(byId('agent-folder').textContent, 'Saved folder /saved/recipient');
   event('agent.frame', {identity: 'other-recipient', connectionEpoch: 1, frame: {...frame, status: {busy: true, model: {provider: 'other', modelId: 'not-recipient'}}}}); flushFrames(); await settle();
   assert.equal(byId('agent-status').textContent, 'Model live-model · Thinking low (retained)');
@@ -1870,7 +1913,7 @@ test('held Agent capabilities block the captured Stop control without a reservat
 });
 
 test('a stale Stop confirmation cannot dispatch after its captured owner leaves the active pane', async () => {
-  const identity = 'stale-stop-owner'; await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'agent', identity}, conversationLayout: twoPanes(identity)}, primaries: [primaryFixture({epoch: 9531})], roster: [agentFixture(identity)], observations: [observation(identity)]});
+  const identity = 'stale-stop-owner'; await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'agent', identity}, conversationLayout: twoPanes(identity)}, primaries: [primaryFixture({epoch: 9531})], roster: [agentFixture(identity)], observations: [observation(identity, {revision: 1, observedAt: 'now', entries: [], live: [], nextBefore: null, status: {busy: true}, coverage})]});
   const owner = controls(app.agentComposer()); owner('stop').click(); await settle();
   assert.equal(byId('modal').open, true); const confirm = byId('modal-body').querySelector('button.danger'); assert.ok(confirm); const before = transportLog.length;
   app.applyLayout(singlePane()); await settle(); const editor = primaryControl('editor'); editor.focus(); confirm.click(); await settle();

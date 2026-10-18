@@ -4,7 +4,7 @@ import { resolve, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import type { Bootstrap, PrimaryView } from "../shared/api.ts";
-import { launchBrave, type Page } from "./cdp.mts";
+import { launchBrowser, type Page } from "./cdp.mts";
 
 export type Options = { url: string; out: string; fake: boolean; cwd?: string; session?: string; prompt: string; dialogPrompt?: string };
 export function options(args: string[]): Options {
@@ -234,11 +234,11 @@ async function fixtureControls(page: Page, config: Options, check: RunCheck): Pr
 
 export async function runSmoke(config: Options): Promise<Report> {
   await mkdir(config.out, { recursive: true });
-  const browser = await launchBrave(); const page = browser.page;
+  const browser = await launchBrowser(); const page = browser.page;
   const report: Report = { browser: browser.version, viewport: { width: 1440, height: 900 },
     mode: config.fake ? "deterministic fixture, not real integration acceptance" : "no-prompt browser inspection",
     checks: [], screenshots: [], timings: {}, boundaries: [
-      "Headless Brave only. Safari and foreground display acceptance remain unavailable.",
+      "Explicit headless browser only. Safari and foreground display acceptance remain unavailable.",
       "No paid provider prompts. Fixture results do not establish real Pi model, tool, extension, or Durable behavior.",
       "No native agent input or abort without an authorized disposable agent fixture.",
       "No terminal process starts. Actual terminal identity and sole-writer handoff remain unavailable.",

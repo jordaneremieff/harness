@@ -195,11 +195,12 @@ test('explicit send reserves a passive draft and passive settlement never prepar
   await sending; assert.equal(f.reservations(), 1); assert.equal(f.submitted.length, 1); assert.equal(f.composer.editor.value, '');
   f.composer.availability(true, true, false); await turn(); assert.equal(f.reservations(), 1); f.composer.destroy();
 });
-test('captured image send still checks image capability after a newer text-only edit', async () => {
+test('captured image send retains its exact tuple after a newer text-only edit', async () => {
   let allowed = true; const f = fixture('primary', undefined, true, undefined, () => false, () => ({allowed, reason: 'No image input'}));
-  f.connect(state('a', {...draft(4, 'captured'), images: [image()]})); const sending = f.composer.send();
-  f.node('attachments').find('Remove one.png')?.fire('click'); allowed = false; await sending;
-  assert.equal(f.calls.some(call => call.path.endsWith('/inputs')), false); assert.deepEqual(f.pick('PUT', '/draft').body.images, []); f.saved('captured', 5); await turn();
+  const a=f.connect(state('a', {...draft(4, 'captured'), images: [image()]})); const sending = f.composer.send();
+  f.node('attachments').find('Remove one.png')?.fire('click'); allowed = false;
+  const request=await f.waitCall('POST','/inputs');assert.deepEqual(request.body.images,[image()]);assert.equal(request.body.message,'captured');f.admit(a,'rejected');await sending;
+  assert.deepEqual(f.pick('PUT', '/draft').body.images, []); f.saved('captured', 5); await turn();assert.deepEqual(f.composer.state?.draft.images,[]);assert.equal(f.calls.some(call=>call.path.endsWith('/inputs')),false);f.composer.destroy();
 });
 test('exact recovery refuses changed ordered image metadata instead of restoring another tuple', async () => {
   const f = fixture(), a = state('a', draft(4)), images = [image(), image('two.png', 'b')];
@@ -227,7 +228,7 @@ test('missing image lease reacquires exact bytes once for Save but never retries
 });
 test('preview retry refreshes authoritative availability without replacing text or sending', async () => {
   const f = fixture(), a = state('a', {...draft(4, 'source'), images: [image()]}); a.imageAvailability = [{digest: image().digest, state: 'unavailable'}];
-  a.imageStorageError = {code: 'image_storage_unavailable', message: 'Storage unavailable', retry: 'read'}; f.connect(a); assert.equal(f.node('send').disabled, true);
+  a.imageStorageError = {code: 'image_storage_unavailable', message: 'Storage unavailable', retry: 'read'}; f.connect(a); assert.equal(f.node('send').disabled, false);
   f.node('attachments').find('Retry preview one.png')?.fire('click'); await turn();
   f.ok(f.pick('GET', '/a'), {...a, imageStorageError: undefined, imageAvailability: [{digest: image().digest, state: 'ready'}]}); await turn();
   assert.equal(f.node('send').disabled, false); assert.equal(f.composer.editor.value, 'source'); assert.equal(f.calls.length, 0);
@@ -238,20 +239,13 @@ test('image-only input uses the saved ordered tuple and retains it on refusal', 
   assert.deepEqual(f.pick('POST', '/inputs').body, {message: '', mode: 'prompt', images, draftRevision: 4, epoch: 7, literal: false});
   f.admit(a, 'rejected'); await sending; assert.deepEqual(f.composer.state?.draft.images, images); assert.match(f.node('attachments').textContent, /one.png/);
 });
-test('image removal saves the entire remaining tuple before another send', async () => {
+test('image removal saves the entire remaining tuple independently of send readiness', async () => {
   const f = fixture(), images = [image(), image('two.png', 'b')]; f.connect(state('a', {...draft(3, 'source'), images}));
   f.node('editor').setSelectionRange(1, 4, 'backward'); f.node('editor').fire('select');
   f.node('attachments').find('Remove one.png')?.fire('click');
-  assert.deepEqual(f.pick('PUT', '/draft').body, {expectedRevision: 3, text: 'source', mode: 'prompt', images: [images[1]]}); assert.equal(f.node('send').disabled, true);
+  assert.deepEqual(f.pick('PUT', '/draft').body, {expectedRevision: 3, text: 'source', mode: 'prompt', images: [images[1]]}); assert.equal(f.node('send').disabled, false);
   f.ok(f.pick('PUT', '/draft'), {...draft(4, 'source'), images: [images[1]]}); await turn();
   assert.equal(f.node('send').disabled, false); assert.deepEqual([f.node('editor').selectionStart, f.node('editor').selectionEnd, f.node('editor').selectionDirection], [1, 4, 'backward']);
-});
-test('image capability loss and command combinations retain the complete draft without dispatch', async () => {
-  let allowed = false;
-  const f = fixture('primary', undefined, true, undefined, () => false, () => ({allowed, reason: 'Model capability unavailable'}));
-  const a = state('a', {...draft(3, 'source'), images: [image()]}); f.connect(a); await f.composer.send(); assert.equal(f.calls.length, 0); assert.match(f.node('send').getAttribute('aria-description') ?? '', /unavailable/);
-  allowed = true; f.composer.availability(true, true, false); f.composer.setText('/command'); f.ok(f.pick('PUT', '/draft'), {...draft(4, '/command'), images: [image()]}); await turn();
-  await f.composer.send(true); assert.equal(f.calls.length, 0); assert.deepEqual(f.composer.state?.draft.images, [image()]); assert.match(f.node('attachments').textContent, /separate messages/);
 });
 test('handled image admission keeps the draft without a cleanup save', async () => {
   const f = fixture(), images = [image()], a = f.connect(state('a', {...draft(5, 'source'), images}));
@@ -271,11 +265,11 @@ test('known queue recovery consent applies to one exact attempt and preserves pr
   confirm.fire('click'); await turn(); assert.equal(f.calls.length, 0);
   f.composer.setText('new text'); assert.equal(f.pick('PUT', '/draft').body.recoverySource, origin.recoveryOperationId); f.saved('new text', 6); await turn();
 });
-test('a newer saved revision invalidates different-message consent before dispatch', async () => {
-  const f = fixture(), guard = {state: 'blocked' as const, imageCopies: 1}; f.connect(state('a', {...draft(5, 'different text'), recoverySendGuard: guard}));
+test('a save acknowledgment preserves one different-message consent for the unchanged tuple', async () => {
+  const f = fixture(), guard = {state: 'blocked' as const, imageCopies: 1},a=f.connect(state('a', {...draft(5, 'different text'), recoverySendGuard: guard}));
   f.click('Send a different message…'); f.click('Confirm different message');
   f.composer.updateDraft({...draft(6, 'different text'), recoverySendGuard: guard}); await turn();
-  assert.equal(f.calls.some(call => call.path.endsWith('/inputs')), false); assert.match(f.node('receipt').textContent, /confirmed draft changed/i);
+  const request=f.pick('POST','/inputs');assert.deepEqual(request.body,{epoch:7,message:'different text',mode:'prompt',draftRevision:6,images:[],literal:false,differentMessage:true});assert.equal(f.calls.filter(call=>call.path.endsWith('/inputs')).length,1);f.admit(a,'rejected');await turn();assert.equal(f.composer.editor.value,'different text');
 });
 test('duplicate-send consent retains the original uncertain operation and cannot be reused', async () => {
   const f = fixture(), a = f.connect(state('a', draft(2, 'original'))), first = f.composer.send(); await turn(); const original = f.admit(a, 'uncertain'); await first;
@@ -322,10 +316,10 @@ test('attachment preparation keeps short states, full errors and explicit text a
   const saved = f.composer.captureReload()[0]; assert.equal(saved?.attachments?.items[1]?.file, invalid);
   assert.equal(f.composer.editor, editor); assert.equal(editor.value, ''); assert.equal(f.calls.length, 0); assert.equal(f.submitted.length, 0);
 });
-test('a failed thumbnail retains identity and blocks a reduced send', async () => {
-  const f = fixture(); f.connect(state('a', {...draft(4, 'source'), images: [image()]})); const thumbnail = f.node('attachments').querySelector('img'); assert.ok(thumbnail);
-  thumbnail.fire('error'); assert.equal(f.node('send').disabled, true); assert.match(f.node('attachments').textContent, /Image unavailable/); assert.equal(f.composer.editor.value, 'source'); assert.deepEqual(f.composer.state?.draft.images, [image()]);
-  await f.composer.send(); assert.equal(f.calls.length, 0);
+test('a failed thumbnail retains identity and the complete native input tuple', async () => {
+  const f = fixture(),a=f.connect(state('a', {...draft(4, 'source'), images: [image()]})); const thumbnail = f.node('attachments').querySelector('img'); assert.ok(thumbnail);
+  thumbnail.fire('error'); assert.equal(f.node('send').disabled, false); assert.match(f.node('attachments').textContent, /Image unavailable/); assert.equal(f.composer.editor.value, 'source'); assert.deepEqual(f.composer.state?.draft.images, [image()]);
+  const sending=f.composer.send(),request=await f.waitCall('POST','/inputs');assert.deepEqual(request.body.images,[image()]);assert.equal(request.body.message,'source');f.admit(a,'rejected');await sending;assert.deepEqual(f.composer.state?.draft.images,[image()]);
 });
 test('file inclusion after an edit remains a named suggestion until deliberate native insertion', async () => {
   const f = fixture(); f.connect(state('a', draft(2, 'before'))); f.node('editor').focus(); f.node('editor').setSelectionRange(1, 3, 'backward');
@@ -379,7 +373,7 @@ test('duplicate native input notifications keep one edit and one draft save', as
   assert.equal(f.retained.length, retained); assert.equal(f.calls.filter(call => call.path.endsWith('/draft')).length, 1);
   f.saved('one edit'); await turn(); assert.equal(f.calls.length, 0);
 });
-test('newline is native by default; only saved explicit send gestures dispatch', async () => {
+test('newline is native by default and explicit send gestures capture local text', async () => {
   for (const key of ['Enter', 'ArrowUp', 'ArrowDown', 'Tab', 'Escape']) {
     const f = fixture(); f.connect(state('a', draft(1, 'saved')));
     assert.equal(f.node('editor').fire('keydown', {key}).defaultPrevented, false); await turn(); assert.equal(f.calls.length, 0);
@@ -389,7 +383,7 @@ test('newline is native by default; only saved explicit send gestures dispatch',
     assert.equal(f.node('editor').fire('keydown', {key: 'Enter', ...modifier}).defaultPrevented, true); await turn(); assert.ok(f.pick('POST', '/inputs'));
   }
   const f = fixture('primary', undefined, true, undefined, () => true); f.connect(); f.composer.setText('unsaved');
-  f.node('editor').fire('keydown', {key: 'Enter', metaKey: true}); f.saved('unsaved'); await turn(); assert.equal(f.calls.length, 0);
+  f.node('editor').fire('keydown', {key: 'Enter', metaKey: true}); await turn(); const request=f.pick('POST','/inputs');assert.equal(request.body.message,'unsaved');f.admit(state('a'),'rejected');await turn();f.saved('unsaved');await turn();assert.equal(f.calls.length,0);
   assert.equal(f.node('editor').fire('keydown', {key: 'Enter', shiftKey: true}).defaultPrevented, false);
   assert.equal(f.node('editor').fire('keydown', {key: 'Enter', repeat: true}).defaultPrevented, true); await turn(); assert.equal(f.calls.length, 0);
 });
@@ -520,12 +514,12 @@ test('draft drain saves all retained buffers without delivery and honors cancell
   await assert.rejects(pending, /drain cancelled/); f.saved('cancel-safe', 2); await turn();
   assert.equal(f.composer.unsaved, false); assert.equal(f.submitted.length, 0);
 });
-test('draft drain refuses IME and conflict without new requests', async () => {
+test('draft drain refuses IME and preserves a conflict for byte-preserving reload', async () => {
   const f = fixture(); f.connect(); f.node('editor').fire('compositionstart');
   assert.equal(f.composer.reloadHold, 'ime'); await assert.rejects(f.composer.drain(new AbortController().signal), /not safe/);
   f.node('editor').fire('compositionend'); f.composer.setText('review'); f.fail(f.pick('PUT', '/draft'), 'stale_revision'); await turn();
-  const before = f.calls.length; assert.equal(f.composer.reloadHold, 'conflict');
-  await assert.rejects(f.composer.drain(new AbortController().signal), /not safe/); assert.equal(f.calls.length, before);
+  const before = f.calls.length; assert.equal(f.composer.reloadHold, undefined);
+  await assert.rejects(f.composer.drain(new AbortController().signal), /did not settle/); assert.equal(f.calls.length, before);assert.equal(f.composer.captureReload()[0]?.data.text,'review');
 });
 test('editor echo timing is optional, target-owned and stops after owner disposal', () => {
   const samples: number[][] = [], f = fixture('primary', undefined, false, (start, end) => {samples.push([start, end]);}); f.connect();
@@ -568,28 +562,27 @@ test('same-target snapshot merge preserves local copy and exposes both exact con
   f.saved(' local\n ', 1); await turn(); f.click('Review'); f.ok(f.pick('GET', '/a'), state('a', draft(2, ' remote\n '))); await turn();
   f.click('Keep my copy'); assert.equal(f.pick('PUT', '/draft').body.expectedRevision, 2); assert.equal(f.composer.editor.value, ' local\n ');
 });
-test('stale save requires Review and never sends the stale saved revision', async () => {
-  const f = fixture(); f.connect(state('a', draft(3, 'old'))); f.composer.setText('mine'); const sending = f.composer.send();
-  f.fail(f.pick('PUT', '/draft'), 'stale_revision'); await sending; assert.equal(f.calls.length, 0); assert.equal(f.composer.editor.value, 'mine');
+test('stale save keeps local text and requires Review before replacement', async () => {
+  const f = fixture(); f.connect(state('a', draft(3, 'old'))); f.composer.setText('mine');
+  f.fail(f.pick('PUT', '/draft'), 'stale_revision'); await turn(); assert.equal(f.calls.length, 0); assert.equal(f.composer.editor.value, 'mine');
   f.click('Review'); f.fail(f.pick('GET', '/a'), 'review_unavailable'); await turn();
   assert.match(f.node('receipt').textContent, /Draft could not be loaded/); assert.match(f.node('receipt').textContent, /review_unavailable/);
   f.click('Review'); f.ok(f.pick('GET', '/a'), state('a', draft(4, 'remote'))); await turn(); assert.match(f.node('receipt').textContent, /mine/); assert.match(f.node('receipt').textContent, /remote/);
   f.click('Use Mac draft'); assert.equal(f.composer.editor.value, 'remote'); assert.equal(f.composer.unsaved, false);
   assert.doesNotMatch(f.node('receipt').textContent, /review_unavailable|Draft could not be loaded/);
 });
-test('save transport failure returns failure to send without dispatch', async () => {
-  const f = fixture(); f.connect(state('a', draft(1, 'old'))); f.composer.setText('new'); const sending = f.composer.send();
-  f.pick('PUT', '/draft').reject(new Error('offline')); await sending; assert.equal(f.calls.filter(call => call.path.endsWith('/inputs')).length, 0);
+test('save transport failure retains the exact unsaved draft without dispatch', async () => {
+  const f = fixture(); f.connect(state('a', draft(1, 'old'))); f.composer.setText('new');
+  f.pick('PUT', '/draft').reject(new Error('offline')); await turn(); assert.equal(f.calls.filter(call => call.path.endsWith('/inputs')).length, 0);
   assert.equal(f.composer.editor.value, 'new'); assert.equal(f.composer.unsaved, true); assert.match(f.node('receipt').textContent, /offline/);
 });
-test('submission saves the clicked exact text and mode, then keeps target and revision across navigation', async () => {
-  const f = fixture('agent'); const a = f.connect(); f.composer.setText('first'); f.composer.setText('clicked');
+test('submission captures exact local text and mode independently of saves and later navigation', async () => {
+  const f = fixture('agent'); const a = f.connect(); f.composer.setText('first'); const first=f.pick('PUT','/draft');f.composer.setText('clicked');
   const sending = f.composer.send(); f.composer.setText('newer'); f.composer.attach('w', state('b', draft(0, '', 'followUp'), true)); f.composer.setText('B');
-  f.ok(f.calls.find(call => call.path.includes('/a/draft')) as Call, draft(1, 'first', 'followUp')); await turn();
-  const clicked = f.calls.find(call => call.path.includes('/a/draft')) as Call; assert.equal(clicked.body.text, 'clicked');
-  f.ok(clicked, draft(2, 'clicked', 'followUp')); await turn(); const input = f.pick('POST', '/inputs');
-  assert.equal(input.path, '/api/agents/a/inputs'); assert.deepEqual(input.body, {message: 'clicked', mode: 'followUp', draftRevision: 2, images: []}); assert.equal(input.id, 'op-1');
-  f.admit(a, 'rejected'); await sending; assert.equal(f.composer.editor.value, 'B'); f.composer.attach('w', state('a', draft(2, 'clicked', 'followUp'), true)); assert.equal(f.composer.editor.value, 'newer');
+  const input=await f.waitCall('POST','/inputs');assert.equal(input.path,'/api/agents/a/inputs');assert.deepEqual(input.body,{message:'clicked',mode:'followUp',draftRevision:0,images:[]});assert.equal(input.id,'op-1');
+  f.admit(a,'rejected');await sending;assert.equal(f.composer.editor.value,'B');f.ok(first,draft(1,'first','followUp'));await turn();
+  const newer=f.calls.find(call=>call.path.includes('/a/draft'));assert.ok(newer);assert.equal(newer.body.text,'newer');f.ok(newer,draft(2,'newer','followUp'));await turn();
+  f.composer.attach('w',state('a',draft(2,'newer','followUp'),true));assert.equal(f.composer.editor.value,'newer');
 });
 test('acceptance preserves newer edits and saves from the backend cleanup revision', async () => {
   const f = fixture(); const a = f.connect(state('a', draft(5, 'sent'))); const sending = f.composer.send(); await turn(); f.composer.setText('newer');
@@ -676,10 +669,10 @@ test('a busy primary shows a prompt-mode draft as steer, the mode it delivers', 
   assert.equal(f.node('modes').children[0]?.value, 'steer');
 });
 test('stale save retains both exact copies from the error without a receipt fetch', async () => {
-  const f = fixture(); f.connect(); f.composer.setText(' local\n '); const sending = f.composer.send();
+  const f = fixture(); f.connect(); f.composer.setText(' local\n ');
   const call = f.pick('PUT', '/draft'); f.calls.splice(f.calls.indexOf(call), 1);
   call.resolve({ok: false, error: {code: 'stale_revision', message: 'stale', retry: 'manual', details: {value: draft(2, ' remote\n '), truncated: false}}});
-  await sending; assert.equal(f.composer.editor.value, ' local\n '); assert.match(f.node('receipt').textContent, / remote\n /); assert.match(f.node('receipt').textContent, / local\n /); f.node('receipt').find('Review');
+  await turn(); assert.equal(f.composer.editor.value, ' local\n '); assert.match(f.node('receipt').textContent, / remote\n /); assert.match(f.node('receipt').textContent, / local\n /); f.node('receipt').find('Review');
 });
 test('local reservation expiry requires a new explicit send and never dispatches the old key', async context => {
   let now = 100; context.mock.method(Date, 'now', () => now);
@@ -778,10 +771,10 @@ test('accepted-event cleanup keeps newer edits and advances their next save revi
   f.ok(f.pick('GET', '/a'), state('a', draft(6, ''))); await turn(); f.ok(input, accepted); await sending;
   assert.equal(f.composer.editor.value, 'newer'); assert.equal(f.pick('PUT', '/draft').body.expectedRevision, 6); assert.doesNotMatch(f.node('save').textContent, /Review/);
 });
-test('an idle primary saves prompt mode before dispatch and keeps that captured mode if busy state changes', async () => {
+test('an idle primary captures prompt mode without a save and retains it across busy-state changes', async () => {
   const f = fixture(); const a = f.connect(state('a', draft(2, 'sent', 'steer'))); const sending = f.composer.send(); f.composer.availability(true, true, true); await turn();
-  assert.equal(f.pick('PUT', '/draft').body.mode, 'prompt'); f.saved('sent', 3, 'prompt'); await turn();
-  assert.deepEqual(f.pick('POST', '/inputs').body, {epoch: 7, message: 'sent', mode: 'prompt', draftRevision: 3, images: [], literal: false}); f.admit(a, 'rejected'); await sending;
+  assert.deepEqual(f.pick('POST', '/inputs').body, {epoch: 7, message: 'sent', mode: 'prompt', draftRevision: 2, images: [], literal: false});assert.equal(f.calls.some(call=>call.method==='PUT'),false);f.admit(a,'rejected');await sending;
+  assert.equal(f.pick('PUT','/draft').body.mode,'prompt');f.saved('sent',3,'prompt');await turn();
 });
 
 test('literal confirmation refuses changed text, saved revision, and target epoch', async () => {
@@ -855,7 +848,7 @@ test('a slow-save timer never paints another target and a late settle clears its
 });
 test('a clean acknowledged draft stays quiet offline while unsaved text gets the offline exception', async () => {
   const f = fixture(); f.connect(state('a', draft(1, 'retained'))); f.composer.availability(false, true, false);
-  assert.equal(f.node('save').textContent, ''); assert.equal(f.node('send').disabled, true);
+  assert.equal(f.node('save').textContent, ''); assert.equal(f.node('send').disabled, false);
   f.composer.setText('unsaved'); assert.equal(f.node('save').textContent, 'Draft not saved'); assert.equal(f.calls.length, 0);
   f.composer.availability(true, true, false); assert.equal(f.node('save').textContent, '');
   f.saved('unsaved', 2); await turn(); assert.equal(f.node('save').textContent, '');
@@ -896,8 +889,8 @@ test('a matching stream acknowledgment stays quiet if its later HTTP response is
   assert.equal(f.composer.unsaved, false); assert.equal(f.node('save').textContent, ''); assert.equal(f.node('receipt').textContent, '');
   f.composer.availability(false, true, false); assert.equal(f.node('save').textContent, '');
 });
-test('save Retry clears the matching failed-send notice after an acknowledged retry', async () => {
-  const f = fixture(); f.connect(); f.composer.setText('text'); const sending = f.composer.send(); f.fail(f.pick('PUT', '/draft'), 'host_unavailable'); await sending;
+test('save Retry clears the matching save failure after an acknowledged retry', async () => {
+  const f = fixture(); f.connect(); f.composer.setText('text'); f.fail(f.pick('PUT', '/draft'), 'host_unavailable'); await turn();
   assert.equal(f.node('save').textContent, 'Draft not saved'); assert.match(f.node('receipt').textContent, /host_unavailable/); f.click('Retry draft save'); f.saved('text'); await turn();
   assert.equal(f.node('receipt').textContent, ''); assert.equal(f.node('save').textContent, ''); assert.equal(f.calls.length, 0);
 });
@@ -932,17 +925,17 @@ test('modal focus return restores the same revision range but never applies it t
   f.node('editor').fire('blur'); f.composer.updateDraft(draft(4, 'changed text')); f.node('editor').focus();
   assert.equal(f.node('editor').value, 'changed text'); assert.deepEqual([f.node('editor').selectionStart, f.node('editor').selectionEnd], [0, 0]); assert.equal(f.submitted.length, 0);
 });
-test('a healthy selection gate blocks Send and draft writes without offline presentation', async () => {
+test('a healthy selection gate pauses draft writes without gating the captured native message', async () => {
   const f = fixture(); f.connect(); f.composer.availability(true, true, false, true); f.composer.setText('unsaved');
-  assert.equal(f.node('save').textContent, ''); assert.equal(f.node('send').disabled, true); assert.equal(f.composer.unsaved, true);
-  assert.equal(f.node('send').attrs.get('aria-description'), 'Selecting this conversation…');
-  await f.composer.send(); assert.equal(f.calls.length, 0);
+  assert.equal(f.node('save').textContent, ''); assert.equal(f.node('send').disabled, false); assert.equal(f.composer.unsaved, true);
+  assert.equal(f.node('send').attrs.get('aria-description'), '');
+  const sending=f.composer.send(),request=await f.waitCall('POST','/inputs');assert.equal(request.body.message,'unsaved');f.admit(state('a'),'rejected');await sending;assert.equal(f.calls.length,0);
   f.composer.availability(true, true, false, false); assert.equal(f.pick('PUT', '/draft').body.text, 'unsaved'); f.saved('unsaved'); await turn();
   assert.equal(f.node('save').textContent, ''); assert.equal(f.node('send').disabled, false);
 });
 test('an outstanding save settles during a healthy gate but newer text waits until the gate clears', async () => {
   const f = fixture(); f.connect(); f.composer.setText('first'); f.composer.availability(true, true, false, true); f.composer.setText('newer');
-  f.saved('first'); await turn(); assert.equal(f.calls.length, 0); assert.equal(f.node('save').textContent, ''); assert.equal(f.node('send').disabled, true);
+  f.saved('first'); await turn(); assert.equal(f.calls.length, 0); assert.equal(f.node('save').textContent, ''); assert.equal(f.node('send').disabled, false);
   f.composer.availability(true, true, false); assert.equal(f.pick('PUT', '/draft').body.text, 'newer'); f.saved('newer', 2); await turn();
   f.composer.availability(false, true, false, true); f.composer.setText('offline edit'); assert.equal(f.node('save').textContent, 'Draft not saved');
 });
@@ -1035,7 +1028,7 @@ test('ready agent Send requires a nonempty draft and readiness never submits inp
   assert.equal(f.node('editor').attrs.get('aria-label'), 'Message Review companion');
   f.composer.availability(false, true, false); f.composer.recipient('Message Review companion');
   assert.equal(f.composer.editor.value, 'retained draft'); assert.equal(f.node('editor').selectionStart, 4);
-  assert.equal(f.node('editor').selectionEnd, 8); assert.equal(f.node('editor').focused, true); assert.equal(f.node('send').disabled, true);
+  assert.equal(f.node('editor').selectionEnd, 8); assert.equal(f.node('editor').focused, true); assert.equal(f.node('send').disabled, false);
   f.composer.availability(true, true, false); assert.equal(f.calls.length, 0);
   f.composer.availability(true, false, false); f.composer.recipient('Draft for Review companion');
   assert.equal(f.node('recipient').textContent, 'Draft for Review companion'); assert.equal(f.node('send').hidden, false);
@@ -1099,8 +1092,8 @@ test('scoped element factories create distinct editors and exact label/resize/co
   const ids = [first, second].flatMap(elements => [...walk(elements.root as unknown as NodeFake), elements.save as unknown as NodeFake, elements.receiptDetails as unknown as NodeFake]).map(node => node.id).filter(Boolean);
   assert.equal(new Set(ids).size, ids.length); assert.notEqual(first.editor, second.editor); assert.equal((first.recipient as HTMLLabelElement).htmlFor, first.editor.id);
   assert.equal(first.root.querySelector('.resizer')?.getAttribute('aria-controls'), first.editor.id); assert.equal(first.root.querySelector('.resizer')?.getAttribute('aria-orientation'), 'horizontal');
-  assert.equal(first.root.querySelector('.stop')?.getAttribute('aria-label'), 'Stop');
-  assert.equal(first.send.getAttribute('aria-label'), 'Send'); assert.equal(first.send.querySelector('svg')?.getAttribute('viewBox'), '0 0 16 16');
+  assert.equal(first.root.querySelector('.stop')?.getAttribute('aria-label'), 'Stop response');
+  assert.equal(first.send.getAttribute('aria-label'), 'Send message'); assert.equal(first.send.textContent, 'Send'); assert.equal(first.send.querySelector('svg'), undefined);
   assert.equal(first.modes.querySelector('select')?.getAttribute('aria-label'), 'Delivery while working'); assert.equal(first.send.type, 'submit'); assert.equal(first.send.disabled, true);
   assert.equal(first.root.contains(first.editor), true); assert.equal(first.root.contains(first.save), false); assert.equal(first.root.contains(first.receiptDetails), false);
   assert.equal(first.save.className, 'draft-state'); assert.equal(first.receiptDetails.className, 'receipt-details'); assert.equal(first.commandMenu?.hidden, true); assert.deepEqual(f.lookups, []);

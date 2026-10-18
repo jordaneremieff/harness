@@ -1,8 +1,10 @@
 # Browser acceptance
 
-This directory contains a dependency-free Brave Chrome DevTools Protocol (CDP)
+This directory contains a dependency-free Chrome DevTools Protocol (CDP)
 driver and a browser smoke command. It uses Node's built-in WebSocket and starts
-Brave with a fresh temporary profile. Readiness comes from the DevTools URL on
+an explicitly selected Chrome for Testing executable with a fresh temporary profile.
+Set `PI_UI_BROWSER_EXECUTABLE` to that executable before a browser command.
+The driver has no default executable and never discovers or falls back to another browser. Readiness comes from the DevTools URL on
 stderr, not an HTTP probe or delay. Shutdown removes the profile after the owned
 browser exits. Every fresh profile uses the plain local address without sign-in.
 Fresh profiles must not touch the macOS keychain; the launcher always uses
@@ -73,8 +75,9 @@ performance budget result.
 
 ## Driver API
 
-`launchBrave({executable?,port?,timeoutMs?})` returns `{cdp,page,version,profile,close}`.
-The default debug port is `0`, so Brave chooses an available local port. The
+`launchBrowser({port?,timeoutMs?})` returns `{cdp,page,version,profile,close}`.
+`PI_UI_BROWSER_EXECUTABLE` is required and names the executable; a missing or blank value refuses before profile creation or process spawn.
+The default debug port is `0`, so the selected browser chooses an available local port. The
 endpoint must be an explicit `127.0.0.1` WebSocket address.
 
 - `cdp.send(method,params?,{sessionId?,timeoutMs?,signal?})` correlates responses.

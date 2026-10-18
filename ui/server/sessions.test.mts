@@ -53,7 +53,7 @@ test('latest names, explicit clears, excerpts, and malformed records follow boun
   assert.equal(page.total, 5); assert.equal(page.omitted, 0); assert.equal(page.nextCursor, null);
   const titles = new Map(page.items.map(item => [item.id, item.title]));
   assert.equal(titles.get('named'), 'newest name'); assert.equal(titles.get('cleared'), 'first user');
-  assert.equal(titles.get('broken'), 'valid excerpt'); assert.equal(titles.get('empty'), '(title unavailable)');
+  assert.equal(titles.get('broken'), '(title unavailable)'); assert.equal(titles.get('empty'), '(title unavailable)');
   assert.equal(titles.get('long')?.length, 200);
   for (const item of page.items) {
     const info = await stat(item.path); assert.equal(item.size, info.size); assert.equal(item.modifiedAt, info.mtime.toISOString());
@@ -61,7 +61,7 @@ test('latest names, explicit clears, excerpts, and malformed records follow boun
   assert.ok(Number.isFinite(Date.parse(page.observedAt)));
 });
 
-test('large files use head and tail names but never middle records or split lines', async t => {
+test('complete scans include middle names and refuse partial or oversized records', async t => {
   const {store, project, save} = await setup(t);
   const prefix = user('head excerpt') + named('head name');
   const body = `${prefix + line({type: 'message', message: {role: 'assistant', content: 'a'.repeat(WINDOW * 3)}}) + named('tail old') + named('tail latest')}{partial`;
@@ -71,11 +71,11 @@ test('large files use head and tail names but never middle records or split line
   await save('clear-tail', prefix + '\n'.repeat(WINDOW * 2) + named(''));
   const page = await ready(store, project);
   const titles = new Map(page.items.map(item => [item.id, item.title]));
-  assert.equal(titles.get('large'), 'tail latest'); assert.equal(titles.get('middle'), 'head name');
-  assert.equal(titles.get('giant'), 'first'); assert.equal(titles.get('clear-tail'), 'head excerpt');
+  assert.equal(titles.get('large'), '(title unavailable)'); assert.equal(titles.get('middle'), 'middle invisible');
+  assert.equal(titles.get('giant'), '(title unavailable)'); assert.equal(titles.get('clear-tail'), 'head excerpt');
 });
 
-test('adjacent windows retain complete boundary records without reordering overlapping names', async t => {
+test('complete chunk-boundary records preserve order and malformed suffixes refuse titles', async t => {
   const {store, project, dir} = await setup(t);
   const prefix = sessionHeader(project, 'boundary') + user('fallback') + named('old');
   const padding = '\n'.repeat(WINDOW - Buffer.byteLength(prefix));
@@ -83,7 +83,7 @@ test('adjacent windows retain complete boundary records without reordering overl
   assert.equal((await ready(store, project)).items[0].title, 'last');
   const noNewline = sessionHeader(project, 'nonl') + user('nonl excerpt') + 'x'.repeat(WINDOW * 3) + JSON.stringify({type: 'session_info', name: 'fragment'});
   await writeFile(join(dir, 'nonl.jsonl'), noNewline);
-  assert.equal((await ready(store, project)).items.find(item => item.id === 'nonl')?.title, 'nonl excerpt');
+  assert.equal((await ready(store, project)).items.find(item => item.id === 'nonl')?.title, '(title unavailable)');
 });
 
 test('encoded cwd preserves colon, backslash, hyphens, and spaces; header cwd disambiguates collisions', async t => {
@@ -212,7 +212,7 @@ test('manual session association uses bounded headers and canonical project path
   await assert.rejects(validateSessionProject(project, bad), code('invalid_session'));
 });
 
-test('the first physical line owns the header and tail users never become first-user excerpts', async t => {
+test('the first physical line owns the header and complete scans retain the first user', async t => {
   const {store, project, dir, save} = await setup(t);
   const blank = join(dir, 'blank.jsonl'); await writeFile(blank, `\n${sessionHeader(project)}${user('wrong header')}`);
   await assert.rejects(validateSessionProject(project, blank), code('invalid_session'));
@@ -220,7 +220,7 @@ test('the first physical line owns the header and tail users never become first-
   await save('tail-only', line({type: 'unknown'}) + '\n'.repeat(WINDOW * 34) + user('late prompt'));
   const page = await ready(store, project);
   assert.equal(page.total, 2);
-  assert.ok(page.items.every(item => item.title === '(title unavailable)'));
+  const titles=new Map(page.items.map(item=>[item.id,item.title]));assert.equal(titles.get('image-first'),'(title unavailable)');assert.equal(titles.get('tail-only'),'late prompt');
 });
 
 test('session titles redact credentials and terminal controls through the shared display policy', async t => {
@@ -307,7 +307,7 @@ test('entry traversal caps include excluded names and reject incomplete coverage
 test('title completion preserves captured metadata and starts only current-page scans', async t => {
   const {store, project, save} = await setup(t);
   for (let index = 0; index < 25; index++) {
-    const path = await save(`page-${index}`, line({type: 'message', message: {role: 'system', content: 's'.repeat(WINDOW * 5)}}) + user(`first ${index}`));
+    const path = await save(`page-${index}`, line({type: 'message', message: {role: 'system', content: 's'.repeat(WINDOW)}}).repeat(5) + user(`first ${index}`));
     await utimes(path, index + 1, index + 1);
   }
   const first = await store.sessions(project); assert.ok(first.titleCursor);

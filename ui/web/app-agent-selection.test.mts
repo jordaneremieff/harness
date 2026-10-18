@@ -13,7 +13,7 @@ test('caption fact events refresh idle subjects and every affected recipient wit
   await arrive({workspace:{id:'caption-events',revision:1,primaryKey:'p',selectedTarget:targetB,conversationLayout:layout},primaries:[primaryFixture({epoch:targetP.epoch,activity:'idle'})],roster:[agentFixture(b,{name:'Partner'})],history:[tool],
     targets:[targetFixture('caption-p',targetP),targetFixture('caption-a',targetA),targetFixture('caption-b',targetB,{draft:{revision:1,text:'Keep B draft',mode:'prompt',persisted:true}})]});
   const primaryRoot=primaryControl('transcript'), card=primaryRoot.querySelector('.tool-card'), subject=card?.querySelector('.tool-target'), preview=card?.querySelector('.tool-preview'); assert.ok(card && subject && preview);
-  assert.equal(subject.textContent,'Unresolved conversation'); const editor=app.agentComposer().editor; editor.focus(); editor.setSelectionRange(1,5,'backward');
+  assert.equal(subject.textContent,''); assert.equal(subject.hidden,true); assert.equal(subject.title,a); const editor=app.agentComposer().editor; editor.focus(); editor.setSelectionRange(1,5,'backward');
   let primarySets=0, refreshes=0; const originalSet=Transcript.prototype.set, originalRefresh=Transcript.prototype.refreshSubjects;
   t.mock.method(Transcript.prototype,'set',function(this:Transcript,...args:Parameters<Transcript['set']>){if(this.node===primaryRoot as unknown as HTMLElement)primarySets++;return originalSet.apply(this,args);});
   t.mock.method(Transcript.prototype,'refreshSubjects',function(this:Transcript){refreshes++;return originalRefresh.call(this);});
@@ -26,7 +26,7 @@ test('caption fact events refresh idle subjects and every affected recipient wit
   const rosterA=byId('roster').querySelector(`[data-identity="${a}"]`), rosterB=byId('roster').querySelector(`[data-identity="${b}"]`); assert.ok(rosterA && rosterB);
   assert.equal(rosterA.querySelector('.row-name')?.textContent,'Partner'); assert.equal(rosterB.querySelector('.row-name')?.textContent,'Partner');
   const aTail=rosterA.querySelector('.row-identity')?.textContent,bTail=rosterB.querySelector('.row-identity')?.textContent; assert.ok(aTail && bTail); assert.notEqual(aTail,bTail);
-  assert.equal(link.textContent,`Partner · ${aTail}`); assert.equal(agentControl('recipient').textContent,`Draft for Partner · ${bTail}`);
+  assert.equal(link.textContent,'Partner'); assert.equal(subject.title,a); assert.equal(agentControl('recipient').textContent,`Draft for Partner · ${bTail}`);
   const beforeDelta=refreshes; event('agent.frame',{identity:a,connectionEpoch,frame:{...frame,revision:2,observedAt:'later',status:{...frame.status,busy:true}}}); await settle(); assert.equal(refreshes,beforeDelta);
   assert.equal(primarySets,0); assert.equal(primaryRoot.querySelector('.tool-card'),card); assert.equal(card.querySelector('.tool-preview'),preview); assert.equal(card.open,false);
   assert.equal(app.agentComposer().editor,editor); assert.equal(editor.value,'Keep B draft'); assert.deepEqual([editor.selectionStart,editor.selectionEnd,editor.selectionDirection],[1,5,'backward']); assert.equal(hostDocument.activeElement,editor);
@@ -43,9 +43,9 @@ test('public root and child captions agree across subjects, tabs, roster, choose
     targets:[targetFixture('root-draft',target,{draft:{revision:3,text:'Root draft',mode:'followUp',persisted:true}}),targetFixture('child-draft',childTarget,{draft:{revision:7,text:'Child draft',mode:'prompt',persisted:true}})],observations:[observation(root,frame)]});
   const rootEditor=app.agentComposer().editor; rootEditor.setSelectionRange(1,4,'backward');
   const known = agentControl('root').querySelector('[data-entry-id="known-subject"]'), unresolved=agentControl('root').querySelector('[data-entry-id="unknown-subject"]'); assert.ok(known && unresolved);
-  const link=known.querySelector('.tool-subject-link'); assert.ok(link); assert.equal(link.textContent,'Review · branch-review'); assert.equal(known.querySelector('.tool-target')?.title,child);
-  assert.equal(unresolved.querySelector('.tool-target')?.textContent,'Unresolved conversation'); assert.equal(unresolved.querySelector('.tool-subject-link'),null); assert.equal(unresolved.querySelector('.tool-target')?.title,unknown);
-  assert.equal(agentControl('root').querySelector('[data-entry-id="literal-subject"] .tool-target')?.textContent,'arbitrary target');
+  const link=known.querySelector('.tool-subject-link'); assert.ok(link); assert.equal(link.textContent,'Review'); assert.equal(known.querySelector('.tool-target')?.title,child);
+  assert.equal(unresolved.querySelector('.tool-target')?.textContent,''); assert.equal(unresolved.querySelector('.tool-target')?.hidden,true); assert.equal(unresolved.querySelector('.tool-subject-link'),null); assert.equal(unresolved.querySelector('.tool-target')?.title,unknown);
+  assert.equal(agentControl('root').querySelector('[data-entry-id="literal-subject"] .tool-target')?.textContent,''); assert.equal(agentControl('root').querySelector('[data-entry-id="literal-subject"] .tool-target')?.title,'arbitrary target');
   const tab=byId('sidebar-conversations').querySelector(`[data-tab-key="agent:${child}"]`); assert.ok(tab); assert.equal(tab.querySelector('.conversation-name')?.textContent,'Review'); assert.equal(tab.querySelector('.conversation-identity')?.textContent,'branch-review');
   const rosterRow=byId('roster').querySelector(`[data-identity="${child}"]`); assert.ok(rosterRow); assert.equal(rosterRow.querySelector('.row-name')?.textContent,'Review'); assert.equal(rosterRow.querySelector('.row-identity')?.textContent,'branch-review');
   link.click(); await settle(); assert.deepEqual(app.state.workspace?.selectedTarget,childTarget); assert.equal(app.agentComposer().editor.value,'Child draft'); assert.equal(agentControl('recipient').textContent,'Draft for Review · branch-review');
@@ -54,7 +54,7 @@ test('public root and child captions agree across subjects, tabs, roster, choose
   byId('modal-close').click(); const rootRow=rows[0]; assert.ok(rootRow); await app.selectAgent(rootRow); await settle(); assert.equal(app.agentComposer().editor,rootEditor); assert.equal(rootEditor.value,'Root draft'); assert.deepEqual([rootEditor.selectionStart,rootEditor.selectionEnd,rootEditor.selectionDirection],[1,4,'backward']);
   assert.equal(transportLog.some(call=>call.path.includes('/inputs') || call.path.endsWith('/start')),false);
   await arrive({workspace:{id:'root-child-captions',revision:2,selectedTarget:target,conversationLayout:singlePane([target,childTarget],`agent:${root}`)},primaries:[],roster:rows.map(row=>({...row,name:'Renamed review'})),observations:[observation(root,frame)]});
-  assert.equal(agentControl('root').querySelector('.tool-subject-link')?.textContent,'Renamed review · branch-review'); assert.equal(app.agentComposer().editor,rootEditor);
+  assert.equal(agentControl('root').querySelector('.tool-subject-link')?.textContent,'Renamed review'); assert.equal(app.agentComposer().editor,rootEditor);
 });
 
 test('passive draft hydration leaves focus unchanged, while explicit focus and rerenders preserve native ranges', async () => {
@@ -108,7 +108,7 @@ test('whole agent views retain messages independently of running, idle and incom
       await arrive({workspace: {id: identity, revision: 1, selectedTarget: target}, primaries: [], roster: [row], targets: [saved], observations: availability === 'live' ? [observation(identity, {revision: 1, observedAt: '', status: {busy: true}, live: [], entries: [entry], nextBefore: null, coverage})] : []});
       if (availability === 'live') {event('agent.availability', {identity, connectionEpoch: app.state.agentEpochs.get(identity), state: 'live', capabilities: row.capabilities}); await settle();}
       assertAgentComposition(); assert.match(visibleText(agentControl('root')), /Exact retained conversation text/); assert.equal(app.agentComposer().state?.draft.text, 'Exact editable draft');
-      assert.equal(agentControl('send').disabled, availability !== 'live'); assert.equal(agentControl('editor').disabled, false); assert.equal(agentControl('start').hidden, availability !== 'stored');
+      assert.equal(agentControl('send').disabled, false); assert.equal(agentControl('editor').disabled, false); assert.equal(agentControl('start').hidden, availability !== 'stored');
       assert.equal(agentControl('agent-state').hidden, availability === 'live');
       const editor = app.agentComposer().editor, message = agentControl('root').querySelector('[data-entry-id=retained-message]'); assert.ok(message); editor.setSelectionRange(2, 7, 'backward'); editor.focus();
       const before = transportLog.length; failed = true; agentControl('history-retry').dispatch('click'); await settle(); assertAgentComposition();
@@ -132,11 +132,11 @@ test('whole idle and incompatible views show one plain unreadable-history error 
       await arrive({workspace: {id: identity, revision: 1, selectedTarget: target}, primaries: [], roster: [agentFixture(identity, {availability, capabilities: {input: false}})], targets: [targetFixture(identity, target, {draft: {revision: 4, text: 'Exact unreadable-view draft', mode: 'followUp', persisted: true}})]});
       assertAgentComposition(); const rendered = visibleText(agentControl('root')); assert.equal(rendered.split(plain).length - 1, 1); assert.doesNotMatch(rendered, /retained source|Permission denied/);
       assert.equal(agentControl('agent-state-line').textContent, plain + (availability === 'stored' ? ' · Agent is not connected.' : ' · This agent cannot connect; messages remain read-only.'));
-      assert.equal(agentControl('agent-state-line').title, diagnostic); assert.equal(agentControl('send').disabled, true);
+      assert.equal(agentControl('agent-state-line').title, diagnostic); assert.equal(agentControl('send').disabled, false);
       if (availability === 'incompatible') {assert.equal(byId('workbench-activity').textContent, 'Connection unavailable'); assert.doesNotMatch(hostDocument.title, /host/i);}
       const editor = app.agentComposer().editor, before = requests.length; assert.equal(editor.value, 'Exact unreadable-view draft'); editor.setSelectionRange(1, 3); editor.focus(); failed = false; agentControl('history-retry').dispatch('click'); await settle();
       assertAgentComposition(); assert.match(agentControl('agent-state-line').textContent, /^No messages yet/); assert.doesNotMatch(visibleText(agentControl('root')), /saved messages could not be read|retained source/); assert.equal(agentControl('agent-state-line').title, '');
-      assert.equal(app.agentComposer().editor, editor); assert.equal(editor.value, 'Exact unreadable-view draft'); assert.deepEqual([editor.selectionStart, editor.selectionEnd], [1, 3]); assert.equal(hostDocument.activeElement, editor); assert.equal(agentControl('send').disabled, true);
+      assert.equal(app.agentComposer().editor, editor); assert.equal(editor.value, 'Exact unreadable-view draft'); assert.deepEqual([editor.selectionStart, editor.selectionEnd], [1, 3]); assert.equal(hostDocument.activeElement, editor); assert.equal(agentControl('send').disabled, false);
       assert.deepEqual(requests.slice(before), [['GET', `/api/agents/${identity}/history`]]);
     }
   } finally {globalThis.fetch = original;}
@@ -147,11 +147,11 @@ test('agent settings retain model and thinking text from the exact frame without
     status: {busy: false, model: {provider: 'provider', modelId: 'selected-agent-long-model-name'}, thinkingLevel: 'medium'}};
   await arrive({workspace: {id: 'agent-settings', revision: 2, primaryKey: 'p', selectedTarget: {kind: 'agent', identity: 'selected'}}, primaries: [primaryFixture()], roster: [row], observations: [observation('selected', frame)]});
   event('agent.availability', {identity: row.identity, connectionEpoch: app.state.agentEpochs.get(row.identity), state: 'live', capabilities: row.capabilities}); await settle();
-  byId('model-button').textContent = 'Primary model'; byId('thinking-button').textContent = 'Thinking high';
+  byId('model-value').textContent = 'Primary model'; byId('thinking-value').textContent = 'high';
   app.agentChrome('selected', row); assert.equal(byId('agent-status').textContent, 'Model selected-agent-long-model-name · Thinking medium');
   app.state.conversations.clear(); app.agentChrome('selected', row);
   assert.equal(byId('agent-status').textContent, 'Model roster-model (retained) · Thinking low (retained)');
-  assert.equal(byId('model-button').textContent, 'Primary model'); assert.equal(byId('thinking-button').textContent, 'Thinking high');
+  assert.equal(byId('model-value').textContent, 'Primary model'); assert.equal(byId('thinking-value').textContent, 'high');
 });
 test('a fresh agent selection retains each earlier control and prepares only its addressed owner', async () => {
   const a = agentFixture('a'), b = agentFixture('b'); const targetA = targetFixture('saved-a', {kind: 'agent', identity: 'a'}), targetB = targetFixture('saved-b', {kind: 'agent', identity: 'b'});

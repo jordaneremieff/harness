@@ -22,16 +22,16 @@ test('session records accept only complete JSON objects', () => {
   assert.deepEqual(sessionRecord('{}'), {});
 });
 
-test('title scans skip giant system lines and return the first user excerpt up to 200 characters', async t => {
-  const body = line({type: 'session', id: 'id', cwd: '/project'}) + message('system', 's'.repeat(600 * 1024)) + message('user', 'u'.repeat(300)) + message('user', 'later user');
+test('complete bounded system records preserve the first user excerpt up to 200 characters', async t => {
+  const body = line({type: 'session', id: 'id', cwd: '/project'}) + message('system', 's'.repeat(200 * 1024)).repeat(3) + message('user', 'u'.repeat(300)) + message('user', 'later user');
   const {path, size} = await fixture(t, body);
   assert.deepEqual(await scanSessionTitle(path, size), {title: 'u'.repeat(200), titleSource: 'prompt', titleState: 'ready'});
 });
 
-test('the forward cap skips later users while the tail still supplies the latest name or clear', async t => {
-  const base = line({type: 'session'}) + message('system', 's'.repeat(2 * 1024 * 1024 + 100));
-  const late = await fixture(t, base + message('user', 'late outside cap'));
-  assert.deepEqual(await scanSessionTitle(late.path, late.size), {title: '(title unavailable)', titleState: 'unavailable'});
+test('complete scans find late users and the latest name or clear', async t => {
+  const base = line({type: 'session'}) + message('system', 's'.repeat(64 * 1024)).repeat(34);
+  const late = await fixture(t, base + message('user', 'late complete prompt'));
+  assert.deepEqual(await scanSessionTitle(late.path, late.size), {title: 'late complete prompt', titleSource: 'prompt', titleState: 'ready'});
   const named = await fixture(t, base + line({type: 'session_info', name: 'old'}) + line({type: 'session_info', name: 'latest'}));
   assert.deepEqual(await scanSessionTitle(named.path, named.size), {title: 'latest', titleSource: 'name', titleState: 'ready'});
   const cleared = await fixture(t, message('user', 'first') + base + line({type: 'session_info', name: 'old'}) + line({type: 'session_info', name: ''}));
@@ -54,14 +54,14 @@ test('first image-only user does not become a later text user', async t => {
   assert.equal((await scanSessionTitle(path, size)).titleState, 'unavailable');
 });
 
-test('dense malformed records yield within the loop bound', async t => {
-  const {path, size} = await fixture(t, `${'{\n'.repeat(65536)}${message('user', 'valid')}`);
+test('dense complete records yield within the loop bound', async t => {
+  const {path, size} = await fixture(t, `${line({type:'unknown'}).repeat(65536)}${message('user', 'valid')}`);
   let active = true; let maxGap = 0; let previous = performance.now();
   const monitor = (async () => {
     while (active) { await yieldLoop(); const now = performance.now(); maxGap = Math.max(maxGap, now - previous); previous = now; }
   })();
   try { assert.equal((await scanSessionTitle(path, size)).title, 'valid'); }
   finally { active = false; await monitor; }
-  t.diagnostic(`dense malformed record scan: maximum event-loop gap ${maxGap.toFixed(3)} ms`);
+  t.diagnostic(`dense complete record scan: maximum event-loop gap ${maxGap.toFixed(3)} ms`);
   assert.ok(maxGap < 50, `loop gap ${maxGap} ms`);
 });

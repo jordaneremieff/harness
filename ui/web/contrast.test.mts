@@ -45,6 +45,7 @@ const decorativeHairlines = new Set([
 	".thinking > .stream-text|border-left",
 	".thinking-content|border-left",
 	".tool-shell|border",
+  ".attachment-preview|border",
 	".composer-detail-body|border-top",
 	".tool-copy|border",
 	".output-pages button|border",
@@ -157,7 +158,7 @@ function parse(input: string): Rule[] {
 			const end = blockEnd(body, index);
 			const inner = body.slice(index + 1, end - 1);
 			if (selector.startsWith("@")) {
-				assert.match(selector, /^@(?:media|container)\b/, `Unsupported at-rule: ${selector}`);
+				assert.match(selector, /^(?:@(?:media|container)\b|@keyframes work-pulse$)/, `Unsupported at-rule: ${selector}`);
 				walk(inner, [...contexts, selector]);
 			} else rules.push({ selector, contexts, declarations: declarations(inner) });
 			start = end;
@@ -463,6 +464,10 @@ test("CSS parser preserves nested media, strings, and functions", () => {
 	assert.equal(parsed[0].contexts[0], "@media (max-width: 99px)");
 	assert.equal(parse("@container t (min-width: 9rem) { .x { color: var(--text); } }")[0].contexts[0], "@container t (min-width: 9rem)");
 	assert.throws(() => parse("@import 'external.css';"), /Unparsed/);
+  const frames = parse('@keyframes work-pulse { to { transform: rotate(360deg); } }');
+  assert.equal(frames[0]?.selector, 'to');
+  assert.deepEqual(frames[0]?.contexts, ['@keyframes work-pulse']);
+  assert.deepEqual(frames[0]?.declarations, [{property: 'transform', value: 'rotate(360deg)'}]);
 });
 test("every required matrix pair is measured in all six themes", () => {
 	assert.equal(
@@ -487,10 +492,12 @@ test("regular user prose retains normal-text contrast and the left rule retains 
 	assert.ok(user);
 	const declarations = Object.fromEntries(user.declarations.map(({ property, value }) => [property, value]));
 	assert.equal(declarations["font-weight"], "400");
-	assert.equal(declarations.background, "transparent");
+	assert.equal(declarations.background, "var(--side)");
 	assert.equal(declarations.color, undefined, "User prose inherits the primary foreground");
 	for (const [theme, palette] of Object.entries(result.themes)) {
-		assert.ok(ratio(palette["--fg"], palette["--canvas"]) >= 4.5, `${theme}: regular prose requires normal-text AA`);
+    for (const bg of ['canvas', 'side']) {
+      assert.ok(ratio(palette['--fg'], palette[`--${bg}`]) >= 4.5, `${theme}: regular prose on ${bg} requires normal-text AA`);
+    }
 		const borders = result.measurements.filter((row) => row.theme === theme && row.kind === "border-declaration" && row.source.startsWith(".message.user > .message-body::before "));
 		assert.equal(borders.length, surfaces.length, `${theme}: left rule needs every modeled surface`);
 		assert.ok(borders.every((row) => row.threshold === 3 && row.ratio >= 3));

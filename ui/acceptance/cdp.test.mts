@@ -6,11 +6,16 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import type { ChildProcess } from "node:child_process";
 import { test } from "node:test";
-import { CDP, Page, awaitDevTools, braveLaunchArgs, type Socket, type SocketEvent } from "./cdp.mts";
+import { CDP, Page, awaitDevTools, browserLaunchArgs, launchBrowser, type Socket, type SocketEvent } from "./cdp.mts";
 
-test("fresh Brave profiles isolate password storage from the macOS keychain", () => {
+test('browser launch requires an explicit executable before process or profile creation', async () => {
+  const previous=process.env.PI_UI_BROWSER_EXECUTABLE;
+  try {delete process.env.PI_UI_BROWSER_EXECUTABLE;await assert.rejects(launchBrowser(), /PI_UI_BROWSER_EXECUTABLE/);process.env.PI_UI_BROWSER_EXECUTABLE='  ';await assert.rejects(launchBrowser(), /PI_UI_BROWSER_EXECUTABLE/);}
+  finally {if(previous===undefined)delete process.env.PI_UI_BROWSER_EXECUTABLE;else process.env.PI_UI_BROWSER_EXECUTABLE=previous;}
+});
+test("fresh browser profiles isolate password storage from the macOS keychain", () => {
   for (const port of [0, 4319]) {
-    assert.deepEqual(braveLaunchArgs("profile with spaces", port), [
+    assert.deepEqual(browserLaunchArgs("profile with spaces", port), [
       "--headless=new", "--remote-debugging-address=127.0.0.1", `--remote-debugging-port=${port}`,
       "--user-data-dir=profile with spaces", "--no-first-run", "--no-default-browser-check",
       "--use-mock-keychain", "--password-store=basic", "about:blank",

@@ -445,7 +445,7 @@ function openAgentMessage(identity: string): void {
   void preparing.then(() => { if (captured && messageTarget.valid(captured) && captured.prepared && document.activeElement === byId('agent-message-close')) controller.composer.editor.focus(); }).catch(showError);
 }
 function preparationCurrent(connection: EventSource | undefined): boolean {
-  return !!connection && connection === source && connected && !document.hidden;
+  return !!connection && connection === source && connected;
 }
 function requireCurrentPreparation(connection: EventSource | undefined): void {
   if (!preparationCurrent(connection)) throw new Error('The browser connection changed. Check the agent connection again.');
@@ -1980,6 +1980,7 @@ function bind(): void {
   window.addEventListener('beforeunload', event => { if (!(devNavigating&&preparedReloadState?.revision===devInteractionRevision&&preparedReloadState.workspace===state.workspace?.id) && (!filesViews.canDispose || [...controllers.values()].some(controller => !controller.composer.canDispose))) event.preventDefault(); });
   document.addEventListener('visibilitychange', () => {
     diagnostics.setHidden(document.hidden); for (const controller of controllers.values()) controller.transcript.visibilityChanged();
+    if (!document.hidden && !uiReady) void finishStartup().catch(showError);
   });
 }
 export function devHold(): DevReloadHold | undefined {

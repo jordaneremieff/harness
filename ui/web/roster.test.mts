@@ -154,15 +154,15 @@ test('exception footer actions preserve refresh and retry without routine paging
   assert.match(f.footer.textContent, /Agents could not be loaded/); const retry = required(f.footer.children.find(child => child.tagName === 'button'));
   assert.equal(retry.attributes['aria-label'], 'Refresh agents'); assert.equal(retry.title, 'Refresh agents'); assert.equal(retry.query('card-action-label').textContent, 'Refresh agents'); retry.click(); assert.deepEqual(actions, ['refresh', 'refresh', 'refresh']);
 });
-test('working roster rows replace the age with the current tool and keep the argument accessible', t => {
+test('working roster rows keep timestamps separate from accessible current tool details', t => {
   t.mock.method(Date, 'now', () => 600000);
   const f = setup(); const roster = new Roster(() => {}, () => {});
   const currentTool = {name: 'bash', argument: 'npm run check'};
-  roster.set([row('one', {state: 'working', currentTool})]); f.flush();
+  roster.set([row('one', {state: 'working', currentTool, modifiedAt: 599000})]); f.flush();
   const node = required(f.node.children[0]); const age = node.query('row-age'); const select = node.query('row-select');
-  assert.equal(node.dataset.tool, 'true'); assert.equal(age.textContent, 'bash'); assert.equal(age.hidden, false); assert.equal(age.disabled, true);
-  assert.equal(age.title, 'bash · npm run check'); assert.equal(age.attributes['aria-description'], 'bash · npm run check');
-  assert.equal(age.query('timestamp').dateTime, ''); assert.match(select.title, /bash · npm run check/);
+  assert.equal(node.dataset.tool, 'true'); assert.equal(age.textContent, 'now'); assert.equal(age.hidden, false); assert.equal(age.disabled, false);
+  assert.match(age.title, /1970-01-01T00:09:59.000Z/); assert.equal(age.attributes['aria-description'], timestampDetails(599000).display);
+  assert.equal(age.query('timestamp').dateTime, new Date(599000).toISOString()); assert.match(select.title, /bash · npm run check/);
   assert.match(select.attributes['aria-description'] ?? '', /bash · npm run check/);
   const height = node.offsetHeight;
   roster.set([row('one', {state: 'idle', modifiedAt: 599000})]); f.flush();
@@ -190,7 +190,7 @@ test('roster has sibling native actions and plain retained, idle and working sta
   assert.equal(idle.attributes['aria-current'], undefined); assert.equal(idle.query('row-select').attributes['aria-current'], 'page');
   assert.equal(stored.query('row-select').attributes['aria-current'], 'false');
   assert.equal(select.children.length, 1);
-  assert.deepEqual(select.children[0]?.children.map(child => child.className), ['row-name', 'row-identity muted', 'row-state']);
+  assert.deepEqual(select.children[0]?.children.map(child => child.className), ['row-name', 'row-identity muted', 'row-state', 'row-preview']);
   assert.equal(stored.dataset.live, 'false'); assert.equal(idle.dataset.live, 'true'); assert.equal(working.dataset.live, 'true');
   for (const removed of ['row-word', 'row-detail', 'row-model', 'row-activity']) assert.throws(() => stored.query(removed));
   assert.equal(idle.query('row-select').title, 'idle'); assert.equal(working.query('row-select').title, 'working');
@@ -579,7 +579,7 @@ test('resolved status overrides live catalog state and removes a stale tool with
   roster.set([source], undefined, source.identity); f.flush();
   const node = required(f.node.children[0]); const select = node.query('row-select'); select.focus();
   assert.match(select.attributes['aria-label'] ?? '', /Working/); assert.doesNotMatch(select.attributes['aria-label'] ?? '', /unavailable/);
-  assert.equal(node.query('row-age').textContent, 'read'); assert.equal(node.query('row-state').title, 'Working');
+  assert.equal(node.query('row-age').textContent, ''); assert.match(select.title, /read · file.ts/); assert.equal(node.query('row-state').title, 'Working');
   label = 'Ready'; roster.set([source], undefined, source.identity); f.flush();
   assert.equal(f.node.children[0], node); assert.equal(f.document.activeElement, select);
   assert.match(select.attributes['aria-label'] ?? '', /Ready/); assert.notEqual(node.query('row-age').textContent, 'read');

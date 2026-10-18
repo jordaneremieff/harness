@@ -1,4 +1,4 @@
-/* Two families on a fixed scale (12 meta, 13 code and controls, 14 interface, 15 prose, 18 headings).
+/* Two families on a fixed scale (12 meta, 13 code and controls, 14 interface, 15 composer, 16 prose, 18 headings).
    Color tokens follow the Pi terminal theme; every text pair is tested for AA in all six themes. */
 :root {
   color-scheme: dark;
@@ -929,7 +929,7 @@ pre.tool-document { font-family: var(--mono); }
 .queued-message { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .queued-message[data-mode=steer] { color: var(--fg); }
 .composer { position: relative; container: composer / inline-size; flex: none; margin: 0 0 var(--s2); }
-.composer-input { position: relative; padding: 0; border: 1px solid var(--rule); border-radius: 0; background: var(--canvas); }
+.composer-input { position: relative; padding: 0; border: 1px solid var(--edge); border-radius: 0; background: var(--canvas); }
 .composer textarea { display: block; width: 100%; min-width: 0; min-height: 24px; padding: var(--s3); border: 0; background: transparent; color: var(--fg); caret-color: var(--accent); font-size: 15px; line-height: 1.6; resize: none; }
 .composer-surface { position: relative; }
 .composer-overlay { position: absolute; top: 0; left: 0; overflow: auto; scrollbar-width: none; pointer-events: none; color: var(--fg); }

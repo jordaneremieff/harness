@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { launchBrave, type Page } from './cdp.mts';
+import { launchBrowser, type Page } from './cdp.mts';
 
 export type Options = { session?: string; out: string; pi: string; maxPages: number; rich?: boolean };
 const inputPath = /\/api\/(?:primaries|agents)\/[^/?]+\/inputs(?:$|\?)/;
@@ -508,10 +508,10 @@ export async function runLargeSession(config: Options): Promise<Record<string, u
   });
   const done = exited(child);
   let stderr = ''; child.stderr?.on('data', chunk => { stderr = (stderr + String(chunk)).slice(-8192); }); child.stdout?.resume();
-  let browser: Awaited<ReturnType<typeof launchBrave>> | undefined;
+  let browser: Awaited<ReturnType<typeof launchBrowser>> | undefined;
   try {
     const url = await ready(child); report.backendPid = child.pid;
-    browser = await launchBrave(); report.browser = browser.version;
+    browser = await launchBrowser(); report.browser = browser.version;
     const page = browser.page;
     await page.send('Page.addScriptToEvaluateOnNewDocument', { source: instrumentation });
     await page.navigate(url);

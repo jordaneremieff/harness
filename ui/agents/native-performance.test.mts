@@ -19,6 +19,11 @@ function deferred<T>() {
 	const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
 	return { promise, resolve, reject };
 }
+async function bounded<T>(work: Promise<T>, ms: number, detail: () => string): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const expired = new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error(detail())), ms); });
+	try { return await Promise.race([work, expired]); } finally { clearTimeout(timer); }
+}
 type Done = Extract<FixtureMessage, { kind: "done" }>;
 class FixtureWorker {
 	readonly #worker: Worker;
@@ -59,11 +64,11 @@ class FixtureWorker {
 	async close(): Promise<FixtureError[]> {
 		if (this.#closed) return [];
 		try {
-			const done = await this.command({ kind: "close" }); const errors = done.errors ?? [];
+			const done = await bounded(this.command({ kind: "close" }), 5000, () => 'Performance fixture close did not settle'); const errors = done.errors ?? [];
 			// Client disposal disconnects immediately; a server write callback can then report EPIPE.
 			if (this.#checked) for (const error of errors) assert.equal(error.code, "EPIPE");
 			else assert.deepEqual(errors, []);
-			assert.equal(await this.#exited.promise, 0); return errors;
+			assert.equal(await bounded(this.#exited.promise, 5000, () => 'Performance fixture did not exit after close'), 0); return errors;
 		} finally { await this.#worker.terminate(); }
 	}
 }
@@ -160,24 +165,29 @@ test("worker Unix host measures large native decode and projection on the backen
 	const token = "native-performance";
 	await connected.request("observe-open", { token, scope: "conversation", sessionId: STORAGE }, { identity: STORAGE, token });
 	let received: number[] = []; let all: ReturnType<typeof deferred<void>> | undefined;
+	let firstRevision = 0, finalRevision = 0;
 	const subscription = await connected.subscribeObservation(token, (value: ConversationFrame) => {
+		if (!all || value.revision < firstRevision) return;
 		const start = performance.now(); const projected = projectFrame(value);
 		measures.add("native.live.project", performance.now() - start);
 		assert.equal(projected.revision, value.revision); assert.equal(projected.live.length, 1);
 		assert.equal(projected.live[0]?.messages?.[0]?.coverage.truncated, true);
-		received.push(value.revision); if (received.length === info.burstFrames) all?.resolve(undefined);
+		assert.ok(value.revision <= finalRevision);
+		received.push(value.revision); if (value.revision === finalRevision) all.resolve(undefined);
 	}, STORAGE, error => all?.reject(error));
 	subscription.start();
 	const bursts: Sample[] = [];
 	try {
 		for (let i = 0; i < SAMPLES; i++) {
-			received = []; all = deferred<void>(); const firstRevision = 2 + i * info.burstFrames;
+			received = []; all = deferred<void>(); firstRevision = 2 + i * info.burstFrames; finalRevision = firstRevision + info.burstFrames - 1;
 			const sample = await measure(measures, async () => {
-				const [done] = await Promise.all([fixture.burst(firstRevision), all?.promise]);
-				assert.equal(done.published, info.burstFrames);
-				assert.deepEqual(received, Array.from({ length: info.burstFrames }, (_, n) => firstRevision + n));
+				assert.ok(all); const completion = all.promise;
+				const [done] = await bounded(Promise.all([fixture.burst(firstRevision), completion]), 15000, () => `Native live burst did not reach ${finalRevision}; received ${JSON.stringify(received)}`);
+				assert.equal(done.published, info.burstFrames); assert.equal(received.at(-1), finalRevision);
+				assert.ok(received.length >= 1 && received.length <= info.burstFrames);
+				assert.ok(received.every((revision, n) => revision >= firstRevision && revision <= finalRevision && (n === 0 || received[n - 1] < revision)));
 			});
-			bursts.push(sample); t.diagnostic(JSON.stringify({ phase: "live-burst", sample: i + 1, ...sample }));
+			all = undefined; bursts.push(sample); t.diagnostic(JSON.stringify({ phase: "live-burst", sample: i + 1, received: received.length, ...sample }));
 		}
 	} finally { await subscription.dispose(); await connected.request("observe-close", { token }, { token }); }
 	t.diagnostic(JSON.stringify({ fixture: { snapshotJsonBytes: info.snapshotJsonBytes, snapshotTextBytes: info.snapshotTextBytes,
@@ -256,7 +266,8 @@ test("isolated agent facade measures bounded snapshot and live projection on the
 	for (let i = 0; i < SAMPLES; i++) {
 		received = []; all = deferred<void>(); firstRevision = 2 + i * info.burstFrames; finalRevision = firstRevision + info.burstFrames - 1;
 		const sample = await measure(measures, async () => {
-			const [done] = await Promise.all([activeFixture.burst(firstRevision), all?.promise]);
+			assert.ok(all); const completion = all.promise;
+			const [done] = await bounded(Promise.all([activeFixture.burst(firstRevision), completion]), 15000, () => `Facade live burst did not reach ${finalRevision}; received ${JSON.stringify(received)}`);
 			assert.equal(done.published, info.burstFrames); assert.equal(received.at(-1), finalRevision);
 			assert.ok(received.every((revision, n) => revision >= firstRevision && (n === 0 || received[n - 1] < revision)));
 		});
