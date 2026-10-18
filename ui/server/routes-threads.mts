@@ -10,12 +10,12 @@ import * as v from './validate.mts';
 
 const THREAD_ID = /^([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\/[0-9a-f]{32}$/;
 
-/** Thread routes are read only. The list fans out across live storages; a read goes to the storage that owns the thread. */
+/** Thread routes are read only. The browser adds its workspace to every request; the routes ignore it because threads belong to storages, not workspaces. The list fans out across live storages; a read goes to the storage that owns the thread. */
 export async function dispatchThreads(registry: Registry, context: RequestContext): Promise<ThreadOverview | ThreadPageView> {
   const {parts, method, url, signal} = context;
   if (method !== 'GET' || parts.length > 3 || (parts.length === 3 && parts[2] !== 'read')) throw new ApiError('invalid_request', 'The route does not accept this method.', 405);
   const read = parts.length === 3;
-  queryNames(url, read ? ['threadId', 'before', 'limit'] : []);
+  queryNames(url, read ? ['workspace', 'threadId', 'before', 'limit'] : ['workspace']);
   return read ? readThread(registry, url, signal) : collectThreads(registry.agents, {signal});
 }
 function queryNames(url: URL, allowed: string[]): void {

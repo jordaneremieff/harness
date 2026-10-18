@@ -1,4 +1,4 @@
-import type { AgentHistoryPage, AgentRow, Bootstrap, EventData, HistoryPage, OperationView, PrimaryView, ProjectedFrame, Snapshot, Target, TargetState, Workspace } from '../shared/api.ts';
+import type { AgentHistoryPage, AgentRow, Bootstrap, EventData, HistoryPage, OperationView, PrimaryView, ProjectedFrame, Snapshot, Target, TargetState, ThreadListItem, ThreadOverview, ThreadPageView, Workspace } from '../shared/api.ts';
 import { draftHasContent, draftImageFingerprint, LIMITS, resolveAppearance } from '../shared/api.ts';
 import { Actions } from './actions.ts';
 import {InputEchoes} from './input-echoes.ts';
@@ -40,6 +40,8 @@ import { ReferenceResolver, type ReferenceDestination, type ReferenceQuery, type
 import { imageUrl } from './image.ts';
 import { historyBecameReady, pageToReadingAnchor } from './transcript-history.ts';
 import { Roster } from './roster.ts';
+import { ThreadExplorer, ThreadReader } from './threads-view.ts';
+import { THREAD_PAGE_EVENTS } from './threads.ts';
 import {noticeGroups, noticeTarget, type NoticeGroup} from './notice-presentation.ts';
 import { Recovery } from './recovery.ts';
 import { conversationBlocks, createState, dismissNotice, markReadNotices, unreadNotices, mergeRosterPage, mergeAgentPage, mergePrimaryPage, primaryBlocks, reduceEvent, replaceSnapshot, targetIdentity } from './state.ts';
@@ -227,11 +229,12 @@ function renderInspection(controller:ConversationController):void {
   if(controller.target.kind==='agent')inspection.observe(state.conversations.get(targetIdentity(controller.target))?.frame,connected&&state.agentAvailability.get(controller.target.identity)?.state==='live');
   else inspection.observe(undefined,connected);
   const region=controllerNode(controller,'transcript-region');
-  if(inspection.active&&!region.hidden)controller.readingGeometry=controller.transcript.captureGeometry();
-  region.hidden=inspection.active;
-  if(!inspection.active&&controller.readingGeometry){const geometry=controller.readingGeometry;controller.readingGeometry=undefined;controller.transcript.applyGeometry(geometry);}
-  controller.elements.root.hidden=!controller.saved||inspection.active&&!projected;
-  if(controller.target.kind==='agent')controllerNode(controller,'history-note').hidden=inspection.active||!controllerNode(controller,'history-note-line').textContent;
+  const covered=inspection.active||threadHost===controller;
+  if(covered&&!region.hidden)controller.readingGeometry=controller.transcript.captureGeometry();
+  region.hidden=covered;
+  if(!covered&&controller.readingGeometry){const geometry=controller.readingGeometry;controller.readingGeometry=undefined;controller.transcript.applyGeometry(geometry);}
+  controller.elements.root.hidden=!controller.saved||covered&&!projected;
+  if(controller.target.kind==='agent')controllerNode(controller,'history-note').hidden=covered||!controllerNode(controller,'history-note-line').textContent;
   inspection.visibility(inspection.active&&!controller.root.hidden&&!controller.root.inert&&controller.workspaceId===state.workspace?.id);
   controller.root.classList.toggle('inspection-active',inspection.active);
 }
@@ -281,6 +284,7 @@ function collectControllers(): void {
     const awaitingDraft = controller.workspaceId === state.workspace?.id && (controller.composer.serverDraftRevision ?? 0) > (targetState(controller.target)?.draft.revision ?? 0);
     const retainedMessage = controller.workspaceId === state.workspace?.id && !!controller.messageRetention;
     if (open.has(key) || retainedMessage || !controller.composer.canDispose || preferences.pending || awaitingDraft) continue;
+    if (threadHost === controller) closeThread(false);
     controller.abort.abort(); controller.historyAbort.abort(); controller.resizer?.destroy(); controller.transcript.destroy(); controller.inspection?.destroy(); controller.composer.destroy(); stableViews().forget(controller.root); controller.root.remove(); controller.elements.root.remove(); controllers.delete(key);
   }
 }
@@ -496,6 +500,63 @@ const roster = new Roster(row => { void selectAgent(row).catch(showError); }, ac
   load: (cursor, signal) => request<import('../shared/api.ts').CachedRoster>(`/api/agents?limit=20&cursor=${encodeURIComponent(cursor)}`, 'GET', undefined, undefined, signal),
   merge: page => { state = mergeRosterPage(state, page); renderRoster(); },
 }, openAgentMessage, row => { const view = presentation({kind: 'agent', identity: row.identity}); return {glyph: presentationGlyph(view), label: view.activity, hideVisibleRosterState: view.hideVisibleRosterState, activity: state.workspace ? controllers.get(controllerKey(state.workspace.id,{kind:'agent',identity:row.identity}))?.transcript.activitySentence() : undefined, tool: view.tool, tone:view.tone, name:view.name, tail:view.identityTail}; });
+/** Threads: the sidebar explorer, and one reader placed in the pane that was focused when a thread was opened. It is not part of the saved layout. */
+let threadHost: ConversationController | undefined, threadOpener: string | undefined;
+function threadName(identity: string): string | undefined {
+  const caption = toolSubjectCaption(identity); if (!caption) return undefined;
+  if (caption.name) return caption.name;
+  return /^(Unresolved|Unnamed)\b/.test(caption.text) ? undefined : caption.text;
+}
+const threadReader = new ThreadReader({
+  page: (threadId, before, signal) => request<ThreadPageView>(`/api/threads/read?threadId=${encodeURIComponent(threadId)}&limit=${THREAD_PAGE_EVENTS}${before === undefined ? '' : `&before=${before}`}`, 'GET', undefined, undefined, AbortSignal.any([signal, AbortSignal.timeout(30_000)])),
+  name: threadName,
+  openMember: identity => openThreadMember(identity),
+  back: () => closeThread(true),
+});
+const threadExplorer = new ThreadExplorer({
+  overview: signal => request<ThreadOverview>('/api/threads', 'GET', undefined, undefined, AbortSignal.any([signal, AbortSignal.timeout(45_000)])),
+  name: threadName,
+  open: item => openThread(item),
+});
+/** The focused pane's conversation hosts the reader; when that pane shows a file, the first pane with a conversation does. */
+function threadHostController(): ConversationController | undefined {
+  const workspace = state.workspace; if (!workspace) return undefined;
+  const layout = currentLayout(), focused = paneById(layout, layout.focusedPane);
+  for (const pane of [...(focused ? [focused] : []), ...paneLeaves(layout.root)]) {
+    const tab = pane.tabs.find(item => tabKey(item) === pane.active), target = tab ? controllerTarget(tab) : undefined;
+    const controller = target ? controllers.get(controllerKey(workspace.id, target)) : undefined;
+    if (controller) return controller;
+  }
+  return undefined;
+}
+function openThread(item: ThreadListItem): void {
+  const controller = threadHostController();
+  if (!controller) { modal.open('Open a conversation first').append(element('p', undefined, 'A thread opens beside a conversation. Open one, then choose the thread again.')); return; }
+  if (threadHost && threadHost !== controller) { const previous = threadHost; threadReader.node.remove(); threadHost = undefined; if (controllers.has(controllerKey(previous.workspaceId, previous.target))) renderInspection(previous); }
+  if (controller.inspection?.active) controller.inspection.conversation();
+  threadHost = controller; threadOpener = item.id;
+  controller.root.insertBefore(threadReader.node, controllerNode(controller, 'transcript-region'));
+  threadExplorer.setCurrent(item.id); renderInspection(controller);
+  threadReader.open(item); threadReader.focus();
+}
+function closeThread(restoreFocus: boolean): void {
+  const controller = threadHost, opener = threadOpener;
+  threadReader.close(); threadReader.node.remove(); threadHost = undefined; threadOpener = undefined; threadExplorer.setCurrent(undefined);
+  if (controller && controllers.has(controllerKey(controller.workspaceId, controller.target))) renderInspection(controller);
+  if (!restoreFocus) return;
+  if (opener && threadExplorer.focusRow(opener)) return;
+  if (controller) controllerNode(controller, 'transcript').focus({preventScroll: true});
+}
+function openThreadMember(identity: string): void {
+  if (!conversationIdentityText(identity)) return;
+  const destinations = referenceIdentities(identity);
+  const destination: ReferenceDestination = destinations.length === 1 && destinations[0] ? destinations[0] : {target: {kind: 'agent', identity}};
+  closeThread(false);
+  void navigateReference(destination, true).catch(showError);
+}
+function syncThreadHost(): void {
+  if (threadHost && (threadHost.workspaceId !== state.workspace?.id || controllers.get(controllerKey(threadHost.workspaceId, threadHost.target)) !== threadHost)) closeThread(false);
+}
 function openAgentMessage(identity: string): void {
   let controller: ConversationController; try {controller = conversationController({kind: 'agent', identity});} catch (error) {showError(error); return;}
   controller.messageRetention = {};
@@ -660,7 +721,7 @@ function refreshCaptionConsumers(): void {
     const controller = controllers.get(controllerKey(captured.workspaceId, {kind: 'agent', identity: captured.identity}));
     controller?.composer.recipient((ready ? 'Message ' : 'Draft for ') + name, ready || !captured.prepared || captured.invalidated ? '' : 'This agent is not ready for messages.', messagePlaceholder(name));
   }
-  tabStrip.render(); roster.schedule(); renderIdentity();
+  tabStrip.render(); roster.schedule(); renderIdentity(); threadExplorer.refreshNames(); threadReader.refreshNames();
 }
 function targetCaption(target?: Target) {return target?.kind === 'agent' ? presentationCaptions().get(target.identity) : undefined;}
 function startAttempt(target?: Target): {pending: boolean; reason?: string} | undefined {
@@ -1191,7 +1252,7 @@ function renderAll(): void {
   document.documentElement.dataset.appearance = resolveAppearance(state.workspace.appearance);
   renderNavigation();
   if (messageTarget.current && !messageTarget.valid(messageTarget.current)) closeMessagePanel(false);
-  renderPrimary(); renderRoster(); renderAgent(); renderMessagePanel(); refreshPaneSizes(); noticesBadge(); extensionDialogs.update(); refreshCaptionConsumers();
+  syncThreadHost(); renderPrimary(); renderRoster(); renderAgent(); renderMessagePanel(); refreshPaneSizes(); noticesBadge(); extensionDialogs.update(); refreshCaptionConsumers();
 }
 export function renderNavigation(): void {
   const narrow = !matchMedia('(min-width: 900px)').matches;
@@ -1219,7 +1280,7 @@ function renderSessionEntry(hasTab: boolean): void {
   const chooser = byId('session-chooser'); chooser.hidden = !firstUse;
   if (firstUse && snapshot) picker.mount(chooser, projectPath()); else picker.unmount();
 }
-function focusEditor(): void {const selected=layoutTarget(currentLayout(),primaryTarget());const owner=selected&&state.workspace?controllers.get(controllerKey(state.workspace.id,selected)):undefined;if(owner?.inspection?.active){owner.inspection.scroller.focus({preventScroll:true});return;}const tab = activeTab(currentLayout());if (tab?.kind === 'file' && state.workspace) {filesViews.view(state.workspace,tab).focus();return;}const target = layoutTarget(currentLayout(), primaryTarget()); if (target) conversationController(target).composer.focus(); }
+function focusEditor(): void {const selected=layoutTarget(currentLayout(),primaryTarget());const owner=selected&&state.workspace?controllers.get(controllerKey(state.workspace.id,selected)):undefined;if(owner&&threadHost===owner){threadReader.focus();return;}if(owner?.inspection?.active){owner.inspection.scroller.focus({preventScroll:true});return;}const tab = activeTab(currentLayout());if (tab?.kind === 'file' && state.workspace) {filesViews.view(state.workspace,tab).focus();return;}const target = layoutTarget(currentLayout(), primaryTarget()); if (target) conversationController(target).composer.focus(); }
 export function toggleSidebar(visible: boolean): void {
   if (!matchMedia('(min-width: 900px)').matches) {
     drawerOpen = visible; renderNavigation(); roster.schedule(); byId(visible ? 'project-button' : 'sidebar-show').focus(); return;
@@ -2151,6 +2212,7 @@ function bind(): void {
   document.addEventListener('visibilitychange', () => {
     diagnostics.setHidden(document.hidden); for (const controller of controllers.values()) controller.transcript.visibilityChanged();
     if (!document.hidden && !uiReady) void finishStartup().catch(showError);
+    if (!document.hidden) { threadExplorer.refreshIfStale(); threadReader.refreshIfStale(); }
   });
 }
 export function devHold(): DevReloadHold | undefined {

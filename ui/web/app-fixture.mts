@@ -342,10 +342,17 @@ function fixtureSelectionResponse(path: string, body: Record<string, unknown> | 
   fixture = {...fixture, workspace: applySelection(fixture.workspace, body ?? {})};
   return Response.json({ok: true, data: fixture.workspace});
 }
+let threadHandler: (url: URL) => unknown = () => ({error: {code: 'host_error', message: 'No thread fixture', retry: 'none'}});
+function threadResponse(url: URL, method: string, body?: Record<string, unknown>): Response {
+  transportLog.push({method, path: `${url.pathname}${url.search}`, body});
+  const result = threadHandler(url);
+  return Response.json(result && typeof result === 'object' && 'error' in result ? {ok: false, error: (result as {error: unknown}).error} : {ok: true, data: result});
+}
 globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
   const url = new URL(String(input), 'http://ui.test/app'); const path = url.pathname;
   const method = (init?.method ?? 'GET').toUpperCase();
   const body = init?.body === undefined ? undefined : JSON.parse(String(init.body)) as Record<string, unknown>;
+  if (path === '/api/threads' || path === '/api/threads/read') return threadResponse(url, method, body);
   const starting = /^\/api\/agents\/[^/]+\/start$/.test(path);
   transportLog.push({method, path, body, ...(starting ? {key: new Headers(init?.headers).get('Idempotency-Key') ?? '', workspace: url.searchParams.get('workspace')} : {})});
   if (starting && startPreparation) return startPreparation(decodeURIComponent(path.split('/')[3] ?? ''));
@@ -454,6 +461,7 @@ export async function createAppFixture(profile: 'application' | 'workspace' = 'w
     failSelection: (value: typeof selectionFailure): void => {selectionFailure = value;},
     get fixture() {return fixture;}, set fixture(value: Fixture) {fixture = value;},
     get startPreparation() {return startPreparation;}, set startPreparation(value: typeof startPreparation) {startPreparation = value;},
+    get threadHandler() {return threadHandler;}, set threadHandler(value: typeof threadHandler) {threadHandler = value;},
     get preferenceSave() {return preferenceSave;}, set preferenceSave(value: typeof preferenceSave) {preferenceSave = value;},
     get selectionFailure() {return selectionFailure;}, set selectionFailure(value: typeof selectionFailure) {selectionFailure = value;},
     get frames() {return frames;}, get frameCount() {return frameCount;}, get cursorSequence() {return cursorSequence;}, get hostClosed() {return hostClosed;},

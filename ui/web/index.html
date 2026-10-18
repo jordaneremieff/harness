@@ -35,6 +35,14 @@
 <div id="roster-footer" class="roster-footer"></div>
 </div>
 </section>
+<section id="threads-section" class="nav-section threads-section" aria-labelledby="threads-heading">
+<div class="nav-heading-row"><h2 class="nav-heading"><button id="threads-heading" class="section-toggle" type="button" aria-expanded="false" aria-controls="threads-section-body">THREADS<span id="threads-count" class="count" hidden></span></button></h2><div class="nav-heading-actions"><button id="threads-refresh" class="icon-button" type="button" data-control-icon="restart" aria-label="Refresh threads" title="Refresh threads"><span class="sr-only">Refresh threads</span></button></div></div>
+<div id="threads-section-body" class="section-body threads-body" hidden>
+<div id="threads-filter-box" class="nav-search" hidden><span class="search-icon" data-control-icon="search" aria-label="Filter threads"></span><label class="sr-only" for="threads-filter">Filter threads</label><input id="threads-filter" class="nav-filter" type="search" placeholder="Filter threads" autocomplete="off" spellcheck="false"></div>
+<ul id="threads-list" class="threads-list" aria-labelledby="threads-heading"></ul>
+<div id="threads-footer" class="roster-footer threads-footer"></div>
+</div>
+</section>
 </div>
 <section id="agent-message-panel" class="agent-message-panel" aria-labelledby="agent-message-name" hidden>
 <div id="message-panel-resizer" class="resizer" data-axis="y" tabindex="0" role="separator" aria-orientation="horizontal" aria-label="Resize Message panel" aria-controls="agent-message-panel"></div>

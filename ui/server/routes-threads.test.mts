@@ -63,6 +63,16 @@ test('the thread list takes no query and thread routes accept only GET', async (
   await assert.rejects(dispatchThreads(registry, {...context(), parts: ['api', 'threads', 'write']}), error => error instanceof ApiError && error.status === 405);
 });
 
+test('thread routes accept the workspace the browser adds to every request, once', async () => {
+  const calls: Call[] = [];
+  const registry = registryFor(calls);
+  await dispatchThreads(registry, context('?workspace=w1', false));
+  await dispatchThreads(registry, context(`?workspace=w1&threadId=${THREAD}&limit=2`));
+  assert.deepEqual(calls, [['thread', STORAGE, THREAD, {limit: 2}]]);
+  await assert.rejects(dispatchThreads(registry, context('?workspace=w1&workspace=w2', false)), invalid);
+  await assert.rejects(dispatchThreads(registry, context(`?workspace=w1&workspace=w2&threadId=${THREAD}`)), invalid);
+});
+
 test('thread routes need no workspace and never call a mutating adapter member', async () => {
   const forbidden = () => {throw new Error('No mutation or workspace access belongs to a thread read.');};
   const registry = {workspace: forbidden, startAgent: forbidden, store: {target: forbidden},

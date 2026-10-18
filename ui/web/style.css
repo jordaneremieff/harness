@@ -1158,6 +1158,57 @@ dialog[data-variant=menu]::backdrop { background: transparent; }
   .sidebar-scroll > .roster-section { min-height: 0; }
   .agent-message-panel { min-height: 100px; max-height: 40dvh; }
 }
+/* Threads: the sidebar explorer and the reader shown inside one pane. */
+.threads-list { max-height: min(28dvh, 240px); margin: 0; padding: 0; overflow-x: hidden; overflow-y: auto; list-style: none; scrollbar-width: thin; scrollbar-color: var(--edge) transparent; }
+.thread-item { margin: 0; }
+.thread-row .row-title { flex: 1 1 auto; }
+.thread-row .row-meta { flex: none; }
+.thread-row.closed .row-title { color: var(--muted); }
+.threads-footer { flex-direction: column; gap: 2px; }
+.threads-footer > :is(.threads-note, details, .threads-retry) { margin: 0; }
+.threads-footer .threads-retry { align-self: start; padding: 2px 0; }
+.threads-footer summary { color: var(--muted); }
+.thread-reader { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; gap: var(--s2); padding-block: var(--s2); }
+.thread-reader[hidden] { display: none; }
+.thread-reader .inspection-header { align-items: center; }
+.thread-title { flex: 1; min-width: 0; overflow: hidden; color: var(--fg); font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.thread-meta { display: flex; flex: none; align-items: baseline; gap: var(--s2); min-width: 0; }
+.thread-meta > .thread-status { flex: 1; min-width: 0; }
+.thread-refresh, .thread-earlier, .thread-toggle, .thread-retry { padding: 2px 0; color: var(--muted); font-size: 12px; }
+.thread-refresh:hover, .thread-earlier:hover, .thread-toggle:hover, .thread-retry:hover { color: var(--fg); }
+.thread-refresh { flex: none; }
+.thread-scroll { flex: 1; min-height: 0; min-width: 0; overflow-x: hidden; overflow-y: auto; overflow-anchor: none; overflow-wrap: anywhere; scrollbar-width: thin; scrollbar-color: var(--rule) transparent; }
+.thread-scroll:focus-visible { outline-offset: -2px; }
+.thread-scroll > button { display: block; }
+.thread-scroll summary { width: fit-content; max-width: 100%; padding: 2px 6px 2px 0; color: var(--muted); font-size: 13px; }
+.thread-scroll summary:hover { color: var(--fg); }
+.thread-purpose { max-height: 4.5em; overflow: hidden; font-size: 14px; line-height: 1.5; }
+.thread-purpose[data-expanded=true] { max-height: none; }
+.thread-prose { font-size: 14px; line-height: 1.5; }
+.thread-prose > :first-child { margin-top: 0; }
+.thread-prose > :last-child { margin-bottom: 0; }
+.thread-members, .thread-frame-details { margin-top: var(--s2); }
+.thread-member-list { margin: 2px 0 0; padding: 0; list-style: none; }
+.thread-member { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: var(--s2); padding-block: 2px; }
+.thread-person, .thread-sender { padding: 0; color: var(--fg); font-size: 13px; font-weight: 500; text-align: left; }
+button.thread-person:hover, button.thread-sender:hover { background: var(--raised); }
+.thread-role, .thread-kind, .thread-time, .thread-reply, .thread-source, .thread-note { color: var(--muted); font-size: 12px; }
+.thread-contribution { flex-basis: 100%; margin: 0; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.thread-fact h3, .thread-change h3 { margin: var(--s2) 0 2px; color: var(--muted); font-size: 12px; font-weight: 500; }
+.thread-exchange { margin: var(--s3) 0 0; padding: 0; list-style: none; }
+.thread-event { margin: 0; }
+.thread-message { padding-block: var(--s2); }
+.thread-event-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--s2); min-width: 0; }
+.thread-reply, .thread-source { margin: 2px 0 0; }
+.thread-line { padding-block: 4px; }
+.thread-line-text { margin: 0; color: var(--muted); font-size: 12px; }
+.thread-line-note { margin: 0; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.thread-line-details .thread-line-note { white-space: pre-wrap; }
+.thread-before, .thread-after { white-space: pre-wrap; font-size: 13px; }
+.thread-before { color: var(--muted); }
+.thread-change-label { display: block; color: var(--muted); font-size: 12px; }
+.thread-notice { padding-block: var(--s2); }
+.thread-notice > .thread-note { margin: 0 0 var(--s1); }
 @media (pointer:coarse) {
   .conversation-tab { --tab-chrome: 90px; }
   .conversation-row { min-height: 44px; align-items: center; }
