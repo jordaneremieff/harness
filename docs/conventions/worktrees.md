@@ -208,8 +208,13 @@ head and a clean worktree. The gates take minutes, and the owner may commit or e
 its worktree changed, the command leaves that branch exactly as it is, names the reason in that slice's `left` field,
 and prints `Left unchanged`. The promotion itself continues, because the promoted commits are already on `main`. The
 next synchronization rebases a clean branch onto `main` and drops the commits that are now on `main`; a dirty branch
-is deferred until its owner commits. A rollback after a failed gate follows the same rule: it does not reset a branch
-that changed meanwhile, and the `recover` text says how to inspect it.
+is deferred until its owner commits. Every reset in the command follows one rule: it resets only a state the promotion
+produced. Before it rebases or replays a slice, the command checks that the branch still holds its preflight state; if
+not, the promotion fails with stage `preflight` and rolls back what it made. A rollback after a failure resets a branch
+only while its head and worktree status still match what the promotion left, including the state of a rebuild that
+failed part way, and it aborts an unfinished batch rebase first. It resets `main` only while `main` holds the commits
+the promotion made and the main checkout is clean. Otherwise it leaves the branch or `main` as it is, and the `recover`
+text says how to inspect it. For `main`, the text says that `main` holds unpushed commits from the failed promotion.
 
 This removes repeated shared gate sets, pushes, and synchronization runs from
 separate promotions. It does not cache gate results or measure elapsed-time

@@ -1531,3 +1531,202 @@ describe("promotion while the branch changes during the gates", () => {
 		assert.equal(git(["status", "--porcelain"], tree), "");
 	});
 });
+
+interface ShimRule {
+	/** The Git argument that triggers the rule once. */
+	arg: string;
+	/** Git calls run, in the given directory, before the triggering call proceeds. */
+	steps: Array<{ cwd: string; args: string[] }>;
+	/** Fails the triggering call instead of running it. */
+	fail?: boolean;
+}
+
+describe("promotion rollback resets only what the promotion produced", () => {
+	const script = fileURLToPath(new URL("./worktrees.mts", import.meta.url));
+	const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+	const gitAt = (cwd: string, args: readonly string[], env: NodeJS.ProcessEnv): string =>
+		execFileSync("git", args, { cwd, env, encoding: "utf8" }).trim();
+	let root: string;
+	after(() => {
+		if (root) rmSync(root, { recursive: true, force: true });
+	});
+
+	interface Options {
+		/** The second slice edits a file the first also edits, so its batch rebase stops on a conflict. */
+		conflict?: boolean;
+		shim?: (trees: { demo: string; other: string }) => ShimRule;
+		/** Node code run by the gate; `repo`, `demo`, `other` and `git(cwd, ...args)` are in scope. */
+		gate?: string;
+		gateFails?: boolean;
+	}
+
+	const promoteBatch = (repo: string, env: NodeJS.ProcessEnv) => {
+		let stdout: string;
+		let status = 0;
+		try {
+			stdout = execFileSync(process.execPath, [script, "promote", "demo", "other", "--json"], {
+				cwd: repo,
+				env,
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "pipe"],
+			});
+		} catch (error) {
+			if (error === null || typeof error !== "object" || !("stdout" in error) || typeof error.stdout !== "string") throw error;
+			stdout = error.stdout;
+			status = "status" in error && typeof error.status === "number" ? error.status : 1;
+		}
+		const report: SerializedPromotionReport & { slices: Array<{ left?: string }> } = JSON.parse(stdout);
+		return { report, status };
+	};
+
+	const scenario = (options: Options = {}) => {
+		root = realpathSync(mkdtempSync(join(tmpdir(), "worktree-rollback-")));
+		const repo = join(root, "harness");
+		const worktrees = join(root, "harness.worktrees");
+		const agent = join(root, "agent");
+		const demo = join(worktrees, "demo");
+		const other = join(worktrees, "other");
+		const bin = join(root, "bin");
+		mkdirSync(bin);
+		mkdirSync(repo, { recursive: true });
+		mkdirSync(agent, { recursive: true });
+		const rule = options.shim?.({ demo, other });
+		writeFileSync(
+			join(bin, "git"),
+			`#!${process.execPath}\nconst { spawnSync } = require("node:child_process");\nconst fs = require("node:fs");\nconst args = process.argv.slice(2);\nconst rule = JSON.parse(process.env.PI_TEST_SHIM || "null");\nconst real = process.env.PI_TEST_REAL_GIT;\nif (rule && args.includes(rule.arg) && !fs.existsSync(rule.mark)) {\n\tfs.writeFileSync(rule.mark, "1");\n\tfor (const step of rule.steps) spawnSync(real, step.args, { cwd: step.cwd, stdio: "ignore" });\n\tif (rule.fail) { process.stderr.write("injected failure\\n"); process.exit(1); }\n}\nprocess.exit(spawnSync(real, args, { stdio: "inherit" }).status ?? 1);\n`,
+			{ mode: 0o755 },
+		);
+		const plain: NodeJS.ProcessEnv = {
+			...process.env,
+			GIT_AUTHOR_NAME: "Fixture",
+			GIT_AUTHOR_EMAIL: "fixture@example.com",
+			GIT_COMMITTER_NAME: "Fixture",
+			GIT_COMMITTER_EMAIL: "fixture@example.com",
+		};
+		const git = (args: readonly string[], cwd: string = repo): string => gitAt(cwd, args, plain);
+		const write = (base: string, path: string, content: string): void => {
+			mkdirSync(dirname(join(base, path)), { recursive: true });
+			writeFileSync(join(base, path), content);
+		};
+		const commit = (base: string, message: string): void => {
+			git(["add", "-A"], base);
+			git(["commit", "-q", "-m", message], base);
+		};
+		git(["init", "-q", "-b", "main"]);
+		write(repo, "extensions/demo/index.ts", "export default function demo() { return {}; }\n");
+		write(repo, "package.json", '{"name":"harness","scripts":{}}\n');
+		commit(repo, "feat(demo): initial");
+		writeFileSync(join(agent, "settings.json"), `${JSON.stringify({ packages: [{ source: repo, extensions: [] }] })}\n`);
+		git(["branch", "extension/demo", "main"]);
+		git(["worktree", "add", "-q", demo, "extension/demo"]);
+		write(demo, "extensions/demo/index.ts", "export default function demo() { return { ok: true }; }\n");
+		commit(demo, "fix(demo): return a value");
+		write(demo, "extensions/demo/LOG.md", "# log\n");
+		commit(demo, "docs(demo): log");
+		git(["branch", "extension/other", "main"]);
+		git(["worktree", "add", "-q", other, "extension/other"]);
+		write(other, "extensions/other/index.ts", "export default function other() {}\n");
+		if (options.conflict) write(other, "extensions/demo/index.ts", "export default function demo() { return { other: true }; }\n");
+		commit(other, "feat(other): add extension");
+		const mainBefore = git(["rev-parse", "main"]);
+		const before = { demo: git(["rev-parse", "extension/demo"]), other: git(["rev-parse", "extension/other"]) };
+		const gateCode = `const { execFileSync } = require("node:child_process"); const { writeFileSync } = require("node:fs"); const repo = ${JSON.stringify(repo)}, demo = ${JSON.stringify(demo)}, other = ${JSON.stringify(other)}; const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { stdio: "pipe" });\n${options.gate ?? ""}\n${options.gateFails ? "process.exit(1);" : ""}`;
+		const env: NodeJS.ProcessEnv = {
+			...plain,
+			PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
+			PI_HARNESS_ROOT: repo,
+			PI_WORKTREE_ROOT: worktrees,
+			PI_AGENT_DIR: agent,
+			PI_SETTINGS_PATH: join(agent, "settings.json"),
+			PI_PROMOTE_GATES: JSON.stringify([{ name: "test", command: [process.execPath, "-e", gateCode] }]),
+			PI_TEST_REAL_GIT: realGit,
+			...(rule ? { PI_TEST_SHIM: JSON.stringify({ ...rule, mark: join(root, "shim-mark") }) } : {}),
+		};
+		const { report, status } = promoteBatch(repo, env);
+		return { report, status, git, repo, demo, other, mainBefore, before };
+	};
+
+	it("fails a batch whose later slice gained a commit after the preflight, without promoting it or resetting it", () => {
+		const run = scenario({
+			shim: ({ other }) => ({ arg: "cherry-pick", steps: [{ cwd: other, args: ["commit", "--allow-empty", "-q", "-m", "feat(other): added after the preflight"] }] }),
+		});
+		assert.equal(run.report.ok, false);
+		assert.equal(run.report.stage, "preflight");
+		assert.match(run.report.reason, /changed after the preflight/);
+		assert.equal(run.git(["rev-parse", "main"]), run.mainBefore);
+		assert.equal(run.git(["rev-parse", "extension/demo"]), run.before.demo);
+		assert.equal(run.git(["log", "-1", "--format=%s", "extension/other"]), "feat(other): added after the preflight");
+		assert.equal(run.git(["status", "--porcelain"], run.other), "");
+	});
+
+	it("does not reset a rebased branch that gained a commit before a failed gate, and resets main", () => {
+		const run = scenario({
+			gate: 'git(other, "commit", "--allow-empty", "-q", "-m", "feat(other): made during the gates");',
+			gateFails: true,
+		});
+		assert.equal(run.report.ok, false);
+		assert.match(run.report.recover ?? "", /extension\/other changed during the promotion and was not reset/);
+		assert.equal(run.git(["log", "-1", "--format=%s", "extension/other"]), "feat(other): made during the gates");
+		assert.equal(run.git(["rev-parse", "main"]), run.mainBefore);
+		assert.equal(run.git(["rev-parse", "extension/demo"]), run.before.demo);
+	});
+
+	it("aborts a conflicting batch rebase and restores the branch when nothing else touched it", () => {
+		const run = scenario({ conflict: true });
+		assert.equal(run.report.ok, false);
+		assert.equal(run.report.stage, "rebase");
+		assert.equal(run.git(["rev-parse", "extension/other"]), run.before.other);
+		assert.equal(run.git(["status", "--porcelain"], run.other), "");
+		assert.equal(run.git(["rev-parse", "main"]), run.mainBefore);
+		assert.equal(run.report.recover, null);
+	});
+
+	it("does not reset a branch that gained a commit as its conflicting rebase started", () => {
+		const run = scenario({
+			conflict: true,
+			shim: ({ other }) => ({ arg: "rebase", steps: [{ cwd: other, args: ["commit", "--allow-empty", "-q", "-m", "feat(other): added as the rebase started"] }] }),
+		});
+		assert.equal(run.report.ok, false);
+		assert.equal(run.report.stage, "rebase");
+		assert.match(run.report.recover ?? "", /extension\/other changed during the promotion and was not reset/);
+		assert.equal(run.git(["log", "-1", "--format=%s", "extension/other"]), "feat(other): added as the rebase started");
+		assert.equal(run.git(["status", "--porcelain"], run.other), "");
+		assert.equal(run.git(["rev-parse", "main"]), run.mainBefore);
+	});
+
+	it("rolls a half-built rebuild back to the original branch head", () => {
+		const run = scenario({ shim: () => ({ arg: "docs(demo): retain development records", steps: [], fail: true }) });
+		assert.equal(run.report.ok, false);
+		assert.equal(run.report.stage, "sync");
+		assert.equal(run.git(["rev-parse", "extension/demo"]), run.before.demo);
+		assert.equal(run.git(["status", "--porcelain"], run.demo), "");
+		assert.equal(run.git(["rev-parse", "main"]), run.mainBefore);
+		assert.equal(run.report.recover, null);
+	});
+
+	it("leaves a commit made on main during the gates and says main holds unpushed promotion commits", () => {
+		const run = scenario({ gate: 'git(repo, "commit", "--allow-empty", "-q", "-m", "chore: made on main during the gates");', gateFails: true });
+		assert.equal(run.report.ok, false);
+		assert.match(run.report.recover ?? "", /main holds unpushed commits from the failed promotion/);
+		assert.notEqual(run.git(["rev-parse", "main"]), run.mainBefore);
+		assert.equal(run.git(["log", "-1", "--format=%s", "main"]), "chore: made on main during the gates");
+		assert.match(run.git(["show", "main~1:extensions/demo/index.ts"]), /ok: true/);
+	});
+
+	it("leaves an uncommitted edit made on main during the gates", () => {
+		const run = scenario({ gate: 'writeFileSync(repo + "/package.json", \'{"name":"edited"}\\n\');', gateFails: true });
+		assert.equal(run.report.ok, false);
+		assert.match(run.report.recover ?? "", /main holds unpushed commits from the failed promotion/);
+		assert.equal(readFileSync(join(run.repo, "package.json"), "utf8"), '{"name":"edited"}\n');
+	});
+
+	it("resets main to where it started after a failed gate nothing else touched", () => {
+		const run = scenario({ gateFails: true });
+		assert.equal(run.report.ok, false);
+		assert.equal(run.git(["rev-parse", "main"]), run.mainBefore);
+		assert.equal(run.git(["status", "--porcelain"]), "");
+		assert.equal(run.report.recover, null);
+		assert.equal(run.git(["rev-parse", "extension/demo"]), run.before.demo);
+		assert.equal(run.git(["rev-parse", "extension/other"]), run.before.other);
+	});
+});

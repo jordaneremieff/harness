@@ -1071,12 +1071,20 @@ function replayPromotionCommit(repoRoot: string, entry: ReplayCommit): { committ
 	return { committed: true };
 }
 
-function replayPromotion(repoRoot: string, shipping: ReplayCommit[]): { promoted: string[]; reason?: string } {
+/** Replays the commits and records every main head it creates, so a rollback can tell its own commits from anyone else's. */
+function replayPromotion(
+	repoRoot: string,
+	shipping: ReplayCommit[],
+	heads: Set<string>,
+): { promoted: string[]; reason?: string } {
 	const promoted: string[] = [];
 	for (const entry of shipping) {
 		const result = replayPromotionCommit(repoRoot, entry);
 		if (result.reason !== undefined) return { promoted, reason: result.reason };
-		if (result.committed) promoted.push(entry.sha);
+		if (result.committed) {
+			promoted.push(entry.sha);
+			heads.add(git(repoRoot, ["rev-parse", "HEAD"]).stdout.trim());
+		}
 	}
 	return { promoted };
 }
@@ -1127,27 +1135,40 @@ interface PromotionSelection {
 	prepared: PreparedPromotion;
 	record: WorktreeRecord;
 	before: string;
-	/** The branch head this promotion itself produced (after a batch rebase or rebuild). */
-	settled?: string;
-	/** True while this promotion itself rewrites the branch, so its own half-finished state is not mistaken for outside work. */
-	rebuilding?: boolean;
+	/** The state this promotion left on the branch. The branch may be rebuilt or reset only while it still matches. */
+	produced?: BranchState;
+}
+
+interface BranchState {
+	head: string;
+	status: string;
+}
+
+function branchState(path: string, branch: string): BranchState {
+	return {
+		head: git(path, ["rev-parse", branch]).stdout.trim(),
+		status: git(path, ["status", "--porcelain"], { cwd: path }).stdout.trim(),
+	};
 }
 
 /**
- * A branch may be rebuilt or rolled back only while it still holds what this promotion saw: the same head and a clean
- * worktree. Gates run for minutes, and the owner may commit or edit meanwhile; a hard reset would drop that work.
+ * A branch may be rebased, rebuilt or rolled back only while it holds a state this promotion saw or produced: the
+ * preflight head with a clean worktree, or the head and status the promotion itself left. Gates run for minutes, and
+ * the owner may commit or edit meanwhile; a hard reset or a rebase would take that work along.
  */
 function branchMovedReason(selection: PromotionSelection): string | undefined {
 	const { path, branch } = selection.record;
-	if (selection.rebuilding) return undefined;
 	const paused = pausedGitOperation(path);
 	if (paused) return paused;
 	if (git(path, ["symbolic-ref", "--short", "HEAD"], { accept: [0, 1, 128] }).stdout.trim() !== branch) {
 		return `${branch} is no longer checked out in ${path}`;
 	}
-	const head = git(path, ["rev-parse", branch]).stdout.trim();
-	if (head !== (selection.settled ?? selection.before)) return `${branch} moved while the promotion ran`;
-	if (isDirty(path)) return `${path} has uncommitted tracked changes or untracked files made while the promotion ran`;
+	const expected = selection.produced ?? { head: selection.before, status: "" };
+	const now = branchState(path, branch);
+	if (now.head !== expected.head) return `${branch} moved while the promotion ran`;
+	if (now.status !== expected.status) {
+		return `${path} has uncommitted tracked changes or untracked files made while the promotion ran`;
+	}
 	return undefined;
 }
 
@@ -1281,8 +1302,9 @@ function restorePromotionBranch(selection: PromotionSelection, rebasing: boolean
 	try {
 		abort = rebasing && Boolean(pausedGitOperation(path)?.includes("rebase-"));
 		if (abort) git(path, noHooks(["rebase", "--abort"]));
-		if (!rebasing && branchMovedReason(selection) !== undefined) {
-			return `${branch} changed during the promotion and was not reset; inspect ${path}, then git -C ${path} reset --hard ${selection.before} only if nothing there is needed`;
+		const moved = branchMovedReason(selection);
+		if (moved !== undefined) {
+			return `${branch} changed during the promotion and was not reset (${moved}); inspect ${path}, then git -C ${path} reset --hard ${selection.before} only if nothing there is needed`;
 		}
 		git(path, noHooks(["reset", "--hard", selection.before]));
 		if (
@@ -1332,10 +1354,12 @@ function rebuildUnlessMoved(
 		return false;
 	}
 	changed.add(selection);
-	selection.rebuilding = true;
-	rebuildPromotedBranch(context, selection.record, selection.before);
-	selection.rebuilding = false;
-	selection.settled = git(selection.record.path, ["rev-parse", selection.record.branch]).stdout.trim();
+	try {
+		rebuildPromotedBranch(context, selection.record, selection.before);
+	} finally {
+		// A rebuild that fails part way leaves a state this promotion produced; a later rollback may reset exactly that.
+		selection.produced = branchState(selection.record.path, selection.record.branch);
+	}
 	return true;
 }
 
@@ -1354,6 +1378,54 @@ function rebuildPromotedBranches(
 	}
 }
 
+/** Resets main only while it holds commits this promotion made; anything else on main is left for its owner. */
+function restoreMain(
+	repo: string,
+	mainBefore: string,
+	mainHeads: ReadonlySet<string>,
+	replaying: boolean,
+): string[] {
+	try {
+		const head = git(repo, ["rev-parse", "main"]).stdout.trim();
+		const status = git(repo, ["status", "--porcelain"]).stdout.trim();
+		if (!mainHeads.has(head) || (!replaying && (status !== "" || pausedGitOperation(repo)))) {
+			return [`main holds unpushed commits from the failed promotion (${mainBefore.slice(0, 7)}..${head.slice(0, 7)}) or changed outside it, and was not reset; inspect git -C ${repo} log ${mainBefore}..main and git -C ${repo} status, then git -C ${repo} reset --hard ${mainBefore} only if nothing there is needed`];
+		}
+		if (replaying) git(repo, noHooks(["cherry-pick", "--quit"]));
+		git(repo, noHooks(["reset", "--hard", mainBefore]));
+		if (pausedGitOperation(repo) || git(repo, ["rev-parse", "main"]).stdout.trim() !== mainBefore) {
+			throw new Error("incomplete rollback");
+		}
+		return [];
+	} catch {
+		return [`git -C ${repo} cherry-pick --quit && git -C ${repo} reset --hard ${mainBefore}`];
+	}
+}
+
+/**
+ * Checks that a slice's branch still holds its preflight state, then rebases every slice after the first onto the
+ * accumulated main. A branch that changed in between would otherwise be rebased and promoted with unreviewed work.
+ */
+function startSlice(
+	context: HarnessContext,
+	selection: PromotionSelection,
+	index: number,
+	changed: Set<PromotionSelection>,
+	progress: (stage: string, rebasing: PromotionSelection | undefined) => void,
+): string | undefined {
+	const { record, prepared: entry } = selection;
+	progress("preflight", undefined);
+	const moved = branchMovedReason(selection);
+	if (moved !== undefined) return `${entry.branch} changed after the preflight: ${moved}`;
+	if (index === 0) return undefined;
+	changed.add(selection);
+	progress("rebase", selection);
+	git(context.repoRoot, noHooks(["rebase", "main"]), { cwd: record.path });
+	progress("rebase", undefined);
+	selection.produced = branchState(record.path, record.branch);
+	return undefined;
+}
+
 async function applyPromotions(
 	context: HarnessContext,
 	selected: PromotionSelection[],
@@ -1367,26 +1439,15 @@ async function applyPromotions(
 	let stage = "cherry-pick";
 	let failedSlice: string | undefined;
 	let rebasing: PromotionSelection | undefined;
+	const mainHeads = new Set([mainBefore]);
+	let replaying = false;
 	const abandon = (reason: string): PromotionReport => {
 		const recovery: string[] = [];
 		for (const selection of changed) {
 			const instruction = restorePromotionBranch(selection, rebasing === selection);
 			if (instruction) recovery.push(instruction);
 		}
-		try {
-			git(context.repoRoot, noHooks(["cherry-pick", "--quit"]));
-			git(context.repoRoot, noHooks(["reset", "--hard", mainBefore]));
-			if (
-				pausedGitOperation(context.repoRoot) ||
-				git(context.repoRoot, ["rev-parse", "main"]).stdout.trim() !== mainBefore
-			) {
-				throw new Error("incomplete rollback");
-			}
-		} catch {
-			recovery.push(
-				`git -C ${context.repoRoot} cherry-pick --quit && git -C ${context.repoRoot} reset --hard ${mainBefore}`,
-			);
-		}
+		recovery.push(...restoreMain(context.repoRoot, mainBefore, mainHeads, replaying));
 		return {
 			...report,
 			ok: false,
@@ -1401,22 +1462,21 @@ async function applyPromotions(
 	};
 	try {
 		for (const [index, selection] of selected.entries()) {
-			const { record, prepared: entry } = selection;
+			const entry = selection.prepared;
 			failedSlice = entry.branch;
-			if (index > 0) {
-				stage = "rebase";
-				changed.add(selection);
-				rebasing = selection;
-				git(context.repoRoot, noHooks(["rebase", "main"]), { cwd: record.path });
-				rebasing = undefined;
-				selection.settled = git(record.path, ["rev-parse", record.branch]).stdout.trim();
-			}
+			const stale = startSlice(context, selection, index, changed, (next, active) => {
+				stage = next;
+				rebasing = active;
+			});
+			if (stale !== undefined) return abandon(stale);
 			stage = "cherry-pick";
 			const shipping = promotionCommits(context.repoRoot, entry.branch, roots).filter(
 				(commit) => commit.kind !== "held",
 			);
-			const replay = replayPromotion(context.repoRoot, shipping);
+			replaying = true;
+			const replay = replayPromotion(context.repoRoot, shipping, mainHeads);
 			if (replay.reason !== undefined) return abandon(replay.reason);
+			replaying = false;
 			slices[index].promoted = replay.promoted;
 			stage = "verify";
 			assertPromotionBoundary(context, entry.branch, roots);
