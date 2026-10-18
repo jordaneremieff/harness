@@ -287,3 +287,47 @@ for (const [name, letter, removesRow] of [['while older events remain', 'x', fal
     await closeReader();
   });
 }
+
+const LATE = id('v');
+test('rows that grow after they are placed leave the first visible event where it was, and a refresh keeps the reading position', async () => {
+  const {HostNode, HostResizeObserver} = harness as unknown as {HostNode: {prototype: object}; HostResizeObserver: {instances: {observed: Set<unknown>; callback: () => void}[]}};
+  const all = Array.from({length: 12}, (_, index) => event(index + 1, 'contribution', BUILDER, {message: `event ${index + 1}`}));
+  const newest = page(all.slice(4), {id: LATE, sequence: 12}); newest.nextBefore = 5; newest.coverage = {complete: false};
+  const older = page(all.slice(0, 4), {id: LATE, sequence: 12});
+  const grown = new Map<string, number>();
+  const prototype = HostNode.prototype as Record<string, unknown>;
+  const height = Object.getOwnPropertyDescriptor(prototype, 'offsetHeight') as PropertyDescriptor, rect = prototype.getBoundingClientRect as (this: unknown) => {top: number; bottom: number};
+  type Layout = {classList: {contains(name: string): boolean}; dataset: Record<string, string>; closest(selector: string): {scrollTop: number} | null};
+  const eventRow = (node: Layout) => node.classList.contains('thread-event');
+  Object.defineProperty(prototype, 'offsetHeight', {configurable: true, get(this: Layout) { return eventRow(this) ? 100 + (grown.get(this.dataset.sequence ?? '') ?? 0) : height.get?.call(this); }});
+  prototype.getBoundingClientRect = function (this: Layout) {
+    const base = rect.call(this), scroll = eventRow(this) ? this.closest('.thread-scroll')?.scrollTop ?? 0 : 0;
+    return {...base, top: base.top - scroll, bottom: base.bottom - scroll};
+  };
+  try {
+    fixtureControl.threadHandler = url => url.pathname !== '/api/threads/read' ? {...overview, items: [...overview.items, {id: LATE, storageId: STORAGE, title: 'Late growth', purpose: '', updatedAt: Date.now(), closed: false, members: 2}]} : url.searchParams.get('before') ? older : newest;
+    byId('threads-refresh').click(); await settle();
+    rowButton('Late growth').click(); await settle();
+    const node = reader(); assert.ok(node);
+    const scroller = node.querySelector('.thread-scroll') as unknown as {scrollTop: number; dispatch(name: string): void; getBoundingClientRect(): {top: number}} | null; assert.ok(scroller);
+    const rows = () => node.querySelector('.thread-exchange')?.children ?? [];
+    const top = (sequence: string) => { const row = rows().find(candidate => candidate.dataset.sequence === sequence); assert.ok(row, sequence); return row.getBoundingClientRect().top; };
+    const settleRows = () => { for (const observer of HostResizeObserver.instances) if ([...observer.observed].some(target => target === node.querySelector('.thread-exchange'))) observer.callback(); };
+    scroller.scrollTop = 450; scroller.dispatch('scroll'); await settle();
+    const first = rows().find(row => row.getBoundingClientRect().bottom > scroller.getBoundingClientRect().top)?.dataset.sequence; assert.ok(first);
+    const before = top(first);
+    node.querySelector('.thread-earlier')?.click(); await settle();
+    assert.equal(rows().length, 12);
+    assert.ok(Math.abs(top(first) - before) <= 1, `after the older page the event moved by ${top(first) - before}px`);
+    for (const sequence of ['1', '2', '3', '4']) grown.set(sequence, 40);
+    settleRows();
+    assert.ok(Math.abs(top(first) - before) <= 1, `after late growth the event moved by ${top(first) - before}px`);
+    const position = scroller.scrollTop;
+    byId('threads-refresh').click(); node.querySelector('.thread-refresh')?.click(); await settle();
+    assert.ok(Math.abs(top(first) - before) <= 1, `after a refresh the event moved by ${top(first) - before}px`);
+    assert.ok(Math.abs(scroller.scrollTop - position) <= 1);
+  } finally {
+    Object.defineProperty(prototype, 'offsetHeight', height); prototype.getBoundingClientRect = rect;
+    await closeReader();
+  }
+});

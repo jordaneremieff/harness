@@ -375,7 +375,7 @@ function installHost(): void {
     document: hostDocument, HTMLElement: HostNode, window: view, location: {href: 'http://ui.test/app?workspace=w', hash: ''},
     history: {replaceState() {}}, sessionStorage: hostSessionStorage, indexedDB:new ReloadStorageFactory(), matchMedia: (query: string) => ({matches: query === '(min-width: 900px)' && host.viewport >= 900 || query === '(max-width: 599px)' && host.viewport < 600, addEventListener() {}, removeEventListener() {}}),
     getComputedStyle: view.getComputedStyle, requestAnimationFrame: hostRequestAnimationFrame, cancelAnimationFrame: hostCancelAnimationFrame,
-    ResizeObserver: application ? HostResizeObserver : class {observe(): void {} unobserve(): void {} disconnect(): void {}},
+    ResizeObserver: HostResizeObserver,
     MutationObserver: class {observe(): void {} disconnect(): void {}},
     EventSource: FixtureEventSource,
     innerWidth: 1200, innerHeight: 800,

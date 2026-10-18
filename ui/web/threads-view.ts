@@ -182,6 +182,9 @@ export class ThreadReader {
   private readonly earlierRow = element('div', 'thread-earlier-row');
   private readonly earlierNote = element('p', 'thread-note', 'Older events not loaded.');
   private lastTop = 0;
+  /** The first visible event and its position at the last reading change, so later height changes can restore it. */
+  private reading?: {sequence: string; top: number};
+  private readonly resize?: ResizeObserver;
   private readonly exchange = element('ol', 'thread-exchange');
   private readonly notice = element('div', 'thread-notice');
   private readonly cache = new Map<string, Cached>();
@@ -213,8 +216,9 @@ export class ThreadReader {
     this.earlierRow.append(this.earlierNote, this.earlier);
     this.scroller.append(this.frame, this.earlierRow, this.exchange, this.notice);
     this.node.append(header, meta, this.scroller);
+    if (typeof ResizeObserver === 'function') { this.resize = new ResizeObserver(() => this.settle()); this.resize.observe(this.exchange); }
     this.scroller.addEventListener('scroll', () => {
-      this.rememberScroll();
+      this.rememberScroll(); this.reading = this.anchorRow();
       const top = this.scroller.scrollTop, up = top < this.lastTop; this.lastTop = top;
       if (up && top <= EARLIER_EDGE && !this.failure) void this.loadEarlier();
     }, {passive: true});
@@ -294,9 +298,7 @@ export class ThreadReader {
     try {
       const page = await this.hooks.page(entry.item.id, before, controller.signal);
       if (serial !== this.earlierSerial) return;
-      const node = this.scroller, anchor = this.anchorRow();
       this.take(entry, page, true); this.paint();
-      this.holdAnchor(anchor); this.lastTop = node.scrollTop;
     } catch (error) {
       if (serial !== this.earlierSerial || controller.signal.aborted) return;
       this.failure = this.classify(error);
@@ -304,20 +306,31 @@ export class ThreadReader {
       if (serial === this.earlierSerial) { this.loadingEarlier = false; this.earlierController = undefined; this.paint(); }
     }
   }
-  /** The first event row at or below the top edge of the exchange, with its position, so a prepend can keep it where it was. */
+  /** The first event row whose bottom is below the top edge of the exchange, with its position. Rows are in document order, so a bisection finds it. */
   private anchorRow(): {sequence: string; top: number} | undefined {
-    const edge = this.scroller.getBoundingClientRect().top;
-    for (const row of Array.from(this.exchange.children) as HTMLElement[]) {
-      const rect = row.getBoundingClientRect();
-      if (rect.bottom > edge && row.dataset.sequence) return {sequence: row.dataset.sequence, top: rect.top};
+    if (this.node.hidden) return undefined;
+    const edge = this.scroller.getBoundingClientRect().top, rows = Array.from(this.exchange.children) as HTMLElement[];
+    let low = 0, high = rows.length;
+    while (low < high) {
+      const middle = (low + high) >> 1, bottom = rows[middle]?.getBoundingClientRect().bottom ?? 0;
+      if (bottom > edge) high = middle; else low = middle + 1;
     }
-    return undefined;
+    const row = rows[low];
+    return row?.dataset.sequence ? {sequence: row.dataset.sequence, top: row.getBoundingClientRect().top} : undefined;
   }
   /** Scrolls by however far the anchor row moved, whatever changed above or below it. */
   private holdAnchor(anchor: {sequence: string; top: number} | undefined): void {
     if (!anchor) return;
     const row = (Array.from(this.exchange.children) as HTMLElement[]).find(candidate => candidate.dataset.sequence === anchor.sequence);
-    if (row) this.scroller.scrollTop += row.getBoundingClientRect().top - anchor.top;
+    const moved = row ? row.getBoundingClientRect().top - anchor.top : 0;
+    if (Math.abs(moved) < 0.5) return;
+    this.scroller.scrollTop += moved; this.lastTop = this.scroller.scrollTop;
+  }
+  /** Rows can change height after they are placed (late names, Markdown, fonts). A reader at the end stays at the end; any other reader keeps the first visible event where it was. */
+  private settle(): void {
+    const entry = this.entry; if (!entry || this.node.hidden || this.restorePending) return;
+    if (this.scrollOf(entry.item.id) === 'end') { this.scroller.scrollTop = this.scroller.scrollHeight; this.lastTop = this.scroller.scrollTop; return; }
+    this.holdAnchor(this.reading); this.reading = this.anchorRow();
   }
   private classify(error: unknown): Failure {
     return errorView(error)?.code === 'threads_unavailable' ? {kind: 'unavailable'} : {kind: 'failed', message: errorText(error)};
@@ -337,6 +350,7 @@ export class ThreadReader {
   private paint(): void {
     const entry = this.entry; if (!entry) return;
     const wasEnd = this.scroller.scrollHeight - this.scroller.scrollTop - this.scroller.clientHeight <= 24;
+    const anchor = wasEnd ? undefined : this.anchorRow();
     const thread = entry.thread, name = nameFor(this.hooks.name);
     this.lastNames = this.nameSignature();
     setText(this.title, thread?.title || entry.item.title || 'Thread');
@@ -350,6 +364,8 @@ export class ThreadReader {
     this.paintControls();
     if (this.restorePending && entry.thread) { this.restorePending = false; this.restoreScroll(); }
     else if (wasEnd && this.scrollOf(entry.item.id) === 'end') this.scroller.scrollTop = this.scroller.scrollHeight;
+    else this.holdAnchor(anchor);
+    this.reading = this.anchorRow();
   }
   private statusText(thread: ThreadView | undefined, events: readonly ThreadEventView[]): string {
     if (!thread) return this.loading ? 'Reading thread…' : '';
