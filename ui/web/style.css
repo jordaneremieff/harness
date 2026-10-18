@@ -909,6 +909,7 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
 .stop:hover { background: var(--err-bg); }
 .receipt { display: flex; flex-wrap: wrap; gap: 2px 12px; max-height: 30dvh; margin-bottom: 6px; overflow: auto; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
 .receipt:empty { display: none; }
+.receipt:has(> .receipt-save-failure:only-child) { max-height: none; overflow: visible; }
 .receipt > div { display: flex; flex-basis: 100%; flex-wrap: wrap; gap: 0 12px; }
 .receipt button { color: var(--fg); }
 .roster-footer button:hover, .roster-error button:hover, .connection button:hover, .exception button:hover, .receipt button:hover { background: var(--raised); }

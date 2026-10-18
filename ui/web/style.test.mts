@@ -1061,5 +1061,6 @@ test('every sidebar heading and row starts its content at the same 12px edge', (
 
 test('the draft-save failure row wraps, stays visible and offers a quiet text retry', () => {
   assert.match(rule('.receipt-save-failure'), /display: flex; flex-wrap: wrap;/); assert.match(rule('.receipt-save-failure'), /overflow: visible;/);
+  assert.match(rule('.receipt:has(> .receipt-save-failure:only-child)'), /max-height: none; overflow: visible;/);
   assert.match(rule('.receipt .receipt-save-failure > .receipt-retry'), /padding: 2px 0; color: var\(--muted\); font-size: 12px;/);
 });
