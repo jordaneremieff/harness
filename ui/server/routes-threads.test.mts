@@ -1,104 +1,93 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { ThreadList, ThreadPage } from '../agents/index.mts';
+import { AgentError, type ThreadList, type ThreadPage } from '../agents/index.mts';
 import { CHILD, STORAGE, THREAD, threadList, threadPage } from '../agents/fake-host.mts';
-import { ROUTES, type ThreadListPage, type ThreadPageView } from '../shared/api.ts';
+import { ROUTES, type ThreadPageView } from '../shared/api.ts';
 import { ApiError } from './errors.mts';
 import type { RequestContext } from './http.mts';
 import type { Registry } from './registry.mts';
-import { dispatchAgent } from './routes-agent.mts';
-import { projectThreadList, projectThreadPage } from './threads.mts';
+import { dispatchThreads } from './routes-threads.mts';
+import { projectThreadItems, projectThreadPage } from './threads.mts';
 
 type Call = [string, ...unknown[]];
 function registryFor(calls: Call[], overrides: Record<string, unknown> = {}) {
   return {agents: {
-    threads: async (identity: string, options: unknown) => {calls.push(['threads', identity, options]); return threadList() as unknown as ThreadList;},
+    roster: () => ({rows: [], nextCursor: null, coverage: {complete: true, omitted: 0}, stale: false, scan: {}}),
+    threads: async () => threadList() as unknown as ThreadList,
     thread: async (identity: string, threadId: string, options: unknown) => {calls.push(['thread', identity, threadId, options]); return threadPage({threadId, ...(options as object)}) as unknown as ThreadPage;},
     ...overrides,
   }} as unknown as Registry;
 }
-function context(identity: string, query = '', read = false, method = 'GET'): RequestContext {
-  return {method, parts: ['api', 'agents', identity, 'threads', ...(read ? ['read'] : [])], body: {}, url: new URL(`http://localhost/api${query}`)};
+function context(query = '', read = true, method = 'GET'): RequestContext {
+  return {method, parts: ['api', 'threads', ...(read ? ['read'] : [])], body: {}, url: new URL(`http://localhost/api${query}`)};
 }
 const invalid = (error: unknown) => error instanceof ApiError && error.code === 'invalid_request';
 
-test('thread routes are declared as read-only GET routes', () => {
-  assert.ok(ROUTES.includes('GET /api/agents/:identity/threads'));
-  assert.ok(ROUTES.includes('GET /api/agents/:identity/threads/read'));
+test('thread routes are declared as two read-only GET routes and no identity route remains', () => {
+  assert.ok(ROUTES.includes('GET /api/threads'));
+  assert.ok(ROUTES.includes('GET /api/threads/read'));
+  assert.equal(ROUTES.filter(route => /threads/.test(route)).length, 2);
   assert.equal(ROUTES.some(route => /threads/.test(route) && !route.startsWith('GET ')), false);
 });
 
-test('the thread list route forwards bounded options for the exact identity storage', async () => {
-  const calls: Call[] = [];
-  const result = await dispatchAgent(registryFor(calls), context(CHILD, '?limit=5&cursor=12&query=design')) as ThreadListPage;
-  assert.deepEqual(calls, [['threads', CHILD, {limit: 5, cursor: '12', query: 'design'}]]);
-  assert.equal(result.storageId, STORAGE);
-  assert.equal(result.items[0].id, THREAD);
-  assert.equal(result.nextCursor, null);
-  assert.equal(result.coverage.complete, true);
-  assert.equal(typeof result.observedAt, 'string');
-  calls.length = 0;
-  await dispatchAgent(registryFor(calls), context(STORAGE));
-  assert.deepEqual(calls, [['threads', STORAGE, {}]]);
-});
-
-test('the thread read route validates its selector and page options before the adapter', async () => {
+test('the thread read route goes to the storage that owns the thread and forwards bounded options', async () => {
   const calls: Call[] = [];
   const registry = registryFor(calls);
-  const result = await dispatchAgent(registry, context(STORAGE, `?threadId=${encodeURIComponent(THREAD)}&limit=2&before=6`, true)) as ThreadPageView;
+  const result = await dispatchThreads(registry, context(`?threadId=${encodeURIComponent(THREAD)}&limit=2&before=6`)) as ThreadPageView;
   assert.deepEqual(calls, [['thread', STORAGE, THREAD, {limit: 2, before: 6}]]);
   assert.equal(result.storageId, STORAGE);
   assert.equal(result.thread.id, THREAD);
   assert.deepEqual(result.events.map(event => event.sequence), [4, 5]);
   calls.length = 0;
-  const bad = ['', '?limit=2', `?threadId=${THREAD}&limit=0`, `?threadId=${THREAD}&limit=21`, `?threadId=${THREAD}&limit=1.5`, `?threadId=${THREAD}&limit=01`,
-    `?threadId=${THREAD}&before=0`, `?threadId=${THREAD}&before=-1`, `?threadId=${THREAD}&before=abc`, `?threadId=${THREAD}&threadId=${THREAD}`,
-    `?threadId=${THREAD}&cursor=1`, `?threadId=${'a'.repeat(129)}`, `?threadId=%00`];
-  for (const query of bad) await assert.rejects(dispatchAgent(registry, context(STORAGE, query, true)), invalid, query);
+  await dispatchThreads(registry, context(`?threadId=${THREAD}`));
+  assert.deepEqual(calls, [['thread', STORAGE, THREAD, {}]]);
+});
+
+test('the thread read route validates its selector and page options before the adapter', async () => {
+  const calls: Call[] = [];
+  const registry = registryFor(calls);
+  const bad = ['', '?limit=2', `?threadId=${STORAGE}`, `?threadId=${THREAD}x`, `?threadId=${THREAD}&limit=0`, `?threadId=${THREAD}&limit=21`, `?threadId=${THREAD}&limit=1.5`,
+    `?threadId=${THREAD}&limit=01`, `?threadId=${THREAD}&before=0`, `?threadId=${THREAD}&before=-1`, `?threadId=${THREAD}&before=abc`, `?threadId=${THREAD}&threadId=${THREAD}`,
+    `?threadId=${THREAD}&cursor=1`, `?threadId=${'a'.repeat(129)}`, '?threadId=%00'];
+  for (const query of bad) await assert.rejects(dispatchThreads(registry, context(query)), invalid, query);
   assert.deepEqual(calls, []);
 });
 
-test('thread list queries refuse unknown, repeated and oversized parameters', async () => {
-  const calls: Call[] = [];
-  const registry = registryFor(calls);
-  for (const query of ['?before=1', '?threadId=x', '?limit=0', '?limit=21', '?cursor=', `?cursor=${'1'.repeat(17)}`, `?query=${'x'.repeat(257)}`, '?query=', '?limit=1&limit=2'])
-    await assert.rejects(dispatchAgent(registry, context(STORAGE, query)), invalid, query);
-  assert.deepEqual(calls, []);
-});
-
-test('thread routes accept only well-formed conversation identities and the GET method', async () => {
-  const calls: Call[] = [];
-  const registry = registryFor(calls);
-  for (const identity of ['invalid', `${STORAGE}:0`, `${STORAGE}:02`, `${STORAGE}:2:3`, '../escape'])
-    await assert.rejects(dispatchAgent(registry, context(identity)), invalid, identity);
+test('the thread list takes no query and thread routes accept only GET', async () => {
+  const registry = registryFor([]);
+  for (const query of ['?limit=1', '?cursor=0', '?query=x', `?identity=${STORAGE}`]) await assert.rejects(dispatchThreads(registry, context(query, false)), invalid, query);
   for (const method of ['POST', 'PUT', 'DELETE']) {
-    await assert.rejects(dispatchAgent(registry, context(STORAGE, '', false, method)), error => error instanceof ApiError && error.status === 405);
-    await assert.rejects(dispatchAgent(registry, context(STORAGE, `?threadId=${THREAD}`, true, method)), error => error instanceof ApiError && error.status === 405);
+    await assert.rejects(dispatchThreads(registry, context('', false, method)), error => error instanceof ApiError && error.status === 405);
+    await assert.rejects(dispatchThreads(registry, context(`?threadId=${THREAD}`, true, method)), error => error instanceof ApiError && error.status === 405);
   }
-  await assert.rejects(dispatchAgent(registry, {...context(STORAGE), parts: ['api', 'agents', STORAGE, 'threads', 'write']}), error => error instanceof ApiError && error.status === 405);
-  assert.deepEqual(calls, []);
+  await assert.rejects(dispatchThreads(registry, {...context(), parts: ['api', 'threads', 'write']}), error => error instanceof ApiError && error.status === 405);
 });
 
 test('thread routes need no workspace and never call a mutating adapter member', async () => {
   const forbidden = () => {throw new Error('No mutation or workspace access belongs to a thread read.');};
   const registry = {workspace: forbidden, startAgent: forbidden, store: {target: forbidden},
-    agents: {threads: async () => threadList(), thread: async () => threadPage({threadId: THREAD}), submit: forbidden, retrySubmit: forbidden, abort: forbidden, configure: forbidden, select: forbidden, hide: forbidden}} as unknown as Registry;
-  await dispatchAgent(registry, context(STORAGE));
-  await dispatchAgent(registry, context(STORAGE, `?threadId=${THREAD}`, true));
+    agents: {roster: () => ({rows: [], nextCursor: null, coverage: {complete: true, omitted: 0}}), threads: async () => threadList(), thread: async () => threadPage({threadId: THREAD}),
+      submit: forbidden, retrySubmit: forbidden, abort: forbidden, configure: forbidden, select: forbidden, hide: forbidden}} as unknown as Registry;
+  await dispatchThreads(registry, context('', false));
+  await dispatchThreads(registry, context(`?threadId=${THREAD}`));
 });
 
-test('adapter failures keep their safe codes and reach the caller unchanged', async () => {
-  const failure = Object.assign(new Error('Stored metadata; no live compatible host.'), {code: 'stored'});
-  await assert.rejects(dispatchAgent(registryFor([], {threads: async () => {throw failure;}}), context(STORAGE)), caught => caught === failure);
-  await assert.rejects(dispatchAgent(registryFor([], {thread: async () => {throw failure;}}), context(STORAGE, `?threadId=${THREAD}`, true)), caught => caught === failure);
+test('absent or unequal thread operations map to threads_unavailable with a status other than 500; other failures pass through', async () => {
+  const unavailable = new AgentError('threads_unavailable', 'Host operation collaboration-list is unavailable.');
+  await assert.rejects(dispatchThreads(registryFor([], {thread: async () => {throw unavailable;}}), context(`?threadId=${THREAD}`)),
+    error => error instanceof ApiError && error.code === 'threads_unavailable' && error.status === 501 && error.retry === 'none');
+  for (const code of ['stored', 'host_unavailable', 'protocol_error']) {
+    const failure = new AgentError(code, 'The host did not answer.');
+    await assert.rejects(dispatchThreads(registryFor([], {thread: async () => {throw failure;}}), context(`?threadId=${THREAD}`)), caught => caught === failure);
+  }
 });
 
 test('thread projection keeps shape, cleans display text and unpacks frame events', () => {
   const list = threadList() as unknown as ThreadList;
   list.items[0].title = 'Design \u001b[31mred\u001b[0m Bearer abcdef1234567890';
-  const listed = projectThreadList(STORAGE, list, '2026-01-01T00:00:00.000Z');
-  assert.equal(listed.items[0].title, 'Design red Bearer [redacted]');
-  assert.equal(listed.observedAt, '2026-01-01T00:00:00.000Z');
+  const listed = projectThreadItems(STORAGE, list);
+  assert.equal(listed[0].title, 'Design red Bearer [redacted]');
+  assert.equal(listed[0].storageId, STORAGE);
   const source = threadPage({threadId: THREAD}) as unknown as ThreadPage;
   source.events[2].message = 'Token sk-abcdefghijklmnopqrstuvwxyz is mine\u0007';
   source.events[4].source = 'Operator\u0000';

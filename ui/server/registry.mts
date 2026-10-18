@@ -16,6 +16,7 @@ import { budgetSnapshot } from './snapshot.mts';
 import type { RequestContext, ImageUploadContext, ImageUploadHeaders } from './http.mts';
 import { dispatchPrimary } from './routes-primary.mts';
 import { dispatchAgent } from './routes-agent.mts';
+import { dispatchThreads } from './routes-threads.mts';
 import { dispatchView } from './routes-view.mts';
 import { StoredAgentStarter, startIdentity, type StartOptions } from './agent-start.mts';
 import { validateSessionProject } from './sessions.mts';
@@ -532,6 +533,7 @@ export class Registry {
     const family = context.parts[1];
     if(family === 'primaries') return dispatchPrimary(this,context);
     if(family === 'agents') return dispatchAgent(this,context);
+    if(family === 'threads') return dispatchThreads(this,context);
     return dispatchView(this,context);
   }
   async detach(): Promise<void> {

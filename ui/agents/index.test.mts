@@ -8,6 +8,8 @@ import { EventEmitter } from 'node:events';
 import { AgentService, createAgentService, deriveEndpoint } from "./index.mts";
 import { activity, blockedResult, deferred, descriptor, FakeHost, frame, receipt, THREAD } from "./fake-host.mts";
 import { dispatchAgent } from "../server/routes-agent.mts";
+import type { ThreadOverview, ThreadPageView } from "../shared/api.ts";
+import { dispatchThreads } from "../server/routes-threads.mts";
 import { errorView } from "../server/errors.mts";
 import type { Registry } from "../server/registry.mts";
 
@@ -509,16 +511,18 @@ test("current native input and inspect cross the unchanged worker response inter
 test("thread routes cross the worker and the native transport as read-only host calls", async t => {
   const { service, host } = await liveFixture(t);
   const registry = { agents: service } as unknown as Registry;
-  const route = (read: boolean, query: string) => dispatchAgent(registry, { method: "GET", body: {}, url: new URL(`http://localhost/api${query}`),
-    parts: ["api", "agents", storageId, "threads", ...(read ? ["read"] : [])] });
-  const list = await route(false, "?limit=4") as { storageId: string; items: { id: string }[] };
-  assert.equal(list.storageId, storageId); assert.equal(list.items[0].id, THREAD);
-  const read = await route(true, `?threadId=${THREAD}&limit=2`) as { events: { sequence: number }[]; nextBefore: number | null; thread: { members: { identity: string }[] } };
-  assert.deepEqual(read.events.map(event => event.sequence), [4, 5]); assert.equal(read.nextBefore, 4); assert.equal(read.thread.members.length, 2);
-  const older = await route(true, `?threadId=${THREAD}&limit=2&before=${read.nextBefore}`) as { events: { sequence: number }[] };
-  assert.deepEqual(older.events.map(event => event.sequence), [2, 3]);
+  const route = (read: boolean, query: string) => dispatchThreads(registry, { method: "GET", body: {}, url: new URL(`http://localhost/api${query}`),
+    parts: ["api", "threads", ...(read ? ["read"] : [])] }) as Promise<ThreadOverview & ThreadPageView>;
+  const read = await route(true, `?threadId=${THREAD}&limit=2`);
+  assert.equal(read.storageId, storageId);
+  assert.deepEqual(read.events.map((event: { sequence: number }) => event.sequence), [4, 5]); assert.equal(read.nextBefore, 4); assert.equal(read.thread.members.length, 2);
+  const older = await route(true, `?threadId=${THREAD}&limit=2&before=${read.nextBefore}`);
+  assert.deepEqual(older.events.map((event: { sequence: number }) => event.sequence), [2, 3]);
   await assert.rejects(route(true, `?threadId=${storageId}/${"d".repeat(32)}`), /Thread not found/);
-  assert.deepEqual(host.calls.map(call => call.member), ["collaboration-list", "collaboration-read", "collaboration-read", "collaboration-read"]);
-  await assert.rejects(route(true, `?threadId=00000000-0000-4000-8000-000000000009/${"a".repeat(32)}`), hasCode("invalid_request"));
-  assert.equal(host.calls.length, 4);
+  assert.deepEqual(host.calls.map(call => call.member), ["collaboration-read", "collaboration-read", "collaboration-read"]);
+  await assert.rejects(route(true, `?threadId=00000000-0000-4000-8000-000000000009/${"a".repeat(32)}`), hasCode("host_unavailable"));
+  assert.equal(host.calls.length, 3);
+  const overview = await route(false, "");
+  assert.deepEqual(overview.storages.map((state: { storageId: string }) => state.storageId), overview.hosts.total ? [storageId] : []);
+  assert.ok(host.calls.every(call => call.member !== "collaboration-mutate"));
 });

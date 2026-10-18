@@ -10,7 +10,6 @@ import {inspectCursor, projectInspection} from './inspection.mts';
 import * as v from './validate.mts';
 import { ImageResponse } from './images.mts';
 import { imageRequest, isImageRoute } from './image-request.mts';
-import { projectThreadList, projectThreadPage } from './threads.mts';
 
 export async function dispatchAgent(registry: Registry,context: RequestContext) {
   const {parts,body,method,url}=context;
@@ -27,7 +26,6 @@ export async function dispatchAgent(registry: Registry,context: RequestContext) 
     try {retainedTarget(identity);} catch {throw new ApiError('invalid_request','Use the exact agent conversation identity.');}
     return new ImageResponse(await registry.agents.image(identity,request.source,request.digest));
   }
-  if(parts[3]==='threads') return threads(registry,identity,parts,method,url,context.signal);
   if(method==='GET') return history(registry,identity,target,url,context.workspace,context.signal);
   if(parts[3]==='inspect') return inspect(registry,identity,body,context.signal);
   const workspace=await registry.workspace(context.workspace);
@@ -78,34 +76,6 @@ async function history(registry:Registry,identity:string,target:Target,url:URL,w
   }
   const page:AgentHistoryPage={target,entries:frame.entries,nextBefore:source.nextBefore,coverage:frame.coverage,revision:source.revision};
   return page;
-}
-/** Threads are read only: a list of the storage's threads, and one page of one thread's exchange. */
-async function threads(registry:Registry,identity:string,parts:string[],method:string,url:URL,signal?:AbortSignal) {
-  if(method!=='GET'||parts.length>5||(parts.length===5&&parts[4]!=='read')) throw new ApiError('invalid_request','The route does not accept this method.',405);
-  let binding: ReturnType<typeof retainedTarget>;
-  try {binding=retainedTarget(identity);} catch {throw new ApiError('invalid_request','Use the exact agent conversation identity.');}
-  const read=parts.length===5;
-  threadQuery(url,read?['threadId','before','limit']:['cursor','query','limit']);
-  const limit=url.searchParams.get('limit');
-  const bound=limit===null?{}:{limit:threadNumber(limit,'thread page limit',1,20)};
-  if(!read) {
-    const cursor=url.searchParams.get('cursor'),query=url.searchParams.get('query');
-    return projectThreadList(binding.storageId,await registry.agents.threads(identity,{...bound,...(cursor!==null?{cursor:v.string(cursor,'thread cursor',16)}:{}),...(query!==null?{query:v.string(query,'thread query',256)}:{})},signal));
-  }
-  const threadId=v.string(url.searchParams.get('threadId'),'thread ID',128),before=url.searchParams.get('before');
-  return projectThreadPage(binding.storageId,await registry.agents.thread(identity,threadId,{...bound,...(before!==null?{before:threadNumber(before,'thread boundary',1)}:{})},signal));
-}
-function threadQuery(url:URL,allowed:string[]) {
-  const seen=new Set<string>();
-  for(const key of url.searchParams.keys()) {
-    if(!allowed.includes(key)||seen.has(key)) throw new ApiError('invalid_request','The thread query is invalid.');
-    seen.add(key);
-  }
-}
-function threadNumber(raw:string,name:string,min:number,max=Number.MAX_SAFE_INTEGER) {
-  const value=/^[1-9]\d*$/.test(raw)?Number(raw):Number.NaN;
-  if(!Number.isSafeInteger(value)||value<min||value>max) throw new ApiError('invalid_request',`The ${name} is invalid.`);
-  return value;
 }
 async function inspect(registry:Registry,identity:string,body:Record<string,unknown>,signal?:AbortSignal) {
   v.fields(body,['view','source','cursor','entryId','offset','submissionId','requestId','operationId','limit'],['view']);

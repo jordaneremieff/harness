@@ -137,7 +137,7 @@ export class AgentService {
     if (options.query !== undefined) params.query = options.query;
     validateThreadParams("collaboration-list", params);
     signal?.throwIfAborted();
-    return (await (await this.#link(identity)).request("collaboration-list", params, {}, signal)) as ThreadList;
+    return (await (await this.#threadLink(identity)).request("collaboration-list", params, {}, signal)) as ThreadList;
   }
   async thread(identity: string, threadId: string, options: ThreadReadOptions = {}, signal?: AbortSignal): Promise<ThreadPage> {
     this.#ready();
@@ -147,7 +147,17 @@ export class AgentService {
     validateThreadParams("collaboration-read", params);
     if (threadId.split("/")[0] !== this.#record(identity).storageId) throw new AgentError("invalid_request", "The thread belongs to a different agent storage.");
     signal?.throwIfAborted();
-    return (await (await this.#link(identity)).request("collaboration-read", params, {}, signal)) as ThreadPage;
+    return (await (await this.#threadLink(identity)).request("collaboration-read", params, {}, signal)) as ThreadPage;
+  }
+  /** An absent or unequal thread operation identity is `threads_unavailable`, distinct from transport and read failures. */
+  async #threadLink(identity: string): Promise<HostLink> {
+    const link = await this.#link(identity);
+    try { link.require(["collaboration-list", "collaboration-read"]); }
+    catch (error) {
+      if (error instanceof AgentError && error.code === "contract_mismatch") throw new AgentError("threads_unavailable", error.message);
+      throw error;
+    }
+    return link;
   }
   submit(identity: string, input: SubmitInput): Promise<Admission> { return this.#input(identity, input, false); }
   /** Explicit reconciliation repeats only the captured key and freshly verified content. */

@@ -1,5 +1,5 @@
 import type { ThreadFrame, ThreadList, ThreadPage } from '../agents/index.mts';
-import type { ThreadEventView, ThreadFrameView, ThreadListPage, ThreadPageView } from '../shared/api.ts';
+import type { ThreadEventView, ThreadFrameView, ThreadListItem, ThreadPageView } from '../shared/api.ts';
 import { safeText } from './projection.mts';
 
 const FRAME_FIELDS = ['title', 'purpose', 'authority', 'source', 'restrictions', 'acceptance', 'integrator'] as const;
@@ -22,10 +22,9 @@ function eventFrame(kind: string, message: string): ThreadFrameView | undefined 
     return frameView(record as ThreadFrame);
   } catch { return undefined; }
 }
-export function projectThreadList(storageId: string, source: ThreadList, observedAt = new Date().toISOString()): ThreadListPage {
-  return {storageId, nextCursor: source.nextCursor, coverage: {complete: source.coverage.complete, visited: source.coverage.visited},
-    items: source.items.map(item => ({id: item.id, title: safeText(item.title, 1024), purpose: safeText(item.purpose, 2048),
-      updatedAt: item.updatedAt, closed: item.closed, members: item.members})), observedAt};
+export function projectThreadItems(storageId: string, source: ThreadList): ThreadListItem[] {
+  return source.items.map(item => ({id: item.id, storageId, title: safeText(item.title, 1024), purpose: safeText(item.purpose, 2048),
+    updatedAt: item.updatedAt, closed: item.closed, members: item.members}));
 }
 export function projectThreadPage(storageId: string, source: ThreadPage, observedAt = new Date().toISOString()): ThreadPageView {
   const thread = source.thread;

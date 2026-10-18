@@ -195,8 +195,13 @@ export type HandoffView = {cwd: string; sessionFile: string; executable: string;
 export type HistoryPage = {target: Target; items: EntryView[]; nextCursor: string | null; coverage: DisplayCoverage};
 export type AgentHistoryPage = {target: Target; entries: EntryView[]; nextBefore: number | null; coverage: DisplayCoverage; revision: string};
 /** Threads belong to the storage that created them. Identities are external conversation identities; display names come from the roster. */
-export type ThreadSummaryView = {id: string; title: string; purpose: string; updatedAt: number; closed: boolean; members: number};
-export type ThreadListPage = {storageId: string; items: ThreadSummaryView[]; nextCursor: string | null; coverage: {complete: boolean; visited: number}; observedAt: string};
+export type ThreadListItem = {id: string; storageId: string; title: string; purpose: string; updatedAt: number; closed: boolean; members: number};
+/** `unavailable` means the host does not offer the exact thread operations; `failed` means the host did not answer or answered invalidly. */
+export type ThreadHostState = {storageId: string; state: 'answered' | 'unavailable' | 'failed'; threads: number; truncated: boolean; code?: string; message?: string};
+/** Open threads first, then newest update first. Bounds are stated so a cut list reports itself. */
+export type ThreadOverview = {items: ThreadListItem[]; /** `total` counts storages with a live host. `notRunning` counts the other storages in the roster, whose threads are not listed. */
+  hosts: {total: number; answered: number; unavailable: number; failed: number; notRunning: number}; storages: ThreadHostState[];
+  rosterComplete: boolean; truncated: boolean; omitted: number; bounds: {perHost: number; total: number}; observedAt: string};
 export type ThreadFrameView = {title: string; purpose: string; authority: string; source: string; restrictions: string; acceptance: string; integrator: string};
 export type ThreadMemberView = {identity: string; contribution: string; joinedAt: number};
 /** A create or revise event carries its frame in `frame` and leaves `message` empty; every other event carries prose in `message`. */
@@ -250,7 +255,7 @@ export const ROUTES = [
   'GET /api/primaries/:key/diagnostics', 'POST /api/primaries/:key/inputs', 'POST /api/primaries/:key/stop',
   'POST /api/primaries/:key/session', 'POST /api/primaries/:key/control', 'POST /api/primaries/:key/dialogs/:dialogId', 'POST /api/primaries/:key/handoff',
   'GET /api/agents', 'POST /api/agents/refresh', 'GET /api/agents/:identity/history', 'GET /api/agents/:identity/history/image', 'POST /api/agents/:identity/inspect',
-  'GET /api/agents/:identity/threads', 'GET /api/agents/:identity/threads/read',
+  'GET /api/threads', 'GET /api/threads/read',
   'POST /api/agents/:identity/inputs', 'POST /api/agents/:identity/abort', 'POST /api/agents/:identity/configure',
   'POST /api/workspaces/:id/targets', 'PUT /api/workspaces/:id/selection', 'GET /api/workspaces/:id/targets/:targetKey', 'PUT /api/workspaces/:id/targets/:targetKey/draft',
   'POST /api/workspaces/:id/targets/:targetKey/images', 'GET /api/workspaces/:id/targets/:targetKey/images/:digest',
