@@ -481,7 +481,7 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
   #workbench-scope { flex: none; max-width: 18ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .workbench-version { flex: none; max-width: none; white-space: nowrap; }
   .workbench-status-facts { flex: 0 1 auto; flex-wrap: wrap; min-width: min-content; gap: 2px 8px; }
-  .workbench-update { flex: 0 10 auto; overflow: hidden; white-space: nowrap; }
+  .workbench-update { flex: 0 1 auto; flex-wrap: wrap; white-space: normal; }
   .workbench-activity { flex: none; white-space: nowrap; }
   .workbench-activity:has(> .workbench-activity-text) { flex: 1 1 0; min-width: 10ch; gap: 0; }
   .workbench-activity:has(> .workbench-activity-text)[data-busy=true]::before { margin-right: 8px; }
