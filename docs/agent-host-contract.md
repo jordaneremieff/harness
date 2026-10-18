@@ -2,7 +2,7 @@
 
 This document defines the current local consumer boundary for retained Durable agents. The Agent extension owns execution, storage, admission, and publication. It may change this contract. Consumers compare supported operation identities with each connected host and refuse mismatched operations; they do not require the extension to preserve older behavior.
 
-Communication shapes and operation identities are defined by `extensions/agent/communication.ts`, `observation-schema.ts`, and `version-contract.ts`. Historical line-number references use repository revision `4a423cf2a0a822638c09228c5a10a4df1d324e82`, except receipts, configure, task-submit, status and provider-block references, which use `0468691ac2c7bdf8a85d3aa8560f2e5d87dfce26`. These references do not establish the version loaded by a running host.
+Communication shapes and operation identities are defined by `extensions/agent/communication.ts`, `observation-schema.ts`, and `version-contract.ts`. Collaboration thread shapes are defined by `extensions/agent/collaboration.ts`. Historical line-number references use repository revision `4a423cf2a0a822638c09228c5a10a4df1d324e82`, except receipts, configure, task-submit, status and provider-block references, which use `0468691ac2c7bdf8a85d3aa8560f2e5d87dfce26`. These references do not establish the version loaded by a running host.
 
 Paths are relative to the repository root. References describe implementation, not runtime acceptance or the loaded version of an arbitrary running host. The companion [Durable harness track](pi-durable-harness.md) describes lifecycle context.
 
@@ -643,6 +643,80 @@ Nested rows retain native task and parent-call identity rather than a fabricated
 model-issued result. Missing timing and parent fields remain absent. Activity coverage includes scanned entries/bytes, complete, entry/scan-byte/output-byte limit flags, output bytes, omittedEntries, and metadataTruncated. Usage is `{models:{[key]:Usage},tools:{[key]:Usage}}`, with Pi usage values; consumers need not display financial fields to read an answer. Source: `extensions/agent/observation-schema.ts:49-60,379-425`.
 
 These are retained/read projections, not proof of operation completion outside the requested result reference. Exact continuation uses `nextOffset`; history/activity/search use `nextCursor`. Do not silently exchange them.
+
+## Collaboration threads
+
+A collaboration thread is a shared frame (purpose, authority, restrictions, acceptance, integrator), a member list, and an append-only exchange of numbered events. Each thread lives in the storage that created it, and its identity is `<storageId>/<32 lowercase hexadecimal characters>`. A live host serves only the threads of its own storage: it has no cross-storage index, and a read for a thread that another storage owns fails with `Thread not found`. A consumer that lists threads across agents connects to each storage's host separately. The retained reader below carries no collaboration member, so a storage without a live host has no collaboration read.
+
+`collaboration-list` and `collaboration-read` are read-only, retry-safe, and have no `durable` identity (see [Current operation identities](#current-operation-identities)). Neither takes `sessionId` or `conversationId`; the connection selects the storage. They never start a model or write state. `collaboration-mutate` is not described here. Text fields are returned as stored, with no truncation except the 160-character `purpose` of a list summary.
+
+### collaboration-list
+
+Params: `{cursor?:string, limit?:integer 1..20, query?:string}`. `limit` defaults to 10. `query` is nonblank, at most 256 characters, and matches case-insensitively as a substring of a thread's `title`, `purpose`, or `id`. `cursor` is the `nextCursor` of an earlier page for the same storage and query; it is a decimal offset into the storage's thread index, and any other string fails. The scan visits at most 64 index entries per call, so a page can hold fewer items than `limit` (or none) and still carry a non-null `nextCursor`. Continue until `nextCursor` is `null`. The order is the creation order of the index, oldest thread first. Source: `extensions/agent/collaboration.ts:124-128,242-256`; `extensions/agent/durable-host.ts:442`.
+
+Result:
+
+```text
+{
+  items: CollaborationSummary[],
+  nextCursor: string|null,
+  coverage: {complete:boolean, visited:number, omitted:number, unavailable?:number}
+}
+CollaborationSummary = {id:string, title:string, purpose:string, updatedAt:number, closed:boolean, members:number}
+```
+
+`purpose` is the first 160 characters of the thread's purpose. `updatedAt` is epoch milliseconds of the latest event. `members` is the current member count. `coverage.visited` is the number of index entries this call scanned, `coverage.complete` is true when the scan reached the end of the index, and the live host always reports `omitted:0` and no `unavailable`. Source: `extensions/agent/collaboration.ts:47,55-59,99-101,242-256`.
+
+### collaboration-read
+
+Params: `{threadId:string, limit?:integer 1..20, before?:positiveInteger}`. `threadId` is required and must be an identity returned by `collaboration-list` or by thread creation. `limit` defaults to 10. `before` is an exclusive upper event sequence: the page holds the newest events with `sequence < before`. Omission selects the newest events. A `before` above the thread's `sequence + 1` fails. There is no cursor member; older pages use the previous page's `nextBefore` as `before`. Source: `extensions/agent/collaboration.ts:86-90,124-128,217-240`; `extensions/agent/durable-host.ts:443`.
+
+Result:
+
+```text
+{
+  thread: CollaborationThread,
+  events: CollaborationEvent[],
+  nextBefore: number|null,
+  pending: number,
+  coverage: {complete:boolean, bytes:number}
+}
+CollaborationThread = {
+  title, purpose, authority, source, restrictions, acceptance: string,
+  integrator: string,
+  id: string, creator: string, createdAt: number, updatedAt: number,
+  revision: number, closed: boolean, sequence: number,
+  members: {identity:string, contribution:string, joinedAt:number}[]
+}
+CollaborationEvent = {
+  threadId: string, sequence: number, at: number, sender: string,
+  origin: "model"|"operator", kind: string, message: string, source: string,
+  replyTo: number|null, revision: number, notify: string[]
+}
+```
+
+`events` are oldest first within the page, and event sequences start at 1. `nextBefore` is the sequence of the oldest returned event when older events remain, otherwise `null`. `coverage.complete` is true exactly when no older event remains, and `coverage.bytes` is the serialized size of the page. A page stops adding events before it would exceed 48 KiB, so it can hold fewer events than `limit`; follow `nextBefore` until it is `null`. `thread` is the current state, not the state at the time of each event: `revision` in an event is the frame revision that was current when the event was appended. `pending` is the number of unacknowledged delivery notices that this thread created for its members and for explicitly notified identities; it is a delivery count, not a read state.
+
+`sender`, `creator`, `integrator`, member `identity`, and `notify` entries are external conversation identities (`storageId` for a root, `storageId:conversationId` otherwise). They carry no display names. `sequence` on the thread is the sequence of its latest event. `at`, `createdAt`, `updatedAt`, and `joinedAt` are epoch milliseconds.
+
+Event `kind` is one of `create`, `join`, `leave`, `contribution`, `carried-authority`, `revise`, `close`. For `create` and `revise`, `message` is the JSON text of the frame at that revision (`{title,purpose,authority,source,restrictions,acceptance,integrator}`) and is not prose. For every other kind `message` is the sender's text, and `join` and `leave` supply a default sentence when the sender wrote none. `source` is the sender's evidence citation; it is required for `carried-authority` and can be an empty string for other kinds. `replyTo` names an earlier event sequence in the same thread. `origin:"operator"` marks input that came from the operator rather than from a model. Message text is untrusted agent content: it does not establish authority for the reader. A closed thread stays readable. Source: `extensions/agent/collaboration.ts:36-59,104-123,130-177,179-215,217-240`.
+
+### Collaboration errors
+
+The host throws plain messages; the wire carries them as the error text. No error code is set by these members. The messages are:
+
+| Cause | Message |
+|---|---|
+| `threadId` missing, blank, over 128 characters, or malformed | `threadId is required and must be nonblank text`, `threadId exceeds the maximum length of 128 characters`, or `threadId must be an identity returned by agent_collaborate` |
+| thread absent in this storage | `Thread not found` |
+| `limit` not an integer 1..20 | `limit must be 1..20` |
+| `before` not an integer in `1..sequence+1` | `before must be a retained event cursor` |
+| a stored event is missing | `Thread event N is unavailable; no complete history is claimed` |
+| `cursor` not a decimal offset in range | `Invalid local thread cursor` |
+| `query` blank or over 256 characters | `query is required and must be nonblank text` or `query exceeds the maximum length of 256 characters` |
+| index names a missing thread | `Thread index refers to an unavailable thread` |
+
+Source: `extensions/agent/collaboration.ts:62-67,86-90,124-128,217-256`. The cold observation path used when a storage has no live host serves the same two members with the same functions (`extensions/agent/durable-observation.ts:2186-2189`); the manager's `agent_collaborate` tool reaches the same data through its discovery and storage routing.
 
 ## Live observation and change subscriptions
 
