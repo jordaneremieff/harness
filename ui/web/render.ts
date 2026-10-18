@@ -636,10 +636,10 @@ export class Transcript {
       const card = content.closest('.tool-shell'); const tool = [...this.tools.values()].find(item => item.card === card);
       return tool?.previewBudget?.room() ?? 0;
     });
-    const outputs = root.querySelectorAll<HTMLElement>('pre, table');
+    const outputs = root.querySelectorAll<HTMLElement>('pre, table, .tool-result');
     for (const node of outputs) {
       this.registerOutput(node); node.tabIndex = 0;
-      node.setAttribute('role', 'region'); node.setAttribute('aria-label', 'Scrollable content');
+      node.setAttribute('role', 'region'); node.setAttribute('aria-label', node.classList.contains('tool-result') ? 'Tool result' : 'Scrollable content');
     }
     if (root.tagName.toLowerCase() === 'pre') { this.registerOutput(root); root.tabIndex = 0; }
     for (const detail of root.querySelectorAll<HTMLDetailsElement>('details')) this.observeDisclosure(detail);
@@ -1321,6 +1321,7 @@ export class Transcript {
     tier.append(title, glyph); cardDisclosure(summary); summary.append(tier);
     const preview = element('div', 'tool-preview'); const qualification = element('p', 'tool-preview-qualification', 'Partial output'); qualification.hidden = true;
     const expanded = element('div', 'tool-expanded'), resultArea = element('div', 'tool-result');
+    resultArea.tabIndex = 0; resultArea.setAttribute('role', 'region'); resultArea.setAttribute('aria-label', 'Tool result');
     const technical = element('details', 'tool-details'), technicalSummary = element('summary', undefined, 'Details'); cardDisclosure(technicalSummary);
     const info = element('p', 'secondary tool-output-info'); technical.append(technicalSummary, target, meta, info); summary.append(preview, qualification); node.append(summary, expanded);
     node.dataset.disclosure = `tool:${source.callId}`; node.open = this.expanded.has(`tool:${source.callId}`);
@@ -1600,8 +1601,8 @@ export class Transcript {
     tool.documentSource = source;
     pre.hidden = !!tool.resultDocument;
     const wrap = tool.actions.querySelector<HTMLElement>('.source-wrap'); if (wrap) wrap.hidden = pre.hidden;
-    if (pre.hidden) { this.releaseOutput(pre); tool.viewport = undefined; }
-    else { tool.viewport = pre; this.registerOutput(pre); }
+    if (pre.hidden) this.releaseOutput(pre); else this.registerOutput(pre);
+    tool.viewport = tool.resultArea; this.registerOutput(tool.resultArea);
   }
   private resultParts(tool: ToolNode, source: JoinedTool): HTMLElement {
     const node = element('div', 'tool-result-parts'); const generation = this.generation; const budget = this.resultBudget(tool, source);

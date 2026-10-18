@@ -801,7 +801,8 @@ details[open] > .card-disclosure > .card-icon-disclosure { transform: rotate(90d
 .tool-output-actions > button { min-height: 24px; padding: 2px 4px; color: var(--muted); }
 .tool-details { min-width: 0; max-width: 100%; margin-top: var(--s2); }
 .tool-details > :not(summary) { margin-top: var(--s1); }
-.tool-result { min-width: 0; max-width: 100%; }
+.tool-result { min-width: 0; max-width: 100%; min-height: 0; max-height: min(480px,50dvh); overflow: auto; }
+.tool-result:focus-visible { outline-offset: -2px; }
 .tool-source-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0 0 8px; font-family: var(--sans); font-size: 12px; }
 .tool-source-actions > button { min-height: 24px; padding: 2px 4px; color: var(--muted); }
 .tool-source-actions > button:hover { color: var(--fg); background: var(--raised); }
@@ -818,6 +819,7 @@ details[open] > .card-disclosure > .card-icon-disclosure { transform: rotate(90d
 .tool-expanded > .secondary { display: block; color: var(--muted); font-size: 12px; }
 /* Native output scrollports retain bounded height without hiding text lines. */
 .tool-expanded pre { display: block; box-sizing: border-box; width: fit-content; min-width: min(24ch,100%); max-width: 100%; max-height: 480px; padding: var(--s1) var(--s2); border: 0; border-radius: 3px; background: var(--code); }
+.tool-expanded .tool-result pre { max-height: none; }
 .tool-expanded .tool-output-text { color: var(--fg); }
 .tool-output-info { max-width: 100%; color: var(--muted); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .tool-expanded details > summary { min-height: 24px; line-height: 20px; color: var(--muted); font-family: var(--sans); font-size: 12px; }

@@ -1585,6 +1585,20 @@ test('a saved null anchor restores the start and permits later geometry and read
   const saved = view.captureGeometry(); root.scrollTop = 500; view.applyGeometry(saved); assert.equal(root.scrollTop, 0);
   view.destroy();
 });
+test('main structured tool results retain a named stable scroll region outside their actions', () => {
+  setup(); const view = transcript(); const value = {body: `# Saved document\n\n${'Readable retained content. '.repeat(250)}`};
+  const source = contentEntry('result-scroll', {}, JSON.stringify(value), false, {value, truncated: false});
+  view.set([source]); flush(); const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card); card.open = true; card.dispatch('toggle'); flush();
+  const area = card.querySelector('.tool-result'), actions = card.querySelector('.tool-output-actions'), technical = card.querySelector('.tool-details');
+  assert.ok(area); assert.ok(actions); assert.ok(technical); assert.equal(area.tabIndex, 0); assert.equal(area.attributes.role, 'region'); assert.equal(area.attributes['aria-label'], 'Tool result');
+  assert.deepEqual(card.querySelector('.tool-expanded')?.children, [area, actions, technical]); assert.equal(area.contains(actions), false); assert.equal(area.contains(technical), false);
+  assert.match(area.textContent, /Readable retained content/); assert.equal((Reflect.get(view, 'outputNodes') as Set<FakeNode>).has(area), true);
+  area.scrollTop = 112; area.focus(); const changed = {body: `${value.body}\n\nAdditional retained paragraph.`};
+  view.set([contentEntry('result-scroll', {}, JSON.stringify(changed), false, {value: changed, truncated: false})]); flush();
+  assert.equal(card.querySelector('.tool-result'), area); assert.equal(area.scrollTop, 112); assert.equal(document.activeElement, area as unknown as Element);
+  assert.match(area.textContent, /Additional retained paragraph/); assert.equal(card.querySelector('.tool-output-actions'), actions);
+  view.reset(); assert.equal((Reflect.get(view, 'outputNodes') as Set<FakeNode>).has(area), false);
+});
 test('expanded image output keeps supplied part order before actions and quieter technical details', async () => {
   setup(); const view = new Transcript('primary', {presentation: () => {}, reading: () => {}, image: () => '/fixture-image.png'});
   const source = contentEntry('image-order', {path: '/opaque/store/digest.bin'}, '');
