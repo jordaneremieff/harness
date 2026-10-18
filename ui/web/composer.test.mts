@@ -285,6 +285,38 @@ test('whole-image restore uses exact-target CAS and never sends', async () => {
   f.click('Restore to draft'); await turn(); assert.deepEqual(f.pick('POST', '/restore').body, {expectedDraftRevision: 4});
   f.ok(f.pick('POST', '/restore'), {...draft(5), images}); await turn(); assert.deepEqual(f.composer.state?.draft.images, images); assert.equal(f.calls.length, 0);
 });
+test('attachment rows retain image identity and expose capability uncertainty through local details', () => {
+  let allowed = true;
+  const f = fixture('agent', undefined, false, undefined, undefined, () => ({allowed, reason: 'Exact image capability explanation.'}));
+  const wide = {...image('wide-landscape.png'), width: 4096, height: 4, bytes: 6144};
+  const saved = f.connect(state('a', {...draft(4, 'Exact draft', 'followUp'), images: [wide]}, true));
+  const editor = f.node('editor'); editor.focus(); editor.setSelectionRange(2, 7, 'backward');
+  let row = f.node('attachments').children[0]; assert.ok(row);
+  assert.ok(row.find('wide-landscape.png')); assert.ok(row.find('PNG · 6.0 KiB')); assert.ok(row.find('Acceptance unknown'));
+  const thumbnail = row.querySelector('img') as unknown as HTMLImageElement; assert.equal(thumbnail.width, 48); assert.equal(thumbnail.height, 48);
+  const details = row.querySelector('.attachment-details'); assert.ok(details); assert.equal(details.open, false);
+  assert.match(details.textContent, /host image support and provider acceptance are separate/); assert.doesNotMatch(row.textContent, /This host accepts image input/);
+  assert.ok(row.find('Remove wide-landscape.png'));
+  allowed = false; f.composer.availability(true, true, false);
+  row = f.node('attachments').children[0]; assert.ok(row?.find('Needs attention')); assert.match(row.textContent, /Exact image capability explanation/);
+  f.node('attachments').querySelector('img')?.fire('error'); row = f.node('attachments').children[0]; assert.ok(row?.find('Image unavailable')); assert.ok(row.find('Retry preview wide-landscape.png'));
+  assert.equal(editor.value, 'Exact draft'); assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [2, 7, 'backward']);
+  assert.deepEqual(f.composer.target, saved.target); assert.deepEqual(f.composer.state?.draft.images, [wide]); assert.equal(f.calls.length, 0); assert.equal(f.submitted.length, 0);
+});
+test('attachment preparation keeps short states, full errors and explicit text actions outside Details', async () => {
+  const f = fixture('agent'); f.connect(); const editor = f.composer.editor;
+  f.composer.addFiles([new File(['exact text'], 'notes.txt', {type: 'text/plain'})]);
+  assert.ok(f.node('attachments').find('Preparing…')); await new Promise(resolve => setImmediate(resolve));
+  const textRow = f.node('attachments').children[0]; assert.ok(textRow?.find('Text not included')); assert.ok(textRow.find('text/plain · 10 B'));
+  const include = textRow.find('Include text from notes.txt'); assert.ok(include); assert.equal(include.textContent, 'Include text');
+  assert.equal(textRow.querySelector('.attachment-details')?.contains(include), false);
+  const invalid = new File(['invalid image'], 'broken.png', {type: 'image/png'}); f.composer.addFiles([invalid]); await new Promise(resolve => setImmediate(resolve));
+  const failedRow = f.node('attachments').children[1]; assert.ok(failedRow?.find('Unavailable'));
+  const details = failedRow.querySelector('.attachment-details'); assert.ok(details); assert.match(details.textContent, /Only valid PNG and JPEG images are supported/);
+  const retry = failedRow.find('Retry broken.png'); assert.ok(retry); assert.equal(retry.textContent, 'Retry'); assert.equal(details.contains(retry), false);
+  const saved = f.composer.captureReload()[0]; assert.equal(saved?.attachments?.items[1]?.file, invalid);
+  assert.equal(f.composer.editor, editor); assert.equal(editor.value, ''); assert.equal(f.calls.length, 0); assert.equal(f.submitted.length, 0);
+});
 test('a failed thumbnail retains identity and blocks a reduced send', async () => {
   const f = fixture(); f.connect(state('a', {...draft(4, 'source'), images: [image()]})); const thumbnail = f.node('attachments').querySelector('img'); assert.ok(thumbnail);
   thumbnail.fire('error'); assert.equal(f.node('send').disabled, true); assert.match(f.node('attachments').textContent, /Image unavailable/); assert.equal(f.composer.editor.value, 'source'); assert.deepEqual(f.composer.state?.draft.images, [image()]);

@@ -397,41 +397,60 @@ export class Composer {
   }
   private paintAttachments(buffer: Buffer): void {
     const slot = this.elements.attachments; if (!slot || this.destroyed || this.current !== buffer) return;
-    const items = buffer.attachments?.items ?? [], refusal = this.imageRefusal(buffer);
-    const key = JSON.stringify([buffer.workspace, buffer.state.targetKey, draftImageFingerprint(buffer.data.images), draftImageFingerprint(buffer.data.server.images), items.map(item => [item.id, item.state, item.error, item.prepared !== undefined]), [...buffer.imageErrors ?? []], refusal]);
+    const items = buffer.attachments?.items ?? [], refusals = buffer.data.images.map(image => this.imageRefusal(buffer, {text: buffer.data.text, images: [image]}));
+    const key = JSON.stringify([buffer.workspace, buffer.state.targetKey, draftImageFingerprint(buffer.data.images), draftImageFingerprint(buffer.data.server.images), items.map(item => [item.id, item.state, item.error, item.prepared !== undefined]), [...buffer.imageErrors ?? []], refusals]);
     if (key === this.attachmentPaint) return; this.attachmentPaint = key;
     slot.replaceChildren(); slot.hidden = !buffer.data.images.length && !items.length;
-    for (const image of buffer.data.images) slot.append(this.attachmentRow(buffer, image));
+    buffer.data.images.forEach((image, index) => {slot.append(this.attachmentRow(buffer, image, refusals[index] ?? ''));});
     for (const item of items) slot.append(this.preparationRow(buffer, item));
-    if (refusal && !items.length) slot.append(element('p', 'warning', refusal));
-    else if (buffer.data.images.length && buffer.state.target.kind === 'agent') slot.append(element('p', 'secondary', 'This host accepts image input. Provider acceptance is not confirmed.'));
     this.resize();
   }
-  private attachmentRow(buffer: Buffer, image: DraftImage): HTMLElement {
-    const row = element('div', 'attachment-row'), thumbnail = element('img');
+  private attachmentInfo(name: string, type: string, bytes: number | undefined, status: string, explanation: string, warning = false): HTMLElement {
+    const info = element('div', 'attachment-info');
+    const size = bytes === undefined ? 'Size unavailable' : bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KiB` : `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+    const details = element('details', 'attachment-details'), summary = element('summary');
+    summary.setAttribute('aria-label', `${status ? `${status}. ` : ''}Attachment details for ${name}`);
+    if (status) summary.append(element('span', warning ? 'warning' : 'secondary', status));
+    summary.append(element('span', 'attachment-details-label', 'Details'));
+    details.append(summary, element('p', undefined, explanation));
+    info.append(element('span', 'attachment-name', name), element('span', 'attachment-meta', `${type} · ${size}`), details); return info;
+  }
+  private attachmentRow(buffer: Buffer, image: DraftImage, refusal: string): HTMLElement {
+    const row = element('div', 'attachment-row attachment-row-image'), thumbnail = element('img');
     const preview = button('', () => previewAttachment(buffer.workspace, buffer.state.targetKey, image, preview), 'attachment-preview');
-    preview.setAttribute('aria-label', `Preview ${image.name}`); thumbnail.alt = ''; thumbnail.loading = 'lazy'; thumbnail.decoding = 'async'; thumbnail.width = 40; thumbnail.height = 40;
+    preview.setAttribute('aria-label', `Preview ${image.name}`); thumbnail.alt = ''; thumbnail.loading = 'lazy'; thumbnail.decoding = 'async'; thumbnail.width = 48; thumbnail.height = 48;
     const unavailable = buffer.imageErrors?.has(image.digest) || buffer.state.imageAvailability.some(item => item.digest === image.digest && item.state === 'unavailable');
     if (!unavailable) {
       thumbnail.addEventListener('error', () => {buffer.imageErrors ??= new Set(); buffer.imageErrors.add(image.digest); this.paint(buffer);});
       thumbnail.src = draftImageUrl(buffer.workspace, buffer.state.targetKey, image.digest); preview.append(thumbnail);
     } else preview.textContent = 'Preview';
-    row.append(preview, element('span', 'attachment-name', image.name), cardAction('close', `Remove ${image.name}`, () => {
+    const status = unavailable ? 'Image unavailable' : refusal ? 'Needs attention' : buffer.state.target.kind === 'agent' ? 'Acceptance unknown' : '';
+    const explanation = [refusal, `${image.width} × ${image.height} pixels. Image references, host image support and provider acceptance are separate facts. Intake permission or stored bytes do not confirm provider acceptance.`].filter(Boolean).join('\n');
+    row.append(preview, this.attachmentInfo(image.name, image.mimeType === 'image/png' ? 'PNG' : 'JPEG', image.bytes, status, explanation, !!unavailable || !!refusal), cardAction('close', `Remove ${image.name}`, () => {
       const previous = buffer.data; buffer.data = editDraft(buffer.data, buffer.data.text, buffer.data.mode, buffer.data.images.filter(item => item.digest !== image.digest));
       buffer.attachments?.forget(image.digest); buffer.imageErrors?.delete(image.digest); this.rebaseSelection(buffer, previous); this.paint(buffer); this.receipt(buffer); this.flush(buffer); announce(`Removed ${image.name}`);
     }));
-    if (unavailable) row.append(element('span', 'warning', 'Image unavailable'), button(`Retry preview ${image.name}`, () => {buffer.imageErrors?.delete(image.digest); this.attachmentPaint = ''; this.paint(buffer); void this.refreshImageState(buffer);}));
+    if (unavailable) {
+      const actions = element('div', 'attachment-actions'), retry = button('Retry preview', () => {buffer.imageErrors?.delete(image.digest); this.attachmentPaint = ''; this.paint(buffer); void this.refreshImageState(buffer);});
+      retry.setAttribute('aria-label', `Retry preview ${image.name}`); actions.append(retry); row.append(actions);
+    }
     return row;
   }
+  private preparationInfo(item: AttachmentItem): HTMLElement {
+    const status = item.state === 'failed' ? 'Unavailable' : item.state === 'including' ? 'Including text…' : item.state === 'text' ? item.prepared === undefined ? 'Text not included' : 'Ready to insert' : 'Preparing…';
+    const explanation = item.error ?? (item.state === 'text' ? 'File text is not included. Use the explicit text action to insert it into this draft.' : 'Local file preparation is pending. This file is not included in a sent message until preparation completes.');
+    return this.attachmentInfo(item.name, item.file?.type || 'File', item.file?.size, status, explanation, item.state === 'failed');
+  }
   private preparationRow(buffer: Buffer, item: AttachmentItem): HTMLElement {
-    const row = element('div', 'attachment-row'); row.append(element('span', 'attachment-name', item.name));
-    row.append(element('span', item.state === 'failed' ? 'warning' : 'secondary', item.error ?? (item.state === 'text' ? 'File text is not included.' : 'Preparing…')));
+    const row = element('div', 'attachment-row'), actions = element('div', 'attachment-actions'); row.append(this.preparationInfo(item));
+    const action = (text: string, label: string, run: () => void): void => {const control = button(text, run); control.setAttribute('aria-label', `${label} ${item.name}`); actions.append(control);};
     if (item.state === 'text') {
-      row.append(button(`${item.prepared === undefined ? 'Include text from' : 'Insert prepared text from'} ${item.name}`, () => {void this.includeFile(buffer, item);}));
-      if (item.prepared !== undefined) row.append(button(`Copy prepared text from ${item.name}`, () => {void copy(item.prepared ?? '', row);}));
+      action(item.prepared === undefined ? 'Include text' : 'Insert text', item.prepared === undefined ? 'Include text from' : 'Insert prepared text from', () => {void this.includeFile(buffer, item);});
+      if (item.prepared !== undefined) action('Copy text', 'Copy prepared text from', () => {void copy(item.prepared ?? '', row);});
     }
-    if (item.state === 'failed' && item.file) row.append(button(`Retry ${item.name}`, () => buffer.attachments?.retry(item)));
+    if (item.state === 'failed' && item.file) action('Retry', 'Retry', () => buffer.attachments?.retry(item));
     row.append(cardAction('close', `Remove ${item.name}`, () => {buffer.inclusions?.delete(item.id); buffer.attachments?.remove(item); announce(`Removed ${item.name}`);}));
+    if (actions.children.length) row.append(actions);
     return row;
   }
   private async includeFile(buffer: Buffer, item: AttachmentItem): Promise<void> {

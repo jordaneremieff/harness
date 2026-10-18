@@ -82,6 +82,16 @@ test('Save, Health and Version retain quiet desktop hit heights without weakenin
     assert.doesNotMatch(rule(selector), /(?:^|;)\s*(?:height|min-height|max-height):/);
   }
 });
+test('draft attachments keep a fixed contained preview and bounded wrapping details and actions', () => {
+  assert.match(rule('.attachment-preview'), /width: 48px; height: 48px; min-width: 48px; min-height: 48px/);
+  assert.match(rule('.attachment-preview img'), /width: 100%; height: 100%; object-fit: contain/);
+  assert.match(rule('.attachment-row-image'), /grid-template-columns: 48px minmax\(0,1fr\) auto/);
+  assert.match(rule('.attachment-row'), /min-width: 0; max-width: 100%/);
+  assert.match(rule('.attachment-info'), /min-width: 0; overflow-wrap: anywhere/);
+  assert.match(rule('.attachment-details > p'), /white-space: pre-wrap; overflow-wrap: anywhere/);
+  assert.match(rule('.attachment-actions'), /grid-column: 1 \/ -1; display: flex; flex-wrap: wrap/);
+  assert.match(rule('.composer-attachments'), /flex-wrap: wrap/);
+});
 test('attachment metadata uses the fixed scale and preview inherits the dialog hairline', () => {
   assert.match(rule('.attachment-digest'), /font-size: 12px; color: var\(--muted\)/);
   assert.match(rule('dialog'), /border: 1px solid var\(--rule\)/);
