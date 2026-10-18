@@ -1876,11 +1876,12 @@ function conversationMenuItems(target: Target): ContextItem[] {
       ...(item.name === 'Show thinking' ? {checked: shown, checkbox: true} : {})}));
 }
 function agentMenuItems(identity: string): ContextItem[] {
-  const row = agentRow(identity); if (!row) return [];
+  const row = agentRow(identity);
   const items: ContextItem[] = [
-    {label: 'Show conversation', run: () => { void selectAgent(row).catch(showError); }},
-
-    {label: 'Message', enabled: connected && row.availability === 'live' && row.capabilities?.input === true, run: () => openAgentMessage(identity)},
+    ...(row ? [
+      {label: 'Show conversation', run: () => { void selectAgent(row).catch(showError); }},
+      {label: 'Message', enabled: connected && row.availability === 'live' && row.capabilities?.input === true, run: () => openAgentMessage(identity)},
+    ] : []),
     {label: 'Copy agent ID', run: () => { void copy(identity, agentNode('view-notice')); }},
     {label: 'Conversation details', run: () => actions.conversationDetails(identity)},
   ];
@@ -1892,7 +1893,7 @@ export function openConversationActions(paneId: string = focusedPane, key?: stri
   const workspace = state.workspace?.id, layout = currentLayout(), pane = paneById(layout, paneId);
   const tab = pane?.tabs.find(tab => tabKey(tab) === (key ?? pane.active)), target = tab && controllerTarget(tab);
   if (!workspace || !tab || !target) return;
-  const current = layout, owner = conversationController(target), trigger = origin ?? paneRegions.get(paneId)?.actions;
+  const current = layout, owner = conversationController(target), rowAtOpen = target.kind === 'agent' && state.roster.has(target.identity), trigger = origin ?? paneRegions.get(paneId)?.actions;
   if (!trigger) return;
   const view = owner.transcript.node.dataset.view === 'grouped' ? 'grouped' : 'chronological';
   const choices: ContextItem[] = (['chronological', 'grouped'] as const).map(mode => ({label: mode === 'chronological' ? 'Conversation' : 'Grouped', description: mode === 'chronological' ? 'View: Conversation' : 'View: Grouped', checked: view === mode, run: () => owner.transcript.setView(mode)}));
@@ -1905,7 +1906,7 @@ export function openConversationActions(paneId: string = focusedPane, key?: stri
   ];
   const grouped = groups.flatMap(([heading, items], group) => items.map((item, index) => index === 0 ? {...item, heading, separatorBefore: group > 0} : item));
   const box = trigger.getBoundingClientRect(); contextMenu.open(trigger, {x: box.right, y: box.bottom}, 'Conversation actions', [...grouped, {label: 'Commands…', separatorBefore: true, run: () => actions.palette()}],
-    () => state.workspace?.id === workspace && samePaneLayout(currentLayout(), current) && sameTarget(controllerTarget(tab), target) && (target.kind === 'primary' || state.roster.has(target.identity)));
+    () => state.workspace?.id === workspace && samePaneLayout(currentLayout(), current) && sameTarget(controllerTarget(tab), target) && (target.kind === 'primary' || state.roster.has(target.identity) === rowAtOpen));
 }
 function paneSpace(id: string): {width: number; height: number; divider: number} { const box = paneRegions.get(id)?.node.getBoundingClientRect(); return {width: box?.width ?? 0, height: box?.height ?? 0, divider: 4}; }
 function paneTabChoices(leaf: PaneLeaf, layout: ConversationLayout): ContextItem[] {
