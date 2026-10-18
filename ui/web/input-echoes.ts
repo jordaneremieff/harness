@@ -18,6 +18,7 @@ function echoEntry(id:string,echo:Echo):EntryView {
   const label=echo.state==='sending'?'Sending…':echo.state==='accepted'?'Sent':echo.state==='uncertain'?'Delivery not confirmed':'Message not sent';
   return {id:`ui-input:${id}`,kind:'ui.input',data:{value:{delivery:label},truncated:false},messages:[{id:`ui-input:${id}:message`,role:'user',timestamp:echo.at,parts:[{type:'text',text}],state:echo.state==='sending'?'partial':'final',...(echo.state==='rejected'||echo.state==='uncertain'?{error:label}:{}),coverage:{complete:true,truncated:false,omitted:0}}]};
 }
+function entryTime(entry:EntryView):number|undefined {return (entry.messages??[]).find(message=>typeof message.timestamp==='number'&&Number.isFinite(message.timestamp))?.timestamp;}
 /** Browser-owned input copies are not native history or proof of admission. */
 export class InputEchoes {
   private pending=new Map<string,Echo>();
@@ -37,7 +38,10 @@ export class InputEchoes {
       if(echo.workspace!==workspace||targetIdentity(echo.submission.target)!==targetIdentity(target))continue;
       const match=native.find(entry=>!claimed.has(entry.id)&&!echo.baseline.has(entry.id)&&matchesInput(echo,entry));
       if(match){claimed.add(match.id);this.pending.delete(id);continue;}
-      result.push(echoEntry(id,echo));
+      const row=echoEntry(id,echo);
+      // A settled input that no native message claims (an extension command) keeps its time order; unsettled input stays last.
+      const later=echo.state==='accepted'?result.findIndex(entry=>{const time=entryTime(entry);return time!==undefined&&time>echo.at;}):-1;
+      if(later<0)result.push(row);else result.splice(later,0,row);
     }
     return result;
   }
