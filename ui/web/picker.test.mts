@@ -28,7 +28,7 @@ class Node {
   matches(selector: string): boolean { return selector.split(',').some(value => {const part = value.trim(); return part.startsWith('.') ? this.classList.contains(part.slice(1)) : part.startsWith('#') ? this.id === part.slice(1) : this.tag === part;}); }
   querySelectorAll(selector: string): Node[] { return descendants(this).filter(node => node.matches(selector)); }
   querySelector(selector: string): Node | null { return this.querySelectorAll(selector)[0] ?? null; }
-  focus(): void { this.focused = true; }
+  focus(): void { this.focused = true; Reflect.set(document, 'activeElement', this); }
   getBoundingClientRect() { return {left: 8, top: 8, bottom: 36, width: 140, height: 28}; }
   setSelectionRange(start: number, end: number): void { this.selectionStart = start; this.selectionEnd = end; }
 }
@@ -156,8 +156,9 @@ test('Durable picker rows use projected names and truthful state with native key
   assert.match(first.title, /first/); assert.match(first.attributes['aria-label'] ?? '', /first/); assert.match(first.querySelector('.picker-session-meta')?.textContent ?? '', /Saved folder:/);
   assert.equal(first.querySelector('.picker-session-tail')?.textContent, qualifier); assert.ok(first.attributes['aria-label']?.includes(qualifier)); assert.equal(first.querySelector('.picker-session-meta')?.title, folderPath);
   assert.equal(durable.querySelector('.picker-safety'), null); Reflect.set(document, 'activeElement', first);
-  let prevented = 0; list.dispatch('keydown', {key: 'ArrowDown', target: first, preventDefault() {prevented++;}}); assert.equal(second.focused, true);
-  list.dispatch('keydown', {key: 'Enter', target: second, preventDefault() {prevented++;}}); await settle();
+  const results=setup.body.querySelector('.picker-results');assert.ok(results);
+  let prevented = 0; results.dispatch('keydown', {key: 'ArrowDown', target: first, preventDefault() {prevented++;}}); assert.equal(second.focused, true);
+  results.dispatch('keydown', {key: 'Enter', target: second, preventDefault() {prevented++;}}); await settle();
   assert.equal(prevented, 2); assert.deepEqual(setup.selections, [{panelVisible: true, selectedTarget: {kind: 'agent', identity: 'second'}}]);
   assert.equal(setup.calls.some(call => call.path === '/api/primaries' || call.path === '/api/agents/convert'), false);
 });
@@ -167,12 +168,58 @@ test('ordinary Resume warnings stay inside their groups and exact-file disclosur
   const registered = setup.body.querySelector('.picker-ordinary'), folder = setup.body.querySelector('.picker-folder-ordinary'); assert.ok(registered); assert.ok(folder);
   assert.equal(setup.body.children.some(node => node.classList.contains('picker-safety')), false);
   assert.match(registered.querySelector('.picker-safety')?.textContent ?? '', /^Before ordinary Resume/); assert.equal(registered.querySelector('.picker-safety')?.hidden, false);
-  assert.equal(folder.querySelector('.picker-safety')?.hidden, false); assert.ok(registered.children.find(node => node.className === 'picker-session'));
+  assert.equal(folder.querySelector('.picker-safety')?.hidden, false); assert.ok(registered.querySelector('.picker-session'));
   const file = folder.querySelector('.picker-file'); assert.ok(file); assert.match(file.querySelector('.picker-safety')?.textContent ?? '', /^Before ordinary Resume/);
   const convert = descendants(registered).find(node => node.tag === 'button' && node.textContent === 'Convert to Durable'); assert.ok(convert); assert.match(convert.title, /source.*unchanged|ordinary session stays unchanged/i);
   const search = setup.body.querySelector('#picker-search'); assert.ok(search); search.value = 'no match'; search.dispatch('input');
-  assert.equal(folder.querySelector('.picker-safety')?.hidden, true); assert.equal(registered.querySelector('.picker-safety')?.hidden, false);
+  assert.equal(folder.querySelector('.picker-safety')?.hidden, true); assert.equal(registered.querySelector('.picker-safety')?.hidden, true);
   assert.equal(setup.calls.some(call => call.path === '/api/primaries' || call.path === '/api/agents/convert'), false);
+});
+function pickerKeyboard(t:TestContext) {
+  class Key {key:string;target:Node;constructor(key:string,target:Node) {this.key=key;this.target=target;} preventDefault():void {} }
+  const priorKey=Object.getOwnPropertyDescriptor(globalThis,'KeyboardEvent'), priorButton=Object.getOwnPropertyDescriptor(globalThis,'HTMLButtonElement');
+  Object.defineProperty(globalThis,'KeyboardEvent',{configurable:true,value:Key});Object.defineProperty(globalThis,'HTMLButtonElement',{configurable:true,value:Node});
+  t.after(()=>{if(priorKey)Object.defineProperty(globalThis,'KeyboardEvent',priorKey);else Reflect.deleteProperty(globalThis,'KeyboardEvent');if(priorButton)Object.defineProperty(globalThis,'HTMLButtonElement',priorButton);else Reflect.deleteProperty(globalThis,'HTMLButtonElement');});
+  return (node:Node,key:string,target=node)=>node.dispatch('keydown',new Key(key,target) as unknown as Record<string,unknown>);
+}
+const searchCatalog=()=>({roster:{...catalogRoster([{...catalogRow('designer'),name:'Web UI designer'},{...catalogRow('other'),name:'Other agent'}]),nextCursor:'more'},published:{...saved,omitted:1,items:[{...ordinarySample,path:'/registered.jsonl',title:'Registered planning'}]}});
+test('one query filters every loaded group without fetching or weakening coverage and duplicate suppression',async t=> {
+  const catalog=searchCatalog(),duplicate={...ordinarySample,path:'/registered.jsonl',title:'Folder alias'};
+  const setup=directPicker(t,undefined,{...saved,items:[ordinarySample,duplicate]},undefined,catalog);setup.picker.open();await settle();
+  const search=setup.body.querySelector('#picker-search'),results=setup.body.querySelector('.picker-results');assert.ok(search&&results);
+  const rows=()=>results.querySelectorAll('.picker-durable-select, .picker-select');const calls=setup.calls.length;
+  assert.deepEqual(rows().map(row=>row.dataset.agentIdentity??row.dataset.sessionPath),['designer','other','/registered.jsonl',ordinarySample.path]);
+  for(const [query,expected] of [['Web UI designer','designer'],['Registered planning','/registered.jsonl'],['Saved title',ordinarySample.path]] as const) {
+    search.value=query;search.dispatch('input');assert.deepEqual(rows().map(row=>row.dataset.agentIdentity??row.dataset.sessionPath),[expected]);
+    assert.match(results.querySelector('.picker-durable-coverage')?.textContent??'',/incomplete/);assert.match(results.querySelector('.picker-ordinary')?.textContent??'',/registered ordinary list is incomplete/);
+  }
+  search.value='Folder alias';search.dispatch('input');assert.equal(rows().length,0);
+  search.value='not present';search.dispatch('input');assert.equal(rows().length,0);assert.match(results.querySelector('.picker-durable')?.textContent??'',/No loaded Durable conversations match/);assert.match(results.querySelector('.picker-ordinary')?.textContent??'',/No loaded registered ordinary sessions match/);assert.match(results.querySelector('.picker-folder-ordinary')?.textContent??'',/This folder:/);
+  assert.equal(setup.calls.length,calls);assert.equal(setup.selections.length,0);
+});
+test('Arrow navigation uses all visible groups and Enter excludes conversion controls',async t=> {
+  const key=pickerKeyboard(t),setup=directPicker(t,undefined,saved,undefined,searchCatalog());setup.picker.open();await settle();
+  const search=setup.body.querySelector('#picker-search'),results=setup.body.querySelector('.picker-results');assert.ok(search&&results);
+  const rows=results.querySelectorAll('.picker-durable-select, .picker-select');search.focus();key(search,'ArrowDown');assert.equal(document.activeElement,rows[0]);
+  for(let index=1;index<rows.length;index++){key(results,'ArrowDown',rows[index-1]);assert.equal(document.activeElement,rows[index]);}
+  key(results,'Home',rows.at(-1));assert.equal(document.activeElement,rows[0]);key(results,'End',rows[0]);assert.equal(document.activeElement,rows.at(-1));
+  const conversion=descendants(results).find(node=>node.tag==='button'&&node.textContent==='Convert to Durable');assert.ok(conversion);key(results,'Enter',conversion);await settle();assert.equal(setup.calls.some(call=>call.path==='/api/agents/convert'||call.path==='/api/primaries'),false);
+  const file=results.querySelector('#picker-session-path');assert.ok(file);file.focus();key(results,'ArrowDown',file);key(results,'Home',file);assert.equal(document.activeElement,file);
+  conversion.focus();key(results,'ArrowDown',conversion);assert.equal(document.activeElement,conversion);
+  search.focus();search.value='no result';search.dispatch('input');key(search,'Enter');key(search,'ArrowDown');assert.equal(document.activeElement,search);assert.equal(setup.selections.length,0);
+});
+for(const [query,identity,path] of [['Web UI designer','designer',undefined],['Registered planning',undefined,'/registered.jsonl'],['Saved title',undefined,ordinarySample.path]] as const) test(`search Enter selects the exact visible target for ${query}`,async t=> {
+  const key=pickerKeyboard(t),setup=directPicker(t,undefined,saved,undefined,searchCatalog());setup.picker.open();await settle();const search=setup.body.querySelector('#picker-search');assert.ok(search);search.value=query;search.dispatch('input');key(search,'Enter');await settle();
+  if(identity) {assert.deepEqual(setup.selections,[{panelVisible:true,selectedTarget:{kind:'agent',identity}}]);assert.equal(setup.calls.some(call=>call.path==='/api/primaries'),false);}
+  else {assert.deepEqual(setup.calls.find(call=>call.path==='/api/primaries')?.body,{cwd:'/project',sessionFile:path});}
+  assert.equal(setup.calls.some(call=>call.path==='/api/agents/convert'),false);
+});
+test('late registered rows honor the current query and retain the focused Durable target',async t=> {
+  const catalog=searchCatalog(),setup=directPicker(t,undefined,saved,undefined,catalog),original=globalThis.fetch,pending=Promise.withResolvers<Response>();
+  globalThis.fetch=async(input,init)=>String(input)==='/api/sessions/published'?pending.promise:original(input,init);
+  setup.picker.open();await settle();const search=setup.body.querySelector('#picker-search');assert.ok(search);search.value='Web UI designer';search.dispatch('input');const selected=setup.body.querySelector('.picker-durable-select');assert.ok(selected);selected.focus();
+  pending.resolve(Response.json({ok:true,data:catalog.published}));await settle();
+  const rows=setup.body.querySelectorAll('.picker-durable-select, .picker-select');assert.equal(rows.length,1);assert.equal(rows[0]?.dataset.agentIdentity,'designer');assert.equal(document.activeElement,rows[0]);assert.equal(setup.selections.length,0);
 });
 test('Durable coverage remains local and a ready blank ordinary title displays absence after hydration', async t => {
   const pending = {...saved, titleCursor: 'titles', items: [{...ordinarySample, title: '', titleState: 'pending' as const}]};
@@ -576,6 +623,10 @@ test('chooser style bindings preserve ordinary actions and full-width Durable ro
   assert.match(css, /\.picker-session-details\[open\] \{[^}]*grid-column: 1 \/ -1; grid-row: 2;/);
   assert.match(css, /\.picker-session-meta:empty \{ display: none; \}/);
   assert.match(css, /\.picker-footer \{[^}]*border-top: 1px solid var\(--edge\);/);
+  assert.match(css, /dialog\[open\]\[data-variant=picker\] \{ display: flex; flex-direction: column; overflow: hidden; \}/);
+  assert.match(css, /dialog\[data-variant=picker\] #modal-body \{[^}]*display: flex; flex-direction: column; min-height: 0;/);
+  assert.match(css, /\.picker-results \{ flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: thin; \}/);
+  assert.match(css, /dialog\[data-variant=picker\] #modal-body > :not\(\.picker-results\) \{ flex: none; \}/);
   assert.match(css,/\.picker-durable-list \{[^}]*grid-template-columns: minmax\(0,1fr\);/);assert.match(css,/\.picker-durable-select \{[^}]*grid-template-columns: minmax\(0,1fr\);[^}]*width: 100%;[^}]*min-width: 0;/);assert.match(css,/\.picker-durable-select :is\(\.picker-session-title, \.picker-session-tail, \.picker-durable-state\) \{[^}]*white-space: normal;[^}]*overflow-wrap: anywhere;/);
 });
 

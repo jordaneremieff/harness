@@ -44,6 +44,16 @@ function durableCoverage(roster?: CachedRoster): string {
   return notes.join(' ');
 }
 
+function registeredCoverage(page: SavedSessionPage | undefined, failed: boolean, matches: number, query: string): string {
+  if (failed) return 'Registered ordinary sessions are unavailable. Refresh the session picker.';
+  if (!page) return 'Loading registered ordinary sessions…';
+  const notes: string[] = [];
+  if (!matches) notes.push(query.trim() ? `No loaded registered ordinary sessions match “${query.trim()}”.` : 'No loaded registered ordinary sessions.');
+  if (page.nextCursor || page.omitted || page.items.some(item => item.titleState !== 'ready')) notes.push('The loaded registered ordinary list is incomplete.');
+  if (page.omitted) notes.push(`${page.omitted} discovery records are unavailable or outside the bound.`);
+  return notes.join(' ');
+}
+
 type Context = {snapshot(): Snapshot | undefined; primary(): PrimaryView | undefined; modal: Modal;
   agentPresentation(row: AgentRow): Pick<ConversationPresentation, 'name' | 'identityTail' | 'activity' | 'tone' | 'cwd'>;
   selection(change: SelectionChange): Promise<void>; reload(): Promise<void>; selectOpened?(): (key:string)=>Promise<void>; selectConverted?(): (identity:string)=>Promise<void>; project?(): string | undefined; projectsChanged?(): void; workingFolder?(path:string):Promise<void>};
@@ -247,8 +257,9 @@ export class ProjectPicker {
     const safety = ordinaryResumeWarning();
     const search = input('Search sessions'); search.field.id = 'picker-search'; search.label.htmlFor = search.field.id; search.field.placeholder = 'Search sessions';
     const searchRow = element('div', 'picker-search-row'); searchRow.append(pickerField(search)); body.append(searchRow);
+    const results = element('div', 'picker-results'); body.append(results);
     const publishedPaths=new Set<string>();
-    this.catalog(body,signal,token,paths=>{for(const path of paths)publishedPaths.add(path);paint();});
+    const paintCatalog = this.catalog(results,signal,token,()=>search.field.value,()=>search.field.focus(),paths=>{for(const path of paths)publishedPaths.add(path);paint();});
     const ordinary = element('section', 'picker-folder-ordinary'); ordinary.append(element('h2', undefined, 'Ordinary sessions in this folder'), safety);
     const list = element('div', 'picker-sessions'); const coverage = element('p', 'secondary'); coverage.id = 'picker-coverage'; coverage.setAttribute('aria-live', 'polite');
     const error = element('p', 'error'); error.setAttribute('role', 'alert');
@@ -266,8 +277,8 @@ export class ProjectPicker {
       observed.textContent = `Saved list · ${relativeTime(data.observedAt, Date.now())}`;
     };
     const paint = () => {
-      const focusedPath = document.activeElement instanceof HTMLElement && document.activeElement.classList.contains('picker-select') ? document.activeElement.dataset.sessionPath : undefined;
-      const version = ++render; list.replaceChildren();
+      const focusedPath = [...list.querySelectorAll<HTMLButtonElement>('.picker-select')].find(row=>row===document.activeElement)?.dataset.sessionPath;
+      const version = ++render; paintCatalog(); list.replaceChildren();
       if (!data) return;
       const matches = filterSessions(data.items, search.field.value).filter(item=>!publishedPaths.has(item.path));
       const tails = duplicateIdentityTails(data.items.map(item => ({name: sessionLabel(item), identity: item.id})));
@@ -285,7 +296,7 @@ export class ProjectPicker {
         if (offset < matches.length) requestAnimationFrame(batch);
       };
       batch();
-      if (!matches.length) list.append(element('p', 'secondary', sessionSearchEmpty(data, search.field.value)));
+      if (!matches.length) list.append(element('p', 'secondary', `This folder: ${sessionSearchEmpty(data, search.field.value)}`));
     };
     const save = () => {
       if (!data) return;
@@ -329,32 +340,54 @@ export class ProjectPicker {
     searchRow.append(options);
     const utilities = element('div', 'picker-project-actions picker-footer');
     utilities.append(coverage, freshness, more);
-    ordinary.append(list, error, utilities, file); body.append(ordinary);
-    list.addEventListener('keydown', event => this.navigate(event, list));
+    ordinary.append(list, error, utilities, file); results.append(ordinary);
+    results.addEventListener('keydown', event => {
+      if (event.target instanceof HTMLButtonElement && event.target.matches('.picker-select, .picker-durable-select')) this.navigate(event, results);
+    });
     search.field.addEventListener('input', paint); search.field.addEventListener('keydown', event => {
       if (!(event instanceof KeyboardEvent)) return;
-      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') this.navigate(event, list);
-      if (event.key === 'Enter') { event.preventDefault(); list.querySelector<HTMLButtonElement>('.picker-select')?.click(); }
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') this.navigate(event, results);
+      if (event.key === 'Enter') { event.preventDefault(); results.querySelector<HTMLButtonElement>('.picker-durable-select, .picker-select')?.click(); }
     });
     save(); paint(); for (const page of data?.pendingTitles ?? []) void fillTitles(page); search.field.focus();
   }
-  private catalog(body:HTMLElement,signal:AbortSignal,token:number,changed:(paths:string[])=>void):void {
+  private catalog(body:HTMLElement,signal:AbortSignal,token:number,query:()=>string,focusSearch:()=>void,changed:(paths:string[])=>void):()=>void {
     const durable=element('section','picker-durable');durable.append(element('h2',undefined,'Durable conversations'));
     const roster = this.ctx.snapshot()?.roster, list = element('div', 'picker-durable-list');
-    for (const row of roster?.rows ?? []) list.append(this.durableRow(row));
-    list.addEventListener('keydown', event => this.navigate(event, list));
     const coverage = element('p', 'secondary picker-durable-coverage', durableCoverage(roster)); coverage.hidden = !coverage.textContent;
     durable.append(list, coverage);
-    const ordinary=element('section','picker-ordinary'), safety=ordinaryResumeWarning(); safety.hidden=true;
-    ordinary.append(element('h2',undefined,'Registered ordinary sessions'),element('p','secondary','All folders. Conversion copies saved context only. The source session stays unchanged.'), safety);
+    const ordinary=element('section','picker-ordinary'), safety=ordinaryResumeWarning(), registered=element('div','picker-registered-list');
+    const status=element('p','secondary'); status.setAttribute('aria-live','polite');
+    ordinary.append(element('h2',undefined,'Registered ordinary sessions'),element('p','secondary','All folders. Conversion copies saved context only. The source session stays unchanged.'), safety, registered, status);
     body.append(durable,ordinary);
+    let published:SavedSessionPage|undefined, failed=false;
+    const selectable=()=>[...list.querySelectorAll<HTMLButtonElement>('.picker-durable-select'),...registered.querySelectorAll<HTMLButtonElement>('.picker-select')];
+    const restoreFocus=(focused?:HTMLButtonElement)=> {
+      if(!focused)return;
+      const replacement=selectable().find(row=>focused.dataset.agentIdentity ? row.dataset.agentIdentity===focused.dataset.agentIdentity : row.dataset.sessionPath===focused.dataset.sessionPath);
+      if(replacement)replacement.focus();else focusSearch();
+    };
+    const paint=()=> {
+      const focused=selectable().find(row=>row===document.activeElement);
+      const needle=query().trim().toLocaleLowerCase();
+      const matches=(roster?.rows ?? []).filter(row=> {
+        const view=this.ctx.agentPresentation(row);
+        return !needle || [presentationName(view),row.identity,view.cwd].some(value=>value?.toLocaleLowerCase().includes(needle));
+      });
+      list.replaceChildren(...matches.map(row=>this.durableRow(row)));
+      if(!matches.length && needle)list.append(element('p','secondary',`No loaded Durable conversations match “${query().trim()}”.`));
+      const items=filterSessions(published?.items ?? [],query());
+      const tails=duplicateIdentityTails((published?.items ?? []).map(item=>({name:sessionLabel(item),identity:item.id})));
+      registered.replaceChildren(...items.map(item=>this.row(item,tails.get(item.id))));
+      safety.hidden=!items.some(item=>!sessionOwner(this.ctx.snapshot()?.primaries ?? [],item.path));
+      status.textContent=registeredCoverage(published,failed,items.length,query()); status.hidden=!status.textContent;
+      restoreFocus(focused);
+    };
     void request<SavedSessionPage>('/api/sessions/published','GET',undefined,undefined,signal).then(page=>{
       if(!this.owns(token)||signal.aborted)return;
-      safety.hidden = !page.items.some(item => !sessionOwner(this.ctx.snapshot()?.primaries ?? [], item.path));
-      for(const item of page.items)ordinary.append(this.row(item));
-      if(page.omitted)ordinary.append(element('p','secondary',`${page.omitted} discovery records are unavailable or outside the bound.`));
-      changed(page.items.map(item=>item.path));
-    }).catch(()=>{if(this.owns(token)&&!signal.aborted)ordinary.append(element('p','secondary','Registered ordinary sessions are unavailable. Refresh the session picker.'));});
+      published=page; changed(page.items.map(item=>item.path));
+    }).catch(()=>{if(this.owns(token)&&!signal.aborted){failed=true;paint();}});
+    return paint;
   }
   private durableRow(row: AgentRow): HTMLElement {
     const view = this.ctx.agentPresentation(row);

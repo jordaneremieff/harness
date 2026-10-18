@@ -1134,8 +1134,11 @@ dialog textarea:focus-visible { outline: 2px solid var(--accent); outline-offset
 .picker-folder > button, .picker-file > button { padding: 6px 12px; border: 1px solid var(--edge); font-size: 13px; }
 .picker-list-details > button { display: block; margin-top: 8px; }
 .picker-sessions { max-height: none; overflow: visible; }
-.session-picker-inline { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: thin; }
-.session-picker-inline .session-picker-body { overflow: visible; }
+.session-picker-inline { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
+.session-picker-inline .session-picker-body { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: auto; }
+.picker-results { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: thin; }
+.picker-results > section + section { margin-top: 12px; }
+.session-picker-body > :not(.picker-results), .session-picker-inline > .picker-header { flex: none; }
 .picker-title { font-size: 18px; font-weight: 600; }
 .picker-session-details { min-width: 0; padding: 6px 10px 6px 0; }
 .picker-session-details[open] { grid-column: 1 / -1; grid-row: 2; padding: 0 10px 8px; }
@@ -1145,8 +1148,10 @@ dialog textarea:focus-visible { outline: 2px solid var(--accent); outline-offset
 .picker-session-details > .icon-button { min-width: 28px; padding: 0 4px; }
 .picker-search-row > .card-action { flex: none; }
 .picker-safety { margin-block: 12px; color: var(--muted); font-size: 13px; }
-dialog[data-variant=picker] { overflow-y: auto; }
-dialog[data-variant=picker] #modal-body { overflow: visible; }
+dialog[open][data-variant=picker] { display: flex; flex-direction: column; overflow: hidden; }
+dialog[data-variant=picker] .modal-heading, dialog[data-variant=picker] .dialog-actions { flex: none; }
+dialog[data-variant=picker] #modal-body { display: flex; flex-direction: column; min-height: 0; overflow: auto; }
+dialog[data-variant=picker] #modal-body > :not(.picker-results) { flex: none; }
 .picker-session { position: relative; display: grid; grid-template-columns: minmax(0,1fr) auto auto auto; align-items: center; gap: 0 12px; }
 .picker-select { display: flex; flex-direction: column; align-items: stretch; gap: 2px; width: 100%; min-width: 0; padding: 6px 10px; border-left: 2px solid transparent; border-radius: 0; text-align: left; white-space: nowrap; }
 .picker-select:hover { background: var(--canvas); }

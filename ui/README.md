@@ -50,7 +50,14 @@ The session picker shows named registered ordinary sessions across folders besid
 native Durable conversations. Its project list also retains archived ordinary
 sessions. Public primary metadata corrects unavailable names only after exact
 saved-file and session-ID matching; registration is not proof of live idle state.
-Discovery limits and unavailable records remain visible.
+Discovery limits and unavailable records remain visible. **Search sessions** filters
+all loaded groups: Durable conversations, registered ordinary sessions, and ordinary
+sessions in the working folder. Arrow navigation follows their visible order; Enter
+activates the focused row, or the first match from the search field. Conversion
+remains a separate action. A query reads no new catalog or session page. Each group
+keeps its own empty or incomplete state, and registered paths stay suppressed in
+the folder group even when filtered out. The heading and search stay available
+above the scrolling results.
 
 Every ordinary row has one **Convert to Durable** action. This creates a new
 native identity with the same actual name. Selection follows the captured picker,
