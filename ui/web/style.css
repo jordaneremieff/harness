@@ -1148,6 +1148,15 @@ dialog[data-variant=picker] #modal-body { overflow: visible; }
 .picker-session-meta:empty { display: none; }
 .picker-select .identity { overflow-wrap: anywhere; white-space: normal; }
 .picker-select .info { flex: none; color: var(--muted); font-size: 12px; }
+.picker-durable, .picker-ordinary, .picker-folder-ordinary { min-width: 0; }
+.picker-durable-list { display: grid; grid-template-columns: minmax(0,1fr); }
+.picker-durable-select { display: grid; grid-template-columns: minmax(0,1fr); gap: 2px; width: 100%; min-width: 0; min-height: 44px; padding: 6px 10px; border-left: 2px solid transparent; border-radius: 0; text-align: left; white-space: normal; }
+.picker-durable-select:hover { background: var(--canvas); }
+.picker-durable-select:focus-visible { border-left-color: var(--accent); outline: none; background: var(--canvas); }
+.picker-durable-select .picker-session-heading { flex-wrap: wrap; }
+.picker-durable-select :is(.picker-session-title, .picker-session-tail, .picker-durable-state) { min-width: 0; max-width: none; overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
+.picker-durable-select .picker-session-tail { max-width: 100%; flex: 0 1 auto; }
+.picker-durable-select .picker-session-meta { display: block; min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 .picker-age { max-width: 24ch; color: var(--muted); font-size: 12px; }
 dialog[data-variant=palette], dialog[data-variant=picker] { inset: 10dvh auto auto 50%; width: min(680px, calc(100vw - 32px)); max-height: 70dvh; margin: 0; transform: translateX(-50%); }
 dialog[data-variant=palette] { padding: 0; }

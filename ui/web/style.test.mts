@@ -210,6 +210,18 @@ test('tool status labels have natural width and disclosure marks stay separate f
   assert.match(rule('.tool-output-info'), /max-width: 100%; color: var\(--muted\); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere/);
   assert.doesNotMatch(rule('.tool-output-info'), /cursor: pointer|text-overflow: ellipsis|line-clamp/);
 });
+test('Durable picker choices use full-width native rows with wrapping state and shared focus', () => {
+  assert.match(rule('.picker-durable-list'), /display: grid; grid-template-columns: minmax\(0,1fr\)/);
+  const row = rule('.picker-durable-select'); assert.match(row, /display: grid; grid-template-columns: minmax\(0,1fr\); gap: 2px; width: 100%; min-width: 0; min-height: 44px/);
+  assert.match(row, /text-align: left; white-space: normal/); assert.doesNotMatch(row, /(?:^|;)\s*height:|overflow: hidden/);
+  assert.match(rule('.picker-durable-select .picker-session-heading'), /flex-wrap: wrap/);
+  const text = rule('.picker-durable-select :is(.picker-session-title, .picker-session-tail, .picker-durable-state)');
+  assert.match(text, /max-width: none; overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere/);
+  assert.match(rule('.picker-durable-select .picker-session-tail'), /max-width: 100%; flex: 0 1 auto/);
+  assert.match(rule('.picker-durable-select .picker-session-meta'), /display: block; min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere/);
+  assert.match(rule('.picker-durable-select:focus-visible'), /border-left-color: var\(--accent\)/);
+  assert.doesNotMatch(rule('.picker-durable-list'), /max-height:|overflow/);
+});
 test('results-first tool regions keep output and technical details inside local bounds', () => {
   const result = rule('.tool-result');
   assert.match(result, /min-width: 0; max-width: 100%/);

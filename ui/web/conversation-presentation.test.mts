@@ -14,10 +14,18 @@ test('presentation tones come from source states without changing readiness',()=
   const states=[['ready','running','info'],['ready','compacting','info'],['ready','idle','success'],['ready','retrying','warning'],['ready','unknown','warning'],['stopped','idle','warning'],['failed','idle','error'],['starting','unknown','info']];
   for(const [lifecycle,activity,tone]of states){const primary={key:'p',epoch:1,lifecycle,activity} as PrimaryView;const view=conversationPresentation({target:{kind:'primary',key:'p',epoch:1},primary,connected:true});assert.equal(view.tone,tone,`${lifecycle}/${activity}`);assert.equal(view.input,lifecycle==='ready');}
   for(const availability of ['stored','unavailable','incompatible'] as const) {const view=conversationPresentation({target,row:{...row,availability},connected:true});assert.equal(view.tone,availability==='stored'?'secondary':'warning');assert.equal(view.input,false);}
-  assert.equal(conversationPresentation({target,row,connected:true}).tone,'warning');
+  assert.equal(conversationPresentation({target,row,connected:true}).tone,'secondary');
   assert.equal(conversationPresentation({target,row,negotiated,frame:frame(true),connected:true}).tone,'info');
   assert.equal(conversationPresentation({target,row,negotiated,frame:frame(false),connected:true}).tone,'success');
   const compacting=frame(false);compacting.status.compactions={value:[{active:true}],truncated:false};assert.equal(conversationPresentation({target,row,negotiated,frame:compacting,connected:true}).tone,'info');
+});
+test('unchecked live claims stay neutral without admitting input or hiding real warnings', () => {
+  const unchecked = conversationPresentation({target, row: {...row, state: 'working'}, connected: true});
+  assert.equal(unchecked.activity, 'Connection not checked'); assert.equal(unchecked.tone, 'secondary'); assert.equal(unchecked.input, false); assert.equal(unchecked.busy, false); assert.equal(unchecked.tool, undefined);
+  assert.equal(conversationPresentation({target, row, connected: false}).tone, 'warning');
+  for (const availability of ['unavailable', 'incompatible'] as const) assert.equal(conversationPresentation({target, row: {...row, availability}, connected: true}).tone, 'warning');
+  const stopped = frame(false); stopped.entries = [{id: 'stop', kind: 'message', messages: [{id: 'stopped', role: 'assistant', state: 'final', parts: [], stopReason: 'aborted', coverage: stopped.coverage}]}];
+  const view = conversationPresentation({target, row, negotiated, frame: stopped, connected: true}); assert.equal(view.tone, 'warning'); assert.equal(view.activity, 'Stopped'); assert.equal(view.input, true);
 });
 test('agent display names reject identity fallbacks and retain shared suffixes in accessible names',()=> {
   const identity='00000000-0000-4000-8000-000000000099', target={kind:'agent' as const,identity};

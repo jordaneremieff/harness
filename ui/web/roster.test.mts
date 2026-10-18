@@ -2,8 +2,16 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { AgentRow, CachedRoster } from '../shared/api.ts';
 import { absoluteTime, relativeTime, timestampDetails } from './format.ts';
-import { Roster as RosterView, activityLine, publishedRetryDescription } from './roster.ts';
+import { Roster as RosterView, activityLine, publishedRetryDescription, rosterPreview } from './roster.ts';
 
+test('roster previews project Markdown words without losing literal punctuation', () => {
+  assert.equal(rosterPreview('**October 18, 2026** with `const total = 2`'), 'October 18, 2026 with const total = 2');
+  assert.equal(rosterPreview(String.raw`Keep \*literal\* and \_under\_ plus a_b.`), 'Keep *literal* and _under_ plus a_b.');
+  assert.equal(rosterPreview('[A **label**](https://example.test/doc) and `a*b`'), 'A label and a*b');
+  assert.equal(rosterPreview('| First | Second |\n| --- | --- |\n| Alpha | Beta |\n\n- One\n- Two'), 'First Second Alpha Beta One Two');
+  const long = rosterPreview('**Text** '.repeat(10000)); assert.ok(long.length <= 180); assert.doesNotMatch(long, /\*\*/);
+  assert.equal(rosterPreview(`${' '.repeat(4096)}Outside parser input`), '');
+});
 test('published retry detail names its old source and never claims a current deadline', () => {
   const row: AgentRow = {identity: 'published', storageId: 'storage', cwd: '/project', modifiedAt: 0, state: 'working', owner: 'unknown', availability: 'stored', partial: false,
     observedAt: '2026-10-16T00:00:00Z', publishedRetry: {attempt: 2, maxAttempts: 5, delayMs: 60000, error: 'Opaque diagnostic'}};

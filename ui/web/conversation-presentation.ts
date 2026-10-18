@@ -113,8 +113,9 @@ function agentFailureDetails(frame?: ProjectedFrame): string | undefined {
   const block = frame?.status.providerBlock; if (!block) return;
   return ['Configure this agent through Primary.', block.error, block.errorRedacted ? 'Some diagnostic text was redacted.' : '', block.errorTruncated ? 'The diagnostic is shortened.' : ''].filter(Boolean).join('\n');
 }
-function agentTone(state: AgentRow['availability'], connected: boolean, live: boolean, busy: boolean, input: boolean, frame?: ProjectedFrame, outcome?: ResponseOutcome): PresentationTone {
+function agentTone(state: AgentRow['availability'], connected: boolean, checked: boolean, live: boolean, busy: boolean, input: boolean, frame?: ProjectedFrame, outcome?: ResponseOutcome): PresentationTone {
   if(state==='stored')return 'secondary';
+  if(connected&&state==='live'&&!checked)return 'secondary';
   if(!connected||!live)return 'warning';
   if(frame?.status.retry||frame?.status.providerBlock)return 'warning';
   if(Array.isArray(frame?.status.compactions?.value)&&frame.status.compactions.value.length)return 'info';
@@ -131,7 +132,7 @@ function agentPresentation(source: PresentationSource, identity: string): Conver
   const name = source.caption?.name ?? agentName(row?.name, row?.handle, identity, frame?.status.name, row?.firstMessage);
   const identityTail = source.caption?.tail ?? source.identityTail;
   const outcome = responseOutcome(frame?.entries);
-  const tone = agentTone(state,source.connected,live,busy,input,frame,outcome);
+  const tone = agentTone(state,source.connected,checked,live,busy,input,frame,outcome);
   return {...emptyPresentation(source.connected), ...settings, name, identityTail, tone, cwd: row?.cwd,
     activity: agentActivity(state, input, frame, source.connected, checked), input, busy, guidance: input ? '' : state === 'stored' ? 'Use Start agent to connect this agent.' : 'Messages are unavailable for this agent.', retainedModel: settings.retainedModel || retained && !!settings.model, retainedThinking: settings.retainedThinking || retained && !!settings.thinking,
     detail: live ? agentFailureDetails(frame) : undefined,

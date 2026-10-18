@@ -7,12 +7,30 @@ import { absoluteTime, compactAge, isValidTimestamp, previewText, relativeTime, 
 import { reconcileChildren } from './render.ts';
 import {ConversationCaptions, agentName} from './tabs.ts';
 import type {PresentationTone} from './conversation-presentation.ts';
+import {parseMarkdown, type MarkdownBlock, type MarkdownInline} from './markdown.ts';
 
 export type CachedPageSearch = {load: (cursor: string, signal: AbortSignal) => Promise<CachedRoster>; merge: (page: CachedRoster) => void};
 const SEARCH_PAGE_LIMIT = 20;
 const ROW_HEIGHT = 44;
 const RECENT_AGE = 24 * 60 * 60 * 1000;
-type RowNode = {node: HTMLElement; select: HTMLButtonElement; state: HTMLElement; name: HTMLElement; preview: HTMLElement; identity: HTMLElement; ageButton: HTMLButtonElement; message: HTMLButtonElement; age: HTMLTimeElement; source: AgentRow; absolute: boolean};
+type RowNode = {node: HTMLElement; select: HTMLButtonElement; state: HTMLElement; name: HTMLElement; preview: HTMLElement; identity: HTMLElement; ageButton: HTMLButtonElement; message: HTMLButtonElement; age: HTMLTimeElement; source: AgentRow; absolute: boolean; previewSource?: string};
+function inlinePreview(nodes: MarkdownInline[]): string {
+  return nodes.map(node => node.type === 'text' || node.type === 'code' ? node.text : 'children' in node ? inlinePreview(node.children) : '').join('');
+}
+function blockPreview(block: MarkdownBlock): string {
+  switch (block.type) {
+    case 'paragraph': case 'heading': return inlinePreview(block.children);
+    case 'code': return block.text;
+    case 'quote': return block.children.map(blockPreview).join(' ');
+    case 'list': return block.items.map(item => item.map(blockPreview).join(' ')).join(' ');
+    case 'table': return [block.header, ...block.rows].map(row => row.map(inlinePreview).join(' ')).join(' ');
+    case 'rule': return '';
+  }
+}
+export function rosterPreview(source: string): string {
+  const words = parseMarkdown(source.slice(0, 4096)).map(blockPreview).join(' ').replace(/\s+/g, ' ');
+  return previewText(words, 1, 180).text;
+}
 function rowName(row: AgentRow): string {return agentName(row.name, row.handle, row.identity, undefined, row.firstMessage);}
 export type RosterStatus = {activity?: string; glyph: string; label: string; tone?: PresentationTone; name?: string; tail?: string; tool?: AgentRow['currentTool']};
 function modelText(row: AgentRow): string {
@@ -283,7 +301,8 @@ export class Roster {
     const cached = this.cache.get(row.identity) ?? this.createRow(row);
     const state = this.resolvedStatus(row); setText(cached.state, state.activity || (state.label==='Ready'?'Idle':state.label)); cached.state.hidden = !cached.state.textContent; cached.state.title = state.label; cached.state.dataset.tone = state.tone ?? 'secondary'; setText(cached.name, state.name ?? rowName(row));
     const caption=this.captions.get(row.identity);cached.name.title=caption.source==='first-message'?'Title from first message, not a supplied name':'Conversation name';
-    setText(cached.preview,previewText(row.latestReply??'',1,180).text);cached.preview.hidden=!cached.preview.textContent;
+    if (cached.previewSource !== row.latestReply) {cached.previewSource = row.latestReply; setText(cached.preview, rosterPreview(row.latestReply ?? ''));}
+    cached.preview.hidden=!cached.preview.textContent;
     identity = state.name !== undefined ? state.tail ?? '' : identity; setText(cached.identity, identity); cached.identity.hidden = !identity; cached.identity.title = `Agent ID: ${row.identity}`;
     cached.identity.setAttribute('aria-label', cached.identity.title);
     cached.node.dataset.live = String(row.availability === 'live');

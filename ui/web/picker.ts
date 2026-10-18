@@ -1,8 +1,8 @@
-import type { Bootstrap, OperationView, PrimaryView, RecentProjectPage, SavedSession, SavedSessionPage, Snapshot } from '../shared/api.ts';
+import type { AgentRow, CachedRoster, Bootstrap, OperationView, PrimaryView, RecentProjectPage, SavedSession, SavedSessionPage, Snapshot } from '../shared/api.ts';
 import type { SelectionChange } from './actions.ts';
 import { button, details, element, input } from './dom.ts';
 import { cardAction, cardDisclosure, controlIcon } from './card-icons.ts';
-import { projectIdentity, projectLabels } from './conversation-presentation.ts';
+import { projectIdentity, projectLabels, presentationName, type ConversationPresentation } from './conversation-presentation.ts';
 import { contextMenu, type ContextItem } from './context-menu.ts';
 import { duplicateIdentityTails } from './tabs.ts';
 import { absoluteTime, relativeTime } from './format.ts';
@@ -29,7 +29,23 @@ function projectPage(previous: RecentProjectPage | undefined, page: RecentProjec
   return {...page, items: append ? [...(previous?.items ?? []), ...page.items] : page.items};
 }
 
+function sessionDisplayTitle(item: SavedSession): string { return item.titleState === 'ready' && item.title === '' ? 'No title' : sessionLabel(item); }
+function ordinaryResumeWarning(): HTMLElement {
+  return element('p', 'secondary picker-safety', 'Before ordinary Resume, stop the terminal session. Each active process keeps its own in-memory branch; this window does not read later writes from another active process.');
+}
+function durableCoverage(roster?: CachedRoster): string {
+  const notes: string[] = [];
+  if (!roster?.rows.length) notes.push('No loaded Durable conversations.');
+  if (!roster || roster.scan.state === 'not-started') notes.push('The Durable catalog is not loaded.');
+  else if (roster.scan.state === 'running') notes.push('Loading Durable conversations…');
+  else if (roster.error || roster.scan.state === 'failed') notes.push('The Durable catalog could not refresh.');
+  if (roster?.stale) notes.push('Saved Durable catalog; current coverage is not confirmed.');
+  if (roster && (roster.nextCursor || !roster.scan.complete || roster.scan.skipped || roster.scan.omitted)) notes.push('The loaded Durable catalog is incomplete.');
+  return notes.join(' ');
+}
+
 type Context = {snapshot(): Snapshot | undefined; primary(): PrimaryView | undefined; modal: Modal;
+  agentPresentation(row: AgentRow): Pick<ConversationPresentation, 'name' | 'identityTail' | 'activity' | 'tone' | 'cwd'>;
   selection(change: SelectionChange): Promise<void>; reload(): Promise<void>; selectOpened?(): (key:string)=>Promise<void>; selectConverted?(): (identity:string)=>Promise<void>; project?(): string | undefined; projectsChanged?(): void; workingFolder?(path:string):Promise<void>};
 
 /** Metadata caches belong to the picker, never to execution or writer ownership. */
@@ -228,11 +244,12 @@ export class ProjectPicker {
     projectDetails.append(folderSummary, element('p', 'identity', project));
     body.append(projectDetails);
     this.sessionActions(project);
-    const safety = element('p', 'secondary picker-safety', 'Stop the terminal session before Resume. Each active process keeps its own in-memory branch; this window does not read later writes from another active process.');
+    const safety = ordinaryResumeWarning();
     const search = input('Search sessions'); search.field.id = 'picker-search'; search.label.htmlFor = search.field.id; search.field.placeholder = 'Search sessions';
-    const searchRow = element('div', 'picker-search-row'); searchRow.append(pickerField(search)); body.append(searchRow, safety);
+    const searchRow = element('div', 'picker-search-row'); searchRow.append(pickerField(search)); body.append(searchRow);
     const publishedPaths=new Set<string>();
     this.catalog(body,signal,token,paths=>{for(const path of paths)publishedPaths.add(path);paint();});
+    const ordinary = element('section', 'picker-folder-ordinary'); ordinary.append(element('h2', undefined, 'Ordinary sessions in this folder'), safety);
     const list = element('div', 'picker-sessions'); const coverage = element('p', 'secondary'); coverage.id = 'picker-coverage'; coverage.setAttribute('aria-live', 'polite');
     const error = element('p', 'error'); error.setAttribute('role', 'alert');
     let data = first ? mergeSessions(undefined, first) : existing;
@@ -256,7 +273,7 @@ export class ProjectPicker {
       const tails = duplicateIdentityTails(data.items.map(item => ({name: sessionLabel(item), identity: item.id})));
       if (focusedPath && !matches.some(item => item.path === focusedPath)) { search.field.focus(); error.textContent = 'The selected session is no longer in this loaded list.'; }
       updateCoverage(matches.length);
-      more.hidden = !data.nextCursor; safety.hidden = !file.open && !matches.some(item => !sessionOwner(this.ctx.snapshot()?.primaries ?? [], item.path));
+      more.hidden = !data.nextCursor; safety.hidden = !matches.some(item => !sessionOwner(this.ctx.snapshot()?.primaries ?? [], item.path));
       let offset = 0;
       const batch = () => {
         if (version !== render || !this.owns(token)) return;
@@ -300,7 +317,7 @@ export class ProjectPicker {
       } catch (cause) { if (!signal.aborted && this.owns(token)) { error.textContent = 'Some session titles did not load. Use Refresh.'; this.error(cause, ''); } }
     };
     const refresh = cardAction('restart', 'Refresh saved sessions', () => { void load(); }); searchRow.append(refresh);
-    const file = this.sessionFile(project, search.field, () => {safety.hidden = !file.open && !filterSessions(data?.items ?? [], search.field.value).some(item => !sessionOwner(this.ctx.snapshot()?.primaries ?? [], item.path));}); file.hidden = true;
+    const file = this.sessionFile(project, search.field); file.hidden = true;
     const options = cardAction('more', 'Saved session options', () => {
       const box = options.getBoundingClientRect();
       contextMenu.open(options, {x: box.left, y: box.bottom}, 'Saved session options', [
@@ -312,7 +329,7 @@ export class ProjectPicker {
     searchRow.append(options);
     const utilities = element('div', 'picker-project-actions picker-footer');
     utilities.append(coverage, freshness, more);
-    body.append(list, error, utilities, file);
+    ordinary.append(list, error, utilities, file); body.append(ordinary);
     list.addEventListener('keydown', event => this.navigate(event, list));
     search.field.addEventListener('input', paint); search.field.addEventListener('keydown', event => {
       if (!(event instanceof KeyboardEvent)) return;
@@ -323,15 +340,35 @@ export class ProjectPicker {
   }
   private catalog(body:HTMLElement,signal:AbortSignal,token:number,changed:(paths:string[])=>void):void {
     const durable=element('section','picker-durable');durable.append(element('h2',undefined,'Durable conversations'));
-    for(const row of this.ctx.snapshot()?.roster.rows??[])durable.append(button(row.name||'(unnamed Durable conversation)',()=>{void this.run(async()=>{await this.ctx.selection({panelVisible:true,selectedTarget:{kind:'agent',identity:row.identity}});await this.ctx.reload();});},'picker-project-row'));
-    const ordinary=element('section','picker-ordinary');ordinary.append(element('h2',undefined,'Registered ordinary sessions'),element('p','secondary','All folders. Conversion copies saved context only. The source session stays unchanged.'));
+    const roster = this.ctx.snapshot()?.roster, list = element('div', 'picker-durable-list');
+    for (const row of roster?.rows ?? []) list.append(this.durableRow(row));
+    list.addEventListener('keydown', event => this.navigate(event, list));
+    const coverage = element('p', 'secondary picker-durable-coverage', durableCoverage(roster)); coverage.hidden = !coverage.textContent;
+    durable.append(list, coverage);
+    const ordinary=element('section','picker-ordinary'), safety=ordinaryResumeWarning(); safety.hidden=true;
+    ordinary.append(element('h2',undefined,'Registered ordinary sessions'),element('p','secondary','All folders. Conversion copies saved context only. The source session stays unchanged.'), safety);
     body.append(durable,ordinary);
     void request<SavedSessionPage>('/api/sessions/published','GET',undefined,undefined,signal).then(page=>{
       if(!this.owns(token)||signal.aborted)return;
+      safety.hidden = !page.items.some(item => !sessionOwner(this.ctx.snapshot()?.primaries ?? [], item.path));
       for(const item of page.items)ordinary.append(this.row(item));
       if(page.omitted)ordinary.append(element('p','secondary',`${page.omitted} discovery records are unavailable or outside the bound.`));
       changed(page.items.map(item=>item.path));
     }).catch(()=>{if(this.owns(token)&&!signal.aborted)ordinary.append(element('p','secondary','Registered ordinary sessions are unavailable. Refresh the session picker.'));});
+  }
+  private durableRow(row: AgentRow): HTMLElement {
+    const view = this.ctx.agentPresentation(row);
+    const select = button('', () => {void this.run(async () => {await this.ctx.selection({panelVisible:true,selectedTarget:{kind:'agent',identity:row.identity}});await this.ctx.reload();});}, 'picker-durable-select');
+    select.dataset.agentIdentity = row.identity;
+    const heading = element('span', 'picker-session-heading'), tail = element('span', 'picker-session-tail', view.identityTail ?? ''); tail.hidden = !tail.textContent;
+    heading.append(element('strong', 'picker-session-title', view.name), tail);
+    const state = element('span', 'conversation-state picker-durable-state', view.activity); state.dataset.tone = view.tone;
+    select.append(heading, state);
+    if (view.cwd) {const folder = element('span', 'picker-session-meta', `Saved folder: ${this.projectName(view.cwd)}`); folder.title = view.cwd; select.append(folder);}
+    const caption = presentationName(view);
+    select.title = [caption, row.identity, view.activity, view.cwd].filter(Boolean).join('\n');
+    select.setAttribute('aria-label', `${caption} · ${row.identity} · ${view.activity}`);
+    return select;
   }
   private patchTitles(list: HTMLElement, data: SessionList): void {
     const items = new Map(data.items.map(item => [item.path, item]));
@@ -339,7 +376,7 @@ export class ProjectPicker {
     for (const row of list.querySelectorAll<HTMLElement>('.picker-session')) {
       const select = row.querySelector<HTMLButtonElement>('.picker-select'); if (!select) continue;
       const item = items.get(select.dataset.sessionPath ?? ''); const title = select.querySelector('.picker-session-title');
-      if (item && title) { title.textContent = sessionLabel(item); select.title = item.title;
+      if (item && title) { title.textContent = sessionDisplayTitle(item); select.title = item.title;
         const full = row.querySelector('.picker-session-full-title'); if (full) full.textContent = item.title;
         const tail = tails.get(item.id);
         const identity = select.querySelector<HTMLElement>('.picker-session-tail'); if (identity) { identity.textContent = tail ?? ''; identity.hidden = !tail; }
@@ -352,7 +389,7 @@ export class ProjectPicker {
     const select = button('', () => this.resume(item.project, item.path), 'picker-select');
     select.dataset.sessionPath = item.path; select.title = item.title;
     const heading = element('span', 'picker-session-heading'); const identity = element('span', 'picker-session-tail', tail ?? ''); identity.hidden = !tail;
-    heading.append(element('strong', 'picker-session-title', sessionLabel(item)), identity);
+    heading.append(element('strong', 'picker-session-title', sessionDisplayTitle(item)), identity);
     const metadata = element('span', 'picker-session-meta');
     metadata.append(element('span', 'picker-session-folder', this.projectName(item.project)));
     if (opened) metadata.append(element('span', 'info', 'In this window'));
@@ -371,17 +408,17 @@ export class ProjectPicker {
     row.append(select, age, convert, details); return row;
   }
   private navigate(event: KeyboardEvent, list: HTMLElement): void {
-    if (event.key === 'Enter' && event.target instanceof HTMLButtonElement && event.target.matches('.picker-select, .picker-project-row')) {
+    if (event.key === 'Enter' && event.target instanceof HTMLButtonElement && event.target.matches('.picker-select, .picker-project-row, .picker-durable-select')) {
       event.preventDefault(); event.target.click(); return;
     }
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
-    const rows = [...list.querySelectorAll<HTMLButtonElement>('.picker-select, .picker-project-row')]; if (!rows.length) return;
+    const rows = [...list.querySelectorAll<HTMLButtonElement>('.picker-select, .picker-project-row, .picker-durable-select')]; if (!rows.length) return;
     event.preventDefault();
     const current = rows.indexOf(document.activeElement as HTMLButtonElement);
     const index = event.key === 'Home' ? 0 : event.key === 'End' ? rows.length - 1 : event.key === 'ArrowDown' ? (current + 1) % rows.length : (current < 0 ? rows.length - 1 : (current - 1 + rows.length) % rows.length);
     rows[index]?.focus();
   }
-  private sessionFile(project: string, search: HTMLElement, changed: () => void): HTMLDetailsElement {
+  private sessionFile(project: string, search: HTMLElement): HTMLDetailsElement {
     const disclosure = element('details', 'picker-file'); const summary = element('summary', 'secondary', 'Session file…'); cardDisclosure(summary); disclosure.append(summary);
     const session = input('Session file'); session.field.id = 'picker-session-path'; session.label.htmlFor = session.field.id;
     const error = element('p', 'error'); error.id = 'picker-file-error'; error.setAttribute('role', 'alert'); session.field.setAttribute('aria-describedby', error.id);
@@ -390,8 +427,8 @@ export class ProjectPicker {
       if (!savedPathValid(session.field.value)) { error.textContent = 'Enter a saved session path that starts with /.'; session.field.focus(); return; }
       this.resume(project, session.field.value, cause => { error.textContent = cause instanceof Error ? cause.message : String(cause); session.field.focus(); });
     };
-    disclosure.append(pickerField(session, true), error, button('Resume session', resume, 'main-action'));
-    disclosure.addEventListener('toggle', () => { changed(); disclosure.hidden = !disclosure.open; if (disclosure.open) session.field.focus(); else search.focus(); });
+    disclosure.append(ordinaryResumeWarning(), pickerField(session, true), error, button('Resume session', resume, 'main-action'));
+    disclosure.addEventListener('toggle', () => { disclosure.hidden = !disclosure.open; if (disclosure.open) session.field.focus(); else search.focus(); });
     session.field.addEventListener('keydown', event => { if (event instanceof KeyboardEvent && event.key === 'Enter') { event.preventDefault(); resume(); } });
     return disclosure;
   }

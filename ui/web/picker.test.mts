@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test, {type TestContext} from 'node:test';
-import type { Bootstrap, PrimaryView, RecentProjectPage, SavedSessionPage } from '../shared/api.ts';
+import type { AgentRow, CachedRoster, Bootstrap, PrimaryView, RecentProjectPage, SavedSessionPage } from '../shared/api.ts';
 import type { Modal } from './modal.ts';
 import type { SelectionChange } from './actions.ts';
 import { ProjectPicker } from './picker.ts';
@@ -10,7 +10,7 @@ import { contextMenu } from './context-menu.ts';
 class Node {
   children: Node[] = []; className = ''; id = ''; value = ''; title = ''; hidden = false; disabled = false;
   open = false; scrollLeft = 100; selectionStart = -1; selectionEnd = -1; focused = false; htmlFor = '';
-  private handlers = new Map<string, Array<() => void>>();
+  private handlers = new Map<string, Array<(event: Record<string, unknown>) => void>>();
   classList = {contains: (name: string) => this.className.split(' ').includes(name), add: (name: string) => { this.className += ` ${name}`; }};
   attributes: Record<string, string> = {}; dataset: Record<string, string> = {}; private text = '';
   readonly tag: string;
@@ -22,16 +22,18 @@ class Node {
   prepend(...nodes: Node[]): void { this.children.unshift(...nodes); }
   replaceChildren(...nodes: Node[]): void { this.children = nodes; this.text = ''; }
   setAttribute(name: string, value: string): void { this.attributes[name] = value; }
-  addEventListener(name: string, callback: () => void): void { this.handlers.set(name, [...this.handlers.get(name) ?? [], callback]); }
-  dispatch(name: string): void { for (const callback of this.handlers.get(name) ?? []) callback(); }
+  addEventListener(name: string, callback: (event: Record<string, unknown>) => void): void { this.handlers.set(name, [...this.handlers.get(name) ?? [], callback]); }
+  dispatch(name: string, event: Record<string, unknown> = {}): void { for (const callback of this.handlers.get(name) ?? []) callback(event); }
   click(): void { this.dispatch('click'); }
-  querySelectorAll(selector: string): Node[] { return descendants(this).filter(node => selector.startsWith('.') ? node.classList.contains(selector.slice(1)) : selector.startsWith('#') ? node.id === selector.slice(1) : node.tag === selector); }
+  matches(selector: string): boolean { return selector.split(',').some(value => {const part = value.trim(); return part.startsWith('.') ? this.classList.contains(part.slice(1)) : part.startsWith('#') ? this.id === part.slice(1) : this.tag === part;}); }
+  querySelectorAll(selector: string): Node[] { return descendants(this).filter(node => node.matches(selector)); }
   querySelector(selector: string): Node | null { return this.querySelectorAll(selector)[0] ?? null; }
   focus(): void { this.focused = true; }
   getBoundingClientRect() { return {left: 8, top: 8, bottom: 36, width: 140, height: 28}; }
   setSelectionRange(start: number, end: number): void { this.selectionStart = start; this.selectionEnd = end; }
 }
 function descendants(node: Node): Node[] { return node.children.flatMap(child => [child, ...descendants(child)]); }
+const catalogPresentation: ConstructorParameters<typeof ProjectPicker>[0]['agentPresentation'] = row => ({name: row.name ?? 'Unnamed conversation', activity: 'Connection not checked', tone: 'warning', cwd: row.cwd});
 const saved: SavedSessionPage = {items: [{id: 's', path: '/project/s.jsonl', project: '/project', revision: 'r', title: 'Saved title', titleState: 'ready', modifiedAt: '2026-01-01T00:00:00Z', size: 10}], total: 1, omitted: 0, nextCursor: null, titleCursor: null, observedAt: '2026-01-01T00:00:00Z'};
 for (const [name, page, status] of [
   ['complete', saved, 'Saved list · now'],
@@ -48,16 +50,16 @@ for (const [name, page, status] of [
   globalThis.fetch = async url => new Response(JSON.stringify({ok: true, data: String(url).includes('/api/projects') ? {items: [], total: 0, omitted: 0, nextCursor: null, observedAt: saved.observedAt} : page}), {status: 200, headers: {'content-type': 'application/json'}});
   const modal = {node: {dataset: {} as Record<string, string>}, token: 1, open: () => { body.replaceChildren(); return body; }, owns: (token: number) => token === 1, actions: (...buttons: Node[]) => body.append(...buttons), error: (error: unknown) => { throw error; }};
   try {
-    const picker = new ProjectPicker({modal: modal as unknown as Modal, snapshot: () => ({launchCwd: '/project', primaries: []}) as unknown as Bootstrap, primary: () => undefined, selection: async () => {}, reload: async () => {}});
+    const picker = new ProjectPicker({agentPresentation: catalogPresentation, modal: modal as unknown as Modal, snapshot: () => ({launchCwd: '/project', primaries: []}) as unknown as Bootstrap, primary: () => undefined, selection: async () => {}, reload: async () => {}});
     picker.open(); assert.equal(modal.node.dataset.variant, 'picker', 'pickers open as the top-anchored panel');
     assert.equal(descendants(body).some(node => node.textContent === 'Open project'), false);
     await new Promise<void>(resolve => setImmediate(resolve));
     const nodes = descendants(body); const search = nodes.find(node => node.id === 'picker-search'); assert.ok(search);
     const label = nodes.find(node => node.tag === 'label' && node.htmlFor === search.id); assert.ok(label);
     assert.equal(label.className, 'sr-only'); assert.equal(label.textContent, 'Search sessions');
-    const heading = body.children.findIndex(node => node.className === 'secondary picker-safety');
-    assert.equal(body.children[heading]?.textContent, 'Stop the terminal session before Resume. Each active process keeps its own in-memory branch; this window does not read later writes from another active process.');
-    const searchRow = body.children[heading - 1]; assert.ok(searchRow); assert.equal(searchRow.className, 'picker-search-row');
+    const ordinary = nodes.find(node => node.className === 'picker-folder-ordinary'); assert.ok(ordinary);
+    assert.match(ordinary.querySelector('.picker-safety')?.textContent ?? '', /^Before ordinary Resume/);
+    const searchRow = body.children.find(node => node.className === 'picker-search-row'); assert.ok(searchRow);
     const line = searchRow.children[0]; assert.ok(line); assert.equal(line.className, 'picker-input-row'); assert.equal(search.className, 'picker-input');
     assert.equal(line.children.length, 2); assert.equal(search.id, label.htmlFor);
     assert.equal(line.children[0], label); assert.equal(line.children[1], search);
@@ -80,7 +82,12 @@ for (const [name, page, status] of [
     if (oldElement) Object.defineProperty(globalThis, 'HTMLElement', oldElement); else Reflect.deleteProperty(globalThis, 'HTMLElement');
   }
 });
-function directPicker(t: TestContext, active?: PrimaryView, page: SavedSessionPage = saved, selectOpened?:()=>((key:string)=>Promise<void>)) {
+type CatalogFixture = {roster: CachedRoster; published: SavedSessionPage; presentation?: typeof catalogPresentation; titlePage?: SavedSessionPage};
+function catalogPage(path: string, catalog?: CatalogFixture): SavedSessionPage | undefined {
+  if (path === '/api/sessions/published') return catalog?.published;
+  return path.includes('&titles=') ? catalog?.titlePage : undefined;
+}
+function directPicker(t: TestContext, active?: PrimaryView, page: SavedSessionPage = saved, selectOpened?:()=>((key:string)=>Promise<void>), catalog?: CatalogFixture) {
   const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
   const previousElement = Object.getOwnPropertyDescriptor(globalThis, 'HTMLElement');
   const previousFetch = globalThis.fetch; const body = new Node('div'); const origin = new Node('button');
@@ -99,7 +106,7 @@ function directPicker(t: TestContext, active?: PrimaryView, page: SavedSessionPa
     if (previousElement) Object.defineProperty(globalThis, 'HTMLElement', previousElement); else Reflect.deleteProperty(globalThis, 'HTMLElement');
   });
   const calls: {path: string; body?: unknown}[] = []; const selections: SelectionChange[] = []; const steps: string[] = [];
-  const state = {primaries: active ? [active] : [], launchCwd: '/project'} as unknown as Bootstrap;
+  const state = {primaries: active ? [active] : [], launchCwd: '/project', ...(catalog ? {roster: catalog.roster} : {})} as unknown as Bootstrap;
   let reloads = 0; let failure = false; let listFailure = false; let closed = false; let error = ''; let running = false;
   const modal = {
     node: {dataset: {} as Record<string, string>}, body, token: 0, close: () => {closed = true;},
@@ -116,7 +123,7 @@ function directPicker(t: TestContext, active?: PrimaryView, page: SavedSessionPa
   globalThis.fetch = async (url, init) => {
     const path = String(url); const posted = init?.body ? JSON.parse(String(init.body)) : undefined; calls.push({path, body: posted});
     if (listFailure && path.includes('/api/sessions')) return new Response(JSON.stringify({ok: false, error: {code: 'invalid_request', message: 'The project directory does not exist.', retry: 'none'}}), {status: 400, headers: {'content-type': 'application/json'}});
-    let data: unknown = page;
+    let data: unknown = catalogPage(path, catalog) ?? page;
     if (path.includes('/api/operations')) data = {operationId: 'open'};
     else if (path.includes('/api/primaries')) data = failure
       ? {operation: {state: 'rejected', error: {code: 'operation_conflict', message: 'This saved session already has a backend writer.'}}}
@@ -124,12 +131,59 @@ function directPicker(t: TestContext, active?: PrimaryView, page: SavedSessionPa
     else if (path.includes('/api/projects')) data = {items: [], total: 0, omitted: 0, nextCursor: null, observedAt: saved.observedAt};
     return new Response(JSON.stringify({ok: true, data}), {status: 200, headers: {'content-type': 'application/json'}});
   };
-  const picker = new ProjectPicker({modal: modal as unknown as Modal, snapshot: () => state, primary: () => active,selectOpened,
+  const picker = new ProjectPicker({agentPresentation: catalog?.presentation ?? catalogPresentation, modal: modal as unknown as Modal, snapshot: () => state, primary: () => active,selectOpened,
     selection: async change => { steps.push('selection'); selections.push(change); }, reload: async () => { steps.push('reload'); reloads++; }});
   const click = (label: string) => { const node = descendants(body).find(node => node.tag === 'button' && node.textContent === label); assert.ok(node, label); node.click(); };
   return {picker, modal, body, calls, state, selections, steps, click, fail: () => { failure = true; }, failList: () => { listFailure = true; }, get reloads() { return reloads; }, get closed() { return closed; }, get error() { return error || descendants(body).find(node => node.id === 'picker-file-error')?.textContent || descendants(body).find(node => node.className === 'picker-error')?.textContent || ''; }};
 }
 const settle = () => new Promise<void>(resolve => setImmediate(resolve));
+function catalogRow(identity: string): AgentRow {return {identity, storageId: identity, name: 'Published name', cwd: '/project', modifiedAt: 0, state: 'working', owner: 'unknown', availability: 'live', partial: false};}
+function catalogRoster(rows: AgentRow[] = []): CachedRoster {return {rows, scan: {state: 'ready', complete: true, visited: rows.length, skipped: 0, omitted: 0}, stale: false};}
+const noPublished = {...saved, items: [], total: 0};
+const ordinarySample = saved.items[0]; assert.ok(ordinarySample);
+test('Durable picker rows use projected names and truthful state with native keyboard selection only', async t => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'HTMLButtonElement');
+  Object.defineProperty(globalThis, 'HTMLButtonElement', {configurable: true, value: Node});
+  t.after(() => {if (original) Object.defineProperty(globalThis, 'HTMLButtonElement', original); else Reflect.deleteProperty(globalThis, 'HTMLButtonElement');});
+  const name = 'Complete projected conversation name '.repeat(8), activity = 'Connection not checked; retained history remains available';
+  const qualifier = 'qualifier'.repeat(70), folderPath = `/${'unbroken-folder'.repeat(80)}`;
+  const setup = directPicker(t, undefined, saved, undefined, {roster: catalogRoster([catalogRow('first'), catalogRow('second')]), published: noPublished,
+    presentation: row => ({name: row.identity === 'first' ? name : 'Unnamed conversation', identityTail: row.identity === 'first' ? qualifier : undefined, activity, tone: 'warning', cwd: folderPath})});
+  setup.picker.open(); await settle(); const durable = setup.body.querySelector('.picker-durable'), list = durable?.querySelector('.picker-durable-list'); assert.ok(durable); assert.ok(list);
+  const [first, second] = list.children; assert.ok(first); assert.ok(second); assert.equal(first.tag, 'button'); assert.equal(Reflect.get(first, 'type'), 'button');
+  assert.equal(first.querySelector('.picker-session-title')?.textContent, name); assert.equal(second.querySelector('.picker-session-title')?.textContent, 'Unnamed conversation');
+  assert.equal(first.querySelector('.picker-durable-state')?.textContent, activity); assert.equal(first.querySelector('.picker-durable-state')?.dataset.tone, 'warning');
+  assert.match(first.title, /first/); assert.match(first.attributes['aria-label'] ?? '', /first/); assert.match(first.querySelector('.picker-session-meta')?.textContent ?? '', /Saved folder:/);
+  assert.equal(first.querySelector('.picker-session-tail')?.textContent, qualifier); assert.ok(first.attributes['aria-label']?.includes(qualifier)); assert.equal(first.querySelector('.picker-session-meta')?.title, folderPath);
+  assert.equal(durable.querySelector('.picker-safety'), null); Reflect.set(document, 'activeElement', first);
+  let prevented = 0; list.dispatch('keydown', {key: 'ArrowDown', target: first, preventDefault() {prevented++;}}); assert.equal(second.focused, true);
+  list.dispatch('keydown', {key: 'Enter', target: second, preventDefault() {prevented++;}}); await settle();
+  assert.equal(prevented, 2); assert.deepEqual(setup.selections, [{panelVisible: true, selectedTarget: {kind: 'agent', identity: 'second'}}]);
+  assert.equal(setup.calls.some(call => call.path === '/api/primaries' || call.path === '/api/agents/convert'), false);
+});
+test('ordinary Resume warnings stay inside their groups and exact-file disclosure', async t => {
+  const published = {...saved, items: [{...ordinarySample, path: '/published/session.jsonl'}]};
+  const setup = directPicker(t, undefined, saved, undefined, {roster: catalogRoster(), published}); setup.picker.open(); await settle();
+  const registered = setup.body.querySelector('.picker-ordinary'), folder = setup.body.querySelector('.picker-folder-ordinary'); assert.ok(registered); assert.ok(folder);
+  assert.equal(setup.body.children.some(node => node.classList.contains('picker-safety')), false);
+  assert.match(registered.querySelector('.picker-safety')?.textContent ?? '', /^Before ordinary Resume/); assert.equal(registered.querySelector('.picker-safety')?.hidden, false);
+  assert.equal(folder.querySelector('.picker-safety')?.hidden, false); assert.ok(registered.children.find(node => node.className === 'picker-session'));
+  const file = folder.querySelector('.picker-file'); assert.ok(file); assert.match(file.querySelector('.picker-safety')?.textContent ?? '', /^Before ordinary Resume/);
+  const convert = descendants(registered).find(node => node.tag === 'button' && node.textContent === 'Convert to Durable'); assert.ok(convert); assert.match(convert.title, /source.*unchanged|ordinary session stays unchanged/i);
+  const search = setup.body.querySelector('#picker-search'); assert.ok(search); search.value = 'no match'; search.dispatch('input');
+  assert.equal(folder.querySelector('.picker-safety')?.hidden, true); assert.equal(registered.querySelector('.picker-safety')?.hidden, false);
+  assert.equal(setup.calls.some(call => call.path === '/api/primaries' || call.path === '/api/agents/convert'), false);
+});
+test('Durable coverage remains local and a ready blank ordinary title displays absence after hydration', async t => {
+  const pending = {...saved, titleCursor: 'titles', items: [{...ordinarySample, title: '', titleState: 'pending' as const}]};
+  const filled = {...saved, items: [{...ordinarySample, title: '', titleState: 'ready' as const}]};
+  const roster = {...catalogRoster(), stale: true, nextCursor: 'more', scan: {...catalogRoster().scan, complete: false}};
+  const setup = directPicker(t, undefined, pending, undefined, {roster, published: noPublished, titlePage: filled}); setup.picker.open(); await settle(); await settle();
+  const durable = setup.body.querySelector('.picker-durable'); assert.ok(durable); const notice = durable.querySelector('.picker-durable-coverage'); assert.ok(notice);
+  assert.match(notice.textContent, /No loaded Durable conversations/); assert.match(notice.textContent, /Saved Durable catalog/); assert.match(notice.textContent, /incomplete/);
+  const folder = setup.body.querySelector('.picker-folder-ordinary'); assert.ok(folder); assert.equal(folder.querySelector('.picker-session-title')?.textContent, 'No title');
+  assert.equal(filled.items[0]?.title, ''); assert.equal(pending.items[0]?.titleState, 'pending'); assert.ok(setup.calls.some(call => call.path.includes('&titles=titles')));
+});
 const active = {key: 'current', cwd: '/project', epoch: 1, lifecycle: 'ready'} as PrimaryView;
 for (const owner of ['new','current'] as const) test(`successful Resume selects the exact ${owner} Primary after refresh`,async t=> {
   const completed:string[] = [];let admissions = 0;
@@ -145,7 +199,7 @@ for (const changed of ['closed','replaced'] as const) test(`late Resume completi
 });
 test('first-use folder selection retains the inline session chooser after the root save',async t=> {
   const setup=directPicker(t);const root=new Node('main');let folder:string|undefined;
-  const picker=new ProjectPicker({modal:setup.modal as unknown as Modal,snapshot:()=>setup.state,primary:()=>undefined,project:()=>folder,selection:async()=>{},reload:async()=>{},workingFolder:async path=> {folder=path;}});
+  const picker=new ProjectPicker({agentPresentation:catalogPresentation,modal:setup.modal as unknown as Modal,snapshot:()=>setup.state,primary:()=>undefined,project:()=>folder,selection:async()=>{},reload:async()=>{},workingFolder:async path=> {folder=path;}});
   picker.mount(root as unknown as HTMLElement);await settle();picker.openProject();await settle();
   const other=descendants(root).find(node=>node.tag==='button'&&node.textContent==='Other folder…');assert.ok(other);other.click();
   const field=descendants(root).find(node=>node.id==='picker-project');assert.ok(field);field.value='/another-project';
@@ -334,7 +388,7 @@ test('a blank saved title keeps session identity in details without an agent suf
   const item = saved.items[0]; assert.ok(item);
   const setup = directPicker(t, undefined, {...saved, items: [{...item, id: 'blank0033', title: ''}]}); setup.picker.open(); await settle();
   const row = descendants(setup.body).find(node => node.className === 'picker-select'); assert.ok(row);
-  assert.equal(row.querySelector('.picker-session-title')?.textContent, ''); assert.equal(row.querySelector('.picker-session-tail')?.hidden, true); assert.equal(row.querySelector('.picker-session-tail')?.textContent, '');
+  assert.equal(row.querySelector('.picker-session-title')?.textContent, 'No title'); assert.equal(row.querySelector('.picker-session-tail')?.hidden, true); assert.equal(row.querySelector('.picker-session-tail')?.textContent, '');
   assert.match(descendants(setup.body).find(node => node.className === 'picker-session-details')?.textContent ?? '', /blank0033/);
 });
 
