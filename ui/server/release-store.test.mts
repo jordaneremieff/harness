@@ -36,3 +36,10 @@ test('release manifests refuse path escape and incompatible identities',()=> {
   assert.throws(()=>readManifest({...manifest(),files:{'ui/../../outside':hash}}));
   assert.throws(()=>readManifest({...manifest(),browserApi:'unknown'}));
 });
+test('a release manifest keeps a valid history list, drops an invalid one and still reads one that has none',()=>{
+  const base=JSON.parse(JSON.stringify(manifest())) as Record<string,unknown>;
+  assert.equal(readManifest(base).recent,undefined);
+  const recent=[{commit:'a'.repeat(40),subject:'Change'}];
+  assert.deepEqual(readManifest({...base,recent}).recent,recent);
+  for(const bad of ['text',[],[{commit:'x',subject:'y'}],[{commit:'a'.repeat(40),subject:'a\u0001b'}]])assert.equal(readManifest({...base,recent:bad}).recent,undefined);
+});

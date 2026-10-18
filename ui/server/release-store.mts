@@ -3,6 +3,7 @@ import {constants} from 'node:fs';
 import {open, mkdir, realpath, rename, lstat, opendir, chmod, rm} from 'node:fs/promises';
 import {join, resolve, relative, isAbsolute, basename} from 'node:path';
 import {RELEASE_FORMAT, BROWSER_API, type ReleaseManifest, type ReleaseSelection} from '../shared/release.ts';
+import {readRecent} from '../shared/version.ts';
 
 export const RELEASE_LIMITS = {entries: 100000, bytes: 2 * 1024 ** 3, fileBytes: 128 * 1024 ** 2, releases: 8, rootBytes: 8 * 1024 ** 3, manifestBytes: 2 * 1024 ** 2};
 export const sha256 = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex');
@@ -56,6 +57,7 @@ function manifestImports(imports:Record<string,unknown>) {
 export function readManifest(value: unknown): ReleaseManifest {
   const v=object(value);manifestHeader(v);manifestIdentities(v);manifestFiles(object(v.files));manifestImports(object(v.imports));
   if(typeof v.branch!=='string'||v.branch.length>256)throw new Error('Invalid release inventory.');
+  if(v.recent!==undefined){const recent=readRecent(v.recent);if(recent)v.recent=recent;else delete v.recent;}
   return v as unknown as ReleaseManifest;
 }
 export async function manifestAt(directory: string, verify = false) {

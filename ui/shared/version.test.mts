@@ -28,3 +28,30 @@ test('malformed current metadata exposes only the declared iteration', () => {
     assert.deepEqual(readIdentity(encoded), {iteration: UI_ITERATION});
   }
 });
+import { RECENT_COMMITS, RECENT_ENCODED_CHARS, RECENT_SUBJECT_CHARS, boundedRecent, parseRecentCommits, readRecent } from './version.ts';
+const hash = (digit: string) => digit.repeat(40);
+test('git log output becomes a bounded newest-first list, with control characters removed and malformed lines skipped', () => {
+  const output = [`${hash('a')}\0First change`, `${hash('b')}\0Tab\there \u001b[31mand escape`, 'not a record', `${'z'.repeat(40)}\0Not a hash`, `${hash('c')}\0${'x'.repeat(300)}`, `${hash('d')}\0`].join('\n');
+  const list = parseRecentCommits(output);
+  assert.deepEqual(list.map(item => item.commit), [hash('a'), hash('b'), hash('c')]);
+  assert.equal(list[1]?.subject, 'Tab here  [31mand escape', 'each run of control characters becomes one space');
+  assert.equal(list[2]?.subject.length, RECENT_SUBJECT_CHARS); assert.ok(list[2]?.subject.endsWith('…'));
+  assert.deepEqual(parseRecentCommits(''), []);
+});
+test('the list keeps at most thirty commits and shrinks to fit the identity even for non-ASCII subjects', () => {
+  const many = Array.from({length: 50}, (_, index) => ({commit: String(index % 10).repeat(40), subject: `Change ${index}`}));
+  assert.equal(boundedRecent(many).length, RECENT_COMMITS);
+  const wide = Array.from({length: 30}, (_, index) => ({commit: String(index % 10).repeat(40), subject: '\u00e9'.repeat(RECENT_SUBJECT_CHARS)}));
+  const kept = boundedRecent(wide);
+  assert.ok(kept.length > 0 && kept.length < 30); assert.ok(encodeURIComponent(JSON.stringify(kept)).length <= RECENT_ENCODED_CHARS);
+  assert.deepEqual(kept, wide.slice(0, kept.length));
+});
+test('served identity carries the recent list, and an unsafe list is dropped without losing the identity', () => {
+  const recent = [{commit: hash('a'), subject: 'Newest'}, {commit: hash('b'), subject: 'Older'}];
+  assert.deepEqual(readIdentity(encodeURIComponent(JSON.stringify({...identity, recent}))), {...identity, recent});
+  assert.deepEqual(readIdentity(encodeURIComponent(JSON.stringify(identity))), identity, 'no recent key appears when none was served');
+  for (const bad of [[], 'text', [{commit: 'short', subject: 'x'}], [{commit: hash('a'), subject: 'a\u0001b'}], [{commit: hash('a'), subject: 'x'.repeat(RECENT_SUBJECT_CHARS + 1)}], Array.from({length: RECENT_COMMITS + 1}, () => ({commit: hash('a'), subject: 'x'}))]) {
+    assert.deepEqual(readIdentity(encodeURIComponent(JSON.stringify({...identity, recent: bad}))), identity);
+    assert.equal(readRecent(bad), undefined);
+  }
+});

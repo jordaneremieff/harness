@@ -462,6 +462,11 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .file-message-destination { width: 100%; min-width: 0; max-width: 100%; }
 .workbench-update { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
 .workbench-update[hidden] { display: none; }
+.workbench-updated { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; min-width: 0; max-width: 100%; }
+.workbench-updated[hidden] { display: none; }
+.workbench-updated > button { padding: 2px 0; border: 0; background: transparent; color: var(--muted); font-size: 12px; text-decoration: underline; }
+.workbench-updated > button:hover { color: var(--fg); }
+.update-changes { margin: 0 0 12px; padding-left: 18px; font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; }
 .workbench-activity { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
 .workbench-activity[data-tone=info] { color: var(--info); }
 .workbench-activity[data-tone=warning] { color: var(--warning); }

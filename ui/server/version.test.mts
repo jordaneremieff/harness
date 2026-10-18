@@ -65,3 +65,30 @@ test('encoded identity cannot create markup and obeys the document byte bound', 
   assert.equal(document.includes('<img'), false); assert.equal(document.includes('onerror='), false);
   assert.throws(() => identityDocument(pageAsset, identity, 20), (error: unknown) => (error as {code?: string}).code === 'capacity');
 });
+test('a checkout run lists its recent commits from one bounded git log, and the list reaches the page identity', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'ui-recent-')); t.after(() => rm(root, {recursive: true, force: true}));
+  const calls: string[][] = [];
+  const execute: GitExec = async (_command, args) => {
+    const flags = args.slice(3); calls.push(flags);
+    if (flags[0] === 'rev-parse' && flags[1] === '--show-toplevel') return root;
+    if (flags[0] === 'show') return `${commit}\0aaaaaaa\0${date}\n`;
+    if (flags[0] === 'status') return '';
+    if (flags[0] === 'log') return `${commit}\0Newest change\n${'b'.repeat(40)}\0Older change\n`;
+    return 'feature/ui\n';
+  };
+  const identity = await collectIdentity(assets, {root, execute, startedAt: date});
+  assert.deepEqual(identity.recent, [{commit, subject: 'Newest change'}, {commit: 'b'.repeat(40), subject: 'Older change'}]);
+  assert.deepEqual(calls.find(args => args[0] === 'log'), ['log', '-n', '30', '--format=%H%x00%s', 'HEAD']);
+  const meta = /name="ui-identity" content="([^"]*)"/.exec(identityDocument(pageAsset, identity, 10000).data.toString());
+  assert.ok(meta?.[1]); assert.deepEqual(readIdentity(meta[1]).recent, identity.recent);
+  const failing: GitExec = async (command, args, options) => { if (args.includes('log')) throw new Error('no history'); return execute(command, args, options); };
+  assert.equal((await collectIdentity(assets, {root, execute: failing, startedAt: date})).recent, undefined, 'a failed log leaves the rest of the identity intact');
+});
+test('a sealed release serves the history list its staging kept, and a release without one serves none', async () => {
+  const digest = assetDigest(assets), hash = 'c'.repeat(64);
+  const release = {format: 'ui.release/1', id: hash, sourceCommit: commit, sourceTree: 'b'.repeat(40), iteration: '1.10', stagedAt: date, committedAt: date, branch: 'main', lockDigest: hash, runtimeDigest: hash,
+    assetDigest: digest, ownerProtocol: 'owner/1', browserApi: 'ui.browser/1', generation: hash, moduleFamily: hash, files: {}, imports: {}} as const;
+  const recent = [{commit, subject: 'Newest change'}];
+  assert.deepEqual((await collectIdentity(assets, {release: {...release, recent}, startedAt: date})).recent, recent);
+  assert.equal((await collectIdentity(assets, {release, startedAt: date})).recent, undefined);
+});

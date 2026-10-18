@@ -1,3 +1,4 @@
+import type {RecentCommit} from './version.ts';
 export const RELEASE_FORMAT = 'ui.release/1';
 export const BROWSER_API = 'ui.browser/1';
 export type ReleaseManifest = {
@@ -6,6 +7,8 @@ export type ReleaseManifest = {
   lockDigest: string; runtimeDigest: string; assetDigest: string; ownerProtocol: string;
   browserApi: typeof BROWSER_API; generation: string; moduleFamily: string;
   files: Record<string, string>; imports: Record<string, string[]>;
+  /** The newest commits of the source, so a page can list what changed since an earlier release. Releases staged before it have none. */
+  recent?: readonly RecentCommit[];
 };
 export type ReleaseSelection = {current: string; lastGood?: string; updatedAt: string};
 export type ReleaseStatus = {current?: string; lastGood?: string; candidate?: string; state: 'ready'|'switching'|'backend-unavailable'|'stopping'|'stop-blocked'|'stopped'; stopError?:{code:string;message:string}; ownerPid: number; backendPid?: number; ownerIncarnation: string; ownerProtocol: string; primaries: {key: string; epoch: number; pid?: number}[]; failed: string[]};

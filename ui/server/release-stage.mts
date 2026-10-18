@@ -8,7 +8,7 @@ import {assetDigest} from './version.mts';
 import {assertBrowserAssetsFresh} from './browser-assets.mts';
 import {AssetGeneration} from './asset-generations.mts';
 import {RELEASE_FORMAT,BROWSER_API,type ReleaseManifest} from '../shared/release.ts';
-import {UI_ITERATION} from '../shared/version.ts';
+import {RECENT_COMMITS,UI_ITERATION,parseRecentCommits} from '../shared/version.ts';
 import {atomicJson,boundedFile,inventory,RELEASE_LIMITS,releaseRoot,sealTree,sha256,removeStagingTree,manifestAt,assertSealedTree,type InventoryEntry} from './release-store.mts';
 const run=(cwd:string,args:string[])=>new Promise<string>((accept,reject)=>execFile('git',['--no-optional-locks',...args],{cwd,encoding:'utf8',timeout:5000,maxBuffer:256*1024},(error,out)=>error?reject(error):accept(out.trim())));
 async function copyInventory(source:string,target:string,entries:InventoryEntry[]) {
@@ -29,7 +29,9 @@ async function exists(path:string) {try{await lstat(path);return true;}catch(err
 async function sourceRevision(source:string,allowDirty?:boolean) {
   const [sourceCommit,sourceTree,committedAt,branch,dirty]=await Promise.all([
     run(source,['rev-parse','HEAD']),run(source,['rev-parse','HEAD^{tree}']),run(source,['show','--no-patch','--format=%cI','HEAD']),run(source,['rev-parse','--abbrev-ref','HEAD']),run(source,['status','--porcelain=v1','--untracked-files=normal','--','ui','transport','package.json','package-lock.json'])]);
-  if(dirty&&!allowDirty)throw new Error('Release staging requires checked, committed UI and transport source.');return {sourceCommit,sourceTree,committedAt,branch};
+  if(dirty&&!allowDirty)throw new Error('Release staging requires checked, committed UI and transport source.');
+  const recent=parseRecentCommits(await run(source,['log','-n',String(RECENT_COMMITS),'--format=%H%x00%s','HEAD']).catch(()=>''));
+  return {sourceCommit,sourceTree,committedAt,branch,...(recent.length?{recent}:{})};
 }
 async function snapshotInputs(source:string) {
   const names=['ui/server','ui/rpc','ui/agents','ui/shared','ui/web','ui/dist','ui/cli','transport'],inputs=new Map<string,InventoryEntry[]>();let bytes=128*1024,count=0;

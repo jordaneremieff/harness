@@ -29,6 +29,7 @@ import { includedText } from './composer-attachments.ts';
 import {writeReloadState,readReloadState,deleteReloadState} from './reload-storage.ts';
 import { WorkbenchStatus } from './workbench-status.ts';
 import { VersionStatus } from './version-status.ts';
+import { UpdateNotice } from './update-notice.ts';
 import { HealthStatus } from './health-status.ts';
 import { ConnectionRecovery, connectionSurface as connectionSurfaceFor, type ConnectionPhase } from './connection-state.ts';
 import { announce, byId, button, copy, details, element, empty, placeRetained, rawText, setText } from './dom.ts';
@@ -109,7 +110,8 @@ const snapshotBuffers = new Set<{events: UiEvent[]; bytes: number; overflow: boo
 const modal = new Modal(focusEditor);
 const preferences = new PreferenceQueue();
 const diagnostics = new BrowserDiagnostics();
-new VersionStatus(() => modal.open('Copy UI version identity'));
+const versionStatus = new VersionStatus(() => modal.open('Copy UI version identity'));
+new UpdateNotice(versionStatus.identity, {storage: sessionStorage, before: byId('workbench-version'), details: (title, body) => {modal.open(title); modal.body.append(...body);}, copy: (text, anchor) => {void copy(text, anchor);}});
 new HealthStatus(modal);
 let diagnosticsActive = false;
 let devReload: DevReload | undefined;

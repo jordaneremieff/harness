@@ -167,6 +167,14 @@ test('update footer words keep exceptional actions separate from exact technical
   for(const [state,text]of Object.entries(labels)) {const view=devReloadPresentation({state:state as DevReloadNotice['state'],code:'none',retryable:true});assert.equal(view.text,text);assert.doesNotMatch(view.text,/Development|none|ready/);assert.equal(view.detail,`${state} (none)`);}
   for(const [state,code,retry]of [['failed','ack',true],['failed','restore',false],['deferred','ime',true],['offline','none',true],['restart-required','backend-change',false]] as const){assert.equal(devReloadPresentation({state,code,retryable:true}).retry,retry);assert.equal(devReloadPresentation({state,code,retryable:false}).retry,false);}
 });
+test('an update that waits says why in words, and keeps the retry beside its sentence',()=> {
+  const sentences:Record<DevReloadHold,string>={input:'Update waits while you type',ime:'Update waits while you compose text',selection:'Update waits while text is selected',resize:'Update waits while you resize a pane',modal:'Update waits while a dialog is open',offline:'Update waits while the connection is offline',conflict:'Update waits while a draft conflict is open',uncertain:'Update waits until a sent message is confirmed'};
+  for(const [code,text]of Object.entries(sentences))for(const state of ['held','deferred'] as const){
+    const view=devReloadPresentation({state,code:code as DevReloadHold,retryable:true});assert.equal(view.text,text);assert.equal(view.detail,`${state} (${code})`);
+  }
+  for(const code of ['timeout','drain','none'] as const)assert.equal(devReloadPresentation({state:'held',code,retryable:true}).text,'Update paused','a cause with no sentence keeps the plain words');
+  assert.equal(devReloadPresentation({state:'failed',code:'input',retryable:true}).text,'Update unavailable','only a waiting update takes a hold sentence');
+});
 test('missing or malformed metadata is inert, including the deferred browser default', async () => {
   for (const [generation, client] of [[null, OLD], [A, null], ['A'.repeat(64), OLD], [A, 'bad']]) {
     const f = new Fixture(); f.generation = generation ?? null; f.client = client ?? null;

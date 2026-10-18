@@ -31,12 +31,17 @@ export type DevReloadNotice = {
   code: DevBuild['code'] | DevReloadHold | 'checkpoint' | 'restore' | 'storage' | 'stylesheet' | 'drain' | 'timeout' | 'ack' | 'release' | 'host';
   build?: DevBuild;
 };
+/** Why an update that is ready waits, in words. */
+const HOLD_SENTENCES: Record<DevReloadHold, string> = {input: 'Update waits while you type', ime: 'Update waits while you compose text', selection: 'Update waits while text is selected', resize: 'Update waits while you resize a pane',
+  modal: 'Update waits while a dialog is open', offline: 'Update waits while the connection is offline', conflict: 'Update waits while a draft conflict is open', uncertain: 'Update waits until a sent message is confirmed'};
+function pausedText(code: DevReloadNotice['code']): string { return Object.hasOwn(HOLD_SENTENCES, code) ? HOLD_SENTENCES[code as DevReloadHold] : 'Update paused'; }
 export function devReloadPresentation(notice: DevReloadNotice): {text: string; detail: string; retry: boolean} {
   const labels: Record<DevReloadNotice['state'], string> = {idle:'', applied:'', ready:'Updating…', building:'Updating…', navigating:'Updating…', held:'Update paused', deferred:'Update paused', failed:'Update unavailable', offline:'Update unavailable', 'restart-required':'Restart required', reconnecting:'Reconnecting updates…'};
   const retry = notice.retryable && (notice.state === 'deferred' || notice.state === 'offline' || notice.state === 'failed' && ['stylesheet', 'drain', 'ack'].includes(notice.code));
   const error = notice.error;
   const detail = `${notice.state} (${notice.code})${error ? `\nName: ${error.name}\nMessage: ${error.message}\nStack:\n${error.stack || '[not supplied]'}${error.truncated.length ? `\nTruncated fields: ${error.truncated.join(', ')}` : ''}` : ''}`;
-  return {text:labels[notice.state], detail, retry};
+  const waiting = notice.state === 'held' || notice.state === 'deferred';
+  return {text:waiting ? pausedText(notice.code) : labels[notice.state], detail, retry};
 }
 export interface DevReloadHooks {
   /** Revision advances for user interaction, target changes and writes, not restoration itself. */

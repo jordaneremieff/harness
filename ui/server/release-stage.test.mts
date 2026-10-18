@@ -101,3 +101,11 @@ test('staging seals emitted browser modules built after the committed source',as
   const staged=JSON.parse((await f.stage()).stdout) as {directory:string;manifest:{id:string;files:Record<string,string>}};
   assert.match(staged.manifest.id,/^[a-f0-9]{64}$/);assert.ok('ui/dist/web/app.js' in staged.manifest.files);
 });
+test('staging keeps the newest commit subjects in the release, newest first, for the page to list',async context=>{
+  const f=await sourceFixture(context);await f.emit(NEW);
+  await writeFile(join(f.source,'ui/web/style.css'),'body{margin:0}');await git(f.source,'commit','--quiet','--all','-m','Second change\twith a tab');
+  const later=new Date(NEW.getTime()+1000);await f.emit(later);
+  const staged=JSON.parse((await f.stage()).stdout) as {manifest:{sourceCommit:string;recent?:{commit:string;subject:string}[]}};
+  assert.deepEqual(staged.manifest.recent?.map(item=>item.subject),['Second change with a tab','fixture']);
+  assert.equal(staged.manifest.recent?.[0]?.commit,staged.manifest.sourceCommit);
+});
