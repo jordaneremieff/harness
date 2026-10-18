@@ -1294,7 +1294,7 @@ export function renderNavigation(): void {
   renderPaneTree(layout); renderSessionEntry(!!tab); byId('conversation-panes').hidden = !hasConversation();
   tabStrip.render(); renderIdentity();
   byId('primary-row').hidden = !primary() || paneLeaves(layout.root).some(pane => pane.tabs.some(tab => tab.kind === 'primary'));
-  byId('primary-section').hidden = !hasConversation(); byId('primary-section-body').hidden = byId('primary-row').hidden;
+  byId('primary-section').hidden = !hasConversation(); byId('primary-section-body').hidden = false;
   byId('primary-row').setAttribute('aria-label', 'Return to Primary'); byId('primary-row').setAttribute('aria-current', agentSelected ? 'false' : 'page');
   const navigation = byId('navigation-access'); const leading = paneRegions.get(layout.focusedPane)?.node.querySelector<HTMLElement>('.tab-bar') ?? byId('workspace');
   if (navigation.parentElement !== leading) leading.prepend(navigation);

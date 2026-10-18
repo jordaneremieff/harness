@@ -30,8 +30,8 @@ export class TabStrip {
   private regions: TabRegions;
   constructor(hooks: TabHooks, regions: TabRegions) {
     this.hooks = hooks; this.regions = regions;
-    const doc = regions.conversations.ownerDocument; this.heading = doc.createElement('h2'); this.heading.className = 'conversation-heading'; this.heading.textContent = 'TABS';
-    regions.conversations.setAttribute('aria-label', 'Tabs'); regions.conversations.append(this.heading);
+    const doc = regions.conversations.ownerDocument; this.heading = doc.createElement('h2'); this.heading.className = 'conversation-heading'; this.heading.textContent = 'OPEN';
+    regions.conversations.setAttribute('aria-label', 'Open conversations and files'); regions.conversations.append(this.heading);
     this.observer = new ResizeObserver(() => {
       if (this.destroyed) return;
       this.fitStatuses();

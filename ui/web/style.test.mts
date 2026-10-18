@@ -561,18 +561,17 @@ test('expanded output retains bounded native scrollports with fixed gutters', ()
 test('the desktop Message panel stays outside the sidebar section flow and the roster scrolls', () => {
   assert.match(rule('.sidebar > *, .sidebar-scroll > *'), /flex-shrink: 0/);
   assert.match(rule('.sidebar-scroll'), /display: contents/);
-  assert.match(rule('.sidebar-scroll > .roster-section'), /flex: 1 1 auto/);
+  assert.match(rule('.sidebar-scroll > :is(.roster-section, .files-section)'), /flex: 1 1 0; min-height: calc\(28px \+ 5 \* 26px\)/);
   assert.match(rule('.roster'), /flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto/);
   assert.match(rule('.roster-body'), /display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0/);
   assert.match(rule('.roster-body > :not(.roster)'), /flex: none/);
-  assert.match(rule('.sidebar-scroll > .roster-section'), /min-height: 28px/);
   assert.match(rule('.agent-message-panel'), /flex: none;/);
 });
 test('responsive, short, coarse, reduced-motion and forced-color paths remain', () => {
   for (const width of [899, 599]) assert.ok(css.includes(`${width}px`));
   assert.match(css, /\.app\.drawer-open \.workbench > \.sidebar/);
   assert.match(media('@media (max-width:899px)'), /\.sidebar > \.resizer \{ display: none; \}/);
-  assert.ok(media('@media (max-height:599px)').includes('.sidebar-scroll > .roster-section { min-height: 28px; }'));
+  assert.ok(media('@media (max-height:599px)').includes('.sidebar-scroll > :is(.roster-section, .files-section) { min-height: 28px; }'));
   const coarse = media('@media (pointer:coarse)');
   assert.match(coarse, /\.icon-button \{ min-height: 44px; min-width: 44px; \}/);
   assert.match(coarse, /\.resizer\[data-axis=x\] \{ right: 0; width: 44px; \}/);
@@ -962,12 +961,13 @@ test('prose keeps a measured narrow allowance without shrinking technical blocks
 test('phone drawer sections keep usable content inside one outer scroll owner', () => {
   const phone = media('@media (max-width:599px)');
   assert.match(phone,/\.app\.drawer-open \.sidebar-scroll \{ display: block; flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain/);
-  assert.match(phone,/\.app\.drawer-open \.files-section \{ flex: none; max-height: none/);
+  assert.match(phone,/\.app\.drawer-open \.files-section \{ flex: none; max-height: none; min-height: 0/);
   assert.match(phone,/\.app\.drawer-open #files-section-body \{ overflow: visible/);
   assert.match(phone,/\.app\.drawer-open \.sidebar-scroll > \.roster-section \{ flex: none/);
   assert.match(phone,/\.app\.drawer-open \.roster \{ flex: none; min-height: 44px; max-height: 50dvh/);
   const sectionEnd = html.indexOf('</div>\n<section id="agent-message-panel"');
   assert.ok(html.indexOf('<div class="sidebar-scroll">') < html.indexOf('id="sidebar-conversations"'));
+  assert.match(rule('.conversation-heading'), /min-height: 28px/);
   assert.ok(sectionEnd > html.indexOf('id="roster-section"'));
   assert.ok(sectionEnd < html.indexOf('class="sidebar-footer"'));
 });
@@ -1067,7 +1067,7 @@ test('the draft-save failure row wraps, stays visible and offers a quiet text re
 
 test('sidebar section headings keep their own row in normal flow so no heading draws over another', () => {
   const heading = rule('.nav-heading-row'); assert.match(heading, /height: 28px/); assert.doesNotMatch(heading, /position: (?:absolute|fixed)|margin-top: -|transform:/);
-  assert.match(rule('.sidebar-scroll > .roster-section'), /min-height: 28px/); assert.match(rule('.roster-section[data-collapsed=true]'), /flex: none/);
+  assert.match(rule('.sidebar-scroll > :is(.roster-section, .files-section)[data-collapsed=true]'), /flex: none; min-height: 0/);
   const threads = rule('.threads-section'); assert.match(threads, /display: flex; flex-direction: column;/); assert.match(threads, /min-height: 28px/); assert.match(threads, /overflow: hidden/); assert.doesNotMatch(threads, /position: (?:absolute|fixed)|margin-top: -/);
   assert.match(rule('.threads-section > .nav-heading-row'), /flex: none/); assert.match(rule('.threads-body[hidden]'), /display: none/);
   assert.match(rule('.thread-scroll:focus-visible'), /outline-offset: -2px/); assert.doesNotMatch(css, /data-pointer/);
@@ -1078,4 +1078,11 @@ test('the transcript scroller is not positioned, because render.ts measures its 
   for (const rule of rules) {
     assert.doesNotMatch(rule[2] ?? '', /(?:^|[;\s])position\s*:/, `${(rule[1] ?? '').trim()} must not declare position. The offsetTop sites in render.ts (anchor, restorePosition, historyAvailable, revealEntry) assume the scroller and its rows share one offset parent (.transcript-region). Positioning the scroller means moving those sites to rectangle geometry, as layoutOrigin does, in the same change.`);
   }
+});
+test('sidebar sections follow the document order OPEN, SESSIONS, AGENTS, THREADS, FILES and Files fills the rest', () => {
+  const order = ['sidebar-conversations', 'primary-section', 'roster-section', 'threads-section', 'files-section'].map(id => html.indexOf(`<section id="${id}"`));
+  assert.ok(order.every((index, position) => index > 0 && (position === 0 || index > (order[position - 1] ?? 0))), 'sections appear in reading order');
+  assert.doesNotMatch(rule('.files-section'), /max-height/);
+  assert.match(rule('#files-section-body'), /flex: 1 1 auto; min-height: 0; overflow: auto/);
+  assert.ok(html.indexOf('id="files-section"') < html.indexOf('id="agent-message-panel"'));
 });

@@ -200,13 +200,15 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .sidebar { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 0 0 8px; border-right: 1px solid var(--rule); background: var(--side); }
 .sidebar > *, .sidebar-scroll > * { flex-shrink: 0; }
 .sidebar-scroll { display: contents; }
-.sidebar-scroll > .roster-section { flex: 1 1 auto; min-height: 28px; }
+.sidebar-scroll > :is(.roster-section, .files-section) { flex: 1 1 0; min-height: calc(28px + 5 * 26px); }
+.sidebar-scroll > :is(.roster-section, .files-section)[data-collapsed=true] { flex: none; min-height: 0; }
 .nav-top { display: flex; align-items: center; gap: var(--s1); min-height: 32px; padding: 0 var(--s2) 0 var(--s3); border-bottom: 1px solid var(--rule); }
 .sidebar-footer { display: flex; flex: none; align-items: center; gap: var(--s1); margin-top: auto; padding: var(--s1) var(--s2) 0; font-size: 13px; }
 .sidebar-footer > .icon-button { justify-content: flex-start; padding: 0 4px; }
 .sidebar-footer > .icon-button > .card-icon { margin-inline: 2px; }
 .sidebar-conversations { max-height: 25dvh; overflow-y: auto; scrollbar-width: thin; }
 .conversation-heading, .conversation-group-title { display: flex; align-items: center; min-height: 24px; padding: 0 var(--s3); color: var(--dim); font-size: 11px; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; }
+.conversation-heading { min-height: 28px; }
 .conversation-row { display: grid; grid-template-columns: minmax(0,1fr) auto auto; align-items: baseline; gap: var(--s2); width: 100%; min-width: 0; min-height: 26px; padding: 2px var(--s3); border: 0; border-radius: 0; text-align: left; }
 .conversation-row[aria-current=true] { background: var(--raised); font-weight: 500; }
 .conversation-row:hover { background: var(--raised); }
@@ -243,12 +245,11 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .row-meta, .row-word { flex: none; color: var(--muted); font-size: 12px; }
 .row-identity { flex: 0 1 auto; min-width: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-family: var(--mono); font-size: 12px; white-space: nowrap; }
 .row-meta:empty, .row-word:empty { display: none; }
-.roster-section { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.roster-section { display: flex; flex-direction: column; }
 .roster-section > .nav-heading-row { flex: none; }
-.roster-section[data-collapsed=true] { flex: none; }
-.files-section { display: flex; flex-direction: column; min-height: 0; max-height: 45%; }
+.files-section { display: flex; flex-direction: column; }
 .files-section > .nav-heading-row { flex: none; }
-#files-section-body { min-height: 0; overflow: auto; scrollbar-width: thin; }
+#files-section-body { flex: 1 1 auto; min-height: 0; overflow: auto; scrollbar-width: thin; }
 .file-row { display: flex; align-items: center; gap: var(--s1); width: 100%; min-height: 26px; padding: 2px var(--s3) 2px calc(var(--s3) + var(--file-depth,0) * 14px); border: 0; border-radius: 0; text-align: left; }
 .file-row:hover, .file-row[aria-selected=true] { background: var(--raised); }
 .file-row[aria-selected=true] { font-weight: 500; }
@@ -1135,9 +1136,9 @@ dialog[data-variant=menu]::backdrop { background: transparent; }
   .workspace, .stable-views { --gutter: 16px; }
   .app.drawer-open .sidebar-scroll { display: block; flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
   .app.drawer-open .sidebar-conversations { max-height: none; overflow: visible; }
-  .app.drawer-open .files-section { flex: none; max-height: none; }
+  .app.drawer-open .files-section { flex: none; max-height: none; min-height: 0; }
   .app.drawer-open #files-section-body { overflow: visible; }
-  .app.drawer-open .sidebar-scroll > .roster-section { flex: none; }
+  .app.drawer-open .sidebar-scroll > .roster-section { flex: none; min-height: 0; }
   .app.drawer-open .roster-body { flex: none; }
   .app.drawer-open .roster { flex: none; min-height: 44px; max-height: 50dvh; }
   .tab-bar > .pane-tab-nav, .navigation-access > .compact-project-context, .navigation-access > .compact-project-button { display: none; }
@@ -1166,7 +1167,7 @@ dialog[data-variant=menu]::backdrop { background: transparent; }
   .transcript-region { min-height: 120px; }
   .command-menu { max-height: min(200px,35vh); }
   .nav-section { margin-top: 6px; }
-  .sidebar-scroll > .roster-section { min-height: 28px; }
+  .sidebar-scroll > :is(.roster-section, .files-section) { min-height: 28px; }
   .agent-message-panel { min-height: 100px; max-height: 40dvh; }
 }
 /* Threads: the sidebar explorer and the reader shown inside one pane. */

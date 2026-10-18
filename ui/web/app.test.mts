@@ -1200,7 +1200,8 @@ test('sidebar sections retain their collapsed state per workspace and tab and fi
   const workspace = (id: string): Workspace => ({id, revision: 1, primaryKey: 'p'});
   await arrive({workspace: workspace('w'), primaries: [primaryFixture()], roster: []});
   app.renderSidebarSections(); assert.equal(byId('agents-heading').attributes.get('aria-expanded'), 'false');
-  assert.equal(byId('agents-section-body').hidden, true); assert.equal(byId('primary-section-body').hidden, true);
+  assert.equal(byId('agents-section-body').hidden, true);
+  assert.equal(byId('primary-section').hidden, false); assert.equal(byId('primary-row').hidden, true); assert.equal(byId('primary-section-body').hidden, false); assert.equal(byId('session-open').hidden, false);
   app.setSidebarSection('agents', false);
   assert.equal(byId('agents-section-body').hidden, false); assert.equal(values.get('ui:sections:w:agents'), 'false'); assert.equal(byId('agents-count').hidden, true);
   app.setSidebarSection('agents', true); assert.equal(values.get('ui:sections:w:agents'), 'true');

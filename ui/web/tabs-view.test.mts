@@ -155,10 +155,10 @@ test('destroy releases observer and strip drop handlers exactly once and never c
 });
 test('Tabs stays separate from catalogs and empty pane groups have no visible heading', () => {
   const f = fixture([]), heading = f.conversations.querySelector('.conversation-heading'); assert.ok(heading);
-  assert.equal(heading.textContent, 'TABS'); assert.equal(heading.hidden, true);
+  assert.equal(heading.textContent, 'OPEN'); assert.equal(heading.hidden, true);
   assert.ok(f.conversations.children.filter(node => node.className === 'conversation-group').every(node => node.hidden));
   f.set(createPaneLayout([{kind: 'primary'}])); assert.equal(heading.hidden, false); assert.equal(f.rows().length, 1);
-  assert.equal(f.conversations.attributes.get('aria-label'), 'Tabs');
+  assert.equal(f.conversations.attributes.get('aria-label'), 'Open conversations and files');
 });
 test('strip reveal uses only the nearest hidden edge', () => {
   assert.equal(revealTabScroll(0,200,0,1500),0); assert.equal(revealTabScroll(300,200,0,1500),0);
