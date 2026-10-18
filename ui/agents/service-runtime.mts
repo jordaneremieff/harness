@@ -4,14 +4,14 @@ import { captureSubmitInput, submitInputDigest, type NativeInputMessage, type Na
 import { readVerifiedDraftImages, verifiedImageReferences } from "../server/draft-images.mts";
 import { imageMessageDigest, imageReferenceMessage } from "../server/images.mts";
 import { isAbsolute } from "node:path";
-import { decodeInput, type AbortReceipt, type Admission, type ConversationFrame, type InspectResult, type JsonObject, type Snapshot, type ThreadList, type ThreadPage } from "./contract.mts";
+import { decodeInput, type AbortReceipt, type Admission, type CommandResult, type ConversationFrame, type HostInventory, type InspectResult, type JsonObject, type Snapshot, type StatusReply, type ThreadList, type ThreadPage } from "./contract.mts";
 import { ObservationManager, type AvailabilityListener } from "./observation.mts";
 import { RetainedReader } from "./retained-read.mts";
 import { retainedReaderPath } from "../server/agent-start.mts";
 export { AgentError, HostLink } from "./client.mts";
 export { AgentCatalog, deriveEndpoint, readClaim } from "./catalog.mts";
 export type { CatalogPage, CatalogRecord, CatalogScan, CatalogRow } from "./catalog.mts";
-export type { AbortReceipt, Admission, ConversationFrame, InspectResult, Snapshot, ThreadEvent, ThreadFrame, ThreadList, ThreadMember, ThreadPage, ThreadRecord, ThreadSummary } from "./contract.mts";
+export type { AbortReceipt, Admission, CommandResult, ConversationFrame, HostInventory, InspectResult, Snapshot, ThreadEvent, ThreadFrame, ThreadList, ThreadMember, ThreadPage, ThreadRecord, ThreadSummary } from "./contract.mts";
 export type { SubmitInput } from "./client.mts";
 export type { AvailabilityListener, AvailabilityState } from "./observation.mts";
 
@@ -34,6 +34,7 @@ export interface InspectOptions {
   cursor?: JsonObject; source?: 'user'; limit?: number; entryId?: number; offset?: number; submissionId?: number; requestId?: string; operationId?: string;
 }
 export interface UnavailableConfiguration { available: false; reason: string }
+export interface CommandInput { operationId: string; name: string; args?: string }
 interface InputRecord { identity: string; input: SubmitInput; digest: string; promise: Promise<Admission>; pending: boolean; link?: HostLink }
 function inspectionSelectors(options: InspectOptions, params: JsonObject): void {
   for (const field of ["entryId", "submissionId"] as const) if (options[field] !== undefined) { positive(options[field], field); params[field] = options[field]; }
@@ -215,6 +216,39 @@ export class AgentService {
     for (let i = 0; i < images.length; i++) parts.push({type: "image", mimeType: input.images[i].mimeType, data: Buffer.from(images[i].data).toString("base64")});
     return parts;
   }
+  /** The installed commands of the agent's live host. A host that is not live, or has no inventory, is `commands_unavailable`. */
+  async inventory(identity: string, signal?: AbortSignal): Promise<HostInventory> {
+    this.#ready();
+    signal?.throwIfAborted();
+    const link = await this.#link(identity);
+    this.#requireCommands(link, ["status"]);
+    const reply = (await link.request("status", { sessionId: identity }, { identity }, signal)) as StatusReply;
+    if (!reply.inventory) throw new AgentError("commands_unavailable", "The host reported no command inventory.");
+    return reply.inventory;
+  }
+  /** Runs one contribution command once. The call is never repeated: a lost connection leaves the outcome unknown. */
+  async command(identity: string, input: CommandInput): Promise<CommandResult> {
+    this.#ready();
+    if (!input || typeof input.operationId !== "string" || !/^[a-zA-Z0-9._:-]{1,120}$/.test(input.operationId)) throw new AgentError("invalid_request", "Invalid command operation.");
+    const params: JsonObject = { sessionId: identity, name: input.name, invocationId: `ui:${input.operationId}` };
+    if (input.args !== undefined) params.args = input.args;
+    try { decodeInput("command", params, { identity }); }
+    catch (error) { throw new AgentError("invalid_request", error instanceof Error ? error.message : "Invalid command request."); }
+    const link = await this.#link(identity);
+    this.#requireCommands(link, ["command"]);
+    try { return (await link.request("command", params, { identity })) as CommandResult; }
+    catch (error) {
+      if (error instanceof AgentError || !link.connected || !hostAnswered(error)) throw error;
+      throw new AgentError("command_refused", error.message.slice(0, 512));
+    }
+  }
+  #requireCommands(link: HostLink, members: ("status" | "command")[]): void {
+    try { link.require(members); }
+    catch (error) {
+      if (error instanceof AgentError && error.code === "contract_mismatch") throw new AgentError("commands_unavailable", error.message);
+      throw error;
+    }
+  }
   async abort(identity: string): Promise<AbortReceipt> {
     this.#ready();
     return (await (await this.#link(identity)).request("abort", { sessionId: identity, background: false }, { identity })) as AbortReceipt;
@@ -307,6 +341,12 @@ export class AgentService {
     })();
     return this.#closing;
   }
+}
+/** The host replied with an error. A lost connection, cancellation or release says nothing about whether the command ran. */
+function hostAnswered(error: unknown): error is Error & { code: string } {
+  if (!(error instanceof Error) || !("code" in error) || typeof error.code !== "string") return false;
+  const reason = "reason" in error ? error.reason : undefined;
+  return ["invalid", "forbidden", "not_ready", "unavailable"].includes(error.code) && reason !== "transport";
 }
 function retainedEligible(error: unknown, linked: boolean): boolean {
   return error instanceof AgentError && (["stored", "host_unavailable", "contract_mismatch"].includes(error.code) || !linked && error.code === "protocol_error");

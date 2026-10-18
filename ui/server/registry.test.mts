@@ -20,7 +20,7 @@ const sessionHeader = (cwd: string, id = 'fixture-session') => `${JSON.stringify
 const empty: CatalogPage = {rows: [], nextCursor: null, coverage: {complete: true, omitted: 0}, stale: false, scan: {state: 'ready', complete: true, visited: 0, skipped: 0, omitted: 0}};
 function fakeAgents() {
   const forbidden = async (): Promise<never> => { throw new Error('No native work in a registry fixture'); };
-  const adapter: AgentAdapter = {roster: () => empty, rosterRow: () => undefined, imageInputAvailable: () => false, refresh: forbidden, prepare: forbidden, select: forbidden, reconnect: forbidden, history: forbidden, image: forbidden, inspect: forbidden, threads: forbidden, thread: forbidden,
+  const adapter: AgentAdapter = {roster: () => empty, rosterRow: () => undefined, imageInputAvailable: () => false, refresh: forbidden, prepare: forbidden, select: forbidden, reconnect: forbidden, history: forbidden, image: forbidden, inspect: forbidden, inventory: forbidden, command: forbidden, threads: forbidden, thread: forbidden,
     submit: forbidden, retrySubmit: forbidden, abort: forbidden, configure: () => { throw new Error('No native configuration'); },
     hide: async () => {}, disconnectWorkspace: async () => {}, close: async () => {}};
   return () => adapter;
@@ -463,7 +463,7 @@ test('repeated agent preparation returns the same saved draft without selection 
   assert.equal(second.targetState.targetKey,first.targetState.targetKey);
   assert.equal(second.targetState.draft.text,'Retain this exact draft.');
   assert.equal(second.targetState.draft.revision,1); assert.equal(second.availability,'live'); assert.equal(second.reason,undefined);
-  assert.deepEqual(second.capabilities,{history:true,observe:true,input:true,images:false,abort:true,configure:false,inspect:true});
+  assert.deepEqual(second.capabilities,{history:true,observe:true,input:true,images:false,abort:true,configure:false,inspect:true,commands:false});
   assert.deepEqual(await registry.store.workspace(workspace.id),workspace);
   assert.equal(registry.frames.size,0); assert.equal(registry.availability.size,0);
   assert.equal(setup.counts.started,0); assert.deepEqual(calls,['storage:2','storage:2']);
@@ -482,7 +482,7 @@ test('expected preparation refusals keep target drafts and disable every capabil
     const prepared = await prepareRoute(registry,workspace.id,{target});
     assert.equal(prepared.availability,availability); assert.equal(prepared.reason,failure.message);
     assert.equal(prepared.targetState.targetKey,state.targetKey); assert.equal(prepared.targetState.draft.text,'Safe offline draft.');
-    assert.deepEqual(prepared.capabilities,{history:false,observe:false,input:false,images:false,abort:false,configure:false,inspect:false});
+    assert.deepEqual(prepared.capabilities,{history:false,observe:false,input:false,images:false,abort:false,configure:false,inspect:false,commands:false});
   }
   assert.deepEqual(await registry.store.workspace(workspace.id),workspace);
   assert.equal(registry.frames.size,0); assert.equal(registry.availability.size,0); assert.equal(setup.counts.started,0);
@@ -520,7 +520,7 @@ test('current host identities enable input and activity inspection but never con
     inspect: async (identity, options) => { calls.push({identity, options}); return activity(identity) as Awaited<ReturnType<AgentAdapter['inspect']>>; }});
   const registry = await setup.open(); const workspace = await registry.store.workspace(); const identity = 'storage:2';
   const prepared = await prepareRoute(registry, workspace.id, {target:{kind:'agent',identity}});
-  assert.deepEqual(prepared.capabilities,{history:true,observe:true,input:true,images:false,abort:true,configure:false,inspect:true});
+  assert.deepEqual(prepared.capabilities,{history:true,observe:true,input:true,images:false,abort:true,configure:false,inspect:true,commands:true});
   const inspected = await registry.dispatch({parts:['api','agents',identity,'inspect'],body:{view:'activity',limit:20},method:'POST',
     url:new URL('http://localhost/api/agents/storage:2/inspect')}) as {identity:string;view:string};
   assert.equal(inspected.identity,identity);assert.equal(inspected.view,'activity');

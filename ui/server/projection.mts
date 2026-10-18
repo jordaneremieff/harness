@@ -604,7 +604,7 @@ function rosterOptionals(row: AgentRow, source: Record<string, unknown>): void {
   if (typeof tool.name === 'string') row.currentTool = {name: safeText(tool.name, 256), argument: safeText(tool.argument, 1024)};
   const retry = publishedRetry(source); if (retry) row.publishedRetry = retry;
   const caps = object(source.capabilities);
-  if (typeof source.identity === 'string' && source.capabilities) row.capabilities = {history: caps.history === true, observe: caps.observe === true, input: caps.input === true, abort: caps.abort === true, configure: caps.configure === true, inspect: caps.inspect === true};
+  if (typeof source.identity === 'string' && source.capabilities) row.capabilities = {history: caps.history === true, observe: caps.observe === true, input: caps.input === true, abort: caps.abort === true, configure: caps.configure === true, inspect: caps.inspect === true, commands: caps.commands === true};
 }
 function rosterIdentity(source: Record<string, unknown>): CatalogRow['id'] | undefined {
   const id = source.identity ?? source.id;

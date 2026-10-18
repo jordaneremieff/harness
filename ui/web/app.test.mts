@@ -1113,7 +1113,7 @@ test('every stored appearance value reads as dark, light or system and a missing
 });
 test('editors keep accessible recipient labels and recipient placeholders', async () => {
   const row=agentFixture('labels-agent'); await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:{kind:'agent',identity:row.identity},conversationLayout:twoPanes(row.identity)},primaries:[primaryFixture({epoch:709})],roster:[row]});
-  for(const control of [primaryControl,agentControl]){const editor=control('editor') as HostNode & {placeholder:string}; assert.equal(editor.placeholder.replace(' · @ files…','…'),`${control('recipient').textContent.replace(/^Draft for /, 'Message ')}…`); assert.match(editor.placeholder,/ · @ files…$/,'a loaded working folder names the typed @ trigger'); assert.equal((control('recipient') as HostNode & {htmlFor:string}).htmlFor,editor.id); assert.match(control('recipient').textContent,/^Message /);}
+  for(const control of [primaryControl,agentControl]){const editor=control('editor') as HostNode & {placeholder:string}; assert.equal(editor.placeholder.replace(' · @ files','').replace(' · / commands',''),`${control('recipient').textContent.replace(/^Draft for /, 'Message ')}…`); assert.match(editor.placeholder,/ · @ files( · \/ commands)?…$/,'a loaded working folder names the typed @ trigger'); assert.equal(editor.placeholder.includes(' · / commands'),control===primaryControl,'the slash trigger is named only where the recipient lists commands'); assert.equal((control('recipient') as HostNode & {htmlFor:string}).htmlFor,editor.id); assert.match(control('recipient').textContent,/^Message /);}
 });
 
 test('pane tabs keep separate menus and focused facts while both target owners stay retained', async () => {

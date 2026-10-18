@@ -436,6 +436,9 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .receipt-disclosure { min-width: 0; max-width: 100%; color: var(--muted); font-size: 12px; }
 .receipt-disclosure pre { max-height: 24dvh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .send-recovery { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.command-receipt { display: flex; flex-wrap: wrap; align-items: center; gap: 0 var(--s2); min-width: 0; max-width: 100%; }
+.command-receipt > p { margin: 0; }
+.command-receipt > .receipt-disclosure { flex: 1 1 100%; }
 .composer-details { min-width: 0; width: 100%; color: var(--muted); font-size: 12px; }
 .composer-details > summary { display: flex; align-items: center; gap: 8px 12px; min-height: 24px; }
 .composer-details > summary > span:not(.composer-details-label) { display: inline-flex; align-items: center; gap: 12px; min-width: 0; }

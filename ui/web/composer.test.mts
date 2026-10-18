@@ -1191,3 +1191,82 @@ test('destroy keeps pending draft and input settlement owned by their captured t
   input.composer.destroy(); input.admit(a,'uncertain'); await sending;
   assert.equal(input.composer.retained('w',a.target),true); assert.equal(input.composer.editor.value,'captured'); assert.equal(input.reservations(),1); assert.equal(input.calls.length,0); assert.equal(input.node('receipt').children.length,0);
 });
+
+const hostCommands = (state: CommandInventory['state'] = 'ready'): CommandInventory => ({state, items: state === 'ready' ? [{name: 'ping', description: 'Reply with pong', source: 'alpha'}] : []});
+const commandResult = (id: string, changes: Partial<OperationView> = {}): OperationView => ({id, kind: 'agent.command', target: {kind: 'agent', identity: 'run'}, state: 'completed', createdAt: '', updatedAt: '1', receipt: {kind: 'command', name: 'ping', text: 'pong', truncated: false}, ...changes});
+test('an agent draft that names a host command runs it once and clears only after the confirmed result', async () => {
+  const f = fixture('agent', () => hostCommands(), true); f.connect(state('run', draft(0, '', 'followUp'), true));
+  f.composer.setText('/ping now'); const reserved = f.reservations();
+  assert.equal(f.node('send').textContent, 'Run command'); assert.equal(f.node('send').attrs.get('aria-label'), 'Run command /ping'); assert.match(f.node('send').title ?? '', /^Run \/ping on this agent\. It sends no message/);
+  const sending = f.composer.send(); const call = await f.waitCall('POST', '/command');
+  assert.equal(call.path, '/api/agents/run/command'); assert.deepEqual(call.body, {name: 'ping', args: 'now'}); assert.equal(f.calls.some(item => item.path.endsWith('/inputs')), false);
+  assert.equal(f.composer.editor.value, '/ping now', 'the draft stays while the command runs');
+  f.ok(call, commandResult(call.id as string)); await sending;
+  assert.equal(f.composer.editor.value, ''); assert.equal(f.submitted.length, 1); assert.equal(f.reservations(), reserved + 1, 'one reservation for the one run');
+  assert.equal(f.node('receipt').find('Command /ping ran') !== undefined, true);
+  assert.equal(f.node('send').textContent, 'Send');
+  assert.equal(f.calls.filter(item => item.path.endsWith('/command')).length, 0, 'the command is never repeated');
+});
+test('a command with no arguments sends only its name, and a name that is not in the host list is an ordinary message', async () => {
+  const f = fixture('agent', () => hostCommands(), true); f.connect(state('run', draft(0, '', 'followUp'), true));
+  f.composer.setText('/ping'); const sending = f.composer.send(); const call = await f.waitCall('POST', '/command');
+  assert.deepEqual(call.body, {name: 'ping'}); f.ok(call, commandResult(call.id as string)); await sending;
+  f.composer.setText('/other thing'); assert.equal(f.node('send').textContent, 'Send'); const message = f.composer.send(); await f.waitCall('POST', '/inputs'); assert.equal(f.calls.some(item => item.path.endsWith('/command')), false); void message;
+});
+test('a host refusal keeps the draft, shows the host message and runs nothing again', async () => {
+  const f = fixture('agent', () => hostCommands(), true); f.connect(state('run', draft(0, '', 'followUp'), true));
+  f.composer.setText('/ping'); const sending = f.composer.send(); const call = await f.waitCall('POST', '/command');
+  f.ok(call, commandResult(call.id as string, {state: 'rejected', receipt: undefined, error: {code: 'command_refused', message: 'durable command ping failed', retry: 'none'}})); await sending;
+  assert.equal(f.composer.editor.value, '/ping'); assert.ok(f.node('receipt').find('durable command ping failed')); assert.ok(f.node('receipt').find('Your draft is unchanged.'));
+  assert.equal(f.calls.filter(item => item.path.endsWith('/command')).length, 0);
+});
+test('an unknown outcome keeps the draft, says the command may have run and offers no repeat', async () => {
+  const f = fixture('agent', () => hostCommands(), true); f.connect(state('run', draft(0, '', 'followUp'), true));
+  f.composer.setText('/ping'); const sending = f.composer.send(); const call = await f.waitCall('POST', '/command');
+  const used = f.reservations();
+  f.ok(call, commandResult(call.id as string, {state: 'uncertain', receipt: undefined, error: {code: 'delivery_uncertain', message: 'Dispatch ended without a valid receipt', retry: 'manual'}})); await sending;
+  assert.equal(f.composer.editor.value, '/ping'); assert.ok(f.node('receipt').find('The command may have run. Your draft is unchanged.'));
+  assert.equal(f.node('receipt').find('Check action'), undefined); assert.equal(f.node('receipt').find('Run again'), undefined);
+  f.click('Dismiss'); const removal = f.pick('DELETE', `/api/operations/${call.id}`); f.ok(removal, {removed: true});
+  assert.equal(f.node('receipt').find('The command may have run. Your draft is unchanged.'), undefined);
+  assert.equal(f.reservations(), used, 'dismissing does not run anything');
+});
+test('a lost request leaves the draft and says the command may have run', async () => {
+  const f = fixture('agent', () => hostCommands(), true); f.connect(state('run', draft(0, '', 'followUp'), true));
+  f.composer.setText('/ping'); const sending = f.composer.send(); const call = await f.waitCall('POST', '/command');
+  call.reject(new Error('network down')); await sending;
+  assert.equal(f.composer.editor.value, '/ping'); assert.ok(f.node('receipt').find('The command may have run. Your draft is unchanged.'));
+});
+test('a result stays in the receipt with a bounded disclosure, Copy and the cut notice until it is dismissed or the next run', async () => {
+  const f = fixture('agent', () => hostCommands(), true); f.connect(state('run', draft(0, '', 'followUp'), true));
+  f.composer.setText('/ping'); const sending = f.composer.send(); const call = await f.waitCall('POST', '/command');
+  f.ok(call, commandResult(call.id as string, {receipt: {kind: 'command', name: 'ping', text: 'first line\nsecond line', truncated: true}})); await sending;
+  assert.ok(f.node('receipt').find('Showing the first 16 KiB')); assert.ok(f.node('receipt').find('Result')); assert.equal(f.node('receipt').textContent.includes('first line'), true);
+  f.click('Copy result'); await turn(); assert.deepEqual(f.copied, ['first line\nsecond line']);
+  f.composer.setText('typing elsewhere'); assert.ok(f.node('receipt').find('Command /ping ran'), 'a later edit keeps the result');
+  f.click('Dismiss'); assert.equal(f.node('receipt').find('Command /ping ran'), undefined);
+  f.composer.setText('/ping'); const again = f.composer.send(); const next = await f.waitCall('POST', '/command');
+  assert.equal(f.node('receipt').find('Command /ping ran'), undefined, 'the previous result leaves when the next run starts');
+  f.ok(next, commandResult(next.id as string, {updatedAt: '2', receipt: {kind: 'command', name: 'ping', text: '', truncated: false}})); await again;
+  assert.ok(f.node('receipt').find('The command returned no text.'));
+});
+test('a draft that edits during the run keeps the newer text', async () => {
+  const f = fixture('agent', () => hostCommands(), true); f.connect(state('run', draft(0, '', 'followUp'), true));
+  f.composer.setText('/ping'); const sending = f.composer.send(); const call = await f.waitCall('POST', '/command');
+  f.composer.setText('/ping changed'); f.ok(call, commandResult(call.id as string)); await sending;
+  assert.equal(f.composer.editor.value, '/ping changed'); assert.ok(f.node('receipt').find('The command ran. Your newer draft is unchanged.'));
+});
+test('a slash draft waits while the list loads, and a command cannot carry attachments', async () => {
+  let inventory = hostCommands('loading'); const f = fixture('agent', () => inventory, true); f.connect(state('run', draft(0, '', 'followUp'), true));
+  f.composer.setText('/ping'); assert.equal(f.node('send').disabled, true); assert.equal(f.node('send').title, 'Loading commands…');
+  await f.composer.send(); assert.equal(f.calls.some(item => item.path.endsWith('/inputs') || item.path.endsWith('/command')), false);
+  inventory = hostCommands(); f.composer.commandsChanged(); assert.equal(f.node('send').disabled, false); assert.equal(f.node('send').textContent, 'Run command');
+  const withImage = state('run', {...draft(0, '/ping', 'followUp'), images: [image()]}, true); f.composer.attach('w', {...withImage, targetKey: 'run-image'}); f.composer.commandsChanged();
+  assert.equal(f.node('send').disabled, true); assert.equal(f.node('send').title, 'Remove attachments to run a command.');
+});
+test('Primary and a recipient without commands never run a command from the draft', async () => {
+  const primary = fixture('primary', () => hostCommands(), true); primary.connect(); primary.composer.setText('/ping');
+  assert.equal(primary.node('send').textContent, 'Send');
+  const none = fixture('agent', () => ({state: 'unavailable', items: [], message: 'Start the agent to run commands.'}), true); none.connect(state('run', draft(0, '', 'followUp'), true));
+  none.composer.setText('/ping'); assert.equal(none.node('send').textContent, 'Send');
+});

@@ -828,6 +828,30 @@ Result:
 
 `selection` carries `{inputDigest,source,preset?,presetNames,values,origins,unapplied,diagnostics,thinking?}`. `source` has `{path,digest:string|null,observedAt,status}`; values contain optional model/thinking/role/check-in fields; origins name explicit/preset/defaultPreset/retained/default; diagnostics contain field/message. A request key retains the resolved selection, not permission to replay the whole mutation after arbitrary later work. Do not automatically retry configure after an uncertain outcome. Source: `extensions/agent/configuration.ts:15-43`; `extensions/agent/agent-preferences.ts:24-48`; `extensions/agent/durable-runtime.ts:356-373,457-460`; `extensions/agent/host-protocol.ts:196-202`.
 
+### status
+
+Params for one conversation: `{sessionId}`. `status` is read-only and retry-safe. The reply to a live host is `{conversation:ConversationStatus, inventory:HostInventory, pid:number, storageId:string, deliveryError?:string}`; a host that is not live answers `{conversation, live:false, storageId}` with no inventory and no process identity. A consumer that wants commands reads only `inventory` and `storageId`, treats `conversation` as an opaque object, and treats a missing `inventory` as unavailable, never as an empty list. Without `sessionId` the reply lists up to 50 conversations (`conversations`), which a command consumer does not need.
+
+```text
+HostInventory = {
+  contributions: {name:string, source:string, commands:{name:string, description:string}[]}[],
+  ordinaryOnly: string[],
+  failed?: {path:string, error:string}[]   // present only when an extension failed to load
+}
+```
+
+`contributions[].name` is the contribution that supplies its commands, and `source` is where it was loaded from. `ordinaryOnly` names extensions that load but add no host command. The response identity is the schema hash `H-status`, so a consumer checks the operation identity above and the shape it uses, and refuses a reply whose `inventory` has a field outside this shape. The inventory belongs to the loaded runtime: a host reload replaces it, so a cached copy is valid only for the connection it was read on. Source: `extensions/agent/observation-schema.ts:243-249,317-320`; `extensions/agent/durable-runtime.ts:508`.
+
+### command
+
+Params: `{sessionId, name:string, args?:string, invocationId:string, data?:JsonValue}`. `name` is a command in the host inventory. `args` is the text after the name and defaults to empty. `invocationId` is required by the host and is correlation only: it is not an idempotency key, so reusing it does not make the host skip a second run (the runtime fills a missing one from the wire request ID). The host runs the command against the target conversation and answers after the command returns.
+
+Result: `{name:string, conversationId:number, identity:string, text:string}`. `text` is whatever the command returned and has no host bound below the transport frame bound, so a consumer that shows it bounds it itself.
+
+Two names are reserved for the host's own use and are never contribution commands: `tree` (a fork at a native entry) and `reload` (a runtime reload that needs an idle storage and closed observers). A consumer that lists or runs commands leaves them out. A name the host has not registered fails with `durable command <name> is not registered`; a command that throws fails with the thrown message. Both are definite answers from the host.
+
+`command` is not retry-safe. A command can change state, and a lost connection says nothing about whether it ran. Do not resend after a lost connection, a malformed reply or a timeout; report the outcome as unknown and let the operator decide. A command that answers with an error may have changed state before it failed, and the answer text is the only evidence. Source: `extensions/agent/durable-host.ts:832-848`; `extensions/agent/durable-runtime.ts:398-440,507`.
+
 ## Request keys, retry, and completion
 
 There are three distinct IDs:

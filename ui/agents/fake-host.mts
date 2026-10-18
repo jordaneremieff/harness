@@ -100,6 +100,15 @@ export function blockedResult(identity = STORAGE, requestId = "input-example"): 
 			errorTruncated: false, source: "provider", timestamp: 0,
 			originalResults: [{ sessionId: identity, submissionId: 7, requestId }], omittedOriginalResults: 0 } };
 }
+/** A status reply with an inventory, shaped like the host response. A host command named `tree` or `reload` is reserved and listed here only to show the UI leaves it out. */
+export function statusReply(): JsonObject {
+	return { conversation: { conversationId: 1, identity: STORAGE }, inventory: { contributions: [{ name: "fixture-contribution", source: "fixture/contribution.ts",
+		commands: [{ name: "ping", description: "Reply with pong" }, { name: "tree", description: "Reserved" }, { name: "reload", description: "Reserved" }] }],
+		ordinaryOnly: ["fixture-ordinary"] }, pid: 1, storageId: STORAGE };
+}
+export function commandReply(identity: string, name: string, text: string): JsonObject {
+	return { name, conversationId: identity === STORAGE ? 1 : Number(identity.split(":")[1]), identity, text };
+}
 export const THREAD = `${STORAGE}/${"a".repeat(32)}`;
 const THREAD_FRAME = { title: "Protocol design", purpose: "Keep peers useful", authority: "Operator task", source: "Operator task source",
 	restrictions: "No external changes", acceptance: "Exchange survives restart", integrator: STORAGE };
@@ -555,6 +564,10 @@ export class FakeHost {
 					conversationId: input.sessionId === CHILD ? 2 : 1,
 					background: input.background ?? false,
 				};
+			case "status":
+				return statusReply();
+			case "command":
+				return commandReply(String(input.sessionId), String(input.name), "pong");
 			case "dashboard":
 				return [];
 			case "collaboration-list":

@@ -7,7 +7,8 @@ type JsonValue = null | boolean | number | string | JsonValue[] | JsonObject;
 export type JsonObject = { [key: string]: JsonValue };
 export type OperationContract = Readonly<{ request: string; response: string; durable?: string }>;
 export type OperationName = "dashboard" | "snapshot" | "inspect" | "observe-open" | "observe-frame"
-	| "observe-close" | "changes" | "task-submit" | "abort" | "configure" | "collaboration-list" | "collaboration-read";
+	| "observe-close" | "changes" | "task-submit" | "abort" | "configure" | "collaboration-list" | "collaboration-read"
+	| "status" | "command";
 export type RuntimeDescriptor = {
 	format: "pi.agent.contract/1"; release: string;
 	upstream: { codingAgent: string; durable: string };
@@ -36,6 +37,12 @@ export type Admission = JsonObject & { submissionId: number; conversationId: num
 	identity: string; result: JsonObject & { sessionId: string; submissionId: number; requestId?: string } };
 export type AbortReceipt = JsonObject & { conversationId: number; identity: string; background: boolean };
 export type InspectResult = JsonObject & { view: string; sessionId: string; conversationId: number };
+/** What one live host reports as installed: contribution commands, extensions without commands, and extensions that failed to load. */
+export type HostInventory = { contributions: { name: string; source: string; commands: { name: string; description: string }[] }[];
+	ordinaryOnly: string[]; failed?: { path: string; error: string }[] };
+/** A status reply for one conversation. A retained, not-live host reply carries no inventory. */
+export type StatusReply = JsonObject & { storageId: string; inventory?: HostInventory };
+export type CommandResult = JsonObject & { name: string; conversationId: number; identity: string; text: string };
 export type ThreadSummary = { id: string; title: string; purpose: string; updatedAt: number; closed: boolean; members: number };
 export type ThreadList = { items: ThreadSummary[]; nextCursor: string | null;
 	coverage: { complete: boolean; visited: number; omitted: number; unavailable?: number } };
@@ -55,6 +62,7 @@ type Responses = {
 	"observe-frame": ConversationFrame | JsonObject; "observe-close": JsonObject & { closed: boolean };
 	changes: JsonObject; "task-submit": Admission; abort: AbortReceipt; configure: never;
 	"collaboration-list": ThreadList; "collaboration-read": ThreadPage;
+	status: StatusReply; command: CommandResult;
 };
 
 export class ContractError extends Error {
@@ -146,7 +154,7 @@ function nativeVersion(): string | undefined {
 	} catch { return undefined; }
 }
 const durable = nativeVersion();
-const opaque = new Set<OperationName>(["snapshot", "inspect", "observe-open", "observe-frame"]);
+const opaque = new Set<OperationName>(["snapshot", "inspect", "observe-open", "observe-frame", "status", "command"]);
 function contract(member: string, version = "1.0.0", response = `${member}/${version}`, native = false): OperationContract {
 	return Object.freeze({ request: `${member}/${version}`, response, ...(native && durable ? { durable } : {}) });
 }
@@ -160,6 +168,8 @@ export const supportedOperations: Readonly<Record<OperationName, OperationContra
 	"task-submit": contract("task-submit", "1.0.0", "task-submit/1.2.0"), abort: contract("abort"),
 	configure: contract("configure", "1.3.0"),
 	"collaboration-list": contract("collaboration-list"), "collaboration-read": contract("collaboration-read"),
+	status: contract("status", "1.0.0", "294bb95f3d60b9c9ae2976f291e4f8d41c11d00ec517c1aebcfd9c7af40a3087", true),
+	command: contract("command", "1.1.0", "command/1.0.0", true),
 });
 function operation(value: JsonValue): OperationContract {
 	const o = object(value); only(o, ["request", "response", "durable"]);
@@ -510,6 +520,31 @@ function admission(value: JsonValue, context: Context): Admission {
 function abort(value: JsonValue, context: Context): AbortReceipt {
 	const o = object(value); target(o, "identity", context); boolean(o.background); return o as AbortReceipt;
 }
+/** The commands the host runs for itself rather than through a contribution. The UI never offers or sends them. */
+export const RESERVED_COMMANDS: readonly string[] = Object.freeze(["tree", "reload"]);
+function hostInventory(value: JsonValue): void {
+	const o = object(value); only(o, ["contributions", "ordinaryOnly", "failed"]);
+	array(o.contributions, c => {
+		const contribution = object(c); only(contribution, ["name", "source", "commands"]);
+		fields(contribution, ["name", "source"], v => string(v, 4096, true));
+		array(contribution.commands, x => { const command = object(x); only(command, ["name", "description"]);
+			string(command.name, 512); string(command.description, 65536, true); }, 4096);
+	}, 1024);
+	array(o.ordinaryOnly, v => string(v, 4096, true), 1024);
+	optional(o, ["failed"], v => array(v, f => { const failure = object(f); only(failure, ["path", "error"]);
+		fields(failure, ["path", "error"], x => string(x, 65536, true)); }, 1024));
+}
+function statusReply(value: JsonValue): StatusReply {
+	const o = object(value); string(o.storageId, 512);
+	requireValue(o.conversation !== undefined || o.conversations !== undefined, "Status reply names no conversation");
+	if (o.inventory !== undefined) hostInventory(o.inventory);
+	return o as StatusReply;
+}
+function commandResult(value: JsonValue, context: Context): CommandResult {
+	const o = object(value); only(o, ["name", "conversationId", "identity", "text"]);
+	string(o.name, 512); string(o.text, 16 * 1024 * 1024, true); target(o, "identity", context);
+	return o as CommandResult;
+}
 const threadIdPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\/[0-9a-f]{32}$/;
 const participantPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}(?::[1-9]\d*)?$/;
 function threadId(value: unknown): asserts value is string {
@@ -585,6 +620,7 @@ export function decodeResponse<M extends OperationName>(member: M, value: unknow
 		"observe-close": () => { const o = object(v); boolean(o.closed); return o; },
 		changes: () => changes(v), "task-submit": () => admission(v, context), abort: () => abort(v, context),
 		"collaboration-list": () => threadList(v), "collaboration-read": () => threadPage(v),
+		status: () => statusReply(v), command: () => commandResult(v, context),
 	};
 	const decoder = decoders[member as Exclude<OperationName, "configure">];
 	requireValue(Object.hasOwn(decoders, member) && decoder, "Unsupported operation"); return decoder() as Responses[M];
@@ -659,16 +695,23 @@ export function decodeInput(member: OperationName, value: unknown, context: Cont
 	if (member === "task-submit") return o;
 	if (member === "observe-open") { observeInput(o); return o; }
 	if (member === "observe-frame" || member === "observe-close") { only(o, ["token"]); token(o.token); return o; }
-	if (member === "abort") { only(o, ["sessionId", "background"]); identity(o.sessionId); optional(o, ["background"], boolean); return o; }
+
 	if (member === "dashboard") { only(o, ["conversationId", "cwd"]); optional(o, ["conversationId"], v => integer(v, 1));
 		optional(o, ["cwd"], v => string(v, 4096)); return o; }
 	if (member === "snapshot") { only(o, ["sessionId", "before", "limit", "maxBytes"]); identity(o.sessionId);
 		optional(o, ["before"], v => integer(v, 1)); optional(o, ["limit"], v => integer(v, 1, 200));
 		optional(o, ["maxBytes"], v => integer(v, 1, 1048576)); return o; }
 	if (member === "inspect") { inspectInput(o); return o; }
-	const threadInput = threadInputs[member];
-	if (threadInput) { threadInput(o); return o; }
+	const simpleInput = simpleInputs[member];
+	if (simpleInput) { simpleInput(o); return o; }
 	unavailable("Changes is a subscription gate, not a request operation");
+}
+function commandInput(o: JsonObject): void {
+	only(o, ["sessionId", "name", "args", "invocationId"]); identity(o.sessionId);
+	string(o.name, 128); requireValue(/^[A-Za-z0-9_][A-Za-z0-9_.:-]*$/.test(o.name as string), "Invalid command name");
+	requireValue(!RESERVED_COMMANDS.includes(o.name as string), "Reserved host command");
+	optional(o, ["args"], v => { string(v, LIMITS.textBytes, true); requireValue(Buffer.byteLength(v as string) <= LIMITS.textBytes, "Command arguments exceed their byte bound"); });
+	string(o.invocationId, 125); requireValue(/^[a-zA-Z0-9._:-]+$/.test(o.invocationId as string), "Invalid invocation identity");
 }
 function threadListInput(o: JsonObject): void {
 	only(o, ["cursor", "limit", "query"]); optional(o, ["cursor"], listCursor); optional(o, ["limit"], v => integer(v, 1, 20));
@@ -678,7 +721,11 @@ function threadReadInput(o: JsonObject): void {
 	only(o, ["threadId", "limit", "before"]); threadId(o.threadId);
 	optional(o, ["limit"], v => integer(v, 1, 20)); optional(o, ["before"], v => integer(v, 1));
 }
-const threadInputs: Partial<Record<OperationName, (o: JsonObject) => void>> = { "collaboration-list": threadListInput, "collaboration-read": threadReadInput };
+const simpleInputs: Partial<Record<OperationName, (o: JsonObject) => void>> = {
+	abort: o => { only(o, ["sessionId", "background"]); identity(o.sessionId); optional(o, ["background"], boolean); },
+	status: o => { only(o, ["sessionId"]); identity(o.sessionId); },
+	command: commandInput, "collaboration-list": threadListInput, "collaboration-read": threadReadInput,
+};
 function observeInput(o: JsonObject): void {
 	only(o, ["token", "scope", "sessionId"]); token(o.token); choice(o.scope, ["conversation", "tasks"]);
 	if (o.scope === "conversation") identity(o.sessionId);

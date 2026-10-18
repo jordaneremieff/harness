@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { LIMITS, sameDraftTuple } from '../shared/api.ts';
+import { COMMAND_RESULT_BYTES, LIMITS, sameDraftTuple } from '../shared/api.ts';
 import type {DraftImage} from '../shared/api.ts';
 import {normalizeDraftImages} from './validate.mts';
 import type { ErrorView, OperationKind, OperationView, Target } from '../shared/api.ts';
@@ -11,7 +11,7 @@ import {withPrimaryOperation} from '../rpc/primary-operation.mts';
 import {join} from 'node:path';
 import {imageMessageDigest, imageReferenceMessage} from './images.mts';
 
-const KINDS: OperationKind[] = ['primary.open', 'primary.input', 'primary.stop', 'primary.session', 'primary.control', 'primary.dialog', 'primary.handoff', 'agent.input', 'agent.abort', 'agent.configure', 'agent.convert'];
+const KINDS: OperationKind[] = ['primary.open', 'primary.input', 'primary.stop', 'primary.session', 'primary.control', 'primary.dialog', 'primary.handoff', 'agent.input', 'agent.abort', 'agent.configure', 'agent.convert', 'agent.command'];
 const terminal = (record: {view: {state: string}; input?: unknown; inputResolved?: boolean; retainedInput?: unknown; protected?: boolean}) => ['accepted', 'rejected', 'completed'].includes(record.view.state) && (!record.input || record.inputResolved) && !record.retainedInput && !record.protected;
 export type ExecuteRequest = {workspaceId: string; kind: OperationKind; target?: Target; body: unknown;
   input?: {targetKey: string; text: string; mode: string; draftRevision: number; images?: DraftImage[]; differentMessage?: true}; retryUncertainNative?: boolean};
@@ -114,7 +114,7 @@ export class Operations {
     return this.store.transaction(async () => {
       const record = this.store.record(id);
       if (this.store.canDiscardUnknownQueueClear(id) && record.queueClear) { record.queueClear.rowBudget = 0; record.inputResolved = true; await this.store.writeOperation(record); }
-      if (!terminal(record) && !(record.view.state === 'uncertain' && record.inputResolved)) throw new StateError('operation_conflict', 'Resolve this operation before removal', 409);
+      if (!terminal(record) && !(record.view.state === 'uncertain' && (record.inputResolved || record.view.kind === 'agent.command'))) throw new StateError('operation_conflict', 'Resolve this operation before removal', 409);
       await this.store.deleteOperation(id);
     });
   }
@@ -224,7 +224,9 @@ export class Operations {
     const receipt = outcome.receipt;
     if (receipt?.kind === 'durable') this.validateNativeReceipt(receipt, record);
     else if (receipt?.kind === 'rpc') this.validateRpcReceipt(receipt, record);
+    else if (receipt?.kind === 'command') this.validateCommandReceipt(receipt, record);
     else if (receipt) throw new Error('Wrong receipt kind');
+    if (record.view.kind === 'agent.command' && outcome.state === 'completed' && receipt?.kind !== 'command') throw new Error('Missing command receipt');
   }
   private validateSentImageOutcome(outcome: DispatchResult, record: OperationRecord): void {
     if (outcome.sentImageMessageDigest === undefined) return;
@@ -232,6 +234,9 @@ export class Operations {
     if (outcome.state !== 'accepted' || outcome.receipt?.kind !== 'durable' || !input?.images.length) throw new Error('Missing sent-image admission');
     const message = imageReferenceMessage(input.text, input.images, input.images.map(image => join(this.store.root, 'images', input.targetKey, `${image.digest}.bin`)));
     if (imageMessageDigest(message) !== outcome.sentImageMessageDigest) throw new Error('Wrong sent-image fingerprint');
+  }
+  private validateCommandReceipt(receipt: Extract<NonNullable<OperationView['receipt']>, {kind: 'command'}>, record: OperationRecord): void {
+    if (record.view.kind !== 'agent.command' || typeof receipt.name !== 'string' || typeof receipt.text !== 'string' || typeof receipt.truncated !== 'boolean' || Buffer.byteLength(receipt.text) > COMMAND_RESULT_BYTES) throw new Error('Wrong command receipt');
   }
   private validateRpcReceipt(receipt: Extract<NonNullable<OperationView['receipt']>, {kind: 'rpc'}>, record: OperationRecord): void {
     if (record.view.target?.kind === 'agent') throw new Error('Wrong receipt kind');

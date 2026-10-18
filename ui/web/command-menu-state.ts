@@ -1,8 +1,9 @@
 export type CommandOption = {name: string; description: string; source: string};
-export type CommandInventory = {items: CommandOption[]; state: 'ready' | 'loading' | 'unavailable'; incomplete?: boolean};
+/** An unavailable inventory with a message still opens the list, so the reason is read where the commands would be. */
+export type CommandInventory = {items: CommandOption[]; state: 'ready' | 'loading' | 'unavailable'; incomplete?: boolean; message?: string};
 export type CommandMatch = {item: CommandOption; rank: number; marks: number[]};
 export type CommandToken = {name: string; end: number};
-export type MenuState = {token?: CommandToken; matches: CommandMatch[]; open: boolean; active: number; suppressed?: string; inventory: CommandInventory['state']; incomplete?: boolean};
+export type MenuState = {token?: CommandToken; matches: CommandMatch[]; open: boolean; active: number; suppressed?: string; inventory: CommandInventory['state']; incomplete?: boolean; message?: string};
 export const emptyMenu = (): MenuState => ({matches: [], open: false, active: 0, inventory: 'unavailable'});
 export function commandToken(text: string, start: number, end = start): CommandToken | undefined {
   if (!text.startsWith('/') || start !== end || start < 1) return undefined;
@@ -37,8 +38,8 @@ export function updateMenu(previous: MenuState, text: string, start: number, end
   const matches = token && inventory.state === 'ready' ? rankCommands(inventory.items, token.name) : [];
   const selected = previous.token?.name === token?.name ? previous.matches[previous.active]?.item.name : undefined;
   const active = Math.max(0, matches.findIndex(match => match.item.name === selected));
-  return {token, matches, suppressed, active, inventory: inventory.state, incomplete: inventory.incomplete,
-    open: !!token && inventory.state !== 'unavailable' && suppressed !== token.name && !composing};
+  return {token, matches, suppressed, active, inventory: inventory.state, incomplete: inventory.incomplete, message: inventory.message,
+    open: !!token && (inventory.state !== 'unavailable' || !!inventory.message) && suppressed !== token.name && !composing};
 }
 export type MenuKey = {key: string; shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean; isComposing?: boolean; keyCode?: number; repeat?: boolean};
 function arrowStep(key: string): number { return key === 'ArrowDown' ? 1 : key === 'ArrowUp' ? -1 : 0; }

@@ -1,6 +1,6 @@
 import { announce, button, element } from './dom.ts';
 import { insertNativeText } from './native-insertion.ts';
-import { acceptCommand, emptyMenu, menuKey, updateMenu } from './command-menu-state.ts';
+import { acceptCommand, commandToken, emptyMenu, menuKey, updateMenu } from './command-menu-state.ts';
 import type { CommandInventory, CommandMatch, MenuState } from './command-menu-state.ts';
 
 export class CommandMenu {
@@ -15,12 +15,12 @@ export class CommandMenu {
   private generation = 0;
   private editor: HTMLTextAreaElement;
   private menu: HTMLElement;
-  private inventory: () => CommandInventory;
+  private inventory: (deliberate: boolean) => CommandInventory;
   private change: (text: string, error?: string, prepared?: string) => void;
   private cleanup: (() => void)[] = [];
   private observer?: ResizeObserver;
   private destroyed = false;
-  constructor(editor: HTMLTextAreaElement, menu: HTMLElement, inventory: () => CommandInventory, change: (text: string, error?: string, prepared?: string) => void, more?: () => Promise<void>) {
+  constructor(editor: HTMLTextAreaElement, menu: HTMLElement, inventory: (deliberate: boolean) => CommandInventory, change: (text: string, error?: string, prepared?: string) => void, more?: () => Promise<void>) {
     this.editor = editor; this.menu = menu; this.inventory = inventory; this.change = change; this.more = more;
     menu.setAttribute('role', 'listbox'); menu.setAttribute('aria-label', 'Commands');
     editor.setAttribute('aria-autocomplete', 'list'); editor.setAttribute('aria-controls', menu.id);
@@ -50,7 +50,8 @@ export class CommandMenu {
   }
   update(): void {
     if (this.destroyed) return;
-    this.state = updateMenu(this.state, this.editor.value, this.editor.selectionStart, this.editor.selectionEnd, this.inventory(), this.composing);
+    const deliberate = !!commandToken(this.editor.value, this.editor.selectionStart, this.editor.selectionEnd);
+    this.state = updateMenu(this.state, this.editor.value, this.editor.selectionStart, this.editor.selectionEnd, this.inventory(deliberate), this.composing);
     if (!this.focused || this.editor.disabled) this.state.open = false;
     this.paint();
   }
@@ -81,6 +82,7 @@ export class CommandMenu {
     for (let offset = 0; offset < match.item.name.length; offset++) name.append(element(marks.has(offset) ? 'mark' : 'span', undefined, match.item.name[offset]));
     const desc = element('span', 'command-desc', match.item.description); desc.id = `${node.id}-desc`;
     const source = element('span', 'command-source', match.item.source); source.id = `${node.id}-source`;
+    node.title = match.item.source ? `/${match.item.name} · ${match.item.source}` : `/${match.item.name}`;
     node.setAttribute('aria-label', `/${match.item.name}`); node.setAttribute('aria-describedby', `${desc.id} ${source.id}`);
     node.append(name, desc, source);
     node.addEventListener('pointerdown', event => event.preventDefault());
@@ -107,6 +109,7 @@ export class CommandMenu {
     finally { if (generation === this.generation) { this.continuing = false; this.update(); } }
   }
   private emptyText(): string {
+    if (this.state.inventory === 'unavailable') return this.state.message ?? 'Commands are unavailable.';
     return this.state.incomplete ? 'The command list is incomplete.' : `No commands match /${this.state.token?.name ?? ''}`;
   }
   private hint(count: number): HTMLElement {
@@ -119,7 +122,7 @@ export class CommandMenu {
     action.addEventListener('pointerdown', event => event.preventDefault()); hint.append(action); return hint;
   }
   private paint(): void {
-    const key = JSON.stringify([this.state.open, this.state.inventory, this.state.token?.name, this.state.active, this.state.matches, this.state.incomplete, this.continuing, this.continuationError]);
+    const key = JSON.stringify([this.state.open, this.state.inventory, this.state.token?.name, this.state.active, this.state.matches, this.state.incomplete, this.state.message, this.continuing, this.continuationError]);
     if (key === this.painted) return; this.painted = key;
     this.editor.removeAttribute('aria-activedescendant'); this.menu.hidden = !this.state.open;
     this.menu.replaceChildren();
@@ -127,6 +130,7 @@ export class CommandMenu {
     if (this.state.inventory === 'loading') this.menu.append(element('div', 'command-empty', 'Loading commands…'));
     else if (!this.state.matches.length) this.menu.append(element('div', 'command-empty', this.emptyText()));
     else this.menu.append(...this.state.matches.map((match, index) => this.row(match, index)));
+    if (this.state.inventory === 'unavailable') return;
     const count = this.state.matches.length;
     const hint = this.hint(count); this.menu.append(hint);
     if (this.state.matches.length) this.showActive(hint);

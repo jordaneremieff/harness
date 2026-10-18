@@ -28,3 +28,9 @@ test('completed controls use their exact action and retain unknown-action fallba
   assert.equal(operationLabel({...operation('primary.control','completed'), action: 'unfamiliar'}), 'Action completed');
   assert.equal(operationLabel({...operation('primary.control','accepted'), action: 'model'}), 'Action requested');
 });
+test('a command run says what is known: it ran, it may have run, or it did not run', () => {
+  assert.equal(operationLabel(operation('agent.command', 'uncertain')), 'Command may have run');
+  assert.equal(operationLabel(operation('agent.command', 'rejected')), 'Command did not run');
+  assert.equal(operationLabel({...operation('agent.command', 'completed'), receipt: {kind: 'command', name: 'ping', text: 'pong', truncated: false}}), 'Command /ping ran');
+  assert.equal(inputOperation(operation('agent.command', 'completed')), false);
+});

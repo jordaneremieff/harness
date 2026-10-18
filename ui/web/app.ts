@@ -1,6 +1,7 @@
 import type { AgentHistoryPage, AgentRow, Bootstrap, EventData, HistoryPage, OperationView, PrimaryView, ProjectedFrame, Snapshot, Target, TargetState, ThreadListItem, ThreadOverview, ThreadPageView, Workspace } from '../shared/api.ts';
 import { draftHasContent, draftImageFingerprint, LIMITS, resolveAppearance } from '../shared/api.ts';
 import { Actions } from './actions.ts';
+import { AgentCommandInventory } from './agent-commands.ts';
 import {InputEchoes} from './input-echoes.ts';
 import {recallItems} from './message-recall.ts';
 const inputEchoes=new InputEchoes();
@@ -186,6 +187,7 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
   wireSettingPickers(target, elements);
   controller.composer = new Composer(elements, {workingFile:stage=>composerWorkingFile(controller,stage),recallItems:()=>recallItems(inputEchoes.entries(controller.workspaceId,controller.target,(()=>{const conversation=state.conversations.get(targetIdentity(controller.target));return conversation?conversationBlocks(conversation):[];})())),fileSearch:(query,signal)=>searchWorkingFiles(controller,query,signal),fileStage:(path,signal,present,stage)=>stageMentionedFile(controller,path,signal,present,stage),changed:()=>{devInteractionRevision++;},captured: submission=>{const conversation=state.conversations.get(targetIdentity(controller.target));inputEchoes.capture(workspaceId,submission,conversation?conversationBlocks(conversation):[]);renderController(controller);},failed:(id,uncertain)=>{inputEchoes.failed(id,uncertain);renderController(controller);},prepareInput: () => !controller.passive, imageState: refreshComposerImages, imageInput: captured => composerImageInput(controller, captured), recovery: () => recovery.open(), layoutHeight: () => stableViews().height(elements.root), enterSends: () => state.workspace?.enterSendsMessages === true, timing: (start, end) => {if (controller.workspaceId === state.workspace?.id && !elements.root.closest('[hidden],[inert]')) diagnostics.measure('editor-echo', start, end);}, submitted: result => {inputEchoes.settle(result);showOperation(result, workspaceId);renderController(controller);}, unknownCommand: (text, literal) => target.kind === 'primary' && sameTarget(primaryTarget(), target) ? actions.unknown(text, literal) : false,
     ...(target.kind === 'primary' ? {commands: () => actions.commandOptions(), moreCommands: (captured: Target) => actions.continueCommands(captured)} : {}),
+    ...agentCommandHooks(controller),
     retained: (workspace, captured) => { if (workspace === state.workspace?.id && captured.kind === 'agent') renderMessageResume(captured.identity); }});
   controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {operatorInput: target.kind === 'primary', references, subject: toolSubjectCaption, readTaskResult:async(reference,signal)=>{const value=await request<AgentInspectionView>(`/api/agents/${encodeURIComponent(reference.sessionId)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',{view:'result',submissionId:reference.submissionId,...(reference.requestId?{requestId:reference.requestId}:{})},undefined,AbortSignal.any([signal,controller.abort.signal,AbortSignal.timeout(15_000)]));if(value.view!=='result')throw new Error('The task result view changed.');return value;}, activity:()=>{if (footerController === controller) renderWorkbenchStatus();}, cwd: () => target.kind === 'primary' ? state.primaries.get(target.key)?.cwd : state.roster.get(target.identity)?.cwd, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
     presentation: (expanded, thinking, view) => { controller.showThinking = thinking; void savePresentation(controllerCapture(controller), expanded, thinking, view); },
@@ -380,7 +382,23 @@ export function addFileToMessage(rootId:string,path:string):void {
   modal.actions(button('Cancel',()=>modal.close()),add); select.focus();
 }
 /** The placeholder names the recipient and the typed trigger that currently works. */
-function messagePlaceholder(name:string):string {return `Message ${name}${fileRoot.selection?.root?' · @ files':''}`;}
+function messagePlaceholder(name:string,target:Target):string {return `Message ${name}${fileRoot.selection?.root?' · @ files':''}${commandsLive(target)?' · / commands':''}`;}
+/** The slash list is offered when the recipient can answer it: a ready Primary, or a live agent whose host lists commands. */
+function commandsLive(target:Target):boolean {
+  if(target.kind==='primary')return state.primaries.get(target.key)?.lifecycle==='ready';
+  const row=agentRow(target.identity);return connected&&row?.availability==='live'&&row.capabilities?.commands===true;
+}
+/** An agent composer reads its host's commands on the first deliberate slash and keeps them for the connection epoch. */
+function agentCommandHooks(controller:ConversationController):{commands?:(deliberate:boolean)=>import('./command-menu-state.ts').CommandInventory} {
+  const {target,workspaceId}=controller;if(target.kind!=='agent')return {};
+  const inventory=new AgentCommandInventory(signal=>request<import('../shared/api.ts').AgentCommandList>(`/api/agents/${encodeURIComponent(target.identity)}/commands?workspace=${encodeURIComponent(workspaceId)}`,'GET',undefined,undefined,signal),()=>controller.composer.commandsChanged());
+  return {commands:deliberate=>inventory.inventory(agentCommandSource(controller),deliberate)};
+}
+function agentCommandSource(controller:ConversationController):import('./agent-commands.ts').CommandSource {
+  const target=controller.target;if(target.kind!=='agent')return {live:false,supported:false,epoch:0};
+  const row=agentRow(target.identity);
+  return {live:connected&&row?.availability==='live',supported:row?.capabilities?.commands===true,epoch:state.conversations.get(targetIdentity(target))?.connectionEpoch??0};
+}
 /** The working folder, workspace and a freshness check shared by the folder chooser and typed file suggestions. */
 function workingFileContext(controller:ConversationController) {
   const workspace=controller.workspaceId,selection=fileRoot.selection,root=selection?.root;
@@ -716,14 +734,14 @@ function refreshCaptionConsumers(): void {
     controller.transcript.refreshSubjects();
     const view = presentation(controller.target);
     renderComposerSettings(controller, view);
-  controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + presentationName(view), controllerGuidance(controller, view), messagePlaceholder(presentationName(view)));
+  controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + presentationName(view), controllerGuidance(controller, view), messagePlaceholder(presentationName(view), controller.target));
   }
   const captured = messageTarget.current;
   if (captured && messageTarget.valid(captured)) {
     const name = presentationName(presentation({kind: 'agent', identity: captured.identity})), ready = messageTarget.ready;
     setText(byId('agent-message-name'), name);
     const controller = controllers.get(controllerKey(captured.workspaceId, {kind: 'agent', identity: captured.identity}));
-    controller?.composer.recipient((ready ? 'Message ' : 'Draft for ') + name, ready || !captured.prepared || captured.invalidated ? '' : 'This agent is not ready for messages.', messagePlaceholder(name));
+    controller?.composer.recipient((ready ? 'Message ' : 'Draft for ') + name, ready || !captured.prepared || captured.invalidated ? '' : 'This agent is not ready for messages.', messagePlaceholder(name, {kind: 'agent', identity: captured.identity}));
   }
   tabStrip.render(); roster.schedule(); renderIdentity(); threadExplorer.refreshNames(); threadReader.refreshNames();
 }
@@ -1325,7 +1343,7 @@ function renderController(controller: ConversationController, deferred = false, 
     controller.composer.attach(controller.workspaceId, saved);
   } else prepareController(controller);
   controller.composer.receipts(state.operations.values());
-  const view = presentation(controller.target); controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + presentationName(view), controllerGuidance(controller, view), messagePlaceholder(presentationName(view)));
+  const view = presentation(controller.target); controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + presentationName(view), controllerGuidance(controller, view), messagePlaceholder(presentationName(view), controller.target));
   controller.composer.availability(connected, !!saved && (controller.target.kind === 'agent' || view.input), view.busy, selecting, view.input);
   if (firstDraft && !controller.passive && !controller.root.hidden && sameTarget(layoutTarget(currentLayout(), primaryTarget()) ?? undefined, controller.target) && document.activeElement === document.body) controller.composer.focus();
   controller.elements.root.hidden = !saved;renderInspection(controller); renderObserved(controller, controller.target.kind === 'agent' || connected || !view.activity);
@@ -1503,7 +1521,7 @@ function renderMessagePanel(): void {
     state = {...state, targets: new Map(state.targets).set(saved.targetKey, saved)}; controller.saved = saved; controller.composer.attach(captured.workspaceId, saved);
   } else controller.composer.attachRetained(captured.workspaceId, target);
   placeMessageEditor(controller, panel);
-  const ready = messageTarget.ready; controller.composer.recipient((ready ? 'Message ' : 'Draft for ') + name, ready || !captured.prepared || captured.invalidated ? '' : 'This agent is not ready for messages.', messagePlaceholder(name));
+  const ready = messageTarget.ready; controller.composer.recipient((ready ? 'Message ' : 'Draft for ') + name, ready || !captured.prepared || captured.invalidated ? '' : 'This agent is not ready for messages.', messagePlaceholder(name, target));
   controller.composer.availability(connected, !!controller.saved, view.busy, selecting, view.input); controller.composer.receipts(state.operations.values()); controllerNode(controller, 'stop').hidden = true;
   renderWorkbenchStatus();
 }
@@ -1560,7 +1578,7 @@ function controllerGuidance(controller: ConversationController, view: Conversati
   return controller.target.kind === 'agent' ? '' : view.guidance;
 }
 function renderAgentRecipient(identity: string, view: ConversationPresentation = presentation({kind: 'agent', identity})): void {
-  agentComposer().recipient(`${view.input ? 'Message' : 'Draft for'} ${presentationName(view)}`, '', messagePlaceholder(presentationName(view)));
+  agentComposer().recipient(`${view.input ? 'Message' : 'Draft for'} ${presentationName(view)}`, '', messagePlaceholder(presentationName(view), {kind: 'agent', identity}));
 }
 function renderStoredAgent(identity: string, _row?: AgentRow): void {
   renderAgentState(conversationController({kind: 'agent', identity}));
@@ -1592,6 +1610,7 @@ function renderAgentState(controller: ConversationController): void {
     if (composerState.kind === 'unreachable') prepareAgentConnection(controller);
     else void (attempt && !attempt.pending ? checkAgentConnection(workspace, identity) : startStoredAgent(workspace, identity));
   }));
+  controller.composer.commandsChanged();
 }
 /** Repeats the target preparation for an agent whose connection facts belong to a closed stream. */
 function prepareAgentConnection(controller: ConversationController): void {

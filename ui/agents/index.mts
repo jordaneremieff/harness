@@ -8,9 +8,10 @@ import { AgentError } from "./client.mts";
 import type { SubmitInput } from "./client.mts";
 import type { CatalogPage, CatalogRow, CatalogScan } from "./catalog.mts";
 import { compareRosterRows } from "./catalog-state.mts";
-import type { AbortReceipt, Admission, InspectResult, Snapshot, ThreadList, ThreadPage } from "./contract.mts";
+import type { AbortReceipt, Admission, CommandResult, HostInventory, InspectResult, Snapshot, ThreadList, ThreadPage } from "./contract.mts";
 import type {
 	AgentServiceOptions as RuntimeOptions,
+	CommandInput,
 	HistoryOptions,
 	InspectOptions,
 	ThreadListOptions,
@@ -21,10 +22,10 @@ export type AgentServiceOptions = Omit<RuntimeOptions, "frameProjection" | "onIm
 export { AgentError, HostLink } from "./client.mts";
 export { AgentCatalog, deriveEndpoint, readClaim } from "./catalog.mts";
 export type { CatalogPage, CatalogRecord, CatalogScan, CatalogRow } from "./catalog.mts";
-export type { AbortReceipt, Admission, ConversationFrame, InspectResult, Snapshot, ThreadEvent, ThreadFrame, ThreadList, ThreadMember, ThreadPage, ThreadRecord, ThreadSummary } from "./contract.mts";
+export type { AbortReceipt, Admission, CommandResult, ConversationFrame, HostInventory, InspectResult, Snapshot, ThreadEvent, ThreadFrame, ThreadList, ThreadMember, ThreadPage, ThreadRecord, ThreadSummary } from "./contract.mts";
 export type { SubmitInput } from "./client.mts";
 export type { AvailabilityListener, AvailabilityState } from "./observation.mts";
-export type { HistoryOptions, InspectOptions, ThreadListOptions, ThreadReadOptions, UnavailableConfiguration } from "./service-runtime.mts";
+export type { CommandInput, HistoryOptions, InspectOptions, ThreadListOptions, ThreadReadOptions, UnavailableConfiguration } from "./service-runtime.mts";
 
 type WorkerPort = {
 	on(event: "message", listener: (message: Response) => void): unknown;
@@ -56,7 +57,7 @@ interface Selection {
 	confirmed: boolean;
 	promise?: Promise<void>;
 }
-const mutations = new Set(["submit", "retrySubmit", "abort"]);
+const mutations = new Set(["submit", "retrySubmit", "abort", "command"]);
 const MAX_ROWS = 2048,
 	MAX_BYTES = 8 * 1024 * 1024;
 
@@ -467,6 +468,14 @@ export class AgentService {
 		} catch (error) {
 			return Promise.reject(error);
 		}
+	}
+	async inventory(identity: string, signal?: AbortSignal): Promise<HostInventory> {
+		this.#ready();
+		return this.#request("inventory", [identity], signal);
+	}
+	async command(identity: string, input: CommandInput): Promise<CommandResult> {
+		this.#ready();
+		return this.#request("command", [identity, input]);
 	}
 	async abort(identity: string): Promise<AbortReceipt> {
 		this.#ready();

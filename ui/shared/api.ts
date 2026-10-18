@@ -168,7 +168,11 @@ export type TargetState = {targetKey: string; target: Target; draft: DraftView; 
   unconfirmed: UnconfirmedInput[]; retainedInputs: RetainedInput[]; imageAvailability: DraftImageAvailability[]; imageStorageError?: ErrorView; recoveryPreviewTruncated?: true; presentation?: PresentationView};
 export type TargetPreparation = {targetState: TargetState; availability: 'live' | 'stored' | 'unavailable' | 'incompatible';
   capabilities: AgentCapabilities; reason?: string};
-export type AgentCapabilities = {history: boolean; observe: boolean; input: boolean; abort: boolean; configure: boolean; inspect?: boolean; images?: boolean};
+export type AgentCapabilities = {history: boolean; observe: boolean; input: boolean; abort: boolean; configure: boolean; inspect?: boolean; images?: boolean; commands?: boolean};
+/** The commands one live agent host installed, flattened for the slash list. Each item names the host contribution that supplies it. */
+export type AgentCommandList = {items: {name: string; description: string; source: string}[]; incomplete: boolean};
+/** The most a command result keeps; a longer result is cut and says so. */
+export const COMMAND_RESULT_BYTES = 16 * 1024;
 /** Published metadata and claim state, not an assertion of fresh native idle state. */
 export type AgentRow = {identity: string; storageId: string; cwd: string; name?: string; handle?: string;
   modifiedAt: number; state: string; owner: 'here' | 'unavailable' | 'unknown';
@@ -187,12 +191,13 @@ export type ProjectedFrame = {revision: number; attachmentRevision?: number; obs
   tools?: {callId:string;name:string;status:'pending'|'running'|'done'}[]; toolsOmitted?:number;
   compactions?: JsonDisplay; compactionFailure?: JsonDisplay; retry?: GenerationRetry; providerBlock?: ProviderBlock}; coverage: DisplayCoverage};
 export type OperationKind = 'primary.open' | 'primary.input' | 'primary.stop' | 'primary.session' |
-  'primary.control' | 'primary.dialog' | 'primary.handoff' | 'agent.input' | 'agent.abort' | 'agent.configure' | 'agent.convert';
+  'primary.control' | 'primary.dialog' | 'primary.handoff' | 'agent.input' | 'agent.abort' | 'agent.configure' | 'agent.convert' | 'agent.command';
 /** Admission is separate from the eventual answer. Completed is a local control response. */
 export type OperationView = {id: string; kind: OperationKind; target?: Target; action?: string;
   state: 'reserved' | 'dispatched' | 'accepted' | 'rejected' | 'uncertain' | 'completed';
   createdAt: string; updatedAt: string; retainedInput?: RetainedAdmission; receipt?: {kind: 'rpc'; disposition?: 'started' | 'queued' | 'handled'; result?: JsonDisplay} |
-  {kind: 'durable'; identity: string; submissionId: number; requestId: string; deduped: boolean}; error?: ErrorView};
+  {kind: 'durable'; identity: string; submissionId: number; requestId: string; deduped: boolean} |
+  {kind: 'command'; name: string; text: string; truncated: boolean}; error?: ErrorView};
 export type PrimaryControl = {epoch: number} & ({action: 'model'; provider: string; modelId: string} |
   {action: 'thinking'; level: string} | {action: 'compact'; customInstructions?: string} |
   {action: 'autoCompaction' | 'autoRetry'; enabled: boolean} | {action: 'abortRetry'} |

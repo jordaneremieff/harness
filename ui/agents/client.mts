@@ -11,7 +11,7 @@ import { AgentError, nativeInputDigest, type NativeSubmitInput } from "./input.m
 import { LIMITS } from "../shared/api.ts";
 export interface RequestContext { wireRequestId?: string; identity?: string; requestId?: string; token?: string }
 export interface ObservationSubscription { baseline: ConversationFrame; start(): void; dispose(): Promise<void> }
-const mutations = new Set<OperationName>(["task-submit", "abort", "configure"]);
+const mutations = new Set<OperationName>(["task-submit", "abort", "configure", "command"]);
 const localRefusalCodes = { "frame-limit": "payload_too_large", "queue-limit": "capacity", serialization: "invalid_request" } as const;
 
 /** One negotiated connection. Disconnect never replays work or opens another connection. */
@@ -233,7 +233,8 @@ function assertResponseContext(member: OperationName, value: unknown, params: Js
   const equal = (field: string, expected: unknown) => {
     if (expected !== undefined && response[field] !== expected) throw new AgentError("protocol_error", `Host returned a different ${field}.`);
   };
-  if (member === "abort") equal("background", params.background ?? false);
+  const echoed: Partial<Record<OperationName, [string, unknown]>> = { abort: ["background", params.background ?? false], command: ["name", params.name] };
+  const echo = echoed[member]; if (echo) equal(echo[0], echo[1]);
   if (member.startsWith("collaboration-")) assertThreadContext(member as "collaboration-list" | "collaboration-read", response, params);
   if (member === "inspect") {
     equal("view", params.view ?? "history");

@@ -24,7 +24,7 @@ import type {Control} from './control.mts';
 import type {OwnerConnection} from './owner-client.mts';
 import type {OwnerDescriptor, OwnerStateIdentity, OwnerRecovery} from '../shared/owner.ts';
 
-export type AgentAdapter = Pick<AgentService, 'roster' | 'rosterRow' | 'prepare' | 'refresh' | 'select' | 'hide' | 'reconnect' | 'history' | 'image' | 'imageInputAvailable' | 'inspect' | 'threads' | 'thread' | 'submit' | 'retrySubmit' | 'abort' | 'configure' | 'disconnectWorkspace' | 'close'> & {readonly available?:boolean};
+export type AgentAdapter = Pick<AgentService, 'roster' | 'rosterRow' | 'prepare' | 'refresh' | 'select' | 'hide' | 'reconnect' | 'history' | 'image' | 'imageInputAvailable' | 'inspect' | 'inventory' | 'command' | 'threads' | 'thread' | 'submit' | 'retrySubmit' | 'abort' | 'configure' | 'disconnectWorkspace' | 'close'> & {readonly available?:boolean};
 export type RegistryOptions = {stateDir: string; cwd: string; executable: string; agentStore: string;
   agents?: (options: AgentServiceOptions) => AgentAdapter; primary?: (options: PrimarySessionOptions) => PrimarySession; measure?: Measure;
   agentStart?: Pick<StartOptions,'spawn'|'timeoutMs'|'agentDir'>;
@@ -207,7 +207,7 @@ export class Registry {
   }
   private capabilities(identity: string, supported?: Record<string,boolean>): AgentCapabilities {
     return {history: supported?.snapshot === true, observe: ['observe-open','observe-frame','observe-close','snapshot'].every(key=>supported?.[key] === true),
-      input:supported?.['task-submit'] === true,images:supported?.['task-submit'] === true && this.agents.imageInputAvailable(identity),abort:supported?.abort === true,configure:false,inspect:supported?.inspect === true};
+      input:supported?.['task-submit'] === true,images:supported?.['task-submit'] === true && this.agents.imageInputAvailable(identity),abort:supported?.abort === true,configure:false,inspect:supported?.inspect === true,commands:supported?.status === true && supported?.command === true};
   }
   async prepareTarget(workspace: string, target: Extract<Target,{kind:'agent'}>): Promise<TargetPreparation> {
     let availability: TargetPreparation['availability'] = 'live';

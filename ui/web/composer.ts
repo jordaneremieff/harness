@@ -23,7 +23,7 @@ import { acknowledgeDraft, beginDraftSave, captureSubmission, createDraft, draft
 import type { DraftSave, DraftState, Submission } from './draft-state.ts';
 import { ApiError, draftImageUrl, errorMessage, operation, request, reserve } from './transport.ts';
 
-export type ComposerHooks = {recallItems?: () => readonly string[]; fileSearch?: (query: string, signal: AbortSignal) => Promise<FileSearchResult> | undefined; fileStage?: (path: string, signal: AbortSignal, current: () => boolean, stage: (files: readonly File[]) => boolean) => Promise<boolean>; workingFile?:(stage:(files:readonly File[])=>boolean)=>void; changed?:()=>void; captured?: (submission:Submission)=>void; failed?: (operationId:string,uncertain:boolean)=>void; prepareInput?: () => boolean; imageState?: (workspace: string, state: TargetState) => void; imageInput?: (target: Target) => {allowed: boolean; reason?: string}; recovery?: () => void; layoutHeight?: () => number | undefined; timing?: (start: number, end: number) => void; submitted: (operation: OperationView) => void; unknownCommand: (text: string, sendLiteral: () => void) => boolean; enterSends?: () => boolean; commands?: () => CommandInventory; moreCommands?: (target: Target) => Promise<void>; retained?: (workspace: string, target: Target, retained: boolean) => void};
+export type ComposerHooks = {recallItems?: () => readonly string[]; fileSearch?: (query: string, signal: AbortSignal) => Promise<FileSearchResult> | undefined; fileStage?: (path: string, signal: AbortSignal, current: () => boolean, stage: (files: readonly File[]) => boolean) => Promise<boolean>; workingFile?:(stage:(files:readonly File[])=>boolean)=>void; changed?:()=>void; captured?: (submission:Submission)=>void; failed?: (operationId:string,uncertain:boolean)=>void; prepareInput?: () => boolean; imageState?: (workspace: string, state: TargetState) => void; imageInput?: (target: Target) => {allowed: boolean; reason?: string}; recovery?: () => void; layoutHeight?: () => number | undefined; timing?: (start: number, end: number) => void; submitted: (operation: OperationView) => void; unknownCommand: (text: string, sendLiteral: () => void) => boolean; enterSends?: () => boolean; commands?: (deliberate: boolean) => CommandInventory; moreCommands?: (target: Target) => Promise<void>; retained?: (workspace: string, target: Target, retained: boolean) => void};
 export type ComposerElements = {root: HTMLFormElement; editor: HTMLTextAreaElement; recipient: HTMLElement; receipt: HTMLElement;
   receiptDetails: HTMLElement; modes: HTMLElement; send: HTMLButtonElement; save: HTMLElement; fileMenu?: HTMLElement; recallHint?: HTMLElement; meta?: HTMLElement; model?: HTMLButtonElement; thinking?: HTMLButtonElement; settings?: HTMLElement; commandMenu?: HTMLElement; overlay?: HTMLElement; attachments?: HTMLElement; attach?: HTMLButtonElement; sources?: HTMLButtonElement; picker?: HTMLInputElement; state?: HTMLElement; start?: HTMLButtonElement};
 /** An agent-specific line inside the composer, with at most one action in the Send position and optional exact details. */
@@ -90,7 +90,7 @@ export function validComposerReloadState(value:unknown):value is ComposerReloadS
 type SendConsent = {buffer: Buffer; edit: number; revision: number; tuple: Edit; operations: Set<string>; used?: true; differentMessage?: true};
 type Pending = {submission: Submission; original?: UnconfirmedInput; uncertain: boolean; cleanup?: DraftView; settling?: Promise<void>};
 type Buffer = {selection?: EditorSelection; workspace: string; state: TargetState; data: DraftState; saving?: Promise<DraftView>; submitting: boolean;
-  attachments?: ComposerAttachments; inclusions?: Map<number, InsertionCapture>; imageErrors?: Set<string>; imageReview?: boolean; review: boolean; insertionCopy?: string; saveError?: string; outstandingSince?: number; slowTimer?: ReturnType<typeof setTimeout>; localCopy?: string; reservation?: {promise: Promise<string>; at: number}; pending: Map<string, Pending>; resolved: Set<string>; notice: string; noticeDetails?: string; lastOperation?: OperationView; retained?: boolean};
+  attachments?: ComposerAttachments; inclusions?: Map<number, InsertionCapture>; imageErrors?: Set<string>; imageReview?: boolean; review: boolean; insertionCopy?: string; saveError?: string; outstandingSince?: number; slowTimer?: ReturnType<typeof setTimeout>; localCopy?: string; reservation?: {promise: Promise<string>; at: number}; pending: Map<string, Pending>; resolved: Set<string>; notice: string; noticeDetails?: string; lastOperation?: OperationView; retained?: boolean; commandDismissed?: string};
 const encoded = encodeURIComponent;
 const sameTarget = (a: Target, b?: Target): boolean => JSON.stringify(a) === JSON.stringify(b);
 
@@ -194,7 +194,7 @@ export class Composer {
     this.recipientGuidance = guidance; this.renderControls();
   }
   placement(_sidebar: boolean): void { this.resize(); this.renderControls(); }
-  commandsChanged(): void { this.commandMenu?.update(); }
+  commandsChanged(): void { this.commandMenu?.update(); this.render(); }
   /** Shows the recipient's state inside the composer; an action takes the Send position and the draft stays editable. */
   setState(view?: ComposerStateView): void {
     if (this.destroyed) return;
@@ -398,12 +398,26 @@ export class Composer {
   private attachmentSources():void {
     const origin=this.elements.sources, captured=this.insertionCapture(); if (!origin) return;
     const current=()=>!this.destroyed && this.current===captured?.buffer;
-    const box=origin.getBoundingClientRect();
+    const box=origin.getBoundingClientRect(), offer=this.commandsOffer();
     contextMenu.open(origin,{x:box.left,y:box.bottom},'Add to message',[
       {label:'Upload files…',icon:'file',run:()=>this.elements.attach?.click()},
       {label:'Working-folder file…',icon:'folder',hint:'@',enabled:!!captured && !!this.hooks.workingFile,disabledReason:captured?'Working-folder files are unavailable.':'Draft is not loaded. Open this conversation first.',
         run:()=>{if(captured)this.hooks.workingFile?.(files=>current() && this.addFiles(files,captured));}},
+      {label:'Commands…',icon:'commands',hint:'/',separatorBefore:true,enabled:!!captured && offer.enabled,disabledReason:captured?offer.reason:'Draft is not loaded. Open this conversation first.',run:()=>{if(current())this.openCommands();}},
     ],current);
+  }
+  private commandsOffer(): {enabled: boolean; reason: string} {
+    const inventory = this.hooks.commands?.(false);
+    if (!inventory) return {enabled: false, reason: 'Commands are unavailable here.'};
+    return inventory.state === 'unavailable' ? {enabled: false, reason: inventory.message ?? 'Commands are unavailable.'} : {enabled: true, reason: ''};
+  }
+  /** Commands start the message, so an empty draft receives the slash that opens the list. */
+  private openCommands(): void {
+    const buffer = this.current; if (!buffer || this.destroyed) return;
+    this.focus();
+    if (this.editor.value === '') { const inserted = insertNativeText(this.editor, '/', 0, 0); this.change(inserted.text); }
+    else if (!this.editor.value.startsWith('/')) { buffer.notice = 'Commands start a message. Clear the draft to choose one.'; this.receipt(buffer); return; }
+    this.commandMenu?.update();
   }
   /** A chosen folder narrows the typed path; a chosen file is staged, and only its typed token is removed. */
   private mention(token: MentionToken, row: FileSearchRow): void {
@@ -705,7 +719,7 @@ export class Composer {
     const buffer = this.current; const mode = buffer?.data.mode;
     this.elements.root.hidden = !buffer; this.editor.disabled = !buffer;
     this.renderControls();
-    this.elements.send.disabled = !buffer || !this.ready || this.sendSuppressed || buffer.submitting || this.textLimit || this.pendingBlocks(buffer) || buffer.data.server.recoverySendGuard?.state === 'blocked' || buffer.data.server.recoverySendGuard?.state === 'unavailable' || !draftHasContent({text: buffer.data.text.trim(), images: buffer.data.images});
+    this.elements.send.disabled = !buffer || !this.ready || this.sendSuppressed || buffer.submitting || this.textLimit || this.pendingBlocks(buffer) || !!this.commandHold(buffer) || buffer.data.server.recoverySendGuard?.state === 'blocked' || buffer.data.server.recoverySendGuard?.state === 'unavailable' || !draftHasContent({text: buffer.data.text.trim(), images: buffer.data.images});
     const active = this.deliveryMode(mode);
     const delivery = this.delivery(); if (delivery) delivery.value = active === 'followUp' ? 'followUp' : 'steer';
     setText(this.elements.save, this.saveSummary(buffer));
@@ -715,7 +729,24 @@ export class Composer {
     this.elements.modes.hidden = !this.current || !this.ready || !this.connected || !this.busy || !this.deliverySupported;
     this.elements.send.hidden = !!this.stateView?.action;
     const reason = this.sendGuidance();
-    const send = this.elements.send; send.setAttribute('aria-description', reason); send.title = reason || `Send · ${this.sendKeyName()}`;
+    const send = this.elements.send, run = this.current && this.commandDraft(this.current);
+    setText(send, run ? 'Run command' : 'Send'); send.setAttribute('aria-label', run ? `Run command /${run.name}` : 'Send message');
+    send.setAttribute('aria-description', reason);
+    send.title = reason || (run ? `Run /${run.name} on this agent. It sends no message · ${this.sendKeyName()}` : `Send · ${this.sendKeyName()}`);
+  }
+  /** An agent draft that is one of the live host's commands runs that command instead of sending a message. */
+  private commandDraft(buffer: Buffer): {name: string; args: string} | undefined {
+    if (buffer.state.target.kind !== 'agent' || !this.hooks.commands) return undefined;
+    const match = /^\/(\S+)(?:\s([\s\S]*))?$/.exec(buffer.data.text);
+    if (!match) return undefined;
+    const inventory = this.hooks.commands(true);
+    return inventory.state === 'ready' && inventory.items.some(item => item.name === match[1]) ? {name: match[1] as string, args: (match[2] ?? '').trim()} : undefined;
+  }
+  /** Why a slash draft cannot go yet: the list is still loading, or a command cannot carry attachments. */
+  private commandHold(buffer: Buffer): string {
+    if (buffer.state.target.kind !== 'agent' || !this.hooks.commands || !/^\/\S/.test(buffer.data.text)) return '';
+    if (this.hooks.commands(true).state === 'loading') return 'Loading commands…';
+    return this.commandDraft(buffer) && (buffer.data.images.length || buffer.attachments?.pending) ? 'Remove attachments to run a command.' : '';
   }
   /** The key that sends, named as the keyboard shows it: Enter when the setting is on, otherwise the platform modifier plus Enter. */
   private sendKeyName(): string {
@@ -724,6 +755,8 @@ export class Composer {
   }
   private sendGuidance(): string {
     if (!this.ready) return this.current?.state.target.kind === 'agent' ? this.recipientGuidance : 'This conversation is not ready for messages.';
+    const hold = this.current ? this.commandHold(this.current) : '';
+    if (hold) return hold;
     return this.current?.attachments?.pending ? 'Unfinished local files stay in this tab and are not included in this message.' : '';
   }
   /** A primary prompt draft is delivered as steer while work runs; the saved mode changes on the next edit or send. */
@@ -834,6 +867,7 @@ export class Composer {
     const slot = this.slot(); slot.replaceChildren();
     const records = this.records(buffer); this.receiptDetails(records);
     this.controlExceptions(buffer, records, slot);
+    this.commandReceipt(buffer, records, slot);
     this.receiptNotices(buffer, records, slot);
     if (buffer.review) {
       slot.append(element('p', 'warning', 'This draft changed in another tab.'), element('pre', undefined, buffer.localCopy ?? buffer.data.text), attachmentSummary(buffer.workspace, buffer.state.targetKey, buffer.data.images), button('Review', () => { void this.review(buffer); }));
@@ -904,12 +938,34 @@ export class Composer {
   }
   private controlExceptions(buffer: Buffer, records: OperationView[], slot: HTMLElement): void {
     for (const item of records) {
-      if (inputOperation(item) || !['uncertain', 'rejected'].includes(item.state)) continue;
+      if (inputOperation(item) || item.kind === 'agent.command' || !['uncertain', 'rejected'].includes(item.state)) continue;
       slot.append(element('p', 'warning', operationLabel(item)));
       if (item.state === 'uncertain') slot.append(cardAction('restart', 'Check action', () => {
         void request<OperationView>(`/api/operations/${encoded(item.id)}/reconcile`, 'POST', {}).then(result => this.hooks.submitted(result)).catch(error => this.failureNotice(buffer, 'Action not confirmed.', error));
       }));
     }
+  }
+  /** The latest command run of this recipient: its bounded result, or why the draft is still here. It stays until dismissed or the next run. */
+  private commandReceipt(buffer: Buffer, records: OperationView[], slot: HTMLElement): void {
+    const record = records.find(item => item.kind === 'agent.command');
+    if (!record || buffer.commandDismissed === record.id) return;
+    const row = element('section', 'command-receipt');
+    const dismiss = button('Dismiss', () => {
+      buffer.commandDismissed = record.id; this.receipt(buffer);
+      if (record.state === 'uncertain') void request(`/api/operations/${encoded(record.id)}`, 'DELETE').catch(error => this.failureNotice(buffer, 'The notice could not be cleared.', error));
+    });
+    if (record.state === 'completed' && record.receipt?.kind === 'command') {
+      const {name, text, truncated} = record.receipt;
+      row.append(element('p', 'secondary', `Command /${name} ran`));
+      if (text) {
+        row.append(this.details(text, 'Result'));
+        if (truncated) row.append(element('p', 'secondary', 'Showing the first 16 KiB'));
+        row.append(cardAction('copy', 'Copy result', () => { void copy(text, row); }));
+      } else row.append(element('p', 'secondary', 'The command returned no text.'));
+    } else if (record.state === 'uncertain') row.append(element('p', 'warning', 'The command may have run. Your draft is unchanged.'));
+    else if (record.state === 'rejected') row.append(element('p', 'warning', record.error?.message ?? 'The command did not run.'), element('p', 'secondary', 'Your draft is unchanged.'));
+    else return;
+    row.append(dismiss); slot.append(row);
   }
   private details(text: string, title = 'Details'): HTMLDetailsElement {
     const node = element('details', 'receipt-disclosure');
@@ -1051,8 +1107,9 @@ export class Composer {
     return false;
   }
   async send(literal = false, consent?: SendConsent): Promise<void> {
-    const buffer = this.current; if (this.composing || this.suppressEnter || this.textLimit || this.sendSuppressed || !buffer || this.blocked(buffer, consent)) return;
-    if (consent && !this.consentMatches(buffer, consent)) return;
+    const buffer = this.current; if (!buffer || this.sendRefused(buffer, consent)) return;
+    const command = this.commandSend(buffer, consent);
+    if (command) { await command; return; }
     if (consent) consent.used = true;
     this.rememberSelection(); const focusOrigin = document.activeElement;
     this.commandMenu?.close(); this.fileMenu?.close();
@@ -1075,6 +1132,46 @@ export class Composer {
       await this.finish(buffer, pending, result); this.hooks.submitted(result);
     } catch (error) { this.sendError(buffer, pending, error); }
     finally { buffer.submitting = false; this.paint(buffer); this.receipt(buffer); this.prepare(buffer); this.flush(buffer); this.returnFocus(buffer, focusOrigin); }
+  }
+  private sendRefused(buffer: Buffer, consent?: SendConsent): boolean {
+    if (this.composing || this.suppressEnter || this.textLimit || this.sendSuppressed || this.blocked(buffer, consent)) return true;
+    return !!consent && !this.consentMatches(buffer, consent);
+  }
+  /** Defined when the draft is a host command, or must wait for the command list, so it is not sent as a message. A message send stays synchronous up to its capture. */
+  private commandSend(buffer: Buffer, consent?: SendConsent): Promise<void> | undefined {
+    if (consent) return undefined;
+    if (this.commandHold(buffer)) return Promise.resolve();
+    const run = this.commandDraft(buffer);
+    return run ? this.runCommand(buffer, run) : undefined;
+  }
+  /** Runs one host command once. The draft is cleared only by a confirmed result; a refusal or an unknown outcome keeps it, and nothing runs again without a deliberate action. */
+  private async runCommand(buffer: Buffer, command: {name: string; args: string}): Promise<void> {
+    const snapshot = {text: buffer.data.text, edit: buffer.data.edit}, target = buffer.state.target;
+    if (target.kind !== 'agent') return;
+    this.rememberSelection(); const focusOrigin = document.activeElement; this.commandMenu?.close(); this.fileMenu?.close();
+    const previous = this.records(buffer).find(item => item.kind === 'agent.command'); if (previous) buffer.commandDismissed = previous.id;
+    buffer.submitting = true; buffer.lastOperation = undefined; buffer.notice = `Running /${command.name}…`; buffer.noticeDetails = undefined; this.render(); this.receipt(buffer);
+    try {
+      const id = await reserve('agent.command', target);
+      const result = await operation('agent.command', `/api/agents/${encoded(target.identity)}/command`, command.args ? {name: command.name, args: command.args} : {name: command.name}, target, id);
+      buffer.lastOperation = result; buffer.notice = '';
+      if (result.state === 'completed') this.clearRanCommand(buffer, snapshot);
+      this.hooks.submitted(result);
+    } catch (error) {
+      const unknown = !(error instanceof ApiError) || ['delivery_uncertain', 'internal'].includes(error.view.code);
+      buffer.notice = unknown ? 'The command may have run. Your draft is unchanged.' : errorMessage(error);
+      buffer.noticeDetails = errorMessage(error); announce(buffer.notice);
+    } finally { buffer.submitting = false; this.paint(buffer); this.receipt(buffer); this.returnFocus(buffer, focusOrigin); }
+  }
+  private clearRanCommand(buffer: Buffer, snapshot: {text: string; edit: number}): void {
+    if (buffer.data.edit !== snapshot.edit || buffer.data.text !== snapshot.text) { buffer.notice = 'The command ran. Your newer draft is unchanged.'; return; }
+    if (this.current === buffer) {
+      const cleared = insertNativeText(this.editor, '', 0, this.editor.value.length); this.change(cleared.text);
+      if (cleared.status === 'inserted') return;
+    }
+    buffer.data = editDraft(buffer.data, '', buffer.data.mode); this.hooks.changed?.();
+    if (this.current === buffer) { this.editor.value = ''; this.render(); }
+    this.flush(buffer);
   }
   private assertSendReady(buffer: Buffer, snapshot: Edit, consent?: SendConsent): void {
     if (this.current === buffer && !this.ready) throw new Error('The recipient changed. Your draft is unchanged.');

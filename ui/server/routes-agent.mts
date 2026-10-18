@@ -1,6 +1,9 @@
 import {convertSaved} from './conversion.mts';
 import type { AgentHistoryPage, Target } from '../shared/api.ts';
-import { retainedTarget } from '../agents/contract.mts';
+import { RESERVED_COMMANDS, retainedTarget } from '../agents/contract.mts';
+import { AgentError } from '../agents/index.mts';
+import { boundCommandResult, projectCommandList } from './agent-commands.mts';
+import { safeText } from './projection.mts';
 import type { Registry } from './registry.mts';
 import type { RequestContext } from './http.mts';
 import { execute } from './dispatch.mts';
@@ -26,6 +29,7 @@ export async function dispatchAgent(registry: Registry,context: RequestContext) 
     try {retainedTarget(identity);} catch {throw new ApiError('invalid_request','Use the exact agent conversation identity.');}
     return new ImageResponse(await registry.agents.image(identity,request.source,request.digest));
   }
+  if(method==='GET'&&parts[3]==='commands') return commandList(registry,identity,url,context.signal);
   if(method==='GET') return history(registry,identity,target,url,context.workspace,context.signal);
   if(parts[3]==='inspect') return inspect(registry,identity,body,context.signal);
   const workspace=await registry.workspace(context.workspace);
@@ -44,12 +48,18 @@ export async function dispatchAgent(registry: Registry,context: RequestContext) 
         ...(typeof admission.sentImageMessageDigest === 'string' ? {sentImageMessageDigest: admission.sentImageMessageDigest} : {})};
     });
   }
+  return controlAction(registry,context,workspace,target,identity);
+}
+/** Actions on one agent that are not input: stop, run a host command, configure. */
+function controlAction(registry:Registry,context:RequestContext,workspace:string,target:Extract<Target,{kind:'agent'}>,identity:string) {
+  const {parts,body}=context;
   if(parts[3]==='abort') {
     v.fields(body,['background'],['background']);if(body.background!==false) throw new ApiError('unsupported','Background ownership-tree abort is not exposed.');
     return execute(registry,context.operationId,{workspaceId:workspace,kind:'agent.abort',target,body},async()=> {
       await registry.agents.abort(identity);return {state:'completed'};
     });
   }
+  if(parts[3]==='command') return runCommand(registry,context,workspace,target,identity);
   if(parts[3]==='configure') {
     v.fields(body,['name','model','thinkingLevel']);
     return execute(registry,context.operationId,{workspaceId:workspace,kind:'agent.configure',target,body},async()=> {
@@ -58,6 +68,34 @@ export async function dispatchAgent(registry: Registry,context: RequestContext) 
     });
   }
   throw new ApiError('invalid_request','The agent action does not exist.',404);
+}
+const COMMAND_NAME=/^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$/;
+/** The inventory belongs to the live host that answers. It is read only and never cached on the server. */
+async function commandList(registry:Registry,identity:string,url:URL,signal?:AbortSignal) {
+  for(const key of url.searchParams.keys()) if(key!=='workspace') throw new ApiError('invalid_request','The command list query is invalid.');
+  try {retainedTarget(identity);} catch {throw new ApiError('invalid_request','Use the exact agent conversation identity.');}
+  try {return projectCommandList(await registry.agents.inventory(identity,signal));}
+  catch(error) {
+    if(error instanceof AgentError&&error.code==='commands_unavailable') throw new ApiError('commands_unavailable',safeText(error.message,512),501);
+    throw error;
+  }
+}
+/** One run of one host command. The host call is never repeated: a lost connection is an unknown outcome, and a host refusal keeps its message. */
+function runCommand(registry:Registry,context:RequestContext,workspace:string,target:Target,identity:string) {
+  const body=context.body;
+  v.fields(body,['name','args'],['name']);
+  const name=v.string(body.name,'command name',128);
+  if(!COMMAND_NAME.test(name)||RESERVED_COMMANDS.includes(name)) throw new ApiError('invalid_request','The command name is not available.');
+  const args=body.args===undefined?undefined:v.text(body.args,true);
+  return execute(registry,context.operationId,{workspaceId:workspace,kind:'agent.command',target,body},async()=> {
+    try {
+      const result=await registry.agents.command(identity,{operationId:context.operationId ?? '',name,...(args!==undefined?{args}:{})});
+      return {state:'completed',receipt:{kind:'command',name:result.name,...boundCommandResult(result.text)}};
+    } catch(error) {
+      if(error instanceof AgentError&&error.code==='command_refused') return {state:'rejected',error:{code:'command_refused',message:safeText(error.message,512),retry:'none'}};
+      throw error;
+    }
+  });
 }
 async function refresh(registry:Registry,body:Record<string,unknown>) {
   v.fields(body,['scanId','continue']);

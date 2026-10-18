@@ -7,7 +7,7 @@ import {ImageResponse} from './images.mts';
 import * as v from './validate.mts';
 import { validateConversationLayout } from './state.mts';
 
-const KINDS:OperationKind[]=['primary.open','primary.input','primary.stop','primary.session','primary.control','primary.dialog','primary.handoff','agent.input','agent.abort','agent.configure','agent.convert'];
+const KINDS:OperationKind[]=['primary.open','primary.input','primary.stop','primary.session','primary.control','primary.dialog','primary.handoff','agent.input','agent.abort','agent.configure','agent.convert','agent.command'];
 export async function dispatchView(registry:Registry,context:RequestContext):Promise<unknown> {
   const {parts,body,method}=context;
   if(parts[1]==='bootstrap'||parts[1]==='snapshot') return registry.snapshot(context.workspace,parts[1]==='bootstrap');

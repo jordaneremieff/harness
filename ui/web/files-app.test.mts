@@ -22,7 +22,7 @@ async function workingFixture(context:test.TestContext,name:string) {
   await arrive({workspace:{id:`working-${name}`,revision:1,primaryKey:'p',selectedTarget:target},primaries:[primaryFixture({epoch:940})],roster:[],targets:[targetFixture(`working-target-${name}`,target,{draft:{revision:1,text:'Keep this draft',mode:'prompt',images:[],persisted:true}})]});await settle();
   const root=app.fileRoot.selection?.root?.id;assert.ok(root);const previous=globalThis.fetch,reads:URL[]=[];
   globalThis.fetch=async(input,init)=>{const url=new URL(String(input),'http://ui.test');if(url.pathname.endsWith('/directory')){reads.push(url);const path=url.searchParams.get('path')??'';return Response.json({ok:true,data:{rootId:root,path,entries:[{name:'saved.md',path:path?`${path}/saved.md`:'saved.md',kind:'file'}],nextCursor:null,revision:'r',coverage:{complete:true,visited:1}}});}return previous(input,init);};
-  const open=()=>{const sources=primaryControl('composer').querySelector('.attachment-sources');assert.ok(sources);sources.click();const menu=hostDocument.body.querySelector('.context-menu');assert.ok(menu);assert.equal(menu.getAttribute('aria-label'),'Add to message');assert.deepEqual(menu.children.map(node=>node.textContent.replace('@','')),['Upload files…','Working-folder file…']);assert.equal(menu.children[1]?.getAttribute('aria-keyshortcuts'),'@');menu.children[1]?.click();};
+  const open=()=>{const sources=primaryControl('composer').querySelector('.attachment-sources');assert.ok(sources);sources.click();const menu=hostDocument.body.querySelector('.context-menu');assert.ok(menu);assert.equal(menu.getAttribute('aria-label'),'Add to message');assert.deepEqual(menu.children.map(node=>node.textContent.replace('@','')),['Upload files…','Working-folder file…','','Commands…/']);assert.equal(menu.children[2]?.getAttribute('role'),'separator');assert.equal(menu.children[3]?.getAttribute('aria-keyshortcuts'),'/');assert.equal(menu.children[1]?.getAttribute('aria-keyshortcuts'),'@');menu.children[1]?.click();};
   const add=()=>{byId('modal-body').querySelector('[data-path="saved.md"]')?.click();const button=byId('modal-body').querySelectorAll('button').find(node=>node.textContent==='Add file');assert.ok(button);button.click();};
   return {root,reads,open,add,composer:app.primaryComposer(),editor:primaryControl('editor'),target};
 }
@@ -226,4 +226,11 @@ test('the existing unload guard protects immediate file input, pending acknowled
   readFailed = false;await owner.reread();assert.equal(beforeUnload(),false);
   failed = true;owner.edit('unacknowledged');await assert.rejects(owner.drain(),/forced draft failure/);assert.equal(beforeUnload(),true);
   app.filesViews.reconcile(workspace,[],[]);await assert.rejects(owner.drain(),/forced draft failure/);assert.equal(beforeUnload(),true);
+});
+test('the Add menu offers the slash list: a notice over text, the slash itself over an empty draft',async context=>{
+  const f=await workingFixture(context,'slash'),form=primaryControl('composer');
+  const choose=()=>{form.querySelector('.attachment-sources')?.click();const menu=hostDocument.body.querySelector('.context-menu');assert.ok(menu);const item=menu.children[3];assert.ok(item);assert.equal(item.getAttribute('aria-disabled')==='true',false);item.click();};
+  choose();assert.equal(f.editor.value,'Keep this draft');assert.match(primaryControl('receipt').textContent,/Commands start a message\. Clear the draft to choose one\./);
+  Object.defineProperty(hostDocument,'execCommand',{configurable:true,value:(_command:string,_ui:boolean,value:string)=>{const target=hostDocument.activeElement as unknown as typeof f.editor;const at=target.selectionStart;target.value=target.value.slice(0,at)+value+target.value.slice(target.selectionEnd);target.setSelectionRange(at+value.length,at+value.length);target.dispatch('input');return true;}});
+  try{f.composer.setText('');choose();assert.equal(f.editor.value,'/');}finally{Reflect.deleteProperty(hostDocument,'execCommand');}
 });

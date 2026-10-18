@@ -54,6 +54,8 @@ function descriptor(): JsonObject {
 			configure: { request: "configure/1.3.0", response: "configure/1.3.0" },
 			"collaboration-list": { request: "collaboration-list/1.0.0", response: "collaboration-list/1.0.0" },
 			"collaboration-read": { request: "collaboration-read/1.0.0", response: "collaboration-read/1.0.0" },
+			status: { request: "status/1.0.0", response: "294bb95f3d60b9c9ae2976f291e4f8d41c11d00ec517c1aebcfd9c7af40a3087", durable: D },
+			command: { request: "command/1.1.0", response: "command/1.0.0", durable: D },
 		},
 	};
 }

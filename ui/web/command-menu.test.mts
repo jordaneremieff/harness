@@ -30,18 +30,18 @@ class FakeNode {
 const originalDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
 afterEach(() => { if (originalDocument) Object.defineProperty(globalThis, 'document', originalDocument); else Reflect.deleteProperty(globalThis, 'document'); });
 function fixture(more?: () => Promise<void>) {
-  const editor = new FakeNode(); const menu = new FakeNode(); menu.id = 'primary-command-menu'; const announcements = new FakeNode(); const changed: string[] = [];
+  const editor = new FakeNode(); const menu = new FakeNode(); menu.id = 'primary-command-menu'; const announcements = new FakeNode(); const changed: string[] = []; const reads: boolean[] = [];
   let inventory: CommandInventory = {state: 'ready', items: ['compact', 'model', 'thinking'].map(name => ({name, description: `${name} description`, source: 'app'}))};
   Object.defineProperty(globalThis, 'document', {configurable: true, value: {execCommand: (_command: string, _ui: boolean, text: string) => {
     const editor = document.activeElement as unknown as FakeNode; const at = editor.selectionStart;
     editor.value = editor.value.slice(0, at) + text + editor.value.slice(editor.selectionEnd); editor.setSelectionRange(at + text.length, at + text.length); return true;
   }, createElement: (tag: string) => {const node = new FakeNode(); node.tag = tag; return node;}, getElementById: () => announcements}});
-  const controller = new CommandMenu(editor as unknown as HTMLTextAreaElement, menu as unknown as HTMLElement, () => inventory, text => {changed.push(text); controller.update();}, more);
+  const controller = new CommandMenu(editor as unknown as HTMLTextAreaElement, menu as unknown as HTMLElement, deliberate => {reads.push(deliberate); return inventory;}, text => {changed.push(text); controller.update();}, more);
   const text = (value: string, caret = value.length, end = caret) => {editor.value = value; editor.setSelectionRange(caret, end); editor.fire('focus'); controller.update();};
   const key = (value: string, extra: Partial<FakeEvent> = {}) => {
     const event = editor.fire('none', {key: value, ...extra}); const handled = controller.key(event as unknown as KeyboardEvent); return {event, handled};
   };
-  return {editor, menu, announcements, changed, controller, text, key, inventory: (value: CommandInventory) => {inventory = value; controller.update();}};
+  return {editor, menu, announcements, changed, reads, controller, text, key, inventory: (value: CommandInventory) => {inventory = value; controller.update();}};
 }
 test('rows expose listbox semantics, stable name IDs, descriptions, sources, and safe name marks', () => {
   const f = fixture(); f.text('/mo');
@@ -194,4 +194,19 @@ test('destroy invalidates a pending continuation without cancelling its outcome 
   const action=f.menu.children.at(-1)?.children.find(node=>node.tag==='button'); assert.ok(action); action.fire('click'); f.controller.destroy();
   page.reject(new Error('Late page failure')); await page.promise.catch(()=>{}); await Promise.resolve();
   assert.equal(f.menu.hidden,true); assert.equal(f.menu.children.length,0); assert.doesNotMatch(f.menu.textContent,/Late page failure/); assert.equal(f.editor.value,'/x'); assert.deepEqual(f.changed,[]);
+});
+test('the list asks for its inventory deliberately only while the draft starts with a slash', () => {
+  const f = fixture(); f.text('hello'); f.text('/mo'); f.text('not a command');
+  assert.deepEqual([...new Set(f.reads.slice(0, 1))], [false]); assert.equal(f.reads.includes(true), true);
+  const lastSlash = f.reads.lastIndexOf(true), lastPlain = f.reads.length - 1; assert.ok(lastPlain > lastSlash && f.reads[lastPlain] === false);
+});
+test('each row names the host contribution that supplies it in the right column and in its title', () => {
+  const f = fixture(); f.inventory({state: 'ready', items: [{name: 'ping', description: 'Reply with pong', source: 'alpha'}]}); f.text('/p');
+  const row = f.menu.children[0] as FakeNode & {title?: string}; assert.equal(row.title, '/ping \u00b7 alpha');
+  assert.equal(row.children.at(-1)?.textContent, 'alpha'); assert.match(row.children.at(-1)?.className ?? '', /command-source/);
+});
+test('an unavailable inventory with a reason opens the list with that reason and no count', () => {
+  const f = fixture(); f.inventory({state: 'unavailable', items: [], message: 'Start the agent to run commands.'}); f.text('/p');
+  assert.equal(f.menu.hidden, false); assert.equal(f.menu.textContent, 'Start the agent to run commands.');
+  f.inventory({state: 'unavailable', items: []}); assert.equal(f.menu.hidden, true);
 });
