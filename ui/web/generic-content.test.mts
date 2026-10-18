@@ -72,16 +72,16 @@ test('collapsed summaries prefer useful payloads and explicit facts over reorder
     {document: '# Actual document\nUseful excerpt', count: 2, coverage: {complete: true}, digest: 'hash', cursor: 'next'},
   ]) {
     const before = JSON.stringify(value), shown = structuredResultPreview({value, truncated: false}); assert.ok(shown);
-    assert.match(shown, /document: # Actual document/); assert.match(shown, /count: 2/);
+    assert.match(shown, /^# Actual document/); assert.match(shown, /count: 2/);
     assert.doesNotMatch(shown, /cursor|digest|coverage/); assert.equal(JSON.stringify(value), before);
   }
   const shown = structuredResultPreview({value: {cursor: 'next', metadata: {digest: 'hash', document: 'Actual nested content', warning: 'Source incomplete'}, count: 3}, truncated: false});
-  assert.match(shown ?? '', /metadata\.warning: Source incomplete/); assert.match(shown ?? '', /metadata\.document: Actual nested content/);
+  assert.match(shown ?? '', /metadata\.warning: Source incomplete/); assert.match(shown ?? '', /Actual nested content/);
   assert.match(shown ?? '', /count: 3/); assert.doesNotMatch(shown ?? '', /digest|cursor/);
 });
 test('summary warnings, outcomes and array counts remain supplied facts with explicit partial coverage', () => {
   const shown = structuredResultPreview({value: {cursor: 'next', document: 'Useful document', error: {message: 'Request refused'}, status: 'failed'}, truncated: false});
-  assert.match(shown ?? '', /error\.message: Request refused/); assert.match(shown ?? '', /document: Useful document/); assert.match(shown ?? '', /status: failed/);
+  assert.match(shown ?? '', /error\.message: Request refused/); assert.match(shown ?? '', /Useful document/); assert.match(shown ?? '', /status: failed/);
   assert.equal(structuredResultPreview({value: {cursor: 'next', rows: [{id: 1}, {id: 2}]}, truncated: false}), 'rows: 2 items');
   const partial = structuredResultPreview({value: {cursor: 'next', records: [{id: 1}]}, truncated: true});
   assert.match(partial ?? '', /records: Array preview limited/); assert.match(partial ?? '', /Partial preview/); assert.doesNotMatch(partial ?? '', /1 item/);
@@ -93,7 +93,7 @@ test('summary selection bounds field scans and depth, never evaluates getters, a
   const shown = structuredResultPreview({value, truncated: false}); assert.ok(shown);
   assert.match(shown, /Summary scan limited/); assert.doesNotMatch(shown, /outside/); assert.ok(shown.length <= 240);
   const cycle: Record<string, unknown> = {body: 'Retained cycle document'}; cycle.again = cycle;
-  assert.match(structuredResultPreview({value: cycle, truncated: false}) ?? '', /body: Retained cycle document.*Summary scan limited/);
+  assert.match(structuredResultPreview({value: cycle, truncated: false}) ?? '', /Retained cycle document.*Summary scan limited/);
   let nested: unknown = {body: 'Outside depth'};
   for (let i = 0; i < 10; i++) nested = {payload: nested};
   const deep = structuredResultPreview({value: nested, truncated: false}); assert.ok(deep);

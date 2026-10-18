@@ -193,6 +193,14 @@ test('tool status labels have natural width and disclosure marks stay separate f
   assert.match(rule('.tool-output-info'), /max-width: 100%; color: var\(--muted\); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere/);
   assert.doesNotMatch(rule('.tool-output-info'), /cursor: pointer|text-overflow: ellipsis|line-clamp/);
 });
+test('results-first tool regions keep output and technical details inside local bounds', () => {
+  assert.match(rule('.tool-result'), /min-width: 0; max-width: 100%/);
+  assert.match(rule('.tool-output-actions'), /display: flex; flex-wrap: wrap/);
+  assert.match(rule('.tool-details'), /min-width: 0; max-width: 100%/);
+  assert.match(rule('.tool-expanded pre'), /max-height: 480px/);
+  assert.match(rule('.tool-inspection > pre'), /max-height: 320px/);
+  assert.match(rule('.tool-shell'), /width: fit-content/);
+});
 test('structured content uses readable prose, wrapped fields, compact tables and plain event disclosures', () => {
   assert.match(rule('.tool-document'), /min-width: 0; color: var\(--fg\); font-family: var\(--sans\)/);
   assert.match(rule('pre.tool-document'), /font-family: var\(--mono\)/, 'supplied argument text and plain-result fallbacks stay monospaced while document prose stays sans');

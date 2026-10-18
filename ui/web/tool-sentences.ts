@@ -1,4 +1,5 @@
 import type {JoinedTool} from './transcript-tools.ts';
+import type {PartView} from '../shared/api.ts';
 
 export type NamedDestination = {text: string; name?: string; provenance?: 'reported' | 'supplied' | 'handle'; title?: string; open?: () => void};
 export type SentenceContext = {nestedCount?:number; cwd?: string; subject?: (identity: string) => NamedDestination | undefined};
@@ -52,10 +53,14 @@ function awaitWords({args}:SentenceInput):Words {
   const suffix=count===undefined?' agent results':` ${count} agent ${count===1?'result':'results'}`;
   return words('Waited for','Waiting for','Wait for',suffix);
 }
+function readImages(parts:readonly PartView[], types = new Set<string>()): {count:number;types:Set<string>} {
+  let count=0;for(const part of parts){if(part.type==='image'){count++;types.add(part.mimeType==='image/png'?'PNG':'JPEG');}else if(part.type==='toolResult')count+=readImages(part.parts,types).count;}return {count,types};
+}
 function readWords({tool,args,target}:SentenceInput):Words {
-  const image=tool.result?.some(part=>part.type==='image');
+  const images=readImages(tool.result??[]);
+  if(images.count){const object=`${images.count===1?'image':'images'} · ${[...images.types].join('/')}`;return words(`Read ${object}`,`Reading ${object}`,`Read ${object}`);}
   const range=typeof args.offset==='number'&&typeof args.limit==='number'&&args.offset>0&&args.limit>0?` (lines ${args.offset}–${args.offset+args.limit-1})`:'';
-  return image?words('Viewed','Viewing','View',target||' an image'):words('Read','Reading','Read',(target||' a file')+range);
+  return words('Read','Reading','Read',(target||' a file')+range);
 }
 function editWords({args,target}:SentenceInput):Words {
   const n=Array.isArray(args.edits)?args.edits.length:undefined;

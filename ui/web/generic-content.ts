@@ -130,7 +130,8 @@ class ResultSummary {
   text(value: Record<string, unknown>, truncated: boolean): string {
     this.collect(value, '', 0, false, false);
     const useful = this.facts.some(field => field.rank < 4);
-    const facts = this.facts.filter(field => !useful || field.rank < 4).sort((a, b) => a.rank - b.rank).slice(0, 3).map(field => summaryFact(field.key, field.value, truncated));
+    const readable = this.facts.find(field => field.rank === 1 && typeof field.value === 'string');
+    const facts = this.facts.filter(field => !useful || field.rank < 4).sort((a, b) => a.rank - b.rank).slice(0, 3).map(field => field === readable ? prefix(String(field.value), 240, 2) : summaryFact(field.key, field.value, truncated));
     const notice = [truncated ? 'Partial preview.' : '', this.limited ? 'Summary scan limited.' : ''].filter(Boolean).join(' ');
     const suffix = notice ? ` · ${notice}` : '';
     return prefix(facts.length ? facts.join(' · ') : 'Empty object', 240 - suffix.length, 2) + suffix;

@@ -174,7 +174,7 @@ type MessageNode = {communication?: CommunicationCard; node: HTMLElement; header
 type EventPage = {node: HTMLElement; rows: HTMLElement; page: number; previous: HTMLButtonElement; next: HTMLButtonElement; cache: Map<string, {source: EntryView; node: HTMLElement}>};
 type SessionNode = {source?: SessionGroup; details: HTMLDetailsElement; events: EventPage; notices: EventPage};
 type EntryNode = {node: HTMLElement; messages: Map<string, MessageNode>; source?: EntryView; custom?: HTMLElement; session?: SessionNode; groupHeader?: HTMLElement};
-type ToolNode = {previewSource?: JoinedTool; answerText?: string; subject?: ToolSubjectCaption; card: HTMLElement; node: HTMLDetailsElement; copy: HTMLButtonElement; title: HTMLElement; target: HTMLElement; glyph: HTMLElement; meta: HTMLElement; preview: HTMLElement; qualification: HTMLElement; expanded: HTMLElement; info: HTMLElement; source?: JoinedTool; inspectionSources?: Map<HTMLDetailsElement, JoinedTool>; presentation?: HTMLElement; argumentsDocument?: HTMLElement; argumentsSource?: JoinedTool; output?: HTMLElement; images?: HTMLElement; contentSource?: JoinedTool; viewport?: HTMLElement; pageViewports?: Set<HTMLElement>; resultDocument?: HTMLElement; documentSource?: JoinedTool; previewBudget?: PreviewBudget; outputNotice?: {node: HTMLElement; source: JoinedTool}; inspections?: {arguments: HTMLDetailsElement; output: HTMLDetailsElement; details: HTMLDetailsElement}};
+type ToolNode = {previewSource?: JoinedTool; answerText?: string; subject?: ToolSubjectCaption; card: HTMLElement; node: HTMLDetailsElement; copy: HTMLButtonElement; title: HTMLElement; target: HTMLElement; glyph: HTMLElement; meta: HTMLElement; preview: HTMLElement; qualification: HTMLElement; expanded: HTMLElement; resultArea: HTMLElement; technical: HTMLDetailsElement; actions: HTMLElement; info: HTMLElement; source?: JoinedTool; inspectionSources?: Map<HTMLDetailsElement, JoinedTool>; presentation?: HTMLElement; argumentsDocument?: HTMLElement; argumentsSource?: JoinedTool; output?: HTMLElement; contentSource?: JoinedTool; viewport?: HTMLElement; pageViewports?: Set<HTMLElement>; resultDocument?: HTMLElement; documentSource?: JoinedTool; previewBudget?: PreviewBudget; outputNotice?: {node: HTMLElement; source: JoinedTool}; inspections?: {arguments: HTMLDetailsElement; output: HTMLDetailsElement; details: HTMLDetailsElement}};
 export type TranscriptGeometry = {generation: number; followTail: boolean; anchor: {id: string; offsetPx: number} | null; scrollTop: number};
 export type FindStatus = {total: number; position: number; moved: boolean; end: 'none' | 'first' | 'last' | 'unavailable' | null};
 export type FindSession = {next: (query: string) => FindStatus; previous: (query: string) => FindStatus; reset: () => void; close: () => void};
@@ -935,7 +935,7 @@ export class Transcript {
     if(!run.events.length){cached.session?.details.remove();return;}
     this.updateSession(cached,{id:cached.node.dataset.entryId??run.key,entries:run.events,notices:[]});
     const source=run.tools[0],tool=source&&this.tools.get(source.callId);
-    if(cached.session&&tool)tool.expanded.append(cached.session.details);
+    if(cached.session&&tool)tool.technical.append(cached.session.details);
   }
   private sentence(tool: JoinedTool): string {return toolSentence(tool,{subject:this.hooks.subject,cwd:this.hooks.cwd?.(),nestedCount:this.rows.nestedCounts.get(tool.callId)});}
   private entryToolChildren(entry: EntryView): HTMLElement[] {
@@ -1299,14 +1299,6 @@ export class Transcript {
     const generation = this.generation; node.className = 'image-part'; node.dataset.imageKey = key;
     node.replaceChildren(transcriptImage(part, url, () => { if (generation === this.generation) this.schedule(); }));
   }
-  private updateToolImages(tool: ToolNode, parts: readonly PartView[]): void {
-    const images = imageParts(parts);
-    if (!images.length && !tool.images) return;
-    if (!tool.images) { tool.images = element('div', 'tool-images'); tool.expanded.append(tool.images); }
-    const previous = [...tool.images.children] as HTMLElement[];
-    const wanted = images.map((image, index) => { const node = previous[index] ?? element('div'); this.imageContent(node, image); return node; });
-    reconcileChildren(tool.images, wanted); tool.images.hidden = !images.length;
-  }
   private thinkingContent(node: HTMLElement, part: Extract<PartView, {type: 'text' | 'thinking'}>, partial: boolean): void {
     const content = node.querySelector('.thinking-content'); if (!content) return;
     content.className = partial ? 'thinking-content stream-text' : 'thinking-content';
@@ -1328,7 +1320,9 @@ export class Transcript {
     const title = element('span', 'tool-name'); const target = element('span', 'tool-target'); const meta = element('span', 'tool-secondary');
     tier.append(title, glyph); cardDisclosure(summary); summary.append(tier);
     const preview = element('div', 'tool-preview'); const qualification = element('p', 'tool-preview-qualification', 'Partial output'); qualification.hidden = true;
-    const expanded = element('div', 'tool-expanded'); const info = element('p', 'secondary tool-output-info'); expanded.append(target, meta, info); summary.append(preview, qualification); node.append(summary, expanded);
+    const expanded = element('div', 'tool-expanded'), resultArea = element('div', 'tool-result');
+    const technical = element('details', 'tool-details'), technicalSummary = element('summary', undefined, 'Details'); cardDisclosure(technicalSummary);
+    const info = element('p', 'secondary tool-output-info'); technical.append(technicalSummary, target, meta, info); summary.append(preview, qualification); node.append(summary, expanded);
     node.dataset.disclosure = `tool:${source.callId}`; node.open = this.expanded.has(`tool:${source.callId}`);
     const generation = this.generation;
     const action = button('Copy output', () => {
@@ -1343,9 +1337,9 @@ export class Transcript {
     action.addEventListener('click', event => event.stopPropagation());
     action.addEventListener('blur', () => { if (!this.destroyed && tool.source) this.toolCopyLabel(tool, tool.source); });
     const controls=element('div','tool-source-actions');
-    controls.append(action,button('Copy arguments',()=>{const source=tool.source;if(source&&this.currentToolSource(tool,source,generation))void copy(this.toolArguments(tool),controls);}),button('Copy ID',()=>{const source=tool.source;if(source&&this.currentToolSource(tool,source,generation))void copy(source.callId,controls);}));
-    expanded.prepend(controls);
-    const tool: ToolNode = {card, node, copy: action, title, target, glyph, meta, preview, qualification, expanded, info}; this.tools.set(source.callId, tool);
+    controls.append(button('Copy arguments',()=>{const source=tool.source;if(source&&this.currentToolSource(tool,source,generation))void copy(this.toolArguments(tool),controls);}),button('Copy ID',()=>{const source=tool.source;if(source&&this.currentToolSource(tool,source,generation))void copy(source.callId,controls);}));
+    technical.append(controls); const actions = element('div', 'tool-output-actions'); actions.append(action); expanded.append(resultArea, actions, technical);
+    const tool: ToolNode = {card, node, copy: action, title, target, glyph, meta, preview, qualification, expanded, resultArea, technical, actions, info}; this.tools.set(source.callId, tool);
     this.trackDisclosure(node, `tool:${source.callId}`);
     node.addEventListener('toggle', () => this.toolExpansion(tool)); this.registerContent(card); return tool;
   }
@@ -1499,7 +1493,7 @@ export class Transcript {
     this.retireNode(tool.presentation); this.retireNode(tool.argumentsDocument);
     tool.presentation = supplied ? args : undefined; tool.argumentsDocument = supplied ? undefined : args;
     tool.previewBudget = budget;
-    if (tool.presentation) { tool.expanded.querySelector('.tool-source-actions')?.after(tool.presentation); this.registerContent(tool.presentation); }
+    if (tool.presentation && tool.inspections) { tool.inspections.arguments.append(tool.presentation); this.registerContent(tool.presentation); }
     if (tool.argumentsDocument && tool.inspections) { tool.inspections.arguments.append(tool.argumentsDocument); this.registerContent(tool.argumentsDocument); }
     tool.argumentsSource = source; tool.previewBudget = budget; tool.documentSource = undefined;
   }
@@ -1509,7 +1503,7 @@ export class Transcript {
     const current = () => this.currentToolSource(tool, source, generation);
     return {showSavedOutput: () => {
       const output = tool.inspections?.output; if (!current() || !output) return;
-      output.open = true; output.querySelector<HTMLElement>('summary')?.focus({preventScroll: true}); this.follow = false; this.schedule();
+      tool.technical.open = true; output.open = true; output.querySelector<HTMLElement>('summary')?.focus({preventScroll: true}); this.follow = false; this.schedule();
     }};
   }
   private currentToolSource(tool: ToolNode, source: JoinedTool, generation: number): boolean {
@@ -1533,8 +1527,7 @@ export class Transcript {
   }
   private expandedContent(tool: ToolNode, source: JoinedTool): void {
     if (tool.contentSource === source) return;
-    const rich = source.status !== 'working' && hasStructuredResult(source.result ?? []);
-    this.updateToolImages(tool, rich ? [] : source.result ?? []);
+    const rich = this.documentResult(source);
     if (tool.contentSource?.result !== source.result) this.replaceToolPages(tool, source, rich);
     tool.contentSource = source;
   }
@@ -1548,20 +1541,21 @@ export class Transcript {
     } };
     if (!rich) append(source.result ?? []);
     const text = tool.expanded.querySelector('.tool-output-text');
-    if (text) text.after(output); else tool.expanded.append(output);
+    if (text) text.after(output); else tool.resultArea.append(output);
   }
   private toolOutputNode(tool: ToolNode, source: JoinedTool): HTMLElement {
-    let pre = tool.expanded.querySelector<HTMLElement>('.tool-output-text');
+    let pre = tool.resultArea.querySelector<HTMLElement>('.tool-output-text');
     if (!pre) {
-      pre = element('pre', 'tool-output-text'); preTextFrame(pre as HTMLElement); tool.expanded.append(sourceHeader(pre as HTMLElement, 'Result'), pre);
+      pre = element('pre', 'tool-output-text'); preTextFrame(pre as HTMLElement); tool.resultArea.append(pre); tool.actions.append(sourceWrap(pre as HTMLElement));
       if (tool.output) pre.after(tool.output);
       const argumentsInspection = this.toolInspection(tool, 'Arguments', () => this.toolArguments(tool), `arguments:${source.callId}`);
       const resultInspection = this.toolInspection(tool, 'Raw output', () => partText(tool.source?.result ?? []), `raw-output:${source.callId}`);
       argumentsInspection.classList.add('tool-inspection'); argumentsInspection.classList.add('tool-arguments');
       resultInspection.classList.add('tool-inspection'); resultInspection.classList.add('tool-raw-output');
-      const details = this.inspection('Details', () => this.toolDetails(tool)); details.classList.add('tool-inspection');
+      const details = this.inspection('Metadata', () => this.toolDetails(tool)); details.classList.add('tool-inspection');
       tool.inspections = {arguments: argumentsInspection, output: resultInspection, details};
-      tool.expanded.append(argumentsInspection, resultInspection, details);
+      tool.technical.append(argumentsInspection, resultInspection, details);
+      if (argumentsInspection.open || resultInspection.open) tool.technical.open = true;
     }
     return pre;
   }
@@ -1593,16 +1587,19 @@ export class Transcript {
     this.retireNode(tool.outputNotice?.node); const notice = this.previewNotice(tool, source);
     tool.outputNotice = {node: notice, source}; pre.after(notice);
   }
+  private documentResult(source: JoinedTool): boolean {
+    return imageParts(source.result ?? []).length > 0 || source.status !== 'working' && hasStructuredResult(source.result ?? []);
+  }
   private updateResultDocument(tool: ToolNode, source: JoinedTool, pre: HTMLElement): void {
     if (tool.documentSource?.result !== source.result || tool.documentSource?.status !== source.status || tool.documentSource?.args !== source.args) {
       if (tool.resultDocument && this.protectedNode(tool.resultDocument)) return;
       this.retireNode(tool.resultDocument);
-      tool.resultDocument = source.status !== 'working' && hasStructuredResult(source.result ?? []) ? this.resultParts(tool, source) : undefined;
+      tool.resultDocument = this.documentResult(source) ? this.resultParts(tool, source) : undefined;
       if (tool.resultDocument) pre.after(tool.resultDocument);
     }
     tool.documentSource = source;
     pre.hidden = !!tool.resultDocument;
-    if (pre.previousElementSibling?.classList.contains('source-header')) (pre.previousElementSibling as HTMLElement).hidden = pre.hidden;
+    const wrap = tool.actions.querySelector<HTMLElement>('.source-wrap'); if (wrap) wrap.hidden = pre.hidden;
     if (pre.hidden) { this.releaseOutput(pre); tool.viewport = undefined; }
     else { tool.viewport = pre; this.registerOutput(pre); }
   }

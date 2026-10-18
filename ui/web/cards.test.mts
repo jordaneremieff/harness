@@ -156,7 +156,7 @@ test('bounded expanded comparisons keep exact lazy inspections and never scan re
 test('collapsed summaries preserve redacted literal sources while preferring supplied warnings and documents', () => {
   const parts: PartView[] = [{type: 'text', text: 'original JSON text', structured: {value: {cursor: 'next', digest: 'hash', coverage: {}, document: 'Actual document', warning: 'Some results omitted'}, truncated: true}}];
   const retained = JSON.stringify(parts), shown = resultPreview(parts);
-  assert.match(shown, /warning: Some results omitted/); assert.match(shown, /document: Actual document/); assert.match(shown, /Partial preview/);
+  assert.match(shown, /warning: Some results omitted/); assert.match(shown, /Actual document/); assert.match(shown, /Partial preview/);
   assert.doesNotMatch(shown, /cursor|digest|coverage/); assert.equal(JSON.stringify(parts), retained);
   assert.equal(resultPreview([{...parts[0], type: 'text', text: '[protected text]', redacted: true}]), '[protected text]');
 });

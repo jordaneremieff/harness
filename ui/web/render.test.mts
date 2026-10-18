@@ -401,11 +401,11 @@ test('callId joins call and results across entries with one bounded disclosure a
   assert.equal(card.parentNode?.dataset.status, 'success'); assert.equal(card.querySelector('.tool-tier')?.children[0], card.querySelector('.tool-name'));
   assert.equal(card.querySelector('.tool-status')?.attributes.role, undefined); assert.equal(card.querySelector('.tool-status')?.textContent, '');
   assert.deepEqual(card.querySelector('.tool-tier')?.children.map(child=>child.className), ['tool-name','tool-status success']);
-  assert.equal(card.querySelector('.tool-target')?.parentNode, card.querySelector('.tool-expanded')); assert.equal(card.querySelector('.tool-status')?.querySelector('svg'), null);
+  assert.equal(card.querySelector('.tool-target')?.parentNode, card.querySelector('.tool-details')); assert.equal(card.querySelector('.tool-status')?.querySelector('svg'), null);
   assert.doesNotMatch(card.textContent, /The tool completed without output\.|Working|Tool error/); assert.ok((card.querySelector('.tool-preview')?.textContent.length ?? Infinity) < 2000);
   assert.match(card.querySelector('.tool-preview')?.textContent ?? '', /…$/); assert.ok((card.querySelector('.tool-preview')?.textContent.length ?? Infinity) <= 1200);
   assert.equal(card.querySelector('.tool-preview')?.parentNode, card.querySelector('summary'));
-  assert.equal(card.querySelectorAll('details').length, 0); card.open = true; card.dispatch('toggle'); flush();
+  assert.equal(card.querySelectorAll('details').length, 1); card.open = true; card.dispatch('toggle'); flush();
   assert.equal(card.querySelector('pre')?.textContent, 'x'.repeat(5000));
   const raw = card.querySelectorAll('details').find(node => node.querySelector('summary')?.textContent === 'Raw output');
   assert.ok(raw); raw.open = true; raw.dispatch('toggle'); assert.equal(raw.querySelector('pre')?.textContent, 'x'.repeat(5000));
@@ -776,7 +776,7 @@ test('expanded write highlights its bounded supplied preview and keeps exact raw
   card.open = true; card.dispatch('toggle'); flush();
   const supplied = card.querySelector('.tool-content'); assert.ok(supplied); assert.equal(supplied.querySelector('.syn-keyword')?.textContent, 'const'); assert.equal(supplied.querySelector('pre')?.textContent, content);
   const inspection = card.querySelector('.tool-arguments'); assert.ok(inspection); inspection.open = true; inspection.dispatch('toggle');
-  assert.equal(JSON.parse(inspection.querySelector('pre')?.textContent ?? '{}').content, content); assert.equal(inspection.querySelector('.tool-content'), null);
+  assert.equal(JSON.parse(inspection.querySelector('pre')?.textContent ?? '{}').content, content); assert.equal(inspection.querySelector('.tool-content'), supplied);
 });
 test('standalone Markdown rules render semantic hr nodes with no text or HTML evaluation', () => {
   setup(); const wrapper = new FakeNode('div'); wrapper.append(markdownDom('---\n\n***\n\n___\n\n<script>inert</script>') as unknown as FakeNode);
@@ -935,7 +935,7 @@ test('tool result refresh preserves open supplied-content inspections', () => {
     card.open = true; card.dispatch('toggle');
     const disclosure = card.querySelector('.tool-arguments'); assert.ok(disclosure);
     disclosure.open = true; disclosure.dispatch('toggle'); inspections.push(disclosure);
-    const args = JSON.parse(disclosure.querySelector('pre')?.textContent ?? '{}'); assert.equal(args.content ?? args.oldText, supplied); assert.equal(disclosure.querySelector('.tool-content'), null);
+    const args = JSON.parse(disclosure.querySelector('pre')?.textContent ?? '{}'); assert.equal(args.content ?? args.oldText, supplied); assert.ok(disclosure.querySelector('.tool-content'));
   }
   const parts = [{type: 'text' as const, text: 'updated raw result'}];
   view.set(entries, new Map(['edit', 'write'].map(id => [id, {callId: id, name: id, phase: 'end' as const, parts}]))); flush();
@@ -1370,7 +1370,8 @@ test('separate tool and thinking rows omit empty parts without losing source, ev
   assert.equal(compact.parentNode?.children.length, 1); assert.equal(compact.querySelector('.message'), null);
   assert.ok(compact.closest('.compact-entry')); const outputCopy = compact.querySelector('.tool-copy'); assert.ok(outputCopy);
   outputCopy.dispatch('click', {stopPropagation() {}}); await Promise.resolve(); assert.equal(copied.at(-1), 'retained output');
-  assert.deepEqual(compact.querySelector('.tool-source-actions')?.children.map(button => button.textContent), ['Copy output', 'Copy arguments', 'Copy ID']);
+  assert.deepEqual(compact.querySelector('.tool-source-actions')?.children.map(button => button.textContent), ['Copy arguments', 'Copy ID']);
+  assert.equal(compact.querySelector('.tool-details')?.contains(compact.querySelector('.tool-source-actions') as FakeNode), true);
   assert.match(root.textContent, /Check this warning/);
   assert.equal(root.querySelector('.session-events')?.querySelector('summary')?.textContent, '1 session event');
   const thought = root.querySelector('.thinking-only'); assert.ok(thought);
@@ -1557,13 +1558,13 @@ test('complete projected documents do not depend on the retained raw page prefix
   assert.equal(card.querySelectorAll('.preview-omission').length, 1); assert.ok(card.querySelector('.tool-result-part')?.querySelector('.output-pages'));
 });
 
-test('expanded plain output has one Result header with Wrap and retains exact copy and disclosures', async () => {
+test('expanded plain output precedes Copy and Wrap without a Result band and retains exact disclosures', async () => {
   setup(); const view = transcript(); const raw = '  retained output\nsecond line\n';
   view.set([contentEntry('single-result', {}, raw, false)]); flush();
   const root = node('primary-transcript'), card = root.querySelector('.tool-card'); assert.ok(card);
   card.open = true; card.dispatch('toggle'); flush();
   const labels = card.querySelectorAll('.source-header').flatMap(header => header.querySelectorAll('span')).filter(label => label.textContent === 'Result');
-  assert.equal(labels.length, 1); assert.equal(card.querySelector('.tool-result-label'), null);
+  assert.equal(labels.length, 0); assert.equal(card.querySelector('.tool-result-label'), null);
   assert.equal(card.querySelector('.tool-output-text')?.textContent, raw);
   assert.ok(card.querySelectorAll('button').some(button => button.textContent === 'Wrap'));
   assert.ok(card.querySelectorAll('summary').some(summary => summary.textContent === 'Arguments'));
@@ -1582,6 +1583,27 @@ test('a saved null anchor restores the start and permits later geometry and read
   const root = node('primary-transcript'); assert.equal(root.scrollTop, 0); assert.equal(view.restorationCurrent(reading), false);
   root.dispatch('scrollend'); assert.equal(readings.length, 1); assert.equal(readings[0]?.followTail, false);
   const saved = view.captureGeometry(); root.scrollTop = 500; view.applyGeometry(saved); assert.equal(root.scrollTop, 0);
+  view.destroy();
+});
+test('expanded image output keeps supplied part order before actions and quieter technical details', async () => {
+  setup(); const view = new Transcript('primary', {presentation: () => {}, reading: () => {}, image: () => '/fixture-image.png'});
+  const source = contentEntry('image-order', {path: '/opaque/store/digest.bin'}, '');
+  const call = source.messages[0]?.parts.find(part => part.type === 'toolCall'); assert.ok(call); call.name = 'read';
+  const result = source.messages[0]?.parts.find(part => part.type === 'toolResult'); assert.ok(result); result.name = 'read';
+  result.parts = [{type: 'text', text: 'Supplied introduction'}, {type: 'image', mimeType: 'image/png', digest: 'a'.repeat(64), width: 512, height: 256, bytes: 1024, alt: 'Retained image description'}, {type: 'text', text: 'Supplied conclusion'}];
+  view.set([source]); flush(); const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card); card.open = true; card.dispatch('toggle'); flush();
+  assert.equal(card.querySelector('.tool-name')?.textContent, 'Read image · PNG');
+  const expanded = card.querySelector('.tool-expanded'), area = card.querySelector('.tool-result'), actions = card.querySelector('.tool-output-actions'), technical = card.querySelector('.tool-details');
+  assert.ok(expanded); assert.ok(area); assert.ok(actions); assert.ok(technical); assert.deepEqual(expanded.children, [area, actions, technical]);
+  const parts = area.querySelector('.tool-result-parts'); assert.ok(parts); assert.equal(parts.children.length, 3);
+  assert.equal(parts.children[0]?.querySelector('pre')?.textContent, 'Supplied introduction'); assert.equal(parts.children[1]?.querySelectorAll('.image-part').length, 1); assert.equal(parts.children[2]?.querySelector('pre')?.textContent, 'Supplied conclusion');
+  assert.equal(area.querySelector('.tool-output-text')?.hidden, true); assert.equal(area.querySelector('.tool-output-text')?.textContent, '');
+  assert.equal(technical.open, false); assert.ok(technical.querySelector('.tool-arguments')); assert.ok(technical.querySelector('.tool-raw-output')); assert.ok(technical.querySelector('.tool-output-info'));
+  assert.equal(actions.querySelectorAll('.tool-copy').length, 1); assert.equal(technical.querySelectorAll('.tool-copy').length, 0);
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator'); let copied = '';
+  Object.defineProperty(globalThis, 'navigator', {configurable: true, value: {clipboard: {writeText: async (text: string) => {copied = text;}}}});
+  try {actions.querySelector('.tool-copy')?.dispatch('click', {stopPropagation() {}}); await Promise.resolve(); assert.equal(copied, 'Supplied introduction\nRetained image description\nSupplied conclusion');}
+  finally {if(previous)Object.defineProperty(globalThis,'navigator',previous);else Reflect.deleteProperty(globalThis,'navigator');}
   view.destroy();
 });
 test('structured result parts preserve plain text, image and omission order without duplicate images', () => {
@@ -1623,14 +1645,15 @@ test('structured result expansion is lazy and exact raw copy survives document a
   try { const action = card.parentNode?.querySelector('.tool-copy'); assert.ok(action); action.dispatch('click', {stopPropagation: () => {}}); await Promise.resolve(); assert.equal(copied, raw); }
   finally { if (previous) Object.defineProperty(globalThis, 'navigator', previous); else Reflect.deleteProperty(globalThis, 'navigator'); }
 });
-test('generic source arguments precede output and their own collapse survives result refresh', () => {
+test('generic source arguments stay in Details and their own collapse survives result refresh', () => {
   setup(); const view = transcript(); const args = {program: 'const value = 1;\nreturn value;', language: 'typescript'};
   view.set([contentEntry('program', args, 'first result')]); flush(); const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card);
   card.open = true; card.dispatch('toggle'); flush(); const source = card.querySelector('.tool-source'); assert.ok(source);
   assert.equal(source.open, true); assert.equal(source.querySelector('pre')?.textContent, args.program); assert.ok(source.querySelector('span'));
   const expanded = card.querySelector('.tool-expanded'); assert.ok(expanded); const argumentsNode = card.querySelector('.tool-arguments'); assert.ok(argumentsNode); assert.equal(argumentsNode.contains(source), true);
   const output = card.querySelector('.tool-output-text'); assert.ok(output);
-  assert.ok(expanded.children.indexOf(argumentsNode) > expanded.children.indexOf(output));
+  assert.equal(card.querySelector('.tool-details')?.contains(argumentsNode), true);
+  assert.equal(expanded.children[0]?.contains(output), true);
   source.open = false; source.dispatch('toggle'); view.set([contentEntry('program', args, 'second result')]); flush();
   assert.equal(card.querySelector('.tool-source'), source); assert.equal(source.open, false); assert.equal(card.querySelector('.tool-output-text')?.textContent, 'second result');
 });
@@ -1742,19 +1765,21 @@ test('large write/edit previews share one argument root, result budget and defer
     const args = {...supplied, metadata: {note: 'argument metadata '.repeat(300)}};
     const source = contentEntry(name, args, '', false); const message = source.messages[0]; assert.ok(message); for (const part of message.parts) part.name = name; message.parts = message.parts.filter(part => part.type !== 'toolResult');
     view.set([source]); flush(); const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card); card.open = true; card.dispatch('toggle'); flush();
-    const argument = card.querySelector('.tool-content'); assert.ok(argument); const raw = card.querySelector('.tool-arguments'); assert.ok(raw); assert.equal(raw.querySelector('.tool-content'), null);
+    const argument = card.querySelector('.tool-content'); assert.ok(argument); const raw = card.querySelector('.tool-arguments'); assert.ok(raw); assert.equal(raw.querySelector('.tool-content'), argument);
     const part: PartView = {type: 'text', text: 'Saved raw result', structured: {value: {body: 'Initial result', metadata: {note: 'result metadata '.repeat(300)}}, truncated: false}};
-    view.set([source], new Map([[name, {callId: name, name, phase: 'end' as const, parts: [part]}]])); flush(); assert.equal(card.querySelector('.tool-content'), argument);
-    const roots = card.querySelectorAll('.tool-content'); assert.ok(roots.length <= 2); assert.equal(card.querySelector('.tool-arguments')?.querySelector('.tool-content'), null);
+    view.set([source], new Map([[name, {callId: name, name, phase: 'end' as const, parts: [part]}]])); flush(); assert.equal(card.querySelector('.tool-arguments')?.querySelector('.tool-content'), argument);
+    const roots = card.querySelectorAll('.tool-content'); assert.ok(roots.length <= 2); assert.equal(card.querySelector('.tool-arguments')?.querySelector('.tool-content'), argument);
     const budget = () => {const mounted = card.querySelectorAll('.tool-content'); assert.ok(mounted.reduce((total, root) => total + root.textContent.length, 0) <= 16384); assert.ok(mounted.reduce((total, root) => total + count(root), 0) <= 512);}; budget();
     if (variant === 'multi-edit') assert.ok(argument.querySelectorAll('.diff-del').length >= 2);
-    const metadata = roots.flatMap(root => root.querySelectorAll('.tool-metadata')); assert.ok(metadata.length); for (const detail of metadata) {detail.open = true; detail.dispatch('toggle');} flush(); budget();
-    const argumentMetadata = argument.querySelector('.tool-metadata'); assert.ok(argumentMetadata); assert.match(argumentMetadata.textContent, /argument metadata/);
+    const argumentMetadata = argument.querySelector('.tool-metadata'); assert.ok(argumentMetadata); argumentMetadata.open = true; argumentMetadata.dispatch('toggle');
+    const metadata = roots.flatMap(root => root.querySelectorAll('.tool-metadata')); assert.ok(metadata.length); for (const detail of metadata.filter(detail => detail !== argumentMetadata)) {detail.open = true; detail.dispatch('toggle');} flush(); budget();
+    assert.match(argumentMetadata.textContent, /argument metadata/);
     const refreshed: PartView = {type: 'text', text: 'Refreshed saved result', structured: {value: {body: 'refreshed result '.repeat(2000), metadata: {note: 'refreshed metadata '.repeat(300)}}, truncated: false}};
     view.set([source], new Map([[name, {callId: name, name, phase: 'end' as const, parts: [refreshed]}]])); flush(); budget();
-    assert.equal(card.querySelector('.tool-content'), argument); assert.equal(argument.querySelector('.tool-metadata'), argumentMetadata); assert.equal(argumentMetadata.open, true); assert.match(argumentMetadata.textContent, /argument metadata/);
-    raw.open = true; raw.dispatch('toggle'); flush(); assert.deepEqual(JSON.parse(raw.querySelector('pre')?.textContent ?? '{}'), args); assert.equal(raw.querySelector('.tool-content'), null);
-    const result = card.querySelectorAll('.source-header').find(header => header.querySelector('.source-language')?.textContent === 'Result'); assert.ok(result); const parent = argument.parentNode; assert.ok(parent); assert.equal(result.parentNode, parent); assert.ok(parent.children.indexOf(argument) < parent.children.indexOf(result));
+    assert.equal(card.querySelector('.tool-arguments')?.querySelector('.tool-content'), argument); assert.equal(argument.querySelector('.tool-metadata'), argumentMetadata); assert.equal(argumentMetadata.open, true); assert.match(argumentMetadata.textContent, /argument metadata/);
+    raw.open = true; raw.dispatch('toggle'); flush(); assert.deepEqual(JSON.parse(raw.querySelector('pre')?.textContent ?? '{}'), args); assert.equal(raw.querySelector('.tool-content'), argument);
+    const result = card.querySelector('.tool-result'), technical = card.querySelector('.tool-details'), expanded = card.querySelector('.tool-expanded'); assert.ok(result); assert.ok(technical); assert.ok(expanded);
+    assert.equal(technical.contains(argument), true); assert.equal(expanded.children[0], result); assert.equal(expanded.children[2], technical);
     view.reset();
   }
 });
@@ -1827,7 +1852,7 @@ test('tool refresh leaves open generic Details text intact and refreshes only ow
   const owned = card.querySelectorAll('.tool-inspection'); assert.equal(owned.length, 3);
   const raw = owned.find(node => node.firstElementChild?.textContent === 'Raw output'); assert.ok(raw);
   raw.open = true; raw.dispatch('toggle'); assert.equal(raw.querySelector('pre')?.textContent, 'initial raw result');
-  const limits = owned.find(node => node.firstElementChild?.textContent === 'Details'); assert.ok(limits);
+  const limits = owned.find(node => node.firstElementChild?.textContent === 'Metadata'); assert.ok(limits);
   limits.open = true; limits.dispatch('toggle'); assert.match(limits.querySelector('pre')?.textContent ?? '', /Raw inspection/);
   assert.ok(raw.firstElementChild); raw.firstElementChild.textContent = 'Retained raw inspection';
   view.set([source('updated raw result')]); flush();
@@ -1914,7 +1939,7 @@ test('expanded source disclosures avoid the raw inspection scroll cap', () => {
   const source = card.querySelector('.tool-source'); assert.ok(source);
   assert.equal(source.classList.contains('tool-inspection'), false);
   const inspections = card.querySelectorAll('.tool-inspection'); assert.equal(inspections.length, 3);
-  assert.deepEqual(inspections.map(detail => detail.querySelector('summary')?.textContent), ['Arguments', 'Raw output', 'Details']);
+  assert.deepEqual(inspections.map(detail => detail.querySelector('summary')?.textContent), ['Arguments', 'Raw output', 'Metadata']);
   const limits = inspections[2]; assert.ok(limits); assert.equal(limits.querySelector('pre'), null);
   limits.open = true; limits.dispatch('toggle');
   assert.match(limits.querySelector('pre')?.textContent ?? '', /8192 characters/);
@@ -1956,13 +1981,13 @@ test('tool subjects mark known character and line cuts without changing complete
     const characterCut = targetFor(name, key, 'x'.repeat(4200));
     assert.equal(characterCut.textContent, ''); assert.equal(characterCut.hidden, true); assert.equal(characterCut.title, `${prefix}${'x'.repeat(4200)}`);
     const captions = {bash: [`Ran ${'x'.repeat(60)}…`, 'Ran first line…', 'Ran Complete unknown TypeScr'], read: [`Read ${'x'.repeat(100)}…`, 'Read first line…', 'Read Complete unknown TypeScr'], custom: ['Used custom', 'Used custom', 'Used custom']};
-    assert.equal(characterCut.parentNode?.parentNode?.querySelector('.tool-name')?.textContent, captions[name][0]);
+    assert.equal(characterCut.closest('.tool-card')?.querySelector('.tool-name')?.textContent, captions[name][0]);
     const lineCut = targetFor(name, key, 'first line\nsecond line'); assert.equal(lineCut.textContent, '');
     assert.equal(lineCut.title, prefix.concat('first line', String.fromCharCode(10), 'second line'));
-    assert.equal(lineCut.parentNode?.parentNode?.querySelector('.tool-name')?.textContent, captions[name][1]);
+    assert.equal(lineCut.closest('.tool-card')?.querySelector('.tool-name')?.textContent, captions[name][1]);
     const boundedTitle = targetFor(name, key, 'x'.repeat(65536)); assert.equal(boundedTitle.title.length, 65536); assert.equal(boundedTitle.title.endsWith('…'), name === 'bash');
     const complete = targetFor(name, key, 'Complete unknown TypeScr'); assert.equal(complete.title, `${prefix}Complete unknown TypeScr`);
-    assert.equal(complete.parentNode?.parentNode?.querySelector('.tool-name')?.textContent, captions[name][2]);
+    assert.equal(complete.closest('.tool-card')?.querySelector('.tool-name')?.textContent, captions[name][2]);
   }
 });
 test('multiline tool targets keep a compact row and complete retained title and Arguments', () => {
@@ -2047,8 +2072,9 @@ test('expanded tool captions share the wrap row and native source disclosures ke
   assert.equal(disclosure.open, true); assert.equal(pre.dataset.wrap, 'false'); assert.equal(pre.textContent, text); assert.equal(pre.children[0], retained);
   control.dispatch('click'); flush(); assert.equal(pre.dataset.wrap, 'true');
   const output = card.querySelector('.tool-output-text'); assert.ok(output);
-  const header = output.previousElementSibling; assert.ok(header); assert.equal(header.textContent, 'ResultWrap');
-  assert.equal(header.classList.contains('source-header'), true); assert.equal(header.children.length, 2);
+  const header = card.querySelector('.tool-output-actions'); assert.ok(header); assert.equal(header.children.length, 2);
+  assert.ok(header.querySelector('.tool-copy')); const area = output.closest('.tool-result'); assert.ok(area);
+  assert.equal(header.parentNode?.children.indexOf(area), 0); assert.equal(header.parentNode?.children.indexOf(header), 1);
   const outputControl = header.querySelector('.source-wrap'); assert.ok(outputControl);
   assert.equal(outputControl.attributes['aria-label'], 'Wrap source lines');
   assert.equal(outputControl.attributes['aria-pressed'], 'true'); assert.equal(outputControl.title, 'Do not wrap source lines');
