@@ -1,13 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {mkdtemp,mkdir,writeFile,readFile,realpath,chmod,rm,lstat,access,rename} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,readFile,realpath,chmod,rm,lstat,access,rename,utimes} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
+import {execFile} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
+import {promisify} from 'node:util';
 import {publishSnapshot} from './release-stage.mts';
 import {inventory,manifestAt,removeStagingTree,sealTree,sha256} from './release-store.mts';
 import {RELEASE_FORMAT,BROWSER_API,type ReleaseManifest} from '../shared/release.ts';
 import {OWNER_PROTOCOL} from '../shared/owner.ts';
+import {STALE_ASSETS_MESSAGE} from './browser-assets.mts';
 async function fixture(context:test.TestContext){
   const root=await realpath(await mkdtemp(join(tmpdir(),'ui-stage-publish-'))),runtime=join(root,'runtimes','a'.repeat(64));
   context.after(async()=>{await chmod(root,0o700);for(const entry of await inventory(root))if(entry.directory)await chmod(join(root,entry.path),0o700);await rm(root,{recursive:true});});
@@ -59,4 +63,41 @@ test('unpublished sealed staging cleanup preserves sibling snapshots and runtime
   assert.equal(await readFile(join(sibling,'published'),'utf8'),'published');assert.equal((await lstat(sibling)).mode&0o777,0o500);
   assert.equal(await readFile(join(dependency,'index.js'),'utf8'),'immutable dependency');assert.equal((await lstat(dependency)).mode&0o777,0o500);
   await assert.rejects(()=>removeStagingTree(sibling),/Only an unpublished/);
+});
+
+const run=promisify(execFile),releaseCli=fileURLToPath(new URL('../cli/release.mts',import.meta.url));
+const git=(cwd:string,...args:string[])=>run('git',['-c','user.name=fixture','-c','user.email=fixture@example.invalid','-c','commit.gpgsign=false',...args],{cwd});
+const OLD=new Date('2026-01-01T00:00:00Z'),NEW=new Date('2026-01-02T00:00:00Z');
+async function sourceFixture(context:test.TestContext){
+  const base=await realpath(await mkdtemp(join(tmpdir(),'ui-stage-source-'))),source=join(base,'checkout'),state=join(base,'state');
+  context.after(async()=>{for(const entry of await inventory(base))if(entry.directory)await chmod(join(base,entry.path),0o700);await rm(base,{recursive:true});});
+  for(const directory of ['ui/server','ui/rpc','ui/agents','ui/shared','ui/web','ui/dist/web','ui/dist/shared','ui/cli','transport','node_modules/fixture'])await mkdir(join(source,directory),{recursive:true});
+  for(const directory of ['ui/server','ui/rpc','ui/agents','ui/cli','transport'])await writeFile(join(source,directory,'index.mts'),'export {};');
+  await writeFile(join(source,'ui/web/tsconfig.json'),JSON.stringify({include:['./*.ts','../shared/api.ts'],compilerOptions:{rootDir:'..',outDir:'../dist'}}));
+  await writeFile(join(source,'ui/web/app.ts'),'export const app=1;');await writeFile(join(source,'ui/shared/api.ts'),'export const api=1;');
+  await writeFile(join(source,'ui/web/index.html'),'<!doctype html><html><head></head><body></body></html>');await writeFile(join(source,'ui/web/style.css'),'body{}');await writeFile(join(source,'ui/web/favicon.svg'),'<svg/>');
+  await writeFile(join(source,'node_modules/fixture/index.js'),'module.exports={};');
+  await writeFile(join(source,'package.json'),'{}');await writeFile(join(source,'package-lock.json'),'{}');await writeFile(join(source,'.gitignore'),'ui/dist/\nnode_modules/\n');
+  for(const path of ['ui/web/tsconfig.json','ui/web/app.ts','ui/shared/api.ts'])await utimes(join(source,path),OLD,OLD);
+  await git(source,'init','--quiet');await git(source,'add','--all');await git(source,'commit','--quiet','-m','fixture');
+  const emit=async(time:Date)=>{await writeFile(join(source,'ui/dist/web/app.js'),'export const app=1;');
+    for(const name of ['api','version','files','health','control','inspection'])await writeFile(join(source,'ui/dist/shared',`${name}.js`),'export {};');
+    for(const directory of ['web','shared'])for(const entry of await inventory(join(source,'ui/dist',directory)))await utimes(join(source,'ui/dist',directory,entry.path),time,time);};
+  const stage=()=>run(process.execPath,['--experimental-vm-modules',releaseCli,'stage','--source',source,'--state-dir',state]);
+  return {source,emit,stage};
+}
+test('staging refuses a checkout with no emitted browser modules',async context=>{
+  const f=await sourceFixture(context);
+  await assert.rejects(f.stage,(error:{stderr:string})=>error.stderr.includes(STALE_ASSETS_MESSAGE));
+});
+test('staging refuses emitted browser modules older than committed source',async context=>{
+  const f=await sourceFixture(context);await f.emit(NEW);
+  await writeFile(join(f.source,'ui/web/app.ts'),'export const app=2;');await git(f.source,'commit','--quiet','--all','-m','change browser source');
+  const later=new Date(NEW.getTime()+1000);await utimes(join(f.source,'ui/web/app.ts'),later,later);
+  await assert.rejects(f.stage,(error:{stderr:string})=>error.stderr.includes(STALE_ASSETS_MESSAGE));
+});
+test('staging seals emitted browser modules built after the committed source',async context=>{
+  const f=await sourceFixture(context);await f.emit(NEW);
+  const staged=JSON.parse((await f.stage()).stdout) as {directory:string;manifest:{id:string;files:Record<string,string>}};
+  assert.match(staged.manifest.id,/^[a-f0-9]{64}$/);assert.ok('ui/dist/web/app.js' in staged.manifest.files);
 });

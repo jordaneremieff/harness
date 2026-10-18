@@ -5,6 +5,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import vm from 'node:vm';
 import {assetMap} from './http.mts';
 import {assetDigest} from './version.mts';
+import {assertBrowserAssetsFresh} from './browser-assets.mts';
 import {AssetGeneration} from './asset-generations.mts';
 import {RELEASE_FORMAT,BROWSER_API,type ReleaseManifest} from '../shared/release.ts';
 import {UI_ITERATION} from '../shared/version.ts';
@@ -92,6 +93,7 @@ export async function publishSnapshot(root:string,runtime:string,directory:strin
 /** Staging reads checked source and copies real bytes. It never changes the selected release. */
 export async function stageRelease(sourceRoot:string,stateDir:string,options:{ownerProtocol:string;allowDirty?:boolean}):Promise<{directory:string;manifest:ReleaseManifest}> {
   const source=resolve(sourceRoot),{root}=await releaseRoot(stateDir),revision=await sourceRevision(source,options.allowDirty);
+  await assertBrowserAssetsFresh(source);
   await mkdir(join(root,'releases'),{recursive:true,mode:0o700});await descriptorCount(join(root,'releases'));
   const runtimeSource=join(source,'node_modules'),dependencies=(await inventory(runtimeSource,true)).sort((a,b)=>a.path.localeCompare(b.path));
   const lockDigest=sha256(await boundedFile(join(source,'package-lock.json'),16*1024**2)),runtimeDigest=await dependencyDigest(runtimeSource,dependencies),runtime=join(root,'runtimes',runtimeDigest);
