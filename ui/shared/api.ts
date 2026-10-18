@@ -249,6 +249,8 @@ export type EventData = {
   'agent.frame': {identity: string; connectionEpoch: number; frame: ProjectedFrame};
   'agent.availability': {identity: string; connectionEpoch: number; state: 'live' | 'stored' | 'unavailable' | 'incompatible'; reason?: string; capabilities: AgentCapabilities};
   'files.changed': FileChanges;
+  /** Terminal sessions that had a saved file held no longer do; the picker re-reads its rows. */
+  'sessions.writers': {released: string[]};
   'workspace.changed': Workspace;
   'draft.changed': {targetKey: string; target: Target; draft: DraftView};
   'reading.changed': {targetKey: string; reading: ReadingView};
@@ -278,7 +280,8 @@ export const ROUTES = [
   'GET /api/workspaces/:id/unconfirmed/:operationId', 'POST /api/workspaces/:id/unconfirmed/:operationId/restore', 'DELETE /api/workspaces/:id/unconfirmed/:operationId',
 ] as const;
 
-export type SavedSession = {id: string; path: string; revision: string; project: string; title: string; titleSource?: 'name' | 'prompt'; titleState?: 'pending' | 'ready' | 'unavailable'; modifiedAt: string; size: number};
+/** `writer: 'live'` means a terminal session may still be writing the file; its absence is proof of release for the files this backend does not own. */
+export type SavedSession = {writer?: 'live'; id: string; path: string; revision: string; project: string; title: string; titleSource?: 'name' | 'prompt'; titleState?: 'pending' | 'ready' | 'unavailable'; modifiedAt: string; size: number};
 export type RecentProject = {path: string; name: string; modifiedAt: string};
 export type SavedSessionPage = {items: SavedSession[]; total: number; omitted: number; nextCursor: string | null; titleCursor: string | null; observedAt: string};
 export type RecentProjectPage = {items: RecentProject[]; total: number; omitted: number; nextCursor: string | null; observedAt: string};

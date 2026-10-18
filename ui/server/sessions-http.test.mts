@@ -38,3 +38,17 @@ test('manual saved paths validate their header project before runtime dispatch',
   const mismatch = await open(other); assert.equal(mismatch.status, 400); assert.equal(dispatched, 0);
   const matching = await open(project); assert.equal(matching.status, 202); assert.equal(dispatched, 1);
 });
+
+test('the first saved page and the published list carry the backend writer marks, and title pages do not', async context => {
+  const marked = {...page, items: [{id: 'a', path: '/s/a.jsonl', revision: 'r', project: '/project', title: 'A', modifiedAt: '2026-01-01T00:00:00Z', size: 1}]};
+  const seen: string[] = [];
+  const backend: HttpBackend = {journal: new Journal(), dispatch: async () => ({}), workspace: async () => 'workspace', observe: async () => {}, detached() {},
+    publishedSessions: async () => marked, withWriters: async input => { seen.push(input.items[0]?.id ?? ''); return {...input, items: input.items.map(item => ({...item, writer: 'live' as const}))}; }};
+  const http = new LocalHttp(backend, new Map(), {sessions: async () => marked, projects: async () => page, titles: async () => marked});
+  const origin = new URL(await http.listen(0)).origin; context.after(() => http.close());
+  const listed = await (await fetch(`${origin}/api/sessions?project=%2Fproject`)).json() as {data: typeof marked};
+  assert.equal((listed.data.items[0] as {writer?: string}).writer, 'live');
+  const titles = await (await fetch(`${origin}/api/sessions?project=%2Fproject&titles=cursor`)).json() as {data: typeof marked};
+  assert.equal((titles.data.items[0] as {writer?: string}).writer, undefined);
+  assert.deepEqual(seen, ['a']);
+});

@@ -3,11 +3,12 @@ import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import { AgentError, createAgentService, type AgentService, type AgentServiceOptions } from '../agents/index.mts';
 import { PrimarySession, type PrimarySessionOptions } from '../rpc/session.mts';
-import { LIMITS, type AgentCapabilities, type Bootstrap, type EventData, type EventName, type PrimaryView, type ProjectedFrame, type Snapshot, type Target, type TargetPreparation } from '../shared/api.ts';
+import { LIMITS, type AgentCapabilities, type Bootstrap, type EventData, type EventName, type PrimaryView, type ProjectedFrame, type SavedSessionPage, type Snapshot, type Target, type TargetPreparation } from '../shared/api.ts';
 import { ApiError } from './errors.mts';
 import * as v from './validate.mts';
 import { Journal, type Measure } from './journal.mts';
-import {publishedOrdinarySessions} from './ordinary-presence.mts';
+import {publishedOrdinarySessions,writerState} from './ordinary-presence.mts';
+import { WriterWatch } from './writer-watch.mts';
 import { Operations } from './operations.mts';
 import { StateStore } from './state.mts';
 import { projectFrame, projectRoster, safeText } from './projection.mts';
@@ -19,7 +20,7 @@ import { dispatchAgent } from './routes-agent.mts';
 import { dispatchThreads } from './routes-threads.mts';
 import { dispatchView } from './routes-view.mts';
 import { StoredAgentStarter, startIdentity, type StartOptions } from './agent-start.mts';
-import { validateSessionProject } from './sessions.mts';
+import { savedSessionId, validateSessionProject } from './sessions.mts';
 import type {Control} from './control.mts';
 import type {OwnerConnection} from './owner-client.mts';
 import type {OwnerDescriptor, OwnerStateIdentity, OwnerRecovery} from '../shared/owner.ts';
@@ -44,7 +45,29 @@ interface AgentObservationSlot {epoch: number; afterEpoch: number; started: bool
 interface WorkspaceObservation {version: number; dirty: boolean; desired: Map<string,AgentObservationSlot>; attached: Map<string,AgentObservationSlot>; running?: Promise<void>}
 /** Process ownership is independent of browser connections and saved view state. */
 export class Registry {
-  publishedSessions() {return publishedOrdinarySessions(this.options.agentStore);}
+  publishedSessions() {return publishedOrdinarySessions(this.options.agentStore).then(page=>this.withWriters(page));}
+  /** Marks each saved file that a terminal session may still write. A file this backend owns is never marked; its row already reads as open here. */
+  async withWriters(page: SavedSessionPage): Promise<SavedSessionPage> {
+    const items = await Promise.all(page.items.map(async item => {
+      if(await this.ownsFile(item.path)) return item;
+      return await writerState(this.options.agentStore,item.id,item.path)==='live' ? {...item,writer:'live' as const} : item;
+    }));
+    this.writerWatch().track(items.filter(item=>item.writer==='live'));
+    return {...page,items};
+  }
+  #writerWatch?: WriterWatch;
+  private writerWatch(): WriterWatch {
+    this.#writerWatch ??= new WriterWatch(this.options.agentStore, released => { if(!this.closing) this.journal.publish('sessions.writers', undefined, {released}); });
+    return this.#writerWatch;
+  }
+  private async ownsFile(path: string): Promise<boolean> {
+    const target = await realpath(path).catch(()=>path);
+    for(const session of this.sessions.values()) {
+      if(!owned(session) || !session.view.sessionFile) continue;
+      if(await realpath(session.view.sessionFile).catch(()=>session.view.sessionFile) === target) return true;
+    }
+    return false;
+  }
   control?:Control;
   readonly journal: Journal;
   readonly operations: Operations;
@@ -298,6 +321,14 @@ export class Registry {
       }
       if(existing === path) throw new ApiError('operation_conflict','This saved session already has a backend writer.',409,'manual');
     }
+    if(await this.ownsFileFor(path,key)) return;
+    const id = await savedSessionId(path);
+    if(id && await writerState(this.options.agentStore,id,path) === 'live') throw new ApiError('writer_active','A terminal session is writing this file. Resume when it ends.',409,'manual');
+  }
+  /** The primary that already owns this file may claim it again; its own published record is not a second writer. */
+  private async ownsFileFor(path: string, key: string): Promise<boolean> {
+    const current = this.sessions.get(key); if(!current || !owned(current) || !current.view.sessionFile) return false;
+    return await realpath(current.view.sessionFile).catch(()=>current.view.sessionFile) === path;
   }
   private admitPrimary(reuse: boolean) {
     if (this.closing) throw new ApiError('not_ready','The backend no longer accepts primaries.',503);
@@ -537,7 +568,7 @@ export class Registry {
     return dispatchView(this,context);
   }
   async detach(): Promise<void> {
-    this.closing = true; this.starter.close();
+    this.closing = true; this.starter.close(); this.#writerWatch?.close();
     await Promise.all([...this.opens]);
     await Promise.all([...this.sessions.values()].map(session => session.detach()));
     await this.agents.close(); await this.metadataWrite; await this.store.savePrimaries(this.views());
@@ -548,7 +579,7 @@ export class Registry {
     this.closePromise ??= this.closeOnce().catch(error => {this.closePromise = undefined; throw error;}); return this.closePromise;
   }
   private async closeOnce() {
-    this.closing = true; this.starter.close(); this.journal.close();
+    this.closing = true; this.starter.close(); this.#writerWatch?.close(); this.journal.close();
     await Promise.allSettled([...this.opens]);
     const results = await Promise.allSettled([...this.sessions.values()].map(session=>session.close()).concat(this.agents.close()));
     this.shutdownReady=true;

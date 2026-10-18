@@ -792,3 +792,38 @@ test('loaded project rows share shortest unique suffixes and preserve exact dire
   assert.deepEqual(setup.selections, [{primaryKey: 'current', selectedTarget: {kind: 'primary', key: 'current', epoch: 1}}]);
   assert.equal(setup.calls.some(call => call.path === '/api/primaries'), false);
 });
+
+const rowOf = (setup: ReturnType<typeof directPicker>) => { const select = setup.body.querySelector('.picker-folder-ordinary')?.querySelector('.picker-select'); assert.ok(select); return select; };
+test('a saved file a terminal writes reads "Open in a terminal" with Resume disabled, then enables with one line once the terminal ends', async t => {
+  const page = {...saved, items: [{...ordinarySample, writer: 'live' as const}]};
+  const setup = directPicker(t, undefined, page, undefined, {roster: catalogRoster(), published: noPublished}); setup.picker.open(); await settle();
+  let select = rowOf(setup);
+  assert.equal(select.disabled, true); assert.match(select.textContent, /Open in a terminal/); assert.match(select.textContent, /Resume here when the terminal exits\./);
+  assert.doesNotMatch(select.textContent, /The terminal session ended/);
+  assert.equal(setup.calls.some(call => call.path === '/api/primaries'), false);
+  page.items = [{...ordinarySample}]; setup.picker.writersChanged(); await settle();
+  select = rowOf(setup);
+  assert.equal(select.disabled, false); assert.match(select.textContent, /The terminal session ended\. Resume here\./); assert.doesNotMatch(select.textContent, /Open in a terminal/);
+  assert.equal(setup.calls.some(call => call.path === '/api/primaries'), false, 'release alone resumes nothing');
+  select.click(); await settle();
+  assert.equal(setup.calls.filter(call => call.path === '/api/primaries').length, 1);
+});
+test('a file that was never held reads as before and the window regaining focus makes no row claim', async t => {
+  const setup = directPicker(t, undefined, saved, undefined, {roster: catalogRoster(), published: noPublished}); setup.picker.open(); await settle();
+  const select = rowOf(setup);
+  assert.equal(select.disabled, false); assert.doesNotMatch(select.textContent, /terminal/i);
+  setup.picker.writersChanged(); await settle(); assert.doesNotMatch(rowOf(setup).textContent, /terminal/i);
+});
+test('a refusal at Resume shows the writer sentence and turns the row to its held state', async t => {
+  const page = {...saved, items: [{...ordinarySample}]};
+  const setup = directPicker(t, undefined, page, undefined, {roster: catalogRoster(), published: noPublished}); setup.picker.open(); await settle();
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes('/api/primaries') || String(url).includes('/api/operations')) return new Response(JSON.stringify({ok: false, error: {code: 'writer_active', message: 'A terminal session is writing this file. Resume when it ends.', retry: 'manual'}}), {status: 409, headers: {'content-type': 'application/json'}});
+    return original(url, init);
+  };
+  page.items = [{...ordinarySample, writer: 'live' as const}];
+  rowOf(setup).click(); await settle(); await settle();
+  assert.match(setup.error, /^A terminal session is writing this file\. Resume when it ends\./);
+  assert.equal(rowOf(setup).disabled, true); assert.match(rowOf(setup).textContent, /Open in a terminal/);
+});

@@ -64,11 +64,28 @@ type Context = {snapshot(): Snapshot | undefined; primary(): PrimaryView | undef
   agentPresentation(row: AgentRow): Pick<ConversationPresentation, 'name' | 'identityTail' | 'activity' | 'tone' | 'cwd' | 'hideVisibleState'>;
   selection(change: SelectionChange): Promise<void>; reload(): Promise<void>; selectOpened?(): (key:string)=>Promise<void>; selectConverted?(): (identity:string)=>Promise<void>; project?(): string | undefined; projectsChanged?(): void; titlesChanged?(): void; workingFolder?(path:string):Promise<void>};
 
+const WRITER_ACTIVE = 'A terminal session is writing this file. Resume when it ends.';
+const WRITER_HELD = 'Resume here when the terminal exits.';
+const WRITER_ENDED = 'The terminal session ended. Resume here.';
+function writerRefused(cause: unknown): boolean { return (cause as {view?: {code?: unknown}} | undefined)?.view?.code === 'writer_active'; }
 /** Metadata caches belong to the picker, never to execution or writer ownership. */
 export class ProjectPicker {
   private ctx: Context;
   private cached = new Map<string, SessionList>();
   private published?: SavedSessionPage;
+  /** Saved files a terminal session held when last read, and files whose terminal has since ended. */
+  private held = new Set<string>();
+  private ended = new Set<string>();
+  private reloadWriters?: () => void;
+  private reloadPublished?: () => void;
+  /** Called when a terminal session may have released a file: the open lists re-read their first page. */
+  writersChanged(): void { this.reloadWriters?.(); }
+  private noteWriters(items: readonly SavedSession[]): void {
+    for (const item of items) {
+      if (item.writer === 'live') { this.held.add(item.path); this.ended.delete(item.path); }
+      else if (this.held.delete(item.path)) this.ended.add(item.path);
+    }
+  }
   /** The title of a Pi session whose metadata this picker already holds. It makes no request. */
   sessionTitle(id: string): string | undefined {
     for (const page of [...this.cached.values(), ...(this.published ? [this.published] : [])]) {
@@ -118,6 +135,7 @@ export class ProjectPicker {
   }
   private error(cause: unknown, message = 'The session did not open. Your project choice is unchanged.'): void {
     const text = cause instanceof Error ? cause.message : String(cause);
+    if (writerRefused(cause)) message = WRITER_ACTIVE;
     const disclosure = details('Details', text); disclosure.className = 'picker-error-details';
     const summary = element('p', 'error', message); summary.hidden = !message; summary.setAttribute('role', 'alert');
     this.inlineError?.replaceChildren(summary, ...(cause === undefined ? [] : [disclosure]));
@@ -137,6 +155,7 @@ export class ProjectPicker {
   constructor(ctx: Context) { this.ctx = ctx; }
   private begin(title: string): {body: HTMLElement; token: number; signal: AbortSignal} {
     contextMenu.close(false); this.pending.abort(); this.pending = new AbortController(); this.revision++; this.shownProject = undefined;
+    this.reloadWriters = undefined; this.reloadPublished = undefined;
     let body: HTMLElement;
     if (this.inline) {
       const header = element('div', 'picker-header'); this.inlineActions = element('div', 'dialog-actions');
@@ -270,6 +289,7 @@ export class ProjectPicker {
     if (!existing) {
       first = await request<SavedSessionPage>(`/api/sessions?project=${encodeURIComponent(project)}`, 'GET', undefined, undefined, this.pending.signal);
       if (!this.owns(initialToken) || choosing !== this.choosing) return;
+      this.noteWriters(first.items);
     }
     const {body, token, signal} = this.begin(`Sessions in ${this.projectName(project)}`); this.shownProject = project;
     this.sessionContext(body, project);
@@ -325,6 +345,7 @@ export class ProjectPicker {
         const page = await request<SavedSessionPage>(`/api/sessions?project=${encodeURIComponent(project)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`, 'GET', undefined, undefined, signal);
         if (!this.owns(token)) return;
         if (generation !== loading) return;
+        this.noteWriters(page.items);
         data = mergeSessions(data, page, !!cursor); save(); paint(); void fillTitles(page);
       } catch (cause) { if (!signal.aborted && current()) { error.textContent = 'The saved list did not refresh. Use Refresh to reload the first page.'; this.error(cause, ''); } }
       finally { if (current()) {more.disabled = false; refresh.disabled = false;} }
@@ -342,7 +363,8 @@ export class ProjectPicker {
         }
       } catch (cause) { if (!signal.aborted && this.owns(token)) { error.textContent = 'Some session titles did not load. Use Refresh.'; this.error(cause, ''); } }
     };
-    const refresh = cardAction('restart', 'Refresh saved sessions', () => { void load(); }); searchRow.append(refresh);
+    const refresh = cardAction('restart', 'Refresh saved sessions', () => { void load(); this.reloadPublished?.(); }); searchRow.append(refresh);
+    this.reloadWriters = () => { if (this.owns(token)) { void load(); this.reloadPublished?.(); } };
     const file = this.sessionFile(project, search.field); file.hidden = true;
     const options = cardAction('more', 'Saved session options', () => {
       const box = options.getBoundingClientRect();
@@ -405,10 +427,11 @@ export class ProjectPicker {
       updateRegisteredDetails();
       restoreFocus(focused);
     };
-    void request<SavedSessionPage>('/api/sessions/published','GET',undefined,undefined,signal).then(page=>{
+    const readPublished=()=>void request<SavedSessionPage>('/api/sessions/published','GET',undefined,undefined,signal).then(page=>{
       if(!this.owns(token)||signal.aborted)return;
-      this.published=page;loaded=true;this.ctx.titlesChanged?.();changed(page.items.map(item=>item.path));
+      this.noteWriters(page.items);this.published=page;loaded=true;failed=false;this.ctx.titlesChanged?.();changed(page.items.map(item=>item.path));
     }).catch(()=>{if(this.owns(token)&&!signal.aborted){failed=true;changed([]);}});
+    this.reloadPublished=readPublished;readPublished();
     return paint;
   }
   private durableRow(row: AgentRow): HTMLElement {
@@ -442,15 +465,19 @@ export class ProjectPicker {
   private row(item: SavedSession, tail?: string): HTMLElement {
     const row = element('div', 'picker-session');
     const opened = sessionOwner(this.ctx.snapshot()?.primaries ?? [], item.path);
-    const select = button('', () => this.resume(item.project, item.path), 'picker-select');
+    const writer = !opened && item.writer === 'live', ended = !opened && !writer && this.ended.has(item.path);
+    const select = button('', () => this.resume(item.project, item.path), 'picker-select'); select.disabled = writer;
     select.dataset.sessionPath = item.path; select.title = item.title;
     const heading = element('span', 'picker-session-heading'); const identity = element('span', 'picker-session-tail', tail ?? ''); identity.hidden = !tail;
     heading.append(element('strong', 'picker-session-title', sessionDisplayTitle(item)), identity);
     const metadata = element('span', 'picker-session-meta');
     metadata.append(element('span', 'picker-session-folder', this.projectName(item.project)));
     if (opened) metadata.append(element('span', 'info', 'In this window'));
+    else if (writer) { metadata.append(element('span', 'info', 'Open in a terminal')); select.setAttribute('aria-description', WRITER_HELD); }
+    else if (ended) metadata.append(element('span', 'info picker-ended', WRITER_ENDED));
     else select.setAttribute('aria-description', 'Stop the terminal session before Resume. Active processes keep independent branches.');
     select.append(heading, metadata);
+    if (writer) select.append(element('span', 'secondary picker-session-meta', WRITER_HELD));
     let absolute = false;
     const formatted = absoluteTime(item.modifiedAt);
     const describeTime = () => age.setAttribute('aria-label', `Session time: ${formatted}. Show ${absolute ? 'relative' : 'absolute'} time.`);
@@ -458,7 +485,7 @@ export class ProjectPicker {
     age.title = formatted; describeTime();
     const details = element('details', 'picker-session-details'); const summary = element('summary'); controlIcon(summary, 'info', `Details for ${item.title}`);
     details.append(summary, element('p', 'picker-session-full-title', item.title), element('p', 'identity', item.project), element('p', 'identity', item.id), element('p', 'identity', item.path), element('p', 'secondary', sessionSize(item.size)));
-    if (!opened) details.append(element('p', 'secondary', 'Stop the terminal session before Resume. Active processes keep independent branches.'));
+    if (!opened && !writer && !ended) details.append(element('p', 'secondary', 'Stop the terminal session before Resume. Active processes keep independent branches.'));
     const convert=button('Convert to Durable',()=>{void this.run(()=>this.convert(item),cause=>this.error(cause,'The conversion did not return a confirmed conversation.'));},'quiet');
     convert.title='Creates a new Durable conversation from saved context. Leaves the ordinary session unchanged.';
     convert.setAttribute('aria-description', convert.title);
@@ -495,7 +522,7 @@ export class ProjectPicker {
       const current = sessionOwner(this.ctx.snapshot()?.primaries ?? [], path);
       return current
         ? this.select({primaryKey: current.key, selectedTarget: {kind: 'primary', key: current.key, epoch: current.epoch}})
-        : this.start(project, path);
+        : this.start(project, path).catch(cause => { if (writerRefused(cause)) this.writersChanged(); throw cause; });
     }, failed);
   }
   private async select(change: SelectionChange): Promise<void> {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { ChildProcess } from 'node:child_process';
-import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { ChildProcess, spawnSync } from 'node:child_process';
+import { mkdtemp, mkdir, realpath, rm, unlink, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -626,4 +626,73 @@ test('receipt capacity refuses new work without evicting an uncertain outcome',{
   const f=await startFixture(t,100);f.control.announce=false;f.control.claim=false;const first=f.registry.startAgent(f.workspace.id,STORAGE,'uncertain-0');await assert.rejects(first,{code:'not_ready'});
   for(let i=1;i<2048;i++)await assert.rejects(f.registry.startAgent(f.workspace.id,STORAGE,`uncertain-${i}`),{code:'not_ready'});
   assert.throws(()=>f.registry.startAgent(f.workspace.id,STORAGE,'overflow'),{code:'capacity'});assert.equal(f.registry.startAgent(f.workspace.id,STORAGE,'uncertain-0'),first);await assert.rejects(first,{code:'not_ready'});assert.equal(f.counts.launches,1);assert.equal(f.counts.refresh,0);assert.deepEqual(f.prepares,[]);assert.equal(f.counts.signals,0);assert.equal(f.counts.input,0);
+});
+
+const TERMINAL_ID = '3f2b8c1e-5d4a-4e7b-9c60-1a2b3c4d5e6f';
+const deadPid = () => { const child = spawnSync(process.execPath, ['-e', ''], {stdio: 'ignore'}); assert.ok(child.pid); return child.pid; };
+async function terminalRecord(setup: Awaited<ReturnType<typeof fixture>>, file: string, overrides: Record<string, unknown> = {}) {
+  const directory = join(setup.options.agentStore, '.primaries'); await mkdir(directory, {recursive: true});
+  const path = join(directory, `${TERMINAL_ID}.json`);
+  await writeFile(path, JSON.stringify({id: TERMINAL_ID, sessionFile: file, cwd: setup.cwd, pid: process.pid, hostname: hostname(), ...overrides}));
+  return path;
+}
+async function terminalSession(setup: Awaited<ReturnType<typeof fixture>>) {
+  const file = join(setup.cwd, 'terminal.jsonl'); await writeFile(file, sessionHeader(setup.cwd, TERMINAL_ID)); return realpath(file);
+}
+
+test('a saved file a terminal session writes is refused until its record shows release', {timeout: 10000}, async context => {
+  const setup = await fixture(context); const registry = await setup.open(); const file = await terminalSession(setup);
+  const record = await terminalRecord(setup, file);
+  await assert.rejects(registry.openPrimary(setup.cwd, file), {code: 'writer_active', status: 409, message: 'A terminal session is writing this file. Resume when it ends.'});
+  assert.equal(setup.counts.started, 0); assert.equal(registry.sessions.size, 0);
+  await unlink(record);
+  await registry.openPrimary(setup.cwd, file); assert.equal(setup.counts.started, 1);
+});
+
+test('only a dead local publisher proves release; every other record keeps the file held', {timeout: 10000}, async context => {
+  const setup = await fixture(context); const registry = await setup.open(); const file = await terminalSession(setup);
+  for (const overrides of [{hostname: 'another-host.invalid'}, {pid: 'not-a-pid'}, {pid: 0}]) {
+    await terminalRecord(setup, file, overrides);
+    await assert.rejects(registry.openPrimary(setup.cwd, file), {code: 'writer_active'}, JSON.stringify(overrides));
+  }
+  await writeFile(join(setup.options.agentStore, '.primaries', `${TERMINAL_ID}.json`), '{not json');
+  await assert.rejects(registry.openPrimary(setup.cwd, file), {code: 'writer_active'});
+  await terminalRecord(setup, file, {pid: deadPid()});
+  await registry.openPrimary(setup.cwd, file); assert.equal(setup.counts.started, 1);
+});
+
+test('a record that names another file does not hold this one', {timeout: 10000}, async context => {
+  const setup = await fixture(context); const registry = await setup.open(); const file = await terminalSession(setup);
+  await terminalRecord(setup, join(setup.cwd, 'elsewhere.jsonl'));
+  await registry.openPrimary(setup.cwd, file); assert.equal(setup.counts.started, 1);
+});
+
+test('saved lists mark held files and leave files this backend owns unmarked', {timeout: 10000}, async context => {
+  const setup = await fixture(context); const registry = await setup.open(); const file = await terminalSession(setup);
+  const item = {id: TERMINAL_ID, path: file, revision: 'r', project: setup.cwd, title: 'Terminal', modifiedAt: new Date().toISOString(), size: 1};
+  const page = {items: [item], total: 1, omitted: 0, nextCursor: null, titleCursor: null, observedAt: new Date().toISOString()};
+  assert.equal((await registry.withWriters(page)).items[0]?.writer, undefined);
+  const record = await terminalRecord(setup, file);
+  assert.equal((await registry.withWriters(page)).items[0]?.writer, 'live');
+  await unlink(record);
+  assert.equal((await registry.withWriters(page)).items[0]?.writer, undefined);
+  await registry.openPrimary(setup.cwd, file); await terminalRecord(setup, file);
+  assert.equal((await registry.withWriters(page)).items[0]?.writer, undefined, 'the primary this backend owns is not a terminal writer');
+});
+
+test('a primary that already owns a file may claim it again without its own record refusing it', {timeout: 10000}, async context => {
+  const setup = await fixture(context); const registry = await setup.open(); const file = await terminalSession(setup);
+  const key = await registry.openPrimary(setup.cwd, file); await terminalRecord(setup, file);
+  await registry.claimPath(file, key); assert.equal(setup.counts.started, 1);
+});
+
+test('a held file that its terminal releases publishes one sessions.writers event', {timeout: 10000}, async context => {
+  const setup = await fixture(context); const registry = await setup.open(); const file = await terminalSession(setup);
+  const item = {id: TERMINAL_ID, path: file, revision: 'r', project: setup.cwd, title: 'Terminal', modifiedAt: new Date().toISOString(), size: 1};
+  const page = {items: [item], total: 1, omitted: 0, nextCursor: null, titleCursor: null, observedAt: new Date().toISOString()};
+  const record = await terminalRecord(setup, file);
+  const released = new Promise<string[]>(resolve => { const publish = registry.journal.publish.bind(registry.journal); registry.journal.publish = ((name: string, target: unknown, data: {released?: string[]}, workspace?: string) => { if (name === 'sessions.writers') resolve(data.released ?? []); return (publish as (...input: unknown[]) => string)(name, target, data, workspace); }) as typeof registry.journal.publish; });
+  assert.equal((await registry.withWriters(page)).items[0]?.writer, 'live');
+  await unlink(record);
+  assert.deepEqual(await released, [TERMINAL_ID]);
 });

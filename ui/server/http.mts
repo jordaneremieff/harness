@@ -28,6 +28,7 @@ export type ImageUploadContext = Omit<RequestContext, 'body' | 'signal'> & {sign
 export type ImageUploadHeaders = {mimeType: 'image/png' | 'image/jpeg'; declaredBytes?: number};
 export type HttpBackend = {journal: Journal; dispatch(context: RequestContext): Promise<unknown>;
   publishedSessions?():Promise<import('../shared/api.ts').SavedSessionPage>;
+  withWriters?(page:import('../shared/api.ts').SavedSessionPage):Promise<import('../shared/api.ts').SavedSessionPage>;
   uploadImage?(context: ImageUploadContext, headers: ImageUploadHeaders, body: AsyncIterable<Uint8Array>): Promise<unknown>;
   workspace(id?: string): Promise<string>; observe(workspace: string): Promise<void>; detached(workspace: string): void;
   moveFiles?(rootId:string,from:string,to:string,work:()=>Promise<import('../shared/files.ts').FileMutation>):Promise<import('../shared/files.ts').FileMutation>;
@@ -462,7 +463,9 @@ export class LocalHttp {
     if (url.pathname === '/api/projects') { respond(response, await this.sessions.projects(url.searchParams.get('cursor'))); return true; }
     if (url.pathname === '/api/sessions') {
       const project = url.searchParams.get('project') ?? ''; const titles = url.searchParams.get('titles');
-      respond(response, titles ? await this.sessions.titles(project, titles) : await this.sessions.sessions(project, url.searchParams.get('cursor'))); return true;
+      if (titles) respond(response, await this.sessions.titles(project, titles));
+      else { const page = await this.sessions.sessions(project, url.searchParams.get('cursor')); respond(response, this.backend.withWriters ? await this.backend.withWriters(page) : page); }
+      return true;
     }
     return false;
   }

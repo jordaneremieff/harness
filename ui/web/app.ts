@@ -1227,6 +1227,7 @@ function applyShellEvent(event:ReceivedEvent):void {
   switch (event.name) {
     case 'workspace.changed': renderAll();void loadVisibleHistory();break;
     case 'files.changed': fileChanges(event.envelope.data as FileChanges,event.envelope.workspaceId);break;
+    case 'sessions.writers': picker.writersChanged();break;
     case 'draft.changed': updateDraft(event.envelope.data as EventData['draft.changed']);break;
     case 'operation.changed': showOperation(event.envelope.data as OperationView);break;
     case 'notice': {const notice = event.envelope.data as EventData['notice'];if (notice.code?.startsWith('control_')) {controlStatus = notice.message;controlStatusWorkspace = state.workspace?.id;renderWorkbenchStatus();}noticesBadge();break;}
@@ -2259,8 +2260,9 @@ function bind(): void {
   document.addEventListener('visibilitychange', () => {
     diagnostics.setHidden(document.hidden); for (const controller of controllers.values()) controller.transcript.visibilityChanged();
     if (!document.hidden && !uiReady) void finishStartup().catch(showError);
-    if (!document.hidden) { threadExplorer.refreshIfStale(); threadReader.refreshIfStale(); }
+    if (!document.hidden) { threadExplorer.refreshIfStale(); threadReader.refreshIfStale(); picker.writersChanged(); }
   });
+  window.addEventListener('focus', () => picker.writersChanged());
 }
 export function devHold(): DevReloadHold | undefined {
   if (browserControl.applying || selectionQueue.unsettled) return 'input';

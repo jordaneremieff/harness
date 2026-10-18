@@ -81,6 +81,13 @@ async function readSession(info: FileStamp): Promise<SavedSession | null> {
   return {id: saved.id, path: info.path, project: saved.cwd, revision: fingerprint([info.path, info.stamp]), title: '(title pending)', titleState: 'pending',
     modifiedAt: new Date(info.mtime).toISOString(), size: info.size};
 }
+/** The session id in a saved file's header, or undefined when the file is not a readable session. */
+export async function savedSessionId(path: string): Promise<string | undefined> {
+  try {
+    const info = await stat(path); if (!info.isFile()) return undefined;
+    return header(await readHead(path, info.size))?.id;
+  } catch { return undefined; }
+}
 export function savedSessionRevision(path: string, info: Stats): string { return fingerprint([path, fileStamp(path, info)]); }
 function fileStamp(path: string, info: Stats): string {
   return `${basename(path)}:${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;

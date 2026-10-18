@@ -1,5 +1,5 @@
 import {constants} from 'node:fs';
-import {open,opendir,realpath,stat} from 'node:fs/promises';
+import {open,opendir,realpath,stat,type FileHandle} from 'node:fs/promises';
 import {isAbsolute,join,resolve} from 'node:path';
 import {hostname} from 'node:os';
 import type {SavedSessionPage,SavedSession} from '../shared/api.ts';
@@ -11,6 +11,35 @@ type Presence={id:string;sessionFile:string;cwd:string;name?:string};
 function publisherPresent(value:{pid?:unknown;hostname?:unknown}):boolean {
   if(value.hostname!==hostname()||typeof value.pid!=='number'||!Number.isSafeInteger(value.pid)||value.pid<=0)return false;
   try{process.kill(value.pid,0);return true;}catch{return false;}
+}
+type Publisher='live'|'dead'|'unknown';
+/** A publisher is dead only when the kernel says its process does not exist; every other outcome keeps the file held. */
+function publisherState(value:{pid?:unknown;hostname?:unknown}):Publisher {
+  if(value.hostname!==hostname()||typeof value.pid!=='number'||!Number.isSafeInteger(value.pid)||value.pid<=0)return 'unknown';
+  try{process.kill(value.pid,0);return 'live';}catch(error){return (error as NodeJS.ErrnoException).code==='ESRCH'?'dead':'live';}
+}
+/**
+ * Whether a terminal session may still be writing this saved file. 'none' is proof of release: no record
+ * names the id, or the record's publisher process is proven gone. An unreadable, foreign-host or
+ * unverifiable record keeps the file held. Time never counts as proof.
+ */
+export async function writerState(root:string,id:string,path:string):Promise<'live'|'none'> {
+  if(!UUID.test(id))return 'none';
+  let file:FileHandle;
+  try{file=await open(join(root,'.primaries',`${id}.json`),constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);}
+  catch(error){const code=(error as NodeJS.ErrnoException).code;return code==='ENOENT'||code==='ENOTDIR'?'none':'live';}
+  try {
+    const info=await file.stat();if(!info.isFile()||info.size>16384)return 'live';
+    const buffer=Buffer.alloc(16385);const{bytesRead}=await file.read(buffer,0,buffer.length,0);
+    const value=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(buffer.subarray(0,bytesRead)));
+    if(!value||typeof value!=='object'||Array.isArray(value))return 'live';
+    if(typeof value.sessionFile==='string'){
+      const [named,asked]=await Promise.all([realpath(value.sessionFile).catch(()=>value.sessionFile as string),realpath(path).catch(()=>path)]);
+      if(named!==asked)return 'none';
+    }
+    return publisherState(value)==='dead'?'none':'live';
+  }catch{return 'live';}
+  finally{await file.close();}
 }
 /** Public primary discovery data, not an Agent catalog or a live-context request. */
 async function presence(root:string,id:string):Promise<Presence|undefined> {
