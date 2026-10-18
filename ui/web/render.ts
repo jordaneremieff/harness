@@ -8,7 +8,7 @@ import { highlight, languageFromPath } from './highlight.ts';
 import { transcriptImage } from './image.ts';
 import type { ToolState } from './state.ts';
 import { isValidTimestamp, previewText } from './format.ts';
-import { entryVisible, presentEntry, presentMessage } from './entry-presentation.ts';
+import { entryVisible, messageAriaLabel, presentEntry, presentMessage } from './entry-presentation.ts';
 import { cardPreviewLimits, readRange, presentResultPreview, presentToolPreview, resultPreview } from './cards.ts';
 import { thinkingExpanded } from './transcript-presentation.ts';
 import { TranscriptIndex, ToolElapsedClock, toolTime, slot, communicationDisclosureKeys } from './transcript-tools.ts';
@@ -30,7 +30,7 @@ import type { LayoutItem, VirtualLayout } from './virtual.ts';
 
 export type TranscriptElements = {transcript: HTMLElement; latest: HTMLElement; earlier?: HTMLElement};
 export type ToolSubjectCaption = NamedDestination;
-export type ViewHooks = {readTaskResult?: (reference:TaskReference,signal:AbortSignal)=>Promise<ResultInspection>; activity?: (text:string)=>void; cwd?: () => string | undefined; subject?: (value: string) => ToolSubjectCaption | undefined; result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
+export type ViewHooks = {operatorInput?: boolean; readTaskResult?: (reference:TaskReference,signal:AbortSignal)=>Promise<ResultInspection>; activity?: (text:string)=>void; cwd?: () => string | undefined; subject?: (value: string) => ToolSubjectCaption | undefined; result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
 const RAW_LIMIT = 65536;
 const TASK_READ_CONCURRENCY = 4;
 const toolStateLabels:Record<JoinedTool['status'],string>={success:'',preparing:'Preparing call',working:'Working',pending:'Queued',error:'Failed',ended:'Ended without result',available:'Result available',missing:'No result recorded'};
@@ -774,7 +774,7 @@ export class Transcript {
   private updateCommunication(cached: MessageNode, message: MessageView, entryId: string): void {
     if (!cached.communication) {
       const generation = this.generation;
-      cached.communication = new CommunicationCard(cached, {inputContent:(message,root)=>this.communicationInput(cached,message,root,entryId),subject:this.hooks.subject, reply:message=>{const task=this.tasks.replies.get(message);return task?.tool?{text:this.sentence(task.tool),open:()=>this.openTaskAnswer(task)}:undefined;}, active: () => !this.deferred && generation === this.generation && cached.node.isConnected && !this.hidden() && this.index.entries.get(entryId)?.messages?.includes(cached.source) === true, current: () => cached.source, result:this.hooks.result, protected: node => this.protectedNode(node), raw: source => partText(source.parts), expanded: key => this.expanded.has(key), disclosure: (key, open) => this.sourcePreference(key, open), layout: () => this.sourceLayout(entryId), reference: this.hooks.references ? (text, active) => this.hooks.references?.render(text, active) ?? element('span', undefined, typeof text === 'string' ? text : text.text) : undefined}, communicationDisclosureKeys(entryId, message.id));
+      cached.communication = new CommunicationCard(cached, {inputContent:(message,root)=>this.communicationInput(cached,message,root,entryId),subject:this.hooks.subject, operatorInput:this.hooks.operatorInput, reply:message=>{const task=this.tasks.replies.get(message);return task?.tool?{text:this.sentence(task.tool),open:()=>this.openTaskAnswer(task)}:undefined;}, active: () => !this.deferred && generation === this.generation && cached.node.isConnected && !this.hidden() && this.index.entries.get(entryId)?.messages?.includes(cached.source) === true, current: () => cached.source, result:this.hooks.result, protected: node => this.protectedNode(node), raw: source => partText(source.parts), expanded: key => this.expanded.has(key), disclosure: (key, open) => this.sourcePreference(key, open), layout: () => this.sourceLayout(entryId), reference: this.hooks.references ? (text, active) => this.hooks.references?.render(text, active) ?? element('span', undefined, typeof text === 'string' ? text : text.text) : undefined}, communicationDisclosureKeys(entryId, message.id));
     }
     if (cached.communication.sync(message)) {
       this.messageError(cached, message);
@@ -1075,9 +1075,10 @@ export class Transcript {
   private createMessage(entry: EntryNode, message: MessageView): MessageNode {
     const node = element('article', `message ${message.role === 'user' ? 'user' : ''}`); node.dataset.role = message.role;
     const header = element('div', 'message-header');
-    const heading = element('span', 'message-role', bounded(presentMessage(message).label, 4096));
+    const label = presentMessage(message, this.hooks.operatorInput).label;
+    const heading = element('span', 'message-role', bounded(label, 4096)); heading.hidden = !label;
     const actions = element('div', 'message-actions'); const body = element('div', 'message-body'); const error = element('div', 'error message-error'); error.hidden = true;
-    node.setAttribute('aria-label', message.role === 'user' ? 'Input message' : bounded(`${presentMessage(message).label} message`, 4096));
+    node.setAttribute('aria-label', bounded(messageAriaLabel(message, this.hooks.operatorInput), 4096));
     const menu = cardAction('menu', 'Message actions', () => this.messageMenu(entry, message.id, menu), 'message-menu');
     menu.setAttribute('aria-label', 'Message actions'); menu.title = 'Message actions'; menu.setAttribute('aria-haspopup', 'menu'); menu.setAttribute('aria-expanded', 'false');
     actions.append(menu); header.append(heading, actions); node.append(header, body, error);
@@ -1099,7 +1100,8 @@ export class Transcript {
     const cached = entry.messages.get(message.id) ?? this.createMessage(entry, message);
     const error = this.messageError(cached, message);
     if (this.communicationMessage(cached, message, entryId)) return cached;
-    setText(cached.heading, bounded(presentMessage(message).label, 4096));
+    const label = presentMessage(message, this.hooks.operatorInput).label;
+    setText(cached.heading, bounded(label, 4096));
     const children = this.messagePartNodes(cached, message, entryId, selected);
     if (message.coverage.truncated || message.coverage.omitted > 0 || !message.coverage.complete) {
       const reason = bounded(message.coverage.reason ?? '', 4096, 6).trim();
@@ -1173,7 +1175,7 @@ export class Transcript {
     if (toolOnly) cached.node.classList.add('tool-only'); else cached.node.classList.remove('tool-only');
     const thinkingOnly = content.length > 0 && content.every(child => child.classList.contains('thinking')) && !error;
     if (thinkingOnly) cached.node.classList.add('thinking-only'); else cached.node.classList.remove('thinking-only');
-    cached.heading.hidden = toolOnly || thinkingOnly;
+    cached.heading.hidden = toolOnly || thinkingOnly || !cached.heading.textContent;
     cached.actions.hidden = false;
   }
   private pruneParts(message: MessageNode, keys: ReadonlySet<string>): void {

@@ -7,10 +7,16 @@ function meaningfulPart(part: PartView): boolean {
   if (part.type === 'text' || part.type === 'thinking') return !!part.text.trim() || part.redacted === true || !!part.more;
   return true;
 }
-export function presentMessage(message: MessageView): {label: string; visible: boolean} {
-  const label = message.role === 'user' ? 'Input' : message.role === 'assistant' ? 'Assistant' : message.role === 'toolResult' ? 'Tool output' : ['custom', 'system'].includes(message.role) ? 'Notice' : message.role;
+/** Assistant output carries no role label; user-role text reads "You" only where the viewer is the operator's own session. */
+export function presentMessage(message: MessageView, operatorInput = false): {label: string; visible: boolean} {
+  const label = message.role === 'user' ? operatorInput ? 'You' : 'Input' : message.role === 'assistant' ? '' : message.role === 'toolResult' ? 'Tool output' : ['custom', 'system'].includes(message.role) ? 'Notice' : message.role;
   const omitted = message.coverage.truncated || message.coverage.omitted > 0 || message.coverage.complete === false;
   return {label, visible: !!message.communication || !!message.error || omitted || message.parts.some(meaningfulPart) || message.stopReason === 'error' || message.stopReason === 'aborted'};
+}
+/** The accessible name of a message article, which stays meaningful where the visible role label is empty. */
+export function messageAriaLabel(message: MessageView, operatorInput = false): string {
+  if (message.role === 'user') return operatorInput ? 'Your message' : 'Input message';
+  return message.role === 'assistant' ? 'Agent response' : `${presentMessage(message).label} message`;
 }
 export function entryVisible(entry: EntryView): boolean {
   if (entry.data) return true;

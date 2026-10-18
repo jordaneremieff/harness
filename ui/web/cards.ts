@@ -109,13 +109,26 @@ export function readRange(args: Record<string, unknown>): string {
 function previewSource(part: {text: string; redacted?: boolean}, skipFrontmatter: boolean): string {
   return skipFrontmatter && !part.redacted ? withoutFrontmatter(part.text) : part.text;
 }
+/** Drops blank lines before the first and after the last visible line; indentation of the first visible line stays. */
+function withoutOuterBlankLines(text: string): string {
+  let start = 0; let lineStart = 0;
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index];
+    if (char === '\n' || char === '\r') lineStart = index + 1;
+    else if (char !== ' ' && char !== '\t') { start = lineStart; break; }
+    if (index === text.length - 1) return '';
+  }
+  let end = text.length;
+  while (end > start && /\s/.test(text[end - 1] ?? '')) end--;
+  return text.slice(start, end);
+}
 type ResultPreviewText = {text: string; summary: boolean; redacted: boolean};
 function resultPreviewText(parts: readonly PartView[], skipFrontmatter = false): ResultPreviewText | undefined {
   for (const part of parts) {
     if (part.type === 'toolResult') { const nested = resultPreviewText(part.parts, skipFrontmatter); if (nested) return nested; }
     if (part.type !== 'text') continue;
     const summary = !part.redacted ? structuredResultPreview(part.structured) : undefined;
-    const text = summary ?? previewSource(part, skipFrontmatter);
+    const text = withoutOuterBlankLines(summary ?? previewSource(part, skipFrontmatter));
     if (!text) continue;
     const shown = preview(text, 1200, 6);
     return {text: shown.limited ? `${preview(shown.text, 1199, 6).text}…` : shown.text, summary: summary !== undefined, redacted: !!part.redacted};

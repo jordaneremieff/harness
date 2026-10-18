@@ -1011,10 +1011,26 @@ test('ordinary turns expose supplied roles without adding headers to compact tho
   const entries: EntryView[] = ['user', 'assistant', 'custom', 'system'].map(role => ({id: role, kind: 'message', messages: [{...message(role, 'Retained text'), role}]}));
   entries.push({id: 'thought-role', kind: 'message', messages: [{...message('thought-role', ''), parts: [{type: 'thinking', text: 'Retained thought'}]}]});
   view.set(entries); flush(); const root = node('primary-transcript'); const headers = root.querySelectorAll('.message-role');
-  assert.deepEqual(headers.map(header => [header.textContent, header.hidden]), [['Input', false], ['Assistant', false], ['Notice', false], ['Notice', false], ['Assistant', true]]);
+  assert.deepEqual(headers.map(header => [header.textContent, header.hidden]), [['Input', false], ['', true], ['Notice', false], ['Notice', false], ['', true]]);
   assert.equal(root.querySelectorAll('.message-body').filter(body => body.textContent === 'Retained text').length, 4);
   const body = root.querySelector('.message-body'); assert.ok(body); const first = headers[0];
   view.set(entries); flush(); assert.equal(root.querySelector('.message-role'), first); assert.equal(root.querySelector('.message-body'), body);
+});
+test('the operator session labels its own user turns You and no visible text names the assistant', () => {
+  setup(); const view = new Transcript('primary', {operatorInput: true, presentation: () => {}, reading: () => {}});
+  view.set([{id: 'user', kind: 'message', messages: [{...message('u', 'Hello'), role: 'user'}]}, entry('assistant', 'Reply')]); flush();
+  const container = node('primary-transcript'); const user = container.querySelector('.user'); assert.ok(user);
+  assert.equal(user.querySelector('.message-role')?.textContent, 'You'); assert.equal(user.attributes['aria-label'], 'Your message');
+  assert.doesNotMatch(container.textContent, /Assistant/); assert.equal(container.querySelectorAll('.message-role').filter(role => !role.hidden).length, 1);
+  const source = communicationEntry('unresolved'); const input = source.messages?.[0]; assert.ok(input); input.role = 'user'; input.parts = [{type: 'text', text: 'Typed prompt'}];
+  view.set([source]); flush(); assert.equal(container.querySelector('.communication-sender')?.textContent, 'You'); view.reset();
+});
+test('a sender without a public name shows the loaded conversation caption, never a raw identity', () => {
+  setup(); const view = new Transcript('primary', {presentation: () => {}, reading: () => {}, subject: () => ({text: 'Web UI lead · task 96', open: () => {}}), operatorInput: true});
+  view.set([communicationEntry('ready', 'Body', '')]); flush(); const heading = node('primary-transcript').querySelector('.communication-sender'); assert.ok(heading);
+  assert.equal(heading.textContent, 'Web UI lead · task 96'); assert.equal(heading.title, '10000000-0000-4000-8000-000000000001'); view.reset();
+  const unnamed = new Transcript('primary', {presentation: () => {}, reading: () => {}, subject: () => ({text: 'Unnamed conversation', open: () => {}})});
+  unnamed.set([communicationEntry('ready', 'Body', '')]); flush(); assert.equal(node('primary-transcript').querySelector('.communication-sender')?.textContent, 'Unnamed agent'); unnamed.reset();
 });
 test('response stop states remain visible without a supplied error message', () => {
   setup(); const view = transcript();
@@ -1046,7 +1062,8 @@ test('turns preserve body and action hooks with a compact role label', () => {
   const body = user.querySelector('.message-body'); const actions = user.querySelector('.message-actions');
   view.set([{id: 'user', kind: 'message', messages: [{...message('u', 'Hello'), role: 'user'}]}, entry('assistant', 'Reply')]); flush();
   assert.equal(user.querySelector('.message-header'), header); assert.equal(user.querySelector('.message-body'), body); assert.equal(user.querySelector('.message-actions'), actions);
-  assert.deepEqual(container.querySelectorAll('.message-role').map(label => label.textContent), ['Input', 'Assistant']);
+  assert.deepEqual(container.querySelectorAll('.message-role').map(label => label.textContent), ['Input', '']);
+  const reply = container.querySelectorAll('.message-role')[1]; assert.equal(reply?.hidden, true); assert.equal(reply?.parentNode?.parentNode?.attributes['aria-label'], 'Agent response');
   assert.deepEqual(container.querySelectorAll('.message-body').map(body => body.textContent), ['Hello', 'Reply']);
 });
 test('scroll settlement retains deliberate rest and does not schedule text probes', () => {
@@ -1369,6 +1386,19 @@ test('collapsed previews are prose only for Markdown reads and structured summar
   view.set([failed]); flush();
   assert.equal(node('primary-transcript').querySelector('.tool-preview')?.querySelector('.tool-prose-preview'), null);
   assert.equal(node('primary-transcript').querySelector('.tool-preview')?.textContent, markdown);
+});
+test('compact raw previews skip outer blank lines while Copy output keeps the exact text', async () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator'); const copied: string[] = [];
+  Object.defineProperty(globalThis, 'navigator', {configurable: true, value: {clipboard: {writeText: async (text: string) => {copied.push(text);}}}});
+  try {
+    setup(); const view = transcript(); const raw = '\n \n\n  first\nsecond\n\t\n\n';
+    const source = contentEntry('blank-lines', {command: 'cd x'}, raw); for (const part of source.messages[0]?.parts ?? []) if (part.type === 'toolCall' || part.type === 'toolResult') part.name = 'bash';
+    view.set([source]); flush(); const card = node('primary-transcript').querySelector('.tool-shell'); assert.ok(card);
+    assert.equal(card.querySelector('.tool-preview')?.textContent, '  first\nsecond');
+    card.querySelector('.tool-copy')?.dispatch('click', {stopPropagation() {}}); await Promise.resolve(); assert.equal(copied.at(-1), raw);
+    const blank = contentEntry('only-blank', {command: 'true'}, '\n \n'); for (const part of blank.messages[0]?.parts ?? []) if (part.type === 'toolCall' || part.type === 'toolResult') part.name = 'bash';
+    view.set([blank]); flush(); assert.equal(node('primary-transcript').querySelector('.tool-preview')?.hidden, true);
+  } finally { if (previous) Object.defineProperty(globalThis, 'navigator', previous); else Reflect.deleteProperty(globalThis, 'navigator'); }
 });
 test('session groups fold adjacent visible events and show actionable notices outside their lazy body', () => {
   setup(); const view = transcript();
@@ -2266,7 +2296,7 @@ test('communication headers use supplied identities rather than missing-name pro
   setup(); const view = transcript(); const source = communicationEntry('ready', 'Body', ''); view.set([source]); flush();
   const card = node('primary-transcript').querySelector('.communication-card'); assert.ok(card);
   const heading = card.querySelector('.communication-sender'); assert.ok(heading);
-  assert.equal(heading.textContent, '10000000-0000-4000-8000-000000000001'); assert.equal(heading.title, heading.textContent);
+  assert.equal(heading.textContent, 'Unnamed agent'); assert.equal(heading.title, '10000000-0000-4000-8000-000000000001');
   assert.doesNotMatch(heading.textContent, /unavailable/);
   view.set([communicationEntry()]); flush(); assert.equal(card.querySelector('.communication-sender'), heading); assert.equal(heading.textContent, 'Peer');
   assert.equal(heading.title, '10000000-0000-4000-8000-000000000001'); view.reset();
@@ -2348,7 +2378,7 @@ test('Source restores one target-local disclosure and preserves transport loss w
 });
 test('non-ready associations show literal previews without promoting sender or kind claims', () => {
   setup(); const view = transcript(); view.set([communicationEntry('ready', '', '')]); flush(); const article = node('primary-transcript').querySelector('.communication-card'); assert.ok(article);
-  assert.equal(article.querySelector('.communication-sender')?.textContent, '10000000-0000-4000-8000-000000000001'); assert.equal(messageAction(article, 'Copy').enabled, false);
+  assert.equal(article.querySelector('.communication-sender')?.textContent, 'Unnamed agent'); assert.equal(messageAction(article, 'Copy').enabled, false);
   const actions = article.querySelector('.message-actions');
   for (const state of ['unresolved', 'unavailable'] as const) {
     view.set([communicationEntry(state)]); flush(); assert.equal(article.dataset.state, state); assert.equal(article.querySelector('.communication-sender')?.textContent, ''); assert.equal(article.querySelector('.communication-sender')?.hidden, true); assert.equal(article.querySelector('.communication-unverified')?.attributes['aria-label'], 'Source unverified'); assert.equal(article.querySelector('.communication-unverified')?.hidden, false); assert.equal(article.querySelector('.communication-kind'), null); assert.equal(article.querySelector('.communication-copy'), null); assert.match(messageAction(article, 'Copy').description ?? '', /source unverified/); assert.equal(article.querySelector('.message-actions'), actions);

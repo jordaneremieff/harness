@@ -68,13 +68,10 @@ test('sidebar disclosures use rotating chevrons and discovery stays a named acti
 
 test('content hues share scoped Markdown rules and leave metadata and identity tails intact',()=> {
   assert.match(rule('.secondary, .info'),/color: var\(--muted\)/);
-  assert.match(rule('.message.user > .message-header > .message-role'),/color: var\(--accent\)/);
-  assert.match(rule('.message[data-role=assistant] > .message-header > .message-role'),/color: var\(--info\)/);
-  assert.match(rule('.thinking > summary'),/color: var\(--md-em\)/);assert.match(rule('.thinking-content'),/color: var\(--muted\)/);
+  assert.match(rule('.message-role'),/color: var\(--muted\)/);assert.match(rule('.thinking > summary, .system-note > details > summary, .custom-entry > details > summary, .facts-panel summary'),/color: var\(--muted\)/);assert.match(rule('.thinking > summary'),/font-weight: 500/);assert.match(rule('.thinking-content'),/color: var\(--muted\)/);
   assert.match(rule('.tool-name'), /color: inherit/); assert.match(rule('.tool-shell'), /color: var\(--fg\)/);
   assert.match(rule('.tool-status.working'),/color: var\(--info\)/);assert.match(rule('.tool-status.missing'),/color: var\(--warning\)/);
-  assert.match(rule('.communication-card[data-state=ready] .communication-header > .communication-sender'),/color: var\(--md-em\)/);
-  assert.match(rule('.markdown-content:is(h1, h2, h3, h4, h5, h6)'),/color: var\(--md-heading\)/);assert.match(rule('.markdown-content .markdown-inline-code'),/color: var\(--md-code\)/);
+  assert.match(rule('.markdown-content:is(h1, h2, h3, h4, h5, h6)'),/color: var\(--fg\)/);assert.doesNotMatch(rule('.markdown-content .markdown-inline-code'),/color:/);
   assert.doesNotMatch(css,/\.file-content th, \.file-content td|\.file-content blockquote/);
   assert.match(rule('.row-identity'),/max-width: 40%; overflow: hidden; text-overflow: ellipsis/);
   assert.match(rule('.conversation-identity'),/white-space: nowrap/);
@@ -171,7 +168,7 @@ test('blue marks focus while selected rows and tabs use neutral rules and surfac
   const values = [...css.matchAll(/(?:^|\n)\s*([^{}]+)\{([^{}]+)\}/g)].flatMap(match =>
     ['background', 'background-color', 'color', 'fill'].flatMap(property =>
       [...match[2].matchAll(new RegExp(`(?:^|[;\\s])${property}:\\s*([^;}]+)`, 'g'))].map(value => ({selector: match[1].replace(/\/\*[\s\S]*?\*\//g, '').trim(), property, value: value[1].trim()}))));
-  assert.deepEqual(values.filter(item => item.value.includes('--accent')), [{selector: '.pane-split > .pane-divider:focus-visible::after', property: 'background', value: 'var(--accent)'}, {selector: '.message.user > .message-header > .message-role', property: 'color', value: 'var(--accent)'}]);
+  assert.deepEqual(values.filter(item => item.value.includes('--accent')), [{selector: '.pane-split > .pane-divider:focus-visible::after', property: 'background', value: 'var(--accent)'}]);
   const fills = values.filter(item => item.property === 'background' || item.property === 'background-color');
   assert.deepEqual(fills.filter(item => item.value.includes('--edge')), [
     {selector: '.pane-split > .pane-divider:hover::after', property: 'background', value: 'var(--edge)'},
@@ -362,7 +359,7 @@ test('compact message headers retain focus access and Copy output follows the re
 
 test('ordinary role and actions share a stable header and compact actions retain focus access', async () => {
   const communication = await readFile(new URL('./communication.ts', import.meta.url), 'utf8');
-  assert.match(rule('.message-header'), /display: flex; align-items: center; gap: var\(--s2\); min-width: 0; min-height: 24px/);
+  assert.match(rule('.message-header'), /display: flex; align-items: center; gap: var\(--s2\); min-width: 0; max-width: 72ch; min-height: 24px/);
   assert.doesNotMatch(rule('.message-header'), /grid-template-columns:|background:|border:/);
   assert.match(rule('.message-role'), /flex: 0 1 auto; min-width: 0/);
   assert.match(rule('.communication-card'), /padding: 0; border: 0; background: transparent; font-family: var\(--sans\)/);
@@ -1049,4 +1046,14 @@ test('the composer editor and its color layer share the editor-derived reading m
   assert.match(rule('.composer textarea'), /padding: var\(--s3\)/);
   assert.match(rule('.communication-card > .communication-body'), /font-size: 16px/);
   assert.match(rule('.task-answer, .step-answer'), /font-size: 16px; line-height: 1\.6/);
+});
+test('chrome labels stay quiet and content color is reserved for syntax, links and emphasis weight', () => {
+  const contentTokens = [...css.matchAll(/(?:^|\n)\s*([^{}]+)\{([^{}]*var\(--md-[^{}]*)\}/g)].map(match => match[1]?.trim() ?? '');
+  assert.deepEqual(contentTokens.filter(selector => !/^(\.syn-md-|\.composer-colors::highlight\(composer-md-)/.test(selector)), ['.markdown-content strong', '.markdown-content a', '.markdown-content:is(blockquote)']);
+  assert.match(rule('.message-role'), /color: var\(--muted\); font-size: 12px; line-height: 18px; font-weight: 500/);
+  assert.doesNotMatch(css, /\.message\[data-role=assistant\] > \.message-header > \.message-role|\.message\.user > \.message-header > \.message-role/);
+  assert.doesNotMatch(rule('.markdown-content .markdown-inline-code'), /color:/);
+  assert.match(rule('.markdown-content .markdown-inline-code'), /padding: 0 3px/);
+  assert.doesNotMatch(css, /\.markdown-content em \{/);
+  assert.match(rule('.message-actions'), /margin-left: auto/);
 });

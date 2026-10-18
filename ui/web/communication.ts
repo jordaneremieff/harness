@@ -4,13 +4,13 @@ import { button, copy, element, rawText, setText } from './dom.ts';
 import { cardAction, cardActionLabel } from './card-icons.ts';
 import { markdownDom, sourceWrap } from './safe-markdown.ts';
 import { isValidTimestamp, previewText } from './format.ts';
-import { presentMessage } from './entry-presentation.ts';
+import { messageAriaLabel, presentMessage } from './entry-presentation.ts';
 import type { QualifiedReference, ReferenceField, ReferenceQuery } from './references.ts';
 import type {NamedDestination} from './tool-sentences.ts';
 import {conversationIdentityText} from './tabs.ts';
 
 type Shell = {node: HTMLElement; header: HTMLElement; heading: HTMLElement; actions: HTMLElement; body: HTMLElement};
-type Hooks = {inputContent?: (message:MessageView, root:HTMLElement)=>boolean; reply?: (message:MessageView)=>{text:string;open():void}|undefined; subject?: (identity:string)=>NamedDestination|undefined; result?: (identity:string,selector:ResultSelector)=>void; reference?: (query: ReferenceQuery, active: (node: HTMLElement) => boolean) => HTMLElement; active(): boolean; current(): MessageView; protected(node: HTMLElement): boolean; raw(message: MessageView): string; expanded(key: string): boolean; disclosure(key: string, open: boolean): void; layout(): void};
+type Hooks = {operatorInput?: boolean; inputContent?: (message:MessageView, root:HTMLElement)=>boolean; reply?: (message:MessageView)=>{text:string;open():void}|undefined; subject?: (identity:string)=>NamedDestination|undefined; result?: (identity:string,selector:ResultSelector)=>void; reference?: (query: ReferenceQuery, active: (node: HTMLElement) => boolean) => HTMLElement; active(): boolean; current(): MessageView; protected(node: HTMLElement): boolean; raw(message: MessageView): string; expanded(key: string): boolean; disclosure(key: string, open: boolean): void; layout(): void};
 type Ready = Extract<CommunicationPresentation, {state: 'ready'}>;
 type Row = [string, string, QualifiedReference?];
 function qualified(label: string, text: string, owner: string, field: ReferenceField): Row { return [label, text, {text, owner, field}]; }
@@ -163,14 +163,15 @@ export class CommunicationCard {
     const loaded=this.hooks.subject?.(sender.identity);
     if (loaded?.name && loaded.provenance) return loaded.name;
     const supplied=sender.name?.trim();
-    return supplied && supplied!==sender.identity && !conversationIdentityText(supplied) ? supplied : sender.identity;
+    if (supplied && supplied!==sender.identity && !conversationIdentityText(supplied)) return supplied;
+    return loaded?.open && loaded.text && !loaded.text.startsWith('Unnamed') ? loaded.text : 'Unnamed agent';
   }
   private header(value: CommunicationPresentation, message: MessageView): void {
     this.shell.node.dataset.state = value.state;
     this.shell.node.dataset.reason = value.state === 'unavailable' ? value.reason : '';
     const sender=value.state==='ready'?value.value.sender:undefined;
     const input=unassociatedInput(message); this.shell.node.classList.toggle('user',input);
-    const heading=sender?this.senderLabel(sender):input?presentMessage(message).label:'';
+    const heading=sender?this.senderLabel(sender):input?presentMessage(message,this.hooks.operatorInput).label:'';
     setText(this.shell.heading,heading);
     this.shell.heading.hidden = !sender && !input; this.shell.heading.title = sender?.identity ?? '';
     this.unverified.hidden = value.state === 'ready' || input;
@@ -246,7 +247,7 @@ export class CommunicationCard {
   dispose(): void {
     this.unverified.remove(); this.inspection.remove(); this.shell.node.classList.remove('communication-card'); delete this.shell.node.dataset.state; delete this.shell.node.dataset.reason;
     this.shell.header.classList.remove('communication-header'); this.shell.heading.classList.remove('communication-sender'); this.shell.body.classList.remove('communication-body');
-    this.shell.node.setAttribute('aria-label', `${presentMessage(this.hooks.current()).label} message`); this.shell.heading.title = ''; this.shell.heading.hidden = false;
+    this.shell.node.setAttribute('aria-label', messageAriaLabel(this.hooks.current(), this.hooks.operatorInput)); this.shell.heading.title = ''; this.shell.heading.hidden = false;
     this.shell.body.replaceChildren(); this.source = undefined;
   }
 }

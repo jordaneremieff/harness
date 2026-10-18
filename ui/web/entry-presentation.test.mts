@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { EntryView, MessageView, PartView } from '../shared/api.ts';
-import { entryVisible, presentEntry, presentMessage } from './entry-presentation.ts';
+import { entryVisible, messageAriaLabel, presentEntry, presentMessage } from './entry-presentation.ts';
 import type { PresentationContext } from './transcript-presentation.ts';
 
 const coverage = {complete: true, truncated: false, omitted: 0};
@@ -14,6 +14,9 @@ test('contentless messages and entries have no visible chrome', () => {
   assert.equal(entryVisible({id: 'entry', kind: 'message', messages: []}), false);
   assert.equal(presentMessage(message([], {role: 'assistant', state: 'partial'})).visible, false);
   assert.deepEqual(presentMessage(message([{type: 'text', text: 'hello'}], {role: 'user'})), {label: 'Input', visible: true});
+  assert.deepEqual(presentMessage(message([{type: 'text', text: 'hello'}], {role: 'user'}), true), {label: 'You', visible: true});
+  assert.deepEqual(presentMessage(message([{type: 'text', text: 'hello'}], {role: 'assistant'}), true), {label: '', visible: true});
+  assert.equal(messageAriaLabel(message([], {role: 'assistant'})), 'Agent response');
 });
 test('communication state remains visible without original content', () => {
   const value = message([], {communication: {state: 'unresolved'}}); assert.equal(presentMessage(value).visible, true); assert.equal(entryVisible({id: 'entry', kind: 'message', messages: [value]}), true);
