@@ -1626,7 +1626,7 @@ function refreshStaleConnection(controller: ConversationController): void {
 const ACTION_TITLES: Partial<Record<AgentComposerState['kind'], string>> = {start: 'Start agent. This can resume unfinished work before the agent is ready.', failed: 'Check whether the agent started.'};
 function composerStateView(view: AgentComposerState, run: () => void): ComposerStateView {
   const {action} = view;
-  return {line: view.line, label: view.label, blocksSend: view.kind === 'read-only' || view.kind === 'checking', detail: view.detail || undefined, showDetail: () => showDetails('Agent details', view.detail),
+  return {line: view.line, label: view.label, blocksSend: view.kind === 'read-only' || view.kind === 'checking', ...(view.kind === 'start' || view.kind === 'starting' ? {} : {detail: view.detail || undefined, showDetail: () => showDetails('Agent details', view.detail)}),
     ...(action ? {action: {...action, ...(ACTION_TITLES[view.kind] ? {title: ACTION_TITLES[view.kind]} : {}), disabled: action.disabled || !connected || !!checkingAgent, run}} : {})};
 }
 function showDetails(title: string, detail: string): void {

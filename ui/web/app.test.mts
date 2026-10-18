@@ -1859,7 +1859,10 @@ test('the control row shows no sentence for an ordinary state and a short label 
   assert.equal(agentControl('state-line').textContent, 'Not running. Start it to send a message.'); assert.equal(visible()?.hidden, true); assert.equal(agentControl('state-detail').hidden, true);
   assert.equal(agentControl('start').hidden, false); assert.equal(agentControl('start').textContent, 'Start'); assert.equal(agentControl('send').hidden, true);
   assert.equal(agentControl('editor').rows, 1); assert.equal((agentControl('editor') as HostNode & {placeholder: string}).placeholder.includes('commands'), false);
+  event('agent.availability', {identity, connectionEpoch: 1, state: 'stored', capabilities: agentFixture(identity).capabilities, reason: 'Stored since the last restart.'}); await settle();
+  assert.equal(agentControl('state-line').textContent, 'Not running. Start it to send a message.'); assert.equal(agentControl('state-detail').hidden, true, 'Start offers no Details control even when a reason exists'); assert.equal(state.classList.contains('sr-only'), true); assert.equal(visible()?.hidden, true);
   await arrive({workspace: {id: 'w', revision: 2, selectedTarget: target, panelVisible: true}, primaries: [], roster: [agentFixture(identity, {availability: 'incompatible', capabilities: {input: false}})], targets: [targetFixture('quiet-state', target, {draft: {revision: 1, text: '', mode: 'followUp', persisted: true}})]});
+  event('agent.availability', {identity, connectionEpoch: 2, state: 'incompatible', capabilities: {...agentFixture(identity).capabilities, input: false}}); await settle();
   assert.equal(state.classList.contains('sr-only'), false); assert.equal(visible()?.textContent, 'Read only'); assert.equal(visible()?.title, 'This agent cannot run here. Messages are read only.');
   assert.equal(visible()?.getAttribute('aria-hidden'), 'true'); assert.equal(agentControl('state-line').textContent, 'This agent cannot run here. Messages are read only.');
 });
