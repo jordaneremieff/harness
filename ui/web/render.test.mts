@@ -3126,4 +3126,12 @@ test('an older page keeps the first visible entry in place, with the earlier row
     f.grow(190); flush(); flush(); assert.ok(Math.abs(f.moved()) <= 1, `rows grew after the page landed, ${f.label}: moved ${f.moved()}px`);
     f.grow(205); f.view.set(f.withOlder); settleFrames(); assert.ok(Math.abs(f.moved()) <= 1, `rows grew, ${f.label}: moved ${f.moved()}px`);
   }
+});test('scrolling into rows that are not mounted yet does not shift the reader by the height of the earlier-history row', () => {
+  for (const lead of [false, true]) {
+    setup(); if (lead) { const earlier = new FakeNode('button'); ids.set('primary-earlier', earlier); roots.push(earlier); }
+    const view = transcript(); const container = node('primary-transcript'); const scroll = scrollable(container);
+    view.set(Array.from({length: 60}, (_, index) => entry(`n${index}`))); flush(); view.historyAvailable(lead);
+    scroll.to(2000); container.dispatch('scrollend'); flush(); settleFrames();
+    for (const target of [1300, 900, 4100, 4000]) { scroll.to(target); flush(); flush(); flush(); assert.equal(container.scrollTop, target, `lead ${lead}: scrolled to ${target}`); }
+  }
 });

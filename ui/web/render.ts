@@ -562,7 +562,12 @@ export class Transcript {
         return {id: node.dataset.entryId, offsetPx: this.node.scrollTop - (node.offsetTop - this.node.offsetTop)};
       }
     }
-    return captureAnchor(this.layout, this.node.scrollTop);
+    return captureAnchor(this.layout, this.node.scrollTop - this.layoutOrigin());
+  }
+  /** Layout positions start at the first laid-out item; the earlier-history row and padding above it are not part of the layout. */
+  private layoutOrigin(): number {
+    const first = Array.from(this.node.children).find(child => child !== this.lead) as HTMLElement | undefined;
+    return first ? Math.max(0, first.offsetTop - this.node.offsetTop) : 0;
   }
   private geometryAnchor(override?: {id: string; offsetPx: number} | null): {id: string; offsetPx: number} | null {
     if (this.follow) return null;
