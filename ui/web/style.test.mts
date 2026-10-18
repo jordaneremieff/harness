@@ -565,14 +565,14 @@ test('the desktop Message panel stays outside the sidebar section flow and the r
   assert.match(rule('.roster'), /flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto/);
   assert.match(rule('.roster-body'), /display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0/);
   assert.match(rule('.roster-body > :not(.roster)'), /flex: none/);
-  assert.match(rule('.sidebar-scroll > .roster-section'), /min-height: 0/);
+  assert.match(rule('.sidebar-scroll > .roster-section'), /min-height: 28px/);
   assert.match(rule('.agent-message-panel'), /flex: none;/);
 });
 test('responsive, short, coarse, reduced-motion and forced-color paths remain', () => {
   for (const width of [899, 599]) assert.ok(css.includes(`${width}px`));
   assert.match(css, /\.app\.drawer-open \.workbench > \.sidebar/);
   assert.match(media('@media (max-width:899px)'), /\.sidebar > \.resizer \{ display: none; \}/);
-  assert.ok(media('@media (max-height:599px)').includes('.sidebar-scroll > .roster-section { min-height: 0; }'));
+  assert.ok(media('@media (max-height:599px)').includes('.sidebar-scroll > .roster-section { min-height: 28px; }'));
   const coarse = media('@media (pointer:coarse)');
   assert.match(coarse, /\.icon-button \{ min-height: 44px; min-width: 44px; \}/);
   assert.match(coarse, /\.resizer\[data-axis=x\] \{ right: 0; width: 44px; \}/);
@@ -1063,4 +1063,12 @@ test('the draft-save failure row wraps, stays visible and offers a quiet text re
   assert.match(rule('.receipt-save-failure'), /display: flex; flex-wrap: wrap;/); assert.match(rule('.receipt-save-failure'), /overflow: visible;/);
   assert.match(rule('.receipt:has(> .receipt-save-failure:only-child)'), /max-height: none; overflow: visible;/);
   assert.match(rule('.receipt .receipt-save-failure > .receipt-retry'), /padding: 2px 0; color: var\(--muted\); font-size: 12px;/);
+});
+
+test('sidebar section headings keep their own row in normal flow so no heading draws over another', () => {
+  const heading = rule('.nav-heading-row'); assert.match(heading, /height: 28px/); assert.doesNotMatch(heading, /position: (?:absolute|fixed)|margin-top: -|transform:/);
+  assert.match(rule('.sidebar-scroll > .roster-section'), /min-height: 28px/); assert.match(rule('.roster-section[data-collapsed=true]'), /flex: none/);
+  const threads = rule('.threads-section'); assert.match(threads, /display: flex; flex-direction: column;/); assert.match(threads, /min-height: 28px/); assert.match(threads, /overflow: hidden/); assert.doesNotMatch(threads, /position: (?:absolute|fixed)|margin-top: -/);
+  assert.match(rule('.threads-section > .nav-heading-row'), /flex: none/); assert.match(rule('.threads-body[hidden]'), /display: none/);
+  assert.match(rule('.thread-scroll:focus-visible'), /outline-offset: -2px/); assert.doesNotMatch(css, /data-pointer/);
 });

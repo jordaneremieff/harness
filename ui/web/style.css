@@ -200,7 +200,7 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .sidebar { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 0 0 8px; border-right: 1px solid var(--rule); background: var(--side); }
 .sidebar > *, .sidebar-scroll > * { flex-shrink: 0; }
 .sidebar-scroll { display: contents; }
-.sidebar-scroll > .roster-section { flex: 1 1 auto; min-height: 0; }
+.sidebar-scroll > .roster-section { flex: 1 1 auto; min-height: 28px; }
 .nav-top { display: flex; align-items: center; gap: var(--s1); min-height: 32px; padding: 0 var(--s2) 0 var(--s3); border-bottom: 1px solid var(--rule); }
 .sidebar-footer { display: flex; flex: none; align-items: center; gap: var(--s1); margin-top: auto; padding: var(--s1) var(--s2) 0; font-size: 13px; }
 .sidebar-footer > .icon-button { justify-content: flex-start; padding: 0 4px; }
@@ -245,7 +245,7 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .row-meta:empty, .row-word:empty { display: none; }
 .roster-section { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .roster-section > .nav-heading-row { flex: none; }
-.roster-section[data-collapsed=true] { flex: 1; }
+.roster-section[data-collapsed=true] { flex: none; }
 .files-section { display: flex; flex-direction: column; min-height: 0; max-height: 45%; }
 .files-section > .nav-heading-row { flex: none; }
 #files-section-body { min-height: 0; overflow: auto; scrollbar-width: thin; }
@@ -1158,11 +1158,16 @@ dialog[data-variant=menu]::backdrop { background: transparent; }
   .transcript-region { min-height: 120px; }
   .command-menu { max-height: min(200px,35vh); }
   .nav-section { margin-top: 6px; }
-  .sidebar-scroll > .roster-section { min-height: 0; }
+  .sidebar-scroll > .roster-section { min-height: 28px; }
   .agent-message-panel { min-height: 100px; max-height: 40dvh; }
 }
 /* Threads: the sidebar explorer and the reader shown inside one pane. */
-.threads-list { max-height: min(28dvh, 240px); margin: 0; padding: 0; overflow-x: hidden; overflow-y: auto; list-style: none; scrollbar-width: thin; scrollbar-color: var(--edge) transparent; }
+.threads-section { display: flex; flex-direction: column; flex: 0 1 auto; min-height: 28px; overflow: hidden; }
+.threads-section > .nav-heading-row { flex: none; }
+.threads-body { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.threads-body[hidden] { display: none; }
+.threads-body > :not(.threads-list) { flex: none; }
+.threads-list { flex: 0 1 auto; min-height: 0; max-height: min(28dvh, 240px); margin: 0; padding: 0; overflow-x: hidden; overflow-y: auto; list-style: none; scrollbar-width: thin; scrollbar-color: var(--edge) transparent; }
 .thread-item { margin: 0; }
 .thread-row .row-title { flex: 1 1 auto; }
 .thread-row .row-meta { flex: none; }

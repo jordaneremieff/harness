@@ -317,7 +317,7 @@ export class ThreadReader {
     const thread = entry.thread, name = nameFor(this.hooks.name);
     this.lastNames = this.nameSignature();
     setText(this.title, thread?.title || entry.item.title || 'Thread');
-    setText(this.status, this.statusText(thread));
+    setText(this.status, this.statusText(thread)); this.status.title = thread?.integrator ? `Integrator ${thread.integrator}` : '';
     this.paintFrame(thread);
     const wanted = exchangeRows(entry.events, name).map(row => this.rowNode(row));
     this.exchange.replaceChildren(...wanted);

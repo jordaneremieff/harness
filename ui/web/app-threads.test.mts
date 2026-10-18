@@ -80,6 +80,7 @@ test('a thread opens in the focused pane only, reads without writing, and Escape
   assert.equal(byId('threads-list').querySelectorAll('button')[0]?.getAttribute('aria-current'), 'page');
   assert.equal(text(node.querySelector('.thread-title') as never), 'Release plan');
   assert.match(text(node.querySelector('.thread-status') as never), /^Open · 3 members · Integrator Web UI manager/);
+  assert.equal((node.querySelector('.thread-status') as unknown as {title: string}).title, `Integrator ${STORAGE}`);
   const exchange = node.querySelector('.thread-exchange'); assert.ok(exchange);
   const rows = exchange.children;
   assert.deepEqual(rows.map(row => row.classList.contains('thread-message') ? 'message' : 'line'), ['line', 'line', 'message', 'line', 'message', 'line']);
