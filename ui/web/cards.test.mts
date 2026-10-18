@@ -223,8 +223,30 @@ test('a successful Markdown read previews as noninteractive prose without source
   assert.equal(shown.textContent, 'Release notes The bold and soft label with code() and Image not shown: chart. \u2022 first \u2022 second <script>alert(1)</script>');
   assert.doesNotMatch(shown.textContent, /[#*_[\]]|https:/);
   const classes = walk(shown).map(child => child.className);
-  assert.ok(classes.includes('prose-preview-block prose-preview-heading')); assert.ok(classes.includes('prose-preview-code'));
+  assert.ok(classes.includes('prose-preview-block prose-preview-heading prose-preview-title')); assert.ok(classes.includes('prose-preview-code'));
   assert.deepEqual(walk(shown).filter(child => child.tag === 'strong' || child.tag === 'em').map(child => [child.tag, child.textContent]), [['strong', 'bold'], ['em', 'soft']]);
+});
+test('a leading heading is its own title line and later headings stay inline in the body', () => {
+  setup();
+  const shown = node(presentResultPreview(readSource('docs/a.md', '# A\n\n## B\n\ntext')));
+  const spans = shown.children.filter(child => child.tag === 'span'), [title, body] = spans; assert.ok(title && body); assert.equal(spans.length, 2);
+  assert.equal(title.textContent, 'A'); assert.ok(title.className.split(' ').includes('prose-preview-title'));
+  assert.equal(body.className, 'prose-preview-body'); assert.equal(body.textContent, 'B text');
+  const [heading, paragraph] = body.children.filter(child => child.tag === 'span'); assert.ok(heading && paragraph);
+  assert.ok(heading.className.split(' ').includes('prose-preview-heading')); assert.equal(heading.className.includes('prose-preview-title'), false);
+  assert.equal(heading.textContent, 'B'); assert.equal(paragraph.textContent, 'text');
+  assert.equal(shown.textContent, 'A B text');
+  const plain = node(presentResultPreview(readSource('docs/a.md', 'one\n\ntwo')));
+  assert.equal(plain.children.filter(child => child.tag === 'span').length, 1); assert.equal(plain.children.find(child => child.tag === 'span')?.className, 'prose-preview-body'); assert.equal(plain.textContent, 'one two');
+});
+test('frontmatter is omitted from the compact prose projection only', () => {
+  setup();
+  const front = '---\ntitle: Notes\ntags: [a, b]\nauthor: x\ndate: 2026\nstatus: draft\nkind: note\n---\n# Doc\n\nbody';
+  const shown = node(presentResultPreview(readSource('docs/a.md', front)));
+  assert.equal(shown.textContent, 'Doc body'); assert.equal(shown.children.find(child => child.tag === 'span')?.textContent, 'Doc');
+  assert.equal(resultPreview(readSource('docs/a.md', front).result ?? []).startsWith('---\ntitle: Notes'), true);
+  assert.equal(node(presentResultPreview(readSource('docs/a.md', '---\nnot closed\n\ntext'))).textContent.includes('not closed'), true);
+  assert.equal(node(presentResultPreview(readSource('docs/a.md', 'text\n---\nmore'))).textContent.includes('text'), true);
 });
 test('prose classification uses only explicit content facts', () => {
   setup();

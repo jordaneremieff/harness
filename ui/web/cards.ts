@@ -4,7 +4,7 @@ import { structuredResultPreview } from './generic-content.ts';
 import type { PresentationContext, ToolPresentationSource } from './transcript-presentation.ts';
 import { previewText } from './format.ts';
 import { highlight, isMarkdownPath, languageFromPath } from './highlight.ts';
-import { markdownPreviewDom } from './safe-markdown.ts';
+import { markdownPreviewDom, withoutFrontmatter } from './safe-markdown.ts';
 import { suppliedDifference, differenceNotice } from './supplied-difference.ts';
 
 const PREVIEW_CHARS = 8192;
@@ -106,13 +106,16 @@ export function readRange(args: Record<string, unknown>): string {
   return Number.isSafeInteger(end) ? `lines ${offset}–${end}` : '';
 }
 
+function previewSource(part: {text: string; redacted?: boolean}, skipFrontmatter: boolean): string {
+  return skipFrontmatter && !part.redacted ? withoutFrontmatter(part.text) : part.text;
+}
 type ResultPreviewText = {text: string; summary: boolean; redacted: boolean};
-function resultPreviewText(parts: readonly PartView[]): ResultPreviewText | undefined {
+function resultPreviewText(parts: readonly PartView[], skipFrontmatter = false): ResultPreviewText | undefined {
   for (const part of parts) {
-    if (part.type === 'toolResult') { const nested = resultPreviewText(part.parts); if (nested) return nested; }
+    if (part.type === 'toolResult') { const nested = resultPreviewText(part.parts, skipFrontmatter); if (nested) return nested; }
     if (part.type !== 'text') continue;
     const summary = !part.redacted ? structuredResultPreview(part.structured) : undefined;
-    const text = summary ?? part.text;
+    const text = summary ?? previewSource(part, skipFrontmatter);
     if (!text) continue;
     const shown = preview(text, 1200, 6);
     return {text: shown.limited ? `${preview(shown.text, 1199, 6).text}…` : shown.text, summary: summary !== undefined, redacted: !!part.redacted};
@@ -136,7 +139,7 @@ export function presentResultPreview(source: ToolPresentationSource): HTMLElemen
   const markdown = !shown.summary && !shown.redacted && source.name === 'read' && source.status === 'success' && isMarkdownPath(args.file_path ?? args.path);
   if (!shown.summary && !markdown) return undefined;
   const node = element('span', 'tool-prose-preview');
-  if (markdown) node.append(markdownPreviewDom(shown.text)); else node.textContent = shown.text;
+  if (markdown) node.append(markdownPreviewDom(resultPreviewText(source.result ?? [], true)?.text ?? '')); else node.textContent = shown.text;
   return node.textContent ? node : undefined;
 }
 

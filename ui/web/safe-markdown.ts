@@ -122,10 +122,21 @@ function previewBlock(node: MarkdownBlock, budget: PreviewBudget, out: HTMLEleme
  */
 export function markdownPreviewDom(text: string): DocumentFragment {
   const budget: PreviewBudget = {nodes: PREVIEW_NODES, blocks: PREVIEW_BLOCKS, limited: false}; const blocks: HTMLElement[] = [];
-  for (const node of parseMarkdown(text)) previewBlock(node, budget, blocks);
-  const fragment = document.createDocumentFragment(); blocks.forEach((block, index) => { if (index) fragment.append(document.createTextNode(' ')); fragment.append(block); });
-  if (budget.limited) fragment.append(document.createTextNode('…'));
+  const parsed = parseMarkdown(text);
+  for (const node of parsed) previewBlock(node, budget, blocks);
+  const fragment = document.createDocumentFragment();
+  const title = parsed[0]?.type === 'heading' ? blocks.shift() : undefined;
+  if (title) { title.className = `${title.className} prose-preview-title`; fragment.append(title, document.createTextNode(' ')); }
+  const body = element('span', 'prose-preview-body');
+  blocks.forEach((block, index) => { if (index) body.append(document.createTextNode(' ')); body.append(block); });
+  if (budget.limited) body.append(document.createTextNode('…'));
+  if (blocks.length || budget.limited) fragment.append(body);
   return fragment;
+}
+const FRONTMATTER = /^\uFEFF?---[ \t]*\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/;
+/** Removes a leading block delimited by `---` lines; text without a closing delimiter is returned unchanged. */
+export function withoutFrontmatter(text: string): string {
+  return text.replace(FRONTMATTER, '');
 }
 export function markdownDom(text: string): DocumentFragment {
   const fragment = document.createDocumentFragment(); fragment.append(...parseMarkdown(text).map(block)); return fragment;

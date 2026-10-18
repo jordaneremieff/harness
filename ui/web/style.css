@@ -833,8 +833,8 @@ details[open] > .card-disclosure > .card-icon-disclosure { transform: rotate(90d
 .tool-preview { display: -webkit-box; max-width: 88ch; margin-top: 4px; overflow: hidden; color: var(--fg); font-family: var(--mono); font-size: 12px; white-space: pre-wrap; -webkit-box-orient: vertical; -webkit-line-clamp: 6; }
 .tool-preview > .tool-content-preview { margin: 0; padding: 0; border: 0; background: transparent; font: inherit; }
 .tool-preview > .tool-prose-preview { display: -webkit-box; overflow: hidden; color: var(--muted); font-family: var(--sans); font-size: 13px; line-height: 20px; font-weight: 400; white-space: normal; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
-.tool-prose-preview .prose-preview-block + .prose-preview-block { margin-left: 8px; }
 .tool-prose-preview .prose-preview-heading, .tool-prose-preview strong { font-weight: 500; }
+.tool-prose-preview .prose-preview-title { margin: 0; color: var(--fg); font-size: 13px; line-height: 20px; font-weight: 500; }
 .tool-prose-preview .prose-preview-code { font-family: var(--mono); font-size: 12px; }
 .tool-preview.tool-error { color: var(--error); }
 .tool-preview-qualification { color: var(--muted); font-family: var(--sans); font-size: 12px; }
