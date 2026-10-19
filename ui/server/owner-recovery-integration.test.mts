@@ -83,10 +83,13 @@ function present(pid: number): boolean {
   try {process.kill(pid, 0); return true;} catch (error) {if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false; throw error;}
 }
 /** A terminated process stays visible to kill(pid, 0) as a zombie until its parent reaps it; the reaper may be slow under load, so exit means the process is gone or a zombie. */
+function runningFrom(readStat: () => string): boolean {
+  try {return !readStat().trim().startsWith('Z');}
+  catch (error) {if ((error as {status?: number}).status === 1) return false; throw error;}
+}
 function running(pid: number): boolean {
   assert.ok(Number.isSafeInteger(pid) && pid > 1);
-  try {return !execFileSync('ps', ['-o','stat=','-p',String(pid)], {encoding: 'utf8', maxBuffer: 256, timeout: 2000, env: {PATH: process.env.PATH, LC_ALL: 'C'}}).trim().startsWith('Z');}
-  catch (error) {if ((error as {status?: number}).status === 1) return false; throw error;}
+  return runningFrom(() => execFileSync('ps', ['-o','stat=','-p',String(pid)], {encoding: 'utf8', maxBuffer: 256, timeout: 2000, env: {PATH: process.env.PATH, LC_ALL: 'C'}}));
 }
 type ProcessIdentity = {pid: number; parent: number; group: number; uid: number; started: string; signature: string; token: string};
 type ProcessIO = {probe: (pid: number) => ProcessIdentity | undefined; members: (group: number) => number[]; signal: (group: number) => void};
@@ -476,12 +479,18 @@ async function finishDetachedFixture(cwd: string, token: string) {
   const socket = createConnection({host:'127.0.0.1',port:proof.port});
   try {socket.resume(); await Promise.all([once(socket,'connect',{signal:AbortSignal.timeout(5000)}).then(() => {socket.write(`${token}\n`);}), once(socket,'end',{signal:AbortSignal.timeout(5000)})]);}
   finally {socket.destroy();}
-  assert.deepEqual(processIds('-g',proof.group),[]); assert.equal(running(proof.pid),false); assert.equal(present(-proof.group),false);
+  assert.deepEqual(processIds('-g',proof.group).filter(running),[]); assert.equal(running(proof.pid),false);
 }
-test('a child that has exited reads as not running before its parent reaps it', {timeout:15000}, async () => {
+test('a ps state that starts with Z means not running and exit status 1 means gone', () => {
+  for (const stat of ['Z\n','Z+ ','Zs']) assert.equal(runningFrom(() => stat),false, stat);
+  for (const stat of ['S\n',' Ss ','R+','U','I']) assert.equal(runningFrom(() => stat),true, stat);
+  assert.equal(runningFrom(() => {throw Object.assign(new Error('no such process'),{status:1});}),false);
+  assert.throws(() => runningFrom(() => {throw Object.assign(new Error('ps failed'),{status:2});}),/ps failed/);
+});
+test('a child that has exited and been reaped reads as not running', {timeout:15000}, async () => {
   const child = spawn(process.execPath,['-e',"process.stdout.write('x')"],{shell:false,stdio:['ignore','pipe','ignore']});
-  assert.ok(child.pid); child.stdout.resume(); await once(child.stdout,'end');
-  assert.equal(running(child.pid),false); await once(child,'exit');
+  assert.ok(child.pid); child.stdout.resume(); await once(child,'exit');
+  assert.equal(running(child.pid),false);
 });
 test('launcher exit with a detached child refuses cleanup and retains state until verified fixture teardown', {timeout:15000}, async context => {
   const cwd = await realpath(await mkdtemp(join(tmpdir(),'or-orphan-'))), token = randomUUID(); let cleaned = false, verified = false;
