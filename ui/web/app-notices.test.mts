@@ -111,6 +111,6 @@ test('local conversation menus never select another recipient and target its Vie
   const slot = paneNode('agent-pane').querySelector('.pane-content'); assert.ok(slot);
   const agentRoot = [...globalThis.document.querySelectorAll<HTMLElement>('.conversation')].find(root => app.stableViews().slot(root) === slot as unknown as HTMLElement);
   assert.ok(agentRoot); assert.equal(agentRoot.querySelector<HTMLDetailsElement>('.thinking')?.open, true); assert.deepEqual(app.state.workspace?.selectedTarget, selected);
-  assert.equal(app.state.targets.get('local-agent')?.presentation?.showThinking, true);
+  assert.equal(app.state.targets.get('local-agent')?.presentation?.showThinking, true); assert.equal(app.state.targets.get('local-agent')?.presentation?.thinking, 'shown');
   contextMenu.close();
 });

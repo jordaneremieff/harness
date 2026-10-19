@@ -840,7 +840,7 @@ test('preference completions keep their captured request and leave a newer targe
 });
 async function thinkingFixture(epoch: number, shown = false): Promise<TargetState> {
   const target = {kind: 'primary' as const, key: 'p', epoch};
-  const saved = targetFixture(`thinking-${epoch}`, target, {presentation: {revision: 1, expanded: [], showThinking: shown}});
+  const saved = targetFixture(`thinking-${epoch}`, target, {presentation: {revision: 1, expanded: [], showThinking: shown, ...(shown ? {thinking: 'shown' as const} : {})}});
   const history = [entryFixture(`thinking-entry-${epoch}`, [messageFixture(`thinking-message-${epoch}`, [{type: 'thinking', text: 'Retained reasoning'}])])];
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({epoch})], roster: [], targets: [saved], history});
   return saved;

@@ -155,7 +155,9 @@ export function sameDraftTuple(a: DraftTuple, b: DraftTuple): boolean { return a
 export function draftHasContent(value: Pick<DraftTuple, 'text' | 'images'>): boolean { return !!value.text.length || !!value.images.length; }
 export type ReadingView = {revision: number; anchorId: string | null; offsetPx: number; followTail: boolean};
 export type TranscriptView = 'chronological' | 'grouped';
-export type PresentationView = {revision: number; expanded: string[]; showThinking: boolean; transcriptView?: TranscriptView};
+/** A reader's deliberate Show thinking or Hide thinking choice; the stored showThinking flag alone is not one. */
+export type ThinkingChoice = 'shown' | 'hidden';
+export type PresentationView = {revision: number; expanded: string[]; showThinking: boolean; thinking?: ThinkingChoice; transcriptView?: TranscriptView};
 export type InputCopy = {operationId: string; target: Target; text: string; mode: string; images: DraftImage[];
   submittedDraftRevision: number; createdAt: string; reason: string; textTruncated?: true;
   queueRecovery?: QueueRecovery; recoveryOrigin?: RecoveryOrigin; differentMessage?: true};

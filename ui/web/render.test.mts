@@ -487,7 +487,7 @@ test('generic entries update, unknown entries remain inspectable, and expansion 
   assert.ok(structured({value: ['a'], truncated: false}));
 });
 test('thinking preference applies to new blocks and reset removes old tools and nodes', () => {
-  setup(); const view = transcript(); view.configure({revision: 1, expanded: [], showThinking: true});
+  setup(); const view = transcript(); view.configure({revision: 1, expanded: [], showThinking: true, thinking: 'shown'});
   view.set([{id: 'e', kind: 'message', messages: [{...message('m', ''), parts: [{type: 'thinking', text: 'secret', redacted: true}]}]}]); flush();
   const thinking = node('primary-transcript').querySelector('.thinking'); assert.ok(thinking); assert.equal(thinking.open, true); assert.match(thinking.textContent, /Thinking not available/); assert.doesNotMatch(thinking.textContent, /secret/);
   view.expandLoaded(false, false); flush(); assert.equal(thinking.open, false);
@@ -1061,7 +1061,7 @@ test('finished thinking is closed to one line by default and opens on click, a s
   assert.deepEqual(all().map(item => item.open), [true, false], 'a block the reader opened is open again after a reload');
   view.expandLoaded(false, true); flush(); assert.equal(all().every(item => item.open), true);
   view.expandLoaded(false, false); flush(); assert.equal(all().every(item => !item.open), true);
-  view.reset(); view.configure({revision: 2, expanded: [], showThinking: true}); view.set(entries); flush(); assert.equal(all().every(item => item.open), true, 'a saved Show thinking choice opens every block');
+  view.reset(); view.configure({revision: 2, expanded: [], showThinking: true, thinking: 'shown'}); view.set(entries); flush(); assert.equal(all().every(item => item.open), true, 'a saved Show thinking choice opens every block');
   view.reset();
 });
 test('a thinking group shows the first line of its first part', () => {
@@ -2273,7 +2273,7 @@ test('expanded tool captions share the wrap row and native source disclosures ke
 });
 
 test('grouped local Thinking collapse clears the global default and preserves other open choices through updates', () => {
-  setup(); let saved = {revision: 1, expanded: [] as string[], showThinking: true};
+  setup(); let saved = {revision: 1, expanded: [] as string[], showThinking: true, thinking: 'shown' as const};
   const view = new Transcript('primary', {presentation: (expanded, showThinking) => { saved = {...saved, expanded, showThinking}; }, reading: () => {}});
   const grouped = (text: string) => ({id: 'grouped', kind: 'message', messages: [{...message('grouped', ''), parts: [
     {type: 'thinking' as const, text}, {type: 'thinking' as const, text: 'second thought'}, {type: 'text' as const, text: 'Reply'},
@@ -3201,4 +3201,25 @@ test('the layout origin is the same whichever ancestor is the offset parent of t
     assert.equal(origin, earlier.offsetHeight, `transcript positioned: ${positioned}`);
     scroll.to(1200); assert.equal(Reflect.get(view, 'layoutOrigin').call(view), origin, 'scrolling does not change the origin');
   }
+});
+test('a saved flag without a thinking choice renders closed; Show thinking and Hide thinking save the choice and every other save keeps it', () => {
+  setup(); const saves: {expanded: string[]; showThinking: boolean; choice?: string}[] = [];
+  const open = () => node('primary-transcript').querySelectorAll('.thinking').map(item => item.open);
+  const mount = (presentation: Parameters<RetainedTranscript['configure']>[0]) => {
+    const view = new Transcript('primary', {reading: () => {}, presentation: (expanded, showThinking, _view, choice) => { saves.push({expanded, showThinking, choice}); }});
+    view.configure(presentation); view.set(richEntries(2)); flush(); return view;
+  };
+  const legacy = mount({revision: 2, expanded: ['tool-1'], showThinking: true}); assert.deepEqual(open(), [false, false], 'a copied default does not pin thinking open'); legacy.reset();
+  const view = mount({revision: 1, expanded: [], showThinking: false}); saves.length = 0;
+  view.expandLoaded(false, true); flush(); assert.equal(saves.at(-1)?.choice, 'shown'); assert.deepEqual(open(), [true, true]);
+  const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card); card.open = true; card.dispatch('toggle'); flush();
+  assert.equal(saves.at(-1)?.choice, 'shown', 'a tool expansion after Show thinking keeps the choice'); assert.ok(saves.at(-1)?.expanded.some(id => id.startsWith('tool:')));
+  view.setView('grouped'); assert.equal(saves.at(-1)?.choice, 'shown', 'a view change keeps the choice');
+  const reopened = mount({revision: 4, expanded: saves.at(-1)?.expanded ?? [], showThinking: true, thinking: 'shown'}); assert.deepEqual(open(), [true, true], 'a saved Show thinking choice reopens expanded');
+  reopened.expandLoaded(false, false); flush(); assert.equal(saves.at(-1)?.choice, 'hidden'); assert.deepEqual(open(), [false, false]);
+  reopened.expandLoaded(false, true); flush();
+  const first = node('primary-transcript').querySelector('.thinking'); assert.ok(first); first.open = false; first.dispatch('toggle'); flush();
+  assert.equal(saves.at(-1)?.choice, 'hidden', 'closing one block while all thinking is shown saves the hidden choice'); assert.equal(saves.at(-1)?.showThinking, false);
+  const hiddenView = mount({revision: 6, expanded: saves.at(-1)?.expanded ?? [], showThinking: false, thinking: 'hidden'}); assert.deepEqual(open(), [false, true]);
+  hiddenView.reset(); reopened.reset(); view.reset();
 });

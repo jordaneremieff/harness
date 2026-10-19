@@ -302,7 +302,7 @@ function fixtureDraft(path: string, body?: Record<string, unknown>): unknown {
 }
 function fixtureView(path: string, body: Record<string, unknown>): unknown {
   const revision = Number(body.expectedRevision ?? 0) + 1, kind = path.endsWith('/reading') ? 'reading' : 'presentation';
-  const value = kind === 'reading' ? {revision, anchorId: body.anchorId ?? null, offsetPx: body.offsetPx ?? 0, followTail: body.followTail ?? true} : {revision, expanded: body.expanded ?? [], showThinking: body.showThinking ?? false, transcriptView: body.transcriptView ?? 'chronological'};
+  const value = kind === 'reading' ? {revision, anchorId: body.anchorId ?? null, offsetPx: body.offsetPx ?? 0, followTail: body.followTail ?? true} : {revision, expanded: body.expanded ?? [], showThinking: body.showThinking ?? false, ...(body.thinking ? {thinking: body.thinking} : {}), transcriptView: body.transcriptView ?? 'chronological'};
   if (decodeURIComponent(path.split('/')[3] ?? '') === fixture.workspace.id) fixture = {...fixture, targets: fixture.targets?.map(saved => saved.targetKey === decodeURIComponent(path.split('/')[5] ?? '') ? {...saved, [kind]: value} : saved)};
   return value;
 }

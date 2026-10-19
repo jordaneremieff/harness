@@ -49,8 +49,8 @@ async function savedImage(registry: Registry, workspace: string, key: string, co
   return new ImageResponse(await registry.store.readDraftImage(workspace, key, digest));
 }
 function presentation(registry:Registry,workspace:string,key:string,expectedRevision:number,body:Record<string,unknown>) {
-  v.fields(body,['expectedRevision','expanded','showThinking','transcriptView'],['expectedRevision','expanded','showThinking']);
-  return registry.store.putPresentation(workspace,key,{expectedRevision,expanded:body.expanded as string[],showThinking:v.boolean(body.showThinking,'thinking visibility'),...(body.transcriptView!==undefined?{transcriptView:v.choice(body.transcriptView,['chronological','grouped'],'transcript view')}:{})});
+  v.fields(body,['expectedRevision','expanded','showThinking','thinking','transcriptView'],['expectedRevision','expanded','showThinking']);
+  return registry.store.putPresentation(workspace,key,{expectedRevision,expanded:body.expanded as string[],showThinking:v.boolean(body.showThinking,'thinking visibility'),...(body.thinking!==undefined?{thinking:v.choice(body.thinking,['shown','hidden'],'thinking choice')}:{}),...(body.transcriptView!==undefined?{transcriptView:v.choice(body.transcriptView,['chronological','grouped'],'transcript view')}:{})});
 }
 async function prepareTarget(registry:Registry,workspace:string,body:Record<string,unknown>) {
   await registry.workspace(workspace);

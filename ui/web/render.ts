@@ -1,4 +1,4 @@
-import type { EntryView, ImageView, JsonDisplay, MessageView, PartView, PresentationView, ReadingView, TranscriptView } from '../shared/api.ts';
+import type { EntryView, ImageView, JsonDisplay, MessageView, PartView, PresentationView, ReadingView, ThinkingChoice, TranscriptView } from '../shared/api.ts';
 import type {ResultInspection, ResultSelector} from '../shared/inspection.ts';
 import { announce, button, copy, details, element, rawText, setText } from './dom.ts';
 import { ArrivalCounter, latestLabel } from './arrivals.ts';
@@ -39,7 +39,7 @@ function thinkingSpans(summary: Element): {label: HTMLElement; preview: HTMLElem
   summary.replaceChildren(made.label, made.preview); return made;
 }
 const previewSuffix = (line: string): string => line ? ` · ${line}` : '';
-export type ViewHooks = {earlier?: () => void; operatorInput?: boolean; readTaskResult?: (reference:TaskReference,signal:AbortSignal)=>Promise<ResultInspection>; activity?: (text:string)=>void; cwd?: () => string | undefined; subject?: (value: string) => ToolSubjectCaption | undefined; result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; preview?: (part: ImageView, url: string, invoker: HTMLElement) => () => void; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
+export type ViewHooks = {earlier?: () => void; operatorInput?: boolean; readTaskResult?: (reference:TaskReference,signal:AbortSignal)=>Promise<ResultInspection>; activity?: (text:string)=>void; cwd?: () => string | undefined; subject?: (value: string) => ToolSubjectCaption | undefined; result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView, thinking?: ThinkingChoice) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; preview?: (part: ImageView, url: string, invoker: HTMLElement) => () => void; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
 const RAW_LIMIT = 65536;
 /** Scrolling up within this many pixels of the first loaded row reads the next older page. */
 const EARLIER_ZONE_PX = 240;
@@ -215,6 +215,8 @@ export class Transcript {
   private generation = 0;
   private expanded = new Set<string>();
   private showThinking = false;
+  /** The reader's saved Show thinking or Hide thinking choice, sent with every save so a coalesced save cannot drop it. */
+  private thinkingChoice?: ThinkingChoice;
   /** Thinking that streamed in this view stays open here after it finishes; it is never saved, so a reload closes it like the rest. */
   private streamedThinking = new Set<string>();
   private follow = true;
@@ -261,7 +263,7 @@ export class Transcript {
   private lastScrollTop = 0;
   private readonly arrivals = new ArrivalCounter();
   constructor(elements: TranscriptElements, hooks: ViewHooks) {
-    this.hooks = {...hooks, presentation: (expanded, showThinking) => hooks.presentation(expanded, showThinking, this.view)};
+    this.hooks = {...hooks, presentation: (expanded, showThinking) => hooks.presentation(expanded, showThinking, this.view, this.thinkingChoice)};
     this.node = elements.transcript; this.latest = elements.latest;
     this.node.dataset.view = this.view;
     const visibilityChange = () => {
@@ -401,7 +403,7 @@ export class Transcript {
   configure(presentation?: PresentationView, reading?: ReadingView): void {
     this.view = presentation?.transcriptView ?? 'chronological'; this.pendingView = undefined;
     this.node.dataset.view = this.view;
-    this.expanded = new Set(presentation?.expanded ?? []); this.showThinking = thinkingExpanded(presentation);
+    this.expanded = new Set(presentation?.expanded ?? []); this.showThinking = thinkingExpanded(presentation); this.thinkingChoice = presentation?.thinking;
     this.deriveRows();
     if (reading) {
       this.follow = reading.followTail; this.readingRevision = reading.revision; this.restoring = reading.followTail ? undefined : reading;
@@ -430,7 +432,7 @@ export class Transcript {
     this.resize?.disconnect(); if (!this.destroyed) this.resize?.observe(this.node); this.sizes = new WeakMap(); this.scrolling = new WeakSet(); this.reflowAnchor = undefined; this.writtenScrollTop = undefined;
     this.clearFind(); this.findRevision++;
     this.generation++; this.entries = []; this.displayed = []; this.cache.clear(); this.tools.clear(); this.liveThinking.clear(); this.thinkingTimes = new Map(); this.index = new TranscriptIndex(); this.joined = this.index.joined; this.rows = new TranscriptRows(); this.tasks = new ConversationTasks(); this.visible.clear(); this.dirtyLayout = true; this.pins.clear(); this.heights.clear(); this.gaps.clear();
-    this.expanded.clear(); this.streamedThinking.clear(); this.showThinking = false; this.follow = true; this.readingRevision = 0;
+    this.expanded.clear(); this.streamedThinking.clear(); this.showThinking = false; this.thinkingChoice = undefined; this.follow = true; this.readingRevision = 0;
     this.layout = layoutItems([], this.heights, 140); this.restoring = undefined; this.node.replaceChildren(...(this.lead ? [this.lead] : [])); this.scrollTo(0); this.hold = undefined; this.arrivals.reset(); this.syncLatest();
   }
   defer(refresh: () => void, receivedAt?: number): void {
@@ -1842,7 +1844,7 @@ export class Transcript {
       const id = node.dataset.disclosure;
       if (node.open && node.dataset.streaming !== 'true' && id && id !== excluded) this.expanded.add(id);
     }
-    this.showThinking = false;
+    this.showThinking = false; this.thinkingChoice = 'hidden';
   }
   private applyPreferences(): void {
     for (const entry of this.cache.values()) for (const node of entry.node.querySelectorAll<HTMLDetailsElement>('[data-disclosure]')) {
@@ -1858,7 +1860,7 @@ export class Transcript {
     }
   }
   expandLoaded(tools: boolean, expanded: boolean): void {
-    if (!tools) {this.showThinking = expanded; if (!expanded) this.streamedThinking.clear(); this.deriveRows();}
+    if (!tools) {this.showThinking = expanded; this.thinkingChoice = expanded ? 'shown' : 'hidden'; if (!expanded) this.streamedThinking.clear(); this.deriveRows();}
     for (const id of this.loadedDisclosures(tools)) {
       if (expanded) this.expanded.add(id); else this.expanded.delete(id);
     }

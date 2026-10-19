@@ -516,3 +516,16 @@ test('selection clear preserves old targets, synchronous index bounds draft prev
   const invalid = {expectedRevision: cleared.revision, unexpected: 'private field'};
   await assert.rejects(store.updateSelection(workspace.id, invalid), /Unknown workspace field/);
 });
+test('a thinking choice is validated and carried by saves that omit it', async t => {
+  const {store, workspace, target} = await setup(t);
+  const first = await store.putPresentation(workspace.id, target.targetKey, {expectedRevision: 0, expanded: ['tool-1'], showThinking: true});
+  assert.equal(first.thinking, undefined, 'a stored flag without a choice stays without one');
+  const shown = await store.putPresentation(workspace.id, target.targetKey, {expectedRevision: 1, expanded: [], showThinking: true, thinking: 'shown'});
+  assert.equal(shown.thinking, 'shown');
+  const expanded = await store.putPresentation(workspace.id, target.targetKey, {expectedRevision: 2, expanded: ['tool-2'], showThinking: true, transcriptView: 'grouped'});
+  assert.equal(expanded.thinking, 'shown', 'a tool expansion or view change keeps the choice');
+  const hidden = await store.putPresentation(workspace.id, target.targetKey, {expectedRevision: 3, expanded: [], showThinking: false, thinking: 'hidden'});
+  assert.equal(hidden.thinking, 'hidden');
+  await assert.rejects(store.putPresentation(workspace.id, target.targetKey, {expectedRevision: 4, expanded: [], showThinking: false, thinking: 'always' as 'shown'}), /presentation preferences/);
+  assert.equal((await store.getTarget(workspace.id, target.targetKey)).presentation?.thinking, 'hidden');
+});

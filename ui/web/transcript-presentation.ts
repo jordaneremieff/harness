@@ -1,8 +1,8 @@
 import type { JsonDisplay, PartView, PresentationView } from '../shared/api.ts';
 
-/** Finished thinking is closed to one line until the reader opens it; a saved Show thinking choice wins. Revision zero has no deliberate choice. */
+/** Finished thinking is closed to one line until the reader opens it. Only a saved Show thinking choice expands it; a stored showThinking flag without that choice is a copied default, not a decision. */
 export function thinkingExpanded(presentation?: PresentationView): boolean {
-  return !!presentation && presentation.revision !== 0 && presentation.showThinking;
+  return presentation?.thinking === 'shown';
 }
 
 export type PresentationContext = {

@@ -192,7 +192,7 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
     ...agentCommandHooks(controller),
     retained: (workspace, captured) => { if (workspace === state.workspace?.id && captured.kind === 'agent') renderMessageResume(captured.identity); }});
   controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {earlier: () => loadEarlierRows(controller), operatorInput: target.kind === 'primary', references, subject: toolSubjectCaption, readTaskResult:async(reference,signal)=>{const value=await request<AgentInspectionView>(`/api/agents/${encodeURIComponent(reference.sessionId)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',{view:'result',submissionId:reference.submissionId,...(reference.requestId?{requestId:reference.requestId}:{})},undefined,AbortSignal.any([signal,controller.abort.signal,AbortSignal.timeout(15_000)]));if(value.view!=='result')throw new Error('The task result view changed.');return value;}, activity:()=>{if (footerController === controller) renderWorkbenchStatus();}, cwd: () => target.kind === 'primary' ? state.primaries.get(target.key)?.cwd : state.roster.get(target.identity)?.cwd, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
-    presentation: (expanded, thinking, view) => { controller.showThinking = thinking; void savePresentation(controllerCapture(controller), expanded, thinking, view); },
+    presentation: (expanded, thinking, view, choice) => { controller.showThinking = thinking; void savePresentation(controllerCapture(controller), expanded, thinking, view, choice); },
     reading: reading => { void saveReading(controllerCapture(controller), reading); },
     ...(target.kind === 'primary' ? {fork: (message: import('../shared/api.ts').MessageView, entry: string) => { if (sameTarget(target, primaryTarget())) actions.fork(entry, rawText(message.parts)); }, output: (more: import('../shared/api.ts').OutputContinuation) => loadControllerOutput(controller, more)} : {}),
     image: part => imageUrl(part, controller.target, controller.workspaceId),preview: (part, url, invoker) => openImagePreview(modal, part, url, invoker),result:(identity,selector)=>inspectAgent(identity,'result',selector)});
@@ -1877,8 +1877,8 @@ function saveReading(captured: TranscriptTarget | undefined, reading: TargetStat
   if (!captured || captured.controller.historyReading) return Promise.resolve();
   return saveView(captured, 'reading', {anchorId: reading.anchorId, offsetPx: reading.offsetPx, followTail: reading.followTail});
 }
-function savePresentation(captured: TranscriptTarget | undefined, expanded: string[], showThinking: boolean, transcriptView: import('../shared/api.ts').TranscriptView = 'chronological'): Promise<void> {
-  return saveView(captured, 'presentation', {expanded: expanded.slice(), showThinking, transcriptView});
+function savePresentation(captured: TranscriptTarget | undefined, expanded: string[], showThinking: boolean, transcriptView: import('../shared/api.ts').TranscriptView = 'chronological', thinking?: import('../shared/api.ts').ThinkingChoice): Promise<void> {
+  return saveView(captured, 'presentation', {expanded: expanded.slice(), showThinking, ...(thinking ? {thinking} : {}), transcriptView});
 }
 function savedControllerView(captured: TranscriptTarget): TargetState {
   const saved = captured.workspaceId === state.workspace?.id ? state.targets.get(captured.saved.targetKey) : captured.controller.saved;

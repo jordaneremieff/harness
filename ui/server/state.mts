@@ -592,8 +592,8 @@ export class StateStore {
   putPresentation(wid: string, key: string, input: Omit<PresentationView, 'revision'> & {expectedRevision: number}): Promise<PresentationView> {
     return this.transaction(async () => {
       const value = this.requireTarget(wid, key); revision(value.presentation?.revision ?? 0, input.expectedRevision, value.presentation);
-      if (!Array.isArray(input.expanded) || input.expanded.length > 128 || input.expanded.some(id => typeof id !== 'string' || id.length > 256) || typeof input.showThinking !== 'boolean' || input.transcriptView !== undefined && !['chronological', 'grouped'].includes(input.transcriptView)) throw new StateError('invalid_request', 'Invalid presentation preferences');
-      const presentation: PresentationView = {revision: (value.presentation?.revision ?? 0) + 1, expanded: [...new Set(input.expanded)], showThinking: input.showThinking, transcriptView: input.transcriptView ?? value.presentation?.transcriptView ?? 'chronological'};
+      if (!Array.isArray(input.expanded) || input.expanded.length > 128 || input.expanded.some(id => typeof id !== 'string' || id.length > 256) || typeof input.showThinking !== 'boolean' || input.thinking !== undefined && !['shown', 'hidden'].includes(input.thinking) || input.transcriptView !== undefined && !['chronological', 'grouped'].includes(input.transcriptView)) throw new StateError('invalid_request', 'Invalid presentation preferences');
+      const presentation: PresentationView = {revision: (value.presentation?.revision ?? 0) + 1, expanded: [...new Set(input.expanded)], showThinking: input.showThinking, ...(input.thinking ?? value.presentation?.thinking ? {thinking: input.thinking ?? value.presentation?.thinking} : {}), transcriptView: input.transcriptView ?? value.presentation?.transcriptView ?? 'chronological'};
       await this.writeTarget({...value, presentation}); return structuredClone(presentation);
     });
   }
