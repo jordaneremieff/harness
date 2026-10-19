@@ -1156,6 +1156,8 @@ interface PromotionSelection {
 	prepared: PreparedPromotion;
 	record: WorktreeRecord;
 	before: string;
+	/** The index and work tree as they were when the promotion's own rebase stopped. */
+	stopped?: string;
 	/** The state this promotion left on the branch. The branch may be rebuilt or reset only while it still matches. */
 	produced?: BranchState;
 }
@@ -1317,14 +1319,29 @@ async function promote(
 	return completePromotion(context, result, options, remote);
 }
 
+/** The index, the work tree and the untracked files of a worktree, as one comparable string. */
+function worktreeFingerprint(path: string): string | undefined {
+	try {
+		return [
+			git(path, ["ls-files", "--stage"]).stdout,
+			git(path, ["diff", "--no-ext-diff", "--no-color"]).stdout,
+			git(path, ["status", "--porcelain", "--untracked-files=all"]).stdout,
+		].join("\0");
+	} catch {
+		return undefined;
+	}
+}
+
 /**
  * A paused rebase leaves HEAD where git put it, and git writes a rebase entry to the HEAD log for each step it takes.
- * Any other newest entry (a commit, a reset, a checkout) means someone worked on the detached HEAD since the stop,
- * and aborting would discard that work.
+ * Any other newest entry (a commit, a reset, a checkout) means someone worked on the detached HEAD since the stop.
+ * A resolution that is staged or edited but not committed leaves the log alone, so the index and work tree are
+ * compared with how they were when the rebase stopped. Aborting would discard either kind of work.
  */
-function pausedRebaseWasEdited(path: string): boolean {
+function pausedRebaseWasEdited(path: string, stopped: string | undefined): boolean {
 	const latest = git(path, ["reflog", "-1", "--format=%gs", "HEAD"], { accept: [0, 1, 128] }).stdout.trim();
-	return latest !== "" && !latest.startsWith("rebase");
+	if (latest !== "" && !latest.startsWith("rebase")) return true;
+	return stopped !== undefined && worktreeFingerprint(path) !== stopped;
 }
 
 function restorePromotionBranch(selection: PromotionSelection, rebasing: boolean): string | undefined {
@@ -1333,11 +1350,13 @@ function restorePromotionBranch(selection: PromotionSelection, rebasing: boolean
 	try {
 		abort = rebasing && Boolean(pausedGitOperation(path)?.includes("rebase-"));
 		if (abort) {
-			if (pausedRebaseWasEdited(path)) {
+			if (pausedRebaseWasEdited(path, selection.stopped)) {
 				return `${branch} changed during the promotion: its paused rebase in ${path} holds work made after the rebase stopped, so it was not aborted; inspect ${path}, then git -C ${path} rebase --abort && git -C ${path} reset --hard ${selection.before} only if nothing there is needed`;
 			}
 			git(path, noHooks(["rebase", "--abort"]));
 		}
+		// The promotion rebases a detached HEAD, so a rebase that stopped or failed leaves the worktree off the branch.
+		if (rebasing) git(path, noHooks(["switch", branch]));
 		const moved = branchMovedReason(selection);
 		if (moved !== undefined) {
 			return `${branch} changed during the promotion and was not reset (${moved}); inspect ${path}, then git -C ${path} reset --hard ${selection.before} only if nothing there is needed`;
@@ -1494,7 +1513,20 @@ function startSlice(
 	if (index === 0) return undefined;
 	changed.add(selection);
 	progress("rebase", selection);
-	git(context.repoRoot, noHooks(["rebase", "main"]), { cwd: record.path });
+	// Rebase a detached HEAD at the checked head, then move the branch with that head as the expected old value, so a
+	// commit that lands on the branch meanwhile is kept instead of being rebased into the promotion.
+	git(record.path, noHooks(["switch", "--detach", selection.before]));
+	try {
+		git(context.repoRoot, noHooks(["rebase", "main"]), { cwd: record.path });
+	} catch (error) {
+		selection.stopped = worktreeFingerprint(record.path);
+		throw error;
+	}
+	const rebased = git(record.path, ["rev-parse", "HEAD"]).stdout.trim();
+	if (!moveBranchRef(record.path, record.branch, rebased, selection.before)) {
+		return `${entry.branch} changed after the preflight: ${entry.branch} moved while the rebase ran`;
+	}
+	git(record.path, noHooks(["switch", record.branch]));
 	progress("rebase", undefined);
 	selection.produced = branchState(record.path, record.branch);
 	return undefined;

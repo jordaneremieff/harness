@@ -213,20 +213,25 @@ produced. Before it rebases or replays a slice, the command checks that the bran
 not, the promotion fails with stage `preflight` and rolls back what it made. A rollback after a failure resets a branch
 only while its head and worktree status still match what the promotion left, including the state of a rebuild that
 failed part way, and it aborts an unfinished batch rebase first, unless work was done on the paused rebase after it
-stopped. It resets `main` only while `main` holds the commits the promotion made and the main checkout holds nothing
+stopped: a commit, a reset, a checkout, a staged or edited conflict resolution, or a new untracked file. It resets `main` only while `main` holds the commits the promotion made and the main checkout holds nothing
 else. Normally that means a clean checkout. When a cherry-pick replay stopped part way, the checkout holds that
 replay's staged changes and conflicted files, so the command accepts changes to the replayed paths and refuses any
 other changed or untracked path, or a work-tree edit to a replayed path that is not in conflict. An edit to a path
 still in conflict looks the same as the conflict. Otherwise it leaves the branch or `main` as it is, and the `recover`
 text says how to inspect it. For `main`, the text says that `main` holds unpushed commits from the failed promotion.
 
-Each move of a branch ref (the rebuild, the branch rollback, and the `main` rollback) uses `git update-ref` with the
-expected old value, so a commit that lands after the check makes the move fail and keeps the commit. Git cannot
-guard three steps the same way. `git rebase main` takes no expected tip, so a commit that lands between the
-branch check and the rebase is rebased with the branch. `git rebase --abort` takes no expected `HEAD`, so a commit
-made on a paused rebase between the check and the abort is discarded. A work-tree edit made between a check and the
-following `git reset --hard` is lost, because Git has no compare-and-swap for the work tree. Each of these windows
-is the time between two consecutive Git calls.
+Each move of a branch ref (the batch rebase, the rebuild, the branch rollback, and the `main` rollback) uses
+`git update-ref` with the expected old value, so a commit that lands after the check makes the move fail and keeps
+the commit. The batch rebase runs on a detached `HEAD` at the checked head and moves the branch only at the end; if
+the branch moved meanwhile, the promotion fails with stage `rebase` and the branch keeps its new commit.
+
+Git cannot guard three steps the same way, and each window is the time between two consecutive Git calls.
+`git rebase --abort` takes no expected `HEAD`, so work done on a paused rebase between the check and the abort is
+discarded. A work-tree edit made between a check and the following `git reset --hard` is lost, because Git has no
+compare-and-swap for the work tree. No single Git call moves a ref with an expected old value and also updates the
+work tree, so each ref move is followed by `git reset --hard HEAD`. If the command is killed between the two, the
+branch (or `main`) holds the new commit while its work tree and index still hold the old tree, which shows as changes
+that undo the move. The work tree holds nothing else, so `git reset --hard` in that worktree finishes the move.
 
 This removes repeated shared gate sets, pushes, and synchronization runs from
 separate promotions. It does not cache gate results or measure elapsed-time

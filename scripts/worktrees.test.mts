@@ -1541,6 +1541,8 @@ interface ShimRule {
 	arg?: string;
 	/** A regular expression over the joined Git arguments; triggers the rule once instead of `arg`. */
 	pattern?: string;
+	/** The rule fires on this matching call (1 is the first). */
+	nth?: number;
 	/** Only a call made from this directory triggers the rule. */
 	inCwd?: string;
 	/** Files written, before the steps run, as an owner editing meanwhile. */
@@ -1603,7 +1605,7 @@ describe("promotion rollback resets only what the promotion produced", () => {
 		const rule = options.shim?.({ demo, other, repo });
 		writeFileSync(
 			join(bin, "git"),
-			`#!${process.execPath}\nconst { spawnSync } = require("node:child_process");\nconst fs = require("node:fs");\nconst args = process.argv.slice(2);\nconst rule = JSON.parse(process.env.PI_TEST_SHIM || "null");\nconst real = process.env.PI_TEST_REAL_GIT;\nconst hit = rule && (rule.pattern ? new RegExp(rule.pattern).test(args.join(" ")) : args.includes(rule.arg)) && (!rule.inCwd || process.cwd() === rule.inCwd);\nif (hit && !fs.existsSync(rule.mark)) {\n\tfs.writeFileSync(rule.mark, "1");\n\tfor (const file of rule.files || []) fs.writeFileSync(file.path, file.content);\n\tfor (const step of rule.steps) spawnSync(real, step.args, { cwd: step.cwd, stdio: "ignore" });\n\tif (rule.fail) { process.stderr.write("injected failure\\n"); process.exit(1); }\n}\nprocess.exit(spawnSync(real, args, { stdio: "inherit" }).status ?? 1);\n`,
+			`#!${process.execPath}\nconst { spawnSync } = require("node:child_process");\nconst fs = require("node:fs");\nconst args = process.argv.slice(2);\nconst rule = JSON.parse(process.env.PI_TEST_SHIM || "null");\nconst real = process.env.PI_TEST_REAL_GIT;\nconst hit = rule && (rule.pattern ? new RegExp(rule.pattern).test(args.join(" ")) : args.includes(rule.arg)) && (!rule.inCwd || process.cwd() === rule.inCwd);\nconst seen = hit ? (fs.existsSync(rule.mark + "-n") ? Number(fs.readFileSync(rule.mark + "-n", "utf8")) : 0) + 1 : 0;\nif (hit) fs.writeFileSync(rule.mark + "-n", String(seen));\nif (hit && seen === (rule.nth || 1) && !fs.existsSync(rule.mark)) {\n\tfs.writeFileSync(rule.mark, "1");\n\tfor (const file of rule.files || []) fs.writeFileSync(file.path, file.content);\n\tfor (const step of rule.steps) spawnSync(real, step.args, { cwd: step.cwd, stdio: "ignore" });\n\tif (rule.fail) { process.stderr.write("injected failure\\n"); process.exit(1); }\n}\nprocess.exit(spawnSync(real, args, { stdio: "inherit" }).status ?? 1);\n`,
 			{ mode: 0o755 },
 		);
 		const plain: NodeJS.ProcessEnv = {
@@ -1694,7 +1696,7 @@ describe("promotion rollback resets only what the promotion produced", () => {
 	it("does not reset a branch that gained a commit as its conflicting rebase started", () => {
 		const run = scenario({
 			conflict: true,
-			shim: ({ other }) => ({ arg: "rebase", steps: [{ cwd: other, args: ["commit", "--allow-empty", "-q", "-m", "feat(other): added as the rebase started"] }] }),
+			shim: ({ other }) => ({ pattern: "switch --detach|rebase main", steps: [{ cwd: other, args: ["commit", "--allow-empty", "-q", "-m", "feat(other): added as the rebase started"] }] }),
 		});
 		assert.equal(run.report.ok, false);
 		assert.equal(run.report.stage, "rebase");
@@ -1748,7 +1750,9 @@ describe("promotion rollback resets only what the promotion produced", () => {
 		const run = scenario({
 			gateFails: true,
 			shim: ({ other }) => ({
-				pattern: "update-ref|reset --hard",
+				pattern: "update-ref",
+				nth: 2,
+				inCwd: other,
 				steps: [{ cwd: other, args: ["commit", "--allow-empty", "-q", "-m", "feat(other): added as the rollback started"] }],
 			}),
 		});
@@ -1790,6 +1794,67 @@ describe("promotion rollback resets only what the promotion produced", () => {
 		assert.match(run.report.recover ?? "", /paused rebase/);
 		assert.equal(run.git(["log", "-1", "--format=%s", "HEAD"], run.other), "feat(other): made while the rebase was paused");
 		assert.equal(run.git(["rev-parse", "main"]), run.mainBefore);
+	});
+
+	it("keeps a commit that lands on the branch as the batch rebase starts, and does not promote it", () => {
+		const run = scenario({
+			shim: ({ other }) => ({
+				pattern: "switch --detach|rebase main",
+				steps: [{ cwd: other, args: ["commit", "--allow-empty", "-q", "-m", "feat(other): added as the rebase started"] }],
+			}),
+		});
+		assert.equal(run.report.ok, false);
+		assert.equal(run.report.stage, "rebase");
+		assert.match(run.report.reason, /changed after the preflight/);
+		assert.equal(run.git(["log", "-1", "--format=%s", "extension/other"]), "feat(other): added as the rebase started");
+		assert.equal(run.git(["rev-parse", "extension/other~1"]), run.before.other);
+		assert.equal(run.git(["symbolic-ref", "--short", "HEAD"], run.other), "extension/other");
+		assert.equal(run.git(["status", "--porcelain"], run.other), "");
+		assert.equal(run.git(["rev-parse", "main"]), run.mainBefore);
+	});
+
+	it("keeps a conflict resolution that was staged but not committed on a paused rebase", () => {
+		const run = scenario({
+			conflict: true,
+			shim: ({ other }) => ({
+				pattern: "reflog|--abort",
+				inCwd: other,
+				steps: [{ cwd: other, args: ["add", "-A"] }],
+			}),
+		});
+		assert.equal(run.report.ok, false);
+		assert.equal(run.report.stage, "rebase");
+		assert.match(run.report.recover ?? "", /paused rebase/);
+		assert.equal(run.git(["ls-files", "--unmerged"], run.other), "");
+		assert.match(run.git(["diff", "--cached", "--name-only"], run.other), /extensions\/demo\/index\.ts/);
+		assert.equal(run.git(["rev-parse", "main"]), run.mainBefore);
+	});
+
+	for (const [moving, stage] of [["rebuild", "sync"], ["batch rebase", "rebase"]] as const) {
+		it(`rolls back when moving a branch ref fails during the ${moving} for a reason other than a changed branch`, () => {
+			const run = scenario({
+				shim: ({ demo, other }) => ({ pattern: "update-ref", inCwd: moving === "rebuild" ? demo : other, steps: [], fail: true }),
+			});
+			assert.equal(run.report.ok, false);
+			assert.equal(run.report.stage, stage);
+			assert.equal(run.git(["rev-parse", "extension/demo"]), run.before.demo);
+			assert.equal(run.git(["rev-parse", "extension/other"]), run.before.other);
+			assert.equal(run.git(["symbolic-ref", "--short", "HEAD"], run.other), "extension/other");
+			assert.equal(run.git(["status", "--porcelain"], run.demo), "");
+			assert.equal(run.git(["status", "--porcelain"], run.other), "");
+			assert.equal(run.git(["rev-parse", "main"]), run.mainBefore);
+			assert.equal(run.report.recover, null);
+		});
+	}
+
+	it("names the recovery commands when moving main fails for a reason other than a changed head", () => {
+		const run = scenario({
+			gateFails: true,
+			shim: ({ repo }) => ({ pattern: "update-ref", inCwd: repo, steps: [], fail: true }),
+		});
+		assert.equal(run.report.ok, false);
+		assert.match(run.report.recover ?? "", /cherry-pick --quit && git -C .* reset --hard/);
+		assert.notEqual(run.git(["rev-parse", "main"]), run.mainBefore);
 	});
 
 	it("leaves an uncommitted edit made on main while the replay runs", () => {
