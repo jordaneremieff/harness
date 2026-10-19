@@ -213,12 +213,18 @@ produced. Before it rebases or replays a slice, the command checks that the bran
 not, the promotion fails with stage `preflight` and rolls back what it made. A rollback after a failure resets a branch
 only while its head and worktree status still match what the promotion left, including the state of a rebuild that
 failed part way, and it aborts an unfinished batch rebase first, unless work was done on the paused rebase after it
-stopped: a commit, a reset, a checkout, a staged or edited conflict resolution, or a new untracked file. It resets `main` only while `main` holds the commits the promotion made and the main checkout holds nothing
-else. Normally that means a clean checkout. When a cherry-pick replay stopped part way, the checkout holds that
+stopped: a commit, a reset, a checkout, a staged or edited conflict resolution, or a new untracked file. It resets
+`main` only while `HEAD` is on `main`, every commit between the starting `main` and its head is one the promotion
+made, and the main checkout holds nothing else. Normally that means a clean checkout. When a cherry-pick replay
+stopped part way, the checkout holds that
 replay's staged changes and conflicted files, so the command accepts changes to the replayed paths and refuses any
 other changed or untracked path, or a work-tree edit to a replayed path that is not in conflict. An edit to a path
 still in conflict looks the same as the conflict. Otherwise it leaves the branch or `main` as it is, and the `recover`
 text says how to inspect it. For `main`, the text says that `main` holds unpushed commits from the failed promotion.
+
+Each replayed commit takes the whole index, so the command fails the promotion if the main checkout index holds staged
+changes before the cherry-pick, or a path outside that commit after it. A branch that moves between its state check
+and the read of its commit list also fails the promotion before any replay.
 
 Each move of a branch ref (the batch rebase, the rebuild, the branch rollback, and the `main` rollback) uses
 `git update-ref` with the expected old value, so a commit that lands after the check makes the move fail and keeps
@@ -237,8 +243,9 @@ The batch rebase leaves the worktree detached from its first `git switch --detac
 to the branch, and a kill in that span (after the detach, or between the branch `git update-ref` and the `git
 switch`) leaves it detached. The branch itself is intact in both cases, and `git switch <branch>` in that worktree
 reattaches it. While the worktree is detached, a commit made there lands on the detached `HEAD`, not on the branch,
-so the expected-old-value check on the branch does not see it. If it lands before the rebase finishes, the rebase
-carries it into the promotion. If it lands after, the final `git switch` leaves it behind. Git's own rebase detaches
+so the expected-old-value check on the branch does not see it. If it lands before `git rebase` starts, or after the
+rebase ends and before the command reads `HEAD`, the promotion carries it. If it lands while the rebase is paused, the
+paused-rebase check below keeps it. If it lands after the branch ref moves, the final `git switch` leaves it behind. Git's own rebase detaches
 `HEAD` the same way.
 
 The check for work on a paused rebase compares the index, the work tree and the untracked file list with a snapshot

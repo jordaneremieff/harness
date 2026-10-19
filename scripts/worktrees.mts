@@ -1064,8 +1064,31 @@ function promotionCommits(repoRoot: string, branch: string, roots: Array<string 
 	});
 }
 
-function replayPromotionCommit(repoRoot: string, entry: ReplayCommit): { committed: boolean; reason?: string } {
+/** Staged paths that the commit being replayed does not explain. */
+function stagedOutsideReplay(repoRoot: string, entry: ReplayCommit): string[] {
+	const replayed = new Set([...entry.devRecords, ...entry.shipped]);
+	return git(repoRoot, ["diff", "--cached", "--name-only", "--no-renames"])
+		.stdout.split("\n")
+		.map((line) => line.trim())
+		.filter((path) => path !== "" && !replayed.has(path));
+}
+
+/** Applies a commit to the index. The commit that follows takes the whole index, so it must hold only this replay. */
+function pickIntoIndex(repoRoot: string, entry: ReplayCommit): { pick?: ReturnType<typeof git>; reason?: string } {
+	if (git(repoRoot, ["diff", "--cached", "--quiet"], { accept: [0, 1] }).status !== 0) {
+		return { reason: `${entry.sha}: the main checkout holds staged changes made while the promotion ran` };
+	}
 	const pick = git(repoRoot, noHooks(["cherry-pick", "-n", entry.full]), { accept: [0, 1, 128] });
+	const foreign = pick.status === 0 ? stagedOutsideReplay(repoRoot, entry) : [];
+	if (foreign.length > 0) {
+		return { reason: `${entry.sha}: the main checkout holds staged changes outside the replay: ${foreign.join(", ")}` };
+	}
+	return { pick };
+}
+
+function replayPromotionCommit(repoRoot: string, entry: ReplayCommit): { committed: boolean; reason?: string } {
+	const { pick, reason } = pickIntoIndex(repoRoot, entry);
+	if (!pick) return { committed: false, reason };
 	if (pick.status !== 0) {
 		const unmerged = git(repoRoot, ["diff", "--name-only", "--diff-filter=U", "-z"]).stdout.split("\0").filter(Boolean);
 		const developmentRecords = new Set(entry.devRecords);
@@ -1193,6 +1216,20 @@ function branchMovedReason(selection: PromotionSelection): string | undefined {
 		return `${path} has uncommitted tracked changes or untracked files made while the promotion ran`;
 	}
 	return undefined;
+}
+
+/**
+ * The commits to replay for a branch; throws when the branch moved. The list is read after the state check, so a
+ * commit that landed between the two would otherwise be replayed.
+ */
+function shippingCommits(repoRoot: string, selection: PromotionSelection, roots: Array<string | null>): ReplayCommit[] {
+	const { path, branch } = selection.record;
+	const commits = promotionCommits(repoRoot, branch, roots).filter((commit) => commit.kind !== "held");
+	const head = git(path, ["rev-parse", branch]).stdout.trim();
+	if (head !== (selection.produced?.head ?? selection.before)) {
+		throw new Error(`${branch} changed after the preflight: ${branch} moved while the promotion ran`);
+	}
+	return commits;
 }
 
 function preparePromotions(
@@ -1482,7 +1519,12 @@ function restoreMain(
 			? changesOutsideReplay(repo, replayed).length > 0
 			: git(repo, ["status", "--porcelain"]).stdout.trim() !== "" || Boolean(pausedGitOperation(repo));
 		const held = [`main holds unpushed commits from the failed promotion (${mainBefore.slice(0, 7)}..${head.slice(0, 7)}) or changed outside it, and was not reset; inspect git -C ${repo} log ${mainBefore}..main and git -C ${repo} status, then git -C ${repo} reset --hard ${mainBefore} only if nothing there is needed`];
-		if (!mainHeads.has(head) || foreign) return held;
+		const own = git(repo, ["rev-list", `${mainBefore}..${head}`])
+			.stdout.split("\n")
+			.filter(Boolean)
+			.every((sha) => mainHeads.has(sha));
+		const attached = git(repo, ["symbolic-ref", "--short", "HEAD"], { accept: [0, 1, 128] }).stdout.trim() === "main";
+		if (!mainHeads.has(head) || !own || !attached || foreign) return held;
 		if (replayed) git(repo, noHooks(["cherry-pick", "--quit"]));
 		if (!moveBranchRef(repo, "main", mainBefore, head)) return held;
 		git(repo, noHooks(["reset", "--hard", "HEAD"]));
@@ -1526,6 +1568,8 @@ function startSlice(
 	if (!moveBranchRef(record.path, record.branch, rebased, selection.before)) {
 		return `${entry.branch} changed after the preflight: ${entry.branch} moved while the rebase ran`;
 	}
+	// The branch ref has moved; a failure from here on must roll back the head this promotion produced.
+	selection.produced = { head: rebased, status: "" };
 	git(record.path, noHooks(["switch", record.branch]));
 	progress("rebase", undefined);
 	selection.produced = branchState(record.path, record.branch);
@@ -1576,9 +1620,7 @@ async function applyPromotions(
 			});
 			if (stale !== undefined) return abandon(stale);
 			stage = "cherry-pick";
-			const shipping = promotionCommits(context.repoRoot, entry.branch, roots).filter(
-				(commit) => commit.kind !== "held",
-			);
+			const shipping = shippingCommits(context.repoRoot, selection, roots);
 			replayed = new Set(shipping.flatMap((commit) => [...commit.devRecords, ...commit.shipped]));
 			const replay = replayPromotion(context.repoRoot, shipping, mainHeads);
 			if (replay.reason !== undefined) return abandon(replay.reason);
@@ -1642,7 +1684,7 @@ function printSliceOutcomes(slices: SlicePromotionReport[]): void {
 
 function printLeftBranches(slices: SlicePromotionReport[]): void {
 	for (const slice of slices) {
-		if (slice.left) console.log(`Left unchanged: ${slice.branch} (${slice.left}); the next sync rebases it onto main`);
+		if (slice.left) console.log(`Left unchanged: ${slice.branch} (${slice.left})`);
 	}
 }
 

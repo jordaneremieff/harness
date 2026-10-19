@@ -1913,6 +1913,94 @@ describe("promotion rollback resets only what the promotion produced", () => {
 		assert.match(readFileSync(join(run.repo, "extensions/demo/index.ts"), "utf8"), /mine: true/);
 	});
 
+	it("does not publish a path staged in the main checkout while a replay runs", () => {
+		const run = scenario({
+			shim: ({ repo }) => ({
+				pattern: "cherry-pick",
+				nth: 2,
+				inCwd: repo,
+				files: [{ path: join(repo, "stray.txt"), content: "staged by someone else\n" }],
+				steps: [{ cwd: repo, args: ["add", "stray.txt"] }],
+			}),
+		});
+		assert.equal(run.report.ok, false);
+		assert.equal(run.report.stage, "cherry-pick");
+		assert.match(run.report.reason, /staged changes outside the replay: stray\.txt/);
+		assert.doesNotMatch(run.git(["ls-tree", "-r", "--name-only", "main"]), /stray\.txt/);
+		assert.match(run.git(["diff", "--cached", "--name-only"]), /stray\.txt/);
+		assert.match(run.report.recover ?? "", /main holds unpushed commits from the failed promotion/);
+	});
+
+	it("fails before a replay when the main checkout index holds staged changes", () => {
+		const run = scenario({
+			shim: ({ repo }) => ({
+				pattern: "diff --cached --quiet",
+				nth: 3,
+				inCwd: repo,
+				files: [{ path: join(repo, "stray.txt"), content: "staged by someone else\n" }],
+				steps: [{ cwd: repo, args: ["add", "stray.txt"] }],
+			}),
+		});
+		assert.equal(run.report.ok, false);
+		assert.equal(run.report.stage, "cherry-pick");
+		assert.match(run.report.reason, /holds staged changes made while the promotion ran/);
+		assert.doesNotMatch(run.git(["ls-tree", "-r", "--name-only", "main"]), /stray\.txt/);
+		assert.match(run.git(["diff", "--cached", "--name-only"]), /stray\.txt/);
+	});
+
+	it("keeps a commit made on main between two replayed commits when a later step fails", () => {
+		const run = scenario({
+			gateFails: true,
+			shim: ({ repo }) => ({
+				pattern: "cherry-pick",
+				nth: 2,
+				inCwd: repo,
+				steps: [{ cwd: repo, args: ["commit", "--allow-empty", "-q", "-m", "chore: made between two replays"] }],
+			}),
+		});
+		assert.equal(run.report.ok, false);
+		assert.match(run.report.recover ?? "", /main holds unpushed commits from the failed promotion/);
+		assert.match(run.git(["log", "--format=%s", "main"]), /chore: made between two replays/);
+	});
+
+	it("does not replay a commit that landed on the first branch after its state check", () => {
+		const run = scenario({
+			shim: ({ demo }) => ({
+				pattern: "rev-list --reverse --topo-order main..extension/demo",
+				nth: 3,
+				steps: [{ cwd: demo, args: ["commit", "--allow-empty", "-q", "-m", "feat(demo): added before the commit list was read"] }],
+			}),
+		});
+		assert.equal(run.report.ok, false);
+		assert.match(run.report.reason, /extension\/demo moved while the promotion ran/);
+		assert.equal(run.git(["rev-parse", "main"]), run.mainBefore);
+		assert.equal(run.git(["log", "-1", "--format=%s", "extension/demo"]), "feat(demo): added before the commit list was read");
+	});
+
+	it("rolls the branch back when switching to it fails after the batch rebase moved it", () => {
+		const run = scenario({
+			shim: ({ other }) => ({ pattern: "switch extension/other$", inCwd: other, steps: [], fail: true }),
+		});
+		assert.equal(run.report.ok, false);
+		assert.equal(run.report.stage, "rebase");
+		assert.equal(run.git(["rev-parse", "extension/other"]), run.before.other);
+		assert.equal(run.git(["symbolic-ref", "--short", "HEAD"], run.other), "extension/other");
+		assert.equal(run.git(["status", "--porcelain"], run.other), "");
+		assert.equal(run.git(["rev-parse", "main"]), run.mainBefore);
+		assert.equal(run.report.recover, null);
+	});
+
+	it("keeps a commit made on a detached main checkout during the gates", () => {
+		const run = scenario({
+			gate: 'git(repo, "switch", "--detach"); git(repo, "commit", "--allow-empty", "-q", "-m", "chore: made on a detached head");',
+			gateFails: true,
+		});
+		assert.equal(run.report.ok, false);
+		assert.match(run.report.recover ?? "", /main holds unpushed commits from the failed promotion/);
+		assert.notEqual(run.git(["rev-parse", "main"]), run.mainBefore);
+		assert.equal(run.git(["log", "-1", "--format=%s", "HEAD"]), "chore: made on a detached head");
+	});
+
 	it("resets main to where it started after a failed gate nothing else touched", () => {
 		const run = scenario({ gateFails: true });
 		assert.equal(run.report.ok, false);
