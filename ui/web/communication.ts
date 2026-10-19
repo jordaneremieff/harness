@@ -17,6 +17,15 @@ function qualified(label: string, text: string, owner: string, field: ReferenceF
 function bounded(value: string, chars: number): string {
   const shown = previewText(value, Number.MAX_SAFE_INTEGER, value.length > chars ? chars - 1 : chars); return shown.text + (shown.truncated ? '…' : '');
 }
+/** Status kinds that read as one line until opened: the producer's own check-ins and thread notices. */
+function statusLine(value: CommunicationPresentation): {kind: string; preview: string} | undefined {
+  if (value.state !== 'ready') return undefined;
+  const {kind, body} = value.value;
+  if (kind !== 'check-in' && kind !== 'notice') return undefined;
+  const title = value.value.kind === 'notice' ? value.value.metadata.title?.trim() : undefined;
+  const first = body.text.slice(0, 2048).split('\n').map(line => line.trim()).find(line => line) ?? '';
+  return {kind: kind === 'check-in' ? 'check-in' : title ? `thread notice · ${bounded(title, 80)}` : 'thread notice', preview: bounded(first, 240)};
+}
 export function messageCopyText(message: MessageView, raw: (message: MessageView) => string): string {
   return message.communication?.state === 'ready' ? message.communication.value.body.text : raw(message);
 }
@@ -94,6 +103,12 @@ export class CommunicationCard {
   private readonly close: HTMLButtonElement;
   private opener?: HTMLElement;
   private readonly key: string;
+  private readonly lineKey: string;
+  private readonly toggle = element('button', 'communication-toggle');
+  private readonly kindLabel = element('span', 'communication-line-kind');
+  private readonly preview = element('span', 'communication-line-preview');
+  private lineMode = false;
+  private lineOpen = false;
   private readonly text = element('div', 'communication-text');
   private readonly reply = element('p','communication-reply');
   private readonly resultActions=element('div','communication-results');
@@ -117,8 +132,10 @@ export class CommunicationCard {
   private detailsValue = '';
   private readonly shell: Shell;
   private readonly hooks: Hooks;
-  constructor(shell: Shell, hooks: Hooks, keys: readonly [string]) {
-    this.shell = shell; this.hooks = hooks; this.key = keys[0];
+  constructor(shell: Shell, hooks: Hooks, keys: readonly [string, string]) {
+    this.shell = shell; this.hooks = hooks; this.key = keys[0]; this.lineKey = keys[1];
+    this.toggle.type = 'button'; this.toggle.addEventListener('click', () => { if (this.lineMode && hooks.active()) this.setLineOpen(!this.lineOpen, true); });
+    this.toggle.append(this.kindLabel, this.preview);
     shell.node.classList.add('communication-card'); for (const name of ['user', 'tool-only', 'thinking-only']) shell.node.classList.remove(name);
     shell.header.classList.add('communication-header'); shell.heading.classList.add('communication-sender'); shell.body.classList.add('communication-body');
     this.unverified = cardAction('unknown', 'Source unverified', () => this.openSource(this.unverified), 'communication-unverified');
@@ -175,9 +192,33 @@ export class CommunicationCard {
     const input=unassociatedInput(message); this.shell.node.classList.toggle('user',input);
     const heading=sender?this.senderLabel(sender):input?presentMessage(message,this.hooks.operatorInput).label:'';
     setText(this.shell.heading,heading);
+    this.arrangeLine(value, heading);
     this.shell.heading.hidden = !sender && !input; this.shell.heading.title = sender?.identity ?? '';
     this.unverified.hidden = value.state === 'ready' || input;
     this.shell.node.setAttribute('aria-label', heading || 'Message with unverified source');
+  }
+  /** A check-in or thread notice takes one row whose button discloses the full card; other kinds keep the card as is. */
+  private arrangeLine(value: CommunicationPresentation, heading: string): void {
+    const line = statusLine(value), node = this.shell.node;
+    if (!line) {
+      if (!this.lineMode) return;
+      this.lineMode = false; this.unverified.before(this.shell.heading); this.toggle.remove();
+      node.classList.remove('communication-line'); delete node.dataset.open; this.shell.body.hidden = false; return;
+    }
+    if (!this.lineMode) {
+      this.lineMode = true; this.unverified.before(this.toggle); this.toggle.prepend(this.shell.heading);
+      node.classList.add('communication-line');
+    }
+    setText(this.kindLabel, line.kind); setText(this.preview, line.preview);
+    this.toggle.setAttribute('aria-label', [heading, line.kind, line.preview].filter(Boolean).join(', '));
+    this.paintLine(this.hooks.expanded(this.lineKey));
+  }
+  private paintLine(open: boolean): void {
+    this.lineOpen = open; this.toggle.setAttribute('aria-expanded', String(open)); this.shell.node.dataset.open = String(open); this.shell.body.hidden = !open;
+  }
+  private setLineOpen(open: boolean, notify: boolean): void {
+    this.hooks.layout(); this.paintLine(open);
+    if (notify) this.hooks.disclosure(this.lineKey, open);
   }
   private content(value: CommunicationPresentation, message: MessageView): void {
     const ready = value.state === 'ready'; const original = ready ? value.value.body.text : this.hooks.raw(message);
@@ -210,6 +251,7 @@ export class CommunicationCard {
   current(): MessageView | undefined { return this.hooks.active() && this.source === this.hooks.current() ? this.source : undefined; }
   openSource(opener: HTMLElement): void {
     if (!this.current()) return;
+    if (this.lineMode && !this.lineOpen) this.setLineOpen(true, true);
     this.opener = opener; this.setSourceOpen(true, true); this.close.focus({preventScroll: true});
   }
   configureSource(open: boolean): void { this.inspection.hidden = !open; this.inspection.inert = !open; }
@@ -259,6 +301,7 @@ export class CommunicationCard {
     if (structured.length > 8192) warnings.push('Structured source display shortened.');
   }
   dispose(): void {
+    if (this.lineMode) { this.lineMode = false; this.unverified.before(this.shell.heading); this.toggle.remove(); this.shell.node.classList.remove('communication-line'); delete this.shell.node.dataset.open; this.shell.body.hidden = false; }
     this.unverified.remove(); this.inspection.remove(); this.shell.node.classList.remove('communication-card'); delete this.shell.node.dataset.state; delete this.shell.node.dataset.reason;
     this.shell.header.classList.remove('communication-header'); this.shell.heading.classList.remove('communication-sender'); this.shell.body.classList.remove('communication-body');
     this.shell.node.setAttribute('aria-label', messageAriaLabel(this.hooks.current(), this.hooks.operatorInput)); this.shell.heading.title = ''; this.shell.heading.hidden = false;

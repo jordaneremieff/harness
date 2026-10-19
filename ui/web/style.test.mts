@@ -1089,3 +1089,11 @@ test('sidebar sections follow the document order OPEN, SESSIONS, AGENTS, THREADS
   assert.match(rule('#files-section-body'), /flex: 1 1 auto; min-height: 0; overflow: auto/);
   assert.ok(html.indexOf('id="files-section"') < html.indexOf('id="agent-message-panel"'));
 });
+test('a status row holds sender, kind and first line on one 28px line without fill or border', () => {
+  assert.match(rule('.communication-toggle'), /display: flex; flex: 1 1 auto; align-items: center;[^}]*height: 28px; overflow: hidden; color: var\(--muted\); font-size: 12px;[^}]*white-space: nowrap/);
+  assert.doesNotMatch(rule('.communication-toggle'), /background:|border:|box-shadow:/);
+  assert.match(rule('.communication-line > .communication-header'), /min-height: 28px/);
+  assert.match(rule('.communication-line-preview'), /flex: 1 1 0/);
+  assert.match(rule('.communication-line-kind, .communication-line-preview'), /min-width: 0; overflow: hidden;[^}]*text-overflow: ellipsis/);
+  assert.match(rule('.communication-toggle > .communication-sender'), /font-weight: 500/);
+});

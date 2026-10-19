@@ -779,6 +779,14 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
 
 .communication-card { min-width: 0; max-width: 100%; padding: 0; border: 0; background: transparent; font-family: var(--sans); }
 .communication-header > .communication-sender { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.communication-line > .communication-header { min-height: 28px; }
+.communication-toggle { display: flex; flex: 1 1 auto; align-items: center; gap: var(--s2); min-width: 0; height: 28px; overflow: hidden; color: var(--muted); font-size: 12px; line-height: 18px; white-space: nowrap; }
+.communication-toggle:hover { color: var(--fg); }
+.communication-toggle > .communication-sender { flex: 0 1 auto; max-width: 40%; font-weight: 500; }
+.communication-line-kind, .communication-line-preview { min-width: 0; overflow: hidden; font-weight: 400; text-overflow: ellipsis; }
+.communication-line-kind { flex: 0 1 auto; max-width: 40%; }
+.communication-line-preview { flex: 1 1 0; }
+.communication-line-kind::before, .communication-line-preview::before { content: "·"; margin-right: var(--s2); }
 .communication-unverified { display: inline-flex; flex: none; align-items: center; gap: 4px; width: auto; height: 28px; min-width: 28px; min-height: 28px; padding: 0 4px; color: var(--warning); font-size: 12px; line-height: 1; }
 .communication-unverified > .card-action-label { white-space: nowrap; }
 .communication-unverified:hover { background: var(--raised); color: var(--fg); }

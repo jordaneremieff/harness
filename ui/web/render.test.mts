@@ -2338,6 +2338,48 @@ function communicationEntry(state: 'ready' | 'unresolved' | 'unavailable' = 'rea
   const communication: import('../shared/api.ts').CommunicationPresentation = state === 'ready' ? {state, origin: {kind: 'ordinary-custom', customType: 'agent.peer', renderEntryId: 'peer-message', sourceEntryId: 'peer'}, value: {format: 'agent.communication/1', sender: {identity: '10000000-0000-4000-8000-000000000001', name}, body: {text: body, complete: false, redacted: false}, recordedAt: 1700000000000, kind: 'report', metadata: {sourceId: 'source', requestId: 'request'}}, rawDetails: {value: {literal: '[omitted]'}, truncated: false}} : state === 'unresolved' ? {state} : {state, reason: 'invalid'};
   return {id: 'peer', kind: 'message', messages: [{id: 'peer-message', role: 'custom', state: 'final', parts: [{type: 'text', text: 'Original transport paragraph'}], coverage, communication}]};
 }
+function statusEntry(kind: 'check-in' | 'notice' | 'report', body: string, title?: string): import('../shared/api.ts').EntryView {
+  const source = communicationEntry('ready', body); const message = source.messages?.[0]; assert.ok(message);
+  if (message.communication?.state !== 'ready') throw new Error('ready communication expected');
+  const metadata = kind === 'check-in' ? {sourceId: 'source', producerRequestId: 'request', elapsedMs: 0, origin: 'model' as const}
+    : kind === 'notice' ? {threadId: 'thread', ...(title ? {title} : {})} : {sourceId: 'source', requestId: 'request'};
+  message.communication.value = {...message.communication.value, kind, metadata} as import('../shared/api.ts').Communication;
+  return source;
+}
+test('a check-in or thread notice is one row that discloses the full card and keeps focus on the row', () => {
+  setup(); let saved: string[] = []; const view = new Transcript('primary', {presentation: value => {saved = value;}, reading: () => {}});
+  view.set([statusEntry('check-in', '\n  Awaiting \u00b7 run 2734\nheld requests 16, 472')]); flush();
+  const card = node('primary-transcript').querySelector('.communication-card'); assert.ok(card);
+  const toggle = card.querySelector('.communication-toggle'); const body = card.querySelector('.communication-body'); const header = card.querySelector('.communication-header'); assert.ok(toggle); assert.ok(body); assert.ok(header);
+  assert.equal(toggle.tagName, 'button'); assert.equal(toggle.type, 'button'); assert.equal(card.classList.contains('communication-line'), true);
+  assert.equal(toggle.querySelector('.communication-sender')?.textContent, 'Peer'); assert.equal(toggle.querySelector('.communication-line-kind')?.textContent, 'check-in'); assert.equal(toggle.querySelector('.communication-line-preview')?.textContent, 'Awaiting \u00b7 run 2734');
+  assert.equal(toggle.attributes['aria-label'], 'Peer, check-in, Awaiting \u00b7 run 2734'); assert.equal(toggle.attributes['aria-expanded'], 'false'); assert.equal(body.hidden, true);
+  assert.equal(toggle.parentNode, header); assert.equal(header.querySelector('.message-actions')?.querySelector('.message-menu')?.attributes['aria-label'], 'Message actions');
+  toggle.focus(); toggle.click(); flush();
+  assert.equal(body.hidden, false); assert.equal(toggle.attributes['aria-expanded'], 'true'); assert.equal(fakeDocument.activeElement, toggle);
+  assert.match(card.querySelector('.communication-text')?.textContent ?? '', /held requests 16, 472/); assert.equal(saved.length, 1); assert.match(saved[0] ?? '', /^communication-line:/);
+  const key = saved[0] ?? ''; toggle.click(); flush(); assert.equal(body.hidden, true); assert.deepEqual(saved, []);
+  toggle.click(); flush(); view.reset(); view.configure({revision: 1, expanded: [key], showThinking: false}); view.set([statusEntry('check-in', 'Awaiting')]); flush();
+  const restored = node('primary-transcript').querySelector('.communication-card'); assert.equal(restored?.querySelector('.communication-body')?.hidden, false); assert.equal(restored?.querySelector('.communication-toggle')?.attributes['aria-expanded'], 'true'); view.reset();
+});
+test('a thread notice names its thread and Source opens the row it belongs to', () => {
+  setup(); const view = transcript(); view.set([statusEntry('notice', 'Frame revised', 'Release plan')]); flush();
+  const card = node('primary-transcript').querySelector('.communication-card'); assert.ok(card);
+  assert.equal(card.querySelector('.communication-line-kind')?.textContent, 'thread notice \u00b7 Release plan'); assert.equal(card.querySelector('.communication-toggle')?.attributes['aria-label'], 'Peer, thread notice \u00b7 Release plan, Frame revised');
+  assert.equal(card.querySelector('.communication-body')?.hidden, true); messageAction(card, 'Source').run?.(); flush();
+  assert.equal(card.querySelector('.communication-body')?.hidden, false); assert.equal(card.querySelector('.message-source')?.hidden, false); assert.equal(card.querySelector('.communication-toggle')?.attributes['aria-expanded'], 'true');
+  node('primary-editor').focus(); view.set([statusEntry('notice', 'Frame revised')]); flush(); assert.equal(card.querySelector('.communication-line-kind')?.textContent, 'thread notice'); view.reset();
+});
+test('reports and results keep the full card and a card leaves the row form when its kind changes', () => {
+  setup(); const view = transcript(); view.set([statusEntry('check-in', 'Awaiting')]); flush();
+  const card = node('primary-transcript').querySelector('.communication-card'); assert.ok(card);
+  const header = card.querySelector('.communication-header'); const heading = card.querySelector('.communication-sender'); assert.ok(header); assert.ok(heading);
+  view.set([statusEntry('report', 'Finished the task')]); flush();
+  assert.equal(card.querySelector('.communication-toggle'), null); assert.equal(card.classList.contains('communication-line'), false); assert.equal(card.querySelector('.communication-body')?.hidden, false);
+  assert.equal(heading.parentNode, header); assert.equal(card.querySelector('.communication-text')?.textContent, 'Finished the task');
+  view.set([statusEntry('check-in', 'Awaiting')]); flush(); assert.equal(card.querySelector('.communication-toggle')?.querySelector('.communication-sender'), heading);
+  view.set([communicationEntry('unavailable')]); flush(); assert.equal(card.querySelector('.communication-toggle'), null); assert.equal(card.querySelector('.communication-body')?.hidden, false); assert.equal(card.querySelector('.communication-unverified')?.hidden, false); view.reset();
+});
 test('scoped transcripts isolate matching entry IDs and retain the same root across pane moves', () => {
   setup(); const paneOne = new FakeNode('section'), paneTwo = new FakeNode('section'); paneOne.className = 'pane-leaf'; paneTwo.className = 'pane-leaf'; roots.push(paneOne, paneTwo);
   const first = new FakeNode('div'), second = new FakeNode('div'), firstLatest = new FakeNode('button'), secondLatest = new FakeNode('button'); paneOne.append(first, firstLatest); paneTwo.append(second, secondLatest);

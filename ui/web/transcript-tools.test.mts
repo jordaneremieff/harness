@@ -85,6 +85,7 @@ test('communication disclosures follow their message owner and clear on source r
   index.update([], new Map()); for (const key of keys) assert.equal(index.disclosures.has(key), false);
   assert.ok(communicationDisclosureKeys('a'.repeat(256), 'b'.repeat(256)).every(key => key.length <= 256));
   assert.notDeepEqual(communicationDisclosureKeys('a:b', 'c'), communicationDisclosureKeys('a', 'b:c'));
+  assert.equal(keys.length, 2); assert.match(keys[0] ?? '', /^communication-details:/); assert.match(keys[1] ?? '', /^communication-line:/); assert.notEqual(keys[0], keys[1]);
 });
 test('elapsed formatting uses only observed starts and retains supplied completed durations', () => {
   const base = {callId: 'x', name: 'read', owner: 'entry', slot: 'slot', status: 'working'};

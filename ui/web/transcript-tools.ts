@@ -43,11 +43,11 @@ type ToolPart = {part: Extract<PartView, {type: 'toolCall' | 'toolResult'}> | (N
 type EntryParts = {tools: ToolPart[]; thinking: string[]; communication: string[]};
 export function slot(entry: string, message: string, index: number): string { return JSON.stringify([entry, message, index]); }
 export function toolDisclosureKeys(id: string): string[] { return [`tool:${id}`, `arguments:${id}`, `raw-output:${id}`]; }
-/** Opaque preference keys stay inside the existing state bound for long source IDs. */
-export function communicationDisclosureKeys(entry: string, message: string): [string] {
+/** Opaque preference keys stay inside the existing state bound for long source IDs. The first key opens Source; the second opens a one-line status row. */
+export function communicationDisclosureKeys(entry: string, message: string): [string, string] {
   let key = 0x6c62272e07bb014262b821756295c58dn;
   for (const point of JSON.stringify([entry, message])) key = BigInt.asUintN(128, (key ^ BigInt(point.codePointAt(0) ?? 0)) * 0x1000000000000000000013bn);
-  const id = key.toString(16); return [`communication-details:${id}`];
+  const id = key.toString(16); return [`communication-details:${id}`, `communication-line:${id}`];
 }
 function sameTool(a: JoinedTool | undefined, b: JoinedTool): boolean {
   return !!a && a.name === b.name && a.owner === b.owner && a.slot === b.slot && a.args === b.args &&
