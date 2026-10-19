@@ -290,3 +290,7 @@ test('the thinking preview is the first non-blank line in plain words', () => {
   assert.equal(thinkingPreview('- first item\n- second'), 'first item'); assert.equal(thinkingPreview('> quoted   words'), 'quoted words');
   assert.equal(thinkingPreview('   \n  \n'), ''); assert.equal(thinkingPreview('x'.repeat(5000)).length, 300);
 });
+test('the thinking preview reads a link as its label and an image as its alt text', () => {
+  assert.equal(thinkingPreview('See [the guide](https://example.test/a_b) and ![diagram](x.png) now'), 'See the guide and diagram now');
+  assert.equal(thinkingPreview('**[Docs](https://example.test)** first'), 'Docs first');
+});
