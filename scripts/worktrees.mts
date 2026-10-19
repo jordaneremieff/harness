@@ -644,13 +644,33 @@ function devRecordPathsAt(repoRoot: string, ref: string, devRecordRoot: string |
 		.filter((path) => path !== "" && isDevRecordPath(path, devRecordRoot));
 }
 
-function rebuildPromotedBranch(context: HarnessContext, record: WorktreeRecord, originalHead: string): void {
+/**
+ * Moves a branch ref only while it still holds `expected`. Git compares the old value inside the ref update, so a
+ * commit that lands first makes the update fail instead of being dropped. Returns false when the branch moved.
+ */
+function moveBranchRef(path: string, branch: string, to: string, expected: string): boolean {
+	const ref = `refs/heads/${branch}`;
+	const update = git(path, ["update-ref", "-m", "promotion", ref, to, expected], { accept: [0, 1, 128] });
+	if (update.status === 0) return true;
+	if (git(path, ["rev-parse", ref]).stdout.trim() !== expected) return false;
+	throw new Error(`update-ref ${ref} failed: ${(update.stderr || update.stdout).trim()}`);
+}
+
+/** Rebuilds the branch on main. Returns false, touching nothing, when the branch no longer holds `expectedHead`. */
+function rebuildPromotedBranch(
+	context: HarnessContext,
+	record: WorktreeRecord,
+	originalHead: string,
+	expectedHead: string,
+): boolean {
 	const originalPaths = devRecordPathsAt(context.repoRoot, originalHead, record.devRecordRoot);
 	const mainPaths = devRecordPathsAt(context.repoRoot, "main", record.devRecordRoot);
 	const allPaths = [...new Set([...originalPaths, ...mainPaths])].sort();
 	const originalSet = new Set(originalPaths);
 
-	git(context.repoRoot, noHooks(["reset", "--hard", "main"]), { cwd: record.path });
+	const mainHead = git(context.repoRoot, ["rev-parse", "main"]).stdout.trim();
+	if (!moveBranchRef(record.path, record.branch, mainHead, expectedHead)) return false;
+	git(context.repoRoot, noHooks(["reset", "--hard", "HEAD"]), { cwd: record.path });
 	if (originalPaths.length > 0) {
 		git(context.repoRoot, noHooks(["checkout", originalHead, "--", ...originalPaths]), {
 			cwd: record.path,
@@ -663,15 +683,16 @@ function rebuildPromotedBranch(context: HarnessContext, record: WorktreeRecord, 
 			accept: [0, 1, 128],
 		});
 	}
-	if (allPaths.length === 0) return;
+	if (allPaths.length === 0) return true;
 	const staged = git(context.repoRoot, ["diff", "--cached", "--quiet"], {
 		cwd: record.path,
 		accept: [0, 1],
 	});
-	if (staged.status === 0) return;
+	if (staged.status === 0) return true;
 	git(context.repoRoot, noHooks(["commit", "-m", `docs(${record.name}): retain development records`]), {
 		cwd: record.path,
 	});
+	return true;
 }
 
 function canonicalPath(path: string): string {
@@ -1296,17 +1317,36 @@ async function promote(
 	return completePromotion(context, result, options, remote);
 }
 
+/**
+ * A paused rebase leaves HEAD where git put it, and git writes a rebase entry to the HEAD log for each step it takes.
+ * Any other newest entry (a commit, a reset, a checkout) means someone worked on the detached HEAD since the stop,
+ * and aborting would discard that work.
+ */
+function pausedRebaseWasEdited(path: string): boolean {
+	const latest = git(path, ["reflog", "-1", "--format=%gs", "HEAD"], { accept: [0, 1, 128] }).stdout.trim();
+	return latest !== "" && !latest.startsWith("rebase");
+}
+
 function restorePromotionBranch(selection: PromotionSelection, rebasing: boolean): string | undefined {
 	const { path, branch } = selection.record;
 	let abort = rebasing;
 	try {
 		abort = rebasing && Boolean(pausedGitOperation(path)?.includes("rebase-"));
-		if (abort) git(path, noHooks(["rebase", "--abort"]));
+		if (abort) {
+			if (pausedRebaseWasEdited(path)) {
+				return `${branch} changed during the promotion: its paused rebase in ${path} holds work made after the rebase stopped, so it was not aborted; inspect ${path}, then git -C ${path} rebase --abort && git -C ${path} reset --hard ${selection.before} only if nothing there is needed`;
+			}
+			git(path, noHooks(["rebase", "--abort"]));
+		}
 		const moved = branchMovedReason(selection);
 		if (moved !== undefined) {
 			return `${branch} changed during the promotion and was not reset (${moved}); inspect ${path}, then git -C ${path} reset --hard ${selection.before} only if nothing there is needed`;
 		}
-		git(path, noHooks(["reset", "--hard", selection.before]));
+		const expected = selection.produced?.head ?? selection.before;
+		if (!moveBranchRef(path, branch, selection.before, expected)) {
+			return `${branch} changed during the promotion and was not reset (${branch} moved while the promotion ran); inspect ${path}, then git -C ${path} reset --hard ${selection.before} only if nothing there is needed`;
+		}
+		git(path, noHooks(["reset", "--hard", "HEAD"]));
 		if (
 			pausedGitOperation(path) ||
 			git(path, ["symbolic-ref", "--short", "HEAD"]).stdout.trim() !== branch ||
@@ -1354,13 +1394,23 @@ function rebuildUnlessMoved(
 		return false;
 	}
 	changed.add(selection);
+	let rebuilt = true;
 	try {
-		rebuildPromotedBranch(context, selection.record, selection.before);
+		rebuilt = rebuildPromotedBranch(
+			context,
+			selection.record,
+			selection.before,
+			selection.produced?.head ?? selection.before,
+		);
 	} finally {
 		// A rebuild that fails part way leaves a state this promotion produced; a later rollback may reset exactly that.
-		selection.produced = branchState(selection.record.path, selection.record.branch);
+		if (rebuilt) selection.produced = branchState(selection.record.path, selection.record.branch);
 	}
-	return true;
+	if (!rebuilt) {
+		const slice = slices.find((candidate) => candidate.branch === selection.record.branch);
+		if (slice) slice.left = `${selection.record.branch} moved while the promotion ran`;
+	}
+	return rebuilt;
 }
 
 function rebuildPromotedBranches(
@@ -1378,21 +1428,45 @@ function rebuildPromotedBranches(
 	}
 }
 
-/** Resets main only while it holds commits this promotion made; anything else on main is left for its owner. */
+/**
+ * Paths in the main checkout that the commit being replayed cannot explain. A replay stopped part way leaves its own
+ * staged changes and conflicted files; any other path, or a work-tree edit to a replayed path that is not in conflict,
+ * was made by someone else. An edit to a path that is still in conflict cannot be told apart from the conflict.
+ */
+function changesOutsideReplay(repo: string, replayed: ReadonlySet<string>): string[] {
+	const entries = git(repo, ["status", "--porcelain", "-z", "--no-renames", "--untracked-files=all"])
+		.stdout.split("\0")
+		.filter(Boolean);
+	return entries
+		.filter((entry) => {
+			const code = entry.slice(0, 2);
+			if (!replayed.has(entry.slice(3))) return true;
+			const conflicted = code.includes("U") || code === "AA" || code === "DD";
+			return !conflicted && code[1] !== " ";
+		})
+		.map((entry) => entry.slice(3));
+}
+
+/**
+ * Resets main only while it holds commits this promotion made; anything else on main is left for its owner.
+ * `replayed` is set while a replay is in flight and names the paths that replay may have changed.
+ */
 function restoreMain(
 	repo: string,
 	mainBefore: string,
 	mainHeads: ReadonlySet<string>,
-	replaying: boolean,
+	replayed: ReadonlySet<string> | undefined,
 ): string[] {
 	try {
 		const head = git(repo, ["rev-parse", "main"]).stdout.trim();
-		const status = git(repo, ["status", "--porcelain"]).stdout.trim();
-		if (!mainHeads.has(head) || (!replaying && (status !== "" || pausedGitOperation(repo)))) {
-			return [`main holds unpushed commits from the failed promotion (${mainBefore.slice(0, 7)}..${head.slice(0, 7)}) or changed outside it, and was not reset; inspect git -C ${repo} log ${mainBefore}..main and git -C ${repo} status, then git -C ${repo} reset --hard ${mainBefore} only if nothing there is needed`];
-		}
-		if (replaying) git(repo, noHooks(["cherry-pick", "--quit"]));
-		git(repo, noHooks(["reset", "--hard", mainBefore]));
+		const foreign = replayed
+			? changesOutsideReplay(repo, replayed).length > 0
+			: git(repo, ["status", "--porcelain"]).stdout.trim() !== "" || Boolean(pausedGitOperation(repo));
+		const held = [`main holds unpushed commits from the failed promotion (${mainBefore.slice(0, 7)}..${head.slice(0, 7)}) or changed outside it, and was not reset; inspect git -C ${repo} log ${mainBefore}..main and git -C ${repo} status, then git -C ${repo} reset --hard ${mainBefore} only if nothing there is needed`];
+		if (!mainHeads.has(head) || foreign) return held;
+		if (replayed) git(repo, noHooks(["cherry-pick", "--quit"]));
+		if (!moveBranchRef(repo, "main", mainBefore, head)) return held;
+		git(repo, noHooks(["reset", "--hard", "HEAD"]));
 		if (pausedGitOperation(repo) || git(repo, ["rev-parse", "main"]).stdout.trim() !== mainBefore) {
 			throw new Error("incomplete rollback");
 		}
@@ -1440,14 +1514,14 @@ async function applyPromotions(
 	let failedSlice: string | undefined;
 	let rebasing: PromotionSelection | undefined;
 	const mainHeads = new Set([mainBefore]);
-	let replaying = false;
+	let replayed: Set<string> | undefined;
 	const abandon = (reason: string): PromotionReport => {
 		const recovery: string[] = [];
 		for (const selection of changed) {
 			const instruction = restorePromotionBranch(selection, rebasing === selection);
 			if (instruction) recovery.push(instruction);
 		}
-		recovery.push(...restoreMain(context.repoRoot, mainBefore, mainHeads, replaying));
+		recovery.push(...restoreMain(context.repoRoot, mainBefore, mainHeads, replayed));
 		return {
 			...report,
 			ok: false,
@@ -1473,10 +1547,10 @@ async function applyPromotions(
 			const shipping = promotionCommits(context.repoRoot, entry.branch, roots).filter(
 				(commit) => commit.kind !== "held",
 			);
-			replaying = true;
+			replayed = new Set(shipping.flatMap((commit) => [...commit.devRecords, ...commit.shipped]));
 			const replay = replayPromotion(context.repoRoot, shipping, mainHeads);
 			if (replay.reason !== undefined) return abandon(replay.reason);
-			replaying = false;
+			replayed = undefined;
 			slices[index].promoted = replay.promoted;
 			stage = "verify";
 			assertPromotionBoundary(context, entry.branch, roots);

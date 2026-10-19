@@ -1365,7 +1365,11 @@ const args = process.argv.slice(2);
 const second = process.cwd() === ${JSON.stringify(f.second)};
 const fault = ${JSON.stringify(fault)};
 const marker = ${JSON.stringify(marker)};
-if (second && fault === "rebuild" && args.slice(-3).join(" ") === "reset --hard main") process.exit(42);
+const rebuildFailed = marker + "-rebuild";
+if (second && fault === "rebuild" && !existsSync(rebuildFailed) && args.slice(-3).join(" ") === "reset --hard HEAD") {
+	writeFileSync(rebuildFailed, "failed");
+	process.exit(42);
+}
 if (second && fault === "abort" && args.slice(-2).join(" ") === "rebase --abort") process.exit(42);
 if (second && fault === "probe" && existsSync(marker) && args.at(-1) === "rebase-merge") process.exit(42);
 const result = spawnSync(${JSON.stringify(realGit)}, args, { stdio: "inherit" });
@@ -1534,7 +1538,13 @@ describe("promotion while the branch changes during the gates", () => {
 
 interface ShimRule {
 	/** The Git argument that triggers the rule once. */
-	arg: string;
+	arg?: string;
+	/** A regular expression over the joined Git arguments; triggers the rule once instead of `arg`. */
+	pattern?: string;
+	/** Only a call made from this directory triggers the rule. */
+	inCwd?: string;
+	/** Files written, before the steps run, as an owner editing meanwhile. */
+	files?: Array<{ path: string; content: string }>;
 	/** Git calls run, in the given directory, before the triggering call proceeds. */
 	steps: Array<{ cwd: string; args: string[] }>;
 	/** Fails the triggering call instead of running it. */
@@ -1554,7 +1564,7 @@ describe("promotion rollback resets only what the promotion produced", () => {
 	interface Options {
 		/** The second slice edits a file the first also edits, so its batch rebase stops on a conflict. */
 		conflict?: boolean;
-		shim?: (trees: { demo: string; other: string }) => ShimRule;
+		shim?: (trees: { demo: string; other: string; repo: string }) => ShimRule;
 		/** Node code run by the gate; `repo`, `demo`, `other` and `git(cwd, ...args)` are in scope. */
 		gate?: string;
 		gateFails?: boolean;
@@ -1590,10 +1600,10 @@ describe("promotion rollback resets only what the promotion produced", () => {
 		mkdirSync(bin);
 		mkdirSync(repo, { recursive: true });
 		mkdirSync(agent, { recursive: true });
-		const rule = options.shim?.({ demo, other });
+		const rule = options.shim?.({ demo, other, repo });
 		writeFileSync(
 			join(bin, "git"),
-			`#!${process.execPath}\nconst { spawnSync } = require("node:child_process");\nconst fs = require("node:fs");\nconst args = process.argv.slice(2);\nconst rule = JSON.parse(process.env.PI_TEST_SHIM || "null");\nconst real = process.env.PI_TEST_REAL_GIT;\nif (rule && args.includes(rule.arg) && !fs.existsSync(rule.mark)) {\n\tfs.writeFileSync(rule.mark, "1");\n\tfor (const step of rule.steps) spawnSync(real, step.args, { cwd: step.cwd, stdio: "ignore" });\n\tif (rule.fail) { process.stderr.write("injected failure\\n"); process.exit(1); }\n}\nprocess.exit(spawnSync(real, args, { stdio: "inherit" }).status ?? 1);\n`,
+			`#!${process.execPath}\nconst { spawnSync } = require("node:child_process");\nconst fs = require("node:fs");\nconst args = process.argv.slice(2);\nconst rule = JSON.parse(process.env.PI_TEST_SHIM || "null");\nconst real = process.env.PI_TEST_REAL_GIT;\nconst hit = rule && (rule.pattern ? new RegExp(rule.pattern).test(args.join(" ")) : args.includes(rule.arg)) && (!rule.inCwd || process.cwd() === rule.inCwd);\nif (hit && !fs.existsSync(rule.mark)) {\n\tfs.writeFileSync(rule.mark, "1");\n\tfor (const file of rule.files || []) fs.writeFileSync(file.path, file.content);\n\tfor (const step of rule.steps) spawnSync(real, step.args, { cwd: step.cwd, stdio: "ignore" });\n\tif (rule.fail) { process.stderr.write("injected failure\\n"); process.exit(1); }\n}\nprocess.exit(spawnSync(real, args, { stdio: "inherit" }).status ?? 1);\n`,
 			{ mode: 0o755 },
 		);
 		const plain: NodeJS.ProcessEnv = {
@@ -1718,6 +1728,99 @@ describe("promotion rollback resets only what the promotion produced", () => {
 		assert.equal(run.report.ok, false);
 		assert.match(run.report.recover ?? "", /main holds unpushed commits from the failed promotion/);
 		assert.equal(readFileSync(join(run.repo, "package.json"), "utf8"), '{"name":"edited"}\n');
+	});
+
+	it("keeps a commit that lands on a promoted branch just before the rebuild moves it", () => {
+		const run = scenario({
+			shim: ({ demo }) => ({
+				pattern: "update-ref|reset --hard",
+				steps: [{ cwd: demo, args: ["commit", "--allow-empty", "-q", "-m", "feat(demo): added as the rebuild started"] }],
+			}),
+		});
+		assert.equal(run.report.ok, true);
+		const slices: Array<{ branch: string; left?: string }> = run.report.slices;
+		assert.match(slices.find((slice) => slice.branch === "extension/demo")?.left ?? "", /moved while the promotion ran/);
+		assert.equal(run.git(["log", "-1", "--format=%s", "extension/demo"]), "feat(demo): added as the rebuild started");
+		assert.match(run.git(["show", "main:extensions/demo/index.ts"]), /ok: true/);
+	});
+
+	it("keeps a commit that lands on a branch just before its rollback moves it", () => {
+		const run = scenario({
+			gateFails: true,
+			shim: ({ other }) => ({
+				pattern: "update-ref|reset --hard",
+				steps: [{ cwd: other, args: ["commit", "--allow-empty", "-q", "-m", "feat(other): added as the rollback started"] }],
+			}),
+		});
+		assert.equal(run.report.ok, false);
+		assert.match(run.report.recover ?? "", /extension\/other changed during the promotion and was not reset/);
+		assert.equal(run.git(["log", "-1", "--format=%s", "extension/other"]), "feat(other): added as the rollback started");
+		assert.equal(run.git(["rev-parse", "main"]), run.mainBefore);
+	});
+
+	it("keeps a commit that lands on main just before the rollback moves it", () => {
+		const run = scenario({
+			gateFails: true,
+			shim: ({ repo }) => ({
+				pattern: "update-ref|reset --hard",
+				inCwd: repo,
+				steps: [{ cwd: repo, args: ["commit", "--allow-empty", "-q", "-m", "chore: added as the rollback started"] }],
+			}),
+		});
+		assert.equal(run.report.ok, false);
+		assert.match(run.report.recover ?? "", /main holds unpushed commits from the failed promotion/);
+		assert.equal(run.git(["log", "-1", "--format=%s", "main"]), "chore: added as the rollback started");
+		assert.match(run.git(["show", "main~1:extensions/demo/index.ts"]), /ok: true/);
+	});
+
+	it("keeps a commit made on the detached HEAD of a paused rebase", () => {
+		const run = scenario({
+			conflict: true,
+			shim: ({ other }) => ({
+				pattern: "reflog|--abort",
+				inCwd: other,
+				steps: [
+					{ cwd: other, args: ["add", "-A"] },
+					{ cwd: other, args: ["commit", "-q", "-m", "feat(other): made while the rebase was paused"] },
+				],
+			}),
+		});
+		assert.equal(run.report.ok, false);
+		assert.equal(run.report.stage, "rebase");
+		assert.match(run.report.recover ?? "", /paused rebase/);
+		assert.equal(run.git(["log", "-1", "--format=%s", "HEAD"], run.other), "feat(other): made while the rebase was paused");
+		assert.equal(run.git(["rev-parse", "main"]), run.mainBefore);
+	});
+
+	it("leaves an uncommitted edit made on main while the replay runs", () => {
+		const run = scenario({
+			shim: ({ repo }) => ({
+				arg: "cherry-pick",
+				inCwd: repo,
+				files: [{ path: join(repo, "package.json"), content: '{"name":"edited"}\n' }],
+				steps: [],
+				fail: true,
+			}),
+		});
+		assert.equal(run.report.ok, false);
+		assert.equal(run.report.stage, "cherry-pick");
+		assert.match(run.report.recover ?? "", /main holds unpushed commits from the failed promotion/);
+		assert.equal(readFileSync(join(run.repo, "package.json"), "utf8"), '{"name":"edited"}\n');
+	});
+
+	it("leaves an edit made to a replayed file while the replay runs", () => {
+		const run = scenario({
+			shim: ({ repo }) => ({
+				arg: "cherry-pick",
+				inCwd: repo,
+				files: [{ path: join(repo, "extensions/demo/index.ts"), content: "export default function demo() { return { mine: true }; }\n" }],
+				steps: [],
+				fail: true,
+			}),
+		});
+		assert.equal(run.report.ok, false);
+		assert.match(run.report.recover ?? "", /main holds unpushed commits from the failed promotion/);
+		assert.match(readFileSync(join(run.repo, "extensions/demo/index.ts"), "utf8"), /mine: true/);
 	});
 
 	it("resets main to where it started after a failed gate nothing else touched", () => {

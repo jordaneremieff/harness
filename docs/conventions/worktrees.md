@@ -212,9 +212,21 @@ is deferred until its owner commits. Every reset in the command follows one rule
 produced. Before it rebases or replays a slice, the command checks that the branch still holds its preflight state; if
 not, the promotion fails with stage `preflight` and rolls back what it made. A rollback after a failure resets a branch
 only while its head and worktree status still match what the promotion left, including the state of a rebuild that
-failed part way, and it aborts an unfinished batch rebase first. It resets `main` only while `main` holds the commits
-the promotion made and the main checkout is clean. Otherwise it leaves the branch or `main` as it is, and the `recover`
+failed part way, and it aborts an unfinished batch rebase first, unless work was done on the paused rebase after it
+stopped. It resets `main` only while `main` holds the commits the promotion made and the main checkout holds nothing
+else. Normally that means a clean checkout. When a cherry-pick replay stopped part way, the checkout holds that
+replay's staged changes and conflicted files, so the command accepts changes to the replayed paths and refuses any
+other changed or untracked path, or a work-tree edit to a replayed path that is not in conflict. An edit to a path
+still in conflict looks the same as the conflict. Otherwise it leaves the branch or `main` as it is, and the `recover`
 text says how to inspect it. For `main`, the text says that `main` holds unpushed commits from the failed promotion.
+
+Each move of a branch ref (the rebuild, the branch rollback, and the `main` rollback) uses `git update-ref` with the
+expected old value, so a commit that lands after the check makes the move fail and keeps the commit. Git cannot
+guard three steps the same way. `git rebase main` takes no expected tip, so a commit that lands between the
+branch check and the rebase is rebased with the branch. `git rebase --abort` takes no expected `HEAD`, so a commit
+made on a paused rebase between the check and the abort is discarded. A work-tree edit made between a check and the
+following `git reset --hard` is lost, because Git has no compare-and-swap for the work tree. Each of these windows
+is the time between two consecutive Git calls.
 
 This removes repeated shared gate sets, pushes, and synchronization runs from
 separate promotions. It does not cache gate results or measure elapsed-time
