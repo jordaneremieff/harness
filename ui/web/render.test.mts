@@ -507,6 +507,23 @@ test('variable heights and distant focused pins retain internal gaps and restore
   view.set([entry('older'), ...entries]); flush(); assert.equal(focused.isConnected, true); assert.equal(fakeDocument.activeElement, focused);
   assert.equal(focused.offsetHeight, 240); assert.equal(focused.offsetTop, before + 140);
 });
+test('rows stay painted and in place while the saved reading is not loaded yet', () => {
+  setup(); const view = transcript(); const entries = Array.from({length: 220}, (_, index) => entry(`e${index}`));
+  view.set(entries); flush();
+  const container = node('primary-transcript'); container.scrollTop = 5000; container.dispatch('scroll'); flush();
+  const painted = () => container.children.find(child => child.dataset.entryId && child.offsetTop <= container.scrollTop && child.offsetTop + child.offsetHeight > container.scrollTop);
+  const before = painted(); assert.ok(before);
+  view.restore({revision: 1, anchorId: 'missing', offsetPx: 0, followTail: false}); flush();
+  const during = painted(); assert.ok(during, 'The visible region has a mounted row while the saved anchor is missing');
+  assert.equal(during.dataset.entryId, before.dataset.entryId);
+  const offset = container.scrollTop - during.offsetTop;
+  view.set([...Array.from({length: 10}, (_, index) => entry(`older${index}`)), ...entries]); flush();
+  const after = painted(); assert.ok(after);
+  assert.equal(after.dataset.entryId, before.dataset.entryId); assert.equal(container.scrollTop - after.offsetTop, offset);
+  view.set([entry('missing'), ...Array.from({length: 10}, (_, index) => entry(`older${index}`)), ...entries]); flush();
+  const target = container.children.find(child => child.dataset.entryId === 'missing'); assert.ok(target);
+  assert.equal(container.scrollTop, target.offsetTop - container.offsetTop);
+});
 test('restoration clamps a saved offset after the anchored entry shrinks', () => {
   setup(); const view = transcript(); view.set([entry('one'), entry('two'), entry('three')]); flush();
   const target = node('primary-transcript').children.find(child => child.dataset.entryId === 'two'); assert.ok(target); target.measured = 50;

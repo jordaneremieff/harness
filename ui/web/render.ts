@@ -764,8 +764,11 @@ export class Transcript {
     if (this.hidden()) { this.elapsed.stop(); return false; }
     // Current tail intent supersedes a saved reading position that has not reached the DOM yet.
     if (this.follow) this.restoring = undefined;
-    const anchor = this.geometryAnchor(anchorOverride);
+    // The reading being restored may not be loaded yet; what is on screen then is the anchor.
+    const onScreen = this.restoring && !this.follow ? this.anchor() : null;
     if (this.dirtyLayout) { this.layout = layoutItems(this.displayed.map(entry => entry.id), this.heights, 140); this.dirtyLayout = false; }
+    let anchor = this.geometryAnchor(anchorOverride);
+    if (anchor && onScreen && !this.layout.byId.has(anchor.id)) anchor = onScreen;
     const scrollTop = this.prepareScroll();
     const pins = this.currentPins(); if (anchor) pins.add(anchor.id);
     const selected = visibleWindow(this.layout, scrollTop, this.node.clientHeight, {pins}).items;
@@ -874,7 +877,8 @@ export class Transcript {
     }
   }
   private prepareScroll(): number {
-    if (this.restoring) return restoreAnchor(this.layout, this.readingAnchor(), this.node.clientHeight);
+    const saved = this.readingAnchor();
+    if (this.restoring && (!saved || this.layout.byId.has(saved.id))) return restoreAnchor(this.layout, saved, this.node.clientHeight);
     return this.follow ? Math.max(0, this.layout.totalHeight - this.node.clientHeight) : this.node.scrollTop;
   }
   private readingAnchor(): {id: string; offsetPx: number} | null {
@@ -882,7 +886,8 @@ export class Transcript {
     return value?.anchorId ? {id: this.displayId(value.anchorId), offsetPx: value.offsetPx} : null;
   }
   private restorePosition(anchor: {id: string; offsetPx: number} | null): void {
-    const original = this.readingAnchor() ?? anchor;
+    const saved = this.readingAnchor();
+    const original = saved && this.layout.byId.has(saved.id) ? saved : anchor ?? saved;
     const wanted = original ? {id: this.displayId(original.id), offsetPx: original.offsetPx} : null;
     const node = wanted && this.cache.get(wanted.id)?.node;
     const item = wanted && this.layout.byId.get(wanted.id);
@@ -890,7 +895,7 @@ export class Transcript {
       const position = restoreAnchor(this.layout, wanted, 0);
       this.scrollTo(node.offsetTop - this.node.offsetTop + position - item.top);
     }
-    if (this.restoring && (!this.restoring.anchorId || node?.isConnected)) this.restoring = undefined;
+    if (this.restoring && (!this.restoring.anchorId || original === saved && node?.isConnected)) this.restoring = undefined;
   }
   private currentPins(): Set<string> {
     const pins = new Set([...this.pins].map(id => this.displayId(id))); const selection = document.getSelection();
