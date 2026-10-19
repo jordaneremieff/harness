@@ -41,7 +41,7 @@ test('conversation state and split width changes retain editor ancestry, draft i
     const order = surface.children.filter(node => [intake, control('editor').parentNode, line].includes(node));
     assert.deepEqual(order, [intake, control('editor').parentNode, line]); assert.equal(latest.parentNode, meta); assert.equal(meta.children[0], latest, 'Latest leads the control row'); assert.equal(meta.parentNode, line); assert.deepEqual(line.children, [meta, bar]); assert.equal(form.querySelectorAll('.composer-input ~ *').length, 0, 'nothing sits under the box');
     const submit = bar.querySelector('.composer-submit'); assert.ok(submit);
-    assert.deepEqual(bar.children, [control('stop'), submit]); assert.deepEqual(submit.children, [control('modes'), control('start'), control('send')]);
+    assert.deepEqual(bar.children, [control('stop'), submit]); assert.deepEqual(submit.children, [control('queue'), control('start'), control('send')]);
     assert.equal(control('editor').rows, 1);
     assert.equal(control('transcript').parentNode?.contains(latest), false);
     assert.equal(control('editor').parentNode?.classList.contains('composer-surface'), true);
@@ -63,7 +63,7 @@ test('conversation state and split width changes retain editor ancestry, draft i
       assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [2, 9, 'backward']);
       assert.equal((editor.style as {height?: string}).height, height);
       assert.equal(root.classList.contains('agent-empty'), next !== 'populated');
-      assert.equal(agentControl('modes').hidden, next !== 'running'); assert.equal(agentControl('stop').hidden, next !== 'running');
+      assert.equal(agentControl('queue').hidden, next !== 'running'); assert.equal(agentControl('stop').hidden, next !== 'running');
       assert.match(editor.placeholder, /^Message .*…$/); assert.match(editor.getAttribute('aria-label') ?? '', /^(?:Message |Draft for )/);
     }
   }

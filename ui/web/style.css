@@ -937,8 +937,9 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
   .tool-shell[data-status=working] .tool-tier { flex-wrap: wrap; }
 }
 .composer-submit { display: flex; flex: none; flex-wrap: nowrap; align-items: center; gap: var(--s1); }
-.modes { display: flex; flex: none; white-space: nowrap; }
-.modes select { min-height: 24px; max-width: 18ch; padding: 0 4px; border: 0; background: transparent; color: var(--muted); font-size: 13px; }
+.queue { display: inline-flex; flex: none; align-items: center; height: 30px; min-height: 30px; padding: 0 10px; border-radius: 4px; color: var(--muted); font-size: 13px; line-height: 1; white-space: nowrap; }
+.queue:not(:disabled):hover { background: var(--canvas); color: var(--fg); }
+.queue:disabled { color: var(--dim); cursor: default; }
 /* The action slot: Send, Start, Try again, Check again, the disabled Starting… and Stop share one shape. Only an action that will act is filled. */
 .send, .stop { display: inline-flex; flex: none; align-items: center; justify-content: center; gap: 6px; height: 30px; min-height: 30px; padding: 0 12px 0 10px; border: 1px solid transparent; border-radius: 4px; font-size: 13px; font-weight: 500; line-height: 1; white-space: nowrap; }
 .send { background: var(--fg); color: var(--canvas); }
@@ -951,6 +952,9 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
 .stop { border-color: color-mix(in srgb, var(--error) 55%, transparent); color: var(--error); }
 .stop:hover { background: var(--err-bg); }
 .stop .card-icon-stop { fill: currentColor; stroke-width: 0; transform: scale(.8); }
+/* Work with nothing to send leaves Stop alone in the action slot. With a draft, Steer takes the slot and Stop becomes quiet text beside Queue. */
+.composer[data-working=empty] .composer-bar:has(> .stop:not([hidden])) .composer-submit { display: none; }
+.composer[data-working=draft] .stop { padding: 0 10px; border-color: transparent; font-weight: 400; }
 .receipt { display: flex; flex-wrap: wrap; gap: 2px 12px; max-height: 30dvh; margin-bottom: 6px; overflow: auto; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
 .receipt:empty { display: none; }
 .receipt:has(> .receipt-save-failure:only-child) { max-height: none; overflow: visible; }
@@ -1272,7 +1276,7 @@ button.thread-person:hover, button.thread-sender:hover { background: var(--raise
   .sidebar-footer > .icon-button > .card-icon { margin-inline: 10px; }
   button, summary, .row-age, .row-message, .message-actions button, .transcript-actions button, .latest, .source-header button, .source-disclosure > .source-wrap, .tool-copy, .composer-model, .composer-thinking, .icon-button { min-height: 44px; min-width: 44px; }
   .source-disclosure > summary.source-header { min-height: 49px; }
-  .card-action, .section-toggle, .modes select, .attachment-row > button, .source-header button.card-action, .source-disclosure > .source-wrap.card-action { min-height: 44px; min-width: 44px; }
+  .card-action, .section-toggle, .attachment-row > button, .source-header button.card-action, .source-disclosure > .source-wrap.card-action { min-height: 44px; min-width: 44px; }
   .message-menu, .communication-unverified, .message-source-close, .pane-actions, .context-menu > .context-menu-item { min-height: 44px; min-width: 44px; }
   .tool-card > summary, .tool-expanded details > summary { min-height: 44px; }
   .workbench-status .composer-details > summary { min-height: 44px; min-width: 44px; }
@@ -1294,8 +1298,8 @@ button.thread-person:hover, button.thread-sender:hover { background: var(--raise
   .nav-heading-row { flex-wrap: wrap; }
   .nav-filter, .composer textarea { min-height: 44px; }
   .tab-bar { min-height: 44px; }
-  .modes select { padding-right: 4px; padding-left: 4px; }
-  .stop { padding-right: 6px; padding-left: 6px; }
+  .queue { padding-right: 6px; padding-left: 6px; }
+  .stop, .composer[data-working=draft] .stop { padding-right: 6px; padding-left: 6px; }
   .command-option, .palette-row, .nav-row, .row-select { min-height: 44px; height: auto; }
   .row-age, .row-message { top: 0; height: 44px; display: inline-flex; align-items: center; }
   .message-actions, .tool-copy, .row-message { opacity: 1; pointer-events: auto; }

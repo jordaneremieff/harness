@@ -1092,8 +1092,8 @@ test('queued primary input renders labeled text, preserves full titles and clear
   app.renderPrimaryQueue({pending: 2, steering: ['Check this first\nThen inspect the output'], followUp: ['<tag>literal input</tag>']});
   assert.equal(list.hidden, false); assert.equal(list.children.length, 2);
   assert.deepEqual(list.children.map(row => ({tag: row.tagName, className: row.className, mode: row.dataset.mode, text: row.textContent, title: row.title})), [
-    {tag: 'li', className: 'queued-message', mode: 'steer', text: 'Next step: Check this first\nThen inspect the output', title: 'Check this first\nThen inspect the output'},
-    {tag: 'li', className: 'queued-message', mode: 'followUp', text: 'After response: <tag>literal input</tag>', title: '<tag>literal input</tag>'},
+    {tag: 'li', className: 'queued-message', mode: 'steer', text: 'Steer: Check this first\nThen inspect the output', title: 'Check this first\nThen inspect the output'},
+    {tag: 'li', className: 'queued-message', mode: 'followUp', text: 'Queue: <tag>literal input</tag>', title: '<tag>literal input</tag>'},
   ]);
   app.renderPrimaryQueue({pending: 1, followUp: ['Only follow-up']}); assert.equal(list.children.length, 1); assert.equal(list.children[0]?.dataset.mode, 'followUp');
   app.renderPrimaryQueue({pending: 0, steering: [], followUp: []}); assert.equal(list.hidden, true); assert.equal(list.children.length, 0);
@@ -1183,7 +1183,7 @@ test('the whole-workbench footer owns facts while composers retain direct delive
   const identity='delivery-owner';await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:{kind:'agent',identity},conversationLayout:twoPanes(identity)},primaries:[primaryFixture({epoch:9538})],roster:[agentFixture(identity)]});const agent=controls(app.agentComposer());
   app.focusPane('primary-pane'); await settle(); const footer=byId('workbench-status'); for(const id of ['primary-context','primary-usage','extension-status'])assert.equal(footer.contains(byId(id)),true);for(const name of ['model','thinking'])assert.equal(footer.contains(primaryControl(name)),false);assert.ok(primaryControl('composer').contains(primaryControl('model')));
   const slots=byId('focused-composer-status'); assert.equal(slots.children.length,2); assert.match(slots.children[0]?.id??'',/-save$/); assert.match(slots.children[1]?.id??'',/-receipt-details$/);
-  for(const owner of [primaryControl,agent]){const form=owner('composer');assert.ok(form.contains(owner('modes')));assert.ok(form.contains(owner('send')));assert.equal(form.querySelector('.usage-details'),null);assert.equal(form.querySelector('.composer-guidance'),null);assert.ok(form.querySelector('.composer-settings'));}assert.ok(source.includes("elements.model?.addEventListener('click', () => actions.modelPicker())"));assert.ok(source.includes("elements.thinking?.addEventListener('click', () => actions.thinkingPicker())"));
+  for(const owner of [primaryControl,agent]){const form=owner('composer');assert.ok(form.contains(owner('queue')));assert.ok(form.contains(owner('send')));assert.equal(form.querySelector('.usage-details'),null);assert.equal(form.querySelector('.composer-guidance'),null);assert.ok(form.querySelector('.composer-settings'));}assert.ok(source.includes("elements.model?.addEventListener('click', () => actions.modelPicker())"));assert.ok(source.includes("elements.thinking?.addEventListener('click', () => actions.thinkingPicker())"));
 });
 
 test('a live agent with unavailable catalog metadata keeps title pane and composer coherent without a Primary', async () => {

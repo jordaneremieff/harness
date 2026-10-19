@@ -2660,14 +2660,14 @@ test('static workbench markup owns one footer and keeps composer actions without
   assert.match(factory, /const send = element\('button', 'send'\); send\.id = `\$\{id\}-send`; send\.type = 'submit'/);
   assert.match(factory, /const stop = element\('button', 'stop'\); stop\.id = `\$\{id\}-stop`; stop\.type = 'button'/);
   assert.match(factory, /send\.setAttribute\('aria-label', 'Send message'\); stop\.setAttribute\('aria-label', 'Stop response'\)/);
-  assert.match(factory, /element\('select'\)/);
-  assert.match(factory, /const modes = element\('div', 'modes'\); modes\.id = `\$\{id\}-modes`/);
+  assert.doesNotMatch(factory, /element\('select'\)/);
+  assert.match(factory, /const queue = element\('button', 'queue', 'Queue'\); queue\.id = `\$\{id\}-queue`/);
   assert.match(factory, /const recipient = element\('label', 'sr-only', 'Message'\); recipient\.id = `\$\{id\}-recipient`; recipient\.htmlFor = editor\.id/);
   assert.match(factory, /const surface = element\('div', 'composer-surface'\); surface\.append\(overlay, editor\)/);
   assert.match(factory, /const input = element\('div', 'composer-input'\)/); assert.match(factory, /input\.append\(commandMenu, fileMenu, recipient, intake, surface, attachments, line, resize\)/);
   assert.match(factory, /const intake = element\('span','composer-intake'\); intake\.append\(attach,sources,picker\)/);
   assert.match(factory, /cardAction\('plus', 'Add to message'/);
-  assert.match(factory, /root\.append\(receipt, input\)/); assert.match(factory, /meta\.append\(recallHint, state, settings\); line\.append\(meta, bar\)/); assert.match(factory, /bar\.append\(stop, submit\)/); assert.match(factory, /submit\.append\(modes, start, send\)/);
+  assert.match(factory, /root\.append\(receipt, input\)/); assert.match(factory, /meta\.append\(recallHint, state, settings\); line\.append\(meta, bar\)/); assert.match(factory, /bar\.append\(stop, submit\)/); assert.match(factory, /submit\.append\(queue, start, send\)/);
   assert.doesNotMatch(factory, /composer-guidance|usage-details|class="statusline"|root\.append\([^)]*receiptDetails/);
   assert.equal([...html.matchAll(/id="focused-composer-status" class="workbench-draft-state"/g)].length, 1);
 });

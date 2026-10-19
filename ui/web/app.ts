@@ -1478,7 +1478,7 @@ function primaryActivity(item?: PrimaryView, target?: Target): void {
 export function renderPrimaryQueue(queue?: EventData['primary.queue']): void {
   const list = primaryNode('queued'); const rows: HTMLElement[] = [];
   for (const [mode, messages] of [['steer', queue?.steering], ['followUp', queue?.followUp]] as const) for (const text of messages ?? []) {
-    const row = element('li', 'queued-message', `${mode === 'steer' ? 'Next step' : 'After response'}: ${text}`);
+    const row = element('li', 'queued-message', `${mode === 'steer' ? 'Steer' : 'Queue'}: ${text}`);
     row.dataset.mode = mode; row.title = text; rows.push(row);
   }
   list.replaceChildren(...rows); list.hidden = !rows.length;

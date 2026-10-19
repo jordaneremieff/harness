@@ -66,12 +66,12 @@ const actionText = (node: NodeFake): string | undefined => node.querySelector('.
 const turn = async () => { for (let index = 0; index < 20; index++) await Promise.resolve(); };
 function scopedNodes(id: string, withMenu: boolean) {
   const nodes = new Map<string, NodeFake>();
-  for (const name of ['editor', 'recipient', 'composer', 'modes', 'send', 'caption', 'save', 'receipt', 'receipt-details', 'command-menu', 'attachments']) {const node = new NodeFake(); node.id = `${id}-${name}`; nodes.set(name, node);}
+  for (const name of ['editor', 'recipient', 'composer', 'queue', 'send', 'caption', 'save', 'receipt', 'receipt-details', 'command-menu', 'attachments']) {const node = new NodeFake(); node.id = `${id}-${name}`; nodes.set(name, node);}
   const node = (name: string) => nodes.get(name) as NodeFake;
-  const delivery = new NodeFake(); delivery.tag = 'select'; node('modes').append(delivery);
+  const delivery = new NodeFake(); delivery.tag = 'select'; node('queue').append(delivery);
   const pane = new NodeFake(); Object.defineProperty(pane, 'clientHeight', {get: () => node('editor').conversationHeight});
-  pane.append(node('composer')); node('composer').append(node('editor'), node('recipient'), node('receipt'), node('modes'), node('send'), node('attachments'));
-  const elements = {root:node('composer'), editor:node('editor'), recipient:node('recipient'), receipt:node('receipt'), receiptDetails:node('receipt-details'), modes:node('modes'), send:node('send'), save:node('save'), attachments:node('attachments'), commandMenu:withMenu ? node('command-menu') : undefined} as unknown as ComposerElements;
+  pane.append(node('composer')); node('composer').append(node('editor'), node('recipient'), node('receipt'), node('queue'), node('send'), node('attachments'));
+  const elements = {root:node('composer'), editor:node('editor'), recipient:node('recipient'), receipt:node('receipt'), receiptDetails:node('receipt-details'), queue:node('queue'), send:node('send'), save:node('save'), attachments:node('attachments'), commandMenu:withMenu ? node('command-menu') : undefined} as unknown as ComposerElements;
   return {node, elements};
 }
 function fixture(prefix: 'primary' | 'agent' = 'primary', commands?: () => CommandInventory, withMenu = prefix === 'primary', timing?: (start: number, end: number) => void, enterSends: () => boolean = () => false, imageInput = () => ({allowed: true, reason: ''}), prepareInput: () => boolean = () => true) {
@@ -657,6 +657,13 @@ test('network loss after dispatch retains original key, copy, restore, receipt c
   assert.match(f.node('receipt').textContent, /admission remains unknown/); f.click('Send again…'); assert.equal(f.calls.length, 0);
   f.click('Send again'); await turn(); assert.equal(f.pick('POST', '/inputs').id, 'op-2'); f.admit(a, 'rejected'); await turn();
 });
+test('a confirmed send again keeps the follow-up delivery of the uncertain Queue send', async () => {
+  const f = fixture(); const a = f.connect(state('a', draft(4, 'later'))); f.composer.availability(true, true, true);
+  f.node('queue').fire('click'); await turn();
+  const input = f.pick('POST', '/inputs'); assert.equal(input.body.mode, 'followUp'); f.calls.splice(f.calls.indexOf(input), 1); input.reject(new Error('connection lost')); await turn();
+  f.click('Send again…'); f.click('Send again'); await turn();
+  assert.equal(f.pick('POST', '/inputs').body.mode, 'followUp'); f.admit(a, 'rejected'); await turn();
+});
 test('an uncertain send result shows one warning and retains explicit recovery controls', async () => {
   const f = fixture(); const a = f.connect(state('a', draft(2, 'original')));
   const sending = f.composer.send(); await turn(); f.admit(a, 'uncertain'); await sending;
@@ -691,8 +698,8 @@ test('IME, repeat, ShiftEnter, prevented autocomplete, and modified Enter do not
   for (const option of [{isComposing: true}, {repeat: true}, {shiftKey: true}, {defaultPrevented: true}, {ctrlKey: true}, {metaKey: true}, {altKey: true}]) f.node('editor').fire('keydown', {key: 'Enter', ...option});
   await turn(); assert.equal(f.calls.length, 0); f.composer.availability(true, true, true);
   const tab = f.node('editor').fire('keydown', {key: 'Tab'}); assert.equal(tab.defaultPrevented, false);
-  assert.equal(f.node('modes').children.some(node => node.focused), false);
-  assert.equal(f.node('modes').children[0]?.fire('keydown', {key: 'Tab'}).defaultPrevented, false);
+  assert.equal(f.node('queue').focused, false);
+  assert.equal(f.node('queue').fire('keydown', {key: 'Tab'}).defaultPrevented, false);
   assert.equal(f.node('editor').fire('keydown', {key: 'Tab', shiftKey: true}).defaultPrevented, false);
 });
 test('Enter sends preference submits once while pending and form submission shares the duplicate guard', async () => {
@@ -715,11 +722,23 @@ test('input echoes before a blocked network request and records the next frame',
 test('a clean same-target snapshot updates saved text and mode', () => {
   const f = fixture(); f.connect(state('a', draft(1, 'old'))); f.composer.attach('w', state('a', draft(2, 'remote', 'steer')));
   assert.equal(f.composer.editor.value, 'remote'); assert.equal(f.composer.state?.draft.revision, 2); assert.equal(f.composer.unsaved, false);
-  assert.equal(f.node('modes').children[0]?.value, 'steer');
 });
-test('a busy primary shows a prompt-mode draft as steer, the mode it delivers', () => {
-  const f = fixture(); f.connect(state('a', draft(2, 'queued words', 'prompt'))); void f.composer.send(); f.composer.availability(true, true, true);
-  assert.equal(f.node('modes').children[0]?.value, 'steer');
+test('the send key and the action slot steer a busy conversation, Queue follows the response, and idle sends plain', async () => {
+  const sent = async (kind: 'primary' | 'agent', saved: string, busy: boolean, act: (f: ReturnType<typeof fixture>) => void) => {
+    const f = fixture(kind, undefined, true, undefined, () => true); const target = f.connect(state('a', draft(1, 'words', saved), kind === 'agent'));
+    f.composer.availability(true, true, busy); act(f); const call = await f.waitCall('POST', '/inputs'); const mode = call.body.mode; f.admit(target, 'rejected'); await turn(); return mode;
+  };
+  const key = (f: ReturnType<typeof fixture>) => f.node('editor').fire('keydown', {key: 'Enter'});
+  const queue = (f: ReturnType<typeof fixture>) => f.node('queue').fire('click');
+  for (const saved of ['prompt', 'steer', 'followUp']) {
+    assert.equal(await sent('primary', saved, true, key), 'steer', `primary key, saved ${saved}`);
+    assert.equal(await sent('primary', saved, true, f => f.node('composer').fire('submit')), 'steer', `primary submit, saved ${saved}`);
+    assert.equal(await sent('primary', saved, true, queue), 'followUp', `primary Queue, saved ${saved}`);
+    assert.equal(await sent('agent', saved, true, key), 'steer', `agent key, saved ${saved}`);
+    assert.equal(await sent('agent', saved, true, queue), 'followUp', `agent Queue, saved ${saved}`);
+    assert.equal(await sent('primary', saved, false, key), 'prompt', `idle primary, saved ${saved}`);
+    assert.equal(await sent('agent', saved, false, key), 'followUp', `idle agent, saved ${saved}`);
+  }
 });
 test('stale save retains both exact copies from the error without a receipt fetch', async () => {
   const f = fixture(); f.connect(); f.composer.setText(' local\n ');
@@ -770,10 +789,10 @@ test('delayed draft restoration returns focus only to the original action owner'
   for (const nextFocus of ['delivery', 'external', 'restore'] as const) {
     const f = fixture(); const a = state('a', draft(3, '', 'steer'));
     const item = {admission: 'unconfirmed' as const, images: [], operationId: 'retained', target: a.target, text: 'preview', mode: 'steer', submittedDraftRevision: 2, createdAt: '', reason: 'unknown', textTruncated: true as const}; a.unconfirmed.push(item);
-    f.connect(a); f.composer.availability(true, true, true); assert.equal(f.node('modes').hidden, false);
+    f.connect(a); f.composer.availability(true, true, true); assert.equal(f.node('queue').hidden, true);
     const restore = f.node('receipt').find('Restore to draft'); assert.ok(restore); restore.focus(); restore.fire('click');
     const fetch = f.pick('GET', '/retained'); assert.equal(fetch.path, '/api/workspaces/w/unconfirmed/retained');
-    const origin = nextFocus === 'delivery' ? f.node('modes').children[0] : nextFocus === 'external' ? new NodeFake() : restore; assert.ok(origin); origin.focus();
+    const origin = nextFocus === 'delivery' ? f.node('queue') : nextFocus === 'external' ? new NodeFake() : restore; assert.ok(origin); origin.focus();
     f.ok(fetch, {...item, text: 'full original', textTruncated: undefined}); await turn();
     assert.equal(f.composer.editor.value, ''); assert.equal(f.pick('POST', '/restore').body.expectedDraftRevision, 3);
     f.ok(f.pick('POST', '/restore'), draft(4, 'full original', 'steer')); await turn(); assert.equal(f.composer.editor.value, 'full original'); assert.equal(document.activeElement === (nextFocus === 'restore' ? f.composer.editor : origin), true, `saved focus owner: ${nextFocus}`);
@@ -783,10 +802,10 @@ test('delayed draft restoration returns focus only to the original action owner'
 test('explicit replacement starts a fresh focus intent after delayed restoration review', async () => {
   const f = fixture(); const a = state('a', draft(3, 'newer', 'steer'));
   const item = {admission: 'unconfirmed' as const, images: [], operationId: 'retained', target: a.target, text: 'preview', mode: 'steer', submittedDraftRevision: 2, createdAt: '', reason: 'unknown', textTruncated: true as const}; a.unconfirmed.push(item);
-  f.connect(a); f.composer.availability(true, true, true); assert.equal(f.node('modes').hidden, false);
+  f.connect(a); f.composer.availability(true, true, true); assert.equal(f.node('queue').hidden, false);
   f.node('editor').setSelectionRange(1, 4, 'backward'); f.node('editor').fire('select');
   const restore = f.node('receipt').find('Restore to draft'); assert.ok(restore); restore.focus(); restore.fire('click');
-  const delivery = f.node('modes').children[0]; assert.ok(delivery); delivery.focus();
+  const delivery = f.node('queue'); delivery.focus();
   f.ok(f.pick('GET', '/retained'), {...item, text: 'full original', textTruncated: undefined}); await turn();
   assert.equal(f.composer.editor.value, 'newer'); assert.equal(document.activeElement, delivery); assert.equal(f.calls.length, 0);
   const replace = f.node('receipt').find('Replace draft with original'); assert.ok(replace); replace.focus(); replace.fire('click');
@@ -840,7 +859,7 @@ test('literal confirmation refuses changed text, saved revision, and target epoc
 test('an unavailable agent keeps an editable draft and visible disabled Send without an acquisition dependency', () => {
   const f = fixture('agent'); f.connect(state('a', draft(1, 'retained', 'steer'), true));
   f.composer.availability(true, false, true); assert.equal(f.composer.editor.value, 'retained');
-  assert.equal(f.node('send').hidden, false); assert.equal(f.node('acquire'), undefined); assert.equal(f.node('modes').hidden, true); assert.equal(f.node('send').attrs.get('aria-description'), 'This agent is not ready for messages.');
+  assert.equal(f.node('send').hidden, false); assert.equal(f.node('acquire'), undefined); assert.equal(f.node('queue').hidden, true); assert.equal(f.node('send').attrs.get('aria-description'), 'This agent is not ready for messages.');
   assert.equal(f.node('send').disabled, true);
   f.composer.availability(false, false, false); assert.equal(f.node('send').hidden, false); assert.equal(f.node('send').disabled, true); assert.equal(f.node('acquire'), undefined);
 });
@@ -1105,18 +1124,22 @@ test('recipient placeholders and busy delivery capability preserve the exact nat
   assert.equal(editor.placeholder, `Message ${name}…`); assert.equal(f.node('editor').getAttribute('aria-label'), `Draft for ${name}`);
   for (const [connected, ready, busy, supported, visible] of [[true, true, true, false, false], [true, true, true, true, true], [true, true, false, true, false], [false, true, true, true, false], [true, false, true, true, false]] as const) {
     f.composer.availability(connected, ready, busy, false, supported);
-    assert.equal(f.node('modes').hidden, !visible); assert.equal(f.node('modes').children[0]?.value, 'followUp');
+    assert.equal(f.node('queue').hidden, !visible);
     assert.equal(f.composer.editor, editor); assert.equal(editor.parentElement, parent); assert.equal(editor.value, 'Exact local draft');
     assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [2, 9, 'backward']); assert.deepEqual(f.composer.target, a.target);
   }
   assert.equal(f.calls.length, 0); assert.equal(f.submitted.length, 0);
 });
-test('busy delivery choices describe timing once and stay separate from activity', () => {
+test('working with an empty draft offers only Stop, and a draft adds Steer and Queue, each described once', () => {
   const f = fixture(); f.connect(); f.composer.recipient('Message Primary'); f.composer.availability(true, true, true);
-  const delivery = f.node('modes').children[0]; assert.equal(delivery?.value, 'steer');
-  assert.ok(delivery); delivery.value = 'followUp'; delivery.fire('change'); assert.equal(delivery.value, 'followUp');
-  assert.equal(f.node('caption').textContent, ''); assert.equal(f.node('send').disabled, true);
-  f.composer.availability(true, true, false); assert.equal(f.node('modes').hidden, true);
+  const root = f.node('composer'), send = f.node('send'), queue = f.node('queue');
+  assert.equal(root.dataset.working, 'empty'); assert.equal(queue.hidden, true); assert.equal(send.disabled, true); assert.equal(actionText(send), 'Steer');
+  f.composer.setText('Look at the failing test'); f.saved('Look at the failing test');
+  assert.equal(root.dataset.working, 'draft'); assert.equal(queue.hidden, false); assert.equal(queue.disabled, false); assert.equal(send.disabled, false);
+  assert.equal(actionText(send), 'Steer'); assert.equal(send.getAttribute('aria-label'), 'Steer message'); assert.match(send.title, /^Steer: send now; the agent reads it at its next step/);
+  assert.equal(queue.title, 'Queue: send after the current response ends');
+  f.composer.setText(''); assert.equal(root.dataset.working, 'empty'); assert.equal(queue.hidden, true);
+  f.composer.availability(true, true, false); assert.equal(root.dataset.working, undefined); assert.equal(queue.hidden, true); assert.equal(actionText(send), 'Send'); assert.equal(send.getAttribute('aria-label'), 'Send message');
 });
 test('unconfirmed delivery puts captured identifiers and text in closed disclosures', () => {
   const f = fixture(); const a = state('captured', draft(2, 'message'));
@@ -1152,7 +1175,7 @@ test('scoped element factories create distinct editors and exact label/resize/co
   assert.equal(first.root.querySelector('.resizer')?.getAttribute('aria-controls'), first.editor.id); assert.equal(first.root.querySelector('.resizer')?.getAttribute('aria-orientation'), 'horizontal');
   assert.equal(first.root.querySelector('.stop')?.getAttribute('aria-label'), 'Stop response');
   assert.equal(first.send.getAttribute('aria-label'), 'Send message'); assert.equal(actionText(first.send), 'Send'); assert.equal(first.send.children.length, 2);
-  assert.equal(first.modes.querySelector('select')?.getAttribute('aria-label'), 'Delivery while working'); assert.equal(first.send.type, 'submit'); assert.equal(first.send.disabled, true);
+  assert.equal(first.queue.getAttribute('aria-label'), 'Queue message'); assert.equal(first.queue.textContent, 'Queue'); assert.equal(first.queue.hidden, true); assert.equal(first.root.querySelector('select'), undefined); assert.equal(first.send.type, 'submit'); assert.equal(first.send.disabled, true);
   assert.equal(first.root.contains(first.editor), true); assert.equal(first.root.contains(first.save), false); assert.equal(first.root.contains(first.receiptDetails), false);
   assert.equal(first.save.className, 'draft-state'); assert.equal(first.receiptDetails.className, 'receipt-details'); assert.equal(first.commandMenu?.hidden, true); assert.deepEqual(f.lookups, []);
 });
@@ -1183,7 +1206,7 @@ test('two editor height limits follow their own form containers without editor o
 test('Composer destroy removes form, editor, mode and command listeners once without editor replacement', () => {
   const f = fixture('primary',()=>({state:'ready',items:[{name:'fixture',description:'',source:'app'}]})); f.connect(state('a',draft(1,'/fixture'))); f.node('editor').setSelectionRange(8,8); f.node('editor').focus();
   const editor = f.composer.editor; assert.equal(f.node('command-menu').hidden,false); f.node('editor').setSelectionRange(2,4); f.composer.destroy(); f.composer.destroy();
-  for (const node of [f.node('editor'),f.node('composer'),f.node('command-menu'),...f.node('modes').children]) assert.equal([...node.listeners.values()].flat().length,0);
+  for (const node of [f.node('editor'),f.node('composer'),f.node('command-menu'),f.node('queue')]) assert.equal([...node.listeners.values()].flat().length,0);
   assert.equal(f.node('command-menu').hidden,true); assert.equal(f.node('command-menu').children.length,0); assert.equal(f.composer.editor,editor); assert.equal(editor.value,'/fixture');
   assert.deepEqual([editor.selectionStart,editor.selectionEnd],[2,4]); assert.equal(f.node('editor').fire('keydown',{key:'Enter'}).defaultPrevented,false); f.node('composer').fire('submit');
   assert.equal(f.calls.length,0); assert.equal(f.node('editor').attrs.has('aria-autocomplete'),false);

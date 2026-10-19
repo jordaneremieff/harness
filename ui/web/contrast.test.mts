@@ -50,7 +50,6 @@ const decorativeHairlines = new Set([
 	".tool-copy|border",
 	".output-pages button|border",
 	".receipt-details pre|border",
-	".modes|border",
 	".send:disabled|border-color",
 	".send[data-kind=recovery]|border-color",
 	".command-menu|border",

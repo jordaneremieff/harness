@@ -25,7 +25,7 @@ import { ApiError, draftImageUrl, errorMessage, operation, request, reserve } fr
 
 export type ComposerHooks = {recallItems?: () => readonly string[]; fileSearch?: (query: string, signal: AbortSignal) => Promise<FileSearchResult> | undefined; fileStage?: (path: string, signal: AbortSignal, current: () => boolean, stage: (files: readonly File[]) => boolean) => Promise<boolean>; workingFile?:(stage:(files:readonly File[])=>boolean)=>void; changed?:()=>void; captured?: (submission:Submission)=>void; failed?: (operationId:string,uncertain:boolean)=>void; prepareInput?: () => boolean; imageState?: (workspace: string, state: TargetState) => void; imageInput?: (target: Target) => {allowed: boolean; reason?: string}; recovery?: () => void; layoutHeight?: () => number | undefined; timing?: (start: number, end: number) => void; submitted: (operation: OperationView) => void; unknownCommand: (text: string, sendLiteral: () => void) => boolean; enterSends?: () => boolean; commands?: (deliberate: boolean) => CommandInventory; moreCommands?: (target: Target) => Promise<void>; retained?: (workspace: string, target: Target, retained: boolean) => void};
 export type ComposerElements = {root: HTMLFormElement; editor: HTMLTextAreaElement; recipient: HTMLElement; receipt: HTMLElement;
-  receiptDetails: HTMLElement; modes: HTMLElement; send: HTMLButtonElement; save: HTMLElement; fileMenu?: HTMLElement; recallHint?: HTMLElement; meta?: HTMLElement; model?: HTMLButtonElement; thinking?: HTMLButtonElement; settings?: HTMLElement; commandMenu?: HTMLElement; overlay?: HTMLElement; attachments?: HTMLElement; attach?: HTMLButtonElement; sources?: HTMLButtonElement; picker?: HTMLInputElement; state?: HTMLElement; start?: HTMLButtonElement};
+  receiptDetails: HTMLElement; queue: HTMLButtonElement; send: HTMLButtonElement; save: HTMLElement; fileMenu?: HTMLElement; recallHint?: HTMLElement; meta?: HTMLElement; model?: HTMLButtonElement; thinking?: HTMLButtonElement; settings?: HTMLElement; commandMenu?: HTMLElement; overlay?: HTMLElement; attachments?: HTMLElement; attach?: HTMLButtonElement; sources?: HTMLButtonElement; picker?: HTMLInputElement; state?: HTMLElement; start?: HTMLButtonElement};
 /** An agent-specific state in the composer's control row, with at most one action in the Send position (`hideSend` removes the disabled Send when the state offers none) and optional exact details. `line` is the full sentence for assistive technology; `label` is the short note shown beside the add control. */
 export type ComposerStateView = {line: string; label?: string; tone?: 'error' | 'warning'; hideSend?: boolean; action?: {label: string; title?: string; pending?: boolean; disabled?: boolean; recovery?: boolean; run: () => void}; blocksSend?: boolean; detail?: string; showDetail?: () => void};
 /** An action-slot button holds an icon from the shared set, when it has one, and a visible label. */
@@ -57,13 +57,8 @@ export function createComposerElements(instanceId: string): ComposerElements {
   const stateLabel = element('span', 'composer-state-label'), stateLine = element('span', 'sr-only composer-state-line'), stateDetail = element('button', 'composer-state-detail');
   stateLabel.setAttribute('aria-hidden', 'true'); stateLine.id = `${id}-state-line`; stateDetail.id = `${id}-state-detail`; stateDetail.type = 'button'; stateDetail.hidden = true; setText(stateDetail, 'Details'); state.append(stateLabel, stateLine, stateDetail);
   const input = element('div', 'composer-input');
-  const modes = element('div', 'modes'); modes.id = `${id}-modes`; modes.hidden = true; modes.setAttribute('role', 'group'); modes.setAttribute('aria-label', 'Delivery while working');
-  const delivery = element('select'); delivery.setAttribute('aria-label', 'Delivery while working'); delivery.title = 'Next step reaches the next step of the current work. After response follows the current response.';
-  delivery.setAttribute('aria-description', delivery.title);
-  for (const [mode, text] of [['steer', 'Next step'], ['followUp', 'After response']] as const) {
-    const choice = element('option', undefined, text); choice.value = mode; delivery.append(choice);
-  }
-  modes.append(delivery);
+  // While work runs and the draft has content, Queue sends it after the current response; the send key and the action slot steer it.
+  const queue = element('button', 'queue', 'Queue'); queue.id = `${id}-queue`; queue.type = 'button'; queue.hidden = true; queue.setAttribute('aria-label', 'Queue message');
   const stop = element('button', 'stop'); stop.id = `${id}-stop`; stop.type = 'button'; stop.hidden = true; paintAction(stop, 'stop', 'Stop');
   const send = element('button', 'send'); send.id = `${id}-send`; send.type = 'submit'; send.disabled = true; paintAction(send, 'send', 'Send');
   send.setAttribute('aria-label', 'Send message'); stop.setAttribute('aria-label', 'Stop response');
@@ -73,7 +68,7 @@ export function createComposerElements(instanceId: string): ComposerElements {
   sources.setAttribute('aria-haspopup','menu'); sources.setAttribute('aria-expanded','false');
   const intake = element('span','composer-intake'); intake.append(attach,sources,picker);
   const start = element('button', 'send start'); start.id = `${id}-start`; start.type = 'button'; start.hidden = true; paintAction(start, 'play', 'Start');
-  const submit = element('div', 'composer-submit'); submit.append(modes, start, send);
+  const submit = element('div', 'composer-submit'); submit.append(queue, start, send);
   const bar = element('div', 'composer-bar'); bar.append(stop, submit); const line = element('div', 'composer-line');
   // The add control leads the tab order, then the editor, then the control row; the grid places them visually.
   const model = element('button', 'composer-model'), thinking = element('button', 'composer-thinking'), settingsText = element('span', 'composer-settings-text');
@@ -87,7 +82,7 @@ export function createComposerElements(instanceId: string): ComposerElements {
   input.append(commandMenu, fileMenu, recipient, intake, surface, attachments, line, resize); root.append(receipt, input);
   const save = element('span', 'draft-state'); save.id = `${id}-save`;
   const receiptDetails = element('span', 'receipt-details'); receiptDetails.id = `${id}-receipt-details`;
-  return {root, editor, recipient, receipt, receiptDetails, modes, send, save, fileMenu, recallHint, meta, model, thinking, settings, commandMenu, overlay, attachments, attach, sources, picker, state, start};
+  return {root, editor, recipient, receipt, receiptDetails, queue, send, save, fileMenu, recallHint, meta, model, thinking, settings, commandMenu, overlay, attachments, attach, sources, picker, state, start};
 }
 type Edit = {text: string; mode: string; images: DraftImage[]; edit: number};
 type InsertionCapture = {buffer: Buffer; edit: number; text: string; start: number; end: number; direction: 'forward' | 'backward' | 'none'};
@@ -181,11 +176,7 @@ export class Composer {
     this.listen(this.editor, 'pointerup', () => this.rememberSelection());
     this.listen(elements.root, 'submit', event => { event.preventDefault(); void this.send(); });
     this.editor.placeholder = 'Write a message…';
-    const delivery = this.delivery();
-    if (delivery) this.listen(delivery, 'change', () => {
-      if (delivery.value !== 'steer' && delivery.value !== 'followUp') return;
-      this.rememberSelection(); this.change(this.editor.value, delivery.value);
-    });
+    this.listen(elements.queue, 'click', () => { if (this.current && !this.textLimit) void this.send(false, undefined, 'followUp'); });
   }
   private listen<K extends keyof HTMLElementEventMap>(node: HTMLElement, type: K, handler: (event: HTMLElementEventMap[K]) => void): void {
     const listener = handler as EventListener; node.addEventListener(type, listener); this.cleanup.push(() => node.removeEventListener(type, listener));
@@ -367,7 +358,6 @@ export class Composer {
     if (!this.editor.value && this.current && draftSaved(this.current.data)) { this.setText(text); return; }
     this.slot().replaceChildren(element('p', 'warning', 'Suggested text is available. Your draft is unchanged.'), button('Use suggested text', () => this.setText(text)), button('Keep draft', () => this.receipt(this.current)));
   }
-  private delivery(): HTMLSelectElement | null { return this.elements.modes.querySelector<HTMLSelectElement>('select'); }
   private slot(): HTMLElement { return this.elements.receipt; }
   private base(buffer: Buffer): string { return `/api/workspaces/${encoded(buffer.workspace)}/targets/${encoded(buffer.state.targetKey)}`; }
   private change(text: string, mode = this.current?.data.mode): void {
@@ -742,23 +732,34 @@ export class Composer {
   }
   private render(): void {
     if (this.destroyed) return;
-    const buffer = this.current; const mode = buffer?.data.mode;
+    const buffer = this.current;
     this.elements.root.hidden = !buffer; this.editor.disabled = !buffer;
     this.renderControls();
     this.elements.send.disabled = !buffer || !this.ready || this.sendSuppressed || buffer.submitting || this.textLimit || this.pendingBlocks(buffer) || !!this.commandHold(buffer) || buffer.data.server.recoverySendGuard?.state === 'blocked' || buffer.data.server.recoverySendGuard?.state === 'unavailable' || !draftHasContent({text: buffer.data.text.trim(), images: buffer.data.images});
-    const active = this.deliveryMode(mode);
-    const delivery = this.delivery(); if (delivery) delivery.value = active === 'followUp' ? 'followUp' : 'steer';
+    this.elements.queue.disabled = this.elements.send.disabled;
     setText(this.elements.save, this.saveSummary(buffer));
   }
   private renderControls(): void {
     if (this.destroyed) return;
-    this.elements.modes.hidden = !this.current || !this.ready || !this.connected || !this.busy || !this.deliverySupported;
-    this.elements.send.hidden = !!this.stateView?.action || !!this.stateView?.hideSend;
-    const reason = this.sendGuidance();
-    const send = this.elements.send, run = this.current && this.commandDraft(this.current);
-    paintAction(send, 'send', run ? 'Run command' : 'Send'); send.setAttribute('aria-label', run ? `Run command /${run.name}` : 'Send message');
+    const {send, queue, root} = this.elements, buffer = this.current;
+    const working = !!buffer && this.ready && this.connected && this.busy && this.deliverySupported;
+    const content = !!buffer && draftHasContent({text: buffer.data.text.trim(), images: buffer.data.images});
+    // Work with nothing to send leaves Stop alone in the action slot; a draft makes Stop quiet and offers Queue beside the Steer action.
+    if (working) root.dataset.working = content ? 'draft' : 'empty'; else delete root.dataset.working;
+    send.hidden = !!this.stateView?.action || !!this.stateView?.hideSend;
+    const reason = this.sendGuidance(), run = buffer && this.commandDraft(buffer);
+    queue.hidden = !working || !content || !!run || send.hidden;
+    this.describeSend(reason, run ? run.name : undefined, working);
+    queue.setAttribute('aria-description', reason);
+    queue.title = reason || 'Queue: send after the current response ends';
+  }
+  /** The action names what the key will do: run a host command, steer running work, or send. */
+  private describeSend(reason: string, command: string | undefined, working: boolean): void {
+    const send = this.elements.send, steer = working && command === undefined, key = this.sendKeyName();
+    paintAction(send, steer ? 'steer' : 'send', command !== undefined ? 'Run command' : steer ? 'Steer' : 'Send');
+    send.setAttribute('aria-label', command !== undefined ? `Run command /${command}` : steer ? 'Steer message' : 'Send message');
     send.setAttribute('aria-description', reason);
-    send.title = reason || (run ? `Run /${run.name} on this agent. It sends no message · ${this.sendKeyName()}` : `Send · ${this.sendKeyName()}`);
+    send.title = reason || (command !== undefined ? `Run /${command} on this agent. It sends no message · ${key}` : steer ? `Steer: send now; the agent reads it at its next step · ${key}` : `Send · ${key}`);
   }
   /** An agent draft that is one of the live host's commands runs that command instead of sending a message. */
   private commandDraft(buffer: Buffer): {name: string; args: string} | undefined {
@@ -785,9 +786,10 @@ export class Composer {
     if (hold) return hold;
     return this.current?.attachments?.pending ? 'Unfinished local files stay in this tab and are not included in this message.' : '';
   }
-  /** A primary prompt draft is delivered as steer while work runs; the saved mode changes on the next edit or send. */
-  private deliveryMode(mode?: string): string | undefined {
-    return this.current?.state.target.kind === 'primary' && this.busy && mode === 'prompt' ? 'steer' : mode;
+  /** The mode a send captures. While work runs the sender chooses: the send key and Steer reach the next step, Queue follows the current response. A Primary that is not working takes a plain prompt; an agent that is not working queues, so a message that meets unobserved work waits instead of interrupting it. A saved draft mode never decides. */
+  private deliveryMode(buffer: Buffer, delivery: 'steer' | 'followUp'): 'prompt' | 'steer' | 'followUp' {
+    if (this.busy) return delivery;
+    return buffer.state.target.kind === 'primary' ? 'prompt' : 'followUp';
   }
   private records(buffer?: Buffer): OperationView[] {
     const operations = this.operations.length ? this.operations : buffer?.lastOperation ? [buffer.lastOperation] : [];
@@ -1014,7 +1016,7 @@ export class Composer {
       const consent = this.consent(buffer);
       row.append(element('p', 'warning', 'The message might already be sent. Sending again risks duplicate work.'), button('Send again', () => {
         if (this.current !== buffer || buffer.submitting || !this.consentMatches(buffer, consent)) return;
-        void this.send(false, consent);
+        void this.send(false, consent, captured.mode === 'followUp' ? 'followUp' : 'steer');
       }));
     }));
     if (pending.original?.sendGuard?.state === 'blocked') row.append(element('p', 'warning', 'Image copies remain from this queue clear. Restore the copy before an explicit different-message confirmation.'));
@@ -1133,18 +1135,18 @@ export class Composer {
     if (this.pendingBlocks(buffer) && !this.consentMatches(buffer, consent)) { this.receipt(buffer); return true; }
     return false;
   }
-  async send(literal = false, consent?: SendConsent): Promise<void> {
+  async send(literal = false, consent?: SendConsent, delivery: 'steer' | 'followUp' = 'steer'): Promise<void> {
     const buffer = this.current; if (!buffer || this.sendRefused(buffer, consent)) return;
     const command = this.commandSend(buffer, consent);
     if (command) { await command; return; }
     if (consent) consent.used = true;
     this.rememberSelection(); const focusOrigin = document.activeElement;
     this.commandMenu?.close(); this.fileMenu?.close();
-    const snapshot: Edit = {text: buffer.data.text, mode: buffer.state.target.kind === 'primary' && !this.busy ? 'prompt' : this.deliveryMode(buffer.data.mode) ?? buffer.data.mode, images: buffer.data.images.map(image => ({...image})), edit: buffer.data.edit};
+    const snapshot: Edit = {text: buffer.data.text, mode: this.deliveryMode(buffer, delivery), images: buffer.data.images.map(image => ({...image})), edit: buffer.data.edit};
     const confirmation = {target: {...buffer.state.target}, revision: buffer.data.server.revision, mode: buffer.data.mode};
     if (!literal && buffer.state.target.kind === 'primary' && this.hooks.unknownCommand(snapshot.text, () => {
       if (this.current === buffer && sameTarget(confirmation.target, buffer.state.target) && buffer.data.text === snapshot.text &&
-        buffer.data.edit === snapshot.edit && buffer.data.server.revision === confirmation.revision && buffer.data.mode === confirmation.mode) void this.send(true);
+        buffer.data.edit === snapshot.edit && buffer.data.server.revision === confirmation.revision && buffer.data.mode === confirmation.mode) void this.send(true, undefined, delivery);
     })) return;
     // The captured native message owns its mode independently of draft persistence.
     if (snapshot.mode !== buffer.data.mode) { const previous = buffer.data; buffer.data = editDraft(buffer.data, snapshot.text, snapshot.mode); this.rebaseSelection(buffer, previous); snapshot.edit = buffer.data.edit; }

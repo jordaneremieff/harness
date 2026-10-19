@@ -472,12 +472,20 @@ test('narrow composer controls wrap only as needed and retain right alignment wi
   assert.match(narrow, /\.composer-bar \{ justify-content: flex-end; \}/);
   assert.doesNotMatch(narrow, /\.composer-bar[^}]*flex-basis: 100%/);
   assert.doesNotMatch(css, /\.composer-bar[^{}]*\{[^}]*justify-content: (?:center|flex-start)/);
-  assert.match(rule('.modes'), /flex: none; white-space: nowrap/);
-  assert.doesNotMatch(css, /\.modes[^{}]*\{[^}]*flex-wrap: wrap/);
+  assert.match(rule('.queue'), /flex: none;[^}]*white-space: nowrap/);
+  assert.doesNotMatch(css, /\.queue[^{}]*\{[^}]*flex-wrap: wrap/);
   assert.match(rule('.send, .stop'), /flex: none;[^}]*white-space: nowrap/);
   assert.match(rule(':focus-visible'), /outline: 2px solid var\(--accent\)/);
   assert.match(media('@media (pointer:coarse)'), /button, summary,[^{}]*\{ min-height: 44px; min-width: 44px; \}/);
   assert.doesNotMatch(narrow, /\.send[^{}]*\{[^}]*(?:display: none|overflow: hidden|min-width: 0)/);
+});
+test('working controls: Stop alone in the action slot without a draft, quiet Stop beside Queue with one', () => {
+  const alone = /\.composer\[data-working=empty\] \.composer-bar:has\(> \.stop:not\(\[hidden\]\)\) \.composer-submit \{ display: none; \}/;
+  assert.match(css, alone);
+  assert.match(css, /\.composer\[data-working=draft\] \.stop \{[^}]*border-color: transparent[^}]*font-weight: 400/);
+  assert.match(rule('.stop'), /border-color: color-mix\(in srgb, var\(--error\) 55%, transparent\); color: var\(--error\)/);
+  assert.match(rule('.queue'), /color: var\(--muted\)/);
+  assert.doesNotMatch(css, /\.modes\b/);
 });
 test('three direct utility controls retain named SVG slots and a separate unread badge', () => {
   const footer = html.match(/<footer class="sidebar-footer"[\s\S]*?<\/footer>/)?.[0]; assert.ok(footer);
@@ -605,7 +613,7 @@ test('short tool output sizes to content and wrap controls retain reserved space
   const coarse = media('@media (pointer:coarse)');
   assert.match(coarse, /\.tool-inspection > \.source-header \{ opacity: 1/);
   assert.match(coarse, /\.tool-expanded details > summary \{ min-height: 44px/);
-  assert.match(coarse, /\.card-action, \.section-toggle, \.modes select, \.attachment-row > button, \.source-header button\.card-action, \.source-disclosure > \.source-wrap\.card-action \{ min-height: 44px; min-width: 44px/);
+  assert.match(coarse, /\.card-action, \.section-toggle, \.attachment-row > button, \.source-header button\.card-action, \.source-disclosure > \.source-wrap\.card-action \{ min-height: 44px; min-width: 44px/);
 });
 test('Latest occupies the existing composer control line outside the transcript scrollport', async () => {
   assert.match(rule('.transcript-region'), /display: grid; grid-template-rows: minmax\(0,1fr\); flex: 1/);
@@ -707,7 +715,7 @@ test('one workbench footer owns wrapped facts while settings sit under the compo
   assert.match(factory, /const root = element\('form', 'composer'\); root\.id = id/);
   assert.match(factory, /const id = `composer-\$\{encodeURIComponent\(instanceId\)\}`/);
   assert.match(factory, /root\.append\(receipt, input\)/);
-  assert.match(factory, /submit\.append\(modes, start, send\)/);
+  assert.match(factory, /submit\.append\(queue, start, send\)/);
   assert.match(factory, /bar\.append\(stop, submit\)/);
   assert.match(factory, /intake\.append\(attach,sources,picker\)/);
   assert.match(factory, /line\.append\(meta, bar\)/);
