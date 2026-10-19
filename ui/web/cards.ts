@@ -133,7 +133,22 @@ export function withoutTrailingJson(line: string): string {
   const prose = line.slice(0, start).replace(/\s*\b[A-Z][A-Za-z ]{0,24}:\s*$/, '').trimEnd();
   return /^[A-Z0-9]/.test(prose) && prose.split(/\s+/).length >= 3 ? prose : line;
 }
-function tidied(source: string, tidy: boolean): string { return tidy ? source.split(/\r\n|\r|\n/).map(withoutTrailingJson).join('\n') : source; }
+const LABELED_JSON = /^[A-Z][^:{}[\]]{0,22}:\s*([{[].*)$/;
+/** A line that is only a short capitalized label and one JSON object or array ("Result: {...}"). */
+function labeledJson(line: string): boolean {
+  const body = LABELED_JSON.exec(line.trim())?.[1]; if (!body || body.length > 4096) return false;
+  try { const value: unknown = JSON.parse(body); return typeof value === 'object' && value !== null; } catch { return false; }
+}
+/** Success previews drop a labeled JSON line once an earlier line of prose has said what happened; the full text stays in the expanded result. */
+function tidied(source: string, tidy: boolean): string {
+  if (!tidy) return source;
+  let prose = false;
+  return source.split(/\r\n|\r|\n/).map(withoutTrailingJson).filter(line => {
+    const labeled = labeledJson(line); if (labeled && prose) return false;
+    const text = line.trim(); if (text && !labeled && !/^[{[]/.test(text)) prose = true;
+    return true;
+  }).join('\n');
+}
 type PreviewOptions = {resolve?: NameResolver; tidy?: boolean};
 function resultPreviewText(parts: readonly PartView[], skipFrontmatter: boolean, options: PreviewOptions): ResultPreviewText | undefined {
   for (const part of parts) {

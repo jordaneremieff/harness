@@ -298,3 +298,20 @@ test('a collapsed result made only of identifiers shows nothing, and a known nam
   const part: PartView = {type: 'text', text: JSON.stringify({sessionId: session, submissionId: 1}), structured: {value: {sessionId: session, submissionId: 1}, truncated: false}};
   assert.equal(resultPreview([part]), ''); assert.equal(resultPreview([part], {resolve: identity => identity === session ? 'Web UI lead' : undefined}), 'Web UI lead');
 });
+test('a labeled JSON line is dropped from a success preview only after a line of prose', () => {
+  const tidy = (text: string) => resultPreview([{type: 'text', text}], {tidy: true});
+  const spawned = 'Started Scroll blank diagnosis.\nResult: {"sessionId":"7074","submissionId":16,"requestId":"spawn:1"}';
+  assert.equal(tidy(spawned), 'Started Scroll blank diagnosis.');
+  assert.equal(tidy('Started the task.\nIt is running.\nDetails: [1, 2, 3]\nDone.'), 'Started the task.\nIt is running.\nDone.');
+  assert.equal(resultPreview([{type: 'text', text: spawned}]), spawned, 'the literal text is kept outside tidy mode, as for every error preview');
+  const jsonOnly = 'Result: {"sessionId":"7074","submissionId":16}';
+  assert.equal(tidy(jsonOnly), jsonOnly, 'a result that is only a labeled JSON line stays');
+  assert.equal(tidy('{"a":1}\nResult: {"b":2}'), '{"a":1}\nResult: {"b":2}', 'a JSON line is not prose');
+  assert.equal(tidy('Result: {"b":2}\nStarted the task.'), 'Result: {"b":2}\nStarted the task.', 'a JSON line with no prose before it stays');
+  assert.equal(tidy('Started the task.\nNote: not json at all'), 'Started the task.\nNote: not json at all');
+  assert.equal(tidy('Started the task.\nResult: {"broken":'), 'Started the task.\nResult: {"broken":');
+  assert.equal(tidy('Started the task.\nlowercase: {"a":1}'), 'Started the task.\nlowercase: {"a":1}');
+  assert.equal(tidy('Started the task.\nSupercalifragilisticexpialidocious: {"a":1}'), 'Started the task.\nSupercalifragilisticexpialidocious: {"a":1}');
+  assert.equal(tidy('Started the task.\nResult: 42'), 'Started the task.\nResult: 42', 'a scalar is not an object or array');
+  assert.equal(resultPreview([{type: 'text', text: spawned, redacted: true}], {tidy: true}), spawned, 'redacted text is never rewritten');
+});

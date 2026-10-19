@@ -3265,3 +3265,17 @@ test('a saved flag without a thinking choice renders closed; Show thinking and H
   const hiddenView = mount({revision: 6, expanded: saves.at(-1)?.expanded ?? [], showThinking: false, thinking: 'hidden'}); assert.deepEqual(open(), [false, true]);
   hiddenView.reset(); reopened.reset(); view.reset();
 });
+test('a collapsed success card drops its labeled JSON line, while the expanded result and every error card keep the exact text', () => {
+  setup(); const view = transcript();
+  const text = 'Started Scroll blank diagnosis.\nResult: {"sessionId":"7074","submissionId":16}';
+  const call = {id: 'spawn', kind: 'message', messages: [{...message('spawn-message', ''), parts: [{type: 'toolCall' as const, callId: 'spawn-1', name: 'custom', arguments: {value: {task: 'x'}, truncated: false}}]}]};
+  const result = (isError: boolean) => ({id: 'spawn-result', kind: 'message', messages: [{...message('spawn-result-message', ''), role: 'toolResult', parts: [{type: 'toolResult' as const, callId: 'spawn-1', name: 'custom', isError, parts: [{type: 'text' as const, text}]}]}]});
+  view.set([call, result(false)]); flush();
+  const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card);
+  const preview = () => card.parentElement?.querySelector('.tool-preview') ?? card.querySelector('.tool-preview');
+  assert.equal(preview()?.textContent, 'Started Scroll blank diagnosis.');
+  card.open = true; card.dispatch('toggle'); flush();
+  assert.match(node('primary-transcript').textContent, /Result: \{"sessionId":"7074","submissionId":16\}/, 'the expanded result keeps the exact text');
+  view.reset(); setup(); const failing = transcript(); failing.set([call, result(true)]); flush();
+  assert.equal(node('primary-transcript').querySelector('.tool-preview')?.textContent, text, 'an error preview stays literal'); failing.reset();
+});
