@@ -1566,7 +1566,7 @@ describe("promotion rollback resets only what the promotion produced", () => {
 	interface Options {
 		/** The second slice edits a file the first also edits, so its batch rebase stops on a conflict. */
 		conflict?: boolean;
-		shim?: (trees: { demo: string; other: string; repo: string }) => ShimRule;
+		shim?: (trees: { demo: string; other: string; repo: string }) => ShimRule | ShimRule[];
 		/** Node code run by the gate; `repo`, `demo`, `other` and `git(cwd, ...args)` are in scope. */
 		gate?: string;
 		gateFails?: boolean;
@@ -1602,10 +1602,10 @@ describe("promotion rollback resets only what the promotion produced", () => {
 		mkdirSync(bin);
 		mkdirSync(repo, { recursive: true });
 		mkdirSync(agent, { recursive: true });
-		const rule = options.shim?.({ demo, other, repo });
+		const rules = [options.shim?.({ demo, other, repo }) ?? []].flat();
 		writeFileSync(
 			join(bin, "git"),
-			`#!${process.execPath}\nconst { spawnSync } = require("node:child_process");\nconst fs = require("node:fs");\nconst args = process.argv.slice(2);\nconst rule = JSON.parse(process.env.PI_TEST_SHIM || "null");\nconst real = process.env.PI_TEST_REAL_GIT;\nconst hit = rule && (rule.pattern ? new RegExp(rule.pattern).test(args.join(" ")) : args.includes(rule.arg)) && (!rule.inCwd || process.cwd() === rule.inCwd);\nconst seen = hit ? (fs.existsSync(rule.mark + "-n") ? Number(fs.readFileSync(rule.mark + "-n", "utf8")) : 0) + 1 : 0;\nif (hit) fs.writeFileSync(rule.mark + "-n", String(seen));\nif (hit && seen === (rule.nth || 1) && !fs.existsSync(rule.mark)) {\n\tfs.writeFileSync(rule.mark, "1");\n\tfor (const file of rule.files || []) fs.writeFileSync(file.path, file.content);\n\tfor (const step of rule.steps) spawnSync(real, step.args, { cwd: step.cwd, stdio: "ignore" });\n\tif (rule.fail) { process.stderr.write("injected failure\\n"); process.exit(1); }\n}\nprocess.exit(spawnSync(real, args, { stdio: "inherit" }).status ?? 1);\n`,
+			`#!${process.execPath}\nconst { spawnSync } = require("node:child_process");\nconst fs = require("node:fs");\nconst args = process.argv.slice(2);\nconst rules = JSON.parse(process.env.PI_TEST_SHIM || "[]");\nconst real = process.env.PI_TEST_REAL_GIT;\nfor (const rule of rules) {\n\tconst hit = (rule.pattern ? new RegExp(rule.pattern).test(args.join(" ")) : args.includes(rule.arg)) && (!rule.inCwd || process.cwd() === rule.inCwd);\n\tconst seen = hit ? (fs.existsSync(rule.mark + "-n") ? Number(fs.readFileSync(rule.mark + "-n", "utf8")) : 0) + 1 : 0;\n\tif (hit) fs.writeFileSync(rule.mark + "-n", String(seen));\n\tif (hit && seen === (rule.nth || 1) && !fs.existsSync(rule.mark)) {\n\t\tfs.writeFileSync(rule.mark, "1");\n\t\tfor (const file of rule.files || []) fs.writeFileSync(file.path, file.content);\n\t\tfor (const step of rule.steps) spawnSync(real, step.args, { cwd: step.cwd, stdio: "ignore" });\n\t\tif (rule.fail) { process.stderr.write("injected failure\\n"); process.exit(1); }\n\t}\n}\nprocess.exit(spawnSync(real, args, { stdio: "inherit" }).status ?? 1);\n`,
 			{ mode: 0o755 },
 		);
 		const plain: NodeJS.ProcessEnv = {
@@ -1652,7 +1652,7 @@ describe("promotion rollback resets only what the promotion produced", () => {
 			PI_SETTINGS_PATH: join(agent, "settings.json"),
 			PI_PROMOTE_GATES: JSON.stringify([{ name: "test", command: [process.execPath, "-e", gateCode] }]),
 			PI_TEST_REAL_GIT: realGit,
-			...(rule ? { PI_TEST_SHIM: JSON.stringify({ ...rule, mark: join(root, "shim-mark") }) } : {}),
+			...(rules.length > 0 ? { PI_TEST_SHIM: JSON.stringify(rules.map((rule, index) => ({ ...rule, mark: join(root, `shim-mark-${index}`) }))) } : {}),
 		};
 		const { report, status } = promoteBatch(repo, env);
 		return { report, status, git, repo, demo, other, mainBefore, before };
@@ -1736,6 +1736,7 @@ describe("promotion rollback resets only what the promotion produced", () => {
 		const run = scenario({
 			shim: ({ demo }) => ({
 				pattern: "update-ref|reset --hard",
+				inCwd: demo,
 				steps: [{ cwd: demo, args: ["commit", "--allow-empty", "-q", "-m", "feat(demo): added as the rebuild started"] }],
 			}),
 		});
@@ -1813,6 +1814,26 @@ describe("promotion rollback resets only what the promotion produced", () => {
 		assert.equal(run.git(["rev-parse", "main"]), run.mainBefore);
 	});
 
+	it("keeps a commit made on a paused rebase when the stop snapshot could not be taken", () => {
+		const run = scenario({
+			conflict: true,
+			shim: ({ other }) => [
+				{ pattern: "ls-files", inCwd: other, steps: [], fail: true },
+				{
+					pattern: "reflog|--abort",
+					inCwd: other,
+					steps: [
+						{ cwd: other, args: ["add", "-A"] },
+						{ cwd: other, args: ["commit", "-q", "-m", "feat(other): made while the rebase was paused"] },
+					],
+				},
+			],
+		});
+		assert.equal(run.report.ok, false);
+		assert.match(run.report.recover ?? "", /paused rebase/);
+		assert.equal(run.git(["log", "-1", "--format=%s", "HEAD"], run.other), "feat(other): made while the rebase was paused");
+	});
+
 	it("keeps a conflict resolution that was staged but not committed on a paused rebase", () => {
 		const run = scenario({
 			conflict: true,
@@ -1824,7 +1845,10 @@ describe("promotion rollback resets only what the promotion produced", () => {
 		});
 		assert.equal(run.report.ok, false);
 		assert.equal(run.report.stage, "rebase");
-		assert.match(run.report.recover ?? "", /paused rebase/);
+		assert.equal(
+			run.report.recover,
+			`extension/other changed during the promotion: its paused rebase in ${run.other} holds work made after the rebase stopped, so it was not aborted; inspect ${run.other}, then git -C ${run.other} rebase --abort && git -C ${run.other} switch extension/other && git -C ${run.other} reset --hard ${run.before.other} only if nothing there is needed`,
+		);
 		assert.equal(run.git(["ls-files", "--unmerged"], run.other), "");
 		assert.match(run.git(["diff", "--cached", "--name-only"], run.other), /extensions\/demo\/index\.ts/);
 		assert.equal(run.git(["rev-parse", "main"]), run.mainBefore);
@@ -1837,6 +1861,7 @@ describe("promotion rollback resets only what the promotion produced", () => {
 			});
 			assert.equal(run.report.ok, false);
 			assert.equal(run.report.stage, stage);
+			assert.match(run.report.reason, /update-ref .* failed: .*injected failure/);
 			assert.equal(run.git(["rev-parse", "extension/demo"]), run.before.demo);
 			assert.equal(run.git(["rev-parse", "extension/other"]), run.before.other);
 			assert.equal(run.git(["symbolic-ref", "--short", "HEAD"], run.other), "extension/other");

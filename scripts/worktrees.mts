@@ -1351,7 +1351,7 @@ function restorePromotionBranch(selection: PromotionSelection, rebasing: boolean
 		abort = rebasing && Boolean(pausedGitOperation(path)?.includes("rebase-"));
 		if (abort) {
 			if (pausedRebaseWasEdited(path, selection.stopped)) {
-				return `${branch} changed during the promotion: its paused rebase in ${path} holds work made after the rebase stopped, so it was not aborted; inspect ${path}, then git -C ${path} rebase --abort && git -C ${path} reset --hard ${selection.before} only if nothing there is needed`;
+				return `${branch} changed during the promotion: its paused rebase in ${path} holds work made after the rebase stopped, so it was not aborted; inspect ${path}, then git -C ${path} rebase --abort && git -C ${path} switch ${branch} && git -C ${path} reset --hard ${selection.before} only if nothing there is needed`;
 			}
 			git(path, noHooks(["rebase", "--abort"]));
 		}

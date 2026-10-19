@@ -233,6 +233,20 @@ work tree, so each ref move is followed by `git reset --hard HEAD`. If the comma
 branch (or `main`) holds the new commit while its work tree and index still hold the old tree, which shows as changes
 that undo the move. The work tree holds nothing else, so `git reset --hard` in that worktree finishes the move.
 
+The batch rebase leaves the worktree detached from its first `git switch --detach` until the final `git switch` back
+to the branch, and a kill in that span (after the detach, or between the branch `git update-ref` and the `git
+switch`) leaves it detached. The branch itself is intact in both cases, and `git switch <branch>` in that worktree
+reattaches it. While the worktree is detached, a commit made there lands on the detached `HEAD`, not on the branch,
+so the expected-old-value check on the branch does not see it. If it lands before the rebase finishes, the rebase
+carries it into the promotion. If it lands after, the final `git switch` leaves it behind. Git's own rebase detaches
+`HEAD` the same way.
+
+The check for work on a paused rebase compares the index, the work tree and the untracked file list with a snapshot
+taken a few Git calls after the rebase stopped, so work done in that gap is not seen. The snapshot lists untracked files
+but does not hash their contents, so a later edit to an untracked file is not seen. If the snapshot cannot be taken, the
+check falls back to the `HEAD` log alone, which sees commits, resets and checkouts but not a staged or edited
+resolution.
+
 This removes repeated shared gate sets, pushes, and synchronization runs from
 separate promotions. It does not cache gate results or measure elapsed-time
 savings.
