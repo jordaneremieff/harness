@@ -61,3 +61,8 @@ test('health projection rejects unsafe enums, strings and resource counts and dr
   for(const reason of ['',42,'x'.repeat(161),'line\nbreak'])assert.throws(()=>readBackendHealth({...current,services:[{name:'agents',state:'unavailable',reason}]}),/unavailable/);
   assert.throws(()=>readBackendHealth({...current,services:[{name:'agents',state:'ready',reason:'Not a failure.'}]}),/unavailable/);
 });
+test('a reason cut to the bound with an ellipsis parses and shows in the dialog after the service state',async context=>{
+  const reason=`${'Catalog scan failed: '.repeat(8).slice(0,159)}…`;assert.equal(reason.length,160);
+  const h=host(context);const status=new HealthStatus(h.modal,h.version as unknown as HTMLElement,async()=>({...snapshot(),services:[{name:'files',state:'ready'},{name:'agents',state:'unavailable',reason},{name:'rpc',state:'stopped'}]}));
+  status.open();await settle();assert(h.text().includes(`Agent worker\nunavailable: ${reason}`));assert(h.text().includes('…'));
+});
