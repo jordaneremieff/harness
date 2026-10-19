@@ -494,7 +494,7 @@ export class ProjectPicker {
     const convert=button('Convert to Durable',()=>{void this.run(()=>this.convert(item),cause=>this.error(cause,'The conversion did not return a confirmed conversation.'));},'quiet');
     convert.title='Creates a new Durable conversation from saved context. Leaves the ordinary session unchanged.';
     convert.setAttribute('aria-description', convert.title);
-    if (opened) { row.append(select, age, convert, details); return row; }
+    if (opened) { row.dataset.opened = 'true'; row.append(select, age, convert, details); return row; }
     const resume = button('Resume', () => this.resume(item.project, item.path), 'quiet picker-resume'); resume.disabled = writer;
     if (writer) { resume.title = WRITER_HELD; resume.setAttribute('aria-description', WRITER_HELD); }
     row.append(select, age, resume, convert, details); return row;

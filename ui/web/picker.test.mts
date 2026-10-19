@@ -755,6 +755,7 @@ test('chooser style bindings preserve ordinary actions and full-width Durable ro
   assert.match(css, /\.picker-session \{[^}]*grid-template-columns: minmax\(0,1fr\) auto auto auto auto;/);
   assert.match(css, /\.picker-session-details\[open\] \{[^}]*grid-column: 1 \/ -1; grid-row: 2;/);
   assert.match(css, /\.picker-session-meta:empty \{ display: none; \}/);
+  assert.match(css, /\.picker-session\[data-opened=true\] \{[^}]*grid-template-columns: minmax\(0,1fr\) auto auto auto;/);
   assert.match(css, /\.picker-footer \{[^}]*border-top: 1px solid var\(--edge\);/);
   assert.match(css, /dialog\[open\]\[data-variant=picker\] \{ display: flex; flex-direction: column; overflow: hidden; \}/);
   assert.match(css, /dialog\[data-variant=picker\] #modal-body \{[^}]*display: flex; flex-direction: column; min-height: 0;/);
@@ -861,7 +862,7 @@ test('the Resume text control resumes the same session as the whole-row button',
 test('an opened row has no Resume control while the row itself still selects its session', async t => {
   const setup = directPicker(t, {...active, sessionFile: saved.items[0].path}); setup.picker.open(); await settle();
   const row = sessionRow(setup);
-  assert.equal(row.children.some(node => node.className === 'quiet picker-resume'), false);
+  assert.equal(row.children.some(node => node.className === 'quiet picker-resume'), false); assert.equal(row.dataset.opened, 'true');
   assert.match(row.querySelector('.picker-select')?.textContent ?? '', /In this window/);
   assert.equal(row.children.some(node => node.textContent === 'Convert to Durable'), true);
   row.querySelector('.picker-select')?.click(); await settle();
