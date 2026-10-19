@@ -53,7 +53,8 @@ function renderHealth(content: HTMLElement, snapshot: HealthSnapshot): void {
   if (snapshot.identity.commit) row('Commit', snapshot.identity.commit);
   if (snapshot.identity.assetDigest) row('Assets', snapshot.identity.assetDigest);
   row('User stylesheet', {none: 'Not configured', applied: 'Applied', missing: 'File not found', 'too-large': 'File too large', unreadable: 'File not readable', invalid: 'Setting invalid'}[snapshot.userStylesheet.state]);
-  for (const service of snapshot.services) row({files: 'File worker', agents: 'Agent worker', rpc: 'Primary RPC'}[service.name], service.state);
+  for (const service of snapshot.services) row({files: 'File worker', agents: 'Agent worker', rpc: 'Primary RPC'}[service.name],
+    service.state === 'stopped' && service.name === 'rpc' ? 'idle (no primary running)' : service.reason ? `${service.state}: ${service.reason}` : service.state);
   row('Build', snapshot.build.state); row('Memory RSS', `${Math.round(snapshot.process.rssBytes / (1024 * 1024))} MiB`);
   row('Active API requests', `${snapshot.requests.active} / ${snapshot.requests.limit}`);
   content.replaceChildren(element('p', undefined, 'This snapshot changes only when you select Refresh health.'), facts);

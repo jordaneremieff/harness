@@ -27,6 +27,11 @@ test('health projects only bounded named facts and identity hashes, never arbitr
   assert.deepEqual(snapshot.identity,{iteration:'0.8',commit:'a'.repeat(40),assetDigest:'b'.repeat(64)});
   assert.deepEqual(snapshot.build,{state:'static'});assert(snapshot.services.every((service:object)=>Object.keys(service).length===2));
 });
+test('health carries a bounded reason only for an unavailable service and drops any other service property',async context => {
+  const app = await fixture(context,{health:()=>({...facts(),services:[{name:'files',state:'ready'},{name:'agents',state:'unavailable',reason:'Catalog directory is absent'},{name:'rpc',state:'stopped'}]})});
+  const response = await app.read();assert.equal(response.status,200);
+  assert.deepEqual((await response.json() as {data:HealthSnapshot}).data.services,[{name:'files',state:'ready'},{name:'agents',state:'unavailable',reason:'Catalog directory is absent'},{name:'rpc',state:'stopped'}]);
+});
 test('health callback failures and malformed facts return one non-sensitive unavailable result',async context => {
   let current:unknown = facts();const app = await fixture(context,{health:()=>{if(current instanceof Error)throw current;return current as BackendHealthFacts;}});
   for (const value of [new Error('/private/state token=secret'),{...facts(),supervisorRestarts:-1},{...facts(),startedAt:'private path'},

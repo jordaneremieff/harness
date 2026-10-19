@@ -9,7 +9,8 @@ import { DevelopmentBuild } from './development-build.mts';
 import { DiagnosticDisk, DiagnosticSink } from './diagnostics.mts';
 import { collectIdentity } from './version.mts';
 import { identityLabel, type UiIdentity } from '../shared/version.ts';
-import type {BackendHealthFacts} from '../shared/health.ts';
+import {HEALTH_REASON_CHARACTERS, type BackendHealthFacts} from '../shared/health.ts';
+import {safeText} from './projection.mts';
 import {readUserStylesheet, type UserStylesheetSource} from './user-stylesheet.mts';
 import {LifecycleLog,redactLifecycle} from './lifecycle-log.mts';
 import {parseArgs, type Options} from './options.mts';
@@ -39,11 +40,16 @@ function rpcHealth(registry:Registry):'ready'|'unavailable'|'stopped' {
   if(sessions.some(session=>session.view.lifecycle==='ready'||session.view.lifecycle==='starting'))return 'ready';
   return 'stopped';
 }
+/** The agents service is unavailable while its worker is down or the last catalog scan failed; the reason is the one the roster shows. */
+function agentsHealth(registry:Registry):BackendHealthFacts['services'][number] {
+  const scan=registry.agents.roster({limit:1}).scan;
+  if(registry.agents.available===false)return {name:'agents',state:'unavailable',reason:safeText(scan.error||'The agent worker is unavailable.',HEALTH_REASON_CHARACTERS)};
+  if(scan.state==='failed')return {name:'agents',state:'unavailable',reason:safeText(scan.error||'The agent catalog scan failed.',HEALTH_REASON_CHARACTERS)};
+  return {name:'agents',state:'ready'};
+}
 function serviceHealth(registry:Registry,files:Files|undefined,stopping:boolean):BackendHealthFacts['services'] {
   if(stopping)return [{name:'files',state:'stopped'},{name:'agents',state:'stopped'},{name:'rpc',state:'stopped'}];
-  return [{name:'files',state:files?.available?'ready':'unavailable'},
-    {name:'agents',state:registry.agents.available===false?'unavailable':'ready'},
-    {name:'rpc',state:rpcHealth(registry)}];
+  return [{name:'files',state:files?.available?'ready':'unavailable'},agentsHealth(registry),{name:'rpc',state:rpcHealth(registry)}];
 }
 type BackendRelease={directory:string;manifest:ReleaseManifest;previous?:string};
 async function releaseGenerations(assets:Map<string,Asset>,release:BackendRelease):Promise<AssetGenerations> {
@@ -70,6 +76,7 @@ export async function startBackend(options:Options, injection:Partial<Pick<Regis
     const identity=injection.identity??await collectIdentity(assets,{root:assetRoot?resolve(assetRoot,'..'):undefined,assetRoot,startedAt,build:generations?.identity(),release:release?.manifest});
     const registry=await Registry.open({stateDir,cwd:options.cwd,executable:options.pi,agentStore:paths.agentStore,agents:injection.agents,primary:injection.primary,measure:injection.measure,connectOwner:injection.connectOwner});startupRegistry=registry;
     try {log=await LifecycleLog.open(stateDir);log.record('restart',`Supervisor replacements: ${injection.supervisorRestarts??0}.`);} catch {process.stderr.write('Local lifecycle logging is unavailable.\n');}
+    registry.unavailable=detail=>{const text=redactLifecycle(detail);log?.record('unavailable',text);process.stderr.write(`${text}\n`);};
     if(options.devDiagnostics) {
       try {diagnostics=new DiagnosticSink(await DiagnosticDisk.open(stateDir),undefined,undefined,()=>development?.generations.status().generation);}
       catch {process.stderr.write('Local diagnostics are unavailable.\n');}
@@ -91,7 +98,10 @@ export async function startBackend(options:Options, injection:Partial<Pick<Regis
       if(status.status==='restart-required') injection.onRestart?.();
     });
     development?.build.start();diagnostics?.emit({event:'connection',code:'applied'});
-    void registry.agents.refresh().catch(()=>registry.journal.publish('notice',undefined,{level:'warning',message:'The retained agent catalog is unavailable.',code:'catalog_unavailable'}));
+    void registry.agents.refresh().then(scan=>registry.reportCatalog(scan),error=>{
+      registry.reportCatalog({state:'failed',error:error instanceof Error?error.message:'Catalog scan was refused.'});
+      registry.journal.publish('notice',undefined,{level:'warning',message:'The retained agent catalog is unavailable.',code:'catalog_unavailable'});
+    });
     const close=()=>closing??=(async()=> {
       stopping=true;http.stopAdmission();
       const controls=await Promise.allSettled([control?.close(),controlDiscovery?.close()]);

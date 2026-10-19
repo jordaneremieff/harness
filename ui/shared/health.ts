@@ -3,7 +3,8 @@ export type BackendHealthFacts = {
   supervisorRestarts: number;
   owner?: {pid: number; incarnation: string; protocol: string};
   backend?: {pid: number; release?: string};
-  services: {name: 'files' | 'agents' | 'rpc'; state: 'ready' | 'unavailable' | 'stopped'}[];
+  /** `stopped` on `rpc` means no primary is running (idle) or the backend is closing; `reason` is bounded text that only an `unavailable` service carries. */
+  services: {name: 'files' | 'agents' | 'rpc'; state: 'ready' | 'unavailable' | 'stopped'; reason?: string}[];
   build: {state: 'static' | 'ready' | 'building' | 'failed' | 'held' | 'restart-required'};
 };
 /** Fixed words only: none means no stylesheet is configured; the others say whether the configured file is applied or why not. */
@@ -15,6 +16,7 @@ export type HealthSnapshot = BackendHealthFacts & {
   requests: {active: number; limit: number};
   identity: {iteration: string; commit?: string; assetDigest?: string};
 };
+export const HEALTH_REASON_CHARACTERS = 160;
 const failure = () => new Error('Backend health details are unavailable.');
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw failure();
@@ -45,7 +47,9 @@ export function readBackendHealth(value: unknown): BackendHealthFacts {
   if (!Array.isArray(facts.services) || facts.services.length > 3) throw failure();
   const services = facts.services.map(value => {
     const service = record(value);
-    return {name: choice(service.name, ['files', 'agents', 'rpc'] as const), state: choice(service.state, ['ready', 'unavailable', 'stopped'] as const)};
+    const state = choice(service.state, ['ready', 'unavailable', 'stopped'] as const);
+    if (service.reason !== undefined && (state !== 'unavailable' || typeof service.reason !== 'string' || !service.reason || service.reason.length > HEALTH_REASON_CHARACTERS || /[\u0000-\u001f\u007f]/.test(service.reason))) throw failure();
+    return {name: choice(service.name, ['files', 'agents', 'rpc'] as const), state, ...(typeof service.reason === 'string' ? {reason: service.reason} : {})};
   });
   if (new Set(services.map(service => service.name)).size !== services.length) throw failure();
   const result: BackendHealthFacts = {startedAt: new Date(facts.startedAt).toISOString(), supervisorRestarts: integer(facts.supervisorRestarts), services,

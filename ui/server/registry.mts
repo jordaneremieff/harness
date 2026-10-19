@@ -69,6 +69,16 @@ export class Registry {
     return false;
   }
   control?:Control;
+  /** Receives one redacted line for each service that becomes unavailable and each primary that stops without a request. */
+  unavailable?:(detail:string)=>void;
+  private reportedCatalogError?:string;
+  /** Reports a failed catalog scan once per distinct reason; a later successful scan clears the memory. */
+  reportCatalog(scan:{state:string;error?:string}):void {
+    const failed=scan.state==='failed'?scan.error||'Catalog scan failed':undefined;
+    if(failed===this.reportedCatalogError)return;
+    this.reportedCatalogError=failed;
+    if(failed)this.unavailable?.(`Agent catalog unavailable: ${safeText(failed,200)}`);
+  }
   readonly journal: Journal;
   readonly operations: Operations;
   readonly sessions = new Map<string, PrimarySession>();
@@ -100,6 +110,7 @@ export class Registry {
     this.starter = new StoredAgentStarter({store:options.agentStore,executable:options.executable,...options.agentStart});
     this.agents = (options.agents ?? createAgentService)({store: options.agentStore, stateDir: store.root, installationId: store.instanceId, agentDir: options.agentStart?.agentDir,
       onRoster: page => {
+        this.reportCatalog(page.scan);
         const roster = projectRoster({...page,rows:page.changed??page.rows});
         this.rosterRevision++;
         for (let i = 0; i < roster.rows.length || i === 0; i += 16) this.journal.publish('agent.roster', undefined,
@@ -395,6 +406,7 @@ export class Registry {
       ...(owner ? {transport: owner.factory(primary, descriptor), attach: !!descriptor, recoveryWorkspaceId, ownerIdentity: `${owner.hello.ownerIncarnation}:${key}:${epoch}`} : {}),
       measure:this.options.measure ? (stage,id,at,bytes)=>this.options.measure?.(stage,`${key}:${id}`,at,bytes) : undefined,
       publish: (name,target,data) => this.publish(name,target,data), onChange:()=>this.metadataChanged(),
+      onUnavailable: reason => this.unavailable?.(`Primary ${key} stopped (${reason.code}): ${safeText(reason.message,200)}`),
       onBeforeClearQueue: async (target, pendingCount) => this.operations.beginQueueClear(this.queueWorkspaces.get(key) ?? await this.workspace(), target, pendingCount),
       onRecoveredQueue: (clearOperationId, queue) => this.operations.retainQueue(clearOperationId, queue),
       onQueueClearFailed: (clearOperationId, uncertain) => this.operations.settleQueueClearFailure(clearOperationId, uncertain)});

@@ -71,7 +71,7 @@ export class RpcClient {
         const error = new RpcError('host_unavailable', 'RPC process failed.');
         if (child.pid === undefined) this.processExit(error); else this.transportFailure(error);
       });
-      const exit = (code: number | null, signal: NodeJS.Signals | null) => this.processExit(this.closing && code === 0 && !signal ? undefined : new RpcError('delivery_uncertain', 'RPC process exited.', true));
+      const exit = (code: number | null, signal: NodeJS.Signals | null) => this.processExit(this.closing && code === 0 && !signal ? undefined : new RpcError('delivery_uncertain', `RPC process exited (code ${code ?? 'none'}, signal ${signal ?? 'none'}).`, true));
       child.on('exit', exit); child.on('close', exit);
       child.stdout.on('data', (chunk: Buffer) => this.consume(Buffer.from(chunk)));
       child.stderr.on('data', (chunk: Buffer) => {

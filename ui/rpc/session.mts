@@ -25,6 +25,8 @@ export interface PrimarySessionOptions {
   onQueueClearFailed?: (clearOperationId: string, uncertain: boolean) => Promise<void>;
   startupTimeoutMs?: number; shutdownTimeoutMs?: number;
   measure?: (stage: string, id: string, at: number, bytes?: number) => void;
+  /** Called once per session with the first reason the primary stopped without a request or failed to start. */
+  onUnavailable?: (reason: {code: string; message: string}) => void;
 }
 export class PrimarySession {
   readonly view: PrimaryView;
@@ -69,6 +71,7 @@ export class PrimarySession {
   private bufferBytes = 0;
   private settled = new Set<{ resolve: () => void; reject: (error: RpcError) => void }>();
   private started = false;
+  private reported = false;
   private closing?: Promise<void>;
   private shutdownWork?:Promise<void>;
   private identityQuarantined=false;
@@ -107,7 +110,7 @@ export class PrimarySession {
       this.projection.state(); this.stats.refresh();this.recoverStream();
     } catch (error) {
       const failure = this.error(error);
-      if (!this.closing) { this.fail(failure); this.view.lifecycle = 'failed'; this.projection.state(); }
+      if (!this.closing) { this.fail(failure); this.view.lifecycle = 'failed'; this.projection.state(); this.report(failure); }
       throw failure;
     }
     finally { this.rejectStartup = undefined; if (this.startupTimer) clearTimeout(this.startupTimer); this.startupTimer = undefined; }
@@ -553,8 +556,15 @@ export class PrimarySession {
     const failure = error ?? new RpcError('delivery_uncertain', 'Primary process closed.', true);
     this.rejectStartup?.(failure);
     for (const waiter of this.settled) waiter.reject(failure); this.settled.clear();
-    if (error) this.view.lastError = { code: error.code, message: error.message, retry: 'manual' };
+    const reason = error ?? (this.frozen || this.closing ? undefined : new RpcError('process_exited', 'Primary process exited without a request.', true));
+    if (reason) this.view.lastError = { code: reason.code, message: reason.message, retry: 'manual' };
     this.projection.state();
+    if (reason) this.report(reason);
+  }
+  private report(reason: RpcError): void {
+    if (this.reported) return;
+    this.reported = true;
+    this.options.onUnavailable?.({ code: reason.code, message: reason.message });
   }
   private fail(error: RpcError): void {
     this.invalidatePreparation();

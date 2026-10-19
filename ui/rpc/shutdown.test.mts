@@ -5,6 +5,7 @@ import type { PrimaryView } from '../shared/api.ts';
 import { RpcClient, type RpcRecord } from './client.mts';
 import { FakeChild } from './fake-child.mts';
 import { PrimarySession } from './session.mts';
+import type { PrimaryTransport, TransportFactory } from './transport.mts';
 
 function sessionFixture() {
   const child = new FakeChild(); const states: PrimaryView[] = []; let spawns = 0;
@@ -93,4 +94,23 @@ test('exit cancels active and queued history decodes and ignores late records wi
   await rejectedOne; await rejectedTwo; await client.close();
   child.stdout.emit('data', Buffer.from(`${JSON.stringify({ type: 'response', command: 'get_entries', id: second.id, success: true, data: snapshot })}\n`));
   assert.equal(client.exited, true); assert.equal(client.pendingCount, 0); assert.deepEqual(events, []); assert.deepEqual(errors, []);
+});
+test('an unrequested exit carries its code and signal in lastError and is reported once', async () => {
+  for (const [code, signal, expected] of [[3, null, 'code 3, signal none'], [null, 'SIGKILL', 'code none, signal SIGKILL']] as const) {
+    const child = new FakeChild(); child.onCommand = (record) => child.defaults(record); const reasons: { code: string; message: string }[] = [];
+    const session = new PrimarySession({ key: 'key', executable: 'pi', cwd: process.cwd(), shutdownTimeoutMs: 1, spawnChild: child.spawn, publish: () => {}, onUnavailable: (reason) => reasons.push(reason) });
+    await session.start(); child.emit('exit', code, signal); child.emit('close', code, signal);
+    assert.equal(session.view.lifecycle, 'failed'); assert.match(session.view.lastError?.message ?? '', new RegExp(`RPC process exited \\(${expected}\\)`));
+    assert.equal(reasons.length, 1); assert.equal(reasons[0].code, 'delivery_uncertain'); assert.match(reasons[0].message, new RegExp(expected));
+    await session.close();
+  }
+});
+test('a clean exit nobody requested still records a reason; a requested close records none', async () => {
+  const reasons: string[] = []; let callbacks: Parameters<TransportFactory>[0] | undefined;
+  const transport = (given: Parameters<TransportFactory>[0]) => { callbacks = given; return { child: undefined, exited: true, available: false, synchronized: true, stderrTail: '', pendingCount: 0, close: async () => {} } as unknown as PrimaryTransport; };
+  const make = () => new PrimarySession({ key: 'key', executable: 'pi', cwd: process.cwd(), publish: () => {}, transport, onUnavailable: (reason) => reasons.push(`${reason.code}: ${reason.message}`) });
+  const unrequested = make(); callbacks?.onExit?.();
+  assert.equal(unrequested.view.lifecycle, 'stopped'); assert.equal(unrequested.view.lastError?.code, 'process_exited'); assert.deepEqual(reasons, ['process_exited: Primary process exited without a request.']);
+  const requested = make(); await requested.close(); callbacks?.onExit?.();
+  assert.equal(requested.view.lastError, undefined); assert.equal(reasons.length, 1);
 });
