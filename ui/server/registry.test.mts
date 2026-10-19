@@ -694,5 +694,7 @@ test('a held file that its terminal releases publishes one sessions.writers even
   const released = new Promise<string[]>(resolve => { const publish = registry.journal.publish.bind(registry.journal); registry.journal.publish = ((name: string, target: unknown, data: {released?: string[]}, workspace?: string) => { if (name === 'sessions.writers') resolve(data.released ?? []); return (publish as (...input: unknown[]) => string)(name, target, data, workspace); }) as typeof registry.journal.publish; });
   assert.equal((await registry.withWriters(page)).items[0]?.writer, 'live');
   await unlink(record);
+  // The saved-list read a focus or Refresh triggers re-checks held files, so the test does not depend on a directory event.
+  assert.equal((await registry.withWriters(page)).items[0]?.writer, undefined);
   assert.deepEqual(await released, [TERMINAL_ID]);
 });

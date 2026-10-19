@@ -5,9 +5,10 @@ import {writerState} from './ordinary-presence.mts';
 type Held = {id: string; path: string};
 /**
  * Reports when a terminal session releases a saved file this backend has seen held.
- * It watches the published-record directory without a timer, checks the held files once when the
- * watch starts (the platform can drop early events), and stops when nothing is held. A publisher that
- * crashed leaves its record behind and produces no event; that case is proven at the next read or open.
+ * It watches the published-record directory without a timer and stops when nothing is held. The platform
+ * can drop a directory event that lands as the watch starts and never report it later, so every `track`
+ * call (each saved-list read) also re-checks the held files. A publisher that crashed leaves its record
+ * behind and produces no event; that case is proven at the next read or open.
  */
 export class WriterWatch {
   readonly #root: string;
@@ -17,18 +18,20 @@ export class WriterWatch {
   #running?: Promise<void>;
   #again = false;
   #closed = false;
-  constructor(root: string, released: (ids: string[]) => void) { this.#root = root; this.#released = released; }
+  readonly #open: typeof watch;
+  constructor(root: string, released: (ids: string[]) => void, open: typeof watch = watch) { this.#root = root; this.#released = released; this.#open = open; }
   get active(): boolean { return this.#watcher !== undefined; }
-  /** Remembers the files a terminal holds and starts watching when there are any. */
+  /** Remembers the files a terminal holds, starts watching when there are any, and re-checks every held file. */
   track(held: readonly Held[]): void {
     if (this.#closed) return;
     for (const item of held) this.#held.set(item.id, item.path);
-    if (this.#held.size && !this.#watcher) this.#start();
+    if (!this.#held.size) return;
+    if (this.#watcher) this.#check(); else this.#start();
   }
   close(): void { this.#closed = true; this.#stop(); this.#held.clear(); }
   #start(): void {
     try {
-      this.#watcher = watch(join(this.#root, '.primaries'), {persistent: false}, () => this.#check());
+      this.#watcher = this.#open(join(this.#root, '.primaries'), {persistent: false}, () => this.#check());
       this.#watcher.on('error', () => { this.#stop(); this.#check(); });
     } catch { /* A missing directory holds no records: the check below proves release. */ }
     this.#check();

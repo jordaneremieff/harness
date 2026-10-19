@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import {EventEmitter} from 'node:events';
+import type {watch} from 'node:fs';
 import {mkdir, mkdtemp, rm, unlink, writeFile} from 'node:fs/promises';
 import {hostname, tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -39,6 +41,18 @@ test('a record already gone when the watch starts is reported without waiting fo
   const released = new Promise<string[]>(resolve => { watch = new WriterWatch(disposable.root, ids => resolve(ids)); });
   watch.track([{id: ID, path: disposable.session}]);
   assert.deepEqual(await released, [ID]); watch.close();
+});
+
+test('a release whose directory event never arrives is reported by the next track call', {timeout: 5000}, async context => {
+  const disposable = await store(context); await disposable.publish();
+  const silent = (() => Object.assign(new EventEmitter(), {close() {}})) as unknown as typeof watch;
+  let watcher!: WriterWatch; let calls = 0;
+  const released = new Promise<string[]>(resolve => { watcher = new WriterWatch(disposable.root, ids => { calls++; resolve(ids); }, silent); });
+  watcher.track([{id: ID, path: disposable.session}]);
+  await unlink(disposable.record);
+  watcher.track([]);
+  assert.deepEqual(await released, [ID]); assert.equal(watcher.active, false);
+  watcher.track([]); assert.equal(calls, 1); watcher.close();
 });
 
 test('nothing is watched when nothing is held', async context => {
