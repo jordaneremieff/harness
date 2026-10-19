@@ -7,12 +7,12 @@ import { contextMenu, nativeEditingTarget, type ContextItem } from './context-me
 import { markdownDom, sourceHeader, sourceWrap } from './safe-markdown.ts';
 import { highlight, languageFromPath } from './highlight.ts';
 import { transcriptImage } from './image.ts';
-import { thinkingKey, type ThinkingTime, type ToolState } from './state.ts';
+import { pairedTimestamp, thinkingKey, type ThinkingTime, type ToolState } from './state.ts';
 import { isValidTimestamp, previewText } from './format.ts';
 import { entryVisible, messageAriaLabel, presentEntry, presentMessage, sessionEventsSummary } from './entry-presentation.ts';
 import { cardPreviewLimits, readRange, presentResultPreview, presentToolPreview, resultPreview } from './cards.ts';
 import { thinkingExpanded } from './transcript-presentation.ts';
-import { TranscriptIndex, ToolElapsedClock, toolTime, thinkingLabel, slot, communicationDisclosureKeys } from './transcript-tools.ts';
+import { TranscriptIndex, ToolElapsedClock, toolTime, thinkingLabel, thinkingPreview, slot, communicationDisclosureKeys } from './transcript-tools.ts';
 import { CommunicationCard, messageCopyText, messageCopyDescription } from './communication.ts';
 import type { TranscriptGroups } from './transcript-groups.ts';
 import {TranscriptRows, type StepRun} from './transcript-rows.ts';
@@ -31,6 +31,14 @@ import type { LayoutItem, VirtualLayout } from './virtual.ts';
 
 export type TranscriptElements = {transcript: HTMLElement; latest: HTMLElement; earlier?: HTMLElement};
 export type ToolSubjectCaption = NamedDestination;
+/** A thinking summary is its label, then the first line of the thinking text; the line hides while the block is open. */
+function thinkingSpans(summary: Element): {label: HTMLElement; preview: HTMLElement} {
+  const label = summary.querySelector<HTMLElement>('.thinking-label'), preview = summary.querySelector<HTMLElement>('.thinking-preview');
+  if (label && preview) return {label, preview};
+  const made = {label: element('span', 'thinking-label', 'Thinking'), preview: element('span', 'thinking-preview')};
+  summary.replaceChildren(made.label, made.preview); return made;
+}
+const previewSuffix = (line: string): string => line ? ` · ${line}` : '';
 export type ViewHooks = {earlier?: () => void; operatorInput?: boolean; readTaskResult?: (reference:TaskReference,signal:AbortSignal)=>Promise<ResultInspection>; activity?: (text:string)=>void; cwd?: () => string | undefined; subject?: (value: string) => ToolSubjectCaption | undefined; result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; preview?: (part: ImageView, url: string, invoker: HTMLElement) => () => void; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
 const RAW_LIMIT = 65536;
 /** Scrolling up within this many pixels of the first loaded row reads the next older page. */
@@ -206,7 +214,9 @@ export class Transcript {
   private dirtyLayout = true;
   private generation = 0;
   private expanded = new Set<string>();
-  private showThinking = true;
+  private showThinking = false;
+  /** Thinking that streamed in this view stays open here after it finishes; it is never saved, so a reload closes it like the rest. */
+  private streamedThinking = new Set<string>();
   private follow = true;
   private readingRevision = 0;
   private pending = false;
@@ -420,7 +430,7 @@ export class Transcript {
     this.resize?.disconnect(); if (!this.destroyed) this.resize?.observe(this.node); this.sizes = new WeakMap(); this.scrolling = new WeakSet(); this.reflowAnchor = undefined; this.writtenScrollTop = undefined;
     this.clearFind(); this.findRevision++;
     this.generation++; this.entries = []; this.displayed = []; this.cache.clear(); this.tools.clear(); this.liveThinking.clear(); this.thinkingTimes = new Map(); this.index = new TranscriptIndex(); this.joined = this.index.joined; this.rows = new TranscriptRows(); this.tasks = new ConversationTasks(); this.visible.clear(); this.dirtyLayout = true; this.pins.clear(); this.heights.clear(); this.gaps.clear();
-    this.expanded.clear(); this.showThinking = true; this.follow = true; this.readingRevision = 0;
+    this.expanded.clear(); this.streamedThinking.clear(); this.showThinking = false; this.follow = true; this.readingRevision = 0;
     this.layout = layoutItems([], this.heights, 140); this.restoring = undefined; this.node.replaceChildren(...(this.lead ? [this.lead] : [])); this.scrollTo(0); this.hold = undefined; this.arrivals.reset(); this.syncLatest();
   }
   defer(refresh: () => void, receivedAt?: number): void {
@@ -1220,7 +1230,8 @@ export class Transcript {
     const groups = message.thinkingGroups ?? new Map(); message.thinkingGroups = groups; let group = groups.get(id);
     if (!group) {
       const node = element('details', 'thinking thinking-group'); const body = element('div');
-      node.dataset.disclosure = id; node.append(element('summary', undefined, 'Thinking'), body);
+      const summary = element('summary'); thinkingSpans(summary);
+      node.dataset.disclosure = id; node.append(summary, body);
       group = {node, body}; groups.set(id, group);
       node.addEventListener('toggle', () => {
         if (node.dataset.streaming === 'true') node.open = true;
@@ -1230,6 +1241,8 @@ export class Transcript {
     }
     for (const part of parts) { const summary = part.querySelector<HTMLElement>('summary'); if (summary) summary.hidden = true; }
     reconcileChildren(group.body, parts);
+    const heading = group.node.querySelector('summary');
+    if (heading) setText(thinkingSpans(heading).preview, parts.map(part => part.querySelector('.thinking-preview')?.textContent ?? '').find(Boolean) ?? '');
     group.node.dataset.streaming = String(parts.some(part => part.dataset.streaming === 'true'));
     group.node.open = this.thinkingOpen(group.node) || parts.some(part => (part as HTMLDetailsElement).open);
     return group.node;
@@ -1333,10 +1346,7 @@ export class Transcript {
     const node = previous?.node ?? this.createPart(part, entryId, message.source.id, index);
     const pages = node.querySelector<HTMLElement>('.output-pages'); if (pages) { this.releaseFrames(pages); pages.remove(); }
     this.partContent(node, part, partial, previous);
-    if (part.type === 'thinking') {
-      node.dataset.streaming = String(partial && !part.redacted && !!part.text.trim());
-      (node as HTMLDetailsElement).open = this.thinkingOpen(node); this.thinkingTitle(node, message.source, index, partial);
-    }
+    if (part.type === 'thinking') this.markThinking(node as HTMLDetailsElement, part, message.source, index, partial);
     if ((part.type === 'text' || part.type === 'thinking') && part.more) {
       const source = part; const generation = this.generation;
       const pages = outputPages(part.more, this.hooks.output, () => generation === this.generation && message.parts.get(key)?.source === source, () => this.schedule());
@@ -1344,11 +1354,17 @@ export class Transcript {
     }
     this.registerContent(node); message.parts.set(key, {node, source: part, partial}); return node;
   }
+  private markThinking(node: HTMLDetailsElement, part: Extract<PartView, {type: 'thinking'}>, message: MessageView, index: number, partial: boolean): void {
+    const streaming = partial && !part.redacted && !!part.text.trim(), streamKey = this.streamKey(message, index);
+    node.dataset.streaming = String(streaming); node.dataset.streamKey = streamKey;
+    if (streaming) this.streamedThinking.add(streamKey);
+    node.open = this.thinkingOpen(node); this.thinkingTitle(node, message, index, partial);
+  }
   private createPart(part: PartView, entryId: string, messageId: string, index: number): HTMLElement {
     if (part.type !== 'thinking') return element('div');
     const node = element('details', 'thinking'); const id = `thinking:${entryId}:${messageId}:${index}`;
     node.dataset.disclosure = id; node.open = this.showThinking || this.expanded.has(id);
-    const summary = element('summary', undefined, 'Thinking'); cardDisclosure(summary);
+    const summary = element('summary'); cardDisclosure(summary); thinkingSpans(summary);
     node.append(summary, element('div', 'thinking-content'));
     this.trackDisclosure(node, id); return node;
   }
@@ -1371,7 +1387,8 @@ export class Transcript {
   private thinkingContent(node: HTMLElement, part: Extract<PartView, {type: 'text' | 'thinking'}>, partial: boolean): void {
     const content = node.querySelector('.thinking-content'); if (!content) return;
     content.className = partial ? 'thinking-content stream-text' : 'thinking-content';
-    const root = content as HTMLElement;
+    const root = content as HTMLElement, summary = node.querySelector('summary');
+    if (summary) setText(thinkingSpans(summary).preview, part.redacted ? '' : previewSuffix(thinkingPreview(part.text)));
     if (part.redacted || partial) { this.releaseFrames(root); setText(root, part.redacted ? 'Thinking not available' : bounded(part.text, 8192)); }
     else if (part.text.length > 8192) this.replaceContent(root, markdownDom(bounded(part.text, 8192)), this.inspection('More thinking', () => part.text));
     else this.replaceContent(root, markdownDom(part.text));
@@ -1480,7 +1497,7 @@ export class Transcript {
   /** The title carries the browser-observed span; a streaming block keeps counting through the shared clock. */
   private thinkingTitle(node: HTMLElement, message: MessageView, index: number, partial: boolean): void {
     const key = thinkingKey(message, index), time = this.thinkingTimes.get(key), streaming = partial && time !== undefined && time.end === undefined;
-    const summary = node.querySelector('summary'); if (summary) setText(summary, thinkingLabel(time, streaming));
+    const summary = node.querySelector('summary'); if (summary) setText(thinkingSpans(summary).label, thinkingLabel(time, streaming));
     if (streaming) this.liveThinking.set(key, node); else this.liveThinking.delete(key);
   }
   private paintElapsed(): boolean {
@@ -1489,7 +1506,7 @@ export class Transcript {
     for (const [key, node] of this.liveThinking) {
       const time = this.thinkingTimes.get(key), summary = node.querySelector('summary');
       if (!this.node.contains(node) || !summary || time === undefined || time.end !== undefined) { this.liveThinking.delete(key); continue; }
-      setText(summary, thinkingLabel(time, true)); active = true;
+      setText(thinkingSpans(summary).label, thinkingLabel(time, true)); active = true;
     }
     this.hooks.activity?.(this.activitySentence());
     for (const tool of this.tools.values()) {
@@ -1782,7 +1799,20 @@ export class Transcript {
     if (data) { setText(preTextFrame(data), bounded(source())); if (tool?.source) tool.inspectionSources?.set(node, tool.source); }
   }
   private thinkingOpen(node: HTMLElement): boolean {
-    return node.dataset.streaming === 'true' || this.showThinking || this.expanded.has(node.dataset.disclosure ?? '');
+    return node.dataset.streaming === 'true' || this.showThinking || this.expanded.has(node.dataset.disclosure ?? '') || this.streamedOpen(node);
+  }
+  private streamKey(message: MessageView, index: number): string {
+    const stamp = pairedTimestamp(message);
+    return stamp !== undefined ? `@${stamp}:${index}` : `${message.id}:${index}`;
+  }
+  private streamedParts(node: HTMLElement): HTMLElement[] {
+    return node.classList.contains('thinking-group') ? [...node.querySelectorAll<HTMLElement>('.thinking')] : [node];
+  }
+  private streamedOpen(node: HTMLElement): boolean {
+    return this.streamedParts(node).some(part => part.dataset.streamKey !== undefined && this.streamedThinking.has(part.dataset.streamKey));
+  }
+  private forgetStreamed(node: HTMLElement): void {
+    for (const part of this.streamedParts(node)) if (part.dataset.streamKey !== undefined) this.streamedThinking.delete(part.dataset.streamKey);
   }
   private trackDisclosure(node: HTMLDetailsElement, id: string): void {
     node.querySelector('summary')?.addEventListener('click', event => {
@@ -1792,13 +1822,20 @@ export class Transcript {
       if (this.destroyed || !this.node.contains(node)) return;
       const current = node.dataset.disclosure ?? id;
       if (node.dataset.streaming === 'true') { node.open = true; return; }
-      const expected = this.expanded.has(current) || (current.startsWith('thinking:') && this.showThinking);
-      if (node.open === expected) return;
+      if (node.open === this.disclosureExpected(node, current)) return;
       this.follow = false;
-      if (node.open) this.expanded.add(current); else this.expanded.delete(current);
-      if (!node.open && current.startsWith('thinking:') && this.showThinking) this.closeThinkingPreference(current);
+      if (node.open) this.expanded.add(current); else this.disclosureClosed(node, current);
       this.hooks.presentation([...this.expanded], this.showThinking); this.schedule();
     });
+  }
+  private disclosureClosed(node: HTMLElement, id: string): void {
+    this.expanded.delete(id);
+    if (!id.startsWith('thinking:')) return;
+    this.forgetStreamed(node);
+    if (this.showThinking) this.closeThinkingPreference(id);
+  }
+  private disclosureExpected(node: HTMLElement, id: string): boolean {
+    return this.expanded.has(id) || id.startsWith('thinking:') && (this.showThinking || this.streamedOpen(node));
   }
   private closeThinkingPreference(excluded: string): void {
     for (const entry of this.cache.values()) for (const node of entry.node.querySelectorAll<HTMLDetailsElement>('.thinking')) {
@@ -1821,7 +1858,7 @@ export class Transcript {
     }
   }
   expandLoaded(tools: boolean, expanded: boolean): void {
-    if (!tools) {this.showThinking = expanded;this.deriveRows();}
+    if (!tools) {this.showThinking = expanded; if (!expanded) this.streamedThinking.clear(); this.deriveRows();}
     for (const id of this.loadedDisclosures(tools)) {
       if (expanded) this.expanded.add(id); else this.expanded.delete(id);
     }

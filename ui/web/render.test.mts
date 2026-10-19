@@ -487,7 +487,7 @@ test('generic entries update, unknown entries remain inspectable, and expansion 
   assert.ok(structured({value: ['a'], truncated: false}));
 });
 test('thinking preference applies to new blocks and reset removes old tools and nodes', () => {
-  setup(); const view = transcript(); view.configure({revision: 0, expanded: [], showThinking: true});
+  setup(); const view = transcript(); view.configure({revision: 1, expanded: [], showThinking: true});
   view.set([{id: 'e', kind: 'message', messages: [{...message('m', ''), parts: [{type: 'thinking', text: 'secret', redacted: true}]}]}]); flush();
   const thinking = node('primary-transcript').querySelector('.thinking'); assert.ok(thinking); assert.equal(thinking.open, true); assert.match(thinking.textContent, /Thinking not available/); assert.doesNotMatch(thinking.textContent, /secret/);
   view.expandLoaded(false, false); flush(); assert.equal(thinking.open, false);
@@ -1025,7 +1025,7 @@ test('read headers keep the recorded tool name and supplied path across disclosu
 test('a thinking title counts while it streams, settles to its observed span, and plain history says Thinking', t => {
   t.mock.timers.enable({apis: ['setInterval', 'Date'], now: 100_000}); setup(); const view = transcript();
   const block = (state: 'partial' | 'final') => ({id: 'thought', kind: 'message', messages: [{...message('thought', '', state), parts: [{type: 'thinking' as const, text: 'weighing options'}]}]});
-  const title = () => node('primary-transcript').querySelector('.thinking')?.querySelector('summary')?.textContent;
+  const title = () => node('primary-transcript').querySelector('.thinking')?.querySelector('.thinking-label')?.textContent;
   view.set([block('partial')], new Map(), new Map([['thought:0', {start: 100_000}]])); flush(); assert.equal(title(), 'Thinking 0s');
   t.mock.timers.tick(4000); assert.equal(title(), 'Thinking 4s');
   view.set([block('partial')], new Map(), new Map([['thought:0', {start: 100_000, end: 112_000}]])); flush(); assert.equal(title(), 'Thought for 12s');
@@ -1037,13 +1037,39 @@ test('a thinking title counts while it streams, settles to its observed span, an
 });
 test('a live agent thinking block finds its span by message id and timestamp, and the committed copy by its own id', t => {
   t.mock.timers.enable({apis: ['setInterval', 'Date'], now: 100_000}); setup(); const view = transcript();
-  const title = () => node('primary-transcript').querySelector('.thinking')?.querySelector('summary')?.textContent;
+  const title = () => node('primary-transcript').querySelector('.thinking')?.querySelector('.thinking-label')?.textContent;
   const live = {id: 'live:generation', kind: 'pi.assistant', messages: [{...message('live:generation:message:0', '', 'partial'), timestamp: 500, parts: [{type: 'thinking' as const, text: 'weighing'}]}]};
   view.set([live], new Map(), new Map([['live:generation:message:0@500:0', {start: 100_000}]])); flush(); assert.equal(title(), 'Thinking 0s');
   t.mock.timers.tick(3000); assert.equal(title(), 'Thinking 3s');
   view.set([live], new Map(), new Map([['live:generation:message:0:0', {start: 1}]])); flush(); assert.equal(title(), 'Thinking', 'a span keyed without the turn timestamp is not this block');
   const saved = {id: '101', kind: 'pi.assistant', messages: [{...message('101:message:0', '', 'final'), timestamp: 500, parts: [{type: 'thinking' as const, text: 'weighing'}]}]};
-  view.set([saved], new Map(), new Map([['101:message:0:0', {start: 100_000, end: 106_000}]])); flush(); assert.equal(title(), 'Thought for 6s'); view.reset();
+  view.set([saved], new Map(), new Map([['101:message:0:0', {start: 100_000, end: 106_000}]])); flush(); assert.equal(title(), 'Thought for 6s');
+  assert.equal(node('primary-transcript').querySelector('.thinking')?.open, true, 'the committed copy of thinking that streamed here stays open'); view.reset();
+});
+test('finished thinking is closed to one line by default and opens on click, a saved choice, or Show thinking', () => {
+  setup(); const view = transcript();
+  const block = (id: string, text: string) => ({id, kind: 'message', messages: [{...message(id, ''), parts: [{type: 'thinking' as const, text}]}]});
+  const entries = [block('a', '## Checking the procedure\n\nThen more words'), block('b', 'Second thought')];
+  view.configure({revision: 0, expanded: [], showThinking: true}); view.set(entries); flush();
+  const root = node('primary-transcript'); const all = () => root.querySelectorAll('.thinking');
+  assert.equal(all().every(item => !item.open), true, 'revision zero ignores the stored flag and renders closed');
+  const first = all()[0]; assert.ok(first);
+  assert.equal(first.querySelector('summary')?.textContent, 'Thinking · Checking the procedure');
+  assert.equal(first.querySelector('.thinking-label')?.textContent, 'Thinking'); assert.equal(first.querySelector('.thinking-preview')?.textContent, ' · Checking the procedure');
+  first.open = true; first.dispatch('toggle'); flush(); assert.equal(first.open, true);
+  view.reset(); view.configure({revision: 1, expanded: ['thinking:a:a:0'], showThinking: false}); view.set(entries); flush();
+  assert.deepEqual(all().map(item => item.open), [true, false], 'a block the reader opened is open again after a reload');
+  view.expandLoaded(false, true); flush(); assert.equal(all().every(item => item.open), true);
+  view.expandLoaded(false, false); flush(); assert.equal(all().every(item => !item.open), true);
+  view.reset(); view.configure({revision: 2, expanded: [], showThinking: true}); view.set(entries); flush(); assert.equal(all().every(item => item.open), true, 'a saved Show thinking choice opens every block');
+  view.reset();
+});
+test('a thinking group shows the first line of its first part', () => {
+  setup(); const view = transcript(); view.configure({revision: 1, expanded: [], showThinking: false});
+  view.set([{id: 'g', kind: 'message', messages: [{...message('g', ''), parts: [{type: 'thinking' as const, text: '**First** idea\nmore'}, {type: 'thinking' as const, text: 'Second idea'}]}]}]); flush();
+  const group = node('primary-transcript').querySelector('.thinking-group'); assert.ok(group);
+  assert.equal(group.querySelector('summary')?.textContent, 'Thinking · First idea');
+  view.reset();
 });
 test('final thinking uses safe Markdown while partial and redacted thinking remain plain text', () => {
   setup(); const view = transcript();
@@ -1540,19 +1566,24 @@ for (const count of [1, 2]) test(`supplied live thinking stays visible through s
   view.set([retained, thought('stream', 'partial', 'More supplied live thinking')]); flush();
   assert.match(live.textContent, /More supplied live thinking/);
   view.set([retained, thought('stream', 'final', 'Complete retained thinking')]); flush();
-  assert.equal(live.querySelectorAll('.thinking').every(node => !node.open), true, 'settlement restores the retained choice');
-  const disclosure = live.querySelector('.thinking'); assert.ok(disclosure); disclosure.open = true; disclosure.dispatch('toggle'); flush();
+  assert.equal(live.querySelectorAll('.thinking').every(node => node.open), true, 'thinking that streamed here stays open after it settles');
+  for (const node of live.querySelectorAll('.thinking')) node.dispatch('toggle');
+  assert.equal(choices.length, 1, 'the open state after settlement is not a saved choice');
+  view.reset(); view.configure(saved); view.set([retained, thought('stream', 'final', 'Complete retained thinking')]); flush();
+  assert.equal(root.querySelectorAll('.thinking').every(node => !node.open), true, 'a reopened view renders settled thinking closed');
+  const disclosure = root.querySelector('.thinking'); assert.ok(disclosure); disclosure.open = true; disclosure.dispatch('toggle'); flush();
   view.set([retained, thought('stream', 'final', 'Updated retained thinking')]); flush(); assert.equal(disclosure.open, true);
   view.reset();
 });
-test('retained collapse does not save a forced live thinking expansion', () => {
+test('thinking that streamed here stays open after it settles, unsaved, until the reader closes it', () => {
   setup(); let saved: string[] = []; const view = new Transcript('primary', {reading: () => {}, presentation: value => {saved = value;}});
   const thought = (id: string, state: 'partial' | 'final'): EntryView => ({id, kind: 'message', messages: [{...message(id, '', state), parts: [{type: 'thinking', text: id}]}]});
   const older = thought('older', 'final'); view.set([older, thought('live', 'partial')]); flush();
   const root = node('primary-transcript'), retained = root.children.find(row => row.dataset.entryId === 'older')?.querySelector('.thinking'); assert.ok(retained);
-  retained.open = false; retained.dispatch('toggle'); flush(); assert.deepEqual(saved, []);
+  assert.equal(retained.open, false); retained.dispatch('toggle'); flush(); assert.deepEqual(saved, []);
   const live = root.children.find(row => row.dataset.entryId === 'live')?.querySelector('.thinking'); assert.ok(live); assert.equal(live.open, true);
-  view.set([older, thought('live', 'final')]); flush(); assert.equal(live.open, false); view.reset();
+  live.dispatch('toggle'); view.set([older, thought('live', 'final')]); flush(); assert.equal(live.open, true); live.dispatch('toggle'); flush(); assert.deepEqual(saved, []);
+  live.open = false; live.dispatch('toggle'); flush(); view.set([older, thought('live', 'final')]); flush(); assert.equal(live.open, false); assert.deepEqual(saved, []); view.reset();
 });
 test('empty and redacted partial thinking do not invent readable thinking', () => {
   setup(); const view = transcript(); view.configure({revision: 1, expanded: [], showThinking: false});
@@ -2242,7 +2273,7 @@ test('expanded tool captions share the wrap row and native source disclosures ke
 });
 
 test('grouped local Thinking collapse clears the global default and preserves other open choices through updates', () => {
-  setup(); let saved = {revision: 0, expanded: [] as string[], showThinking: true};
+  setup(); let saved = {revision: 1, expanded: [] as string[], showThinking: true};
   const view = new Transcript('primary', {presentation: (expanded, showThinking) => { saved = {...saved, expanded, showThinking}; }, reading: () => {}});
   const grouped = (text: string) => ({id: 'grouped', kind: 'message', messages: [{...message('grouped', ''), parts: [
     {type: 'thinking' as const, text}, {type: 'thinking' as const, text: 'second thought'}, {type: 'text' as const, text: 'Reply'},

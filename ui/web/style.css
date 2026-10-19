@@ -647,7 +647,9 @@ summary::before { content: none; }
 .thinking { margin: 0; }
 .system-note, .custom-entry { margin: 0 0 14px; }
 .thinking > summary, .system-note > details > summary, .custom-entry > details > summary, .facts-panel summary { width: fit-content; max-width: 100%; padding: 2px 6px 2px 0; overflow: hidden; color: var(--muted); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-.thinking > summary { font-weight: 500; }
+.thinking > summary { font-weight: 400; line-height: 20px; }
+.thinking-label { font-weight: 500; }
+.thinking[open] > summary > .thinking-preview { display: none; }
 .thinking > summary:hover, .system-note > details > summary:hover, .custom-entry > details > summary:hover { color: var(--fg); }
 .thinking > .stream-text { margin-top: 4px; padding-left: 12px; border-left: 2px solid var(--rule); color: var(--muted); font-size: 14px; line-height: 21px; font-style: normal; }
 .system-note, .custom-entry { color: var(--muted); font-size: 13px; }

@@ -69,7 +69,7 @@ test('sidebar headings are text controls with counts and the finder is the first
 
 test('content hues share scoped Markdown rules and leave metadata and identity tails intact',()=> {
   assert.match(rule('.secondary, .info'),/color: var\(--muted\)/);
-  assert.match(rule('.message-role'),/color: var\(--muted\)/);assert.match(rule('.thinking > summary, .system-note > details > summary, .custom-entry > details > summary, .facts-panel summary'),/color: var\(--muted\)/);assert.match(rule('.thinking > summary'),/font-weight: 500/);assert.match(rule('.thinking-content'),/color: var\(--muted\)/);
+  assert.match(rule('.message-role'),/color: var\(--muted\)/);assert.match(rule('.thinking > summary, .system-note > details > summary, .custom-entry > details > summary, .facts-panel summary'),/color: var\(--muted\)/);assert.match(rule('.thinking > summary'),/font-weight: 400; line-height: 20px/);assert.match(rule('.thinking-label'),/font-weight: 500/);assert.match(rule('.thinking[open] > summary > .thinking-preview'),/display: none/);assert.match(rule('.thinking-content'),/color: var\(--muted\)/);
   assert.match(rule('.tool-name'), /color: inherit/); assert.match(rule('.tool-shell'), /color: var\(--fg\)/);
   assert.match(rule('.tool-status.working'),/color: var\(--info\)/);assert.match(rule('.tool-status.missing'),/color: var\(--warning\)/);
   assert.match(rule('.markdown-content:is(h1, h2, h3, h4, h5, h6)'),/color: var\(--fg\)/);assert.doesNotMatch(rule('.markdown-content .markdown-inline-code'),/color:/);

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { EntryView, PartView } from '../shared/api.ts';
-import { actionableEntry, slot, communicationDisclosureKeys, TranscriptIndex, ToolElapsedClock, toolTime, thinkingLabel } from './transcript-tools.ts';
+import { actionableEntry, slot, communicationDisclosureKeys, TranscriptIndex, ToolElapsedClock, toolTime, thinkingLabel, thinkingPreview } from './transcript-tools.ts';
 
 const coverage = {complete: true, truncated: false, omitted: 0};
 function entry(id: string, parts: PartView[]): EntryView { return {id, kind: 'message', messages: [{id, role: 'assistant', state: 'final', parts, coverage}]}; }
@@ -284,4 +284,9 @@ test('thinking titles use only observed spans', () => {
   assert.equal(thinkingLabel({start: 1000}, true, 5999), 'Thinking 4s'); assert.equal(thinkingLabel({start: 1000}, true, 62000), 'Thinking 1m 1s');
   assert.equal(thinkingLabel({start: 1000}, false, 9000), 'Thinking', 'an unsettled span on a finished message is not invented');
   assert.equal(thinkingLabel({start: 1000, end: 1400}, false), 'Thought for <1s'); assert.equal(thinkingLabel({start: 1000, end: 13000}, false), 'Thought for 12s');
+});
+test('the thinking preview is the first non-blank line in plain words', () => {
+  assert.equal(thinkingPreview('\n\n## **Checking** the `procedure`\n\nmore'), 'Checking the procedure');
+  assert.equal(thinkingPreview('- first item\n- second'), 'first item'); assert.equal(thinkingPreview('> quoted   words'), 'quoted words');
+  assert.equal(thinkingPreview('   \n  \n'), ''); assert.equal(thinkingPreview('x'.repeat(5000)).length, 300);
 });

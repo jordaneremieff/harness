@@ -1,8 +1,8 @@
 import type { JsonDisplay, PartView, PresentationView } from '../shared/api.ts';
 
-/** Revision zero has no deliberate disclosure choice. */
+/** Finished thinking is closed to one line until the reader opens it; a saved Show thinking choice wins. Revision zero has no deliberate choice. */
 export function thinkingExpanded(presentation?: PresentationView): boolean {
-  return !presentation || presentation.revision === 0 || presentation.showThinking;
+  return !!presentation && presentation.revision !== 0 && presentation.showThinking;
 }
 
 export type PresentationContext = {

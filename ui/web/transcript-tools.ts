@@ -21,6 +21,14 @@ export function thinkingLabel(time: {start: number; end?: number} | undefined, s
   if (time.end !== undefined) return `Thought for ${span(time.end - time.start, true)}`;
   return streaming ? `Thinking ${span(now - time.start, false)}` : 'Thinking';
 }
+/** The first non-blank line of a thinking block as plain words: heading, list, quote and emphasis marks are dropped. */
+export function thinkingPreview(text: string): string {
+  for (const line of text.slice(0, 2000).split('\n')) {
+    const words = line.replace(/^\s*(?:#{1,6}\s+|[-*+]\s+|>\s*|\d+[.)]\s+)/, '').replace(/\*\*|__|[*`]/g, '').replace(/\s+/g, ' ').trim();
+    if (words) return words.slice(0, 300);
+  }
+  return '';
+}
 export class ToolElapsedClock {
   private timer?: ReturnType<typeof setInterval>;
   private paint: () => boolean;
