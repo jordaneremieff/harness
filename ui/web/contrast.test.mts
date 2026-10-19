@@ -14,8 +14,9 @@ const syntaxTokens = TONES.map(tone=>tone.startsWith('md-') ? tone : `syntax-${t
 const foregrounds = ["fg", "muted", "dim", "success", "error", "warning", "link", "accent", "info", ...syntaxTokens];
 // Every painted surface, including tool-status tints and diff rows, carries any foreground.
 const surfaces = ["canvas", "side", "raised", "code", "run-bg", "ok-bg", "err-bg", "add-bg", "del-bg"];
-// No inverted fills exist; the list stays explicit so a new one needs a deliberate model.
-const inverseFills: string[] = [];
+// An inverted fill carries the canvas color as its text. The list stays explicit so a new one needs a deliberate model.
+// The action that will act is filled with the primary ink, and its hover with the secondary ink.
+const inverseFills: string[] = ['fg', 'muted'];
 // The edge token marks controls, status rules and neutral selections; the accent marks focus.
 const graphics = ["edge", "accent"];
 const required = [...foregrounds, ...surfaces, ...graphics, "rule"];
@@ -27,7 +28,7 @@ const decorativeHairlines = new Set([
   ".transcript-group-header|border-top", ".message-source|border",
   ".communication-source-section + .communication-source-section|border-top",
   ".context-menu-separator|border-top",
-  ".nav-top|border-bottom", ".nav-filter|border", ".composer-input|border-top",
+  ".nav-top|border-bottom", ".nav-filter|border", ".composer-input|border",
   ".context-menu|border", "dialog[data-variant=find] #modal-body > input|border",
 	".source-header|border-bottom",
 	".sidebar|border-right",
@@ -50,13 +51,16 @@ const decorativeHairlines = new Set([
 	".output-pages button|border",
 	".receipt-details pre|border",
 	".modes|border",
-	".send|border",
+	".send:disabled|border-color",
+	".send[data-kind=recovery]|border-color",
 	".command-menu|border",
 	"dialog|border",
   "dialog[open][data-variant=find]|border-top",
 	".notification|border-bottom",
 	".palette-input-row|border-bottom",
 ]);
+// A tinted edge names its exact mix. The control it frames is identified by its text and icon, so the tint is decoration.
+const decorativeTintedEdges = new Set([".stop|border-color|color-mix(in srgb, var(--error) 55%, transparent)"]);
 // Non-content paint: the backdrop dims the page; the resting divider separates positioned panes.
 const decorativeBackgrounds = new Set(["dialog::backdrop|var(--backdrop)", ".pane-split > .pane-divider::after|var(--rule)"]);
 // Graphic paint carries no text; meaningful hover/focus and selected marks still meet 3:1.
@@ -276,8 +280,29 @@ function matrix(palette: Palette, theme: string, measure: Measure) {
 	for (const bg of surfaces) measure("border-matrix", `--edge / --${bg}`, "edge", bg, 3);
 	for (const bg of surfaces) measure("focus-matrix", `--accent / --${bg}`, "accent", bg, 3);
 }
+// A quiet placeholder mixes one text token into the surface it sits on; the blend is measured against that surface.
+const placeholderMix = /^color-mix\(in srgb, var\(--(muted)\) (\d+)%, var\(--(raised)\)\)$/;
+function blend(foreground: string, background: string, weight: number): string {
+	const mixed = rgb(foreground).map((channel, index) => Math.round(channel * weight + (rgb(background)[index] as number) * (1 - weight)));
+	return `#${mixed.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
+}
+// Text whose exact paint is modeled elsewhere: the quiet placeholder blend and the canvas text of an inverted fill.
+function modeledText(context: Context, property: string, value: string): boolean {
+	const { theme, source, exclusions, measure, decl, palette } = context;
+	if (property !== "color") return false;
+	const mix = placeholderMix.exec(value);
+	if (mix && context.rule.selector === ".composer textarea::placeholder") {
+		measure("placeholder", `${source} ${value} / --${mix[3]}`, blend(palette["--muted"] as string, palette["--raised"] as string, Number(mix[2]) / 100), mix[3] as string, 3);
+		return true;
+	}
+	const filled = token(decl["background-color"] ?? decl.background ?? "");
+	if (value !== "var(--canvas)" || !filled || !inverseFills.includes(filled)) return false;
+	exclusions.push(`${theme}: inverted fill text ${source} ${property}: ${value}`);
+	return true;
+}
 function textDeclaration(context: Context, property: string, value: string) {
 	const { theme, source, exclusions, issues, measure, decl } = context;
+	if (modeledText(context, property, value)) return;
 	if (["inherit", "currentColor"].includes(value)) {
 		exclusions.push(`${theme}: inherited foreground ${source} ${property}: ${value}`);
 		return;
@@ -352,6 +377,10 @@ function edgeDeclaration(context: Context, property: string, value: string): boo
 	const { theme, source, exclusions, issues, rule, measure } = context;
 	if (["0", "none", "transparent", "inherit"].includes(value)) {
 		exclusions.push(`${theme}: absent/inherited edge ${source} ${property}`);
+		return false;
+	}
+	if (decorativeTintedEdges.has(`${rule.selector}|${property}|${value}`)) {
+		exclusions.push(`${theme}: tinted decorative edge ${source} ${property}: ${value}`);
 		return false;
 	}
 	const edge = /(?:var\(--[\w-]+\)|currentColor|transparent)$/.exec(value)?.[0];
@@ -544,7 +573,8 @@ test("graphic paint measures selected marks and divider hover/focus without open
   const checks = result.measurements.filter(row => row.kind === "text-declaration" && row.source.startsWith(".context-menu-item > .choice-check "));
   assert.equal(checks.length, surfaces.length * 2);
   assert.ok(checks.every(row => row.threshold === 4.5 && row.ratio >= 4.5));
-  assert.ok(audit(`${css}\n.probe { background: var(--muted); }`).issues.some(issue => issue.includes("non-surface background")));
+  assert.ok(audit(`${css}\n.probe { background: var(--dim); }`).issues.some(issue => issue.includes("non-surface background")));
+  assert.ok(audit(`${css}\n.probe { background: var(--muted); }`).issues.some(issue => issue.includes("ink fill lacks an explicit foreground")), "an inverted fill needs its own canvas text");
   assert.ok(audit(`${css}\n.pane-split > .pane-divider:hover::after { background: var(--rule); }`).issues.some(issue => issue.includes("non-surface background")));
   const weakened = audit(css.replace("--edge: #8f97b5", "--edge: #303446"));
   assert.ok(weakened.measurements.some(row => row.kind === "graphic-paint" && row.ratio < row.threshold));
@@ -584,7 +614,9 @@ test("hardcoded and unknown text colors, extra pairs, and alpha effects are dete
 			i.includes("non-token text color"),
 		),
 	);
-	assert.ok(audit(`${css}\n.probe { background: var(--fg); }`).issues.some((i) => i.includes("non-surface background")));
+	assert.ok(audit(`${css}\n.probe { background: var(--fg); }`).issues.some((i) => i.includes("ink fill lacks an explicit foreground")));
+	assert.ok(audit(`${css}\n.probe { background: var(--dim); color: var(--canvas); }`).issues.some((i) => i.includes("non-surface background")));
+	assert.deepEqual(audit(`${css}\n.probe { background: var(--fg); color: var(--canvas); }`).issues, []);
 	assert.ok(audit(`${css}\ndialog::backdrop { background: #000000cc; }`).issues.some((i) => i.includes("unmodeled background")));
 	assert.ok(audit(`${css}\n.probe { background: var(--backdrop); }`).issues.some((i) => i.includes("non-surface background")), "the translucent backdrop token is not a content surface");
 	assert.ok(audit(`${css}\n.transcript-region::before { background: linear-gradient(to bottom,var(--canvas),transparent); }`).issues.some((i) => i.includes("unmodeled background")), "transcript edges have no gradient exception");

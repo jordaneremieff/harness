@@ -154,19 +154,19 @@ test('the composer state names what the draft needs before it can be sent', () =
   const source = {connected: true};
   assert.equal(agentComposerState({...source, availability: 'live', input: true, checked: true}), undefined);
   assert.equal(agentComposerState({...source, availability: 'live', checked: false, input: false}), undefined);
-  assert.deepEqual(agentComposerState({...source, availability: 'stored'}), {kind: 'start', line: 'Not running. Start it to send a message.', label: '', action: {label: 'Start'}, detail: ''});
+  assert.deepEqual(agentComposerState({...source, availability: 'stored'}), {kind: 'start', line: 'Not running. Start it to send a message.', label: 'Not running', action: {label: 'Start'}, detail: ''});
   assert.equal(agentComposerState({connected: false, availability: 'stored'}), undefined);
   const starting = agentComposerState({...source, availability: 'stored', startAttempt: {pending: true}});
-  assert.equal(starting?.kind, 'starting'); assert.equal(starting?.label, ''); assert.equal(starting?.action?.pending, true); assert.equal(starting?.action?.disabled, true);
+  assert.equal(starting?.kind, 'starting'); assert.equal(starting?.line, 'Starting the agent…'); assert.equal(starting?.label, 'Starting the agent'); assert.equal(starting?.action?.pending, true); assert.equal(starting?.action?.disabled, true);
   const failed = agentComposerState({...source, availability: 'stored', startAttempt: {pending: false, reason: 'Readiness timed out.'}});
   assert.equal(failed?.kind, 'failed'); assert.equal(failed?.line, 'Start did not complete.'); assert.equal(failed?.label, 'Start did not complete'); assert.equal(failed?.action?.label, 'Try again'); assert.equal(failed?.detail, 'Readiness timed out.');
   for (const availability of ['incompatible', 'unavailable'] as const) {
-    const view = agentComposerState({...source, availability}); assert.equal(view?.kind, 'read-only'); assert.equal(view?.line, 'This agent cannot run here. Messages are read only.'); assert.equal(view?.label, 'Read only'); assert.equal(view?.action, undefined);
+    const view = agentComposerState({...source, availability}); assert.equal(view?.kind, 'read-only'); assert.equal(view?.line, 'This agent cannot run here. Messages are read only.'); assert.equal(view?.label, 'This agent cannot run here'); assert.equal(view?.action, undefined);
   }
   const reason = 'Check the agent after the browser reconnects.';
-  assert.equal(agentComposerState({...source, availability: 'live', checked: true, input: false, reason})?.line, 'Messages are read only.');
+  const noInput = agentComposerState({...source, availability: 'live', checked: true, input: false, reason}); assert.equal(noInput?.line, 'Messages are read only.'); assert.equal(noInput?.label, 'Read only');
   const connectionError = `task-submit/1.2.0 host unavailable: ${'diagnostic '.repeat(40)}`;
-  const failedCheck = agentComposerState({...source, availability: 'stored', connectionError}); assert.equal(failedCheck?.kind, 'unreachable'); assert.equal(failedCheck?.line, 'Could not reach the agent.'); assert.equal(failedCheck?.label, 'Could not reach the agent'); assert.equal(failedCheck?.action?.label, 'Check agent'); assert.equal(failedCheck?.detail, connectionError);
+  const failedCheck = agentComposerState({...source, availability: 'stored', connectionError}); assert.equal(failedCheck?.kind, 'unreachable'); assert.equal(failedCheck?.line, 'Could not reach the agent.'); assert.equal(failedCheck?.label, 'Could not reach the agent'); assert.equal(failedCheck?.action?.label, 'Check again'); assert.equal(failedCheck?.detail, connectionError);
   const checking = agentComposerState({...source, availability: 'live', checked: true, input: true, checking: true}); assert.equal(checking?.kind, 'checking'); assert.equal(checking?.line, 'Checking the agent…'); assert.equal(checking?.label, 'Checking the agent…'); assert.equal(checking?.action, undefined);
   const blocked = agentComposerState({...source, availability: 'live', checked: true, input: true, blocked: 'Quota reached.'});
   assert.deepEqual(blocked, {kind: 'notice', line: 'Provider blocked. Configure this agent through Primary.', label: 'Provider blocked', detail: 'Quota reached.'});

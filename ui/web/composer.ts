@@ -5,7 +5,7 @@ import { insertNativeText } from './native-insertion.ts';
 import { ComposerOverlay } from './composer-overlay.ts';
 import type { DraftImage, DraftView, OperationView, RecoveryInput, Target, TargetIndex, TargetState, UnconfirmedInput } from '../shared/api.ts';
 import { announce, button, copy, element, rawText, setText } from './dom.ts';
-import { cardAction, controlIcon } from './card-icons.ts';
+import { cardAction, cardIcon, type CardIcon } from './card-icons.ts';
 import {contextMenu} from './context-menu.ts';
 import { exactInput, recoveryLabel } from './recovery.ts';
 import { targetReceipts } from './receipt.ts';
@@ -26,8 +26,18 @@ import { ApiError, draftImageUrl, errorMessage, operation, request, reserve } fr
 export type ComposerHooks = {recallItems?: () => readonly string[]; fileSearch?: (query: string, signal: AbortSignal) => Promise<FileSearchResult> | undefined; fileStage?: (path: string, signal: AbortSignal, current: () => boolean, stage: (files: readonly File[]) => boolean) => Promise<boolean>; workingFile?:(stage:(files:readonly File[])=>boolean)=>void; changed?:()=>void; captured?: (submission:Submission)=>void; failed?: (operationId:string,uncertain:boolean)=>void; prepareInput?: () => boolean; imageState?: (workspace: string, state: TargetState) => void; imageInput?: (target: Target) => {allowed: boolean; reason?: string}; recovery?: () => void; layoutHeight?: () => number | undefined; timing?: (start: number, end: number) => void; submitted: (operation: OperationView) => void; unknownCommand: (text: string, sendLiteral: () => void) => boolean; enterSends?: () => boolean; commands?: (deliberate: boolean) => CommandInventory; moreCommands?: (target: Target) => Promise<void>; retained?: (workspace: string, target: Target, retained: boolean) => void};
 export type ComposerElements = {root: HTMLFormElement; editor: HTMLTextAreaElement; recipient: HTMLElement; receipt: HTMLElement;
   receiptDetails: HTMLElement; modes: HTMLElement; send: HTMLButtonElement; save: HTMLElement; fileMenu?: HTMLElement; recallHint?: HTMLElement; meta?: HTMLElement; model?: HTMLButtonElement; thinking?: HTMLButtonElement; settings?: HTMLElement; commandMenu?: HTMLElement; overlay?: HTMLElement; attachments?: HTMLElement; attach?: HTMLButtonElement; sources?: HTMLButtonElement; picker?: HTMLInputElement; state?: HTMLElement; start?: HTMLButtonElement};
-/** An agent-specific state in the composer's control row, with at most one action in the Send position and optional exact details. `line` is the full sentence for assistive technology; `label` is the short visible text, empty for an ordinary state. */
-export type ComposerStateView = {line: string; label?: string; action?: {label: string; title?: string; pending?: boolean; disabled?: boolean; run: () => void}; blocksSend?: boolean; detail?: string; showDetail?: () => void};
+/** An agent-specific state in the composer's control row, with at most one action in the Send position (`hideSend` removes the disabled Send when the state offers none) and optional exact details. `line` is the full sentence for assistive technology; `label` is the short note shown beside the add control. */
+export type ComposerStateView = {line: string; label?: string; tone?: 'error' | 'warning'; hideSend?: boolean; action?: {label: string; title?: string; pending?: boolean; disabled?: boolean; recovery?: boolean; run: () => void}; blocksSend?: boolean; detail?: string; showDetail?: () => void};
+/** An action-slot button holds an icon from the shared set, when it has one, and a visible label. */
+const actionParts = new WeakMap<HTMLElement, {label: HTMLElement; icon?: CardIcon; mark?: SVGSVGElement}>();
+function paintAction(node: HTMLButtonElement, icon: CardIcon | undefined, label: string): void {
+  let parts = actionParts.get(node);
+  if (!parts) { parts = {label: element('span', 'action-label')}; actionParts.set(node, parts); node.replaceChildren(parts.label); }
+  setText(parts.label, label);
+  if (parts.icon === icon) return;
+  parts.icon = icon; parts.mark = icon ? cardIcon(icon) : undefined;
+  node.replaceChildren(...(parts.mark ? [parts.mark, parts.label] : [parts.label]));
+}
 /** Creates one editor; the detached save/receipt-detail nodes belong in the shared footer. */
 export function createComposerElements(instanceId: string): ComposerElements {
   const id = `composer-${encodeURIComponent(instanceId)}`;
@@ -43,9 +53,9 @@ export function createComposerElements(instanceId: string): ComposerElements {
   const surface = element('div', 'composer-surface'); surface.append(overlay, editor);
   const attachments = element('div', 'composer-attachments'); attachments.hidden = true; attachments.setAttribute('aria-label', 'Attachments');
   const state = element('p', 'composer-state'); state.id = `${id}-state`; state.hidden = true; state.setAttribute('role', 'status');
-  // The full sentence stays in the accessibility tree; only an exceptional state shows its short label.
+  // The full sentence stays in the accessibility tree; the short label is the visible note.
   const stateLabel = element('span', 'composer-state-label'), stateLine = element('span', 'sr-only composer-state-line'), stateDetail = element('button', 'composer-state-detail');
-  stateLabel.setAttribute('aria-hidden', 'true'); stateLine.id = `${id}-state-line`; stateDetail.id = `${id}-state-detail`; stateDetail.type = 'button'; stateDetail.hidden = true; controlIcon(stateDetail, 'info', 'Details'); state.append(stateLabel, stateLine, stateDetail);
+  stateLabel.setAttribute('aria-hidden', 'true'); stateLine.id = `${id}-state-line`; stateDetail.id = `${id}-state-detail`; stateDetail.type = 'button'; stateDetail.hidden = true; setText(stateDetail, 'Details'); state.append(stateLabel, stateLine, stateDetail);
   const input = element('div', 'composer-input');
   const modes = element('div', 'modes'); modes.id = `${id}-modes`; modes.hidden = true; modes.setAttribute('role', 'group'); modes.setAttribute('aria-label', 'Delivery while working');
   const delivery = element('select'); delivery.setAttribute('aria-label', 'Delivery while working'); delivery.title = 'Next step reaches the next step of the current work. After response follows the current response.';
@@ -54,15 +64,15 @@ export function createComposerElements(instanceId: string): ComposerElements {
     const choice = element('option', undefined, text); choice.value = mode; delivery.append(choice);
   }
   modes.append(delivery);
-  const stop = element('button', 'stop', 'Stop'); stop.id = `${id}-stop`; stop.type = 'button'; stop.hidden = true;
-  const send = element('button', 'send', 'Send'); send.id = `${id}-send`; send.type = 'submit'; send.disabled = true;
+  const stop = element('button', 'stop'); stop.id = `${id}-stop`; stop.type = 'button'; stop.hidden = true; paintAction(stop, 'stop', 'Stop');
+  const send = element('button', 'send'); send.id = `${id}-send`; send.type = 'submit'; send.disabled = true; paintAction(send, 'send', 'Send');
   send.setAttribute('aria-label', 'Send message'); stop.setAttribute('aria-label', 'Stop response');
   const attach = element('button', 'attach', 'Attach'); attach.type = 'button'; attach.hidden = true; attach.tabIndex = -1; attach.setAttribute('aria-label', 'Upload files');
   const picker = element('input'); picker.type = 'file'; picker.multiple = true; picker.hidden = true; picker.tabIndex = -1; picker.setAttribute('aria-label', 'Choose attachments');
   const sources = cardAction('plus', 'Add to message', () => {}, 'attachment-sources');
   sources.setAttribute('aria-haspopup','menu'); sources.setAttribute('aria-expanded','false');
   const intake = element('span','composer-intake'); intake.append(attach,sources,picker);
-  const start = element('button', 'send start', 'Start'); start.id = `${id}-start`; start.type = 'button'; start.hidden = true;
+  const start = element('button', 'send start'); start.id = `${id}-start`; start.type = 'button'; start.hidden = true; paintAction(start, 'play', 'Start');
   const submit = element('div', 'composer-submit'); submit.append(modes, start, send);
   const bar = element('div', 'composer-bar'); bar.append(stop, submit); const line = element('div', 'composer-line');
   // The add control leads the tab order, then the editor, then the control row; the grid places them visually.
@@ -73,7 +83,8 @@ export function createComposerElements(instanceId: string): ComposerElements {
   const recallHint = element('div', 'composer-recall-hint'); recallHint.hidden = true; recallHint.setAttribute('role', 'status'); recallHint.setAttribute('aria-live', 'polite');
   const recallSpoken = element('span', 'sr-only composer-recall-spoken'), recallVisible = element('span', 'composer-recall-visible'); recallVisible.setAttribute('aria-hidden', 'true'); recallHint.append(recallVisible, recallSpoken);
   const meta = element('div', 'composer-meta'); meta.append(recallHint, state, settings); line.append(meta, bar);
-  input.append(commandMenu, fileMenu, recipient, intake, surface, attachments, line); root.append(resize, receipt, input);
+  // The handle is absolutely placed on the surface's top edge; it follows the control row in tab order.
+  input.append(commandMenu, fileMenu, recipient, intake, surface, attachments, line, resize); root.append(receipt, input);
   const save = element('span', 'draft-state'); save.id = `${id}-save`;
   const receiptDetails = element('span', 'receipt-details'); receiptDetails.id = `${id}-receipt-details`;
   return {root, editor, recipient, receipt, receiptDetails, modes, send, save, fileMenu, recallHint, meta, model, thinking, settings, commandMenu, overlay, attachments, attach, sources, picker, state, start};
@@ -112,7 +123,6 @@ export class Composer {
   private admittedSaves = new WeakMap<DraftSave,Submission>();
   private sizePending = false;
   private manualHeight?: number;
-  private sizedHeight = 0;
   private elements: ComposerElements;
   private cleanup: (() => void)[] = [];
   private destroyed = false;
@@ -168,10 +178,7 @@ export class Composer {
     } : undefined);
     const fileSearch = hooks.fileSearch;
     if (elements.fileMenu && fileSearch && hooks.fileStage) this.fileMenu = new FileMentionMenu(this.editor, elements.fileMenu, {search: (query, signal) => this.current ? fileSearch(query, signal) : undefined, accept: (token, row) => this.mention(token, row)});
-    this.listen(this.editor, 'pointerup', () => {
-      this.rememberSelection();
-      if (this.editor.offsetHeight !== this.sizedHeight) this.setManualHeight(this.editor.offsetHeight);
-    });
+    this.listen(this.editor, 'pointerup', () => this.rememberSelection());
     this.listen(elements.root, 'submit', event => { event.preventDefault(); void this.send(); });
     this.editor.placeholder = 'Write a message…';
     const delivery = this.delivery();
@@ -209,19 +216,22 @@ export class Composer {
     const {state, start} = this.elements; if (!state || !start) return;
     this.paintStateText(state, view);
     start.hidden = !view?.action; start.disabled = !!view?.action?.disabled; start.setAttribute('aria-busy', String(!!view?.action?.pending));
-    setText(start, view?.action?.label ?? 'Start'); start.title = view?.action?.title ?? ''; start.onclick = view?.action ? () => view.action?.run() : null;
+    paintAction(start, view?.action?.pending ? undefined : view?.action?.recovery ? 'restart' : 'play', view?.action?.label ?? 'Start');
+    if (view?.action?.recovery) start.dataset.kind = 'recovery'; else delete start.dataset.kind;
+    start.title = view?.action?.title ?? ''; start.onclick = view?.action ? () => view.action?.run() : null;
     for (const control of [start, this.elements.send]) { if (view) control.setAttribute('aria-describedby', `${state.id}-line`); else control.removeAttribute('aria-describedby'); }
     this.render();
   }
   private paintStateText(state: HTMLElement, view?: ComposerStateView): void {
     const line = state.querySelector<HTMLElement>('.composer-state-line'), label = state.querySelector<HTMLElement>('.composer-state-label'), detail = state.querySelector<HTMLButtonElement>('.composer-state-detail');
     state.hidden = !view; setText(line as HTMLElement, view?.line ?? '');
+    if (view?.tone) state.dataset.tone = view.tone; else delete state.dataset.tone;
     if (label) {setText(label, view?.label ?? ''); label.hidden = !view?.label; label.title = view?.label ? view.line : '';}
     if (detail) { detail.hidden = !view?.detail || !view.showDetail; detail.onclick = view?.showDetail ? () => view.showDetail?.() : null; }
     state.classList.toggle('sr-only', !view?.label && detail?.hidden !== false);
   }
   private get sendSuppressed(): boolean { return !!this.stateView?.action || !!this.stateView?.blocksSend; }
-  /** Undefined restores automatic growth; explicit sizes retain their preferred pixel height. */
+  /** Undefined restores the automatic resting height; an explicit size is the resting minimum, and the text still grows the box. */
   setManualHeight(px: number | undefined): void {
     if (px !== undefined && (!Number.isFinite(px) || px < 0)) throw new RangeError('Invalid composer height');
     this.manualHeight = px === undefined ? undefined : Math.round(px); this.resize();
@@ -719,12 +729,15 @@ export class Composer {
       const baseline = line + extra;
       const available = this.hooks.layoutHeight?.() ?? this.elements.root.parentElement?.clientHeight ?? this.elements.root.clientHeight;
       const autoCap = Math.min(10 * line + extra, available * (short ? 0.25 : 0.3));
-      const cap = Math.max(baseline, this.manualHeight === undefined ? autoCap : available * 0.6);
+      // A dragged height is the resting minimum: the text still grows the box, up to the automatic cap or the dragged height when that is larger.
+      const preferred = this.manualHeight;
+      const cap = Math.max(baseline, preferred === undefined ? autoCap : Math.max(autoCap, Math.min(preferred, available * 0.6)));
+      const floor = preferred === undefined ? baseline : Math.min(cap, Math.max(baseline, preferred));
       this.editor.style.maxHeight = `${cap}px`;
-      this.editor.style.height = this.manualHeight === undefined ? '0px' : `${Math.min(cap, Math.max(baseline, this.manualHeight))}px`;
-      if (this.manualHeight === undefined) this.editor.style.height = `${Math.min(cap, Math.max(baseline, this.editor.scrollHeight + Number.parseFloat(style.borderTopWidth) + Number.parseFloat(style.borderBottomWidth)))}px`;
+      this.editor.style.height = '0px';
+      this.editor.style.height = `${Math.min(cap, Math.max(floor, this.editor.scrollHeight + Number.parseFloat(style.borderTopWidth) + Number.parseFloat(style.borderBottomWidth)))}px`;
       this.editor.scrollTop = scrollTop; this.editor.scrollLeft = scrollLeft;
-      this.sizedHeight = this.editor.offsetHeight; this.overlay?.invalidate();
+      this.overlay?.invalidate();
     });
   }
   private render(): void {
@@ -740,10 +753,10 @@ export class Composer {
   private renderControls(): void {
     if (this.destroyed) return;
     this.elements.modes.hidden = !this.current || !this.ready || !this.connected || !this.busy || !this.deliverySupported;
-    this.elements.send.hidden = !!this.stateView?.action;
+    this.elements.send.hidden = !!this.stateView?.action || !!this.stateView?.hideSend;
     const reason = this.sendGuidance();
     const send = this.elements.send, run = this.current && this.commandDraft(this.current);
-    setText(send, run ? 'Run command' : 'Send'); send.setAttribute('aria-label', run ? `Run command /${run.name}` : 'Send message');
+    paintAction(send, 'send', run ? 'Run command' : 'Send'); send.setAttribute('aria-label', run ? `Run command /${run.name}` : 'Send message');
     send.setAttribute('aria-description', reason);
     send.title = reason || (run ? `Run /${run.name} on this agent. It sends no message · ${this.sendKeyName()}` : `Send · ${this.sendKeyName()}`);
   }

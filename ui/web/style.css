@@ -184,6 +184,11 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .resizer:hover::after, .resizer[data-dragging=true]::after { opacity: 1; }
 .resizer:focus-visible { outline: none; }
 .resizer:focus-visible::after { opacity: 1; border-color: var(--accent); }
+/* The message box handle is a short grip centered on the surface's top edge; the rest of the edge is plain border. */
+.composer-input > .resizer[data-axis=y] { top: -5px; right: auto; left: 50%; width: 40px; height: 10px; margin-left: -20px; }
+.composer-input > .resizer[data-axis=y]::after { top: 4px; right: 4px; left: 4px; }
+.composer-input:hover > .resizer[data-axis=y]::after { opacity: 1; }
+.composer-input > .resizer[data-axis=y][data-dragging=true]::after, .composer-input > .resizer[data-axis=y]:focus-visible::after { opacity: 1; border-top-color: var(--edge); }
 
 #extension-status:empty { display: none; }
 .extension-status-details { position: static; }
@@ -423,13 +428,14 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .history-note[hidden] { display: none; }
 .history-note > p { margin: 0; font-size: inherit; font-weight: 400; overflow-wrap: anywhere; }
 .history-note > button, #agent-message-retry { padding: 4px 0; border: 0; border-radius: 0; }
-.composer-state { display: inline-flex; flex: 0 1 auto; align-items: center; gap: var(--s1); min-width: 0; margin: 0 0 0 auto; color: var(--muted); font-size: 13px; }
+.composer-state { display: inline-flex; flex: 0 1 auto; align-items: center; min-width: 0; margin: 0 0 0 6px; color: var(--muted); font-size: 13px; }
 .composer-state[hidden] { display: none; }
+.composer-state[data-tone=error] { color: var(--error); }
+.composer-state[data-tone=warning] { color: var(--warning); }
 .composer-state-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer-state-label[hidden] { display: none; }
-.composer-state-detail { flex: none; color: var(--muted); }
-.composer-state-detail:hover { color: var(--fg); background: var(--raised); }
-.composer-state:not(.sr-only) ~ .composer-settings { margin-left: 0; }
+.composer-state-detail { flex: none; margin-left: 6px; color: inherit; font-size: 13px; text-decoration: underline; text-underline-offset: 3px; }
+.composer-state-detail:hover { text-decoration-thickness: 2px; }
 .conversation.agent-empty .transcript { padding-block: 0; }
 .last-observed { padding-top: 8px; }
 .inline-session-chooser { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; padding: 24px var(--gutter); }
@@ -825,25 +831,31 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
 .queued-message { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .queued-message[data-mode=steer] { color: var(--fg); }
 .composer { position: relative; container: composer / inline-size; flex: none; margin: 0 0 var(--s2); }
-.composer-input { position: relative; display: grid; grid-template-columns: auto minmax(0,1fr); padding: 0; border: 1px solid var(--edge); border-radius: 4px; background: var(--canvas); }
+/* One surface holds the editor, the attachments and the control row: a hairline on a raised fill, darker only while the editor has focus. */
+.composer-input { position: relative; display: grid; grid-template-columns: auto minmax(0,1fr); padding: 0 0 6px; border: 1px solid var(--rule); border-radius: 6px; background: var(--raised); }
 .composer-input > .composer-surface { grid-column: 1 / -1; grid-row: 1; }
 .composer-input > .composer-attachments { grid-column: 1 / -1; grid-row: 2; }
-.composer-input > .composer-intake { grid-column: 1; grid-row: 3; align-self: start; margin: 0; padding: 0 var(--s1) var(--s1); }
-.composer-input > .composer-line { grid-column: 2; grid-row: 3; align-self: start; padding: 0 var(--s2) var(--s1) 0; }
-.composer-settings { display: flex; flex: 0 1 auto; align-items: center; gap: var(--s1); min-width: 0; margin-left: auto; }
-.composer-model, .composer-thinking { min-width: 0; min-height: 28px; padding: 2px 6px; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.composer-model { min-width: 10ch; }
-.composer-model:not(:disabled):hover, .composer-thinking:not(:disabled):hover { color: var(--fg); background: var(--raised); }
-.composer-settings-separator { flex: none; color: var(--muted); font-size: 12px; }
-.composer-settings-text { min-width: 0; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+.composer-input > .composer-intake { grid-column: 1; grid-row: 3; align-self: start; margin: 0; padding: 4px 0 0 6px; }
+.composer-input > .composer-line { grid-column: 2; grid-row: 3; align-self: start; padding: 4px 6px 0 0; }
+/* Model and effort stay at the right of the control row in every state; a state note takes the space beside the add control. */
+.composer-settings { display: flex; flex: 0 1 auto; align-items: center; min-width: 0; margin: 0 6px 0 auto; }
+.composer-model, .composer-thinking { min-width: 0; min-height: 30px; padding: 0 6px; border-radius: 4px; color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.composer-thinking { color: var(--dim); }
+.composer-model:not(:disabled):hover, .composer-thinking:not(:disabled):hover { color: var(--fg); }
+.composer-input :is(.latest, .attachment-sources, .composer-model, .composer-thinking):not(:disabled):hover { background: var(--canvas); }
+.composer-settings-separator { display: none; }
+.composer-settings-text { min-width: 0; overflow: hidden; color: var(--muted); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; cursor: default; }
+.composer-settings-effort { color: var(--dim); }
 .composer-recall-hint { min-width: 0; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .composer-meta[data-recall=true] > .latest { display: none; }
-/* Narrow panes: the model name truncates first; below its minimum the settings take a second line inside the surface. */
-@container composer (max-width: 340px) {
-  .composer-settings { flex: 1 1 100%; margin-left: 0; }
+/* Narrow panes keep the add control, the action and the model name; effort and an ordinary note leave first, and an error or warning note replaces the model. */
+@container composer (max-width: 460px) {
+  .composer-thinking, .composer-settings-effort { display: none; }
+  .composer-state:not([data-tone]) > :not(.composer-state-line) { display: none; }
+  .composer-meta:has(> .composer-state[data-tone]:not([hidden])) > .composer-settings { display: none; }
 }
-.composer-meta { display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: center; gap: 0 var(--s2); min-width: 0; min-height: 28px; color: var(--muted); font-size: 12px; }
-.composer textarea { display: block; width: 100%; min-width: 0; min-height: 24px; padding: var(--s3); border: 0; background: transparent; color: var(--fg); caret-color: var(--accent); font-size: 16px; line-height: 1.6; resize: none; }
+.composer-meta { display: flex; flex: 1 1 auto; flex-wrap: nowrap; align-items: center; min-width: 0; min-height: 30px; color: var(--muted); font-size: 12px; }
+.composer textarea { display: block; width: 100%; min-width: 0; min-height: 24px; padding: 12px 14px 4px; border: 0; background: transparent; color: var(--fg); caret-color: var(--accent); font-size: 16px; line-height: 1.6; resize: none; }
 .composer-surface { position: relative; }
 .composer-overlay { position: absolute; top: 0; left: 0; overflow: auto; scrollbar-width: none; pointer-events: none; color: var(--fg); }
 .composer-colors { box-sizing: border-box; white-space: pre-wrap; overflow-wrap: break-word; }
@@ -864,9 +876,10 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
 .composer-colors::highlight(composer-md-marker) { color: var(--md-marker); }
 .composer textarea { position: relative; }
 .composer textarea[data-decorated=true] { color: transparent; }
-.composer textarea::selection { color: var(--fg); background: var(--raised); }
+.composer textarea::selection { color: var(--fg); }
+.composer textarea::placeholder { color: color-mix(in srgb, var(--muted) 72%, var(--raised)); }
 .composer textarea:focus-visible { outline: none; }
-.composer-input:has(textarea:focus-visible) { border-color: var(--accent); }
+.composer-input:has(textarea:focus-visible) { border-color: var(--edge); }
 .composer textarea:disabled { color: var(--dim); }
 .composer[data-file-drop=true] .composer-input { outline: 1px solid var(--accent); outline-offset: -1px; }
 .composer-attachments { display: flex; flex-direction: row; flex-wrap: wrap; gap: var(--s2) var(--s3); max-height: min(24dvh,220px); margin-top: var(--s1); padding: 0 var(--s3) var(--s2); overflow: auto; }
@@ -891,14 +904,14 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
 .attachment-dialog > img { display: block; max-width: 100%; max-height: 65dvh; margin: 8px auto; object-fit: contain; }
 .composer-intake { display: inline-flex; flex: none; align-items: center; margin-right: auto; }
 .attach { min-height: 28px; padding: 2px 6px; color: var(--muted); font-size: 13px; }
-.attachment-sources { width: 28px; height: 28px; min-width: 28px; min-height: 28px; }
+.attachment-sources { width: 30px; height: 30px; min-width: 30px; min-height: 30px; border-radius: 4px; }
 .working-file-filter { display: block; width: 100%; margin: 8px 0; }
 .working-file-list { max-height: 36dvh; overflow: auto; }
 .working-file-row { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 28px; text-align: left; }
 .working-file-row[aria-pressed=true] { background: var(--raised); font-weight: 500; }
 .working-file-row .file-name { white-space: normal; overflow-wrap: anywhere; }
 @media (pointer: coarse) { .attach, .attachment-row button, .attachment-dialog button, .attachment-details > summary { min-width: 44px; min-height: 44px; } }
-.composer-line { display: flex; flex-wrap: nowrap; align-items: flex-start; justify-content: space-between; gap: var(--s2); min-width: 0; min-height: 28px; padding: 0; border: 0; border-radius: 0; background: transparent; }
+.composer-line { display: flex; flex-wrap: nowrap; align-items: center; justify-content: space-between; gap: 2px; min-width: 0; min-height: 30px; padding: 0; border: 0; border-radius: 0; background: transparent; }
 .statusline { display: flex; flex-wrap: wrap; align-items: center; flex: 0 1 auto; gap: 2px 12px; min-width: 0; color: var(--muted); font-family: var(--mono); font-size: 12px; white-space: nowrap; }
 .statusline > :empty, .statusline > [hidden] { display: none; }
 .statusline:not(:has(> :not(:empty):not([hidden]))) { display: none; }
@@ -913,7 +926,7 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
 .receipt .receipt-save-failure > .receipt-retry { padding: 2px 0; color: var(--muted); font-size: 12px; }
 .receipt .receipt-save-failure > .receipt-retry:hover:not(:disabled) { background: transparent; color: var(--fg); }
 .receipt-details pre { position: absolute; right: 0; bottom: calc(100% + 6px); left: 0; z-index: 5; max-height: 30dvh; padding: 8px 12px; overflow: auto; border: 1px solid var(--rule); border-radius: 4px; background: var(--raised); color: var(--fg); white-space: pre-wrap; box-shadow: var(--shadow); }
-.composer-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; flex: 0 1 auto; gap: var(--s1); min-width: 0; min-height: 28px; }
+.composer-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; flex: 0 1 auto; gap: var(--s1); min-width: 0; min-height: 30px; }
 @container conversation (max-width: 480px) {
   .composer-bar { justify-content: flex-end; }
   .tool-shell .kv { grid-template-columns: minmax(0,1fr); }
@@ -926,13 +939,18 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
 .composer-submit { display: flex; flex: none; flex-wrap: nowrap; align-items: center; gap: var(--s1); }
 .modes { display: flex; flex: none; white-space: nowrap; }
 .modes select { min-height: 24px; max-width: 18ch; padding: 0 4px; border: 0; background: transparent; color: var(--muted); font-size: 13px; }
-.send, .stop { display: inline-flex; flex: none; align-items: center; justify-content: center; min-height: 28px; font-size: 13px; white-space: nowrap; }
-.stop { padding: 2px 8px; color: var(--error); }
-/* Send, Start, Try again and the disabled Starting… are one shape: the only filled button in the control row. */
-.send { padding: 0 12px; border: 1px solid var(--rule); background: var(--raised); color: var(--fg); font-weight: 500; }
-.send:not(:disabled):hover { border-color: var(--edge); }
-.send:disabled { border-color: transparent; background: transparent; color: var(--muted); }
+/* The action slot: Send, Start, Try again, Check again, the disabled Starting… and Stop share one shape. Only an action that will act is filled. */
+.send, .stop { display: inline-flex; flex: none; align-items: center; justify-content: center; gap: 6px; height: 30px; min-height: 30px; padding: 0 12px 0 10px; border: 1px solid transparent; border-radius: 4px; font-size: 13px; font-weight: 500; line-height: 1; white-space: nowrap; }
+.send { background: var(--fg); color: var(--canvas); }
+.send:not(:disabled):hover { background: var(--muted); color: var(--canvas); }
+.send[data-kind=recovery] { border-color: var(--rule); background: transparent; color: var(--fg); }
+.send[data-kind=recovery]:not(:disabled):hover { border-color: var(--edge); background: transparent; color: var(--fg); }
+.send:disabled { border-color: var(--rule); background: transparent; color: var(--dim); cursor: default; }
+.send[aria-busy=true] { color: var(--muted); cursor: progress; }
+.send .card-icon-play { fill: currentColor; stroke-width: 0; }
+.stop { border-color: color-mix(in srgb, var(--error) 55%, transparent); color: var(--error); }
 .stop:hover { background: var(--err-bg); }
+.stop .card-icon-stop { fill: currentColor; stroke-width: 0; transform: scale(.8); }
 .receipt { display: flex; flex-wrap: wrap; gap: 2px 12px; max-height: 30dvh; margin-bottom: 6px; overflow: auto; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
 .receipt:empty { display: none; }
 .receipt:has(> .receipt-save-failure:only-child) { max-height: none; overflow: visible; }
@@ -1261,6 +1279,8 @@ button.thread-person:hover, button.thread-sender:hover { background: var(--raise
   .resizer[data-axis=x] { right: 0; width: 44px; }
   .resizer[data-axis=y] { position: relative; top: auto; height: 44px; }
   .resizer[data-axis=y]::after { top: 21px; opacity: 1; }
+  .composer-input > .resizer[data-axis=y] { position: absolute; top: -38px; width: 64px; height: 44px; margin-left: -32px; }
+  .composer-input > .resizer[data-axis=y]::after { top: 36px; opacity: 1; }
   .sidebar > .resizer[data-axis=x] { position: relative; top: auto; right: auto; bottom: auto; width: 100%; height: 44px; }
   .sidebar > .resizer[data-axis=x]::after { top: 12px; right: 50%; bottom: 12px; opacity: 1; }
   .pane-split > .pane-divider { inset: auto; width: auto; height: auto; }

@@ -621,7 +621,7 @@ export function storeTabSize(key: string, value: number | undefined): void {
 }
 function composerResizer(controller: ConversationController): Resizer {
   const composer = controller.composer, key = `ui:pane:${controller.workspaceId}:${targetIdentity(controller.target)}:composer`; let preferred = tabSize(key, 40, 640); composer.setManualHeight(preferred);
-  return createResizer({handle: controllerNode(controller, 'composer-resizer'), axis: 'y', direction: -1, min: 40, max: 640, defaultValue: 144, applyInitial: preferred !== undefined,
+  return createResizer({handle: controllerNode(controller, 'composer-resizer'), axis: 'y', direction: -1, min: 40, max: 640, defaultValue: 144, dragThreshold: 4, applyInitial: preferred !== undefined,
     read: () => preferred ?? composer.editor.offsetHeight, write: value => composer.setManualHeight(value), onCommit: value => {preferred = value; storeTabSize(key, value);},
     onReset: () => {preferred = undefined; storeTabSize(key, undefined); composer.setManualHeight(undefined);}});
 }
@@ -1409,7 +1409,8 @@ function renderPrimarySettings(model: HTMLButtonElement, thinking: HTMLButtonEle
 }
 function renderAgentSettingsText(model: HTMLButtonElement, thinking: HTMLButtonElement, view: ConversationPresentation, text: HTMLElement): void {
   model.hidden = thinking.hidden = true; const full = settingsLabel(view, true);
-  setText(text, [view.model?.modelId, view.thinking].filter(Boolean).join(' · ')); text.hidden = !text.textContent; text.title = full; text.setAttribute('aria-label', full);
+  const modelText = view.model?.modelId ?? '';
+  text.replaceChildren(...[modelText && element('span', 'composer-settings-model', modelText), view.thinking && element('span', 'composer-settings-effort', `${modelText ? ' · ' : ''}${view.thinking}`)].filter((node): node is HTMLElement => !!node)); text.hidden = !text.textContent; text.title = full; text.setAttribute('aria-label', full);
 }
 function controllerPreparationFailed(controller: ConversationController, error: unknown): void {
   if (controller.target.kind === 'agent') {controller.connectionError = errorMessage(error); renderAgentState(controller);}
@@ -1632,8 +1633,8 @@ function refreshStaleConnection(controller: ConversationController): void {
 const ACTION_TITLES: Partial<Record<AgentComposerState['kind'], string>> = {start: 'Start agent. This can resume unfinished work before the agent is ready.', failed: 'Check whether the agent started.'};
 function composerStateView(view: AgentComposerState, run: () => void): ComposerStateView {
   const {action} = view;
-  return {line: view.line, label: view.label, blocksSend: view.kind === 'read-only' || view.kind === 'checking', ...(view.kind === 'start' || view.kind === 'starting' ? {} : {detail: view.detail || undefined, showDetail: () => showDetails('Agent details', view.detail)}),
-    ...(action ? {action: {...action, ...(ACTION_TITLES[view.kind] ? {title: ACTION_TITLES[view.kind]} : {}), disabled: action.disabled || !connected || !!checkingAgent, run}} : {})};
+  return {line: view.line, label: view.label, ...(view.kind === 'failed' ? {tone: 'error' as const} : view.kind === 'unreachable' ? {tone: 'warning' as const} : {}), blocksSend: view.kind === 'read-only' || view.kind === 'checking', ...(view.kind === 'read-only' ? {hideSend: true} : {}), ...(view.kind === 'start' || view.kind === 'starting' ? {} : {detail: view.detail || undefined, showDetail: () => showDetails('Agent details', view.detail)}),
+    ...(action ? {action: {...action, ...(view.kind === 'failed' || view.kind === 'unreachable' ? {recovery: true} : {}), ...(ACTION_TITLES[view.kind] ? {title: ACTION_TITLES[view.kind]} : {}), disabled: action.disabled || !connected || !!checkingAgent, run}} : {})};
 }
 function showDetails(title: string, detail: string): void {
   modal.open(title); modal.body.append(element('pre', undefined, detail));

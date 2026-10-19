@@ -62,6 +62,7 @@ function state(key = 'a', saved = draft(), agent = false): TargetState {
   return {targetKey: key, target: agent ? {kind: 'agent', identity: key} : {kind: 'primary', key, epoch: 7}, draft: saved,
     reading: {revision: 0, anchorId: null, offsetPx: 0, followTail: true}, unconfirmed: [], retainedInputs: [], imageAvailability: []};
 }
+const actionText = (node: NodeFake): string | undefined => node.querySelector('.action-label')?.textContent;
 const turn = async () => { for (let index = 0; index < 20; index++) await Promise.resolve(); };
 function scopedNodes(id: string, withMenu: boolean) {
   const nodes = new Map<string, NodeFake>();
@@ -855,7 +856,7 @@ test('input and control receipts share one disclosure and never leak across targ
   f.composer.attach('w', state('b')); assert.equal(f.node('receipt-details').textContent, ''); assert.equal(f.node('save').textContent, '');
 });
 
-test('editor height grows locally, caps long drafts, shrinks, and preserves explicit manual sizing', () => {
+test('editor height grows locally, caps long drafts, shrinks, and keeps an explicit size as its resting minimum', () => {
   const computed = Object.getOwnPropertyDescriptor(globalThis, 'getComputedStyle'); const media = Object.getOwnPropertyDescriptor(globalThis, 'matchMedia');
   Object.defineProperty(globalThis, 'getComputedStyle', {configurable: true, value: () => ({lineHeight: '22.5px', paddingTop: '8px', paddingBottom: '8px', borderTopWidth: '1px', borderBottomWidth: '1px'})});
   Object.defineProperty(globalThis, 'matchMedia', {configurable: true, value: () => ({matches: false})});
@@ -865,7 +866,10 @@ test('editor height grows locally, caps long drafts, shrinks, and preserves expl
     f.composer.setText(Array(10).fill('line').join('\n')); paint(); assert.equal(editor.style.height, '243px');
     f.composer.setText(Array(20).fill('line').join('\n')); paint(); assert.equal(editor.style.height, '243px');
     f.composer.setText('one'); paint(); assert.equal(editor.style.height, '40.5px');
-    editor.style.height = '180px'; editor.fire('pointerup'); f.composer.setText('two'); paint(); assert.equal(editor.style.height, '180px');
+    editor.style.height = '180px'; editor.fire('pointerup'); f.composer.setText('two'); paint(); assert.equal(editor.style.height, '40.5px');
+    f.composer.setManualHeight(180); paint(); assert.equal(editor.style.height, '180px');
+    f.composer.setText(Array(20).fill('line').join('\n')); paint(); assert.equal(editor.style.height, '243px'); assert.equal(editor.style.maxHeight, '243px');
+    f.composer.setText('two'); paint(); assert.equal(editor.style.height, '180px');
     f.composer.setManualHeight(600); paint(); assert.equal(editor.style.height, '540px'); assert.equal(editor.style.maxHeight, '540px');
     f.composer.setText('short'); paint(); assert.equal(editor.style.height, '540px');
     editor.conversationHeight = 400; f.composer.resize(); paint(); assert.equal(editor.style.height, '240px');
@@ -1147,7 +1151,7 @@ test('scoped element factories create distinct editors and exact label/resize/co
   assert.equal(new Set(ids).size, ids.length); assert.notEqual(first.editor, second.editor); assert.equal((first.recipient as HTMLLabelElement).htmlFor, first.editor.id);
   assert.equal(first.root.querySelector('.resizer')?.getAttribute('aria-controls'), first.editor.id); assert.equal(first.root.querySelector('.resizer')?.getAttribute('aria-orientation'), 'horizontal');
   assert.equal(first.root.querySelector('.stop')?.getAttribute('aria-label'), 'Stop response');
-  assert.equal(first.send.getAttribute('aria-label'), 'Send message'); assert.equal(first.send.textContent, 'Send'); assert.equal(first.send.querySelector('svg'), undefined);
+  assert.equal(first.send.getAttribute('aria-label'), 'Send message'); assert.equal(actionText(first.send), 'Send'); assert.equal(first.send.children.length, 2);
   assert.equal(first.modes.querySelector('select')?.getAttribute('aria-label'), 'Delivery while working'); assert.equal(first.send.type, 'submit'); assert.equal(first.send.disabled, true);
   assert.equal(first.root.contains(first.editor), true); assert.equal(first.root.contains(first.save), false); assert.equal(first.root.contains(first.receiptDetails), false);
   assert.equal(first.save.className, 'draft-state'); assert.equal(first.receiptDetails.className, 'receipt-details'); assert.equal(first.commandMenu?.hidden, true); assert.deepEqual(f.lookups, []);
@@ -1197,21 +1201,21 @@ const commandResult = (id: string, changes: Partial<OperationView> = {}): Operat
 test('an agent draft that names a host command runs it once and clears only after the confirmed result', async () => {
   const f = fixture('agent', () => hostCommands(), true); f.connect(state('run', draft(0, '', 'followUp'), true));
   f.composer.setText('/ping now'); const reserved = f.reservations();
-  assert.equal(f.node('send').textContent, 'Run command'); assert.equal(f.node('send').attrs.get('aria-label'), 'Run command /ping'); assert.match(f.node('send').title ?? '', /^Run \/ping on this agent\. It sends no message/);
+  assert.equal(actionText(f.node('send')), 'Run command'); assert.equal(f.node('send').attrs.get('aria-label'), 'Run command /ping'); assert.match(f.node('send').title ?? '', /^Run \/ping on this agent\. It sends no message/);
   const sending = f.composer.send(); const call = await f.waitCall('POST', '/command');
   assert.equal(call.path, '/api/agents/run/command'); assert.deepEqual(call.body, {name: 'ping', args: 'now'}); assert.equal(f.calls.some(item => item.path.endsWith('/inputs')), false);
   assert.equal(f.composer.editor.value, '/ping now', 'the draft stays while the command runs');
   f.ok(call, commandResult(call.id as string)); await sending;
   assert.equal(f.composer.editor.value, ''); assert.equal(f.submitted.length, 1); assert.equal(f.reservations(), reserved + 1, 'one reservation for the one run');
   assert.equal(f.node('receipt').find('Command /ping ran') !== undefined, true);
-  assert.equal(f.node('send').textContent, 'Send');
+  assert.equal(actionText(f.node('send')), 'Send');
   assert.equal(f.calls.filter(item => item.path.endsWith('/command')).length, 0, 'the command is never repeated');
 });
 test('a command with no arguments sends only its name, and a name that is not in the host list is an ordinary message', async () => {
   const f = fixture('agent', () => hostCommands(), true); f.connect(state('run', draft(0, '', 'followUp'), true));
   f.composer.setText('/ping'); const sending = f.composer.send(); const call = await f.waitCall('POST', '/command');
   assert.deepEqual(call.body, {name: 'ping'}); f.ok(call, commandResult(call.id as string)); await sending;
-  f.composer.setText('/other thing'); assert.equal(f.node('send').textContent, 'Send'); const message = f.composer.send(); await f.waitCall('POST', '/inputs'); assert.equal(f.calls.some(item => item.path.endsWith('/command')), false); void message;
+  f.composer.setText('/other thing'); assert.equal(actionText(f.node('send')), 'Send'); const message = f.composer.send(); await f.waitCall('POST', '/inputs'); assert.equal(f.calls.some(item => item.path.endsWith('/command')), false); void message;
 });
 test('a host refusal keeps the draft, shows the host message and runs nothing again', async () => {
   const f = fixture('agent', () => hostCommands(), true); f.connect(state('run', draft(0, '', 'followUp'), true));
@@ -1260,15 +1264,15 @@ test('a slash draft waits while the list loads, and a command cannot carry attac
   let inventory = hostCommands('loading'); const f = fixture('agent', () => inventory, true); f.connect(state('run', draft(0, '', 'followUp'), true));
   f.composer.setText('/ping'); assert.equal(f.node('send').disabled, true); assert.equal(f.node('send').title, 'Loading commands…');
   await f.composer.send(); assert.equal(f.calls.some(item => item.path.endsWith('/inputs') || item.path.endsWith('/command')), false);
-  inventory = hostCommands(); f.composer.commandsChanged(); assert.equal(f.node('send').disabled, false); assert.equal(f.node('send').textContent, 'Run command');
+  inventory = hostCommands(); f.composer.commandsChanged(); assert.equal(f.node('send').disabled, false); assert.equal(actionText(f.node('send')), 'Run command');
   const withImage = state('run', {...draft(0, '/ping', 'followUp'), images: [image()]}, true); f.composer.attach('w', {...withImage, targetKey: 'run-image'}); f.composer.commandsChanged();
   assert.equal(f.node('send').disabled, true); assert.equal(f.node('send').title, 'Remove attachments to run a command.');
 });
 test('Primary and a recipient without commands never run a command from the draft', async () => {
   const primary = fixture('primary', () => hostCommands(), true); primary.connect(); primary.composer.setText('/ping');
-  assert.equal(primary.node('send').textContent, 'Send');
+  assert.equal(actionText(primary.node('send')), 'Send');
   const none = fixture('agent', () => ({state: 'unavailable', items: [], message: 'Start the agent to run commands.'}), true); none.connect(state('run', draft(0, '', 'followUp'), true));
-  none.composer.setText('/ping'); assert.equal(none.node('send').textContent, 'Send');
+  none.composer.setText('/ping'); assert.equal(actionText(none.node('send')), 'Send');
 });
 test('an open extension dialog changes the pending send line to Waiting for your answer without changing delivery', async () => {
   const f = fixture('primary'); const saved = f.connect(state('dialog-wait', draft(0, '', 'prompt')));

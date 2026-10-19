@@ -1060,7 +1060,7 @@ test('sidebar width commits preserve transcript requests and pane refresh follow
   const render = source.slice(source.indexOf('function renderAll('), source.indexOf('function renderNavigation('));
   assert.ok(render.indexOf('refreshPaneSizes()') > render.indexOf('renderMessagePanel()'));
   const composer = source.slice(source.indexOf('function composerResizer('), source.indexOf('function refreshPaneSizes('));
-  assert.ok(composer.includes('composer.setManualHeight(preferred)')); assert.ok(composer.includes('applyInitial: preferred !== undefined'));
+  assert.ok(composer.includes('composer.setManualHeight(preferred)')); assert.ok(composer.includes('dragThreshold: 4'), 'a plain press on the handle stores nothing'); assert.ok(composer.includes('applyInitial: preferred !== undefined'));
   assert.ok(composer.includes('composer.setManualHeight(undefined)')); assert.doesNotMatch(source, /--composer-height/);
 });
 test('per-tab pane sizes accept bounded integers and storage failures remain nonfatal', async () => {
@@ -1737,7 +1737,7 @@ test('a stored Start response across stream replacement retains uncertainty with
   await storedLaunchFixture(identity); const editor = agentControl('editor'); editor.setSelectionRange(2, 6, 'backward'); const before = transportLog.length;
   browser.startPreparation = async () => pending.promise; const starting = app.startStoredAgent('w', identity); await settle(); await interruptPreparation('reconnect', recovery);
   pending.resolve(Response.json({ok: true, data: {...fixturePreparation({kind: 'agent', identity}), availability: 'live', capabilities: agentFixture(identity).capabilities}})); await starting; await settle();
-  assert.equal(agentControl('send').hidden, true); assert.equal(agentControl('state-line').textContent, 'Start did not complete.'); assert.equal(agentControl('start').textContent, 'Try again'); assert.match(tabsNode().querySelector('[data-tab-key="agent:late-stored-start"]')?.title ?? '', /Start failed/); assert.match(startDetail(), /browser connection changed/);
+  assert.equal(agentControl('send').hidden, true); assert.equal(agentControl('state-line').textContent, 'Start did not complete.'); assert.equal(agentControl('start').textContent, 'Try again'); assert.equal(agentControl('state').dataset.tone, 'error'); assert.equal(agentControl('state').querySelector('.composer-state-label')?.textContent, 'Start did not complete'); assert.equal(agentControl('start').dataset.kind, 'recovery'); assert.ok(agentControl('start').querySelector('.card-icon-restart'), 'Try again carries the retry icon'); assert.match(tabsNode().querySelector('[data-tab-key="agent:late-stored-start"]')?.title ?? '', /Start failed/); assert.match(startDetail(), /browser connection changed/);
   assert.equal(agentControl('editor'), editor); assert.equal(editor.value, 'Agent launch keep'); assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [2, 6, 'backward']);
   assert.equal(transportLog.slice(before).filter(call => call.path.endsWith('/start')).length, 1); assert.equal(transportLog.slice(before).some(call => call.path.includes('/inputs')), false);
 });
@@ -1845,25 +1845,28 @@ test('a read-only agent disables Send, describes it with the state line, and kee
   const identity = 'read-only-send', target = {kind: 'agent' as const, identity};
   await arrive({workspace: {id: 'w', revision: 1, selectedTarget: target, panelVisible: true}, primaries: [], roster: [agentFixture(identity, {availability: 'incompatible', capabilities: {input: false}})], targets: [targetFixture('read-only-send', target, {draft: {revision: 3, text: 'Draft kept while read only', mode: 'followUp', persisted: true}})]});
   assert.equal(agentControl('state-line').textContent, 'This agent cannot run here. Messages are read only.'); assert.equal(agentControl('start').hidden, true);
-  assert.equal(agentControl('send').hidden, false); assert.equal(agentControl('send').disabled, true); assert.equal(agentControl('send').attributes.get('aria-describedby'), agentControl('state-line').id);
+  assert.equal(agentControl('send').hidden, true, 'a read only agent offers no action'); assert.equal(agentControl('send').disabled, true); assert.equal(agentControl('send').attributes.get('aria-describedby'), agentControl('state-line').id);
   assert.equal(agentControl('editor').disabled, false); assert.equal(agentControl('editor').value, 'Draft kept while read only');
   const before = transportLog.length; await app.agentComposer().send(); await settle(); assert.equal(transportLog.slice(before).some(call => call.path.includes('/inputs')), false);
 });
 
-test('the control row shows no sentence for an ordinary state and a short label with an info icon for an exceptional one', async () => {
+test('the control row names every state that is not ready with a short note beside the add control', async () => {
   const identity = 'quiet-state', target = {kind: 'agent' as const, identity};
   const visible = () => agentControl('state').querySelector('.composer-state-label');
   await arrive({workspace: {id: 'w', revision: 1, selectedTarget: target, panelVisible: true}, primaries: [], roster: [agentFixture(identity, {availability: 'stored'})], targets: [targetFixture('quiet-state', target, {draft: {revision: 1, text: '', mode: 'followUp', persisted: true}})]});
   const state = agentControl('state'), meta = agentControl('meta');
-  assert.equal(state.parentNode, meta); assert.equal(state.classList.contains('sr-only'), true, 'an ordinary state paints no visible text');
-  assert.equal(agentControl('state-line').textContent, 'Not running. Start it to send a message.'); assert.equal(visible()?.hidden, true); assert.equal(agentControl('state-detail').hidden, true);
-  assert.equal(agentControl('start').hidden, false); assert.equal(agentControl('start').textContent, 'Start'); assert.equal(agentControl('send').hidden, true);
+  assert.equal(state.parentNode, meta); assert.equal(state.classList.contains('sr-only'), false, 'a stored agent says why only Start is offered');
+  assert.equal(agentControl('state-line').textContent, 'Not running. Start it to send a message.'); assert.equal(visible()?.hidden, false); assert.equal(visible()?.textContent, 'Not running'); assert.equal(state.dataset.tone, undefined); assert.equal(agentControl('state-detail').hidden, true);
+  assert.equal(agentControl('start').hidden, false); assert.equal(agentControl('start').textContent, 'Start'); assert.ok(agentControl('start').querySelector('.card-icon-play'), 'Start carries the play icon'); assert.equal(agentControl('start').dataset.kind, undefined); assert.equal(agentControl('send').hidden, true);
   assert.equal(agentControl('editor').rows, 1); assert.equal((agentControl('editor') as HostNode & {placeholder: string}).placeholder.includes('commands'), false);
+  const editor = agentControl('editor'); editor.focus();
   event('agent.availability', {identity, connectionEpoch: 1, state: 'stored', capabilities: agentFixture(identity).capabilities, reason: 'Stored since the last restart.'}); await settle();
-  assert.equal(agentControl('state-line').textContent, 'Not running. Start it to send a message.'); assert.equal(agentControl('state-detail').hidden, true, 'Start offers no Details control even when a reason exists'); assert.equal(state.classList.contains('sr-only'), true); assert.equal(visible()?.hidden, true);
+  assert.equal(hostDocument.activeElement, editor, 'a state change leaves focus in the editor');
+  assert.equal(agentControl('state-line').textContent, 'Not running. Start it to send a message.'); assert.equal(agentControl('state-detail').hidden, true, 'Start offers no Details control even when a reason exists'); assert.equal(state.classList.contains('sr-only'), false); assert.equal(visible()?.textContent, 'Not running');
   await arrive({workspace: {id: 'w', revision: 2, selectedTarget: target, panelVisible: true}, primaries: [], roster: [agentFixture(identity, {availability: 'incompatible', capabilities: {input: false}})], targets: [targetFixture('quiet-state', target, {draft: {revision: 1, text: '', mode: 'followUp', persisted: true}})]});
   event('agent.availability', {identity, connectionEpoch: 2, state: 'incompatible', capabilities: {...agentFixture(identity).capabilities, input: false}}); await settle();
-  assert.equal(state.classList.contains('sr-only'), false); assert.equal(visible()?.textContent, 'Read only'); assert.equal(visible()?.title, 'This agent cannot run here. Messages are read only.');
+  assert.equal(state.classList.contains('sr-only'), false); assert.equal(visible()?.textContent, 'This agent cannot run here'); assert.equal(visible()?.title, 'This agent cannot run here. Messages are read only.'); assert.equal(state.dataset.tone, undefined);
+  assert.equal(hostDocument.activeElement, editor, 'a change to read only leaves focus in the editor'); assert.equal(agentControl('send').hidden, true);
   assert.equal(visible()?.getAttribute('aria-hidden'), 'true'); assert.equal(agentControl('state-line').textContent, 'This agent cannot run here. Messages are read only.');
 });
 
@@ -1890,7 +1893,7 @@ test('after a browser reconnect a still-running agent shows the normal composer 
   assert.equal(transportLog.slice(before).some(call => call.path.endsWith('/start') || call.path.includes('/inputs')), false);
 });
 
-test('a failed preparation after reconnect says the agent could not be reached and offers Check agent', async t => {
+test('a failed preparation after reconnect says the agent could not be reached and offers Check again', async t => {
   const recovery = preparationRecovery(); const original = globalThis.fetch; let fail = true;
   t.after(async () => { globalThis.fetch = original; await recovery.dispose(); });
   const identity = 'reconnect-fail';
@@ -1898,9 +1901,9 @@ test('a failed preparation after reconnect says the agent could not be reached a
   await recovery.disconnect();
   globalThis.fetch = async (input, init) => new URL(String(input), 'http://ui.test').pathname.endsWith('/targets') && init?.method === 'POST' && fail ? Response.json({ok: false, error: {code: 'host_unavailable', message: 'The agent socket is closed.', retry: 'manual'}}) : original(input, init);
   const before = transportLog.length; await recovery.recover(); await settle();
-  assert.equal(agentControl('state-line').textContent, 'Could not reach the agent.'); assert.equal(agentControl('start').textContent, 'Check agent'); assert.equal(agentControl('start').hidden, false);
-  assert.equal(agentControl('send').hidden, true); assert.equal(agentControl('state-detail').hidden, false);
-  assert.equal(agentControl('state-detail').getAttribute('aria-label'), 'Details'); assert.ok(agentControl('state-detail').querySelector('.card-icon-info'), 'Details is the info icon'); assert.equal(agentControl('state').querySelector('.composer-state-label')?.textContent, 'Could not reach the agent');
+  assert.equal(agentControl('state-line').textContent, 'Could not reach the agent.'); assert.equal(agentControl('start').textContent, 'Check again'); assert.equal(agentControl('start').hidden, false); assert.equal(agentControl('start').dataset.kind, 'recovery'); assert.ok(agentControl('start').querySelector('.card-icon-restart'));
+  assert.equal(agentControl('send').hidden, true); assert.equal(agentControl('state-detail').hidden, false); assert.equal(agentControl('state').dataset.tone, 'warning');
+  assert.equal(agentControl('state-detail').textContent, 'Details'); assert.equal(agentControl('state').querySelector('.composer-state-label')?.textContent, 'Could not reach the agent');
   agentControl('state-detail').click(); assert.match(byId('modal-body').textContent, /agent socket is closed/); byId('modal-close').click();
   const failed = preparations(before, identity).length; await settle(); assert.equal(preparations(before, identity).length, failed);
   fail = false; agentControl('start').click(); await settle();
@@ -1926,7 +1929,7 @@ test('pending stored Start deduplicates clicks and a stale completion never chan
   let complete: ((response: Response) => void) | undefined;
   browser.startPreparation = () => new Promise(resolve => { complete = resolve; }); const before = transportLog.length;
   const pending = app.startStoredAgent('w', identity); await app.startStoredAgent('w', identity);
-  assert.equal(agentControl('start').disabled, true); assert.equal(agentControl('start').textContent, 'Starting…'); assert.equal(agentControl('history-reload').disabled, true);
+  assert.equal(agentControl('start').disabled, true); assert.equal(agentControl('start').textContent, 'Starting…'); assert.equal(agentControl('start').attributes.get('aria-busy'), 'true'); assert.ok(!agentControl('start').querySelector('.card-icon'), 'the busy action has no icon'); assert.equal(agentControl('state').querySelector('.composer-state-label')?.textContent, 'Starting the agent'); assert.equal(agentControl('state').dataset.tone, undefined); assert.equal(agentControl('history-reload').disabled, true);
   await storedLaunchFixture('new-recipient'); const editor = agentControl('editor'); editor.focus(); editor.setSelectionRange(1, 6);
   assert.ok(complete); complete(Response.json({ok: true, data: {targetState: targetFixture('late-target', {kind: 'agent', identity}), availability: 'live', capabilities: {input: true}}})); await pending; await settle();
   assert.equal(transportLog.slice(before).filter(call => call.path.endsWith('/start')).length, 1);

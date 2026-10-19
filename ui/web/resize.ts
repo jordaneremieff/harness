@@ -9,6 +9,8 @@ export type ResizerOptions = {
   label?: string;
   /** Leave an automatically sized pane unchanged until user input. */
   applyInitial?: boolean;
+  /** Pointer movement in pixels before a press counts as a drag; a press and release below it changes and commits nothing. Default 0. */
+  dragThreshold?: number;
   /** Override numeric reset, for example to restore automatic editor growth. */
   onReset?: () => void;
   read: () => number;
@@ -47,7 +49,8 @@ export function createResizer(options: ResizerOptions): Resizer {
   let resetFrame: number | undefined;
   let painted: number | undefined;
   let destroyed = false;
-  let drag: {id: number; origin: number; value: number} | undefined;
+  let drag: {id: number; origin: number; value: number; engaged: boolean} | undefined;
+  const threshold = Math.max(0, options.dragThreshold ?? 0);
   const coordinate = (event: PointerEvent): number => axis === 'x' ? event.clientX : event.clientY;
   const aria = (measured?: number): void => {
     handle.setAttribute('aria-valuenow', String(value));
@@ -83,20 +86,23 @@ export function createResizer(options: ResizerOptions): Resizer {
     cancelReset(); handle.setPointerCapture(event.pointerId);
     event.preventDefault(); handle.focus({preventScroll: true});
     value = clamp(read()); aria();
-    drag = {id: event.pointerId, origin: coordinate(event), value};
+    drag = {id: event.pointerId, origin: coordinate(event), value, engaged: threshold === 0};
     dragging(true);
   };
   const move = (event: PointerEvent): void => {
     if (!drag || event.pointerId !== drag.id) return;
-    event.preventDefault(); schedule(drag.value + direction * (coordinate(event) - drag.origin));
+    event.preventDefault();
+    const travelled = coordinate(event) - drag.origin;
+    if (!drag.engaged && Math.abs(travelled) >= threshold) drag.engaged = true;
+    if (drag.engaged) schedule(drag.value + direction * travelled);
   };
   const finish = (event: PointerEvent): void => {
     if (!drag || event.pointerId !== drag.id) return;
     if (event.type === 'pointerup') move(event);
-    const id = drag.id; drag = undefined;
+    const id = drag.id, moved = drag.engaged; drag = undefined;
     dragging(false);
     if (handle.hasPointerCapture(id)) handle.releasePointerCapture(id);
-    onCommit(value);
+    if (moved) onCommit(value);
   };
   const reset = (event: Event): void => {
     if (drag || destroyed) return;

@@ -235,3 +235,17 @@ test('invalid bounds reject and fractional external dimensions round to integer 
   for (const options of [{min: 500}, {max: Infinity}, {defaultValue: NaN}, {min: 200.5}]) assert.throws(() => setup(options), RangeError);
   const f = setup({}, 270.6); f.handle.frame(); assert.deepEqual(f.writes, [271]);
 });
+
+test('a press that stays under the drag threshold changes and commits nothing, and a longer one follows the pointer from its origin', () => {
+  const f = setup({axis: 'y', direction: -1, dragThreshold: 4}); f.handle.frame(); f.writes.length = 0;
+  f.handle.emit('pointerdown', {clientY: 300}); f.handle.emit('pointerup', {clientY: 300});
+  assert.deepEqual(f.commits, []); assert.deepEqual(f.writes, []); assert.equal(f.handle.rootClasses.has('resizing'), false);
+  f.handle.emit('pointerdown', {clientY: 300}); f.handle.emit('pointermove', {clientY: 297}); f.handle.frame();
+  f.handle.emit('pointerup', {clientY: 297});
+  assert.deepEqual(f.commits, []); assert.deepEqual(f.writes, []); assert.equal(f.resizer.value, 264);
+  f.handle.emit('pointerdown', {clientY: 300}); f.handle.emit('pointermove', {clientY: 296}); f.handle.frame();
+  assert.deepEqual(f.writes, [268]); f.handle.emit('pointermove', {clientY: 301}); f.handle.emit('pointermove', {clientY: 230}); f.handle.frame();
+  f.handle.emit('pointerup', {clientY: 230}); assert.deepEqual(f.commits, [334]);
+  f.handle.emit('pointerdown', {clientY: 300}); f.handle.emit('pointermove', {clientY: 302}); f.handle.emit('pointercancel');
+  assert.deepEqual(f.commits, [334], 'a cancelled press that never moved far enough commits nothing');
+});
