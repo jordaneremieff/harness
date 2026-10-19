@@ -1440,8 +1440,8 @@ test('Up in an empty Primary draft recalls earlier loaded user messages and no c
 test('Primary model and thinking are picker buttons under its composer with accessible names', async () => {
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({cwd: '/fixture', lifecycle: 'ready', model: {provider: 'provider', id: 'model', name: 'Model', reasoning: false, input: ['text']}, thinkingLevel: 'high'})], roster: []});
   const model = primaryControl('model'), thinking = primaryControl('thinking');
-  assert.equal(model.textContent, 'model'); assert.equal(model.title, 'provider/model · Primary'); assert.equal(model.attributes.get('aria-label'), 'Model for Primary: provider/model');
-  assert.equal(thinking.textContent, 'high'); assert.equal(thinking.attributes.get('aria-label'), 'Thinking level for Primary: high'); assert.ok(primaryControl('meta').contains(model)); assert.equal(primaryControl('settings').querySelector('.composer-settings-separator')?.hidden, false);
+  assert.equal(model.textContent, 'Model'); assert.equal(model.title, 'provider/model · Primary'); assert.equal(model.attributes.get('aria-label'), 'Model for Primary: provider/model');
+  assert.equal(thinking.textContent, 'High'); assert.equal(thinking.attributes.get('aria-label'), 'Thinking level for Primary: high'); assert.ok(primaryControl('meta').contains(model)); assert.equal(primaryControl('settings').querySelector('.composer-settings-separator')?.hidden, false);
 });
 
 test('local conversation actions group existing controls and open workspace input settings without navigation', async () => {
@@ -1619,7 +1619,7 @@ test('Message panel settings describe its captured agent instead of a prior agen
   const agent = byId('roster').children.find(node => node.dataset.identity === row.identity); assert.ok(agent); const message = agent.querySelector('.row-message'); assert.ok(message); message.click(); await settle();
   const settingsText = () => messageControl('settings-text');
   assert.equal(byId('agent-message-panel').hidden, false); assert.equal(settingsText()?.hidden, false);
-  assert.equal(settingsText()?.textContent, 'recipient-model · low'); assert.equal(settingsText()?.title, 'Last observed: Model agent-provider/recipient-model · Thinking low');
+  assert.equal(settingsText()?.textContent, 'recipient-model · Low'); assert.equal(settingsText()?.title, 'Last observed: Model agent-provider/recipient-model · Thinking low');
   assert.equal(settingsText()?.getAttribute('aria-label'), settingsText()?.title); assert.match(byId('agent-settings-detail').textContent, /Last observed settings are not confirmed current\./); assert.equal(byId('agent-settings-detail').hidden, false); assert.equal(byId('agent-settings-detail').classList.contains('phone-status-facts'), false);
   assert.equal(messageControl('recipient').textContent, 'Message Recipient'); assert.equal(primaryControl('root').hidden, false);
   const editor = messageControl('editor'); editor.value = 'Keep the recipient draft'; editor.dispatch('input'); editor.focus(); editor.setSelectionRange(3, 8);
@@ -1961,10 +1961,10 @@ test('failed-session recovery leaves retained text and unconfirmed input under t
 });
 
 test('accepted working activity owns the tool while retained settings stay composer-local', async () => {
-  const row=agentFixture('tool-agent',{state:'working',currentTool:{name:'read',argument:'src/current-file.ts'},model:{provider:'fixture',modelId:'model'}});
+  const row=agentFixture('tool-agent',{state:'working',currentTool:{name:'read',argument:'src/current-file.ts'},model:{provider:'fixture',modelId:'tool-model'}});
   await arrive({workspace:{id:'w',revision:1,selectedTarget:{kind:'agent',identity:row.identity},panelVisible:true},primaries:[],roster:[row],observations:[observation(row.identity,{revision:1,observedAt:'now',entries:[],live:[],nextBefore:null,status:{busy:true},coverage})]});
-  assert.equal(tabsNode().children.find(node => node.attributes.get('aria-selected') === 'true')?.querySelector('.tab-dot')?.title, 'Working'); assert.equal(agentControl('settings-text')?.textContent,'model');
-  assert.equal(agentControl('settings-text')?.title,'Last observed model fixture/model'); assert.doesNotMatch(html, /agent-pane-heading/);
+  assert.equal(tabsNode().children.find(node => node.attributes.get('aria-selected') === 'true')?.querySelector('.tab-dot')?.title, 'Working'); assert.equal(agentControl('settings-text')?.textContent,'tool-model');
+  assert.equal(agentControl('settings-text')?.title,'Last observed model fixture/tool-model'); assert.doesNotMatch(html, /agent-pane-heading/);
   app.openConversationActions(); const menu = hostDocument.body.children.find(node => node.className === 'context-menu'); assert.ok(menu);
   const detailsAction = menu.children.find(node => node.textContent === 'Conversation details'); assert.ok(detailsAction); detailsAction.click();
   assert.match(byId('modal-body').textContent, /Last reported tool/); assert.match(byId('modal-body').textContent, /src\/current-file.ts/); byId('modal-close').click();
@@ -2006,11 +2006,11 @@ test('Message panel uses its captured loaded cache and ignores unaccepted late f
   assert.equal(app.state.workspace?.selectedTarget?.kind, 'primary');
   const before = transportLog.length;
   event('agent.frame', {identity: row.identity, connectionEpoch: 0, frame: {...frame, revision: 2, status: {busy: false, model: {provider: 'unaccepted', modelId: 'late-model'}}}}); flushFrames(); await settle();
-  assert.equal(messageControl('settings-text')?.textContent, 'live-model · low');
+  assert.equal(messageControl('settings-text')?.textContent, 'live-model · Low');
   assert.match(byId('agent-usage-summary').textContent, /Cache 50%/); assert.match(byId('agent-usage').textContent, /Loaded assistant window only/); assert.doesNotMatch(byId('agent-usage').textContent, /Primary|whole-session cost|context window/);
   assert.equal(byId('agent-folder').textContent, 'Saved folder /saved/recipient');
   event('agent.frame', {identity: 'other-recipient', connectionEpoch: 1, frame: {...frame, status: {busy: true, model: {provider: 'other', modelId: 'not-recipient'}}}}); flushFrames(); await settle();
-  assert.equal(messageControl('settings-text')?.textContent, 'live-model · low');
+  assert.equal(messageControl('settings-text')?.textContent, 'live-model · Low');
   assert.equal(messageControl('editor'), editor); assert.equal(editor.value, 'Keep captured draft'); assert.deepEqual([editor.selectionStart, editor.selectionEnd], [2, 7]); assert.equal(hostDocument.activeElement, editor);
   assert.equal(byId('agent-usage-details'), details); assert.equal(Reflect.get(details, 'open'), true);
   assert.equal(transportLog.slice(before).filter(call => call.path.includes('/inputs') || call.path.endsWith('/targets')).length, 0);
@@ -2172,4 +2172,73 @@ test('generic action failures keep exact details for the focused owner or an own
     else {assert.equal(byId('modal').open, true); assert.equal(byId('modal-body').querySelector('pre')?.textContent, diagnostic); byId('modal-close').click();}
     assert.doesNotMatch(byId('announcements').textContent, /ENOENT|selection-endpoint/);
   }
+});
+test('composer settings show the Primary model list name and capitalized effort, read the list once, and keep ids in names', async () => {
+  const known = agentFixture('named-known', {name: 'Known', model: {provider: 'vendor', modelId: 'sonnet-id'}, thinkingLevel: 'high'});
+  const unknown = agentFixture('named-unknown', {name: 'Unknown', model: {provider: 'vendor', modelId: 'unlisted-id'}, thinkingLevel: 'low'});
+  const other = agentFixture('named-other', {name: 'Other', model: {provider: 'elsewhere', modelId: 'sonnet-id'}, thinkingLevel: 'medium'});
+  const previous = globalThis.fetch, reads: string[] = [];
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input), 'http://ui.test/app');
+    if (url.pathname.endsWith('/resources/models')) {reads.push(`${url.pathname}${url.search}`); return Response.json({ok: true, data: {items: [{provider: 'vendor', id: 'sonnet-id', name: 'Vendor Sonnet 5.5', reasoning: true, input: ['text']}, {provider: 'fixture', id: 'primary-id', name: 'Listed Primary Name', reasoning: true, input: ['text']}], nextCursor: null, revision: 'r'}});}
+    return previous(input, init);
+  };
+  try {
+    await arrive({workspace: {id: 'named', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'primary', key: 'p', epoch: 7701}}, primaries: [primaryFixture({epoch: 7701, model: {provider: 'fixture', id: 'primary-id', name: 'Reported Primary Name', reasoning: true, input: ['text']}, thinkingLevel: 'xhigh'})], roster: [known, unknown, other]});
+    await settle();
+    assert.equal(primaryControl('model').textContent, 'Listed Primary Name'); assert.equal(primaryControl('thinking').textContent, 'Xhigh');
+    assert.equal(primaryControl('model').title, 'fixture/primary-id · Primary'); assert.equal(primaryControl('model').attributes.get('aria-label'), 'Model for Primary: fixture/primary-id');
+    const shown: string[] = [], labels: (string | undefined)[] = [];
+    for (const row of [known, unknown, other, known, unknown]) {
+      await app.selectAgent(row); await settle();
+      shown.push(agentControl('settings-text')?.textContent ?? ''); labels.push(agentControl('settings-text')?.getAttribute('aria-label'));
+    }
+    assert.deepEqual(shown, ['Vendor Sonnet 5.5 · High', 'unlisted-id · Low', 'Vendor Sonnet 5.5 · Medium', 'Vendor Sonnet 5.5 · High', 'unlisted-id · Low']);
+    assert.deepEqual(labels, ['Last observed: Model vendor/sonnet-id · Thinking high', 'Last observed: Model vendor/unlisted-id · Thinking low', 'Last observed: Model elsewhere/sonnet-id · Thinking medium', 'Last observed: Model vendor/sonnet-id · Thinking high', 'Last observed: Model vendor/unlisted-id · Thinking low']);
+    assert.equal(reads.length, 1); assert.match(reads[0] ?? '', /^\/api\/primaries\/p\/resources\/models\?limit=100(&|$)/);
+  } finally {globalThis.fetch = previous;}
+});
+test('the Add menu names its rows, shows only the typed triggers, and Earlier messages starts the same browse as Up', async () => {
+  const ask = (id: string, text: string) => entryFixture(id, [{...messageFixture(`${id}-m`, [textPart(text)]), role: 'user'}]);
+  const target = {kind: 'primary' as const, key: 'p', epoch: 9812};
+  await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: target}, primaries: [primaryFixture({epoch: 9812, lifecycle: 'ready'})], roster: [], targets: [targetFixture('add-menu-primary', target, {draft: {revision: 1, text: '', mode: 'prompt', persisted: true}})], history: [ask('h1', 'first ask'), ask('h2', 'second ask')]});
+  await settle(); const editor = primaryControl('editor') as HostNode & {value: string}, logged = transportLog.length;
+  Object.defineProperty(hostDocument, 'execCommand', {configurable: true, value: (_command: string, _ui: boolean, value: string) => {const target = hostDocument.activeElement as unknown as typeof editor; const at = target.selectionStart; target.value = target.value.slice(0, at) + value + target.value.slice(target.selectionEnd); target.setSelectionRange(at + value.length, at + value.length); target.dispatch('input'); return true;}});
+  try {
+    const open = () => {primaryControl('composer').querySelector('.attachment-sources')?.click(); const menu = hostDocument.body.querySelector('.context-menu'); assert.ok(menu); return menu;};
+    const menu = open(); assert.equal(menu.className, 'context-menu context-menu-compact');
+    const rows = menu.children.filter(node => node.getAttribute('role') === 'menuitem');
+    assert.deepEqual(rows.map(row => row.querySelector('.context-menu-label')?.textContent), ['Upload files or images', 'Reference a file', 'Run a command', 'Earlier messages']);
+    assert.deepEqual(rows.map(row => row.querySelector('.context-menu-hint')?.textContent ?? ''), ['', '@', '/', '']);
+    assert.deepEqual(rows.map(row => row.querySelector('.card-icon')?.getAttribute('class')), ['card-icon card-icon-upload context-menu-icon', 'card-icon card-icon-file context-menu-icon', 'card-icon card-icon-commands context-menu-icon', 'card-icon card-icon-history context-menu-icon']);
+    assert.deepEqual(rows.map(row => row.querySelector('.context-menu-hint')?.getAttribute('aria-hidden') ?? 'none'), ['none', 'true', 'true', 'none']);
+    assert.deepEqual(rows.map(row => row.textContent.replace(/[@/]$/, '')), ['Upload files or images', 'Reference a file', 'Run a command', 'Earlier messages']);
+    assert.equal(menu.querySelector('.context-menu-note'), null); assert.equal(rows[3]?.getAttribute('aria-disabled'), 'false');
+    editor.focus(); rows[3]?.click();
+    assert.equal(editor.value, 'second ask'); assert.equal(hostDocument.body.querySelector('.context-menu'), null); assert.equal(primaryControl('meta').dataset.recall, 'true');
+    editor.dispatch('keydown', {key: 'Escape'}); assert.equal(editor.value, '');
+    editor.value = 'typed'; editor.dispatch('input');
+    const second = open(), earlier = second.children.filter(node => node.getAttribute('role') === 'menuitem')[3];
+    assert.equal(earlier?.getAttribute('aria-disabled'), 'true'); assert.equal(earlier?.title, 'Clear the draft to browse earlier messages.'); assert.equal(earlier?.getAttribute('aria-description'), earlier?.title);
+    assert.equal(second.querySelector('.context-menu-note'), null); earlier?.click(); assert.equal(editor.value, 'typed');
+    assert.equal(transportLog.slice(logged).some(call => call.path.includes('/inputs') || call.path.includes('/operations')), false, 'the menu sends nothing');
+  } finally {Reflect.deleteProperty(hostDocument, 'execCommand'); contextMenu.close();}
+});
+test('an agent on another provider shows the list name for the same id, and its tooltip keeps the reported provider and id', async () => {
+  const codex = agentFixture('named-codex', {name: 'Codex agent', model: {provider: 'openai-codex', modelId: 'gpt-6-astra'}, thinkingLevel: 'high'});
+  const clash = agentFixture('named-clash', {name: 'Clash agent', model: {provider: 'third', modelId: 'clashing-id'}, thinkingLevel: 'high'});
+  const previous = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input), 'http://ui.test/app');
+    if (url.pathname.endsWith('/resources/models')) return Response.json({ok: true, data: {items: [{provider: 'openai', id: 'gpt-6-astra', name: 'GPT-6 Astra', reasoning: true, input: ['text']}, {provider: 'one', id: 'clashing-id', name: 'Clash One', reasoning: true, input: ['text']}, {provider: 'two', id: 'clashing-id', name: 'Clash Two', reasoning: true, input: ['text']}], nextCursor: null, revision: 'r'}});
+    return previous(input, init);
+  };
+  try {
+    await arrive({workspace: {id: 'codex', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'primary', key: 'p', epoch: 7702}}, primaries: [primaryFixture({epoch: 7702})], roster: [codex, clash]});
+    await settle(); await app.selectAgent(codex); await settle();
+    assert.equal(agentControl('settings-text')?.textContent, 'GPT-6 Astra · High'); assert.equal(agentControl('settings-text')?.title, 'Last observed: Model openai-codex/gpt-6-astra · Thinking high');
+    assert.equal(agentControl('settings-text')?.getAttribute('aria-label'), 'Last observed: Model openai-codex/gpt-6-astra · Thinking high');
+    await app.selectAgent(clash); await settle();
+    assert.equal(agentControl('settings-text')?.textContent, 'clashing-id · High', 'two names for one id leave the id');
+  } finally {globalThis.fetch = previous;}
 });

@@ -19,7 +19,7 @@ function withDocument(action: () => void): void {
   try { action(); } finally { Reflect.set(globalThis, 'document', original); }
 }
 test('card icons keep one SVG size and stroke without executable markup', () => withDocument(() => {
-  for (const name of ['copy', 'wrap', 'chevron', 'success', 'error', 'working', 'unknown', 'previous', 'next', 'restart', 'close', 'menu', 'plus', 'search', 'info', 'folder', 'navigation', 'agent', 'latest', 'earlier', 'message', 'more', 'commands', 'notifications', 'appearance', 'send', 'stop', 'play', 'steer', 'disconnected'] as const) {
+  for (const name of ['copy', 'wrap', 'chevron', 'success', 'error', 'working', 'unknown', 'previous', 'next', 'restart', 'close', 'menu', 'plus', 'search', 'info', 'folder', 'navigation', 'agent', 'latest', 'earlier', 'message', 'more', 'commands', 'notifications', 'appearance', 'send', 'stop', 'play', 'steer', 'upload', 'history', 'disconnected'] as const) {
     const icon = cardIcon(name) as unknown as Node;
     assert.equal(icon.attributes.viewBox, '0 0 16 16'); assert.equal(icon.attributes.stroke, 'currentColor');
     assert.equal(icon.attributes['stroke-width'], '1.5'); assert.equal(icon.attributes['aria-hidden'], 'true');

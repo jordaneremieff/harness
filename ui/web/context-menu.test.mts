@@ -223,3 +223,12 @@ test('the small plus contains only new conversation and split actions', () => {
   for (const label of ['Close tab','Close pane','Conversation actions…']) assert.ok(context.some(item => item.label === label));
   assert.equal(context.some(item => /^(View:|Compact|Model|Thinking)/.test(item.label)), false);
 });
+test('an upward menu ends at the given point and keeps inside the window', () => {
+  const doc = new Doc(); Object.defineProperty(globalThis, 'document', {configurable: true, value: doc});
+  const origin = new Node(doc, 'button'); doc.body.append(origin); origin.focus(); const controller = new ContextMenu();
+  controller.open(origin as unknown as HTMLElement, {x: 20, y: 200}, 'Add', [{label: 'One', run() {}}], () => true, {above: true});
+  assert.equal(doc.body.children.at(-1)?.style.left, '20px'); assert.equal(doc.body.children.at(-1)?.style.top, '104px');
+  controller.open(origin as unknown as HTMLElement, {x: 20, y: 30}, 'Add', [{label: 'One', run() {}}], () => true, {above: true});
+  assert.equal(doc.body.children.at(-1)?.style.top, '4px', 'a menu that cannot fit above stays inside the window');
+  controller.close();
+});

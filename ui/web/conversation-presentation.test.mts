@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { AgentRow, ProjectedFrame, PrimaryView, SavedSession } from '../shared/api.ts';
-import { composerFolder, conversationPresentation, presentationGlyph, presentationName, projectIdentity, projectLabels, agentHistoryNote, readsSavedMessages, agentComposerState, responseOutcome, settingsLabel } from './conversation-presentation.ts';
+import { effortText, modelText, composerFolder, conversationPresentation, presentationGlyph, presentationName, projectIdentity, projectLabels, agentHistoryNote, readsSavedMessages, agentComposerState, responseOutcome, settingsLabel } from './conversation-presentation.ts';
 const row: AgentRow = {identity: 'agent:one', storageId: 'agent', cwd: '/projects/work', name: 'Worker', modifiedAt: 0,
   state: 'unavailable', owner: 'unknown', availability: 'live', partial: false,
   capabilities: {input: true, observe: true, history: true, abort: true, configure: false}};
@@ -290,4 +290,11 @@ test('stored agents report their own start attempt in the activity word', () => 
   assert.equal(conversationPresentation({...stored, start: {pending: true}}).activity, 'Starting…');
   const failed = conversationPresentation({...stored, start: {pending: false, reason: 'Timed out.'}});
   assert.equal(failed.activity, 'Start failed'); assert.equal(failed.tone, 'warning'); assert.equal(presentationGlyph(failed), '!');
+});
+
+test('model text prefers the model list name, then the reported name, then the id; effort is capitalized', () => {
+  assert.equal(modelText({modelId: 'id', name: 'Reported'}, 'Listed'), 'Listed');
+  assert.equal(modelText({modelId: 'id', name: 'Reported'}), 'Reported');
+  assert.equal(modelText({modelId: 'id', name: '  '}, ' '), 'id'); assert.equal(modelText({modelId: 'id'}), 'id');
+  assert.equal(effortText('high'), 'High'); assert.equal(effortText('xhigh'), 'Xhigh'); assert.equal(effortText(''), '');
 });

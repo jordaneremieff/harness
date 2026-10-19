@@ -411,18 +411,25 @@ export class Composer {
   private attachmentSources():void {
     const origin=this.elements.sources, captured=this.insertionCapture(); if (!origin) return;
     const current=()=>!this.destroyed && this.current===captured?.buffer;
-    const box=origin.getBoundingClientRect(), offer=this.commandsOffer();
-    contextMenu.open(origin,{x:box.left,y:box.bottom},'Add to message',[
-      {label:'Upload files…',icon:'file',run:()=>this.elements.attach?.click()},
-      {label:'Working-folder file…',icon:'folder',hint:'@',enabled:!!captured && !!this.hooks.workingFile,disabledReason:captured?'Working-folder files are unavailable.':'Draft is not loaded. Open this conversation first.',
+    const box=origin.getBoundingClientRect(), offer=this.commandsOffer(), unloaded='Draft is not loaded. Open this conversation first.';
+    const earlier=this.hooks.recallItems?.().length ? this.editor.value === '' ? '' : 'Clear the draft to browse earlier messages.' : 'No earlier messages are loaded.';
+    contextMenu.open(origin,{x:box.left,y:box.top-8},'Add to message',[
+      {label:'Upload files or images',icon:'upload',run:()=>this.elements.attach?.click()},
+      {label:'Reference a file',icon:'file',hint:'@',enabled:!!captured && !!this.hooks.workingFile,disabledReason:captured?'Working-folder files are unavailable.':unloaded,
         run:()=>{if(captured)this.hooks.workingFile?.(files=>current() && this.addFiles(files,captured));}},
-      {label:'Commands…',icon:'commands',hint:'/',separatorBefore:true,enabled:!!captured && offer.enabled,disabledReason:captured?offer.reason:'Draft is not loaded. Open this conversation first.',run:()=>{if(current())this.openCommands();}},
-    ],current);
+      {label:'Run a command',icon:'commands',hint:'/',enabled:!!captured && offer.enabled,disabledReason:captured?offer.reason:unloaded,run:()=>{if(current())this.openCommands();}},
+      {label:'Earlier messages',icon:'history',separatorBefore:true,enabled:!!captured && !earlier && !this.editor.disabled,disabledReason:captured?earlier||'Messages are read only.':unloaded,run:()=>{if(current())this.browseEarlier();}},
+    ],current,{compact:true,above:true});
   }
   private commandsOffer(): {enabled: boolean; reason: string} {
     const inventory = this.hooks.commands?.(false);
     if (!inventory) return {enabled: false, reason: 'Commands are unavailable here.'};
     return inventory.state === 'unavailable' ? {enabled: false, reason: inventory.message ?? 'Commands are unavailable.'} : {enabled: true, reason: ''};
+  }
+  /** The menu row starts the browse that Up starts in an empty draft, for pointer and touch input. */
+  private browseEarlier(): void {
+    const source = this.hooks.recallItems; if (!source || !this.current || this.destroyed || this.composing || this.editor.disabled) return;
+    this.focus(); if (this.beginRecall(source)) this.stepRecall(-1);
   }
   /** Commands start the message, so an empty draft receives the slash that opens the list. */
   private openCommands(): void {

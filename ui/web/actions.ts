@@ -17,6 +17,8 @@ import { navigateOptions } from './list-navigation.ts';
 import { responseOutcome } from './conversation-presentation.ts';
 import type { CommandInventory, CommandOption, CommandMatch } from './command-menu-state.ts';
 export const COMMAND_INVENTORY_PAGE_LIMIT = 8;
+/** Pages of the Primary model list read for display names; a model beyond them shows its id. */
+export const MODEL_NAME_PAGE_LIMIT = 10;
 const appearanceChoices: readonly [Appearance, string][] = [['system', 'System'], ['dark', 'Dark'], ['light', 'Light']];
 /** The server links the user stylesheet into the page only when the file is usable, so the link is the applied state. */
 export function userStylesheetApplied(): boolean {
@@ -103,7 +105,7 @@ function findStatusText(result: FindStatus | undefined, query: string): string {
   return `Match ${result.position} of ${result.total} in loaded messages.${boundary}`;
 }
 export type SelectionChange = Partial<Omit<Workspace, 'selectedTarget'>> & {selectedTarget?: Target | null};
-export type ActionContext = {agentPresentation: ConstructorParameters<typeof ProjectPicker>[0]['agentPresentation']; snapshot: () => Snapshot | undefined; primary: () => PrimaryView | undefined; composer: Composer; commandsChanged: () => void; modelChanged?: () => void; modal: Modal;
+export type ActionContext = {agentPresentation: ConstructorParameters<typeof ProjectPicker>[0]['agentPresentation']; snapshot: () => Snapshot | undefined; primary: () => PrimaryView | undefined; composer: Composer; commandsChanged: () => void; modelChanged?: () => void; modelNamesChanged?: () => void; modal: Modal;
   selection: (change: SelectionChange) => Promise<void>; reload: () => Promise<void>; result: (result: OperationView) => void; rosterRefresh: () => void; hasTranscript: () => boolean; find: () => FindSession | undefined; recovery: () => void; primaryEntries: () => EntryView[]; agents: () => AgentRow[]; selectedAgent: () => Pick<AgentRow, 'identity' | 'capabilities'> | undefined; selectAgent: (row: AgentRow) => void; selectPrimary: () => void; notices: () => void; sidebar: (visible: boolean) => void; view: (tools: boolean, expand: boolean) => void; copyAgent: () => void; inspectAgent: () => void; resultLookup?: () => void; agentCaption?: (identity: string) => ConversationCaption; agentStatus: (row: AgentRow) => string; conversationFacts?: (identity: string) => readonly ReportedFact[]; tabs?: {close: () => void; switch: (direction: number) => void; layout: () => ConversationLayout}};
 export class Actions {
   private captions = new ConversationCaptions();
@@ -118,10 +120,47 @@ export class Actions {
   private picker?: ProjectPicker;
   private changingSession = false;
   private modelChanges = new Map<string, Set<{operationId?: string}>>();
+  private modelNames = new Map<string, Map<string, string>>();
+  private namedPrimaries = new Set<string>();
   private ctx: ActionContext;
   constructor(ctx: ActionContext) { this.ctx = ctx; }
   private target(primary: PrimaryView): Target { return {kind: 'primary', key: primary.key, epoch: primary.epoch}; }
   private path(primary: PrimaryView, suffix: string): string { return `/api/primaries/${encodeURIComponent(primary.key)}/${suffix}`; }
+  /** The display name for a reported provider and id: the exact provider match first, otherwise the one name every provider gives that id; undefined when the names differ or none is known. */
+  modelName(provider: string, id: string): string | undefined {
+    const byProvider = this.modelNames.get(id); if (!byProvider) return undefined;
+    const exact = byProvider.get(provider); if (exact !== undefined) return exact;
+    const names = new Set(byProvider.values());
+    return names.size === 1 ? [...names][0] : undefined;
+  }
+  private learnModels(items: readonly ModelChoice[], keepExisting = false): void {
+    let changed = false;
+    for (const model of items) {
+      if (typeof model.name !== 'string' || !model.name.trim()) continue;
+      const byProvider = this.modelNames.get(model.id) ?? new Map<string, string>(); this.modelNames.set(model.id, byProvider);
+      const known = byProvider.get(model.provider);
+      if (known === model.name || keepExisting && known !== undefined) continue;
+      byProvider.set(model.provider, model.name); changed = true;
+    }
+    if (changed) this.ctx.modelNamesChanged?.();
+  }
+  /** Learns the ready Primary's own model on every call, then reads its model list once for each Primary session, page by page up to the page bound, so conversation settings can show readable names. */
+  readModelNames(): void {
+    const primary = this.ctx.primary(); if (primary?.lifecycle !== 'ready') return;
+    if (primary.model) this.learnModels([primary.model], true);
+    const key = `${primary.key}:${primary.epoch}`; if (this.namedPrimaries.has(key)) return;
+    this.namedPrimaries.add(key);
+    void this.walkModelNames(primary);
+  }
+  private async walkModelNames(primary: PrimaryView): Promise<void> {
+    let cursor: string | undefined;
+    for (let index = 0; index < MODEL_NAME_PAGE_LIMIT; index++) {
+      const page = await this.resourcePage(primary, 'models', cursor).catch(() => undefined); if (!page) return;
+      this.learnModels(page.items as ModelChoice[]);
+      if (!page.nextCursor) return;
+      cursor = page.nextCursor;
+    }
+  }
   private observeResources(primary?: PrimaryView): boolean {
     const target = primary ? `${primary.key}:${primary.epoch}:${primary.lifecycle}` : '';
     if (this.resourceTarget === target) return false;
@@ -307,7 +346,7 @@ export class Actions {
     const primary = this.ctx.primary(); if (!primary) return;
     const modal = this.ctx.modal; modal.open('Choose model for Primary'); const token = modal.token; modal.body.append(element('p', 'secondary', 'Loading models…'));
     void modal.run(async () => {
-      const page = await this.load('models'); if (!modal.owns(token)) return;
+      const page = await this.load('models'); this.learnModels(page.items as ModelChoice[]); if (!modal.owns(token)) return;
       modal.body.replaceChildren(); const search = input('Search models'); const list = element('div', 'options'); list.setAttribute('role', 'menu'); list.setAttribute('aria-label', 'Models'); modal.body.append(search.label, search.field, list);
       const paint = () => {
         list.replaceChildren();
@@ -323,7 +362,7 @@ export class Actions {
       search.field.addEventListener('input', paint); paint(); search.field.focus();
       if (page.nextCursor) {
         const more = button('More models', () => { more.disabled = true; void modal.run(async () => {
-          try { const next = await request<ResourcePage>(this.path(primary, `resources/models?limit=100&cursor=${encodeURIComponent(page.nextCursor ?? '')}`)); page.items = [...page.items as ModelChoice[], ...next.items as ModelChoice[]]; page.nextCursor = next.nextCursor; more.hidden = !next.nextCursor; paint(); }
+          try { const next = await request<ResourcePage>(this.path(primary, `resources/models?limit=100&cursor=${encodeURIComponent(page.nextCursor ?? '')}`)); page.items = [...page.items as ModelChoice[], ...next.items as ModelChoice[]]; page.nextCursor = next.nextCursor; more.hidden = !next.nextCursor; this.learnModels(next.items as ModelChoice[]); paint(); }
           finally { more.disabled = false; }
         }, false, 'Models could not be loaded.'); }); modal.body.append(more);
       }

@@ -6,11 +6,37 @@ import { canSplitPane, closePane, MAX_PANES, movePaneTab, paneById, paneLeaves, 
 export type ContextItem = {key?: string; icon?: CardIcon; hint?: string; label: string; run: () => void; enabled?: boolean; checked?: boolean; checkbox?: boolean; description?: string; disabledReason?: string; separatorBefore?: boolean; heading?: string};
 function itemRole(item: ContextItem): string { return item.checked === undefined ? 'menuitem' : item.checkbox ? 'menuitemcheckbox' : 'menuitemradio'; }
 export type MenuPoint = {x: number; y: number};
+/** A compact menu draws fixed-height rows with the typed trigger at the right and keeps a disabled reason in the tooltip; an upward menu ends at the given point. */
+export type MenuOptions = {compact?: boolean; above?: boolean};
 export function menuPosition(point: MenuPoint, size: {width: number; height: number}, viewport: {width: number; height: number}): MenuPoint {
   return {x: Math.max(4, Math.min(point.x, viewport.width - size.width - 4)), y: Math.max(4, Math.min(point.y, viewport.height - size.height - 4))};
 }
+function menuClass(options: MenuOptions): string { return options.compact ? 'context-menu context-menu-compact' : 'context-menu'; }
+function placeMenu(point: MenuPoint, size: {width: number; height: number}, options: MenuOptions, viewport: {width: number; height: number}): MenuPoint {
+  return menuPosition({x: point.x, y: options.above ? point.y - size.height : point.y}, size, viewport);
+}
 export function nativeEditingTarget(target: EventTarget | null): boolean {
   return !!(target as HTMLElement | null)?.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"])');
+}
+function explainDisabled(row: HTMLElement, reason: string, options: MenuOptions): void {
+  if (options.compact) {row.title = reason; row.setAttribute('aria-description', reason); return;}
+  const note = element('span', 'context-menu-note'); note.textContent = reason; row.append(note);
+}
+/** One row: a check or icon, the label, the typed trigger, and a disabled reason as a note or, in a compact menu, as its tooltip. */
+function menuRow(item: ContextItem, options: MenuOptions, choose: () => void): HTMLButtonElement {
+  const row = button(item.label, choose);
+  row.className = 'context-menu-item';
+  row.setAttribute('role', itemRole(item));
+  if (item.checked !== undefined) {row.setAttribute('aria-checked', String(item.checked)); const check = cardIcon('success'); check.classList.add('choice-check'); row.prepend(check);}
+  const icon = item.icon ? cardIcon(item.icon) : undefined; icon?.classList.add('context-menu-icon');
+  const hint = item.hint ? element('span', 'context-menu-hint', item.hint) : undefined; hint?.setAttribute('aria-hidden', 'true');
+  if (options.compact) row.replaceChildren(...[icon, element('span', 'context-menu-label', item.label), hint].filter((node): node is NonNullable<typeof node> => !!node));
+  else {if (icon) row.prepend(icon); if (hint) row.prepend(hint);}
+  if (item.hint) row.setAttribute('aria-keyshortcuts', item.hint);
+  if (item.description) {row.setAttribute('aria-description', item.description); row.title = item.description;}
+  row.setAttribute('aria-disabled', String(item.enabled === false)); row.tabIndex = -1;
+  if (item.disabledReason && item.enabled === false) explainDisabled(row, item.disabledReason, options);
+  return row;
 }
 /** One popup owns menu navigation and dismissal; callers retain the action's exact target. */
 export class ContextMenu {
@@ -22,7 +48,7 @@ export class ContextMenu {
   private items: ContextItem[] = [];
   get openNow(): boolean { return !!this.node; }
   owns(origin: HTMLElement): boolean { return !!this.node && this.trigger === origin; }
-  open(origin: HTMLElement, point: MenuPoint, label: string, items: ContextItem[], valid: () => boolean = () => true): void {
+  open(origin: HTMLElement, point: MenuPoint, label: string, items: ContextItem[], valid: () => boolean = () => true, options: MenuOptions = {}): void {
     const previous = this.trigger === origin ? this.rows.indexOf(origin.ownerDocument.activeElement as HTMLElement) : -1;
     const choice = this.items[previous];
     const restore = previous >= 0 ? this.restore : undefined;
@@ -31,22 +57,14 @@ export class ContextMenu {
     const active = doc.activeElement as HTMLElement | null;
     this.restore = restore ?? (active && origin.contains(active) ? active : origin);
     if (origin.getAttribute?.('aria-haspopup') === 'menu') { this.trigger = origin; origin.setAttribute('aria-expanded', 'true'); }
-    const menu = element('div', 'context-menu'); menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', label);
+    const menu = element('div', menuClass(options)); menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', label);
     this.node = menu;
     const rows = items.map(item => {
-      const row = button(item.label, () => {
+      const row = menuRow(item, options, () => {
         if (item.enabled === false) return;
         const current = valid(); this.close();
         if (current) item.run(); else announce('This item changed. Choose the action again.');
       });
-      row.className = 'context-menu-item';
-      row.setAttribute('role', itemRole(item));
-      if (item.checked !== undefined) {row.setAttribute('aria-checked', String(item.checked)); const check = cardIcon('success'); check.classList.add('choice-check'); row.prepend(check);}
-      if (item.icon) {const icon = cardIcon(item.icon); icon.classList.add('context-menu-icon'); row.prepend(icon);}
-      if (item.hint) {const hint = element('span', 'context-menu-hint'); hint.textContent = item.hint; hint.setAttribute('aria-hidden', 'true'); row.prepend(hint); row.setAttribute('aria-keyshortcuts', item.hint);}
-      if (item.description) {row.setAttribute('aria-description', item.description); row.title = item.description;}
-      row.setAttribute('aria-disabled', String(item.enabled === false)); row.tabIndex = -1;
-      if (item.disabledReason && item.enabled === false) { const note = element('span', 'context-menu-note'); note.textContent = item.disabledReason; row.append(note); }
       if (item.separatorBefore) { const separator = element('div', 'context-menu-separator'); separator.setAttribute('role', 'separator'); menu.append(separator); }
       if (item.heading) {const heading = element('div', 'context-menu-heading'); heading.setAttribute('role', 'presentation'); heading.textContent = item.heading; menu.append(heading);}
       menu.append(row); return row;
@@ -76,7 +94,7 @@ export class ContextMenu {
       menu.popover = 'manual'; menu.style.margin = '0'; menu.style.inset = 'auto'; menu.showPopover();
     }
     menu.style.maxWidth = `${Math.max(1, view.innerWidth - 8)}px`; menu.style.maxHeight = `${Math.max(1, view.innerHeight - 8)}px`;
-    const position = menuPosition(point, menu.getBoundingClientRect(), {width: view.innerWidth, height: view.innerHeight});
+    const position = placeMenu(point, menu.getBoundingClientRect(), options, {width: view.innerWidth, height: view.innerHeight});
     menu.style.left = `${position.x}px`; menu.style.top = `${position.y}px`;
     const retained = choice?.key ? items.findIndex(item => item.key === choice.key) : -1;
     focus(previous < 0 ? 0 : retained >= 0 ? retained : Math.min(previous, rows.length - 1));

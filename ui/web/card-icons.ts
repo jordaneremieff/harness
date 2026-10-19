@@ -1,6 +1,6 @@
 import { button, element, setText } from './dom.ts';
 
-export type CardIcon = 'copy' | 'wrap' | 'chevron' | 'success' | 'error' | 'working' | 'unknown' | 'previous' | 'next' | 'restart' | 'close' | 'menu' | 'plus' | 'search' | 'info' | 'folder' | 'folder-open' | 'navigation' | 'agent' | 'latest' | 'earlier' | 'message' | 'more' | 'commands' | 'notifications' | 'appearance' | 'send' | 'stop' | 'disconnected' | 'file' | 'play' | 'steer';
+export type CardIcon = 'copy' | 'wrap' | 'chevron' | 'success' | 'error' | 'working' | 'unknown' | 'previous' | 'next' | 'restart' | 'close' | 'menu' | 'plus' | 'search' | 'info' | 'folder' | 'folder-open' | 'navigation' | 'agent' | 'latest' | 'earlier' | 'message' | 'more' | 'commands' | 'notifications' | 'appearance' | 'send' | 'stop' | 'disconnected' | 'file' | 'play' | 'steer' | 'upload' | 'history';
 const paths: Record<CardIcon, string> = {
   file: 'M3 2h6l4 4v8H3Z M9 2v4h4 M5 9h6 M5 11h4',
   copy: 'M6 5V2h8v9h-3 M2 5h8v9H2Z',
@@ -20,6 +20,8 @@ const paths: Record<CardIcon, string> = {
   stop: 'M3 3h10v10H3Z',
   play: 'M5 3.5v9l7-4.5Z',
   steer: 'M4 3v5a2 2 0 0 0 2 2h6 M9 7l3 3-3 3',
+  upload: 'M8 10V3 M5 6l3-3 3 3 M3 11v2h10v-2',
+  history: 'M8 4v4l3 2 M2.5 8a5.5 5.5 0 1 0 1.6-3.9 M2.5 2.5V5H5',
   disconnected: 'M14 8a6 6 0 1 1-12 0 6 6 0 0 1 12 0 M4 4l8 8',
   commands: 'M2 4l4 4-4 4 M9 12h5',
   notifications: 'M3 11h10l-1-2V6a4 4 0 0 0-8 0v3Z M6 13a2 2 0 0 0 4 0 M8 1v1',

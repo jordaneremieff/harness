@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test, type TestContext } from 'node:test';
 import type { AgentRow, Appearance, HandoffView, OperationView, PrimaryControl, PrimaryView, Snapshot, Target } from '../shared/api.ts';
-import { Actions, COMMAND_INVENTORY_PAGE_LIMIT, rankPalette } from './actions.ts';
+import { Actions, COMMAND_INVENTORY_PAGE_LIMIT, MODEL_NAME_PAGE_LIMIT, rankPalette } from './actions.ts';
 import { Modal } from './modal.ts';
 import { rankCommands } from './command-menu-state.ts';
 import type { ActionContext, PaletteEntry } from './actions.ts';
@@ -1080,4 +1080,73 @@ test('conversation details keeps the captured agent and reported facts separate 
     assert.deepEqual(requested, ['agent-first']); assert.match(textOf(f.body), /task for agent-first/); assert.doesNotMatch(textOf(f.body), /agent-second/);
     assert.match(f.actions.paletteEntries().find(item => item.source === 'agent')?.description ?? '', /^Connected/);
   } finally {f.restore();}
+});
+test('model names come from one read of the Primary model list for each Primary session', async () => {
+  const reads: string[] = []; let changed = 0, current = primary;
+  globalThis.fetch = async path => {
+    reads.push(String(path));
+    return Response.json({ok: true, data: {items: [{provider: 'vendor', id: 'model-a', name: 'Model A', reasoning: true, input: ['text']}, {provider: 'vendor', id: 'unnamed', name: '  ', reasoning: false, input: ['text']}], nextCursor: null, revision: 'r'}});
+  };
+  const actions = new Actions(context({primary: () => current, modelNamesChanged: () => {changed++;}}));
+  assert.equal(actions.modelName('vendor', 'model-a'), undefined);
+  actions.readModelNames(); actions.readModelNames(); actions.readModelNames();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(reads, ['/api/primaries/p/resources/models?limit=100']);
+  assert.equal(actions.modelName('vendor', 'model-a'), 'Model A'); assert.equal(actions.modelName('vendor', 'unnamed'), undefined); assert.equal(actions.modelName('other', 'model-a'), 'Model A', 'another provider takes the one name the list gives that id');
+  assert.equal(changed, 1);
+  actions.readModelNames(); await new Promise(resolve => setTimeout(resolve, 0)); assert.equal(reads.length, 1);
+  current = {...primary, epoch: 2}; actions.readModelNames(); await new Promise(resolve => setTimeout(resolve, 0)); assert.equal(reads.length, 2);
+  assert.equal(changed, 1, 'an unchanged list does not repaint');
+});
+test('model names are not read for a Primary that is not ready, and a failed read stays quiet', async () => {
+  const reads: string[] = []; let current: PrimaryView = {...primary, lifecycle: 'starting'}, changed = 0;
+  globalThis.fetch = async path => {reads.push(String(path)); return Response.json({ok: false, error: {code: 'unavailable', message: 'No models', retry: 'manual'}}, {status: 503});};
+  const actions = new Actions(context({primary: () => current, modelNamesChanged: () => {changed++;}}));
+  actions.readModelNames(); assert.deepEqual(reads, []);
+  current = {...primary, lifecycle: 'ready'}; actions.readModelNames(); actions.readModelNames();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(reads.length, 1); assert.equal(actions.modelName('vendor', 'model-a'), undefined); assert.equal(changed, 0);
+});
+test('model names follow the list pages once, stop at the page bound, and stop at a failed page', async () => {
+  const reads: string[] = []; let failAt = Infinity;
+  globalThis.fetch = async path => {
+    reads.push(String(path)); const page = reads.length;
+    if (page >= failAt) return Response.json({ok: false, error: {code: 'stale_revision', message: 'The resource cache changed.', retry: 'read'}}, {status: 409});
+    return Response.json({ok: true, data: {items: [{provider: 'vendor', id: `model-${page}`, name: `Model ${page}`, reasoning: false, input: ['text']}], nextCursor: `cursor-${page}`, revision: 'r'}});
+  };
+  const first = new Actions(context());
+  first.readModelNames(); await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(reads.length, MODEL_NAME_PAGE_LIMIT); assert.match(reads[1] ?? '', /cursor=cursor-1$/); assert.equal(first.modelName('vendor', `model-${MODEL_NAME_PAGE_LIMIT}`), `Model ${MODEL_NAME_PAGE_LIMIT}`);
+  reads.length = 0; failAt = 3; const second = new Actions(context());
+  second.readModelNames(); await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(reads.length, 3); assert.equal(second.modelName('vendor', 'model-2'), 'Model 2'); assert.equal(second.modelName('vendor', 'model-3'), undefined);
+});
+test('a model without an exact provider match takes the one name every provider gives its id', async () => {
+  globalThis.fetch = async () => Response.json({ok: true, data: {items: [{provider: 'openai', id: 'gpt-6-astra', name: 'GPT-6 Astra', reasoning: true, input: ['text']}, {provider: 'vendor-a', id: 'shared', name: 'Shared A', reasoning: false, input: ['text']}, {provider: 'vendor-b', id: 'shared', name: 'Shared B', reasoning: false, input: ['text']}, {provider: 'vendor-c', id: 'same', name: 'Same', reasoning: false, input: ['text']}, {provider: 'vendor-d', id: 'same', name: 'Same', reasoning: false, input: ['text']}], nextCursor: null, revision: 'r'}});
+  const actions = new Actions(context()); actions.readModelNames(); await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(actions.modelName('openai', 'gpt-6-astra'), 'GPT-6 Astra'); assert.equal(actions.modelName('openai-codex', 'gpt-6-astra'), 'GPT-6 Astra');
+  assert.equal(actions.modelName('vendor-a', 'shared'), 'Shared A'); assert.equal(actions.modelName('vendor-b', 'shared'), 'Shared B');
+  assert.equal(actions.modelName('other', 'shared'), undefined, 'different names for one id leave the id');
+  assert.equal(actions.modelName('other', 'same'), 'Same', 'identical names for one id agree');
+  assert.equal(actions.modelName('openai-codex', 'unlisted'), undefined);
+});
+test('the ready Primary names its own model without a list read and follows a model change', async () => {
+  let current: PrimaryView = {...primary, model: {provider: 'openai-codex', id: 'gpt-6-astra', name: 'GPT-6 Astra', reasoning: true, input: ['text']}}, changed = 0;
+  globalThis.fetch = async () => Response.json({ok: false, error: {code: 'unavailable', message: 'No models', retry: 'manual'}}, {status: 503});
+  const actions = new Actions(context({primary: () => current, modelNamesChanged: () => {changed++;}}));
+  assert.equal(actions.modelName('openai-codex', 'gpt-6-astra'), undefined);
+  actions.readModelNames(); await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(actions.modelName('openai-codex', 'gpt-6-astra'), 'GPT-6 Astra'); assert.equal(changed, 1);
+  actions.readModelNames(); assert.equal(changed, 1, 'an unchanged model repaints nothing');
+  current = {...current, model: {provider: 'anthropic', id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5', reasoning: true, input: ['text']}};
+  actions.readModelNames(); assert.equal(actions.modelName('anthropic', 'claude-sonnet-5-5'), 'Claude Sonnet 5.5'); assert.equal(actions.modelName('openai-codex', 'gpt-6-astra'), 'GPT-6 Astra'); assert.equal(changed, 2);
+  current = {...primary, lifecycle: 'starting', model: {provider: 'late', id: 'late-id', name: 'Late', reasoning: false, input: ['text']}};
+  actions.readModelNames(); assert.equal(actions.modelName('late', 'late-id'), undefined, 'a Primary that is not ready teaches nothing');
+});
+test('a list name for the Primary model is not replaced by the name the Primary reports', async () => {
+  const current: PrimaryView = {...primary, model: {provider: 'vendor', id: 'm', name: 'Reported', reasoning: false, input: ['text']}}; let changed = 0;
+  globalThis.fetch = async () => Response.json({ok: true, data: {items: [{provider: 'vendor', id: 'm', name: 'Listed', reasoning: false, input: ['text']}], nextCursor: null, revision: 'r'}});
+  const actions = new Actions(context({primary: () => current, modelNamesChanged: () => {changed++;}}));
+  actions.readModelNames(); await new Promise(resolve => setTimeout(resolve, 0)); actions.readModelNames();
+  assert.equal(actions.modelName('vendor', 'm'), 'Listed'); assert.equal(changed, 2);
 });

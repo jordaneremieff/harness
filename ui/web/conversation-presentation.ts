@@ -45,7 +45,7 @@ export function agentComposerState(source: AgentComposerSource): AgentComposerSt
 }
 export type ConversationPresentation = {
   name: string; nameDetail?: string; identityTail?: string; tone: PresentationTone; cwd?: string; activity: string; input: boolean; busy: boolean; lastObserved: boolean; guidance: string;
-  model?: {provider: string; modelId: string}; thinking?: string; retainedModel: boolean; retainedThinking: boolean;
+  model?: {provider: string; modelId: string; name?: string}; thinking?: string; retainedModel: boolean; retainedThinking: boolean;
   tool?: AgentRow['currentTool']; detail?: string; responseOutcome?: ResponseOutcome; hideVisibleState?: boolean;
 };
 export function settingsLabel(view: Pick<ConversationPresentation, 'model' | 'thinking' | 'retainedModel' | 'retainedThinking'>, fullModel = false): string {
@@ -54,6 +54,10 @@ export function settingsLabel(view: Pick<ConversationPresentation, 'model' | 'th
   const thinking = view.thinking ? `${!both && view.retainedThinking ? 'Last observed thinking' : 'Thinking'} ${view.thinking}` : '';
   return `${both ? 'Last observed: ' : ''}${[model, thinking].filter(Boolean).join(' · ')}`;
 }
+/** Composer text for a model: the list name when one is known, otherwise the id. The provider and id stay in the tooltip and accessible name. */
+export function modelText(model: {modelId: string; name?: string}, listed?: string): string { return listed?.trim() || model.name?.trim() || model.modelId; }
+/** Effort is shown with a capital first letter; the reported level stays unchanged elsewhere. */
+export function effortText(level: string): string { return level ? level.charAt(0).toLocaleUpperCase() + level.slice(1) : level; }
 export type PresentationSource = {target?: Target; primary?: PrimaryView; savedSession?: SavedSession; row?: AgentRow; identityTail?: string; caption?: ConversationCaption;
   availability?: EventData['agent.availability']; negotiated?: Pick<TargetPreparation, 'availability' | 'capabilities'> & {identity: string}; frame?: ProjectedFrame; entries?: readonly EntryView[]; tool?: AgentRow['currentTool']; start?: AgentStartAttempt; connected: boolean};
 /** The newest conversational record owns its response outcome; tool errors do not. */
@@ -98,7 +102,7 @@ function primaryPresentation(source: PresentationSource, target: Extract<Target,
   return {...base, ...primaryCaption(item, source.savedSession), identityTail:source.identityTail, cwd: item.cwd, activity, tone: primaryTone(item, outcome, source.connected),
     input: ready, busy: source.connected && ready && ['running', 'compacting', 'retrying'].includes(item.activity), responseOutcome: outcome,
     detail: item.activity === 'retrying' && item.retry ? `Next retry time is estimated from backend receipt plus ${item.retry.delayMs} ms.\n${item.retry.error}` : undefined,
-    model: item.model ? {provider: item.model.provider, modelId: item.model.id} : undefined, thinking: item.thinkingLevel,
+    model: item.model ? {provider: item.model.provider, modelId: item.model.id, name: item.model.name} : undefined, thinking: item.thinkingLevel,
     tool: ready && item.activity === 'running' ? source.tool : undefined};
 }
 function agentSettings(row?: AgentRow, frame?: ProjectedFrame): Pick<ConversationPresentation, 'name' | 'model' | 'thinking' | 'retainedModel' | 'retainedThinking'> {

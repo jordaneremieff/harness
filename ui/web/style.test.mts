@@ -206,7 +206,7 @@ test('stored and live conversation names use primary text while metadata stays q
 });
 test('small radii and quiet surfaces permit only the reduced-motion-aware busy marker', () => {
   const radii = declarations('border-radius');
-  assert.deepEqual(radii.filter(value => value === '6px'), ['6px'], 'only the composer surface takes the larger corner'); assert.match(rule('.composer-input'), /border-radius: 6px/);
+  assert.deepEqual(radii.filter(value => value === '6px'), ['6px', '6px'], 'only the composer surface and its Add menu take the larger corner'); assert.match(rule('.composer-input'), /border-radius: 6px/); assert.match(rule('.context-menu-compact'), /border-radius: 6px/);
   for (const value of radii) {
     if (value === '50%' || value === '6px') continue;
     for (const length of value.match(/[\d.]+px/g) ?? []) assert.ok(Number.parseFloat(length) <= 4, `radius ${value}`);
@@ -261,7 +261,7 @@ test('file message source and exact destination details wrap within the dialog',
 test('model and thinking leave the footer for separate readable targets under the composer', () => {
   assert.doesNotMatch(html, /id="(?:model-button|thinking-button|model-value|thinking-value|agent-status)"|workbench-model/);
   assert.match(rule('.composer-settings'), /margin: 0 6px 0 auto/); assert.match(rule('.composer-model, .composer-thinking'), /min-height: 30px;[^}]*font-size: 13px; white-space: nowrap/);
-  assert.match(rule('.composer-meta'), /display: flex; flex: 1 1 auto; flex-wrap: nowrap; align-items: center/);
+  assert.match(rule('.composer-meta'), /display: flex; flex: 1 1 0; flex-wrap: nowrap; align-items: center/);
   assert.doesNotMatch(css, /\.composer-model[^{}]*\{[^}]*min-width: 10ch/);
   assert.match(media('@media (pointer:coarse)'), /\.composer-model, \.composer-thinking, \.icon-button/);
   assert.equal((html.match(/<footer id="workbench-status"/g) ?? []).length, 1);
@@ -1122,4 +1122,11 @@ test('the message box handle is a short grip on the surface edge and the model s
   assert.match(narrow, /\.composer-state:not\(\[data-tone\]\) > :not\(\.composer-state-line\) \{ display: none; \}/);
   assert.doesNotMatch(narrow, /\.composer-state(?::not\(\[data-tone\]\))?\s*\{[^}]*display: none/, "a container rule never hides the status region that holds the spoken sentence");
   assert.match(narrow, /\.composer-meta:has\(> \.composer-state\[data-tone\]:not\(\[hidden\]\)\) > \.composer-settings \{ display: none; \}/);
+});
+test('the compact Add menu draws 34px rows with a 20px icon column and the trigger at the right, and the control row gives the action its width first', () => {
+  assert.match(rule('.context-menu-compact'), /width: 272px/);
+  assert.match(rule('.context-menu-compact > .context-menu-item'), /display: grid; grid-template-columns: 20px minmax\(0, 1fr\) auto/);
+  assert.match(rule('.context-menu-compact > .context-menu-item'), /min-height: 34px/);
+  assert.match(rule('.context-menu-compact .context-menu-label'), /overflow: hidden; text-overflow: ellipsis/);
+  assert.match(rule('.composer-meta'), /flex: 1 1 0;/);
 });

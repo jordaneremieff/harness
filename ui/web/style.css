@@ -854,7 +854,7 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
   .composer-state:not([data-tone]) > :not(.composer-state-line) { display: none; }
   .composer-meta:has(> .composer-state[data-tone]:not([hidden])) > .composer-settings { display: none; }
 }
-.composer-meta { display: flex; flex: 1 1 auto; flex-wrap: nowrap; align-items: center; min-width: 0; min-height: 30px; color: var(--muted); font-size: 12px; }
+.composer-meta { display: flex; flex: 1 1 0; flex-wrap: nowrap; align-items: center; min-width: 0; min-height: 30px; color: var(--muted); font-size: 12px; }
 .composer textarea { display: block; width: 100%; min-width: 0; min-height: 24px; padding: 12px 14px 4px; border: 0; background: transparent; color: var(--fg); caret-color: var(--accent); font-size: 16px; line-height: 1.6; resize: none; }
 .composer-surface { position: relative; }
 .composer-overlay { position: absolute; top: 0; left: 0; overflow: auto; scrollbar-width: none; pointer-events: none; color: var(--fg); }
@@ -977,6 +977,12 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
 .context-menu-icon { display: inline-block; vertical-align: middle; margin: -2px var(--s2) 0 0; color: var(--muted); }
 .context-menu-note { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; }
 .context-menu-separator { margin: 4px 0; border-top: 1px solid var(--rule); }
+.context-menu-compact { width: 272px; padding: 4px; border-radius: 6px; }
+.context-menu-compact > .context-menu-item { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; column-gap: 10px; min-height: 34px; padding: 0 10px; border-radius: 4px; font-size: 14px; white-space: nowrap; }
+.context-menu-compact .context-menu-icon { margin: 0; }
+.context-menu-compact .context-menu-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.context-menu-compact .context-menu-hint { float: none; margin: 0; font-size: 13px; }
+.context-menu-compact .context-menu-separator { margin: 4px 6px; }
 
 /* Lists in menus, palette and pickers */
 .command-option, .palette-row { position: relative; display: grid; grid-template-columns: minmax(0,30%) minmax(0,1fr) 10ch; align-items: center; gap: 12px; width: 100%; min-height: 30px; padding: 0 var(--s3); border: 0; border-radius: 0; cursor: pointer; }
