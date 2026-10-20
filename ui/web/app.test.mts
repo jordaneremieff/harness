@@ -988,11 +988,9 @@ test('Primary and agent name collisions never expose a suffix from the internal 
   assert.doesNotMatch(byId('primary-row').textContent, /mary/); assert.deepEqual(app.state.workspace?.selectedTarget, target);
 });
 
-test('the missing Primary uses the shared unknown glyph rather than a connected mark', async () => {
+test('the Primary row carries no state glyph, so its title starts at the common text edge', async () => {
   await arrive({workspace: {id: 'w', revision: 1}, primaries: [], roster: []});
-  assert.equal(byId('primary-row-state').dataset.glyph, '?');
-  assert.ok(byId('primary-row-state').querySelector('.card-icon-unknown'));
-  assert.equal(byId('primary-row-state').dataset.tone, 'warning');
+  assert.equal(byId('primary-row').querySelector('svg'), null); assert.equal(byId('primary-row').querySelector('.state-glyph'), null);
   assert.equal(byId('primary-row-title').textContent, 'no session');
   assert.equal(byId('session-chooser').hidden, false); assert.equal(byId('conversation-panes').querySelector('textarea'), null);
 });
@@ -1194,6 +1192,12 @@ test('a live agent with unavailable catalog metadata keeps title pane and compos
   assert.equal(agentControl('recipient').textContent,'Message Worker'); assert.equal(agentControl('send').disabled,true); assert.equal(agentControl('editor').disabled,false);
 });
 
+test('a Primary that is not ready keeps its state word on the right of the row and a ready one shows none', async () => {
+  await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({lifecycle: 'stopped'})], roster: []});
+  assert.notEqual(byId('primary-row-meta').textContent, ''); assert.equal(byId('primary-row').querySelector('svg'), null);
+  await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({activity: 'idle'})], roster: []});
+  assert.equal(byId('primary-row-meta').textContent, '');
+});
 test('sidebar sections retain their collapsed state per workspace and tab and filter focus expands agents', async () => {
   const values = new Map<string, string>();
   Reflect.set(globalThis, 'sessionStorage', {getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => {values.set(key, value);}});
@@ -1227,7 +1231,7 @@ test('sidebar sections retain their collapsed state per workspace and tab and fi
   assert.doesNotMatch(html, /id="primary-heading"/);
   assert.match(html, /id="session-open"[^>]*aria-haspopup="dialog">Find session…/);
   assert.match(html, /id="tabs-open-session"[^>]*>Find session…/);
-  for (const section of ['files', 'agents']) { assert.equal(byId(`${section}-heading`).querySelector('svg'), null); assert.ok(byId(`${section}-count`)); }
+  for (const section of ['files', 'agents']) { assert.equal(byId(`${section}-heading`).querySelectorAll('svg').length, 1); assert.ok(byId(`${section}-heading`).querySelector('.card-icon-chevron')); assert.ok(byId(`${section}-count`)); }
   assert.match(html, /id="agents-heading" class="section-toggle"[^>]*aria-controls="agents-section-body">AGENTS/);
 });
 test('palette key aliases prevent browser defaults and preserve IME, repeat and open-dialog guards', async () => {
@@ -1489,7 +1493,7 @@ test('loaded prompt metadata updates Primary captions without input or target ch
   assert.equal(transportLog.slice(requests).some(call=>call.method==='POST'),false);
 });
 test('the Primary composer uses the projected conversation name without replacing its editor', async () => {
-  const item=primaryFixture({epoch:41,sessionName:'Named conversation',activity:'idle'});await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:{kind:'primary',key:'p',epoch:41}},primaries:[item],roster:[]});const editor=primaryControl('editor');assert.equal(primaryControl('recipient').textContent,'Message Named conversation');assert.equal(byId('primary-row-state').dataset.glyph,'✓'); assert.ok(byId('primary-row-state').querySelector('.card-icon-success'));event('primary.state',{...item,sessionName:'Renamed conversation'},{kind:'primary',key:'p',epoch:41});assert.equal(primaryControl('recipient').textContent,'Message Renamed conversation');assert.equal(primaryControl('editor'),editor);
+  const item=primaryFixture({epoch:41,sessionName:'Named conversation',activity:'idle'});await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:{kind:'primary',key:'p',epoch:41}},primaries:[item],roster:[]});const editor=primaryControl('editor');assert.equal(primaryControl('recipient').textContent,'Message Named conversation');assert.equal(byId('primary-row').querySelector('svg'),null); assert.equal(byId('primary-row-meta').textContent,'');event('primary.state',{...item,sessionName:'Renamed conversation'},{kind:'primary',key:'p',epoch:41});assert.equal(primaryControl('recipient').textContent,'Message Renamed conversation');assert.equal(primaryControl('editor'),editor);
 });
 
 test('navigation uses drawer state while a breakpoint resize still has desktop DOM visibility', async () => {

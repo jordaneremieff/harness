@@ -58,8 +58,11 @@ test('conversation actions live in the pane tab row and keep shared desktop and 
   assert.match(media('@media (pointer:coarse)'), /\.card-action, \.section-toggle[^{}]+\{ min-height: 44px; min-width: 44px/);
 });
 test('sidebar headings are text controls with counts and the finder is the first row of SESSIONS', () => {
-  assert.doesNotMatch(css, /\.section-toggle > \.card-icon|card-icon-chevron|\.section-toggle::before/);
+  assert.match(rule('.section-toggle > .card-icon-chevron'), /display: none; flex: none; width: 12px; height: 12px; color: var\(--dim\)/);
+  assert.match(rule('.section-toggle[aria-expanded=false] > .card-icon-chevron'), /display: block/);
+  assert.doesNotMatch(css, /\.section-toggle::before/);
   assert.match(rule('.section-toggle:hover'), /color: var\(--fg\)/); assert.match(rule('.section-toggle .count'), /margin-left: var\(--s2\)/);
+  assert.match(rule('.threads-footer'), /padding-right: 12px; padding-left: 12px/);
   assert.match(html, /id="files-count"/); assert.match(html, /id="agents-count"/);
   assert.match(html, /<h2 id="sessions-heading" class="nav-heading">SESSIONS<\/h2>/);
   assert.match(rule('.session-catalog'), /color: var\(--muted\)/);
@@ -202,7 +205,7 @@ test('stored and live conversation names use primary text while metadata stays q
   assert.doesNotMatch(css, /\.agent-row\[data-live=false\] \.row-name/);
   assert.match(rule('.row-identity'), /color: var\(--muted\)/);
   assert.match(rule('.row-age, .row-message'), /color: var\(--muted\)/);
-  assert.match(rule('.state-glyph, .row-state'), /color: var\(--dim\)/);
+  assert.match(rule('.row-state'), /color: var\(--dim\)/);
 });
 test('small radii and quiet surfaces permit only the reduced-motion-aware busy marker', () => {
   const radii = declarations('border-radius');
@@ -227,11 +230,11 @@ test('neutral tools keep lifecycle accents in marks and errors while source diff
   assert.match(rule('.tool-status'), /color: var\(--muted\)/);
   assert.match(rule('.tool-shell[data-status=error] > .tool-card > summary'), /color: var\(--error\)/);
   assert.match(rule('.tool-status.error'), /color: var\(--error\)/);
-  assert.match(rule(':is(.tab-dot, .conversation-state, .row-state, .state-glyph)[data-tone=info]'), /color: var\(--info\)/, 'work in progress reads as activity, not as a warning');
+  assert.match(rule(':is(.tab-dot, .conversation-state, .row-state)[data-tone=info]'), /color: var\(--info\)/, 'work in progress reads as activity, not as a warning');
   assert.match(rule('.diff-del'), /background: var\(--del-bg\); color: var\(--error\)/);
   assert.match(rule('.diff-add'), /background: var\(--add-bg\); color: var\(--success\)/);
-  assert.match(rule(':is(.tab-dot, .conversation-state, .row-state, .state-glyph)[data-tone=success]'), /color: var\(--success\)/);
-  assert.match(rule(':is(.tab-dot, .conversation-state, .row-state, .state-glyph)[data-tone=error]'), /color: var\(--error\)/);
+  assert.match(rule(':is(.tab-dot, .conversation-state, .row-state)[data-tone=success]'), /color: var\(--success\)/);
+  assert.match(rule(':is(.tab-dot, .conversation-state, .row-state)[data-tone=error]'), /color: var\(--error\)/);
   assert.match(rule('a'), /color: var\(--link\)/);
   assert.match(rule('.stop'), /color: var\(--error\)/);
 });

@@ -19,7 +19,7 @@ import {chooseWorkingFile} from './working-file-chooser.ts';
 import { activeTab, ConversationCaptions, conversationIdentityText, type CaptionRow, closeTab, duplicateTabTails, FileBrowseState, layoutTarget, openTab, switchTab, tabForTarget, tabKey, workspaceLayout } from './tabs.ts';
 import { paneLeaves, paneById, activatePaneTab, movePaneTab, resizePaneSplit, minimumPaneSize, paneSplitGeometry, splitPane, normalizePaneLayout, samePaneLayout, type PaneLeaf } from './pane-layout.ts';
 import { TabStrip } from './tabs-view.ts';
-import { cardAction, controlIcon, type CardIcon } from './card-icons.ts';
+import { cardAction, cardIcon, controlIcon, type CardIcon } from './card-icons.ts';
 import { thinkingExpanded } from './transcript-presentation.ts';
 import { contextMenu, nativeEditingTarget, paneMenuItems, type ContextItem } from './context-menu.ts';
 import { ProjectPicker } from './picker.ts';
@@ -1457,9 +1457,6 @@ export function openTabActions(pane: Pane = focusedPane): void { openPaneMenu(pa
 function primaryState(item: PrimaryView): string { return presentation({kind: 'primary', key: item.key, epoch: item.epoch}).activity; }
 function primaryNavigation(item?: PrimaryView): void {
   const view = presentation(item ? {kind: 'primary', key: item.key, epoch: item.epoch} : undefined);
-  const glyph = presentationGlyph(view);
-  const status = byId('primary-row-state'); setText(status, glyph);
-  status.dataset.tone = view.tone;
   setText(byId('primary-row-title'), item ? view.name : 'no session');
   const detail = item ? [view.name, item.sessionId ? `Session ID: ${item.sessionId}` : '', view.nameDetail].filter(Boolean).join('\n') : 'No session';
   const row = byId('primary-row'); row.title = detail; row.setAttribute('aria-description', detail);
@@ -2214,6 +2211,7 @@ export function appKey(event: KeyboardEvent): void {
 function bind(): void {
   document.addEventListener('compositionstart', event=> {if(event.target)composingFields.add(event.target);},true);
   document.addEventListener('compositionend', event=> {if(event.target)composingFields.delete(event.target);},true);
+  for (const toggle of document.querySelectorAll<HTMLElement>('.section-toggle')) toggle.append(cardIcon('chevron'));
   for (const node of document.querySelectorAll<HTMLElement>('[data-control-icon]')) {
     const count = node.querySelector<HTMLElement>('#notices-count');
     controlIcon(node, node.dataset.controlIcon as CardIcon, node.getAttribute('aria-label') ?? node.textContent ?? '');

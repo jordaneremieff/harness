@@ -65,7 +65,7 @@ const decorativeBackgrounds = new Set(["dialog::backdrop|var(--backdrop)", ".pan
 // Graphic paint carries no text; meaningful hover/focus and selected marks still meet 3:1.
 const graphicForegrounds = new Map([
   ['.tab-dot', 'muted'],
-  ...['info','success','warning','error','secondary'].map((tone):[string,string]=>[`:is(.tab-dot, .conversation-state, .row-state, .state-glyph)[data-tone=${tone}]`, tone==='secondary'?'muted':tone]),
+  ...['info','success','warning','error','secondary'].map((tone):[string,string]=>[`:is(.tab-dot, .conversation-state, .row-state)[data-tone=${tone}]`, tone==='secondary'?'muted':tone]),
 ]);
 const graphicBackgrounds = new Map([
   [".pane-split > .pane-divider:hover::after", "edge"],

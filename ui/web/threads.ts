@@ -31,6 +31,10 @@ export function threadCount(overview: ThreadOverview | undefined): string {
   if (!overview?.items.length) return '';
   return `${overview.items.length}${overview.truncated ? '+' : ''}`;
 }
+/** Names the stopped agents whose threads the list cannot hold. */
+function stoppedAgentsLine(count: number): string {
+  return `Threads from ${count} stopped ${count === 1 ? 'agent' : 'agents'} are not listed.`;
+}
 /** Quiet lines under the list. Each one states what the list does not cover. */
 export function overviewLines(overview: ThreadOverview): string[] {
   const lines: string[] = [];
@@ -43,7 +47,7 @@ export function overviewLines(overview: ThreadOverview): string[] {
   if (coverage.length) lines.push(coverage.join(' · '));
   if (hosts.unavailable > 0) lines.push(`${hosts.unavailable} ${hosts.unavailable === 1 ? 'agent does' : 'agents do'} not offer threads`);
   if (hosts.failed > 0) lines.push(`${hosts.failed} ${hosts.failed === 1 ? 'agent' : 'agents'} did not answer`);
-  if (hosts.notRunning > 0) lines.push(`Agents that are not running do not list their threads (${hosts.notRunning})`);
+  if (hosts.notRunning > 0) lines.push(stoppedAgentsLine(hosts.notRunning));
   return lines;
 }
 /** The empty-list sentence, chosen by why the list is empty. */

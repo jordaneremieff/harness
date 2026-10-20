@@ -58,7 +58,7 @@ test('the section reads nothing until it is opened and lists open threads before
   assert.equal(rows[4].classList.contains('closed'), true);
   assert.equal(byId('threads-refresh').disabled, false);
   assert.doesNotMatch(text(byId('threads-footer')), /Listed by/);
-  assert.match(text(byId('threads-footer')), /Agents that are not running do not list their threads \(2\)/);
+  assert.match(text(byId('threads-footer')), /Threads from 2 stopped agents are not listed\./);
   assert.equal(byId('threads-filter-box').hidden, true);
 });
 
