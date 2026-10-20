@@ -18,12 +18,17 @@ function pathName(value: unknown, cwd?: string): string {
   return `…/${path.split('/').filter(Boolean).slice(-2).join('/')}`;
 }
 const leadingCd = /^\s*cd\s+(?:"([^"$`\\]+)"|'([^']+)'|([^\s;&|<>()$`"'\\]+))\s*(?:&&|;)\s*(?=\S)/;
+/** A command title is one line: every run of white space, line breaks included, folds to one space before the cut. */
+function oneLine(value: string, limit = 60): string {
+  const folded = value.replace(/\s+/g, ' ').trim();
+  return folded.slice(0, limit) + (folded.length > limit ? '…' : '');
+}
 function commandSentence(value: unknown, cwd?: string): string {
   const command = text(value);if (!command) return ' a command';
   const match = leadingCd.exec(command), folder = match?.[1] ?? match?.[2] ?? match?.[3];
-  if (!match || !folder || folder === '-') return ` ${first(command)}`;
+  if (!match || !folder || folder === '-') return ` ${oneLine(command)}`;
   const trim = (path: string): string => path.length > 1 ? path.replace(/\/+$/, '') : path;
-  const shown = first(command.slice(match[0].length)), root = cwd === undefined ? undefined : trim(cwd);
+  const shown = oneLine(command.slice(match[0].length)), root = cwd === undefined ? undefined : trim(cwd);
   return trim(folder) === root ? ` ${shown}` : ` ${shown} in ${pathName(trim(folder), root)}`;
 }
 function words(done: string, active: string, action: string, object = ''): Words {

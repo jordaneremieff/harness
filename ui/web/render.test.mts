@@ -983,7 +983,7 @@ test('bash command and output stay distinct, and shell status follows live compl
   const call = {type: 'toolCall' as const, callId: 'bash', name: 'bash', arguments: {value: {command: 'echo first\necho second', timeout: 45}, truncated: false}};
   const entries = [{id: 'call', kind: 'message', messages: [{...message('bash', ''), parts: [call]}]}];
   view.set(entries); flush(); const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card);
-  assert.equal(card.parentNode?.dataset.status, 'missing'); assert.match(card.textContent, /No result recorded/); assert.equal(card.querySelector('.tool-name')?.textContent, 'Run echo first…');
+  assert.equal(card.parentNode?.dataset.status, 'missing'); assert.match(card.textContent, /No result recorded/); assert.equal(card.querySelector('.tool-name')?.textContent, 'Run echo first echo second');
   assert.equal(card.querySelector('.tool-target')?.title, '$ echo first\necho second'); assert.equal(card.querySelector('.tool-target')?.hidden, true);
   assert.equal(card.querySelector('.tool-secondary')?.textContent, ''); assert.match(card.querySelector('.tool-expanded')?.textContent ?? '', /\(timeout 45s\)/);
   assert.equal(card.querySelector('.tool-expanded')?.hidden, true); assert.doesNotMatch(card.querySelector('summary')?.textContent ?? '', /timeout/);
@@ -2168,7 +2168,7 @@ test('tool subjects mark known character and line cuts without changing complete
     const prefix = name === 'bash' ? '$ ' : '';
     const characterCut = targetFor(name, key, 'x'.repeat(4200));
     assert.equal(characterCut.textContent, ''); assert.equal(characterCut.hidden, true); assert.equal(characterCut.title, `${prefix}${'x'.repeat(4200)}`);
-    const captions = {bash: [`Ran ${'x'.repeat(60)}…`, 'Ran first line…', 'Ran Complete unknown TypeScr'], read: [`Read ${'x'.repeat(100)}…`, 'Read first line…', 'Read Complete unknown TypeScr'], custom: ['Used custom', 'Used custom', 'Used custom']};
+    const captions = {bash: [`Ran ${'x'.repeat(60)}…`, 'Ran first line second line', 'Ran Complete unknown TypeScr'], read: [`Read ${'x'.repeat(100)}…`, 'Read first line…', 'Read Complete unknown TypeScr'], custom: ['Used custom', 'Used custom', 'Used custom']};
     assert.equal(characterCut.closest('.tool-card')?.querySelector('.tool-name')?.textContent, captions[name][0]);
     const lineCut = targetFor(name, key, 'first line\nsecond line'); assert.equal(lineCut.textContent, '');
     assert.equal(lineCut.title, prefix.concat('first line', String.fromCharCode(10), 'second line'));
@@ -2182,7 +2182,7 @@ test('multiline tool targets keep a compact row and complete retained title and 
   setup(); const view = transcript(); const command = ['printf first', 'printf second', 'printf third'].join(String.fromCharCode(10));
   const source = contentEntry('multiline-command', {command}, 'output'); const message = source.messages[0]; assert.ok(message); for (const part of message.parts) part.name = 'bash';
   view.set([source]); flush(); const card = node('primary-transcript').querySelector('.tool-card'); const target = card?.querySelector('.tool-target'); assert.ok(card); assert.ok(target);
-  assert.equal(card.querySelector('.tool-name')?.textContent, 'Ran printf first…'); assert.equal(target.textContent, ''); assert.equal(target.hidden, true); assert.equal(target.title, `$ ${command}`);
+  assert.equal(card.querySelector('.tool-name')?.textContent, 'Ran printf first printf second printf third'); assert.equal(target.textContent, ''); assert.equal(target.hidden, true); assert.equal(target.title, `$ ${command}`);
   card.open = true; card.dispatch('toggle'); flush(); const args = card.querySelector('.tool-arguments'); assert.ok(args); args.open = true; args.dispatch('toggle'); flush();
   assert.match(args.textContent, /printf second/); assert.match(args.textContent, /printf third/);
   const text = 'x'.repeat(70000); const large = contentEntry('multiline-command', {command: text}, 'output'); const largeMessage = large.messages[0]; assert.ok(largeMessage); for (const part of largeMessage.parts) part.name = 'bash';

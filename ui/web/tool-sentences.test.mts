@@ -51,6 +51,24 @@ test('a command title leaves out a leading cd and names a folder only when it is
   assert.equal(toolSentence(bash('cd /elsewhere/place/harness && npm test', 'error'), {cwd}), 'Failed: Run npm test in …/place/harness');
 });
 
+test('a multi-line command folds to one title line and its arguments keep every line', () => {
+  const cwd = '/work/harness';
+  const tool = (command: string): JoinedTool => ({callId: 'b', name: 'bash', owner: 'e', slot: 's', status: 'success', args: {value: {command}, truncated: false}});
+  const label = (command: string, context: {cwd?: string} = {cwd}) => toolLabel(tool(command), context);
+  const script = 'node -e \'const fs=require("fs");\nlet s=fs.readFileSync("a","utf8");\nconsole.log(s)\'';
+  assert.equal(label(script), 'Ran node -e \'const fs=require("fs"); let s=fs.readFileSync("a","…');
+  assert.match(label(script), /^Ran node -e 'const fs=require/); assert.doesNotMatch(label(script), /\n/);
+  assert.equal(label("python3 - <<'EOF'\nimport sys\nprint(sys.argv)\nEOF"), "Ran python3 - <<'EOF' import sys print(sys.argv) EOF");
+  assert.equal(label('echo   ok\t\tnow\r\n'), 'Ran echo ok now', 'runs of white space fold and the ends are trimmed');
+  assert.equal(label('echo ok'), 'Ran echo ok');
+  assert.equal(label(`${'a'.repeat(100)}\n${'b'.repeat(100)}`), `Ran ${'a'.repeat(60)}…`);
+  const words = ['word', ...Array.from({length: 100}, () => 'x')].join(' ');
+  assert.equal(label(words.replace(/ /g, '\n  ')), `Ran ${words.slice(0, 60)}…`);
+  assert.equal(label(`cd ${cwd}/ui && node -e 'one\ntwo'`), "Ran node -e 'one two' in ui");
+  assert.equal(label(`cd /elsewhere/place/harness &&\n  npm test\n  --silent`), 'Ran npm test --silent in …/place/harness');
+  assert.equal(toolLabel({...tool('a\nb'), status: 'working'}, {cwd}), 'Running a b'); assert.equal(toolLabel({...tool('a\nb'), status: 'pending'}, {cwd}), 'Run a b');
+  assert.deepEqual(tool(script).args?.value, {command: script}, 'the tool arguments, which the card shows and Copy copies, keep the full command');
+});
 test('a command title keeps commands that are only cd or do not start with cd', () => {
   const cwd = '/work/harness';
   const label = (command: unknown, context: {cwd?: string} = {cwd}) => toolLabel({callId: 'b', name: 'bash', owner: 'e', slot: 's', status: 'success', args: {value: {command}, truncated: false}}, context);
@@ -60,6 +78,6 @@ test('a command title keeps commands that are only cd or do not start with cd', 
   assert.equal(label('cd "$HOME/x" && ls'), 'Ran cd "$HOME/x" && ls'); assert.equal(label('cd - && ls'), 'Ran cd - && ls');
   assert.equal(label(undefined), 'Ran a command');
   assert.equal(label(`cd ${cwd} && ${'x'.repeat(70)}`), `Ran ${'x'.repeat(60)}…`);
-  assert.equal(label(`cd ${cwd} && printf first\nsecond`), 'Ran printf first…');
+  assert.equal(label(`cd ${cwd} && printf first\nsecond`), 'Ran printf first second');
   assert.equal(label('cd /elsewhere/place/harness && npm test', {}), 'Ran npm test in …/place/harness');
 });
