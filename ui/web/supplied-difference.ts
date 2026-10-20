@@ -57,14 +57,14 @@ function windowLines(region: string, present: boolean, chars: number, lines: num
   const truncated = shown.length < region.length;
   return {lines: shown === '' && region !== '' ? [] : shown.split(/\r\n|\r|\n/), truncated};
 }
-/** One shared line, shortened to the context bound; `cut` reports that shared text was left out. */
+/** One shared line, shortened to the context bound and ended with "…"; `cut` reports that shared text was left out. */
 function contextLine(line: string, chars: number): {text: string | null; cut: boolean} {
   const limit = Math.min(CONTEXT_LINE_CHARS, Math.floor(chars / 2));
   if (line.length <= limit) return {text: line, cut: false};
   if (limit <= 0) return {text: null, cut: true};
-  let end = limit;
+  let end = limit - 1;
   if (/[\uD800-\uDBFF]/.test(line[end - 1] ?? '')) end--;
-  return {text: line.slice(0, end), cut: true};
+  return {text: `${line.slice(0, end)}…`, cut: true};
 }
 
 type Start = {oldFrom: number; newFrom: number; displayOld: number; displayNew: number; contextBefore: string | null;
@@ -81,7 +81,7 @@ function commonStart(oldText: string, newText: string, difference: number, width
   if (sharedLast) {
     const line = contextLine(oldText.slice(lineStart, oldLineEnd), width);
     const oldFrom = oldBreak ? oldLineEnd + oldBreak : oldText.length, newFrom = newBreak ? newLineEnd + newBreak : newText.length;
-    return {oldFrom, newFrom, displayOld: oldFrom, displayNew: newFrom, contextBefore: line.text, omittedBefore: line.cut || lineStart > 0,
+    return {oldFrom, newFrom, displayOld: oldFrom, displayNew: newFrom, contextBefore: line.text, omittedBefore: line.text === null || lineStart > 0,
       oldTrailing: oldBreak > 0 && oldFrom === oldText.length, newTrailing: newBreak > 0 && newFrom === newText.length};
   }
   const start = Math.max(lineStart, contextStart(oldText, difference, width));
@@ -91,7 +91,7 @@ function commonStart(oldText: string, newText: string, difference: number, width
   const contentEnd = lineStart - terminatorBefore(oldText, lineStart);
   const previous = lineStartBefore(oldText, contentEnd);
   const line = contextLine(oldText.slice(previous, contentEnd), width);
-  return {...base, displayOld: lineStart, displayNew: lineStart, contextBefore: line.text, omittedBefore: line.cut || previous > 0};
+  return {...base, displayOld: lineStart, displayNew: lineStart, contextBefore: line.text, omittedBefore: line.text === null || previous > 0};
 }
 /** The first line after the changed lines that both texts share, found within the compare bound. */
 function commonEnd(oldText: string, newText: string, difference: number, from: Start, width: number): End {

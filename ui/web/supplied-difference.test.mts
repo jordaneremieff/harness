@@ -103,13 +103,19 @@ test('LF, CRLF and CR windows locate the change without spending their lines on 
   assert.equal(shown.contextBefore, null); assert.equal(shown.omittedBefore, true);
   bounded('a\r\nb', 'a\r\nb', 2, 2);
 });
-test('shared lines longer than the context bound are shortened and reported as omitted', () => {
-  const long = 'y'.repeat(300);
-  const shown = suppliedDifference(`${long}\nold\n${long}`, `${long}\nnew\n${long}`);
-  assert.equal(shown.contextBefore, 'y'.repeat(200)); assert.equal(shown.contextAfter, 'y'.repeat(200));
-  assert.equal(shown.omittedBefore, true); assert.equal(shown.omittedAfter, true);
+test('shared lines longer than the context bound end with an ellipsis within the bound', () => {
+  const long = 'L'.repeat(300), shortened = `${'L'.repeat(199)}…`;
+  const before = suppliedDifference(`${long}\nz`, `${long}\nZ`);
+  assert.equal(before.contextBefore, shortened); assert.equal(before.contextBefore?.length, 200);
+  assert.equal(before.omittedBefore, false); assert.equal(differenceNotice(before), '');
+  const after = suppliedDifference(`a\nold\n${long}`, `a\nnew\n${long}`);
+  assert.equal(after.contextAfter, shortened); assert.equal(after.omittedAfter, true);
+  const both = suppliedDifference(`x\n${long}\nold\n${long}`, `x\n${long}\nnew\n${long}`);
+  assert.equal(both.contextBefore, shortened); assert.equal(both.omittedBefore, true); assert.equal(both.contextAfter, shortened);
   const tight = suppliedDifference('abcdef\nold\nabcdef', 'abcdef\nnew\nabcdef', 5, 2);
-  assert.equal(tight.contextBefore, 'ab'); assert.equal(tight.contextAfter, 'ab');
+  assert.equal(tight.contextBefore, 'a…'); assert.equal(tight.contextAfter, 'a…');
+  const pairs = suppliedDifference(`${'😀'.repeat(150)}\nold`, `${'😀'.repeat(150)}\nnew`);
+  assert.equal(pairs.contextBefore?.isWellFormed(), true); assert.ok((pairs.contextBefore?.length ?? 0) <= 200);
 });
 test('scan exhaustion is explicit and does not claim a located change or an identical pair', () => {
   const prefix = 'x'.repeat(65536);
