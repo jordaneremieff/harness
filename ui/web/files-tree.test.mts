@@ -4,6 +4,7 @@ import {createAppFixture} from './app-fixture.mts';
 const {HostNode, byId, hostDocument, settle} = await createAppFixture();
 type HostNode = InstanceType<typeof HostNode>;
 import {FilesTree} from './files-tree.ts';
+import {contextMenu} from './context-menu.ts';
 import type {FileDirectoryPage,FileEntry} from '../shared/files.ts';
 const root = {id:'r',path:'/project',name:'project'};
 function page(path:string,entries:FileEntry[],complete = true):FileDirectoryPage {return {rootId:'r',path,entries,revision:'v',nextCursor:null,coverage:{complete,visited:entries.length,...(!complete ? {reason:'The scan is incomplete.'} : {})}};}
@@ -16,6 +17,32 @@ test('disclosure preserves selected files and roving focus skips unsupported and
   row(host,'file').click();row(host,'folder').click();await settle();assert.deepEqual(selected,['file']);assert.equal(row(host,'file').getAttribute('aria-selected'),'true');
   tree.selectFile('r','folder/child');row(host,'folder').click();await settle();assert.equal(row(host,'folder').tabIndex,0);assert.equal(host.querySelector('[data-path="folder/child"]'),null);
   host.dispatch('keydown',{target:row(host,'folder'),key:'ArrowDown'});assert.equal(hostDocument.activeElement,row(host,'file'));
+});
+test('quiet tooling rows preserve root and nested order, selection and context actions',async context=> {
+  const host=node();context.after(()=>{host.remove();contextMenu.close();});const selected:string[]=[],added:string[]=[];
+  const names=['.evals','docs','node_modules','ui','.gitignore','AGENTS.md','README.md','npm-shrinkwrap.json','package-lock.json','pnpm-lock.yaml','yarn.lock','package-lock.json.bak','node_modules.txt','.DS_Store'];
+  const quiet=new Set(['.evals','.gitignore','node_modules','npm-shrinkwrap.json','package-lock.json','pnpm-lock.yaml','yarn.lock']);
+  const entries=(prefix:string):FileEntry[]=>names.map(name=>({name,path:prefix+name,kind:['.evals','docs','node_modules','ui'].includes(name)?'directory':'file'}));
+  const tree=new FilesTree(host as unknown as HTMLElement,{page:async(_root,path)=>page(path,path==='docs'?entries('docs/'):path?[]:entries('')),select:(_root,path)=>selected.push(path),addToMessage:(_root,path)=>added.push(path),operation:async()=>{},escape:()=>{}});
+  tree.setRoot(root);await settle();
+  for(const prefix of ['', 'docs/']){
+    if(prefix){row(host,'docs').click();await settle();}
+    const level=prefix?'2':'1',rows=host.querySelectorAll('.file-row').filter(button=>button.getAttribute('aria-level')===level);
+    assert.deepEqual(rows.map(button=>button.dataset.path),names.filter(name=>name!=='.DS_Store').map(name=>prefix+name));
+    for(const name of names.filter(name=>name!=='.DS_Store')){const button=row(host,prefix+name);assert.equal(button.classList.contains('file-row-quiet'),quiet.has(name),prefix+name);assert.equal(button.disabled,false);assert.equal(button.querySelector('.file-name')?.textContent,name);}
+    assert.equal(host.querySelector(`[data-path="${prefix}.DS_Store"]`),null);
+    const path=prefix+'.gitignore',file=row(host,path);file.click();assert.equal(file.getAttribute('aria-selected'),'true');assert.equal(file.classList.contains('file-row-quiet'),true);
+    file.dispatch('contextmenu',{clientX:10,clientY:10});const menu=hostDocument.body.querySelector('.context-menu');assert.ok(menu);
+    assert.deepEqual(menu.children.map(item=>item.textContent),['New file','New folder','Add to message…','Rename','Move','Move to Trash']);
+    menu.children.find(item=>item.textContent==='Add to message…')?.click();
+  }
+  assert.deepEqual(selected,['.gitignore','docs/.gitignore']);assert.deepEqual(added,selected);
+});
+test('retained rows update quiet ink after rename in either direction',async context=> {
+  const host=node();context.after(()=>host.remove());
+  const tree=new FilesTree(host as unknown as HTMLElement,{page:async()=>page('',[{name:'.env',path:'.env',kind:'file'}]),select:()=>{},escape:()=>{}});
+  tree.setRoot(root);await settle();const original=row(host,'.env'),children=[...original.children];original.click();assert.equal(original.classList.contains('file-row-quiet'),true);
+  let from='.env';for(const [to,quiet]of [['notes.txt',false],['package-lock.json',true],['README.md',false]] as const){tree.remap({rootId:'r',from,to});assert.equal(row(host,to),original);assert.equal(original.classList.contains('file-row-quiet'),quiet);assert.equal(original.querySelector('.file-name')?.textContent,to);assert.equal(original.getAttribute('aria-selected'),'true');assert.deepEqual(original.children,children);from=to;}
 });
 test('only regular .DS_Store files disappear from root and nested keyboard rows',async context=> {
   const host=node();context.after(()=>host.remove());const reads:string[]=[],selected:string[]=[];

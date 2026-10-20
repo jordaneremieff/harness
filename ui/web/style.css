@@ -266,6 +266,7 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .files-section > .nav-heading-row { flex: none; }
 #files-section-body { flex: 1 1 auto; min-height: 0; overflow: auto; scrollbar-width: thin; }
 .file-row { display: flex; align-items: center; gap: var(--s1); width: 100%; min-height: 26px; padding: 2px var(--s3) 2px calc(var(--s3) + var(--file-depth,0) * 14px); border: 0; border-radius: 0; text-align: left; }
+.file-row-quiet { color: var(--muted); }
 .file-row:hover, .file-row[aria-selected=true] { background: var(--raised); }
 .file-row[aria-selected=true] { font-weight: 500; }
 .file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

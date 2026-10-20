@@ -11,6 +11,9 @@ function rule(selector: string): string {
 const declarations = (property: string): string[] => [...css.matchAll(new RegExp(`(?:^|[;{\\s])${property}:\\s*([^;}]+)`, 'g'))].map(match => match[1].trim());
 const media = (query: string): string => { const start = css.indexOf(query); assert.ok(start >= 0, `Missing ${query}`); const next = css.indexOf('\n@media', start + 1); return css.slice(start, next < 0 ? undefined : next); };
 
+test('quiet file rows use the existing muted ink without other presentation overrides', () => {
+  assert.equal(rule('.file-row-quiet').trim(), 'color: var(--muted);');
+});
 test('roster rows have one 24px heading line and one optional 16px summary line', () => {
   assert.match(rule('.agent-row'), /grid-template-columns: minmax\(0,1fr\) max-content/);
   assert.match(rule('.agent-row:is([data-action=message],[data-action=resume])'), /max-content 24px/);

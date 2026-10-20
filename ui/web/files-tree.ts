@@ -10,6 +10,7 @@ type Naming = {action:Exclude<FileTreeAction,'trash'>;path:string;parent:string;
 function createAction(action:FileTreeAction):boolean {return action === 'file' || action === 'directory';}
 function parentPath(path:string):string {return path.split('/').slice(0,-1).join('/');}
 function namingLabel(action:Naming['action']):string {switch (action) {case 'move':return 'Destination path from working folder';case 'rename':return 'New name';case 'directory':return 'New folder name';case 'file':return 'New file name';}}
+const quietEntryNames = new Set(['node_modules','package-lock.json','npm-shrinkwrap.json','yarn.lock','pnpm-lock.yaml']);
 export type FileTreeRow = {entry: FileEntry; depth: number; parent: string};
 export function visibleFileEntry(entry:FileEntry):boolean {return entry.kind !== 'file' || entry.name !== '.DS_Store';}
 export function visibleFileRows(directories: ReadonlyMap<string, Directory>, path = '', depth = 0): FileTreeRow[] {
@@ -113,6 +114,7 @@ export class FilesTree {
   }
   private paintRow({entry, depth}: FileTreeRow, tabStop?: string): HTMLButtonElement {
     const button = this.rowButton(entry);
+    button.classList.toggle('file-row-quiet',entry.name.startsWith('.') || quietEntryNames.has(entry.name));
     button.setAttribute('role', 'treeitem'); button.setAttribute('aria-level', String(depth + 1)); button.setAttribute('aria-selected', String(entry.path === this.selected));
     button.style.setProperty('--file-depth', String(depth)); button.title = entry.path; button.tabIndex = entry.path === tabStop ? 0 : -1;
     button.disabled = entry.kind === 'other' || entry.kind === 'symlink';
