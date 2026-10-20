@@ -4,6 +4,7 @@ import {WorkbenchStatus} from './workbench-status.ts';
 import {imageUrl} from './image.ts';
 import test from 'node:test';
 import { Transcript as RetainedTranscript, structured } from './render.ts';
+import { createComposerElements } from './composer.ts';
 import { contextMenu } from './context-menu.ts';
 import { Roster } from './roster.ts';
 import { conversationPresentation, presentationGlyph } from './conversation-presentation.ts';
@@ -2679,12 +2680,33 @@ test('static workbench markup owns one footer and keeps composer actions without
   assert.match(factory, /const queue = element\('button', 'queue', 'Queue'\); queue\.id = `\$\{id\}-queue`/);
   assert.match(factory, /const recipient = element\('label', 'sr-only', 'Message'\); recipient\.id = `\$\{id\}-recipient`; recipient\.htmlFor = editor\.id/);
   assert.match(factory, /const surface = element\('div', 'composer-surface'\); surface\.append\(overlay, editor\)/);
-  assert.match(factory, /const input = element\('div', 'composer-input'\)/); assert.match(factory, /input\.append\(commandMenu, fileMenu, recipient, intake, surface, attachments, line, resize\)/);
+  assert.match(factory, /const input = element\('div', 'composer-input'\)/); assert.match(factory, /input\.append\(commandMenu, fileMenu, recipient, surface, attachments, line, resize\)/);
   assert.match(factory, /const intake = element\('span','composer-intake'\); intake\.append\(attach,sources,picker\)/);
   assert.match(factory, /cardAction\('plus', 'Add to message'/);
-  assert.match(factory, /root\.append\(receipt, input\)/); assert.match(factory, /meta\.append\(state, settings\); line\.append\(meta, bar, recallLine\)/); assert.match(factory, /bar\.append\(stop, submit\)/); assert.match(factory, /submit\.append\(queue, start, send\)/);
+  assert.match(factory, /root\.append\(receipt, utilities, input\)/); assert.match(factory, /meta\.append\(state\)/); assert.match(factory, /utilities\.append\(meta, recallLine, stateDetails\)/); assert.match(factory, /line\.append\(intake, settings, bar\)/); assert.match(factory, /bar\.append\(stop, submit\)/); assert.match(factory, /submit\.append\(queue, start, send\)/);
   assert.doesNotMatch(factory, /composer-guidance|usage-details|class="statusline"|root\.append\([^)]*receiptDetails/);
   assert.equal([...html.matchAll(/id="focused-composer-status" class="workbench-draft-state"/g)].length, 1);
+});
+test('composer utilities precede the writing surface and transcript paints retain its native editor', () => {
+  setup(); const elements = createComposerElements('render-pane');
+  const root = elements.root as unknown as FakeNode, editor = elements.editor as unknown as FakeNode;
+  const utilities = root.querySelector('.composer-utilities'), input = root.querySelector('.composer-input'), surface = root.querySelector('.composer-surface'), shelf = root.querySelector('.composer-line');
+  assert.ok(utilities && input && surface && shelf);
+  assert.deepEqual(root.children, [elements.receipt, utilities, input]);
+  assert.deepEqual(utilities.children, [elements.meta, elements.recallLine, elements.stateDetails]);
+  assert.deepEqual(shelf.children, [input.querySelector('.composer-intake'), elements.settings, input.querySelector('.composer-bar')]);
+  assert.equal(surface.parentNode, input); assert.equal(editor.parentNode, surface); assert.equal(surface.children[1], editor);
+  const host = new FakeNode('section'); roots.push(host); root.hidden = false; host.append(node('primary-transcript'), root);
+  editor.value = 'Retained native draft'; const moves = editor.moves;
+  const ancestry = (): FakeNode[] => { const chain: FakeNode[] = []; for (let parent = editor.parentNode; parent; parent = parent.parentNode) chain.push(parent); return chain; };
+  const originalAncestry = ancestry(), view = transcript();
+  for (const entries of [[entry('stable', 'First text')], [entry('stable', 'Updated text')], [entry('stable', 'Updated text'), entry('next')]]) {
+    view.set(entries); flush();
+    assert.equal(root.querySelector('textarea'), editor); assert.equal(root.querySelectorAll('textarea').length, 1); assert.equal(editor.value, 'Retained native draft');
+    assert.deepEqual(ancestry(), originalAncestry); assert.equal(editor.moves, moves);
+    assert.deepEqual(root.children, [elements.receipt, utilities, input]);
+  }
+  view.reset(); assert.equal(root.querySelector('textarea'), editor); assert.deepEqual(ancestry(), originalAncestry);
 });
 test('workbench and communication CSS retain direct compact controls and keyboard targets', () => {
   const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8');
