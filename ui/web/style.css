@@ -568,6 +568,7 @@ a.reference-link[href] { color: var(--link); text-decoration: underline; overflo
 .message-header { display: flex; align-items: center; gap: var(--s2); min-width: 0; max-width: 72ch; min-height: 24px; }
 .message-header + .message-body { margin-top: 2px; }
 .message-role { flex: 0 1 auto; min-width: 0; overflow: hidden; color: var(--muted); font-size: 12px; line-height: 18px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.message-delivery { flex: 0 0 auto; color: var(--muted); font-size: 12px; line-height: 18px; white-space: nowrap; }
 .message.tool-only { margin: 0; }
 .message.tool-only > .message-body > .thinking { margin: 0; }
 .message.tool-only > .message-body > .thinking + .tool-shell { margin-top: 8px; }

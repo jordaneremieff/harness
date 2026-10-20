@@ -9,7 +9,7 @@ import { highlight, languageFromPath } from './highlight.ts';
 import { transcriptImage } from './image.ts';
 import { pairedTimestamp, thinkingKey, type ThinkingTime, type ToolState } from './state.ts';
 import { isValidTimestamp, previewText } from './format.ts';
-import { entryVisible, messageAriaLabel, presentEntry, presentMessage, sessionEventsSummary } from './entry-presentation.ts';
+import { entryVisible, inputDelivery, messageAriaLabel, presentEntry, presentMessage, sessionEventsSummary } from './entry-presentation.ts';
 import { cardPreviewLimits, readRange, presentResultPreview, presentToolPreview, resultPreview } from './cards.ts';
 import { thinkingExpanded } from './transcript-presentation.ts';
 import { TranscriptIndex, ToolElapsedClock, toolTime, thinkingLabel, thinkingPreview, slot, communicationDisclosureKeys } from './transcript-tools.ts';
@@ -83,6 +83,15 @@ function bounded(text: string, limit = RAW_LIMIT, lines = Number.MAX_SAFE_INTEGE
   const value = previewText(text, lines, limit);
   const shown = value.truncated && value.text.length >= limit ? previewText(value.text, lines, Math.max(0, limit - 1)).text : value.text;
   return shown + (value.truncated ? '…' : '');
+}
+/** The error line of the person's own message states its own failure; the generic phrases belong to agent replies. */
+function errorPresentation(message: MessageView): {summary: string; diagnostic?: string; stopped: boolean} {
+  if (message.role === 'user') return {summary: message.error ?? '', stopped: false};
+  const stopped = message.stopReason === 'aborted';
+  if (message.error) return {summary: stopped ? 'The response stopped.' : 'The response failed.', diagnostic: message.error, stopped};
+  if (message.stopReason === 'error') return {summary: 'The response failed.', stopped: false};
+  if (stopped) return {summary: 'The response stopped.', stopped: true};
+  return {summary: '', stopped: false};
 }
 function record(display?: JsonDisplay): Record<string, unknown> {
   const value = display?.value;
@@ -183,7 +192,7 @@ function setEntryRhythm(node: HTMLElement, children: readonly HTMLElement[], ses
   if (compact) node.classList.add('compact-entry'); else node.classList.remove('compact-entry');
 }
 type PartNode = {node: HTMLElement; source: PartView; partial: boolean};
-type MessageNode = {communication?: CommunicationCard; node: HTMLElement; header: HTMLElement; heading: HTMLElement; actions: HTMLElement; body: HTMLElement; error: HTMLElement; parts: Map<string, PartNode>; source: MessageView; menu: HTMLButtonElement; forkRevision: number; inspection?: HTMLElement; inspectionSource?: MessageView; sourceOpener?: HTMLElement; thinkingGroups?: Map<string, {node: HTMLDetailsElement; body: HTMLElement}>};
+type MessageNode = {communication?: CommunicationCard; node: HTMLElement; header: HTMLElement; heading: HTMLElement; delivery: HTMLElement; actions: HTMLElement; body: HTMLElement; error: HTMLElement; parts: Map<string, PartNode>; source: MessageView; menu: HTMLButtonElement; forkRevision: number; inspection?: HTMLElement; inspectionSource?: MessageView; sourceOpener?: HTMLElement; thinkingGroups?: Map<string, {node: HTMLDetailsElement; body: HTMLElement}>};
 type EventPage = {node: HTMLElement; rows: HTMLElement; page: number; previous: HTMLButtonElement; next: HTMLButtonElement; cache: Map<string, {source: EntryView; node: HTMLElement}>};
 type SessionNode = {source?: SessionGroup; details: HTMLDetailsElement; events: EventPage; notices: EventPage};
 type EntryNode = {node: HTMLElement; messages: Map<string, MessageNode>; source?: EntryView; custom?: HTMLElement; session?: SessionNode; groupHeader?: HTMLElement};
@@ -1040,19 +1049,18 @@ export class Transcript {
     for (const [id, message] of entry.messages) if (!ids.has(id)) { this.releaseFrames(message.node); entry.messages.delete(id); }
   }
   private messageError(cached: MessageNode, message: MessageView): string {
-    const error = message.error || (message.stopReason === 'error' ? 'The response failed.' : message.stopReason === 'aborted' ? 'The response stopped.' : '');
-    const stopped = message.stopReason === 'aborted';
-    cached.error.className = `${stopped ? 'warning' : 'error'} message-error`; cached.error.hidden = !error;
-    if (!error) return error;
+    const shown = errorPresentation(message);
+    cached.error.className = `${shown.stopped ? 'warning' : 'error'} message-error`; cached.error.hidden = !shown.summary;
+    if (!shown.summary) return '';
     let summary = cached.error.querySelector<HTMLElement>('.response-error-summary');
     if (!summary) { summary = element('span', 'response-error-summary'); cached.error.append(summary); }
-    setText(summary, stopped ? 'The response stopped.' : 'The response failed.');
+    setText(summary, bounded(shown.summary, 4096));
     let diagnostic = cached.error.querySelector<HTMLDetailsElement>('details');
-    if (message.error) {
+    if (shown.diagnostic) {
       if (!diagnostic) { diagnostic = details('Details', ''); cached.error.append(diagnostic); }
-      const body = diagnostic.querySelector('pre'); if (body) setText(body, bounded(message.error));
+      const body = diagnostic.querySelector('pre'); if (body) setText(body, bounded(shown.diagnostic));
     } else diagnostic?.remove();
-    return error;
+    return shown.summary;
   }
   private joinedMessage(entryId: string, message: MessageView): boolean {
     if (message.error || !message.parts.length) return false;
@@ -1132,7 +1140,8 @@ export class Transcript {
     if (session.details.open) { this.renderEventPage(session.events, group.entries, 32); session.details.append(session.events.node); }
   }
   private updateCustom(cached: EntryNode, entry: EntryView): void {
-    if (entry.tool || !entry.data && entry.messages?.length) { cached.custom = undefined; return; }
+    // A browser-owned input copy shows its delivery beside the role label, not a record section.
+    if (entry.tool || entry.kind === 'ui.input' || !entry.data && entry.messages?.length) { cached.custom = undefined; return; }
     if (cached.source === entry) return;
     if (cached.source?.data !== entry.data || cached.source?.head !== entry.head || !cached.custom) {
       if (cached.custom) this.releaseFrames(cached.custom);
@@ -1155,12 +1164,13 @@ export class Transcript {
     const header = element('div', 'message-header');
     const label = presentMessage(message, this.hooks.operatorInput).label;
     const heading = element('span', 'message-role', bounded(label, 4096)); heading.hidden = !label;
+    const delivery = element('span', 'message-delivery'); delivery.hidden = true;
     const actions = element('div', 'message-actions'); const body = element('div', 'message-body'); const error = element('div', 'error message-error'); error.hidden = true;
     node.setAttribute('aria-label', bounded(messageAriaLabel(message, this.hooks.operatorInput), 4096));
     const menu = cardAction('menu', 'Message actions', () => this.messageMenu(entry, message.id, menu), 'message-menu');
     menu.setAttribute('aria-label', 'Message actions'); menu.title = 'Message actions'; menu.setAttribute('aria-haspopup', 'menu'); menu.setAttribute('aria-expanded', 'false');
-    actions.append(menu); header.append(heading, actions); node.append(header, body, error);
-    const cached = {node, header, heading, actions, body, error, menu, forkRevision: 0, parts: new Map<string, PartNode>(), source: message}; entry.messages.set(message.id, cached); return cached;
+    actions.append(menu); header.append(heading, delivery, actions); node.append(header, body, error);
+    const cached = {node, header, heading, delivery, actions, body, error, menu, forkRevision: 0, parts: new Map<string, PartNode>(), source: message}; entry.messages.set(message.id, cached); return cached;
   }
   private communicationMessage(cached: MessageNode, message: MessageView, entryId: string): boolean {
     if (message.communication) {
@@ -1180,6 +1190,8 @@ export class Transcript {
     if (this.communicationMessage(cached, message, entryId)) return cached;
     const label = presentMessage(message, this.hooks.operatorInput).label;
     setText(cached.heading, bounded(label, 4096)); cached.heading.hidden = !label;
+    const delivery = inputDelivery(retained);
+    setText(cached.delivery, delivery ? `· ${delivery}` : ''); cached.delivery.hidden = !delivery;
     const children = this.messagePartNodes(cached, message, entryId, selected);
     if (message.coverage.truncated || message.coverage.omitted > 0 || !message.coverage.complete) {
       const reason = bounded(message.coverage.reason ?? '', 4096, 6).trim();

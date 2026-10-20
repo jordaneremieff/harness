@@ -1117,6 +1117,20 @@ test('response stop states remain visible without a supplied error message', () 
   assert.deepEqual(errors.map(error => [error.hidden, error.textContent]), [[false, 'The response failed.'], [false, 'The response stopped.']]);
   assert.equal(errors[0]?.className, 'error message-error'); assert.equal(errors[1]?.className, 'warning message-error');
 });
+test('the browser copy of a sent message reads as the operator\'s own with its delivery word and no record heading', () => {
+  setup(); const view = new Transcript('primary', {operatorInput: true, presentation: () => {}, reading: () => {}});
+  const echo = (id: string, delivery: string, error?: string) => ({id: `ui-input:${id}`, kind: 'ui.input', data: {value: {delivery}, truncated: false},
+    messages: [{id: `ui-input:${id}:message`, role: 'user', timestamp: 1, state: (delivery === 'Sending…' ? 'partial' : 'final') as 'partial' | 'final', parts: [{type: 'text' as const, text: `Text ${id}`}], ...(error ? {error} : {}), coverage}]});
+  view.set([echo('a', 'Sending…'), echo('b', 'Sent'), echo('c', 'Message not sent', 'Message not sent'), echo('d', 'Delivery not confirmed', 'Delivery not confirmed')]); flush();
+  const root = node('primary-transcript'); assert.doesNotMatch(root.textContent, /Record/);
+  assert.deepEqual(root.querySelectorAll('.message-role').map(role => role.textContent), ['You', 'You', 'You', 'You']);
+  assert.deepEqual(root.querySelectorAll('.message-delivery').map(item => [item.textContent, item.hidden]), [['· Sending…', false], ['· Sent', false], ['· Not sent', false], ['· Delivery not confirmed', false]]);
+  const errors = root.querySelectorAll('.message-error');
+  assert.deepEqual(errors.map(item => [item.hidden, item.textContent]), [[true, ''], [true, ''], [false, 'Message not sent'], [false, 'Delivery not confirmed']]);
+  assert.equal(errors[2]?.querySelector('details'), null); assert.equal(errors[2]?.className, 'error message-error');
+  view.set([echo('a', 'Sent')]); flush();
+  assert.deepEqual(root.querySelectorAll('.message-delivery').map(item => [item.textContent, item.hidden]), [['· Sent', false]]); view.reset();
+});
 test('known session changes use quiet system notes with retained data under disclosure', () => {
   setup(); const view = transcript();
   view.set([{id: 'model', kind: 'model_change', data: {value: {provider: 'fixture', modelId: 'test'}, truncated: false}}, {id: 'thinking', kind: 'thinking_level_change', data: {value: {thinkingLevel: 'high'}, truncated: false}}, {id: 'unknown', kind: 'future_change', data: {value: {fact: 'known'}, truncated: false}}]); flush();
@@ -1135,7 +1149,7 @@ test('turns preserve body and action hooks with a compact role label', () => {
   const container = node('primary-transcript'); const user = container.querySelector('.user'); assert.ok(user);
   const header = user.querySelector('.message-header'); assert.ok(header);
   assert.equal(user.children[0], header); assert.equal(user.children[1], user.querySelector('.message-body')); assert.equal(user.attributes['aria-label'], 'Incoming message');
-  assert.equal(header.children[0], user.querySelector('.message-role')); assert.equal(header.children[1], user.querySelector('.message-actions')); assert.equal(messageAction(user, 'Fork').label, 'Fork');
+  assert.equal(header.children[0], user.querySelector('.message-role')); assert.equal(header.children[1], user.querySelector('.message-delivery')); assert.equal(header.children[1]?.hidden, true); assert.equal(header.children[2], user.querySelector('.message-actions')); assert.equal(messageAction(user, 'Fork').label, 'Fork');
   assert.equal(user.querySelector('.message-menu')?.attributes['aria-label'], 'Message actions'); assert.doesNotMatch(user.textContent, /Fork/);
   const body = user.querySelector('.message-body'); const actions = user.querySelector('.message-actions');
   view.set([{id: 'user', kind: 'message', messages: [{...message('u', 'Hello'), role: 'user'}]}, entry('assistant', 'Reply')]); flush();

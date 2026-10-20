@@ -2,10 +2,20 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import type { EntryView, MessageView, PartView } from '../shared/api.ts';
-import { entryVisible, messageAriaLabel, presentEntry, presentMessage, sessionEventsSummary } from './entry-presentation.ts';
+import { entryVisible, inputDelivery, messageAriaLabel, presentEntry, presentMessage, sessionEventsSummary } from './entry-presentation.ts';
 import type { PresentationContext } from './transcript-presentation.ts';
 
 const coverage = {complete: true, truncated: false, omitted: 0};
+test('a browser-owned input copy states its delivery word beside the role label', () => {
+  const echo = (delivery: unknown): EntryView => ({id: 'ui-input:1', kind: 'ui.input', data: {value: {delivery}, truncated: false}});
+  assert.equal(inputDelivery(echo('Sending…')), 'Sending…');
+  assert.equal(inputDelivery(echo('Sent')), 'Sent');
+  assert.equal(inputDelivery(echo('Message not sent')), 'Not sent', 'the heading omits the repeated word message');
+  assert.equal(inputDelivery(echo('Delivery not confirmed')), 'Delivery not confirmed');
+  assert.equal(inputDelivery(echo(42)), undefined); assert.equal(inputDelivery(echo('')), undefined);
+  assert.equal(inputDelivery({id: 'm', kind: 'message'}), undefined);
+  assert.equal(inputDelivery({id: 'v', kind: 'vendor.thing', data: {value: {delivery: 'Sent'}, truncated: false}}), undefined, 'only the browser copy kind carries a delivery word');
+});
 function message(parts: PartView[] = [], changes: Partial<MessageView> = {}): MessageView { return {id: 'message', role: 'system', state: 'final', parts, coverage, ...changes}; }
 test('contentless messages and entries have no visible chrome', () => {
   for (const parts of [[], [{type: 'text' as const, text: ''}], [{type: 'text' as const, text: ' \n\t'}]]) {

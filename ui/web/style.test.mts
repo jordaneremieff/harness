@@ -1091,6 +1091,7 @@ test('chrome labels stay quiet and content color is reserved for syntax, links a
   assert.match(rule('.markdown-content a'), /color: var\(--link\)/);
   assert.match(rule('.markdown-content:is(blockquote)'), /border-left: 2px solid var\(--rule\)/);
   assert.match(rule('.message-role'), /color: var\(--muted\); font-size: 12px; line-height: 18px; font-weight: 500/);
+  assert.match(rule('.message-delivery'), /color: var\(--muted\); font-size: 12px; line-height: 18px/);
   assert.doesNotMatch(css, /\.message\[data-role=assistant\] > \.message-header > \.message-role|\.message\.user > \.message-header > \.message-role/);
   assert.doesNotMatch(rule('.markdown-content .markdown-inline-code'), /color:/);
   assert.match(rule('.markdown-content .markdown-inline-code'), /padding: 0 3px/);
