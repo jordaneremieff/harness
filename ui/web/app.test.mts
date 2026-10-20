@@ -1050,6 +1050,22 @@ test('pane handles are labeled keyboard separators at their pane edges', async (
   const form=primaryControl('composer'),handle=form.querySelector('.resizer'); assert.ok(handle); assert.equal(form.contains(handle),true); assert.ok(form.children.indexOf(handle) < form.children.findIndex(node => node.classList.contains('composer-input'))); assert.equal(handle.getAttribute('aria-controls'),primaryControl('editor').id);
   for(const node of [handle,agentHandle,byId('sidebar-resizer'),byId('message-panel-resizer')]){assert.equal(node.getAttribute('data-axis'),node.id==='sidebar-resizer'?'x':'y');assert.equal(node.getAttribute('aria-orientation'),node.id==='sidebar-resizer'?'vertical':'horizontal');assert.equal(node.tabIndex,0); assert.equal(node.getAttribute('role'),'separator'); assert.match(node.getAttribute('aria-label')??'',/^Resize /); assert.ok(node.getAttribute('aria-orientation'));} assert.equal(byId('sidebar-resizer').parentNode,byId('sidebar')); assert.equal(byId('message-panel-resizer').parentNode,byId('agent-message-panel'));
 });
+test('the message box height is stored under its own key and the bare key is dropped unread', async () => {
+  const identity = 'height-owner', base = `ui:pane:height-workspace:${JSON.stringify(['agent', identity])}:composer`, reads: string[] = [];
+  const values = new Map<string, string>([[base, '120']]);
+  Reflect.set(globalThis, 'sessionStorage', {getItem: (key: string) => {reads.push(key); return values.get(key) ?? null;}, setItem: (key: string, value: string) => {values.set(key, value);}, removeItem: (key: string) => {values.delete(key);}});
+  try {
+    await arrive({workspace: {id: 'height-workspace', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'agent', identity}, conversationLayout: twoPanes(identity)}, primaries: [primaryFixture({epoch: 9601})], roster: [agentFixture(identity)]});
+    assert.equal(values.has(base), false, 'the old key is removed when the resizer is created'); assert.equal(reads.includes(base), false, 'the old value is never read');
+    assert.equal(values.has(`${base}-min`), false, 'no manual height applies'); assert.equal(agentControl('editor').style.height ?? '', '');
+    const handle = agentControl('composer').querySelector('.resizer'); assert.ok(handle);
+    handle.dispatch('keydown', {key: 'ArrowUp'}); flushFrames();
+    const sizes = () => [...values.keys()].filter(key => key.startsWith('ui:pane:'));
+    assert.deepEqual(sizes(), [`${base}-min`], 'a commit writes only the new key');
+    handle.dispatch('dblclick'); flushFrames();
+    assert.deepEqual(sizes(), [], 'reset removes the new key');
+  } finally { Reflect.set(globalThis, 'sessionStorage', hostSessionStorage); }
+});
 test('sidebar width commits preserve transcript requests and pane refresh follows form placement', () => {
   const panes = source.slice(source.indexOf('function refreshPaneSizes('), source.indexOf('function currentSnapshot('));
   assert.ok(panes.includes('selectionQueue.select({sidebarWidth: value})')); assert.doesNotMatch(panes, /\bselection\(|historyAbort/);
@@ -1058,7 +1074,7 @@ test('sidebar width commits preserve transcript requests and pane refresh follow
   const render = source.slice(source.indexOf('function renderAll('), source.indexOf('function renderNavigation('));
   assert.ok(render.indexOf('refreshPaneSizes()') > render.indexOf('renderMessagePanel()'));
   const composer = source.slice(source.indexOf('function composerResizer('), source.indexOf('function refreshPaneSizes('));
-  assert.ok(composer.includes('composer.setManualHeight(preferred)')); assert.ok(composer.includes('dragThreshold: 4'), 'a plain press on the handle stores nothing'); assert.ok(composer.includes('applyInitial: preferred !== undefined'));
+  assert.ok(composer.includes('composer.setManualHeight(preferred)')); assert.ok(composer.includes('dragThreshold: 4'), 'a plain press on the handle stores nothing'); assert.ok(composer.includes('applyInitial: preferred !== undefined')); assert.ok(composer.includes('-min`'));
   assert.ok(composer.includes('composer.setManualHeight(undefined)')); assert.doesNotMatch(source, /--composer-height/);
 });
 test('per-tab pane sizes accept bounded integers and storage failures remain nonfatal', async () => {

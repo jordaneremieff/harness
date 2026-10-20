@@ -620,7 +620,9 @@ export function storeTabSize(key: string, value: number | undefined): void {
   try { if (value === undefined) sessionStorage.removeItem(key); else sessionStorage.setItem(key, String(value)); } catch { /* The current tab retains its in-memory size. */ }
 }
 function composerResizer(controller: ConversationController): Resizer {
-  const composer = controller.composer, key = `ui:pane:${controller.workspaceId}:${targetIdentity(controller.target)}:composer`; let preferred = tabSize(key, 40, 640); composer.setManualHeight(preferred);
+  const composer = controller.composer, base = `ui:pane:${controller.workspaceId}:${targetIdentity(controller.target)}:composer`, key = `${base}-min`;
+  // The bare key held heights stored by every plain press on the handle, which show no intent; it is removed unread.
+  storeTabSize(base, undefined); let preferred = tabSize(key, 40, 640); composer.setManualHeight(preferred);
   return createResizer({handle: controllerNode(controller, 'composer-resizer'), axis: 'y', direction: -1, min: 40, max: 640, defaultValue: 144, dragThreshold: 4, applyInitial: preferred !== undefined,
     read: () => preferred ?? composer.editor.offsetHeight, write: value => composer.setManualHeight(value), onCommit: value => {preferred = value; storeTabSize(key, value);},
     onReset: () => {preferred = undefined; storeTabSize(key, undefined); composer.setManualHeight(undefined);}});
