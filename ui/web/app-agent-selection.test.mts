@@ -111,7 +111,9 @@ test('whole agent views retain messages independently of running, idle and incom
       if (availability === 'live') {event('agent.availability', {identity, connectionEpoch: app.state.agentEpochs.get(identity), state: 'live', capabilities: row.capabilities}); await settle();}
       assertAgentComposition(); assert.match(visibleText(agentControl('root')), /Exact retained conversation text/); assert.equal(app.agentComposer().state?.draft.text, 'Exact editable draft');
       assert.equal(agentControl('editor').disabled, false); assert.equal(agentControl('start').hidden, availability !== 'stored'); assert.equal(agentControl('start').disabled, false);
-      assert.equal(agentControl('state').hidden, availability === 'live');
+      assert.equal(agentControl('state').hidden, false);
+      assert.equal(agentControl('state-line').textContent, {live: 'Wait while the agent works.', stored: 'Not running. Start it to send a message.', incompatible: 'This agent cannot run here. Messages are read only.'}[availability]);
+      assert.equal(agentControl('model').disabled, true); assert.equal(agentControl('thinking').disabled, true);
       assert.equal(agentControl('send').hidden, availability !== 'live'); assert.equal(agentControl('send').disabled, availability !== 'live');
       assert.equal(agentControl('history-note').hidden, true);
       if (availability === 'stored') {assert.match(agentControl('start').title, /resume unfinished work/); const sends = transportLog.length; await app.agentComposer().send(); await settle(); assert.equal(transportLog.slice(sends).some(call => call.path.includes('/inputs')), false);}
@@ -178,12 +180,17 @@ test('agent settings retain model and thinking text from the exact frame without
     status: {busy: false, model: {provider: 'provider', modelId: 'selected-agent-long-model-name'}, thinkingLevel: 'medium'}};
   await arrive({workspace: {id: 'agent-settings', revision: 2, primaryKey: 'p', selectedTarget: {kind: 'agent', identity: 'selected'}}, primaries: [primaryFixture()], roster: [row], observations: [observation('selected', frame)]});
   event('agent.availability', {identity: row.identity, connectionEpoch: app.state.agentEpochs.get(row.identity), state: 'live', capabilities: row.capabilities}); await settle();
-  const settings = () => agentControl('settings-text'); const primaryModel = primaryControl('model').textContent;
-  app.agentChrome('selected', row); assert.deepEqual(settings()?.children.map(node => node.textContent), ['selected-agent-long-model-name', 'Medium']); assert.equal(settings()?.title, 'Model provider/selected-agent-long-model-name · Thinking medium');
+  const settings = () => ['model', 'thinking'].map(key => agentControl(key).querySelector('.composer-setting-label')?.textContent); const primaryModel = primaryControl('model').textContent;
+  app.agentChrome('selected', row); assert.deepEqual(settings(), ['selected-agent-long-model-name', 'Medium']);
+  assert.equal(agentControl('model').hidden, false); assert.equal(agentControl('thinking').hidden, false);
+  assert.match(agentControl('model').getAttribute('aria-label') ?? '', /: provider\/selected-agent-long-model-name$/);
+  assert.match(agentControl('thinking').getAttribute('aria-label') ?? '', /: medium$/);
   const detail=byId('agent-settings-detail'),limit='Last observed settings are not confirmed current.';
   assert.equal(detail.textContent,'Model provider/selected-agent-long-model-name · Thinking medium');assert.equal(detail.hidden,false);
   app.state.conversations.clear(); app.agentChrome('selected', row);
-  assert.deepEqual(settings()?.children.map(node => node.textContent), ['roster-model', 'Low']); assert.equal(settings()?.title, 'Last observed: Model other/roster-model · Thinking low');
+  assert.deepEqual(settings(), ['roster-model', 'Low']);
+  assert.match(agentControl('model').getAttribute('aria-label') ?? '', /: other\/roster-model$/); assert.match(agentControl('model').title, /Last observed model/);
+  assert.match(agentControl('thinking').getAttribute('aria-label') ?? '', /: low$/); assert.match(agentControl('thinking').title, /Last observed thinking/);
   assert.deepEqual(detail.textContent.split('\n'),['Last observed: Model other/roster-model · Thinking low',limit]);
   for(const [fields,text] of [[{model:undefined},'Last observed thinking low'],[{thinkingLevel:undefined},'Last observed model other/roster-model'],[{model:undefined,thinkingLevel:undefined},'']] as const){
     app.state.roster.set(row.identity,{...row,...fields});app.agentChrome(row.identity);

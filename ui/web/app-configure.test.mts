@@ -59,3 +59,13 @@ test('unknown capability and uncertain configure remain visible without fabricat
   await arrive({workspace:{id:'unknown',revision:1,primaryKey:null,selectedTarget:target},primaries:[],roster:[row],pendingOperations:[uncertain],observations:[observation(identity,{revision:1,observedAt:'2026-01-01T00:00:00.000Z',entries:[],live:[],nextBefore:null,status:{busy:false},coverage})]});await settle();
   assert.equal(agentControl('model').hidden,false);assert.equal(agentControl('thinking').hidden,false);assert.equal(agentControl('model').disabled,true);assert.equal(agentControl('thinking').disabled,true);assert.match(agentControl('state').textContent,/not confirmed/);assert.equal(agentControl('state-details').textContent,'Native write was not confirmed.');
 });
+
+test('missing settings keep disabled selectors visible without an unrelated composer notice',async()=> {
+  const identity='missing-settings',target={kind:'agent' as const,identity},row=agentFixture(identity);
+  await arrive({workspace:{id:'missing-settings',revision:1,primaryKey:null,selectedTarget:target},primaries:[],roster:[row],observations:[observation(identity,{revision:1,observedAt:'now',entries:[],live:[],nextBefore:null,status:{busy:false},coverage})]});
+  event('agent.availability',{identity,connectionEpoch:app.state.agentEpochs.get(identity),state:'live',capabilities:row.capabilities});await settle();
+  assert.equal(agentControl('state').hidden,true);
+  for(const [key,label,reason]of [['model','Model unavailable','The model catalog is unavailable.'],['thinking','Thinking unavailable','Thinking capabilities are unavailable for this exact model.']] as const){
+    const control=agentControl(key);assert.equal(control.hidden,false);assert.equal(control.disabled,true);assert.equal(control.querySelector('.composer-setting-label')?.textContent,label);assert.equal(control.getAttribute('aria-description'),reason);assert.ok(control.title.includes(reason));
+  }
+});

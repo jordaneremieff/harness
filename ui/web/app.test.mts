@@ -1197,7 +1197,7 @@ test('the whole-workbench footer owns facts while composers retain direct delive
   const identity='delivery-owner';await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:{kind:'agent',identity},conversationLayout:twoPanes(identity)},primaries:[primaryFixture({epoch:9538})],roster:[agentFixture(identity)]});const agent=controls(app.agentComposer());
   app.focusPane('primary-pane'); await settle(); const footer=byId('workbench-status'); for(const id of ['primary-context','primary-usage','extension-status'])assert.equal(footer.contains(byId(id)),true);for(const name of ['model','thinking'])assert.equal(footer.contains(primaryControl(name)),false);assert.ok(primaryControl('composer').contains(primaryControl('model')));
   const slots=byId('focused-composer-status'); assert.equal(slots.children.length,2); assert.match(slots.children[0]?.id??'',/-save$/); assert.match(slots.children[1]?.id??'',/-receipt-details$/);
-  for(const owner of [primaryControl,agent]){const form=owner('composer');assert.ok(form.contains(owner('queue')));assert.ok(form.contains(owner('send')));assert.equal(form.querySelector('.usage-details'),null);assert.equal(form.querySelector('.composer-guidance'),null);assert.ok(form.querySelector('.composer-settings'));}assert.ok(source.includes("elements.model?.addEventListener('click', () => actions.modelPicker())"));assert.ok(source.includes("elements.thinking?.addEventListener('click', () => actions.thinkingPicker())"));
+  for(const owner of [primaryControl,agent]){const form=owner('composer');assert.ok(form.contains(owner('queue')));assert.ok(form.contains(owner('send')));assert.equal(form.querySelector('.usage-details'),null);assert.equal(form.querySelector('.composer-guidance'),null);assert.ok(form.querySelector('.composer-settings'));}assert.ok(source.includes("[[controller.elements.model,'modelPicker'],[controller.elements.thinking,'thinkingPicker']]"));assert.ok(source.includes("const captured=settingSelection(controller)"));assert.ok(source.includes('actions[picker](captured)'));
 });
 
 test('a live agent with unavailable catalog metadata keeps title pane and composer coherent without a Primary', async () => {
@@ -2057,8 +2057,8 @@ test('failed-session recovery leaves retained text and unconfirmed input under t
 test('accepted working activity owns the tool while retained settings stay composer-local', async () => {
   const row=agentFixture('tool-agent',{state:'working',currentTool:{name:'read',argument:'src/current-file.ts'},model:{provider:'fixture',modelId:'tool-model'}});
   await arrive({workspace:{id:'w',revision:1,selectedTarget:{kind:'agent',identity:row.identity},panelVisible:true},primaries:[],roster:[row],observations:[observation(row.identity,{revision:1,observedAt:'now',entries:[],live:[],nextBefore:null,status:{busy:true},coverage})]});
-  assert.equal(tabsNode().children.find(node => node.attributes.get('aria-selected') === 'true')?.querySelector('.tab-dot')?.title, 'Working'); assert.equal(agentControl('settings-text')?.textContent,'tool-model');
-  assert.equal(agentControl('settings-text')?.title,'Last observed model fixture/tool-model'); assert.doesNotMatch(html, /agent-pane-heading/);
+  assert.equal(tabsNode().children.find(node => node.attributes.get('aria-selected') === 'true')?.querySelector('.tab-dot')?.title, 'Working'); assert.equal(agentControl('model').querySelector('.composer-setting-label')?.textContent,'tool-model');
+  assert.match(agentControl('model').getAttribute('aria-label') ?? '', /: fixture\/tool-model$/); assert.match(agentControl('model').title, /Last observed model/); assert.doesNotMatch(html, /agent-pane-heading/);
   app.openConversationActions(); const menu = hostDocument.body.children.find(node => node.className === 'context-menu'); assert.ok(menu);
   const detailsAction = menu.children.find(node => node.textContent === 'Conversation details'); assert.ok(detailsAction); detailsAction.click();
   assert.match(byId('modal-body').textContent, /Last reported tool/); assert.match(byId('modal-body').textContent, /src\/current-file.ts/); byId('modal-close').click();
@@ -2142,11 +2142,11 @@ test('Message panel uses its captured loaded cache and ignores unaccepted late f
   assert.equal(app.state.workspace?.selectedTarget?.kind, 'primary');
   const before = transportLog.length;
   event('agent.frame', {identity: row.identity, connectionEpoch: 0, frame: {...frame, revision: 2, status: {busy: false, model: {provider: 'unaccepted', modelId: 'late-model'}}}}); flushFrames(); await settle();
-  assert.deepEqual(messageControl('settings-text')?.children.map(node => node.textContent), ['live-model', 'Low']);
+  assert.deepEqual(['model', 'thinking'].map(key => messageControl(key).querySelector('.composer-setting-label')?.textContent), ['live-model', 'Low']);
   assert.match(byId('agent-usage-summary').textContent, /Cache 50%/); assert.match(byId('agent-usage').textContent, /Loaded assistant window only/); assert.doesNotMatch(byId('agent-usage').textContent, /Primary|whole-session cost|context window/);
   assert.equal(byId('agent-folder').textContent, 'Saved folder /saved/recipient');
   event('agent.frame', {identity: 'other-recipient', connectionEpoch: 1, frame: {...frame, status: {busy: true, model: {provider: 'other', modelId: 'not-recipient'}}}}); flushFrames(); await settle();
-  assert.deepEqual(messageControl('settings-text')?.children.map(node => node.textContent), ['live-model', 'Low']);
+  assert.deepEqual(['model', 'thinking'].map(key => messageControl(key).querySelector('.composer-setting-label')?.textContent), ['live-model', 'Low']);
   assert.equal(messageControl('editor'), editor); assert.equal(editor.value, 'Keep captured draft'); assert.deepEqual([editor.selectionStart, editor.selectionEnd], [2, 7]); assert.equal(hostDocument.activeElement, editor);
   assert.equal(byId('agent-usage-details'), details); assert.equal(Reflect.get(details, 'open'), true);
   assert.equal(transportLog.slice(before).filter(call => call.path.includes('/inputs') || call.path.endsWith('/targets')).length, 0);
@@ -2178,7 +2178,7 @@ test('three exact owners isolate drafts, carets, roots and accepted frames throu
   assert.equal(messageControl('composer'), forms[2]); assert.equal(messageControl('editor'), editors[2]); assert.equal(forms[2]?.parentNode, roots[2]); assert.equal(app.stableViews().slot(forms[2] as unknown as HTMLElement)?.id,'agent-message-editor-slot'); assert.deepEqual(app.state.workspace?.selectedTarget, a); editors[2]?.focus();
   event('agent.frame', {identity: a.identity, connectionEpoch: 11, frame: frame(a.identity, 2)}); event('agent.frame', {identity: b.identity, connectionEpoch: 20, frame: frame(b.identity, 2)}); await settle();
   assert.match(ac('transcript').textContent, /three-a frame 2/); assert.doesNotMatch(ac('transcript').textContent, /three-b frame/);
-  assert.match(bc('transcript').textContent, /three-b frame 2/); assert.doesNotMatch(bc('transcript').textContent, /three-a frame/); assert.equal(messageControl('stop').hidden, true); assert.equal(byId('workbench-scope').title,`${byId('workbench-scope').textContent}\n${b.identity}`); assert.match(bc('settings-text')?.textContent ?? '',/three-b-model-2/); assert.equal(hostDocument.activeElement,editors[2]);
+  assert.match(bc('transcript').textContent, /three-b frame 2/); assert.doesNotMatch(bc('transcript').textContent, /three-a frame/); assert.equal(messageControl('stop').hidden, true); assert.equal(byId('workbench-scope').title,`${byId('workbench-scope').textContent}\n${b.identity}`); assert.equal(bc('model').querySelector('.composer-setting-label')?.textContent,'three-b-model-2'); assert.equal(hostDocument.activeElement,editors[2]);
   event('agent.frame', {identity: b.identity, connectionEpoch: 19, frame: frame('stale-b', 99)}); await settle(); assert.doesNotMatch(bc('transcript').textContent, /stale-b/);
   for (const [index, owner] of owners.entries()) { assert.equal(owner('root'), roots[index]); assert.equal(owner('editor'), editors[index]); assert.equal(owner('composer'), forms[index]); assert.deepEqual([editors[index]?.selectionStart, editors[index]?.selectionEnd], [index + 1, index + 5]); assert.equal(editors[index]?.selectionDirection,index === 1 ? 'backward' : 'forward'); }
   assert.deepEqual(editors.map(editor => editor.value), ['Primary exact draft local', 'Alpha exact draft local', 'Beta exact draft local']);

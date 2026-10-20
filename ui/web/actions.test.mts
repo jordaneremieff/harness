@@ -1111,10 +1111,10 @@ test('model names come from one read of the Primary model list for each Primary 
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.deepEqual(reads, ['/api/primaries/p/resources/models?limit=100']);
   assert.equal(actions.modelName('vendor', 'model-a'), 'Model A'); assert.equal(actions.modelName('vendor', 'unnamed'), undefined); assert.equal(actions.modelName('other', 'model-a'), 'Model A', 'another provider takes the one name the list gives that id');
-  assert.equal(changed, 1);
-  actions.readModelNames(); await new Promise(resolve => setTimeout(resolve, 0)); assert.equal(reads.length, 1);
+  assert.equal(changed, 2, 'catalog availability and new names each refresh the settings');
+  actions.readModelNames(); await new Promise(resolve => setTimeout(resolve, 0)); assert.equal(reads.length, 1); assert.equal(changed, 2);
   current = {...primary, epoch: 2}; actions.readModelNames(); await new Promise(resolve => setTimeout(resolve, 0)); assert.equal(reads.length, 2);
-  assert.equal(changed, 1, 'an unchanged list does not repaint');
+  assert.equal(changed, 3, 'the new Primary catalog refreshes availability without another name change');
 });
 test('model names are read through the naming Primary when no Primary is selected', async () => {
   const reads: string[] = [];
@@ -1173,5 +1173,5 @@ test('a list name for the Primary model is not replaced by the name the Primary 
   globalThis.fetch = async () => Response.json({ok: true, data: {items: [{provider: 'vendor', id: 'm', name: 'Listed', reasoning: false, input: ['text']}], nextCursor: null, revision: 'r'}});
   const actions = new Actions(context({primary: () => current, modelNamesChanged: () => {changed++;}}));
   actions.readModelNames(); await new Promise(resolve => setTimeout(resolve, 0)); actions.readModelNames();
-  assert.equal(actions.modelName('vendor', 'm'), 'Listed'); assert.equal(changed, 2);
+  assert.equal(actions.modelName('vendor', 'm'), 'Listed'); assert.equal(changed, 3, 'the reported name, catalog availability and listed name each refresh the settings');
 });

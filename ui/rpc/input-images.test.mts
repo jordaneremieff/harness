@@ -113,11 +113,11 @@ test('a state response from before a model change cannot restore stale image cap
   child.onCommand = record => record.type === 'get_state' ? requested.resolve(record) : child.defaults(record);
   const refresh = session.refreshState(); const stale = await requested.promise;
   child.onCommand = record => {
-    if (record.type === 'set_model') { child.modelInput = ['text']; child.response(record, {provider: 'fixture', id: 'text', input: ['text']}); }
+    if (record.type === 'set_model') { child.modelInput = ['text']; child.response(record, {provider: 'fixture', id: 'text', reasoning: false, input: ['text']}); }
     else child.defaults(record);
   };
   await session.control({epoch: 1, action: 'model', provider: 'fixture', modelId: 'text'});
-  child.response(stale, {sessionId: 'fixture', isStreaming: false, isCompacting: false, model: {provider: 'fixture', id: 'old', input: ['image']}});
+  child.response(stale, {sessionId: 'fixture', isStreaming: false, isCompacting: false, model: {provider: 'fixture', id: 'old', reasoning: false, input: ['image']}});
   await refresh; assert.deepEqual(present(session.view.model).input, ['text']);
   await assert.rejects(session.input('', 'prompt', false, source), {code: 'unsupported'}); await session.close();
 });

@@ -1471,7 +1471,7 @@ function listedModelText(model: NonNullable<ConversationPresentation['model']>):
 function latestSettingsOperation(target:Target):OperationView|undefined {
   return [...state.operations.values()].findLast(value=>sameTarget(value.target,target)&&(value.kind==='agent.configure'||value.kind==='primary.control'&&['model','thinking'].includes(value.action??'')));
 }
-function settingsFeedback(view:ConversationPresentation,latest:OperationView|undefined,pending:boolean,uncertain:boolean,base?:string):ComposerStateView|undefined {
+function settingsFeedback(latest:OperationView|undefined,pending:boolean,uncertain:boolean,base?:string):ComposerStateView|undefined {
   if(pending)return {line:'Updating settings…',label:'Updating settings…'};
   const issue=latest&&['rejected','uncertain'].includes(latest.state)?latest.error?.message:undefined;
   if(issue){
@@ -1481,17 +1481,16 @@ function settingsFeedback(view:ConversationPresentation,latest:OperationView|und
     return {line,label:line,detail:issue,tone:'warning'};
   }
   if(base==='Wait while the agent works.')return {line:base,label:base};
-  if(!view.model||!view.thinking)return {line:'Settings are not fully reported.',label:'Settings are not fully reported.'};
   return undefined;
 }
-function composerSettingsStatus(controller:ConversationController,view:ConversationPresentation) {
+function composerSettingsStatus(controller:ConversationController) {
   const target=controller.target,selection=settingSelection(controller),base=settingsReason(controller),latest=latestSettingsOperation(target);
   const pending=actions.modelChanging(target,state.operations.values())||!!latest&&['reserved','dispatched'].includes(latest.state);
   const uncertain=latest?.state==='uncertain'&&!configurationReadback(target,latest);
   const common=pending?'Updating settings…':uncertain?'Settings update was not confirmed. Check the conversation before another change.':base;
   return {pending,modelReason:common||(!actions.hasModelCatalog()?'The model catalog is unavailable.':undefined),
     thinkingReason:common||(target.kind==='agent'&&!selection.levels?.length?'Thinking capabilities are unavailable for this exact model.':undefined),
-    feedback:settingsFeedback(view,latest,pending,uncertain,base)};
+    feedback:settingsFeedback(latest,pending,uncertain,base)};
 }
 function paintModelSetting(node:HTMLButtonElement,view:ConversationPresentation,owner:string,reason?:string):void {
   const id=view.model?`${view.model.provider}/${view.model.modelId}`:'';
@@ -1507,7 +1506,7 @@ function paintThinkingSetting(node:HTMLButtonElement,view:ConversationPresentati
 function renderComposerSettings(controller: ConversationController, view: ConversationPresentation): void {
   const {model,thinking}=controller.elements;if(!model||!thinking)return;
   actions.readModelNames();
-  const status=composerSettingsStatus(controller,view),owner=controller.target.kind==='primary'?'Primary':view.name;
+  const status=composerSettingsStatus(controller),owner=controller.target.kind==='primary'?'Primary':view.name;
   paintModelSetting(model,view,owner,status.modelReason);paintThinkingSetting(thinking,view,owner,status.thinkingReason);
   controller.composer.setSettingsState(status.feedback);
   for(const [node,reason]of [[model,status.modelReason],[thinking,status.thinkingReason]] as const){
