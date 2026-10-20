@@ -15,7 +15,7 @@
 <div id="connection" class="connection-banner" role="status" aria-live="polite" hidden></div>
 <div class="workbench">
 <nav id="sidebar" class="sidebar" aria-label="Navigation">
-<div class="nav-top"><span id="project-name" class="project-context">Working folder</span><button id="project-button" class="icon-button project-button" type="button" data-control-icon="folder" title="Choose working folder" aria-label="Choose working folder" aria-haspopup="menu" aria-expanded="false"><span class="sr-only">Choose working folder</span></button><button id="sidebar-close" class="icon-button sidebar-close" type="button" data-control-icon="close" aria-label="Hide navigation" title="Hide navigation"><span class="sr-only">Hide navigation</span></button></div>
+<div class="nav-top"><button id="sidebar-close" class="icon-button sidebar-close" type="button" data-control-icon="navigation" aria-label="Hide sidebar" title="Hide sidebar"><span class="sr-only">Hide sidebar</span></button><span id="project-name" class="project-context">Working folder</span><button id="project-button" class="icon-button project-button" type="button" data-control-icon="folder" title="Choose working folder" aria-label="Choose working folder" aria-haspopup="menu" aria-expanded="false"><span class="sr-only">Choose working folder</span></button></div>
 <div class="sidebar-scroll">
 <section id="sidebar-conversations" class="nav-section sidebar-conversations" aria-label="Conversations"></section>
 <section id="primary-section" class="nav-section primary-section" aria-labelledby="sessions-heading">
@@ -40,7 +40,7 @@
 </div>
 </section>
 <section id="files-section" class="nav-section files-section" aria-labelledby="files-heading">
-<div class="nav-heading-row"><h2 class="nav-heading"><button id="files-heading" class="section-toggle" type="button" aria-expanded="true" aria-controls="files-section-body">FILES<span id="files-count" class="count" hidden></span></button></h2><div class="nav-heading-actions"><button id="files-refresh" class="icon-button" type="button" data-control-icon="restart" aria-label="Refresh files" title="Refresh files"><span class="sr-only">Refresh files</span></button></div></div>
+<div class="nav-heading-row"><h2 class="nav-heading"><button id="files-heading" class="section-toggle" type="button" aria-expanded="true" aria-controls="files-section-body">FILES<span id="files-count" class="count" hidden></span></button></h2><div class="nav-heading-actions"><button id="files-refresh" class="icon-button" type="button" hidden data-control-icon="restart" aria-label="Refresh files" title="Refresh files"><span class="sr-only">Refresh files</span></button></div></div>
 <div id="files-section-body" class="section-body"><div id="files-tree"></div></div>
 </section>
 </div>

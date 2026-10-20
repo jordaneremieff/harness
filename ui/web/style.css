@@ -207,7 +207,7 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .sidebar-scroll { display: contents; }
 .sidebar-scroll > :is(.roster-section, .files-section) { flex: 1 1 0; min-height: calc(28px + 5 * 26px); }
 .sidebar-scroll > :is(.roster-section, .files-section)[data-collapsed=true] { flex: none; min-height: 0; }
-.nav-top { display: flex; align-items: center; gap: var(--s1); min-height: 32px; padding: 0 var(--s2) 0 var(--s3); border-bottom: 1px solid var(--rule); }
+.nav-top { display: flex; align-items: center; gap: var(--s1); min-height: 32px; padding: 0 var(--s2) 0 6px; border-bottom: 1px solid var(--rule); }
 .sidebar-footer { display: flex; flex: none; align-items: center; gap: var(--s1); margin-top: auto; padding: var(--s1) var(--s2) 0; font-size: 13px; }
 .sidebar-footer > .icon-button { justify-content: flex-start; padding: 0 4px; }
 .sidebar-footer > .icon-button > .card-icon { margin-inline: 2px; }

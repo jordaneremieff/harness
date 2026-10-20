@@ -932,11 +932,37 @@ test('visible controls supplement the palette without a header band or title cli
   for(const id of ['session-open','session-new','agent-new','commands-button','notifications-button','appearance-button'])assert.ok(byId(id)); assert.doesNotMatch(html,/window-actions|pane-heading|key-hint|id="notices-button"/); assert.ok(source.includes('focusedTranscript()?.expandLoaded')); assert.ok(source.includes("byId('notices-count').hidden = !unread")); assert.ok(source.includes("const activity = byId('workbench-activity'); if (!notice && view.detail) activity.title +=")); assert.ok(source.includes("!view.busy && view.responseOutcome === 'failed'")); assert.doesNotMatch(source, /Retrying after/); assert.ok(source.includes('if (item?.lastError)')); assert.doesNotMatch(source, /byId\('(?:session-title|agent-name)'\)\.addEventListener\('click'/); for (const binding of ["byId('session-new').addEventListener('click'", "byId('agent-refresh').addEventListener('click', refreshRoster)", "byId('agent-new').addEventListener('click'", "byId('commands-button').addEventListener('click', () => actions.palette())", "byId('notifications-button').addEventListener('click', notices)", "byId('appearance-button').addEventListener('click', () => actions.appearance())"]) assert.ok(source.includes(binding));
 });
 
+test('the sidebar header leads with the same panel icon as its show control', () => {
+  const header = byId('sidebar-close').parentNode; assert.ok(header);
+  assert.deepEqual(header.children.map(node => node.id), ['sidebar-close', 'project-name', 'project-button']);
+  const toggle = byId('sidebar-close'), show = byId('sidebar-show');
+  assert.equal(toggle.dataset.controlIcon, show.dataset.controlIcon); assert.equal(toggle.dataset.controlIcon, 'navigation');
+  assert.equal(toggle.getAttribute('aria-label'), 'Hide sidebar'); assert.equal(toggle.title, 'Hide sidebar');
+  assert.equal(header.querySelector('[data-control-icon="close"]'), null); assert.ok(toggle.querySelector('.card-icon-navigation'));
+});
+test('file watch status alone exposes the heading refresh and Commands uses the same refresh', async t => {
+  const fetch = globalThis.fetch;
+  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => new URL(String(input), 'http://ui.test/app').pathname.endsWith('/files/watch')
+    ? Response.json({ok: true, data: {roots: []}}) : fetch(input, init));
+  await arrive({workspace: {id: 'file-refresh-affordance', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture()], roster: []});
+  await app.fileWatch.scope('file-refresh-affordance', [], true);
+  const change = {rootId: 'watch-affordance', directories: [], files: [], rescan: false};
+  t.after(() => {app.fileWatch.change({...change, watch: 'live'}); byId('modal-close').click();});
+  assert.equal(app.fileWatch.status, ''); assert.equal(byId('files-refresh').hidden, true);
+  let refreshes = 0; t.mock.method(app.filesTree, 'refresh', () => {refreshes++;});
+  app.fileWatch.change({...change, watch: 'unavailable', reason: 'Use Refresh files.'});
+  assert.notEqual(app.fileWatch.status, ''); assert.equal(byId('files-refresh').hidden, false);
+  byId('files-refresh').click(); assert.equal(refreshes, 1);
+  app.fileWatch.change({...change, watch: 'live'}); assert.equal(byId('files-refresh').hidden, true);
+  byId('commands-button').click(); const entry = byId('modal-body').querySelectorAll('.palette-row').find(row => row.querySelector('.palette-name')?.textContent === 'Refresh files');
+  assert.ok(entry); assert.equal(entry.disabled, false); entry.click(); assert.equal(refreshes, 2);
+  assert.equal(byId('files-refresh').hidden, true);
+});
 test('project identity names both direct controls with a launch-directory fallback', async () => {
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture()], roster: []});
   assert.equal(byId('project-name').textContent, 'project'); assert.equal(byId('compact-project-name').textContent, 'project');
   assert.equal(byId('project-button').title, 'Working folder: /fixture/project');
-  assert.equal(byId('project-name').title, '/fixture/project');
+  assert.equal(byId('project-name').title, '/fixture/project'); assert.equal(byId('compact-project-name').title, '/fixture/project');
   assert.equal(byId('project-button').getAttribute('aria-label'), 'Choose working folder');
   assert.match(html, /id="project-name" class="project-context">Working folder/);
 });

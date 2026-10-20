@@ -25,7 +25,7 @@ const primary: PrimaryView = {key: 'p', epoch: 1, cwd: '/project', lifecycle: 'r
 const handoff: HandoffView = {cwd: '/handed-project', sessionFile: '/handed-project/session.jsonl', executable: 'pi', argv: ['--session', '/handed-project/session.jsonl'], command: 'pi --session /handed-project/session.jsonl'};
 const operation: OperationView = {id: 'op', kind: 'primary.control', state: 'completed', target: {kind: 'primary', key: 'p', epoch: 1}, createdAt: '2026-10-08T12:00:00Z', updatedAt: '2026-10-08T12:00:00Z'};
 function context(overrides: Partial<ActionContext> = {}): ActionContext {
-  return {agentPresentation: row => ({name: row.name ?? 'Unnamed conversation', activity: 'Running', tone: 'secondary', cwd: row.cwd}), snapshot: () => undefined, primary: () => primary, composer: {commandsChanged: () => {}} as ActionContext['composer'], commandsChanged: () => {overrides.composer?.commandsChanged?.();}, modal: {} as ActionContext['modal'], selection: async () => undefined, reload: async () => undefined, result: () => undefined, rosterRefresh: () => undefined, hasTranscript: () => !!(overrides.primary ?? (() => primary))(), find: () => undefined, recovery: () => undefined, primaryEntries: () => [], agents: () => [], selectedAgent: () => undefined, agentStatus: row => row.availability === 'live' ? row.state : row.availability, selectAgent: () => {}, selectPrimary: () => {}, notices: () => {}, sidebar: () => {}, sidebarShown: () => true, view: () => {}, copyAgent: () => {}, inspectAgent: () => {}, ...overrides};
+  return {agentPresentation: row => ({name: row.name ?? 'Unnamed conversation', activity: 'Running', tone: 'secondary', cwd: row.cwd}), snapshot: () => undefined, primary: () => primary, composer: {commandsChanged: () => {}} as ActionContext['composer'], commandsChanged: () => {overrides.composer?.commandsChanged?.();}, modal: {} as ActionContext['modal'], selection: async () => undefined, reload: async () => undefined, result: () => undefined, rosterRefresh: () => undefined, filesRefresh: () => undefined, hasTranscript: () => !!(overrides.primary ?? (() => primary))(), find: () => undefined, recovery: () => undefined, primaryEntries: () => [], agents: () => [], selectedAgent: () => undefined, agentStatus: row => row.availability === 'live' ? row.state : row.availability, selectAgent: () => {}, selectPrimary: () => {}, notices: () => {}, sidebar: () => {}, sidebarShown: () => true, view: () => {}, copyAgent: () => {}, inspectAgent: () => {}, ...overrides};
 }
 test('model catalog absence disables choices without discarding exact thinking metadata',async()=> {
   const current={...primary,model:{provider:'fixture',id:'model',name:'Fixture',reasoning:true,input:['text'],thinkingLevels:['off','high']}};
@@ -566,7 +566,7 @@ test('the palette lists the one sidebar action that applies and still finds it b
 test('palette covers every displaced control and session availability follows the menu', () => {
   const actions = new Actions(context());
   const names = actions.paletteEntries().filter(item => item.source === 'app').map(item => item.name);
-  assert.deepEqual(names, ['New session', 'Sessions', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Saved drafts and messages', 'Appearance', 'Message input…', 'Agent presentation control', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Notifications', 'Refresh agents', 'Insert /agent new', 'Hide sidebar', 'Projects', 'Model', 'Thinking', 'Sent and received tasks…']);
+  assert.deepEqual(names, ['New session', 'Sessions', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Saved drafts and messages', 'Appearance', 'Message input…', 'Agent presentation control', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Notifications', 'Refresh agents', 'Refresh files', 'Insert /agent new', 'Hide sidebar', 'Projects', 'Model', 'Thinking', 'Sent and received tasks…']);
   const absent = new Actions(context({primary: () => undefined})).paletteEntries();
   const disabled = absent.filter(item => !item.enabled).map(item => item.name);
   assert.deepEqual(disabled, ['Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Model', 'Thinking', 'Sent and received tasks…']);
@@ -574,6 +574,15 @@ test('palette covers every displaced control and session availability follows th
   assert.equal(starting.find(item => item.name === 'New session')?.enabled, true);
   assert.equal(starting.find(item => item.name === 'Model')?.enabled, false);
   assert.equal(starting.find(item => item.name === 'Thinking')?.enabled, false);
+});
+test('Refresh files stays enabled without a ready conversation and invokes its workspace action', () => {
+  let refreshes = 0;
+  for (const selected of [undefined, primary, {...primary, lifecycle: 'starting' as const}]) {
+    const actions = new Actions(context({primary: () => selected, filesRefresh: () => {refreshes++;}}));
+    const entry = actions.paletteEntries().find(item => item.name === 'Refresh files');
+    assert.ok(entry); assert.equal(entry.enabled, true); assert.equal(entry.priority, 1); entry.run();
+  }
+  assert.equal(refreshes, 3);
 });
 test('transcript actions follow the focused view without enabling Primary execution', () => {
   const calls: string[] = []; let available = true;

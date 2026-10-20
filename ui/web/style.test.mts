@@ -906,7 +906,7 @@ test('the document selects the same-origin SVG favicon', () => {
 
 test('drawer and overflow controls share accessible inline stroke icons', async () => {
   const button = html.match(/<button id="sidebar-close"[^>]*>[\s\S]*?<\/button>/)?.[0] ?? '';
-  assert.match(button, /data-control-icon="close"/); assert.match(button, /aria-label="Hide navigation"/);
+  assert.match(button, /data-control-icon="navigation"/); assert.match(button, /aria-label="Hide sidebar"/);
   const app = await readFile(new URL('./app.ts', import.meta.url), 'utf8');
   assert.equal([...app.matchAll(/const plus = cardAction\('plus'/g)].length, 1);
   assert.match(app, /cardAction\('plus', 'New tab', \(\) => choosePaneTarget\(leaf\.id\)/);
@@ -981,9 +981,10 @@ test('the sidebar footer stays at the bottom without a heavy separator', () => {
   assert.match(rule('.sidebar-footer'), /align-items: center; gap: var\(--s1\); margin-top: auto; padding: var\(--s1\) var\(--s2\) 0/); assert.doesNotMatch(rule('.sidebar-footer'), /border-top:/);
 });
 
-test('the visible sidebar owns its close control and inherits coarse pointer targets', () => {
+test('the visible sidebar leads with its panel toggle at the same inset and inherits coarse pointer targets', () => {
   assert.match(rule('.sidebar-close'), /display: inline-flex/);
-  assert.match(html, /id="sidebar-close" class="icon-button sidebar-close"[^>]+aria-label="Hide navigation"/);
+  assert.match(rule('.nav-top'), /padding: 0 var\(--s2\) 0 6px/); assert.match(rule('.navigation-access'), /padding: 0 6px/);
+  assert.match(html, /id="sidebar-close" class="icon-button sidebar-close"[^>]+aria-label="Hide sidebar"/);
   assert.match(media('@media (max-width:899px)'), /\.sidebar-close \{ display: inline-flex/);
   assert.match(rule('.icon-button'), /width: 24px; height: 24px/);
   assert.match(media('@media (pointer:coarse)'), /min-height: 44px; min-width: 44px/);
