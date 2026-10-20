@@ -391,6 +391,17 @@ test('explicit preparation refreshes image readiness in the existing observation
   assert.equal((await f.registry.snapshot('w')).observations?.[0]?.availability?.capabilities.images,true);
   assert.equal(f.calls.filter(call=>call[0]==='select').length,2);assert.equal(f.calls.some(call=>call[0]==='hide'),false);
 });
+test('a selection failure for an agent whose catalog row reports no live host raises no notice, and a live row still does',async context=> {
+  const f=await memoryRegistry(context);
+  const claims=new Map<string,string>([[STORAGE,'dead'],[CHILD,'live']]);
+  context.mock.method(f.registry.agents,'rosterRow',(identity:string)=>claims.has(identity)?{id:identity,storageId:'s',cwd:'/p',claim:claims.get(identity)}:undefined as never);
+  context.mock.method(f.registry.agents,'select',async()=>{throw new Error('No live compatible host.');});
+  await f.registry.observe('w');
+  assert.deepEqual(f.registry.journal.notices('w').map(item=>item.target),[{kind:'agent',identity:CHILD}]);
+  claims.delete(CHILD);const current=f.workspaces.get('w');assert.ok(current);current.conversationLayout=agentLayout([`${STORAGE}:9`]);
+  await f.registry.observe('w');
+  assert.deepEqual(f.registry.journal.notices('w').map(item=>item.target),[{kind:'agent',identity:CHILD},{kind:'agent',identity:`${STORAGE}:9`}]);
+});
 test('pure concurrent hidden tabs do not acquire observations',async context=> {
   const f=await memoryRegistry(context);const root=f.workspaces.get('w')?.conversationLayout?.root;
   assert.ok(root?.kind==='split' && root.first.kind==='split' && root.first.second.kind==='pane');

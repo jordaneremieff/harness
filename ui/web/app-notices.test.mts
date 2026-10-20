@@ -97,6 +97,24 @@ test('grouped refusal details retain every cause and Dismiss removes only their 
   assert.deepEqual(forbidden(start), []); byId('modal-close').click();
 });
 
+test('repeated connection notices for one named conversation share one row that dismisses all its items', async () => {
+  const target: Target = {kind: 'agent', identity: 'repeat-notice'}, other: Target = {kind: 'agent', identity: 'repeat-other'};
+  await arrive({workspace: {id: 'notice-repeat', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({epoch: 126})], roster: [agentFixture(target.identity, {name: 'Web UI lead'}), agentFixture(other.identity, {name: 'Reviewer'})]});
+  event('notice', {level: 'warning', code: 'observation_unavailable', message: 'Stored metadata; no live compatible host.'}, target);
+  event('notice', {level: 'warning', code: 'observation_unavailable', message: 'Stored metadata; no live compatible host.'}, target);
+  event('notice', {level: 'warning', code: 'observation_unavailable', message: 'Native attach diagnostic'}, other);
+  const ids = app.state.notices.slice(0, 2).map(item => item.id); byId('notifications-button').click();
+  const rows = byId('modal-body').querySelectorAll('.notification'); assert.equal(rows.length, 2);
+  const merged = rows[0]; assert.ok(merged);
+  assert.equal(merged.querySelector('p')?.textContent, 'Web UI lead: the agent connection is unavailable · 2 times');
+  assert.equal(rows[1]?.querySelector('p')?.textContent, 'Reviewer: the agent connection is unavailable.');
+  assert.equal(merged.querySelectorAll('.notice-destination').length, 1);
+  const detail = merged.querySelector('pre'); assert.ok(detail); for (const id of ids) assert.match(detail.textContent, new RegExp(id));
+  const dismiss = merged.querySelector('button'); assert.ok(dismiss); dismiss.click();
+  for (const id of ids) assert.equal(app.state.dismissedNotices.has(id), true);
+  assert.deepEqual(app.state.notices.map(item => item.target), [other]); byId('modal-close').click();
+});
+
 test('local conversation menus never select another recipient and target its View and thinking controls exactly', async () => {
   const target: Target = {kind: 'agent', identity: 'local-menu'};
   const p: Target = {kind: 'primary', key: 'p', epoch: 124};

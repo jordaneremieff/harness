@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type {AgentRow, NoticeView, Snapshot, Target} from '../shared/api.ts';
 import {createState, dismissNotice, replaceSnapshot} from './state.ts';
-import {noticeGroups, noticeTarget} from './notice-presentation.ts';
+import {noticeGroups, noticeGroupText, noticeTarget, type NoticeGroup} from './notice-presentation.ts';
 
 const agent: AgentRow = {identity: 'exact-agent', storageId: 'storage', cwd: '/project', modifiedAt: 0, state: 'idle', owner: 'here', partial: false, name: 'Parser', availability: 'live'};
 const target: Target = {kind: 'agent', identity: agent.identity};
@@ -58,4 +58,35 @@ test('Primary destinations reject old epochs even if the key and displayed name 
   const state = replaceSnapshot(createState(), {...snapshot([notice]), primaryIndex: [{key: 'p', epoch: 2, lifecycle: 'ready'}]});
   assert.equal(noticeTarget(state, notice), exact);
   assert.equal(noticeTarget({...state, primaryIndex: [{key: 'p', epoch: 3, lifecycle: 'ready'}]}, notice), undefined);
+});
+
+test('a targeted notice starts with its conversation name and an untargeted or unnamed one reads as supplied', () => {
+  const named = (id: number, who: Target): NoticeView => ({id: `boot:${id}`, code: 'observation_unavailable', level: 'warning', target: who, message: 'Native diagnostic'});
+  const other: NoticeView = {id: 'boot:9', code: 'save', level: 'error', message: 'Draft was not saved.', target};
+  const plain: NoticeView = {id: 'boot:10', code: 'observation_unavailable', level: 'warning', message: 'Native diagnostic'};
+  const nameOf = (who: Target) => who.kind === 'agent' && who.identity === agent.identity ? 'Parser' : undefined;
+  const groups = noticeGroups([named(1, target), other, plain, named(2, {kind: 'agent', identity: 'unknown-agent'})], nameOf);
+  assert.deepEqual(groups.map(group => group.message), ['Parser: the agent connection is unavailable.', 'Parser: Draft was not saved.', 'The agent connection is unavailable.', 'The agent connection is unavailable.']);
+});
+
+test('notices with one target and one code share a row with a count and keep every original item', () => {
+  const make = (id: number, who: Target, code = 'observation_unavailable', level: NoticeView['level'] = 'warning'): NoticeView => ({id: `boot:${id}`, code, level, target: who, message: `Native diagnostic ${id}`});
+  const another: Target = {kind: 'agent', identity: 'another-agent'};
+  const first = make(1, target), second = make(2, target, 'observation_unavailable', 'error'), apart = make(3, another), differs = make(4, target, 'save');
+  const groups = noticeGroups([first, apart, second, differs], who => who.kind === 'agent' ? who.identity : undefined);
+  assert.equal(groups.length, 3);
+  assert.deepEqual(groups[0]?.items, [first, second]); assert.equal(groups[0]?.times, 2); assert.equal(groups[0]?.level, 'error');
+  assert.equal(noticeGroupText(groups[0] as NoticeGroup), 'exact-agent: the agent connection is unavailable · 2 times');
+  assert.equal(groups[1]?.times, undefined); assert.equal(noticeGroupText(groups[1] as NoticeGroup), 'another-agent: the agent connection is unavailable.');
+  assert.deepEqual(groups[2]?.items, [differs]);
+  let state = replaceSnapshot(createState(), snapshot([first, second]));
+  for (const item of noticeGroups(state.notices)[0]?.items ?? []) state = dismissNotice(state, item.id);
+  assert.deepEqual([...state.dismissedNotices], ['boot:1', 'boot:2']); assert.deepEqual(state.notices, []);
+});
+
+test('the refused-record group ignores names and targets', () => {
+  const one = {...refused(1, 'first'), target}, two = {...refused(2, 'second'), target};
+  const groups = noticeGroups([one, two], () => 'Parser');
+  assert.equal(groups.length, 1); assert.equal(groups[0]?.message, '2 saved records could not be read. The saved files remain unchanged.');
+  assert.equal(groups[0]?.times, undefined); assert.deepEqual(groups[0]?.items, [one, two]);
 });

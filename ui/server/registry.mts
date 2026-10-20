@@ -525,13 +525,19 @@ export class Registry {
       await this.agents.hide(workspace,identity); record.attached.delete(identity);
     }
   }
+  /** A catalog row whose projected `/api/agents` availability is not live is an expected stored state, not a connection fault. */
+  private reportObservationFailure(workspace: string, identity: string, error: unknown): void {
+    const row = this.agents.rosterRow(identity), known = row ? projectRoster({rows:[row]}).rows[0]?.availability : undefined;
+    if(known && known !== 'live') return;
+    this.journal.publish('notice',{kind:'agent',identity},{level:'warning',code:'observation_unavailable',message:safeText(error instanceof Error ? error.message : 'Agent observation failed.',512)},workspace);
+  }
   private async selectDesiredObservations(workspace: string, record: WorkspaceObservation): Promise<void> {
     for(const [identity,slot] of record.desired) {
       if(this.closing) return;
       if(record.attached.get(identity) === slot) continue;
       slot.started = true; record.attached.set(identity,slot);
       try {await this.agents.select(workspace,identity);}
-      catch(error) {slot.failed = true; this.journal.publish('notice',{kind:'agent',identity},{level:'warning',code:'observation_unavailable',message:safeText(error instanceof Error ? error.message : 'Agent observation failed.',512)},workspace);}
+      catch(error) {slot.failed = true; this.reportObservationFailure(workspace,identity,error);}
       if(record.dirty) return;
     }
   }

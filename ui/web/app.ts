@@ -45,7 +45,7 @@ import { IdentityLookup } from './identity-lookup.ts';
 import { Roster } from './roster.ts';
 import { ThreadExplorer, ThreadReader } from './threads-view.ts';
 import { THREAD_PAGE_EVENTS } from './threads.ts';
-import {noticeGroups, noticeTarget, type NoticeGroup} from './notice-presentation.ts';
+import {noticeGroups, noticeGroupText, noticeTarget, type NoticeGroup} from './notice-presentation.ts';
 import { Recovery } from './recovery.ts';
 import { conversationBlocks, createState, dismissNotice, markReadNotices, unreadNotices, mergeRosterPage, mergeAgentPage, mergePrimaryPage, primaryBlocks, reduceEvent, replaceSnapshot, targetIdentity } from './state.ts';
 import type { UiEvent } from './state.ts';
@@ -1969,14 +1969,19 @@ function noticesBadge(): void {
 }
 function notices(): void {
   state = markReadNotices(state); noticesBadge(); modal.open('Notifications'); if (!state.notices.length) modal.body.append(empty('No notifications'));
-  for (const group of noticeGroups(state.notices)) renderNoticeGroup(group);
+  for (const group of noticeGroups(state.notices, noticeConversationName)) renderNoticeGroup(group);
+}
+/** A notice names its conversation as the tab does. A Primary of another epoch is not named. */
+function noticeConversationName(target: Target): string | undefined {
+  if (target.kind === 'primary' && state.primaries.get(target.key)?.epoch !== target.epoch) return undefined;
+  return presentationName(presentation(target));
 }
 function renderNoticeGroup(group: NoticeGroup): void {
   const row = element('div', `notification ${group.level}`); row.dataset.noticeCount = String(group.items.length);
   row.append(cardAction('close', group.items.length > 1 ? 'Dismiss these notifications' : 'Dismiss notification', () => {
     for (const notice of group.items) state = dismissNotice(state, notice.id);
     notices(); noticesBadge();
-  }), element('p', undefined, group.message), details('Details', rawText(group.items)));
+  }), element('p', undefined, noticeGroupText(group)), details('Details', rawText(group.items)));
   const seen = new Set<string>(), workspace = state.workspace?.id, boot = state.bootId;
   for (const notice of group.items) {
     const target = noticeTarget(state, notice); if (!target || seen.has(targetIdentity(target))) continue;
