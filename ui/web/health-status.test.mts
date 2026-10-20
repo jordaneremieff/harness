@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test, {type TestContext} from 'node:test';
 import {readBackendHealth, readHealthSnapshot, type HealthSnapshot} from '../shared/health.ts';
-import {HealthStatus} from './health-status.ts';
+import {HealthStatus, uptimeText} from './health-status.ts';
+import {localDateTime} from './format.ts';
 import {Modal} from './modal.ts';
 const snapshot = (): HealthSnapshot => ({startedAt:'2026-10-15T00:00:00.000Z',supervisorRestarts:2,
   services:[{name:'files',state:'ready'},{name:'agents',state:'unavailable',reason:'Catalog directory is absent'},{name:'rpc',state:'stopped'}],build:{state:'held'},
@@ -33,10 +34,11 @@ test('health has one footer control, no startup read and one snapshot per explic
   assert.equal(reads,0);assert.equal(h.footer.children.length,2);assert.equal(h.footer.children[0] as unknown,status.node);assert.equal(h.footer.children[1],h.version);
   assert.equal(status.node.textContent,'Health');assert.equal((status.node as unknown as InstanceType<typeof h.Node>).attributes.get('aria-label'),'Read backend health');
   status.node.focus();status.node.dispatchEvent(new Event('click'));assert.equal(reads,1);assert.equal(h.button('Refresh health').disabled,true);status.open();assert.equal(reads,1);await settle();
-  assert.match(h.text(),/Supervisor restarts\n2/);assert.match(h.text(),/61 s/);assert.match(h.text(),/64 MiB/);assert.match(h.text(),/File worker\nready/);assert.match(h.text(),/Agent worker\nunavailable: Catalog directory is absent/);assert.match(h.text(),/Primary RPC\nidle \(no primary running\)/);assert.match(h.text(),/User stylesheet\nApplied/);
+  assert.match(h.text(),/Supervisor restarts\n2/);assert.match(h.text(),/Uptime\n1 min 1 s/);assert.match(h.text(),/64 MiB/);assert.match(h.text(),/File worker\nready/);assert.match(h.text(),/Agent worker\nunavailable: Catalog directory is absent/);assert.match(h.text(),/Primary RPC\nidle \(no primary running\)/);assert.match(h.text(),/User stylesheet\nApplied/);
   assert.equal(h.button('Refresh health').disabled,false);await settle();assert.equal(reads,1);
   h.button('Refresh health').dispatchEvent(new Event('click'));await settle();assert.equal(reads,2);
-  h.button('Close').dispatchEvent(new Event('click'));assert.equal(h.modal.openNow,false);assert.equal(h.active as unknown,status.node);
+  const actions=h.body.children.find(node=>node.className==='dialog-actions');assert.ok(actions);assert.deepEqual(actions.children.map(node=>node.textContent),['Refresh health']);
+  globalThis.document.getElementById('modal-close')?.dispatchEvent(new Event('click'));assert.equal(h.modal.openNow,false);assert.equal(h.active as unknown,status.node);
 });
 test('closing or replacing the health dialog aborts its read and rejects stale results',async context=>{
   const h=host(context), pending=deferred<unknown>();let signal:AbortSignal|undefined;
@@ -65,4 +67,25 @@ test('a reason cut to the bound with an ellipsis parses and shows in the dialog 
   const reason=`${'Catalog scan failed: '.repeat(8).slice(0,159)}…`;assert.equal(reason.length,160);
   const h=host(context);const status=new HealthStatus(h.modal,h.version as unknown as HTMLElement,async()=>({...snapshot(),services:[{name:'files',state:'ready'},{name:'agents',state:'unavailable',reason},{name:'rpc',state:'stopped'}]}));
   status.open();await settle();assert(h.text().includes(`Agent worker\nunavailable: ${reason}`));assert(h.text().includes('…'));
+});
+test('uptime shows its largest two units and leaves out a zero smaller unit',()=>{
+  for(const [ms,text] of [[0,'0 s'],[38_000,'38 s'],[274_000,'4 min 34 s'],[7_500_000,'2 h 5 min'],[7_200_000,'2 h'],[2*86_400_000,'2 d'],[(86_400+5*3600+30*60)*1000,'1 d 5 h'],[999,'0 s']] as const)assert.equal(uptimeText(ms),text);
+});
+test('a local start time reads day, month and 12-hour time with seconds',()=>{
+  assert.equal(localDateTime('2026-10-20T04:29:23.852Z','Australia/Brisbane'),'20 Oct, 2:29:23 PM');
+  assert.equal(localDateTime('2026-10-15T00:00:00.000Z','UTC'),'15 Oct, 12:00:00 AM');assert.equal(localDateTime('secret'),'');
+});
+test('started, uptime and assets read in plain units with exact values in titles and the dialog has one action and closes on the window control and Escape',async context=>{
+  const digest='0123456789abcdef'.repeat(4), started='2026-10-15T00:00:00.000Z';
+  const h=host(context);const status=new HealthStatus(h.modal,h.version as unknown as HTMLElement,async()=>({...snapshot(),startedAt:started,process:{pid:123,uptimeMs:274_000,rssBytes:64*1024*1024},identity:{iteration:'0.8',commit:'a'.repeat(40),assetDigest:digest}}));
+  status.open();await settle();
+  const field=(name:string)=>{const list=h.body.children.flatMap(node=>node.children).flatMap(node=>node.children);const index=list.findIndex(node=>node.textContent===name);assert.ok(index>=0);const value=list[index+1];assert.ok(value);return value;};
+  assert.equal(field('Started').textContent,localDateTime(started));assert.equal(field('Started').title,started);
+  assert.equal(field('Uptime').textContent,'4 min 34 s');
+  assert.equal(field('Assets').textContent,`${digest.slice(0,12)}…`);assert.equal(field('Assets').title,digest);
+  const labels=[...h.body.children.flatMap(node=>node.children).flatMap(node=>node.children)].filter(node=>node.textContent&&['Process','Started','Uptime','Supervisor restarts','UI','Commit','Assets','User stylesheet'].includes(node.textContent)).map(node=>node.textContent);
+  assert.deepEqual(labels,['Process','Started','Uptime','Supervisor restarts','UI','Commit','Assets','User stylesheet']);
+  const actions=h.body.children.find(node=>node.className==='dialog-actions');assert.ok(actions);assert.deepEqual(actions.children.map(node=>node.textContent),['Refresh health']);
+  globalThis.document.getElementById('modal-close')?.dispatchEvent(new Event('click'));assert.equal(h.modal.openNow,false);
+  status.open();await settle();assert.equal(h.modal.openNow,true);h.modal.node.dispatchEvent(new Event('cancel',{cancelable:true}));assert.equal(h.modal.openNow,false);
 });

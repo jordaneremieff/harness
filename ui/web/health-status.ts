@@ -1,5 +1,6 @@
 import { readHealthSnapshot, type HealthSnapshot } from '../shared/health.ts';
 import { button, byId, element } from './dom.ts';
+import { localDateTime } from './format.ts';
 import type { Modal } from './modal.ts';
 import { request } from './transport.ts';
 
@@ -40,18 +41,32 @@ export class HealthStatus {
         if (this.modal.owns(token)) content.replaceChildren(element('p', undefined, 'Backend health is unavailable. Select Refresh health to retry.'));
       } finally {busy = false; if (this.modal.owns(token)) refresh.disabled = false;}
     };
-    this.modal.actions(refresh, button('Close', () => this.modal.close()));
+    this.modal.actions(refresh);
     void load();
   }
 }
+const DURATION_UNITS: readonly (readonly [string, number])[] = [['d', 86400], ['h', 3600], ['min', 60], ['s', 1]];
+/** The largest two units of a duration, for example "4 min 34 s"; a zero smaller unit is left out. */
+export function uptimeText(milliseconds: number): string {
+  let rest = Math.max(0, Math.floor(milliseconds / 1000));
+  const counts = DURATION_UNITS.map(([unit, size]) => {const count = Math.floor(rest / size); rest -= count * size; return {unit, count};});
+  const first = counts.findIndex(item => item.count > 0);
+  if (first < 0) return '0 s';
+  return counts.slice(first, first + 2).filter((item, index) => index === 0 || item.count > 0).map(item => `${item.count} ${item.unit}`).join(' ');
+}
+const ASSET_DIGEST_CHARS = 12;
 function renderHealth(content: HTMLElement, snapshot: HealthSnapshot): void {
   const facts = element('dl', 'health-facts');
-  const row = (name: string, value: string) => facts.append(element('dt', undefined, name), element('dd', undefined, value));
-  row('Process', String(snapshot.process.pid)); row('Started', snapshot.startedAt);
-  row('Uptime', `${Math.floor(snapshot.process.uptimeMs / 1000)} s`); row('Supervisor restarts', String(snapshot.supervisorRestarts));
+  const row = (name: string, value: string, title?: string) => {
+    const field = element('dd', undefined, value); if (title) field.title = title;
+    facts.append(element('dt', undefined, name), field);
+  };
+  row('Process', String(snapshot.process.pid)); row('Started', localDateTime(snapshot.startedAt) || snapshot.startedAt, snapshot.startedAt);
+  row('Uptime', uptimeText(snapshot.process.uptimeMs)); row('Supervisor restarts', String(snapshot.supervisorRestarts));
   row('UI', snapshot.identity.iteration);
   if (snapshot.identity.commit) row('Commit', snapshot.identity.commit);
-  if (snapshot.identity.assetDigest) row('Assets', snapshot.identity.assetDigest);
+  const digest = snapshot.identity.assetDigest;
+  if (digest) row('Assets', digest.length > ASSET_DIGEST_CHARS ? `${digest.slice(0, ASSET_DIGEST_CHARS)}…` : digest, digest);
   row('User stylesheet', {none: 'Not configured', applied: 'Applied', missing: 'File not found', 'too-large': 'File too large', unreadable: 'File not readable', invalid: 'Setting invalid'}[snapshot.userStylesheet.state]);
   for (const service of snapshot.services) row({files: 'File worker', agents: 'Agent worker', rpc: 'Primary RPC'}[service.name],
     service.state === 'stopped' && service.name === 'rpc' ? 'idle (no primary running)' : service.reason ? `${service.state}: ${service.reason}` : service.state);
