@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { performance } from 'node:perf_hooks';
-import { highlight, languageFromPath, HIGHLIGHT_BYTES, HIGHLIGHT_LINES, TONES, tokenRanges } from './highlight.ts';
+import { highlight, knownSyntax, languageFromPath, HIGHLIGHT_BYTES, HIGHLIGHT_LINES, TONES, tokenRanges } from './highlight.ts';
 
 class Node {
   children: Node[] = []; className = ''; private text = '';
@@ -65,10 +65,18 @@ test('all requested fence aliases and file extensions select supported languages
     py: 'def greet():\n  return "hello" # note', css: 'body { color: "red"; width: 12px; /* note */ }', html: '<div title="x">hello 12</div><!--note-->', xml: '<node id="2"/>',
     md:'# Heading *em*', markdown:'# Heading **strong**', mdown:'[label](url) `code`', yaml: 'value: 2 # note', toml: 'value = "text" # note', go: 'func main() { var value int = 2 } // note', rust: 'fn main() { let value: u32 = 2; } // note', diff: '@@ -1,2 +1,2 @@\n-old\n+new',
   };
-  for (const [language, text] of Object.entries(samples)) { const node = output(text, language); assert.equal(node.textContent, text); assert.ok(tones(node).length > 0, language); assert.equal(languageFromPath(`folder/source.${language}`), language); }
+  for (const [language, text] of Object.entries(samples)) { assert.equal(knownSyntax(language), true); const node = output(text, language); assert.equal(node.textContent, text); assert.ok(tones(node).length > 0, language); assert.equal(languageFromPath(`folder/source.${language}`), language); }
   for (const language of ['typescript', 'javascript', 'python', 'yml', 'rs', 'patch']) assert.ok(tones(output('value = "x" # note', language)).length > 0, language);
   assert.equal(languageFromPath('/code/SOURCE.TS'), 'ts');
   for (const path of ['README', '/folder.ts/no-extension', '/folder/code.unknown', 'ts', undefined]) assert.equal(languageFromPath(path), undefined);
+});
+test('known syntax uses explicit language evidence independently of token output', () => {
+  for (const language of ['typescript', 'javascript', 'python', 'yml', 'rs', 'patch', ' TS ', 'MARKDOWN']) assert.equal(knownSyntax(language), true, language);
+  for (const language of [undefined, '', ' ', 'unknown', 'custom-grammar', '__proto__', 'constructor']) assert.equal(knownSyntax(language), false, language);
+  assert.deepEqual(tokenRanges('identifier', 'ts'), []);
+  assert.equal(knownSyntax('ts'), true);
+  assert.equal(tokenRanges('x'.repeat(HIGHLIGHT_BYTES + 1), 'ts'), undefined);
+  assert.equal(knownSyntax('ts'), true);
 });
 test('markup text is plain and strings and comments shield their content from token classification', () => {
   setup();

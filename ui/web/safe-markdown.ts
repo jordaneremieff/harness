@@ -2,7 +2,7 @@ import { parseMarkdown } from './markdown.ts';
 import type { MarkdownBlock, MarkdownInline } from './markdown.ts';
 import { copy, element } from './dom.ts';
 import { cardAction, cardActionLabel } from './card-icons.ts';
-import { highlight } from './highlight.ts';
+import { highlight, knownSyntax } from './highlight.ts';
 
 function inlineNode(node: MarkdownInline): Node {
   if (node.type === 'text') return document.createTextNode(node.text);
@@ -48,6 +48,7 @@ function codeBlock(node: Extract<MarkdownBlock, {type: 'code'}>): HTMLElement {
   const wrap = element('div', 'code-block'); const pre = element('pre'); const code = element('code');
   code.append(highlight(node.text, node.language));
   if (node.language) code.dataset.language = node.language;
+  if (knownSyntax(node.language)) code.dataset.syntax = 'known';
   pre.append(code); wrap.append(sourceHeader(pre, node.language, () => node.text), pre); return wrap;
 }
 function tableBlock(node: Extract<MarkdownBlock, {type: 'table'}>): HTMLElement {

@@ -90,7 +90,7 @@ test('content hues share scoped Markdown rules and leave metadata and identity t
   assert.match(rule('.message-role'),/color: var\(--muted\)/);assert.match(rule('.thinking > summary, .system-note > details > summary, .custom-entry > details > summary, .facts-panel summary'),/color: var\(--muted\)/);assert.match(rule('.thinking > summary'),/font-weight: 400; line-height: 20px/);assert.match(rule('.thinking-label'),/font-weight: 500/);assert.match(rule('.thinking[open] > summary > .thinking-preview'),/display: none/);assert.match(rule('.thinking-content'),/color: var\(--muted\)/);
   assert.match(rule('.tool-name'), /color: inherit/); assert.match(rule('.tool-shell'), /color: var\(--fg\)/);
   assert.match(rule('.tool-status.working'),/color: var\(--info\)/);assert.match(rule('.tool-status.missing'),/color: var\(--warning\)/);
-  assert.match(rule('.markdown-content:is(h1, h2, h3, h4, h5, h6)'),/color: var\(--fg\)/);assert.doesNotMatch(rule('.markdown-content .markdown-inline-code'),/color:/);
+  assert.match(rule('.markdown-content:is(h1, h2, h3, h4, h5, h6)'),/color: var\(--md-heading\)/);assert.match(rule('.markdown-content .markdown-inline-code'),/color: var\(--md-code\)/);
   assert.doesNotMatch(css,/\.file-content th, \.file-content td|\.file-content blockquote/);
   assert.match(rule('.row-identity'),/max-width: 40%; overflow: hidden; text-overflow: ellipsis/);
   assert.match(rule('.conversation-identity'),/white-space: nowrap/);
@@ -1105,6 +1105,9 @@ test('thinking keeps one quiet tier for streaming text and completed Markdown', 
   assert.match(rule('.thinking-content'), /color: var\(--muted\); font-size: 14px; line-height: 21px/);
   assert.match(rule('.thinking > .stream-text'), /color: var\(--muted\); font-size: 14px; line-height: 21px/);
   assert.match(rule('.thinking .thinking-content :is(strong, em)'), /color: inherit/);
+  assert.equal(rule('.thinking .thinking-content .markdown-inline-code').trim(), 'color: inherit;');
+  assert.equal(rule('.thinking .thinking-content .code-block > pre > code').trim(), 'color: inherit;');
+  assert.doesNotMatch(css, /\.thinking[^{}]*\.syn-[^{}]*\{/);
   assert.match(rule('.thinking .thinking-content strong'), /font-weight: 500/);
   const heading = rule('.thinking .thinking-content .markdown-content:is(h1, h2, h3, h4, h5, h6)');
   assert.match(heading, /color: inherit; font-size: inherit; line-height: inherit; font-weight: 500/);
@@ -1133,16 +1136,20 @@ test('the composer editor and its color layer share the editor-derived reading m
   assert.match(rule('.communication-card > .communication-body'), /font-size: 16px/);
   assert.match(rule('.task-answer, .step-answer'), /font-size: 16px; line-height: 1\.6/);
 });
-test('chrome labels stay quiet and content color is reserved for syntax, links and emphasis weight', () => {
+test('Markdown role colors leave chrome labels quiet and preserve syntax token colors', () => {
   const contentTokens = [...css.matchAll(/(?:^|\n)\s*([^{}]+)\{([^{}]*var\(--md-[^{}]*)\}/g)].map(match => match[1]?.trim() ?? '');
-  assert.deepEqual(contentTokens.filter(selector => !/^(\.syn-md-|\.composer-colors::highlight\(composer-md-)/.test(selector)), []);
+  assert.deepEqual(contentTokens.filter(selector => !/^(\.syn-md-|\.composer-colors::highlight\(composer-md-)/.test(selector)), ['.markdown-content:is(h1, h2, h3, h4, h5, h6)', '.markdown-content .markdown-inline-code', '.code-block > pre > code:not([data-syntax=known])']);
+  assert.equal(rule('.code-block > pre > code:not([data-syntax=known])').trim(), 'color: var(--md-code);');
+  assert.doesNotMatch(css, /(?:^|\n)\.code-block > pre > code\s*\{/);
+  assert.match(rule('.markdown-content:is(h1, h2, h3, h4, h5, h6)'), /color: var\(--md-heading\)/);
+  for (const tone of ['keyword', 'string', 'number', 'comment', 'type', 'fn', 'property', 'operator', 'punct']) assert.equal(rule(`.syn-${tone}`).trim(), `color: var(--syntax-${tone});`);
   assert.match(rule('.markdown-content a'), /color: var\(--link\)/);
   assert.match(rule('.markdown-content:is(blockquote)'), /border-left: 2px solid var\(--rule\)/);
   assert.match(rule('.message-role'), /color: var\(--muted\); font-size: 12px; line-height: 18px; font-weight: 500/);
   assert.match(rule('.message-delivery'), /color: var\(--muted\); font-size: 12px; line-height: 18px/);
   assert.match(rule('.message-error.warning'), /color: var\(--warning\)/);
   assert.doesNotMatch(css, /\.message\[data-role=assistant\] > \.message-header > \.message-role|\.message\.user > \.message-header > \.message-role/);
-  assert.doesNotMatch(rule('.markdown-content .markdown-inline-code'), /color:/);
+  assert.match(rule('.markdown-content .markdown-inline-code'), /color: var\(--md-code\)/);
   assert.match(rule('.markdown-content .markdown-inline-code'), /padding: 0 3px/);
   assert.doesNotMatch(css, /\.markdown-content em \{/);
   assert.match(rule('.message-actions'), /margin-left: auto/);

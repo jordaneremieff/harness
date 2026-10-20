@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { parseInline, parseMarkdown, safeLink } from './markdown.ts';
 import { markdownDom } from './safe-markdown.ts';
-import { HIGHLIGHT_BYTES } from './highlight.ts';
+import { HIGHLIGHT_BYTES, HIGHLIGHT_LINES } from './highlight.ts';
 
 class MarkdownNode extends EventTarget {
   children: MarkdownNode[] = []; className = ''; dataset: Record<string, string> = {}; private text = '';
@@ -167,6 +167,24 @@ test('inline and fenced code preserve source without evaluation', () => {
   assert.deepEqual(parseMarkdown('```ts\nconst x = "<script>";\n```'), [{type: 'code', language: 'ts', text: 'const x = "<script>";'}]);
   assert.deepEqual(parseMarkdown('~~~\nunclosed\nnext'), [{type: 'code', language: '', text: 'unclosed\nnext'}]);
   assert.equal(parseMarkdown('````\n```\n````')[0].type, 'code');
+});
+test('fence syntax markers follow known languages without spans or after scan bounds are exceeded', context => {
+  mockDocument(context);
+  const cases: [string, string, boolean, boolean][] = [
+    ['ts', 'const count = 42;', true, true], ['TS', 'identifier', true, false],
+    ['md', 'plain text', true, false], ['', 'const count = 42;', false, false],
+    ['custom-grammar', 'const count = 42;', false, false], ['__proto__', 'identifier', false, false],
+    ['ts', 'x'.repeat(HIGHLIGHT_BYTES + 1), true, false],
+    ['ts', 'identifier\n'.repeat(HIGHLIGHT_LINES), true, false],
+  ];
+  for (const [language, source, known, spans] of cases) {
+    const dom = markdownDom([`\`\`\`${language}`, source, '```'].join('\n')) as unknown as MarkdownNode;
+    const code = dom.children[0].children[1].children[0];
+    assert.equal(code.dataset.language, language || undefined);
+    assert.equal(code.dataset.syntax, known ? 'known' : undefined, language);
+    assert.equal(code.textContent, source);
+    assert.equal(code.children.some(node => node.tag === 'span'), spans, language);
+  }
 });
 test('emphasis includes strong and nested emphasis with escapes', () => {
   assert.deepEqual(parseInline('**bold and *soft***'), [{type: 'strong', children: [{type: 'text', text: 'bold and '}, {type: 'emphasis', children: [{type: 'text', text: 'soft'}]}]}]);

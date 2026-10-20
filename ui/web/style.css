@@ -602,14 +602,14 @@ a.reference-link[href] { color: var(--link); text-decoration: underline; overflo
 :where(.markdown-content) + :where(.markdown-content) { margin-top: 8px; }
 .markdown-content:is(h1) { margin-top: 20px; font-size: 18px; line-height: 1.35; }
 .markdown-content:is(h2, h3, h4, h5, h6) { margin-top: 18px; }
-.markdown-content:is(h1, h2, h3, h4, h5, h6) { color: var(--fg); }
+.markdown-content:is(h1, h2, h3, h4, h5, h6) { color: var(--md-heading); }
 .message-body > :first-child > :first-child, .message-body > :first-child, .file-content > :first-child { margin-top: 0; }
 .markdown-content:is(h1, h2, h3, h4, h5, h6) + * { margin-top: 6px; }
 .markdown-content:is(ul, ol) { padding-left: 22px; }
 .markdown-content li::marker { color: var(--muted); }
 .markdown-content li > * + *, .markdown-content li > ul, .markdown-content li > ol { margin-top: 2px; }
 .markdown-content li + li { margin-top: 2px; }
-.markdown-content .markdown-inline-code { padding: 0 3px; border-radius: 3px; background: var(--code); overflow-wrap: anywhere; }
+.markdown-content .markdown-inline-code { padding: 0 3px; border-radius: 3px; background: var(--code); color: var(--md-code); overflow-wrap: anywhere; }
 .markdown-content strong { color: var(--fg); }
 .markdown-content a { color: var(--link); text-decoration: underline; }
 .markdown-content:is(blockquote) { padding-left: 12px; border-left: 2px solid var(--rule); color: var(--muted); }
@@ -620,6 +620,7 @@ a.reference-link[href] { color: var(--link); text-decoration: underline; overflo
 pre { max-width: 100%; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: hidden; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--edge) transparent; }
 .message-body pre, .code-block > pre { padding: var(--s1) var(--s2); border-radius: 3px; background: var(--code); }
 .code-block { min-width: 0; }
+.code-block > pre > code:not([data-syntax=known]) { color: var(--md-code); }
 .source-header { display: flex; align-items: center; gap: 4px; min-width: 0; padding: 2px 0; border-bottom: 1px solid var(--rule); color: var(--muted); font-family: var(--sans); font-size: 12px; }
 .source-language { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .source-header button, .source-disclosure > .source-wrap { flex: none; min-height: 24px; padding: 1px 6px; color: var(--muted); font-family: var(--sans); font-size: 12px; }
@@ -774,6 +775,8 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
 .session-events > :not(summary) { margin-top: 6px; overflow-wrap: anywhere; }
 .thinking-content { margin-top: 4px; padding-left: 12px; border-left: 2px solid var(--rule); color: var(--muted); font-size: 14px; line-height: 21px; font-style: normal; }
 .thinking .thinking-content :is(strong, em) { color: inherit; }
+.thinking .thinking-content .markdown-inline-code { color: inherit; }
+.thinking .thinking-content .code-block > pre > code { color: inherit; }
 .thinking .thinking-content strong { font-weight: 500; }
 .thinking .thinking-content .markdown-content:is(h1, h2, h3, h4, h5, h6) { margin-top: 8px; color: inherit; font-size: inherit; line-height: inherit; font-weight: 500; }
 .thinking .thinking-content .markdown-content:is(h1, h2, h3, h4, h5, h6):first-child { margin-top: 0; }

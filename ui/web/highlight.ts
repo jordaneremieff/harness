@@ -37,6 +37,7 @@ function familyFor(language?: string): Family | 'markdown' | undefined {
   const name = language?.toLowerCase().trim() ?? '';
   return ['md', 'markdown', 'mdown'].includes(name) ? 'markdown' : Object.hasOwn(languages, name) ? languages[name] : undefined;
 }
+export function knownSyntax(language?: string): boolean { return familyFor(language) !== undefined; }
 export function languageFromPath(path: unknown): string | undefined {
   if (typeof path !== 'string') return undefined;
   const file = path.slice(path.lastIndexOf('/') + 1).toLowerCase();
