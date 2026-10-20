@@ -284,9 +284,11 @@ test('desktop status reserves controls and identity while only long text slots s
   // The row wraps instead of drawing items over each other; only the activity text shrinks, with an ellipsis.
   assert.match(desktop,/\.workbench-status \{ flex-wrap: wrap;/);assert.doesNotMatch(desktop,/\.workbench-status \{[^}]*overflow:/);
   assert.match(desktop,/\.workbench-status-facts \{ flex: 0 1 auto; flex-wrap: wrap; min-width: min-content;/);assert.doesNotMatch(desktop,/\.workbench-status-facts \{[^}]*(flex: 1 1 0|nowrap)/);
-  assert.match(desktop,/\.workbench-activity:has\(> \.workbench-activity-text\) \{ flex: 1 1 0; min-width: 10ch;/);assert.match(desktop,/#workbench-scope \{ flex: none; max-width: 18ch;/);
-  assert.match(desktop,/\.workbench-version \{ flex: none; max-width: none; white-space: nowrap;/);
-  assert.match(desktop,/#workbench-scope \{[^}]*text-overflow: ellipsis; white-space: nowrap;/);
+  assert.match(desktop,/\.workbench-activity:has\(> \.workbench-activity-text\) \{ flex: 1 1 0; min-width: 10ch;/);
+  // The name's 18-character cut and the version's no-wrap apply at every width, so the line keeps one row below 1000px.
+  assert.doesNotMatch(desktop,/#workbench-scope \{/);assert.doesNotMatch(desktop,/\.workbench-version \{/);
+  assert.match(rule('#workbench-scope'),/flex: none;[^}]*max-width: 18ch;[^}]*overflow: hidden; text-overflow: ellipsis; white-space: nowrap;/);
+  assert.match(rule('.workbench-version'),/flex: none;[^}]*max-width: none;[^}]*white-space: nowrap;/);
   // Setting labels keep their full text; the update notice wraps, and scope and details give way when space runs short.
   assert.match(desktop,/\.workbench-update \{ flex: 0 1 auto; flex-wrap: wrap; white-space: normal; \}/);assert.match(desktop,/\.workbench-status \.composer-details \{ flex: none; max-width: none; \}/);
   assert.match(rule('.workbench-update'),/display: inline-flex; align-items: center; gap: 8px/);
