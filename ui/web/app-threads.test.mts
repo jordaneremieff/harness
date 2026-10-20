@@ -44,6 +44,9 @@ test('the section reads nothing until it is opened and lists open threads before
   await settle();
   assert.deepEqual(threadCalls(), []);
   assert.equal(byId('threads-refresh').disabled, true);
+  assert.equal(byId('threads-count').hidden, true);
+  const heading = byId('threads-heading'), chevron = heading.querySelector('.card-icon-chevron');
+  assert.ok(chevron); assert.equal(heading.firstChild, chevron); assert.equal(heading.querySelectorAll('svg').length, 1);
   byId('threads-refresh').click(); await settle();
   assert.deepEqual(threadCalls(), []);
   assert.equal(byId('threads-heading').getAttribute('aria-expanded'), 'false');
@@ -60,6 +63,14 @@ test('the section reads nothing until it is opened and lists open threads before
   assert.doesNotMatch(text(byId('threads-footer')), /Listed by/);
   assert.match(text(byId('threads-footer')), /Threads from 2 stopped agents are not listed\./);
   assert.equal(byId('threads-filter-box').hidden, true);
+  const count = byId('threads-count'); assert.equal(count.textContent, '5'); assert.equal(count.hidden, false);
+  assert.equal(heading.firstChild, chevron); assert.equal(heading.contains(byId('threads-refresh')), false);
+  byId('threads-refresh').click(); await settle(); assert.equal(heading.getAttribute('aria-expanded'), 'true');
+  const reads = threadCalls().length;
+  heading.dispatch('click', {clientX: heading.clientWidth - 1, clientY: 12}); await settle();
+  assert.equal(heading.getAttribute('aria-expanded'), 'false'); assert.equal(heading.firstChild, chevron); assert.equal(count.hidden, false); assert.equal(count.textContent, '5');
+  heading.click(); await settle(); assert.equal(heading.getAttribute('aria-expanded'), 'true'); assert.equal(count.hidden, false);
+  assert.equal(threadCalls().length, reads);
 });
 
 test('a thread opens in the focused pane only, reads without writing, and Escape returns to the row', async context => {

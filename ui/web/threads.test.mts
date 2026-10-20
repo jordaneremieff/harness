@@ -19,7 +19,7 @@ test('the list filter matches every word in title, purpose or identity', () => {
   assert.deepEqual(filterThreads(rows, 's/3').map(row => row.id), ['s/3']);
 });
 
-test('the collapsed count marks a cut list', () => {
+test('the heading count marks a cut list', () => {
   assert.equal(threadCount(undefined), '');
   assert.equal(threadCount(overview({items: []})), '');
   assert.equal(threadCount(overview()), '1');

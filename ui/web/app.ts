@@ -668,12 +668,12 @@ export function renderSidebarSections(): void {
   }
   renderSectionCounts();
 }
-/** Collapsed headings show file totals and published work among loaded live agents. */
+/** Agent headings keep published work visible; file totals appear only above a closed tree. */
 export function renderSectionCounts(): void {
   const files = filesTree.rootCount(), agents = state.rosterOrder.filter(identity => {const row = agentRow(identity); return row?.availability === 'live' && row.state === 'working';}).length;
   const labels = {files: files ? `${files.count}${files.more ? '+' : ''}` : '', agents: agents ? `${agents} working` : ''};
   for (const section of ['files', 'agents'] as const) {
-    const count = byId(`${section}-count`); setText(count, labels[section]); count.hidden = !sidebarSections[section] || !labels[section];
+    const count = byId(`${section}-count`); setText(count, labels[section]); count.hidden = !labels[section] || section === 'files' && !sidebarSections.files;
   }
 }
 export function setSidebarSection(section: 'agents' | 'files', collapsed: boolean): void {
@@ -2337,7 +2337,7 @@ export function appKey(event: KeyboardEvent): void {
 function bind(): void {
   document.addEventListener('compositionstart', event=> {if(event.target)composingFields.add(event.target);},true);
   document.addEventListener('compositionend', event=> {if(event.target)composingFields.delete(event.target);},true);
-  for (const toggle of document.querySelectorAll<HTMLElement>('.section-toggle')) toggle.append(cardIcon('chevron'));
+  for (const toggle of document.querySelectorAll<HTMLElement>('.section-toggle')) toggle.prepend(cardIcon('chevron'));
   for (const node of document.querySelectorAll<HTMLElement>('[data-control-icon]')) {
     const count = node.querySelector<HTMLElement>('#notices-count');
     controlIcon(node, node.dataset.controlIcon as CardIcon, node.getAttribute('aria-label') ?? node.textContent ?? '');

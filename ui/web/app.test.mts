@@ -1214,7 +1214,7 @@ test('a Primary that is not ready keeps its state word on the right of the row a
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({activity: 'idle'})], roster: []});
   assert.equal(byId('primary-row-meta').textContent, '');
 });
-test('collapsed Agents counts only loaded live work and never cached page size', async () => {
+test('Agents counts only loaded live work in both section states and never cached page size', async () => {
   const workspace = {id: 'sidebar-work-count', revision: 1, primaryKey: 'p'};
   const rows = Array.from({length: 20}, (_, index) => agentFixture(`sidebar-count-${index}`, {state: index < 2 ? 'working' : 'idle'}));
   rows.push(agentFixture('sidebar-stored-work', {availability: 'stored', state: 'working'}));
@@ -1233,11 +1233,33 @@ test('collapsed Agents counts only loaded live work and never cached page size',
   assert.ok(idle); assert.equal(idle.hidden, true);
   const stored = byId('roster').querySelector('[data-identity="sidebar-stored-work"]')?.querySelector('.row-state');
   assert.ok(stored); assert.equal(stored.textContent, 'Not running'); assert.equal(stored.hidden, false);
-  app.setSidebarSection('agents', false); assert.equal(count.hidden, true);
+  app.setSidebarSection('agents', false); assert.equal(count.hidden, false); assert.equal(count.textContent, '2 working');
   await arrive({workspace, primaries: [primaryFixture()], roster: rows.map(row => ({...row, state: 'idle'}))});
   app.state.rosterMeta = {...app.state.rosterMeta, nextCursor: 'still-more-cached-agents'};
   app.setSidebarSection('agents', true); assert.equal(count.textContent, ''); assert.equal(count.hidden, true);
   assert.equal(transportLog.slice(before).some(call => call.path.endsWith('/connect') || call.path.endsWith('/start') || call.path.includes('/inputs')), false);
+});
+test('sidebar headings keep one leading chevron and separate actions while their free button area toggles', async t => {
+  await arrive({workspace: {id: 'heading-targets', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture()], roster: [agentFixture('heading-work', {state: 'working'})]});
+  t.mock.method(app.filesTree, 'rootCount', () => ({count: 7, more: true}));
+  let refreshes = 0; t.mock.method(app.filesTree, 'refresh', () => {refreshes++;});
+  for (const section of ['agents', 'files'] as const) {
+    const heading = byId(`${section}-heading`), count = byId(`${section}-count`), chevron = heading.querySelector('.card-icon-chevron');
+    assert.ok(chevron); assert.equal(heading.firstChild, chevron); assert.equal(heading.tagName, 'button'); assert.equal(heading.getAttribute('type'), 'button');
+    assert.equal(heading.querySelectorAll('svg').length, 1); assert.equal(chevron.getAttribute('aria-hidden'), 'true');
+    app.setSidebarSection(section, true);
+    assert.equal(heading.getAttribute('aria-expanded'), 'false'); assert.equal(count.hidden, false);
+    assert.equal(count.textContent, section === 'agents' ? '1 working' : '7+');
+    heading.dispatch('click', {clientX: heading.clientWidth - 1, clientY: 12});
+    assert.equal(heading.getAttribute('aria-expanded'), 'true'); assert.equal(heading.firstChild, chevron);
+    assert.equal(count.hidden, section === 'files');
+    heading.dispatch('click', {clientX: heading.clientWidth - 1, clientY: 12});
+    assert.equal(heading.getAttribute('aria-expanded'), 'false'); assert.equal(heading.firstChild, chevron); assert.equal(count.hidden, false);
+    const action = byId(section === 'agents' ? 'agent-refresh' : 'files-refresh');
+    assert.equal(heading.contains(action), false); assert.equal(action.parentNode?.parentNode, heading.parentNode?.parentNode);
+  }
+  byId('files-refresh').click(); assert.equal(refreshes, 1); assert.equal(byId('files-heading').getAttribute('aria-expanded'), 'false');
+  app.setSidebarSection('files', false); byId('files-refresh').click(); assert.equal(refreshes, 2); assert.equal(byId('files-heading').getAttribute('aria-expanded'), 'true');
 });
 test('sidebar sections retain their collapsed state per workspace and tab and filter focus expands agents', async () => {
   const values = new Map<string, string>();

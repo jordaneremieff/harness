@@ -26,7 +26,7 @@ export function threadMeta(item: ThreadListItem, now: number): string {
   const when = !age ? '' : age === 'now' ? 'just now' : /^\d+[a-z]+$/.test(age) ? `${age} ago` : age;
   return [item.closed ? 'Closed' : '', members, when].filter(Boolean).join(' · ');
 }
-/** The collapsed heading carries the list size; a cut list adds a plus sign. */
+/** The heading carries the list size; a cut list adds a plus sign. */
 export function threadCount(overview: ThreadOverview | undefined): string {
   if (!overview?.items.length) return '';
   return `${overview.items.length}${overview.truncated ? '+' : ''}`;

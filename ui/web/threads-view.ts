@@ -107,7 +107,7 @@ export class ThreadExplorer {
     this.section.dataset.collapsed = String(this.collapsed);
     this.heading.setAttribute('aria-expanded', String(!this.collapsed));
     this.body.hidden = this.collapsed;
-    const count = threadCount(overview); setText(this.count, count); this.count.hidden = !this.collapsed || !count;
+    const count = threadCount(overview); setText(this.count, count); this.count.hidden = !count;
     this.refreshButton.disabled = this.loading || this.collapsed;
     const query = this.filter.value.trim();
     this.filterBox.hidden = !(overview && (overview.items.length > THREAD_FILTER_THRESHOLD || query));

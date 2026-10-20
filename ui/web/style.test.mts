@@ -58,8 +58,16 @@ test('conversation actions live in the pane tab row and keep shared desktop and 
   assert.match(media('@media (pointer:coarse)'), /\.card-action, \.section-toggle[^{}]+\{ min-height: 44px; min-width: 44px/);
 });
 test('sidebar headings are text controls with counts and the finder is the first row of SESSIONS', () => {
-  assert.match(rule('.section-toggle > .card-icon-chevron'), /display: none; flex: none; width: 12px; height: 12px; color: var\(--dim\)/);
-  assert.match(rule('.section-toggle[aria-expanded=false] > .card-icon-chevron'), /display: block/);
+  const chevron = rule('.section-toggle > .card-icon-chevron');
+  assert.match(chevron, /display: block; flex: none; width: 12px; height: 12px; color: var\(--dim\)/);
+  assert.match(chevron, /transform: rotate\(0deg\); transition: transform 120ms/);
+  assert.match(rule('.section-toggle[aria-expanded=true] > .card-icon-chevron'), /transform: rotate\(90deg\)/);
+  assert.doesNotMatch(css, /\.section-toggle\[aria-expanded=false\] > \.card-icon-chevron/);
+  assert.match(css, /@media \(prefers-reduced-motion:reduce\) \{ \.section-toggle > \.card-icon-chevron \{ transition: none; \} \}/);
+  assert.match(rule('.nav-heading'), /display: flex; flex: 1; min-width: 0/);
+  assert.match(rule('.section-toggle'), /display: flex; flex: 1; align-items: center; gap: var\(--s1\); width: 100%/);
+  assert.match(rule('#sessions-heading'), /padding-left: calc\(12px \+ var\(--s1\)\)/);
+  assert.match(rule('.conversation-heading'), /padding-left: calc\(var\(--s3\) \+ 12px \+ var\(--s1\)\)/);
   assert.doesNotMatch(css, /\.section-toggle::before/);
   assert.match(rule('.section-toggle:hover'), /color: var\(--fg\)/); assert.match(rule('.section-toggle .count'), /margin-left: var\(--s2\)/);
   assert.match(rule('.threads-footer'), /padding-right: 12px; padding-left: 12px/);
@@ -213,7 +221,7 @@ test('stored and live conversation names use primary text while metadata stays q
   assert.match(rule('.row-age, .row-message'), /color: var\(--muted\)/);
   assert.match(rule('.row-state'), /color: var\(--dim\)/);
 });
-test('small radii and quiet surfaces permit only the reduced-motion-aware busy marker', () => {
+test('small radii and quiet surfaces limit motion to the busy marker and section chevrons', () => {
   const radii = declarations('border-radius');
   assert.match(rule('.composer-input'), /border-radius: 16px/); assert.match(rule('.context-menu-compact'), /border-radius: 6px/);
   assert.deepEqual([...new Set(radii)].sort(), ['0', '0 4px 4px 0', '10px', '16px', '2px', '3px', '4px', '50%', '6px', '8px']);
@@ -221,7 +229,8 @@ test('small radii and quiet surfaces permit only the reduced-motion-aware busy m
   assert.match(rule('dialog[open][data-variant=find]'), /box-shadow: none/);
   const shadowed = [...css.matchAll(/(?:^|\n)\s*([^{}\n]+)\{[^}]*box-shadow: var\(--shadow\)/g)].map(match => match[1].trim()).sort();
   assert.deepEqual(shadowed, ['.app.drawer-open .workbench > .sidebar', '.command-menu', '.context-menu', '.receipt-details pre', '.workbench-status .composer-detail-body', 'dialog']);
-  assert.doesNotMatch(css, /transition:|scroll-behavior:\s*smooth|backdrop-filter|filter:|text-shadow|gradient/);
+  assert.doesNotMatch(css, /scroll-behavior:\s*smooth|backdrop-filter|filter:|text-shadow|gradient/);
+  assert.deepEqual(declarations('transition'), ['transform 120ms', 'none']);
   assert.deepEqual(declarations('animation'), ['work-pulse 900ms linear infinite', 'none']);
   assert.match(rule('.workbench-activity[data-busy=true]::before'), /animation: work-pulse 900ms linear infinite/);
   assert.match(css, /^@keyframes work-pulse \{ to \{ transform: rotate\(360deg\); \} \}$/m);
@@ -1132,7 +1141,7 @@ test('chrome labels stay quiet and content color is reserved for syntax, links a
 test('an unreachable tab arrow keeps its space and leaves the tab order', () => {
   assert.match(rule('.pane-tab-nav[data-unreachable=true]'), /visibility: hidden/);
 });
-test('every sidebar heading and row starts its content at the same 12px edge', () => {
+test('sidebar heading rails keep the shared edge and plain labels reserve chevron space', () => {
   assert.match(rule('.nav-heading-row'), /padding: 0 8px 0 var\(--s3\)/); assert.match(rule('.conversation-heading, .conversation-group-title'), /padding: 0 var\(--s3\)/);
   assert.match(rule('.nav-row, .row-select'), /padding: 2px 64px 2px var\(--s3\)/); assert.match(rule('.conversation-row'), /padding: 2px var\(--s3\);/);
   assert.match(rule('.file-row'), /padding: 2px var\(--s3\) 2px calc\(var\(--s3\) \+ var\(--file-depth,0\) \* 14px\)/);
