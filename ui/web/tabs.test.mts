@@ -141,3 +141,16 @@ test('duplicate identity tails stay unique across stores without decorating uniq
   const tails = duplicateIdentityTails(rows); assert.notEqual(tails.get('first:same'), tails.get('second:same')); assert.equal(tails.get('third:same'), undefined);
   assert.deepEqual(rows.map(row => row.identity), ['first:same', 'second:same', 'third:same']);
 });
+
+test('a child conversation without a name of its own reads as its parent name and number, and an own name wins', () => {
+  const parent = '00000000-0000-4000-8000-000000000501', child = `${parent}:232`, other = `${parent}:7`;
+  const captions = new ConversationCaptions();
+  captions.update([{identity: parent, name: 'Web UI lead'}, {identity: child}, {identity: other, firstMessage: 'Own first message'}]);
+  assert.equal(captions.get(child).name, 'Web UI lead · 232');
+  assert.equal(captions.get(other).name, 'Web UI lead · 7', 'a first message is not a name of its own');
+  assert.equal(captions.knownName(child), undefined, 'a derived name is not a stated name');
+  captions.update([{identity: parent, name: 'Web UI lead'}, {identity: child, name: 'Stated child'}]);
+  assert.equal(captions.get(child).name, 'Stated child');
+  captions.update([{identity: child}]);
+  assert.equal(captions.get(child).name, 'Unnamed conversation', 'without a named parent the fallback stays');
+});

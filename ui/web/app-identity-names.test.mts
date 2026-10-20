@@ -35,3 +35,16 @@ test('identities the roster pages do not hold are named once by the server, in t
   await settle(); await settle();
   assert.equal(lookups().length, requests.length, 'a missing identity is not asked again without a roster refresh');
 });
+
+test('a child tab whose parent is named only by the lookup reads with the parent name and number', async () => {
+  const parent = '00000000-0000-4000-8000-000000000411', child = `${parent}:232`, tabs = [loaded, child].map(identity => ({kind: 'agent' as const, identity}));
+  transportLog.length = 0;
+  await arrive({workspace: {id: 'identity-child', revision: 1, selectedTarget: tabs[0], conversationLayout: singlePane(tabs, `agent:${loaded}`)}, primaries: [],
+    roster: [agentFixture(loaded, {name: 'Loaded name'})], catalog: [agentFixture(parent, {name: 'Web UI lead'})],
+    targets: tabs.map(tab => targetFixture(`target-${tab.identity}`, tab))});
+  await settle();
+  const asked = lookups().flatMap(call => new URL(call.path, 'http://ui.test').searchParams.getAll('identity'));
+  assert.deepEqual(asked.sort(), [child, parent].sort(), 'the child and its parent are asked once');
+  assert.equal(byId('sidebar-conversations').querySelector(`[data-tab-key="agent:${child}"] .conversation-name`)?.textContent, 'Web UI lead · 232');
+  assert.equal(byId('sidebar-conversations').querySelector(`[data-tab-key="agent:${child}"]`)?.closest('.unnamed-conversations'), null);
+});

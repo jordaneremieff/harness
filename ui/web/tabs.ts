@@ -97,6 +97,7 @@ export class ConversationCaptions {
     }
     this.captions = new Map(unique.map(row => [row.identity, {name: agentName(row.name, row.handle, row.identity, row.reported, row.firstMessage),
       ...(![row.reported, row.name, row.handle].some(value => usefulName(value, row.identity)) && firstMessageTitle(row.firstMessage, row.identity) ? {source: 'first-message' as const} : {})}]));
+    for (const row of unique) this.deriveChild(row.identity);
     const groups = new Map<string, CaptionRow[]>();
     for (const row of unique) {const name = this.get(row.identity).name, group = groups.get(name) ?? []; group.push(row); groups.set(name, group);}
     for (const group of groups.values()) if (group.length > 1) this.qualify(group);
@@ -104,6 +105,13 @@ export class ConversationCaptions {
     if (previous.size !== this.captions.size || [...this.captions].some(([identity, caption]) => {
       const old = previous.get(identity); return old?.name !== caption.name || old?.tail !== caption.tail || old?.source !== caption.source || previousNames.get(identity)?.provenance !== this.knownNames.get(identity)?.provenance;
     })) this.revision++;
+  }
+  /** A child conversation with no name of its own reads as its parent's name plus its number. */
+  private deriveChild(identity: string): void {
+    const split = identity.lastIndexOf(':');
+    if (split < 0 || this.knownNames.has(identity) || !conversationIdentityText(identity)) return;
+    const parent = this.knownNames.get(identity.slice(0, split))?.name;
+    if (parent) this.captions.set(identity, {name: `${parent} · ${identity.slice(split + 1)}`});
   }
   private composed(caption: ConversationCaption): string {return caption.tail ? `${caption.name} · ${caption.tail}` : caption.name;}
   private distinguishComposed(): void {
