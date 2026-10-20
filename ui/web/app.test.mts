@@ -2065,6 +2065,48 @@ test('accepted working activity owns the tool while retained settings stay compo
   assert.match(byId('modal-body').textContent, /Last reported tool/); assert.match(byId('modal-body').textContent, /src\/current-file.ts/); byId('modal-close').click();
 });
 
+for (const availability of ['stored', 'unavailable', 'incompatible', 'live'] as const) test(`agent usage keeps loaded facts in Details with ${availability} availability`, async () => {
+  const target = {kind: 'agent' as const, identity: `usage-${availability}`};
+  const message = {...messageFixture('usage-final', [textPart('Retained result')]), usage: {input: 5, cacheRead: 5, cacheWrite: 0}};
+  const frame = {revision: 1, observedAt: 'now', entries: [entryFixture('usage-entry', [message])], live: [], nextBefore: null, status: {busy: false}, coverage};
+  await arrive({workspace: {id: 'usage-availability', revision: 1, selectedTarget: target}, primaries: [], roster: [agentFixture(target.identity, {availability})], observations: [observation(target.identity, frame)]});
+  const details = byId('agent-usage-details'), facts = byId('agent-usage');
+  assert.equal(details.hidden, false); assert.match(facts.textContent, /Loaded assistant window only.*cache read 5/);
+  if (availability === 'live') {
+    assert.equal(byId('agent-usage-summary').textContent, 'Cache 50%'); assert.doesNotMatch(facts.textContent, /Last loaded turns/);
+  } else {
+    assert.equal(byId('agent-usage-summary').textContent, ''); assert.equal(facts.children[0]?.textContent, 'Last loaded turns; the agent is not running.');
+  }
+});
+
+test('agent connection error hides inline usage and preserves loaded facts and the open Details', async t => {
+  const target = {kind: 'agent' as const, identity: 'usage-connection-error'};
+  const message = {...messageFixture('usage-error-final', [textPart('Retained result')]), usage: {input: 5, cacheRead: 5, cacheWrite: 0}};
+  await arrive({workspace: {id: 'usage-error', revision: 1, selectedTarget: target}, primaries: [], roster: [agentFixture(target.identity)], observations: [observation(target.identity, {revision: 1, observedAt: 'now', entries: [entryFixture('usage-error-entry', [message])], live: [], nextBefore: null, status: {busy: false}, coverage})]});
+  const details = byId('agent-usage-details'); Reflect.set(details, 'open', true);
+  assert.equal(byId('agent-usage-summary').textContent, 'Cache 50%');
+  const original = globalThis.fetch; t.after(() => {globalThis.fetch = original;});
+  globalThis.fetch = async (input, init) => new URL(String(input), 'http://ui.test').pathname.endsWith('/targets') && init?.method === 'POST'
+    ? Response.json({ok: false, error: {code: 'unavailable', message: 'Fixture connection failed', retry: 'manual'}}) : original(input, init);
+  await app.checkAgentConnection('usage-error', target.identity); await settle();
+  assert.equal(byId('agent-usage-summary').textContent, ''); assert.equal(byId('agent-usage-details'), details); assert.equal(details.hidden, false); assert.equal(Reflect.get(details, 'open'), true);
+  assert.equal(byId('agent-usage').children[0]?.textContent, 'Last loaded turns; the agent is not running.'); assert.match(byId('agent-usage').textContent, /Loaded assistant window only.*cache read 5/);
+});
+
+for (const lifecycle of ['starting', 'switching', 'stopping', 'stopped', 'failed', 'ready'] as const) test(`Primary usage retains facts in Details with ${lifecycle} lifecycle`, async () => {
+  const current = primaryFixture({epoch: 6000, lifecycle, contextUsage: {tokens: 100, contextWindow: 1000, percent: 10}, usage: {cost: 1, tokens: {input: 4, output: 5, cacheRead: 6, cacheWrite: 7, total: 22}}});
+  await arrive({workspace: {id: 'usage-primary', revision: 1, primaryKey: 'p'}, primaries: [current], roster: []});
+  const details = byId('primary-usage-details'), facts = byId('primary-usage');
+  assert.equal(details.hidden, false); assert.match(facts.textContent, /Primary context estimate: 10%/); assert.match(facts.textContent, /Reported whole-session cost estimate: \$1.000000/);
+  if (lifecycle === 'ready') {
+    assert.match(byId('primary-context').textContent, /Context 10%/); assert.match(byId('primary-usage-summary').textContent, /Session ~\$1.00/); assert.doesNotMatch(facts.textContent, /Last reported/);
+    event('primary.state', {...current, activity: 'idle'}); await settle();
+    assert.match(byId('primary-context').textContent, /Context 10%/); assert.match(byId('primary-usage-summary').textContent, /Session ~\$1.00/);
+  } else {
+    assert.equal(byId('primary-context').textContent, ''); assert.equal(byId('primary-usage-summary').textContent, ''); assert.equal(facts.children[0]?.textContent, 'Last reported; Primary is not running.');
+  }
+});
+
 test('metadata updates retain the disclosure, editor, caret, saved draft and recipient-only folder', async () => {
   const target = {kind: 'primary' as const, key: 'p', epoch: 6001};
   const saved = targetFixture('metadata-draft', target, {draft: {revision: 7, text: 'Keep metadata draft', mode: 'prompt', persisted: true}});

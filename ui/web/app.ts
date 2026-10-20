@@ -1463,10 +1463,10 @@ export function primaryChrome(item?: PrimaryView): void {
   const settings = byId('primary-settings-detail'); setText(settings, [item?.model ? `Model ${item.model.provider}/${item.model.id}` : '', item?.thinkingLevel ? `Thinking ${item.thinkingLevel}` : ''].filter(Boolean).join(' · ')); settings.hidden = !settings.textContent;
 }
 function renderPrimaryUsage(item?: PrimaryView): void {
-  const usage = usageFacts(item, item ? primaryBlocks(state, item.key) : undefined);
-  byId('primary-context').replaceChildren(...usageNodes({facts: usage.facts.filter(fact => fact.key === 'context' || fact.key === 'contextTokens'), contextFraction: usage.contextFraction}, true));
-  byId('primary-usage-summary').replaceChildren(...usageNodes({facts: usage.facts.filter(fact => fact.key !== 'context' && fact.key !== 'contextTokens'), contextFraction: null}, true));
-  byId('primary-usage').replaceChildren(...usageNodes(usage, false));
+  const usage = usageFacts(item, item ? primaryBlocks(state, item.key) : undefined), current = item?.lifecycle === 'ready';
+  byId('primary-context').replaceChildren(...(current ? usageNodes({facts: usage.facts.filter(fact => fact.key === 'context' || fact.key === 'contextTokens'), contextFraction: usage.contextFraction}, true) : []));
+  byId('primary-usage-summary').replaceChildren(...(current ? usageNodes({facts: usage.facts.filter(fact => fact.key !== 'context' && fact.key !== 'contextTokens'), contextFraction: null}, true) : []));
+  byId('primary-usage').replaceChildren(...(!current && item ? [element('p', 'usage-detail', 'Last reported; Primary is not running.')] : []), ...usageNodes(usage, false));
   byId('primary-usage-details').hidden = !item;
   renderComposerFolder('primary-folder', composerFolder({cwd: item?.cwd}, false));
 }
@@ -1605,7 +1605,9 @@ function renderAgentSettings(view: ConversationPresentation, target: Extract<Tar
   const retained = !!view.model && view.retainedModel || !!view.thinking && view.retainedThinking;
   setText(detail, [full, retained ? 'Last observed settings are not confirmed current.' : '', view.detail].filter(Boolean).join('\n')); detail.hidden = !detail.textContent;
   const conversation = state.conversations.get(targetIdentity(target)); const usage = usageFacts(undefined, conversation ? conversationBlocks(conversation) : []);
-  byId('agent-usage-summary').replaceChildren(...usageNodes(usage, true)); byId('agent-usage').replaceChildren(...usageNodes(usage, false));
+  const current = !owner?.connectionError && (owner ? agentReadAvailability(owner) : agentRow(target.identity)?.availability) === 'live';
+  byId('agent-usage-summary').replaceChildren(...(current ? usageNodes(usage, true) : []));
+  byId('agent-usage').replaceChildren(...(!current ? [element('p', 'usage-detail', 'Last loaded turns; the agent is not running.')] : []), ...usageNodes(usage, false));
   byId('agent-usage-details').hidden = !phone && !usage.facts.length && !view.cwd && !view.model && !view.thinking && !view.detail;
   setText(byId('agent-usage-note'), 'Loaded finalized assistant messages only; earlier and omitted usage is not included.');
   renderComposerFolder('agent-folder', composerFolder(view, true));
