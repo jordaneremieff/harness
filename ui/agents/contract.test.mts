@@ -79,8 +79,7 @@ function inspectBase(view: string): JsonObject { return { view, sessionId: stora
 for (const member of Object.keys(supportedOperations) as OperationName[]) {
 	test(`local contract identity: ${member}`, () => {
 		const remote = decodeDescriptor(descriptor());
-		if (member === "configure") refusal(() => assertOperation(remote, member), "unavailable");
-		else assert.equal(assertOperation(remote, member), supportedOperations[member]);
+		assert.equal(assertOperation(remote, member), supportedOperations[member]);
 	});
 }
 
@@ -394,10 +393,10 @@ test("abort correlates target and validates native receipt", () => {
 	refusal(() => decodeResponse("abort", { ...value, conversationId: 0 }));
 });
 
-test("configure is explicitly unavailable for descriptor, request, and response", () => {
-	refusal(() => assertOperation(decodeDescriptor(descriptor()), "configure"), "unavailable");
-	refusal(() => decodeInput("configure", { sessionId: storageId, requestId, name: "example" }), "unavailable");
-	refusal(() => decodeResponse("configure", { sessionId: storageId, outcome: "applied" }), "unavailable");
+test("configure negotiates its current descriptor and refuses incomplete responses", () => {
+	assert.equal(assertOperation(decodeDescriptor(descriptor()), "configure"), supportedOperations.configure);
+	assert.deepEqual(decodeInput("configure", { sessionId: storageId, requestId, name: "example" }), { sessionId: storageId, requestId, name: "example" });
+	refusal(() => decodeResponse("configure", { sessionId: storageId, outcome: "applied" }));
 });
 
 test("request subsets reject unsupported targeting and fields", () => {

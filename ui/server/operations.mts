@@ -217,7 +217,7 @@ export class Operations {
         record.input = record.input ?? {operationId: record.view.id, target: structuredClone(request.target), targetKey: input.targetKey, text: input.text, mode: input.mode, images, submittedDraftRevision: input.draftRevision, createdAt: this.stamp(), reason: 'Dispatch has no receipt yet', ...(origin ? {recoveryOrigin: origin} : {}), ...(input.differentMessage === true ? {differentMessage: true as const} : {})};
   }
   private validateOutcome(outcome: DispatchResult, record: OperationRecord): void {
-    if (!outcome || (!['accepted', 'completed', 'rejected'].includes(outcome.state) && !(outcome.state === 'uncertain' && record.view.kind === 'agent.convert'))) throw new Error('Invalid outcome');
+    if (!outcome || (!['accepted', 'completed', 'rejected'].includes(outcome.state) && !(outcome.state === 'uncertain' && ['agent.convert','agent.configure'].includes(record.view.kind)))) throw new Error('Invalid outcome');
     if (record.input && !['rejected', 'accepted'].includes(outcome.state)) throw new Error('Input needs admission receipt');
     if (record.input && outcome.state === 'accepted' && !outcome.receipt) throw new Error('Missing admission receipt');
     this.validateSentImageOutcome(outcome, record);
@@ -225,8 +225,16 @@ export class Operations {
     if (receipt?.kind === 'durable') this.validateNativeReceipt(receipt, record);
     else if (receipt?.kind === 'rpc') this.validateRpcReceipt(receipt, record);
     else if (receipt?.kind === 'command') this.validateCommandReceipt(receipt, record);
+    else if (receipt?.kind === 'configuration') this.validateConfigurationReceipt(receipt,record);
     else if (receipt) throw new Error('Wrong receipt kind');
     if (record.view.kind === 'agent.command' && outcome.state === 'completed' && receipt?.kind !== 'command') throw new Error('Missing command receipt');
+    this.requireConfigurationReceipt(outcome,record);
+  }
+  private requireConfigurationReceipt(outcome:DispatchResult,record:OperationRecord):void {
+    if(record.view.kind==='agent.configure'&&outcome.state==='completed'&&outcome.receipt?.kind!=='configuration')throw new Error('Missing configuration receipt');
+  }
+  private validateConfigurationReceipt(receipt:Extract<NonNullable<OperationView['receipt']>,{kind:'configuration'}>,record:OperationRecord):void {
+    if(record.view.kind!=='agent.configure'||record.view.target?.kind!=='agent'||receipt.identity!==record.view.target.identity||!['live','retained'].includes(receipt.afterSource)||!['completed','uncertain','not-attempted'].includes(receipt.persistence))throw new Error('Wrong configuration receipt');
   }
   private validateSentImageOutcome(outcome: DispatchResult, record: OperationRecord): void {
     if (outcome.sentImageMessageDigest === undefined) return;

@@ -192,6 +192,9 @@ export type ProjectedFrame = {revision: number; attachmentRevision?: number; obs
   thinkingLevel?: string; lastText?: string; tasks?: JsonDisplay; submissions?: JsonDisplay;
   tools?: {callId:string;name:string;status:'pending'|'running'|'done'}[]; toolsOmitted?:number;
   compactions?: JsonDisplay; compactionFailure?: JsonDisplay; retry?: GenerationRetry; providerBlock?: ProviderBlock}; coverage: DisplayCoverage};
+export type ConfigurationReceipt = {kind: 'configuration'; identity: string; outcome: 'applied' | 'failed';
+  after: {name: string; model: string | null; thinkingLevel: string | null}; afterSource: 'live' | 'retained';
+  persistence: 'completed' | 'uncertain' | 'not-attempted'; clamped?: boolean; note?: string};
 export type OperationKind = 'primary.open' | 'primary.input' | 'primary.stop' | 'primary.session' |
   'primary.control' | 'primary.dialog' | 'primary.handoff' | 'agent.input' | 'agent.abort' | 'agent.configure' | 'agent.convert' | 'agent.command';
 /** Admission is separate from the eventual answer. Completed is a local control response. */
@@ -199,7 +202,7 @@ export type OperationView = {id: string; kind: OperationKind; target?: Target; a
   state: 'reserved' | 'dispatched' | 'accepted' | 'rejected' | 'uncertain' | 'completed';
   createdAt: string; updatedAt: string; retainedInput?: RetainedAdmission; receipt?: {kind: 'rpc'; disposition?: 'started' | 'queued' | 'handled'; result?: JsonDisplay} |
   {kind: 'durable'; identity: string; submissionId: number; requestId: string; deduped: boolean} |
-  {kind: 'command'; name: string; text: string; truncated: boolean}; error?: ErrorView};
+  {kind: 'command'; name: string; text: string; truncated: boolean} | ConfigurationReceipt; error?: ErrorView};
 export type PrimaryControl = {epoch: number} & ({action: 'model'; provider: string; modelId: string} |
   {action: 'thinking'; level: string} | {action: 'compact'; customInstructions?: string} |
   {action: 'autoCompaction' | 'autoRetry'; enabled: boolean} | {action: 'abortRetry'} |

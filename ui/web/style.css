@@ -860,7 +860,7 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
 .composer-utilities:has(.latest:not([hidden]), .composer-recall:not([hidden])) { margin-bottom: 8px; }
 .composer-utilities > .latest { grid-column: 2; grid-row: 1; min-height: 32px; margin: 0; }
 .composer-recall { grid-column: 1; grid-row: 1; }
-.composer-meta { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 0 12px; padding: 6px 20px 0; min-width: 0; color: var(--muted); }
+.composer-meta { display: grid; grid-template-columns: minmax(74px,1fr) minmax(0,auto); align-items: center; gap: 0 12px; padding: 6px 20px 0; min-width: 0; color: var(--muted); }
 .composer-meta:not(:has(.composer-state:not([hidden]):not(.sr-only), .composer-settings > :not([hidden]), .composer-state-details:not([hidden]))) { display: none; }
 .composer-meta > .composer-state { grid-column: 1; grid-row: 1; }
 .composer-meta > .composer-settings { grid-column: 2; grid-row: 1; justify-self: end; }
@@ -869,9 +869,9 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
 .composer-model, .composer-thinking { display: inline-flex; align-items: center; gap: 6px; min-width: 32px; min-height: 32px; height: 32px; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--muted); font-size: 13px; white-space: nowrap; }
 .composer-model { flex: 0 1 auto; max-width: 160px; overflow: hidden; }
 .composer-setting-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.composer-model > .card-icon-chevron { flex: none; width: 12px; height: 12px; transform: rotate(90deg); }
+.composer-settings .card-icon-chevron { flex: none; width: 12px; height: 12px; transform: rotate(90deg); }
 .composer-thinking { flex: none; color: var(--muted); }
-.composer-meta :is(.composer-model, .composer-thinking):not(:disabled):hover { background: transparent; color: var(--fg); }
+.composer-meta :is(.composer-model, .composer-thinking):not(:disabled):is(:hover,[aria-expanded=true]) { background: transparent; color: var(--fg); }
 .composer-settings-text { display: flex; gap: 8px; min-width: 0; max-width: 210px; color: var(--muted); font-size: 13px; line-height: 32px; white-space: nowrap; cursor: default; }
 .composer-settings-model { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .composer-settings-effort { flex: none; color: var(--muted); }
@@ -1338,8 +1338,7 @@ button.thread-person:hover, button.thread-sender:hover { background: var(--raise
   .tab-bar { min-height: 44px; }
   .composer-line { flex-wrap: wrap; min-height: 44px; }
   .composer :is(.attachment-sources, .composer-model, .composer-thinking, .send, .stop, .queue, .composer-state-detail, .composer-recall-restore), .composer[data-working=draft] .stop { min-width: 44px; min-height: 44px; }
-  .composer-meta { grid-template-columns: minmax(0,1fr); }
-  .composer-meta > .composer-settings { grid-row: auto; grid-column: 1; }
+  .composer-meta { grid-template-columns: minmax(74px,1fr) minmax(0,auto); }
   .command-option, .palette-row, .nav-row, .row-select { min-height: 44px; height: auto; }
   .row-age, .row-message { top: 0; height: 44px; display: inline-flex; align-items: center; }
   .message-actions, .tool-copy, .row-message { opacity: 1; pointer-events: auto; }

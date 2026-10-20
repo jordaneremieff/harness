@@ -1,7 +1,7 @@
 import { parentPort, workerData } from "node:worker_threads";
 import { nativeImage } from "./images.mts";
 import { AgentError } from "./client.mts";
-import { AgentService, type CommandInput, type HistoryOptions, type InspectOptions, type SubmitInput, type ThreadListOptions, type ThreadReadOptions } from "./service-runtime.mts";
+import { AgentService, type CommandInput, type ConfigureInput, type HistoryOptions, type InspectOptions, type SubmitInput, type ThreadListOptions, type ThreadReadOptions } from "./service-runtime.mts";
 import { transferFrame, transferInspect, transferSnapshot, transferThread } from "./transfer.mts";
 
 interface Request { id: number; member: string; args: unknown[] }
@@ -42,6 +42,7 @@ async function invoke(member: string, args: unknown[], signal?: AbortSignal): Pr
     case "abort": return service.abort(identity);
     case "inventory": return service.inventory(identity, signal);
     case "command": return service.command(identity, args[1] as CommandInput);
+    case "configure": return service.configure(identity, args[1] as ConfigureInput);
     case "close": closing = true; return service.close();
     default: throw new AgentError("invalid_request", "Unsupported agent worker operation.");
   }

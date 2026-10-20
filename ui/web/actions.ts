@@ -104,6 +104,7 @@ function findStatusText(result: FindStatus | undefined, query: string): string {
   const boundary = result.end === 'first' ? ' First loaded match.' : result.end === 'last' ? ' Last loaded match.' : '';
   return `Match ${result.position} of ${result.total} in loaded messages.${boundary}`;
 }
+export type SettingsSelection = {target: Target; model?: {provider: string; modelId: string}; thinking?: string; levels?: string[]; primary?: PrimaryView; closed?: () => void; guard: () => string | undefined};
 export type SelectionChange = Partial<Omit<Workspace, 'selectedTarget'>> & {selectedTarget?: Target | null};
 export type ActionContext = {agentPresentation: ConstructorParameters<typeof ProjectPicker>[0]['agentPresentation']; snapshot: () => Snapshot | undefined; primary: () => PrimaryView | undefined; /** The Primary whose model list names models: the selected Primary when it is ready, else any ready Primary. */ namingPrimary?: () => PrimaryView | undefined; composer: Composer; commandsChanged: () => void; modelChanged?: () => void; modelNamesChanged?: () => void; modal: Modal;
   selection: (change: SelectionChange) => Promise<void>; reload: () => Promise<void>; result: (result: OperationView) => void; rosterRefresh: () => void; hasTranscript: () => boolean; find: () => FindSession | undefined; recovery: () => void; primaryEntries: () => EntryView[]; agents: () => AgentRow[]; selectedAgent: () => Pick<AgentRow, 'identity' | 'capabilities'> | undefined; selectAgent: (row: AgentRow) => void; selectPrimary: () => void; notices: () => void; sidebar: (visible: boolean) => void; sidebarShown: () => boolean; view: (tools: boolean, expand: boolean) => void; copyAgent: () => void; inspectAgent: () => void; resultLookup?: () => void; agentCaption?: (identity: string) => ConversationCaption; agentStatus: (row: AgentRow) => string; conversationFacts?: (identity: string) => readonly ReportedFact[]; tabs?: {close: () => void; switch: (direction: number) => void; layout: () => ConversationLayout}};
@@ -121,6 +122,8 @@ export class Actions {
   private changingSession = false;
   private modelChanges = new Map<string, Set<{operationId?: string}>>();
   private modelNames = new Map<string, Map<string, string>>();
+  private modelChoices = new Map<string, ModelChoice>();
+  private modelCatalogs = new Set<string>();
   private namedPrimaries = new Set<string>();
   private ctx: ActionContext;
   constructor(ctx: ActionContext) { this.ctx = ctx; }
@@ -136,6 +139,7 @@ export class Actions {
   private learnModels(items: readonly ModelChoice[], keepExisting = false): void {
     let changed = false;
     for (const model of items) {
+      this.modelChoices.set(`${model.provider}/${model.id}`, model);
       if (typeof model.name !== 'string' || !model.name.trim()) continue;
       const byProvider = this.modelNames.get(model.id) ?? new Map<string, string>(); this.modelNames.set(model.id, byProvider);
       const known = byProvider.get(model.provider);
@@ -156,11 +160,14 @@ export class Actions {
     let cursor: string | undefined;
     for (let index = 0; index < MODEL_NAME_PAGE_LIMIT; index++) {
       const page = await this.resourcePage(primary, 'models', cursor).catch(() => undefined); if (!page) return;
+      if(page.items.length){this.modelCatalogs.add(`${primary.key}:${primary.epoch}`);this.ctx.modelNamesChanged?.();}
       this.learnModels(page.items as ModelChoice[]);
       if (!page.nextCursor) return;
       cursor = page.nextCursor;
     }
   }
+  modelChoice(provider: string, id: string): ModelChoice | undefined { return this.modelChoices.get(`${provider}/${id}`); }
+  hasModelCatalog(): boolean { const primary=(this.ctx.namingPrimary??this.ctx.primary)();return primary?.lifecycle==='ready'&&this.modelCatalogs.has(`${primary.key}:${primary.epoch}`); }
   private observeResources(primary?: PrimaryView): boolean {
     const target = primary ? `${primary.key}:${primary.epoch}:${primary.lifecycle}` : '';
     if (this.resourceTarget === target) return false;
@@ -257,7 +264,7 @@ export class Actions {
   }
   async control(control: Omit<PrimaryControl, 'epoch'>, captured?: PrimaryView): Promise<void> {
     const primary = captured ?? this.ctx.primary(); if (!primary) return;
-    const result = control.action === 'model' ? await this.modelControl(primary, control) : await this.performControl(primary, control);
+    const result = control.action === 'model' || control.action === 'thinking' ? await this.modelControl(primary, control) : await this.performControl(primary, control);
     if (result.error) throw new Error(result.error.message);
   }
   private async modelControl(primary: PrimaryView, control: Omit<PrimaryControl, 'epoch'>): Promise<OperationView> {
@@ -342,19 +349,38 @@ export class Actions {
     }
     const facts = element('div', 'conversation-facts'); renderFacts(facts, this.ctx.conversationFacts?.(captured) ?? []); body.append(facts);
   }
-  modelPicker(): void {
-    const primary = this.ctx.primary(); if (!primary) return;
-    const modal = this.ctx.modal; modal.open('Choose model for Primary'); const token = modal.token; modal.body.append(element('p', 'secondary', 'Loading models…'));
+  async configure(selection: SettingsSelection, patch: {model?: {provider: string; modelId: string}; thinkingLevel?: string}): Promise<void> {
+    const reason=selection.guard(); if(reason)throw new Error(reason);
+    const target=selection.target;
+    if(target.kind==='primary') {
+      if(!selection.primary)throw new Error('This Primary is unavailable.');
+      await this.control((patch.model?{action:'model',provider:patch.model.provider,modelId:patch.model.modelId}:{action:'thinking',level:patch.thinkingLevel ?? ''}) as PrimaryControl,selection.primary);return;
+    }
+    const key=JSON.stringify(target),changes=this.modelChanges.get(key)??new Set<{operationId?:string}>(),change:{operationId?:string}={};
+    changes.add(change);this.modelChanges.set(key,changes);this.ctx.modelChanged?.();
+    try {
+      change.operationId=await reserve('agent.configure',target);
+      const current=selection.guard();if(current)throw new Error(current);
+      const result=await operation('agent.configure',`/api/agents/${encodeURIComponent(target.identity)}/configure`,patch,target,change.operationId);
+      this.ctx.result(result);
+      if(result.error)throw new Error(result.error.message);
+      if(result.state!=='completed')throw new Error('Settings update was not confirmed. Check the agent before another change.');
+    } finally {changes.delete(change);if(!changes.size)this.modelChanges.delete(key);this.ctx.modelChanged?.();}
+  }
+  modelPicker(selection?: SettingsSelection): void {
+    const primary = selection?.primary ?? (selection ? (this.ctx.namingPrimary ?? this.ctx.primary)() : this.ctx.primary()); if (!primary) return;
+    const selected=selection?.model ?? (primary.model?{provider:primary.model.provider,modelId:primary.model.id}:undefined);
+    const modal = this.ctx.modal; modal.open(selection?.target.kind==='agent'?'Choose model for agent':'Choose model for Primary',undefined,selection?.closed); const token = modal.token; modal.body.append(element('p', 'secondary', 'Loading models…'));
     void modal.run(async () => {
-      const page = await this.load('models'); this.learnModels(page.items as ModelChoice[]); if (!modal.owns(token)) return;
+      const page = await this.resourcePage(primary,'models'); this.learnModels(page.items as ModelChoice[]); if (!modal.owns(token)) return;
       modal.body.replaceChildren(); const search = input('Search models'); const list = element('div', 'options'); list.setAttribute('role', 'menu'); list.setAttribute('aria-label', 'Models'); modal.body.append(search.label, search.field, list);
       const paint = () => {
         list.replaceChildren();
-        for (const model of page.items as ModelChoice[]) if (`${model.provider}/${model.id}`.toLocaleLowerCase().includes(search.field.value.toLocaleLowerCase())) {
-          const label = `${model.provider}/${model.id}`;
-          const node = choice(label, primary.model?.provider === model.provider && primary.model.id === model.id, () => {
+        for (const model of page.items as ModelChoice[]) if (`${model.name} ${model.provider}/${model.id}`.toLocaleLowerCase().includes(search.field.value.toLocaleLowerCase())) {
+          const label = `${model.name} · ${model.provider}/${model.id}`;
+          const node = choice(label, selected?.provider === model.provider && selected.modelId === model.id, () => {
             node.disabled = true; node.setAttribute('aria-busy', 'true');
-            void modal.run(async () => { try { await this.control({action: 'model', provider: model.provider, modelId: model.id} as PrimaryControl, primary); this.resources.delete(`${primary.key}:${primary.epoch}:thinking`); } finally {node.disabled = false; node.removeAttribute('aria-busy');} });
+            void modal.run(async () => { try { if(selection)await this.configure(selection,{model:{provider:model.provider,modelId:model.id}});else await this.control({action: 'model', provider: model.provider, modelId: model.id} as PrimaryControl, primary); this.resources.delete(`${primary.key}:${primary.epoch}:thinking`);this.resources.delete(`${primary.key}:${primary.epoch}:thinking:page:`); } finally {node.disabled = false; node.removeAttribute('aria-busy');} });
           }); list.append(node);
         }
       };
@@ -368,13 +394,13 @@ export class Actions {
       }
     }, false, 'Models could not be loaded.');
   }
-  thinkingPicker(): void {
-    const primary = this.ctx.primary(); if (!primary) return;
-    const modal = this.ctx.modal; modal.open('Thinking level for Primary'); const token = modal.token;
+  thinkingPicker(selection?: SettingsSelection): void {
+    const primary = selection?.primary ?? this.ctx.primary(); if (!selection && !primary) return;
+    const modal = this.ctx.modal; modal.open(selection?.target.kind==='agent'?'Thinking level for agent':'Thinking level for Primary',undefined,selection?.closed); const token = modal.token;
     void modal.run(async () => {
-      const page = await this.load('thinking'); if (!modal.owns(token)) return;
+      const page = selection?.target.kind==='agent'?{items:selection.levels ?? []}:await this.resourcePage(primary as PrimaryView,'thinking'); if (!modal.owns(token)) return;
       const list = element('div', 'options'); list.setAttribute('role', 'menu'); list.setAttribute('aria-label', 'Thinking levels');
-      for (const level of page.items as string[]) list.append(choice(level, primary.thinkingLevel === level, () => { void modal.run(() => this.control({action: 'thinking', level} as PrimaryControl, primary)); }));
+      for (const level of page.items as string[]) list.append(choice(level, (selection?.thinking ?? primary?.thinkingLevel) === level, () => { void modal.run(() => selection?this.configure(selection,{thinkingLevel:level}):this.control({action: 'thinking', level} as PrimaryControl, primary)); }));
       list.addEventListener('keydown', event => navigateOptions(event, list)); modal.body.append(list); list.querySelector<HTMLButtonElement>('button')?.focus();
     }, false, 'Thinking levels could not be loaded.');
   }
@@ -620,7 +646,7 @@ export class Actions {
   }
   help(): void {
     const modal = this.ctx.modal; modal.open('Help');
-    modal.body.append(element('p', undefined, 'Closing this tab does not stop your sessions or agents.'), element('p', undefined, 'To configure an agent, use its command through Primary.'), element('p', undefined, 'Use Commands to find actions. Closing a dialog never stops work.'), element('p', undefined, 'Unsaved drafts are lost if the browser closes unexpectedly.'));
+    modal.body.append(element('p', undefined, 'Closing this tab does not stop your sessions or agents.'), element('p', undefined, 'Choose the model and thinking level below the message box. Agent settings require an idle agent.'), element('p', undefined, 'Use Commands to find actions. Closing a dialog never stops work.'), element('p', undefined, 'Unsaved drafts are lost if the browser closes unexpectedly.'));
     modal.body.append(details('Display limits', `Message box syntax uses plain text above ${DECORATION_BYTES / 1024} KiB, ${DECORATION_LINES} lines, or ${DECORATION_SPANS} color marks. Composition and forced colors use native text.`));
   }
   retryOutput(): void {

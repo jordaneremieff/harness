@@ -36,6 +36,14 @@ export type ConversationFrame = JsonObject & { scope: "conversation"; storageId:
 export type Admission = JsonObject & { submissionId: number; conversationId: number; deduped: boolean;
 	identity: string; result: JsonObject & { sessionId: string; submissionId: number; requestId?: string } };
 export type AbortReceipt = JsonObject & { conversationId: number; identity: string; background: boolean };
+export type ConfigurationState = { name: string; model: string | null; thinkingLevel: string | null };
+export type ConfigureResult = JsonObject & { sessionId: string; outcome: "applied" | "failed";
+	before: ConfigurationState; beforeSource: "live" | "retained"; requested: JsonObject;
+	after: ConfigurationState; afterSource: "live" | "retained";
+	reasoning?: { requested: string; effective: string | null; clamped: boolean | null };
+	hookErrors: { count: number; events: string[]; omitted: number; observation: string };
+	persistence: { nativeWrites: "completed" | "uncertain" | "not-attempted"; fileExists: boolean; note: string };
+	error?: string; truncated?: string[]; selection: JsonObject };
 export type InspectResult = JsonObject & { view: string; sessionId: string; conversationId: number };
 /** What one live host reports as installed: contribution commands, extensions without commands, and extensions that failed to load. */
 export type HostInventory = { contributions: { name: string; source: string; commands: { name: string; description: string }[] }[];
@@ -60,7 +68,7 @@ type Responses = {
 	dashboard: Summary[]; snapshot: Snapshot; inspect: InspectResult;
 	"observe-open": JsonObject & { token: string; frame: ConversationFrame | JsonObject };
 	"observe-frame": ConversationFrame | JsonObject; "observe-close": JsonObject & { closed: boolean };
-	changes: JsonObject; "task-submit": Admission; abort: AbortReceipt; configure: never;
+	changes: JsonObject; "task-submit": Admission; abort: AbortReceipt; configure: ConfigureResult;
 	"collaboration-list": ThreadList; "collaboration-read": ThreadPage;
 	status: StatusReply; command: CommandResult;
 };
@@ -192,7 +200,6 @@ export function decodeDescriptor(value: unknown): RuntimeDescriptor {
 	return o as unknown as RuntimeDescriptor;
 }
 export function assertOperation(descriptor: Pick<RuntimeDescriptor, "operations">, member: OperationName): OperationContract {
-	if (member === "configure") unavailable("Configure is unavailable: execution selection is not decoded");
 	if (opaque.has(member) && !durable) unavailable("Durable package metadata is unavailable");
 	const local = Object.hasOwn(supportedOperations, member) ? supportedOperations[member] : undefined;
 	const remote = Object.hasOwn(descriptor.operations, member) ? descriptor.operations[member] : undefined;
@@ -520,6 +527,48 @@ function admission(value: JsonValue, context: Context): Admission {
 function abort(value: JsonValue, context: Context): AbortReceipt {
 	const o = object(value); target(o, "identity", context); boolean(o.background); return o as AbortReceipt;
 }
+const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+function canonicalModel(value: JsonValue): void {
+	string(value, 512); requireValue(/^[^/\s]+\/\S+$/.test(value as string) && !/[\p{Cc}\p{Cf}]/u.test(value as string), "Invalid canonical model");
+}
+function configureInput(o: JsonObject): void {
+	only(o, ["sessionId", "requestId", "name", "model", "thinkingLevel", "preset"]); identity(o.sessionId); string(o.requestId, 512);
+	requireValue(["name", "model", "thinkingLevel", "preset"].some(key => o[key] !== undefined), "Empty configuration");
+	optional(o, ["name"], v => { string(v, 256, true); requireValue(!/[\p{Cc}\p{Cf}\ud800-\udfff\u2028\u2029]/u.test(v as string), "Invalid configuration name"); });
+	if (o.model !== undefined) { const m = object(o.model); only(m, ["provider", "modelId"]); fields(m, ["provider", "modelId"], v => string(v, 512)); requireValue(!String(m.provider).includes('/'), "Invalid model provider"); canonicalModel(`${m.provider}/${m.modelId}`); }
+	optional(o, ["thinkingLevel"], v => choice(v, thinkingLevels));
+	optional(o, ["preset"], presetName);
+}
+function presetName(value: JsonValue): void { string(value, 64); requireValue(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(value as string), "Invalid preset name"); }
+function executionSelection(value: JsonValue): void {
+	const o = object(value); only(o, ["inputDigest", "source", "preset", "presetNames", "values", "origins", "unapplied", "diagnostics", "thinking"]);
+	const digest = (v: JsonValue) => { string(v, 64); requireValue(/^[a-f0-9]{64}$/.test(v as string), "Invalid selection digest"); }; digest(o.inputDigest);
+	const source = object(o.source); only(source, ["path", "digest", "observedAt", "status"]); string(source.path, 4096, true);
+	if (source.digest !== null) digest(source.digest); string(source.observedAt, 64); choice(source.status, ["loaded", "missing", "invalid", "unavailable"]);
+	optional(o, ["preset"], presetName); array(o.presetNames, presetName, 64);
+	requireValue(new Set(o.presetNames as string[]).size === (o.presetNames as string[]).length, "Duplicate preset name");
+	const values = object(o.values); only(values, ["model", "thinkingLevel", "role", "checkInMinutes"]);
+	optional(values, ["model"], canonicalModel); optional(values, ["thinkingLevel"], v => choice(v, thinkingLevels)); optional(values, ["role"], v => string(v, 2000, true));
+	optional(values, ["checkInMinutes"], v => requireValue(typeof v === "number" && v >= 0 && v <= 35791, "Invalid check-in interval"));
+	const origins = object(o.origins); only(origins, ["model", "thinkingLevel", "role", "checkInMinutes"]);
+	for (const v of Object.values(origins)) choice(v, ["explicit", "preset", "defaultPreset", "retained", "default"]);
+	array(o.unapplied, v => string(v, 32, true), 4);
+	array(o.diagnostics, v => { const d = object(v); only(d, ["field", "message"]); string(d.field, 600, true); string(d.message, 1200, true); }, 512);
+	if (o.thinking !== undefined) { const t = object(o.thinking); only(t, ["requested", "effective"]); fields(t, ["requested", "effective"], v => string(v, 16, true)); }
+}
+function configureResult(value: JsonValue, context: Context): ConfigureResult {
+	const o = object(value); only(o, ["sessionId", "outcome", "before", "beforeSource", "requested", "after", "afterSource", "reasoning", "hookErrors", "persistence", "error", "truncated", "selection"]);
+	identity(o.sessionId); if (context.identity !== undefined) requireValue(o.sessionId === context.identity, "Wrong configuration target");
+	choice(o.outcome, ["applied", "failed"]);
+	for (const key of ["before", "after"]) { const s = object(o[key]); only(s, ["name", "model", "thinkingLevel"]); string(s.name, 256, true); if (s.model !== null) canonicalModel(s.model); if (s.thinkingLevel !== null) choice(s.thinkingLevel, thinkingLevels); }
+	fields(o, ["beforeSource", "afterSource"], v => choice(v, ["live", "retained"]));
+	const requested = object(o.requested); only(requested, ["name", "model", "thinkingLevel"]); optional(requested, ["name"], v => string(v, 256, true)); optional(requested, ["model"], canonicalModel); optional(requested, ["thinkingLevel"], v => choice(v, thinkingLevels));
+	if (o.reasoning !== undefined) { const r = object(o.reasoning); only(r, ["requested", "effective", "clamped"]); choice(r.requested, thinkingLevels); if (r.effective !== null) choice(r.effective, thinkingLevels); if (r.clamped !== null) boolean(r.clamped); }
+	const hooks = object(o.hookErrors); only(hooks, ["count", "events", "omitted", "observation"]); integer(hooks.count); integer(hooks.omitted); array(hooks.events, v => string(v, 2000, true), 512); string(hooks.observation, 4096, true);
+	const p = object(o.persistence); only(p, ["nativeWrites", "fileExists", "note"]); choice(p.nativeWrites, ["completed", "uncertain", "not-attempted"]); boolean(p.fileExists); string(p.note, 4096, true);
+	optional(o, ["error"], v => string(v, 4096, true)); if (o.truncated !== undefined) array(o.truncated, v => string(v, 256), 32);
+	executionSelection(o.selection); return o as ConfigureResult;
+}
 /** The commands the host runs for itself rather than through a contribution. The UI never offers or sends them. */
 export const RESERVED_COMMANDS: readonly string[] = Object.freeze(["tree", "reload"]);
 function hostInventory(value: JsonValue): void {
@@ -609,7 +658,6 @@ function threadPage(value: JsonValue): ThreadPage {
 	return o as ThreadPage;
 }
 export function decodeResponse<M extends OperationName>(member: M, value: unknown, context: Context = {}): Responses[M] {
-	if (member === "configure") unavailable("Configure is unavailable: execution selection is not decoded");
 	const v = json(value);
 	const decoders = {
 		dashboard: () => { array(v, summary); return v as unknown as Summary[]; }, snapshot: () => snapshot(v),
@@ -618,11 +666,11 @@ export function decodeResponse<M extends OperationName>(member: M, value: unknow
 			if (context.token !== undefined) requireValue(o.token === context.token, "Wrong observation token");
 			o.frame = frameValue(object(o.frame), context); return o; },
 		"observe-close": () => { const o = object(v); boolean(o.closed); return o; },
-		changes: () => changes(v), "task-submit": () => admission(v, context), abort: () => abort(v, context),
+		changes: () => changes(v), "task-submit": () => admission(v, context), abort: () => abort(v, context), configure: () => configureResult(v, context),
 		"collaboration-list": () => threadList(v), "collaboration-read": () => threadPage(v),
 		status: () => statusReply(v), command: () => commandResult(v, context),
 	};
-	const decoder = decoders[member as Exclude<OperationName, "configure">];
+	const decoder = decoders[member];
 	requireValue(Object.hasOwn(decoders, member) && decoder, "Unsupported operation"); return decoder() as Responses[M];
 }
 function token(value: unknown): void { string(value, 128); requireValue(/^[A-Za-z0-9._:-]+$/.test(value), "Invalid observation token"); }
@@ -687,12 +735,12 @@ export function decodeOperatorInput(value: unknown): JsonObject {
 	return o;
 }
 export function decodeInput(member: OperationName, value: unknown, context: Context = {}): JsonObject {
-	if (member === "configure") unavailable("Configure is unavailable: execution selection is not decoded");
 	const o = member === "task-submit" ? decodeOperatorInput(value) : object(json(value));
 	if (context.identity !== undefined && o.sessionId !== undefined) requireValue(o.sessionId === context.identity, "Wrong input target");
 	if (context.requestId !== undefined) requireValue(o.requestId === context.requestId, "Wrong input request ID");
 	if (context.token !== undefined) requireValue(o.token === context.token, "Wrong input observation token");
 	if (member === "task-submit") return o;
+	if (member === "configure") { configureInput(o); return o; }
 	if (member === "observe-open") { observeInput(o); return o; }
 	if (member === "observe-frame" || member === "observe-close") { only(o, ["token"]); token(o.token); return o; }
 

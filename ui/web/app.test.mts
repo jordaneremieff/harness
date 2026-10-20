@@ -1458,10 +1458,10 @@ test('Up in an empty Primary draft recalls earlier loaded user messages and no c
   Reflect.deleteProperty(hostDocument, 'execCommand');
 });
 test('Primary model and thinking are picker buttons under its composer with accessible names', async () => {
-  await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({cwd: '/fixture', lifecycle: 'ready', model: {provider: 'provider', id: 'model', name: 'Model', reasoning: false, input: ['text']}, thinkingLevel: 'high'})], roster: []});
+  await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({cwd: '/fixture', lifecycle: 'ready', activity:'idle', model: {provider: 'provider', id: 'model', name: 'Model', reasoning: false, input: ['text']}, thinkingLevel: 'high'})], roster: []});
   const model = primaryControl('model'), thinking = primaryControl('thinking');
-  assert.equal(model.textContent, 'Model'); assert.equal(model.title, 'provider/model · Primary'); assert.equal(model.attributes.get('aria-label'), 'Model for Primary: provider/model');
-  assert.equal(thinking.textContent, 'High'); assert.equal(thinking.attributes.get('aria-label'), 'Thinking level for Primary: high'); assert.ok(primaryControl('settings').contains(model)); assert.ok(model.querySelector('.card-icon-chevron')); assert.equal(thinking.querySelector('.card-icon-chevron'), null); assert.equal(primaryControl('settings').querySelector('.composer-settings-separator'), null);
+  assert.equal(model.textContent, 'Model'); assert.ok(model.title.startsWith('provider/model · Primary')); assert.equal(model.attributes.get('aria-label'), 'Model for Primary: provider/model');
+  assert.equal(thinking.textContent, 'High'); assert.equal(thinking.attributes.get('aria-label'), 'Thinking level for Primary: high'); assert.ok(primaryControl('settings').contains(model)); assert.ok(model.querySelector('.card-icon-chevron')); assert.ok(thinking.querySelector('.card-icon-chevron')); assert.equal(primaryControl('settings').querySelector('.composer-settings-separator'), null);
 });
 
 test('local conversation actions group existing controls and open workspace input settings without navigation', async () => {
@@ -1484,12 +1484,12 @@ test('local conversation actions group existing controls and open workspace inpu
 });
 test('composer settings preserve exact long values and existing eligibility without replacing controls', async () => {
   const id = 'long-model-value'.repeat(60);
-  await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({lifecycle: 'ready', model: {provider: 'provider', id, name: id, reasoning: true, input: ['text']}, thinkingLevel: 'high'})], roster: []});
-  const model = primaryControl('model'), thinking = primaryControl('thinking');
+  await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({lifecycle: 'ready', activity:'idle', model: {provider: 'provider', id, name: id, reasoning: true, input: ['text']}, thinkingLevel: 'high'})], roster: []});
+  event('ready',{bootId:'boot'});await settle();const model = primaryControl('model'), thinking = primaryControl('thinking');
   app.primaryChrome(primaryFixture({model: {provider: 'provider', id, name: id, reasoning: true, input: ['text']}, thinkingLevel: 'high'}));
   assert.equal(byId('primary-settings-detail').textContent,`Model provider/${id} · Thinking high`);assert.equal(byId('primary-settings-detail').hidden,false);
-  assert.equal(primaryControl('model'), model); assert.equal(primaryControl('thinking'), thinking); assert.equal(model.textContent, id); assert.equal(model.disabled, false); assert.equal(thinking.hidden, false);
-  const current = app.state.primaries.get('p'); assert.ok(current); event('primary.state', {...current, lifecycle: 'starting', model: undefined, thinkingLevel: undefined}, {kind: 'primary', key: 'p', epoch: current.epoch}); await settle(); assert.equal(primaryControl('model'), model); assert.equal(model.hidden, true); assert.equal(model.disabled, true); assert.equal(thinking.hidden, true);assert.equal(byId('primary-settings-detail').hidden,true);assert.equal(byId('primary-settings-detail').textContent,'');
+  assert.equal(primaryControl('model'), model); assert.equal(primaryControl('thinking'), thinking); assert.equal(model.textContent, id); assert.equal(model.disabled, true); assert.equal(thinking.hidden, false);
+  const current = app.state.primaries.get('p'); assert.ok(current); event('primary.state', {...current, lifecycle: 'starting', model: undefined, thinkingLevel: undefined}, {kind: 'primary', key: 'p', epoch: current.epoch}); await settle(); assert.equal(primaryControl('model'), model); assert.equal(model.hidden, false); assert.equal(model.disabled, true); assert.equal(thinking.hidden, false);assert.equal(thinking.disabled,true);assert.equal(byId('primary-settings-detail').hidden,true);assert.equal(byId('primary-settings-detail').textContent,'');
 });
 test('loaded prompt metadata updates Primary captions without input or target changes', async context => {
   const item=primaryFixture({epoch:42,sessionId:'caption-session',sessionFile:'/fixture/caption-session.jsonl',sessionName:undefined,extension:undefined,activity:'idle'});
@@ -1688,10 +1688,9 @@ test('Message panel settings describe its captured agent instead of a prior agen
   const row = agentFixture('message-settings', {name: 'Recipient', model: {provider: 'agent-provider', modelId: 'recipient-model'}, thinkingLevel: 'low'});
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'primary', key: 'p', epoch: 1}}, primaries: [primaryFixture({model: {provider: 'primary-provider', id: 'primary-model', name: 'Primary model', reasoning: false, input: ['text']}})], roster: [row]});
   const agent = byId('roster').children.find(node => node.dataset.identity === row.identity); assert.ok(agent); const message = agent.querySelector('.row-message'); assert.ok(message); message.click(); await settle();
-  const settingsText = () => messageControl('settings-text');
-  assert.equal(byId('agent-message-panel').hidden, false); assert.equal(settingsText()?.hidden, false);
-  assert.equal(settingsText()?.textContent, 'recipient-modelLow'); assert.equal(settingsText()?.title, 'Last observed: Model agent-provider/recipient-model · Thinking low');
-  assert.equal(settingsText()?.getAttribute('aria-label'), settingsText()?.title); assert.match(byId('agent-settings-detail').textContent, /Last observed settings are not confirmed current\./); assert.equal(byId('agent-settings-detail').hidden, false); assert.equal(byId('agent-settings-detail').classList.contains('phone-status-facts'), false);
+  assert.equal(byId('agent-message-panel').hidden, false); assert.equal(messageControl('model').hidden,false);
+  assert.equal(messageControl('model').textContent,'recipient-model');assert.equal(messageControl('thinking').textContent,'Low');assert.match(messageControl('model').title,/agent-provider\/recipient-model/);
+  assert.equal(messageControl('model').getAttribute('aria-label'),'Model for Recipient: agent-provider/recipient-model'); assert.match(byId('agent-settings-detail').textContent, /Last observed settings are not confirmed current\./); assert.equal(byId('agent-settings-detail').hidden, false); assert.equal(byId('agent-settings-detail').classList.contains('phone-status-facts'), false);
   assert.equal(messageControl('recipient').textContent, 'Message Recipient'); assert.equal(primaryControl('root').hidden, false);
   const editor = messageControl('editor'); editor.value = 'Keep the recipient draft'; editor.dispatch('input'); editor.focus(); editor.setSelectionRange(3, 8);
   event('agent.availability', {identity: row.identity, connectionEpoch: app.state.agentEpochs.get(row.identity) ?? 1, state: 'live', capabilities: {input: false}});
@@ -2321,17 +2320,17 @@ test('composer settings show the Primary model list name and capitalized effort,
     return previous(input, init);
   };
   try {
-    await arrive({workspace: {id: 'named', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'primary', key: 'p', epoch: 7701}}, primaries: [primaryFixture({epoch: 7701, model: {provider: 'fixture', id: 'primary-id', name: 'Reported Primary Name', reasoning: true, input: ['text']}, thinkingLevel: 'xhigh'})], roster: [known, unknown, other]});
-    await settle();
+    await arrive({workspace: {id: 'named', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'primary', key: 'p', epoch: 7701}}, primaries: [primaryFixture({epoch: 7701, model: {provider: 'fixture', id: 'primary-id', name: 'Reported Primary Name', reasoning: true, input: ['text']}, thinkingLevel: 'xhigh',activity:'idle'})], roster: [known, unknown, other]});
+    event('ready',{bootId:'boot'});await settle();
     assert.equal(primaryControl('model').textContent, 'Listed Primary Name'); assert.equal(primaryControl('thinking').textContent, 'Xhigh');
     assert.equal(primaryControl('model').title, 'fixture/primary-id · Primary'); assert.equal(primaryControl('model').attributes.get('aria-label'), 'Model for Primary: fixture/primary-id');
     const shown: string[] = [], labels: (string | undefined)[] = [];
     for (const row of [known, unknown, other, known, unknown]) {
       await app.selectAgent(row); await settle();
-      shown.push(agentControl('settings-text')?.textContent ?? ''); labels.push(agentControl('settings-text')?.getAttribute('aria-label'));
+      shown.push(agentControl('model').textContent+agentControl('thinking').textContent); labels.push(agentControl('model').getAttribute('aria-label'));
     }
     assert.deepEqual(shown, ['Vendor Sonnet 5.5High', 'unlisted-idLow', 'Vendor Sonnet 5.5Medium', 'Vendor Sonnet 5.5High', 'unlisted-idLow']);
-    assert.deepEqual(labels, ['Last observed: Model vendor/sonnet-id · Thinking high', 'Last observed: Model vendor/unlisted-id · Thinking low', 'Last observed: Model elsewhere/sonnet-id · Thinking medium', 'Last observed: Model vendor/sonnet-id · Thinking high', 'Last observed: Model vendor/unlisted-id · Thinking low']);
+    assert.deepEqual(labels, ['Model for Known: vendor/sonnet-id', 'Model for Unknown: vendor/unlisted-id', 'Model for Other: elsewhere/sonnet-id', 'Model for Known: vendor/sonnet-id', 'Model for Unknown: vendor/unlisted-id']);
     assert.equal(reads.length, 1); assert.match(reads[0] ?? '', /^\/api\/primaries\/p\/resources\/models\?limit=100(&|$)/);
   } finally {globalThis.fetch = previous;}
 });
@@ -2373,10 +2372,10 @@ test('an agent on another provider shows the list name for the same id, and its 
   try {
     await arrive({workspace: {id: 'codex', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'primary', key: 'p', epoch: 7702}}, primaries: [primaryFixture({epoch: 7702})], roster: [codex, clash]});
     await settle(); await app.selectAgent(codex); await settle();
-    assert.equal(agentControl('settings-text')?.textContent, 'GPT-6 AstraHigh'); assert.equal(agentControl('settings-text')?.title, 'Last observed: Model openai-codex/gpt-6-astra · Thinking high');
-    assert.equal(agentControl('settings-text')?.getAttribute('aria-label'), 'Last observed: Model openai-codex/gpt-6-astra · Thinking high');
+    assert.equal(agentControl('model').textContent,'GPT-6 Astra');assert.equal(agentControl('thinking').textContent,'High');assert.match(agentControl('model').title,/openai-codex\/gpt-6-astra/);
+    assert.equal(agentControl('model').getAttribute('aria-label'),'Model for Codex agent: openai-codex/gpt-6-astra');
     await app.selectAgent(clash); await settle();
-    assert.equal(agentControl('settings-text')?.textContent, 'clashing-idHigh', 'two names for one id leave the id');
+    assert.equal(agentControl('model').textContent, 'clashing-id', 'two names for one id leave the id');
   } finally {globalThis.fetch = previous;}
 });
 test('a stored agent shows the list name from a ready Primary when no Primary is selected, and its tooltip keeps provider and id', async () => {
@@ -2391,7 +2390,7 @@ test('a stored agent shows the list name from a ready Primary when no Primary is
     await arrive({workspace: {id: 'unselected', revision: 1, primaryKey: null}, primaries: [primaryFixture({epoch: 7703, lifecycle: 'ready'})], roster: [stored]});
     await settle(); await app.selectAgent(stored); await settle();
     assert.equal(app.state.workspace?.primaryKey ?? null, null);
-    assert.deepEqual(agentControl('settings-text')?.children.map(node => node.textContent), ['Claude Sonnet 5.5', 'High']); assert.equal(agentControl('settings-text')?.title, 'Last observed: Model anthropic/claude-sonnet-5-5 · Thinking high');
+    assert.equal(agentControl('model').textContent,'Claude Sonnet 5.5');assert.equal(agentControl('thinking').textContent,'High');assert.match(agentControl('model').title,/anthropic\/claude-sonnet-5-5/);
     assert.deepEqual(reads, ['/api/primaries/p/resources/models']);
   } finally {globalThis.fetch = previous;}
 });
@@ -2407,7 +2406,7 @@ test('a stored agent shows the list name from a ready Primary when the selected 
     await arrive({workspace: {id: 'stopped-selection', revision: 1, primaryKey: 'stopped'}, primaries: [primaryFixture({key: 'stopped', epoch: 7704, lifecycle: 'stopped'}), primaryFixture({key: 'ready', epoch: 7705, lifecycle: 'ready'})], roster: [stored]});
     await settle(); await app.selectAgent(stored); await settle();
     assert.equal(app.state.workspace?.primaryKey, 'stopped');
-    assert.deepEqual(agentControl('settings-text')?.children.map(node => node.textContent), ['Claude Sonnet 5.5', 'High']); assert.equal(agentControl('settings-text')?.title, 'Last observed: Model anthropic/claude-sonnet-5-5 · Thinking high');
+    assert.equal(agentControl('model').textContent,'Claude Sonnet 5.5');assert.equal(agentControl('thinking').textContent,'High');assert.match(agentControl('model').title,/anthropic\/claude-sonnet-5-5/);
     assert.deepEqual(reads, ['/api/primaries/ready/resources/models']);
   } finally {globalThis.fetch = previous;}
 });

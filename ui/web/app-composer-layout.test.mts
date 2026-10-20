@@ -46,7 +46,7 @@ test('conversation state and split width changes retain editor ancestry, draft i
     assert.deepEqual(line.children, [intake, bar]); assert.equal(line.parentNode, surface);
     assert.equal(surface.contains(meta), false); assert.equal(surface.contains(recallLine), false);
     assert.ok(form.children.indexOf(meta) > form.children.indexOf(surface));
-    assert.ok(control('model').querySelector('.card-icon-chevron')); assert.equal(control('thinking').querySelector('.card-icon-chevron'), null);
+    assert.ok(control('model').querySelector('.card-icon-chevron')); assert.ok(control('thinking').querySelector('.card-icon-chevron'));
     const submit = bar.querySelector('.composer-submit'); assert.ok(submit);
     assert.deepEqual(bar.children, [control('stop'), submit]); assert.deepEqual(submit.children, [control('queue'), control('start'), control('send')]);
     assert.equal(control('editor').rows, 1);

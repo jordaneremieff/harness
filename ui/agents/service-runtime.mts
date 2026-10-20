@@ -4,7 +4,7 @@ import { captureSubmitInput, submitInputDigest, type NativeInputMessage, type Na
 import { readVerifiedDraftImages, verifiedImageReferences } from "../server/draft-images.mts";
 import { imageMessageDigest, imageReferenceMessage } from "../server/images.mts";
 import { isAbsolute } from "node:path";
-import { decodeInput, type AbortReceipt, type Admission, type CommandResult, type ConversationFrame, type HostInventory, type InspectResult, type JsonObject, type Snapshot, type StatusReply, type ThreadList, type ThreadPage } from "./contract.mts";
+import { decodeInput, type AbortReceipt, type Admission, type ConfigureResult, type CommandResult, type ConversationFrame, type HostInventory, type InspectResult, type JsonObject, type Snapshot, type StatusReply, type ThreadList, type ThreadPage } from "./contract.mts";
 import { ObservationManager, type AvailabilityListener } from "./observation.mts";
 import { RetainedReader } from "./retained-read.mts";
 import { retainedReaderPath } from "../server/agent-start.mts";
@@ -33,7 +33,7 @@ export interface InspectOptions {
   view: "history" | "activity" | "exact" | "result";
   cursor?: JsonObject; source?: 'user'; limit?: number; entryId?: number; offset?: number; submissionId?: number; requestId?: string; operationId?: string;
 }
-export interface UnavailableConfiguration { available: false; reason: string }
+export interface ConfigureInput { operationId: string; name?: string; model?: {provider: string; modelId: string}; thinkingLevel?: string }
 export interface CommandInput { operationId: string; name: string; args?: string }
 interface InputRecord { identity: string; input: SubmitInput; digest: string; promise: Promise<Admission>; pending: boolean; link?: HostLink }
 function inspectionSelectors(options: InspectOptions, params: JsonObject): void {
@@ -270,8 +270,19 @@ export class AgentService {
     this.#ready();
     return (await (await this.#link(identity)).request("abort", { sessionId: identity, background: false }, { identity })) as AbortReceipt;
   }
-  configure(_identity: string, _options?: unknown): UnavailableConfiguration {
-    return { available: false, reason: "Agent configuration is available through the primary agent command, not this UI adapter." };
+  async configure(identity: string, input: ConfigureInput): Promise<ConfigureResult> {
+    this.#ready();
+    if (!input || typeof input.operationId !== "string" || !/^[a-zA-Z0-9._:-]{1,120}$/.test(input.operationId)) throw new AgentError("invalid_request", "Invalid configuration operation.");
+    const {operationId, ...patch} = input; const requestId = `ui:${operationId}`;
+    const params: JsonObject = {sessionId: identity, requestId, ...patch};
+    try { decodeInput("configure", params, {identity, requestId}); }
+    catch (error) { throw new AgentError("invalid_request", error instanceof Error ? error.message : "Invalid configuration request."); }
+    const link = await this.#link(identity);
+    try { return await link.request("configure", params, {identity, requestId, wireRequestId: requestId}) as ConfigureResult; }
+    catch (error) {
+      if (error instanceof AgentError || !link.connected || !hostAnswered(error)) throw error;
+      throw new AgentError("configure_refused", error.message.slice(0, 2000));
+    }
   }
   /** Last browser detach releases observation and transport, not admitted Durable work. */
   async disconnectWorkspace(workspaceId: string): Promise<void> {

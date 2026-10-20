@@ -241,7 +241,7 @@ export class Registry {
   }
   private capabilities(identity: string, supported?: Record<string,boolean>): AgentCapabilities {
     return {history: supported?.snapshot === true, observe: ['observe-open','observe-frame','observe-close','snapshot'].every(key=>supported?.[key] === true),
-      input:supported?.['task-submit'] === true,images:supported?.['task-submit'] === true && this.agents.imageInputAvailable(identity),abort:supported?.abort === true,configure:false,inspect:supported?.inspect === true,commands:supported?.status === true && supported?.command === true};
+      input:supported?.['task-submit'] === true,images:supported?.['task-submit'] === true && this.agents.imageInputAvailable(identity),abort:supported?.abort === true,configure:supported?.configure === true,inspect:supported?.inspect === true,commands:supported?.status === true && supported?.command === true};
   }
   async prepareTarget(workspace: string, target: Extract<Target,{kind:'agent'}>): Promise<TargetPreparation> {
     let availability: TargetPreparation['availability'] = 'live';

@@ -26,6 +26,14 @@ export function deferred<T>() {
 	return { promise, resolve, reject };
 }
 
+export function configurationReply(identity = STORAGE): JsonObject {
+	return {sessionId:identity,outcome:"applied",before:{name:"Fixture",model:"fixture/old",thinkingLevel:"low"},beforeSource:"live",
+		requested:{model:"fixture/new",thinkingLevel:"high"},after:{name:"Fixture",model:"fixture/new",thinkingLevel:"high"},afterSource:"live",
+		reasoning:{requested:"high",effective:"high",clamped:false},hookErrors:{count:0,events:[],omitted:0,observation:"No hooks"},
+		persistence:{nativeWrites:"completed",fileExists:true,note:"Native commits"},selection:{inputDigest:"a".repeat(64),
+			source:{path:"/fixture/harness.json",digest:null,observedAt:"2026-01-01T00:00:00.000Z",status:"missing"},presetNames:[],
+			values:{model:"fixture/new",thinkingLevel:"high"},origins:{model:"explicit",thinkingLevel:"explicit"},unapplied:[],diagnostics:[]}};
+}
 /** Fabricated current host values remain independent of the UI decoder. */
 export function frame(revision = 1, identity = STORAGE): JsonObject {
 	const conversationId = identity === STORAGE ? 1 : Number(identity.split(":")[1]);
@@ -564,6 +572,8 @@ export class FakeHost {
 					conversationId: input.sessionId === CHILD ? 2 : 1,
 					background: input.background ?? false,
 				};
+			case "configure":
+				return configurationReply(String(input.sessionId));
 			case "status":
 				return statusReply();
 			case "command":

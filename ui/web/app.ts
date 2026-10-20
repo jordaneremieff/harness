@@ -188,7 +188,7 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
   root.append(observed, notice, region, above, elements.root, below); stableViews().mount(root);
   if (target.kind === 'agent') root.insertBefore(createHistoryNote(add), region);
   const controller = {workspaceId, target: {...target}, instanceId, root, nodes, elements, abort: new AbortController(), historyAbort: new AbortController(), cursor: null, before: null, loading: false, preparing: false, passive: true, historyReady: false, historyBoundaryLoaded: false, initialized: false, showThinking: false} as ConversationController;
-  wireSettingPickers(target, elements);
+  wireSettingPickers(controller);
   controller.composer = new Composer(elements, {workingFile:stage=>composerWorkingFile(controller,stage),recallItems:()=>recallItems(inputEchoes.entries(controller.workspaceId,controller.target,(()=>{const conversation=state.conversations.get(targetIdentity(controller.target));return conversation?conversationBlocks(conversation):[];})())),fileSearch:(query,signal)=>searchWorkingFiles(controller,query,signal),fileStage:(path,signal,present,stage)=>stageMentionedFile(controller,path,signal,present,stage),changed:()=>{devInteractionRevision++;},captured: submission=>{const conversation=state.conversations.get(targetIdentity(controller.target));inputEchoes.capture(workspaceId,submission,conversation?conversationBlocks(conversation):[]);renderController(controller);},failed:(id,uncertain)=>{inputEchoes.failed(id,uncertain);renderController(controller);},prepareInput: () => !controller.passive, imageState: refreshComposerImages, imageInput: captured => composerImageInput(controller, captured), recovery: () => recovery.open(), layoutHeight: () => stableViews().height(elements.root), enterSends: () => state.workspace?.enterSendsMessages === true, timing: (start, end) => {if (controller.workspaceId === state.workspace?.id && !elements.root.closest('[hidden],[inert]')) diagnostics.measure('editor-echo', start, end);}, submitted: result => {inputEchoes.settle(result);showOperation(result, workspaceId);renderController(controller);}, unknownCommand: (text, literal) => target.kind === 'primary' && sameTarget(primaryTarget(), target) ? actions.unknown(text, literal) : false,
     ...(target.kind === 'primary' ? {commands: () => actions.commandOptions(), moreCommands: (captured: Target) => actions.continueCommands(captured)} : {}),
     ...agentCommandHooks(controller),
@@ -773,12 +773,23 @@ function presentation(target?: Target): ConversationPresentation {
   const conversation = target ? state.conversations.get(targetIdentity(target)) : undefined;
   const tool = target?.kind === 'primary' ? [...conversation?.tools.values() ?? []].findLast(item => item.phase !== 'end') : undefined;
   const item = target?.kind === 'primary' ? state.primaries.get(target.key) : undefined;
-  return conversationPresentation({target, primary: item, savedSession: picker.savedSession(item),
+  const view=conversationPresentation({target, primary: item, savedSession: picker.savedSession(item),
     row, caption: targetCaption(target), availability: target?.kind === 'agent' && !liveConnection(controller) && !controller?.connectionError ? state.agentAvailability.get(target.identity) : undefined,
     negotiated: agentNegotiation(target, controller),
     entries: conversation ? conversationBlocks(conversation) : undefined,
     start: startAttempt(target),
     frame: target ? state.conversations.get(targetIdentity(target))?.frame : undefined, tool: tool ? {name: tool.name, argument: tool.argumentText ?? ''} : undefined, connected});
+  return configuredPresentation(target,conversation?.frame,view);
+}
+function configuredPresentation(target:Target|undefined,frame:ProjectedFrame|undefined,view:ConversationPresentation):ConversationPresentation {
+  const operation=target?.kind==='agent'?[...state.operations.values()].findLast(value=>value.kind==='agent.configure'&&sameTarget(value.target,target)&&value.receipt?.kind==='configuration'):undefined;
+  const receipt=operation?.receipt;
+  if(receipt?.kind==='configuration'&&(!frame||Date.parse(frame.observedAt)<=Date.parse(operation?.updatedAt ?? ''))) {
+    const model=receipt.after.model,slash=model?.indexOf('/')??-1;
+    return {...view,model:model&&slash>0?{provider:model.slice(0,slash),modelId:model.slice(slash+1)}:undefined,thinking:receipt.after.thinkingLevel??undefined,
+      retainedModel:receipt.afterSource==='retained',retainedThinking:receipt.afterSource==='retained'};
+  }
+  return view;
 }
 function tabPresentation(tab: ConversationTab): ConversationPresentation { return presentation(controllerTarget(tab)); }
 function activePresentation(): ConversationPresentation { return presentation(layoutTarget(currentLayout(), primaryTarget()) ?? undefined); }
@@ -1424,29 +1435,86 @@ function applyPreparation(controller: ConversationController, prepared: import('
   }
   renderController(controller); renderRoster(); renderWorkbenchStatus();
 }
-/** Model and thinking sit under the composer: pickers for the Primary, passive facts for an agent. */
-function wireSettingPickers(target: Target, elements: import('./composer.ts').ComposerElements): void {
-  if (target.kind !== 'primary') return;
-  elements.model?.addEventListener('click', () => actions.modelPicker()); elements.thinking?.addEventListener('click', () => actions.thinkingPicker());
+/** Each picker retains the exact composer recipient, independently of pane focus. */
+function wireSettingPickers(controller: ConversationController): void {
+  for(const [node,picker]of [[controller.elements.model,'modelPicker'],[controller.elements.thinking,'thinkingPicker']] as const)node?.addEventListener('click',()=> {
+    if(node.disabled)return;node.setAttribute('aria-expanded','true');
+    const captured=settingSelection(controller);captured.closed=()=>node.setAttribute('aria-expanded','false');actions[picker](captured);
+  });
+}
+function configurationReadback(target:Target,operation:OperationView):boolean {
+  if(target.kind!=='agent')return false;
+  const frame=state.conversations.get(targetIdentity(target))?.frame;
+  return !!frame?.status.model&&frame.status.thinkingLevel!==undefined&&Date.parse(frame.observedAt)>Date.parse(operation.updatedAt);
+}
+function settingsReason(controller:ConversationController):string|undefined {
+  if(controller.abort.signal.aborted||controller.workspaceId!==state.workspace?.id)return 'This conversation is no longer available.';
+  if(!connected)return 'Settings are unavailable while disconnected.';
+  const view=presentation(controller.target);
+  if(controller.target.kind==='primary')return view.input?undefined:'This Primary is not ready.';
+  if(view.busy)return 'Wait while the agent works.';
+  const negotiated=agentNegotiation(controller.target,controller),observed=state.agentAvailability.get(controller.target.identity);
+  const availability=negotiated?.availability??observed?.state,capabilities=negotiated?.capabilities??observed?.capabilities;
+  if(availability!=='live'||!capabilities?.configure)return 'This host does not offer model and thinking changes.';
+  if(!state.conversations.get(targetIdentity(controller.target))?.frame)return 'Agent activity is not yet confirmed.';
+  const latest=[...state.operations.values()].findLast(value=>sameTarget(value.target,controller.target)&&value.kind==='agent.configure');
+  if(latest?.state==='uncertain'&&!configurationReadback(controller.target,latest))return 'Settings update was not confirmed. Check the conversation before another change.';
+  return undefined;
+}
+function settingSelection(controller:ConversationController):import('./actions.ts').SettingsSelection {
+  const target={...controller.target},view=presentation(target),primary=target.kind==='primary'?state.primaries.get(target.key):undefined;
+  const metadata=view.model?actions.modelChoice(view.model.provider,view.model.modelId):undefined;
+  return {target,model:view.model,thinking:view.thinking,levels:metadata?.thinkingLevels,primary,guard:()=>settingsReason(controller)};
 }
 function renderAllComposerSettings(): void { for (const controller of controllers.values()) renderComposerSettings(controller, presentation(controller.target)); }
 function listedModelText(model: NonNullable<ConversationPresentation['model']>): string { return modelText(model, actions.modelName(model.provider, model.modelId)); }
+function latestSettingsOperation(target:Target):OperationView|undefined {
+  return [...state.operations.values()].findLast(value=>sameTarget(value.target,target)&&(value.kind==='agent.configure'||value.kind==='primary.control'&&['model','thinking'].includes(value.action??'')));
+}
+function settingsFeedback(view:ConversationPresentation,latest:OperationView|undefined,pending:boolean,uncertain:boolean,base?:string):ComposerStateView|undefined {
+  if(pending)return {line:'Updating settings…',label:'Updating settings…'};
+  const issue=latest&&['rejected','uncertain'].includes(latest.state)?latest.error?.message:undefined;
+  if(issue){
+    let line='Settings change failed.';
+    if(uncertain)line='Settings update not confirmed.';
+    else if(latest?.state==='uncertain')line='Settings checked after unconfirmed change.';
+    return {line,label:line,detail:issue,tone:'warning'};
+  }
+  if(base==='Wait while the agent works.')return {line:base,label:base};
+  if(!view.model||!view.thinking)return {line:'Settings are not fully reported.',label:'Settings are not fully reported.'};
+  return undefined;
+}
+function composerSettingsStatus(controller:ConversationController,view:ConversationPresentation) {
+  const target=controller.target,selection=settingSelection(controller),base=settingsReason(controller),latest=latestSettingsOperation(target);
+  const pending=actions.modelChanging(target,state.operations.values())||!!latest&&['reserved','dispatched'].includes(latest.state);
+  const uncertain=latest?.state==='uncertain'&&!configurationReadback(target,latest);
+  const common=pending?'Updating settings…':uncertain?'Settings update was not confirmed. Check the conversation before another change.':base;
+  return {pending,modelReason:common||(!actions.hasModelCatalog()?'The model catalog is unavailable.':undefined),
+    thinkingReason:common||(target.kind==='agent'&&!selection.levels?.length?'Thinking capabilities are unavailable for this exact model.':undefined),
+    feedback:settingsFeedback(view,latest,pending,uncertain,base)};
+}
+function paintModelSetting(node:HTMLButtonElement,view:ConversationPresentation,owner:string,reason?:string):void {
+  const id=view.model?`${view.model.provider}/${view.model.modelId}`:'';
+  setText(node.querySelector<HTMLElement>('.composer-setting-label') as HTMLElement,view.model?listedModelText(view.model):'Model unavailable');
+  node.title=[id?`${id} · ${owner}`:'Model unavailable',view.retainedModel?'Last observed model':'',reason].filter(Boolean).join('\n');
+  node.setAttribute('aria-label',id?`Model for ${owner}: ${id}`:`Model for ${owner}: unavailable`);
+}
+function paintThinkingSetting(node:HTMLButtonElement,view:ConversationPresentation,owner:string,reason?:string):void {
+  setText(node.querySelector<HTMLElement>('.composer-setting-label') as HTMLElement,view.thinking?effortText(view.thinking):'Thinking unavailable');
+  node.title=[view.thinking?`Thinking level: ${view.thinking}`:'Thinking unavailable',view.retainedThinking?'Last observed thinking':'',reason].filter(Boolean).join('\n');
+  node.setAttribute('aria-label',view.thinking?`Thinking level for ${owner}: ${view.thinking}`:`Thinking level for ${owner}: unavailable`);
+}
 function renderComposerSettings(controller: ConversationController, view: ConversationPresentation): void {
-  const {model, thinking, settings} = controller.elements; const text = settings?.querySelector<HTMLElement>('.composer-settings-text');
-  if (!model || !thinking || !text) return;
-  if (view.model) actions.readModelNames();
-  if (controller.target.kind === 'primary') renderPrimarySettings(model, thinking, view); else renderAgentSettingsText(model, thinking, view, text);
-  if (controller.target.kind === 'primary') text.hidden = true;
-}
-function renderPrimarySettings(model: HTMLButtonElement, thinking: HTMLButtonElement, view: ConversationPresentation): void {
-  const ready = view.input, id = view.model ? `${view.model.provider}/${view.model.modelId}` : '';
-  model.hidden = !view.model && !ready; model.disabled = !ready; setText(model.querySelector<HTMLElement>('.composer-setting-label') as HTMLElement, view.model ? listedModelText(view.model) : 'Choose model'); model.title = id ? `${id} · Primary` : 'Choose Primary model'; model.setAttribute('aria-label', id ? `Model for Primary: ${id}` : 'Choose Primary model');
-  thinking.hidden = !view.thinking; thinking.disabled = !ready; setText(thinking.querySelector<HTMLElement>('.composer-setting-label') as HTMLElement, effortText(view.thinking ?? '')); thinking.title = view.thinking ? `Thinking level: ${view.thinking}` : 'Choose thinking level'; thinking.setAttribute('aria-label', view.thinking ? `Thinking level for Primary: ${view.thinking}` : 'Choose Primary thinking level');
-}
-function renderAgentSettingsText(model: HTMLButtonElement, thinking: HTMLButtonElement, view: ConversationPresentation, text: HTMLElement): void {
-  model.hidden = thinking.hidden = true; const full = settingsLabel(view, true);
-  const shown = view.model ? listedModelText(view.model) : '';
-  text.replaceChildren(...[shown && element('span', 'composer-settings-model', shown), view.thinking && element('span', 'composer-settings-effort', effortText(view.thinking))].filter((node): node is HTMLElement => !!node)); text.hidden = !text.textContent; text.title = full; text.setAttribute('aria-label', full);
+  const {model,thinking}=controller.elements;if(!model||!thinking)return;
+  actions.readModelNames();
+  const status=composerSettingsStatus(controller,view),owner=controller.target.kind==='primary'?'Primary':view.name;
+  paintModelSetting(model,view,owner,status.modelReason);paintThinkingSetting(thinking,view,owner,status.thinkingReason);
+  controller.composer.setSettingsState(status.feedback);
+  for(const [node,reason]of [[model,status.modelReason],[thinking,status.thinkingReason]] as const){
+    node.hidden=false;node.disabled=!!reason;node.setAttribute('aria-haspopup','dialog');node.setAttribute('aria-busy',String(status.pending));
+    if(reason)node.setAttribute('aria-description',reason);else node.removeAttribute('aria-description');
+    if(status.feedback)node.setAttribute('aria-describedby',`${controller.elements.state?.id}-line`);else node.removeAttribute('aria-describedby');
+  }
 }
 function controllerPreparationFailed(controller: ConversationController, error: unknown): void {
   if (controller.target.kind === 'agent') {controller.connectionError = errorMessage(error); renderAgentState(controller);}
@@ -1561,7 +1629,7 @@ function renderMessagePanel(): void {
   placeMessageEditor(controller, panel);
   const ready = messageTarget.ready; controller.composer.recipient((ready ? 'Message ' : 'Draft for ') + name, ready || !captured.prepared || captured.invalidated ? '' : 'This agent is not ready for messages.', messagePlaceholder(name));
   controller.composer.availability(connected, !!controller.saved, view.busy, selecting, view.input); controller.composer.receipts(state.operations.values()); controllerNode(controller, 'stop').hidden = true;
-  renderWorkbenchStatus();
+  renderAgentSettings(view,target);renderWorkbenchStatus();
 }
 function renderMessageStatus(captured: import('./selection-state.ts').MessageCapture): void {
   const status = byId('agent-message-status'); status.title = captured.error ?? captured.prepared?.reason ?? '';
@@ -1767,7 +1835,7 @@ function renderAvailability(): void {
   for (const controller of controllers.values()) {
     if (!connected && controller.connection?.availability === 'live') controller.connection = {...controller.connection, stale: true};
     const view = presentation(controller.target), current = controller.workspaceId === state.workspace?.id; controller.composer.availability(connected && current, current && !!controller.saved && (controller.target.kind === 'agent' || view.input), current && view.busy, selecting, view.input);
-    controllerNode(controller, 'stop').hidden = !canStopController(controller); renderControllerEmpty(controller);
+    controllerNode(controller, 'stop').hidden = !canStopController(controller); renderControllerEmpty(controller); renderComposerSettings(controller,view);
   }
   if (!connected && messageTarget.current) {messageTarget.current.invalidated = true; messageTarget.current.preparing = false; messageTarget.current.error = 'The browser connection changed. Check the agent connection again.';}
   if (messageTarget.current) renderMessagePanel(); renderIdentity(); tabStrip.render();
@@ -1973,6 +2041,7 @@ function showOperation(result: OperationView, workspaceId = state.workspace?.id)
   if (newerOperation(state.operations.get(result.id), result) !== result) return;
   state = {...state, operations: mergeOperationMap(state.operations, result)};
   if (result.kind === 'primary.handoff') actions.handoffResult(result);
+  if(result.kind==='agent.configure'||result.kind==='primary.control')renderAllComposerSettings();
   if (inputOperation(result)) {
     if (['accepted', 'rejected', 'uncertain'].includes(result.state)) for (const controller of controllers.values()) controller.composer.updateOperation(result);
   }

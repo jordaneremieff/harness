@@ -221,15 +221,15 @@ for (const member of ["task-submit", "abort"] as const) {
 	});
 }
 
-test("configure stays unavailable and sends no mutation or retry", async (t) => {
+test("configure negotiates and sends one mutation without retry", async (t) => {
 	const host = await FakeHost.start();
 	t.after(() => host.close());
 	const link = await HostLink.connect(host.endpoint);
 	t.after(() => link.close());
-	assert.equal(link.supports("configure"), false);
-	await assert.rejects(link.request("configure", { sessionId: CHILD, requestId: "configure-example" }));
+	assert.equal(link.supports("configure"), true);
+	await link.request("configure", { sessionId: CHILD, requestId: "configure-example", thinkingLevel: "high" }, {identity:CHILD});
 	await turn();
-	assert.equal(host.calls.length, 0);
+	assert.equal(host.calls.length, 1);
 });
 
 test("request capacity refuses excess requests but permits a later request", async (t) => {

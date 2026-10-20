@@ -907,12 +907,12 @@ test('drawer and overflow controls share accessible inline stroke icons', async 
   assert.doesNotMatch(css, /\.tab-overflow\s*\{|\.tab-actions\s*\{/);
 });
 
-test('the composer uses shared SVGs, passive agent facts and visible effort at narrow widths', () => {
+test('the composer uses shared SVG selectors and visible effort at narrow widths', () => {
   assert.doesNotMatch(css, /\.composer-state::before|\.composer-model:not\(:disabled\)::after/);
   assert.match(rule('.composer-model, .composer-thinking'), /display: inline-flex; align-items: center/);
   assert.match(rule('.composer-setting-label'), /overflow: hidden; text-overflow: ellipsis/);
-  assert.match(rule('.composer-model > .card-icon-chevron'), /width: 12px; height: 12px/);
-  assert.match(rule('.composer-settings-text'), /gap: 8px;[^}]*color: var\(--muted\); font-size: 13px/);
+  assert.match(rule('.composer-settings .card-icon-chevron'), /width: 12px; height: 12px/);
+  assert.match(rule('.composer-settings'), /gap: 8px/);
   assert.doesNotMatch(css, /\.composer-settings-text[^{}]*::after|\.composer-settings-effort[^{}]*::after/);
   assert.match(rule('.composer .attachment-sources'), /color: var\(--fg\)/);
   assert.doesNotMatch(css, /\.composer-thinking, \.composer-settings-effort \{ display: none/);
@@ -924,7 +924,7 @@ test('empty composer regions collapse and plain intake/settings retain focus and
   assert.match(rule('.composer-meta:not(:has(.composer-state:not([hidden]):not(.sr-only), .composer-settings > :not([hidden]), .composer-state-details:not([hidden])))'), /display: none/);
   assert.match(rule('.composer .attachment-sources'), /background: transparent/);
   assert.match(rule('.composer .attachment-sources:hover:not(:disabled), .composer .attachment-sources[aria-expanded=true]:not(:disabled)'), /var\(--fg\) 9%, transparent/);
-  for (const selector of ['.composer-model, .composer-thinking', '.composer-meta :is(.composer-model, .composer-thinking):not(:disabled):hover']) assert.match(rule(selector), /background: transparent/);
+  for (const selector of ['.composer-model, .composer-thinking', '.composer-meta :is(.composer-model, .composer-thinking):not(:disabled):is(:hover,[aria-expanded=true])']) assert.match(rule(selector), /background: transparent/);
   assert.match(rule('.composer textarea'), /min-height: 26px;[^}]*font-size: 18px; line-height: 26px/);
   assert.doesNotMatch(rule('.composer-input'), /(?:^|;)\s*(?:min-)?height:/);
 });

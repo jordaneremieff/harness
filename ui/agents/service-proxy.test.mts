@@ -253,7 +253,7 @@ test("close waits for its response, terminates once, and retains roster data", a
 	assert.equal(worker.terminated, 1);
 	assert.equal(service.roster().rows[0]?.id, "fixture");
 	assert.throws(() => service.refresh(), code("not_ready"));
-	assert.equal(service.configure("fixture").available, false);
+	await assert.rejects(service.configure("fixture", {operationId:"closed",thinkingLevel:"high"}), code("not_ready"));
 });
 
 test("roster cache refuses overflow with visible omissions and bounded pages", async (t) => {

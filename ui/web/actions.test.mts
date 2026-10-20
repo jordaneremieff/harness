@@ -27,6 +27,15 @@ const operation: OperationView = {id: 'op', kind: 'primary.control', state: 'com
 function context(overrides: Partial<ActionContext> = {}): ActionContext {
   return {agentPresentation: row => ({name: row.name ?? 'Unnamed conversation', activity: 'Running', tone: 'secondary', cwd: row.cwd}), snapshot: () => undefined, primary: () => primary, composer: {commandsChanged: () => {}} as ActionContext['composer'], commandsChanged: () => {overrides.composer?.commandsChanged?.();}, modal: {} as ActionContext['modal'], selection: async () => undefined, reload: async () => undefined, result: () => undefined, rosterRefresh: () => undefined, hasTranscript: () => !!(overrides.primary ?? (() => primary))(), find: () => undefined, recovery: () => undefined, primaryEntries: () => [], agents: () => [], selectedAgent: () => undefined, agentStatus: row => row.availability === 'live' ? row.state : row.availability, selectAgent: () => {}, selectPrimary: () => {}, notices: () => {}, sidebar: () => {}, sidebarShown: () => true, view: () => {}, copyAgent: () => {}, inspectAgent: () => {}, ...overrides};
 }
+test('model catalog absence disables choices without discarding exact thinking metadata',async()=> {
+  const current={...primary,model:{provider:'fixture',id:'model',name:'Fixture',reasoning:true,input:['text'],thinkingLevels:['off','high']}};
+  for(const state of ['empty','failed','loaded']){
+    globalThis.fetch=async()=>state==='failed'?Response.json({ok:false,error:{code:'host_unavailable',message:'Catalog unavailable',retry:'none'}}):Response.json({ok:true,data:{items:state==='loaded'?[current.model]:[],nextCursor:null,revision:'r'}});
+    const actions=new Actions(context({primary:()=>current}));actions.readModelNames();await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(actions.hasModelCatalog(),state==='loaded');assert.deepEqual(actions.modelChoice('fixture','model')?.thinkingLevels,['off','high']);
+  }
+});
+
 test('model holds start before reservation and release only their own authoritative receipt', async () => {
   const reserved = Promise.withResolvers<Response>(); let count = 0, changed = 0;
   globalThis.fetch = async path => {

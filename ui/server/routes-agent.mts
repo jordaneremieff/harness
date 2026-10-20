@@ -1,12 +1,15 @@
 import {convertSaved} from './conversion.mts';
 import type { AgentHistoryPage, Target } from '../shared/api.ts';
-import { RESERVED_COMMANDS, retainedTarget } from '../agents/contract.mts';
+import { RESERVED_COMMANDS, retainedTarget, type ConfigureResult } from '../agents/contract.mts';
 import { AgentError } from '../agents/index.mts';
 import { boundCommandResult, projectCommandList } from './agent-commands.mts';
 import { safeText } from './projection.mts';
 import type { Registry } from './registry.mts';
 import type { RequestContext } from './http.mts';
 import { execute } from './dispatch.mts';
+import type {DispatchResult} from './operations.mts';
+import type {ConfigureInput} from '../agents/index.mts';
+import type {ConfigurationReceipt} from '../shared/api.ts';
 import { ApiError } from './errors.mts';
 import { projectFrame, projectRoster } from './projection.mts';
 import {inspectCursor, projectInspection} from './inspection.mts';
@@ -73,12 +76,29 @@ function controlAction(registry:Registry,context:RequestContext,workspace:string
   if(parts[3]==='command') return runCommand(registry,context,workspace,target,identity);
   if(parts[3]==='configure') {
     v.fields(body,['name','model','thinkingLevel']);
-    return execute(registry,context.operationId,{workspaceId:workspace,kind:'agent.configure',target,body},async()=> {
-      const result=registry.agents.configure(identity,body);
-      return {state:'rejected',error:{code:'unsupported',message:result.reason,retry:'none'}};
-    });
+    return execute(registry,context.operationId,{workspaceId:workspace,kind:'agent.configure',target,body},()=>configureAgent(registry,identity,{operationId:context.operationId ?? '',...body}));
   }
   throw new ApiError('invalid_request','The agent action does not exist.',404);
+}
+function configurationReceipt(result:ConfigureResult):ConfigurationReceipt {
+  const receipt:ConfigurationReceipt={kind:'configuration',identity:result.sessionId,outcome:result.outcome,
+    after:{name:safeText(result.after.name,256),model:result.after.model,thinkingLevel:result.after.thinkingLevel},afterSource:result.afterSource,persistence:result.persistence.nativeWrites};
+  if(typeof result.reasoning?.clamped==='boolean')receipt.clamped=result.reasoning.clamped;
+  if(result.persistence.note)receipt.note=safeText(result.persistence.note,2048);
+  return receipt;
+}
+function configurationOutcome(result:ConfigureResult):DispatchResult {
+  const receipt=configurationReceipt(result);
+  if(result.persistence.nativeWrites!=='uncertain'&&result.outcome==='applied')return {state:'completed',receipt};
+  const uncertain=result.persistence.nativeWrites==='uncertain';
+  return {state:uncertain?'uncertain':'rejected',receipt,error:{code:uncertain?'configuration_uncertain':'configure_refused',message:safeText(result.error??result.persistence.note??'Configuration was not confirmed.',2048),retry:'none'}};
+}
+async function configureAgent(registry:Registry,identity:string,input:ConfigureInput):Promise<DispatchResult> {
+  try{return configurationOutcome(await registry.agents.configure(identity,input));}
+  catch(error){
+    if(error instanceof AgentError&&error.code==='configure_refused')return {state:'rejected',error:{code:error.code,message:safeText(error.message,2048),retry:'none'}};
+    throw error;
+  }
 }
 const COMMAND_NAME=/^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$/;
 /** The inventory belongs to the live host that answers. It is read only and never cached on the server. */

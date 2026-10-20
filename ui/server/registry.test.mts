@@ -474,7 +474,7 @@ test('repeated agent preparation returns the same saved draft without selection 
   assert.equal(second.targetState.targetKey,first.targetState.targetKey);
   assert.equal(second.targetState.draft.text,'Retain this exact draft.');
   assert.equal(second.targetState.draft.revision,1); assert.equal(second.availability,'live'); assert.equal(second.reason,undefined);
-  assert.deepEqual(second.capabilities,{history:true,observe:true,input:true,images:false,abort:true,configure:false,inspect:true,commands:false});
+  assert.deepEqual(second.capabilities,{history:true,observe:true,input:true,images:false,abort:true,configure:true,inspect:true,commands:false});
   assert.deepEqual(await registry.store.workspace(workspace.id),workspace);
   assert.equal(registry.frames.size,0); assert.equal(registry.availability.size,0);
   assert.equal(setup.counts.started,0); assert.deepEqual(calls,['storage:2','storage:2']);
@@ -521,7 +521,7 @@ test('registry validates path kind and refuses stale epochs without a primary ef
 });
 
 
-test('current host identities enable input and activity inspection but never configuration', async context => {
+test('current host identities enable input, activity inspection and configuration', async context => {
   const remote = decodeDescriptor(await descriptor());
   const supported = Object.fromEntries((Object.keys(supportedOperations) as OperationName[]).map(member => {
     try { assertOperation(remote, member); return [member, true]; } catch { return [member, false]; }
@@ -531,7 +531,7 @@ test('current host identities enable input and activity inspection but never con
     inspect: async (identity, options) => { calls.push({identity, options}); return activity(identity) as Awaited<ReturnType<AgentAdapter['inspect']>>; }});
   const registry = await setup.open(); const workspace = await registry.store.workspace(); const identity = 'storage:2';
   const prepared = await prepareRoute(registry, workspace.id, {target:{kind:'agent',identity}});
-  assert.deepEqual(prepared.capabilities,{history:true,observe:true,input:true,images:false,abort:true,configure:false,inspect:true,commands:true});
+  assert.deepEqual(prepared.capabilities,{history:true,observe:true,input:true,images:false,abort:true,configure:true,inspect:true,commands:true});
   const inspected = await registry.dispatch({parts:['api','agents',identity,'inspect'],body:{view:'activity',limit:20},method:'POST',
     url:new URL('http://localhost/api/agents/storage:2/inspect')}) as {identity:string;view:string};
   assert.equal(inspected.identity,identity);assert.equal(inspected.view,'activity');

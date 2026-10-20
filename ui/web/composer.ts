@@ -77,7 +77,7 @@ export function createComposerElements(instanceId: string): ComposerElements {
   model.id = `${id}-model`; thinking.id = `${id}-thinking`; settingsText.id = `${id}-settings-text`; model.type = thinking.type = 'button'; model.hidden = thinking.hidden = settingsText.hidden = true;
   const settings = element('div', 'composer-settings'); settings.id = `${id}-settings`; settings.setAttribute('role', 'group'); settings.setAttribute('aria-label', 'Model and thinking');
   model.append(element('span', 'composer-setting-label'), cardIcon('chevron'));
-  thinking.append(element('span', 'composer-setting-label'));
+  thinking.append(element('span', 'composer-setting-label'), cardIcon('chevron'));
   settings.append(model, thinking, settingsText);
   const recallHint = element('div', 'composer-recall-hint'); recallHint.hidden = true; recallHint.setAttribute('role', 'status'); recallHint.setAttribute('aria-live', 'polite');
   const recallSpoken = element('span', 'sr-only composer-recall-spoken'), recallVisible = element('span', 'composer-recall-visible'); recallVisible.setAttribute('aria-hidden', 'true'); recallHint.append(recallVisible, recallSpoken);
@@ -142,6 +142,7 @@ export class Composer {
   private overlay?: ComposerOverlay;
   private textLimit = false;
   private stateView?: ComposerStateView;
+  private settingsState?: ComposerStateView;
   private focusRequest?: {origin: Element | null};
   private attachmentPaint = '';
   private pickerCapture?: InsertionCapture;
@@ -218,7 +219,13 @@ export class Composer {
     if (this.current) this.prepare(this.current);
     this.paintState(view);
   }
+  setSettingsState(view?: ComposerStateView): void { this.settingsState=view;this.paintState(this.stateView); }
+  private combinedState(view?:ComposerStateView):ComposerStateView|undefined {
+    const settings=this.settingsState;if(!settings)return view;if(!view)return settings;
+    return {...view,line:[view.line,settings.line].join(' '),label:[view.label,settings.label].filter(Boolean).join(' · '),detail:[view.detail,settings.detail].filter(Boolean).join('\n')};
+  }
   private paintState(view?: ComposerStateView): void {
+    view=this.combinedState(view);
     const {state, start} = this.elements; if (!state || !start) return;
     this.paintStateText(state, view);
     start.hidden = !view?.action; start.disabled = !!view?.action?.disabled; start.setAttribute('aria-busy', String(!!view?.action?.pending));

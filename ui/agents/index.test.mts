@@ -452,9 +452,9 @@ test("prepare handshake deadline returns an unavailable error without observatio
   assert.equal(host.tokenCount, 0); assert.deepEqual(host.calls, []);
 });
 
-test("configure reports an explicit unavailable control without a host", async t => {
+test("configure refuses stored conversations before a host mutation", async t => {
   const { service } = await stored(t);
-  assert.equal(service.configure(storageId, { name: "Name" }).available, false);
+  await assert.rejects(service.configure(storageId, {operationId:"stored", name: "Name" }), hasCode("stored"));
   await service.disconnectWorkspace("workspace");
   await service.close();
   await service.close();
@@ -498,14 +498,14 @@ test("current native input and inspect cross the unchanged worker response inter
     return undefined;
   } });
   const supported = await service.prepare(identity);
-  assert.equal(supported["task-submit"], true); assert.equal(supported.inspect, true); assert.equal(supported.configure, false);
+  assert.equal(supported["task-submit"], true); assert.equal(supported.inspect, true); assert.equal(supported.configure, true);
   const admitted = await service.submit(identity, input);
   assert.equal(admitted.identity, identity); assert.equal(admitted.deduped, true);
   assert.deepEqual(admitted.result, { sessionId: identity, submissionId: 7, requestId: "ui:operation-example" });
   assert.deepEqual(await service.inspect(identity, { view: "activity" }), activity(identity));
   assert.deepEqual(await service.inspect(identity, { view: "result", submissionId: 7 }), blockedResult(identity));
-  assert.equal(service.configure(identity, { name: "Not applied" }).available, false);
-  assert.deepEqual(host.calls.map(call => call.member), ["task-submit", "inspect", "inspect"]);
+  const configured=await service.configure(identity, {operationId:"configure-example",thinkingLevel:"high"});assert.equal(configured.outcome,"applied");
+  assert.deepEqual(host.calls.map(call => call.member), ["task-submit", "inspect", "inspect", "configure"]);assert.equal(host.calls[3].wireRequestId,"ui:configure-example");
 });
 
 test("thread routes cross the worker and the native transport as read-only host calls", async t => {

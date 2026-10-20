@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { EventProjection } from './events.mts';
+import { EventProjection, model } from './events.mts';
+
+test('model resources retain exact supported thinking levels from Pi capability maps',()=> {
+  const base={provider:'fixture',id:'model',name:'Fixture',reasoning:true,input:['text']};
+  assert.deepEqual(model(base).thinkingLevels,['off','minimal','low','medium','high']);
+  assert.deepEqual(model({...base,thinkingLevelMap:{off:null,minimal:null,xhigh:'extra',max:'maximum'}}).thinkingLevels,['low','medium','high','xhigh','max']);
+  assert.deepEqual(model({...base,reasoning:false}).thinkingLevels,['off']);
+  assert.throws(()=>model({...base,thinkingLevelMap:{max:{invalid:true}}}),/thinking map/);
+});
 import type { EventData, EventName, PrimaryView } from '../shared/api.ts';
 
 function create() {

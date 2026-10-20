@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import {getSupportedThinkingLevels, type Api, type Model} from '@earendil-works/pi-ai';
 import type { DisplayCoverage, EntryView, EventData, EventName, MessageView, PrimaryView, Target } from '../shared/api.ts';
 import { projectEntry, jsonDisplay as projectJson, projectMessage, safeText, toolOutputInfo } from '../server/projection.mts';
 import { RpcError, type RpcRecord } from './client.mts';
@@ -22,8 +23,14 @@ export function text(value: unknown): string {
 export function identifier(value: unknown): string { const id = text(value); if (!id || id.length > 256) throw new RpcError('protocol_error', 'Invalid RPC identifier.'); return id; }
 export function model(value: unknown) {
   const m = object(value);
+  if (typeof m.reasoning !== 'boolean') throw new RpcError('protocol_error', 'Invalid model reasoning capability.');
+  if (m.thinkingLevelMap !== undefined) {
+    const map=object(m.thinkingLevelMap);
+    if(Object.entries(map).some(([key,value])=>!['off','minimal','low','medium','high','xhigh','max'].includes(key)||value!==null&&typeof value!=='string'&&typeof value!=='number'))throw new RpcError('protocol_error','Invalid model thinking map.');
+  }
+  const thinkingLevels=getSupportedThinkingLevels(m as unknown as Model<Api>);
   return { provider: identifier(m.provider), id: identifier(m.id), name: typeof m.name === 'string' ? safeText(m.name, 256) : identifier(m.id),
-    reasoning: m.reasoning === true, input: Array.isArray(m.input) ? m.input.filter((v): v is string => typeof v === 'string').slice(0, 16) : [] };
+    reasoning: m.reasoning === true, thinkingLevels, input: Array.isArray(m.input) ? m.input.filter((v): v is string => typeof v === 'string').slice(0, 16) : [] };
 }
 function recoveryPhase(type: string): EventData['primary.recovery']['phase'] {
   if (type.endsWith('scheduled')) return 'scheduled';
