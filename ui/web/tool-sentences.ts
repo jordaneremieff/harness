@@ -17,6 +17,15 @@ function pathName(value: unknown, cwd?: string): string {
   if (!path.startsWith('/')) return first(path, 100);
   return `…/${path.split('/').filter(Boolean).slice(-2).join('/')}`;
 }
+const leadingCd = /^\s*cd\s+(?:"([^"$`\\]+)"|'([^']+)'|([^\s;&|<>()$`"'\\]+))\s*(?:&&|;)\s*(?=\S)/;
+function commandSentence(value: unknown, cwd?: string): string {
+  const command = text(value);if (!command) return ' a command';
+  const match = leadingCd.exec(command), folder = match?.[1] ?? match?.[2] ?? match?.[3];
+  if (!match || !folder || folder === '-') return ` ${first(command)}`;
+  const trim = (path: string): string => path.length > 1 ? path.replace(/\/+$/, '') : path;
+  const shown = first(command.slice(match[0].length)), root = cwd === undefined ? undefined : trim(cwd);
+  return trim(folder) === root ? ` ${shown}` : ` ${shown} in ${pathName(trim(folder), root)}`;
+}
 function words(done: string, active: string, action: string, object = ''): Words {
   return {done: `${done}${object}`, active: `${active}${object}`, action: `${action}${object}`};
 }
@@ -99,7 +108,7 @@ const templates:Record<string,(input:SentenceInput)=>Words>={
   agent_abort:({args,identity,name})=>typeof args.timerId==='number'?words('Canceled a timer','Canceling a timer','Cancel a timer',identity?` for ${name}`:''):words('Stopped work','Stopping work','Stop work',identity?` in ${name}`:''),
   agent_status:()=>words('Checked agent status','Checking agent status','Check agent status'),
   agent_list:()=>words('Listed agents','Listing agents','List agents'),
-  bash:({args})=>words('Ran','Running','Run',args.command?` ${first(args.command)}`:' a command'),
+  bash:({args,context})=>words('Ran','Running','Run',commandSentence(args.command,context.cwd)),
   read:readWords,edit:editWords,write:writeWords,pillars:pillarWords,
   memory_search:({args})=>words('Searched memory','Searching memory','Search memory',quote(Array.isArray(args.query)?args.query[0]:args.query)),
   memory_read:({args})=>words('Read memory note','Reading memory note','Read memory note',args.slug?` ${first(args.slug)}`:''),

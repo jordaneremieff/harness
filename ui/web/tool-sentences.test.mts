@@ -31,3 +31,35 @@ test('a thread call with an unknown or missing action falls back to a generic se
   assert.equal(toolLabel(call({action: 'rename'})), 'Used a thread'); assert.equal(toolLabel(call({})), 'Used a thread');
   assert.equal(toolLabel(call({action: 'post'})), 'Posted to a thread'); assert.equal(toolLabel({...call({}), args: undefined}), 'Used a thread');
 });
+
+test('a command title leaves out a leading cd and names a folder only when it is not the conversation folder', () => {
+  const cwd = '/work/harness.worktrees/ui-presentation';
+  const bash = (command: unknown, status: JoinedTool['status'] = 'success'): JoinedTool => ({callId: 'b', name: 'bash', owner: 'e', slot: 's', status, args: {value: {command}, truncated: false}});
+  const label = (command: unknown, status: JoinedTool['status'] = 'success', context: {cwd?: string} = {cwd}) => toolLabel(bash(command, status), context);
+  assert.equal(label(`cd ${cwd} && git status --short | head -20`), 'Ran git status --short | head -20');
+  assert.equal(label(`cd ${cwd}/ && npm test`), 'Ran npm test');
+  assert.equal(label(`cd ${cwd}; npm test`), 'Ran npm test');
+  assert.equal(label('cd /elsewhere/place/harness && npm test'), 'Ran npm test in …/place/harness');
+  assert.equal(label(`cd ${cwd}/ui && npm test`), 'Ran npm test in ui');
+  assert.equal(label('cd "/a b/harness" && npm test'), 'Ran npm test in …/a b/harness');
+  assert.equal(label("cd '/a b/harness'; npm test"), 'Ran npm test in …/a b/harness');
+  assert.equal(label(`cd "${cwd}" && git log`), 'Ran git log');
+  assert.equal(label('cd /elsewhere/place/harness && npm test', 'working'), 'Running npm test in …/place/harness');
+  assert.equal(label(`cd ${cwd} && npm test`, 'working'), 'Running npm test');
+  assert.equal(label(`cd ${cwd} && npm test`, 'pending'), 'Run npm test');
+  assert.equal(toolSentence(bash(`cd ${cwd} && npm test`, 'pending'), {cwd}), 'Queued: Run npm test');
+  assert.equal(toolSentence(bash('cd /elsewhere/place/harness && npm test', 'error'), {cwd}), 'Failed: Run npm test in …/place/harness');
+});
+
+test('a command title keeps commands that are only cd or do not start with cd', () => {
+  const cwd = '/work/harness';
+  const label = (command: unknown, context: {cwd?: string} = {cwd}) => toolLabel({callId: 'b', name: 'bash', owner: 'e', slot: 's', status: 'success', args: {value: {command}, truncated: false}}, context);
+  assert.equal(label(`cd ${cwd}`), `Ran cd ${cwd}`); assert.equal(label(`cd ${cwd} &&`), `Ran cd ${cwd} &&`);
+  assert.equal(label('git status && cd /x && ls'), 'Ran git status && cd /x && ls');
+  assert.equal(label('cdrom --eject'), 'Ran cdrom --eject'); assert.equal(label('echo ok'), 'Ran echo ok');
+  assert.equal(label('cd "$HOME/x" && ls'), 'Ran cd "$HOME/x" && ls'); assert.equal(label('cd - && ls'), 'Ran cd - && ls');
+  assert.equal(label(undefined), 'Ran a command');
+  assert.equal(label(`cd ${cwd} && ${'x'.repeat(70)}`), `Ran ${'x'.repeat(60)}…`);
+  assert.equal(label(`cd ${cwd} && printf first\nsecond`), 'Ran printf first…');
+  assert.equal(label('cd /elsewhere/place/harness && npm test', {}), 'Ran npm test in …/place/harness');
+});
