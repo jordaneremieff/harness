@@ -228,10 +228,10 @@ test('row ages are compact while exact metadata, relative labels and absolute to
     {value: now - 86400000, text: '1d'},
     {value: now - 5 * 86400000, text: '5d'},
     {value: now - 29 * 86400000, text: '29d'},
-    {value: now - 30 * 86400000, text: 'Sep 8'},
-    {value: new Date(2026, 8, 2, 12).getTime(), text: 'Sep 2'},
+    {value: now - 30 * 86400000, text: '8 Sept'},
+    {value: new Date(2026, 8, 2, 12).getTime(), text: '2 Sept'},
     {value: now + 60000, text: 'now'},
-    {value: now + 120000, text: 'Oct 8'},
+    {value: now + 120000, text: '8 Oct'},
   ];
   for (const {value, text} of cases) {
     roster.set([row('one', {modifiedAt: value})]); f.flush();

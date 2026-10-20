@@ -5,6 +5,7 @@ import type { UiState } from './state.ts';
 import { byId, button, details, element, input, setText, stripControls } from './dom.ts';
 import type { Modal } from './modal.ts';
 import { operation, reserve, request } from './transport.ts';
+import { localDateTime } from './format.ts';
 
 export class ExtensionDialogs {
   private shown?: string;
@@ -45,7 +46,7 @@ export class ExtensionDialogs {
     const label = element('p', 'target-label', stripControls(this.caption(primary)));
     const exact = `Conversation ID: ${primary.sessionId ?? primary.key}`; label.setAttribute('title', exact); label.setAttribute('aria-description', exact); body.append(label);
     if (dialog.message) body.append(element('p', undefined, stripControls(dialog.message)));
-    if (dialog.deadline) body.append(element('p', 'secondary', `Respond before ${new Date(dialog.deadline).toLocaleString()}.`));
+    if (dialog.deadline) body.append(element('p', 'secondary', `Respond before ${localDateTime(dialog.deadline)}.`));
     const cancel = button('Cancel', () => submit({cancelled: true}));
     if (dialog.method === 'select') {
       this.options(dialog, body, submit); this.modal.actions(cancel);

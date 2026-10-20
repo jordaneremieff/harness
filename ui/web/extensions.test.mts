@@ -3,6 +3,7 @@ import { afterEach, test } from 'node:test';
 import type { DialogView, PrimaryView } from '../shared/api.ts';
 import { enqueueDialog } from './dialog-state.ts';
 import { ExtensionDialogs, extensionStatus } from './extensions.ts';
+import { localDateTime } from './format.ts';
 import type { Modal } from './modal.ts';
 import { createState } from './state.ts';
 const originalFetch = globalThis.fetch;
@@ -112,7 +113,8 @@ test('dialog deadlines name the response deadline without replacing supplied con
   const deadline = '2030-01-01T00:00:00.000Z';
   const f = fixture({...select, deadline, message: 'Supplied message'});
   assert.match(f.modal.body.textContent, /Supplied message/);
-  assert.ok(f.modal.body.textContent.includes(`Respond before ${new Date(deadline).toLocaleString()}.`));
+  assert.ok(f.modal.body.textContent.includes(`Respond before ${localDateTime(deadline)}.`));
+  assert.match(f.modal.body.textContent, /Respond before \d{1,2} [A-Z][a-z]{2}, \d{1,2}:\d{2}:\d{2} [AP]M\./);
   assert.doesNotMatch(f.modal.body.textContent, /Pi owns|Pi limits/);
 });
 test('one long Unicode status keeps its full text accessible without inventing another hidden cell', () => {

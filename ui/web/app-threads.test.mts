@@ -62,8 +62,11 @@ test('the section reads nothing until it is opened and lists open threads before
   assert.equal(byId('threads-filter-box').hidden, true);
 });
 
-test('a thread opens in the focused pane only, reads without writing, and Escape returns to the row', async () => {
-  fixtureControl.threadHandler = url => url.pathname === '/api/threads/read' ? page(events) : overview;
+test('a thread opens in the focused pane only, reads without writing, and Escape returns to the row', async context => {
+  context.mock.method(Date, 'now', () => new Date(2026, 9, 20, 12).getTime());
+  const firstAt = new Date(2026, 9, 7, 5, 56).getTime();
+  const datedEvents = events.map((event, index) => index === 0 ? {...event, at: firstAt} : event);
+  fixtureControl.threadHandler = url => url.pathname === '/api/threads/read' ? page(datedEvents) : overview;
   byId('threads-list').querySelectorAll('button')[0]?.click(); await settle();
   const read = threadCalls().filter(call => call.path.startsWith('/api/threads/read'));
   assert.equal(read.length, 1);
@@ -85,6 +88,10 @@ test('a thread opens in the focused pane only, reads without writing, and Escape
   const rows = exchange.children;
   assert.deepEqual(rows.map(row => row.classList.contains('thread-message') ? 'message' : 'line'), ['line', 'line', 'message', 'line', 'message', 'line']);
   assert.equal(text(rows[0]).startsWith('Thread created by Web UI manager'), true);
+  const time = rows[0].querySelector('.thread-time'); assert.ok(time);
+  assert.equal(text(time), '7 Oct, 5:56 AM');
+  assert.equal(time.title, '7 Oct 2026, 5:56 AM');
+  assert.equal((time as unknown as {dateTime: string}).dateTime, new Date(firstAt).toISOString());
   assert.equal(text(rows[1]).startsWith('Builder joined'), true);
   assert.equal(text(rows[5]).startsWith('Designer archive'), true);
   assert.equal(text(rows[2].querySelector('.thread-sender') as never), 'Builder');

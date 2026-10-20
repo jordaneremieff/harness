@@ -71,9 +71,9 @@ test('a reason cut to the bound with an ellipsis parses and shows in the dialog 
 test('uptime shows its largest two units and leaves out a zero smaller unit',()=>{
   for(const [ms,text] of [[0,'0 s'],[38_000,'38 s'],[274_000,'4 min 34 s'],[7_500_000,'2 h 5 min'],[7_200_000,'2 h'],[2*86_400_000,'2 d'],[(86_400+5*3600+30*60)*1000,'1 d 5 h'],[999,'0 s']] as const)assert.equal(uptimeText(ms),text);
 });
-test('a local start time reads month, day and 12-hour time with seconds',()=>{
-  assert.equal(localDateTime('2026-10-20T04:29:23.852Z','Australia/Brisbane'),'Oct 20, 2:29:23 PM');
-  assert.equal(localDateTime('2026-10-15T00:00:00.000Z','UTC'),'Oct 15, 12:00:00 AM');assert.equal(localDateTime('secret'),'');
+test('a local start time reads day, month and 12-hour time with seconds',()=>{
+  assert.equal(localDateTime('2026-10-20T04:29:23.852Z','Australia/Brisbane'),'20 Oct, 2:29:23 PM');
+  assert.equal(localDateTime('2026-10-15T00:00:00.000Z','UTC'),'15 Oct, 12:00:00 AM');assert.equal(localDateTime('secret'),'');
 });
 test('started, uptime and assets read in plain units with exact values in titles and the dialog has one action and closes on the window control and Escape',async context=>{
   const digest='0123456789abcdef'.repeat(4), started='2026-10-15T00:00:00.000Z';

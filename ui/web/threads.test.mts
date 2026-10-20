@@ -99,7 +99,7 @@ test('older events remain until sequence one is loaded', () => {
 test('event times, long notes and long purposes are classified by size', () => {
   const now = new Date(2026, 9, 19, 15, 0).getTime();
   assert.match(eventTime(new Date(2026, 9, 19, 9, 5).getTime(), now), /^9:05\s?AM$/);
-  assert.match(eventTime(new Date(2026, 9, 18, 9, 5).getTime(), now), /^Oct 18/);
+  assert.match(eventTime(new Date(2026, 9, 18, 9, 5).getTime(), now), /^18 Oct, 9:05 AM$/);
   assert.equal(eventTime(Number.NaN, now), '');
   assert.equal(noteFitsInline('short'), true);
   assert.equal(noteFitsInline('two\nlines'), false);
@@ -109,11 +109,22 @@ test('event times, long notes and long purposes are classified by size', () => {
   assert.equal(purposeNeedsExpansion('x'.repeat(300)), true);
 });
 
+test('thread times share day-first dates and uppercase day periods across zone day boundaries', () => {
+  const zone = 'Australia/Sydney', now = Date.parse('2026-10-20T13:05:00Z');
+  assert.equal(eventTime(Date.parse('2026-10-06T18:56:00Z'), now, zone), '7 Oct, 5:56 AM');
+  assert.equal(eventTime(Date.parse('2026-10-20T18:56:00Z'), now, zone), '5:56 AM');
+  assert.equal(eventTime(Date.parse('2026-10-20T13:00:00Z'), now, zone), '12:00 AM');
+  assert.equal(eventTime(Date.parse('2026-10-20T12:59:00Z'), now, zone), '20 Oct, 11:59 PM');
+  assert.equal(eventTime(Date.parse('2026-10-20T12:59:00Z'), now, 'UTC'), '12:59 PM');
+  assert.equal(eventTime(Date.parse('2025-10-20T13:00:00Z'), now, zone), '21 Oct, 12:00 AM');
+  assert.equal(eventTime(Number.NaN, now, zone), '');
+});
+
 test('a list row states its members and an age that reads as an age', () => {
   const now = Date.parse('2026-10-19T12:00:00Z'), at = (ms: number) => now - ms;
   assert.equal(threadMeta(item('a', 'One', {members: 20, updatedAt: at(2 * 60_000)}), now), '20 members · 2m ago');
   assert.equal(threadMeta(item('a', 'One', {members: 1, updatedAt: at(16 * 3600_000)}), now), '1 member · 16h ago');
   assert.equal(threadMeta(item('a', 'One', {members: 6, closed: true, updatedAt: at(11 * 86400_000)}), now), 'Closed · 6 members · 11d ago');
   assert.equal(threadMeta(item('a', 'One', {members: 2, updatedAt: at(5000)}), now), '2 members · just now');
-  assert.match(threadMeta(item('a', 'One', {members: 2, updatedAt: at(90 * 86400_000)}), now), /^2 members · [A-Z][a-z]{2} \d+$/);
+  assert.match(threadMeta(item('a', 'One', {members: 2, updatedAt: at(90 * 86400_000)}), now), /^2 members · \d+ [A-Z][a-z]{2,3}$/);
 });

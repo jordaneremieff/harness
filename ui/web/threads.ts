@@ -1,4 +1,4 @@
-import { compactAge } from './format.ts';
+import { compactAge, formatDate } from './format.ts';
 import type {ThreadEventView, ThreadFrameView, ThreadListItem, ThreadOverview, ThreadPageView} from '../shared/api.ts';
 
 /** Above this many threads the explorer offers a filter field. */
@@ -143,11 +143,10 @@ export function pageEvents(page: ThreadPageView): ThreadEventView[] {
 }
 
 /** Time of an event: clock time on the current day, date and time otherwise. */
-export function eventTime(at: number, now: number): string {
-  const date = new Date(at), today = new Date(now);
-  if (!Number.isFinite(date.getTime())) return '';
-  const sameDay = date.getFullYear() === today.getFullYear() && date.getMonth() === today.getMonth() && date.getDate() === today.getDate();
-  return new Intl.DateTimeFormat('en-US', sameDay ? {hour: 'numeric', minute: '2-digit'} : {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'}).format(date);
+export function eventTime(at: number, now: number, timeZone?: string): string {
+  const day: Intl.DateTimeFormatOptions = {year: 'numeric', month: 'numeric', day: 'numeric'};
+  const sameDay = formatDate(at, day, timeZone) === formatDate(now, day, timeZone);
+  return formatDate(at, sameDay ? {hour: 'numeric', minute: '2-digit'} : {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'}, timeZone);
 }
 
 /** The purpose shows its first lines; a long one offers expansion. */

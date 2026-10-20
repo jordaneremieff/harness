@@ -753,10 +753,10 @@ test('palette Escape uses the shared modal and restores focus without an action'
 });
 
 test('agent palette descriptions use only state and compact age', () => {
-  const originalNow = Date.now; const now = new Date('2026-10-09T12:00:00Z').getTime(); Date.now = () => now;
+  const originalNow = Date.now; const now = new Date(2026, 9, 9, 12).getTime(); Date.now = () => now;
   try {
     const base = {identity: 'agent-identity', storageId: 'store', cwd: '/project', name: 'Builder', handle: 'builder-handle', modifiedAt: now, state: 'working', owner: 'unknown' as const, availability: 'live' as const, partial: false};
-    const cases: [number, string][] = [[0, 'now'], [61_000, '1m'], [3_600_000, '1h'], [3 * 3_600_000, '3h'], [86_400_000, '1d'], [29 * 86_400_000, '29d'], [30 * 86_400_000, 'Sep 9']];
+    const cases: [number, string][] = [[0, 'now'], [61_000, '1m'], [3_600_000, '1h'], [3 * 3_600_000, '3h'], [86_400_000, '1d'], [29 * 86_400_000, '29d'], [30 * 86_400_000, '9 Sept']];
     for (const [age, label] of cases) {
       const actions = new Actions(context({agents: () => [{...base, modifiedAt: now - age}]}));
       const item = actions.paletteEntries().find(item => item.source === 'agent'); assert.ok(item);

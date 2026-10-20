@@ -1,46 +1,44 @@
 type Timestamp = string | number | Date;
 function timestampDate(value: Timestamp): Date { return value instanceof Date ? value : new Date(value); }
 export function isValidTimestamp(value: Timestamp): boolean { return Number.isFinite(timestampDate(value).getTime()); }
-export function relativeTime(value: Timestamp, now: number): string {
+/** Fixed day-first dates and uppercase day periods in the local zone unless a zone is supplied. */
+export function formatDate(value: Timestamp, fields: Intl.DateTimeFormatOptions, timeZone?: string): string {
+  const date = timestampDate(value);
+  if (!Number.isFinite(date.getTime())) return '';
+  return new Intl.DateTimeFormat('en-AU', {...fields, hour12: true, timeZone}).formatToParts(date)
+    .map(part => part.type === 'dayPeriod' ? part.value.toUpperCase() : part.value.replace(/\s/g, ' ')).join('');
+}
+export function relativeTime(value: Timestamp, now: number, timeZone?: string): string {
   const date = timestampDate(value);
   if (!isValidTimestamp(date) || !isValidTimestamp(now)) return '';
   const seconds = (now - date.getTime()) / 1000;
   if (Math.abs(seconds) <= 60) return 'now';
   if (seconds < -60 || seconds >= 30 * 86400) {
-    return new Intl.DateTimeFormat('en-US', {year: 'numeric', month: 'short', day: 'numeric'}).format(date);
+    return formatDate(date, {year: 'numeric', month: 'short', day: 'numeric'}, timeZone);
   }
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}hr ago`;
   return `${Math.floor(seconds / 86400)}d ago`;
 }
-export function compactAge(value: number, now: number): string {
-  const full = relativeTime(value, now); if (!full) return '';
+export function compactAge(value: number, now: number, timeZone?: string): string {
+  const full = relativeTime(value, now, timeZone); if (!full) return '';
   const seconds = (now - value) / 1000;
-  if (seconds < -60 || seconds >= 30 * 86400) return new Intl.DateTimeFormat('en-US', {month: 'short', day: 'numeric'}).format(new Date(value));
+  if (seconds < -60 || seconds >= 30 * 86400) return formatDate(value, {month: 'short', day: 'numeric'}, timeZone);
   return full.replace(/hr ago$/, 'h').replace(/ ago$/, '');
 }
-export function absoluteTime(value: Timestamp, options: { locale?: string; timeZone?: string } = {}): string {
-  const date = timestampDate(value);
-  if (!Number.isFinite(date.getTime())) return '';
-  return new Intl.DateTimeFormat(options.locale ?? 'en-US', {
-    year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
-    timeZone: options.timeZone,
-  }).format(date);
+export function absoluteTime(value: Timestamp, options: { timeZone?: string } = {}): string {
+  return formatDate(value, {year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'}, options.timeZone);
 }
-/** Local month, day and 12-hour time with seconds, for example "Oct 20, 2:29:23 PM". */
+/** Local day, month and 12-hour time with seconds, for example "20 Oct, 2:29:23 PM". */
 export function localDateTime(value: Timestamp, timeZone?: string): string {
-  const date = timestampDate(value);
-  if (!Number.isFinite(date.getTime())) return '';
-  const part = new Map(new Intl.DateTimeFormat('en-US', {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true, timeZone})
-    .formatToParts(date).map(item => [item.type, item.value] as const));
-  return `${part.get('month')} ${part.get('day')}, ${part.get('hour')}:${part.get('minute')}:${part.get('second')} ${part.get('dayPeriod')}`;
+  return formatDate(value, {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit'}, timeZone);
 }
 export function timestampDetails(value: Timestamp, timeZone?: string): { exact: string; display: string } {
   const date = timestampDate(value);
   if (!Number.isFinite(date.getTime())) return { exact: '', display: '' };
-  return { exact: date.toISOString(), display: new Intl.DateTimeFormat('en-US', {
-    dateStyle: 'medium', timeStyle: 'long', timeZone,
-  }).format(date) };
+  return { exact: date.toISOString(), display: formatDate(date, {
+    year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short',
+  }, timeZone) };
 }
 /** Remove terminal instructions while retaining line breaks and ordinary text. */
 export function stripControls(text: string): string {
