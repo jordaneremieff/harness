@@ -43,7 +43,7 @@ function reloadWords(notice: DevReloadNotice): ReloadPresentation {
     if (notice.code === 'io') return {text:'Update check failed.', action:null};
     return {text:'Update did not finish.', action:['stylesheet', 'drain', 'ack'].includes(notice.code) ? 'retry' : null};
   }
-  if (notice.state === 'held' || notice.state === 'deferred') return {text:pausedText(notice.code), action:notice.retryable ? 'retry' : null};
+  if (notice.state === 'held' || notice.state === 'deferred') return {text:pausedText(notice.code), action:notice.state === 'deferred' && notice.retryable ? 'retry' : null};
   const labels = {idle:'', applied:'', ready:'Updating…', building:'Updating…', navigating:'Updating…', offline:'Reconnecting updates…', 'restart-required':'Restart required', reconnecting:'Reconnecting updates…'};
   return {text:labels[notice.state], action:null};
 }

@@ -184,7 +184,7 @@ test('update footer words and actions distinguish retry, automatic recovery and 
 test('an update that waits says why in words, and keeps the retry beside its sentence',()=> {
   const sentences:Record<DevReloadHold,string>={input:'Update waits while you type',ime:'Update waits while you compose text',selection:'Update waits while text is selected',resize:'Update waits while you resize a pane',modal:'Update waits while a dialog is open',offline:'Update waits while the connection is offline',conflict:'Update waits while a draft conflict is open',uncertain:'Update waits until a sent message is confirmed'};
   for(const [code,text]of Object.entries(sentences))for(const state of ['held','deferred'] as const){
-    const view=devReloadPresentation({state,code:code as DevReloadHold,retryable:true});assert.equal(view.text,text);assert.equal(view.detail,`${state} (${code})`);assert.equal(view.action,'retry');
+    const view=devReloadPresentation({state,code:code as DevReloadHold,retryable:true});assert.equal(view.text,text);assert.equal(view.detail,`${state} (${code})`);assert.equal(view.action,state === 'deferred' ? 'retry' : null);
   }
   for(const code of ['timeout','drain','none'] as const)assert.equal(devReloadPresentation({state:'held',code,retryable:true}).text,'Update paused','a cause with no sentence keeps the plain words');
   assert.equal(devReloadPresentation({state:'failed',code:'input',retryable:true}).text,'Update did not finish.','only a waiting update takes a hold sentence');
