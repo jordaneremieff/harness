@@ -1002,7 +1002,9 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
 .receipt button { color: var(--fg); }
 .roster-footer button:hover, .roster-error button:hover, .connection button:hover, .exception button:hover, .receipt button:hover { background: var(--raised); }
 .receipt pre { flex-basis: 100%; max-height: 120px; white-space: pre-wrap; }
-.command-menu { position: absolute; right: 0; bottom: calc(100% + 6px); left: 0; z-index: 6; max-height: min(320px,40vh); padding: 4px 0; overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--rule); border-radius: 4px; background: var(--raised); box-shadow: var(--shadow); scrollbar-width: thin; }
+.command-menu { position: absolute; right: 0; bottom: calc(100% + 8px); left: 0; z-index: 6; max-height: min(320px,40vh); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.command-menu, .composer-intake-menu { padding: 6px; border: 1px solid color-mix(in srgb, var(--rule) 60%, transparent); border-radius: 12px; background: var(--raised); box-shadow: 0 6px 20px color-mix(in srgb, var(--side) 24%, transparent); }
+.composer-menu-heading { padding: 6px 10px; color: var(--muted); font-size: 12px; }
 
 .context-menu { position: fixed; z-index: 30; width: 260px; padding: var(--s1); overflow: auto; overscroll-behavior: contain; border: 1px solid var(--rule); border-radius: 4px; background: var(--raised); color: var(--fg); box-shadow: var(--shadow); scrollbar-width: thin; }
 .context-menu > button { display: block; width: 100%; min-height: 26px; padding: 2px var(--s2); border-radius: 3px; font-size: 13px; white-space: normal; overflow-wrap: anywhere; }
@@ -1023,10 +1025,17 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
 .context-menu-compact .context-menu-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .context-menu-compact .context-menu-hint { float: none; margin: 0; font-size: 13px; }
 .context-menu-compact .context-menu-separator { margin: 4px 6px; }
+.context-menu.composer-intake-menu { width: 300px; padding: 6px; border: 1px solid color-mix(in srgb, var(--rule) 60%, transparent); border-radius: 12px; box-shadow: 0 6px 20px color-mix(in srgb, var(--side) 24%, transparent); }
+.composer-intake-menu > .context-menu-item { min-height: 36px; border-radius: 6px; }
+.composer-intake-menu .context-menu-icon { width: 18px; height: 18px; }
+.composer-intake-menu .context-menu-separator { margin: 6px 10px; }
+.composer-intake-menu > .context-menu-item:hover, .composer-intake-menu > .context-menu-item:focus-visible { background: color-mix(in srgb, var(--fg) 7%, transparent); }
 
 /* Lists in menus, palette and pickers */
 .command-option, .palette-row { position: relative; display: grid; grid-template-columns: minmax(0,30%) minmax(0,1fr) 10ch; align-items: center; gap: 12px; width: 100%; min-height: 30px; padding: 0 var(--s3); border: 0; border-radius: 0; cursor: pointer; }
-.command-option:hover, .palette-row:hover { background: var(--canvas); }
+.palette-row:hover { background: var(--canvas); }
+.command-option { min-height: 36px; padding: 6px 10px; border-radius: 6px; }
+.command-option:hover, .command-option[aria-selected=true] { background: color-mix(in srgb, var(--fg) 7%, transparent); }
 .palette-check { position: absolute; right: 14px; width: 14px; height: 14px; color: var(--fg); }
 .palette-row[aria-checked] .palette-source { padding-right: 20px; }
 .palette-row[data-source=app] { grid-template-columns: minmax(0,30%) minmax(0,1fr); }
@@ -1037,14 +1046,15 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
 .palette-identity { flex: none; color: var(--muted); font-family: var(--mono); font-size: 12px; }
 .palette-row[data-kind=conversation] .palette-desc { grid-column: auto; grid-row: auto; font-size: 12px; }
 .palette-row[data-kind=conversation] .palette-source { display: none; }
-.command-option[aria-selected=true], .palette-row[aria-selected=true] { background: var(--canvas); }
+.palette-row[aria-selected=true] { background: var(--canvas); }
 .command-name, .palette-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.command-name { font-family: var(--mono); font-size: 13px; }
-.command-name mark, .palette-name mark { background: transparent; color: inherit; font-weight: 600; text-decoration: underline; }
+.command-name { font-family: var(--sans); font-size: 14px; }
+.command-name mark, .palette-name mark { background: transparent; color: inherit; font-weight: 600; }
+.palette-name mark { text-decoration: underline; }
 .command-desc, .palette-desc, .command-source, .palette-source, .palette-tail { overflow: hidden; color: var(--muted); font-size: 13px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
 .command-source, .palette-source { font-size: 12px; text-align: right; }
 .palette-tail { font-family: var(--mono); font-size: 12px; }
-@container conversation (max-width: 540px) {
+@container composer (max-width: 540px) {
   .command-option { grid-template-columns: minmax(0,1fr) auto; gap: 2px 8px; padding-block: 4px; }
   .command-name { grid-column: 1; grid-row: 1; }
   .command-source { grid-column: 2; grid-row: 1; max-width: 10ch; }
@@ -1052,11 +1062,17 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
 }
 .mention-option { grid-template-columns: minmax(0,1fr) auto; }
 .mention-option .command-name { display: flex; align-items: center; gap: var(--s2); font-family: var(--sans); }
-.mention-option .command-name > .card-icon { flex: none; color: var(--muted); }
+.mention-option .command-name > .card-icon { flex: none; width: 18px; height: 18px; color: var(--muted); }
 .mention-option .command-name > span { overflow: hidden; text-overflow: ellipsis; }
 .mention-directory { max-width: 32ch; text-align: right; }
 .mention-more { font-style: normal; }
-.command-empty, .command-hint { padding: 6px 14px; color: var(--muted); font-size: 13px; }
+.command-empty, .command-hint { padding: 6px 10px; color: var(--muted); font-size: 13px; }
+.command-menu:not(.file-menu) > .command-hint { position: sticky; bottom: -6px; background: var(--raised); }
+@container composer (max-width: 540px) {
+  .mention-option { grid-template-columns: minmax(0,1fr); }
+  .mention-directory { max-width: 100%; text-align: left; }
+}
+@media (pointer: coarse) { .command-option, .composer-intake-menu > .context-menu-item { min-height: 44px; } }
 
 .empty-state { color: var(--muted); }
 .conversation > .transcript-region > .empty-state { grid-area: 1 / 1; align-self: start; padding-top: 24px; }

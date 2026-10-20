@@ -15,6 +15,7 @@ class Node {
   classList = {add: (name: string) => {this.className = `${this.className} ${name}`.trim();}};
   prepend(node: Node): void {node.remove(); node.parent = this; this.children.unshift(node);}
   append(...nodes: Node[]): void { for (const node of nodes) {node.remove(); node.parent = this; this.children.push(node);} }
+  replaceChildren(...nodes: Node[]): void { this.children = []; this.textContent = ''; this.append(...nodes); }
   remove(): void { if (this.parent) this.parent.children.splice(this.parent.children.indexOf(this), 1); this.parent = undefined; }
   contains(node?: Node): boolean { return !!node && (this === node || this.children.some(child => child.contains(node))); }
   addEventListener(name: string, handler: Handler): void { this.handlers.set(name, [...this.handlers.get(name) ?? [], handler]); }
@@ -222,6 +223,17 @@ test('the small plus contains only new conversation and split actions', () => {
   const context = paneMenuItems({paneId:'pane-1'}, {...f.hooks, purpose:'context'});
   for (const label of ['Close tab','Close pane','Conversation actions…']) assert.ok(context.some(item => item.label === label));
   assert.equal(context.some(item => /^(View:|Compact|Model|Thinking)/.test(item.label)), false);
+});
+test('the composer intake header and separator never take row focus or activation', () => {
+  const f = fixture(); f.controller.close(); f.controller.open(f.origin as unknown as HTMLElement, {x: 20, y: 200}, 'Add to message', [
+    {label: 'Upload', icon: 'upload', run: () => f.runs.push('upload')},
+    {label: 'Earlier messages', separatorBefore: true, enabled: false, disabledReason: 'Clear the draft.', run: () => f.runs.push('earlier')},
+  ], () => true, {compact: true, above: true, presentation: 'composer-intake'});
+  const menu = f.doc.body.children.at(-1); assert.ok(menu); const rows = menu.children.filter(node => node.getAttribute('role') === 'menuitem');
+  assert.equal(menu.className, 'context-menu context-menu-compact composer-intake-menu'); assert.equal(menu.children[0]?.textContent, 'Add to message');
+  assert.equal(menu.children[0]?.getAttribute('role'), 'presentation'); assert.equal(f.doc.activeElement, rows[0]);
+  menu.fire('keydown', {key: 'ArrowDown'}); assert.equal(f.doc.activeElement, rows[1]); assert.equal(rows[1]?.title, 'Clear the draft.');
+  menu.fire('keydown', {key: 'Enter'}); assert.deepEqual(f.runs, []); menu.fire('keydown', {key: 'ArrowUp'}); menu.fire('keydown', {key: 'Enter'}); assert.deepEqual(f.runs, ['upload']);
 });
 test('an upward menu ends at the given point and keeps inside the window', () => {
   const doc = new Doc(); Object.defineProperty(globalThis, 'document', {configurable: true, value: doc});

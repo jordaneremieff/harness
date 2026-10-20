@@ -7,11 +7,11 @@ export type ContextItem = {key?: string; icon?: CardIcon; hint?: string; label: 
 function itemRole(item: ContextItem): string { return item.checked === undefined ? 'menuitem' : item.checkbox ? 'menuitemcheckbox' : 'menuitemradio'; }
 export type MenuPoint = {x: number; y: number};
 /** A compact menu draws fixed-height rows with the typed trigger at the right and keeps a disabled reason in the tooltip; an upward menu ends at the given point. */
-export type MenuOptions = {compact?: boolean; above?: boolean};
+export type MenuOptions = {compact?: boolean; above?: boolean; presentation?: 'composer-intake'};
 export function menuPosition(point: MenuPoint, size: {width: number; height: number}, viewport: {width: number; height: number}): MenuPoint {
   return {x: Math.max(4, Math.min(point.x, viewport.width - size.width - 4)), y: Math.max(4, Math.min(point.y, viewport.height - size.height - 4))};
 }
-function menuClass(options: MenuOptions): string { return options.compact ? 'context-menu context-menu-compact' : 'context-menu'; }
+function menuClass(options: MenuOptions): string { return `context-menu${options.compact ? ' context-menu-compact' : ''}${options.presentation === 'composer-intake' ? ' composer-intake-menu' : ''}`; }
 function placeMenu(point: MenuPoint, size: {width: number; height: number}, options: MenuOptions, viewport: {width: number; height: number}): MenuPoint {
   return menuPosition({x: point.x, y: options.above ? point.y - size.height : point.y}, size, viewport);
 }
@@ -59,6 +59,7 @@ export class ContextMenu {
     if (origin.getAttribute?.('aria-haspopup') === 'menu') { this.trigger = origin; origin.setAttribute('aria-expanded', 'true'); }
     const menu = element('div', menuClass(options)); menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', label);
     this.node = menu;
+    if (options.presentation === 'composer-intake') { const heading = element('div', 'composer-menu-heading', label); heading.setAttribute('role', 'presentation'); heading.setAttribute('aria-hidden', 'true'); menu.append(heading); }
     const rows = items.map(item => {
       const row = menuRow(item, options, () => {
         if (item.enabled === false) return;

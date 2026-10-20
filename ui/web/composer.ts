@@ -444,7 +444,7 @@ export class Composer {
   private attachmentSources():void {
     const origin=this.elements.sources, captured=this.insertionCapture(); if (!origin) return;
     const current=()=>!this.destroyed && this.current===captured?.buffer;
-    const box=origin.getBoundingClientRect(), offer=this.commandsOffer(), unloaded='Draft is not loaded. Open this conversation first.';
+    const box=(origin.closest('.composer-input') ?? origin).getBoundingClientRect(), offer=this.commandsOffer(), unloaded='Draft is not loaded. Open this conversation first.';
     const earlier=this.hooks.recallItems?.().length ? this.editor.value === '' ? '' : 'Clear the draft to browse earlier messages.' : 'No earlier messages are loaded.';
     contextMenu.open(origin,{x:box.left,y:box.top-8},'Add to message',[
       {label:'Upload files or images',icon:'upload',run:()=>this.elements.attach?.click()},
@@ -452,7 +452,7 @@ export class Composer {
         run:()=>{if(captured)this.hooks.workingFile?.(files=>current() && this.addFiles(files,captured));}},
       {label:'Run a command',icon:'commands',hint:'/',enabled:!!captured && offer.enabled,disabledReason:captured?offer.reason:unloaded,run:()=>{if(current())this.openCommands();}},
       {label:'Earlier messages',icon:'history',separatorBefore:true,enabled:!!captured && !earlier && !this.editor.disabled,disabledReason:captured?earlier||'Messages are read only.':unloaded,run:()=>{if(current())this.browseEarlier();}},
-    ],current,{compact:true,above:true});
+    ],current,{compact:true,above:true,presentation:'composer-intake'});
   }
   private commandsOffer(): {enabled: boolean; reason: string} {
     const inventory = this.hooks.commands?.(false);

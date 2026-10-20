@@ -14,6 +14,7 @@ class FakeNode {
   private text = ''; private listeners = new Map<string, ((event: FakeEvent) => void)[]>();
   get textContent(): string { return this.text + this.children.map(child => child.textContent).join(''); }
   set textContent(value: string) { this.text = value; this.children = []; this.writes++; }
+  querySelectorAll(selector: string): FakeNode[] { return this.children.filter(node => selector === '[role="option"]' && node.attrs.get('role') === 'option'); }
   setAttribute(name: string, value: string): void { this.attrs.set(name, value); }
   removeAttribute(name: string): void { this.attrs.delete(name); }
   append(...nodes: FakeNode[]): void { this.children.push(...nodes); this.children.forEach((node, index) => {node.offsetTop = index * 40;}); }
@@ -48,28 +49,29 @@ test('rows expose listbox semantics, stable name IDs, descriptions, sources, and
   assert.equal(f.menu.children.at(-1)?.textContent, '1 command');
   assert.equal(f.menu.attrs.get('role'), 'listbox'); assert.equal(f.menu.attrs.get('aria-label'), 'Commands');
   assert.equal(f.editor.attrs.has('role'), false); assert.equal(f.editor.attrs.get('aria-autocomplete'), 'list');
-  const row = f.menu.children[0]; assert.ok(row); assert.equal(row.className, 'command-option');
+  assert.equal(f.menu.children[0]?.textContent, 'Commands'); assert.equal(f.menu.children[0]?.attrs.get('role'), 'presentation');
+  const row = f.menu.children[1]; assert.ok(row); assert.equal(row.className, 'command-option');
   assert.equal(row.attrs.get('role'), 'option'); assert.equal(row.attrs.get('aria-selected'), 'true');
   assert.equal(f.editor.attrs.get('aria-activedescendant'), row.id);
   assert.deepEqual(row.children.map(child => child.className), ['command-name', 'command-desc', 'command-source']);
   assert.deepEqual(row.children[0]?.children.filter(child => child.tag === 'mark').map(child => child.textContent), ['m', 'o']);
   assert.equal(row.attrs.get('aria-describedby'), `${row.id}-desc ${row.id}-source`);
-  const id = row.id; f.controller.update(); assert.equal(f.menu.children[0]?.id, id);
+  const id = row.id; f.controller.update(); assert.equal(f.menu.children[1]?.id, id);
   f.inventory({state: 'ready', items: [{name: '<script>', description: '<img src=x>', source: '<unsafe>'}]}); f.text('/<');
-  assert.equal(f.menu.children[0]?.attrs.get('aria-label'), '/<script>');
-  assert.equal(f.menu.children[0]?.children[1]?.textContent, '<img src=x>');
-  assert.equal(f.menu.children[0]?.children[0]?.children.some(node => node.tag === 'script'), false);
+  assert.equal(f.menu.children[1]?.attrs.get('aria-label'), '/<script>');
+  assert.equal(f.menu.children[1]?.children[1]?.textContent, '<img src=x>');
+  assert.equal(f.menu.children[1]?.children[0]?.children.some(node => node.tag === 'script'), false);
 });
 test('keyboard selection scrolls only the list and leaves textarea focus ownership intact', () => {
   const f = fixture(); f.text('/'); f.key('ArrowDown'); f.key('ArrowDown'); f.key('ArrowDown');
-  assert.equal(f.menu.children[2]?.attrs.get('aria-selected'), 'true'); assert.equal(f.menu.scrollTop, 80);
-  assert.equal(f.editor.attrs.get('aria-activedescendant'), f.menu.children[2]?.id);
-  assert.equal(f.changed.length, 0); f.key('ArrowUp'); assert.equal(f.menu.children[1]?.attrs.get('aria-selected'), 'true');
+  assert.equal(f.menu.children[3]?.attrs.get('aria-selected'), 'true'); assert.equal(f.menu.scrollTop, 120);
+  assert.equal(f.editor.attrs.get('aria-activedescendant'), f.menu.children[3]?.id);
+  assert.equal(f.changed.length, 0); f.key('ArrowUp'); assert.equal(f.menu.children[2]?.attrs.get('aria-selected'), 'true');
 });
 test('pointerdown preserves focus, hover never changes keyboard selection, and click only inserts', () => {
-  const f = fixture(); f.text('/'); const row = f.menu.children[1]; assert.ok(row);
-  row.fire('pointerenter'); assert.equal(f.menu.children[0]?.attrs.get('aria-selected'), 'true');
-  assert.equal(row.fire('pointerdown').defaultPrevented, true); f.controller.update(); assert.equal(f.menu.children[1], row); row.fire('click');
+  const f = fixture(); f.text('/'); const row = f.menu.children[2]; assert.ok(row);
+  row.fire('pointerenter'); assert.equal(f.menu.children[1]?.attrs.get('aria-selected'), 'true');
+  assert.equal(row.fire('pointerdown').defaultPrevented, true); f.controller.update(); assert.equal(f.menu.children[2], row); row.fire('click');
   assert.deepEqual(f.changed, ['/model ']); assert.equal(f.menu.hidden, true); assert.equal(f.editor.selectionStart, 7);
   assert.equal(f.editor.attrs.has('aria-activedescendant'), false);
 });
@@ -80,10 +82,10 @@ test('exact-name Enter accepts and a subsequent Enter returns to normal composer
 });
 test('loading and empty states are not options and consume Enter without edits', () => {
   const f = fixture(); f.inventory({state: 'loading', items: []}); f.text('/');
-  assert.equal(f.menu.children[0]?.textContent, 'Loading commands…'); assert.equal(f.menu.children[0]?.attrs.has('role'), false);
+  assert.equal(f.menu.children[1]?.textContent, 'Loading commands…'); assert.equal(f.menu.children[1]?.attrs.has('role'), false);
   assert.equal(f.key('Enter').handled, true); assert.equal(f.changed.length, 0);
   f.inventory({state: 'ready', items: []}); f.text('/nothing');
-  assert.equal(f.menu.children[0]?.textContent, 'No commands match /nothing'); assert.equal(f.key('Enter').event.defaultPrevented, true);
+  assert.equal(f.menu.children[1]?.textContent, 'No commands match /nothing'); assert.equal(f.key('Enter').event.defaultPrevented, true);
   f.inventory({state: 'unavailable', items: []}); assert.equal(f.menu.hidden, true); assert.equal(f.editor.attrs.has('aria-activedescendant'), false);
 });
 test('modifier Enter closes ready, loading and empty lists without insertion and stays dismissed', () => {
@@ -114,20 +116,20 @@ test('each settled query announces at most once and never announces each arrow o
 });
 test('incomplete inventories explain their limit instead of claiming no command matches', () => {
   const f = fixture(); f.inventory({state: 'ready', items: [], incomplete: true}); f.text('/missing');
-  assert.equal(f.menu.children[0]?.textContent, 'The command list is incomplete.');
-  assert.doesNotMatch(f.menu.children[0]?.textContent ?? '', /No commands match/);
-  assert.equal(f.menu.children[0]?.attrs.has('role'), false); assert.equal(f.key('Enter').handled, true);
-  f.inventory({state: 'ready', items: []}); assert.equal(f.menu.children[0]?.textContent, 'No commands match /missing');
+  assert.equal(f.menu.children[1]?.textContent, 'The command list is incomplete.');
+  assert.doesNotMatch(f.menu.children[1]?.textContent ?? '', /No commands match/);
+  assert.equal(f.menu.children[1]?.attrs.has('role'), false); assert.equal(f.key('Enter').handled, true);
+  f.inventory({state: 'ready', items: []}); assert.equal(f.menu.children[1]?.textContent, 'No commands match /missing');
 });
 test('a shorter list after a viewport resize scrolls the active row back above the hint', () => {
-  const f = fixture(); f.menu.clientHeight = 160; f.text('/'); f.key('ArrowDown'); f.key('ArrowDown'); const active = f.menu.children[2]; const footer = f.menu.children.at(-1); assert.ok(active); assert.ok(footer);
+  const f = fixture(); f.menu.clientHeight = 200; f.text('/'); f.key('ArrowDown'); f.key('ArrowDown'); const active = f.menu.children[3]; const footer = f.menu.children.at(-1); assert.ok(active); assert.ok(footer);
   assert.equal(f.menu.scrollTop, 0); footer.offsetHeight = 28; f.menu.clientHeight = 100; f.controller.keepActiveVisible();
   assert.ok(f.menu.scrollTop > 0); assert.ok(active.offsetTop + active.offsetHeight <= f.menu.scrollTop + f.menu.clientHeight - footer.offsetHeight);
   f.key('Escape'); const scrolled = f.menu.scrollTop; f.controller.keepActiveVisible(); assert.equal(f.menu.scrollTop, scrolled);
 });
 test('rendered list padding cannot leave the active row partly behind the sticky hint', () => {
   const f = fixture(); f.menu.clientHeight = 100; f.text('/'); f.key('ArrowDown'); f.key('ArrowDown');
-  const active = f.menu.children[2]; const hint = f.menu.children.at(-1); assert.ok(active); assert.ok(hint); hint.offsetHeight = 28;
+  const active = f.menu.children[3]; const hint = f.menu.children.at(-1); assert.ok(active); assert.ok(hint); hint.offsetHeight = 28;
   active.rect = () => ({top: 4 + active.offsetTop - f.menu.scrollTop, bottom: 4 + active.offsetTop + active.offsetHeight - f.menu.scrollTop});
   hint.rect = () => ({top: f.menu.clientHeight - hint.offsetHeight, bottom: f.menu.clientHeight});
   f.controller.keepActiveVisible();
@@ -143,7 +145,7 @@ test('local command continuation fetches only on demand and preserves query, tok
   assert.equal(document.activeElement, f.editor); assert.equal(f.changed.length, 0);
   assert.equal(f.menu.children.at(-1)?.children.find(node => node.tag === 'button')?.disabled, true);
   f.inventory({state: 'ready', items: [{name: 'missing', description: 'saved', source: 'app'}]}); page.resolve(); await page.promise; await Promise.resolve();
-  assert.equal(f.menu.children[0]?.attrs.get('aria-label'), '/missing'); assert.equal(f.editor.value, '/missing retained text');
+  assert.equal(f.menu.children[1]?.attrs.get('aria-label'), '/missing'); assert.equal(f.editor.value, '/missing retained text');
   assert.equal(f.editor.selectionStart, 8); assert.equal(document.activeElement, f.editor); assert.deepEqual(f.changed, []);
 });
 test('command continuation fails locally, offers retry, and never revives errors across recipient reset', async () => {
@@ -168,7 +170,7 @@ test('each open menu has a non-option count and active scrolling reserves its me
   const f = fixture(); f.text('/'); const hint = f.menu.children.at(-1); assert.ok(hint);
   assert.equal(hint.className, 'command-hint'); assert.equal(hint.attrs.get('aria-hidden'), 'true'); assert.equal(hint.attrs.has('role'), false);
   assert.equal(hint.textContent, '3 commands');
-  f.key('ArrowDown'); f.key('ArrowDown'); const active = f.menu.children[2]; const footer = f.menu.children.at(-1); assert.ok(active); assert.ok(footer);
+  f.key('ArrowDown'); f.key('ArrowDown'); const active = f.menu.children[3]; const footer = f.menu.children.at(-1); assert.ok(active); assert.ok(footer);
   assert.ok(active.offsetTop + active.offsetHeight <= f.menu.scrollTop + f.menu.clientHeight - footer.offsetHeight);
   f.key('Escape'); assert.equal(f.menu.children.length, 0); assert.equal(f.menu.hidden, true);
   f.inventory({state: 'loading', items: []}); f.text('/pending'); assert.equal(f.menu.children.at(-1)?.className, 'command-hint');
@@ -202,11 +204,11 @@ test('the list asks for its inventory deliberately only while the draft starts w
 });
 test('each row names the host contribution that supplies it in the right column and in its title', () => {
   const f = fixture(); f.inventory({state: 'ready', items: [{name: 'ping', description: 'Reply with pong', source: 'alpha'}]}); f.text('/p');
-  const row = f.menu.children[0] as FakeNode & {title?: string}; assert.equal(row.title, '/ping \u00b7 alpha');
+  const row = f.menu.children[1] as FakeNode & {title?: string}; assert.equal(row.title, '/ping \u00b7 alpha');
   assert.equal(row.children.at(-1)?.textContent, 'alpha'); assert.match(row.children.at(-1)?.className ?? '', /command-source/);
 });
 test('an unavailable inventory with a reason opens the list with that reason and no count', () => {
   const f = fixture(); f.inventory({state: 'unavailable', items: [], message: 'Start the agent to run commands.'}); f.text('/p');
-  assert.equal(f.menu.hidden, false); assert.equal(f.menu.textContent, 'Start the agent to run commands.');
+  assert.equal(f.menu.hidden, false); assert.equal(f.menu.textContent, 'CommandsStart the agent to run commands.');
   f.inventory({state: 'unavailable', items: []}); assert.equal(f.menu.hidden, true);
 });

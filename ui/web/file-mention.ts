@@ -84,8 +84,15 @@ export class FileMentionMenu {
   private row(row: FileSearchRow, index: number): HTMLElement {
     const node = element('div', 'command-option mention-option'); node.id = `${this.menu.id}-option-${index}`;
     node.setAttribute('role', 'option'); node.setAttribute('aria-selected', String(index === this.view.active));
-    const name = element('span', 'command-name'); const icon = cardIcon(row.kind === 'directory' ? 'folder' : 'file'); name.append(icon, element('span', undefined, row.kind === 'directory' ? `${row.name}/` : row.name));
-    const directory = directoryOf(row.path), where = element('span', 'command-desc mention-directory', shortDirectory(directory)); where.title = row.path;
+    const name = element('span', 'command-name'); const icon = cardIcon(row.kind === 'directory' ? 'folder' : 'file');
+    const label = element('span'); const query = this.view.token?.query.split('/').at(-1) ?? '';
+    const start = query ? row.name.toLowerCase().indexOf(query.toLowerCase()) : -1;
+    if (start < 0) label.textContent = row.name;
+    else label.append(element('span', undefined, row.name.slice(0, start)), element('mark', undefined, row.name.slice(start, start + query.length)), element('span', undefined, row.name.slice(start + query.length)));
+    if (row.kind === 'directory') label.append(element('span', undefined, '/'));
+    name.append(icon, label);
+    const directory = directoryOf(row.path), where = element('span', 'command-desc mention-directory', shortDirectory(directory)); where.title = row.path; where.id = `${node.id}-directory`;
+    node.title = row.path; node.setAttribute('aria-describedby', where.id);
     node.setAttribute('aria-label', `${row.kind === 'directory' ? 'Folder' : 'File'} ${row.path}`);
     node.append(name, where);
     node.addEventListener('pointerdown', event => event.preventDefault());
@@ -104,10 +111,11 @@ export class FileMentionMenu {
     this.editor.removeAttribute('aria-activedescendant'); this.menu.hidden = !this.view.open; this.menu.replaceChildren();
     if (!this.view.open) return;
     this.editor.setAttribute('aria-autocomplete', 'list'); this.editor.setAttribute('aria-controls', this.menu.id);
+    const heading = element('div', 'composer-menu-heading', 'Working-folder files'); heading.setAttribute('role', 'presentation'); heading.setAttribute('aria-hidden', 'true'); this.menu.append(heading);
     this.menu.append(...this.view.rows.map((row, index) => this.row(row, index)));
     if (this.view.more) this.menu.append(element('div', 'command-hint mention-more', 'More matches. Type more of the name'));
     const status = this.status(); if (status) this.menu.append(element('div', 'command-hint', status));
-    const active = this.menu.children[this.view.active] as HTMLElement | undefined;
+    const active = this.menu.querySelectorAll<HTMLElement>('[role="option"]')[this.view.active];
     if (this.view.rows.length && active) { this.editor.setAttribute('aria-activedescendant', active.id); active.scrollIntoView?.({block: 'nearest'}); }
     if (this.view.state === 'ready' && this.view.token?.query !== this.announced) {
       this.announced = this.view.token?.query; const count = this.view.rows.length; announce(`${count} ${count === 1 ? 'file or folder' : 'files and folders'}`);

@@ -90,7 +90,8 @@ export class CommandMenu {
     return node;
   }
   private showActive(hint: HTMLElement): void {
-    const active = this.menu.children[this.state.active] as HTMLElement;
+    const active = this.menu.querySelectorAll<HTMLElement>('[role="option"]')[this.state.active];
+    if (!active) return;
     this.editor.setAttribute('aria-activedescendant', active.id);
     const top = active.offsetTop; const bottom = top + active.offsetHeight;
     const visibleHeight = Math.max(active.offsetHeight, this.menu.clientHeight - hint.offsetHeight);
@@ -127,6 +128,7 @@ export class CommandMenu {
     this.editor.removeAttribute('aria-activedescendant'); this.menu.hidden = !this.state.open;
     this.menu.replaceChildren();
     if (!this.state.open) return;
+    const heading = element('div', 'composer-menu-heading', 'Commands'); heading.setAttribute('role', 'presentation'); heading.setAttribute('aria-hidden', 'true'); this.menu.append(heading);
     if (this.state.inventory === 'loading') this.menu.append(element('div', 'command-empty', 'Loading commands…'));
     else if (!this.state.matches.length) this.menu.append(element('div', 'command-empty', this.emptyText()));
     else this.menu.append(...this.state.matches.map((match, index) => this.row(match, index)));

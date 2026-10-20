@@ -40,7 +40,7 @@ class NodeFake {
   select(): void {}
   addEventListener(name: string, listener: (event: EventFake) => void): void { this.listeners.set(name, [...this.listeners.get(name) ?? [], listener]); }
   removeEventListener(name: string, listener: (event: EventFake) => void): void {this.listeners.set(name, (this.listeners.get(name) ?? []).filter(item => item !== listener));}
-  querySelectorAll(): NodeFake[] { return this.children; }
+  querySelectorAll(selector?: string): NodeFake[] { return selector === '[role="option"]' ? this.children.filter(node => node.attrs.get('role') === 'option') : this.children; }
   querySelector(selector: string): NodeFake | undefined {
     for (const child of this.children) {if (selector === child.tag || (selector.startsWith('.') && child.className.split(' ').includes(selector.slice(1))) || selector.includes(`"${child.dataset.mode}"`)) return child; const found = child.querySelector(selector); if (found) return found;}
     return undefined;

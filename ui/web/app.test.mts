@@ -2417,7 +2417,7 @@ test('the Add menu names its rows, shows only the typed triggers, and Earlier me
   Object.defineProperty(hostDocument, 'execCommand', {configurable: true, value: (_command: string, _ui: boolean, value: string) => {const target = hostDocument.activeElement as unknown as typeof editor; const at = target.selectionStart; target.value = target.value.slice(0, at) + value + target.value.slice(target.selectionEnd); target.setSelectionRange(at + value.length, at + value.length); target.dispatch('input'); return true;}});
   try {
     const open = () => {primaryControl('composer').querySelector('.attachment-sources')?.click(); const menu = hostDocument.body.querySelector('.context-menu'); assert.ok(menu); return menu;};
-    const menu = open(); assert.equal(menu.className, 'context-menu context-menu-compact');
+    const menu = open(); assert.equal(menu.className, 'context-menu context-menu-compact composer-intake-menu'); assert.equal(menu.children[0]?.textContent, 'Add to message'); assert.equal(menu.children[0]?.getAttribute('role'), 'presentation');
     const rows = menu.children.filter(node => node.getAttribute('role') === 'menuitem');
     assert.deepEqual(rows.map(row => row.querySelector('.context-menu-label')?.textContent), ['Upload files or images', 'Reference a file', 'Run a command', 'Earlier messages']);
     assert.deepEqual(rows.map(row => row.querySelector('.context-menu-hint')?.textContent ?? ''), ['', '@', '/', '']);
