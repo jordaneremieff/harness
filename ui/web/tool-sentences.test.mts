@@ -3,6 +3,112 @@ import test from 'node:test';
 import {toolLabel, toolSentence} from './tool-sentences.ts';
 import type {JoinedTool} from './transcript-tools.ts';
 
+const publicCall = (name: string, value: Record<string, unknown> = {}, status: JoinedTool['status'] = 'success'): JoinedTool => ({callId: 'public-call', name, owner: 'entry', slot: 'slot', status, args: {value, truncated: false}});
+
+test('public call arguments supply tool sentences without result interpretation', () => {
+  const cases: [string, Record<string, unknown>, string][] = [
+    ['registry', {search: 'sample_query', name: 'ignored', kind: 'tool'}, 'Searched tools and resources for “sample_query”'],
+    ['registry', {name: 'sample_resource', kind: 'tool'}, 'Looked up sample_resource'],
+    ['registry', {kind: 'skill'}, 'Listed skills'],
+    ['registry', {}, 'Checked the model and context'],
+    ['history_search', {query: 'sample_query'}, 'Searched this conversation for “sample_query”'],
+    ['history_search', {}, 'Listed recent conversation entries'],
+    ['history_read', {entryId: 42}, 'Read conversation entry 42'],
+    ['history_read', {entryId: '43'}, 'Read conversation entry 43'],
+    ['stash_write', {title: 'Sample handover'}, 'Saved a handover: “Sample handover”'],
+    ['stash_write', {title: 'Sample checkpoint', checkpoint: true}, 'Saved a checkpoint: “Sample checkpoint”'],
+    ['stash_list', {query: 'sample_query'}, 'Searched handovers for “sample_query”'],
+    ['stash_list', {}, 'Listed handovers'],
+    ['stash_read', {id: 'sample'}, 'Read a handover'],
+    ['stash_edit', {id: 'sample', edits: []}, 'Edited a handover'],
+    ['stash_complete', {id: 'sample', outcome: 'Done'}, 'Closed a handover'],
+    ['stash_rotate', {id: 'sample'}, 'Archived a handover'],
+    ['agent_place', {area: '/work/sample_folder/', prompt: 'Check it'}, 'Sent work to the owner of sample_folder'],
+    ['agent_place', {area: '/work/sample_folder'}, 'Found the owner of sample_folder'],
+    ['agent_place', {prompt: 'Check it'}, 'Sent work to the owner of this folder'],
+    ['agent_place', {}, 'Found the owner of this folder'],
+    ['agent_profile', {action: 'update'}, 'Updated the profile of this agent'],
+    ['agent_profile', {action: 'read'}, 'Read the profile of this agent'],
+    ['agent_reset', {sessionId: 'unknown'}, 'Reset another conversation'],
+    ['agent_configure', {sessionId: 'unknown'}, 'Changed settings of another conversation'],
+    ['agent_fork', {sessionId: 'unknown'}, 'Forked another conversation'],
+    ['agent_rewind', {sessionId: 'unknown', entryId: '42', correction: 'Use the source'}, 'Rewound another conversation'],
+    ['agent_compact', {sessionId: 'unknown'}, 'Compacted another conversation'],
+    ['memory_history', {slug: 'sample-note'}, 'Listed versions of memory note sample-note'],
+    ['memory_retire', {slug: 'sample-note'}, 'Retired memory note sample-note'],
+    ['pillars_usage', {}, 'Checked pillar usage'],
+    ['clipboard_copy', {content: 'Raw content'}, 'Copied to the clipboard'],
+    ['clipboard_copy', {content: 'Raw content', label: 'sample_label'}, 'Copied to the clipboard: “sample_label”'],
+    ['twitter_search', {query: 'sample_query'}, 'Searched X for “sample_query”'],
+    ['twitter_feed', {feed: 'following'}, 'Read the X feed'],
+  ];
+  for (const [name, args, expected] of cases) {
+    const tool = {...publicCall(name, args), result: [{type: 'text' as const, text: 'Unrelated output: another_name'}]};
+    const before = structuredClone(tool);
+    assert.equal(toolLabel(tool), expected, name); assert.equal(toolSentence(tool), expected, name);
+    assert.deepEqual(tool, before, `${name} keeps its raw arguments and output`);
+  }
+});
+
+test('empty quoted search objects keep plain forms without a dangling preposition', () => {
+  for (const [name, key, subject] of [
+    ['registry', 'search', 'tools and resources'], ['history_search', 'query', 'this conversation'],
+    ['stash_list', 'query', 'handovers'], ['twitter_search', 'query', 'X'],
+  ]) {
+    for (const query of ['', '   ', '**', 42]) {
+      const call = publicCall(name, {[key]: query});
+      assert.equal(toolLabel(call), `Searched ${subject}`);
+      assert.equal(toolLabel({...call, status: 'working'}), `Searching ${subject}`);
+      assert.equal(toolLabel({...call, status: 'pending'}), `Search ${subject}`);
+    }
+  }
+});
+
+test('new sentence templates preserve active, action and separate outcome words', () => {
+  const call = publicCall('history_search', {query: 'sample_query'});
+  assert.equal(toolLabel({...call, status: 'working'}), 'Searching this conversation for “sample_query”');
+  assert.equal(toolLabel({...call, status: 'pending'}), 'Search this conversation for “sample_query”');
+  for (const [status, expected] of [
+    ['preparing', 'Preparing call: Search'], ['error', 'Failed: Search'], ['pending', 'Queued: Search'],
+    ['ended', 'Ended without a result: Search'], ['available', 'Result available: Search'], ['missing', 'No result recorded: Search'],
+  ] as const) assert.equal(toolSentence({...call, status}), `${expected} this conversation for “sample_query”`);
+  assert.equal(toolLabel({...call, status: 'working', args: undefined, argumentText: '{'}), 'Preparing…');
+});
+
+test('new agent sentences use public captions and keep unknown destinations unnamed', () => {
+  const context = {subject: (identity: string) => identity === 'known:42' ? {text: 'Sample agent · 42', name: 'Sample agent', provenance: 'supplied' as const} : undefined};
+  for (const [name, extra, verb] of [
+    ['agent_profile', {action: 'read'}, 'Read the profile of'], ['agent_profile', {action: 'update'}, 'Updated the profile of'],
+    ['agent_reset', {}, 'Reset'], ['agent_configure', {}, 'Changed settings of'], ['agent_fork', {}, 'Forked'],
+    ['agent_rewind', {}, 'Rewound'], ['agent_compact', {}, 'Compacted'],
+  ] as const) {
+    assert.equal(toolLabel(publicCall(name, {sessionId: 'known:42', ...extra}), context), `${verb} Sample agent · 42`);
+    assert.equal(toolLabel(publicCall(name, {sessionId: 'unknown', ...extra}), context), `${verb} another conversation`);
+  }
+  assert.equal(toolLabel(publicCall('agent_profile', {action: 'read', sessionId: 'unverified'}), {subject: () => ({text: 'Unverified name', name: 'Unverified name'})}), 'Read the profile of another conversation');
+});
+
+test('function name separators become words without rewriting literal arguments', () => {
+  assert.equal(toolLabel(publicCall('custom')), 'Used custom');
+  assert.equal(toolLabel(publicCall('some_new-tool')), 'Used some new tool');
+  assert.equal(toolLabel(publicCall('mcp__srv__tool')), 'Used mcp srv tool');
+  assert.equal(toolLabel(publicCall('mcp_-_srv--tool')), 'Used mcp srv tool');
+  assert.equal(toolLabel(publicCall('some_new_tool')), 'Used some new tool');
+  assert.equal(toolLabel(publicCall('some_new_tool', {}, 'working')), 'Using some new tool');
+  assert.equal(toolLabel(publicCall('some_new_tool', {}, 'pending')), 'Use some new tool');
+  assert.equal(toolLabel(publicCall('registry', {name: 'sample_resource-name'})), 'Looked up sample_resource-name');
+  assert.equal(toolLabel(publicCall('history_search', {query: 'sample_query-name'})), 'Searched this conversation for “sample_query-name”');
+  assert.equal(toolLabel(publicCall('clipboard_copy', {label: 'sample_label-name', content: 'unchanged'})), 'Copied to the clipboard: “sample_label-name”');
+});
+
+test('unavailable public arguments never use result data for new sentences', () => {
+  const call = {...publicCall('registry', {search: 'hidden_query'}), result: [{type: 'text' as const, text: 'search: guessed_query'}]};
+  assert.equal(toolLabel({...call, args: {value: {search: 'hidden_query'}, truncated: true}}), 'Checked the model and context');
+  assert.equal(toolLabel({...call, args: undefined}), 'Checked the model and context');
+  assert.equal(toolLabel(publicCall('history_read')), 'Read conversation entry');
+  assert.equal(toolLabel(publicCall('memory_history')), 'Listed versions of memory note');
+});
+
 test('image reads use typed media without guessing a name from the storage path', () => {
   const tool:JoinedTool = {callId:'image',name:'read',owner:'entry',slot:'slot',status:'success',args:{value:{path:'/opaque/storage/digest.bin'},truncated:false},result:[{type:'image',mimeType:'image/png',digest:'a'.repeat(64),bytes:64,width:20,height:10,alt:'Not an established filename'}]};
   assert.equal(toolLabel(tool),'Read image · PNG'); assert.equal(toolLabel({...tool,status:'working'}),'Reading image · PNG');

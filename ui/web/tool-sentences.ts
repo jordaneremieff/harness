@@ -112,12 +112,41 @@ function webWords({args}:SentenceInput):Words {
   if(args.find)return words('Looked for','Looking for','Look for',` ${quote(args.find).slice(2)}${url?` on ${url.host}`:''}`);
   return words('Read','Reading','Read',url?` ${url.host}${first(url.pathname,80)}`:' a web page');
 }
+function registryWords({args}:SentenceInput):Words {
+  if(Object.hasOwn(args,'search')){const quoted=quote(args.search);return words('Searched tools and resources','Searching tools and resources','Search tools and resources',quoted?` for ${quoted.slice(2)}`:'');}
+  if(args.name)return words('Looked up','Looking up','Look up',` ${first(args.name)}`);
+  if(args.kind)return words('Listed','Listing','List',` ${first(args.kind)}s`);
+  return words('Checked the model and context','Checking the model and context','Check the model and context');
+}
+function historySearchWords({args}:SentenceInput):Words {
+  if(!Object.hasOwn(args,'query'))return words('Listed recent conversation entries','Listing recent conversation entries','List recent conversation entries');
+  const quoted=quote(args.query);return words('Searched this conversation','Searching this conversation','Search this conversation',quoted?` for ${quoted.slice(2)}`:'');
+}
+function placeWords({args}:SentenceInput):Words {
+  const folder=first(text(args.area).split('/').filter(Boolean).at(-1))||'this folder';
+  return args.prompt?words('Sent work to the owner of','Sending work to the owner of','Send work to the owner of',` ${folder}`):words('Found the owner of','Finding the owner of','Find the owner of',` ${folder}`);
+}
 const templates:Record<string,(input:SentenceInput)=>Words>={
   agent_send:sendWords,agent_steer:sendWords,agent_inspect:inspectWords,agent_await:awaitWords,agent_collaborate:collaborateWords,
   agent_spawn:({args})=>words('Started','Starting','Start',` ${first(args.name)||'a new agent'}${quote(args.prompt)}`),
   agent_abort:({args,identity,name})=>typeof args.timerId==='number'?words('Canceled a timer','Canceling a timer','Cancel a timer',identity?` for ${name}`:''):words('Stopped work','Stopping work','Stop work',identity?` in ${name}`:''),
   agent_status:()=>words('Checked agent status','Checking agent status','Check agent status'),
   agent_list:()=>words('Listed agents','Listing agents','List agents'),
+  agent_place:placeWords,
+  agent_profile:({args,identity,name})=>args.action==='update'?words('Updated the profile of','Updating the profile of','Update the profile of',` ${identity?name:'this agent'}`):words('Read the profile of','Reading the profile of','Read the profile of',` ${identity?name:'this agent'}`),
+  agent_reset:({name})=>words('Reset','Resetting','Reset',` ${name}`),
+  agent_configure:({name})=>words('Changed settings of','Changing settings of','Change settings of',` ${name}`),
+  agent_fork:({name})=>words('Forked','Forking','Fork',` ${name}`),
+  agent_rewind:({name})=>words('Rewound','Rewinding','Rewind',` ${name}`),
+  agent_compact:({name})=>words('Compacted','Compacting','Compact',` ${name}`),
+  registry:registryWords,history_search:historySearchWords,
+  history_read:({args})=>words('Read conversation entry','Reading conversation entry','Read conversation entry',typeof args.entryId==='number'||typeof args.entryId==='string'?` ${first(String(args.entryId))}`:''),
+  stash_write:({args})=>args.checkpoint===true?words('Saved a checkpoint','Saving a checkpoint','Save a checkpoint',quote(args.title)):words('Saved a handover','Saving a handover','Save a handover',quote(args.title)),
+  stash_list:({args})=>{if(!Object.hasOwn(args,'query'))return words('Listed handovers','Listing handovers','List handovers');const quoted=quote(args.query);return words('Searched handovers','Searching handovers','Search handovers',quoted?` for ${quoted.slice(2)}`:'');},
+  stash_read:()=>words('Read a handover','Reading a handover','Read a handover'),
+  stash_edit:()=>words('Edited a handover','Editing a handover','Edit a handover'),
+  stash_complete:()=>words('Closed a handover','Closing a handover','Close a handover'),
+  stash_rotate:()=>words('Archived a handover','Archiving a handover','Archive a handover'),
   bash:({args,context})=>words('Ran','Running','Run',commandSentence(args.command,context.cwd)),
   read:readWords,edit:editWords,write:writeWords,pillars:pillarWords,
   memory_search:({args})=>words('Searched memory','Searching memory','Search memory',quote(Array.isArray(args.query)?args.query[0]:args.query)),
@@ -125,6 +154,12 @@ const templates:Record<string,(input:SentenceInput)=>Words>={
   memory_write:({args})=>words('Saved a memory note','Saving a memory note','Save a memory note',quote(args.title)),
   memory_edit:({args})=>words('Edited memory note','Editing memory note','Edit memory note',args.slug?` ${first(args.slug)}`:''),
   memory_review:({args})=>words('Reviewed memory note','Reviewing memory note','Review memory note',args.slug?` ${first(args.slug)}`:''),
+  memory_history:({args})=>words('Listed versions of memory note','Listing versions of memory note','List versions of memory note',args.slug?` ${first(args.slug)}`:''),
+  memory_retire:({args})=>words('Retired memory note','Retiring memory note','Retire memory note',args.slug?` ${first(args.slug)}`:''),
+  pillars_usage:()=>words('Checked pillar usage','Checking pillar usage','Check pillar usage'),
+  clipboard_copy:({args})=>words('Copied to the clipboard','Copying to the clipboard','Copy to the clipboard',quote(args.label)),
+  twitter_search:({args})=>{const quoted=quote(args.query);return words('Searched X','Searching X','Search X',quoted?` for ${quoted.slice(2)}`:'');},
+  twitter_feed:()=>words('Read the X feed','Reading the X feed','Read the X feed'),
   web_search:({args})=>words('Searched the web','Searching the web','Search the web',quote(args.query)),web_read:webWords,
   codemode:({context})=>words('Ran a script','Running a script','Run a script',context.nestedCount===undefined?'':` (${context.nestedCount} recorded tool calls)`),
 };
@@ -134,7 +169,7 @@ function sentenceWords(tool: JoinedTool, context: SentenceContext): Words {
   const path = pathName(args.path ?? args.file_path, text(args.cwd) || context.cwd);
   const target = path ? ` ${path}` : '';
   const template=Object.hasOwn(templates,tool.name)?templates[tool.name]:undefined;
-  return template?template({tool,context,args,identity,name,target}):words('Used','Using','Use',` ${first(tool.name)}`);
+  return template?template({tool,context,args,identity,name,target}):words('Used','Using','Use',` ${first(tool.name.replace(/[_-]+/g,' '))}`);
 }
 /** A call title describes the action; its separate state stays with the original invocation. */
 export function toolLabel(tool:JoinedTool,context:SentenceContext={}):string{
