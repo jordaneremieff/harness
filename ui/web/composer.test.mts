@@ -10,7 +10,7 @@ import { MessageTarget } from './selection-state.ts';
 class NodeFake {
   id = ''; tag = ''; className = ''; parentElement?: NodeFake; type = ''; selectionStart = 0; selectionEnd = 0; offsetTop = 0; scrollTop = 0; scrollLeft = 0; clientHeight = 80;
   get ownerDocument(): Document { return document; }
-  classList = {add: (...names: string[]) => {this.className = `${this.className} ${names.join(' ')}`.trim();}, contains: (name: string) => this.className.split(' ').includes(name)};
+  classList = {add: (...names: string[]) => {this.className = `${this.className} ${names.join(' ')}`.trim();}, contains: (name: string) => this.className.split(' ').includes(name), toggle: (name: string, force?: boolean) => {const has = this.className.split(' ').includes(name), want = force ?? !has; if (want && !has) this.className = `${this.className} ${name}`.trim(); if (!want && has) this.className = this.className.split(' ').filter(item => item !== name).join(' '); return want;}};
   prepend(...nodes: NodeFake[]): void {this.children.unshift(...nodes);}
   removeAttribute(name: string): void { this.attrs.delete(name); }
   selectionDirection: 'forward' | 'backward' | 'none' = 'none';
@@ -887,6 +887,25 @@ test('an unavailable agent keeps an editable draft and visible disabled Send wit
 test('a missing target hides the composer and clears all save and receipt presentation', () => {
   const f = fixture(); f.connect(); f.composer.attach('w');
   assert.equal(f.node('composer').hidden, true); assert.equal(f.node('save').textContent, ''); assert.equal(f.node('receipt-details').textContent, ''); assert.equal(f.node('send').disabled, true);
+});
+test('a state that holds the composer without a draft shows it with a disabled editor, the note, Details and its action', () => {
+  const f = fixture('agent'); const elements = {...createComposerElements('target:no-draft/1'), overlay: undefined}; const composer = new Composer(elements, {submitted() {}, unknownCommand: () => false});
+  const root = elements.root as unknown as NodeFake, editor = elements.editor as unknown as NodeFake, sources = elements.sources as unknown as NodeFake, start = elements.start as unknown as NodeFake, send = elements.send as unknown as NodeFake, note = elements.state as unknown as NodeFake;
+  const label = () => (elements.state?.querySelector('.composer-state-label') as unknown as NodeFake), detail = () => (elements.state?.querySelector('.composer-state-detail') as unknown as HTMLButtonElement);
+  composer.attach('w'); assert.equal(root.hidden, true, 'no state, no draft');
+  composer.setState({line: 'Not running. Start it to send a message.', label: 'Not running', action: {label: 'Start', run() {}}}); assert.equal(root.hidden, true, 'a state without the marker stays hidden');
+  composer.setState({line: 'Checking the agent…', label: 'Checking the agent…', blocksSend: true}); assert.equal(root.hidden, true);
+  let checks = 0, shown = 0;
+  composer.setState({line: 'Could not reach the agent.', label: 'Could not reach the agent', tone: 'warning', withoutDraft: true, detail: 'socket closed', showDetail: () => { shown++; }, action: {label: 'Check again', recovery: true, run: () => { checks++; }}});
+  assert.equal(root.hidden, false); assert.equal(editor.disabled, true); assert.equal(sources.disabled, true); assert.equal(send.hidden, true);
+  assert.equal(start.hidden, false); assert.equal(start.disabled, false); assert.equal(actionText(start), 'Check again'); assert.equal(note.hidden, false); assert.equal(note.dataset.tone, 'warning');
+  assert.equal(label().hidden, false); assert.equal(label().textContent, 'Could not reach the agent'); assert.equal(detail().hidden, false);
+  (detail().onclick as () => void)(); assert.equal(shown, 1); (start.onclick as unknown as () => void)(); assert.equal(checks, 1);
+  composer.setState({line: 'Checking the agent…', label: 'Checking the agent…', withoutDraft: true, blocksSend: true, action: {label: 'Checking…', pending: true, disabled: true, run() {}}});
+  assert.equal(root.hidden, false); assert.equal(start.disabled, true); assert.equal(start.getAttribute('aria-busy'), 'true');
+  composer.attach('w', state('m', draft(1, 'kept'), true)); composer.setState({line: 'Not running. Start it to send a message.', label: 'Not running', action: {label: 'Start', run() {}}});
+  assert.equal(root.hidden, false); assert.equal(editor.disabled, false); assert.equal(sources.disabled, false); assert.equal(composer.showsWithoutDraft, false);
+  composer.attach('w'); assert.equal(root.hidden, true, 'without a draft the same state hides the composer again'); void f; composer.destroy();
 });
 test('input and control receipts share one disclosure and never leak across targets', () => {
   const f = fixture(); const a = f.connect();

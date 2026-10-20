@@ -237,7 +237,7 @@ function renderInspection(controller:ConversationController):void {
   if(covered&&!region.hidden)controller.readingGeometry=controller.transcript.captureGeometry();
   region.hidden=covered;
   if(!covered&&controller.readingGeometry){const geometry=controller.readingGeometry;controller.readingGeometry=undefined;controller.transcript.applyGeometry(geometry);}
-  controller.elements.root.hidden=!controller.saved||covered&&!projected;
+  controller.elements.root.hidden=!composerShown(controller)||covered&&!projected;
   if(controller.target.kind==='agent')controllerNode(controller,'history-note').hidden=covered||!controllerNode(controller,'history-note-line').textContent;
   inspection.visibility(inspection.active&&!controller.root.hidden&&!controller.root.inert&&controller.workspaceId===state.workspace?.id);
   controller.root.classList.toggle('inspection-active',inspection.active);
@@ -1337,6 +1337,8 @@ function renderPrimaryExtensions(item = primary()): void {
   const target = primaryTarget(), controller = target && state.workspace ? controllers.get(controllerKey(state.workspace.id, target)) : undefined;
   extensionStatus(item, controller ? {above: controllerNode(controller, 'widgets-above'), below: controllerNode(controller, 'widgets-below')} : undefined);
 }
+/** A conversation shows its composer once a draft is attached, or when its state asks to stay on screen without one. */
+function composerShown(controller: ConversationController): boolean { return !!controller.saved || controller.composer.showsWithoutDraft; }
 function renderController(controller: ConversationController, deferred = false, receivedAt?: number): void {
   const saved = targetState(controller.target); controller.saved = saved; controller.resizer ??= composerResizer(controller);
   const firstDraft = !!saved && !controller.initialized;
@@ -1350,7 +1352,7 @@ function renderController(controller: ConversationController, deferred = false, 
   controller.composer.availability(connected, !!saved && (controller.target.kind === 'agent' || view.input), view.busy, selecting, view.input);
   controller.composer.awaitingAnswer(awaitingAnswer(controller.target));
   if (firstDraft && !controller.passive && !controller.root.hidden && sameTarget(layoutTarget(currentLayout(), primaryTarget()) ?? undefined, controller.target) && document.activeElement === document.body) controller.composer.focus();
-  controller.elements.root.hidden = !saved;renderInspection(controller); renderObserved(controller, controller.target.kind === 'agent' || connected || !view.activity);
+  controller.elements.root.hidden = !composerShown(controller);renderInspection(controller); renderObserved(controller, controller.target.kind === 'agent' || connected || !view.activity);
   controllerNode(controller, 'stop').hidden = !canStopController(controller);
   if (controller.root.hidden) return;
   refreshStaleConnection(controller);
@@ -1611,21 +1613,26 @@ function renderAgentState(controller: ConversationController): void {
   const current = presentation(controller.target);
   const composerState = agentComposerState({connected, availability: availability?.state ?? row?.availability, input: current.input, checked: !!negotiated || !!availability, reason: negotiated?.reason ?? availability?.reason, startAttempt: attempt, connectionError: controller.connectionError, checking: !!controller.refreshing, blocked: current.activity === 'Provider blocked' ? current.detail : undefined});
   controllerNode(controller, 'empty').hidden = true; controller.root.classList.toggle('agent-empty', !controller.hasEntries);
-  controller.composer.setState(composerState && composerStateView(composerState, () => {
-    if (composerState.kind === 'unreachable') prepareAgentConnection(controller);
+  controller.composer.setState(composerState && (controller.saved ? composerStateView : composerStateWithoutDraft)(composerState, () => {
+    if (composerState.kind === 'unreachable') prepareAgentConnection(controller, !!controller.elements.start?.contains(document.activeElement));
     else void (attempt && !attempt.pending ? checkAgentConnection(workspace, identity) : startStoredAgent(workspace, identity));
   }));
   controller.composer.commandsChanged();
 }
-/** Repeats the target preparation for an agent whose connection facts belong to a closed stream. */
-function prepareAgentConnection(controller: ConversationController): void {
+/** Repeats the target preparation for an agent whose connection facts belong to a closed stream. A person who acted from the composer keeps focus in it when the repeat ends. */
+function prepareAgentConnection(controller: ConversationController, keepFocus = false): void {
   if (controller.target.kind !== 'agent' || controller.refreshing || controller.abort.signal.aborted || !connected || controller.workspaceId !== state.workspace?.id) return;
   controller.refreshing = true; controller.connectionError = undefined; renderAgentState(controller);
   const connection = source;
   void request<import('../shared/api.ts').TargetPreparation>(`/api/workspaces/${encodeURIComponent(controller.workspaceId)}/targets`, 'POST', {target: controller.target}, undefined, controller.abort.signal)
     .then(prepared => applyPreparation(controller, prepared, connection))
     .catch(error => {if (preparationCurrent(connection) && !controller.abort.signal.aborted) controllerPreparationFailed(controller, error);})
-    .finally(() => {controller.refreshing = false; renderAgentState(controller);});
+    .finally(() => {
+      controller.refreshing = false; renderAgentState(controller);
+      if (keepFocus && !controller.abort.signal.aborted && (!document.activeElement || document.activeElement === document.body)) {
+        if (!controller.composer.editor.disabled) controller.composer.focus(); else controller.elements.start?.focus({preventScroll: true});
+      }
+    });
 }
 function refreshStaleConnection(controller: ConversationController): void {
   if (controller.connection?.stale && !controller.connectionError && !controller.root.hidden && !controller.root.inert) prepareAgentConnection(controller);
@@ -1635,6 +1642,13 @@ function composerStateView(view: AgentComposerState, run: () => void): ComposerS
   const {action} = view;
   return {line: view.line, label: view.label, ...(view.kind === 'failed' ? {tone: 'error' as const} : view.kind === 'unreachable' ? {tone: 'warning' as const} : {}), blocksSend: view.kind === 'read-only' || view.kind === 'checking', ...(view.kind === 'read-only' ? {hideSend: true} : {}), ...(view.kind === 'start' || view.kind === 'starting' ? {} : {detail: view.detail || undefined, showDetail: () => showDetails('Agent details', view.detail)}),
     ...(action ? {action: {...action, ...(view.kind === 'failed' || view.kind === 'unreachable' ? {recovery: true} : {}), ...(ACTION_TITLES[view.kind] ? {title: ACTION_TITLES[view.kind]} : {}), disabled: action.disabled || !connected || !!checkingAgent, run}} : {})};
+}
+/** Without a draft only the unreachable and checking states keep the composer on screen; checking then holds the action slot so the composer keeps its shape. */
+function composerStateWithoutDraft(view: AgentComposerState, run: () => void): ComposerStateView {
+  const shown = composerStateView(view, run);
+  if (view.kind === 'unreachable') return {...shown, withoutDraft: true};
+  if (view.kind === 'checking') return {...shown, withoutDraft: true, action: {label: 'Checking…', pending: true, disabled: true, run}};
+  return shown;
 }
 function showDetails(title: string, detail: string): void {
   modal.open(title); modal.body.append(element('pre', undefined, detail));

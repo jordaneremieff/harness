@@ -1915,6 +1915,30 @@ test('a failed preparation after reconnect says the agent could not be reached a
   assert.equal(agentControl('state').hidden, true); assert.equal(agentControl('send').hidden, false); assert.equal(agentControl('send').disabled, false);
 });
 
+test('a stored agent whose first preparation fails keeps the composer with the note and Check again until a preparation attaches its draft', async t => {
+  const original = globalThis.fetch; let fail = true, attempts = 0;
+  t.after(() => { globalThis.fetch = original; });
+  const identity = 'first-open-fail', target = {kind: 'agent' as const, identity};
+  const saved = targetFixture('first-open-fail', target, {draft: {revision: 1, text: '', mode: 'followUp', persisted: true}});
+  globalThis.fetch = async (input, init) => {
+    if (new URL(String(input), 'http://ui.test').pathname.endsWith('/targets') && init?.method === 'POST') return ++attempts && fail ? Response.json({ok: false, error: {code: 'host_unavailable', message: 'The agent socket is closed.', retry: 'manual'}}) : Response.json({ok: true, data: {targetState: saved, availability: 'stored', capabilities: {input: false}}});
+    return original(input, init);
+  };
+  const row = agentFixture(identity, {availability: 'stored'});
+  await arrive({workspace: {id: 'first-open-fail', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({epoch: 9810})], roster: [row], targets: []}); streamSources.at(-1)?.emit('ready', {bootId: 'boot'}); await settle(); await app.selectAgent(row); await settle();
+  assert.equal(agentControl('composer').hidden, false, 'the failed preparation keeps the composer on screen');
+  assert.equal(agentControl('editor').disabled, true); assert.equal(agentControl('composer').querySelector('.attachment-sources')?.disabled, true);
+  assert.equal(agentControl('state-line').textContent, 'Could not reach the agent.'); assert.equal(agentControl('state').querySelector('.composer-state-label')?.textContent, 'Could not reach the agent'); assert.equal(agentControl('state').dataset.tone, 'warning');
+  assert.equal(agentControl('start').textContent, 'Check again'); assert.equal(agentControl('start').hidden, false); assert.equal(agentControl('start').disabled, false); assert.equal(agentControl('send').hidden, true);
+  agentControl('state-detail').click(); assert.match(byId('modal-body').textContent, /agent socket is closed/); byId('modal-close').click();
+  fail = false; const before = transportLog.length, failedAttempts = attempts; agentControl('start').focus(); agentControl('start').click(); await settle();
+  assert.equal(attempts, failedAttempts + 1);
+  assert.equal(agentControl('composer').hidden, false); assert.equal(agentControl('editor').disabled, false);
+  assert.equal(agentControl('state-line').textContent, 'Not running. Start it to send a message.'); assert.equal(agentControl('start').textContent, 'Start'); assert.equal(agentControl('send').hidden, true);
+  assert.notEqual(hostDocument.activeElement, hostDocument.body, 'focus does not fall to the page');
+  assert.equal(transportLog.slice(before).some(call => call.path.endsWith('/start') || call.path.includes('/inputs')), false);
+});
+
 test('a background tab keeps its stale connection and makes no preparation request until it is visible', async t => {
   const recovery = preparationRecovery(); t.after(async () => { await recovery.dispose(); });
   const {layout} = await reconnectFixture(['reconnect-front', 'reconnect-back'], 'reconnect-back');
