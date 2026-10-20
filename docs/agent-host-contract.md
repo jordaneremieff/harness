@@ -721,13 +721,38 @@ These are retained/read projections, not proof of operation completion outside t
 
 ## Collaboration threads
 
-A collaboration thread is a shared frame (purpose, authority, restrictions, acceptance, integrator), a member list, and an append-only exchange of numbered events. Each thread lives in the storage that created it, and its identity is `<storageId>/<32 lowercase hexadecimal characters>`. A live host serves only the threads of its own storage: it has no cross-storage index, and a read for a thread that another storage owns fails with `Thread not found`. A consumer that lists threads across agents connects to each storage's host separately. The retained reader below carries no collaboration member, so a storage without a live host has no collaboration read.
+A collaboration thread is a shared frame (purpose, authority, restrictions, acceptance, integrator), a member list, and an append-only exchange of numbered events. Each thread lives in the storage that created it, and its identity is `<storageId>/<32 lowercase hexadecimal characters>`. A storage-scoped list or read serves only that storage: there is no cross-storage native index. A live connection selects the storage; the [independent retained reader](#independent-retained-reads) selects it through a verified bare storage UUID and reads a private snapshot without starting a host. Cross-storage discovery uses catalog hints, then a consumer selects each storage for a full list or read.
 
 `collaboration-list` and `collaboration-read` are read-only, retry-safe, and have no `durable` identity (see [Current operation identities](#current-operation-identities)). Neither takes `sessionId` or `conversationId`; the connection selects the storage. They never start a model or write state. `collaboration-mutate` is not described here. Text fields are returned as stored, with no truncation except the 160-character `purpose` of a list summary.
 
+### Catalog thread discovery
+
+The existing optional catalog-record field is separate from `CatalogView`:
+
+```text
+threads?: {items:CollaborationSummary[], omitted:nonnegativeInteger, updatedAt:string}
+```
+
+The producer selects the last eight keys in the storage's thread index, newest
+creation first, then removes summaries until the serialized `items` array fits
+4,000 UTF-8 bytes. Updating an older thread does not move it into that selection.
+`omitted` counts indexed threads without a returned summary, including selected
+frames that were unavailable and summaries removed for space. Missing hints
+mean unknown discovery coverage, not an empty thread index. The publication's
+`updatedAt` records hint publication time, not the latest event time of every
+thread. Full frames, members, and exchange events remain in native storage.
+
+Catalog discovery searches only these summaries, including their shortened
+purpose. Its cursor binds the query and the publication identity for an
+unfinished storage. Changed hints require a fresh query. It does not freeze
+all catalog records across pages. A full storage-scoped retained list uses the
+native index instead of this hint selection and therefore reaches threads
+omitted from hints. Sources: `extensions/agent/collaboration.ts`
+(`projectCollaboration`), `collaboration-discovery.ts`, and `catalog.ts`.
+
 ### collaboration-list
 
-Params: `{cursor?:string, limit?:integer 1..20, query?:string}`. `limit` defaults to 10. `query` is nonblank, at most 256 characters, and matches case-insensitively as a substring of a thread's `title`, `purpose`, or `id`. `cursor` is the `nextCursor` of an earlier page for the same storage and query; it is a decimal offset into the storage's thread index, and any other string fails. The scan visits at most 64 index entries per call, so a page can hold fewer items than `limit` (or none) and still carry a non-null `nextCursor`. Continue until `nextCursor` is `null`. The order is the creation order of the index, oldest thread first. Source: `extensions/agent/collaboration.ts:124-128,242-256`; `extensions/agent/durable-host.ts:442`.
+Params: `{cursor?:string, limit?:integer 1..20, query?:string}`. `limit` defaults to 10. `query` is nonblank, at most 256 characters, and matches case-insensitively as a substring of a thread's `title`, `purpose`, or `id`. `cursor` is a canonical decimal offset into this storage's thread index, between zero and its current length. It is not bound to the query, index revision, or publication time. Repeat the same query to continue the intended search. The page scan reads at most 64 indexed thread frames per call, so a page can hold fewer items than `limit` (or none) and still carry a non-null `nextCursor`. The reader validates all present index keys before the page scan, including their selected-storage prefix when the caller supplies that controlled target. Continue until `nextCursor` is `null`. The order is the creation order of the index, oldest thread first. Each retained invocation captures its own snapshot; appended threads or changed query matches affect later pages. Source: `extensions/agent/collaboration.ts` (`listCollaboration`); `extensions/agent/durable-host.ts`.
 
 Result:
 
@@ -740,7 +765,7 @@ Result:
 CollaborationSummary = {id:string, title:string, purpose:string, updatedAt:number, closed:boolean, members:number}
 ```
 
-`purpose` is the first 160 characters of the thread's purpose. `updatedAt` is epoch milliseconds of the latest event. `members` is the current member count. `coverage.visited` is the number of index entries this call scanned, `coverage.complete` is true when the scan reached the end of the index, and the live host always reports `omitted:0` and no `unavailable`. Source: `extensions/agent/collaboration.ts:47,55-59,99-101,242-256`.
+`purpose` is the first 160 UTF-16 code units of the thread's purpose. `updatedAt` is epoch milliseconds of the latest event. `members` is the member count in the selected state, not live participant presence. `coverage.visited` counts indexed frames tested for this page, not index-key validation, and `coverage.complete` means the page scan reached the end of that index in this request. Native local lists report `omitted:0` and no `unavailable`; this does not establish complete global discovery or a frozen cross-request snapshot. An absent index in an otherwise valid storage yields an empty indexed list. A malformed present index or an index that names a missing frame is a source error, not an empty result. Source: `extensions/agent/collaboration.ts` (`listCollaboration`).
 
 ### collaboration-read
 
@@ -778,7 +803,11 @@ Event `kind` is one of `create`, `join`, `leave`, `contribution`, `carried-autho
 
 ### Collaboration errors
 
-The host throws plain messages; the wire carries them as the error text. No error code is set by these members. The messages are:
+The shared reader throws `CollaborationReadError` with code `invalid_request`,
+`not_found`, or `source_unreadable`. Request errors and an explicit missing
+thread remain distinct from malformed retained data. The retained process maps
+these source-owned codes to its existing safe failures without parsing message
+text. Native reader messages include:
 
 | Cause | Message |
 |---|---|
@@ -790,8 +819,17 @@ The host throws plain messages; the wire carries them as the error text. No erro
 | `cursor` not a decimal offset in range | `Invalid local thread cursor` |
 | `query` blank or over 256 characters | `query is required and must be nonblank text` or `query exceeds the maximum length of 256 characters` |
 | index names a missing thread | `Thread index refers to an unavailable thread` |
+| present index has malformed or duplicate keys, or more than 256 keys | `Thread index is malformed` |
+| indexed key disagrees with the controlled selected storage | `Thread index refers to a different storage host` |
+| stored frame or participants are malformed | `Thread frame and participants are malformed` |
+| stored event is malformed | `Thread event N is malformed` |
+| stored pending-notice count is malformed | `Thread delivery pending count is malformed` |
 
-Source: `extensions/agent/collaboration.ts:62-67,86-90,124-128,217-256`. The cold observation path used when a storage has no live host serves the same two members with the same functions (`extensions/agent/durable-observation.ts:2186-2189`); the manager's `agent_collaborate` tool reaches the same data through its discovery and storage routing.
+An absent index returns an empty indexed list. It does not trigger an orphan
+scan. A malformed present index, missing indexed frame, or unavailable/malformed
+event returns `source_unreadable`, never complete empty history.
+
+Source: `extensions/agent/collaboration.ts` (`CollaborationReadError`, `readIndex`, `readThread`, `readEvent`, `listCollaboration`, `readCollaboration`). The cold observation path used when a storage has no live host serves the same two members with the same functions (`extensions/agent/durable-observation.ts:2186-2189`); the manager's `agent_collaborate` tool reaches the same data through its discovery and storage routing.
 
 ## Live observation and change subscriptions
 
@@ -963,9 +1001,9 @@ Acquiring controls resolve the retained record and acquire/start its owner. An e
 ## Independent retained reads
 
 `extensions/agent/retained-read.ts` exposes `retained-read/1.0.0` outside a Pi
-session. It reads retained snapshot and inspection evidence without starting or
-resuming an agent. It is a separate executable, not a `durable-runner.ts` mode,
-Unix service, or live-host fallback. Consumers use this process contract rather
+session. It reads retained snapshot, inspection, and collaboration evidence
+without starting or resuming an agent. It is a separate executable, not a
+`durable-runner.ts` mode, Unix service, or live-host fallback. Consumers use this process contract rather
 than importing Agent implementation modules or parsing private SQLite shapes.
 
 ### Invocation and descriptor
@@ -974,6 +1012,7 @@ Invoke without a shell:
 
 ```text
 node <agent-extension-directory>/retained-read.ts --contract
+node <agent-extension-directory>/retained-read.ts --contract collaboration
 node <agent-extension-directory>/retained-read.ts
 ```
 
@@ -985,11 +1024,17 @@ settings, credentials, models, or extensions.
 `--contract` emits `{version,upstream:{codingAgent,durable},operations:{snapshot,inspect}}`
 without reading catalog or storage. `version` is exactly `retained-read/1.0.0`.
 The loaded reader derives upstream versions and both operation values from
-`HOST_CONTRACT`; it advertises no other operations. See the
-[descriptor fixture](#fixture-retained-read-descriptor) for the current example
-of exact negotiation. The runtime emits its own loaded versions and schema
-identities. Examples are neither a supported-version ceiling nor a substitute
-for checking the reader's supported contracts before a request.
+`HOST_CONTRACT`; the default descriptor still advertises no other operations.
+`--contract collaboration` emits the same envelope version and upstream fields,
+with only `operations:{"collaboration-list","collaboration-read"}`. Those are the
+existing operation contracts, each with request and response identity
+`<method>/1.0.0` and no `durable` member. This selector does not change the
+default descriptor or any live operation identity. A consumer must explicitly
+support the selected descriptor and payloads. See the
+[descriptor fixture](#fixture-retained-read-descriptor) for default negotiation.
+The runtime emits its own loaded versions and schema identities. Examples are
+neither a supported-version ceiling nor a substitute for checking the reader's
+supported contracts before a request.
 
 Default mode reads exactly one UTF-8 JSON request on stdin followed by EOF.
 The caller closes stdin and drains stdout/stderr concurrently. The reader emits
@@ -1006,7 +1051,8 @@ The closed request shape is:
 ```text
 {
   version: "retained-read/1.0.0", id: string, store: absolutePath,
-  sessionId: string, method: "snapshot" | "inspect",
+  sessionId: string,
+  method: "snapshot" | "inspect" | "collaboration-list" | "collaboration-read",
   expected: {request: string, response: string, durable?: string},
   params: object
 }
@@ -1014,7 +1060,7 @@ The closed request shape is:
 
 Every top-level field is required, including `params:{}` for a snapshot with
 no optional parameters. Unknown fields fail. History uses method `inspect`
-with `params.view:"history"`; there is no history alias or third method.
+with `params.view:"history"`; there is no history alias.
 
 - `id` is nonempty, at most 256 UTF-16 code units, and contains no whitespace or
   control characters. It correlates this process response only, not native
@@ -1024,7 +1070,9 @@ with `params.view:"history"`; there is no history alias or third method.
   not a database file path.
 - `sessionId` is a canonical lowercase storage UUID for root conversation 1,
   or that UUID plus `:` and a canonical positive safe decimal conversation ID
-  greater than 1. Handles, names, root `:1`, leading zeros, and paths fail.
+  greater than 1 for snapshot and inspect. Collaboration methods require the
+  bare storage UUID and return root `conversationId:1`; child targets fail.
+  Handles, names, root `:1`, leading zeros, and paths fail.
 - `expected` is the closed existing `OperationContract` shape. Its identity
   strings are nonempty, at most 256 code units, with no ASCII spaces/control
   characters; `durable`, when present, is a valid semantic-version string.
@@ -1032,8 +1080,9 @@ with `params.view:"history"`; there is no history alias or third method.
 The reader validates the envelope, expected operation, and parameter grammar
 before catalog or source-storage access. It parses `expected` with the existing
 operation parser and compares request, response, and optional Durable identity
-by exact equality against its selected `HOST_CONTRACT` operation. For both
-native methods, missing or different Durable identity fails. Consumers supply
+by exact equality against its selected `HOST_CONTRACT` operation. Snapshot and
+inspect require the matching Durable identity. Collaboration operations have
+no Durable identity, so an added `expected.durable` also fails. Consumers supply
 the identities of the payload they support; echoing an unknown descriptor does
 not establish compatibility. The descriptor does not replace the per-request
 check, including when the executable changes between invocations. Live-host
@@ -1092,6 +1141,33 @@ rejects selectors for different submissions. Allowed parameters pass through
 the existing inspection parser and reader, with their existing per-view
 semantics and bounds. This boundary does not invent result lookup rules.
 
+Collaboration list parameters:
+
+```ts
+{ query?: string; cursor?: string; limit?: number }
+```
+
+`query` is nonblank and at most 256 UTF-16 code units. `cursor` is the canonical
+nonnegative safe decimal index offset, at most 16 code units; its current range
+is checked against the captured native index. `limit` is an integer from 1
+through 20, default 10. These are local [list semantics](#collaboration-list), not the opaque global
+hint-discovery cursor.
+
+Collaboration read parameters:
+
+```ts
+{ threadId: string; before?: number; limit?: number }
+```
+
+`threadId` uses the existing `<storage UUID>/<32 lowercase hexadecimal>` format.
+Its storage prefix must match the envelope's bare UUID before any catalog or
+source access. `before` is a positive safe integer no greater than the captured
+thread's `sequence + 1`. `limit` is an integer from 1 through 20, default 10.
+These are the existing [thread-page semantics](#collaboration-read), including
+the 48 KiB page bound and exact sequence continuation. No mutation method,
+identity override, or arbitrary storage path is accepted in either parameter
+object.
+
 ### Response and failures
 
 A successful read has this closed wrapper:
@@ -1099,20 +1175,28 @@ A successful read has this closed wrapper:
 ```text
 {
   version: "retained-read/1.0.0", id: string, ok: true,
-  method: "snapshot" | "inspect", sessionId: string,
+  method: "snapshot" | "inspect" | "collaboration-list" | "collaboration-read",
+  sessionId: string,
   storageId: string, conversationId: positiveSafeInteger, result: operationPayload
 }
 ```
 
-`result` is the unchanged current [snapshot or inspect payload](#transcript-pages-and-inspection),
-not a new transcript format. Snapshot retains native entry/model values,
+`result` is the unchanged current [snapshot or inspect payload](#transcript-pages-and-inspection)
+or [collaboration list/page](#collaboration-threads), not a new transcript or
+thread format. Collaboration responses correlate the selected bare UUID with
+`storageId` and `conversationId:1`. Their documents are session-scoped, so these
+methods do not require a root-conversation record to exist. The bridge verifies
+every list summary's storage prefix and the read page's exact requested thread
+identity; a mismatched result returns `source_unreadable`. A retained thread's
+member and pending-notice counts describe the captured state, not live presence
+or delivery progress. Snapshot retains native entry/model values,
 communication metadata, inherited fork-origin IDs, pagination, and coverage.
 The wrapper adds target correlation. Inspect retains its closed output union,
 native optional timing fields, and matching sessionId/conversationId. A missing
 native result selector target is a successful `status:"unavailable"` inspection,
-not a process error or fabricated submission. Missing catalog, source database,
-or conversation instead returns `not_found`. An existing empty conversation
-returns its normal empty payload. See the
+not a process error or fabricated submission. Missing catalog or source database,
+a selected snapshot/inspect conversation, or an explicit thread instead returns
+`not_found`. An existing empty conversation returns its normal empty payload. See the
 [success fixture](#fixture-retained-read-success).
 
 A failure has only `{version,id,ok:false,error:{code,message,retryable}}`.
@@ -1126,13 +1210,22 @@ See the [failure fixture](#fixture-retained-read-error).
 |---|---|---|
 | invalid_request | Bad JSON, envelope, identity, parameters, unsupported method or CLI arguments | false |
 | incompatible | Envelope version or expected request/response/Durable identity mismatch | false |
-| not_found | Catalog, database, or selected conversation absent | false |
+| not_found | Catalog, database, selected snapshot/inspect conversation, or explicitly requested thread absent | false |
 | source_changed | Source identities changed during capture; copied view discarded | true |
-| source_unreadable | Permissions, nonregular/symlink source, corrupt/unusable SQLite, or unsupported nonempty rollback journal | false |
+| source_unreadable | Permissions, nonregular/symlink source, corrupt/unusable SQLite, unsupported nonempty rollback journal, malformed collaboration records, or missing indexed frame/event | false |
 | limit_exceeded | Request, source, or output byte bound exceeded | false |
 | timeout | Cooperative read deadline expired | true |
 | cancelled | SIGINT/SIGTERM or caller cancellation of this reader | false |
 | internal | Other reader failure | false |
+
+Collaboration reads map the source-owned `CollaborationReadError` codes
+`invalid_request`, `not_found`, and `source_unreadable` to these existing retained
+codes. They do not classify error messages with regular expressions. An explicit
+missing thread returns `not_found` with the fixed message
+`The retained thread does not exist.` Invalid `before` or local index cursors
+return `invalid_request`; malformed present records and missing indexed
+frames/events return `source_unreadable`. An absent index remains a valid empty
+indexed list, with no orphan-record scan or replacement index.
 
 `retryable` is advice, not an automatic process loop. A consumer keeps live-host
 incompatibility separate from a successful retained read.

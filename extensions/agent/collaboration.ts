@@ -59,6 +59,15 @@ export interface CollaborationList {
 }
 export interface CollaborationProjection { items: CollaborationSummary[]; omitted: number; updatedAt: string }
 
+export class CollaborationReadError extends Error {
+	readonly code: "invalid_request" | "not_found" | "source_unreadable";
+	constructor(code: CollaborationReadError["code"], message: string) {
+		super(message);
+		this.name = "CollaborationReadError";
+		this.code = code;
+	}
+}
+
 type ThreadIndex = { keys: string[] };
 type StoredThread = { thread: CollaborationThread | null };
 type StoredEvent = { event: CollaborationEvent | null };
@@ -120,11 +129,6 @@ async function appendEvent(tx: Tx, thread: CollaborationThread, event: Collabora
 
 function byteBound(value: unknown, maximum: number, label: string): void {
 	if (Buffer.byteLength(JSON.stringify(value)) > maximum) throw new Error(`${label} exceeds its ${maximum}-byte bound`);
-}
-function pageLimit(input: Record<string, unknown>): number {
-	const limit = input.limit ?? 10;
-	if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > 20) throw new Error("limit must be 1..20");
-	return limit;
 }
 async function createThread(tx: Tx, id: string, input: Record<string, unknown>, actor: string, now: number): Promise<CollaborationThread> {
 	const index = await tx.doc(CollaborationIndex);
@@ -214,42 +218,149 @@ export async function mutateCollaboration(harness: Harness, storageId: string, i
 	}, context);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function validText(value: unknown, maximum: number, empty = false): value is string {
+	return typeof value === "string" && value.length <= maximum && ((empty && value === "") || value.trim() !== "");
+}
+function validThreadId(value: unknown): value is string {
+	return typeof value === "string" && THREAD_ID.exec(value)?.[0] === value;
+}
+function validIdentity(value: unknown): value is string {
+	if (typeof value !== "string" || ID.exec(value)?.[0] !== value) return false;
+	const suffix = value.split(":")[1];
+	return suffix === undefined || (Number.isSafeInteger(Number(suffix)) && Number(suffix) > ROOT_CONVERSATION_ID);
+}
+function validInteger(value: unknown, minimum: number): value is number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= minimum;
+}
+function readText(input: Record<string, unknown>, key: string, maximum: number, optional = false): string {
+	const value = input[key];
+	if (value === undefined && optional) return "";
+	if (typeof value !== "string" || value.trim() === "") throw new CollaborationReadError("invalid_request", `${key} is required and must be nonblank text`);
+	if (value.length > maximum) throw new CollaborationReadError("invalid_request", `${key} exceeds the maximum length of ${maximum} characters`);
+	return value;
+}
+function readLimit(input: Record<string, unknown>): number {
+	const limit = input.limit === undefined ? 10 : input.limit;
+	if (!validInteger(limit, 1) || limit > 20) throw new CollaborationReadError("invalid_request", "limit must be 1..20");
+	return limit;
+}
+function readBytes(value: unknown, maximum: number, label: string): number {
+	const bytes = Buffer.byteLength(JSON.stringify(value));
+	if (bytes > maximum) throw new CollaborationReadError("source_unreadable", `${label} exceeds its ${maximum}-byte bound`);
+	return bytes;
+}
+function readSelectedStorage(value: unknown): string | undefined {
+	if (value === undefined) return undefined;
+	let identity: string;
+	try { identity = collaborationIdentity(value, "sessionId"); }
+	catch (error) {
+		if (error instanceof Error) throw new CollaborationReadError("invalid_request", error.message);
+		throw error;
+	}
+	if (!validIdentity(identity)) throw new CollaborationReadError("invalid_request", "sessionId requires an exact discovered identity");
+	return identity.split(":")[0];
+}
+async function readIndex(session: Session, context: Context, storageId?: string): Promise<string[]> {
+	const snapshot: unknown = await session.snapshot(CollaborationIndex, context);
+	if (snapshot === undefined) return [];
+	if (!isRecord(snapshot) || !Array.isArray(snapshot.keys) || snapshot.keys.length > MAX_THREADS) throw new CollaborationReadError("source_unreadable", "Thread index is malformed");
+	const keys: string[] = [];
+	const seen = new Set<string>();
+	for (const key of snapshot.keys) {
+		if (!validThreadId(key) || seen.has(key)) throw new CollaborationReadError("source_unreadable", "Thread index is malformed");
+		if (storageId !== undefined && !key.startsWith(`${storageId}/`)) throw new CollaborationReadError("source_unreadable", "Thread index refers to a different storage host");
+		seen.add(key); keys.push(key);
+	}
+	return keys;
+}
+function validGoverningFrame(thread: Record<string, unknown>): boolean {
+	return validText(thread.title, 160) && validText(thread.purpose, 4000) && validText(thread.authority, 4000) && validText(thread.source, 2000) && validText(thread.restrictions, 4000) && validText(thread.acceptance, 4000) && validIdentity(thread.integrator);
+}
+function validThreadState(thread: Record<string, unknown>): boolean {
+	return validIdentity(thread.creator) && validInteger(thread.createdAt, 0) && validInteger(thread.updatedAt, 0) && validInteger(thread.sequence, 1) && Number.isSafeInteger(thread.sequence + 1) && validInteger(thread.revision, 1) && thread.revision <= thread.sequence && typeof thread.closed === "boolean";
+}
+function validThreadMembers(members: unknown): boolean {
+	if (!Array.isArray(members) || members.length > MAX_MEMBERS) return false;
+	const identities = new Set<string>();
+	for (const member of members) {
+		if (!isRecord(member) || !validIdentity(member.identity) || !validText(member.contribution, 256, true) || !validInteger(member.joinedAt, 0) || identities.has(member.identity)) return false;
+		identities.add(member.identity);
+	}
+	return true;
+}
+function readThread(snapshot: unknown, id: string, indexed = false): CollaborationThread {
+	if (snapshot === undefined || (isRecord(snapshot) && snapshot.thread === null)) throw new CollaborationReadError(indexed ? "source_unreadable" : "not_found", indexed ? "Thread index refers to an unavailable thread" : "Thread not found");
+	const thread = isRecord(snapshot) ? snapshot.thread : undefined;
+	if (!isRecord(thread) || thread.id !== id || !validGoverningFrame(thread) || !validThreadState(thread) || !validThreadMembers(thread.members)) throw new CollaborationReadError("source_unreadable", "Thread frame and participants are malformed");
+	readBytes(thread, 24 * 1024, "Thread frame and participants");
+	return thread as CollaborationThread;
+}
+function validEventReferences(event: Record<string, unknown>, thread: CollaborationThread, sequence: number): boolean {
+	return event.threadId === thread.id && event.sequence === sequence && (event.replyTo === null || (validInteger(event.replyTo, 1) && event.replyTo < sequence)) && validInteger(event.revision, 1) && event.revision <= thread.revision && event.revision <= sequence;
+}
+function validEventAudience(event: Record<string, unknown>): boolean {
+	if (!Array.isArray(event.notify) || event.notify.length > 16) return false;
+	return !event.notify.some((identity) => !validIdentity(identity) || identity === event.sender) && new Set(event.notify).size === event.notify.length;
+}
+function validEventProvenance(event: Record<string, unknown>): boolean {
+	return validInteger(event.at, 0) && validIdentity(event.sender) && (event.origin === "operator" || event.origin === "model");
+}
+function validEventContent(event: Record<string, unknown>): boolean {
+	if (typeof event.kind !== "string" || !["create", "join", "leave", "contribution", "carried-authority", "revise", "close"].includes(event.kind)) return false;
+	const messageMaximum = event.kind === "create" || event.kind === "revise" ? 20 * 1024 : 8000;
+	return validText(event.message, messageMaximum) && validText(event.source, 2000, !["create", "revise", "carried-authority"].includes(event.kind));
+}
+function readEvent(snapshot: unknown, thread: CollaborationThread, sequence: number): CollaborationEvent {
+	const event = isRecord(snapshot) ? snapshot.event : undefined;
+	if (event === undefined || event === null) throw new CollaborationReadError("source_unreadable", `Thread event ${sequence} is unavailable; no complete history is claimed`);
+	if (!isRecord(event) || !validEventReferences(event, thread, sequence) || !validEventProvenance(event) || !validEventContent(event) || !validEventAudience(event)) throw new CollaborationReadError("source_unreadable", `Thread event ${sequence} is malformed`);
+	readBytes(event, 20 * 1024, "Thread event");
+	return event as CollaborationEvent;
+}
+
 export async function readCollaboration(session: Session, input: Record<string, unknown>, context: Context): Promise<CollaborationPage> {
-	const id = text(input, "threadId", 128); collaborationStorage(id);
-	const thread = (await session.snapshot(CollaborationThreads, id, context))?.thread;
-	if (!thread) throw new Error("Thread not found");
-	const limit = pageLimit(input);
-	const before = input.before ?? thread.sequence + 1;
-	if (typeof before !== "number" || !Number.isSafeInteger(before) || before < 1 || before > thread.sequence + 1) throw new Error("before must be a retained event cursor");
+	const id = readText(input, "threadId", 128);
+	if (!validThreadId(id)) throw new CollaborationReadError("invalid_request", "threadId must be an identity returned by agent_collaborate");
+	const limit = readLimit(input);
+	const requestedBefore = input.before;
+	if (requestedBefore !== undefined && !validInteger(requestedBefore, 1)) throw new CollaborationReadError("invalid_request", "before must be a retained event cursor");
+	const thread = readThread(await session.snapshot(CollaborationThreads, id, context), id);
+	const before = requestedBefore === undefined ? thread.sequence + 1 : requestedBefore;
+	if (before > thread.sequence + 1) throw new CollaborationReadError("invalid_request", "before must be a retained event cursor");
 	const events: CollaborationEvent[] = [];
 	let sequence = before - 1;
 	let bytes = Buffer.byteLength(JSON.stringify(thread));
 	for (; sequence > 0 && events.length < limit; sequence--) {
-		const event = (await session.snapshot(CollaborationEvents, `${id}:${sequence}`, context))?.event;
-		if (!event) throw new Error(`Thread event ${sequence} is unavailable; no complete history is claimed`);
+		const event = readEvent(await session.snapshot(CollaborationEvents, `${id}:${sequence}`, context), thread, sequence);
 		const size = Buffer.byteLength(JSON.stringify(event));
 		if (bytes + size > MAX_PAGE_BYTES - 512) break;
 		events.push(event); bytes += size;
 	}
-	const pending = (await session.snapshot(ThreadDeliveryDoc, id, context))?.pending ?? 0;
+	const delivery: unknown = await session.snapshot(ThreadDeliveryDoc, id, context);
+	const pending = delivery === undefined ? 0 : isRecord(delivery) ? delivery.pending : undefined;
+	if (!validInteger(pending, 0)) throw new CollaborationReadError("source_unreadable", "Thread delivery pending count is malformed");
 	const page = { thread, events: events.reverse(), nextBefore: sequence > 0 ? sequence + 1 : null, pending, coverage: { complete: sequence === 0, bytes: 0 } };
 	page.coverage.bytes = Buffer.byteLength(JSON.stringify(page));
 	page.coverage.bytes = Buffer.byteLength(JSON.stringify(page));
-	byteBound(page, MAX_PAGE_BYTES, "Thread read");
+	readBytes(page, MAX_PAGE_BYTES, "Thread read");
 	return page;
 }
 
 export async function listCollaboration(session: Session, input: Record<string, unknown>, context: Context): Promise<CollaborationList> {
-	const keys = (await session.snapshot(CollaborationIndex, context))?.keys ?? [];
-	const start = input.cursor === undefined ? 0 : Number(input.cursor);
-	const limit = pageLimit(input);
-	if (!Number.isSafeInteger(start) || start < 0 || start > keys.length || (input.cursor !== undefined && String(start) !== input.cursor)) throw new Error("Invalid local thread cursor");
-	const query = text(input, "query", 256, true).toLocaleLowerCase();
+	const storageId = readSelectedStorage(input.sessionId);
+	const limit = readLimit(input);
+	const query = readText(input, "query", 256, true).toLocaleLowerCase();
+	const start = input.cursor === undefined ? 0 : typeof input.cursor === "string" && input.cursor.length <= 2048 ? Number(input.cursor) : NaN;
+	if (!Number.isSafeInteger(start) || start < 0 || (input.cursor !== undefined && String(start) !== input.cursor)) throw new CollaborationReadError("invalid_request", "Invalid local thread cursor");
+	const keys = await readIndex(session, context, storageId);
+	if (start > keys.length) throw new CollaborationReadError("invalid_request", "Invalid local thread cursor");
 	const items: CollaborationSummary[] = [];
 	let offset = start;
 	for (; offset < keys.length && offset - start < 64 && items.length < limit; offset++) {
-		const thread = (await session.snapshot(CollaborationThreads, keys[offset], context))?.thread;
-		if (!thread) throw new Error("Thread index refers to an unavailable thread");
+		const thread = readThread(await session.snapshot(CollaborationThreads, keys[offset], context), keys[offset], true);
 		if (!query || [thread.title, thread.purpose, thread.id].some((value) => value.toLocaleLowerCase().includes(query))) items.push(collaborationSummary(thread));
 	}
 	return { items, nextCursor: offset < keys.length ? String(offset) : null, coverage: { complete: offset === keys.length, visited: offset - start, omitted: 0 } };
@@ -257,11 +368,11 @@ export async function listCollaboration(session: Session, input: Record<string, 
 
 /** Catalog hints are bounded discovery data; the native thread remains authoritative. */
 export async function projectCollaboration(session: Session, context: Context): Promise<CollaborationProjection> {
-	const keys = (await session.snapshot(CollaborationIndex, context))?.keys ?? [];
+	const keys = await readIndex(session, context);
 	const items: CollaborationSummary[] = [];
 	for (const key of keys.slice(-8).reverse()) {
-		const thread = (await session.snapshot(CollaborationThreads, key, context))?.thread;
-		if (thread) items.push(collaborationSummary(thread));
+		const snapshot = await session.snapshot(CollaborationThreads, key, context);
+		if (snapshot?.thread) items.push(collaborationSummary(readThread(snapshot, key, true)));
 	}
 	while (Buffer.byteLength(JSON.stringify(items)) > 4000) items.pop();
 	return { items, omitted: keys.length - items.length, updatedAt: new Date().toISOString() };

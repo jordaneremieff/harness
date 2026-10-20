@@ -5,11 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { LiveDoc, ROOT_CONVERSATION_ID, type LiveState } from "@earendil-works/pi-durable";
+import { LiveDoc, ROOT_CONVERSATION_ID, type LiveState, type Session } from "@earendil-works/pi-durable";
 import { AgentCatalog } from "./catalog.ts";
 import { discoverCollaboration } from "./collaboration-discovery.ts";
-import { type CollaborationPage, collaborationIdentity, listCollaboration, mutateCollaboration, projectCollaboration, readCollaboration } from "./collaboration.ts";
-import { AgentDeliveryDoc, acknowledgeReports } from "./durable-controls.ts";
+import { CollaborationEvents, CollaborationIndex, CollaborationReadError, CollaborationThreads, type CollaborationEvent, type CollaborationPage, type CollaborationThread, collaborationIdentity, listCollaboration, mutateCollaboration, projectCollaboration, readCollaboration } from "./collaboration.ts";
+import { AgentDeliveryDoc, ThreadDeliveryDoc, acknowledgeReports } from "./durable-controls.ts";
 import { DurableHost } from "./durable-host.ts";
 import { DurableObservation, readConversationStatus } from "./durable-observation.ts";
 import { fixtureRegistry, fixtureRuntime, hostOptions, toolCallMessage } from "./durable-host-fixture.mts";
@@ -32,6 +32,202 @@ async function fixture(t: { after(fn: () => void | Promise<void>): void }) {
 function mutation(action: string, requestId: string, fields: Record<string, unknown> = {}) {
 	return { action, requestId, senderIdentity: actor, origin: "model", ...fields };
 }
+
+function retainedReadFixture() {
+	const id = `${actor}/${"a".repeat(32)}`;
+	const thread: CollaborationThread = { ...frame, id, creator: actor, integrator: actor, createdAt: 1, updatedAt: 1, revision: 1, closed: false, sequence: 1, members: [{ identity: actor, contribution: "", joinedAt: 1 }] };
+	const event: CollaborationEvent = { threadId: id, sequence: 1, at: 1, sender: actor, origin: "model", kind: "create", message: JSON.stringify(frame), source: frame.source, replyTo: null, revision: 1, notify: [] };
+	const state = { index: { keys: [id] } as unknown, threads: new Map<string, unknown>([[id, { thread }]]), events: new Map<string, unknown>([[`${id}:1`, { event }]]), delivery: undefined as unknown, reads: [] as string[] };
+	const session = { snapshot: async (doc: unknown, key: unknown) => {
+		if (doc === CollaborationIndex) { state.reads.push("index"); return state.index; }
+		if (doc === CollaborationThreads && typeof key === "string") { state.reads.push(`thread:${key}`); return state.threads.get(key); }
+		if (doc === CollaborationEvents && typeof key === "string") { state.reads.push(`event:${key}`); return state.events.get(key); }
+		if (doc === ThreadDeliveryDoc) { state.reads.push("delivery"); return state.delivery; }
+		throw new Error("Unexpected collaboration snapshot");
+	} } as unknown as Session;
+	return { id, thread, event, state, session };
+}
+function collaborationReadError(code: CollaborationReadError["code"]) {
+	return (error: unknown) => {
+		assert.ok(error instanceof CollaborationReadError);
+		assert.equal(error.name, "CollaborationReadError");
+		assert.equal(error.code, code);
+		return true;
+	};
+}
+
+it("treats only an absent index as empty and reads a new index on every request", async () => {
+	const f = retainedReadFixture();
+	f.state.index = undefined;
+	assert.deepEqual(await listCollaboration(f.session, {}, context), { items: [], nextCursor: null, coverage: { complete: true, visited: 0, omitted: 0 } });
+	const projection = await projectCollaboration(f.session, context);
+	assert.deepEqual(projection.items, []);
+	assert.equal(projection.omitted, 0);
+	assert.deepEqual(f.state.reads, ["index", "index"], "orphan frames are not scanned");
+	f.state.index = { keys: [f.id] };
+	assert.equal((await listCollaboration(f.session, {}, context)).items[0].id, f.id);
+	f.state.index = undefined;
+	assert.equal((await listCollaboration(f.session, {}, context)).items.length, 0);
+});
+
+it("rejects malformed present indexes before a frame lookup", async () => {
+	const f = retainedReadFixture();
+	const oversized = Array.from({ length: 257 }, (_, index) => `${actor}/${index.toString(16).padStart(32, "0")}`);
+	for (const index of [null, [], {}, { keys: undefined }, { keys: null }, { keys: {} }, { keys: f.id }, { keys: [1] }, { keys: [f.id.toUpperCase()] }, { keys: [`${f.id}\n`] }, { keys: [`${f.id}:2`] }, { keys: [f.id, f.id] }, { keys: Array<string>(1) }, { keys: oversized }]) {
+		f.state.index = index;
+		f.state.reads.length = 0;
+		await assert.rejects(listCollaboration(f.session, {}, context), collaborationReadError("source_unreadable"));
+		assert.deepEqual(f.state.reads, ["index"]);
+		await assert.rejects(projectCollaboration(f.session, context), collaborationReadError("source_unreadable"));
+	}
+});
+
+it("confines selected storage indexes before query filters and accepts nonroot selectors", async () => {
+	const f = retainedReadFixture();
+	for (const sessionId of [actor, `${actor}:${ROOT_CONVERSATION_ID + 1}`]) assert.equal((await listCollaboration(f.session, { sessionId }, context)).items[0].id, f.id);
+	for (const sessionId of [null, "invalid", `${actor}:${ROOT_CONVERSATION_ID}`, `${actor}\n`]) {
+		f.state.reads.length = 0;
+		await assert.rejects(listCollaboration(f.session, { sessionId }, context), collaborationReadError("invalid_request"));
+		assert.deepEqual(f.state.reads, []);
+	}
+	f.state.reads.length = 0;
+	await assert.rejects(listCollaboration(f.session, { sessionId: peer, query: "no-match" }, context), collaborationReadError("source_unreadable"));
+	assert.deepEqual(f.state.reads, ["index"]);
+	assert.equal((await listCollaboration(f.session, { query: "no-match" }, context)).coverage.complete, true);
+});
+
+it("distinguishes absent requested frames from unavailable indexed frames", async () => {
+	const f = retainedReadFixture();
+	for (const snapshot of [undefined, { thread: null }]) {
+		f.state.threads.set(f.id, snapshot);
+		await assert.rejects(readCollaboration(f.session, { threadId: f.id }, context), collaborationReadError("not_found"));
+		await assert.rejects(listCollaboration(f.session, {}, context), collaborationReadError("source_unreadable"));
+	}
+	for (const snapshot of [null, {}, { thread: undefined }, { thread: false }]) {
+		f.state.threads.set(f.id, snapshot);
+		await assert.rejects(readCollaboration(f.session, { threadId: f.id }, context), collaborationReadError("source_unreadable"));
+		await assert.rejects(listCollaboration(f.session, {}, context), collaborationReadError("source_unreadable"));
+	}
+});
+
+it("rejects invalid read parameters with typed request errors", async () => {
+	const f = retainedReadFixture();
+	for (const threadId of [undefined, null, 1, "", " ", "not-a-thread", f.id.toUpperCase(), `${f.id}\n`, "x".repeat(129)]) await assert.rejects(readCollaboration(f.session, { threadId }, context), collaborationReadError("invalid_request"));
+	for (const limit of [null, "1", 0, -1, 21, 1.5, NaN, Infinity]) {
+		await assert.rejects(readCollaboration(f.session, { threadId: f.id, limit }, context), collaborationReadError("invalid_request"));
+		await assert.rejects(listCollaboration(f.session, { limit }, context), collaborationReadError("invalid_request"));
+	}
+	for (const before of [null, "1", 0, -1, 1.5, 3, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) await assert.rejects(readCollaboration(f.session, { threadId: f.id, before }, context), collaborationReadError("invalid_request"));
+	for (const cursor of [null, 1, "", "01", "+1", "1.0", "1e0", "-1", " 1", "2", "9007199254740992", "0".repeat(2049)]) await assert.rejects(listCollaboration(f.session, { cursor }, context), collaborationReadError("invalid_request"));
+	for (const query of [null, 1, "", " ", "x".repeat(257)]) await assert.rejects(listCollaboration(f.session, { query }, context), collaborationReadError("invalid_request"));
+});
+
+it("validates frame identity, counters, members, and persisted frame bytes before cursor comparisons", async () => {
+	const f = retainedReadFixture();
+	const malformed = [
+		{ id: `${peer}/${"a".repeat(32)}` }, { title: " " }, { purpose: 1 }, { authority: "x".repeat(4001) }, { source: "" }, { restrictions: null }, { acceptance: undefined },
+		{ creator: "not-an-identity" }, { creator: `${actor}\n` }, { integrator: `${actor}:1` }, { createdAt: -1 }, { updatedAt: "1" }, { revision: 0 }, { revision: 2 }, { sequence: -1 }, { sequence: "1" }, { sequence: 1.5 }, { closed: "false" },
+		{ members: null }, { members: Array.from({ length: 65 }, () => f.thread.members[0]) }, { members: [{ identity: actor, contribution: 1, joinedAt: 1 }] },
+		{ members: [{ identity: actor, contribution: " ", joinedAt: 1 }] }, { members: [{ identity: "invalid", contribution: "", joinedAt: 1 }] },
+		{ members: [{ identity: actor, contribution: "", joinedAt: -1 }] }, { members: [f.thread.members[0], f.thread.members[0]] },
+		{ purpose: "\u0001".repeat(4000), authority: "\u0001".repeat(4000) },
+	];
+	for (const patch of malformed) {
+		f.state.threads.set(f.id, { thread: { ...f.thread, ...patch } });
+		await assert.rejects(readCollaboration(f.session, { threadId: f.id, before: 2 }, context), collaborationReadError("source_unreadable"));
+		await assert.rejects(listCollaboration(f.session, { query: "not-a-match" }, context), collaborationReadError("source_unreadable"));
+	}
+});
+
+it("rejects thread sequences without a safe exclusive cursor before event lookup", async () => {
+	const f = retainedReadFixture();
+	f.thread.sequence = Number.MAX_SAFE_INTEGER;
+	for (const input of [{ threadId: f.id }, { threadId: f.id, before: 1 }]) {
+		f.state.reads.length = 0;
+		await assert.rejects(readCollaboration(f.session, input, context), collaborationReadError("source_unreadable"));
+		assert.deepEqual(f.state.reads, [`thread:${f.id}`]);
+	}
+	await assert.rejects(listCollaboration(f.session, {}, context), collaborationReadError("source_unreadable"));
+	f.thread.sequence = Number.MAX_SAFE_INTEGER - 1;
+	assert.deepEqual((await readCollaboration(f.session, { threadId: f.id, before: 1 }, context)).events, []);
+	assert.equal((await listCollaboration(f.session, {}, context)).items[0].id, f.id);
+});
+
+it("rejects missing and malformed referenced events with typed source errors", async () => {
+	const f = retainedReadFixture();
+	for (const snapshot of [undefined, null, {}, { event: null }, { event: false }]) {
+		f.state.events.set(`${f.id}:1`, snapshot);
+		await assert.rejects(readCollaboration(f.session, { threadId: f.id }, context), collaborationReadError("source_unreadable"));
+	}
+	const malformed = [
+		{ threadId: `${peer}/${"a".repeat(32)}` }, { sequence: 2 }, { at: -1 }, { sender: `${actor}:1` }, { origin: "other" }, { kind: "post" },
+		{ message: null }, { message: " " }, { kind: "contribution", message: "x".repeat(8001) }, { kind: "carried-authority", source: "" }, { source: "x".repeat(2001) },
+		{ replyTo: undefined }, { replyTo: 0 }, { replyTo: 1 }, { replyTo: "1" }, { revision: 0 }, { revision: 2 }, { notify: null },
+		{ notify: Array.from({ length: 17 }, () => peer) }, { notify: ["invalid"] }, { notify: [actor] }, { notify: [peer, peer] },
+		{ kind: "contribution", message: "\u0001".repeat(4000) },
+	];
+	for (const patch of malformed) {
+		f.state.events.set(`${f.id}:1`, { event: { ...f.event, ...patch } });
+		await assert.rejects(readCollaboration(f.session, { threadId: f.id }, context), collaborationReadError("source_unreadable"));
+	}
+});
+
+it("retains closed and nonmember reads, legal page shapes, and the exclusive before cursor", async () => {
+	const f = retainedReadFixture();
+	Object.assign(f.thread, { closed: true, members: [], sequence: 2, createdAt: 5, updatedAt: 2 });
+	f.state.events.set(`${f.id}:2`, { event: { ...f.event, sequence: 2, at: 0, sender: peer, kind: "close", message: "The purpose reached its outcome." } });
+	const latest = await readCollaboration(f.session, { threadId: f.id, limit: 1 }, context);
+	assert.equal(latest.thread.closed, true);
+	assert.ok(latest.thread.updatedAt < latest.thread.createdAt);
+	assert.equal(latest.events[0].at, 0);
+	assert.deepEqual(latest.thread.members, []);
+	assert.deepEqual(latest.events.map((event) => event.sequence), [2]);
+	assert.equal(latest.nextBefore, 2);
+	assert.equal(latest.pending, 0);
+	assert.equal(latest.coverage.complete, false);
+	assert.equal(latest.coverage.bytes, Buffer.byteLength(JSON.stringify(latest)));
+	const older = await readCollaboration(f.session, { threadId: f.id, before: 2, limit: 20 }, context);
+	assert.deepEqual(older.events.map((event) => event.sequence), [1]);
+	assert.equal(older.nextBefore, null);
+	assert.equal(older.coverage.complete, true);
+	assert.deepEqual((await readCollaboration(f.session, { threadId: f.id, before: 1 }, context)).events, []);
+	assert.equal((await listCollaboration(f.session, {}, context)).items[0].closed, true);
+});
+
+it("bounds index visits and list rows with canonical decimal offsets", async () => {
+	const f = retainedReadFixture();
+	const keys = Array.from({ length: 256 }, (_, index) => `${actor}/${index.toString(16).padStart(32, "0")}`);
+	f.state.index = { keys };
+	for (const id of keys) f.state.threads.set(id, { thread: { ...f.thread, id } });
+	const defaults = await listCollaboration(f.session, {}, context);
+	assert.equal(defaults.items.length, 10);
+	assert.equal(defaults.nextCursor, "10");
+	const next = await listCollaboration(f.session, { cursor: defaults.nextCursor, limit: 20 }, context);
+	assert.equal(next.items.length, 20);
+	assert.equal(next.items[0].id, keys[10]);
+	assert.equal(next.nextCursor, "30");
+	const filtered = await listCollaboration(f.session, { query: "no-match" }, context);
+	assert.deepEqual(filtered, { items: [], nextCursor: "64", coverage: { complete: false, visited: 64, omitted: 0 } });
+	const last = await listCollaboration(f.session, { cursor: "250", query: "no-match" }, context);
+	assert.deepEqual(last, { items: [], nextCursor: null, coverage: { complete: true, visited: 6, omitted: 0 } });
+	assert.equal((await listCollaboration(f.session, { cursor: "256" }, context)).coverage.visited, 0);
+	await assert.rejects(listCollaboration(f.session, { cursor: "257" }, context), collaborationReadError("invalid_request"));
+	assert.equal((await listCollaboration(f.session, { query: "PROTOCOL" }, context)).items.length, 10);
+});
+
+it("validates retained delivery counts without classifying arbitrary snapshot failures", async () => {
+	const f = retainedReadFixture();
+	for (const delivery of [null, {}, { pending: -1 }, { pending: "1" }, { pending: 1.5 }]) {
+		f.state.delivery = delivery;
+		await assert.rejects(readCollaboration(f.session, { threadId: f.id }, context), collaborationReadError("source_unreadable"));
+	}
+	f.state.delivery = { pending: 3 };
+	assert.equal((await readCollaboration(f.session, { threadId: f.id }, context)).pending, 3);
+	const failure = new Error("Snapshot transport failed");
+	const unavailable = { snapshot: async () => { throw failure; } } as unknown as Session;
+	await assert.rejects(readCollaboration(unavailable, { threadId: f.id }, context), (error: unknown) => error === failure);
+	await assert.rejects(listCollaboration(unavailable, {}, context), (error: unknown) => error === failure);
+});
 
 it("retains a shared frame and deduplicates the same mutation without any model admission", async (t) => {
 	const f = await fixture(t);

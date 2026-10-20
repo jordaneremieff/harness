@@ -319,11 +319,12 @@ unavailable here. No retained ordinary archive is converted or edited.
 
 ## Independent retained reads
 
-Read Durable history without starting an agent through the separate one-shot
-executable, not the terminal attachment or writer runner:
+Read Durable history and collaboration threads without starting an agent through
+the separate one-shot executable, not the terminal attachment or writer runner:
 
 ```sh
 node extensions/agent/retained-read.ts --contract
+node extensions/agent/retained-read.ts --contract collaboration
 node extensions/agent/retained-read.ts < /example/retained-request.json
 ```
 
@@ -335,13 +336,30 @@ bounds, responses, and error codes. Its
 [request fixture](../../docs/agent-host-contract.md#fixture-retained-read-request)
 uses a synthetic sessions root and exact child identity.
 
-`--contract` advertises only snapshot and inspect, with versions from this
-reader's installed packages. Every read supplies a supported exact operation
-identity again; discovery does not replace negotiation. History is
-`method:"inspect"` with `params.view:"history"`, not a separate method.
-The canonical top-level sessionId selects a root or child conversation; params
-never select another target. This surface accepts no handles or decimal-string
-numeric aliases.
+The unchanged default `--contract` advertises only snapshot and inspect, with
+versions from this reader's installed packages. The explicit
+`--contract collaboration` selector advertises only `collaboration-list` and
+`collaboration-read` under the same `retained-read/1.0.0` envelope. Their existing
+operation identities have no `durable` member. Every read supplies a supported
+exact operation identity again; discovery does not replace negotiation. History
+is `method:"inspect"` with `params.view:"history"`, not a separate method.
+
+The canonical top-level `sessionId` selects a root or child for snapshot and
+inspect. Collaboration methods require a bare storage UUID, and a read's
+`threadId` prefix must match it before catalog or database access. Params never
+select another target. This surface accepts no handles or decimal-string
+numeric aliases; the local thread-list `cursor` is the existing canonical
+decimal index offset, not an alternate numeric parameter.
+
+`collaboration-list` accepts `query?`, `cursor?`, and `limit?`.
+`collaboration-read` accepts `threadId`, `before?`, and `limit?`.
+In both methods, `limit` is an integer from 1 through 20, default 10.
+A list query is nonblank and at most 256 UTF-16 units; its cursor is a safe
+canonical decimal offset of at most 16 units. A read's `before` is a positive
+safe event sequence within the captured thread boundary. Results retain the
+existing native list or thread-page shape, with root conversation 1 in the
+process wrapper. Closed threads remain
+readable. The reader adds no mutations, host startup, or alternate thread store.
 
 The caller owns the short-lived child, closes stdin, and drains stdout/stderr
 concurrently. Stdout contains one JSON object plus newline. Stderr is diagnostic
@@ -369,11 +387,16 @@ private scratch.
 
 An absent or incompatible live host does not block retained reads. Source
 changes during capture return `source_changed`; no hidden retry occurs.
-Missing catalog/database/conversation returns `not_found`, while an existing
-empty conversation returns normal empty evidence. A missing native result
-selector returns successful inspection with `status:"unavailable"`. Every read
-is one retained snapshot, not live state or resumable-host readiness; separate
-invocations have no shared snapshot lease or cache. Cancellation ends only this
+Missing catalog/database, a selected snapshot/inspect conversation, or an
+explicitly requested absent thread returns `not_found`. An existing empty
+conversation returns normal empty evidence; an absent collaboration index
+means an empty indexed list, not a
+search for orphaned frames. A malformed present index, a missing indexed frame,
+or an unavailable retained event returns `source_unreadable`, not empty history.
+These failures use source-owned typed codes, not message matching. A missing
+native result selector returns successful inspection with `status:"unavailable"`.
+Every read is one retained snapshot, not live state or resumable-host readiness.
+Separate invocations have no shared snapshot lease or cache. Cancellation ends only this
 reader, not independent native work.
 
 ## Dashboard and agent console
@@ -1278,6 +1301,24 @@ thread list. Catalog changes follow the filename continuation rules in
 hints refuses if that storage's thread publication changed:
 `Thread discovery changed; restart the query`. There is no background relevance
 search or polling loop.
+
+Catalog thread hints contain only the last eight index keys, newest creation
+first, and the summary array fits 4,000 UTF-8 bytes. Older threads do not enter
+that selection merely because a peer updates them. `omitted` records indexed
+threads without a returned summary; missing hints mean unknown coverage.
+Hints preserve the existing `items`, `omitted`, and `updatedAt` shape. They are
+not full thread frames or a complete native index.
+
+A storage-scoped retained list reads its full native index in bounded pages,
+including threads omitted from catalog hints. Its decimal offset cursor is not
+bound to the query or index revision. Repeat the same query for an intended
+continuation. Each request captures a new private snapshot, so appended threads
+and changed query matches affect later pages. List completeness refers only to
+the captured index, not global discovery. Thread pages preserve exact event
+sequence continuation; member and pending-notice counts describe captured
+state, not live presence or delivery progress. The
+[independent retained reader](#independent-retained-reads) exposes these reads
+without a live host.
 
 `create` needs `title`, `purpose`, `authority`, `source`, `restrictions`, and
 `acceptance`; `integrator` defaults to the caller. An ordinary primary also

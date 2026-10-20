@@ -6,6 +6,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import { createModels } from "@earendil-works/pi-ai";
 import { createRegistry, type ConversationId } from "@earendil-works/pi-durable";
 import { AgentCatalog } from "./catalog.ts";
+import { collaborationStorage, CollaborationReadError } from "./collaboration.ts";
 import { DurableObservation, InspectionRequestError, parseInspectParams } from "./durable-observation.ts";
 import { checkRetainedRead, RetainedReadError, type RetainedErrorCode } from "./retained-errors.ts";
 import { HOST_CONTRACT, parseOperationContract, type OperationContract } from "./version-contract.ts";
@@ -18,12 +19,14 @@ const CONTROL = /[\u0000-\u001f\u007f]/u;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 
 type Params = Record<string, unknown>;
+type CollaborationMethod = "collaboration-list" | "collaboration-read";
+type RetainedMethod = "snapshot" | "inspect" | CollaborationMethod;
 interface ReadRequest {
 	version: typeof RETAINED_READ_VERSION;
 	id: string;
 	store: string;
 	sessionId: string;
-	method: "snapshot" | "inspect";
+	method: RetainedMethod;
 	expected: OperationContract;
 	params: Params;
 	storageId: string;
@@ -31,15 +34,18 @@ interface ReadRequest {
 }
 export type RetainedResponse = {
 	version: typeof RETAINED_READ_VERSION; id: string; ok: true;
-	method: "snapshot" | "inspect"; sessionId: string; storageId: string; conversationId: number; result: unknown;
+	method: RetainedMethod; sessionId: string; storageId: string; conversationId: number; result: unknown;
 } | {
 	version: typeof RETAINED_READ_VERSION; id: string | null; ok: false;
 	error: { code: RetainedErrorCode; message: string; retryable: boolean };
 };
 
-export function retainedReadDescriptor(): unknown {
+export function retainedReadDescriptor(scope?: "collaboration"): unknown {
+	if (scope === "collaboration") return { version: RETAINED_READ_VERSION, upstream: HOST_CONTRACT.upstream, operations: { "collaboration-list": HOST_CONTRACT.operations["collaboration-list"], "collaboration-read": HOST_CONTRACT.operations["collaboration-read"] } };
 	return { version: RETAINED_READ_VERSION, upstream: HOST_CONTRACT.upstream, operations: { snapshot: HOST_CONTRACT.operations.snapshot, inspect: HOST_CONTRACT.operations.inspect } };
 }
+
+function collaborationMethod(method: RetainedMethod): method is CollaborationMethod { return method === "collaboration-list" || method === "collaboration-read"; }
 
 function object(value: unknown): value is Params { return value !== null && typeof value === "object" && !Array.isArray(value); }
 function text(value: unknown, max: number): value is string { return typeof value === "string" && value.length > 0 && value.length <= max && !CONTROL.test(value); }
@@ -78,18 +84,42 @@ function inspectSelectors(value: Params): void {
 	if (value.view === "result" && value.requestId === undefined && value.submissionId === undefined && value.operationId === undefined) invalid();
 }
 
-function parseParams(method: ReadRequest["method"], value: unknown): Params {
+function collaborationParams(method: CollaborationMethod, value: Params, storageId: string): void {
+	optionalInteger(value.limit, 1, 20);
+	if (method === "collaboration-list") {
+		keys(value, ["query", "cursor", "limit"]);
+		if (value.query !== undefined && (typeof value.query !== "string" || value.query.trim().length === 0 || value.query.length > 256)) invalid();
+		if (value.cursor !== undefined && (typeof value.cursor !== "string" || value.cursor.length > 16 || !/^(?:0|[1-9][0-9]*)$/u.test(value.cursor) || !integer(Number(value.cursor), 0))) invalid();
+		return;
+	}
+	keys(value, ["threadId", "before", "limit"]);
+	optionalInteger(value.before, 1);
+	if (!text(value.threadId, 128)) invalid();
+	try { if (collaborationStorage(value.threadId) !== storageId) invalid(); } catch { invalid(); }
+}
+
+function parseParams(method: ReadRequest["method"], value: unknown, storageId: string): Params {
 	if (!object(value)) invalid();
-	optionalInteger(value.limit, 1, 100);
-	if (method === "snapshot") snapshotParams(value);
+	if (collaborationMethod(method)) collaborationParams(method, value, storageId);
 	else {
-		keys(value, ["view", "limit", "cursor", "entryId", "fromId", "offset", "query", "source", "submissionId", "requestId", "operationId"]);
-		inspectNumbers(value);
-		inspectTextAndCursor(value);
-		inspectSelectors(value);
-		parseInspectParams(value);
+		optionalInteger(value.limit, 1, 100);
+		if (method === "snapshot") snapshotParams(value);
+		else {
+			keys(value, ["view", "limit", "cursor", "entryId", "fromId", "offset", "query", "source", "submissionId", "requestId", "operationId"]);
+			inspectNumbers(value);
+			inspectTextAndCursor(value);
+			inspectSelectors(value);
+			parseInspectParams(value);
+		}
 	}
 	return value;
+}
+
+function parseTarget(sessionId: string, method: RetainedMethod): { storageId: string; conversationId: ConversationId } {
+	const [storageId, suffix, extra] = sessionId.split(":");
+	if (!UUID.test(storageId) || extra !== undefined || (suffix !== undefined && (!/^[1-9][0-9]*$/u.test(suffix) || !integer(Number(suffix), 2)))) invalid();
+	if (collaborationMethod(method) && (suffix !== undefined || storageId.length !== 36)) invalid();
+	return { storageId, conversationId: Number(suffix ?? 1) as ConversationId };
 }
 
 function parseRequest(value: unknown): ReadRequest {
@@ -98,16 +128,15 @@ function parseRequest(value: unknown): ReadRequest {
 	keys(value, required);
 	if (required.some((key) => !Object.hasOwn(value, key))) invalid();
 	if (!validId(value.id) || !text(value.store, 4096) || !isAbsolute(value.store) || typeof value.sessionId !== "string") invalid();
-	const [storageId, suffix, extra] = value.sessionId.split(":");
-	if (!UUID.test(storageId) || extra !== undefined || (suffix !== undefined && (!/^[1-9][0-9]*$/u.test(suffix) || !integer(Number(suffix), 2)))) invalid();
-	if (value.method !== "snapshot" && value.method !== "inspect") invalid();
+	if (value.method !== "snapshot" && value.method !== "inspect" && value.method !== "collaboration-list" && value.method !== "collaboration-read") invalid();
+	const { storageId, conversationId } = parseTarget(value.sessionId, value.method);
 	if (value.version !== RETAINED_READ_VERSION) throw new RetainedReadError("incompatible");
 	let expected: OperationContract;
 	try { expected = parseOperationContract(value.expected); } catch { invalid(); }
 	const contract = HOST_CONTRACT.operations[value.method];
 	if (expected.request !== contract.request || expected.response !== contract.response || expected.durable !== contract.durable) throw new RetainedReadError("incompatible");
-	const params = parseParams(value.method, value.params);
-	return { version: RETAINED_READ_VERSION, id: value.id, store: value.store, sessionId: value.sessionId, method: value.method, expected, params, storageId, conversationId: Number(suffix ?? 1) as ConversationId };
+	const params = parseParams(value.method, value.params, storageId);
+	return { version: RETAINED_READ_VERSION, id: value.id, store: value.store, sessionId: value.sessionId, method: value.method, expected, params, storageId, conversationId };
 }
 
 export function retainedFailure(error: unknown, id: string | null): RetainedResponse {
@@ -158,13 +187,38 @@ async function openRetainedObservation(request: ReadRequest, path: string, scope
 	} catch (error) { scope.check(); throw error; }
 }
 
+function scopedThread(value: unknown, storageId: string): value is Params & { id: string } {
+	if (!object(value) || typeof value.id !== "string") return false;
+	try { return collaborationStorage(value.id) === storageId; } catch { return false; }
+}
+
+function collaborationResult(request: ReadRequest, result: unknown): unknown {
+	if (!object(result)) throw new RetainedReadError("source_unreadable");
+	if (request.method === "collaboration-read") {
+		if (!scopedThread(result.thread, request.storageId) || result.thread.id !== request.params.threadId) throw new RetainedReadError("source_unreadable");
+	} else if (!Array.isArray(result.items) || result.items.some((item) => !scopedThread(item, request.storageId))) throw new RetainedReadError("source_unreadable");
+	return result;
+}
+
+function retainedRequestError(error: unknown): unknown {
+	if (error instanceof InspectionRequestError) return new RetainedReadError("invalid_request");
+	if (error instanceof CollaborationReadError) {
+		const failure = new RetainedReadError(error.code);
+		if (error.code === "not_found") failure.message = "The retained thread does not exist.";
+		return failure;
+	}
+	return error;
+}
+
 async function readRetainedObservation(request: ReadRequest, observation: ReadObservation, scope: ReadDeadline, context: Context): Promise<unknown> {
 	try {
 		scope.check();
-		if (!await observation.conversation(request.conversationId, context)) throw new RetainedReadError("not_found");
+		if (!collaborationMethod(request.method) && !await observation.conversation(request.conversationId, context)) throw new RetainedReadError("not_found");
 		scope.check();
-		try { return await observation.request(request.method, { ...request.params, sessionId: request.sessionId }, context); }
-		catch (error) { if (error instanceof InspectionRequestError) throw new RetainedReadError("invalid_request"); throw error; }
+		try {
+			const result = await observation.request(request.method, { ...request.params, sessionId: request.sessionId }, context);
+			return collaborationMethod(request.method) ? collaborationResult(request, result) : result;
+		} catch (error) { throw retainedRequestError(error); }
 	} finally { await observation.close(); }
 }
 
@@ -237,7 +291,9 @@ async function main(): Promise<void> {
 	let ok = false;
 	try {
 		const args = process.argv.slice(2);
-		if (args.length === 1 && args[0] === "--contract") { output = retainedReadDescriptor(); ok = true; }
+		if (args[0] === "--contract" && (args.length === 1 || (args.length === 2 && args[1] === "collaboration"))) {
+			output = retainedReadDescriptor(args.length === 2 ? "collaboration" : undefined); ok = true;
+		}
 		else {
 			if (args.length !== 0) invalid();
 			const input = await readInput(controller.signal);

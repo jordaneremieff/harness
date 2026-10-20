@@ -10,8 +10,10 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createTransportServer } from "../../transport/index.ts";
 import { connectHost } from "./host-client.ts";
 import { createModels } from "@earendil-works/pi-ai";
-import { createRegistry, Harness } from "@earendil-works/pi-durable";
+import { createRegistry, Harness, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
+import { CollaborationEvents, CollaborationIndex, CollaborationReadError, CollaborationThreads, mutateCollaboration, type CollaborationList, type CollaborationPage } from "./collaboration.ts";
 import { DurableHost } from "./durable-host.ts";
 import { DurableObservation } from "./durable-observation.ts";
 import { fixtureRegistry, fixtureRuntime, hostOptions } from "./durable-host-fixture.mts";
@@ -62,7 +64,33 @@ async function invoke(input: string | Buffer, args: string[] = []) {
 	await exited;
 	const stdout = Buffer.concat(output).toString("utf8");
 	assert.equal(stdout.trim().split("\n").length, 1);
-	return { response: JSON.parse(stdout), exitCode: child.exitCode, stderr: Buffer.concat(diagnostics).toString("utf8") };
+	return { response: JSON.parse(stdout), stdout, exitCode: child.exitCode, stderr: Buffer.concat(diagnostics).toString("utf8") };
+}
+
+type ThreadMethod = "collaboration-list" | "collaboration-read";
+const threadContracts = {
+	"collaboration-list": { request: "collaboration-list/1.0.0", response: "collaboration-list/1.0.0" },
+	"collaboration-read": { request: "collaboration-read/1.0.0", response: "collaboration-read/1.0.0" },
+};
+const threadId = `${storageId}/${"a".repeat(32)}`;
+const foreignThreadId = `00000000-0000-4000-8000-000000000002/${"b".repeat(32)}`;
+function threadRequest(store = "/synthetic/store", target = storageId, method: ThreadMethod = "collaboration-list", params: Record<string, unknown> = {}) {
+	return { ...request(store, target, "snapshot", params), method, expected: threadContracts[method] };
+}
+async function threadFixture(t: TestContext, count = 1) {
+	const f = fixture(t);
+	const harness = await Harness.open(await openNodeSqliteStorage(f.record.storagePath), { models: createModels(), registry: createRegistry() }, BACKGROUND_CONTEXT);
+	t.after(() => harness.close(BACKGROUND_CONTEXT));
+	const ids: string[] = [];
+	for (let index = 0; index < count; index++) {
+		const created = await mutateCollaboration(harness, f.record.storageId, {
+			action: "create", senderIdentity: f.record.storageId, origin: "model", requestId: `thread-${index}`,
+			title: `Thread ${index}`, purpose: `${"p".repeat(160)} ${index === count - 1 ? "needle" : "scope"}`,
+			authority: "Test authority", source: "Test source", restrictions: "Read only", acceptance: "Read the retained thread",
+		}, BACKGROUND_CONTEXT);
+		ids.push(created.threadId);
+	}
+	return { ...f, harness, ids };
 }
 
 function fileState(root: string): unknown {
@@ -295,4 +323,201 @@ it("preserves paged snapshot communication, inherited origins, hidden exclusion,
 	const observation = await DurableObservation.open({ backupFrom: f.record.storagePath, storageId: f.record.storageId, registry: createRegistry(), models: createModels() }, BACKGROUND_CONTEXT);
 	try { assert.deepEqual(await observation.request("snapshot", { sessionId: f.record.storageId }), rootPage); }
 	finally { await observation.close(); }
+});
+
+it("publishes collaboration contracts only through the explicit selector without changing default bytes", async () => {
+	const original = { version: RETAINED_READ_VERSION, upstream: HOST_CONTRACT.upstream, operations: { snapshot: snapshotContract, inspect: inspectContract } };
+	const found = await invoke("", ["--contract"]);
+	assert.equal(found.stdout, `${JSON.stringify(original)}\n`);
+	const expected = { version: RETAINED_READ_VERSION, upstream: HOST_CONTRACT.upstream, operations: threadContracts };
+	assert.deepEqual(retainedReadDescriptor("collaboration"), expected);
+	const selected = await invoke("", ["--contract", "collaboration"]);
+	assert.equal(selected.exitCode, 0); assert.equal(selected.stdout, `${JSON.stringify(expected)}\n`);
+	failure((await invoke("", ["--contract", "collaboration", "extra"])).response, "invalid_request");
+	failure((await invoke("", ["--contract", "unknown"])).response, "invalid_request");
+});
+
+it("rejects unscoped collaboration targets and closed-parameter violations before retained I/O", async () => {
+	let reads = 0;
+	const hooks = { readCatalog: () => { reads++; throw new Error("Must not read"); } };
+	const base = threadRequest();
+	const cases = [
+		{ ...base, sessionId: `${storageId}:2` }, { ...base, sessionId: `${storageId}:1` }, { ...base, sessionId: `${storageId}\n` },
+		...[{ threadId }, { action: "list" }, { sessionId: storageId }, { before: 1 }, { query: "" }, { query: "  " }, { query: "q".repeat(257) }, { query: [] },
+			{ cursor: 0 }, { cursor: "00" }, { cursor: "-1" }, { cursor: "1e2" }, { cursor: "9007199254740992" }, { cursor: "0".repeat(17) },
+			{ limit: 0 }, { limit: 21 }, { limit: 1.5 }, { limit: "1" }].map((params) => threadRequest(base.store, storageId, "collaboration-list", params)),
+		...[{}, { threadId: "invalid" }, { threadId: foreignThreadId }, { threadId, query: "needle" }, { threadId, cursor: "0" },
+			{ threadId, before: 0 }, { threadId, before: 1.5 }, { threadId, before: "2" }, { threadId, before: Number.MAX_SAFE_INTEGER + 1 },
+			{ threadId, limit: 21 }, { threadId, action: "read" }].map((params) => threadRequest(base.store, storageId, "collaboration-read", params)),
+	];
+	for (const value of cases) failure(await retainedRead(bytes(value), undefined, hooks), "invalid_request");
+	assert.equal(reads, 0);
+});
+
+it("requires exact existing collaboration operation identities without adding a Durable discriminator", async () => {
+	let reads = 0;
+	const hooks = { readCatalog: () => { reads++; throw new Error("Must not read"); } };
+	for (const method of ["collaboration-list", "collaboration-read"] as const) {
+		const base = threadRequest(undefined, undefined, method, method === "collaboration-read" ? { threadId } : {});
+		for (const expected of [{ ...base.expected, request: "wrong/1.0.0" }, { ...base.expected, response: "wrong/1.0.0" }, { ...base.expected, durable: "1.3.0" }])
+			failure(await retainedRead(bytes({ ...base, expected }), undefined, hooks), "incompatible");
+		failure(await retainedRead(bytes({ ...base, expected: { ...base.expected, extra: true } }), undefined, hooks), "invalid_request");
+	}
+	assert.equal(reads, 0);
+});
+
+it("maps only source-owned collaboration errors and closes every opened observation", async () => {
+	let closed = 0;
+	for (const code of ["invalid_request", "not_found", "source_unreadable"] as const) {
+		const hooks = { readCatalog: () => ({ storagePath: "/synthetic/private" }), open: async () => ({
+			conversation: async () => { throw new Error("Thread reads are not conversation reads"); },
+			request: async () => { throw new CollaborationReadError(code, "Private source details"); }, close: async () => { closed++; },
+		}) };
+		const response = await retainedRead(bytes(threadRequest(undefined, undefined, "collaboration-read", { threadId })), undefined, hooks);
+		failure(response, code); assert.doesNotMatch(JSON.stringify(response), /Private source details/u);
+		if (!response.ok && code === "not_found") assert.equal(response.error.message, "The retained thread does not exist.");
+	}
+	assert.equal(closed, 3);
+	const hooks = { readCatalog: () => ({ storagePath: "/synthetic/private" }), open: async () => ({
+		conversation: async () => undefined, request: async () => { throw new Error("Thread not found but this error has no source type"); }, close: async () => { closed++; },
+	}) };
+	failure(await retainedRead(bytes(threadRequest()), undefined, hooks), "internal"); assert.equal(closed, 4);
+});
+
+it("refuses collaboration results whose identities disagree with the selected storage or thread", async () => {
+	const cases: [ThreadMethod, Record<string, unknown>, unknown][] = [
+		["collaboration-list", {}, { items: [{ id: foreignThreadId }] }], ["collaboration-list", {}, { items: null }],
+		["collaboration-read", { threadId }, { thread: { id: foreignThreadId } }],
+		["collaboration-read", { threadId }, { thread: { id: `${storageId}/${"c".repeat(32)}` } }], ["collaboration-read", { threadId }, null],
+	];
+	for (const [method, params, result] of cases) {
+		let closed = false;
+		const hooks = { readCatalog: () => ({ storagePath: "/synthetic/private" }), open: async () => ({
+			conversation: async () => undefined, request: async () => result, close: async () => { closed = true; },
+		}) };
+		failure(await retainedRead(bytes(threadRequest(undefined, undefined, method, params)), undefined, hooks), "source_unreadable");
+		assert.equal(closed, true);
+	}
+});
+
+it("lists and reads stopped collaboration storage without a root conversation or writer calls", async (t) => {
+	const f = await threadFixture(t, 12);
+	assert.equal(await f.harness.conversation(ROOT_CONVERSATION_ID, BACKGROUND_CONTEXT), undefined);
+	await f.harness.close(BACKGROUND_CONTEXT);
+	const before = fileState(f.root);
+	const original = Harness.open;
+	let forbidden = 0;
+	Harness.open = async (...args) => {
+		const harness = await original(...args);
+		return new Proxy(harness, { get(target, key) {
+			if (["resume", "submit", "waitForIdle", "waitForTask", "createConversation", "root", "conversation", "commit"].includes(String(key))) return () => { forbidden++; throw new Error("Forbidden writer or conversation call"); };
+			const value = Reflect.get(target, key);
+			return typeof value === "function" ? value.bind(target) : value;
+		} });
+	};
+	try {
+		const first = success(await retainedRead(bytes(threadRequest(f.root, f.record.storageId))));
+		const page = first.result as CollaborationList;
+		assert.equal(first.conversationId, 1); assert.equal(page.items.length, 10); assert.equal(page.nextCursor, "10");
+		assert.deepEqual(page.coverage, { complete: false, visited: 10, omitted: 0 });
+		const last = success(await retainedRead(bytes(threadRequest(f.root, f.record.storageId, "collaboration-list", { cursor: page.nextCursor, limit: 20 })))).result as CollaborationList;
+		assert.deepEqual([...page.items, ...last.items].map((row) => row.id), f.ids); assert.equal(last.nextCursor, null); assert.equal(last.coverage.complete, true);
+		const found = success(await retainedRead(bytes(threadRequest(f.root, f.record.storageId, "collaboration-list", { query: "NEEDLE" })))).result as CollaborationList;
+		assert.deepEqual(found.items.map((row) => row.id), [f.ids.at(-1)]); assert.equal(found.items[0].purpose.includes("needle"), false);
+		const read = success(await retainedRead(bytes(threadRequest(f.root, f.record.storageId, "collaboration-read", { threadId: f.ids[0] })))).result as CollaborationPage;
+		assert.equal(read.thread.id, f.ids[0]); assert.equal(read.events.length, 1); assert.equal(read.coverage.complete, true);
+		assert.equal(forbidden, 0);
+	} finally { Harness.open = original; }
+	const cliRead = await invoke(JSON.stringify(threadRequest(f.root, f.record.storageId, "collaboration-read", { threadId: f.ids[0] })));
+	assert.equal(cliRead.exitCode, 0); assert.equal(success(cliRead.response).storageId, f.record.storageId);
+	assert.deepEqual(fileState(f.root), before);
+	assert.equal(existsSync(hostPaths(f.record).claim), false); assert.equal(existsSync(hostPaths(f.record).socket), false);
+});
+
+it("keeps absent indices empty and reports missing requested threads without source mutation", async (t) => {
+	const f = await threadFixture(t, 0); await f.harness.close(BACKGROUND_CONTEXT);
+	const before = fileState(f.root);
+	const result = success(await retainedRead(bytes(threadRequest(f.root, f.record.storageId)))).result as CollaborationList;
+	assert.deepEqual(result, { items: [], nextCursor: null, coverage: { complete: true, visited: 0, omitted: 0 } });
+	failure(await retainedRead(bytes(threadRequest(f.root, f.record.storageId, "collaboration-read", { threadId: `${f.record.storageId}/${"a".repeat(32)}` }))), "not_found");
+	failure(await retainedRead(bytes(threadRequest(f.root, f.record.storageId, "collaboration-list", { cursor: "1" }))), "invalid_request");
+	assert.deepEqual(fileState(f.root), before);
+});
+
+it("preserves closed frames and exact older-event boundaries within the retained page bound", async (t) => {
+	const f = await threadFixture(t);
+	for (let index = 0; index < 7; index++) await mutateCollaboration(f.harness, f.record.storageId, {
+		action: "post", threadId: f.ids[0], senderIdentity: f.record.storageId, origin: "model", requestId: `event-${index}`, message: "x".repeat(8000),
+	}, BACKGROUND_CONTEXT);
+	await mutateCollaboration(f.harness, f.record.storageId, { action: "close", threadId: f.ids[0], senderIdentity: f.record.storageId, origin: "model", requestId: "close", message: "Done" }, BACKGROUND_CONTEXT);
+	await f.harness.close(BACKGROUND_CONTEXT);
+	const before = fileState(f.root);
+	const read = (params: Record<string, unknown> = {}) => retainedRead(bytes(threadRequest(f.root, f.record.storageId, "collaboration-read", { threadId: f.ids[0], ...params })));
+	const page = success(await read({ limit: 20 })).result as CollaborationPage;
+	assert.equal(page.thread.closed, true); assert.ok(page.events.length < 9); assert.equal(page.coverage.complete, false);
+	assert.ok(page.coverage.bytes <= 48 * 1024); assert.ok(Buffer.byteLength(JSON.stringify(page)) <= 48 * 1024);
+	assert.equal(page.nextBefore, page.events[0].sequence);
+	const older = success(await read({ before: page.nextBefore, limit: 20 })).result as CollaborationPage;
+	assert.equal(older.events.at(-1)?.sequence, page.events[0].sequence - 1);
+	assert.equal(older.coverage.complete, true); assert.equal(older.nextBefore, null); assert.equal(older.events[0].sequence, 1);
+	failure(await read({ before: page.thread.sequence + 2 }), "invalid_request");
+	assert.deepEqual(fileState(f.root), before);
+});
+
+it("reports corrupt present indices, frames, and events instead of successful empty retained data", async (t) => {
+	const cases: { name: string; method: ThreadMethod; mutate: (tx: Tx, id: string) => Promise<void> }[] = [
+		{ name: "null index", method: "collaboration-list", mutate: async (tx) => { Object.assign(await tx.doc(CollaborationIndex), { keys: null }); } },
+		{ name: "missing keys", method: "collaboration-list", mutate: async (tx) => { Reflect.deleteProperty(await tx.doc(CollaborationIndex), "keys"); } },
+		{ name: "non-array keys", method: "collaboration-list", mutate: async (tx) => { Object.assign(await tx.doc(CollaborationIndex), { keys: {} }); } },
+		{ name: "missing indexed frame", method: "collaboration-list", mutate: async (tx, id) => { (await tx.doc(CollaborationThreads, id, null)).thread = null; } },
+		{ name: "malformed frame", method: "collaboration-read", mutate: async (tx, id) => { const thread = (await tx.doc(CollaborationThreads, id, null)).thread; assert.ok(thread); Object.assign(thread, { members: null }); } },
+		{ name: "missing event", method: "collaboration-read", mutate: async (tx, id) => { (await tx.doc(CollaborationEvents, `${id}:1`, null)).event = null; } },
+		{ name: "malformed event", method: "collaboration-read", mutate: async (tx, id) => { const event = (await tx.doc(CollaborationEvents, `${id}:1`, null)).event; assert.ok(event); Object.assign(event, { threadId: foreignThreadId }); } },
+	];
+	for (const item of cases) await t.test(item.name, async (subtest) => {
+		const f = await threadFixture(subtest); await f.harness.commit((tx) => item.mutate(tx, f.ids[0]), BACKGROUND_CONTEXT); await f.harness.close(BACKGROUND_CONTEXT);
+		const before = fileState(f.root);
+		const params = item.method === "collaboration-read" ? { threadId: f.ids[0] } : {};
+		failure(await retainedRead(bytes(threadRequest(f.root, f.record.storageId, item.method, params))), "source_unreadable");
+		assert.deepEqual(fileState(f.root), before);
+	});
+});
+
+it("does not expose a foreign-storage frame retained under a selected store's canonical index key", async (t) => {
+	const f = await threadFixture(t);
+	await f.harness.commit(async (tx) => {
+		const stored = await tx.doc(CollaborationThreads, f.ids[0], null); assert.ok(stored.thread);
+		(await tx.doc(CollaborationThreads, foreignThreadId, null)).thread = { ...stored.thread, id: foreignThreadId };
+		(await tx.doc(CollaborationIndex)).keys = [foreignThreadId];
+	}, BACKGROUND_CONTEXT);
+	await f.harness.close(BACKGROUND_CONTEXT);
+	const before = fileState(f.root);
+	failure(await retainedRead(bytes(threadRequest(f.root, f.record.storageId))), "source_unreadable");
+	failure(await retainedRead(bytes(threadRequest(f.root, f.record.storageId, "collaboration-list", { query: "unmatched title" }))), "source_unreadable");
+	assert.deepEqual(fileState(f.root), before);
+});
+
+it("keeps collaboration response bounds, cancellation, and source-change failures on the existing envelope", async () => {
+	let closed = 0;
+	const result = { items: [], padding: "x".repeat(1000) };
+	const hooks = { readCatalog: () => ({ storagePath: "/synthetic/private" }), open: async () => ({
+		conversation: async () => undefined, request: async () => result, close: async () => { closed++; },
+	}), responseBytes: 100 };
+	failure(await retainedRead(bytes(threadRequest()), undefined, hooks), "limit_exceeded"); assert.equal(closed, 1);
+	const controller = new AbortController();
+	const cancelled = { ...hooks, responseBytes: 10000, open: async () => ({ conversation: async () => undefined,
+		request: async () => { controller.abort(); return result; }, close: async () => { closed++; },
+	}) };
+	failure(await retainedRead(bytes(threadRequest()), controller.signal, cancelled), "cancelled"); assert.equal(closed, 2);
+	failure(await retainedRead(bytes(threadRequest()), undefined, { ...hooks, open: async () => { throw new RetainedReadError("source_changed"); } }), "source_changed", true);
+});
+
+it("uses one cooperative deadline through a collaboration read and closes its observation", async (t) => {
+	let now = Date.now(); const deadline = now + 1000; let closed = false;
+	t.mock.method(Date, "now", () => now);
+	const hooks = { readCatalog: () => ({ storagePath: "/synthetic/private" }), open: async () => ({
+		conversation: async () => undefined, request: async () => { now = deadline; return { items: [] }; }, close: async () => { closed = true; },
+	}) };
+	failure(await retainedRead(bytes(threadRequest()), undefined, hooks, deadline), "timeout", true);
+	assert.equal(closed, true);
 });
