@@ -22,22 +22,25 @@ function statusOf(status: unknown, answer: string): AwaitedResult['status'] {
   return answer ? 'done' : 'unavailable';
 }
 
-/** Reads a structured value whose `results` is a non-empty array of objects; any other shape is not an awaited-answers value. */
+function resultOf(item: Record<string, unknown>): AwaitedResult {
+  const reference = own(item, 'result'), identity = plain(reference) ? own(reference, 'sessionId') : undefined;
+  const answer = own(item, 'answer'), text = typeof answer === 'string' ? answer : '';
+  return {...(typeof identity === 'string' && identity ? {identity} : {}), status: statusOf(own(item, 'status'), text), answer: text};
+}
+
+/** Reads a structured value whose `results` is a non-empty array of objects, or an empty one beside a non-empty `unresolved` array; any other shape is not an awaited-answers value. */
 export function awaitedAnswers(display: JsonDisplay | undefined): AwaitedAnswers | undefined {
   if (!plain(display)) return undefined;
   const value = own(display, 'value'); if (!plain(value)) return undefined;
   const list = own(value, 'results');
-  if (!Array.isArray(list) || !list.length || list.length > MAX_RESULTS) return undefined;
+  const unresolved = own(value, 'unresolved'), pending = Array.isArray(unresolved) ? unresolved.length : 0;
+  if (!Array.isArray(list) || list.length > MAX_RESULTS || !list.length && !pending) return undefined;
   const results: AwaitedResult[] = [];
   for (let index = 0; index < list.length; index++) {
     const item = own(list, String(index)); if (!plain(item)) return undefined;
-    const reference = own(item, 'result'), identity = plain(reference) ? own(reference, 'sessionId') : undefined;
-    const answer = own(item, 'answer');
-    const text = typeof answer === 'string' ? answer : '';
-    results.push({...(typeof identity === 'string' && identity ? {identity} : {}), status: statusOf(own(item, 'status'), text), answer: text});
+    results.push(resultOf(item));
   }
-  const unresolved = own(value, 'unresolved');
-  return {results, unresolved: Array.isArray(unresolved) ? unresolved.length : 0};
+  return {results, unresolved: pending};
 }
 
 /** The first structured value among a tool result's text parts, nested results included. */
@@ -64,9 +67,14 @@ function firstLine(answer: string): string {
   return line.length > LINE_CHARS ? `${line.slice(0, LINE_CHARS).trimEnd()}…` : line;
 }
 
+/** What a wait with no answers yet says: how many results are still awaited. */
+export function stillWaitingSentence(awaited: AwaitedAnswers): string {
+  return `Still waiting for ${awaited.unresolved} ${awaited.unresolved === 1 ? 'answer' : 'answers'}`;
+}
+
 /** One collapsed line: the first responder and the first line of its answer, then how many more answers and how many results are still awaited. */
 export function awaitedLine(awaited: AwaitedAnswers, resolve?: AnswerNamer): string {
-  const [first] = awaited.results; if (!first) return '';
+  const [first] = awaited.results; if (!first) return stillWaitingSentence(awaited);
   const name = responderName(first, resolve), note = missingAnswerNote(first);
   const head = note ? `${name}: ${note}` : `${name}: “${firstLine(first.answer)}”`;
   const more = awaited.results.length - 1;

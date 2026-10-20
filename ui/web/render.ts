@@ -21,7 +21,7 @@ import {ConversationTasks, type ConversationTask, type TaskReference} from './co
 import { loadedReference, type ReferenceQuery, type ReferenceResolver } from './references.ts';
 import type { JoinedTool } from './transcript-tools.ts';
 import { outputPages } from './transcript-output.ts';
-import { awaitedAnswers, awaitedFieldsFromParts } from './awaited-answers.ts';
+import { awaitedAnswers, awaitedFieldsFromParts, awaitedFromParts, stillWaitingSentence } from './awaited-answers.ts';
 import { appendKey, presentArguments, presentAwaited, presentResult, previewLimits, PreviewBudget } from './generic-content.ts';
 import type { PreviewActions } from './generic-content.ts';
 import type { SessionGroup } from './transcript-tools.ts';
@@ -1559,10 +1559,17 @@ export class Transcript {
   private nameResolver(): (identity: string) => string | undefined {
     return identity => { const caption = this.hooks.subject?.(identity); return caption?.name && caption.provenance ? caption.name : undefined; };
   }
+  /** A responder reads as the send card names its recipient: the caption text when it begins with the name (a child conversation keeps its number), otherwise the name. */
+  private responderNames(): (identity: string) => string | undefined {
+    return identity => {
+      const caption = this.hooks.subject?.(identity); if (!caption?.name || !caption.provenance) return undefined;
+      return caption.text === caption.name || caption.text.startsWith(`${caption.name} · `) ? caption.text : caption.name;
+    };
+  }
   private toolContent(tool: ToolNode): void {
     const source = tool.source; if (!source) return;
     if (!this.protectedNode(tool.preview)) {
-      const resolve = this.nameResolver(), title = tool.title.textContent ?? '';
+      const resolve = source.name === 'agent_await' && awaitedFromParts(source.result ?? []) ? this.responderNames() : this.nameResolver(), title = tool.title.textContent ?? '';
       const supplied = presentToolPreview(source) ?? presentResultPreview(source, resolve, title);
       if (supplied) this.replaceContent(tool.preview, supplied);
       else setText(tool.preview, resultPreview(source.result ?? [], {resolve, tidy: source.status !== 'error', title}));
@@ -1753,10 +1760,14 @@ export class Transcript {
     }
     this.registerContent(section); return section;
   }
+  private awaitedDocument(awaited: NonNullable<ReturnType<typeof awaitedAnswers>>, structured: JsonDisplay, budget: PreviewBudget): HTMLElement | undefined {
+    if (awaited.results.length) return presentAwaited(structured, this.presentationContext(), budget, this.responderNames());
+    const root = element('section', 'tool-content'); root.append(element('p', 'secondary tool-caption', stillWaitingSentence(awaited))); return root;
+  }
   private resultTextPart(section: HTMLElement, part: Extract<PartView, {type: 'text' | 'thinking'}>, source: JoinedTool, budget: PreviewBudget): void {
     if (part.type === 'text' && part.structured) {
-      const awaited = source.name === 'agent_await' && awaitedAnswers(part.structured);
-      const document = awaited ? presentAwaited(part.structured, this.presentationContext(), budget, this.nameResolver()) : presentResult(part.structured, this.presentationContext(), budget);
+      const awaited = source.name === 'agent_await' ? awaitedAnswers(part.structured) : undefined;
+      const document = awaited ? this.awaitedDocument(awaited, part.structured, budget) : presentResult(part.structured, this.presentationContext(), budget);
       if (document) section.append(document);
       else {
         budget.limit();

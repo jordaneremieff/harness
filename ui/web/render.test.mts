@@ -3324,3 +3324,32 @@ test('a wait card names each responder over its answer and keeps the machine fie
   assert.doesNotMatch(metadata.textContent, /I reverted the change/);
   view.reset();
 });
+
+test('a wait card names a child conversation responder like the send card and shows a wait with no answers as a sentence', () => {
+  setup();
+  const child = 'ead53d8c-af9d-0bda-1416-21a6ba18ab6c:232';
+  const view = new Transcript('primary', {presentation: () => {}, reading: () => {}, subject: identity => identity === child ? {text: 'Round 12 builder K4 · 232', name: 'Round 12 builder K4', provenance: 'reported' as const} : undefined});
+  const reference = {result: {sessionId: child, submissionId: 7, requestId: 'agent-deliver:7'}};
+  const run = (value: unknown) => {
+    const call = {id: 'wait', kind: 'message', messages: [{...message('wait-message', ''), parts: [{type: 'toolCall' as const, callId: 'wait-1', name: 'agent_await', arguments: {value: {results: [{sessionId: child, submissionId: 7}]}, truncated: false}}]}]};
+    const output = {type: 'toolResult' as const, callId: 'wait-1', name: 'agent_await', isError: false, parts: [{type: 'text' as const, text: JSON.stringify(value), structured: {value, truncated: false}}]};
+    const result = {id: 'wait-result', kind: 'message', messages: [{...message('wait-result-message', ''), role: 'toolResult', parts: [output]}]};
+    view.set([call, result]); flush();
+    const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card); card.open = true; view.set([call, result]); flush(); return card;
+  };
+  const answered = run({results: [{...reference, answer: 'Done.', status: 'done'}], unresolved: [], decision: 'settled', queuedInputCount: 3});
+  assert.equal(answered.querySelector('.tool-preview')?.textContent, 'Round 12 builder K4 · 232: “Done.”');
+  assert.deepEqual(answered.querySelectorAll('.tool-awaited-name').map(item => item.textContent), ['Round 12 builder K4 · 232']);
+  view.reset();
+  const waiting = run({results: [], unresolved: [{sessionId: child}, {sessionId: child}], originalInputs: [1953], decision: 'released', queuedInputCount: 3});
+  assert.equal(waiting.querySelector('.tool-preview')?.textContent, 'Still waiting for 2 answers');
+  const body = waiting.querySelector('.tool-result-parts'); assert.ok(body);
+  assert.equal(body.querySelector('.tool-caption')?.textContent, 'Still waiting for 2 answers');
+  assert.doesNotMatch(body.textContent, /decision|released|queuedInputCount|originalInputs|1953|ead53d8c/);
+  assert.equal(waiting.querySelectorAll('summary').filter(item => item.textContent === 'Details').length, 1);
+  assert.equal(waiting.querySelectorAll('.tool-metadata').length, 0);
+  const metadata = waiting.querySelectorAll('details').find(item => item.querySelector('summary')?.textContent === 'Metadata'); assert.ok(metadata);
+  metadata.open = true; metadata.dispatch('toggle'); flush();
+  assert.match(metadata.textContent, /"decision": "released"/); assert.match(metadata.textContent, /"unresolved"/); assert.match(metadata.textContent, /1953/);
+  view.reset();
+});

@@ -389,3 +389,10 @@ test('a result without a results array of objects, or from another tool, keeps t
   }
   assert.match(resultPreview(generic({decision: 'settled', results: [answered(KNOWN, 'Hi')]}, 'custom').result ?? [], {resolve: names}), /decision: settled/);
 });
+test('a wait released with no answers yet reads as the number of answers still awaited', () => {
+  setup();
+  assert.equal(awaitedText(awaitedSource([], {unresolved: [{sessionId: KNOWN}]})), 'Still waiting for 1 answer');
+  assert.equal(awaitedText(awaitedSource([], {unresolved: [{sessionId: KNOWN}, {sessionId: OTHER}]})), 'Still waiting for 2 answers');
+  const empty = awaitedSource([]);
+  assert.equal(awaitedText(empty), resultPreview(empty.result ?? [], {resolve: names}), 'no results and nothing unresolved keeps the generic preview');
+});
