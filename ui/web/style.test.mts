@@ -11,34 +11,38 @@ function rule(selector: string): string {
 const declarations = (property: string): string[] => [...css.matchAll(new RegExp(`(?:^|[;{\\s])${property}:\\s*([^;}]+)`, 'g'))].map(match => match[1].trim());
 const media = (query: string): string => { const start = css.indexOf(query); assert.ok(start >= 0, `Missing ${query}`); const next = css.indexOf('\n@media', start + 1); return css.slice(start, next < 0 ? undefined : next); };
 
-test('roster name-first headings reserve a full name row without the old glyph track', () => {
-  assert.match(rule('.agent-row'), /grid-template-columns: minmax\(0,1fr\) 64px/);
-  assert.match(rule('.agent-row:is([data-action=message],[data-action=resume])'), /64px 28px/);
+test('roster rows have one 24px heading line and one optional 16px summary line', () => {
+  assert.match(rule('.agent-row'), /grid-template-columns: minmax\(0,1fr\) max-content/);
+  assert.match(rule('.agent-row:is([data-action=message],[data-action=resume])'), /max-content 24px/);
   const select = rule('.agent-row .row-select');
-  assert.match(select, /grid-column: 1 \/ -1; grid-row: 1 \/ span 4/);
-  assert.match(select, /grid-template-columns: subgrid; grid-template-rows: subgrid; row-gap: 0/);
-  assert.match(select, /height: auto; min-height: 44px; padding: 4px var\(--s2\)/);
-  assert.match(rule('.agent-row .row-heading'), /display: contents/);
-  assert.match(rule('.agent-row .row-name'), /grid-column: 1; grid-row: 1/);
-  assert.match(rule('.agent-row .row-identity'), /grid-column: 1 \/ -1; grid-row: 2/);
-  assert.match(rule('.agent-row .row-state'), /grid-column: 1 \/ -1; grid-row: 3/);
-  assert.match(rule('.agent-row .row-preview'), /grid-column: 1 \/ -1; grid-row: 4/);
-  const text = rule('.agent-row .row-name, .agent-row .row-identity, .agent-row .row-state, .agent-row .row-preview');
-  assert.match(text, /max-width: none; overflow: visible/); assert.match(text, /white-space: normal; overflow-wrap: anywhere/);
-  assert.doesNotMatch(select, /padding-right: 104px/); assert.doesNotMatch(rule('.row-state'), /max-width: 10ch/);
-  assert.match(rule('.row-age, .row-message'), /position: static; grid-row: 1; z-index: 1/);
-  assert.match(rule('.agent-row > .row-age'), /grid-column: 2; width: 64px; height: auto/);
-});
-
-test('only the optional roster preview has a two-line visual clamp', () => {
-  const preview = rule('.agent-row .row-preview');
-  assert.match(preview, /font-size: 12px/); assert.match(preview, /display: -webkit-box/);
-  assert.match(preview, /-webkit-box-orient: vertical/); assert.match(preview, /-webkit-line-clamp: 2/);
-  assert.match(preview, /overflow: hidden; text-overflow: ellipsis/);
-  const text = rule('.agent-row .row-name, .agent-row .row-identity, .agent-row .row-state, .agent-row .row-preview');
-  assert.match(text, /overflow-wrap: anywhere/); assert.doesNotMatch(text, /line-clamp/);
-  for (const name of ['.agent-row .row-name', '.agent-row .row-state', '.agent-row .row-identity']) assert.doesNotMatch(rule(name), /line-clamp|overflow: hidden/);
+  assert.match(select, /grid-column: 1 \/ -1; grid-row: 1;/);
+  assert.match(select, /grid-template-columns: subgrid; grid-template-rows: 24px auto; row-gap: 0/);
+  assert.match(select, /height: auto; min-height: 28px; padding: 2px var\(--s2\) 2px var\(--s3\)/);
+  assert.match(rule('.agent-row .row-heading'), /grid-column: 1; grid-row: 1; display: flex/);
+  assert.match(rule('.agent-row .row-heading'), /height: 24px; min-width: 0; overflow: hidden/);
+  assert.match(rule('.agent-row .row-name'), /flex: 1; font-size: 13px; line-height: 24px; white-space: nowrap/);
+  assert.match(rule('.row-title, .row-name'), /overflow: hidden; color: var\(--fg\); text-overflow: ellipsis/);
+  const summary = rule('.agent-row .row-summary');
+  assert.match(summary, /grid-column: 1 \/ -1; grid-row: 2/);
+  assert.match(summary, /height: 16px; color: var\(--muted\); font-size: 12px; line-height: 16px/);
+  assert.match(summary, /white-space: nowrap; overflow: hidden; text-overflow: ellipsis/);
+  assert.doesNotMatch(rule('.agent-row .row-state'), /grid-row|grid-column/);
+  assert.match(rule('.row-age, .row-message'), /position: static; grid-row: 1; z-index: 1; margin-top: 2px/);
+  assert.match(rule('.agent-row > .row-age'), /grid-column: 2; width: auto; height: 24px/);
+  assert.match(rule('.row-message.card-action'), /width: 24px; height: 24px/);
   assert.match(rule('[hidden]'), /display: none !important/);
+});
+test('roster activity owns a 10px inline spinner and filters stay quiet until focus', () => {
+  const spinner = rule('.row-state[data-busy=true]::before');
+  assert.match(spinner, /width: 10px; height: 10px/); assert.match(spinner, /border: 1.5px solid currentColor/);
+  assert.match(spinner, /animation: work-pulse 900ms linear infinite/);
+  assert.match(css, /@media \(prefers-reduced-motion:reduce\) \{ \.row-state\[data-busy=true\]::before \{ animation: none; \} \}/);
+  assert.match(rule('.nav-filter'), /border: 0; border-radius: 0; background: transparent; font-size: 13px/);
+  assert.match(rule('.nav-filter::placeholder'), /color: var\(--muted\)/);
+  assert.match(rule('.nav-search'), /height: 26px; margin: 0 var\(--s3\); border-bottom: 1px solid transparent/);
+  assert.match(rule('.nav-search:focus-within'), /border-bottom-color: var\(--rule\)/);
+  assert.match(media('@media (pointer:coarse)'), /\.nav-search \{ height: 44px; \}/);
+  assert.match(rule('input:focus-visible, select:focus-visible'), /outline: 2px solid var\(--accent\)/);
 });
 test('result answer actions use content width and normal-flow height instead of icon-only geometry', () => {
   const row = rule('.communication-results'), action = rule('.communication-results > .card-action');
@@ -229,9 +233,10 @@ test('small radii and quiet surfaces limit motion to the busy marker and section
   assert.match(rule('dialog[open][data-variant=find]'), /box-shadow: none/);
   const shadowed = [...css.matchAll(/(?:^|\n)\s*([^{}\n]+)\{[^}]*box-shadow: var\(--shadow\)/g)].map(match => match[1].trim()).sort();
   assert.deepEqual(shadowed, ['.app.drawer-open .workbench > .sidebar', '.command-menu', '.context-menu', '.receipt-details pre', '.workbench-status .composer-detail-body', 'dialog']);
-  assert.doesNotMatch(css, /scroll-behavior:\s*smooth|backdrop-filter|filter:|text-shadow|gradient/);
+  assert.doesNotMatch(css, /scroll-behavior:\s*smooth|backdrop-filter|text-shadow|gradient/);
+  assert.deepEqual(declarations('filter'), []);
   assert.deepEqual(declarations('transition'), ['transform 120ms', 'none']);
-  assert.deepEqual(declarations('animation'), ['work-pulse 900ms linear infinite', 'none']);
+  assert.deepEqual(declarations('animation'), ['work-pulse 900ms linear infinite', 'none', 'work-pulse 900ms linear infinite', 'none']);
   assert.match(rule('.workbench-activity[data-busy=true]::before'), /animation: work-pulse 900ms linear infinite/);
   assert.match(css, /^@keyframes work-pulse \{ to \{ transform: rotate\(360deg\); \} \}$/m);
   assert.match(css, /@media \(prefers-reduced-motion:reduce\) \{ \.workbench-activity\[data-busy=true\]::before \{ animation: none; \} \}/);
@@ -429,7 +434,7 @@ test('the sidebar resizes through a persisted width and the column sits beside i
   assert.doesNotMatch(css, /\.spacer[^{}]*\{[^}]*max-width: 960px/);
   assert.doesNotMatch(rule('.conversation'), /margin-inline: auto|margin: 0 auto|margin-left: auto; margin-right: auto/);
 });
-test('lean chrome: gutter-marked user turns, no pills, wrapping roster rows and no duplicate title band', () => {
+test('lean chrome: gutter-marked user turns, no pills, compact roster rows and no duplicate title band', () => {
   const user = rule('.message.user > .message-body');
   assert.doesNotMatch(user, /max-width|margin-left|float/);
   assert.match(user, /background: var\(--side\)/);
@@ -439,7 +444,7 @@ test('lean chrome: gutter-marked user turns, no pills, wrapping roster rows and 
   assert.match(rule('.message.user > .message-body::before'), /content: "";[^}]*left: 0; border-left: 2px solid var\(--accent\)/);
   assert.doesNotMatch(css, /content: "You"/);
   const circles = [...css.matchAll(/(?:^|\n)\s*([^{}]+)\{[^{}]*border-radius: 50%;/g)].map(match => match[1].replace(/\/\*[\s\S]*?\*\//g, '').trim());
-  assert.deepEqual(circles, ['.workbench-activity[data-busy=true]::before']);
+  assert.deepEqual(circles, ['.row-state[data-busy=true]::before', '.workbench-activity[data-busy=true]::before']);
   for (const value of declarations('border-radius')) if (value !== '50%') assert.doesNotMatch(value, /999|50%|9999/);
   assert.match(rule('.communication-unverified'), /display: inline-flex;[^}]*align-items: center;[^}]*width: auto/);
   assert.match(rule('.communication-unverified > .card-action-label'), /white-space: nowrap/);
@@ -448,8 +453,8 @@ test('lean chrome: gutter-marked user turns, no pills, wrapping roster rows and 
   assert.match(rule('.row-age, .row-message'), /position: static; grid-row: 1/);
   assert.match(rule('.row-message'), /opacity: 1; pointer-events: auto; color: var\(--muted\)/);
   assert.doesNotMatch(css, /\.agent-row(?::hover|:focus-within)[^{]+> \.row-message/);
-  assert.match(rule('.agent-row > .row-age'), /grid-column: 2; width: 64px/);
-  assert.match(rule('.agent-row .row-select'), /grid-column: 1 \/ -1; grid-row: 1 \/ span 4/);
+  assert.match(rule('.agent-row > .row-age'), /grid-column: 2; width: auto/);
+  assert.match(rule('.agent-row .row-select'), /grid-column: 1 \/ -1; grid-row: 1;/);
   assert.doesNotMatch(css, /\.conversation-title-line|\.conversation-title\s*\{/);
   assert.doesNotMatch(html, /conversation-title-line|conversation-head|head-actions|header-band/);
   assert.match(rule('.pane-actions'), /display: inline-flex; flex: none;[^}]*min-width: 24px; min-height: 24px/);
@@ -1006,11 +1011,11 @@ test('primary history details and retry share a flat wrapping action row', () =>
 });
 test('coarse roster timestamps and Message actions own disjoint columns at every roster width', () => {
   const coarse = media('@media (pointer:coarse)');
-  assert.match(coarse, /\.agent-row:is\(\[data-action=message\],\[data-action=resume\]\) \{ grid-template-columns: minmax\(0,1fr\) 64px 44px/);
+  assert.match(coarse, /\.agent-row:is\(\[data-action=message\],\[data-action=resume\]\) \{ grid-template-columns: minmax\(0,1fr\) max-content 44px/);
   assert.match(coarse, /\.agent-row > \.row-age \{ min-height: 44px/);
   assert.match(coarse, /\.agent-row > \.row-message \{ width: 44px; height: 44px/);
   assert.doesNotMatch(coarse, /\.agent-row > \.row-select|padding-right: var\(--s2\)/);
-  assert.match(rule('.row-age[data-absolute=true], .row-age[data-absolute=true] > time'), /white-space: normal; overflow-wrap: anywhere/);
+  assert.match(rule('.row-age time'), /overflow: hidden; text-overflow: ellipsis; white-space: nowrap/);
   assert.doesNotMatch(coarse, /visibility: hidden/);
 });
 test('source disclosure controls occupy the caption row without entering its click target', () => {
@@ -1145,7 +1150,7 @@ test('sidebar heading rails keep the shared edge and plain labels reserve chevro
   assert.match(rule('.nav-heading-row'), /padding: 0 8px 0 var\(--s3\)/); assert.match(rule('.conversation-heading, .conversation-group-title'), /padding: 0 var\(--s3\)/);
   assert.match(rule('.nav-row, .row-select'), /padding: 2px 64px 2px var\(--s3\)/); assert.match(rule('.conversation-row'), /padding: 2px var\(--s3\);/);
   assert.match(rule('.file-row'), /padding: 2px var\(--s3\) 2px calc\(var\(--s3\) \+ var\(--file-depth,0\) \* 14px\)/);
-  assert.match(rule('.agent-row .row-select'), /padding: 4px var\(--s2\) 4px var\(--s3\)/); assert.match(rule('.nav-search'), /margin: var\(--s1\) var\(--s3\)/);
+  assert.match(rule('.agent-row .row-select'), /padding: 2px var\(--s2\) 2px var\(--s3\)/); assert.match(rule('.nav-search'), /margin: 0 var\(--s3\)/);
 });
 
 test('the draft-save failure row wraps, stays visible and offers a quiet text retry', () => {

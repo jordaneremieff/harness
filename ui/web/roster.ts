@@ -8,12 +8,13 @@ import { reconcileChildren } from './render.ts';
 import {ConversationCaptions, agentName} from './tabs.ts';
 import type {PresentationTone} from './conversation-presentation.ts';
 import {parseMarkdown, type MarkdownBlock, type MarkdownInline} from './markdown.ts';
+import {THREAD_FILTER_THRESHOLD} from './threads.ts';
 
 export type CachedPageSearch = {load: (cursor: string, signal: AbortSignal) => Promise<CachedRoster>; merge: (page: CachedRoster) => void};
 const SEARCH_PAGE_LIMIT = 20;
 const ROW_HEIGHT = 44;
 const RECENT_AGE = 24 * 60 * 60 * 1000;
-type RowNode = {node: HTMLElement; select: HTMLButtonElement; state: HTMLElement; name: HTMLElement; preview: HTMLElement; identity: HTMLElement; ageButton: HTMLButtonElement; message: HTMLButtonElement; age: HTMLTimeElement; source: AgentRow; absolute: boolean; previewSource?: string};
+type RowNode = {node: HTMLElement; select: HTMLButtonElement; state: HTMLElement; name: HTMLElement; summary: HTMLElement; separator: HTMLElement; preview: HTMLElement; identity: HTMLElement; ageButton: HTMLButtonElement; message: HTMLButtonElement; age: HTMLTimeElement; source: AgentRow; absolute: boolean; previewSource?: string};
 function inlinePreview(nodes: MarkdownInline[]): string {
   return nodes.map(node => node.type === 'text' || node.type === 'code' ? node.text : 'children' in node ? inlinePreview(node.children) : '').join('');
 }
@@ -32,7 +33,7 @@ export function rosterPreview(source: string): string {
   return previewText(words, 1, 180).text;
 }
 function rowName(row: AgentRow): string {return agentName(row.name, row.handle, row.identity, undefined, row.firstMessage);}
-export type RosterStatus = {hideVisibleState?: boolean; activity?: string; glyph: string; label: string; tone?: PresentationTone; name?: string; tail?: string; tool?: AgentRow['currentTool']};
+export type RosterStatus = {hideVisibleState?: boolean; glyph: string; label: string; tone?: PresentationTone; name?: string; tail?: string; tool?: AgentRow['currentTool']};
 function modelText(row: AgentRow): string {
   if (!row.model) return '';
   const thinking = row.model.thinkingLevel ?? row.thinkingLevel;
@@ -82,6 +83,7 @@ export class Roster {
   private select: (row: AgentRow) => void;
   private more: (action?: 'refresh' | 'more') => void;
   private empty = element('p', 'empty-state');
+  private filterBox = byId('agent-filter-box');
   readonly node = byId('roster');
   constructor(select: (row: AgentRow) => void, more: (action?: 'refresh' | 'more') => void, search: CachedPageSearch | undefined, message: ((identity: string) => void) | undefined, resolvedStatus: (row: AgentRow) => RosterStatus) {
     this.resolvedStatus = resolvedStatus; this.select = select; this.more = more; this.search = search; this.message = message;
@@ -96,11 +98,12 @@ export class Roster {
     this.node.addEventListener('keydown', event => {
       if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey || event.altKey || Array.from(event.key).length !== 1) return;
       if (!this.node.contains(document.activeElement)) return;
-      event.preventDefault(); searchField.focus(); searchField.value += event.key;
+      event.preventDefault(); this.focusSearch(); searchField.value += event.key;
       this.node.scrollTop = 0; this.paint(); void this.searchCached();
     });
     this.node.addEventListener('scroll', () => this.schedule(), {passive: true});
   }
+  focusSearch(): void { this.filterBox.hidden = false; byId<HTMLInputElement>('agent-search').focus(); }
   set(rows: AgentRow[], meta?: Omit<CachedRoster, 'rows'>, selected?: string): void {
     const now = Date.now();
     for (const row of rows) if (this.arrivals.get(row.identity)?.source !== row) this.arrivals.set(row.identity, {source: row, now});
@@ -232,9 +235,12 @@ export class Roster {
     if (searchMore || pageMore) { cardActionLabel(this.paging, query ? 'More agents' : label); controls.push(this.paging); }
     return controls;
   }
+  private filterVisibility(query: string): void {
+    this.filterBox.hidden = this.rows.length <= THREAD_FILTER_THRESHOLD && !query && document.activeElement !== byId('agent-search');
+  }
   private paint(): void {
     const anchor = captureAnchor(this.layout, this.node.scrollTop); const pins = this.pins();
-    const now = Date.now(); const filtered = this.filtered(); const query = this.query();
+    const now = Date.now(); const filtered = this.filtered(); const query = this.query(); this.filterVisibility(query);
     const scoped = query ? filtered : filtered.filter(row => row.availability === 'live' || row.state === 'working' ||
       (isValidTimestamp(row.modifiedAt) && row.modifiedAt >= now - RECENT_AGE) || pins.has(row.identity) || this.resumes.has(row.identity));
     const olderCount = filtered.length - scoped.length;
@@ -288,29 +294,32 @@ export class Roster {
     const node = element('div', 'agent-row'); node.setAttribute('role', 'listitem');
     const select = button('', () => { const current = this.cache.get(row.identity)?.source; if (current) this.select(current); }, 'row-select');
     node.dataset.identity = row.identity;
-    const heading = element('span', 'row-heading'); const state = element('span', 'row-state workbench-activity'); state.setAttribute('aria-hidden', 'true');
-    const name = element('span', 'row-name'); const identity = element('code', 'row-identity muted'), preview=element('span','row-preview'); heading.append(name, identity, state,preview);
+    const heading = element('span', 'row-heading'); const state = element('span', 'row-state'); state.setAttribute('aria-hidden', 'true');
+    const name = element('span', 'row-name'); const identity = element('code', 'row-identity muted'), preview=element('span','row-preview'); heading.append(name, identity);
+    const summary = element('span', 'row-summary'), separator = element('span', 'row-separator', ' · '); separator.setAttribute('aria-hidden', 'true'); summary.append(state, separator, preview);
     const age = element('time', 'timestamp');
     const ageButton = button('', () => { cached.absolute = !cached.absolute; this.updateAge(cached, true); this.schedule(); }, 'row-age'); ageButton.append(age);
     const message = cardAction('message', 'Message', () => this.message?.(row.identity), 'row-message');
-    select.append(heading); node.append(select, ageButton, message);
-    const cached = {node, select, state, name, preview, identity, ageButton, message, age, source: row, absolute: false}; this.cache.set(row.identity, cached);
+    select.append(heading, summary); node.append(select, ageButton, message);
+    const cached = {node, select, state, name, summary, separator, preview, identity, ageButton, message, age, source: row, absolute: false}; this.cache.set(row.identity, cached);
     return cached;
   }
   private updatePreview(cached: RowNode, source?: string): void {
-    if (cached.previewSource !== source) {cached.previewSource = source; setText(cached.preview, rosterPreview(source ?? '')); cached.preview.title = cached.preview.textContent ?? '';}
+    if (cached.previewSource !== source) {cached.previewSource = source; setText(cached.preview, rosterPreview((source ?? '').slice(0, 4096).split(/\r?\n/, 1)[0] ?? '')); cached.preview.title = cached.preview.textContent ?? '';}
     cached.preview.hidden = !cached.preview.textContent;
+    cached.separator.hidden = cached.state.hidden || cached.preview.hidden;
+    cached.summary.hidden = cached.state.hidden && cached.preview.hidden;
   }
   private rowStatus(row: AgentRow): RosterStatus {
     const resolved = this.resolvedStatus(row);
     return resolved.hideVisibleState && row.availability === 'live' && row.state === 'working'
-      ? {...resolved, label: 'Working', activity: undefined, tone: 'info', hideVisibleState: false} : resolved;
+      ? {...resolved, label: 'Working', tone: 'info', hideVisibleState: false} : resolved;
   }
   private row(row: AgentRow, identity: string): RowNode {
     const cached = this.cache.get(row.identity) ?? this.createRow(row);
     const state = this.rowStatus(row);
-    setText(cached.state, state.activity || (state.label==='Ready'?'Idle':state.label)); cached.state.hidden = state.hideVisibleState === true || !cached.state.textContent; cached.state.title = state.label; cached.state.dataset.tone = state.tone ?? 'secondary'; cached.state.dataset.busy = String(state.label === 'Working'); setText(cached.name, state.name ?? rowName(row));
-    const caption=this.captions.get(row.identity);cached.name.title=caption.source==='first-message'?'Title from first message, not a supplied name':'Conversation name';
+    setText(cached.state, state.label==='Ready'?'Idle':state.label); cached.state.hidden = state.hideVisibleState === true || !cached.state.textContent; cached.state.title = state.label; cached.state.dataset.tone = state.tone ?? 'secondary'; cached.state.dataset.busy = String(state.label === 'Working'); setText(cached.name, state.name ?? rowName(row));
+    const caption=this.captions.get(row.identity);cached.name.title=`${cached.name.textContent}\n${caption.source==='first-message'?'Title from first message, not a supplied name':'Conversation name'}`;
     this.updatePreview(cached, row.latestReply);
     identity = state.name !== undefined ? state.tail ?? '' : identity; setText(cached.identity, identity); cached.identity.hidden = !identity; cached.identity.title = `Agent ID: ${row.identity}`;
     cached.identity.setAttribute('aria-label', cached.identity.title);

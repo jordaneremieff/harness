@@ -181,7 +181,7 @@ const fakeDocument = {
 };
 function setup(): void {
   roots = []; frames = []; ids.clear(); documentHandlers.clear(); selection = null; fakeDocument.activeElement = null;
-  for (const id of ['primary-transcript', 'primary-latest', 'agent-transcript', 'agent-latest', 'roster', 'agent-search', 'roster-footer', 'announcements', 'primary-editor']) {
+  for (const id of ['primary-transcript', 'primary-latest', 'agent-transcript', 'agent-latest', 'roster', 'agent-search', 'agent-filter-box', 'roster-footer', 'announcements', 'primary-editor']) {
     const node = new FakeNode('div'); ids.set(id, node); roots.push(node);
   }
   Reflect.deleteProperty(fakeDocument, 'caretPositionFromPoint'); Reflect.deleteProperty(fakeDocument, 'createRange');

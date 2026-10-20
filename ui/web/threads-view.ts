@@ -110,7 +110,7 @@ export class ThreadExplorer {
     const count = threadCount(overview); setText(this.count, count); this.count.hidden = !count;
     this.refreshButton.disabled = this.loading || this.collapsed;
     const query = this.filter.value.trim();
-    this.filterBox.hidden = !(overview && (overview.items.length > THREAD_FILTER_THRESHOLD || query));
+    this.filterBox.hidden = !(overview && overview.items.length > THREAD_FILTER_THRESHOLD || query || document.activeElement === this.filter);
     this.lastNames = this.nameSignature();
     if (this.collapsed) return;
     const items = overview ? filterThreads(overview.items, query) : [];

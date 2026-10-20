@@ -1283,7 +1283,9 @@ test('sidebar sections retain their collapsed state per workspace and tab and fi
   assert.equal(byId('files-section-body').hidden, true); app.setSidebarSection('files', false);
   assert.equal(byId('files-heading').getAttribute('aria-expanded'), 'true'); assert.equal(byId('files-section-body').hidden, false);
   assert.equal(byId('agents-section-body').hidden, true);
+  assert.equal(byId('agent-filter-box').hidden, true);
   byId('sidebar').hidden = true; const before = browser.frameCount; app.focusAgentSearch(); await settle();
+  assert.equal(byId('agent-filter-box').hidden, false);
   assert.equal(byId('sidebar').hidden, false); assert.equal(byId('agents-section-body').hidden, false);
   assert.equal(hostDocument.activeElement, byId('agent-search')); assert.ok(browser.frameCount > before);
   const denied = () => {throw new Error('denied');};

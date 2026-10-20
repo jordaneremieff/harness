@@ -1,7 +1,7 @@
 import { compactAge, formatDate } from './format.ts';
 import type {ThreadEventView, ThreadFrameView, ThreadListItem, ThreadOverview, ThreadPageView} from '../shared/api.ts';
 
-/** Above this many threads the explorer offers a filter field. */
+/** Longer loaded sidebar lists offer a filter field. */
 export const THREAD_FILTER_THRESHOLD = 8;
 /** One page of events per read; the route accepts at most 20. */
 export const THREAD_PAGE_EVENTS = 20;

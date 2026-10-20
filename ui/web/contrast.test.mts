@@ -28,7 +28,7 @@ const decorativeHairlines = new Set([
   ".transcript-group-header|border-top", ".message-source|border",
   ".communication-source-section + .communication-source-section|border-top",
   ".context-menu-separator|border-top",
-  ".nav-top|border-bottom", ".nav-filter|border", ".composer-input|border",
+  ".nav-top|border-bottom", ".nav-search:focus-within|border-bottom-color", ".composer-input|border",
   ".context-menu|border", "dialog[data-variant=find] #modal-body > input|border",
 	".source-header|border-bottom",
 	".sidebar|border-right",

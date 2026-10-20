@@ -73,6 +73,19 @@ test('the section reads nothing until it is opened and lists open threads before
   assert.equal(threadCalls().length, reads);
 });
 
+test('thread filters share the eight-row threshold and preserve a query or focused field', async () => {
+  const loaded = Array.from({length: 9}, (_, index) => ({...items[0], id: id(String(index)), title: `Filter thread ${index}`}));
+  fixtureControl.threadHandler = () => ({...overview, items: loaded.slice(0, 8)});
+  byId('threads-refresh').click(); await settle(); assert.equal(byId('threads-filter-box').hidden, true);
+  fixtureControl.threadHandler = () => ({...overview, items: loaded});
+  byId('threads-refresh').click(); await settle(); assert.equal(byId('threads-filter-box').hidden, false);
+  const filter = byId('threads-filter'); filter.focus();
+  fixtureControl.threadHandler = () => ({...overview, items: loaded.slice(0, 8)});
+  byId('threads-refresh').click(); await settle(); assert.equal(byId('threads-filter-box').hidden, false);
+  filter.value = 'Filter'; filter.dispatch('input'); filter.blur(); assert.equal(byId('threads-filter-box').hidden, false);
+  filter.value = ''; filter.dispatch('input'); assert.equal(byId('threads-filter-box').hidden, true);
+  fixtureControl.threadHandler = () => overview; byId('threads-refresh').click(); await settle();
+});
 test('a thread opens in the focused pane only, reads without writing, and Escape returns to the row', async context => {
   context.mock.method(Date, 'now', () => new Date(2026, 9, 20, 12).getTime());
   const firstAt = new Date(2026, 9, 7, 5, 56).getTime();
