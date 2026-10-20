@@ -2242,3 +2242,35 @@ test('an agent on another provider shows the list name for the same id, and its 
     assert.equal(agentControl('settings-text')?.textContent, 'clashing-id · High', 'two names for one id leave the id');
   } finally {globalThis.fetch = previous;}
 });
+test('a stored agent shows the list name from a ready Primary when no Primary is selected, and its tooltip keeps provider and id', async () => {
+  const stored = agentFixture('named-unselected', {name: 'Stored agent', model: {provider: 'anthropic', modelId: 'claude-sonnet-5-5'}, thinkingLevel: 'high'});
+  const previous = globalThis.fetch, reads: string[] = [];
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input), 'http://ui.test/app');
+    if (url.pathname.endsWith('/resources/models')) {reads.push(url.pathname); return Response.json({ok: true, data: {items: [{provider: 'anthropic', id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5', reasoning: true, input: ['text']}], nextCursor: null, revision: 'r'}});}
+    return previous(input, init);
+  };
+  try {
+    await arrive({workspace: {id: 'unselected', revision: 1, primaryKey: null}, primaries: [primaryFixture({epoch: 7703, lifecycle: 'ready'})], roster: [stored]});
+    await settle(); await app.selectAgent(stored); await settle();
+    assert.equal(app.state.workspace?.primaryKey ?? null, null);
+    assert.equal(agentControl('settings-text')?.textContent, 'Claude Sonnet 5.5 · High'); assert.equal(agentControl('settings-text')?.title, 'Last observed: Model anthropic/claude-sonnet-5-5 · Thinking high');
+    assert.deepEqual(reads, ['/api/primaries/p/resources/models']);
+  } finally {globalThis.fetch = previous;}
+});
+test('a stored agent shows the list name from a ready Primary when the selected Primary is stopped', async () => {
+  const stored = agentFixture('named-stopped-selection', {name: 'Stored agent', model: {provider: 'anthropic', modelId: 'claude-sonnet-5-5'}, thinkingLevel: 'high'});
+  const previous = globalThis.fetch, reads: string[] = [];
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input), 'http://ui.test/app');
+    if (url.pathname.endsWith('/resources/models')) {reads.push(url.pathname); return Response.json({ok: true, data: {items: [{provider: 'anthropic', id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5', reasoning: true, input: ['text']}], nextCursor: null, revision: 'r'}});}
+    return previous(input, init);
+  };
+  try {
+    await arrive({workspace: {id: 'stopped-selection', revision: 1, primaryKey: 'stopped'}, primaries: [primaryFixture({key: 'stopped', epoch: 7704, lifecycle: 'stopped'}), primaryFixture({key: 'ready', epoch: 7705, lifecycle: 'ready'})], roster: [stored]});
+    await settle(); await app.selectAgent(stored); await settle();
+    assert.equal(app.state.workspace?.primaryKey, 'stopped');
+    assert.equal(agentControl('settings-text')?.textContent, 'Claude Sonnet 5.5 · High'); assert.equal(agentControl('settings-text')?.title, 'Last observed: Model anthropic/claude-sonnet-5-5 · Thinking high');
+    assert.deepEqual(reads, ['/api/primaries/ready/resources/models']);
+  } finally {globalThis.fetch = previous;}
+});

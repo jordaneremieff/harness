@@ -1098,6 +1098,13 @@ test('model names come from one read of the Primary model list for each Primary 
   current = {...primary, epoch: 2}; actions.readModelNames(); await new Promise(resolve => setTimeout(resolve, 0)); assert.equal(reads.length, 2);
   assert.equal(changed, 1, 'an unchanged list does not repaint');
 });
+test('model names are read through the naming Primary when no Primary is selected', async () => {
+  const reads: string[] = [];
+  globalThis.fetch = async path => {reads.push(String(path)); return Response.json({ok: true, data: {items: [{provider: 'vendor', id: 'model-a', name: 'Model A', reasoning: true, input: ['text']}], nextCursor: null, revision: 'r'}});};
+  const actions = new Actions(context({primary: () => undefined, namingPrimary: () => primary}));
+  actions.readModelNames(); actions.readModelNames(); await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(reads, ['/api/primaries/p/resources/models?limit=100']); assert.equal(actions.modelName('vendor', 'model-a'), 'Model A');
+});
 test('model names are not read for a Primary that is not ready, and a failed read stays quiet', async () => {
   const reads: string[] = []; let current: PrimaryView = {...primary, lifecycle: 'starting'}, changed = 0;
   globalThis.fetch = async path => {reads.push(String(path)); return Response.json({ok: false, error: {code: 'unavailable', message: 'No models', retry: 'manual'}}, {status: 503});};

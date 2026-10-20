@@ -105,7 +105,7 @@ function findStatusText(result: FindStatus | undefined, query: string): string {
   return `Match ${result.position} of ${result.total} in loaded messages.${boundary}`;
 }
 export type SelectionChange = Partial<Omit<Workspace, 'selectedTarget'>> & {selectedTarget?: Target | null};
-export type ActionContext = {agentPresentation: ConstructorParameters<typeof ProjectPicker>[0]['agentPresentation']; snapshot: () => Snapshot | undefined; primary: () => PrimaryView | undefined; composer: Composer; commandsChanged: () => void; modelChanged?: () => void; modelNamesChanged?: () => void; modal: Modal;
+export type ActionContext = {agentPresentation: ConstructorParameters<typeof ProjectPicker>[0]['agentPresentation']; snapshot: () => Snapshot | undefined; primary: () => PrimaryView | undefined; /** The Primary whose model list names models: the selected Primary when it is ready, else any ready Primary. */ namingPrimary?: () => PrimaryView | undefined; composer: Composer; commandsChanged: () => void; modelChanged?: () => void; modelNamesChanged?: () => void; modal: Modal;
   selection: (change: SelectionChange) => Promise<void>; reload: () => Promise<void>; result: (result: OperationView) => void; rosterRefresh: () => void; hasTranscript: () => boolean; find: () => FindSession | undefined; recovery: () => void; primaryEntries: () => EntryView[]; agents: () => AgentRow[]; selectedAgent: () => Pick<AgentRow, 'identity' | 'capabilities'> | undefined; selectAgent: (row: AgentRow) => void; selectPrimary: () => void; notices: () => void; sidebar: (visible: boolean) => void; view: (tools: boolean, expand: boolean) => void; copyAgent: () => void; inspectAgent: () => void; resultLookup?: () => void; agentCaption?: (identity: string) => ConversationCaption; agentStatus: (row: AgentRow) => string; conversationFacts?: (identity: string) => readonly ReportedFact[]; tabs?: {close: () => void; switch: (direction: number) => void; layout: () => ConversationLayout}};
 export class Actions {
   private captions = new ConversationCaptions();
@@ -146,7 +146,7 @@ export class Actions {
   }
   /** Learns the ready Primary's own model on every call, then reads its model list once for each Primary session, page by page up to the page bound, so conversation settings can show readable names. */
   readModelNames(): void {
-    const primary = this.ctx.primary(); if (primary?.lifecycle !== 'ready') return;
+    const primary = (this.ctx.namingPrimary ?? this.ctx.primary)(); if (primary?.lifecycle !== 'ready') return;
     if (primary.model) this.learnModels([primary.model], true);
     const key = `${primary.key}:${primary.epoch}`; if (this.namedPrimaries.has(key)) return;
     this.namedPrimaries.add(key);
