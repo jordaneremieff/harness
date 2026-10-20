@@ -28,6 +28,8 @@ export type ComposerElements = {root: HTMLFormElement; editor: HTMLTextAreaEleme
   receiptDetails: HTMLElement; queue: HTMLButtonElement; send: HTMLButtonElement; save: HTMLElement; fileMenu?: HTMLElement; recallHint?: HTMLElement; recallLine?: HTMLElement; recallRestore?: HTMLButtonElement; meta?: HTMLElement; model?: HTMLButtonElement; thinking?: HTMLButtonElement; settings?: HTMLElement; commandMenu?: HTMLElement; overlay?: HTMLElement; attachments?: HTMLElement; attach?: HTMLButtonElement; sources?: HTMLButtonElement; picker?: HTMLInputElement; state?: HTMLElement; start?: HTMLButtonElement};
 /** An agent-specific state in the composer's control row, with at most one action in the Send position (`hideSend` removes the disabled Send when the state offers none) and optional exact details. `line` is the full sentence for assistive technology; `label` is the short note shown beside the add control. `withoutDraft` keeps the composer on screen, with the editor and add control disabled, while no draft is attached, so the state and its action stay reachable. */
 export type ComposerStateView = {line: string; label?: string; tone?: 'error' | 'warning'; hideSend?: boolean; withoutDraft?: boolean; action?: {label: string; title?: string; pending?: boolean; disabled?: boolean; recovery?: boolean; run: () => void}; blocksSend?: boolean; detail?: string; showDetail?: () => void};
+/** An accepted queued input is expected behaviour, so its notice uses the quiet tier, not the warning tier. */
+const queuedAdmissionNotice = (text: string): boolean => text === 'Message queued' || text === 'Steer queued';
 /** An action-slot button holds an icon from the shared set, when it has one, and a visible label. */
 const actionParts = new WeakMap<HTMLElement, {label: HTMLElement; icon?: CardIcon; mark?: SVGSVGElement}>();
 function paintAction(node: HTMLButtonElement, icon: CardIcon | undefined, label: string): void {
@@ -946,7 +948,7 @@ export class Composer {
   private receiptNotices(buffer: Buffer, records: OperationView[], slot: HTMLElement): void {
     const ordinary = buffer.lastOperation?.state === 'accepted' && buffer.notice === 'Message sent';
     const notice = this.waiting && buffer.submitting && (buffer.notice === 'Sending…' || buffer.notice.startsWith('Running /')) ? 'Waiting for your answer' : buffer.notice;
-    if (notice && !ordinary && buffer.notice !== buffer.saveError) slot.append(element('p', 'warning', notice));
+    if (notice && !ordinary && buffer.notice !== buffer.saveError) slot.append(element('p', queuedAdmissionNotice(notice) ? 'secondary' : 'warning', notice));
     if (buffer.noticeDetails && !buffer.saveError) slot.append(this.details(buffer.noticeDetails));
     if (buffer.insertionCopy !== undefined) slot.append(button('Insert prepared text', () => {
       const captured = this.insertionCapture(); if (captured?.buffer === buffer && buffer.insertionCopy !== undefined) this.insertPrepared(captured, buffer.insertionCopy);
@@ -961,8 +963,9 @@ export class Composer {
   private inputReceiptNotice(buffer: Buffer, record: OperationView | undefined, slot: HTMLElement): void {
     if (!record || buffer.pending.has(record.id)) return;
     const queued = record.state === 'accepted' && record.receipt?.kind === 'rpc' && record.receipt.disposition === 'queued';
-    const label = queued ? 'Message queued' : ['uncertain', 'rejected'].includes(record.state) ? operationLabel(record) : '';
-    if (label && buffer.notice !== label) slot.append(element('p', queued ? 'secondary' : 'warning', label));
+    const mode = buffer.state.retainedInputs.find(item => item.operationId === record.id)?.mode;
+    const label = queued ? (mode === 'steer' ? 'Steer queued' : 'Message queued') : ['uncertain', 'rejected'].includes(record.state) ? operationLabel(record) : '';
+    if (label && buffer.notice !== label && !(queued && queuedAdmissionNotice(buffer.notice))) slot.append(element('p', queued ? 'secondary' : 'warning', label));
   }
   private receiptDetails(records: OperationView[]): void {
     const disclosure = this.elements.receiptDetails;
@@ -1109,7 +1112,7 @@ export class Composer {
       const save=buffer.data.inFlight;
       if(outcome==='accepted'&&clearAccepted&&save?.edit===pending.submission.edit&&sameDraftTuple(save,pending.submission))this.admittedSaves.set(save,pending.submission);
       buffer.data = settleSubmission(buffer.data, pending.submission, outcome, undefined, clearAccepted); this.rebaseSelection(buffer, previous, outcome === 'accepted' && clearAccepted);
-      buffer.notice = this.admissionNotice(result, pending.submission.images.length > 0); buffer.noticeDetails = undefined;
+      buffer.notice = this.admissionNotice(result, pending.submission.images.length > 0, pending.submission.mode); buffer.noticeDetails = undefined;
       this.paint(buffer); this.receipt(buffer); announce(buffer.notice);
       if (outcome === 'accepted' || result.retainedInput) await this.refreshAccepted(buffer, pending);
       buffer.pending.delete(result.id); buffer.resolved.add(result.id);
@@ -1128,10 +1131,10 @@ export class Composer {
       } else this.receive(buffer, draft);
     } catch (error) { this.failureNotice(buffer, 'Draft could not be refreshed.', error); }
   }
-  private admissionNotice(result: OperationView, images = false): string {
+  private admissionNotice(result: OperationView, images = false, mode = ''): string {
     if (result.state !== 'accepted') return 'Message not sent';
     if (images && result.receipt?.kind === 'rpc' && result.receipt.disposition === 'handled') return 'Input handled; images not confirmed';
-    if (result.receipt?.kind === 'rpc' && result.receipt.disposition === 'queued') return 'Message queued';
+    if (result.receipt?.kind === 'rpc' && result.receipt.disposition === 'queued') return mode === 'steer' ? 'Steer queued' : 'Message queued';
     return 'Message sent';
   }
   private pendingBlocks(buffer: Buffer): boolean {

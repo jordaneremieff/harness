@@ -981,6 +981,25 @@ test('routine admitted notices announce once without persistent text but queued 
   f.composer.receipts([{id: 'queued', kind: 'primary.input', target: a.target, state: 'accepted', receipt: {kind: 'rpc', disposition: 'queued'}, createdAt: '', updatedAt: ''}]);
   assert.match(f.node('receipt').textContent, /Message queued/); assert.equal(f.node('save').textContent, '');
 });
+test('a queued admission names the delivery mode in the quiet tier while a refusal stays a warning', async () => {
+  const announcements = () => (globalThis.document as unknown as {getElementById(id: string): NodeFake}).getElementById('announcements');
+  const admitQueued = async (f: ReturnType<typeof fixture>, a: TargetState, sending: Promise<void>, mode: string) => {
+    await turn(); const call = f.pick('POST', '/inputs'); assert.equal(call.body.mode, mode);
+    f.ok(call, {id: call.id, kind: 'primary.input', target: a.target, state: 'accepted', createdAt: '', updatedAt: '', receipt: {kind: 'rpc', disposition: 'queued'}});
+    await turn(); f.ok(f.pick('GET', '/a'), state('a', draft(3, '', mode))); await sending; await turn();
+  };
+  const steer = fixture(); const sa = steer.connect(state('a', draft(2, 'steer this'))); steer.composer.availability(true, true, true);
+  await admitQueued(steer, sa, steer.composer.send(), 'steer');
+  assert.equal(steer.node('receipt').textContent, 'Steer queued');
+  assert.equal(steer.node('receipt').children[0]?.className, 'secondary'); assert.equal(announcements().textContent, 'Steer queued');
+  const follow = fixture(); const fa = follow.connect(state('a', draft(2, 'after this run'))); follow.composer.availability(true, true, true);
+  await admitQueued(follow, fa, follow.composer.send(false, undefined, 'followUp'), 'followUp');
+  assert.equal(follow.node('receipt').textContent, 'Message queued');
+  assert.equal(follow.node('receipt').children[0]?.className, 'secondary'); assert.equal(announcements().textContent, 'Message queued');
+  const refused = fixture(); const ra = refused.connect(state('a', draft(2, 'not now')));
+  const refusing = refused.composer.send(); await turn(); refused.admit(ra, 'rejected'); await refusing; await turn();
+  assert.equal(refused.node('receipt').textContent, 'Message not sent'); assert.equal(refused.node('receipt').children[0]?.className, 'warning');
+});
 test('an open primary menu accepts an exact name without dispatch and normal Enter returns after acceptance', async () => {
   const commands = () => ({state: 'ready' as const, items: [{name: 'fixture', description: 'public command', source: 'extension'}]});
   const f = fixture('primary', commands); const a = f.connect(state('a', draft(1, '/fixture')));
