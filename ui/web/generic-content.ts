@@ -568,18 +568,30 @@ class Preview {
       if (!this.append(body, tr)) break;
     }
   }
-  private editSide(frame: HTMLElement, value: string, sign: string, className: string, empty: boolean): void {
+  private editSide(frame: HTMLElement, lines: string[], sign: string, className: string, empty: boolean): void {
     if (!this.budget.text) { this.limit(); return; }
-    const signed = empty ? `${sign === '-' ? 'Old' : 'New'} text: empty` : value.split(/\r\n|\r|\n/).map(line => `${sign} ${line}`).join('\n');
-    const text = this.take(signed, DOC_CHARS);
-    if (text) frame.append(empty ? document.createTextNode(text) : element('span', className, text), document.createTextNode(this.take('\n', 1)));
+    if (empty) {
+      const label = this.take(`${sign === '-' ? 'Old' : 'New'} text: empty`, DOC_CHARS);
+      if (label) frame.append(document.createTextNode(label), document.createTextNode(this.take('\n', 1)));
+      return;
+    }
+    if (!lines.length) return;
+    const text = this.take(lines.map(line => `${sign} ${line}`).join('\n'), DOC_CHARS);
+    if (text) frame.append(element('span', className, text), document.createTextNode(this.take('\n', 1)));
+  }
+  private contextLine(frame: HTMLElement, line: string | null): void {
+    if (line === null) return;
+    if (!this.budget.text) { this.limit(); return; }
+    frame.append(document.createTextNode(this.take(`  ${line}`, DOC_CHARS)), document.createTextNode(this.take('\n', 1)));
   }
   private replacementFrame(old: string, next: string): HTMLPreElement {
     const comparison = suppliedDifference(old, next, Math.min(DOC_CHARS - DOC_LINES * 2, Math.max(0, Math.floor((this.budget.text - 240) / 2))), DOC_LINES);
     const {pre, frame} = framedPre();
     if (comparison.omittedBefore) frame.append(document.createTextNode(this.take('Earlier context omitted.\n', 32, 2)));
-    this.editSide(frame, comparison.oldText, '-', 'diff-del', old === '');
-    this.editSide(frame, comparison.newText, '+', 'diff-add', next === '');
+    this.contextLine(frame, comparison.contextBefore);
+    this.editSide(frame, comparison.removed, '-', 'diff-del', old === '');
+    this.editSide(frame, comparison.added, '+', 'diff-add', next === '');
+    this.contextLine(frame, comparison.contextAfter);
     const notice = differenceNotice(comparison); if (notice) frame.append(document.createTextNode(this.take(notice, 160, 1)));
     if (comparison.omittedBefore || comparison.omittedAfter || comparison.scanLimited) this.limit('text');
     if (countNodes(pre) > this.room()) frame.textContent = pre.textContent;

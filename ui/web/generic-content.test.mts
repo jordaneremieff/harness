@@ -578,6 +578,22 @@ test('supplied edits use at most eight old and new pairs without an inferred dif
   assert.match(node.textContent, /Supplied replacement/); assert.match(node.textContent, /Preview shortened/); bounded(node);
 });
 
+test('supplied edits color only changed lines and show shared lines in plain text', () => {
+  const append = args({edits: [{oldText: 'a\nb.', newText: 'a\nb.\nc\nd'}]});
+  assert.deepEqual(classes(append, 'diff-add').map(child => child.textContent), ['+ c\n+ d']); assert.equal(classes(append, 'diff-del').length, 0);
+  assert.ok(append.textContent.includes('Earlier context omitted.\n  b.\n+ c\n+ d\n'));
+  const insertion = args({edits: [{oldText: 'x\ny\nz', newText: 'x\nI\ny\nz'}]});
+  assert.deepEqual(classes(insertion, 'diff-add').map(child => child.textContent), ['+ I']); assert.equal(classes(insertion, 'diff-del').length, 0);
+  assert.ok(insertion.textContent.includes('  x\n+ I\n  y\nLater context omitted.'));
+  const deletion = args({edits: [{oldText: 'x\ny\nz', newText: 'x\nz'}]});
+  assert.deepEqual(classes(deletion, 'diff-del').map(child => child.textContent), ['- y']); assert.equal(classes(deletion, 'diff-add').length, 0);
+  assert.ok(deletion.textContent.includes('  x\n- y\n  z\n'));
+  const inline = args({edits: [{oldText: 'a\nfoo bar\nc', newText: 'a\nfoo baz\nc'}]});
+  assert.deepEqual([classes(inline, 'diff-del'), classes(inline, 'diff-add')].map(list => list.map(child => child.textContent)), [['- foo bar'], ['+ foo baz']]);
+  const empty = args({edits: [{oldText: '', newText: 'new'}]});
+  assert.match(empty.textContent, /Old text: empty\n\+ new/); assert.equal(classes(empty, 'diff-del').length, 0);
+});
+
 test('expanded supplied replacements locate later changes and preserve their shared content budget', () => {
   const context = setup();
   const prefix = 'same\r\n'.repeat(2000);

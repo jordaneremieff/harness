@@ -6,7 +6,7 @@ import type { PresentationContext, ToolPresentationSource } from './transcript-p
 import { previewText } from './format.ts';
 import { highlight, isMarkdownPath, languageFromPath } from './highlight.ts';
 import { markdownPreviewDom, withoutFrontmatter } from './safe-markdown.ts';
-import { suppliedDifference, differenceNotice } from './supplied-difference.ts';
+import { suppliedDifference, differenceNotice, type SuppliedDifference } from './supplied-difference.ts';
 
 const PREVIEW_CHARS = 8192;
 const TOTAL_CHARS = 16384;
@@ -38,16 +38,21 @@ function preview(text: string, maxChars: number, maxLines = PREVIEW_LINES): {tex
   if (end > 0 && /[\uD800-\uDBFF]/.test(text[end - 1] ?? '')) end--;
   return {text: text.slice(0, end), limited: end < text.length};
 }
+/** Marked preview lines: shared lines take a space, removed lines "-", added lines "+". */
+function comparisonLines(edit: Replacement, comparison: SuppliedDifference): string[] {
+  return [
+    ...(comparison.omittedBefore ? ['Earlier context omitted.'] : []),
+    ...(comparison.contextBefore === null ? [] : [`  ${comparison.contextBefore}`]),
+    ...(edit.oldText === '' ? ['Old text: empty'] : comparison.removed.map(line => `- ${line}`)),
+    ...(edit.newText === '' ? ['New text: empty'] : comparison.added.map(line => `+ ${line}`)),
+    ...(comparison.contextAfter === null ? [] : [`  ${comparison.contextAfter}`]),
+  ];
+}
 function replacementPreview(edit: Replacement, budget: number): {text: string; limited: boolean} {
   const comparison = suppliedDifference(edit.oldText, edit.newText, Math.max(0, Math.min(PREVIEW_CHARS, Math.floor((budget - 240) / 2) - PREVIEW_LINES * 2)), PREVIEW_LINES);
-  const prefix = (text: string, sign: string) => text.split(/\r\n|\r|\n/).map(line => `${sign} ${line}`).join('\n');
   const notice = differenceNotice(comparison);
-  return {text: [
-    ...(comparison.omittedBefore ? ['Earlier context omitted.'] : []),
-    edit.oldText === '' ? 'Old text: empty' : prefix(comparison.oldText, '-'),
-    edit.newText === '' ? 'New text: empty' : prefix(comparison.newText, '+'),
-    ...(notice ? [notice] : []),
-  ].join('\n'), limited: comparison.omittedBefore || comparison.omittedAfter || comparison.scanLimited};
+  return {text: [...comparisonLines(edit, comparison), ...(notice ? [notice] : [])].join('\n'),
+    limited: comparison.omittedBefore || comparison.omittedAfter || comparison.scanLimited};
 }
 function writePreview(source: ToolPresentationSource, text: string, className?: string): HTMLElement {
   const args = record(source.args?.value); const pre = element('pre', className);
@@ -209,12 +214,7 @@ function collapsedReplacement(source: ToolPresentationSource, args: Record<strin
   const remaining = supplied.count - 1;
   const notice = [differenceNotice(comparison), remaining ? `${remaining} more ${remaining === 1 ? 'replacement' : 'replacements'} in Arguments.` : '',
     source.args?.truncated ? 'Some arguments are unavailable.' : ''].filter(Boolean).join(' ');
-  const block = replacementBlock([
-    ...(comparison.omittedBefore ? ['Earlier context omitted.'] : []),
-    edit.oldText === '' ? 'Old text: empty' : comparison.oldText.split(/\r\n|\r|\n/).map(line => `- ${line}`).join('\n'),
-    edit.newText === '' ? 'New text: empty' : comparison.newText.split(/\r\n|\r|\n/).map(line => `+ ${line}`).join('\n'),
-    ...(notice ? [notice] : []),
-  ].join('\n'));
+  const block = replacementBlock([...comparisonLines(edit, comparison), ...(notice ? [notice] : [])].join('\n'));
   block.className = 'tool-content-preview'; return block;
 }
 
