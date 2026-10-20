@@ -28,14 +28,34 @@ test('the heading count marks a cut list', () => {
 
 test('quiet lines state coverage, cuts and agents that cannot list threads', () => {
   assert.deepEqual(overviewLines(overview()), []);
-  assert.deepEqual(overviewLines(overview({hosts: {total: 2, answered: 1, unavailable: 1, failed: 0, notRunning: 0}})), ['Listed by 1 of 2 running agents', '1 agent does not offer threads']);
-  assert.deepEqual(overviewLines(overview({hosts: {total: 1, answered: 0, unavailable: 0, failed: 1, notRunning: 0}})), ['Listed by 0 of 1 running agent', '1 agent did not answer']);
+  assert.deepEqual(overviewLines(overview({hosts: {total: 2, answered: 1, unavailable: 1, failed: 0, notRunning: 0}})), ['1 agent does not offer threads']);
+  assert.deepEqual(overviewLines(overview({hosts: {total: 1, answered: 0, unavailable: 0, failed: 1, notRunning: 0}})), ['1 agent did not answer']);
   assert.deepEqual(overviewLines(overview({hosts: {total: 4, answered: 1, unavailable: 2, failed: 1, notRunning: 3}, truncated: true, omitted: 9, rosterComplete: false})), [
-    'Listed by 1 of 4 running agents · Showing the newest 1 threads; 9 more not shown · Agent list incomplete',
+    'Showing the newest 1 threads; 9 more not shown · Agent list incomplete',
     '2 agents do not offer threads', '1 agent did not answer', 'Threads from 3 stopped agents are not listed.']);
   assert.deepEqual(overviewLines(overview({hosts: {total: 1, answered: 1, unavailable: 0, failed: 0, notRunning: 1}})), ['Threads from 1 stopped agent are not listed.']);
   assert.deepEqual(overviewLines(overview({truncated: true})), ['Some threads are not shown']);
   assert.deepEqual(overviewLines(overview({hosts: {total: 0, answered: 0, unavailable: 0, failed: 0, notRunning: 0}})), []);
+});
+
+test('reason lines alone describe a fully accounted gap', () => {
+  assert.deepEqual(overviewLines(overview({hosts: {total: 14, answered: 13, failed: 1, unavailable: 0, notRunning: 433}, rosterComplete: false})), [
+    'Agent list incomplete', '1 agent did not answer', 'Threads from 433 stopped agents are not listed.']);
+  assert.deepEqual(overviewLines(overview({hosts: {total: 3, answered: 1, failed: 1, unavailable: 1, notRunning: 0}})), [
+    '1 agent does not offer threads', '1 agent did not answer']);
+});
+
+test('an unexplained gap retains its listed count before other coverage parts', () => {
+  assert.deepEqual(overviewLines(overview({hosts: {total: 14, answered: 12, failed: 1, unavailable: 0, notRunning: 0}})), [
+    'Listed by 12 of 14 running agents', '1 agent did not answer']);
+  assert.deepEqual(overviewLines(overview({hosts: {total: 2, answered: 1, failed: 0, unavailable: 0, notRunning: 0}, omitted: 2, truncated: true})), [
+    'Listed by 1 of 2 running agents · Showing the newest 1 threads; 2 more not shown']);
+});
+
+test('a cut list puts its newest note first when reason lines cover the gap', () => {
+  assert.deepEqual(overviewLines(overview({hosts: {total: 14, answered: 13, failed: 1, unavailable: 0, notRunning: 433}, rosterComplete: false, omitted: 2, truncated: true})), [
+    'Showing the newest 1 threads; 2 more not shown · Agent list incomplete',
+    '1 agent did not answer', 'Threads from 433 stopped agents are not listed.']);
 });
 
 test('an empty list says why it is empty', () => {

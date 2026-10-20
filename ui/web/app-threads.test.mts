@@ -199,7 +199,8 @@ test('a list failure and a host that cannot list are reported without hiding the
   byId('threads-refresh').click(); await settle();
   const footer = text(byId('threads-footer'));
   assert.doesNotMatch(footer, /Threads could not be listed/);
-  assert.match(footer, /Listed by 1 of 3 running agents · Showing the newest 5 threads; 4 more not shown · Agent list incomplete/);
+  assert.doesNotMatch(footer, /Listed by/);
+  assert.match(footer, /^Showing the newest 5 threads; 4 more not shown · Agent list incomplete/);
   assert.match(footer, /1 agent does not offer threads/); assert.match(footer, /1 agent did not answer/);
   assert.match(footer, /Builder: does not offer threads/); assert.match(footer, /Designer: did not answer \(The host did not answer in time\.\)/);
 });
