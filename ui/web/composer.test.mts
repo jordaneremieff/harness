@@ -693,6 +693,19 @@ test('an uncertain send result shows one warning and retains explicit recovery c
   for (const label of ['Check delivery', 'Copy original text only', 'Restore to draft', 'Send again…']) assert.ok(receipt.find(label));
   assert.equal(f.composer.editor.value, 'original'); assert.equal(f.calls.length, 0);
 });
+test('an unconfirmed send shows one Details that starts with the reason, and a refused send keeps its own', async () => {
+  const walk = (node: NodeFake): NodeFake[] => [node, ...node.children.flatMap(walk)];
+  const disclosures = (root: NodeFake) => walk(root).filter(node => node.tag === 'details' && node.children[0]?.textContent !== 'Review message');
+  const f = fixture(); f.connect(state('a', draft(2, 'original')));
+  const sending = f.composer.send(); await f.waitCall('POST', '/inputs'); const call = f.pick('POST', '/inputs'); f.fail(call, 'delivery_uncertain'); await sending;
+  const receipt = f.node('receipt'); const found = disclosures(receipt);
+  assert.equal(found.length, 1); assert.equal(found[0]?.children[0]?.textContent, 'Details');
+  assert.ok(found[0]?.children[1]?.textContent.startsWith('delivery_uncertain\n\n')); assert.ok(found[0]?.children[1]?.textContent.includes(call.id as string));
+  assert.equal(receipt.textContent.split('Send not confirmed. Check before you send again.').length - 1, 1); assert.ok(receipt.find('Review message'));
+  const g = fixture(); g.connect(state('a', draft(2, 'original')));
+  const refused = g.composer.send(); await g.waitCall('POST', '/inputs'); g.fail(g.pick('POST', '/inputs'), 'invalid_request'); await refused;
+  const refusal = g.node('receipt'); assert.match(refusal.textContent, /Message not sent/); assert.equal(disclosures(refusal).length, 1); assert.equal(disclosures(refusal)[0]?.children[1]?.textContent, 'invalid_request');
+});
 test('restoring uncertain input does not replace a newer draft without an explicit choice', async () => {
   const f = fixture(); const a = f.connect(state('a', draft(2, 'original'))); const sending = f.composer.send(); await turn(); f.admit(a, 'uncertain'); await sending;
   f.composer.availability(false, false, false); f.composer.setText('newer'); f.click('Restore to draft'); await turn(); assert.equal(f.composer.editor.value, 'newer');

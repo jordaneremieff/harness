@@ -101,7 +101,7 @@ export function validComposerReloadState(value:unknown):value is ComposerReloadS
   try{return !!data.server&&data.server.persisted===true&&Number.isSafeInteger(data.server.revision)&&Array.isArray(data.images)&&!!createDraft({...data.server,images:data.images});}catch{return false;}
 }
 type SendConsent = {buffer: Buffer; edit: number; revision: number; tuple: Edit; operations: Set<string>; used?: true; differentMessage?: true};
-type Pending = {submission: Submission; original?: UnconfirmedInput; uncertain: boolean; cleanup?: DraftView; settling?: Promise<void>};
+type Pending = {submission: Submission; original?: UnconfirmedInput; uncertain: boolean; reason?: string; cleanup?: DraftView; settling?: Promise<void>};
 type Buffer = {selection?: EditorSelection; workspace: string; state: TargetState; data: DraftState; saving?: Promise<DraftView>; submitting: boolean;
   attachments?: ComposerAttachments; inclusions?: Map<number, InsertionCapture>; imageErrors?: Set<string>; imageReview?: boolean; review: boolean; insertionCopy?: string; saveError?: string; outstandingSince?: number; slowTimer?: ReturnType<typeof setTimeout>; localCopy?: string; reservation?: {promise: Promise<string>; at: number}; pending: Map<string, Pending>; resolved: Set<string>; notice: string; noticeDetails?: string; lastOperation?: OperationView; retained?: boolean; commandDismissed?: string};
 const encoded = encodeURIComponent;
@@ -949,7 +949,7 @@ export class Composer {
     const ordinary = buffer.lastOperation?.state === 'accepted' && buffer.notice === 'Message sent';
     const notice = this.waiting && buffer.submitting && (buffer.notice === 'Sending…' || buffer.notice.startsWith('Running /')) ? 'Waiting for your answer' : buffer.notice;
     if (notice && !ordinary && buffer.notice !== buffer.saveError) slot.append(element('p', queuedAdmissionNotice(notice) ? 'secondary' : 'warning', notice));
-    if (buffer.noticeDetails && !buffer.saveError) slot.append(this.details(buffer.noticeDetails));
+    if (buffer.noticeDetails && !buffer.saveError && !(!notice && this.reasonInPanel(buffer))) slot.append(this.details(buffer.noticeDetails));
     if (buffer.insertionCopy !== undefined) slot.append(button('Insert prepared text', () => {
       const captured = this.insertionCapture(); if (captured?.buffer === buffer && buffer.insertionCopy !== undefined) this.insertPrepared(captured, buffer.insertionCopy);
     }), button('Copy prepared text', () => { void copy(buffer.insertionCopy ?? '', slot); }), button('Discard prepared text', () => {buffer.insertionCopy = undefined; buffer.notice = ''; this.receipt(buffer);}));
@@ -1014,6 +1014,8 @@ export class Composer {
     else return;
     row.append(dismiss); slot.append(row);
   }
+  /** The reason of an unconfirmed send is shown inside that send's own Details, so it needs no disclosure of its own. */
+  private reasonInPanel(buffer: Buffer): boolean { return [...buffer.pending.values()].some(item => item.uncertain && item.reason !== undefined && item.reason === buffer.noticeDetails); }
   private details(text: string, title = 'Details'): HTMLDetailsElement {
     const node = element('details', 'receipt-disclosure');
     node.append(element('summary', undefined, title), element('pre', undefined, text)); return node;
@@ -1021,7 +1023,7 @@ export class Composer {
   private recovery(buffer: Buffer, pending: Pending, slot: HTMLElement): void {
     const captured = pending.submission; const row = element('div', 'send-recovery');
     row.append(element('p', 'warning', 'Send not confirmed. Check before you send again.'),
-      this.details(`${JSON.stringify(captured.target)}\n${captured.operationId}\n${captured.mode} · revision ${captured.draftRevision}`), this.details(captured.text, 'Review message'), attachmentSummary(buffer.workspace, buffer.state.targetKey, captured.images));
+      this.details(`${pending.reason ? `${pending.reason}\n\n` : ''}${JSON.stringify(captured.target)}\n${captured.operationId}\n${captured.mode} · revision ${captured.draftRevision}`), this.details(captured.text, 'Review message'), attachmentSummary(buffer.workspace, buffer.state.targetKey, captured.images));
     if (pending.original?.textTruncated) row.append(element('p', 'secondary', 'Preview shortened. Copy or restore the full message.'));
     row.append(cardAction('restart', 'Check delivery', () => { void this.check(buffer, pending); }), cardAction('copy', 'Copy original text only', () => { void this.exact(buffer, pending).then(item => copy(item.text, row)).catch(error => this.recoveryError(buffer, error)); }), button('Restore to draft', () => {
       const origin = document.activeElement;
@@ -1079,7 +1081,7 @@ export class Composer {
       const result = await request<OperationView>(`/api/operations/${encoded(pending.submission.operationId)}/reconcile`, 'POST', {});
       if (!this.updateOperation(result)) throw new Error('The receipt does not match the original operation.');
       this.hooks.submitted(result);
-    } catch (error) { buffer.noticeDetails = `${errorMessage(error)} The original admission remains unknown.`; buffer.notice = ''; this.receipt(buffer); }
+    } catch (error) { buffer.noticeDetails = `${errorMessage(error)} The original admission remains unknown.`; pending.reason = buffer.noticeDetails; buffer.notice = ''; this.receipt(buffer); }
   }
   private hydrate(buffer: Buffer, state: TargetState): void {
     for (const item of state.unconfirmed) {
@@ -1255,7 +1257,7 @@ export class Composer {
     }
     if (error instanceof ApiError && error.view.code === 'stale_revision') this.stale(buffer, error);
     if (error instanceof ApiError && error.view.code === 'unknown_operation') buffer.notice = 'Input reservation expired or unknown. Your text was not sent. Send again with a new reservation.';
-    buffer.noticeDetails = buffer.notice;
+    buffer.noticeDetails = buffer.notice; if (pending?.uncertain) pending.reason = buffer.notice;
     buffer.notice = [...buffer.pending.values()].some(item => item.uncertain) ? '' : 'Message not sent';
     this.receipt(buffer); announce(buffer.notice || 'Send not confirmed. Check before you send again.');
   }
