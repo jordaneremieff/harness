@@ -350,3 +350,42 @@ test('a labeled JSON line is dropped from a success preview only after a line of
   assert.equal(tidy('Started the task.\nResult: 42'), 'Started the task.\nResult: 42', 'a scalar is not an object or array');
   assert.equal(resultPreview([{type: 'text', text: spawned, redacted: true}], {tidy: true}), spawned, 'redacted text is never rewritten');
 });
+
+const KNOWN = 'ead53d8c-af9d-0bda-1416-21a6ba18ab6c:57', OTHER = '1f2e3d4c-0000-4000-8000-123456789abc';
+const names = (identity: string): string | undefined => identity === KNOWN ? 'Round 12 builder K4' : undefined;
+function awaitedSource(results: unknown[], extra: Record<string, unknown> = {}): ToolPresentationSource {
+  const value = {results, unresolved: [], originalInputs: [1953], decision: 'settled', queuedInputCount: 19, ...extra};
+  return {callId: 'wait', name: 'agent_await', status: 'success', result: [{type: 'text', text: JSON.stringify(value), structured: {value, truncated: false}}]};
+}
+const answered = (identity: string, answer: string, status = 'done') => ({result: {sessionId: identity, submissionId: 7, requestId: 'r'}, answer, status, answerEntryId: 4, entryId: 3});
+const awaitedText = (source: ToolPresentationSource, resolve = names): string | undefined => presentResultPreview(source, resolve) ? node(presentResultPreview(source, resolve)).textContent : undefined;
+
+test('a wait card line names the responder and quotes the first line of the answer', () => {
+  setup();
+  assert.equal(awaitedText(awaitedSource([answered(KNOWN, 'I reverted the change.\nSecond line.')])), 'Round 12 builder K4: “I reverted the change.”');
+  const long = 'word '.repeat(30).trim(), line = awaitedText(awaitedSource([answered(KNOWN, long)])) ?? '';
+  assert.equal(line, `Round 12 builder K4: “${long.slice(0, 80).trimEnd()}…”`);
+  assert.doesNotMatch(line, /decision|queuedInputCount|settled/);
+});
+test('a wait card line counts further answers and results still waiting, and marks missing answers', () => {
+  setup();
+  assert.equal(awaitedText(awaitedSource([answered(KNOWN, 'First'), answered(OTHER, 'Second'), answered(OTHER, 'Third')])), 'Round 12 builder K4: “First” · 2 more answers');
+  assert.equal(awaitedText(awaitedSource([answered(KNOWN, 'First'), answered(OTHER, 'Second')], {unresolved: [{sessionId: OTHER}, {sessionId: OTHER}]})), 'Round 12 builder K4: “First” · 1 more answer · 2 still waiting');
+  assert.equal(awaitedText(awaitedSource([answered(KNOWN, '', 'unanswered')])), 'Round 12 builder K4: no answer yet');
+  assert.equal(awaitedText(awaitedSource([answered(KNOWN, '', 'unavailable')])), 'Round 12 builder K4: answer unavailable');
+});
+test('a wait card line says "An agent" for an unknown session and never shows an identifier', () => {
+  setup();
+  const line = awaitedText(awaitedSource([answered(OTHER, 'Done.')])) ?? '';
+  assert.equal(line, 'An agent: “Done.”'); assert.doesNotMatch(line, /1f2e3d4c|ead53d8c/);
+  assert.equal(awaitedText(awaitedSource([{answer: 'No reference', status: 'done'}])), 'An agent: “No reference”');
+});
+test('a result without a results array of objects, or from another tool, keeps the generic preview', () => {
+  setup();
+  const generic = (value: unknown, name = 'agent_await'): ToolPresentationSource => ({callId: 'wait', name, status: 'success', result: [{type: 'text', text: JSON.stringify(value), structured: {value, truncated: false}}]});
+  for (const source of [generic({decision: 'settled', results: []}), generic({decision: 'settled', results: ['text']}), generic({decision: 'settled', results: [answered(KNOWN, 'Hi')]}, 'custom')]) {
+    const expected = resultPreview(source.result ?? [], {resolve: names});
+    assert.equal(awaitedText(source), expected); assert.doesNotMatch(expected, /Round 12 builder K4: “|An agent/);
+  }
+  assert.match(resultPreview(generic({decision: 'settled', results: [answered(KNOWN, 'Hi')]}, 'custom').result ?? [], {resolve: names}), /decision: settled/);
+});

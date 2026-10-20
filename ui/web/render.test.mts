@@ -3294,3 +3294,33 @@ test('a collapsed success card drops its labeled JSON line, while the expanded r
   view.reset(); setup(); const failing = transcript(); failing.set([call, result(true)]); flush();
   assert.equal(node('primary-transcript').querySelector('.tool-preview')?.textContent, text, 'an error preview stays literal'); failing.reset();
 });
+
+test('a wait card names each responder over its answer and keeps the machine fields in its one Details', () => {
+  setup();
+  const known = 'ead53d8c-af9d-0bda-1416-21a6ba18ab6c:57', other = '1f2e3d4c-0000-4000-8000-123456789abc';
+  const view = new Transcript('primary', {presentation: () => {}, reading: () => {}, subject: identity => identity === known ? {text: 'Round 12 builder K4', name: 'Round 12 builder K4', provenance: 'reported' as const} : undefined});
+  const value = {results: [
+    {result: {sessionId: known, submissionId: 7, requestId: 'agent-deliver:7'}, answer: 'I reverted the change.\n\nSecond paragraph.', status: 'done', answerEntryId: 4812, entryId: 4811},
+    {result: {sessionId: other, submissionId: 8, requestId: 'agent-deliver:8'}, answer: '', status: 'unanswered', entryId: 4813},
+  ], unresolved: [], originalInputs: [1953, 1973], queueSnapshot: [], decision: 'settled', queuedInputCount: 19};
+  const call = {id: 'wait', kind: 'message', messages: [{...message('wait-message', ''), parts: [{type: 'toolCall' as const, callId: 'wait-1', name: 'agent_await', arguments: {value: {results: [{sessionId: known, submissionId: 7}]}, truncated: false}}]}]};
+  const output = {type: 'toolResult' as const, callId: 'wait-1', name: 'agent_await', isError: false, parts: [{type: 'text' as const, text: JSON.stringify(value), structured: {value, truncated: false}}]};
+  const result = {id: 'wait-result', kind: 'message', messages: [{...message('wait-result-message', ''), role: 'toolResult', parts: [output]}]};
+  view.set([call, result]); flush();
+  const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card);
+  assert.equal(card.querySelector('.tool-preview')?.textContent, 'Round 12 builder K4: “I reverted the change.” · 1 more answer');
+  assert.doesNotMatch(card.querySelector('summary')?.textContent ?? '', /decision|queuedInputCount|originalInputs/);
+  card.open = true; view.set([call, result]); flush();
+  const names = card.querySelectorAll('.tool-awaited-name').map(item => item.textContent);
+  assert.deepEqual(names, ['Round 12 builder K4', 'An agent']);
+  const body = card.querySelector('.tool-result-parts'); assert.ok(body);
+  assert.match(body.textContent, /I reverted the change\./); assert.match(body.textContent, /Second paragraph\./); assert.match(body.textContent, /no answer yet/);
+  assert.doesNotMatch(body.textContent, /decision|settled|queuedInputCount|originalInputs|1953|agent-deliver|ead53d8c|1f2e3d4c|4812/);
+  assert.equal(card.querySelectorAll('summary').filter(item => item.textContent === 'Details').length, 1);
+  assert.equal(card.querySelectorAll('.tool-metadata').length, 0);
+  const metadata = card.querySelectorAll('details').find(item => item.querySelector('summary')?.textContent === 'Metadata'); assert.ok(metadata);
+  metadata.open = true; metadata.dispatch('toggle'); flush();
+  assert.match(metadata.textContent, /"decision": "settled"/); assert.match(metadata.textContent, /"queuedInputCount": 19/); assert.match(metadata.textContent, /1953/); assert.match(metadata.textContent, /agent-deliver:7/);
+  assert.doesNotMatch(metadata.textContent, /I reverted the change/);
+  view.reset();
+});

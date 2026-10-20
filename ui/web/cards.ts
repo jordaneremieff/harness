@@ -1,5 +1,6 @@
 import { element } from './dom.ts';
 import type { PartView } from '../shared/api.ts';
+import { awaitedFromParts, awaitedLine } from './awaited-answers.ts';
 import { decodedArray, decodedLines, structuredResultPreview, type NameResolver } from './generic-content.ts';
 import type { PresentationContext, ToolPresentationSource } from './transcript-presentation.ts';
 import { previewText } from './format.ts';
@@ -181,12 +182,18 @@ export function resultPreview(parts: readonly PartView[], options: PreviewOption
   return resultPreviewText(parts, false, options)?.text ?? '';
 }
 
+/** A wait call whose result has the awaited-answers shape previews as its first responder and answer; null for every other result. */
+function awaitedPreview(source: ToolPresentationSource, resolve?: NameResolver): HTMLElement | undefined | null {
+  const awaited = source.name === 'agent_await' ? awaitedFromParts(source.result ?? []) : undefined; if (!awaited) return null;
+  const line = awaitedLine(awaited, resolve); return line ? element('span', 'tool-prose-preview', line) : undefined;
+}
 /**
  * Prose previews come only from explicit content facts: a structured summary, or a successful
  * read of a path with a Markdown extension. Every other result stays a literal text prefix.
  */
 export function presentResultPreview(source: ToolPresentationSource, resolve?: NameResolver, title = ''): HTMLElement | undefined {
   if (source.status === 'error') return undefined;
+  const awaited = awaitedPreview(source, resolve); if (awaited !== null) return awaited;
   const shown = resultPreviewText(source.result ?? [], false, {resolve, title}); if (!shown) return undefined;
   const args = record(source.args?.value);
   const markdown = !shown.summary && !shown.redacted && source.name === 'read' && source.status === 'success' && isMarkdownPath(args.file_path ?? args.path);

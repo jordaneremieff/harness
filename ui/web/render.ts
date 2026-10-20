@@ -21,7 +21,8 @@ import {ConversationTasks, type ConversationTask, type TaskReference} from './co
 import { loadedReference, type ReferenceQuery, type ReferenceResolver } from './references.ts';
 import type { JoinedTool } from './transcript-tools.ts';
 import { outputPages } from './transcript-output.ts';
-import { appendKey, presentArguments, presentResult, previewLimits, PreviewBudget } from './generic-content.ts';
+import { awaitedAnswers, awaitedFieldsFromParts } from './awaited-answers.ts';
+import { appendKey, presentArguments, presentAwaited, presentResult, previewLimits, PreviewBudget } from './generic-content.ts';
 import type { PreviewActions } from './generic-content.ts';
 import type { SessionGroup } from './transcript-tools.ts';
 import {attachmentParts} from './attachment-parts.ts';
@@ -1754,7 +1755,8 @@ export class Transcript {
   }
   private resultTextPart(section: HTMLElement, part: Extract<PartView, {type: 'text' | 'thinking'}>, source: JoinedTool, budget: PreviewBudget): void {
     if (part.type === 'text' && part.structured) {
-      const document = presentResult(part.structured, this.presentationContext(), budget);
+      const awaited = source.name === 'agent_await' && awaitedAnswers(part.structured);
+      const document = awaited ? presentAwaited(part.structured, this.presentationContext(), budget, this.nameResolver()) : presentResult(part.structured, this.presentationContext(), budget);
       if (document) section.append(document);
       else {
         budget.limit();
@@ -1799,8 +1801,9 @@ export class Transcript {
   }
   private toolDetails(tool: ToolNode): string {
     const source = tool.source;
+    const awaitedFields = source?.name === 'agent_await' ? awaitedFieldsFromParts(source.result ?? []) : undefined;
     const cards = source?.name === 'write' || source?.name === 'edit' ? cardPreviewLimits() : '';
-    return [source ? `Tool: ${source.name}\nCall ID: ${source.callId}\n${metadata(source)}\n${toolTime(source)}` : '', cards, previewLimits(), `Raw inspection: at most ${RAW_LIMIT} characters.`, source ? outputExplanation(source) : ''].filter(Boolean).join('\n\n');
+    return [source ? `Tool: ${source.name}\nCall ID: ${source.callId}\n${metadata(source)}\n${toolTime(source)}` : '', awaitedFields ? `Fields of the awaited results (answers are shown above):\n${awaitedFields}` : '', cards, previewLimits(), `Raw inspection: at most ${RAW_LIMIT} characters.`, source ? outputExplanation(source) : ''].filter(Boolean).join('\n\n');
   }
   private refreshToolInspections(tool: ToolNode, source: JoinedTool): void {
     this.refreshToolInspection(tool.inspections?.arguments, () => this.toolArguments(tool), tool);

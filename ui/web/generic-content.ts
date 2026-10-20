@@ -1,4 +1,5 @@
 import type { JsonDisplay } from '../shared/api.ts';
+import { awaitedAnswers, missingAnswerNote, responderName, type AnswerNamer } from './awaited-answers.ts';
 import { button, element } from './dom.ts';
 import { highlight, languageFromPath } from './highlight.ts';
 import { markdownDom } from './safe-markdown.ts';
@@ -727,6 +728,20 @@ class Preview {
     this.budget.finish(this.root); this.budget.releaseEmpty(this.root);
     return this.root.childNodes.length ? this.root : undefined;
   }
+  /** Each awaited answer under the name of its responder; its other fields stay out of the body. */
+  renderAwaited(display: JsonDisplay, resolve?: AnswerNamer): HTMLElement | undefined {
+    const awaited = awaitedAnswers(display); if (!this.admitted || !awaited) return undefined;
+    if (awaited.results.length > ROWS) this.limit('rows');
+    for (const result of awaited.results.slice(0, ROWS)) {
+      if (!this.budget.text) { this.limit(); break; }
+      const block = element('section', 'tool-awaited-answer'); if (!this.append(this.root, block)) break;
+      const name = element('p', 'tool-awaited-name'); name.textContent = this.take(responderName(result, resolve), 240, 1); block.append(name);
+      const note = missingAnswerNote(result);
+      if (note) block.append(element('p', 'secondary tool-caption', note)); else this.document(block, '', result.answer);
+    }
+    this.budget.finish(this.root); this.budget.releaseEmpty(this.root);
+    return this.root.childNodes.length ? this.root : undefined;
+  }
   private revealMetadata(): void {
     if (!this.metadata.length) return;
     if (this.budget.text < 'Details'.length) { this.limit(); return; }
@@ -749,6 +764,11 @@ export function presentResult(display: JsonDisplay | undefined, context: Present
   const value = own(display, 'value');
   if (value === undefined) return undefined;
   return new Preview(context, false, own(display, 'truncated') === true, budget ?? new PreviewBudget()).render(value);
+}
+
+/** An awaited-answers value shows each answer under its responder's name. */
+export function presentAwaited(display: JsonDisplay, context: PresentationContext, budget: PreviewBudget, resolve?: AnswerNamer): HTMLElement | undefined {
+  return new Preview(context, false, own(display, 'truncated') === true, budget).renderAwaited(display, resolve);
 }
 
 /** Supplied argument previews have their own collapse controls, without extra raw inspection. */

@@ -747,6 +747,8 @@ summary::before { content: none; }
 .tool-result-parts > .tool-result-part + .tool-result-part { margin-top: 8px; }
 .tool-record { min-width: 0; padding-left: 12px; }
 .tool-record > * + * { margin-top: 8px; }
+.tool-content > .tool-awaited-answer + .tool-awaited-answer { margin-top: 12px; }
+.tool-awaited-name { margin: 0 0 2px; color: var(--muted); font-size: 12px; line-height: 18px; font-weight: 500; overflow-wrap: anywhere; }
 .tool-content > .secondary, .tool-caption { color: var(--muted); font-size: 12px; }
 .tool-command { color: var(--fg); }
 .tool-document { min-width: 0; color: var(--fg); font-family: var(--sans); }

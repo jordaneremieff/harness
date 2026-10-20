@@ -1165,3 +1165,8 @@ test('the compact Add menu draws 34px rows with a 20px icon column and the trigg
   assert.match(rule('.context-menu-compact .context-menu-label'), /overflow: hidden; text-overflow: ellipsis/);
   assert.match(rule('.composer-meta'), /flex: 1 1 0;/);
 });
+
+test('a responder name above a wait answer reads like a role label in muted 12px ink', () => {
+  assert.match(rule('.tool-awaited-name'), /color: var\(--muted\); font-size: 12px; line-height: 18px; font-weight: 500/);
+  assert.match(rule('.tool-content > .tool-awaited-answer + .tool-awaited-answer'), /margin-top: 12px/);
+});
