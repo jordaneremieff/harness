@@ -3312,7 +3312,7 @@ test('a wait card names each responder over its answer and keeps the machine fie
   assert.doesNotMatch(card.querySelector('summary')?.textContent ?? '', /decision|queuedInputCount|originalInputs/);
   card.open = true; view.set([call, result]); flush();
   const names = card.querySelectorAll('.tool-awaited-name').map(item => item.textContent);
-  assert.deepEqual(names, ['Round 12 builder K4', 'An agent']);
+  assert.deepEqual(names, ['Round 12 builder K4', 'Another conversation']);
   const body = card.querySelector('.tool-result-parts'); assert.ok(body);
   assert.match(body.textContent, /I reverted the change\./); assert.match(body.textContent, /Second paragraph\./); assert.match(body.textContent, /no answer yet/);
   assert.doesNotMatch(body.textContent, /decision|settled|queuedInputCount|originalInputs|1953|agent-deliver|ead53d8c|1f2e3d4c|4812/);

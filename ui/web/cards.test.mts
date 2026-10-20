@@ -374,18 +374,18 @@ test('a wait card line counts further answers and results still waiting, and mar
   assert.equal(awaitedText(awaitedSource([answered(KNOWN, '', 'unanswered')])), 'Round 12 builder K4: no answer yet');
   assert.equal(awaitedText(awaitedSource([answered(KNOWN, '', 'unavailable')])), 'Round 12 builder K4: answer unavailable');
 });
-test('a wait card line says "An agent" for an unknown session and never shows an identifier', () => {
+test('a wait card line says "Another conversation" for an unknown session and never shows an identifier', () => {
   setup();
   const line = awaitedText(awaitedSource([answered(OTHER, 'Done.')])) ?? '';
-  assert.equal(line, 'An agent: “Done.”'); assert.doesNotMatch(line, /1f2e3d4c|ead53d8c/);
-  assert.equal(awaitedText(awaitedSource([{answer: 'No reference', status: 'done'}])), 'An agent: “No reference”');
+  assert.equal(line, 'Another conversation: “Done.”'); assert.doesNotMatch(line, /1f2e3d4c|ead53d8c/);
+  assert.equal(awaitedText(awaitedSource([{answer: 'No reference', status: 'done'}])), 'Another conversation: “No reference”');
 });
 test('a result without a results array of objects, or from another tool, keeps the generic preview', () => {
   setup();
   const generic = (value: unknown, name = 'agent_await'): ToolPresentationSource => ({callId: 'wait', name, status: 'success', result: [{type: 'text', text: JSON.stringify(value), structured: {value, truncated: false}}]});
   for (const source of [generic({decision: 'settled', results: []}), generic({decision: 'settled', results: ['text']}), generic({decision: 'settled', results: [answered(KNOWN, 'Hi')]}, 'custom')]) {
     const expected = resultPreview(source.result ?? [], {resolve: names});
-    assert.equal(awaitedText(source), expected); assert.doesNotMatch(expected, /Round 12 builder K4: “|An agent/);
+    assert.equal(awaitedText(source), expected); assert.doesNotMatch(expected, /Round 12 builder K4: “|Another conversation/);
   }
   assert.match(resultPreview(generic({decision: 'settled', results: [answered(KNOWN, 'Hi')]}, 'custom').result ?? [], {resolve: names}), /decision: settled/);
 });

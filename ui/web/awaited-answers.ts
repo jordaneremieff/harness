@@ -54,7 +54,7 @@ export function awaitedFromParts(parts: readonly PartView[]): AwaitedAnswers | u
 }
 
 export function responderName(result: AwaitedResult, resolve?: AnswerNamer): string {
-  return (result.identity ? resolve?.(result.identity) : undefined) || 'An agent';
+  return (result.identity ? resolve?.(result.identity) : undefined) || 'Another conversation';
 }
 /** What a result without answer text says in place of the answer. */
 export function missingAnswerNote(result: AwaitedResult): string | undefined {
