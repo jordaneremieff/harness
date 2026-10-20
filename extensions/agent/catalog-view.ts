@@ -81,7 +81,7 @@ function byteLength(value: unknown): number {
 /** Bound one display text without splitting a surrogate pair. */
 function boundText(text: string): { text: string; truncated: boolean } {
 	if (text.length <= CATALOG_VIEW_TEXT_LIMIT) return { text, truncated: false };
-	let end = CATALOG_VIEW_TEXT_LIMIT;
+	let end = CATALOG_VIEW_TEXT_LIMIT - TEXT_TRUNCATION_MARKER.length;
 	const last = text.charCodeAt(end - 1);
 	if (last >= 0xd800 && last <= 0xdbff) end -= 1;
 	return { text: `${text.slice(0, end)}${TEXT_TRUNCATION_MARKER}`, truncated: true };

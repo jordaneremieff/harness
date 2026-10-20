@@ -52,10 +52,38 @@ it("trims long display texts and keeps the other fields", () => {
 	assert.equal(view.rows.length, 1);
 	assert.equal(view.rows[0]?.name, "kept");
 	assert.equal(view.rows[0]?.cost, 3);
-	assert.ok((view.rows[0]?.latestReply ?? "").length <= CATALOG_VIEW_TEXT_LIMIT + 10);
+	assert.ok((view.rows[0]?.latestReply ?? "").length <= CATALOG_VIEW_TEXT_LIMIT);
 	assert.match(view.rows[0]?.latestReply ?? "", /\[…\]/u);
-	assert.ok((view.rows[0]?.currentTool?.argument ?? "").length <= CATALOG_VIEW_TEXT_LIMIT + 10);
+	assert.ok((view.rows[0]?.currentTool?.argument ?? "").length <= CATALOG_VIEW_TEXT_LIMIT);
 	assert.equal(view.coverage.complete, false, "a trimmed row reports partial coverage");
+});
+
+it("includes the truncation marker within the text limit without splitting surrogate pairs", () => {
+	for (const prefixLength of [CATALOG_VIEW_TEXT_LIMIT - 6, CATALOG_VIEW_TEXT_LIMIT - 5]) {
+		const prefix = "x".repeat(prefixLength);
+		const text = `${prefix}😀${"y".repeat(100)}`;
+		const view = boundCatalogView({
+			updatedAt: "2026-01-01T00:00:00.000Z",
+			rows: [row("root", { latestReply: text, currentTool: { name: "read", argument: text } })],
+		});
+		const expected = `${prefix}${prefixLength === CATALOG_VIEW_TEXT_LIMIT - 6 ? "😀" : ""} […]`;
+		assert.equal(view.rows[0]?.latestReply, expected);
+		assert.equal(view.rows[0]?.currentTool?.argument, expected);
+		assert.ok(expected.length <= CATALOG_VIEW_TEXT_LIMIT);
+		assert.doesNotMatch(expected, /[\ud800-\udfff]/u);
+		assert.equal(view.coverage.complete, false);
+	}
+});
+
+it("preserves text at the exact limit, including a final surrogate pair", () => {
+	const text = `${"x".repeat(CATALOG_VIEW_TEXT_LIMIT - 2)}😀`;
+	const view = boundCatalogView({
+		updatedAt: "2026-01-01T00:00:00.000Z",
+		rows: [row("root", { latestReply: text, currentTool: { name: "read", argument: text } })],
+	});
+	assert.equal(view.rows[0]?.latestReply, text);
+	assert.equal(view.rows[0]?.currentTool?.argument, text);
+	assert.equal(view.coverage.complete, true);
 });
 
 it("emits the root first and keeps it when it fits", () => {
