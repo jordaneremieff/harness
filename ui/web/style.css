@@ -275,7 +275,7 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .file-editor-color { position: absolute; inset: 0; overflow: hidden; pointer-events: none; color: var(--fg); }
 .file-editor[data-decorated=true] { color: transparent; }
 .file-editor::selection { background: var(--raised); color: var(--fg); }
-.file-view-actions { display: flex; justify-content: flex-end; padding-block: var(--s1); }
+.file-view-actions { display: flex; justify-content: flex-end; gap: var(--s3); padding-block: var(--s1); }
 .file-view-actions[hidden] { display: none; }
 .file-save { color: var(--dim); font-size: 12px; }
 .file-save:hover { color: var(--fg); }

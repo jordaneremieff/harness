@@ -130,6 +130,9 @@ test('Save, Health and Version retain quiet desktop hit heights without weakenin
     assert.doesNotMatch(rule(selector), /(?:^|;)\s*(?:height|min-height|max-height):/);
   }
 });
+test('the file action row separates its zero-padding text controls with a gap', () => {
+  assert.match(rule('.file-view-actions'), /display: flex; justify-content: flex-end; gap: var\(--s3\);/);
+});
 test('draft attachments keep a fixed contained preview and bounded wrapping details and actions', () => {
   assert.match(rule('.attachment-preview'), /width: 48px; height: 48px; min-width: 48px; min-height: 48px/);
   assert.match(rule('.attachment-preview img'), /width: 100%; height: 100%; object-fit: contain/);
