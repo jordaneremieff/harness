@@ -2,7 +2,8 @@ import type { JsonDisplay } from '../shared/api.ts';
 import { awaitedAnswers, missingAnswerNote, responderName, type AnswerNamer } from './awaited-answers.ts';
 import { button, element } from './dom.ts';
 import { highlight, languageFromPath } from './highlight.ts';
-import { markdownDom } from './safe-markdown.ts';
+import { plainPreviewWords } from './format.ts';
+import { markdownDom, withoutFrontmatter } from './safe-markdown.ts';
 import type { PresentationContext } from './transcript-presentation.ts';
 import { suppliedDifference, differenceNotice } from './supplied-difference.ts';
 
@@ -86,6 +87,17 @@ function summaryArray(value: unknown[], truncated: boolean): string {
   if (truncated) return 'Array preview limited';
   return `${value.length} ${value.length === 1 ? 'item' : 'items'}`;
 }
+/** A complete frontmatter document contributes its first body line, with its first heading as the empty-prose fallback. */
+function documentPreview(text: string): string | undefined {
+  const body = withoutFrontmatter(text); if (body === text) return undefined;
+  let heading = '';
+  for (const line of body.split(/\r\n|\r|\n/)) {
+    if (!line.trim()) continue;
+    if (/^\s*#{1,6}(?:\s|$)/.test(line)) { if (!heading) heading = plainPreviewWords(line); continue; }
+    return prefix(plainPreviewWords(line), 240, 1);
+  }
+  return prefix(heading, 240, 1);
+}
 type SummaryField = {key: string; value: unknown; rank: number; label?: string};
 /** Resolves an opaque conversation or thread identity to a name the reader already knows, when one is known. */
 export type NameResolver = (identity: string) => string | undefined;
@@ -167,20 +179,21 @@ class ResultSummary {
     this.collect(value, '', 0, false, false);
     const useful = this.facts.some(field => field.rank < 4);
     const readable = this.facts.find(field => field.rank === 1 && typeof field.value === 'string');
+    const document = readable ? documentPreview(String(readable.value)) : undefined;
     const shown = new Set<string>(); let dropped = false;
-    const listed = this.facts.filter(field => !useful || field.rank < 4);
+    const listed = this.facts.filter(field => (!useful || field.rank < 4) && (document === undefined || field.rank !== 3));
     // An empty collection is a fact only when nothing else is; at equal rank facts that say something in words read first, then array counts, then objects shown by key name alone.
     const present = listed.filter(field => !emptyCollection(field.value));
     const facts = (present.length ? present : listed).sort((a, b) => a.rank - b.rank || shapeOrder(a.value) - shapeOrder(b.value)).flatMap(field => {
       if (this.redundant(field)) {dropped = true; return [];}
-      const text = field === readable ? prefix(String(field.value).replace(/\s*\n\s*(?:\n\s*)+/g, '\n'), 240, 2) : field.label ?? summaryFact(field.key, field.value, truncated);
-      if (shown.has(text)) {dropped = true; return [];}
+      const text = field === readable ? document ?? prefix(String(field.value).replace(/\s*\n\s*(?:\n\s*)+/g, '\n'), 240, 2) : field.label ?? summaryFact(field.key, field.value, truncated);
+      if (!text || shown.has(text)) {dropped = true; return [];}
       shown.add(text); return [text];
     }).slice(0, 3);
     const notice = [truncated ? 'Partial preview.' : '', this.limited ? 'Summary scan limited.' : ''].filter(Boolean).join(' ');
     const suffix = notice ? ` · ${notice}` : '';
-    if (!facts.length && (this.omitted || dropped)) return '';
-    return prefix(facts.length ? facts.join(' · ') : 'Empty object', 240 - suffix.length, 2) + suffix;
+    if (!facts.length && (this.omitted || dropped)) return document === undefined ? '' : notice;
+    return prefix(facts.length ? facts.join(' · ') : 'Empty object', 240 - suffix.length, document === undefined ? 2 : 1) + suffix;
   }
 }
 /** Tie-break order at equal rank: scalar 0, array count 1, object 2 (its fact is only a key name). */

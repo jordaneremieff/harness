@@ -92,6 +92,48 @@ test('collapsed summaries prefer useful payloads and explicit facts over reorder
   assert.match(shown ?? '', /metadata\.warning: Source incomplete/); assert.match(shown ?? '', /Actual nested content/);
   assert.match(shown ?? '', /count: 3/); assert.doesNotMatch(shown ?? '', /digest|cursor/);
 });
+test('frontmatter document summaries show body words without plain catalog facts', () => {
+  const page = {
+    format: 'guide', name: 'sample-guide', contentDigest: 'a'.repeat(64), bodyBytes: 900, offset: 0, endOffset: 900,
+    text: '---\ntitle: "Sample Guide"\nsummary: "x"\n---\n\n# Sample Guide\n\n## Overview\n\nThis guide explains how the sample works.\nA later line stays expanded.',
+  };
+  const entry = {ok: true, kind: 'entry', name: 'n', content: '---\ntitle: "T"\n---\n\n# T\n\n## Details\n\nA plain **sample** with `code`.'};
+  for (const [value, expected] of [[page, 'This guide explains how the sample works.'], [entry, 'A plain sample with code.']] as const) {
+    const before = JSON.stringify(value);
+    assert.equal(structuredResultPreview({value, truncated: false}), expected);
+    assert.equal(JSON.stringify(value), before);
+    const expanded = result(value); assert.match(expanded.textContent, /title:/); bounded(expanded);
+    const supplied = args(value); assert.match(supplied.textContent, /title:/); bounded(supplied);
+    assert.equal(JSON.stringify(value), before);
+  }
+});
+test('frontmatter summaries retain explicit facts and partial or limited scan notices', () => {
+  const text = '---\ntitle: Sample\n---\n# Sample\n\nDocument words.';
+  for (const [key, value, expected] of [
+    ['errors', ['bad'], 'errors: 1 item'], ['warning', 'Check source', 'warning: Check source'],
+    ['truncated', true, 'truncated: true'], ['omissions', 2, 'omissions: 2'],
+  ] as const) {
+    assert.equal(structuredResultPreview({value: {text, [key]: value, status: 'ready'}, truncated: false}), `${expected} · Document words.`);
+  }
+  const value = {text, ...Object.fromEntries(Array.from({length: 24}, (_, i) => [`field${i}`, i]))};
+  assert.equal(structuredResultPreview({value, truncated: true}), 'Document words. · Partial preview. Summary scan limited.');
+});
+test('frontmatter summaries use heading words or no document words when the body has no prose', () => {
+  assert.equal(structuredResultPreview({value: {text: '---\ntitle: x\n---\n# Only heading\n\n###### Later heading', kind: 'guide'}, truncated: false}), 'Only heading');
+  for (const text of ['---\ntitle: x\n---', '---\ntitle: x\n---\n\n \t']) {
+    assert.equal(structuredResultPreview({value: {text, kind: 'guide'}, truncated: false}), '');
+    assert.equal(structuredResultPreview({value: {text, kind: 'guide'}, truncated: true}), 'Partial preview.');
+    assert.equal(structuredResultPreview({value: {text, errors: ['bad']}, truncated: false}), 'errors: 1 item');
+  }
+  assert.equal(structuredResultPreview({value: {text: '\uFEFF--- \r\ntitle: x\r\n---\t\r\n\r\n# Title\r\n\r\n> A [sample](https://example.com) line.'}, truncated: false}), 'A sample line.');
+  const long = structuredResultPreview({value: {text: `---\ntitle: x\n---\n# Title\n${'😀'.repeat(150)}\nLater line`}, truncated: false});
+  assert.ok(long); assert.ok(long.length <= 240); assert.equal(long.includes('\n'), false); assert.equal(long.isWellFormed(), true); assert.ok(long.endsWith('…'));
+});
+test('non-frontmatter summaries retain literal prefixes and plain facts', () => {
+  assert.equal(structuredResultPreview({value: {text: '---\ntitle: x\nno end', status: 'queued'}, truncated: false}), '---\ntitle: x… · status: queued');
+  assert.equal(structuredResultPreview({value: {text: 'plain', status: 'queued'}, truncated: false}), 'plain · status: queued');
+  assert.equal(structuredResultPreview({value: {text: '# Heading\nBody', status: 'queued'}, truncated: false}), '# Heading\nBody · status: queued');
+});
 test('summary warnings, outcomes and array counts remain supplied facts with explicit partial coverage', () => {
   const shown = structuredResultPreview({value: {cursor: 'next', document: 'Useful document', error: {message: 'Request refused'}, status: 'failed'}, truncated: false});
   assert.match(shown ?? '', /error\.message: Request refused/); assert.match(shown ?? '', /Useful document/); assert.match(shown ?? '', /status: failed/);
