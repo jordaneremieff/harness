@@ -41,6 +41,7 @@ import { Transcript, type ToolSubjectCaption } from './render.ts';
 import { ReferenceResolver, type ReferenceDestination, type ReferenceQuery, type ReferenceResolution } from './references.ts';
 import { imageUrl } from './image.ts';
 import { historyBecameReady, pageToReadingAnchor } from './transcript-history.ts';
+import { IdentityLookup } from './identity-lookup.ts';
 import { Roster } from './roster.ts';
 import { ThreadExplorer, ThreadReader } from './threads-view.ts';
 import { THREAD_PAGE_EVENTS } from './threads.ts';
@@ -705,14 +706,31 @@ function agentRow(identity: string): AgentRow | undefined {
   return row && availability ? {...row, availability: availability.state, capabilities: availability.capabilities} : row;
 }
 const conversationCaptions = new ConversationCaptions();
-let namesRoster: typeof state.roster | undefined, namesConversations: typeof state.conversations | undefined, namesWorkspace: typeof state.workspace;
+const identityNames = new IdentityLookup(
+  (identities, signal) => request<import('../shared/api.ts').CachedRoster>(`/api/agents?${identities.map(identity => `identity=${encodeURIComponent(identity)}`).join('&')}`, 'GET', undefined, undefined, signal).then(page => page.rows),
+  () => { refreshCaptionConsumers(); }, identity => state.roster.has(identity));
+/** A child conversation is named from its own row or its parent's, so both are asked. */
+function wantIdentityName(identity: string): void {
+  identityNames.want(identity);
+  const split = identity.lastIndexOf(':'); if (split > 0 && conversationIdentityText(identity)) identityNames.want(identity.slice(0, split));
+}
+let namesRoster: typeof state.roster | undefined, namesConversations: typeof state.conversations | undefined, namesWorkspace: typeof state.workspace, namesLookup = -1, namesScan: string | undefined;
 function presentationCaptions(): ConversationCaptions {
-  if (namesRoster === state.roster && namesConversations === state.conversations && namesWorkspace === state.workspace) return conversationCaptions;
-  namesRoster = state.roster; namesConversations = state.conversations; namesWorkspace = state.workspace;
+  if (namesRoster === state.roster && namesConversations === state.conversations && namesWorkspace === state.workspace && namesLookup === identityNames.revision) return conversationCaptions;
+  namesRoster = state.roster; namesConversations = state.conversations; namesWorkspace = state.workspace; namesLookup = identityNames.revision;
+  const scan = state.rosterMeta?.scan.scanId; if (scan !== namesScan) {namesScan = scan; identityNames.forget();}
+  conversationCaptions.update(captionRows()); return conversationCaptions;
+}
+/** Loaded roster rows first, then server answers, then every other identity the page shows. */
+function captionRows(): CaptionRow[] {
   const names = new Map<string, CaptionRow>([...state.roster.values()].map(row => [row.identity, row]));
-  for (const pane of paneLeaves(currentLayout().root)) for (const tab of pane.tabs) if (tab.kind === 'agent' && !names.has(tab.identity)) names.set(tab.identity, {identity: tab.identity});
-  for (const conversation of state.conversations.values()) if (conversation.target.kind === 'agent') {const identity = conversation.target.identity; names.set(identity, {...state.roster.get(identity), identity, reported: conversation.frame?.status.name});}
-  conversationCaptions.update([...names.values()]); return conversationCaptions;
+  for (const row of identityNames.rows()) if (!names.has(row.identity)) names.set(row.identity, row);
+  for (const pane of paneLeaves(currentLayout().root)) for (const tab of pane.tabs) if (tab.kind === 'agent' && !names.has(tab.identity)) {names.set(tab.identity, {identity: tab.identity}); wantIdentityName(tab.identity);}
+  for (const conversation of state.conversations.values()) if (conversation.target.kind === 'agent') {
+    const identity = conversation.target.identity; names.set(identity, {...(state.roster.get(identity) ?? identityNames.get(identity)), identity, reported: conversation.frame?.status.name});
+    wantIdentityName(identity);
+  }
+  return [...names.values()];
 }
 let captionPaintRevision = -1, captionReferenceRoster: typeof state.roster | undefined, captionReferencePrimaries: typeof state.primaries | undefined;
 let captionReferenceKey = '', paintedCaptionReferenceKey = '';
@@ -2002,6 +2020,7 @@ function derivedChildName(identity: string): string | undefined {
   return parent ? `${parent} · ${identity.slice(split + 1)}` : undefined;
 }
 export function toolSubjectCaption(value: string): ToolSubjectCaption | undefined {
+  if (conversationIdentityText(value)) wantIdentityName(value);
   const caption = subjectCaption(value), derived = caption?.name ? undefined : derivedChildName(value);
   if (derived) return {...caption, text: derived, title: value, derived: true};
   return caption && !caption.name && conversationIdentityText(value) ? {...caption, fallback: identityFallback(value)} : caption;

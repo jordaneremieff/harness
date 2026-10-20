@@ -9,7 +9,7 @@ import { targetIdentity } from './state.ts';
 import {Factory as ReloadStorageFactory} from './reload-storage.fixture.mts';
 
 export type Fixture = {workspace: Workspace; primaries: PrimaryView[]; roster: AgentRow[]; targets?: TargetState[]; confirmed?: boolean;
-  selectedPage?: Snapshot['selectedPage']; observations?: Snapshot['observations']; history?: EntryView[]; pendingOperations?: OperationView[]};
+  selectedPage?: Snapshot['selectedPage']; observations?: Snapshot['observations']; history?: EntryView[]; pendingOperations?: OperationView[]; catalog?: AgentRow[]};
 
 let application = false;
 let app: typeof import('./app.ts');
@@ -349,7 +349,14 @@ function threadResponse(url: URL, method: string, body?: Record<string, unknown>
   const result = threadHandler(url);
   return Response.json(result && typeof result === 'object' && 'error' in result ? {ok: false, error: (result as {error: unknown}).error} : {ok: true, data: result});
 }
-globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+function identityResponse(input: RequestInfo | URL): Response | undefined {
+  const url = new URL(String(input), 'http://ui.test/app');
+  if (url.pathname !== '/api/agents' || !url.searchParams.has('identity')) return undefined;
+  transportLog.push({method: 'GET', path: `${url.pathname}${url.search}`});
+  const rows = url.searchParams.getAll('identity').flatMap(identity => fixture.catalog?.find(row => row.identity === identity) ?? []);
+  return Response.json({ok: true, data: {...snapshotOf(fixture, cursorSequence).roster, rows}});
+}
+const fixtureFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
   const url = new URL(String(input), 'http://ui.test/app'); const path = url.pathname;
   const method = (init?.method ?? 'GET').toUpperCase();
   const body = init?.body === undefined ? undefined : JSON.parse(String(init.body)) as Record<string, unknown>;
@@ -362,6 +369,7 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
   if (/^\/api\/workspaces\/[^/]+\/targets$/.test(path)) return Response.json({ok: true, data: fixturePreparation(body?.target)});
   return Response.json({ok: true, data: fixtureRead(path, body)});
 };
+globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => identityResponse(input) ?? fixtureFetch(input, init);
 class HostResizeObserver {
   static instances: HostResizeObserver[] = [];
   readonly observed = new Set<unknown>();

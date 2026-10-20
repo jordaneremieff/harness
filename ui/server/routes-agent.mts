@@ -11,12 +11,14 @@ import { ApiError } from './errors.mts';
 import { projectFrame, projectRoster } from './projection.mts';
 import {inspectCursor, projectInspection} from './inspection.mts';
 import * as v from './validate.mts';
+import { LIMITS } from '../shared/api.ts';
 import { ImageResponse } from './images.mts';
 import { imageRequest, isImageRoute } from './image-request.mts';
 
 export async function dispatchAgent(registry: Registry,context: RequestContext) {
   const {parts,body,method,url}=context;
   if(parts.length===2) {
+    if(url.searchParams.has('identity')) return identityRows(registry,url);
     const page=registry.agents.roster({cursor:v.cursor(url.searchParams.get('cursor')),limit:v.limit(url,20)});
     const roster=projectRoster(page);
     return {rows:roster.rows,nextCursor:page.nextCursor,coverage:page.coverage,observedAt:roster.observedAt,stale:roster.stale,scan:roster.scan};
@@ -49,6 +51,15 @@ export async function dispatchAgent(registry: Registry,context: RequestContext) 
     });
   }
   return controlAction(registry,context,workspace,target,identity);
+}
+/** Rows for exact identities from the catalog already in memory, in request order. An identity the catalog does not hold has no row. Paging does not apply. */
+function identityRows(registry:Registry,url:URL) {
+  if(url.searchParams.has('cursor')||url.searchParams.has('limit')) throw new ApiError('invalid_request','An identity lookup takes no paging fields.');
+  const identities=[...new Set(url.searchParams.getAll('identity').map(value=>v.string(value,'agent identity')))];
+  if(identities.length>LIMITS.identityLookup) throw new ApiError('invalid_request',`An identity lookup names at most ${LIMITS.identityLookup} identities.`);
+  const rows=identities.flatMap(identity=>{const row=registry.agents.rosterRow(identity);return row?[row]:[];});
+  const page=registry.agents.roster({limit:1}),roster=projectRoster({...page,rows,nextCursor:null});
+  return {rows:roster.rows,nextCursor:null,coverage:page.coverage,observedAt:roster.observedAt,stale:roster.stale,scan:roster.scan};
 }
 /** Actions on one agent that are not input: stop, run a host command, configure. */
 function controlAction(registry:Registry,context:RequestContext,workspace:string,target:Extract<Target,{kind:'agent'}>,identity:string) {
