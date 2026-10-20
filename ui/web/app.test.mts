@@ -1532,6 +1532,15 @@ test('drawer Close, outside pointer and Escape retain drafts and desktop visibil
   assert.equal(primaryControl('editor').value, 'Exact retained draft'); assert.equal(primaryControl('transcript').scrollTop, 140); assert.equal(selectionSaves.length, 0); assert.equal(app.state.workspace?.sidebarVisible, true);
   app.toggleSidebar(true); host.viewport = 1100; app.renderNavigation(); assert.equal(app.drawerOpen, false); assert.equal(byId('sidebar').hidden, false);
 });
+test('Commands lists only the sidebar action that applies on wide and narrow windows', async () => {
+  await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'primary', key: 'p', epoch: 1}, sidebarVisible: true}, primaries: [primaryFixture()], roster: []});
+  const sidebarRows = () => byId('modal-body').querySelectorAll('.palette-row').map(row => row.querySelector('.palette-name')?.textContent).filter(name => name === 'Hide sidebar' || name === 'Show sidebar');
+  const listed = () => {byId('commands-button').click(); const names = sidebarRows(); byId('modal-close').click(); return names;};
+  host.viewport = 1200; assert.deepEqual(listed(), ['Hide sidebar']);
+  host.viewport = 760; app.renderNavigation(); assert.deepEqual(listed(), ['Show sidebar']);
+  app.toggleSidebar(true); assert.deepEqual(listed(), ['Hide sidebar']);
+  app.toggleSidebar(false); host.viewport = 1200; app.renderNavigation();
+});
 test('projected Message pointers stay inside the drawer without exempting the conversation transcript', async t => {
   t.after(() => {app.toggleSidebar(false); byId('agent-message-close').click(); host.viewport = 1200;});
   for (const visiblePane of [false, true]) {

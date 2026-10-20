@@ -25,7 +25,7 @@ const primary: PrimaryView = {key: 'p', epoch: 1, cwd: '/project', lifecycle: 'r
 const handoff: HandoffView = {cwd: '/handed-project', sessionFile: '/handed-project/session.jsonl', executable: 'pi', argv: ['--session', '/handed-project/session.jsonl'], command: 'pi --session /handed-project/session.jsonl'};
 const operation: OperationView = {id: 'op', kind: 'primary.control', state: 'completed', target: {kind: 'primary', key: 'p', epoch: 1}, createdAt: '2026-10-08T12:00:00Z', updatedAt: '2026-10-08T12:00:00Z'};
 function context(overrides: Partial<ActionContext> = {}): ActionContext {
-  return {agentPresentation: row => ({name: row.name ?? 'Unnamed conversation', activity: 'Running', tone: 'secondary', cwd: row.cwd}), snapshot: () => undefined, primary: () => primary, composer: {commandsChanged: () => {}} as ActionContext['composer'], commandsChanged: () => {overrides.composer?.commandsChanged?.();}, modal: {} as ActionContext['modal'], selection: async () => undefined, reload: async () => undefined, result: () => undefined, rosterRefresh: () => undefined, hasTranscript: () => !!(overrides.primary ?? (() => primary))(), find: () => undefined, recovery: () => undefined, primaryEntries: () => [], agents: () => [], selectedAgent: () => undefined, agentStatus: row => row.availability === 'live' ? row.state : row.availability, selectAgent: () => {}, selectPrimary: () => {}, notices: () => {}, sidebar: () => {}, view: () => {}, copyAgent: () => {}, inspectAgent: () => {}, ...overrides};
+  return {agentPresentation: row => ({name: row.name ?? 'Unnamed conversation', activity: 'Running', tone: 'secondary', cwd: row.cwd}), snapshot: () => undefined, primary: () => primary, composer: {commandsChanged: () => {}} as ActionContext['composer'], commandsChanged: () => {overrides.composer?.commandsChanged?.();}, modal: {} as ActionContext['modal'], selection: async () => undefined, reload: async () => undefined, result: () => undefined, rosterRefresh: () => undefined, hasTranscript: () => !!(overrides.primary ?? (() => primary))(), find: () => undefined, recovery: () => undefined, primaryEntries: () => [], agents: () => [], selectedAgent: () => undefined, agentStatus: row => row.availability === 'live' ? row.state : row.availability, selectAgent: () => {}, selectPrimary: () => {}, notices: () => {}, sidebar: () => {}, sidebarShown: () => true, view: () => {}, copyAgent: () => {}, inspectAgent: () => {}, ...overrides};
 }
 test('model holds start before reservation and release only their own authoritative receipt', async () => {
   const reserved = Promise.withResolvers<Response>(); let count = 0, changed = 0;
@@ -545,10 +545,19 @@ test('agent presentation control defaults on and the quiet Commands choice saves
     choice.run();assert.deepEqual(selections,[{agentControl:value === false}]);
   }
 });
+test('the palette lists the one sidebar action that applies and still finds it by either name', () => {
+  const sidebarNames = (shown: boolean) => new Actions(context({sidebarShown: () => shown})).paletteEntries().filter(item => /sidebar$/.test(item.name)).map(item => item.name);
+  assert.deepEqual(sidebarNames(true), ['Hide sidebar']); assert.deepEqual(sidebarNames(false), ['Show sidebar']);
+  for (const [shown, name] of [[true, 'Hide sidebar'], [false, 'Show sidebar']] as const) {
+    const sidebarCalls: boolean[] = []; const entries = new Actions(context({sidebarShown: () => shown, sidebar: visible => {sidebarCalls.push(visible);}})).paletteEntries();
+    for (const query of ['show sidebar', 'hide sidebar', 'sidebar', 'hide', 'show']) assert.ok(rankPalette(entries, query).some(match => match.item.name === name), query);
+    entries.find(item => item.name === name)?.run(); assert.deepEqual(sidebarCalls, [!shown]);
+  }
+});
 test('palette covers every displaced control and session availability follows the menu', () => {
   const actions = new Actions(context());
   const names = actions.paletteEntries().filter(item => item.source === 'app').map(item => item.name);
-  assert.deepEqual(names, ['New session', 'Sessions', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Saved drafts and messages', 'Appearance', 'Message input…', 'Agent presentation control', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Notifications', 'Refresh agents', 'Insert /agent new', 'Hide sidebar', 'Show sidebar', 'Projects', 'Model', 'Thinking', 'Sent and received tasks…']);
+  assert.deepEqual(names, ['New session', 'Sessions', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Saved drafts and messages', 'Appearance', 'Message input…', 'Agent presentation control', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Notifications', 'Refresh agents', 'Insert /agent new', 'Hide sidebar', 'Projects', 'Model', 'Thinking', 'Sent and received tasks…']);
   const absent = new Actions(context({primary: () => undefined})).paletteEntries();
   const disabled = absent.filter(item => !item.enabled).map(item => item.name);
   assert.deepEqual(disabled, ['Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Model', 'Thinking', 'Sent and received tasks…']);
