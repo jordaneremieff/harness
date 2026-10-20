@@ -27,13 +27,13 @@ export function absoluteTime(value: Timestamp, options: { locale?: string; timeZ
     timeZone: options.timeZone,
   }).format(date);
 }
-/** Local day, month and 12-hour time with seconds, for example "20 Oct, 2:29:23 PM". */
+/** Local month, day and 12-hour time with seconds, for example "Oct 20, 2:29:23 PM". */
 export function localDateTime(value: Timestamp, timeZone?: string): string {
   const date = timestampDate(value);
   if (!Number.isFinite(date.getTime())) return '';
   const part = new Map(new Intl.DateTimeFormat('en-US', {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true, timeZone})
     .formatToParts(date).map(item => [item.type, item.value] as const));
-  return `${part.get('day')} ${part.get('month')}, ${part.get('hour')}:${part.get('minute')}:${part.get('second')} ${part.get('dayPeriod')}`;
+  return `${part.get('month')} ${part.get('day')}, ${part.get('hour')}:${part.get('minute')}:${part.get('second')} ${part.get('dayPeriod')}`;
 }
 export function timestampDetails(value: Timestamp, timeZone?: string): { exact: string; display: string } {
   const date = timestampDate(value);
