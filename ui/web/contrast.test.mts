@@ -60,7 +60,7 @@ const decorativeHairlines = new Set([
 	".palette-input-row|border-bottom",
 ]);
 // A tinted edge names its exact mix. The control it frames is identified by its text and icon, so the tint is decoration.
-const decorativeTintedEdges = new Set([".stop|border-color|color-mix(in srgb, var(--error) 55%, transparent)"]);
+const decorativeTintedEdges = new Set([".stop|border-color|color-mix(in srgb, var(--error) 55%, transparent)", ".composer-input|border|1px solid color-mix(in srgb, var(--edge) 28%, transparent)"]);
 // Non-content paint: the backdrop dims the page; the resting divider separates positioned panes.
 const decorativeBackgrounds = new Set(["dialog::backdrop|var(--backdrop)", ".pane-split > .pane-divider::after|var(--rule)"]);
 // Graphic paint carries no text; meaningful hover/focus and selected marks still meet 3:1.
@@ -280,29 +280,20 @@ function matrix(palette: Palette, theme: string, measure: Measure) {
 	for (const bg of surfaces) measure("border-matrix", `--edge / --${bg}`, "edge", bg, 3);
 	for (const bg of surfaces) measure("focus-matrix", `--accent / --${bg}`, "accent", bg, 3);
 }
-// A quiet placeholder mixes one text token into the surface it sits on; the blend is measured against that surface.
-const placeholderMix = /^color-mix\(in srgb, var\(--(muted)\) (\d+)%, var\(--(raised)\)\)$/;
 function blend(foreground: string, background: string, weight: number): string {
 	const mixed = rgb(foreground).map((channel, index) => Math.round(channel * weight + (rgb(background)[index] as number) * (1 - weight)));
 	return `#${mixed.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
 }
 const composerFill = (palette: Palette): string => blend(palette['--canvas'] as string, palette['--fg'] as string, palette['color-scheme'] === 'light' ? .94 : .88);
 const composerHoverFills = new Map([
-  ['.composer-input :is(.composer-model, .composer-thinking):not(:disabled):hover', 9],
-  ['.composer .attachment-sources', 7],
-  ['.composer .attachment-sources:hover:not(:disabled)', 13],
+  ['.composer .attachment-sources:hover:not(:disabled), .composer .attachment-sources[aria-expanded=true]:not(:disabled)', 9],
   ['.queue:not(:disabled):hover', 9],
   ['.composer[data-working=draft] .stop:hover', 2],
 ]);
-// Text whose exact paint is modeled elsewhere: the quiet placeholder blend and the canvas text of an inverted fill.
+// Inverted controls pair canvas text with their own filled background.
 function modeledText(context: Context, property: string, value: string): boolean {
-	const { theme, source, exclusions, measure, decl, palette } = context;
+	const { theme, source, exclusions, decl } = context;
 	if (property !== "color") return false;
-	const mix = placeholderMix.exec(value);
-	if (mix && context.rule.selector === ".composer textarea::placeholder") {
-		measure("placeholder", `${source} ${value} / --${mix[3]}`, blend(palette["--muted"] as string, palette["--raised"] as string, Number(mix[2]) / 100), composerFill(palette), 3);
-		return true;
-	}
 	const filled = token(decl["background-color"] ?? decl.background ?? "");
 	if (value !== "var(--canvas)" || !filled || !inverseFills.includes(filled)) return false;
 	exclusions.push(`${theme}: inverted fill text ${source} ${property}: ${value}`);
@@ -347,7 +338,7 @@ function inverseBackground(context: Context, fill: string) {
 function composerBackground(context: Context, value: string): boolean {
   const {rule, palette, measure, source} = context;
   if (rule.selector === '.composer-input' && value === 'var(--composer-fill)') {
-    for (const fg of ['fg', 'muted']) measure('composer-text', `${source} --${fg} / derived surface`, fg, composerFill(palette), 4.5);
+    for (const fg of ['fg', 'muted', 'dim']) measure('composer-text', `${source} --${fg} / derived surface`, fg, composerFill(palette), 4.5);
     measure('composer-focus', `${source} --edge / derived surface`, 'edge', composerFill(palette), 3);
     return true;
   }
@@ -660,6 +651,11 @@ test("hardcoded and unknown text colors, extra pairs, and alpha effects are dete
 	assert.ok(audit(`${css}\n.transcript-region::before { background: linear-gradient(to bottom,var(--canvas),transparent); }`).issues.some((i) => i.includes("unmodeled background")), "transcript edges have no gradient exception");
 	assert.ok(audit(`${css}\n.probe { --dim: #000000; }`).issues.some((i) => i.includes("Component-local variable")));
 	assert.deepEqual(audit(`${css}\n.probe { --edge: 12px; }`).issues, []);
+});
+test('composer placeholder ink meets normal text contrast against the actual derived fill', () => {
+  assert.match(css, /\.composer textarea::placeholder \{ color: var\(--dim\); \}/);
+  const rows = result.measurements.filter(row => row.kind === 'composer-text' && row.source.endsWith('--dim / derived surface'));
+  assert.equal(rows.length, 2); assert.ok(rows.every(row => row.threshold === 4.5 && row.ratio >= 4.5));
 });
 test('composer surfaces measure their derived fill and control composites without a general alpha exception', () => {
   const rows = result.measurements.filter(row => row.kind.startsWith('composer-'));

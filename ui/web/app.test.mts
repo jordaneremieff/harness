@@ -1461,7 +1461,7 @@ test('Primary model and thinking are picker buttons under its composer with acce
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({cwd: '/fixture', lifecycle: 'ready', model: {provider: 'provider', id: 'model', name: 'Model', reasoning: false, input: ['text']}, thinkingLevel: 'high'})], roster: []});
   const model = primaryControl('model'), thinking = primaryControl('thinking');
   assert.equal(model.textContent, 'Model'); assert.equal(model.title, 'provider/model · Primary'); assert.equal(model.attributes.get('aria-label'), 'Model for Primary: provider/model');
-  assert.equal(thinking.textContent, 'High'); assert.equal(thinking.attributes.get('aria-label'), 'Thinking level for Primary: high'); assert.ok(primaryControl('settings').contains(model)); assert.ok(model.querySelector('.card-icon-chevron')); assert.ok(thinking.querySelector('.card-icon-chevron')); assert.equal(primaryControl('settings').querySelector('.composer-settings-separator'), null);
+  assert.equal(thinking.textContent, 'High'); assert.equal(thinking.attributes.get('aria-label'), 'Thinking level for Primary: high'); assert.ok(primaryControl('settings').contains(model)); assert.ok(model.querySelector('.card-icon-chevron')); assert.equal(thinking.querySelector('.card-icon-chevron'), null); assert.equal(primaryControl('settings').querySelector('.composer-settings-separator'), null);
 });
 
 test('local conversation actions group existing controls and open workspace input settings without navigation', async () => {
@@ -1690,7 +1690,7 @@ test('Message panel settings describe its captured agent instead of a prior agen
   const agent = byId('roster').children.find(node => node.dataset.identity === row.identity); assert.ok(agent); const message = agent.querySelector('.row-message'); assert.ok(message); message.click(); await settle();
   const settingsText = () => messageControl('settings-text');
   assert.equal(byId('agent-message-panel').hidden, false); assert.equal(settingsText()?.hidden, false);
-  assert.equal(settingsText()?.textContent, 'recipient-model · Low'); assert.equal(settingsText()?.title, 'Last observed: Model agent-provider/recipient-model · Thinking low');
+  assert.equal(settingsText()?.textContent, 'recipient-modelLow'); assert.equal(settingsText()?.title, 'Last observed: Model agent-provider/recipient-model · Thinking low');
   assert.equal(settingsText()?.getAttribute('aria-label'), settingsText()?.title); assert.match(byId('agent-settings-detail').textContent, /Last observed settings are not confirmed current\./); assert.equal(byId('agent-settings-detail').hidden, false); assert.equal(byId('agent-settings-detail').classList.contains('phone-status-facts'), false);
   assert.equal(messageControl('recipient').textContent, 'Message Recipient'); assert.equal(primaryControl('root').hidden, false);
   const editor = messageControl('editor'); editor.value = 'Keep the recipient draft'; editor.dispatch('input'); editor.focus(); editor.setSelectionRange(3, 8);
@@ -1808,7 +1808,7 @@ test('a stored Start response across stream replacement retains uncertainty with
   await storedLaunchFixture(identity); const editor = agentControl('editor'); editor.setSelectionRange(2, 6, 'backward'); const before = transportLog.length;
   browser.startPreparation = async () => pending.promise; const starting = app.startStoredAgent('w', identity); await settle(); await interruptPreparation('reconnect', recovery);
   pending.resolve(Response.json({ok: true, data: {...fixturePreparation({kind: 'agent', identity}), availability: 'live', capabilities: agentFixture(identity).capabilities}})); await starting; await settle();
-  assert.equal(agentControl('send').hidden, true); assert.equal(agentControl('state-line').textContent, 'Start did not complete.'); assert.equal(agentControl('start').textContent, 'Try again'); assert.equal(agentControl('state').dataset.tone, 'error'); assert.equal(agentControl('state').querySelector('.composer-state-label')?.textContent, 'Start did not complete.'); assert.equal(agentControl('start').dataset.kind, 'recovery'); assert.ok(agentControl('start').querySelector('.card-icon-restart'), 'Try again carries the retry icon'); assert.match(tabsNode().querySelector('[data-tab-key="agent:late-stored-start"]')?.title ?? '', /Start failed/); assert.match(startDetail(), /browser connection changed/);
+  assert.equal(agentControl('send').hidden, true); assert.equal(agentControl('state-line').textContent, 'Start did not complete.'); assert.equal(agentControl('start').textContent, 'Try again'); assert.equal(agentControl('state').dataset.tone, 'error'); assert.equal(agentControl('state').querySelector('.composer-state-label')?.textContent, 'Start did not complete'); assert.equal(agentControl('start').dataset.kind, 'recovery'); assert.ok(agentControl('start').querySelector('.card-icon-restart'), 'Try again carries the retry icon'); assert.match(tabsNode().querySelector('[data-tab-key="agent:late-stored-start"]')?.title ?? '', /Start failed/); assert.match(startDetail(), /browser connection changed/);
   assert.equal(agentControl('editor'), editor); assert.equal(editor.value, 'Agent launch keep'); assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [2, 6, 'backward']);
   assert.equal(transportLog.slice(before).filter(call => call.path.endsWith('/start')).length, 1); assert.equal(transportLog.slice(before).some(call => call.path.includes('/inputs')), false);
 });
@@ -1921,22 +1921,22 @@ test('a read-only agent disables Send, describes it with the state line, and kee
   const before = transportLog.length; await app.agentComposer().send(); await settle(); assert.equal(transportLog.slice(before).some(call => call.path.includes('/inputs')), false);
 });
 
-test('the utility row shows full state sentences above the writing surface without duplicate speech', async () => {
+test('the context line shows compact state below the writing surface without duplicate speech', async () => {
   const identity = 'quiet-state', target = {kind: 'agent' as const, identity};
   const visible = () => agentControl('state').querySelector('.composer-state-label');
   await arrive({workspace: {id: 'w', revision: 1, selectedTarget: target, panelVisible: true}, primaries: [], roster: [agentFixture(identity, {availability: 'stored'})], targets: [targetFixture('quiet-state', target, {draft: {revision: 1, text: '', mode: 'followUp', persisted: true}})]});
   const state = agentControl('state'), meta = agentControl('meta');
   assert.equal(state.parentNode, meta); assert.equal(state.classList.contains('sr-only'), false, 'a stored agent says why only Start is offered');
-  assert.equal(agentControl('state-line').textContent, 'Not running. Start it to send a message.'); assert.equal(visible()?.hidden, false); assert.equal(visible()?.textContent, 'Not running. Start to send.'); assert.equal(state.dataset.tone, undefined); assert.equal(agentControl('state-detail').hidden, true);
+  assert.equal(agentControl('state-line').textContent, 'Not running. Start it to send a message.'); assert.equal(visible()?.hidden, false); assert.equal(visible()?.textContent, 'Not running'); assert.equal(state.dataset.tone, undefined); assert.equal(agentControl('state-detail').hidden, true);
   assert.equal(agentControl('start').hidden, false); assert.equal(agentControl('start').textContent, 'Start'); assert.ok(agentControl('start').querySelector('.card-icon-play'), 'Start carries the play icon'); assert.equal(agentControl('start').dataset.kind, undefined); assert.equal(agentControl('send').hidden, true);
   assert.equal(agentControl('editor').rows, 1); assert.equal((agentControl('editor') as HostNode & {placeholder: string}).placeholder.includes('commands'), false);
   const editor = agentControl('editor'); editor.focus();
   event('agent.availability', {identity, connectionEpoch: 1, state: 'stored', capabilities: agentFixture(identity).capabilities, reason: 'Stored since the last restart.'}); await settle();
   assert.equal(hostDocument.activeElement, editor, 'a state change leaves focus in the editor');
-  assert.equal(agentControl('state-line').textContent, 'Not running. Start it to send a message.'); assert.equal(agentControl('state-detail').hidden, true, 'Start offers no Details control even when a reason exists'); assert.equal(state.classList.contains('sr-only'), false); assert.equal(visible()?.textContent, 'Not running. Start to send.');
+  assert.equal(agentControl('state-line').textContent, 'Not running. Start it to send a message.'); assert.equal(agentControl('state-detail').hidden, true, 'Start offers no Details control even when a reason exists'); assert.equal(state.classList.contains('sr-only'), false); assert.equal(visible()?.textContent, 'Not running');
   await arrive({workspace: {id: 'w', revision: 2, selectedTarget: target, panelVisible: true}, primaries: [], roster: [agentFixture(identity, {availability: 'incompatible', capabilities: {input: false}})], targets: [targetFixture('quiet-state', target, {draft: {revision: 1, text: '', mode: 'followUp', persisted: true}})]});
   event('agent.availability', {identity, connectionEpoch: 2, state: 'incompatible', capabilities: {...agentFixture(identity).capabilities, input: false}}); await settle();
-  assert.equal(state.classList.contains('sr-only'), false); assert.equal(visible()?.textContent, 'This agent cannot run here. Messages are read only.'); assert.equal(visible()?.title, 'This agent cannot run here. Messages are read only.'); assert.equal(state.dataset.tone, undefined);
+  assert.equal(state.classList.contains('sr-only'), false); assert.equal(visible()?.textContent, 'Read only'); assert.equal(visible()?.title, 'This agent cannot run here. Messages are read only.'); assert.equal(state.dataset.tone, undefined);
   assert.equal(hostDocument.activeElement, editor, 'a change to read only leaves focus in the editor'); assert.equal(agentControl('send').hidden, true);
   assert.equal(visible()?.getAttribute('aria-hidden'), 'true'); assert.equal(agentControl('state-line').textContent, 'This agent cannot run here. Messages are read only.');
 });
@@ -1974,7 +1974,7 @@ test('a failed preparation after reconnect says the agent could not be reached a
   const before = transportLog.length; await recovery.recover(); await settle();
   assert.equal(agentControl('state-line').textContent, 'Could not reach the agent.'); assert.equal(agentControl('start').textContent, 'Check again'); assert.equal(agentControl('start').hidden, false); assert.equal(agentControl('start').dataset.kind, 'recovery'); assert.ok(agentControl('start').querySelector('.card-icon-restart'));
   assert.equal(agentControl('send').hidden, true); assert.equal(agentControl('state-detail').hidden, false); assert.equal(agentControl('state').dataset.tone, 'warning');
-  assert.equal(agentControl('state-detail').textContent, 'Details'); assert.equal(agentControl('state').querySelector('.composer-state-label')?.textContent, 'Could not reach the agent.');
+  assert.equal(agentControl('state-detail').textContent, 'Details'); assert.equal(agentControl('state').querySelector('.composer-state-label')?.textContent, 'Could not reach the agent');
   assert.match(startDetail(), /agent socket is closed/);
   const failed = preparations(before, identity).length; await settle(); assert.equal(preparations(before, identity).length, failed);
   fail = false; agentControl('start').click(); await settle();
@@ -1995,7 +1995,7 @@ test('a stored agent whose first preparation fails keeps the composer with the n
   await arrive({workspace: {id: 'first-open-fail', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({epoch: 9810})], roster: [row], targets: []}); streamSources.at(-1)?.emit('ready', {bootId: 'boot'}); await settle(); await app.selectAgent(row); await settle();
   assert.equal(agentControl('composer').hidden, false, 'the failed preparation keeps the composer on screen');
   assert.equal(agentControl('editor').disabled, true); assert.equal(agentControl('composer').querySelector('.attachment-sources')?.disabled, true);
-  assert.equal(agentControl('state-line').textContent, 'Could not reach the agent.'); assert.equal(agentControl('state').querySelector('.composer-state-label')?.textContent, 'Could not reach the agent.'); assert.equal(agentControl('state').dataset.tone, 'warning');
+  assert.equal(agentControl('state-line').textContent, 'Could not reach the agent.'); assert.equal(agentControl('state').querySelector('.composer-state-label')?.textContent, 'Could not reach the agent'); assert.equal(agentControl('state').dataset.tone, 'warning');
   assert.equal(agentControl('start').textContent, 'Check again'); assert.equal(agentControl('start').hidden, false); assert.equal(agentControl('start').disabled, false); assert.equal(agentControl('send').hidden, true);
   assert.match(startDetail(), /agent socket is closed/);
   fail = false; const before = transportLog.length, failedAttempts = attempts; agentControl('start').focus(); agentControl('start').click(); await settle();
@@ -2024,7 +2024,7 @@ test('pending stored Start deduplicates clicks and a stale completion never chan
   let complete: ((response: Response) => void) | undefined;
   browser.startPreparation = () => new Promise(resolve => { complete = resolve; }); const before = transportLog.length;
   const pending = app.startStoredAgent('w', identity); await app.startStoredAgent('w', identity);
-  assert.equal(agentControl('start').disabled, true); assert.equal(agentControl('start').textContent, 'Starting…'); assert.equal(agentControl('start').attributes.get('aria-busy'), 'true'); assert.ok(agentControl('start').querySelector('.card-icon-working')); assert.equal(agentControl('start').getAttribute('aria-label'), 'Starting…'); assert.equal(agentControl('state').querySelector('.composer-state-label')?.textContent, 'Starting the agent…'); assert.equal(agentControl('state').dataset.tone, undefined); assert.equal(agentControl('history-reload').disabled, true);
+  assert.equal(agentControl('start').disabled, true); assert.equal(agentControl('start').textContent, 'Starting…'); assert.equal(agentControl('start').attributes.get('aria-busy'), 'true'); assert.ok(agentControl('start').querySelector('.card-icon-working')); assert.equal(agentControl('start').getAttribute('aria-label'), 'Starting…'); assert.equal(agentControl('state').querySelector('.composer-state-label')?.textContent, 'Starting…'); assert.equal(agentControl('state').dataset.tone, undefined); assert.equal(agentControl('history-reload').disabled, true);
   await storedLaunchFixture('new-recipient'); const editor = agentControl('editor'); editor.focus(); editor.setSelectionRange(1, 6);
   assert.ok(complete); complete(Response.json({ok: true, data: {targetState: targetFixture('late-target', {kind: 'agent', identity}), availability: 'live', capabilities: {input: true}}})); await pending; await settle();
   assert.equal(transportLog.slice(before).filter(call => call.path.endsWith('/start')).length, 1);
@@ -2101,11 +2101,11 @@ test('Message panel uses its captured loaded cache and ignores unaccepted late f
   assert.equal(app.state.workspace?.selectedTarget?.kind, 'primary');
   const before = transportLog.length;
   event('agent.frame', {identity: row.identity, connectionEpoch: 0, frame: {...frame, revision: 2, status: {busy: false, model: {provider: 'unaccepted', modelId: 'late-model'}}}}); flushFrames(); await settle();
-  assert.equal(messageControl('settings-text')?.textContent, 'live-model · Low');
+  assert.deepEqual(messageControl('settings-text')?.children.map(node => node.textContent), ['live-model', 'Low']);
   assert.match(byId('agent-usage-summary').textContent, /Cache 50%/); assert.match(byId('agent-usage').textContent, /Loaded assistant window only/); assert.doesNotMatch(byId('agent-usage').textContent, /Primary|whole-session cost|context window/);
   assert.equal(byId('agent-folder').textContent, 'Saved folder /saved/recipient');
   event('agent.frame', {identity: 'other-recipient', connectionEpoch: 1, frame: {...frame, status: {busy: true, model: {provider: 'other', modelId: 'not-recipient'}}}}); flushFrames(); await settle();
-  assert.equal(messageControl('settings-text')?.textContent, 'live-model · Low');
+  assert.deepEqual(messageControl('settings-text')?.children.map(node => node.textContent), ['live-model', 'Low']);
   assert.equal(messageControl('editor'), editor); assert.equal(editor.value, 'Keep captured draft'); assert.deepEqual([editor.selectionStart, editor.selectionEnd], [2, 7]); assert.equal(hostDocument.activeElement, editor);
   assert.equal(byId('agent-usage-details'), details); assert.equal(Reflect.get(details, 'open'), true);
   assert.equal(transportLog.slice(before).filter(call => call.path.includes('/inputs') || call.path.endsWith('/targets')).length, 0);
@@ -2288,7 +2288,7 @@ test('composer settings show the Primary model list name and capitalized effort,
       await app.selectAgent(row); await settle();
       shown.push(agentControl('settings-text')?.textContent ?? ''); labels.push(agentControl('settings-text')?.getAttribute('aria-label'));
     }
-    assert.deepEqual(shown, ['Vendor Sonnet 5.5 · High', 'unlisted-id · Low', 'Vendor Sonnet 5.5 · Medium', 'Vendor Sonnet 5.5 · High', 'unlisted-id · Low']);
+    assert.deepEqual(shown, ['Vendor Sonnet 5.5High', 'unlisted-idLow', 'Vendor Sonnet 5.5Medium', 'Vendor Sonnet 5.5High', 'unlisted-idLow']);
     assert.deepEqual(labels, ['Last observed: Model vendor/sonnet-id · Thinking high', 'Last observed: Model vendor/unlisted-id · Thinking low', 'Last observed: Model elsewhere/sonnet-id · Thinking medium', 'Last observed: Model vendor/sonnet-id · Thinking high', 'Last observed: Model vendor/unlisted-id · Thinking low']);
     assert.equal(reads.length, 1); assert.match(reads[0] ?? '', /^\/api\/primaries\/p\/resources\/models\?limit=100(&|$)/);
   } finally {globalThis.fetch = previous;}
@@ -2331,10 +2331,10 @@ test('an agent on another provider shows the list name for the same id, and its 
   try {
     await arrive({workspace: {id: 'codex', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'primary', key: 'p', epoch: 7702}}, primaries: [primaryFixture({epoch: 7702})], roster: [codex, clash]});
     await settle(); await app.selectAgent(codex); await settle();
-    assert.equal(agentControl('settings-text')?.textContent, 'GPT-6 Astra · High'); assert.equal(agentControl('settings-text')?.title, 'Last observed: Model openai-codex/gpt-6-astra · Thinking high');
+    assert.equal(agentControl('settings-text')?.textContent, 'GPT-6 AstraHigh'); assert.equal(agentControl('settings-text')?.title, 'Last observed: Model openai-codex/gpt-6-astra · Thinking high');
     assert.equal(agentControl('settings-text')?.getAttribute('aria-label'), 'Last observed: Model openai-codex/gpt-6-astra · Thinking high');
     await app.selectAgent(clash); await settle();
-    assert.equal(agentControl('settings-text')?.textContent, 'clashing-id · High', 'two names for one id leave the id');
+    assert.equal(agentControl('settings-text')?.textContent, 'clashing-idHigh', 'two names for one id leave the id');
   } finally {globalThis.fetch = previous;}
 });
 test('a stored agent shows the list name from a ready Primary when no Primary is selected, and its tooltip keeps provider and id', async () => {
@@ -2349,7 +2349,7 @@ test('a stored agent shows the list name from a ready Primary when no Primary is
     await arrive({workspace: {id: 'unselected', revision: 1, primaryKey: null}, primaries: [primaryFixture({epoch: 7703, lifecycle: 'ready'})], roster: [stored]});
     await settle(); await app.selectAgent(stored); await settle();
     assert.equal(app.state.workspace?.primaryKey ?? null, null);
-    assert.equal(agentControl('settings-text')?.textContent, 'Claude Sonnet 5.5 · High'); assert.equal(agentControl('settings-text')?.title, 'Last observed: Model anthropic/claude-sonnet-5-5 · Thinking high');
+    assert.deepEqual(agentControl('settings-text')?.children.map(node => node.textContent), ['Claude Sonnet 5.5', 'High']); assert.equal(agentControl('settings-text')?.title, 'Last observed: Model anthropic/claude-sonnet-5-5 · Thinking high');
     assert.deepEqual(reads, ['/api/primaries/p/resources/models']);
   } finally {globalThis.fetch = previous;}
 });
@@ -2365,7 +2365,7 @@ test('a stored agent shows the list name from a ready Primary when the selected 
     await arrive({workspace: {id: 'stopped-selection', revision: 1, primaryKey: 'stopped'}, primaries: [primaryFixture({key: 'stopped', epoch: 7704, lifecycle: 'stopped'}), primaryFixture({key: 'ready', epoch: 7705, lifecycle: 'ready'})], roster: [stored]});
     await settle(); await app.selectAgent(stored); await settle();
     assert.equal(app.state.workspace?.primaryKey, 'stopped');
-    assert.equal(agentControl('settings-text')?.textContent, 'Claude Sonnet 5.5 · High'); assert.equal(agentControl('settings-text')?.title, 'Last observed: Model anthropic/claude-sonnet-5-5 · Thinking high');
+    assert.deepEqual(agentControl('settings-text')?.children.map(node => node.textContent), ['Claude Sonnet 5.5', 'High']); assert.equal(agentControl('settings-text')?.title, 'Last observed: Model anthropic/claude-sonnet-5-5 · Thinking high');
     assert.deepEqual(reads, ['/api/primaries/ready/resources/models']);
   } finally {globalThis.fetch = previous;}
 });

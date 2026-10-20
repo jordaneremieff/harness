@@ -1163,7 +1163,7 @@ test('offline Resume attaches the exact buffer before preparation and keeps it a
 test('ready agent Send requires a nonempty draft and readiness never submits input', () => {
   const f = fixture('agent');
   f.connect(state('a', draft(0, '', 'followUp'), true));
-  assert.equal(f.node('send').hidden, false); assert.equal(f.node('send').disabled, true);
+  assert.equal(f.node('send').hidden, true); assert.equal(f.node('send').disabled, true);
   f.composer.attach('w', state('a', draft(1, '  ', 'followUp'), true));
   assert.equal(f.node('send').disabled, true);
   f.composer.attach('w', state('a', draft(2, 'Fixture text', 'followUp'), true));
@@ -1217,6 +1217,22 @@ test('working with an empty draft offers only Stop, and a draft adds Steer and Q
   assert.equal(queue.title, 'Queue: send after the current response ends');
   f.composer.setText(''); assert.equal(root.dataset.working, 'empty'); assert.equal(queue.hidden, true);
   f.composer.availability(true, true, false); assert.equal(root.dataset.working, undefined); assert.equal(queue.hidden, true); assert.equal(actionText(send), 'Send'); assert.equal(send.getAttribute('aria-label'), 'Send message');
+});
+test('empty ready drafts omit Send while text, images and required recovery retain their actions', () => {
+  for (const kind of ['primary', 'agent'] as const) {
+    const f = fixture(kind); f.connect(state('empty', draft(1, ''), kind === 'agent'));
+    const editor = f.composer.editor, parent = editor.parentElement, send = f.node('send');
+    assert.equal(send.hidden, true); editor.focus(); editor.setSelectionRange(0, 0);
+    f.composer.setText('x'); assert.equal(send.hidden, false);
+    f.composer.setText(''); assert.equal(send.hidden, true);
+    assert.equal(f.composer.editor, editor); assert.equal(editor.parentElement, parent); assert.equal(editor.selectionStart, 0);
+    const imageOnly = state('image-only', {...draft(2, ''), images: [{digest: 'a'.repeat(64), mimeType: 'image/png', bytes: 67, width: 1, height: 1, name: 'draft.png'}]}, kind === 'agent');
+    f.composer.attach('w', imageOnly); assert.equal(send.hidden, false); assert.equal(send.disabled, false);
+    f.composer.availability(false, true, false); assert.equal(send.hidden, false);
+    f.composer.attach('w', state('recovery', draft(3, ''), kind === 'agent'));
+    f.composer.setState({line: 'Could not reach the agent.', action: {label: 'Check again', recovery: true, run() {}}});
+    assert.equal(send.hidden, true);
+  }
 });
 test('unconfirmed delivery puts captured identifiers and text in closed disclosures', () => {
   const f = fixture(); const a = state('captured', draft(2, 'message'));

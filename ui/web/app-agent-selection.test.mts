@@ -179,11 +179,11 @@ test('agent settings retain model and thinking text from the exact frame without
   await arrive({workspace: {id: 'agent-settings', revision: 2, primaryKey: 'p', selectedTarget: {kind: 'agent', identity: 'selected'}}, primaries: [primaryFixture()], roster: [row], observations: [observation('selected', frame)]});
   event('agent.availability', {identity: row.identity, connectionEpoch: app.state.agentEpochs.get(row.identity), state: 'live', capabilities: row.capabilities}); await settle();
   const settings = () => agentControl('settings-text'); const primaryModel = primaryControl('model').textContent;
-  app.agentChrome('selected', row); assert.equal(settings()?.textContent, 'selected-agent-long-model-name · Medium'); assert.equal(settings()?.title, 'Model provider/selected-agent-long-model-name · Thinking medium');
+  app.agentChrome('selected', row); assert.deepEqual(settings()?.children.map(node => node.textContent), ['selected-agent-long-model-name', 'Medium']); assert.equal(settings()?.title, 'Model provider/selected-agent-long-model-name · Thinking medium');
   const detail=byId('agent-settings-detail'),limit='Last observed settings are not confirmed current.';
   assert.equal(detail.textContent,'Model provider/selected-agent-long-model-name · Thinking medium');assert.equal(detail.hidden,false);
   app.state.conversations.clear(); app.agentChrome('selected', row);
-  assert.equal(settings()?.textContent, 'roster-model · Low'); assert.equal(settings()?.title, 'Last observed: Model other/roster-model · Thinking low');
+  assert.deepEqual(settings()?.children.map(node => node.textContent), ['roster-model', 'Low']); assert.equal(settings()?.title, 'Last observed: Model other/roster-model · Thinking low');
   assert.deepEqual(detail.textContent.split('\n'),['Last observed: Model other/roster-model · Thinking low',limit]);
   for(const [fields,text] of [[{model:undefined},'Last observed thinking low'],[{thinkingLevel:undefined},'Last observed model other/roster-model'],[{model:undefined,thinkingLevel:undefined},'']] as const){
     app.state.roster.set(row.identity,{...row,...fields});app.agentChrome(row.identity);

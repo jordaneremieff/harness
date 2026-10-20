@@ -113,13 +113,13 @@ test('two families: system sans for interface and prose, system monospace for co
 });
 test('a bounded type scale separates metadata, controls, prose and headings', () => {
   const glyphs = [...css.matchAll(/(?:^|\n)\s*([^{}]+)\{[^{}]*font-size: (11px|16px);/g)].map(match => [match[1].replace(/\/\*[\s\S]*?\*\//g, '').trim(), match[2]]);
-  assert.deepEqual(glyphs, [['.conversation-heading, .conversation-group-title', '11px'], ['.nav-heading', '11px'], ['.section-toggle', '11px'], ['.task-answer, .step-answer', '16px'], ['.pane-actions', '16px'], ['.message-body', '16px'], ['.message.user', '16px'], ['.message-menu', '16px'], ['.communication-card > .communication-body', '16px'], ['.message-source-close', '16px'], ['.composer textarea', '16px']]);
+  assert.deepEqual(glyphs, [['.conversation-heading, .conversation-group-title', '11px'], ['.nav-heading', '11px'], ['.section-toggle', '11px'], ['.task-answer, .step-answer', '16px'], ['.pane-actions', '16px'], ['.message-body', '16px'], ['.message.user', '16px'], ['.message-menu', '16px'], ['.communication-card > .communication-body', '16px'], ['.message-source-close', '16px']]);
   assert.deepEqual([...new Set(declarations('font-size'))].filter(value => value !== '11px' && value !== '16px').sort(), ['12px', '13px', '14px', '15px', '18px', 'inherit']);
   assert.match(rule('.message-role'), /font-size: 12px; line-height: 18px; font-weight: 500/);
   assert.match(rule('.communication-card > .communication-body'), /font-size: 16px; line-height: 1\.6; font-weight: 400; font-style: normal/);
   assert.match(rule('.message-body'), /font-size: 16px; line-height: 1\.6/);
   assert.match(rule('.markdown-content:is(h1)'), /font-size: 18px/);
-  assert.match(rule('.composer textarea'), /font-size: 16px; line-height: 24px/);
+  assert.match(rule('.composer textarea'), /font-size: 18px; line-height: 26px/);
   assert.deepEqual([...new Set(declarations('font-weight'))].sort(), ['400', '500', '600']);
   assert.deepEqual(declarations('font').filter(value => value !== '400 14px/1.5 var(--sans)' && value !== '13px/1.5 var(--mono)' && value !== 'inherit'), []);
 });
@@ -265,8 +265,8 @@ test('file message source and exact destination details wrap within the dialog',
 });
 test('model and thinking leave the footer for separate readable targets under the composer', () => {
   assert.doesNotMatch(html, /id="(?:model-button|thinking-button|model-value|thinking-value|agent-status)"|workbench-model/);
-  assert.match(rule('.composer-settings'), /display: flex; flex: 0 1 auto; align-items: center/); assert.match(rule('.composer-model, .composer-thinking'), /min-height: 32px;[^}]*font-size: 14px; white-space: nowrap/);
-  assert.match(rule('.composer-meta'), /display: contents/);
+  assert.match(rule('.composer-settings'), /display: flex; flex: 0 1 auto; align-items: center/); assert.match(rule('.composer-model, .composer-thinking'), /min-height: 32px;[^}]*font-size: 13px; white-space: nowrap/);
+  assert.match(rule('.composer-meta'), /display: grid/);
   assert.doesNotMatch(css, /\.composer-model[^{}]*\{[^}]*min-width: 10ch/);
   assert.match(media('@media (pointer:coarse)'), /\.composer-model, \.composer-thinking, \.icon-button/);
   assert.equal((html.match(/<footer id="workbench-status"/g) ?? []).length, 1);
@@ -459,7 +459,7 @@ test('prose table cells wrap at words while wide data keeps horizontal scroll an
   assert.match(rule('.tool-rows th, .tool-rows td'), /white-space: normal; overflow-wrap: anywhere/);
   assert.match(rule('.tool-rows'), /max-width: 100%; overflow-x: auto/);
 });
-test('the writing surface groups Add and settings before a fixed icon action', () => {
+test('the writing surface groups Add and the required action below native text', () => {
   assert.match(rule('.composer-intake'), /display: inline-flex; flex: none; align-items: center/);
   assert.match(rule('.composer .attachment-sources'), /width: 32px; height: 32px; min-width: 32px; min-height: 32px/);
   assert.match(rule('.working-file-list'), /max-height: 36dvh; overflow: auto/);
@@ -470,7 +470,7 @@ test('the writing surface groups Add and settings before a fixed icon action', (
   assert.match(rule('.send'), /background: var\(--fg\); color: var\(--canvas\)/);
   assert.match(rule('.send:disabled'), /opacity: 1; background: color-mix\(in srgb, var\(--fg\) 14%, var\(--composer-fill\)\); color: var\(--muted\)/);
   assert.doesNotMatch(css, /\.send\[data-kind=recovery\]/);
-  assert.match(rule('.composer-input'), /padding: 20px 16px 12px; border: 0; border-radius: 16px; background: var\(--composer-fill\)/);
+  assert.match(rule('.composer-input'), /padding: 20px; border: 1px solid color-mix\(in srgb, var\(--edge\) 28%, transparent\); border-radius: 16px; background: var\(--composer-fill\)/);
   assert.match(rule('.composer'), /--composer-fill: color-mix\(in srgb, var\(--canvas\) 88%, var\(--fg\)\)/);
   assert.match(rule(':root[data-appearance=light] .composer'), /--composer-fill: color-mix\(in srgb, var\(--canvas\) 94%, var\(--fg\)\)/);
   assert.match(rule('.composer-line'), /min-height: 36px; margin-top: 16px/);
@@ -648,12 +648,12 @@ test('Latest occupies the existing composer control line outside the transcript 
   assert.match(latest, /gap: 4px/);
   assert.match(latest, /margin: 0 0 0 8px/, 'the jump control stands apart from what precedes it');
   assert.match(css, /\.latest\[hidden\] \{ display: none/);
-  assert.match(rule('.composer-meta > .latest'), /grid-column: 2; grid-row: 1; min-height: 32px; margin: 0/);
+  assert.match(rule('.composer-utilities > .latest'), /grid-column: 2; grid-row: 1; min-height: 32px; margin: 0/);
   const app = await readFile(new URL('./app.ts', import.meta.url), 'utf8');
   assert.match(app, /const scroller = add\('transcript', 'div', 'transcript'\)/);
   assert.match(app, /const latest = add\('latest', 'button', 'latest'\)/);
   assert.match(app, /region\.append\(absent, scroller\)/);
-  assert.match(app, /elements\.state\?\.after\(latest\)/, 'the jump control follows the state note in the control row');
+  assert.match(app, /elements\.utilities\?\.append\(latest\)/, 'the jump control stays above the surface with recall');
   assert.doesNotMatch(html, /id="(?:primary|agent)-(?:transcript|latest)"/);
 });
 test('native text flow preserves scroll boundaries without line paint clipping', () => {
@@ -663,12 +663,13 @@ test('native text flow preserves scroll boundaries without line paint clipping',
   assert.match(rule('.transcript :is(pre, table)'), /overscroll-behavior: contain/);
   assert.match(rule('.transcript :is(.message-body, .tool-content, .tool-expanded, .tool-result-part, .tool-record, .structured, details)'), /min-width: 0; max-width: 100%/);
 });
-test('editor text and prose share a bounded left-aligned column without moving the native editor', () => {
-  assert.match(rule('.conversation > :not(.transcript-region)'), /max-width: 960px; margin-inline: var\(--work-gutter\)/);
+test('editor and transcript share a centered bounded column without moving the native editor', () => {
+  assert.match(rule('.conversation > :not(.transcript-region)'), /max-width: 960px; margin-inline: auto/);
   assert.match(rule('.transcript'), /padding: var\(--s3\) var\(--work-gutter\)/);
   assert.match(css, /@container conversation \(max-width: 700px\)[\s\S]*?--work-gutter: 16px/);
   assert.match(rule('.transcript-region > .empty-state'), /left: var\(--work-gutter\); right: var\(--work-gutter\); max-width: 960px/);
-  assert.match(rule('.composer-input'), /padding: 20px 16px 12px; border: 0/);
+  assert.match(rule('.composer-input'), /padding: 20px; border: 1px solid/);
+  assert.match(rule('.transcript > .entry, .transcript > button'), /max-width: 960px; margin-inline: auto/);
   assert.match(rule('.composer textarea'), /padding: 0; border: 0/);
   for (const selector of ['.transcript', '.composer-input', '.composer textarea']) {
     assert.doesNotMatch(rule(selector), /margin-left: -|translateX|left: -/);
@@ -741,11 +742,11 @@ test('one workbench footer owns wrapped facts while settings sit under the compo
   const factory = composer.slice(composer.indexOf('export function createComposerElements('), composer.indexOf('\ntype Edit ='));
   assert.match(factory, /const root = element\('form', 'composer'\); root\.id = id/);
   assert.match(factory, /const id = `composer-\$\{encodeURIComponent\(instanceId\)\}`/);
-  assert.match(factory, /root\.append\(receipt, utilities, input\)/);
+  assert.match(factory, /root\.append\(receipt, utilities, input, meta\)/);
   assert.match(factory, /submit\.append\(queue, start, send\)/);
   assert.match(factory, /bar\.append\(stop, submit\)/);
   assert.match(factory, /intake\.append\(attach,sources,picker\)/);
-  assert.match(factory, /line\.append\(intake, settings, bar\)/);
+  assert.match(factory, /line\.append\(intake, bar\)/);
   assert.doesNotMatch(factory, /usage-details|workbench-status-facts|root\.append\([^)]*\b(?:save|receiptDetails)\b/);
   assert.doesNotMatch(html, /<form id="(?:primary|agent)-composer"/);
   const app = await readFile(new URL('./app.ts', import.meta.url), 'utf8');
@@ -796,8 +797,8 @@ test('supplied roles stay inline metadata and expanded thinking separates from p
 
 test('focus marks the actual editor and its local split identity without changing placement', () => {
   assert.match(rule('.composer textarea:focus-visible'), /outline: none/);
-  assert.match(rule('.composer-input:has(textarea:focus-visible)'), /outline: 1px solid var\(--edge\); outline-offset: 0/);
-  assert.match(rule('.composer-input'), /border: 0/);
+  assert.match(rule('.composer-input:has(textarea:focus-visible)'), /border-color: var\(--edge\); outline: none/);
+  assert.match(rule('.composer-input'), /border: 1px solid color-mix\(in srgb, var\(--edge\) 28%, transparent\)/);
   assert.doesNotMatch(css.replace(/\.composer\[data-file-drop=true\][^\n]*/, ''), /\.composer-input[^{}]*\{[^}]*(?:border|outline)[^;}]*var\(--accent\)/);
   assert.match(rule('.pane-leaf[data-focused=true] > .tab-bar .conversation-tab[aria-selected=true]'), /box-shadow: inset 0 -2px var\(--accent\)/);
   assert.doesNotMatch(css, /\.pane-heading/);
@@ -907,18 +908,30 @@ test('the composer uses shared SVGs, passive agent facts and visible effort at n
   assert.doesNotMatch(css, /\.composer-state::before|\.composer-model:not\(:disabled\)::after/);
   assert.match(rule('.composer-model, .composer-thinking'), /display: inline-flex; align-items: center/);
   assert.match(rule('.composer-setting-label'), /overflow: hidden; text-overflow: ellipsis/);
-  assert.match(rule('.composer-model > .card-icon-chevron, .composer-thinking > .card-icon-chevron'), /width: 12px; height: 12px/);
-  assert.match(rule('.composer-settings-text'), /color: var\(--muted\); font-size: 14px/);
+  assert.match(rule('.composer-model > .card-icon-chevron'), /width: 12px; height: 12px/);
+  assert.match(rule('.composer-settings-text'), /gap: 8px;[^}]*color: var\(--muted\); font-size: 13px/);
   assert.doesNotMatch(css, /\.composer-settings-text[^{}]*::after|\.composer-settings-effort[^{}]*::after/);
   assert.match(rule('.composer .attachment-sources'), /color: var\(--fg\)/);
   assert.doesNotMatch(css, /\.composer-thinking, \.composer-settings-effort \{ display: none/);
-  assert.match(css, /@container composer \(max-width: 420px\) \{\s*\.composer-line \{ flex-wrap: wrap; \}\s*\.composer-settings \{ flex-basis: calc\(100% - 40px\); \}/);
+  assert.match(css, /@container composer \(max-width: 420px\) \{\s*\.composer-line \{ flex-wrap: wrap; \}/);
+  assert.match(rule('.composer-meta:has(.composer-state:not([hidden]):not(.sr-only)) .composer-settings'), /max-width: 180px/);
+});
+test('empty composer regions collapse and plain intake/settings retain focus and open-state feedback', () => {
+  assert.match(rule('.composer-utilities:not(:has(.latest:not([hidden]), .composer-recall:not([hidden])))'), /display: none/);
+  assert.match(rule('.composer-meta:not(:has(.composer-state:not([hidden]):not(.sr-only), .composer-settings > :not([hidden]), .composer-state-details:not([hidden])))'), /display: none/);
+  assert.match(rule('.composer .attachment-sources'), /background: transparent/);
+  assert.match(rule('.composer .attachment-sources:hover:not(:disabled), .composer .attachment-sources[aria-expanded=true]:not(:disabled)'), /var\(--fg\) 9%, transparent/);
+  for (const selector of ['.composer-model, .composer-thinking', '.composer-meta :is(.composer-model, .composer-thinking):not(:disabled):hover']) assert.match(rule(selector), /background: transparent/);
+  assert.match(rule('.composer textarea'), /min-height: 26px;[^}]*font-size: 18px; line-height: 26px/);
+  assert.doesNotMatch(rule('.composer-input'), /(?:^|;)\s*(?:min-)?height:/);
 });
 test('composer utilities share the editor inset and keep expanded errors inside the pane', () => {
-  assert.match(rule('.composer-utilities'), /display: grid; grid-template-columns: minmax\(0,1fr\) auto;[^}]*padding: 0 16px/);
+  assert.match(rule('.composer-utilities'), /display: grid; grid-template-columns: minmax\(0,1fr\) auto;[^}]*padding: 0 20px/);
+  assert.match(rule('.composer-meta'), /padding: 6px 20px 0/);
   assert.match(rule('.composer-meta > .composer-state'), /grid-column: 1; grid-row: 1/);
-  assert.match(rule('.composer-meta > .latest'), /grid-column: 2; grid-row: 1/);
-  assert.match(rule('.composer-recall, .composer-state-details'), /grid-column: 1 \/ -1/);
+  assert.match(rule('.composer-utilities > .latest'), /grid-column: 2; grid-row: 1/);
+  assert.match(rule('.composer-recall'), /grid-column: 1; grid-row: 1/);
+  assert.match(rule('.composer-state-details'), /grid-column: 1 \/ -1/);
   assert.match(rule('.composer-state-details'), /overflow: auto;[^}]*white-space: pre-wrap; overflow-wrap: anywhere/);
   assert.match(rule('.composer .attachment-sources:disabled'), /background: transparent; color: var\(--dim\); opacity: \.55/);
   assert.doesNotMatch(css, /\.attachment-sources:hover(?!:not\(:disabled\))/);
@@ -928,8 +941,8 @@ test('the history note and composer state are plain lines with flat actions', ()
   assert.match(rule('.history-note'), /display: flex; flex: none; flex-wrap: wrap/);
   assert.match(rule('.history-note > button, #agent-message-retry'), /border: 0; border-radius: 0/);
   assert.doesNotMatch(rule('.history-note > button, #agent-message-retry'), /box-shadow|background/); assert.doesNotMatch(css, /agent-start-help|agent-absent|\.agent-state/);
-  assert.match(rule('.composer-state'), /display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: center/); assert.doesNotMatch(rule('.composer-state'), /background|box-shadow|border/);
-  assert.match(rule('.composer-state-label'), /overflow-wrap: anywhere/); assert.doesNotMatch(css, /\.composer-state-line \{/);
+  assert.match(rule('.composer-state'), /display: flex; flex: 1 1 auto; flex-wrap: nowrap; align-items: center/); assert.doesNotMatch(rule('.composer-state'), /background|box-shadow|border/);
+  assert.match(rule('.composer-state-label'), /overflow: hidden; text-overflow: ellipsis; white-space: nowrap/); assert.doesNotMatch(css, /\.composer-state-line \{/);
   assert.match(rule('.conversation'), /display: flex; flex-direction: column;[^}]*min-height: 0/);
   assert.match(rule('.transcript-region'), /display: grid; grid-template-rows: minmax\(0,1fr\); flex: 1;[^}]*min-height: 0/);
   assert.doesNotMatch(css, /\.conversation\.agent-empty > \.transcript-region\s*\{/);
@@ -1159,7 +1172,7 @@ test('a status row holds sender, kind and first line on one 28px line without fi
   assert.match(rule('.communication-toggle > .communication-sender'), /font-weight: 500/);
 });
 
-test('the message box keeps its centered grip and its state above the left settings group', () => {
+test('the message box keeps its centered grip and its state beside the settings group', () => {
   assert.match(rule('.composer-input > .resizer[data-axis=y]'), /top: -5px; right: auto; left: 50%; width: 40px; height: 10px; margin-left: -20px/);
   assert.match(rule('.resizer::after'), /opacity: 0/);
   assert.match(rule('.composer-input:hover > .resizer[data-axis=y]::after'), /opacity: 1/);

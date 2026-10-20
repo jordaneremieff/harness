@@ -180,7 +180,7 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
   nodes.set('transcript-region',region);region.append(absent, scroller); const above = add('widgets-above', 'div', 'widgets'), below = add('widgets-below', 'div', 'widgets');
   const elements = createComposerElements(instanceId); elements.root.hidden = false;
   // Transcript navigation shares the utility row above the writing surface.
-  elements.state?.after(latest);
+  elements.utilities?.append(latest);
   for (const [name, node] of Object.entries(elements)) if (node) nodes.set(name === 'root' ? 'composer' : name, node);
   const stop = elements.root.querySelector<HTMLButtonElement>('.stop'); if (!stop) throw new Error('Stop control is missing.'); nodes.set('stop', stop); nodes.set('abort', stop);
   const resize = elements.root.querySelector<HTMLElement>('.resizer'); if (resize) nodes.set('composer-resizer', resize);
@@ -1446,7 +1446,7 @@ function renderPrimarySettings(model: HTMLButtonElement, thinking: HTMLButtonEle
 function renderAgentSettingsText(model: HTMLButtonElement, thinking: HTMLButtonElement, view: ConversationPresentation, text: HTMLElement): void {
   model.hidden = thinking.hidden = true; const full = settingsLabel(view, true);
   const shown = view.model ? listedModelText(view.model) : '';
-  text.replaceChildren(...[shown && element('span', 'composer-settings-model', shown), view.thinking && element('span', 'composer-settings-effort', `${shown ? ' · ' : ''}${effortText(view.thinking)}`)].filter((node): node is HTMLElement => !!node)); text.hidden = !text.textContent; text.title = full; text.setAttribute('aria-label', full);
+  text.replaceChildren(...[shown && element('span', 'composer-settings-model', shown), view.thinking && element('span', 'composer-settings-effort', effortText(view.thinking))].filter((node): node is HTMLElement => !!node)); text.hidden = !text.textContent; text.title = full; text.setAttribute('aria-label', full);
 }
 function controllerPreparationFailed(controller: ConversationController, error: unknown): void {
   if (controller.target.kind === 'agent') {controller.connectionError = errorMessage(error); renderAgentState(controller);}
@@ -1671,7 +1671,7 @@ function refreshStaleConnection(controller: ConversationController): void {
 const ACTION_TITLES: Partial<Record<AgentComposerState['kind'], string>> = {start: 'Start agent. This can resume unfinished work before the agent is ready.', failed: 'Check whether the agent started.'};
 function composerStateLabel(view: AgentComposerState): string | undefined {
   if (!view.label) return undefined;
-  return view.kind === 'start' ? 'Not running. Start to send.' : view.line;
+  return ({start: 'Not running', starting: 'Starting…', failed: 'Start did not complete', unreachable: 'Could not reach the agent', 'read-only': 'Read only'} as Partial<Record<AgentComposerState['kind'], string>>)[view.kind] ?? view.line;
 }
 function composerStateView(view: AgentComposerState, run: () => void): ComposerStateView {
   const {action} = view;
