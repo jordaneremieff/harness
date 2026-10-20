@@ -212,7 +212,6 @@ export class Composer {
   }
   placement(_sidebar: boolean): void { this.resize(); this.renderControls(); }
   commandsChanged(): void { this.commandMenu?.update(); this.render(); }
-  /** Shows the recipient's state above the surface; an action takes the Send position and the draft stays editable. */
   setState(view?: ComposerStateView): void {
     if (this.destroyed) return;
     this.stateView = view;
