@@ -2168,14 +2168,6 @@ export function toolSubjectCaption(value: string): ToolSubjectCaption | undefine
   return caption && !caption.name && conversationIdentityText(value) ? {...caption, fallback: identityFallback(value)} : caption;
 }
 function subjectCaption(value: string): ToolSubjectCaption | undefined {
-  if (value.startsWith('@') && value.length > 1) {
-    const matches = [...state.roster.values()].filter(row => typeof row.handle === 'string' && row.handle.replace(/^@/, '') === value.slice(1));
-    const row = matches.length === 1 ? matches[0] : undefined;
-    if (row) { const caption = identitySubjectCaption(row.identity); if (caption) return {...caption, title: value}; }
-  }
-  return identitySubjectCaption(value);
-}
-function identitySubjectCaption(value: string): ToolSubjectCaption | undefined {
   const loadedName=presentationCaptions().knownName(value);
   const destinations = referenceIdentities(value), destination = destinations.length === 1 ? destinations[0] : undefined;
   if (!destination) return loadedName?{text:loadedName.name,...loadedName,title:value}:destinations.length || conversationIdentityText(value) ? {text: 'Unresolved conversation', title: value} : undefined;
