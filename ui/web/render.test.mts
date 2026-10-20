@@ -1487,6 +1487,64 @@ function contentEntry(id: string, args: Record<string, unknown>, text: string, i
     {type: 'toolResult' as const, callId: id, name: 'custom', isError, parts: [{type: 'text' as const, text, ...(structured ? {structured} : {})}] as PartView[]},
   ]}]};
 }
+test('quiet successful lookup text stays exact in expanded output, Raw output and Copy', async () => {
+  setup(); const view = transcript(); const raw = '  First line\n\nUseful lookup content\nLast line  \n';
+  const source = contentEntry('quiet-lookup', {name: 'sample_resource'}, raw);
+  for (const part of source.messages[0]?.parts ?? []) if (part.type === 'toolCall' || part.type === 'toolResult') part.name = 'registry';
+  const original = structuredClone(source);
+  view.set([source]); flush(); const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card);
+  assert.equal(card.querySelector('.tool-name')?.textContent, 'Looked up sample_resource');
+  assert.equal(card.querySelector('.tool-status')?.textContent, ''); assert.equal(card.parentNode?.dataset.status, 'success');
+  assert.equal(card.querySelector('.tool-preview')?.textContent, ''); assert.equal(card.querySelector('.tool-preview')?.hidden, true);
+  card.open = true; card.dispatch('toggle'); flush();
+  assert.equal(card.querySelector('.tool-output-text')?.textContent, raw);
+  const inspection = card.querySelector('.tool-raw-output'); assert.ok(inspection);
+  inspection.open = true; inspection.dispatch('toggle'); assert.equal(inspection.querySelector('pre')?.textContent, raw);
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator'); const copied: string[] = [];
+  Object.defineProperty(globalThis, 'navigator', {configurable: true, value: {clipboard: {writeText: async (text: string) => {copied.push(text);}}}});
+  try {
+    const copy = card.parentNode?.querySelector('.tool-copy'); assert.ok(copy);
+    copy.dispatch('click', {stopPropagation() {}}); await Promise.resolve(); assert.deepEqual(copied, [raw]);
+    assert.deepEqual(source, original);
+  } finally { if (previous) Object.defineProperty(globalThis, 'navigator', previous); else Reflect.deleteProperty(globalThis, 'navigator'); view.reset(); }
+});
+test('quiet flags leave errors, live output, structured summaries and supplied previews intact', () => {
+  setup(); const view = transcript(); const raw = 'Neutral result text';
+  const named = (id: string, name: string, args: Record<string, unknown> = {}, error = false, structured?: JsonDisplay) => {
+    const source = contentEntry(id, args, raw, error, structured);
+    for (const part of source.messages[0]?.parts ?? []) if (part.type === 'toolCall' || part.type === 'toolResult') part.name = name;
+    return source;
+  };
+  const live = named('quiet-live', 'registry'); live.messages[0]?.parts.splice(1);
+  view.set([
+    named('quiet-error', 'registry', {}, true),
+    named('quiet-structured', 'registry', {}, false, {value: {count: 2, valid: true}, truncated: false}),
+    named('ordinary-command', 'bash', {command: 'sample'}),
+    named('supplied-write', 'write', {path: 'sample.txt', content: 'Supplied text'}),
+    named('supplied-edit', 'edit', {path: 'sample.txt', edits: [{oldText: 'Before', newText: 'After'}]}),
+    live,
+  ], new Map([['quiet-live', {callId: 'quiet-live', name: 'registry', phase: 'update', parts: [{type: 'text', text: raw}]}]])); flush();
+  const previews = node('primary-transcript').querySelectorAll('.tool-preview'); assert.equal(previews.length, 6);
+  assert.deepEqual(previews.slice(0, 4).map(preview => preview.textContent), [raw, 'count: 2 · valid: true', raw, 'Supplied text']);
+  assert.match(previews[4]?.textContent ?? '', /- Before\n\+ After/); assert.equal(previews[5]?.textContent, raw);
+  for (const preview of previews) assert.equal(preview.hidden, false);
+  view.reset();
+});
+test('profile update alone quiets the same result text with complete public arguments', () => {
+  setup(); const view = transcript(); const raw = 'Neutral result text';
+  const cases: [Record<string, unknown>, boolean][] = [[{action: 'update'}, false], [{action: 'read'}, false], [{}, false], [{action: 'update'}, true]];
+  const entries = cases.map(([args, truncated], index) => {
+    const source = contentEntry(`profile-${index}`, args, raw);
+    for (const part of source.messages[0]?.parts ?? []) {
+      if (part.type === 'toolCall' || part.type === 'toolResult') part.name = 'agent_profile';
+      if (part.type === 'toolCall') part.arguments.truncated = truncated;
+    }
+    return source;
+  });
+  view.set(entries); flush(); const previews = node('primary-transcript').querySelectorAll('.tool-preview');
+  assert.deepEqual(previews.map(preview => [preview.textContent, preview.hidden]), [['', true], [raw, false], [raw, false], [raw, false]]);
+  view.reset();
+});
 test('collapsed previews are prose only for Markdown reads and structured summaries', () => {
   setup(); const view = transcript(); const markdown = '# Plan\nRead the [guide](https://example.com/guide) first.';
   const entries = ['read', 'bash'].map(name => {

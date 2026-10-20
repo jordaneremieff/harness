@@ -1,9 +1,25 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {toolLabel, toolSentence} from './tool-sentences.ts';
+import {quietTextResult, toolLabel, toolSentence} from './tool-sentences.ts';
 import type {JoinedTool} from './transcript-tools.ts';
 
 const publicCall = (name: string, value: Record<string, unknown> = {}, status: JoinedTool['status'] = 'success'): JoinedTool => ({callId: 'public-call', name, owner: 'entry', slot: 'slot', status, args: {value, truncated: false}});
+
+test('quiet plain-text result flags use only named public call facts', () => {
+  for (const name of ['registry', 'agent_steer', 'agent_place', 'agent_reset', 'agent_configure', 'agent_fork', 'agent_rewind', 'agent_compact', 'stash_write', 'stash_edit', 'stash_complete', 'stash_rotate', 'memory_retire', 'clipboard_copy']) {
+    assert.equal(quietTextResult(publicCall(name)), true, name);
+  }
+  for (const name of ['bash', 'read', 'write', 'edit', 'web_read', 'web_search', 'history_read', 'history_search', 'stash_read', 'stash_list', 'memory_read', 'memory_search', 'agent_send', 'agent_await', 'agent_inspect', 'agent_status', 'agent_collaborate', 'custom', 'toString']) {
+    assert.equal(quietTextResult(publicCall(name)), false, name);
+  }
+  const call = {...publicCall('agent_profile', {action: 'update'}), result: [{type: 'text' as const, text: 'Unrelated output'}]};
+  assert.equal(quietTextResult(call), true);
+  for (const args of [{value: {action: 'read'}, truncated: false}, {value: {}, truncated: false}, {value: {action: 'update'}, truncated: true}, undefined]) {
+    assert.equal(quietTextResult({...call, args}), false);
+  }
+  const accessor = Object.defineProperty({}, 'action', {enumerable: true, get: () => {throw new Error('Do not evaluate argument getters');}});
+  assert.equal(quietTextResult({...call, args: {value: accessor, truncated: false}}), false);
+});
 
 test('public call arguments supply tool sentences without result interpretation', () => {
   const cases: [string, Record<string, unknown>, string][] = [

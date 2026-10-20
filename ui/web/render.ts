@@ -16,7 +16,7 @@ import { TranscriptIndex, ToolElapsedClock, toolTime, thinkingLabel, thinkingPre
 import { CommunicationCard, messageCopyText, messageCopyDescription } from './communication.ts';
 import type { TranscriptGroups } from './transcript-groups.ts';
 import {TranscriptRows, type StepRun} from './transcript-rows.ts';
-import {toolSentence,toolLabel, type NamedDestination} from './tool-sentences.ts';
+import {toolSentence,toolLabel,quietTextResult, type NamedDestination} from './tool-sentences.ts';
 import {ConversationTasks, type ConversationTask, type TaskReference} from './conversation-tasks.ts';
 import { loadedReference, type ReferenceQuery, type ReferenceResolver } from './references.ts';
 import type { JoinedTool } from './transcript-tools.ts';
@@ -1590,8 +1590,9 @@ export class Transcript {
     if (!this.protectedNode(tool.preview)) {
       const resolve = source.name === 'agent_await' && awaitedFromParts(source.result ?? []) ? this.responderNames() : this.nameResolver(), title = tool.title.textContent ?? '';
       const supplied = presentToolPreview(source) ?? presentResultPreview(source, resolve, title);
+      const literal = () => source.status === 'success' && quietTextResult(source) ? '' : resultPreview(source.result ?? [], {resolve, tidy: source.status !== 'error', title});
       if (supplied) this.replaceContent(tool.preview, supplied);
-      else setText(tool.preview, resultPreview(source.result ?? [], {resolve, tidy: source.status !== 'error', title}));
+      else setText(tool.preview, literal());
       tool.preview.classList.toggle('tool-error', source.status === 'error');
       tool.previewSource = source;
       tool.previewSubjectRevision = this.subjectRevision;
