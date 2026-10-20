@@ -176,17 +176,29 @@ test('collapsed results summarize supplied structure without parsing literal tex
   assert.equal(resultPreview([{type: 'text', text: '["one","[omitted]"]', structured: {value: ['one', '[omitted]'], truncated: true}}]), 'Array preview limited');
   assert.equal(resultPreview([{type: 'text', text: '[protected text]', redacted: true, structured: {value: {hidden: 'never preview'}, truncated: false}}]), '[protected text]');
 });
-test('text made of prose and JSON lines previews as its own lines, not as an item count', () => {
-  const mixed = 'fatal: Needed a single revision\n{"cwd":"/work","ok":false}';
-  const parts = (text: string, value: unknown): PartView[] => [{type: 'text', text, structured: {value, truncated: false}}];
-  assert.equal(resultPreview(parts(mixed, ['fatal: Needed a single revision', {cwd: '/work', ok: false}])), mixed);
-  assert.equal(resultPreview(parts(mixed, ['fatal: Needed a single revision', {cwd: '/work', ok: false}]), {tidy: true}), mixed);
-  assert.equal(resultPreview(parts('{"a":1}\n{"b":2}', [{a: 1}, {b: 2}])), '{"a":1}\n{"b":2}');
+test('text made of prose and JSON lines previews each element in order, never as raw JSON or an item count', () => {
+  const parts = (text: string, value: unknown, truncated = false): PartView[] => [{type: 'text', text, structured: {value, truncated}}];
+  const id = 'a600b075-03c4-193c-1c9b-bc5416a82e99', commit = 'bd08c44c0d6f2a91b7e35c48f1a0923be6d7c514', digest = 'f'.repeat(64);
+  // A JSON object then a prose line: the object's readable text, then the prose line, with no brace and no identifier.
+  const object = {requestId: id, ownerId: id, message: 'The composer round is released.\n\nReleased:\n- the first change', senderIdentity: id};
+  const reported = resultPreview(parts(`${JSON.stringify(object)}\nIf the recipient is busy, this report waits.`, [object, 'If the recipient is busy, this report waits.']));
+  assert.equal(reported, 'The composer round is released.\nReleased:…\nIf the recipient is busy, this report waits.'); assert.doesNotMatch(reported, /[{}]|requestId|[0-9a-f]{8}-[0-9a-f]{4}/);
+  // Prose then an object: the prose line, then the object's readable facts; identifiers and digests are left out.
+  const facts = {iteration: '1.10', commit, assetDigest: digest}, fatal = 'fatal: Needed a single revision';
+  const built = resultPreview(parts(`${fatal}\n${JSON.stringify(facts)}`, [fatal, facts])); assert.equal(built, `${fatal}\niteration: 1.10`);
+  assert.equal(resultPreview(parts(`${fatal}\n${JSON.stringify(facts)}`, [fatal, facts]), {tidy: true}), `${fatal}\niteration: 1.10`);
+  assert.equal(resultPreview(parts('{"a":1}\n{"b":2}', [{a: 1}, {b: 2}])), 'a: 1\nb: 2');
+  assert.equal(resultPreview(parts('Listed\n[1,2,3]', ['Listed', [1, 2, 3]])), 'Listed\n3 items');
+  assert.equal(resultPreview(parts(`${JSON.stringify({requestId: id})}\nDone.`, [{requestId: id}, 'Done.'])), 'Done.', 'an object that holds only identifiers adds no line');
+  assert.equal(resultPreview(parts(`${JSON.stringify({requestId: id})}\n${JSON.stringify({ownerId: id})}`, [{requestId: id}, {ownerId: id}])), '', 'nothing readable shows no line');
+  const long = Array.from({length: 9}, (_, index) => `line ${index}`);
+  assert.equal(resultPreview(parts(`${long.join('\n')}\n{"a":1}`, [long.join('\n'), {a: 1}])).split('\n').length, 6, 'the six-line bound stays');
   assert.equal(resultPreview(parts('[1,2,3]', [1, 2, 3])), '3 items');
   assert.equal(resultPreview(parts('\n  [{"a":1}]\n', [{a: 1}])), '1 item');
   assert.equal(resultPreview(parts('{"a":1}', {a: 1})), 'a: 1');
-  const shown = presentResultPreview({callId: 'tool', name: 'custom', status: 'success', result: parts(mixed, ['fatal: Needed a single revision', {cwd: '/work', ok: false}])});
-  assert.equal(shown, undefined, 'mixed text is a literal preview, not a prose summary');
+  assert.equal(resultPreview([{type: 'text', text: `${fatal}\n{"x":1}`, redacted: true, structured: {value: [fatal, {x: 1}], truncated: false}}]), `${fatal}\n{"x":1}`, 'protected text stays literal');
+  const shown = presentResultPreview({callId: 'tool', name: 'custom', status: 'success', result: parts(`${fatal}\n{"cwd":"/work"}`, [fatal, {cwd: '/work'}])});
+  assert.equal(shown, undefined, 'mixed lines keep their own line structure, not the prose summary block');
 });
 test('a summary that repeats the card title or only holds false flags shows no preview line', () => {
   setup();

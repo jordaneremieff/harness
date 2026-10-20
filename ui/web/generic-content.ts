@@ -106,6 +106,9 @@ function summaryRank(key: string, value: unknown, metadata: boolean): number {
   if (typeof value === 'string' && (multiline(value.slice(0, 81)) || !metadata && value.length > 80)) return 1;
   return metadata ? 4 : 3;
 }
+function emptyCollection(value: unknown): boolean {
+  return Array.isArray(value) ? value.length === 0 : record(value) && Object.keys(value).length === 0;
+}
 class ResultSummary {
   private scanned = 0;
   private limited = false;
@@ -164,9 +167,12 @@ class ResultSummary {
     const useful = this.facts.some(field => field.rank < 4);
     const readable = this.facts.find(field => field.rank === 1 && typeof field.value === 'string');
     const shown = new Set<string>(); let dropped = false;
-    const facts = this.facts.filter(field => !useful || field.rank < 4).sort((a, b) => a.rank - b.rank).flatMap(field => {
+    const listed = this.facts.filter(field => !useful || field.rank < 4);
+    // An empty collection is a fact only when nothing else is; at equal rank facts that say something in words read first, then array counts, then objects shown by key name alone.
+    const present = listed.filter(field => !emptyCollection(field.value));
+    const facts = (present.length ? present : listed).sort((a, b) => a.rank - b.rank || shapeOrder(a.value) - shapeOrder(b.value)).flatMap(field => {
       if (this.redundant(field)) {dropped = true; return [];}
-      const text = field === readable ? prefix(String(field.value), 240, 2) : field.label ?? summaryFact(field.key, field.value, truncated);
+      const text = field === readable ? prefix(String(field.value).replace(/\s*\n\s*(?:\n\s*)+/g, '\n'), 240, 2) : field.label ?? summaryFact(field.key, field.value, truncated);
       if (shown.has(text)) {dropped = true; return [];}
       shown.add(text); return [text];
     }).slice(0, 3);
@@ -176,9 +182,28 @@ class ResultSummary {
     return prefix(facts.length ? facts.join(' · ') : 'Empty object', 240 - suffix.length, 2) + suffix;
   }
 }
+/** Tie-break order at equal rank: scalar 0, array count 1, object 2 (its fact is only a key name). */
+function shapeOrder(value: unknown): number {
+  return Array.isArray(value) ? 1 : record(value) ? 2 : 0;
+}
 /** True when the decoded value is an array, which the server also uses for text made of several JSON lines or prose mixed with JSON lines. */
 export function decodedArray(display: JsonDisplay | undefined): boolean {
   return record(display) && Array.isArray(own(display, 'value'));
+}
+export type DecodedLine = {kind: 'text' | 'summary'; text: string};
+/**
+ * The elements of a decoded array that came from prose and JSON lines, in order: text stays text, an object is its compact summary,
+ * a nested array is its count. An element that has nothing readable to say (only identifiers) adds no line.
+ */
+export function decodedLines(display: JsonDisplay | undefined, resolve?: NameResolver, title = ''): DecodedLine[] | undefined {
+  if (!decodedArray(display)) return undefined;
+  const value = own(display as object, 'value') as unknown[], truncated = own(display as object, 'truncated') === true, lines: DecodedLine[] = [];
+  for (const item of value) {
+    if (typeof item === 'string') {lines.push({kind: 'text', text: item}); continue;}
+    const text = structuredResultPreview({value: item, truncated}, resolve, title);
+    if (text?.trim()) lines.push({kind: 'summary', text: text.trimEnd()});
+  }
+  return lines;
 }
 /** Summarize only decoded own data; bounded classification never parses raw output. */
 export function structuredResultPreview(display: JsonDisplay | undefined, resolve?: NameResolver, title = ''): string | undefined {

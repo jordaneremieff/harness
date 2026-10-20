@@ -1,6 +1,6 @@
 import { element } from './dom.ts';
 import type { PartView } from '../shared/api.ts';
-import { decodedArray, structuredResultPreview, type NameResolver } from './generic-content.ts';
+import { decodedArray, decodedLines, structuredResultPreview, type NameResolver } from './generic-content.ts';
 import type { PresentationContext, ToolPresentationSource } from './transcript-presentation.ts';
 import { previewText } from './format.ts';
 import { highlight, isMarkdownPath, languageFromPath } from './highlight.ts';
@@ -159,6 +159,14 @@ function resultPreviewText(parts: readonly PartView[], skipFrontmatter: boolean,
   return undefined;
 }
 function textPreview(part: Extract<PartView, {type: 'text'}>, skipFrontmatter: boolean, options: PreviewOptions): ResultPreviewText | undefined {
+  // Prose mixed with JSON lines previews element by element, so an object says what it holds instead of showing its raw line.
+  const lines = !part.redacted && !part.text.trimStart().startsWith('[') ? decodedLines(part.structured, options.resolve, options.title) : undefined;
+  if (lines) {
+    const joined = withoutOuterBlankLines(lines.map(line => line.kind === 'text' ? tidied(line.text, !!options.tidy) : line.text).join('\n'));
+    if (!joined) return undefined;
+    const shown = preview(joined, 1200, 6);
+    return {text: shown.limited ? `${preview(shown.text, 1199, 6).text}…` : shown.text, summary: false, redacted: false};
+  }
   // An array summarizes text that is one JSON array; text of prose or JSON lines keeps its own lines.
   const summarizable = !decodedArray(part.structured) || part.text.trimStart().startsWith('[');
   const summary = !part.redacted && summarizable ? structuredResultPreview(part.structured, options.resolve, options.title) : undefined;

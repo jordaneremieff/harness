@@ -108,7 +108,7 @@ test('structured collapsed summaries use at most three supplied facts or an arra
   assert.equal(structuredResultPreview(undefined), undefined);
   assert.equal(structuredResultPreview(display(undefined)), undefined);
   assert.equal(structuredResultPreview(display({alpha: 'kept', count: 0, ready: true, ignored: 'only after expansion'})), 'alpha: kept · count: 0 · ready: true');
-  assert.equal(structuredResultPreview(display({nested: {role: 'assistant'}, records: [1, 2], nullable: null})), 'records: 2 items · nested · nullable: null');
+  assert.equal(structuredResultPreview(display({nested: {role: 'assistant'}, records: [1, 2], nullable: null})), 'records: 2 items · nullable: null · nested');
   assert.equal(structuredResultPreview(display([])), '0 items'); assert.equal(structuredResultPreview(display([{}])), '1 item');
   assert.equal(structuredResultPreview(display([{}, {}, {}])), '3 items');
   assert.equal(structuredResultPreview(display({})), 'Empty object');
@@ -996,6 +996,20 @@ test('compact summaries show a name once, leave out a name the title shows, and 
   assert.match(structuredResultPreview(display({error: {message: 'Request refused'}, deduped: false})) ?? '', /Request refused/);
   assert.equal(structuredResultPreview(display({errors: false, sequence: 3})), 'sequence: 3');
   assert.equal(structuredResultPreview(display({})), 'Empty object');
+});
+test('a compact line leaves out empty collections and reads words before counts', () => {
+  const settled = {results: ['x'], unresolved: [], originalInputs: [1, 2, 3, 4, 5, 6], decision: 'settled', queuedInputCount: 25};
+  assert.equal(structuredResultPreview(display(settled)), 'results: 1 item · decision: settled · queuedInputCount: 25');
+  const real = {results: ['x'], unresolved: [], originalInputs: [1, 2, 3, 4, 5, 6], queueSnapshot: {conversationId: 1, runId: 1450, source: 'committed InboxDoc'}, decision: 'settled', queuedInputCount: 25};
+  assert.equal(structuredResultPreview(display(real)), 'results: 1 item · decision: settled · queuedInputCount: 25', 'an object shown by key name alone reads after scalars');
+  assert.equal(structuredResultPreview(display({zeta: {a: 1}, count: 4, name: 'x'})), 'count: 4 · name: x · zeta');
+  assert.equal(structuredResultPreview(display({errors: [], checks: {}, ready: true})), 'ready: true', 'empty collections are not facts beside a fact');
+  assert.equal(structuredResultPreview(display({errors: []})), 'errors: 0 items', 'an empty collection that is the only fact stays');
+  assert.equal(structuredResultPreview(display({errors: [], warnings: []})), 'errors: 0 items · warnings: 0 items');
+  assert.equal(structuredResultPreview(display({items: [], note: 'plain'})), 'note: plain');
+  assert.equal(structuredResultPreview(display([])), '0 items');
+  assert.equal(structuredResultPreview(display({tags: ['a', 'b'], kind: 'file', size: 4})), 'kind: file · size: 4 · tags: 2 items');
+  assert.equal(structuredResultPreview(display({records: [1, 2], nested: {role: 'assistant'}, nullable: null})), 'records: 2 items · nullable: null · nested');
 });
 test('expanded fields keep every identifier', () => {
   const root = result({result: {sessionId: 'ead53d8c-af9d-0bda-1416-21a6ba18ab6c:57', submissionId: 16781}});
