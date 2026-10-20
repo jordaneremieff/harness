@@ -98,6 +98,11 @@ test('bash command uses inert supplied text and preserves multiline commands on 
   const card = node(presentTool(source('bash', {command: 'printf "<script>"\nprintf done'}), context));
   assert.equal(card.children[0]?.className, 'tool-command');
   assert.equal(card.textContent, '$ printf "<script>"\nprintf done');
+  assert.ok(card.children[0]?.children.some(child => child.className === 'syn-fn'));
+  assert.ok(card.children[0]?.children.some(child => child.className === 'syn-string'));
+  const retained = 'printf "😀"\r\necho done';
+  const bounded = node(presentTool(source('bash', {command: retained}), {...context, bounded: text => text.slice(0, 12)}));
+  assert.equal(bounded.children[0]?.textContent, `$ ${retained}`.slice(0, 12));
   assert.equal(presentTool(source('bash', {command: 7}), context), undefined);
 });
 test('collapsed write and edit previews expose supplied content with diff classes', () => {
@@ -126,6 +131,38 @@ test('write previews highlight by extension and preserve exact supplied text and
   const lines = edit.children.filter(child => child.tag === 'pre').flatMap(child => child.children).filter(child => child.tag === 'span');
   assert.equal(lines.every(child => child.className === 'diff-del' || child.className === 'diff-add'), true);
   assert.equal(lines.every(child => child.children.length === 0), true);
+});
+test('collapsed successful source reads add syntax without changing their bounded literal preview or source', () => {
+  setup();
+  for (const pathKey of ['path', 'file_path']) {
+    for (const [path, text] of [['source.ts', '\n  const value: number = 42;\r\nreturn value;\n\n'], ['data.json', '{"value":42,"ok":true}'], ['script.py', 'def answer():\n    return 42']] as const) {
+      const result: PartView[] = [{type: 'text', text}];
+      const call = {...source('read', {[pathKey]: path}), result}; const retained = JSON.stringify(call);
+      const preview = node(presentResultPreview(call));
+      assert.equal(preview.tag, 'pre'); assert.equal(preview.className, 'tool-content-preview');
+      assert.equal(preview.textContent, resultPreview(result, {tidy: true}));
+      assert.ok(preview.children.some(child => child.className.startsWith('syn-')));
+      assert.equal(JSON.stringify(call), retained);
+    }
+  }
+  for (const text of ['const value = 42;\n'.repeat(100), `const value = "${'😀'.repeat(10000)}";`]) {
+    const result: PartView[] = [{type: 'text', text}];
+    const preview = node(presentResultPreview({...source('read', {path: 'source.ts'}), result}));
+    assert.equal(preview.textContent, resultPreview(result, {tidy: true}));
+    assert.ok(preview.textContent.length <= 1200); assert.ok(preview.textContent.split(/\r\n|\r|\n/).length <= 6);
+    assert.equal(preview.textContent.isWellFormed(), true); assert.equal(result[0]?.type === 'text' && result[0].text, text);
+  }
+});
+test('source read colors exclude errors, redaction, unknown paths, other tools and transformed structured text', () => {
+  setup(); const text = 'const value = 42;'; const result: PartView[] = [{type: 'text', text}];
+  for (const call of [source('read', {path: 'source.ts'}, 'working'), source('read', {path: 'source.ts'}, 'error'), source('bash', {path: 'source.ts'}), source('read', {}), source('read', {path: 'source.unknown'})]) {
+    assert.equal(presentResultPreview({...call, result}), undefined);
+  }
+  assert.equal(presentResultPreview({...source('read', {path: 'source.ts'}), result: [{type: 'text', text, redacted: true}]}), undefined);
+  const summary = node(presentResultPreview({...source('read', {path: 'source.ts'}), result: [{type: 'text', text: '{"count":2}', structured: {value: {count: 2}, truncated: false}}]}));
+  assert.equal(summary.className, 'tool-prose-preview'); assert.equal(summary.textContent, 'count: 2');
+  assert.equal(summary.children.some(child => child.className.startsWith('syn-')), false);
+  assert.equal(presentResultPreview({...source('read', {path: 'source.ts'}), result: [{type: 'text', text: 'Listed\n{"count":2}', structured: {value: ['Listed', {count: 2}], truncated: false}}]}), undefined);
 });
 test('collapsed supplied comparisons reveal later changes with bounded context and remaining counts', () => {
   setup();
@@ -286,7 +323,8 @@ test('frontmatter is omitted from the compact prose projection only', () => {
 test('prose classification uses only explicit content facts', () => {
   setup();
   const markdown = '# Title\n\nBody';
-  assert.equal(presentResultPreview(readSource('src/main.ts', markdown)), undefined);
+  const source = node(presentResultPreview(readSource('src/main.ts', markdown)));
+  assert.equal(source.className, 'tool-content-preview'); assert.equal(source.tag, 'pre'); assert.equal(source.textContent, markdown);
   assert.equal(presentResultPreview(readSource('notes', markdown)), undefined);
   assert.equal(presentResultPreview(readSource('docs/a.md', markdown, 'success', 'bash')), undefined);
   assert.equal(presentResultPreview(readSource('docs/a.md', markdown, 'error')), undefined);

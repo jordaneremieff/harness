@@ -66,6 +66,19 @@ function setup(): PresentationContext {
 function result(value: unknown, context = setup()): DomNode { return cast(presentResult({value, truncated: false}, context)); }
 function args(value: unknown, context = setup()): DomNode { return cast(presentArguments({value, truncated: false}, context)); }
 
+test('explicit shell command presentation colors only the root command and retains supplied text and bounds', () => {
+  const context = setup(), command = 'if test "$READY" = 1; then\n  printf "<script>😀"\nfi';
+  const value = {command, content: 'echo plain', nested: {command: 'echo nested'}, timeout: 30}; const retained = JSON.stringify(value);
+  const plain = cast(presentArguments({value, truncated: false}, context)); assert.equal(classes(plain, 'syn-keyword').length, 0);
+  const shown = cast(presentArguments({value, truncated: false}, context, undefined, {shellCommand: true}));
+  const sources = classes(shown, 'tool-source');
+  const root = sources.find(source => source.querySelector('summary')?.textContent === 'command'); assert.ok(root);
+  assert.equal(root.querySelector('pre')?.textContent, command); assert.ok(classes(root, 'syn-keyword').length > 0); assert.ok(classes(root, 'syn-string').length > 0);
+  for (const source of sources.filter(source => source !== root)) assert.equal(descendants(source).some(child => child.className.startsWith('syn-')), false);
+  assert.equal(JSON.stringify(value), retained); bounded(shown);
+  const long = cast(presentArguments({value: {command: 'echo "😀"\n'.repeat(10000)}, truncated: true}, context, undefined, {shellCommand: true}));
+  bounded(long); assert.match(long.textContent, /Preview shortened|Some output was not retained/);
+});
 test('collapsed summaries prefer useful payloads and explicit facts over reordered transport metadata', () => {
   for (const value of [
     {cursor: 'next', digest: 'hash', coverage: {complete: true}, document: '# Actual document\nUseful excerpt', count: 2},

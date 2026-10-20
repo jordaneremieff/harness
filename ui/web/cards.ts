@@ -128,7 +128,7 @@ function withoutOuterBlankLines(text: string): string {
   while (end > start && /\s/.test(text[end - 1] ?? '')) end--;
   return text.slice(start, end);
 }
-type ResultPreviewText = {text: string; summary: boolean; redacted: boolean};
+type ResultPreviewText = {text: string; summary: boolean; redacted: boolean; literal: boolean};
 /**
  * A sentence of prose that ends in a labeled JSON literal ("Admitted to a task. Result: {...}") reads as the sentence alone.
  * Only a line of at least three words that starts with a capital letter or digit qualifies; every other line stays literal.
@@ -171,7 +171,7 @@ function textPreview(part: Extract<PartView, {type: 'text'}>, skipFrontmatter: b
     const joined = withoutOuterBlankLines(lines.map(line => line.kind === 'text' ? tidied(line.text, !!options.tidy) : line.text).join('\n'));
     if (!joined) return undefined;
     const shown = preview(joined, 1200, 6);
-    return {text: shown.limited ? `${preview(shown.text, 1199, 6).text}…` : shown.text, summary: false, redacted: false};
+    return {text: shown.limited ? `${preview(shown.text, 1199, 6).text}…` : shown.text, summary: false, redacted: false, literal: false};
   }
   // An array summarizes text that is one JSON array; text of prose or JSON lines keeps its own lines.
   const summarizable = !decodedArray(part.structured) || part.text.trimStart().startsWith('[');
@@ -179,7 +179,7 @@ function textPreview(part: Extract<PartView, {type: 'text'}>, skipFrontmatter: b
   const text = withoutOuterBlankLines(summary ?? tidied(previewSource(part, skipFrontmatter), !!options.tidy && !part.redacted));
   if (!text) return undefined;
   const shown = preview(text, 1200, 6);
-  return {text: shown.limited ? `${preview(shown.text, 1199, 6).text}…` : shown.text, summary: summary !== undefined, redacted: !!part.redacted};
+  return {text: shown.limited ? `${preview(shown.text, 1199, 6).text}…` : shown.text, summary: summary !== undefined, redacted: !!part.redacted, literal: summary === undefined};
 }
 
 /** A collapsed result describes supplied structured data or keeps a literal text prefix. */
@@ -192,16 +192,25 @@ function awaitedPreview(source: ToolPresentationSource, resolve?: NameResolver):
   const awaited = source.name === 'agent_await' ? awaitedFromParts(source.result ?? []) : undefined; if (!awaited) return null;
   const line = awaitedLine(awaited, resolve); return line ? element('span', 'tool-prose-preview', line) : undefined;
 }
+function readPreviewPath(source: ToolPresentationSource, shown: ResultPreviewText): unknown {
+  if (shown.summary || shown.redacted || source.name !== 'read' || source.status !== 'success') return undefined;
+  const args = record(source.args?.value); return args.file_path ?? args.path;
+}
 /**
  * Prose previews come only from explicit content facts: a structured summary, or a successful
- * read of a path with a Markdown extension. Every other result stays a literal text prefix.
+ * read of a path with a Markdown extension. Known source reads retain their literal monospace prefix with syntax colors.
  */
 export function presentResultPreview(source: ToolPresentationSource, resolve?: NameResolver, title = ''): HTMLElement | undefined {
   if (source.status === 'error') return undefined;
   const awaited = awaitedPreview(source, resolve); if (awaited !== null) return awaited;
   const shown = resultPreviewText(source.result ?? [], false, {resolve, title}); if (!shown) return undefined;
-  const args = record(source.args?.value);
-  const markdown = !shown.summary && !shown.redacted && source.name === 'read' && source.status === 'success' && isMarkdownPath(args.file_path ?? args.path);
+  const path = readPreviewPath(source, shown);
+  const markdown = isMarkdownPath(path);
+  const language = shown.literal && !markdown ? languageFromPath(path) : undefined;
+  if (language) {
+    const node = element('pre', 'tool-content-preview');
+    node.append(highlight(resultPreview(source.result ?? [], {resolve, title, tidy: true}), language)); return node;
+  }
   if (!shown.summary && !markdown) return undefined;
   const node = element('span', 'tool-prose-preview');
   if (markdown) node.append(markdownPreviewDom(resultPreviewText(source.result ?? [], true, {})?.text ?? '')); else node.textContent = shown.text;
@@ -235,7 +244,8 @@ export function presentTool(source: ToolPresentationSource, context: Presentatio
   let node: HTMLElement | undefined;
   if (source.name === 'bash' && typeof args.command === 'string') {
     node = element('section', 'tool-content');
-    node.append(element('pre', 'tool-command', context.bounded(`$ ${args.command}`)));
+    const command = element('pre', 'tool-command');
+    command.append(highlight(context.bounded(`$ ${args.command}`), 'bash')); node.append(command);
   }
   if (source.name === 'write' && typeof args.content === 'string') node = written(source, args.content, context);
   if (source.name === 'edit') {

@@ -775,6 +775,29 @@ test('final fences highlight their language and streaming prose stays plain unti
   assert.equal(node('primary-transcript').querySelector('.syn-keyword')?.textContent, 'const');
   assert.equal(node('primary-transcript').querySelector('code')?.textContent, 'const value: number = 42;');
 });
+test('collapsed source reads retain syntax, exact output copies and the existing raw display filter', async () => {
+  setup(); const view = transcript(); const text = '\n  const value: number = 42;\r\nreturn value;\n\n';
+  const entry = contentEntry('source-preview', {path: 'source.ts'}, text);
+  for (const part of entry.messages[0]?.parts ?? []) if (part.type === 'toolCall' || part.type === 'toolResult') part.name = 'read';
+  const retained = JSON.stringify(entry); view.set([entry]); flush();
+  const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card);
+  const preview = card.querySelector('.tool-preview'); assert.ok(preview);
+  assert.equal(preview.querySelector('.syn-keyword')?.textContent, 'const');
+  assert.equal(preview.querySelector('.tool-prose-preview'), null); assert.equal(card.open, false);
+  const shown = preview.textContent; const action = card.parentNode?.querySelector('.tool-copy'); assert.ok(action);
+  let copied = ''; const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', {configurable: true, value: {clipboard: {writeText: async (value: string) => {copied = value;}}}});
+  try {action.dispatch('click', {stopPropagation() {}}); await Promise.resolve(); await Promise.resolve(); assert.equal(copied, text);}
+  finally {if (previous) Object.defineProperty(globalThis, 'navigator', previous); else Reflect.deleteProperty(globalThis, 'navigator');}
+  card.open = true; card.dispatch('toggle'); flush();
+  const displayed = text.replace(/\r\n/g, '\n');
+  assert.equal(card.querySelector('.tool-output-text')?.textContent, displayed);
+  const raw = card.querySelector('.tool-raw-output'); assert.ok(raw); raw.open = true; raw.dispatch('toggle');
+  assert.equal(raw.querySelector('pre')?.textContent, displayed); assert.equal(raw.querySelector('.syn-keyword'), null);
+  card.open = false; card.dispatch('toggle'); flush();
+  assert.equal(preview.textContent, shown); assert.equal(preview.querySelector('.syn-keyword')?.textContent, 'const');
+  assert.equal(JSON.stringify(entry), retained); view.reset();
+});
 test('expanded completed reads highlight initial output and retained pages but live and error output stay plain', async () => {
   setup(); const text = 'const value = 42;'; const pageText = 'return 24;';
   const view = new Transcript('primary', {presentation: () => {}, reading: () => {}, output: async more => ({entryId: more.entryId, part: more.part, text: pageText, nextOffset: null, totalBytes: more.offset + pageText.length})});
@@ -990,9 +1013,15 @@ test('bash command and output stay distinct, and shell status follows live compl
   assert.equal(card.querySelector('.tool-expanded')?.hidden, true); assert.doesNotMatch(card.querySelector('summary')?.textContent ?? '', /timeout/);
   card.open = true; card.dispatch('toggle'); flush();
   assert.equal(card.querySelector('.tool-command')?.textContent, 'echo first\necho second');
+  assert.equal(card.querySelector('.tool-command')?.querySelector('.syn-fn')?.textContent, 'echo');
   assert.equal(card.querySelector('.tool-source')?.open, true);
+  const argumentsInspection = card.querySelector('.tool-arguments'); assert.ok(argumentsInspection);
+  argumentsInspection.open = true; argumentsInspection.dispatch('toggle');
+  const rawArguments = argumentsInspection.querySelector('pre'); assert.ok(rawArguments);
+  assert.deepEqual(JSON.parse(rawArguments.textContent), call.arguments.value); assert.equal(rawArguments.querySelector('.syn-fn'), null);
   view.set(entries, new Map([['bash', {callId: 'bash', name: 'bash', phase: 'end', parts: [{type: 'text', text: 'first\nsecond'}]}]])); flush();
   assert.equal(card.parentNode?.dataset.status, 'success'); assert.equal(card.querySelector('.tool-output-text')?.textContent, 'first\nsecond');
+  assert.equal(card.querySelector('.tool-output-text')?.querySelector('.syn-fn'), null);
   view.set(entries, new Map([['bash', {callId: 'bash', name: 'bash', phase: 'end', parts: [], isError: true}]])); flush();
   assert.equal(card.parentNode?.dataset.status, 'error'); assert.equal(card.querySelector('.tool-output-text')?.textContent, 'The tool failed. No output is available.');
 });

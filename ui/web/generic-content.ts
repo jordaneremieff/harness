@@ -258,6 +258,7 @@ function language(args: Record<string, unknown>): string | undefined {
 }
 
 export type PreviewActions = {showSavedOutput?: () => void; copySavedText?: () => void};
+type ArgumentPresentation = {caption?: string; replacement?: boolean; shellCommand?: boolean};
 
 /** Share one instance across a tool's arguments, result previews and deferred metadata. */
 export class PreviewBudget {
@@ -354,6 +355,7 @@ class Preview {
   private metadataBuilt = false;
   private readonly context: PresentationContext;
   private readonly argumentsMode: boolean;
+  private shellCommand = false;
   constructor(context: PresentationContext, argumentsMode: boolean, truncated: boolean, budget: PreviewBudget) {
     this.context = context; this.argumentsMode = argumentsMode; this.budget = budget; this.truncated = truncated;
     this.admitted = budget.acquire(this.root);
@@ -679,7 +681,7 @@ class Preview {
     this.content(parent, label, value, depth, path, hint, collectMetadata, fullLabels);
   }
   private content(parent: HTMLElement, label: string, value: unknown, depth: number, path: string, hint: string | undefined, collectMetadata: boolean, fullLabels: boolean): void {
-    if (this.argumentsMode && sourceKey.test(label) && typeof value === 'string') this.source(parent, label, value, hint);
+    if (this.argumentsMode && sourceKey.test(label) && typeof value === 'string') this.source(parent, label, value, this.shellCommand && path === 'command' ? 'bash' : hint);
     else if (this.argumentsMode && label === 'edits' && Array.isArray(value)) this.edits(parent, value);
     else if (this.documentString(value)) this.textField(parent, label, value, hint);
     else if (container(value)) this.nested(parent, label, value, depth, path, hint, collectMetadata, fullLabels);
@@ -720,7 +722,8 @@ class Preview {
       this.field(parent, `${label}.${i + 1}`, own(value, String(i)), depth + 1, itemPath, hint, collectMetadata, fullLabels);
     }
   }
-  private argumentObject(value: Record<string, unknown>, presentation?: {caption?: string; replacement?: boolean}): void {
+  private argumentObject(value: Record<string, unknown>, presentation?: ArgumentPresentation): void {
+    this.shellCommand = presentation?.shellCommand === true;
     if (presentation?.caption) this.caption(this.root, presentation.caption);
     let fields: Field[] | undefined;
     if (presentation?.replacement && typeof own(value, 'oldText') === 'string' && typeof own(value, 'newText') === 'string') {
@@ -728,7 +731,7 @@ class Preview {
     }
     this.object(this.root, value, 0, '', language(value), true, false, fields);
   }
-  render(value: unknown, presentation?: {caption?: string; replacement?: boolean}): HTMLElement | undefined {
+  render(value: unknown, presentation?: ArgumentPresentation): HTMLElement | undefined {
     if (!this.admitted) return undefined;
     if (record(value)) {
       this.ancestors.add(value);
@@ -784,7 +787,7 @@ export function presentAwaited(display: JsonDisplay, context: PresentationContex
 }
 
 /** Supplied argument previews have their own collapse controls, without extra raw inspection. */
-export function presentArguments(args: JsonDisplay | undefined, context: PresentationContext, budget?: PreviewBudget, presentation?: {caption?: string; replacement?: boolean}): HTMLElement | undefined {
+export function presentArguments(args: JsonDisplay | undefined, context: PresentationContext, budget?: PreviewBudget, presentation?: ArgumentPresentation): HTMLElement | undefined {
   if (!record(args)) return undefined;
   const value = own(args, 'value'); if (!record(value)) return undefined;
   return new Preview(context, true, own(args, 'truncated') === true, budget ?? new PreviewBudget()).render(value, presentation);

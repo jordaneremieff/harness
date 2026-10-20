@@ -1615,7 +1615,7 @@ export class Transcript {
     if ([tool.presentation, tool.argumentsDocument, tool.resultDocument].some(root => root && this.protectedNode(root))) return;
     const supplied = source.name === 'write' || source.name === 'edit';
     const budget = new PreviewBudget(this.savedOutputActions(tool, source));
-    const args = presentArguments(source.args, context, budget, {caption: source.name === 'write' ? 'Supplied content' : undefined, replacement: source.name === 'edit'});
+    const args = presentArguments(source.args, context, budget, {caption: source.name === 'write' ? 'Supplied content' : undefined, replacement: source.name === 'edit', shellCommand: source.name === 'bash'});
     this.retireNode(tool.presentation); this.retireNode(tool.argumentsDocument);
     tool.presentation = supplied ? args : undefined; tool.argumentsDocument = supplied ? undefined : args;
     tool.previewBudget = budget;
