@@ -1128,6 +1128,7 @@ test('the browser copy of a sent message reads as the operator\'s own with its d
   const errors = root.querySelectorAll('.message-error');
   assert.deepEqual(errors.map(item => [item.hidden, item.textContent]), [[true, ''], [true, ''], [false, 'Message not sent'], [false, 'Delivery not confirmed']]);
   assert.equal(errors[2]?.querySelector('details'), null); assert.equal(errors[2]?.className, 'error message-error');
+  assert.equal(errors[3]?.querySelector('details'), null); assert.equal(errors[3]?.className, 'warning message-error', 'an unconfirmed copy is an unknown state');
   view.set([echo('a', 'Sent')]); flush();
   assert.deepEqual(root.querySelectorAll('.message-delivery').map(item => [item.textContent, item.hidden]), [['· Sent', false]]); view.reset();
 });

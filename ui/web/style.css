@@ -628,6 +628,7 @@ pre { max-width: 100%; line-height: 1.5; white-space: pre-wrap; overflow-wrap: a
 pre[data-wrap=false], .tool-source > pre[data-wrap=false] { white-space: pre; overflow-wrap: normal; overflow-x: auto; }
 .stream-text { white-space: pre-wrap; }
 .message-error { color: var(--error); }
+.message-error.warning { color: var(--warning); }
 .message-body > .secondary, .message > .secondary { color: var(--muted); font-size: 13px; }
 
 /* Images retain their aspect ratio inside either conversation pane. */

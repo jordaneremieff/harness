@@ -84,14 +84,14 @@ function bounded(text: string, limit = RAW_LIMIT, lines = Number.MAX_SAFE_INTEGE
   const shown = value.truncated && value.text.length >= limit ? previewText(value.text, lines, Math.max(0, limit - 1)).text : value.text;
   return shown + (value.truncated ? '…' : '');
 }
-/** The error line of the person's own message states its own failure; the generic phrases belong to agent replies. */
-function errorPresentation(message: MessageView): {summary: string; diagnostic?: string; stopped: boolean} {
-  if (message.role === 'user') return {summary: message.error ?? '', stopped: false};
-  const stopped = message.stopReason === 'aborted';
-  if (message.error) return {summary: stopped ? 'The response stopped.' : 'The response failed.', diagnostic: message.error, stopped};
-  if (message.stopReason === 'error') return {summary: 'The response failed.', stopped: false};
-  if (stopped) return {summary: 'The response stopped.', stopped: true};
-  return {summary: '', stopped: false};
+/** The error line of the person's own message states its own failure; the generic phrases belong to agent replies. An unconfirmed copy is an unknown state, so its line uses the warning tone. */
+function errorPresentation(message: MessageView): {summary: string; diagnostic?: string; warning: boolean} {
+  if (message.role === 'user') return {summary: message.error ?? '', warning: message.error === 'Delivery not confirmed'};
+  const warning = message.stopReason === 'aborted';
+  if (message.error) return {summary: warning ? 'The response stopped.' : 'The response failed.', diagnostic: message.error, warning};
+  if (message.stopReason === 'error') return {summary: 'The response failed.', warning: false};
+  if (warning) return {summary: 'The response stopped.', warning: true};
+  return {summary: '', warning: false};
 }
 function record(display?: JsonDisplay): Record<string, unknown> {
   const value = display?.value;
@@ -1050,7 +1050,7 @@ export class Transcript {
   }
   private messageError(cached: MessageNode, message: MessageView): string {
     const shown = errorPresentation(message);
-    cached.error.className = `${shown.stopped ? 'warning' : 'error'} message-error`; cached.error.hidden = !shown.summary;
+    cached.error.className = `${shown.warning ? 'warning' : 'error'} message-error`; cached.error.hidden = !shown.summary;
     if (!shown.summary) return '';
     let summary = cached.error.querySelector<HTMLElement>('.response-error-summary');
     if (!summary) { summary = element('span', 'response-error-summary'); cached.error.append(summary); }
