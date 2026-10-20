@@ -207,6 +207,23 @@ test('Up in an empty draft browses earlier messages and Escape or Down past the 
   items = ['again']; composer.setText('draft'); editor.setSelectionRange(0, 0); assert.equal(press('ArrowUp').defaultPrevented, false, 'only an empty draft starts browsing');
   composer.destroy(); void f;
 });
+test('Restore draft does what Escape does and the recall line names no key', () => {
+  const f = fixture(); const scope = scopedNodes('restore', true);
+  const hint = new NodeFake(), visible = new NodeFake(), spoken = new NodeFake(), line = new NodeFake(), restore = new NodeFake(), meta = new NodeFake();
+  visible.className = 'composer-recall-visible'; spoken.className = 'composer-recall-spoken'; hint.append(visible, spoken); line.hidden = true; line.append(hint, restore);
+  const elements = {...scope.elements, recallHint: hint, recallLine: line, recallRestore: restore, meta} as unknown as ComposerElements;
+  const composer = new Composer(elements, {submitted() {}, unknownCommand: () => false, recallItems: () => ['first', 'second']});
+  const editor = scope.node('editor'); composer.attach('w', state('r', draft(1, ''))); composer.availability(true, true, false);
+  editor.focus(); editor.fire('keydown', {key: 'ArrowUp'});
+  assert.equal(editor.value, 'second'); assert.equal(line.hidden, false); assert.equal(meta.dataset.recall, 'true');
+  assert.equal(visible.textContent, 'Earlier message 1 of 2'); assert.equal(spoken.textContent, 'Earlier message 1 of 2 from the loaded conversation.');
+  assert.doesNotMatch(`${visible.textContent} ${spoken.textContent}`, /Esc/);
+  const down = restore.fire('mousedown'); assert.equal(down.defaultPrevented, true, 'the editor keeps focus while the button is pressed');
+  restore.fire('click');
+  assert.equal(editor.value, ''); assert.equal(composer.state?.draft.text, ''); assert.equal(line.hidden, true); assert.equal(meta.dataset.recall, undefined); assert.equal(editor.focused, true);
+  restore.fire('click'); assert.equal(editor.value, '', 'a click with no browsing changes nothing');
+  composer.destroy(); void f;
+});
 test('a typed @ file is staged, only its token leaves the draft, and a changed draft stages nothing', async t => {
   const f = fixture(); const scope = scopedNodes('mention', true); const menu = new NodeFake(); menu.id = 'mention-files';
   const elements = {...scope.elements, fileMenu: menu} as unknown as ComposerElements; let staged: File[] = []; let release: (() => boolean) | undefined;
@@ -224,9 +241,13 @@ test('a typed @ file is staged, only its token leaves the draft, and a changed d
   composer.setText('see @a now'); await open(); key('Enter'); assert.ok(release); editor.value = 'see @a now!'; editor.fire('input');
   assert.equal(release(), false); assert.equal(editor.value, 'see @a now!'); void staged; composer.destroy(); void f;
 });
-test('the Send tooltip names the key that sends', () => {
-  const key = (enterSends: boolean) => {const f = fixture('primary', undefined, true, undefined, () => enterSends); f.connect(); const title = f.node('send').title; f.composer.destroy(); return title;};
-  assert.equal(key(true), 'Send · Enter'); assert.match(key(false), /^Send · (⌘Enter|Ctrl\+Enter)$/);
+test('the Send, Steer and Run tooltips name the action and never a key', () => {
+  const keyless = /⌘|Ctrl|Enter/;
+  for (const enterSends of [true, false]) {
+    const f = fixture('primary', undefined, true, undefined, () => enterSends); f.connect(); assert.equal(f.node('send').title, 'Send');
+    f.composer.availability(true, true, true); assert.equal(f.node('send').title, 'Steer: send now; the agent reads it at its next step'); assert.doesNotMatch(f.node('send').title, keyless);
+    f.composer.destroy();
+  }
 });
 test('a recipient that cannot receive input reserves nothing and prepares once it can', async () => {
   const f = fixture('agent'); const saved = state('suppressed', draft(1, 'Draft for a stored agent', 'followUp'), true);
@@ -1136,7 +1157,7 @@ test('working with an empty draft offers only Stop, and a draft adds Steer and Q
   assert.equal(root.dataset.working, 'empty'); assert.equal(queue.hidden, true); assert.equal(send.disabled, true); assert.equal(actionText(send), 'Steer');
   f.composer.setText('Look at the failing test'); f.saved('Look at the failing test');
   assert.equal(root.dataset.working, 'draft'); assert.equal(queue.hidden, false); assert.equal(queue.disabled, false); assert.equal(send.disabled, false);
-  assert.equal(actionText(send), 'Steer'); assert.equal(send.getAttribute('aria-label'), 'Steer message'); assert.match(send.title, /^Steer: send now; the agent reads it at its next step/);
+  assert.equal(actionText(send), 'Steer'); assert.equal(send.getAttribute('aria-label'), 'Steer message'); assert.equal(send.title, 'Steer: send now; the agent reads it at its next step');
   assert.equal(queue.title, 'Queue: send after the current response ends');
   f.composer.setText(''); assert.equal(root.dataset.working, 'empty'); assert.equal(queue.hidden, true);
   f.composer.availability(true, true, false); assert.equal(root.dataset.working, undefined); assert.equal(queue.hidden, true); assert.equal(actionText(send), 'Send'); assert.equal(send.getAttribute('aria-label'), 'Send message');
@@ -1224,7 +1245,7 @@ const commandResult = (id: string, changes: Partial<OperationView> = {}): Operat
 test('an agent draft that names a host command runs it once and clears only after the confirmed result', async () => {
   const f = fixture('agent', () => hostCommands(), true); f.connect(state('run', draft(0, '', 'followUp'), true));
   f.composer.setText('/ping now'); const reserved = f.reservations();
-  assert.equal(actionText(f.node('send')), 'Run command'); assert.equal(f.node('send').attrs.get('aria-label'), 'Run command /ping'); assert.match(f.node('send').title ?? '', /^Run \/ping on this agent\. It sends no message/);
+  assert.equal(actionText(f.node('send')), 'Run command'); assert.equal(f.node('send').attrs.get('aria-label'), 'Run command /ping'); assert.equal(f.node('send').title, 'Run /ping on this agent. It sends no message');
   const sending = f.composer.send(); const call = await f.waitCall('POST', '/command');
   assert.equal(call.path, '/api/agents/run/command'); assert.deepEqual(call.body, {name: 'ping', args: 'now'}); assert.equal(f.calls.some(item => item.path.endsWith('/inputs')), false);
   assert.equal(f.composer.editor.value, '/ping now', 'the draft stays while the command runs');

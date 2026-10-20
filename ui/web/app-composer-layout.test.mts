@@ -39,7 +39,7 @@ test('conversation state and split width changes retain editor ancestry, draft i
     assert.deepEqual(intake.children,[attach,sources,picker]);
     // One surface holds the add control, the editor and one control row in that tab order; Latest leads the row.
     const order = surface.children.filter(node => [intake, control('editor').parentNode, line].includes(node));
-    assert.deepEqual(order, [intake, control('editor').parentNode, line]); assert.equal(latest.parentNode, meta); assert.equal(meta.children[0], latest, 'Latest leads the control row'); assert.equal(meta.parentNode, line); assert.deepEqual(line.children, [meta, bar]); assert.equal(form.querySelectorAll('.composer-input ~ *').length, 0, 'nothing sits under the box');
+    assert.deepEqual(order, [intake, control('editor').parentNode, line]); assert.equal(latest.parentNode, meta); assert.equal(meta.children[0], latest, 'Latest leads the control row'); assert.equal(meta.parentNode, line); const recallLine = form.querySelector('.composer-recall'); assert.ok(recallLine); assert.deepEqual(line.children, [meta, bar, recallLine], 'the recall line follows the action in tab order'); assert.equal(form.querySelectorAll('.composer-input ~ *').length, 0, 'nothing sits under the box');
     const submit = bar.querySelector('.composer-submit'); assert.ok(submit);
     assert.deepEqual(bar.children, [control('stop'), submit]); assert.deepEqual(submit.children, [control('queue'), control('start'), control('send')]);
     assert.equal(control('editor').rows, 1);

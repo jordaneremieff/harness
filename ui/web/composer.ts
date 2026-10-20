@@ -25,7 +25,7 @@ import { ApiError, draftImageUrl, errorMessage, operation, request, reserve } fr
 
 export type ComposerHooks = {recallItems?: () => readonly string[]; fileSearch?: (query: string, signal: AbortSignal) => Promise<FileSearchResult> | undefined; fileStage?: (path: string, signal: AbortSignal, current: () => boolean, stage: (files: readonly File[]) => boolean) => Promise<boolean>; workingFile?:(stage:(files:readonly File[])=>boolean)=>void; changed?:()=>void; captured?: (submission:Submission)=>void; failed?: (operationId:string,uncertain:boolean)=>void; prepareInput?: () => boolean; imageState?: (workspace: string, state: TargetState) => void; imageInput?: (target: Target) => {allowed: boolean; reason?: string}; recovery?: () => void; layoutHeight?: () => number | undefined; timing?: (start: number, end: number) => void; submitted: (operation: OperationView) => void; unknownCommand: (text: string, sendLiteral: () => void) => boolean; enterSends?: () => boolean; commands?: (deliberate: boolean) => CommandInventory; moreCommands?: (target: Target) => Promise<void>; retained?: (workspace: string, target: Target, retained: boolean) => void};
 export type ComposerElements = {root: HTMLFormElement; editor: HTMLTextAreaElement; recipient: HTMLElement; receipt: HTMLElement;
-  receiptDetails: HTMLElement; queue: HTMLButtonElement; send: HTMLButtonElement; save: HTMLElement; fileMenu?: HTMLElement; recallHint?: HTMLElement; meta?: HTMLElement; model?: HTMLButtonElement; thinking?: HTMLButtonElement; settings?: HTMLElement; commandMenu?: HTMLElement; overlay?: HTMLElement; attachments?: HTMLElement; attach?: HTMLButtonElement; sources?: HTMLButtonElement; picker?: HTMLInputElement; state?: HTMLElement; start?: HTMLButtonElement};
+  receiptDetails: HTMLElement; queue: HTMLButtonElement; send: HTMLButtonElement; save: HTMLElement; fileMenu?: HTMLElement; recallHint?: HTMLElement; recallLine?: HTMLElement; recallRestore?: HTMLButtonElement; meta?: HTMLElement; model?: HTMLButtonElement; thinking?: HTMLButtonElement; settings?: HTMLElement; commandMenu?: HTMLElement; overlay?: HTMLElement; attachments?: HTMLElement; attach?: HTMLButtonElement; sources?: HTMLButtonElement; picker?: HTMLInputElement; state?: HTMLElement; start?: HTMLButtonElement};
 /** An agent-specific state in the composer's control row, with at most one action in the Send position (`hideSend` removes the disabled Send when the state offers none) and optional exact details. `line` is the full sentence for assistive technology; `label` is the short note shown beside the add control. */
 export type ComposerStateView = {line: string; label?: string; tone?: 'error' | 'warning'; hideSend?: boolean; action?: {label: string; title?: string; pending?: boolean; disabled?: boolean; recovery?: boolean; run: () => void}; blocksSend?: boolean; detail?: string; showDetail?: () => void};
 /** An action-slot button holds an icon from the shared set, when it has one, and a visible label. */
@@ -77,12 +77,15 @@ export function createComposerElements(instanceId: string): ComposerElements {
   settings.append(model, separator, thinking, settingsText);
   const recallHint = element('div', 'composer-recall-hint'); recallHint.hidden = true; recallHint.setAttribute('role', 'status'); recallHint.setAttribute('aria-live', 'polite');
   const recallSpoken = element('span', 'sr-only composer-recall-spoken'), recallVisible = element('span', 'composer-recall-visible'); recallVisible.setAttribute('aria-hidden', 'true'); recallHint.append(recallVisible, recallSpoken);
-  const meta = element('div', 'composer-meta'); meta.append(recallHint, state, settings); line.append(meta, bar);
+  // The restore button follows the action in tab order; the line sits first in the control row visually.
+  const recallRestore = element('button', 'composer-recall-restore', 'Restore draft'); recallRestore.type = 'button';
+  const recallLine = element('div', 'composer-recall'); recallLine.hidden = true; recallLine.append(recallHint, recallRestore);
+  const meta = element('div', 'composer-meta'); meta.append(state, settings); line.append(meta, bar, recallLine);
   // The handle is absolutely placed on the surface's top edge; it follows the control row in tab order.
   input.append(commandMenu, fileMenu, recipient, intake, surface, attachments, line, resize); root.append(receipt, input);
   const save = element('span', 'draft-state'); save.id = `${id}-save`;
   const receiptDetails = element('span', 'receipt-details'); receiptDetails.id = `${id}-receipt-details`;
-  return {root, editor, recipient, receipt, receiptDetails, queue, send, save, fileMenu, recallHint, meta, model, thinking, settings, commandMenu, overlay, attachments, attach, sources, picker, state, start};
+  return {root, editor, recipient, receipt, receiptDetails, queue, send, save, fileMenu, recallHint, recallLine, recallRestore, meta, model, thinking, settings, commandMenu, overlay, attachments, attach, sources, picker, state, start};
 }
 type Edit = {text: string; mode: string; images: DraftImage[]; edit: number};
 type InsertionCapture = {buffer: Buffer; edit: number; text: string; start: number; end: number; direction: 'forward' | 'backward' | 'none'};
@@ -177,6 +180,13 @@ export class Composer {
     this.listen(elements.root, 'submit', event => { event.preventDefault(); void this.send(); });
     this.editor.placeholder = 'Write a message…';
     this.listen(elements.queue, 'click', () => { if (this.current && !this.textLimit) void this.send(false, undefined, 'followUp'); });
+    if (elements.recallRestore) {
+      this.listen(elements.recallRestore, 'mousedown', event => event.preventDefault());
+      this.listen(elements.recallRestore, 'click', () => {
+        if (!this.recall) return;
+        this.leaveRecall(true); this.rememberSelection(); this.editor.focus({preventScroll: true});
+      });
+    }
   }
   private listen<K extends keyof HTMLElementEventMap>(node: HTMLElement, type: K, handler: (event: HTMLElementEventMap[K]) => void): void {
     const listener = handler as EventListener; node.addEventListener(type, listener); this.cleanup.push(() => node.removeEventListener(type, listener));
@@ -665,8 +675,8 @@ export class Composer {
     this.renderRecall();
   }
   private renderRecall(): void {
-    const {recallHint, meta} = this.elements; if (!recallHint) return;
-    const recall = this.recall; recallHint.hidden = !recall;
+    const {recallHint, recallLine, meta} = this.elements; if (!recallHint) return;
+    const recall = this.recall; recallHint.hidden = !recall; if (recallLine) recallLine.hidden = !recall;
     if (meta) {if (recall) meta.dataset.recall = 'true'; else delete meta.dataset.recall;}
     const label = recall ? recallLabel(recall.index, recall.items.length) : undefined;
     setText(recallHint.querySelector<HTMLElement>('.composer-recall-visible') as HTMLElement, label?.visible ?? ''); setText(recallHint.querySelector<HTMLElement>('.composer-recall-spoken') as HTMLElement, label?.spoken ?? '');
@@ -762,11 +772,11 @@ export class Composer {
   }
   /** The action names what the key will do: run a host command, steer running work, or send. */
   private describeSend(reason: string, command: string | undefined, working: boolean): void {
-    const send = this.elements.send, steer = working && command === undefined, key = this.sendKeyName();
+    const send = this.elements.send, steer = working && command === undefined;
     paintAction(send, steer ? 'steer' : 'send', command !== undefined ? 'Run command' : steer ? 'Steer' : 'Send');
     send.setAttribute('aria-label', command !== undefined ? `Run command /${command}` : steer ? 'Steer message' : 'Send message');
     send.setAttribute('aria-description', reason);
-    send.title = reason || (command !== undefined ? `Run /${command} on this agent. It sends no message · ${key}` : steer ? `Steer: send now; the agent reads it at its next step · ${key}` : `Send · ${key}`);
+    send.title = reason || (command !== undefined ? `Run /${command} on this agent. It sends no message` : steer ? 'Steer: send now; the agent reads it at its next step' : 'Send');
   }
   /** An agent draft that is one of the live host's commands runs that command instead of sending a message. */
   private commandDraft(buffer: Buffer): {name: string; args: string} | undefined {
@@ -781,11 +791,6 @@ export class Composer {
     if (buffer.state.target.kind !== 'agent' || !this.hooks.commands || !/^\/\S/.test(buffer.data.text)) return '';
     if (this.hooks.commands(true).state === 'loading') return 'Loading commands…';
     return this.commandDraft(buffer) && (buffer.data.images.length || buffer.attachments?.pending) ? 'Remove attachments to run a command.' : '';
-  }
-  /** The key that sends, named as the keyboard shows it: Enter when the setting is on, otherwise the platform modifier plus Enter. */
-  private sendKeyName(): string {
-    if (this.hooks.enterSends?.()) return 'Enter';
-    return /Mac|iPhone|iPad/.test(globalThis.navigator?.platform ?? '') ? '⌘Enter' : 'Ctrl+Enter';
   }
   private sendGuidance(): string {
     if (!this.ready) return this.current?.state.target.kind === 'agent' ? this.recipientGuidance : 'This conversation is not ready for messages.';

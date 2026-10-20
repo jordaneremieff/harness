@@ -721,7 +721,7 @@ test('one workbench footer owns wrapped facts while settings sit under the compo
   assert.match(factory, /submit\.append\(queue, start, send\)/);
   assert.match(factory, /bar\.append\(stop, submit\)/);
   assert.match(factory, /intake\.append\(attach,sources,picker\)/);
-  assert.match(factory, /line\.append\(meta, bar\)/);
+  assert.match(factory, /line\.append\(meta, bar, recallLine\)/);
   assert.doesNotMatch(factory, /usage-details|workbench-status-facts|root\.append\([^)]*\b(?:save|receiptDetails)\b/);
   assert.doesNotMatch(html, /<form id="(?:primary|agent)-composer"/);
   const app = await readFile(new URL('./app.ts', import.meta.url), 'utf8');

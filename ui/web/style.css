@@ -854,7 +854,11 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
 .composer-settings-separator { display: none; }
 .composer-settings-text { min-width: 0; overflow: hidden; color: var(--muted); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; cursor: default; }
 .composer-settings-effort { color: var(--dim); }
-.composer-recall-hint { min-width: 0; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.composer-recall { display: flex; flex: 0 1 auto; order: -1; align-items: center; gap: 6px; min-width: 0; max-width: 55%; margin-left: 6px; color: var(--muted); font-size: 13px; }
+.composer-recall[hidden] { display: none; }
+.composer-recall-hint { min-width: 0; overflow: hidden; color: var(--muted); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.composer-recall-restore { flex: none; color: var(--muted); font-size: 13px; text-decoration: underline; text-underline-offset: 3px; white-space: nowrap; }
+.composer-recall-restore:hover { color: var(--fg); text-decoration-thickness: 2px; }
 .composer-meta[data-recall=true] > .latest { display: none; }
 /* Narrow panes keep the add control, the action and the model name; effort and an ordinary note leave first, and an error or warning note replaces the model. */
 @container composer (max-width: 460px) {

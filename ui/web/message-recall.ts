@@ -48,5 +48,5 @@ export function onEdge(text: string, caret: number, edge: 'first' | 'last'): boo
 /** The position counts back from the newest message, so the first Up reads 1 of N. */
 export function recallLabel(index: number, total: number): {visible: string; spoken: string} {
   const place = `Earlier message ${total - index} of ${total}`;
-  return {visible: `${place} · Esc restores your draft`, spoken: `${place} from the loaded conversation. Escape restores your draft.`};
+  return {visible: place, spoken: `${place} from the loaded conversation.`};
 }

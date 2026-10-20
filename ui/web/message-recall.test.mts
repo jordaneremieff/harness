@@ -35,5 +35,5 @@ test('edges name the first and last logical line and the label states its scope'
   assert.equal(onEdge('one\ntwo', 2, 'first'), true); assert.equal(onEdge('one\ntwo', 5, 'first'), false);
   assert.equal(onEdge('one\ntwo', 5, 'last'), true); assert.equal(onEdge('one\ntwo', 2, 'last'), false);
   assert.equal(recallLabel(11, 12).visible.startsWith('Earlier message 1 of 12'), true, 'the newest is first');
-  assert.deepEqual(recallLabel(9, 12), {visible: 'Earlier message 3 of 12 · Esc restores your draft', spoken: 'Earlier message 3 of 12 from the loaded conversation. Escape restores your draft.'});
+  assert.deepEqual(recallLabel(9, 12), {visible: 'Earlier message 3 of 12', spoken: 'Earlier message 3 of 12 from the loaded conversation.'});
 });
