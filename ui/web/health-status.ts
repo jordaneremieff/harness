@@ -1,5 +1,6 @@
 import { readHealthSnapshot, type HealthSnapshot } from '../shared/health.ts';
-import { button, byId, element } from './dom.ts';
+import { identityText, type UiIdentity } from '../shared/version.ts';
+import { button, byId, copy, element } from './dom.ts';
 import { localDateTime } from './format.ts';
 import type { Modal } from './modal.ts';
 import { request } from './transport.ts';
@@ -8,28 +9,24 @@ type HealthDialog = Pick<Modal, 'open' | 'token' | 'owns' | 'actions' | 'close'>
 type HealthRead = (signal: AbortSignal) => Promise<unknown>;
 const read: HealthRead = signal => request('/api/health', 'GET', undefined, undefined, AbortSignal.any([signal, AbortSignal.timeout(15_000)]));
 
-/** Health is one explicit snapshot, independent of connection recovery and conversation focus. */
+/** Health is one explicit snapshot, independent of connection recovery and conversation focus. The version control in the status line opens it. */
 export class HealthStatus {
-  readonly node: HTMLButtonElement;
   private token?: number;
   private modal: HealthDialog;
+  private identity: UiIdentity;
   private read: HealthRead;
-  constructor(modal: HealthDialog, before: HTMLElement = byId('workbench-version'), readHealth: HealthRead = read) {
-    this.modal = modal; this.read = readHealth;
-    this.node = button('Health', () => this.open(), 'workbench-health');
-    this.node.id = 'workbench-health'; this.node.setAttribute('aria-label', 'Read backend health');
-    this.node.title = 'Read backend health on demand';
-    const parent = before.parentElement;
-    if (!parent) throw new Error('Missing workbench status line.');
-    parent.insertBefore(this.node, before);
+  constructor(modal: HealthDialog, identity: UiIdentity, trigger: HTMLElement = byId('workbench-version'), readHealth: HealthRead = read) {
+    this.modal = modal; this.identity = identity; this.read = readHealth;
+    trigger.addEventListener('click', () => this.open());
   }
   open(): void {
     if (this.token !== undefined && this.modal.owns(this.token)) return;
     const controller = new AbortController();
-    const body = this.modal.open('Backend health', undefined, () => controller.abort()), token = this.modal.token;
+    const body = this.modal.open('Version and health', undefined, () => controller.abort()), token = this.modal.token;
     this.token = token;
     const content = element('div', 'health-details'); content.setAttribute('aria-live', 'polite'); body.append(content);
     let busy = false;
+    const copyVersion = button('Copy version', () => { void copy(identityText(this.identity)); });
     const refresh = button('Refresh health', () => {void load();});
     const load = async () => {
       if (busy || !this.modal.owns(token)) return;
@@ -41,7 +38,7 @@ export class HealthStatus {
         if (this.modal.owns(token)) content.replaceChildren(element('p', undefined, 'Backend health is unavailable. Select Refresh health to retry.'));
       } finally {busy = false; if (this.modal.owns(token)) refresh.disabled = false;}
     };
-    this.modal.actions(refresh);
+    this.modal.actions(copyVersion, refresh);
     void load();
   }
 }

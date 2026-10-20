@@ -123,12 +123,13 @@ test('a bounded type scale separates metadata, controls, prose and headings', ()
   assert.deepEqual([...new Set(declarations('font-weight'))].sort(), ['400', '500', '600']);
   assert.deepEqual(declarations('font').filter(value => value !== '400 14px/1.5 var(--sans)' && value !== '13px/1.5 var(--mono)' && value !== 'inherit'), []);
 });
-test('Save, Health and Version retain quiet desktop hit heights without weakening coarse targets', () => {
-  assert.equal(rule(':where(.file-save, .file-view-switch, .workbench-health, .workbench-version)').trim(), 'min-height: 24px;');
+test('Save and Version retain quiet desktop hit heights without weakening coarse targets', () => {
+  assert.equal(rule(':where(.file-save, .file-view-switch, .workbench-version)').trim(), 'min-height: 24px;');
   assert.match(media('@media (pointer:coarse)'), /button, summary,[^{}]+\{ min-height: 44px; min-width: 44px/);
-  for (const selector of ['.file-save', '.file-view-switch', '.workbench-health', '.workbench-version']) {
+  for (const selector of ['.file-save', '.file-view-switch', '.workbench-version']) {
     assert.doesNotMatch(rule(selector), /(?:^|;)\s*(?:height|min-height|max-height):/);
   }
+  assert.doesNotMatch(css, /\.workbench-health/);
 });
 test('the file action row separates its zero-padding text controls with a gap', () => {
   assert.match(rule('.file-view-actions'), /display: flex; justify-content: flex-end; gap: var\(--s3\);/);
@@ -284,10 +285,12 @@ test('desktop status reserves controls and identity while only long text slots s
   assert.match(desktop,/\.workbench-status \{ flex-wrap: wrap;/);assert.doesNotMatch(desktop,/\.workbench-status \{[^}]*overflow:/);
   assert.match(desktop,/\.workbench-status-facts \{ flex: 0 1 auto; flex-wrap: wrap; min-width: min-content;/);assert.doesNotMatch(desktop,/\.workbench-status-facts \{[^}]*(flex: 1 1 0|nowrap)/);
   assert.match(desktop,/\.workbench-activity:has\(> \.workbench-activity-text\) \{ flex: 1 1 0; min-width: 10ch;/);
-  // The name's 18-character cut and the version's no-wrap apply at every width, so the line keeps one row below 1000px.
+  // The name fills free space up to its text width and shortens with an ellipsis only when the row is full; the version never wraps. Both rules apply at every width.
   assert.doesNotMatch(desktop,/#workbench-scope \{/);assert.doesNotMatch(desktop,/\.workbench-version \{/);
-  assert.match(rule('#workbench-scope'),/flex: none;[^}]*max-width: 18ch;[^}]*overflow: hidden; text-overflow: ellipsis; white-space: nowrap;/);
+  assert.match(rule('#workbench-scope'),/flex: 1 1 0;[^}]*min-width: 8ch;[^}]*max-width: max-content;[^}]*overflow: hidden; text-overflow: ellipsis; white-space: nowrap;/);
+  assert.doesNotMatch(rule('#workbench-scope'),/18ch|flex: none/);
   assert.match(rule('.workbench-version'),/flex: none;[^}]*max-width: none;[^}]*white-space: nowrap;/);
+  assert.doesNotMatch(rule('.workbench-version'),/font-family/);
   // Setting labels keep their full text; the update notice wraps, and scope and details give way when space runs short.
   assert.match(desktop,/\.workbench-update \{ flex: 0 1 auto; flex-wrap: wrap; white-space: normal; \}/);assert.match(desktop,/\.workbench-status \.composer-details \{ flex: none; max-width: none; \}/);
   assert.match(rule('.workbench-update'),/display: inline-flex; align-items: center; gap: 8px/);

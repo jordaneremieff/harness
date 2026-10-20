@@ -111,9 +111,9 @@ const snapshotBuffers = new Set<{events: UiEvent[]; bytes: number; overflow: boo
 const modal = new Modal(focusEditor);
 const preferences = new PreferenceQueue();
 const diagnostics = new BrowserDiagnostics();
-const versionStatus = new VersionStatus(() => modal.open('Copy UI version identity'));
+const versionStatus = new VersionStatus();
 new UpdateNotice(versionStatus.identity, {storage: sessionStorage, before: byId('workbench-version'), details: (title, body) => {modal.open(title); modal.body.append(...body);}, copy: (text, anchor) => {void copy(text, anchor);}});
-new HealthStatus(modal);
+new HealthStatus(modal, versionStatus.identity, versionStatus.node);
 let diagnosticsActive = false;
 let devReload: DevReload | undefined;
 let devInteractionRevision = 0;
@@ -2543,7 +2543,7 @@ export function renderDevReloadNotice(notice: HTMLElement, status: DevReloadNoti
   // A retry never stands alone: the sentence it acts on shares its container, and the technical detail stays in the title.
   if (view.text) notice.append(element('span', undefined, view.retry ? `${view.text}.` : view.text));
   if (view.retry) notice.append(button('Retry update', () => {if (status.state === 'offline') devReload?.reconnect(); void devReload?.resume();}));
-  if (!notice.isConnected) workbenchStatus.node.append(notice);
+  if (!notice.isConnected) workbenchStatus.node.insertBefore(notice, versionStatus.node);
 }
 function updateDiagnostics(): void {
   const generation = document.querySelector('meta[name="ui-generation"]')?.getAttribute('content') ?? '', client = document.querySelector('meta[name="ui-client"]')?.getAttribute('content') ?? '';
