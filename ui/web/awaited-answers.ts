@@ -1,4 +1,5 @@
 import type { JsonDisplay, PartView } from '../shared/api.ts';
+import { plainPreviewWords } from './format.ts';
 
 /** One awaited result: who answered, how it ended, and the answer text when there is one. */
 export type AwaitedResult = {identity?: string; status: 'done' | 'unanswered' | 'unavailable'; answer: string};
@@ -63,7 +64,7 @@ export function missingAnswerNote(result: AwaitedResult): string | undefined {
   return undefined;
 }
 function firstLine(answer: string): string {
-  const line = answer.split(/\r\n|\r|\n/).map(text => text.replace(/\s+/g, ' ').trim()).find(Boolean) ?? '';
+  const line = answer.split(/\r\n|\r|\n/).map(plainPreviewWords).find(Boolean) ?? '';
   return line.length > LINE_CHARS ? `${line.slice(0, LINE_CHARS).trimEnd()}…` : line;
 }
 

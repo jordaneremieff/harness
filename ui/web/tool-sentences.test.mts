@@ -26,6 +26,40 @@ test('thread calls read as sentences by action', () => {
   assert.doesNotMatch(toolSentence(call('post', {message: 'Hi'})), /agent_collaborate|threadId/);
 });
 
+test('call quotes use plain words without changing their supplied arguments', () => {
+  const call = (name: string, args: Record<string, unknown>): JoinedTool => ({callId: 'q', name, owner: 'e', slot: 's', status: 'success', args: {value: args, truncated: false}});
+  const cases = [
+    ['Commit `9a852288` is **done**', 'Commit 9a852288 is done'],
+    ['__Done__ with *care*', 'Done with care'], ['## Result', 'Result'],
+    ['- first item', 'first item'], ['2. second item', 'second item'], ['> quoted words', 'quoted words'],
+    ['[Pi](https://example.test)', 'Pi'],
+  ];
+  for (const [message, expected] of cases) {
+    const tool = call('agent_send', {sessionId: 'peer', message});
+    assert.equal(toolLabel(tool), `Sent a message to another conversation: “${expected}”`);
+    assert.deepEqual(tool.args?.value, {sessionId: 'peer', message});
+  }
+  const message = '**Done**';
+  for (const [name, extra, verb] of [
+    ['agent_send', {}, 'Sent a message to'], ['agent_steer', {}, 'Redirected'],
+    ['agent_send', {mode: 'steer'}, 'Redirected'], ['agent_send', {mode: 'report'}, 'Reported to'],
+    ['agent_send', {deliverAt: '2026-10-21T12:00:00Z'}, 'Scheduled a message to'],
+  ] as const) assert.equal(toolLabel(call(name, {sessionId: 'peer', message, ...extra})), `${verb} another conversation: “Done”`);
+  for (const [action, verb] of [['post', 'Posted to'], ['create', 'Created'], ['revise', 'Revised']]) {
+    assert.equal(toolLabel(call('agent_collaborate', {action, message, title: message})), `${verb} a thread: “Done”`);
+  }
+});
+test('call quotes keep their first-line and 60-character cuts after mark removal', () => {
+  const label = (message: unknown) => toolLabel({callId: 'q', name: 'agent_send', owner: 'e', slot: 's', status: 'success', args: {value: {sessionId: 'peer', message}, truncated: false}});
+  const head = 'Sent a message to another conversation';
+  assert.equal(label(`**${'a'.repeat(60)}**`), `${head}: “${'a'.repeat(60)}”`);
+  assert.equal(label(`**${'a'.repeat(61)}**`), `${head}: “${'a'.repeat(60)}…”`);
+  assert.equal(label('## Result\r\nNext text'), `${head}: “Result…”`);
+  assert.equal(label(''), head); assert.equal(label(undefined), head);
+  assert.equal(label(`\`${'😀'.repeat(30)}\``), `${head}: “${'😀'.repeat(30)}”`);
+  assert.equal(label(`\`${'😀'.repeat(31)}\``), `${head}: “${'😀'.repeat(30)}…”`);
+});
+
 test('a thread call with an unknown or missing action falls back to a generic sentence', () => {
   const call = (args: Record<string, unknown>): JoinedTool => ({callId: 'c', name: 'agent_collaborate', owner: 'e', slot: 's', status: 'success', args: {value: args, truncated: false}});
   assert.equal(toolLabel(call({action: 'rename'})), 'Used a thread'); assert.equal(toolLabel(call({})), 'Used a thread');

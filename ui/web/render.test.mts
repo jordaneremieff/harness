@@ -3352,7 +3352,7 @@ test('a wait card names each responder over its answer and keeps the machine fie
   const known = 'ead53d8c-af9d-0bda-1416-21a6ba18ab6c:57', other = '1f2e3d4c-0000-4000-8000-123456789abc';
   const view = new Transcript('primary', {presentation: () => {}, reading: () => {}, subject: identity => identity === known ? {text: 'Round 12 builder K4', name: 'Round 12 builder K4', provenance: 'reported' as const} : undefined});
   const value = {results: [
-    {result: {sessionId: known, submissionId: 7, requestId: 'agent-deliver:7'}, answer: 'I reverted the change.\n\nSecond paragraph.', status: 'done', answerEntryId: 4812, entryId: 4811},
+    {result: {sessionId: known, submissionId: 7, requestId: 'agent-deliver:7'}, answer: '## Result\n\nCommit `9a852288` is **done**.\n\nSecond paragraph.', status: 'done', answerEntryId: 4812, entryId: 4811},
     {result: {sessionId: other, submissionId: 8, requestId: 'agent-deliver:8'}, answer: '', status: 'unanswered', entryId: 4813},
   ], unresolved: [], originalInputs: [1953, 1973], queueSnapshot: [], decision: 'settled', queuedInputCount: 19};
   const call = {id: 'wait', kind: 'message', messages: [{...message('wait-message', ''), parts: [{type: 'toolCall' as const, callId: 'wait-1', name: 'agent_await', arguments: {value: {results: [{sessionId: known, submissionId: 7}]}, truncated: false}}]}]};
@@ -3360,13 +3360,14 @@ test('a wait card names each responder over its answer and keeps the machine fie
   const result = {id: 'wait-result', kind: 'message', messages: [{...message('wait-result-message', ''), role: 'toolResult', parts: [output]}]};
   view.set([call, result]); flush();
   const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card);
-  assert.equal(card.querySelector('.tool-preview')?.textContent, 'Round 12 builder K4: “I reverted the change.” · 1 more answer');
+  assert.equal(card.querySelector('.tool-preview')?.textContent, 'Round 12 builder K4: “Result” · 1 more answer');
   assert.doesNotMatch(card.querySelector('summary')?.textContent ?? '', /decision|queuedInputCount|originalInputs/);
   card.open = true; view.set([call, result]); flush();
   const names = card.querySelectorAll('.tool-awaited-name').map(item => item.textContent);
   assert.deepEqual(names, ['Round 12 builder K4', 'Another conversation']);
   const body = card.querySelector('.tool-result-parts'); assert.ok(body);
-  assert.match(body.textContent, /I reverted the change\./); assert.match(body.textContent, /Second paragraph\./); assert.match(body.textContent, /no answer yet/);
+  assert.match(body.textContent, /Commit 9a852288 is done\./); assert.match(body.textContent, /Second paragraph\./); assert.match(body.textContent, /no answer yet/);
+  assert.equal(output.parts[0].text, JSON.stringify(value), 'raw output and its Copy source keep the exact answer marks');
   assert.doesNotMatch(body.textContent, /decision|settled|queuedInputCount|originalInputs|1953|agent-deliver|ead53d8c|1f2e3d4c|4812/);
   assert.equal(card.querySelectorAll('summary').filter(item => item.textContent === 'Details').length, 1);
   assert.equal(card.querySelectorAll('.tool-metadata').length, 0);

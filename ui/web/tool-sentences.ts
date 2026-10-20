@@ -1,5 +1,6 @@
 import type {JoinedTool} from './transcript-tools.ts';
 import type {PartView} from '../shared/api.ts';
+import {plainPreviewWords} from './format.ts';
 
 export type NamedDestination = {text: string; name?: string; provenance?: 'reported' | 'supplied' | 'handle'; derived?: boolean; fallback?: string; title?: string; open?: () => void};
 export type SentenceContext = {nestedCount?:number; cwd?: string; subject?: (identity: string) => NamedDestination | undefined};
@@ -9,7 +10,11 @@ function first(value: unknown, limit = 60): string {
   const source = text(value), line = source.split(/\r?\n/, 1)[0] ?? '';
   return line.slice(0, limit) + (line.length > limit || source.length > line.length ? '…' : '');
 }
-function quote(value: unknown): string {const line = first(value); return line ? `: “${line}”` : '';}
+function quote(value: unknown): string {
+  const source = text(value), raw = source.split(/\r?\n/, 1)[0] ?? '', words = plainPreviewWords(raw);
+  const line = words.slice(0, 60) + (words.length > 60 || source.length > raw.length ? '…' : '');
+  return line ? `: “${line}”` : '';
+}
 function pathName(value: unknown, cwd?: string): string {
   const path = text(value);if (!path) return '';
   const root = cwd?.replace(/\/$/, '');

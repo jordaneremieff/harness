@@ -405,6 +405,28 @@ test('a wait card line names the responder and quotes the first line of the answ
   assert.equal(line, `Round 12 builder K4: “${long.slice(0, 80).trimEnd()}…”`);
   assert.doesNotMatch(line, /decision|queuedInputCount|settled/);
 });
+test('a wait card line uses plain words and keeps the full answer source', () => {
+  setup();
+  for (const [answer, expected] of [
+    ['## Result\nNext text', 'Result'], ['Commit `9a852288` is **done**', 'Commit 9a852288 is done'],
+    ['__Done__ with *care*', 'Done with care'], ['- first item', 'first item'],
+    ['2) second item', 'second item'], ['> quoted words', 'quoted words'], ['[Pi](https://example.test)', 'Pi'],
+  ]) {
+    const source = awaitedSource([answered(KNOWN, answer)]), raw = source.result?.[0];
+    assert.equal(awaitedText(source), `Round 12 builder K4: “${expected}”`);
+    assert.equal(raw?.type === 'text' && raw.text, JSON.stringify({results: [answered(KNOWN, answer)], unresolved: [], originalInputs: [1953], decision: 'settled', queuedInputCount: 19}));
+  }
+});
+test('a wait card line keeps its 80-character cut after mark removal and skips blank lines', () => {
+  setup();
+  const line = (answer: string) => awaitedText(awaitedSource([answered(KNOWN, answer)]));
+  assert.equal(line(`**${'a'.repeat(80)}**`), `Round 12 builder K4: “${'a'.repeat(80)}”`);
+  assert.equal(line(`**${'a'.repeat(81)}**`), `Round 12 builder K4: “${'a'.repeat(80)}…”`);
+  assert.equal(line(' \r\n\t\r## Result\nNext text'), 'Round 12 builder K4: “Result”');
+  assert.equal(line(' \t\n'), 'Round 12 builder K4: answer unavailable');
+  assert.equal(line(`\`${'😀'.repeat(40)}\``), `Round 12 builder K4: “${'😀'.repeat(40)}”`);
+  assert.equal(line(`\`${'😀'.repeat(41)}\``), `Round 12 builder K4: “${'😀'.repeat(40)}…”`);
+});
 test('a wait card line counts further answers and results still waiting, and marks missing answers', () => {
   setup();
   assert.equal(awaitedText(awaitedSource([answered(KNOWN, 'First'), answered(OTHER, 'Second'), answered(OTHER, 'Third')])), 'Round 12 builder K4: “First” · 2 more answers');

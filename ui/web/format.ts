@@ -1,3 +1,8 @@
+/** Plain words for a compact line; full text and copies retain their source marks. */
+export function plainPreviewWords(line: string): string {
+  return line.replace(/^\s*(?:#{1,6}\s+|[-*+]\s+|>\s*|\d+[.)]\s+)/, '').replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/\*\*|__|[*`]/g, '').replace(/\s+/g, ' ').trim();
+}
+
 type Timestamp = string | number | Date;
 function timestampDate(value: Timestamp): Date { return value instanceof Date ? value : new Date(value); }
 export function isValidTimestamp(value: Timestamp): boolean { return Number.isFinite(timestampDate(value).getTime()); }
