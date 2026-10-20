@@ -836,7 +836,9 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
 }
 
 /* Composer */
-.latest { position: static; flex: none; align-self: center; min-width: 24px; min-height: 24px; margin: 0; padding: 0; border-radius: 3px; background: transparent; color: var(--muted); font-size: 13px; }
+/* The jump control stands apart from the add control: the icon and word follow the state note with a clear gap. */
+.latest { position: static; flex: none; display: inline-flex; align-items: center; align-self: center; gap: 4px; min-width: 24px; min-height: 24px; margin: 0 0 0 8px; padding: 0; border-radius: 3px; background: transparent; color: var(--muted); font-size: 13px; }
+.latest[hidden] { display: none; }
 .latest:hover { color: var(--fg); background: var(--raised); }
 .widgets { flex: none; max-height: 180px; overflow: auto; color: var(--muted); font-size: 13px; }
 .widgets:empty { display: none; }

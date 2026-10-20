@@ -176,10 +176,11 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
   const region = element('div', 'transcript-region'); const absent = add('empty', 'div', 'empty-state'); absent.hidden = true;
   if (target.kind === 'primary') absent.append(add('empty-heading', 'h2'), add('empty-caption', 'p'));
   const scroller = add('transcript', 'div', 'transcript'); scroller.tabIndex = 0; scroller.setAttribute('aria-label', 'Conversation messages');
-  const latest = add('latest', 'button', 'latest') as HTMLButtonElement; latest.type = 'button'; latest.textContent = 'Latest'; latest.setAttribute('aria-label', 'Latest message'); latest.hidden = true;
+  const latest = add('latest', 'button', 'latest') as HTMLButtonElement; latest.type = 'button'; latest.append(cardIcon('latest'), element('span', 'latest-text', 'Latest')); latest.setAttribute('aria-label', 'Latest message'); latest.hidden = true;
   nodes.set('transcript-region',region);region.append(absent, scroller); const above = add('widgets-above', 'div', 'widgets'), below = add('widgets-below', 'div', 'widgets');
   const elements = createComposerElements(instanceId); elements.root.hidden = false;
-  elements.meta?.prepend(latest);
+  // The jump control follows the state note in the control row: tab order and visual order agree.
+  elements.state?.after(latest);
   for (const [name, node] of Object.entries(elements)) if (node) nodes.set(name === 'root' ? 'composer' : name, node);
   const stop = elements.root.querySelector<HTMLButtonElement>('.stop'); if (!stop) throw new Error('Stop control is missing.'); nodes.set('stop', stop); nodes.set('abort', stop);
   const resize = elements.root.querySelector<HTMLElement>('.resizer'); if (resize) nodes.set('composer-resizer', resize);

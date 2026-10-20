@@ -812,7 +812,8 @@ export class Transcript {
     if (this.follow) this.arrivals.clear();
     this.latest.hidden = this.follow;
     const label = latestLabel(this.arrivals.count);
-    if (this.latest.textContent !== label.text) this.latest.textContent = label.text;
+    const text = this.latest.querySelector('.latest-text') ?? this.latest;
+    if (text.textContent !== label.text) text.textContent = label.text;
     this.latest.setAttribute('aria-label', label.accessible);
   }
   /** An upward move that ends near the first loaded row asks for the next older page; the loader keeps its own one-page-at-a-time guard. */

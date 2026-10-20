@@ -628,11 +628,16 @@ test('Latest occupies the existing composer control line outside the transcript 
   const latest = rule('.latest');
   assert.match(latest, /position: static; flex: none/);
   assert.doesNotMatch(latest, /position: absolute|bottom:|transform:|z-index:/);
+  assert.match(latest, /display: inline-flex; align-items: center/);
+  assert.match(latest, /gap: 4px/);
+  assert.match(latest, /margin: 0 0 0 8px/, 'the jump control stands apart from what precedes it');
+  assert.match(css, /\.latest\[hidden\] \{ display: none/);
+  assert.match(css, /\.composer-meta\[data-recall=true\] > \.latest \{ display: none/);
   const app = await readFile(new URL('./app.ts', import.meta.url), 'utf8');
   assert.match(app, /const scroller = add\('transcript', 'div', 'transcript'\)/);
   assert.match(app, /const latest = add\('latest', 'button', 'latest'\)/);
   assert.match(app, /region\.append\(absent, scroller\)/);
-  assert.match(app, /elements\.meta\?\.prepend\(latest\)/);
+  assert.match(app, /elements\.state\?\.after\(latest\)/, 'the jump control follows the state note in the control row');
   assert.doesNotMatch(html, /id="(?:primary|agent)-(?:transcript|latest)"/);
 });
 test('native text flow preserves scroll boundaries without line paint clipping', () => {
