@@ -3347,6 +3347,90 @@ test('a collapsed success card drops its labeled JSON line, while the expanded r
   assert.equal(node('primary-transcript').querySelector('.tool-preview')?.textContent, text, 'an error preview stays literal'); failing.reset();
 });
 
+function waitCaptionFixture() {
+  setup(); const identity = '00000000-0000-4000-8000-000000000002'; let name: string | undefined;
+  const view = new Transcript('primary', {presentation: () => {}, reading: () => {}, subject: value => value === identity && name ? {text: name, name, provenance: 'reported'} : undefined});
+  const value = {results: [{result: {sessionId: identity, submissionId: 1}, answer: 'Sample answer.', status: 'done'}], unresolved: []};
+  const source = contentEntry('caption-wait', {results: [{sessionId: identity, submissionId: 1}]}, JSON.stringify(value), false, {value, truncated: false});
+  for (const part of source.messages[0]?.parts ?? []) if (part.type === 'toolCall' || part.type === 'toolResult') part.name = 'agent_await';
+  const entries = [source, ...Array.from({length: 60}, (_, index) => entry(`caption-tail-${index}`))];
+  view.configure(undefined, {revision: 0, anchorId: source.id, offsetPx: 0, followTail: false}); view.set(entries); flush();
+  const container = node('primary-transcript'), card = container.querySelector('.tool-card'), preview = card?.querySelector('.tool-preview'); assert.ok(card && preview);
+  assert.equal(preview.textContent, 'Another conversation: “Sample answer.”');
+  return {view, entries, container, card, preview, rename: () => { name = 'Sample responder'; }};
+}
+
+test('closed wait previews refresh a late caption after a retained card returns from the virtual window', () => {
+  const f = waitCaptionFixture();
+  try {
+    const scroll = scrollable(f.container); scroll.to(2000); flush(); assert.equal(f.container.contains(f.card), false);
+    f.rename(); f.view.refreshSubjects(); assert.equal(f.preview.textContent, 'Another conversation: “Sample answer.”');
+    scroll.to(0); flush(); assert.equal(f.container.querySelector('.tool-card'), f.card, 'the same cached card returns');
+    assert.equal(f.preview.textContent, 'Sample responder: “Sample answer.”');
+  } finally { f.view.destroy(); }
+});
+
+test('closed wait previews refresh a late caption after a deferred transcript flush', () => {
+  const f = waitCaptionFixture();
+  try {
+    f.view.defer(() => f.view.set(f.entries)); f.rename(); f.view.refreshSubjects();
+    assert.equal(f.preview.textContent, 'Another conversation: “Sample answer.”');
+    flush(); assert.equal(f.container.querySelector('.tool-card'), f.card);
+    assert.equal(f.preview.textContent, 'Sample responder: “Sample answer.”');
+  } finally { f.view.destroy(); }
+});
+
+test('closed wait previews refresh attached captions immediately and skip unchanged paints', () => {
+  const f = waitCaptionFixture(), original = Reflect.get(f.view, 'toolContent'); let paints = 0;
+  Reflect.set(f.view, 'toolContent', (...args: unknown[]) => { paints++; return original.apply(f.view, args); });
+  try {
+    f.view.schedule(); flush(); assert.equal(paints, 0);
+    f.rename(); f.view.refreshSubjects(); assert.equal(f.preview.textContent, 'Sample responder: “Sample answer.”'); assert.equal(paints, 1);
+    f.view.schedule(); flush(); f.view.set(f.entries); flush(); assert.equal(paints, 1, 'the painted subject revision and source are unchanged');
+  } finally { f.view.destroy(); }
+});
+
+test('closed wait previews retain a selected or focused preview until its protection clears', () => {
+  for (const guard of ['selection', 'focus']) {
+    const f = waitCaptionFixture();
+    try {
+      const retained = f.preview.firstChild; assert.ok(retained);
+      if (guard === 'selection') selection = {isCollapsed: false, anchorNode: retained, focusNode: retained};
+      else f.preview.focus();
+      f.rename(); f.view.refreshSubjects(); f.view.schedule(); flush();
+      assert.equal(f.preview.textContent, 'Another conversation: “Sample answer.”'); assert.equal(f.preview.firstChild, retained);
+      if (guard === 'selection') { assert.equal(selection?.anchorNode, retained); selection = null; }
+      else { assert.equal(fakeDocument.activeElement, f.preview); fakeDocument.activeElement = null; }
+      f.view.schedule(); flush(); assert.equal(f.preview.textContent, 'Sample responder: “Sample answer.”');
+    } finally { selection = null; fakeDocument.activeElement = null; f.view.destroy(); }
+  }
+});
+
+test('a caption revision alone leaves the open expanded path unchanged and refreshes after close', () => {
+  const f = waitCaptionFixture();
+  try {
+    f.card.open = true; f.card.dispatch('toggle'); flush();
+    const expanded = f.card.querySelector('.tool-result-parts'); assert.ok(expanded);
+    const original = Reflect.get(f.view, 'toolContent'); let paints = 0;
+    Reflect.set(f.view, 'toolContent', (...args: unknown[]) => { paints++; return original.apply(f.view, args); });
+    f.rename(); f.view.refreshSubjects(); f.view.schedule(); flush();
+    assert.equal(f.card.open, true); assert.equal(f.card.querySelector('.tool-result-parts'), expanded); assert.equal(paints, 0);
+    f.card.open = false; f.card.dispatch('toggle'); f.view.schedule(); flush();
+    assert.equal(f.preview.textContent, 'Sample responder: “Sample answer.”'); assert.equal(paints, 1);
+  } finally { f.view.destroy(); }
+});
+
+test('a deferred caption refresh also updates structured summary identity names', () => {
+  setup(); const identity = '00000000-0000-4000-8000-000000000003'; let known = false;
+  const view = new Transcript('primary', {presentation: () => {}, reading: () => {}, subject: value => known && value === identity ? {text: 'Sample owner', name: 'Sample owner', provenance: 'reported'} : undefined});
+  try {
+    const value = {sessionId: identity, status: 'ready'}, source = contentEntry('summary-caption', {}, JSON.stringify(value), false, {value, truncated: false});
+    view.set([source]); flush(); const preview = node('primary-transcript').querySelector('.tool-preview'); assert.ok(preview); assert.doesNotMatch(preview.textContent, /Sample owner/);
+    view.defer(() => view.set([source])); known = true; view.refreshSubjects(); flush();
+    assert.match(preview.textContent, /Sample owner/); assert.doesNotMatch(preview.textContent, new RegExp(identity));
+  } finally { view.destroy(); }
+});
+
 test('a wait card names each responder over its answer and keeps the machine fields in its one Details', () => {
   setup();
   const known = 'ead53d8c-af9d-0bda-1416-21a6ba18ab6c:57', other = '1f2e3d4c-0000-4000-8000-123456789abc';

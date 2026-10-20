@@ -197,7 +197,7 @@ type MessageNode = {communication?: CommunicationCard; node: HTMLElement; header
 type EventPage = {node: HTMLElement; rows: HTMLElement; page: number; previous: HTMLButtonElement; next: HTMLButtonElement; cache: Map<string, {source: EntryView; node: HTMLElement}>};
 type SessionNode = {source?: SessionGroup; details: HTMLDetailsElement; events: EventPage; notices: EventPage};
 type EntryNode = {node: HTMLElement; messages: Map<string, MessageNode>; source?: EntryView; custom?: HTMLElement; session?: SessionNode; groupHeader?: HTMLElement};
-type ToolNode = {previewSource?: JoinedTool; answerText?: string; subject?: ToolSubjectCaption; card: HTMLElement; node: HTMLDetailsElement; copy: HTMLButtonElement; title: HTMLElement; target: HTMLElement; glyph: HTMLElement; meta: HTMLElement; preview: HTMLElement; qualification: HTMLElement; expanded: HTMLElement; resultArea: HTMLElement; technical: HTMLDetailsElement; actions: HTMLElement; info: HTMLElement; source?: JoinedTool; inspectionSources?: Map<HTMLDetailsElement, JoinedTool>; presentation?: HTMLElement; argumentsDocument?: HTMLElement; argumentsSource?: JoinedTool; output?: HTMLElement; contentSource?: JoinedTool; viewport?: HTMLElement; pageViewports?: Set<HTMLElement>; resultDocument?: HTMLElement; documentSource?: JoinedTool; previewBudget?: PreviewBudget; outputNotice?: {node: HTMLElement; source: JoinedTool}; inspections?: {arguments: HTMLDetailsElement; output: HTMLDetailsElement; details: HTMLDetailsElement}};
+type ToolNode = {previewSource?: JoinedTool; previewSubjectRevision?: number; answerText?: string; subject?: ToolSubjectCaption; card: HTMLElement; node: HTMLDetailsElement; copy: HTMLButtonElement; title: HTMLElement; target: HTMLElement; glyph: HTMLElement; meta: HTMLElement; preview: HTMLElement; qualification: HTMLElement; expanded: HTMLElement; resultArea: HTMLElement; technical: HTMLDetailsElement; actions: HTMLElement; info: HTMLElement; source?: JoinedTool; inspectionSources?: Map<HTMLDetailsElement, JoinedTool>; presentation?: HTMLElement; argumentsDocument?: HTMLElement; argumentsSource?: JoinedTool; output?: HTMLElement; contentSource?: JoinedTool; viewport?: HTMLElement; pageViewports?: Set<HTMLElement>; resultDocument?: HTMLElement; documentSource?: JoinedTool; previewBudget?: PreviewBudget; outputNotice?: {node: HTMLElement; source: JoinedTool}; inspections?: {arguments: HTMLDetailsElement; output: HTMLDetailsElement; details: HTMLDetailsElement}};
 export type TranscriptGeometry = {generation: number; followTail: boolean; anchor: {id: string; offsetPx: number} | null; scrollTop: number};
 export type FindStatus = {total: number; position: number; moved: boolean; end: 'none' | 'first' | 'last' | 'unavailable' | null};
 export type FindSession = {next: (query: string) => FindStatus; previous: (query: string) => FindStatus; reset: () => void; close: () => void};
@@ -214,6 +214,7 @@ export class Transcript {
   private pendingView?: TranscriptView;
   private cache = new Map<string, EntryNode>();
   private tools = new Map<string, ToolNode>();
+  private subjectRevision = 0;
   private thinkingTimes: ReadonlyMap<string, ThinkingTime> = new Map();
   private liveThinking = new Map<string, HTMLElement>();
   private elapsed = new ToolElapsedClock(() => this.paintElapsed());
@@ -1465,8 +1466,9 @@ export class Transcript {
     const tool = this.tools.get(source.callId) ?? this.createTool(source);
     const previous = tool.source; tool.source = source;
     this.toolHeading(tool, source);this.toolAnswer(tool,source);
+    const staleSubjects = !tool.node.open && tool.previewSubjectRevision !== this.subjectRevision;
     if (previous === source) {
-      if (tool.previewSource !== source) this.toolContent(tool);
+      if (tool.previewSource !== source || staleSubjects) this.toolContent(tool);
       if (tool.node.open && tool.documentSource !== source) this.expandTool(tool);
       return tool.card;
     }
@@ -1479,7 +1481,7 @@ export class Transcript {
     tool.meta.title = ''; setText(tool.info, explanation); tool.info.hidden = !explanation;
     tool.meta.hidden = !tool.meta.textContent; tool.copy.hidden = !source.result; this.toolCopyLabel(tool, source);
     const changed = previous?.args !== source.args || previous?.result !== source.result || previous?.argumentText !== source.argumentText || previous?.status !== source.status;
-    if (changed) this.toolContent(tool);
+    if (changed || staleSubjects) this.toolContent(tool);
     tool.preview.hidden = tool.node.open || !tool.preview.textContent; tool.expanded.hidden = !tool.node.open; return tool.card;
   }
   private toolAnswer(tool: ToolNode, source: JoinedTool): void {
@@ -1546,9 +1548,11 @@ export class Transcript {
     }
     return active;
   }
-  /** Public caption changes repaint retained headings without rebuilding transcript content. */
+  /** Public caption changes refresh attached cards now and closed cached previews on their next paint. */
   refreshSubjects(): void {
-    if (this.destroyed || this.deferred) return;
+    if (this.destroyed) return;
+    this.subjectRevision++;
+    if (this.deferred) return;
     for (const tool of this.tools.values()) if (tool.source && this.node.contains(tool.card)) { this.toolHeading(tool, tool.source); if (!tool.node.open) this.toolContent(tool); }
     for(const entry of this.cache.values())for(const message of entry.messages.values())message.communication?.refreshSender();
   }
@@ -1590,6 +1594,7 @@ export class Transcript {
       else setText(tool.preview, resultPreview(source.result ?? [], {resolve, tidy: source.status !== 'error', title}));
       tool.preview.classList.toggle('tool-error', source.status === 'error');
       tool.previewSource = source;
+      tool.previewSubjectRevision = this.subjectRevision;
     }
     tool.preview.hidden = tool.node.open || !tool.preview.textContent;
     if (tool.node.open) this.expandTool(tool);
