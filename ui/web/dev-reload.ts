@@ -35,13 +35,22 @@ export type DevReloadNotice = {
 const HOLD_SENTENCES: Record<DevReloadHold, string> = {input: 'Update waits while you type', ime: 'Update waits while you compose text', selection: 'Update waits while text is selected', resize: 'Update waits while you resize a pane',
   modal: 'Update waits while a dialog is open', offline: 'Update waits while the connection is offline', conflict: 'Update waits while a draft conflict is open', uncertain: 'Update waits until a sent message is confirmed'};
 function pausedText(code: DevReloadNotice['code']): string { return Object.hasOwn(HOLD_SENTENCES, code) ? HOLD_SENTENCES[code as DevReloadHold] : 'Update paused'; }
-export function devReloadPresentation(notice: DevReloadNotice): {text: string; detail: string; retry: boolean} {
-  const labels: Record<DevReloadNotice['state'], string> = {idle:'', applied:'', ready:'Updating…', building:'Updating…', navigating:'Updating…', held:'Update paused', deferred:'Update paused', failed:'Update unavailable', offline:'Update unavailable', 'restart-required':'Restart required', reconnecting:'Reconnecting updates…'};
-  const retry = notice.retryable && (notice.state === 'deferred' || notice.state === 'offline' || notice.state === 'failed' && ['stylesheet', 'drain', 'ack'].includes(notice.code));
+type ReloadPresentation = {text: string; action: 'retry' | 'reload' | null};
+function reloadWords(notice: DevReloadNotice): ReloadPresentation {
+  if (notice.state === 'failed') {
+    if (!notice.retryable || ['checkpoint', 'restore', 'release', 'invalid-assets', 'host', 'storage'].includes(notice.code)) return {text:'Automatic updates stopped.', action:'reload'};
+    if (['compile', 'input-changed'].includes(notice.code)) return {text:'New version did not build.', action:null};
+    if (notice.code === 'io') return {text:'Update check failed.', action:null};
+    return {text:'Update did not finish.', action:['stylesheet', 'drain', 'ack'].includes(notice.code) ? 'retry' : null};
+  }
+  if (notice.state === 'held' || notice.state === 'deferred') return {text:pausedText(notice.code), action:notice.retryable ? 'retry' : null};
+  const labels = {idle:'', applied:'', ready:'Updating…', building:'Updating…', navigating:'Updating…', offline:'Reconnecting updates…', 'restart-required':'Restart required', reconnecting:'Reconnecting updates…'};
+  return {text:labels[notice.state], action:null};
+}
+export function devReloadPresentation(notice: DevReloadNotice): ReloadPresentation & {detail: string} {
   const error = notice.error;
   const detail = `${notice.state} (${notice.code})${error ? `\nName: ${error.name}\nMessage: ${error.message}\nStack:\n${error.stack || '[not supplied]'}${error.truncated.length ? `\nTruncated fields: ${error.truncated.join(', ')}` : ''}` : ''}`;
-  const waiting = notice.state === 'held' || notice.state === 'deferred';
-  return {text:waiting ? pausedText(notice.code) : labels[notice.state], detail, retry};
+  return {...reloadWords(notice), detail};
 }
 export interface DevReloadHooks {
   /** Revision advances for user interaction, target changes and writes, not restoration itself. */

@@ -2538,13 +2538,41 @@ async function initializeDevReload(current:()=>boolean): Promise<void> {
     status: status => renderDevReloadNotice(notice, status)});
   await devReload.ready;
 }
+export async function reloadDev(): Promise<void> {
+  const workspace = state.workspace?.id, revision = devInteractionRevision, retained = [...controllers.values()];
+  const signal = AbortSignal.timeout(10_000);
+  await drainDev(signal);
+  for (const controller of retained) await controller.composer.drain(signal);
+  signal.throwIfAborted();
+  const current = [...controllers.values()];
+  if (!workspace || workspace !== state.workspace?.id || revision !== devInteractionRevision || devNavigating ||
+    current.length !== retained.length || current.some((controller, index) => controller !== retained[index]) ||
+    selectionQueue.unsettled || preferences.pending || !filesViews.canDispose || retained.some(controller => !controller.composer.canDispose ||
+      controller.composer.captureReload().some(value => value.localCopy !== undefined || value.insertionCopy !== undefined || !!value.attachments?.items.length))) {
+    throw new Error('Retained drafts or view ownership changed. Reload did not leave this page.');
+  }
+  const url = new URL('/', location.href); url.searchParams.set('workspace', workspace);
+  sessionStorage.removeItem(devCheckpointKey);
+  const key = reloadStateKey; reloadStateKey = undefined; preparedReloadState = undefined;
+  if (key) void deleteReloadState(key).catch(() => {});
+  location.assign(url.href);
+}
 export function renderDevReloadNotice(notice: HTMLElement, status: DevReloadNotice): void {
   devNavigating = status.state === 'navigating'; notice.replaceChildren();
-  const view = devReloadPresentation(status); notice.hidden = !view.text && !view.retry; notice.title = view.detail;
+  const view = devReloadPresentation(status); notice.hidden = !view.text && !view.action; notice.title = view.detail;
   if (status.error) notice.dataset.reloadError = JSON.stringify(status.error); else delete notice.dataset.reloadError;
-  // A retry never stands alone: the sentence it acts on shares its container, and the technical detail stays in the title.
-  if (view.text) notice.append(element('span', undefined, view.retry ? `${view.text}.` : view.text));
-  if (view.retry) notice.append(button('Retry update', () => {if (status.state === 'offline') devReload?.reconnect(); void devReload?.resume();}));
+  if (view.text) notice.append(element('span', undefined, view.action && !/[.!?…]$/.test(view.text) ? `${view.text}.` : view.text));
+  if (view.action === 'retry') notice.append(button('Retry', () => {if (status.state === 'offline') devReload?.reconnect(); void devReload?.resume();}));
+  if (view.action === 'reload') {
+    const reload = button('Reload', () => {
+      reload.disabled = true;
+      void reloadDev().catch(error => {
+        reload.disabled = false; notice.title = `${view.detail}\nReload did not finish.\n${errorMessage(error)}`;
+        announce('Reload did not finish. Your drafts remain in this page.');
+      });
+    });
+    notice.append(reload);
+  }
   if (!notice.isConnected) workbenchStatus.node.insertBefore(notice, versionStatus.node);
 }
 function updateDiagnostics(): void {

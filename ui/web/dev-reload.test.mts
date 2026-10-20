@@ -162,18 +162,32 @@ test('an already-current CSS generation never hides its pending acknowledgment f
   await dev.resume();assert.equal(f.notices.at(-1)?.state,'failed');f.fetch=()=>response();await dev.resume();await flush();
   const notice=f.notices.at(-1);assert.ok(notice);assert.equal(notice.state,'idle');assert.equal(devReloadPresentation(notice).text,'');assert.equal(f.styles.length,1);dev.destroy();
 });
-test('update footer words keep exceptional actions separate from exact technical detail',()=> {
-  const labels:Record<DevReloadNotice['state'],string>={idle:'',applied:'',ready:'Updating…',building:'Updating…',navigating:'Updating…',held:'Update paused',deferred:'Update paused',failed:'Update unavailable',offline:'Update unavailable','restart-required':'Restart required',reconnecting:'Reconnecting updates…'};
-  for(const [state,text]of Object.entries(labels)) {const view=devReloadPresentation({state:state as DevReloadNotice['state'],code:'none',retryable:true});assert.equal(view.text,text);assert.doesNotMatch(view.text,/Development|none|ready/);assert.equal(view.detail,`${state} (none)`);}
-  for(const [state,code,retry]of [['failed','ack',true],['failed','restore',false],['deferred','ime',true],['offline','none',true],['restart-required','backend-change',false]] as const){assert.equal(devReloadPresentation({state,code,retryable:true}).retry,retry);assert.equal(devReloadPresentation({state,code,retryable:false}).retry,false);}
+test('update footer words and actions distinguish retry, automatic recovery and stopped updates',()=> {
+  const labels = {idle:'',applied:'',ready:'Updating…',building:'Updating…',navigating:'Updating…','restart-required':'Restart required',reconnecting:'Reconnecting updates…',offline:'Reconnecting updates…'} as const;
+  for(const [state,text] of Object.entries(labels)) {
+    const view=devReloadPresentation({state:state as DevReloadNotice['state'],code:'none',retryable:true});
+    assert.equal(view.text,text);assert.equal(view.action,null);assert.equal(view.detail,`${state} (none)`);
+  }
+  const cases = [
+    ['ack','Update did not finish.','retry'], ['drain','Update did not finish.','retry'], ['stylesheet','Update did not finish.','retry'],
+    ['timeout','Update did not finish.',null], ['capacity','Update did not finish.',null], ['offline','Update did not finish.',null],
+    ['io','Update check failed.',null], ['compile','New version did not build.',null], ['input-changed','New version did not build.',null],
+    ['checkpoint','Automatic updates stopped.','reload'], ['restore','Automatic updates stopped.','reload'], ['release','Automatic updates stopped.','reload'],
+    ['invalid-assets','Automatic updates stopped.','reload'], ['host','Automatic updates stopped.','reload'], ['storage','Automatic updates stopped.','reload'],
+  ] as const;
+  for(const [code,text,action] of cases) {
+    assert.deepEqual(devReloadPresentation({state:'failed',code,retryable:true}),{text,action,detail:`failed (${code})`},code);
+    const stopped=devReloadPresentation({state:'failed',code,retryable:false});
+    assert.equal(stopped.text,'Automatic updates stopped.',code);assert.equal(stopped.action,'reload',code);
+  }
 });
 test('an update that waits says why in words, and keeps the retry beside its sentence',()=> {
   const sentences:Record<DevReloadHold,string>={input:'Update waits while you type',ime:'Update waits while you compose text',selection:'Update waits while text is selected',resize:'Update waits while you resize a pane',modal:'Update waits while a dialog is open',offline:'Update waits while the connection is offline',conflict:'Update waits while a draft conflict is open',uncertain:'Update waits until a sent message is confirmed'};
   for(const [code,text]of Object.entries(sentences))for(const state of ['held','deferred'] as const){
-    const view=devReloadPresentation({state,code:code as DevReloadHold,retryable:true});assert.equal(view.text,text);assert.equal(view.detail,`${state} (${code})`);
+    const view=devReloadPresentation({state,code:code as DevReloadHold,retryable:true});assert.equal(view.text,text);assert.equal(view.detail,`${state} (${code})`);assert.equal(view.action,'retry');
   }
   for(const code of ['timeout','drain','none'] as const)assert.equal(devReloadPresentation({state:'held',code,retryable:true}).text,'Update paused','a cause with no sentence keeps the plain words');
-  assert.equal(devReloadPresentation({state:'failed',code:'input',retryable:true}).text,'Update unavailable','only a waiting update takes a hold sentence');
+  assert.equal(devReloadPresentation({state:'failed',code:'input',retryable:true}).text,'Update did not finish.','only a waiting update takes a hold sentence');
 });
 test('missing or malformed metadata is inert, including the deferred browser default', async () => {
   for (const [generation, client] of [[null, OLD], [A, null], ['A'.repeat(64), OLD], [A, 'bad']]) {

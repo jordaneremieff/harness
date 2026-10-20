@@ -30,7 +30,7 @@ test('native storage refusal reaches the reload notice and captured page record 
   assert.equal(last?.code, 'drain'); assert.equal(last?.error?.name, error.name); assert.equal(last?.error?.message, error.message);
   const captured = JSON.parse(JSON.stringify({state: {notices: [{text: notice.textContent, title: Reflect.get(notice, 'title'), hidden: notice.hidden}]}}));
   // The retry shares one container with its sentence; the technical detail stays in the title.
-  assert.match(notice.textContent, /^Update unavailable\.\s*Retry update$/); const retry = notice.querySelector('button'); assert.ok(retry); assert.equal(retry.parentNode, notice); assert.equal(notice.children[0]?.textContent, 'Update unavailable.'); assert.match(Reflect.get(notice, 'title'), /drain/);
+  assert.match(notice.textContent, /^Update did not finish\.\s*Retry$/); const retry = notice.querySelector('button'); assert.ok(retry); assert.equal(retry.parentNode, notice); assert.equal(notice.children[0]?.textContent, 'Update did not finish.'); assert.match(Reflect.get(notice, 'title'), /drain/);
   assert.ok(captured.state.notices[0].title.includes(error.message)); assert.ok(captured.state.notices[0].title.includes(Reflect.get(error, 'stack')));
   assert.deepEqual(JSON.parse(notice.dataset.reloadError), last?.error);
   assert.equal(browser.agentControl('editor').value, 'Retain this synthetic draft.');
