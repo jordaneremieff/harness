@@ -100,6 +100,7 @@ export class CommandMenu {
     // Rendered geometry includes list padding that offsets omit, so finish against the sticky hint itself.
     const overlap = active.getBoundingClientRect().bottom - hint.getBoundingClientRect().top;
     if (overlap > 0 && active.offsetHeight < visibleHeight + overlap) this.menu.scrollTop += overlap;
+    if (this.state.active === 0 && bottom <= visibleHeight) this.menu.scrollTop = 0;
   }
   private async continue(): Promise<void> {
     if (!this.more || this.continuing || !this.state.open || !this.state.incomplete || this.editor.disabled) return;
@@ -127,7 +128,7 @@ export class CommandMenu {
     if (key === this.painted) return; this.painted = key;
     this.editor.removeAttribute('aria-activedescendant'); this.menu.hidden = !this.state.open;
     this.menu.replaceChildren();
-    if (!this.state.open) return;
+    if (!this.state.open) { this.menu.scrollTop = 0; return; }
     const heading = element('div', 'composer-menu-heading', 'Commands'); heading.setAttribute('role', 'presentation'); heading.setAttribute('aria-hidden', 'true'); this.menu.append(heading);
     if (this.state.inventory === 'loading') this.menu.append(element('div', 'command-empty', 'Loading commands…'));
     else if (!this.state.matches.length) this.menu.append(element('div', 'command-empty', this.emptyText()));

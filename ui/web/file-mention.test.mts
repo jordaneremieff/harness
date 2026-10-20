@@ -3,7 +3,7 @@ import {afterEach, test} from 'node:test';
 import {FileMentionMenu} from './file-mention.ts';
 import type {FileSearchResult, FileSearchRow} from '../shared/files.ts';
 class Node {
-  id = ''; tag = ''; className = ''; value = ''; hidden = false; disabled = false; title = ''; selectionStart = 0; selectionEnd = 0; scrolled = false;
+  id = ''; tag = ''; className = ''; value = ''; hidden = false; disabled = false; title = ''; selectionStart = 0; selectionEnd = 0; scrolled = false; scrollTop = 0;
   children: Node[] = []; attrs = new Map<string,string>(); handlers = new Map<string,Array<(event: Record<string,unknown>)=>void>>(); text = '';
   classList = {add: (name: string) => {this.className += ` ${name}`;}};
   get textContent(): string {return this.text + this.children.map(node=>node.textContent).join('');}
@@ -37,6 +37,7 @@ test('file headers never enter option indexes, active references or pointer acce
   const f=fixture(context);f.text('@comp');await f.settle(result([row('composer.ts'),row('composer.test.mts')]));
   const header=f.menu.children[0];assert.equal(header?.textContent,'Working-folder files');assert.equal(header?.attrs.get('role'),'presentation');assert.equal(header?.attrs.get('aria-hidden'),'true');
   const options=f.menu.querySelectorAll('[role="option"]');assert.equal(options.length,2);assert.equal(f.editor.attrs.get('aria-activedescendant'),options[0]?.id);assert.equal(header?.scrolled,false);
+  f.menu.scrollTop=120; f.key('Escape'); assert.equal(f.menu.scrollTop,0); f.controller.reset(); f.text('@comp'); await f.settle(result([row('composer.ts'),row('composer.test.mts')]));
   f.key('ArrowDown');let active=f.menu.querySelectorAll('[role="option"]')[1];assert.equal(f.editor.attrs.get('aria-activedescendant'),active?.id);assert.equal(active?.scrolled,true);f.key('ArrowUp');f.key('Tab');assert.equal(f.accepted[0]?.name,'composer.ts');
   f.controller.reset();f.text('@comp');await f.settle(result([row('composer.ts'),row('composer.test.mts')]));active=f.menu.querySelectorAll('[role="option"]')[1];let prevented=false;active?.fire('pointerdown',{preventDefault(){prevented=true;}});active?.fire('click');assert.equal(prevented,true);assert.equal(f.accepted[1]?.name,'composer.test.mts');assert.equal(f.editor.value,'@comp');
 });
@@ -45,6 +46,15 @@ test('file names emphasize literal fragments only and retain path descriptions a
   const options=f.menu.querySelectorAll('[role="option"]');const labels=options.map(node=>node.children[0]?.children[1]);
   assert.equal(labels[0]?.children.find(node=>node.tag==='mark')?.textContent,'Comp');assert.equal(labels[1]?.children.some(node=>node.tag==='mark'),false);assert.equal(labels[2]?.textContent,'components/');
   assert.equal(options[0]?.title,'src/Composer.ts');assert.equal(options[0]?.attrs.get('aria-describedby'),`${options[0]?.id}-directory`);assert.equal(options[2]?.attrs.get('aria-label'),'Folder src/components');
+});
+test('literal highlights use original Unicode offsets and treat query punctuation as text',async context=>{
+  const f=fixture(context);f.text('@comp');await f.settle(result([row('İComposer.ts'),row('😀Composer.ts')]));
+  const labels=()=>f.menu.querySelectorAll('[role="option"]').map(node=>node.children[0]?.children[1]);
+  assert.deepEqual(labels().map(label=>label?.children.find(node=>node.tag==='mark')?.textContent),['Comp','Comp']);
+  assert.deepEqual(labels().map(label=>label?.textContent),['İComposer.ts','😀Composer.ts']);
+  f.next();f.text('@[x].');await f.settle(result([row('İ[x].ts'),row('x.ts')]));
+  assert.equal(labels()[0]?.children.find(node=>node.tag==='mark')?.textContent,'[x].');assert.equal(labels()[0]?.textContent,'İ[x].ts');assert.equal(labels()[1]?.children.some(node=>node.tag==='mark'),false);
+  f.next();f.text('@İ');await f.settle(result([row('İfile.ts')]));assert.equal(labels()[0]?.children.find(node=>node.tag==='mark')?.textContent,'İ');assert.equal(labels()[0]?.textContent,'İfile.ts');
 });
 test('searching, complete absence, partial absence and failure remain distinct non-options',async context=>{
   const f=fixture(context);f.text('@x');assert.match(f.menu.textContent,/Searching/);assert.equal(f.menu.querySelectorAll('[role="option"]').length,0);await f.settle(result([]));assert.match(f.menu.textContent,/No matching files/);

@@ -60,7 +60,10 @@ const decorativeHairlines = new Set([
 	".palette-input-row|border-bottom",
 ]);
 // A tinted edge names its exact mix. The control it frames is identified by its text and icon, so the tint is decoration.
-const decorativeTintedEdges = new Set([".stop|border-color|color-mix(in srgb, var(--error) 55%, transparent)", ".composer-input|border|1px solid color-mix(in srgb, var(--edge) 28%, transparent)"]);
+const decorativeTintedEdges = new Set([".stop|border-color|color-mix(in srgb, var(--error) 55%, transparent)", ".composer-input|border|1px solid color-mix(in srgb, var(--edge) 28%, transparent)",
+  '.command-menu, .composer-intake-menu|border|1px solid color-mix(in srgb, var(--rule) 60%, transparent)',
+  '.context-menu.composer-intake-menu|border|1px solid color-mix(in srgb, var(--rule) 60%, transparent)',
+]);
 // Non-content paint: the backdrop dims the page; the resting divider separates positioned panes.
 const decorativeBackgrounds = new Set(["dialog::backdrop|var(--backdrop)", ".pane-split > .pane-divider::after|var(--rule)"]);
 // Graphic paint carries no text; meaningful hover/focus and selected marks still meet 3:1.
@@ -354,6 +357,16 @@ function composerBackground(context: Context, value: string): boolean {
   }
   return false;
 }
+const menuHoverFills = new Set([
+  '.composer-intake-menu > .context-menu-item:hover, .composer-intake-menu > .context-menu-item:focus-visible',
+  '.command-option:hover, .command-option[aria-selected=true]',
+]);
+function menuBackground(context: Context, value: string): boolean {
+  if (!menuHoverFills.has(context.rule.selector) || value !== 'color-mix(in srgb, var(--fg) 7%, transparent)') return false;
+  const fill = blend(context.palette['--fg'] as string, context.palette['--raised'] as string, .07);
+  for (const fg of ['fg', 'muted', 'dim']) context.measure('menu-text', `${context.source} --${fg} / composited row`, fg, fill, 4.5);
+  return true;
+}
 function backgroundDeclaration(context: Context, value: string) {
   const {theme, source, exclusions, issues, rule, palette, measure} = context;
   if (["transparent", "none", "inherit"].includes(value)) {
@@ -362,7 +375,7 @@ function backgroundDeclaration(context: Context, value: string) {
   if (decorativeBackgrounds.has(`${rule.selector}|${value}`)) {
     exclusions.push(`${theme}: non-content paint ${source}: ${value}`); return;
   }
-  if (composerBackground(context, value)) return;
+  if (composerBackground(context, value) || menuBackground(context, value)) return;
 	const name = token(value);
 	if (!name || !palette[`--${name}`]) {
 		issues.push(`${theme}: unmodeled background ${source}: ${value}`);
@@ -664,6 +677,11 @@ test('composer surfaces measure their derived fill and control composites withou
   assert.ok(audit(css.replace('var(--canvas) 88%, var(--fg)', 'var(--canvas) 90%, var(--fg)')).issues.some(issue => issue.includes('Component-local variable requires explicit analysis')));
   assert.ok(audit(`${css}\n.send:disabled { opacity: .29; }`).issues.some(issue => issue.includes('partial opacity')));
   assert.ok(audit(`${css}\n.send { opacity: .28; }`).issues.some(issue => issue.includes('partial opacity')));
+});
+test('menu rows measure their exact raised-surface composites without a general tint exception', () => {
+  const rows = result.measurements.filter(row => row.kind === 'menu-text');
+  assert.equal(rows.length, 12); assert.ok(rows.every(row => row.threshold === 4.5 && row.ratio >= 4.5));
+  assert.ok(audit(`${css}\n.command-option:hover, .command-option[aria-selected=true] { background: color-mix(in srgb, var(--fg) 8%, transparent); }`).issues.some(issue => issue.includes('unmodeled background')));
 });
 test("contrast thresholds use exact ratios, not rounded display values", () => {
 	assert.ok(ratio("#777777", "#ffffff") < 4.5);

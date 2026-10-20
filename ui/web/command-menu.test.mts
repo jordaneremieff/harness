@@ -125,7 +125,7 @@ test('a shorter list after a viewport resize scrolls the active row back above t
   const f = fixture(); f.menu.clientHeight = 200; f.text('/'); f.key('ArrowDown'); f.key('ArrowDown'); const active = f.menu.children[3]; const footer = f.menu.children.at(-1); assert.ok(active); assert.ok(footer);
   assert.equal(f.menu.scrollTop, 0); footer.offsetHeight = 28; f.menu.clientHeight = 100; f.controller.keepActiveVisible();
   assert.ok(f.menu.scrollTop > 0); assert.ok(active.offsetTop + active.offsetHeight <= f.menu.scrollTop + f.menu.clientHeight - footer.offsetHeight);
-  f.key('Escape'); const scrolled = f.menu.scrollTop; f.controller.keepActiveVisible(); assert.equal(f.menu.scrollTop, scrolled);
+  f.key('Escape'); assert.equal(f.menu.scrollTop, 0); f.controller.keepActiveVisible(); assert.equal(f.menu.scrollTop, 0); f.menu.clientHeight = 200; f.text('/mo'); assert.equal(f.menu.children[0]?.textContent, 'Commands'); assert.equal(f.menu.scrollTop, 0);
 });
 test('rendered list padding cannot leave the active row partly behind the sticky hint', () => {
   const f = fixture(); f.menu.clientHeight = 100; f.text('/'); f.key('ArrowDown'); f.key('ArrowDown');

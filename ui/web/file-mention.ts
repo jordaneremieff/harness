@@ -86,9 +86,9 @@ export class FileMentionMenu {
     node.setAttribute('role', 'option'); node.setAttribute('aria-selected', String(index === this.view.active));
     const name = element('span', 'command-name'); const icon = cardIcon(row.kind === 'directory' ? 'folder' : 'file');
     const label = element('span'); const query = this.view.token?.query.split('/').at(-1) ?? '';
-    const start = query ? row.name.toLowerCase().indexOf(query.toLowerCase()) : -1;
-    if (start < 0) label.textContent = row.name;
-    else label.append(element('span', undefined, row.name.slice(0, start)), element('mark', undefined, row.name.slice(start, start + query.length)), element('span', undefined, row.name.slice(start + query.length)));
+    const match = query ? new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'iu').exec(row.name) : null;
+    if (!match) label.textContent = row.name;
+    else label.append(element('span', undefined, row.name.slice(0, match.index)), element('mark', undefined, match[0]), element('span', undefined, row.name.slice(match.index + match[0].length)));
     if (row.kind === 'directory') label.append(element('span', undefined, '/'));
     name.append(icon, label);
     const directory = directoryOf(row.path), where = element('span', 'command-desc mention-directory', shortDirectory(directory)); where.title = row.path; where.id = `${node.id}-directory`;
@@ -109,7 +109,7 @@ export class FileMentionMenu {
     const key = JSON.stringify([this.view.open, this.view.token?.query, this.view.rows, this.view.more, this.view.reason, this.view.state, this.view.error, this.view.active]);
     if (key === this.painted) return; this.painted = key;
     this.editor.removeAttribute('aria-activedescendant'); this.menu.hidden = !this.view.open; this.menu.replaceChildren();
-    if (!this.view.open) return;
+    if (!this.view.open) { this.menu.scrollTop = 0; return; }
     this.editor.setAttribute('aria-autocomplete', 'list'); this.editor.setAttribute('aria-controls', this.menu.id);
     const heading = element('div', 'composer-menu-heading', 'Working-folder files'); heading.setAttribute('role', 'presentation'); heading.setAttribute('aria-hidden', 'true'); this.menu.append(heading);
     this.menu.append(...this.view.rows.map((row, index) => this.row(row, index)));

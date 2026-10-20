@@ -200,6 +200,7 @@ test('blue marks focus while selected rows and tabs use neutral rules and surfac
   for (const item of fills.filter(item => !item.value.includes('--edge'))) {
     const graphic = graphicTokens.get(item.selector);
     if (graphic) assert.equal(item.value, graphic);
+    else if (['.composer-intake-menu > .context-menu-item:hover, .composer-intake-menu > .context-menu-item:focus-visible', '.command-option:hover, .command-option[aria-selected=true]'].includes(item.selector)) assert.equal(item.value, 'color-mix(in srgb, var(--fg) 7%, transparent)');
     else if (/^\.composer(?:-input|\b)|^\.queue:not\(:disabled\):hover$|^\.send:disabled$/.test(item.selector)) assert.match(item.value, /color-mix|transparent|ButtonText|ButtonFace|var\(--composer-fill\)/);
     else assert.doesNotMatch(item.value, /--(?:fg|muted|dim|link)\b/, `ink used as a fill: ${item.value}`);
   }
@@ -207,7 +208,8 @@ test('blue marks focus while selected rows and tabs use neutral rules and surfac
   assert.match(rule('.context-menu-item[aria-checked=false] > .choice-check'), /visibility: hidden/);
   assert.match(rule(':focus-visible'), /outline: 2px solid var\(--accent\)/);
   assert.match(rule('.nav-row[aria-current=page], .row-select[aria-current=page]'), /background: var\(--raised\)/);
-  assert.match(rule('.command-option[aria-selected=true], .palette-row[aria-selected=true]'), /background: var\(--canvas\)/);
+  assert.match(rule('.palette-row[aria-selected=true]'), /background: var\(--canvas\)/);
+  assert.match(rule('.command-option:hover, .command-option[aria-selected=true]'), /background: color-mix\(in srgb, var\(--fg\) 7%, transparent\)/);
   assert.match(rule('.context-menu > button:hover'), /background: var\(--canvas\)/);
   assert.doesNotMatch(rule('.context-menu > button:hover'), /outline:/);
   assert.match(rule('.context-menu > button:focus-visible'), /outline: 2px solid var\(--accent\)/);
@@ -231,11 +233,11 @@ test('stored and live conversation names use primary text while metadata stays q
 test('small radii and quiet surfaces limit motion to the busy marker and section chevrons', () => {
   const radii = declarations('border-radius');
   assert.match(rule('.composer-input'), /border-radius: 16px/); assert.match(rule('.context-menu-compact'), /border-radius: 6px/);
-  assert.deepEqual([...new Set(radii)].sort(), ['0', '0 4px 4px 0', '10px', '16px', '2px', '3px', '4px', '50%', '6px', '8px']);
-  assert.deepEqual([...new Set(declarations('box-shadow'))].sort(), ['inset 0 -2px var(--accent)', 'inset 0 -2px var(--edge)', 'none', 'var(--shadow)']);
+  assert.deepEqual([...new Set(radii)].sort(), ['0', '0 4px 4px 0', '10px', '12px', '16px', '2px', '3px', '4px', '50%', '6px', '8px']);
+  assert.deepEqual([...new Set(declarations('box-shadow'))].sort(), ['0 6px 20px color-mix(in srgb, var(--side) 24%, transparent)', 'inset 0 -2px var(--accent)', 'inset 0 -2px var(--edge)', 'none', 'var(--shadow)']);
   assert.match(rule('dialog[open][data-variant=find]'), /box-shadow: none/);
   const shadowed = [...css.matchAll(/(?:^|\n)\s*([^{}\n]+)\{[^}]*box-shadow: var\(--shadow\)/g)].map(match => match[1].trim()).sort();
-  assert.deepEqual(shadowed, ['.app.drawer-open .workbench > .sidebar', '.command-menu', '.context-menu', '.receipt-details pre', '.workbench-status .composer-detail-body', 'dialog']);
+  assert.deepEqual(shadowed, ['.app.drawer-open .workbench > .sidebar', '.context-menu', '.receipt-details pre', '.workbench-status .composer-detail-body', 'dialog']);
   assert.doesNotMatch(css, /scroll-behavior:\s*smooth|backdrop-filter|text-shadow|gradient/);
   assert.deepEqual(declarations('filter'), []);
   assert.deepEqual(declarations('transition'), ['transform 120ms', 'none']);
@@ -901,7 +903,8 @@ test('navigation identities stay separate from ellipsis and overflow controls re
   assert.match(rule('.picker-select'), /flex-direction: column/);
   assert.match(rule('.picker-session-tail'), /flex: none/);
   assert.match(rule('.picker-select .identity'), /overflow-wrap: anywhere/);
-  assert.match(rule('.command-option:hover, .palette-row:hover'), /background: var\(--canvas\)/);
+  assert.match(rule('.palette-row:hover'), /background: var\(--canvas\)/);
+  assert.match(rule('.command-option:hover, .command-option[aria-selected=true]'), /background: color-mix\(in srgb, var\(--fg\) 7%, transparent\)/);
 });
 test('the document selects the same-origin SVG favicon', () => {
   assert.match(html, /<link rel="icon" href="\/favicon\.svg" type="image\/svg\+xml">/);
@@ -1089,8 +1092,8 @@ test('phone chrome removes redundant tab arrows and coarse tree names retain exp
   for(const edge of ['top','right','bottom','left'])assert.ok(rule('body').includes(`env(safe-area-inset-${edge})`));
   assert.match(rule('body'),/height: 100dvh/);
 });
-test('slash rows use the conversation container and full-width descriptions at narrow pane widths', () => {
-  const start = css.indexOf('@container conversation (max-width: 540px)'); assert.ok(start >= 0);
+test('slash rows use the composer container and full-width descriptions at narrow pane widths', () => {
+  const start = css.indexOf('@container composer (max-width: 540px)'); assert.ok(start >= 0);
   const rows = css.slice(start, css.indexOf('.command-empty', start));
   assert.match(rows, /\.command-source \{ grid-column: 2; grid-row: 1/);
   assert.match(rows, /\.command-desc \{ grid-column: 1 \/ -1; grid-row: 2; white-space: normal; overflow: visible/);
