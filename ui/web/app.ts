@@ -38,7 +38,7 @@ import { ExtensionDialogs, extensionStatus } from './extensions.ts';
 import { Modal } from './modal.ts';
 import { openImagePreview } from './image-preview.ts';
 import { Transcript, type ToolSubjectCaption } from './render.ts';
-import { ReferenceResolver, type ReferenceDestination, type ReferenceQuery, type ReferenceResolution } from './references.ts';
+import { ReferenceResolver, type ReferenceDestination, type ReferenceQuery, type ReferenceResolution, type FileReferenceDestination } from './references.ts';
 import { imageUrl } from './image.ts';
 import { historyBecameReady, pageToReadingAnchor } from './transcript-history.ts';
 import { IdentityLookup } from './identity-lookup.ts';
@@ -303,7 +303,10 @@ let footerController: ConversationController | undefined;
 const workbenchStatus = new WorkbenchStatus();
 const controlAttribution = element('span','secondary');controlAttribution.id = 'control-attribution';controlAttribution.setAttribute('role','status');controlAttribution.hidden = true;workbenchStatus.node.append(controlAttribution);
 const messageTarget = new MessageTarget({workspace: () => state.workspace, prepare: prepareMessageTarget, paint: renderMessagePanel});
-const references = new ReferenceResolver(resolveReference, destination => { void navigateReference(destination).catch(showError); });
+const references = new ReferenceResolver(resolveReference, destination => { void navigateReference(destination).catch(showError); }, {
+  root: () => fileRoot.loading ? undefined : fileRoot.selection?.root ?? undefined,
+  navigate: destination => { void navigateFileReference(destination).catch(showError); },
+});
 const actions: Actions = new Actions({snapshot: currentSnapshot, primary, modelChanged: renderAvailability, namingPrimary: () => { const selected = primary(); return selected?.lifecycle === 'ready' ? selected : [...state.primaries.values()].find(item => item.lifecycle === 'ready'); }, modelNamesChanged: renderAllComposerSettings, get composer() { return primaryComposer(); }, commandsChanged: () => {const target = primaryTarget(); if (target && state.workspace) controllers.get(controllerKey(state.workspace.id, target))?.composer.commandsChanged();}, modal, selection, reload: reloadSelection, result: showOperation, rosterRefresh: refreshRoster, filesRefresh: refreshFiles, hasTranscript: () => !!focusedTranscript(), find: () => captureFind(), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, sidebarShown: () => !byId('sidebar').hidden, view: (tools, expand) => focusedTranscript()?.expandLoaded(tools, expand), selectPrimary, agentCaption: identity => {return presentationCaptions().get(identity);}, agentStatus: row => presentation({kind: 'agent', identity: row.identity}).activity, agentPresentation:row=>presentation({kind:'agent',identity:row.identity}), conversationFacts: identity => agentFacts(agentRow(identity), state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame), copyAgent: () => { void copy(selectedAgent() ?? '', agentNode('view-notice')); }, inspectAgent,resultLookup:()=>{const target=layoutTarget(currentLayout(),primaryTarget());if(target)conversationController(target).inspection?.open('result');},
   tabs: {close: () => { const tab = activeTab(currentLayout()); if (tab) applyLayout(closeTab(currentLayout(), tabKey(tab))); }, switch: direction => applyLayout(switchTab(currentLayout(), direction)), layout: currentLayout},
 });
@@ -334,10 +337,19 @@ function fileDocumentRoute(workspace:string,tab:FileTab,kind:'draft'|'text'):str
 export const filesTree = new FilesTree(byId('files-tree'),{
   page:(rootId,path,cursor)=> {const workspace = state.workspace?.id;if (!workspace) return Promise.reject(new Error('No workspace is selected.'));return request<FileDirectoryPage>(`/api/files/roots/${encodeURIComponent(rootId)}/directory?path=${encodeURIComponent(path)}&workspace=${encodeURIComponent(workspace)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);},
   select:chooseFile,keep:(rootId,path)=>fileBrowse.keep(tabKey({kind:'file',rootId,path})),addToMessage:addFileToMessage,escape:focusEditor,scope:()=>{renderSectionCounts();return watchFiles();},status:message=> {fileActionStatus = message;renderWorkbenchStatus();},operation:fileTreeOperation});
-export const fileRoot = new FileRootChoice({get:workspace=>request<FileRootSelection>(`/api/workspaces/${encodeURIComponent(workspace)}/files/root`),put:(workspace,path,revision)=>request<FileRootSelection>(`/api/workspaces/${encodeURIComponent(workspace)}/files/root`,'PUT',{path,expectedRevision:revision})},()=> {renderFiles();renderIdentity();});
+export const fileRoot = new FileRootChoice({get:workspace=>request<FileRootSelection>(`/api/workspaces/${encodeURIComponent(workspace)}/files/root`),put:(workspace,path,revision)=>request<FileRootSelection>(`/api/workspaces/${encodeURIComponent(workspace)}/files/root`,'PUT',{path,expectedRevision:revision})},()=> {renderFiles();renderIdentity();for (const controller of controllers.values()) controller.transcript.refreshReferences();});
 export function chooseFile(rootId:string,path:string,focus = true):void {
   if (!state.workspace) return;
   try {applyLayout(fileBrowse.choose(currentLayout(),{kind:'file',rootId,path},key=> {const tab = paneLeaves(currentLayout().root).flatMap(pane=>pane.tabs).find(tab=>tabKey(tab) === key);if (tab?.kind !== 'file') return false;const owner = filesViews.owner(state.workspace?.id ?? '',tab);return !!owner && (owner.loading || owner.modified || owner.unsaved);}));if (focus) focusEditor();} catch (error) {showError(error);}
+}
+async function navigateFileReference(destination:FileReferenceDestination):Promise<void> {
+  const workspace = state.workspace;if (!workspace || fileRoot.selection?.root?.id !== destination.rootId) return;
+  chooseFile(destination.rootId,destination.path);
+  const tab:FileTab = {kind:'file',rootId:destination.rootId,path:destination.path};
+  const pane = currentLayout().focusedPane,view = filesViews.view(workspace,tab);
+  await view.owner.load();
+  if (view.owner.text === undefined || state.workspace?.id !== workspace.id || currentLayout().focusedPane !== pane || tabKey(activeTab(currentLayout()) ?? {kind:'primary'}) !== tabKey(tab)) return;
+  if (destination.line !== undefined) view.revealLine(destination.line); else view.focus();
 }
 type FileMessageDestination = {target:Target; key:string; caption:string; controller?:ConversationController; reason?:string};
 function fileMessageDestinations(workspace:string):FileMessageDestination[] {

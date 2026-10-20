@@ -258,7 +258,7 @@ function language(args: Record<string, unknown>): string | undefined {
 }
 
 export type PreviewActions = {showSavedOutput?: () => void; copySavedText?: () => void};
-type ArgumentPresentation = {caption?: string; replacement?: boolean; shellCommand?: boolean};
+type ArgumentPresentation = {caption?: string; replacement?: boolean; shellCommand?: boolean; filePath?: (text: string) => HTMLElement | undefined};
 
 /** Share one instance across a tool's arguments, result previews and deferred metadata. */
 export class PreviewBudget {
@@ -356,6 +356,7 @@ class Preview {
   private readonly context: PresentationContext;
   private readonly argumentsMode: boolean;
   private shellCommand = false;
+  private argumentFilePath?: ArgumentPresentation['filePath'];
   constructor(context: PresentationContext, argumentsMode: boolean, truncated: boolean, budget: PreviewBudget) {
     this.context = context; this.argumentsMode = argumentsMode; this.budget = budget; this.truncated = truncated;
     this.admitted = budget.acquire(this.root);
@@ -537,7 +538,10 @@ class Preview {
     if (!this.budget.text) { this.limit(); return; }
     const dl = element('dl', 'kv');
     const term = element('dt'); appendKey(term, this.take(key, 240, 1));
-    dl.append(term, element('dd', undefined, this.take(scalar(value), 240, 3)));
+    const text = this.take(scalar(value), 240, 3), description = element('dd');
+    const link = typeof value === 'string' && text === value && (key === 'path' || key === 'file_path') ? this.argumentFilePath?.(value) : undefined;
+    if (link) description.append(link); else description.textContent = text;
+    dl.append(term, description);
     this.append(parent, dl);
   }
   private tableShape(values: unknown[]): Entry[][] | undefined {
@@ -724,6 +728,7 @@ class Preview {
   }
   private argumentObject(value: Record<string, unknown>, presentation?: ArgumentPresentation): void {
     this.shellCommand = presentation?.shellCommand === true;
+    this.argumentFilePath = presentation?.filePath;
     if (presentation?.caption) this.caption(this.root, presentation.caption);
     let fields: Field[] | undefined;
     if (presentation?.replacement && typeof own(value, 'oldText') === 'string' && typeof own(value, 'newText') === 'string') {

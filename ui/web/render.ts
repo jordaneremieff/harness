@@ -680,6 +680,10 @@ export class Transcript {
     if (tool.viewport) this.releaseOutput(tool.viewport);
     for (const page of tool.pageViewports ?? []) this.releaseOutput(page);
   }
+  refreshReferences(): void {
+    this.registerContent(this.node);
+    for (const tool of this.tools.values()) if (tool.source) {tool.argumentsSource = undefined;this.presentToolRegion(tool,tool.source);}
+  }
   private registerContent(root: HTMLElement): void {
     this.hooks.references?.decorate(root, node => this.referenceCurrent(node), parent => {
       const content = (parent as HTMLElement).closest?.('.tool-content'); if (!content) return Infinity;
@@ -1411,7 +1415,7 @@ export class Transcript {
   }
   private textContent(node: HTMLElement, text: string, partial: boolean, previous?: PartNode): void {
     if (previous?.source.type === 'text' && previous.source.text === text && previous.partial === partial) return;
-    node.className = partial ? 'stream-text' : '';
+    node.className = partial ? 'message-text stream-text' : 'message-text';
     if (partial) { this.releaseFrames(node); setText(node, bounded(text, 8192)); }
     else if (text.length > 8192) this.replaceContent(node, markdownDom(bounded(text, 8192)), this.inspection('More text', () => text));
     else this.replaceContent(node, markdownDom(text));
@@ -1615,7 +1619,14 @@ export class Transcript {
     if ([tool.presentation, tool.argumentsDocument, tool.resultDocument].some(root => root && this.protectedNode(root))) return;
     const supplied = source.name === 'write' || source.name === 'edit';
     const budget = new PreviewBudget(this.savedOutputActions(tool, source));
-    const args = presentArguments(source.args, context, budget, {caption: source.name === 'write' ? 'Supplied content' : undefined, replacement: source.name === 'edit', shellCommand: source.name === 'bash'});
+    const generation = this.generation;
+    const filePath = ['read', 'edit', 'write'].includes(source.name) ? (text: string) => {
+      const args = source.args?.value;
+      const offset: unknown = args && typeof args === 'object' && !Array.isArray(args) ? Object.getOwnPropertyDescriptor(args,'offset')?.value : undefined;
+      const line = source.name === 'read' ? typeof offset === 'number' && Number.isSafeInteger(offset) && offset > 0 ? offset : 1 : undefined;
+      return this.hooks.references?.renderFile(text, () => this.currentToolSource(tool, tool.argumentsSource ?? source, generation), line);
+    } : undefined;
+    const args = presentArguments(source.args, context, budget, {caption: source.name === 'write' ? 'Supplied content' : undefined, replacement: source.name === 'edit', shellCommand: source.name === 'bash', filePath});
     this.retireNode(tool.presentation); this.retireNode(tool.argumentsDocument);
     tool.presentation = supplied ? args : undefined; tool.argumentsDocument = supplied ? undefined : args;
     tool.previewBudget = budget;

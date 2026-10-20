@@ -278,8 +278,9 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .file-tree-status { padding: var(--s1) var(--s3); color: var(--muted); font-size: 12px; }
 .file-tree-more { margin: var(--s1) var(--s2); }
 .file-view { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 0 var(--gutter); }
-.file-editor-host { flex: 1; position: relative; display: flex; min-width: 0; min-height: 0; }
-.file-editor { flex: 1; width: 100%; min-width: 0; min-height: 0; resize: none; border: 0; padding: var(--s3) 0; background: transparent; color: var(--fg); caret-color: var(--fg); font: 13px/1.5 var(--mono); tab-size: 4; white-space: pre; overflow: auto; }
+.file-editor-host { flex: 1; position: relative; display: flex; min-width: 0; min-height: 0; overflow: hidden; }
+.file-line-band { position: absolute; inset-inline: 0; background: var(--raised); pointer-events: none; }
+.file-editor { position: relative; flex: 1; width: 100%; min-width: 0; min-height: 0; resize: none; border: 0; padding: var(--s3) 0; background: transparent; color: var(--fg); caret-color: var(--fg); font: 13px/1.5 var(--mono); tab-size: 4; white-space: pre; overflow: auto; }
 .file-editor:focus { outline: none; }
 .file-editor-color { position: absolute; inset: 0; overflow: hidden; pointer-events: none; color: var(--fg); }
 .file-editor[data-decorated=true] { color: transparent; }

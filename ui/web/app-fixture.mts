@@ -63,7 +63,10 @@ export class HostNode {
   get lastElementChild(): HostNode | null { return this.children.at(-1) ?? null; }
   get isConnected(): boolean { return hostRoots.includes(this) || !!this.parentNode?.isConnected; }
   contains(node: HostNode | null): boolean { return !!node && (node === this || this.children.some(child => child.contains(node))); }
-  get childNodes(): HostNode[] { return this.children; }
+  get childNodes(): HostNode[] {
+    if (this.tagName !== '#text' && this.text) {const text = new HostNode('#text');text.textContent = this.text;this.text = '';this.prepend(text);}
+    return this.children;
+  }
   get scrollWidth(): number { return this.clientWidth; }
   get nextSibling(): HostNode | null { const peers = this.parentNode?.children ?? []; return peers[peers.indexOf(this) + 1] ?? null; }
   get nextElementSibling(): HostNode | null { return this.nextSibling; }

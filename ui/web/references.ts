@@ -1,5 +1,44 @@
 import type { EntryView, MessageView, Target } from '../shared/api.ts';
 import { element } from './dom.ts';
+import type { FileRoot } from '../shared/files.ts';
+
+export type FileReferenceDestination = {rootId: string; path: string; line?: number};
+type FileReferences = {root: () => FileRoot | undefined; navigate: (destination: FileReferenceDestination) => void};
+/** File syntax is lexical; the existing file reader still validates the registered root and disk identity. */
+export function fileReference(text: string, root: FileRoot): FileReferenceDestination | undefined {
+  const match = /^(.*?)(?::([1-9][0-9]*)(?::[1-9][0-9]*|-[1-9][0-9]*)?|#L([1-9][0-9]*)(?:-L[1-9][0-9]*)?)?$/.exec(text);
+  let path = match?.[1]; if (!path || !/^[\p{L}\p{N}_./-]+$/u.test(path) || path.startsWith('//')) return;
+  if ((path.startsWith('/') ? path.slice(1) : path).split('/').some(part => part === '..' || part === '')) return;
+  if (path.startsWith('/')) {
+    const base = root.path.replace(/\/$/, '');
+    if (!path.startsWith(`${base}/`)) return;
+    path = path.slice(base.length + 1);
+  }
+  if (path.startsWith('./')) path = path.slice(2);
+  if (path.split('/').some(part => part === '.' || part === '..')) return;
+  const line = match?.[2] ?? match?.[3];
+  if (line && !Number.isSafeInteger(Number(line))) return;
+  return {rootId: root.id, path, ...(line ? {line: Number(line)} : {})};
+}
+type FileCandidate = {text: string; start: number; end: number; destination: FileReferenceDestination};
+function lineFileCandidates(line:string,root:FileRoot,offset:number):FileCandidate[] {
+  const result:FileCandidate[] = [];
+  for (const match of line.matchAll(/[^\s`<>"'()[\]{},;!?]+/g)) {
+    const value = match[0].replace(/[.:]+$/, ''),destination = fileReference(value,root);
+    if (destination && /\.[\p{L}][\p{L}\p{N}_-]*$/u.test(destination.path.split('/').at(-1) ?? '') && (value.includes('/') || destination.line !== undefined)) result.push({text:value,start:offset + match.index,end:offset + match.index + value.length,destination});
+  }
+  return result;
+}
+export function fileCandidates(text: string, root: FileRoot): FileCandidate[] {
+  const result:FileCandidate[] = []; let fence: string | undefined; let offset = 0;
+  for (const line of text.split('\n')) {
+    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+    if (marker && (!fence || marker[0] === fence[0] && marker.length >= fence.length)) {fence = fence ? undefined : marker; offset += line.length + 1; continue;}
+    if (!fence) result.push(...lineFileCandidates(line,root,offset));
+    offset += line.length + 1;
+  }
+  return result;
+}
 
 export type ReferenceField = 'identity' | 'recordEntryId' | 'entryId' | 'answerEntryId' | 'requestId' | 'submissionId';
 export type QualifiedReference = {text: string; owner: string; field: ReferenceField};
@@ -40,10 +79,24 @@ export function referenceCandidates(text: string): Array<{text: string; start: n
 }
 /** One renderer and click path for all transcript text surfaces. Copy continues to use original sources. */
 export class ReferenceResolver {
-  private seen = new WeakSet<Node>();
+  private seen = new WeakMap<Node, string>();
+  private files?: FileReferences;
   private lookup: (query: ReferenceQuery) => ReferenceResolution;
   private navigate: (destination: ReferenceDestination) => void;
-  constructor(lookup: (query: ReferenceQuery) => ReferenceResolution, navigate: (destination: ReferenceDestination) => void) { this.lookup = lookup; this.navigate = navigate; }
+  constructor(lookup: (query: ReferenceQuery) => ReferenceResolution, navigate: (destination: ReferenceDestination) => void, files?: FileReferences) { this.lookup = lookup; this.navigate = navigate; this.files = files; }
+  renderFile(text: string, active: (node: HTMLElement) => boolean, line?: number): HTMLElement | undefined {
+    const root = this.files?.root(); const destination = root && fileReference(text, root); if (!destination) return;
+    if (line !== undefined) destination.line = line;
+    const node = element('a', 'reference-link file-reference', text);
+    node.dataset.fileRoot = JSON.stringify([root.id,root.path]);
+    node.href = `#file=${encodeURIComponent(JSON.stringify(destination))}`;
+    node.addEventListener('click', event => {
+      event.preventDefault(); if (!node.isConnected || !active(node)) return;
+      const current = this.files?.root(); const resolved = current && fileReference(text, current);
+      if (resolved && resolved.rootId === destination.rootId && resolved.path === destination.path) this.files?.navigate(destination);
+    });
+    return node;
+  }
   render(query: ReferenceQuery, active: (node: HTMLElement) => boolean): HTMLElement {
     const text = typeof query === 'string' ? query : query.text; const result = this.lookup(query);
     if ('reason' in result) { const node = element('span', 'reference-unresolved', text); node.title = result.reason; node.setAttribute('aria-description', result.reason); return node; }
@@ -58,6 +111,10 @@ export class ReferenceResolver {
     return node;
   }
   decorate(root: HTMLElement, active: (node: HTMLElement) => boolean, room: (parent: Node) => number = () => Infinity): void {
+    const fileRoot = this.files?.root(), key = fileRoot ? JSON.stringify([fileRoot.id,fileRoot.path]) : '';
+    for (const link of root.querySelectorAll<HTMLElement>('.file-reference')) if (link.dataset.fileRoot !== key) {
+      link.parentNode?.insertBefore(document.createTextNode(link.textContent ?? ''),link);link.remove();
+    }
     const pending: Node[] = [root];
     while (pending.length) {
       const parent = pending.pop(); if (!parent || this.ignored(parent)) continue;
@@ -73,14 +130,21 @@ export class ReferenceResolver {
     return ['A', 'BUTTON', 'INPUT', 'TEXTAREA', 'SCRIPT', 'STYLE'].includes(node.tagName.toUpperCase()) || node.classList.contains('reference-unresolved');
   }
   private decorateText(root: HTMLElement, parent: Node, child: Node, active: (node: HTMLElement) => boolean, room: number): void {
-    if (this.seen.has(child)) return;
-    this.seen.add(child);
-    const text = child.textContent ?? ''; const matches = referenceCandidates(text); if (!matches.length) return;
+    const node = parent as HTMLElement;
+    const fileRoot = !node.closest?.('pre, summary, .tool-shell, .message-source') && node.closest?.('.message-text') ? this.files?.root() : undefined;
+    const key = fileRoot ? JSON.stringify([fileRoot.id, fileRoot.path]) : '';
+    if (this.seen.get(child) === key) return;
+    this.seen.set(child, key);
+    const text = child.textContent ?? '';
+    const identities = referenceCandidates(text);
+    const files = fileRoot ? fileCandidates(text, fileRoot).filter(file => !identities.some(identity => file.start < identity.end && file.end > identity.start)) : [];
+    const matches = [...identities.map(value => ({...value, file: false})), ...files.map(value => ({...value, file: true}))].sort((a,b) => a.start - b.start);
+    if (!matches.length) return;
     if (room < matches.length * 3 + 1) { root.setAttribute('aria-description', 'Some references remain text within the preview node limit.'); return; }
     let offset = 0;
     for (const match of matches) {
       if (match.start > offset) parent.insertBefore(document.createTextNode(text.slice(offset, match.start)), child);
-      parent.insertBefore(this.render(match.text, active), child); offset = match.end;
+      parent.insertBefore(match.file ? this.renderFile(match.text, active) ?? document.createTextNode(match.text) : this.render(match.text, active), child); offset = match.end;
     }
     if (offset < text.length) parent.insertBefore(document.createTextNode(text.slice(offset)), child);
     (child as ChildNode).remove();
