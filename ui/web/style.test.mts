@@ -423,7 +423,7 @@ test('lean chrome: gutter-marked user turns, no pills, wrapping roster rows and 
   assert.match(rule('.message.user > .message-body::before'), /content: "";[^}]*left: 0; border-left: 2px solid var\(--accent\)/);
   assert.doesNotMatch(css, /content: "You"/);
   const circles = [...css.matchAll(/(?:^|\n)\s*([^{}]+)\{[^{}]*border-radius: 50%;/g)].map(match => match[1].replace(/\/\*[\s\S]*?\*\//g, '').trim());
-  assert.deepEqual(circles, ['.workbench-activity[data-busy=true]::before']);
+  assert.deepEqual(circles, ['.composer-state::before', '.workbench-activity[data-busy=true]::before']);
   for (const value of declarations('border-radius')) if (value !== '50%') assert.doesNotMatch(value, /999|50%|9999/);
   assert.match(rule('.communication-unverified'), /display: inline-flex;[^}]*align-items: center;[^}]*width: auto/);
   assert.match(rule('.communication-unverified > .card-action-label'), /white-space: nowrap/);
@@ -879,12 +879,34 @@ test('drawer and overflow controls share accessible inline stroke icons', async 
   assert.doesNotMatch(css, /\.tab-overflow\s*\{|\.tab-actions\s*\{/);
 });
 
+test('each element of the composer control row reads as what it is, with tokens only and no resting fill', () => {
+  const state = rule('.composer-state');
+  assert.match(state, /gap: 6px[^}]*padding-left: 10px; border-left: 1px solid var\(--rule\); color: var\(--muted\); font-size: 13px/);
+  assert.match(rule('.composer-state::before'), /width: 6px; height: 6px; border: 1\.5px solid var\(--dim\); border-radius: 50%/);
+  assert.match(rule('.composer-state[data-tone=warning]::before'), /border-color: var\(--warning\); background: var\(--warning\)/);
+  assert.match(rule('.composer-state[data-tone=error]::before'), /border-color: var\(--error\); background: var\(--error\)/);
+  assert.match(rule('.composer-state.sr-only::before'), /display: none/);
+  assert.match(rule('.composer-model, .composer-thinking'), /position: relative; min-width: 0; min-height: 30px; padding: 0 7px 0 8px[^}]*color: var\(--fg\)[^}]*overflow: hidden; text-overflow: ellipsis/);
+  assert.doesNotMatch(rule('.composer-model, .composer-thinking'), /display|align-items|gap/, 'the pickers stay ordinary blocks so the ellipsis can draw');
+  assert.match(rule('.composer-model:not(:disabled), .composer-thinking:not(:disabled)'), /padding-right: 20px/, 'room for the chevron only when the picker has one');
+  assert.match(rule('.composer-thinking'), /color: var\(--muted\)/);
+  const chevron = rule('.composer-model:not(:disabled)::after, .composer-thinking:not(:disabled)::after');
+  assert.match(chevron, /position: absolute; right: 8px; top: 50%; width: 5px; height: 5px; margin-top: -5px; border-right: 1\.5px solid var\(--dim\); border-bottom: 1\.5px solid var\(--dim\); transform: rotate\(45deg\)/);
+  assert.match(rule('.composer-settings-text'), /color: var\(--dim\)/); assert.match(rule('.composer-settings-effort'), /color: var\(--dim\)/);
+  assert.doesNotMatch(css, /\.composer-settings-text[^{}]*::after|\.composer-settings-effort[^{}]*::after/, 'an agent model is a fact and carries no chevron');
+  assert.match(rule('.attachment-sources'), /color: var\(--fg\)/);
+  for (const selector of ['.composer-state', '.composer-model, .composer-thinking', '.composer-settings-text', '.attachment-sources', '.composer-state-detail']) {
+    assert.doesNotMatch(rule(selector), /background|box-shadow/, selector);
+    for (const radius of rule(selector).matchAll(/border-radius: (\d+)px/g)) assert.ok(Number(radius[1]) <= 6, selector);
+  }
+  assert.match(css, /@container composer \(max-width: 460px\) \{\s*\.composer-thinking, \.composer-settings-effort \{ display: none; \}/, 'the effort and its chevron leave together');
+});
 test('the history note and composer state are plain lines with flat actions', () => {
   assert.match(rule('.history-note'), /flex: none/); assert.match(rule('.history-note > p'), /font-weight: 400/);
   assert.match(rule('.history-note'), /display: flex; flex: none; flex-wrap: wrap/);
   assert.match(rule('.history-note > button, #agent-message-retry'), /border: 0; border-radius: 0/);
   assert.doesNotMatch(rule('.history-note > button, #agent-message-retry'), /box-shadow|background/); assert.doesNotMatch(css, /agent-start-help|agent-absent|\.agent-state/);
-  assert.match(rule('.composer-state'), /display: inline-flex; flex: 0 1 auto; align-items: center/); assert.doesNotMatch(rule('.composer-state'), /border|background|box-shadow/);
+  assert.match(rule('.composer-state'), /display: inline-flex; flex: 0 1 auto; align-items: center/); assert.doesNotMatch(rule('.composer-state'), /background|box-shadow|border(?!-left: 1px solid var\(--rule\))/);
   assert.match(rule('.composer-state-label'), /overflow: hidden; text-overflow: ellipsis; white-space: nowrap/); assert.doesNotMatch(css, /\.composer-state-line \{/);
   assert.match(rule('.conversation'), /display: flex; flex-direction: column;[^}]*min-height: 0/);
   assert.match(rule('.transcript-region'), /display: grid; grid-template-rows: minmax\(0,1fr\); flex: 1;[^}]*min-height: 0/);
@@ -1119,7 +1141,7 @@ test('the message box handle is a short grip on the surface edge and the model s
   assert.match(rule('.composer-input:hover > .resizer[data-axis=y]::after'), /opacity: 1/);
   assert.doesNotMatch(css, /\.composer-state[^{}]*~\s*\.composer-settings/, 'a visible state note never moves the model to the left');
   assert.match(rule('.composer-settings'), /margin: 0 6px 0 auto/);
-  assert.match(rule('.composer-state'), /margin: 0 0 0 6px/);
+  assert.match(rule('.composer-state'), /margin: 0 0 0 2px/);
   assert.match(rule('.composer-state[data-tone=error]'), /color: var\(--error\)/); assert.match(rule('.composer-state[data-tone=warning]'), /color: var\(--warning\)/);
   const narrow = media('@container composer (max-width: 460px)');
   assert.match(narrow, /\.composer-state:not\(\[data-tone\]\) > :not\(\.composer-state-line\) \{ display: none; \}/);

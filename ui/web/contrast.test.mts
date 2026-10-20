@@ -52,6 +52,7 @@ const decorativeHairlines = new Set([
 	".receipt-details pre|border",
 	".send:disabled|border-color",
 	".send[data-kind=recovery]|border-color",
+	".composer-state|border-left",
 	".command-menu|border",
 	"dialog|border",
   "dialog[open][data-variant=find]|border-top",
@@ -70,6 +71,8 @@ const graphicForegrounds = new Map([
 const graphicBackgrounds = new Map([
   [".pane-split > .pane-divider:hover::after", "edge"],
   [".pane-split > .pane-divider:focus-visible::after", "accent"],
+  [".composer-state[data-tone=warning]::before", "warning"],
+  [".composer-state[data-tone=error]::before", "error"],
 
 ]);
 const graphicShadows = new Map([

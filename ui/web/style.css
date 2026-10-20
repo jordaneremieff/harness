@@ -430,7 +430,12 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .history-note[hidden] { display: none; }
 .history-note > p { margin: 0; font-size: inherit; font-weight: 400; overflow-wrap: anywhere; }
 .history-note > button, #agent-message-retry { padding: 4px 0; border: 0; border-radius: 0; }
-.composer-state { display: inline-flex; flex: 0 1 auto; align-items: center; min-width: 0; margin: 0 0 0 6px; color: var(--muted); font-size: 13px; }
+/* A state note reads as a state: a hairline divider from the add control, then a status ring in the tone color (outlined when the note has no tone). */
+.composer-state { display: inline-flex; flex: 0 1 auto; align-items: center; gap: 6px; min-width: 0; margin: 0 0 0 2px; padding-left: 10px; border-left: 1px solid var(--rule); color: var(--muted); font-size: 13px; line-height: 18px; }
+.composer-state::before { content: ''; flex: none; width: 6px; height: 6px; border: 1.5px solid var(--dim); border-radius: 50%; }
+.composer-state[data-tone=warning]::before { border-color: var(--warning); background: var(--warning); }
+.composer-state[data-tone=error]::before { border-color: var(--error); background: var(--error); }
+.composer-state.sr-only::before { display: none; }
 .composer-state[hidden] { display: none; }
 .composer-state[data-tone=error] { color: var(--error); }
 .composer-state[data-tone=warning] { color: var(--warning); }
@@ -847,12 +852,15 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
 .composer-input > .composer-line { grid-column: 2; grid-row: 3; align-self: start; padding: 4px 6px 0 0; }
 /* Model and effort stay at the right of the control row in every state; a state note takes the space beside the add control. */
 .composer-settings { display: flex; flex: 0 1 auto; align-items: center; min-width: 0; margin: 0 6px 0 auto; }
-.composer-model, .composer-thinking { min-width: 0; min-height: 30px; padding: 0 6px; border-radius: 4px; color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.composer-thinking { color: var(--dim); }
+/* The Primary's model and effort are pickers: the model reads as a control, both carry a chevron. An agent's model and effort are facts and stay quiet. */
+.composer-model, .composer-thinking { position: relative; min-width: 0; min-height: 30px; padding: 0 7px 0 8px; border-radius: 4px; color: var(--fg); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.composer-thinking { color: var(--muted); }
+.composer-model:not(:disabled), .composer-thinking:not(:disabled) { padding-right: 20px; }
+.composer-model:not(:disabled)::after, .composer-thinking:not(:disabled)::after { content: ''; position: absolute; right: 8px; top: 50%; width: 5px; height: 5px; margin-top: -5px; border-right: 1.5px solid var(--dim); border-bottom: 1.5px solid var(--dim); transform: rotate(45deg); }
 .composer-model:not(:disabled):hover, .composer-thinking:not(:disabled):hover { color: var(--fg); }
 .composer-input :is(.latest, .attachment-sources, .composer-model, .composer-thinking):not(:disabled):hover { background: var(--canvas); }
 .composer-settings-separator { display: none; }
-.composer-settings-text { min-width: 0; overflow: hidden; color: var(--muted); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; cursor: default; }
+.composer-settings-text { min-width: 0; overflow: hidden; color: var(--dim); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; cursor: default; }
 .composer-settings-effort { color: var(--dim); }
 .composer-recall { display: flex; flex: 0 1 auto; order: -1; align-items: center; gap: 6px; min-width: 0; max-width: 55%; margin-left: 6px; color: var(--muted); font-size: 13px; }
 .composer-recall[hidden] { display: none; }
@@ -916,7 +924,7 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
 .attachment-dialog > img { display: block; max-width: 100%; max-height: 65dvh; margin: 8px auto; object-fit: contain; }
 .composer-intake { display: inline-flex; flex: none; align-items: center; margin-right: auto; }
 .attach { min-height: 28px; padding: 2px 6px; color: var(--muted); font-size: 13px; }
-.attachment-sources { width: 30px; height: 30px; min-width: 30px; min-height: 30px; border-radius: 4px; }
+.attachment-sources { width: 30px; height: 30px; min-width: 30px; min-height: 30px; border-radius: 4px; color: var(--fg); }
 .working-file-filter { display: block; width: 100%; margin: 8px 0; }
 .working-file-list { max-height: 36dvh; overflow: auto; }
 .working-file-row { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 28px; text-align: left; }
