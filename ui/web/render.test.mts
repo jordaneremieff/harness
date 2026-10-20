@@ -1124,7 +1124,7 @@ test('the browser copy of a sent message reads as the operator\'s own with its d
   view.set([echo('a', 'Sending…'), echo('b', 'Sent'), echo('c', 'Message not sent', 'Message not sent'), echo('d', 'Delivery not confirmed', 'Delivery not confirmed')]); flush();
   const root = node('primary-transcript'); assert.doesNotMatch(root.textContent, /Record/);
   assert.deepEqual(root.querySelectorAll('.message-role').map(role => role.textContent), ['You', 'You', 'You', 'You']);
-  assert.deepEqual(root.querySelectorAll('.message-delivery').map(item => [item.textContent, item.hidden]), [['· Sending…', false], ['· Sent', false], ['· Not sent', false], ['· Delivery not confirmed', false]]);
+  assert.deepEqual(root.querySelectorAll('.message-delivery').map(item => [item.textContent, item.hidden]), [['· Sending…', false], ['· Sent', false], ['', true], ['', true]]);
   const errors = root.querySelectorAll('.message-error');
   assert.deepEqual(errors.map(item => [item.hidden, item.textContent]), [[true, ''], [true, ''], [false, 'Message not sent'], [false, 'Delivery not confirmed']]);
   assert.equal(errors[2]?.querySelector('details'), null); assert.equal(errors[2]?.className, 'error message-error');

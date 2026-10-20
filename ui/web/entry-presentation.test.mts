@@ -10,8 +10,8 @@ test('a browser-owned input copy states its delivery word beside the role label'
   const echo = (delivery: unknown): EntryView => ({id: 'ui-input:1', kind: 'ui.input', data: {value: {delivery}, truncated: false}});
   assert.equal(inputDelivery(echo('Sending…')), 'Sending…');
   assert.equal(inputDelivery(echo('Sent')), 'Sent');
-  assert.equal(inputDelivery(echo('Message not sent')), 'Not sent', 'the heading omits the repeated word message');
-  assert.equal(inputDelivery(echo('Delivery not confirmed')), 'Delivery not confirmed');
+  assert.equal(inputDelivery(echo('Message not sent')), undefined, 'a failure shows once, in the error line');
+  assert.equal(inputDelivery(echo('Delivery not confirmed')), undefined);
   assert.equal(inputDelivery(echo(42)), undefined); assert.equal(inputDelivery(echo('')), undefined);
   assert.equal(inputDelivery({id: 'm', kind: 'message'}), undefined);
   assert.equal(inputDelivery({id: 'v', kind: 'vendor.thing', data: {value: {delivery: 'Sent'}, truncated: false}}), undefined, 'only the browser copy kind carries a delivery word');

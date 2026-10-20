@@ -24,12 +24,11 @@ export function entryVisible(entry: EntryView): boolean {
   if (entry.messages) return entry.messages.some(message => presentMessage(message).visible);
   return true;
 }
-/** A browser-owned input copy states its delivery beside the role label; the stored label stays unchanged for recall. */
+/** A browser-owned input copy states its delivery beside the role label; a failure shows once, in the error line. */
 export function inputDelivery(entry: EntryView): string | undefined {
   if (entry.kind !== 'ui.input' || !entry.data) return undefined;
   const label = record(entry.data).delivery;
-  if (typeof label !== 'string' || !label.trim()) return undefined;
-  return label === 'Message not sent' ? 'Not sent' : label;
+  return label === 'Sending…' || label === 'Sent' ? label : undefined;
 }
 function record(display: JsonDisplay): Record<string, unknown> {
   const value = display.value;
