@@ -668,10 +668,10 @@ export function renderSidebarSections(): void {
   }
   renderSectionCounts();
 }
-/** A collapsed heading carries the size of what it hides; an expanded one shows the list itself. */
+/** Collapsed headings show file totals and published work among loaded live agents. */
 export function renderSectionCounts(): void {
-  const files = filesTree.rootCount(), agents = state.rosterOrder.length;
-  const labels = {files: files ? `${files.count}${files.more ? '+' : ''}` : '', agents: agents ? `${agents}${state.rosterMeta?.nextCursor ? '+' : ''}` : ''};
+  const files = filesTree.rootCount(), agents = state.rosterOrder.filter(identity => {const row = agentRow(identity); return row?.availability === 'live' && row.state === 'working';}).length;
+  const labels = {files: files ? `${files.count}${files.more ? '+' : ''}` : '', agents: agents ? `${agents} working` : ''};
   for (const section of ['files', 'agents'] as const) {
     const count = byId(`${section}-count`); setText(count, labels[section]); count.hidden = !sidebarSections[section] || !labels[section];
   }

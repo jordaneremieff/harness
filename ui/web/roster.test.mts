@@ -3,6 +3,7 @@ import test from 'node:test';
 import type { AgentRow, CachedRoster } from '../shared/api.ts';
 import { absoluteTime, relativeTime, timestampDetails } from './format.ts';
 import { Roster as RosterView, activityLine, publishedRetryDescription, rosterPreview } from './roster.ts';
+import {conversationPresentation, presentationGlyph} from './conversation-presentation.ts';
 
 test('roster previews project Markdown words without losing literal punctuation', () => {
   assert.equal(rosterPreview('**October 18, 2026** with `const total = 2`'), 'October 18, 2026 with const total = 2');
@@ -190,7 +191,7 @@ test('roster has sibling native actions and plain retained, idle and working sta
   assert.equal(idle.attributes['aria-current'], undefined); assert.equal(idle.query('row-select').attributes['aria-current'], 'page');
   assert.equal(stored.query('row-select').attributes['aria-current'], 'false');
   assert.equal(select.children.length, 1);
-  assert.deepEqual(select.children[0]?.children.map(child => child.className), ['row-name', 'row-identity muted', 'row-state', 'row-preview']);
+  assert.deepEqual(select.children[0]?.children.map(child => child.className), ['row-name', 'row-identity muted', 'row-state workbench-activity', 'row-preview']);
   assert.equal(stored.dataset.live, 'false'); assert.equal(idle.dataset.live, 'true'); assert.equal(working.dataset.live, 'true');
   for (const removed of ['row-word', 'row-detail', 'row-model', 'row-activity']) assert.throws(() => stored.query(removed));
   assert.equal(idle.query('row-select').title, 'idle'); assert.equal(working.query('row-select').title, 'working');
@@ -566,7 +567,7 @@ test('roster keeps callback truth and its bounded excerpt in distinct heading fi
   const roster = new RosterView(() => {}, () => {}, undefined, () => {}, () => ({label, glyph: '?', tone: 'warning'}));
   const source = row('truthful', {name: 'A complete supplied conversation name', availability: 'stored', latestReply: 'Supplied reply '.repeat(80)});
   roster.set([source]); f.flush(); const node = required(f.node.children[0]), heading = node.query('row-heading');
-  assert.deepEqual(heading.children.map(child => child.className), ['row-name', 'row-identity muted', 'row-state', 'row-preview']);
+  assert.deepEqual(heading.children.map(child => child.className), ['row-name', 'row-identity muted', 'row-state workbench-activity', 'row-preview']);
   assert.equal(heading.query('row-name').textContent, source.name); assert.equal(heading.query('row-state').textContent, label);
   assert.equal(heading.query('row-state').dataset.tone, 'warning'); assert.equal(heading.query('row-identity').hidden, true);
   assert.ok(heading.query('row-preview').textContent.startsWith('Supplied reply')); assert.ok(heading.query('row-preview').textContent.length <= 181);
@@ -575,7 +576,7 @@ test('roster keeps callback truth and its bounded excerpt in distinct heading fi
 test('quiet roster state preserves canonical accessibility, full preview and keyed actions', () => {
   const f = setup(); let hidden = true, label = 'Running';
   const roster = new RosterView(() => {}, () => {}, undefined, () => {}, () => ({label, glyph: '?', hideVisibleState: hidden}));
-  const source = row('quiet', {latestReply: `**Long** ${'unbroken'.repeat(30)}`, currentTool: {name: 'read', argument: 'source.ts'}});
+  const source = row('quiet', {state: 'idle', latestReply: `**Long** ${'unbroken'.repeat(30)}`, currentTool: {name: 'read', argument: 'source.ts'}});
   roster.set([source]); f.flush();
   const node = required(f.node.children[0]), select = node.query('row-select'), preview = node.query('row-preview'), state = node.query('row-state'), message = node.query('row-message'), age = node.query('row-age');
   assert.equal(state.hidden, true); assert.equal(state.textContent, label);
@@ -589,6 +590,25 @@ test('quiet roster state preserves canonical accessibility, full preview and key
   }
   hidden = true; label = 'Running'; roster.set([source]); f.flush(); assert.equal(state.hidden, true);
   roster.set([{...source, latestReply: ''}]); f.flush(); assert.equal(preview.hidden, true); assert.equal(preview.title, ''); assert.doesNotMatch(select.attributes['aria-description'], /Preview:/);
+});
+test('unchecked live work shows published activity without changing readiness or stored status', () => {
+  const f = setup();
+  const roster = new RosterView(() => {}, () => {}, undefined, undefined, source => {
+    const view = conversationPresentation({target: {kind: 'agent', identity: source.identity}, row: source, connected: true});
+    assert.equal(view.input, false); assert.equal(view.busy, false); assert.equal(view.tool, undefined);
+    return {label: view.activity, glyph: presentationGlyph(view), tone: view.tone, hideVisibleState: view.hideVisibleState};
+  });
+  const source = row('published-work', {currentTool: {name: 'read', argument: 'source.ts'}});
+  roster.set([source]); f.flush();
+  const node = required(f.node.children[0]), state = node.query('row-state'), select = node.query('row-select');
+  assert.equal(state.textContent, 'Working'); assert.equal(state.hidden, false); assert.equal(state.dataset.tone, 'info');
+  assert.equal(state.dataset.busy, 'true'); assert.ok(state.className.split(' ').includes('workbench-activity'));
+  assert.match(select.title, /Last reported tool · read · source.ts/); assert.match(select.attributes['aria-label'], /Working/);
+  roster.set([{...source, state: 'idle'}]); f.flush();
+  assert.equal(f.node.children[0], node); assert.equal(state.hidden, true); assert.equal(state.dataset.busy, 'false');
+  assert.doesNotMatch(select.textContent, /Ready|Idle/);
+  roster.set([{...source, availability: 'stored'}]); f.flush();
+  assert.equal(state.textContent, 'Not running'); assert.equal(state.hidden, false); assert.equal(state.dataset.busy, 'false'); assert.equal(state.dataset.tone, 'secondary');
 });
 test('resolved status overrides live catalog state and removes a stale tool without replacing the row', () => {
   const f = setup(); let label = 'Working';

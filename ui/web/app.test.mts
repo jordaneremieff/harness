@@ -1214,6 +1214,31 @@ test('a Primary that is not ready keeps its state word on the right of the row a
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({activity: 'idle'})], roster: []});
   assert.equal(byId('primary-row-meta').textContent, '');
 });
+test('collapsed Agents counts only loaded live work and never cached page size', async () => {
+  const workspace = {id: 'sidebar-work-count', revision: 1, primaryKey: 'p'};
+  const rows = Array.from({length: 20}, (_, index) => agentFixture(`sidebar-count-${index}`, {state: index < 2 ? 'working' : 'idle'}));
+  rows.push(agentFixture('sidebar-stored-work', {availability: 'stored', state: 'working'}));
+  const before = transportLog.length;
+  await arrive({workspace, primaries: [primaryFixture()], roster: rows});
+  app.state.rosterMeta = {stale: false, nextCursor: 'more-cached-agents', scan: {state: 'ready', complete: true, visited: 0, skipped: 0, omitted: 0}};
+  app.setSidebarSection('agents', true);
+  const count = byId('agents-count');
+  assert.equal(count.textContent, '2 working'); assert.equal(count.hidden, false);
+  for (const source of rows.slice(0, 2)) {
+    const state = byId('roster').querySelector(`[data-identity="${source.identity}"]`)?.querySelector('.row-state');
+    assert.ok(state); assert.equal(state.textContent, 'Working'); assert.equal(state.hidden, false); assert.equal(state.dataset.tone, 'info'); assert.equal(state.dataset.busy, 'true');
+    assert.equal(app.state.agentAvailability.has(source.identity), false);
+  }
+  const idle = byId('roster').querySelector('[data-identity="sidebar-count-2"]')?.querySelector('.row-state');
+  assert.ok(idle); assert.equal(idle.hidden, true);
+  const stored = byId('roster').querySelector('[data-identity="sidebar-stored-work"]')?.querySelector('.row-state');
+  assert.ok(stored); assert.equal(stored.textContent, 'Not running'); assert.equal(stored.hidden, false);
+  app.setSidebarSection('agents', false); assert.equal(count.hidden, true);
+  await arrive({workspace, primaries: [primaryFixture()], roster: rows.map(row => ({...row, state: 'idle'}))});
+  app.state.rosterMeta = {...app.state.rosterMeta, nextCursor: 'still-more-cached-agents'};
+  app.setSidebarSection('agents', true); assert.equal(count.textContent, ''); assert.equal(count.hidden, true);
+  assert.equal(transportLog.slice(before).some(call => call.path.endsWith('/connect') || call.path.endsWith('/start') || call.path.includes('/inputs')), false);
+});
 test('sidebar sections retain their collapsed state per workspace and tab and filter focus expands agents', async () => {
   const values = new Map<string, string>();
   Reflect.set(globalThis, 'sessionStorage', {getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => {values.set(key, value);}});

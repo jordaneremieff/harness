@@ -288,7 +288,7 @@ export class Roster {
     const node = element('div', 'agent-row'); node.setAttribute('role', 'listitem');
     const select = button('', () => { const current = this.cache.get(row.identity)?.source; if (current) this.select(current); }, 'row-select');
     node.dataset.identity = row.identity;
-    const heading = element('span', 'row-heading'); const state = element('span', 'row-state'); state.setAttribute('aria-hidden', 'true');
+    const heading = element('span', 'row-heading'); const state = element('span', 'row-state workbench-activity'); state.setAttribute('aria-hidden', 'true');
     const name = element('span', 'row-name'); const identity = element('code', 'row-identity muted'), preview=element('span','row-preview'); heading.append(name, identity, state,preview);
     const age = element('time', 'timestamp');
     const ageButton = button('', () => { cached.absolute = !cached.absolute; this.updateAge(cached, true); this.schedule(); }, 'row-age'); ageButton.append(age);
@@ -301,9 +301,15 @@ export class Roster {
     if (cached.previewSource !== source) {cached.previewSource = source; setText(cached.preview, rosterPreview(source ?? '')); cached.preview.title = cached.preview.textContent ?? '';}
     cached.preview.hidden = !cached.preview.textContent;
   }
+  private rowStatus(row: AgentRow): RosterStatus {
+    const resolved = this.resolvedStatus(row);
+    return resolved.hideVisibleState && row.availability === 'live' && row.state === 'working'
+      ? {...resolved, label: 'Working', activity: undefined, tone: 'info', hideVisibleState: false} : resolved;
+  }
   private row(row: AgentRow, identity: string): RowNode {
     const cached = this.cache.get(row.identity) ?? this.createRow(row);
-    const state = this.resolvedStatus(row); setText(cached.state, state.activity || (state.label==='Ready'?'Idle':state.label)); cached.state.hidden = state.hideVisibleState === true || !cached.state.textContent; cached.state.title = state.label; cached.state.dataset.tone = state.tone ?? 'secondary'; setText(cached.name, state.name ?? rowName(row));
+    const state = this.rowStatus(row);
+    setText(cached.state, state.activity || (state.label==='Ready'?'Idle':state.label)); cached.state.hidden = state.hideVisibleState === true || !cached.state.textContent; cached.state.title = state.label; cached.state.dataset.tone = state.tone ?? 'secondary'; cached.state.dataset.busy = String(state.label === 'Working'); setText(cached.name, state.name ?? rowName(row));
     const caption=this.captions.get(row.identity);cached.name.title=caption.source==='first-message'?'Title from first message, not a supplied name':'Conversation name';
     this.updatePreview(cached, row.latestReply);
     identity = state.name !== undefined ? state.tail ?? '' : identity; setText(cached.identity, identity); cached.identity.hidden = !identity; cached.identity.title = `Agent ID: ${row.identity}`;
