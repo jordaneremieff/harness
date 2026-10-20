@@ -881,7 +881,7 @@ test('drawer and overflow controls share accessible inline stroke icons', async 
 
 test('each element of the composer control row reads as what it is, with tokens only and no resting fill', () => {
   const state = rule('.composer-state');
-  assert.match(state, /gap: 6px[^}]*padding-left: 10px; border-left: 1px solid var\(--rule\); color: var\(--muted\); font-size: 13px/);
+  assert.match(state, /gap: 6px[^}]*padding-left: 10px; border-left: 1px solid var\(--rule\); color: var\(--fg\); font-size: 13px/);
   assert.match(rule('.composer-state::before'), /width: 6px; height: 6px; border: 1\.5px solid var\(--dim\); border-radius: 50%/);
   assert.match(rule('.composer-state[data-tone=warning]::before'), /border-color: var\(--warning\); background: var\(--warning\)/);
   assert.match(rule('.composer-state[data-tone=error]::before'), /border-color: var\(--error\); background: var\(--error\)/);
@@ -892,7 +892,7 @@ test('each element of the composer control row reads as what it is, with tokens 
   assert.match(rule('.composer-thinking'), /color: var\(--muted\)/);
   const chevron = rule('.composer-model:not(:disabled)::after, .composer-thinking:not(:disabled)::after');
   assert.match(chevron, /position: absolute; right: 8px; top: 50%; width: 5px; height: 5px; margin-top: -5px; border-right: 1\.5px solid var\(--dim\); border-bottom: 1\.5px solid var\(--dim\); transform: rotate\(45deg\)/);
-  assert.match(rule('.composer-settings-text'), /color: var\(--dim\)/); assert.match(rule('.composer-settings-effort'), /color: var\(--dim\)/);
+  assert.match(rule('.composer-settings-text'), /color: var\(--dim\); font-size: 12px/); assert.match(rule('.composer-settings-effort'), /color: var\(--dim\)/);
   assert.doesNotMatch(css, /\.composer-settings-text[^{}]*::after|\.composer-settings-effort[^{}]*::after/, 'an agent model is a fact and carries no chevron');
   assert.match(rule('.attachment-sources'), /color: var\(--fg\)/);
   for (const selector of ['.composer-state', '.composer-model, .composer-thinking', '.composer-settings-text', '.attachment-sources', '.composer-state-detail']) {
