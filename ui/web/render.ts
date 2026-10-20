@@ -735,6 +735,17 @@ export class Transcript {
   loadedReference(query: ReferenceQuery, owner?: string): string | undefined {
     return loadedReference(this.entries, query, typeof query === 'string' ? this.groups.reference(query) : undefined, owner);
   }
+  /** Reveal the newest message error even when its entry is outside the virtual window. */
+  revealLatestError(): boolean {
+    const entry = this.entries.findLast(entry => entry.messages?.some(message => !!errorPresentation(message).summary));
+    if (!entry) return false;
+    this.revealEntry(entry.id, false);
+    const errors = this.cache.get(this.displayId(entry.id))?.node.querySelectorAll<HTMLElement>('.message-error');
+    const error = errors && [...errors].findLast(node => !node.hidden);
+    if (!error) return false;
+    error.scrollIntoView({block: 'center'});
+    return true;
+  }
   revealEntry(entryId: string, focus = true, callId?: string): void {
     if (!this.index.entries.has(entryId)) return;
     const id = callId ? this.rows.calls.get(callId) ?? this.displayId(entryId) : this.displayId(entryId); this.follow = false; this.pins.clear(); this.pins.add(entryId);

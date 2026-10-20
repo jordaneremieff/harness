@@ -698,7 +698,9 @@ test('editor and transcript share a centered bounded column without moving the n
   }
 });
 test('exceptional tab state remains readable while names use bounded tab widths', () => {
-  assert.match(rule('.tab-dot'), /max-width: 12ch; overflow: hidden/);
+  assert.match(rule('.tab-dot'), /flex: none/);
+  assert.doesNotMatch(rule('.tab-dot'), /max-width:|overflow: hidden/);
+  assert.doesNotMatch(rule('.conversation-state'), /max-width:|overflow: hidden/);
   assert.doesNotMatch(css, /\.tab-state\s*\{/);
   assert.match(rule('.conversation-tabs[data-sole=true] > .conversation-tab'), /flex: 0 1 240px/);
   assert.match(rule('.conversation-tabs'), /min-width: 0; overflow-x: auto/);
@@ -743,7 +745,7 @@ test('long tab names ellipsize without crowding their status and close action', 
   assert.match(tab, /flex: 0 0 auto/);
   assert.match(tab, /min-width: 140px; max-width: 240px/);
   assert.match(rule('.tab-label'), /flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis/);
-  assert.match(rule('.tab-dot'), /max-width: 12ch/);
+  assert.match(rule('.tab-dot'), /flex: none;[^}]*white-space: nowrap/);
   assert.match(media('@media (pointer:coarse)'), /\.conversation-tab \{ --tab-chrome: 90px; \}/);
   assert.match(rule('.conversation-tabs'), /scrollbar-color: transparent transparent/);
   assert.match(rule('.tab-close'), /flex: none/);

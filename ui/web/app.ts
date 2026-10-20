@@ -42,7 +42,9 @@ import { ReferenceResolver, type ReferenceDestination, type ReferenceQuery, type
 import { imageUrl } from './image.ts';
 import { historyBecameReady, pageToReadingAnchor } from './transcript-history.ts';
 import { IdentityLookup } from './identity-lookup.ts';
-import { Roster } from './roster.ts';
+import { Roster, rosterWorking, type RosterStatus } from './roster.ts';
+import {conversationAttention, attentionCounts, type Attention} from './attention.ts';
+import {activeDialog} from './dialog-state.ts';
 import { ThreadExplorer, ThreadReader } from './threads-view.ts';
 import { THREAD_PAGE_EVENTS } from './threads.ts';
 import {noticeGroups, noticeGroupText, noticeTarget, type NoticeGroup} from './notice-presentation.ts';
@@ -316,7 +318,7 @@ const paneSplits = new Map<string, {node: HTMLElement; handle: HTMLElement; resi
 const tabStrip = new TabStrip({layout: currentLayout, activate: activateConversationTab, close: key => applyLayout(closeTab(currentLayout(), key)),
   move: (key, pane, index) => {fileBrowse.keep(key);applyLayout(movePaneTab(currentLayout(), key, pane, index));}, label: tabLabel,unnamed:unnamedTab,keep:key=>fileBrowse.keep(key),
   identity: tab => tab.kind !== 'file' ? tabPresentation(tab).identityTail ?? '' : undefined,
-  status: tab => { if (tab.kind === 'file') {const owner = state.workspace && filesViews.owner(state.workspace.id,tab);return {label:owner?.modified ? 'Modified' : '',glyph:owner?.modified ? '•' : '',tone:owner?.modified ? 'warning' : 'secondary'};}const view = tabPresentation(tab); return {label: [view.activity, view.tool?.name].filter(Boolean).join(' · '), glyph: presentationGlyph(view), tone:view.tone}; },
+  status: tab => { if (tab.kind === 'file') {const owner = state.workspace && filesViews.owner(state.workspace.id,tab);return {label:owner?.modified ? 'Modified' : '',glyph:owner?.modified ? '•' : '',tone:owner?.modified ? 'warning' : 'secondary'};}const view = tabPresentation(tab), attention = attentionFor(controllerTarget(tab)); return {label: [attention?.label, view.activity, view.tool?.name].filter(Boolean).join(' · '), glyph: presentationGlyph(view), tone:view.tone, attention}; },
   overflow: (overflow, pane) => { const region = paneRegions.get(pane); if (region) region.menu.dataset.overflow = String(overflow); }},
   {panes: () => [...paneRegions].map(([id, pane]) => ({id, tabs: pane.tabs, controls: [...controllers.values()].find(owner => stableViews().slot(owner.root) === pane.content)?.root.id ?? pane.content.id})), conversations: byId('sidebar-conversations')});
 let fileActionStatus = '';
@@ -528,7 +530,11 @@ const recovery = new Recovery({snapshot: currentSnapshot, reload, modal});
 const roster = new Roster(row => { void selectAgent(row).catch(showError); }, action => { if (action === 'refresh') refreshRoster(); else moreRoster(); }, {
   load: (cursor, signal) => request<import('../shared/api.ts').CachedRoster>(`/api/agents?limit=20&cursor=${encodeURIComponent(cursor)}`, 'GET', undefined, undefined, signal),
   merge: page => { state = mergeRosterPage(state, page); renderRoster(); },
-}, openAgentMessage, row => { const view = presentation({kind: 'agent', identity: row.identity}); return {glyph: presentationGlyph(view), label: view.activity, hideVisibleState: view.hideVisibleState, tool: view.tool, tone:view.tone, name:view.name, tail:view.identityTail}; });
+}, openAgentMessage, rosterStatus);
+function rosterStatus(row: AgentRow): RosterStatus {
+  const target = {kind: 'agent' as const, identity: row.identity}, view = presentation(target);
+  return {glyph: presentationGlyph(view), label: view.activity, hideVisibleState: view.hideVisibleState, tool: view.tool, tone:view.tone, name:view.name, tail:view.identityTail, attention: attentionFor(target)};
+}
 /** Threads: the sidebar explorer, and one reader placed in the pane that was focused when a thread was opened. It is not part of the saved layout. */
 let threadHost: ConversationController | undefined, threadOpener: string | undefined;
 /** Known name, then a Pi session title the browser already holds, then the short identity. Never a kind the browser does not know. */
@@ -680,10 +686,13 @@ export function renderSidebarSections(): void {
   }
   renderSectionCounts();
 }
-/** Agent headings keep published work visible; file totals appear only above a closed tree. */
+/** Agent headings count attention before work; file totals appear only above a closed tree. */
 export function renderSectionCounts(): void {
-  const files = filesTree.rootCount(), agents = state.rosterOrder.filter(identity => {const row = agentRow(identity); return row?.availability === 'live' && row.state === 'working';}).length;
-  const labels = {files: files ? `${files.count}${files.more ? '+' : ''}` : '', agents: agents ? `${agents} working` : ''};
+  const files = filesTree.rootCount(), agents = state.rosterOrder.flatMap(identity => {
+    const row = state.roster.get(identity); if (!row) return [];
+    const status = rosterStatus(row); return [{attention: status.attention, working: rosterWorking(row, status)}];
+  });
+  const labels = {files: files ? `${files.count}${files.more ? '+' : ''}` : '', agents: attentionCounts(agents)};
   for (const section of ['files', 'agents'] as const) {
     const count = byId(`${section}-count`); setText(count, labels[section]); count.hidden = !labels[section] || section === 'files' && !sidebarSections.files;
   }
@@ -778,6 +787,19 @@ function refreshCaptionConsumers(): void {
 function targetCaption(target?: Target) {return target?.kind === 'agent' ? presentationCaptions().get(target.identity) : undefined;}
 function startAttempt(target?: Target): {pending: boolean; reason?: string} | undefined {
   return target?.kind === 'agent' && state.workspace ? agentStarts.get(agentStartKey(state.workspace.id, target.identity)) : undefined;
+}
+function attentionFor(target?: Target): Attention | undefined {
+  if (!target) return;
+  const controller = state.workspace ? controllers.get(controllerKey(state.workspace.id, target)) : undefined;
+  const conversation = state.conversations.get(targetIdentity(target));
+  if (target.kind === 'primary') {
+    const primary = state.primaries.get(target.key);
+    if (primary?.epoch !== target.epoch) return;
+    return conversationAttention({connected, primary, question: !!activeDialog(state.dialogs, target), outcome: presentation(target).responseOutcome});
+  }
+  const live = liveConnection(controller), availability = live?.availability ?? state.agentAvailability.get(target.identity)?.state ?? agentRow(target.identity)?.availability;
+  const observed = conversation?.connectionEpoch !== undefined && conversation.connectionEpoch === state.agentEpochs.get(target.identity);
+  return conversationAttention({connected, agent: {live: observed && availability === 'live', connectionError: controller?.connectionError, frame: conversation?.frame}});
 }
 function presentation(target?: Target): ConversationPresentation {
   const row = target?.kind === 'agent' ? agentRow(target.identity) : undefined;
@@ -903,6 +925,20 @@ function activateConversationTab(pane: string, key: string): void {
   const layout = activatePaneTab(currentLayout(), pane, key); if (paneById(layout, pane)?.active !== key) return;
   const target = layoutTarget(layout, primaryTarget()); if (target&&!conversationController(target).inspection?.active) conversationController(target).passive = false;
   applyLayout(layout); focusEditor();
+  if (target) revealAttention(target);
+}
+function revealAttention(target: Target): void {
+  const attention = attentionFor(target); if (!attention || attention.label === 'Question') return;
+  const workspace = state.workspace?.id;
+  requestAnimationFrame(() => {
+    if (state.workspace?.id !== workspace || !sameTarget(target, layoutTarget(currentLayout(), primaryTarget()) ?? undefined)) return;
+    const controller = workspace ? controllers.get(controllerKey(workspace, target)) : undefined;
+    if (!controller || controller.root.hidden || !attentionFor(target)) return;
+    if (!controller.transcript.revealLatestError()) {
+      const line = controller.elements.root.querySelector<HTMLElement>('.composer-state');
+      (line && !line.hidden ? line : controller.elements.root).scrollIntoView({block: 'nearest'});
+    }
+  });
 }
 function moveRetained(node: HTMLElement, parent: HTMLElement): void {
   if (node.parentElement === parent) return;
@@ -1272,13 +1308,13 @@ function applyShellEvent(event:ReceivedEvent):void {
     case 'operation.changed': showOperation(event.envelope.data as OperationView);break;
     case 'notice': {const notice = event.envelope.data as EventData['notice'];if (notice.code?.startsWith('control_')) {controlStatus = notice.message;controlStatusWorkspace = state.workspace?.id;renderWorkbenchStatus();}noticesBadge();break;}
     case 'extension.request': applyExtension(event);break;
-    case 'extension.expired': extensionDialogs.update();break;
+    case 'extension.expired': extensionDialogs.update();tabStrip.render();break;
   }
 }
 function renderPrimaryEvent(event: ReceivedEvent): void {
   const target = event.envelope.target; const controller = target && state.workspace ? controllers.get(controllerKey(state.workspace.id, target)) : undefined;
   if (controller) controller.transcript.defer(() => renderController(controller), event.receivedAt);
-  if (event.name === 'primary.tool') { tabStrip.render(); renderIdentity(); }
+  if (event.name === 'primary.tool' || event.name === 'primary.message' && (event.envelope.data as EventData['primary.message']).message.state === 'final') { tabStrip.render(); renderIdentity(); }
   if (event.name === 'primary.message' && (event.envelope.data as EventData['primary.message']).message.state === 'final') renderPrimaryUsage(primary());
 }
 function renderRosterEvent(event: ReceivedEvent): void {
@@ -1299,17 +1335,18 @@ function renderObservedAgent(data: EventData['agent.frame'], receivedAt?: number
   const target = {kind: 'agent' as const, identity: data.identity}; const controller = state.workspace ? controllers.get(controllerKey(state.workspace.id, target)) : undefined;
   const conversation = state.conversations.get(targetIdentity(target)); if (conversation?.connectionEpoch !== data.connectionEpoch || conversation.frame?.revision !== data.frame.revision || (conversation.frame.attachmentRevision ?? 0) !== (data.frame.attachmentRevision ?? 0)) return;
   if (controller) renderController(controller, true, receivedAt);
-  tabStrip.render(); renderIdentity();
+  tabStrip.render(); renderIdentity(); roster.schedule(); renderSectionCounts();
   if (footerController?.target.kind === 'agent' && footerController.target.identity === data.identity) renderAgentSettings(presentation(target), target);
 }
 function awaitingAnswer(target: Target): boolean { return sameTarget(target, primaryTarget()) && extensionDialogs.awaiting(); }
 function syncAwaitingAnswer(): void {
   const target = primaryTarget(); if (!target || !state.workspace) return;
   controllers.get(controllerKey(state.workspace.id, target))?.composer.awaitingAnswer(awaitingAnswer(target));
+  tabStrip.render();
 }
 function applyExtension(event: ReceivedEvent): void {
   const data = event.envelope.data as EventData['extension.request'];
-  if ('id' in data) { extensionDialogs.update(); return; }
+  if ('id' in data) { extensionDialogs.update(); tabStrip.render(); return; }
   if (data.method === 'notify') noticesBadge();
   else if (data.method === 'set_editor_text' && sameTarget(event.envelope.target, primaryTarget())) primaryComposer().suggest(data.text);
   else if (sameTarget(event.envelope.target, primaryTarget())) renderPrimaryExtensions();
@@ -1529,7 +1566,7 @@ function renderComposerSettings(controller: ConversationController, view: Conver
   }
 }
 function controllerPreparationFailed(controller: ConversationController, error: unknown): void {
-  if (controller.target.kind === 'agent') {controller.connectionError = errorMessage(error); renderAgentState(controller);}
+  if (controller.target.kind === 'agent') {controller.connectionError = errorMessage(error); renderAgentState(controller); renderRoster();}
   else if (!targetState(controller.target)) showStatusError(controllerNode(controller, 'view-notice'), 'Conversation could not be prepared.', error, 'preparation-error');
 }
 export function primaryChrome(item?: PrimaryView): void {
@@ -1735,7 +1772,7 @@ function renderAgentState(controller: ConversationController): void {
 /** Repeats the target preparation for an agent whose connection facts belong to a closed stream. A person who acted from the composer keeps focus in it when the repeat ends. */
 function prepareAgentConnection(controller: ConversationController, keepFocus = false): void {
   if (controller.target.kind !== 'agent' || controller.refreshing || controller.abort.signal.aborted || !connected || controller.workspaceId !== state.workspace?.id) return;
-  controller.refreshing = true; controller.connectionError = undefined; renderAgentState(controller);
+  controller.refreshing = true; controller.connectionError = undefined; renderAgentState(controller); renderRoster();
   const connection = source;
   void request<import('../shared/api.ts').TargetPreparation>(`/api/workspaces/${encodeURIComponent(controller.workspaceId)}/targets`, 'POST', {target: controller.target}, undefined, controller.abort.signal)
     .then(prepared => applyPreparation(controller, prepared, connection))
@@ -1850,7 +1887,7 @@ function renderAvailability(): void {
     controllerNode(controller, 'stop').hidden = !canStopController(controller); renderControllerEmpty(controller); renderComposerSettings(controller,view);
   }
   if (!connected && messageTarget.current) {messageTarget.current.invalidated = true; messageTarget.current.preparing = false; messageTarget.current.error = 'The browser connection changed. Check the agent connection again.';}
-  if (messageTarget.current) renderMessagePanel(); renderIdentity(); tabStrip.render();
+  if (messageTarget.current) renderMessagePanel(); renderIdentity(); tabStrip.render(); roster.schedule(); renderSectionCounts();
 }
 export async function selectAgent(row: AgentRow): Promise<void> {
   conversationController({kind: 'agent', identity: row.identity}).passive = false;
@@ -1858,6 +1895,7 @@ export async function selectAgent(row: AgentRow): Promise<void> {
   const applied = selection({panelVisible: true, selectedTarget: {kind: 'agent', identity: row.identity}});
   focusEditor(); await applied;
   if (selectedAgent() === row.identity && (document.activeElement === origin || document.activeElement === document.body)) focusEditor();
+  revealAttention({kind: 'agent', identity: row.identity});
 }
 async function loadVisibleHistory(): Promise<void> {
   await Promise.all(paneLeaves(currentLayout().root).flatMap(pane => { const tab = pane.tabs.find(tab => tabKey(tab) === pane.active), target = tab ? controllerTarget(tab) : undefined; return target ? [loadControllerHistory(conversationController(target))] : []; }));

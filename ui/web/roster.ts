@@ -7,6 +7,7 @@ import { absoluteTime, compactAge, isValidTimestamp, previewText, relativeTime, 
 import { reconcileChildren } from './render.ts';
 import {ConversationCaptions, agentName} from './tabs.ts';
 import type {PresentationTone} from './conversation-presentation.ts';
+import type {Attention} from './attention.ts';
 import {parseMarkdown, type MarkdownBlock, type MarkdownInline} from './markdown.ts';
 import {THREAD_FILTER_THRESHOLD} from './threads.ts';
 
@@ -33,7 +34,10 @@ export function rosterPreview(source: string): string {
   return previewText(words, 1, 180).text;
 }
 function rowName(row: AgentRow): string {return agentName(row.name, row.handle, row.identity, undefined, row.firstMessage);}
-export type RosterStatus = {hideVisibleState?: boolean; glyph: string; label: string; tone?: PresentationTone; name?: string; tail?: string; tool?: AgentRow['currentTool']};
+export type RosterStatus = {attention?: Attention; hideVisibleState?: boolean; glyph: string; label: string; tone?: PresentationTone; name?: string; tail?: string; tool?: AgentRow['currentTool']};
+export function rosterWorking(row: AgentRow, status: RosterStatus): boolean {
+  return status.label === 'Working' || status.hideVisibleState === true && row.availability === 'live' && row.state === 'working';
+}
 function modelText(row: AgentRow): string {
   if (!row.model) return '';
   const thinking = row.model.thinkingLevel ?? row.thinkingLevel;
@@ -241,10 +245,12 @@ export class Roster {
   private paint(): void {
     const anchor = captureAnchor(this.layout, this.node.scrollTop); const pins = this.pins();
     const now = Date.now(); const filtered = this.filtered(); const query = this.query(); this.filterVisibility(query);
-    const scoped = query ? filtered : filtered.filter(row => row.availability === 'live' || row.state === 'working' ||
+    const scoped = query ? filtered : filtered.filter(row => this.rowStatus(row).attention || row.availability === 'live' || row.state === 'working' ||
       (isValidTimestamp(row.modifiedAt) && row.modifiedAt >= now - RECENT_AGE) || pins.has(row.identity) || this.resumes.has(row.identity));
     const olderCount = filtered.length - scoped.length;
     const rows = this.expanded && !query ? filtered : scoped;
+    const priorities = new Map(rows.map(row => {const status = this.rowStatus(row); return [row.identity, status.attention ? 0 : rosterWorking(row, status) ? 1 : 2];}));
+    rows.sort((a, b) => (priorities.get(a.identity) ?? 2) - (priorities.get(b.identity) ?? 2));
     this.layout = layoutItems(rows.map(row => row.identity), this.heights, ROW_HEIGHT);
     if (anchor) pins.add(anchor.id);
     const selected = rows.length > 100 ? visibleWindow(this.layout, this.node.scrollTop, this.node.clientHeight, {pins}).items : this.layout.items;
@@ -312,7 +318,8 @@ export class Roster {
   }
   private rowStatus(row: AgentRow): RosterStatus {
     const resolved = this.resolvedStatus(row);
-    return resolved.hideVisibleState && row.availability === 'live' && row.state === 'working'
+    if (resolved.attention) return {...resolved, label: resolved.attention.label, tone: resolved.attention.tone, hideVisibleState: false};
+    return resolved.hideVisibleState && rosterWorking(row, resolved)
       ? {...resolved, label: 'Working', tone: 'info', hideVisibleState: false} : resolved;
   }
   private row(row: AgentRow, identity: string): RowNode {

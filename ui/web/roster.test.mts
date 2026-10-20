@@ -104,6 +104,16 @@ test('two-line roster summaries keep only the first reply line and omit empty fi
   assert.equal(summary.hidden, false); assert.equal(summary.query('row-preview').hidden, true); assert.equal(summary.query('row-separator').hidden, true);
   roster.set([{...source, state: 'idle', latestReply: ''}]); f.flush(); assert.equal(summary.hidden, true);
 });
+test('connected attention precedes Working and remaining catalog order without catalog failure inference',()=>{
+  const f=setup(); let blocked=true;
+  const roster=new RosterView(()=>{},()=>{},undefined,undefined,source=>({glyph:'?',label:source.identity==='working'?'Working':'Running',hideVisibleState:true,...(source.identity==='blocked'&&blocked?{attention:{label:'Blocked' as const,tone:'warning' as const}}:{})}));
+  const rows=[row('catalog-failure',{state:'failed',error:'Not an attention contract'}),row('working'),row('catalog-idle',{state:'idle'}),row('blocked',{availability:'stored',state:'idle',latestReply:'Reply excerpt'})];
+  roster.set(rows);f.flush();
+  const ids=()=>f.node.children.filter(node=>node.dataset.identity).map(node=>node.dataset.identity);
+  assert.deepEqual(ids(),['blocked','working','catalog-failure','catalog-idle']);
+  const node=f.node.children[0];assert.ok(node);assert.equal(node.query('row-summary').children[0]?.textContent,'Blocked');assert.equal(node.query('row-state').dataset.tone,'warning');assert.equal(node.query('row-state').hidden,false);
+  blocked=false;roster.set(rows);f.flush();assert.deepEqual(ids(),['working','catalog-failure','catalog-idle']);
+});
 test('agent filters follow the loaded eight-row threshold, query and explicit focus', () => {
   const f = setup(), roster = new Roster(() => {}, () => {}), rows = Array.from({length: 9}, (_, i) => row(`filter-${i}`));
   roster.set(rows.slice(0, 8)); f.flush(); assert.equal(f.filterBox.hidden, true);

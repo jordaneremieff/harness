@@ -115,6 +115,17 @@ test('sidebar text status keeps authored labels and retained nodes through repai
 test('tabs and sidebar marks carry explicit semantic tones without interpreting glyphs or words',()=> {
   for(const tone of ['info','success','warning','error','secondary'] as const) {const f=fixture([{kind:'agent',identity:'exact'}],{label:()=> 'Agent',status:()=>({label:'Same words',glyph:'?',tone})});assert.equal(f.root().children[0]?.querySelector('.tab-dot')?.dataset.tone,tone);assert.equal(f.rows()[0]?.querySelector('.conversation-state')?.dataset.tone,tone);assert.equal(f.root().children[0]?.querySelector('.tab-identity')?.textContent,'');event(f.rows()[0],'click');assert.equal(f.calls.at(-1),'pane-1:agent:exact');f.strip.destroy();}
 });
+test('attention words and tones replace marks without changing tab or OPEN order',()=>{
+  let attention = true;
+  const labels = ['Question','Blocked','Failed','Not reachable'] as const;
+  const tabs: ConversationTab[] = [{kind:'primary'},...['a','b','c'].map(identity=>({kind:'agent' as const,identity}))];
+  const f = fixture(tabs,{status:tab=>{const at=tabs.findIndex(value=>tabKey(value)===tabKey(tab)),label=labels[at] ?? 'Question';return {label,glyph:'?',tone:'secondary',...(attention?{attention:{label,tone:label==='Failed'?'error':'warning'}}:{})};}});
+  for(const enabled of [true,false,true]){
+    attention=enabled;f.strip.render();assert.deepEqual(f.rows().map(row=>row.dataset.tabKey),tabs.map(tabKey));assert.deepEqual(f.root().children.map(node=>node.dataset.tabKey),tabs.map(tabKey));
+    labels.forEach((label,at)=>{const mark=f.root().children[at]?.querySelector('.tab-dot'),state=f.rows()[at]?.querySelector('.conversation-state');assert.equal(mark?.textContent,enabled?label:'');assert.equal(state?.textContent,enabled?label:'');assert.equal(mark?.dataset.tone,enabled?(label==='Failed'?'error':'warning'):'secondary');});
+  }
+  f.strip.destroy();
+});
 test('owned drag moves across panes, retains the target node and does not accept an external drag', () => {
   const f=fixture(); f.split('pane-1','x','agent:b'); const source=f.root().children[1]; const target=f.root('pane-2').children[0]; assert.ok(source); assert.ok(target);
   assert.equal(event(target,'dragover').defaultPrevented,false); event(source,'dragstart'); assert.equal(event(target,'dragover').defaultPrevented,true);
