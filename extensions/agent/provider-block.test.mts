@@ -16,6 +16,7 @@ import { ProviderRetryNoticeSchema, providerNoticeRequestId, retainProviderRetry
 import { AgentDeliveryDoc, submitConversation, providerRetryReportSettled } from "./durable-controls.ts";
 import { RequestContextDoc } from "./request-context.ts";
 import { LiveDoc } from "@earendil-works/pi-durable";
+import { producerRetryFact } from "./await-observation.ts";
 
 it("classifies account exhaustion across providers without treating throttle or context rejection as exhaustion", () => {
 	for (const error of ["429 Weekly/Monthly Limit Exhausted", "usage limit reached", "insufficient_quota", "insufficient balance", "credit balance depleted", "billing_hard_limit_reached", "billing limit exhausted", "GoUsageLimitError", "FreeUsageLimitError", "subscription_sharing_usage_limit_exceeded", '{"error":{"code":"1308","message":"weekly usage limit reached"}}', '{"error":{"code":"1310","message":"insufficient balance"}}']) assert.equal(isProviderExhaustion(error), true, error);
@@ -90,7 +91,7 @@ it("explicit same-model recovery invalidates pinned dispatch and old-epoch failu
 	assert.ok(models);
 });
 
-it("notice IDs ignore observation time, include immutable result IDs and retain one report for a revision", async (t) => {
+it("retains burst facts without a preterminal report while typed retry notice IDs remain stable", async (t) => {
 	const { host } = await fixture(t);
 	const admitted = await host.submit({ message: "retained task", requestId: "provider-work", ownerId: "actual-recipient", origin: "model", requestContext: { requester: "requester", replyTo: "actual-recipient", requestId: "provider-work", origin: "model" } });
 	await host.harness.commit(async (tx) => {
@@ -98,15 +99,21 @@ it("notice IDs ignore observation time, include immutable result IDs and retain 
 		assert.ok(live.run); live.generation = { attempt: 1, retry: { at: Date.now() + 100000, error: "429 too many requests" } };
 		await retainProviderRetryNotices(tx, host.storageId, 1 as ConversationId, 21, Date.now());
 	}, BACKGROUND_CONTEXT);
-	const first = (await host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT))?.reports.filter((report) => report.providerRetry !== undefined) ?? [];
-	assert.equal(first.length, 1); assert.equal(first[0].ownerId, "actual-recipient"); assert.equal(first[0].providerRetry?.fact.execution?.results[0].submissionId, admitted.submissionId);
-	const notice = first[0].providerRetry; assert.ok(notice); assert.equal(Value.Check(ProviderRetryNoticeSchema, notice), true);
-	assert.equal(providerNoticeRequestId(first[0].ownerId, notice), providerNoticeRequestId(first[0].ownerId, { fact: { ...notice.fact, observedAt: notice.fact.observedAt + 5000 } }));
-	await host.harness.commit((tx) => retainProviderRetryNotices(tx, host.storageId, 1 as ConversationId, 21, Date.now() + 5000), BACKGROUND_CONTEXT);
-	assert.equal((await host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT))?.reports.filter((report) => report.providerRetry).length, 1);
+	const first = (await host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT))?.reports ?? [];
+	assert.equal(first.length, 0);
+	const retry = await host.harness.commit((tx) => producerRetryFact(tx, 1 as ConversationId, [{ sessionId: host.storageId, submissionId: admitted.submissionId, requestId: "provider-work" }], 21), BACKGROUND_CONTEXT);
+	assert.ok(retry);
+	const notice = { fact: { sessionId: host.storageId, observedAt: Date.now(), source: "producer await-state" as const, execution: retry } };
+	assert.equal(Value.Check(ProviderRetryNoticeSchema, notice), true);
+	assert.equal(providerNoticeRequestId("actual-recipient", notice), providerNoticeRequestId("actual-recipient", { fact: { ...notice.fact, observedAt: notice.fact.observedAt + 5000 } }));
+	await host.harness.commit(async (tx) => {
+		const live = await tx.doc(LiveDoc, 1 as ConversationId); assert.ok(live.generation); live.generation.attempt = 2;
+		await retainProviderRetryNotices(tx, host.storageId, 1 as ConversationId, 21, Date.now() + 5000);
+	}, BACKGROUND_CONTEXT);
+	assert.equal((await host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT))?.reports.length, 0);
 	assert.equal((await host.harness.snapshot(RequestContextDoc, 1 as ConversationId, BACKGROUND_CONTEXT))?.requests[0].replyTo, "actual-recipient");
 	const execution = notice.fact.execution; assert.ok(execution);
-	const missing = { ...first[0], providerRetry: { fact: { ...notice.fact, execution: { ...execution, results: [{ ...execution.results[0], requestId: "missing-input" }] } } } };
+	const missing = { sourceId: "report:missing", requestId: "missing", ownerId: "actual-recipient", senderIdentity: host.storageId, message: "retry evidence", replyTo: "actual-recipient", acknowledged: false, createdAt: Date.now(), providerRetry: { fact: { ...notice.fact, execution: { ...execution, results: [{ ...execution.results[0], requestId: "missing-input" }] } } } };
 	assert.equal(await host.harness.commit((tx) => providerRetryReportSettled(tx, missing), BACKGROUND_CONTEXT), false, "a missing native input is not terminal evidence");
 });
 

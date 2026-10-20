@@ -222,7 +222,7 @@ export interface DurableSubmitParams {
 	readonly requestContext?: RequestContext;
 	readonly providerRetry?: ProviderRetryNotice;
 	/** Trusted owner value, captured inside the existing post-admission bookkeeping commit. */
-	readonly communication?: { readonly storageId: string; readonly value: unknown };
+	readonly communication?: { readonly storageId: string; readonly value: unknown; readonly taskSender?: import("./task-senders.ts").TaskInputSender };
 }
 
 export interface RichSubmitParams {
@@ -358,7 +358,11 @@ function writeFirstMessage(meta: AgentMeta, message: UserInput | DeliveryMessage
 	if (meta.firstMessage !== null) return;
 	const text = inputText(message);
 	if (text === "") return;
-	(meta as { firstMessage: string | null }).firstMessage = text.length > 1200 ? text.slice(0, 1200) : text;
+	let end = 1200;
+	const last = text.charCodeAt(end - 1);
+	const next = text.charCodeAt(end);
+	if (last >= 0xd800 && last <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) end -= 1;
+	(meta as { firstMessage: string | null }).firstMessage = text.slice(0, end);
 }
 
 function admissionProvenance(conversationId: ConversationId, params: DurableSubmitParams): import("./awaited-results.ts").InputProvenance {
@@ -372,7 +376,7 @@ function awaitInputMode(classification: { defer: boolean; release: boolean }, mo
 }
 async function suppressAdmittedCheckIn(conversation: Conversation, submission: import("@earendil-works/pi-durable").Submission, provenance: import("./awaited-results.ts").InputProvenance, context: Context, communication: DurableSubmitParams["communication"], now: () => number, deduped: boolean): Promise<void> {
 	const decision = await conversation.commit(async (tx) => {
-		const capture = communication === undefined ? undefined : await prepareAdmittedCapture(tx, communication.storageId, conversation.id, provenance.requestId, submission.id, communication.value, now, deduped);
+		const capture = communication === undefined ? undefined : await prepareAdmittedCapture(tx, communication.storageId, conversation.id, provenance.requestId, submission.id, communication.value, now, deduped, communication.taskSender);
 		const classified = await classifyAwaitInput(tx, provenance);
 		await recordInputProvenance(tx, provenance);
 		if (capture !== undefined) await capture();

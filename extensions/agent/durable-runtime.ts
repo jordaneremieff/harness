@@ -23,7 +23,8 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import { dirname } from "node:path";
 import { clampThinkingLevel, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { AgentCatalog, hostMetadata, storageIdOf, type CatalogRecord } from "./catalog.ts";
-import { boundCatalogView, withModelEvidence } from "./catalog-view.ts";
+import { boundCatalogView, withAttentionHints, withModelEvidence } from "./catalog-view.ts";
+import { projectCatalogAttention } from "./catalog-attention.ts";
 import { observeColdStorage } from "./cold-observation.ts";
 import { acquireHost } from "./host-client.ts";
 import type { HostMetadata } from "./host-protocol.ts";
@@ -175,10 +176,12 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 			try {
 				const projection = await host.catalogProjection();
 				const base = boundCatalogView({ updatedAt: projection.updatedAt, rows: projection.rows, storageId: metadata.storageId });
-				const ids = base.rows.map((row) => row.id === metadata.storageId ? ROOT_CONVERSATION_ID : Number(row.id.split(":")[1]) as ConversationId);
-				const profiles = await projectProfiles(host.harness, metadata.storageId, ids);
+				const attentionSources = base.rows.map((row) => ({ identity: row.id, conversationId: row.id === metadata.storageId ? ROOT_CONVERSATION_ID : Number(row.id.split(":")[1]) as ConversationId, state: row.state }));
+				const profiles = await projectProfiles(host.harness, metadata.storageId, attentionSources.map((source) => source.conversationId));
 				const profiled = withProfileHints(base, { ...profiles, coverage: { complete: profiles.coverage.complete && base.coverage.omitted === 0, omitted: profiles.coverage.omitted + base.coverage.omitted } });
-				const view = withModelEvidence(profiled, projection.modelEvidence);
+				const attention = await projectCatalogAttention(host.harness, attentionSources);
+				const attentive = withAttentionHints(profiled, { ...attention, coverage: { complete: attention.coverage.complete && base.coverage.omitted === 0, omitted: attention.coverage.omitted + base.coverage.omitted } });
+				const view = withModelEvidence(attentive, projection.modelEvidence);
 				catalog.updateView(metadata.storageId, view, await projectCollaboration(host.harness, BACKGROUND_CONTEXT));
 				for (const listener of changeListeners) listener();
 			} catch (error) {

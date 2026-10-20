@@ -186,21 +186,21 @@ it("returns a known quota block from an exact await without a successful source 
 	} finally { await host.close().catch(() => {}); }
 });
 
-it("notifies a requester without await on its first unknown native retry", { timeout: 60000 }, async (t) => {
+it("keeps a requester without await silent during an active unknown native retry", { timeout: 60000 }, async (t) => {
 	const http = await endpoint(t); const f = fixture(t, http.url); const { owner, notices } = await requester(t, f);
 	const host = await acquireHost(f.metadata, { env: f.env("answer") }); trackHost(t, host.pid);
 	try {
 		const admitted = await host.request("submit", { message: "No-await unknown transient request", requestId: "no-await-retry", ownerId: owner, origin: "model" }) as Submission;
 		await http.requests.waitForCount(1);
+		const reference = { sessionId: f.metadata.storageId, submissionId: admitted.submissionId, requestId: "no-await-retry" };
+		const retry = committed(t, host, () => host.request("await-state", { results: [reference] }), (value) => (value as { execution?: { attempt: number } }).execution?.attempt === 1);
 		fail(http.requests[0], { code: "unfamiliar_overload", message: "Temporary request throttling; retry this request" });
-		await notices.waitForCount(1, 10000);
-		assert.match(notices[0].message.text, /retry/iu);
+		await retry;
+		assert.equal(notices.length, 0, "an active retry burst does not send a preterminal report");
 		assert.equal((await result(host, admitted.submissionId)).status, "placed");
 		const status = await host.request("status", { sessionId: f.metadata.storageId }) as { conversation: { providerBlock?: ProviderBlockFact } };
 		assert.equal(status.conversation.providerBlock, undefined, "unrecognized throttling is not exhaustion");
 		assert.equal(http.requests.length, 1);
-		const error = exposed(f); assert.ok(notices[0].at - error.at < 5000);
-		t.diagnostic(`latency ms ${JSON.stringify({ exposureToRequesterNotification: notices[0].at - error.at })}`);
 		await host.request("abort", {});
 	} finally { await host.close().catch(() => {}); }
 });

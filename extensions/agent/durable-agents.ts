@@ -28,6 +28,8 @@ import { initializeProfile, reconcileProfile } from "./profile.ts";
 import { AgentMetaDoc, recordAdmissionMeta } from "./durable-controls.ts";
 import { ProfileParams, ProfileOutputSchema, HandleSchema } from "./profile-schema.ts";
 import { recordRequestContext, cleanupRequestContexts } from "./request-context.ts";
+import { prepareAdmittedCapture } from "./communication-retention.ts";
+import { taskInputSender, type TaskInputSender } from "./task-senders.ts";
 import { targetIdentity } from "./identity.ts";
 import { admittedResult, dispatchFacts, DispatchOutputSchema, type ResultReference } from "./result-reference.ts";
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
@@ -814,7 +816,11 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		const request = { requestId: `agent-deliver:${reporterTaskId}`, requester: identity(api.conversationId), replyTo: identity(input.reportTo ?? api.conversationId), origin: "model" as const };
 		await reconcileProfile(api, input.conversationId, context, report, host.storageId);
 		let recoveryOf: string | undefined;
+		let taskSender: TaskInputSender | undefined;
+		let deduped = false;
 		await api.commit(async (tx) => {
+			deduped = await tx.submissionByRequest(input.conversationId, request.requestId) !== undefined;
+			taskSender = taskInputSender(request.requester, (await tx.doc(AgentMetaDoc, api.conversationId)).name);
 			recoveryOf = await captureProviderRecovery(tx, input.conversationId, request.requestId);
 			const admission = await tx.doc(LocalAdmission, reporterTaskId);
 			await recordRequestContext(tx, input.conversationId, request, "retained");
@@ -829,6 +835,12 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			await api.commit(async (tx) => { await forgetFailedAdmission(tx, input.conversationId, request.requestId); return undefined; }, BACKGROUND_CONTEXT);
 			throw error;
 		});
+		await api.commit(async (tx) => {
+			const capture = await prepareAdmittedCapture(tx, host.storageId, input.conversationId, request.requestId, submission.id, undefined, () => now, deduped, taskSender);
+			await recordInputProvenance(tx, { conversationId: input.conversationId, requestId: request.requestId, classification: "explicit", sender: request.requester });
+			await capture();
+			return undefined;
+		}, context);
 		await api.commit(async (tx) => { await reconcileInputRelease(tx, input.conversationId, request.requestId); await linkProviderRecovery(tx, submission.id, recoveryOf); return undefined; }, context);
 		const status = await submission.status(context);
 		if (status.id !== submission.id || status.requestId !== request.requestId || status.conversationId !== input.conversationId) throw new Error("Native admission identifiers disagree");

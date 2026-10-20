@@ -3,6 +3,7 @@ import type { Context } from "@earendil-works/chord";
 import { defineDocFamily, UserEntry, type ConversationId, type EntryId, type Session, type SubmissionRecord, type Tx } from "@earendil-works/pi-durable";
 import { AwaitDoc } from "./awaited-results.ts";
 import { communicationFingerprint, parseCommunication, parseCommunicationCompanion, type Communication, type CommunicationInputLink } from "./communication.ts";
+import { parseTaskSenderRecord, retainTaskInputSender, TASK_SENDER_ENTRY_KIND, type RetainedTaskSender, type TaskInputSender } from "./task-senders.ts";
 
 /** Part of the existing admitted-input retention, never a second delivery queue. */
 export type RetainedCommunicationIntent = {
@@ -13,8 +14,9 @@ export type RetainedCommunicationIntent = {
 	noEnvelope?: true;
 	linkedEntryId?: string;
 	recordEntryId?: string;
+	taskSender?: RetainedTaskSender;
 };
-export type CommunicationIndex = { target?: CommunicationInputLink; recordEntryId?: string; invalid?: boolean; noEnvelope?: true };
+export type CommunicationIndex = { target?: CommunicationInputLink; recordEntryId?: string; invalid?: boolean; noEnvelope?: true; taskSenderEntryId?: string };
 /** A point lookup is only a hint; immutable visible records remain the authority. */
 export const CommunicationIndexDoc = defineDocFamily<CommunicationIndex, null>({ kind: "agent.communication-index", version: 1, scope: "session", family: true, initial: () => ({}) });
 export function communicationIndexKey(storageId: string, conversationId: number, entryId: string): string {
@@ -61,7 +63,12 @@ export async function prepareCommunication(tx: Tx, storageId: string, conversati
 	};
 	const value = parseCommunication(intent.value);
 	const companion = value === undefined ? undefined : parseCommunicationCompanion({ format: "agent.communication-link/1", target, value });
+	const sender = intent.taskSender === undefined ? undefined : parseTaskSenderRecord({ format: "agent.task-sender/1", target, ...intent.taskSender });
 	return async () => {
+		if (sender !== undefined) {
+			const record = await tx.appendEntry(conversationId, { kind: TASK_SENDER_ENTRY_KIND, data: sender });
+			index.taskSenderEntryId = String(record.id);
+		}
 		if (intent.noEnvelope === true) {
 			index.target = target;
 			index.noEnvelope = true;
@@ -84,13 +91,14 @@ export async function prepareCommunication(tx: Tx, storageId: string, conversati
 }
 
 /** The existing post-admission classification commit owns the first durable capture. */
-export async function prepareAdmittedCapture(tx: Tx, storageId: string, conversationId: ConversationId, requestId: string, submissionId: number, value: unknown, now: () => number, deduped: boolean): Promise<() => Promise<void>> {
+export async function prepareAdmittedCapture(tx: Tx, storageId: string, conversationId: ConversationId, requestId: string, submissionId: number, value: unknown, now: () => number, deduped: boolean, taskSender?: TaskInputSender): Promise<() => Promise<void>> {
 	const state = await tx.doc(AwaitDoc);
 	const prior = state.provenance.find((item) => item.conversationId === conversationId && item.requestId === requestId);
 	const submission = await tx.submissionByRequest(conversationId, requestId);
 	if (submission?.type !== "input" || submission.id !== submissionId) return async () => { state.communicationDiagnostic = "unavailable"; };
 	const index = submission.entry === undefined ? undefined : await tx.doc(CommunicationIndexDoc, communicationIndexKey(storageId, conversationId, String(submission.entry)), null);
-	const incoming: RetainedCommunicationIntent = value === undefined ? { storageId, noEnvelope: true } : { ...retainCommunicationIntent(value, now), storageId };
+	const sender = taskSender === undefined ? undefined : retainTaskInputSender(taskSender, now());
+	const incoming: RetainedCommunicationIntent = { ...(value === undefined ? { storageId, noEnvelope: true as const } : { ...retainCommunicationIntent(value, now), storageId }), ...(sender === undefined ? {} : { taskSender: sender }) };
 	const intent = index?.noEnvelope === true ? { storageId, noEnvelope: true as const } : prior?.communicationIntent === undefined
 		? deduped || prior?.submissionId !== undefined || index?.target !== undefined ? undefined : incoming
 		: mergeCommunicationIntent(prior.communicationIntent, incoming);

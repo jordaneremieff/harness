@@ -16,6 +16,7 @@
 import { randomUUID } from "node:crypto";
 import { reconcileInputCommunications } from "./communication-retention.ts";
 import { parseCommunication, parseCommunicationPassive } from "./communication.ts";
+import { taskInputSender } from "./task-senders.ts";
 import { ProviderModels } from "./provider-models.ts";
 import { ProviderRetryNotices, ProviderRetryNoticeSchema } from "./provider-notices.ts";
 import type { ProviderRetryNotice } from "./provider-block.ts";
@@ -454,19 +455,7 @@ export class DurableHost {
 					...optionalParam("role", requestString(params, "role")), ...optionalParam("expertise", requestString(params, "expertise")),
 				}, requestContext);
 			}
-			case "task-submit": {
-				const origin = this.originParam(params);
-				if (origin === undefined) throw new TypeError("task-submit requires an explicit origin");
-				const conversation = await this.target(params, requestContext);
-				await conversation.commit((tx) => initializeProfile(tx, conversation.id, this.storageId), requestContext);
-				const submitted = await richSubmitConversation(conversation, {
-					message: messageFrom(params?.message), requestId: requestRequiredString(params, "requestId"), requester: requestRequiredString(params, "requester"),
-					communication: { storageId: this.storageId, value: undefined },
-					origin, ...optionalParam("replyTo", requestString(params, "replyTo")), ...optionalParam("whenBusy", this.busyMode(params)), ...optionalParam("operationId", requestString(params, "operationId")),
-					...(params?.checkInMinutes === undefined ? {} : { checkInMinutes: checkInMinutes(params.checkInMinutes) }), senderIdentity: this.identity(conversation.id),
-				}, requestContext);
-				return { ...submitted, identity: this.identity(conversation.id), result: admittedResult(this.identity(conversation.id), submitted, requestRequiredString(params, "requestId")) };
-			}
+			case "task-submit": return this.taskSubmitRequest(params, requestContext);
 			case "submit":
 				return this.submitRequest(params, requestContext).catch((error) => {
 					if (error instanceof AwaitInputSuppressed) return { suppressed: true };
@@ -560,6 +549,25 @@ export class DurableHost {
 		const target = await this.target(params, context);
 		return this.harness.commit((tx) => releaseAwait(tx, this.storageId, target.id, requestRequiredId(params?.expectedRunId, "expectedRunId")), context);
 	}
+	private async taskSubmitRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
+		const origin = this.originParam(params);
+		if (origin === undefined) throw new TypeError("task-submit requires an explicit origin");
+		const conversation = await this.target(params, context);
+		await conversation.commit((tx) => initializeProfile(tx, conversation.id, this.storageId), context);
+		const requester = requestRequiredString(params, "requester");
+		const checkedSender = taskInputSender(requester);
+		const senderConversation = requester === this.storageId ? ROOT_CONVERSATION_ID : checkedSender !== undefined && requester.startsWith(`${this.storageId}:`) ? Number(requester.slice(this.storageId.length + 1)) as ConversationId : undefined;
+		const senderName = senderConversation === undefined ? undefined : (await this.harness.snapshot(AgentMetaDoc, senderConversation, context).catch(() => undefined))?.name;
+		const taskSender = taskInputSender(requester, senderName);
+		const submitted = await richSubmitConversation(conversation, {
+			message: messageFrom(params?.message), requestId: requestRequiredString(params, "requestId"), requester,
+			communication: { storageId: this.storageId, value: undefined, ...(taskSender === undefined ? {} : { taskSender }) },
+			origin, ...optionalParam("replyTo", requestString(params, "replyTo")), ...optionalParam("whenBusy", this.busyMode(params)), ...optionalParam("operationId", requestString(params, "operationId")),
+			...(params?.checkInMinutes === undefined ? {} : { checkInMinutes: checkInMinutes(params.checkInMinutes) }), senderIdentity: this.identity(conversation.id),
+		}, context);
+		return { ...submitted, identity: this.identity(conversation.id), result: admittedResult(this.identity(conversation.id), submitted, requestRequiredString(params, "requestId")) };
+	}
+
 	private async submitRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const communication = params?.communication === undefined ? undefined : parseCommunication(params.communication) ?? null;
 		if (communication === null) this.communicationDiagnostic = "invalid-envelope";

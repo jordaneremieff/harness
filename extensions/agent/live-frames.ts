@@ -10,6 +10,7 @@
 import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai";
 import type { LiveState, TaskGraph, TaskGraphNode } from "@earendil-works/pi-durable";
 import type { AgentConversationEntry } from "./dashboard-types.ts";
+import type { TaskSenders } from "./task-senders.ts";
 import type { ConversationSnapshotCoverage, ConversationStatus } from "./durable-observation.ts";
 
 /** One bounded conversation reading: committed entries, the uncommitted tail, and the retained status. */
@@ -22,6 +23,8 @@ export interface ConversationFrame {
 	readonly observedAt: string;
 	/** Committed active entries, oldest first, hidden kinds excluded. */
 	readonly entries: readonly AgentConversationEntry[];
+	/** Exact requester hints for committed inputs; absent hints mean unknown. */
+	readonly taskSenders?: TaskSenders;
 	/** Pass as `before` to continue strictly older than the oldest committed entry; null at the oldest visible entry. */
 	readonly nextBefore: number | null;
 	/** Uncommitted tail: a partial assistant answer and running tool output, in display order. */

@@ -15,6 +15,7 @@ import { AgentConversationSummarySchema } from "./observation-schema.ts";
 import { ProfileHintsSchema, type ProfileHints } from "./profile-schema.ts";
 import type { ProfileSeed } from "./profile.ts";
 import { handleSlug } from "./identity.ts";
+import { CatalogAttentionHintsSchema, type CatalogAttentionHints } from "./catalog-attention.ts";
 
 /** Bytes available to one serialized view inside the catalog record bound. */
 export const CATALOG_VIEW_BUDGET_BYTES = 24 * 1024;
@@ -46,6 +47,8 @@ export interface CatalogViewRow {
 
 /** Bounded projection of one host's conversations. */
 export interface CatalogView {
+	/** Optional intervention hints; absence remains unknown, even with complete coverage. */
+	readonly attention?: CatalogAttentionHints;
 	/** Optional sampled model evidence; absence means unknown, never zero usage. */
 	readonly modelEvidence?: ModelEvidence;
 	/** Bounded optional hints; base wire rows remain unchanged. */
@@ -155,7 +158,19 @@ function validateRows(rows: readonly CatalogViewRow[], storageId: string | undef
 	}
 }
 
+function validateAttentionHints(candidate: Partial<CatalogView>): void {
+	if (candidate.attention === undefined) return;
+	if (!Value.Check(CatalogAttentionHintsSchema, candidate.attention)) throw new Error("Invalid attention hints");
+	const identities = new Set(candidate.rows?.map((row) => row.id));
+	const seen = new Set<string>();
+	for (const hint of candidate.attention.rows) {
+		if (!identities.has(hint.identity) || seen.has(hint.identity)) throw new Error("Invalid attention hint identity");
+		seen.add(hint.identity);
+	}
+}
+
 function validateHints(candidate: Partial<CatalogView>): void {
+	validateAttentionHints(candidate);
 	if (candidate.modelEvidence !== undefined && (!Value.Check(ModelEvidenceSchema, candidate.modelEvidence) || byteLength(candidate.modelEvidence) > MODEL_EVIDENCE_BUDGET_BYTES))
 		throw new Error("Invalid model evidence");
 	if (candidate.profiles !== undefined && !Value.Check(ProfileHintsSchema, candidate.profiles)) throw new Error("Invalid profile hints");
@@ -206,7 +221,26 @@ export function withProfileHints(view: CatalogView, profiles: ProfileHints): Cat
 	return parseCatalogView(result);
 }
 
-/** Evidence uses only the space left by operational rows and profile hints. */
+/** Add intervention hints only in the space left by operational rows and profile hints. */
+export function withAttentionHints(view: CatalogView, source: CatalogAttentionHints): CatalogView {
+	if (!Value.Check(CatalogAttentionHintsSchema, source)) throw new Error("Invalid attention hints");
+	const { attention: _attention, ...base } = view;
+	const rows: CatalogAttentionHints["rows"] = [];
+	let omitted = source.coverage.omitted + source.rows.length;
+	const projection = () => ({ ...base, attention: { rows, coverage: { complete: source.coverage.complete && omitted === 0, omitted } } });
+	for (const hint of source.rows) {
+		rows.push(hint);
+		omitted--;
+		if (byteLength(projection()) > CATALOG_VIEW_BUDGET_BYTES) {
+			rows.pop();
+			omitted++;
+		}
+	}
+	const result = projection();
+	return byteLength(result) > CATALOG_VIEW_BUDGET_BYTES ? base : parseCatalogView(result);
+}
+
+/** Evidence uses only the space left by operational rows and optional hints. */
 export function withModelEvidence(view: CatalogView, source: ModelEvidence): CatalogView {
 	const remaining = CATALOG_VIEW_BUDGET_BYTES - byteLength(view) - Buffer.byteLength(',"modelEvidence":');
 	const modelEvidence = boundModelEvidence(source, Math.min(MODEL_EVIDENCE_BUDGET_BYTES, remaining));

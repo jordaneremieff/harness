@@ -70,6 +70,34 @@ Readable surfaces suppress standalone `agent.communication` bookkeeping while na
 
 Source: `extensions/agent/communication.ts`; `communication-retention.ts`; `communication-observation.ts`; `durable-host.ts`; `durable-observation.ts`; `live-observation.ts`; `dashboard-conversation.ts`; `collaboration.ts`.
 
+### Task input sender hints
+
+Snapshot pages and conversation observation frames optionally include
+`taskSenders: Record<entryId, {identity:string, name?:string}>`. Keys are native
+input entry IDs as canonical decimal strings. These requester facts are separate
+from the closed `communication` view and from reply routing. A missing key means
+unknown; it does not imply human authorship. No handle is inferred.
+
+Both local task admission and wire `task-submit` capture the structured requester.
+A same-storage sender name comes from that sender's retained metadata. Foreign
+names remain absent. The existing post-admission bookkeeping retains the first
+capture and appends a model-less `agent.task-sender` companion. The existing
+communication point index identifies it. Readers verify the native submission,
+request ID, original conversation, target entry and companion through the same
+fork-aware cutoff. A fork before the companion does not inherit that hint.
+Existing no-envelope decisions do not permit historical backfill. Native admission
+and owner capture remain separate commits, with the crash boundary stated above.
+
+Hints cover at most 200 selected entries and fit 32,768 serialized UTF-8 bytes.
+Omitted hints never remove native entries. Snapshot revisions include these hints;
+conversation frames pass them through. Display and compact inspection hide the
+companion; exact and branch inspection retain it. Compact inspection does not add
+a task variant to `communication`.
+
+Sources: `extensions/agent/task-senders.ts`; `communication-retention.ts`;
+`communication-observation.ts`; `durable-agents.ts`; `durable-host.ts`;
+`durable-observation.ts`; `live-observation.ts`.
+
 ## Ordinary peer communication mapping
 
 Ordinary Pi custom messages with `customType: "agent.peer"` expose a structured peer contribution through their supplied `details`. This section is the public mapping for consumers; it does not authorize imports of Agent-private types, prose parsing, new delivery operations, or history rewriting. The `primary-delivery/3.0.0` channel requires retained acceptance without changing this payload mapping. `sendMessage`, wake behavior, original content, and `display: false` exclusion retain their meanings. Saved `custom_message` entries and live `role: "custom"` messages use the same mapping before projection drops their details.
@@ -574,11 +602,57 @@ not replace them.
   storageId?:string, unavailable?:string,
   profiles?:bounded profile hints,
   profileSeed?:retained creation defaults,
+  attention?:bounded intervention hints,
   modelEvidence?:bounded sampled evidence
 }
 ```
 
-The serialized view is at most 24 KiB. Producer text fields are bounded at 2,000 UTF-16 code units. The root row is first when it fits. `coverage.complete:false` includes omitted rows **or trimmed text**. Missing hints/evidence are unknown, never zero. Invalid view shape or mismatched storage identity makes the view unavailable; it does not make the database empty. Source: `extensions/agent/catalog-view.ts:20-65,91-148,151-192`; `extensions/agent/catalog.ts:264-275`.
+The serialized view is at most 24 KiB. Producer text fields are bounded at 2,000 UTF-16 code units, including any truncation marker. Truncation never splits a surrogate pair. The root row is first when it fits. `coverage.complete:false` includes omitted rows **or trimmed text**. Missing hints/evidence are unknown, never zero. Invalid view shape or mismatched storage identity makes the view unavailable; it does not make the database empty. Source: `extensions/agent/catalog-view.ts:20-65,91-148,151-192`; `extensions/agent/catalog.ts:264-275`.
+
+`profiles` has this closed hint shape:
+
+```text
+{
+  rows: [{identity:string, handle:string|null, role:string, revision:string,
+          hasExpertise:boolean, updatedAt:number|null}],
+  coverage: {complete:boolean, omitted:nonnegativeInteger}
+}
+```
+
+Join a hint's `identity` to the exact conversation row `id`. A known handle includes
+its leading `@`; `null` means that profile has no handle. An absent hint is unknown,
+not a handle clear. `revision` identifies the retained profile state; `updatedAt`
+is its update time in milliseconds, or null when absent. `role` is a bounded role
+hint, and `hasExpertise` reports whether the profile retains expertise without
+publishing that text. Profile hints use only the remaining publication budget and
+never evict operational rows. Their coverage is separate from row coverage.
+Sources: `extensions/agent/profile-schema.ts` `ProfileHintSchema` and
+`ProfileHintsSchema`; `extensions/agent/catalog-view.ts` `withProfileHints`.
+
+`attention` has this shape:
+
+```text
+{
+  rows: [
+    {identity:string, kind:"provider-blocked", blockId:string}
+    | {identity:string, kind:"task-blocked", taskId:positiveInteger,
+       reason:"missing_task"|"task_too_old"|"migration_failed"}
+    | {identity:string, kind:"failed-turn"}
+  ],
+  coverage: {complete:boolean, omitted:nonnegativeInteger}
+}
+```
+
+Join each hint to the exact conversation row `id`. At most one hint appears per
+row, with provider block before blocked task before failed turn. Provider blocks
+require explicit recovery; blocked tasks require host repair; failed turns need a
+new input. Automatic retry and compaction diagnostics do not establish a need for
+intervention. Absence remains unknown even with complete publication coverage;
+this section does not detect unanswered human questions. Hints use only space
+left after native rows and profile hints. Coverage counts omitted hints and rows,
+not an inferred number of intervention needs. The base row state enum is unchanged.
+Sources: `extensions/agent/catalog-attention.ts` `projectCatalogAttention`;
+`extensions/agent/catalog-view.ts` `withAttentionHints`.
 
 A manager roster composes retained views with current claim observations:
 
@@ -603,6 +677,7 @@ Result:
 ```text
 {
   entries: Entry[], partial:boolean, revision:string, nextBefore:number|null,
+  taskSenders?:Record<entryId,{identity:string,name?:string}>,
   coverage:{complete:boolean,entries:number,bytes:number,hiddenExcluded:number,
             entryLimitReached:boolean,byteLimitReached:boolean}
 }
@@ -911,10 +986,10 @@ settings, credentials, models, or extensions.
 without reading catalog or storage. `version` is exactly `retained-read/1.0.0`.
 The loaded reader derives upstream versions and both operation values from
 `HOST_CONTRACT`; it advertises no other operations. See the
-[descriptor fixture](#fixture-retained-read-descriptor). Its historical 1.2.0
-values illustrate exact negotiation, not current compatibility or a
-supported-version ceiling. A current reader emits its own loaded versions and
-schema identities; do not copy this historical fixture into a current request.
+[descriptor fixture](#fixture-retained-read-descriptor) for the current example
+of exact negotiation. The runtime emits its own loaded versions and schema
+identities. Examples are neither a supported-version ceiling nor a substitute
+for checking the reader's supported contracts before a request.
 
 Default mode reads exactly one UTF-8 JSON request on stdin followed by EOF.
 The caller closes stdin and drains stdout/stderr concurrently. The reader emits
@@ -1160,13 +1235,13 @@ These examples contain fabricated identities and data. They are valid-shape exam
 ### Fixture: retained-read-descriptor
 
 ```json
-{"version":"retained-read/1.0.0","upstream":{"codingAgent":"1.2.0","durable":"1.2.0"},"operations":{"snapshot":{"request":"snapshot/1.0.0","response":"snapshot/2.0.0","durable":"1.2.0"},"inspect":{"request":"inspect/1.1.0","response":"d38d5e5a297d6b3738547ab0154cd494602f01c4a898423a076d2d946e430a6b","durable":"1.2.0"}}}
+{"version":"retained-read/1.0.0","upstream":{"codingAgent":"1.3.0","durable":"1.3.0"},"operations":{"snapshot":{"request":"snapshot/1.0.0","response":"snapshot/2.0.0","durable":"1.3.0"},"inspect":{"request":"inspect/1.1.0","response":"d38d5e5a297d6b3738547ab0154cd494602f01c4a898423a076d2d946e430a6b","durable":"1.3.0"}}}
 ```
 
 ### Fixture: retained-read-request
 
 ```json
-{"version":"retained-read/1.0.0","id":"retained-example","store":"/example/sessions","sessionId":"00000000-0000-4000-8000-000000000001:2","method":"snapshot","expected":{"request":"snapshot/1.0.0","response":"snapshot/2.0.0","durable":"1.2.0"},"params":{"limit":50,"maxBytes":65536}}
+{"version":"retained-read/1.0.0","id":"retained-example","store":"/example/sessions","sessionId":"00000000-0000-4000-8000-000000000001:2","method":"snapshot","expected":{"request":"snapshot/1.0.0","response":"snapshot/2.0.0","durable":"1.3.0"},"params":{"limit":50,"maxBytes":65536}}
 ```
 
 ### Fixture: retained-read-success

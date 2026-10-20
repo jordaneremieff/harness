@@ -245,6 +245,7 @@ export class LiveObservationService {
 		const reader = await captureCommunicationReader(this.harness, this.options.storageId, conversation, this.context);
 		const selection = selectSnapshotEntries([...value.entries].reverse(), SNAPSHOT_ENTRY_LIMIT, SNAPSHOT_BYTE_LIMIT);
 		const views = await reader.views(selection.entries);
+		const taskSenders = await reader.taskSenders(selection.entries);
 		const entries = selection.entries.map((entry, index) => ({ ...snapshotEntry(entry), communication: views[index] ?? { state: "unavailable" as const, reason: "limit" as const } }));
 		const status = await readConversationStatus(this.harness, this.options.storageId, state.conversationId, {}, this.context);
 		if (!status) throw new Error(`observed conversation ${state.conversationId} has no status`);
@@ -255,6 +256,7 @@ export class LiveObservationService {
 			revision,
 			observedAt: new Date(this.options.now?.() ?? Date.now()).toISOString(),
 			entries,
+			...(taskSenders === undefined ? {} : { taskSenders }),
 			nextBefore: selection.nextBefore,
 			live: buildLiveEntries(publicLiveState(value.docs["pi.live"] as LiveState | undefined), entries),
 			status,

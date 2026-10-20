@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
+import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai";
+import { Harness, MemoryStorage, createRegistry } from "@earendil-works/pi-durable";
+import { Value } from "typebox/value";
+import { AgentMetaDoc, recordAdmissionMeta } from "./durable-controls.ts";
+import { AgentConversationSummarySchema } from "./observation-schema.ts";
+import type { CatalogAttentionHints } from "./catalog-attention.ts";
 import {
 	boundCatalogView,
 	CATALOG_VIEW_BUDGET_BYTES,
@@ -7,6 +14,7 @@ import {
 	type CatalogViewRow,
 	isCatalogView,
 	parseCatalogView,
+	withAttentionHints,
 } from "./catalog-view.ts";
 
 function row(id: string, overrides: Partial<CatalogViewRow> = {}): CatalogViewRow {
@@ -86,6 +94,27 @@ it("preserves text at the exact limit, including a final surrogate pair", () => 
 	assert.equal(view.coverage.complete, true);
 });
 
+it("captures first-message metadata at valid surrogate boundaries before catalog publication", async (t) => {
+	const harness = await Harness.open(new MemoryStorage(), { models: createModels(), registry: createRegistry() }, context);
+	t.after(() => harness.close(context));
+	await harness.root(context);
+	for (const [text, expected] of [
+		[`${"x".repeat(1199)}😀tail`, "x".repeat(1199)],
+		[`${"x".repeat(1198)}😀tail`, `${"x".repeat(1198)}😀`],
+		[`${"x".repeat(1198)}😀`, `${"x".repeat(1198)}😀`],
+		[`${"x".repeat(1200)}😀`, "x".repeat(1200)],
+	] as const) {
+		const conversation = await harness.createConversation({ ownership: { kind: "ownerless" } }, context);
+		await harness.commit((tx) => recordAdmissionMeta(tx, conversation.id, text), context);
+		const meta = await harness.snapshot(AgentMetaDoc, conversation.id, context);
+		assert.equal(meta?.firstMessage, expected);
+		const view = boundCatalogView({ updatedAt: "2026-01-01T00:00:00.000Z", rows: [row("root", { firstMessage: meta?.firstMessage ?? undefined })] });
+		assert.equal(view.rows[0]?.firstMessage, expected);
+		assert.ok((view.rows[0]?.firstMessage ?? "").length <= 1200);
+		assert.doesNotMatch(view.rows[0]?.firstMessage ?? "", /[\ud800-\udfff]/u);
+	}
+});
+
 it("emits the root first and keeps it when it fits", () => {
 	const view = boundCatalogView({
 		updatedAt: "2026-01-01T00:00:00.000Z",
@@ -136,6 +165,55 @@ it("bounds complete metadata and final omission counts", () => {
 	const result = boundCatalogView({ updatedAt, rows });
 	assert.ok(Buffer.byteLength(JSON.stringify(result)) <= CATALOG_VIEW_BUDGET_BYTES);
 	assert.equal(result.coverage.omitted, rows.length - result.rows.length);
+});
+
+it("publishes attention as top-level hints without changing native rows", () => {
+	const base = boundCatalogView({ updatedAt: "2026-01-01T00:00:00.000Z", rows: [row("root")] });
+	const hints: CatalogAttentionHints = { rows: [{ identity: "root", kind: "provider-blocked", blockId: "block-a" }], coverage: { complete: true, omitted: 0 } };
+	const view = withAttentionHints(base, hints);
+	assert.deepEqual(view.attention, hints);
+	assert.deepEqual(view.rows, base.rows);
+	assert.ok(view.rows.every((candidate) => Value.Check(AgentConversationSummarySchema, candidate)));
+	assert.deepEqual(parseCatalogView(JSON.parse(JSON.stringify(view))), view);
+	assert.deepEqual(withAttentionHints(view, { rows: [], coverage: { complete: true, omitted: 0 } }).attention?.rows, []);
+});
+
+it("omits attention hints before operational rows and reports the omitted hints", () => {
+	const updatedAt = "2026-01-01T00:00:00.000Z";
+	const base = boundCatalogView({ updatedAt, rows: [row("root", { name: "" }), row("child")] });
+	const first = { identity: "root", kind: "failed-turn" as const };
+	const second = { identity: "child", kind: "failed-turn" as const };
+	const single = withAttentionHints(base, { rows: [first], coverage: { complete: false, omitted: 1 } });
+	const padding = CATALOG_VIEW_BUDGET_BYTES - Buffer.byteLength(JSON.stringify(single));
+	const padded = boundCatalogView({ updatedAt, rows: [row("root", { name: "x".repeat(padding) }), row("child")] });
+	const view = withAttentionHints(padded, { rows: [first, second], coverage: { complete: true, omitted: 0 } });
+	assert.deepEqual(view.rows, padded.rows);
+	assert.deepEqual(view.coverage, padded.coverage);
+	assert.deepEqual(view.attention, { rows: [first], coverage: { complete: false, omitted: 1 } });
+	assert.ok(Buffer.byteLength(JSON.stringify(view)) <= CATALOG_VIEW_BUDGET_BYTES);
+	const fullPadding = CATALOG_VIEW_BUDGET_BYTES - Buffer.byteLength(JSON.stringify(base)) - 1;
+	const full = boundCatalogView({ updatedAt, rows: [row("root", { name: "x".repeat(fullPadding) }), row("child")] });
+	assert.equal(full.rows.length, base.rows.length);
+	assert.equal(full.coverage.complete, true);
+	assert.equal(Buffer.byteLength(JSON.stringify(full)), CATALOG_VIEW_BUDGET_BYTES - 1);
+	const withoutHints = withAttentionHints(full, { rows: [first], coverage: { complete: true, omitted: 0 } });
+	assert.deepEqual(withoutHints.rows, full.rows);
+	assert.equal(withoutHints.attention, undefined, "no space for hint coverage leaves attention unknown");
+});
+
+it("validates a closed attention schema and unique retained row identities", () => {
+	const base = boundCatalogView({ updatedAt: "2026-01-01T00:00:00.000Z", rows: [row("root")] });
+	const hint = { identity: "root", kind: "failed-turn" };
+	for (const rows of [
+		[{ ...hint, extra: true }],
+		[{ identity: "root", kind: "provider-retry" }],
+		[{ identity: "root", kind: "task-blocked", taskId: 1, reason: "awaiting_input" }],
+		[{ identity: "other", kind: "failed-turn" }],
+		[hint, hint],
+	]) {
+		assert.throws(() => parseCatalogView({ ...base, attention: { rows, coverage: { complete: true, omitted: 0 } } }), /attention/u);
+	}
+	assert.throws(() => parseCatalogView({ ...base, rows: [{ ...row("root"), attention: hint }] }), /invalid row/u);
 });
 
 it("refuses malformed and oversized views", () => {

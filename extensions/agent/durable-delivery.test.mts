@@ -12,6 +12,7 @@ import { AgentDeliveryDoc, ThreadDeliveryDoc, type AgentDeliveryState, recordRep
 import { startDurableDelivery } from "./durable-delivery.ts";
 import { mutateCollaboration } from "./collaboration.ts";
 import { DurableHost, type RequestParams } from "./durable-host.ts";
+import { retainProviderRetryNotices } from "./provider-notices.ts";
 import { answerMessage, fixtureModelId, fixtureProvider, fixtureRegistry, fixtureRuntime, gateTool, hostOptions, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
 import type { HostConnection } from "./host-client.ts";
 import { eventLog, waitForProcessExit } from "./host-fixture.mts";
@@ -53,35 +54,40 @@ function sourceMetadata(root: string, storageId: string, storagePath: string): H
 	});
 }
 
-it("retires an undelivered exact retry notice before a delayed primary route returns", { timeout: 15000 }, async (t) => {
+it("delivers one failure summary and native receipt when a delayed primary route returns", { timeout: 15000 }, async (t) => {
 	const root = fixtureRoot(t); const sessionsRoot = join(root, "sessions"); const owner = randomUUID(); const sourceId = randomUUID(); const storagePath = join(root, "retry-retirement.sqlite");
 	let now = Date.now();
-	const models = await scriptedRuntime([{ ...answerMessage(), stopReason: "error", errorMessage: "429 too many requests" }, answerMessage("terminal answer")]);
+	const models = await scriptedRuntime([{ ...answerMessage(), stopReason: "error", errorMessage: "429 too many requests" }, { ...answerMessage(), stopReason: "error", errorMessage: "fatal invalid request" }]);
 	const options = { ...hostOptions(storagePath, models, fixtureRegistry()), storageId: sourceId, cwd: root, now: () => now, settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 100000, maxAgentDelayMs: 100000 } } };
 	let source = await DurableHost.open(options); t.after(() => source.close());
 	const observed = eventLog<void>();
-	const unsubscribe = source.harness.subscribeCommits((publication) => { if (publication.changes.some((change) => change.type === "document" && change.record.kind === "agent.delivery" && change.value !== null && Array.isArray(change.value.reports) && change.value.reports.some((report) => report !== null && typeof report === "object" && "providerRetry" in report))) observed.push(undefined); });
+	const unsubscribe = source.harness.subscribeCommits((publication) => { if (publication.changes.some((change) => change.type === "document" && change.record.kind === "agent.provider-retry-burst" && change.value !== null && change.value.active !== undefined)) observed.push(undefined); });
 	const admitted = await source.submit({ message: "delayed route work", requestId: "delayed-retry", ownerId: owner, origin: "model" });
 	await observed.waitForCount(1); unsubscribe();
-	const retained = (await deliveryState(source))?.reports.find((report) => report.providerRetry !== undefined); assert.ok(retained); assert.equal(retained.acknowledged, false); assert.match(retained.message, /Provider retry observed at/u); assert.doesNotMatch(retained.message, /task remains pending/u);
-	const passes = eventLog<void>();
-	const unavailable = startDurableDelivery({ host: source, metadata: sourceMetadata(root, sourceId, storagePath), catalog: new AgentCatalog(root), sessionsRoot, signal: new AbortController().signal, onIdle: () => passes.push(undefined) });
-	try { await passes.waitForCount(1); assert.equal((await deliveryState(source))?.reports.find((report) => report.sourceId === retained.sourceId)?.acknowledged, false); }
-	finally { await unavailable.close(); }
+	assert.equal((await deliveryState(source))?.reports.length, 0);
 	const live = await source.harness.snapshot(LiveDoc, 1 as ConversationId, BACKGROUND_CONTEXT); assert.ok(live?.generation?.retry);
 	now = live.generation.retry.at + 1;
 	await source.close(); source = await DurableHost.open(options);
-	assert.equal((await source.wait(admitted.submissionId)).status, "done");
+	assert.equal((await source.wait(admitted.submissionId)).status, "unanswered");
+	await source.harness.commit((tx) => retainProviderRetryNotices(tx, sourceId, 1 as ConversationId, 4, now), BACKGROUND_CONTEXT);
 	await settleDeliveries(source.harness, BACKGROUND_CONTEXT);
-	const settled = await deliveryState(source); const retired = settled?.reports.find((report) => report.sourceId === retained.sourceId); assert.ok(retired); assert.equal(retired.acknowledged, true); assert.equal(settled?.receipts[String(admitted.submissionId)]?.acknowledged, false);
+	const retained = (await deliveryState(source))?.reports[0]; assert.ok(retained); assert.equal(retained.acknowledged, false); assert.equal(retained.providerRetry, undefined); assert.match(retained.message, /End state: failed/u);
+	const passes = eventLog<void>();
+	const unavailable = startDurableDelivery({ host: source, metadata: sourceMetadata(root, sourceId, storagePath), catalog: new AgentCatalog(root), sessionsRoot, signal: new AbortController().signal, onIdle: () => passes.push(undefined) });
+	try { await passes.waitForCount(1); assert.equal((await deliveryState(source))?.reports[0].acknowledged, false); }
+	finally { await unavailable.close(); }
 	const received = eventLog<PrimaryDelivery>();
 	const channel = await createPrimaryChannel({ id: owner, cwd: root, sessionsRoot, deliver: async (message) => { received.push(message); }, promptTrust: async () => undefined }); t.after(() => channel.close());
 	const restored = startDurableDelivery({ host: source, metadata: sourceMetadata(root, sourceId, storagePath), catalog: new AgentCatalog(root), sessionsRoot, signal: new AbortController().signal });
 	try {
-		await received.waitForCount(1);
-		await waitForDelivery(source, async () => (await deliveryState(source))?.receipts[String(admitted.submissionId)]?.acknowledged === true);
-		assert.equal(received.length, 1); assert.equal((received[0].details as Record<string, unknown>).kind, "receipt"); assert.equal((received[0].details as Record<string, unknown>).providerRetry, undefined);
-		assert.equal((await deliveryState(source))?.reports.filter((report) => report.sourceId === retained.sourceId).length, 1, "the retired semantic identity remains retained for deduplication");
+		await received.waitForCount(2);
+		await waitForDelivery(source, async () => {
+			const state = await deliveryState(source);
+			return state?.receipts[String(admitted.submissionId)]?.acknowledged === true && state.reports.find((report) => report.sourceId === retained.sourceId)?.acknowledged === true;
+		});
+		assert.equal(received.length, 2);
+		assert.deepEqual(received.map((message) => (message.details as Record<string, unknown>).kind).sort(), ["receipt", "report"]);
+		assert.equal((await deliveryState(source))?.reports.filter((report) => report.sourceId === retained.sourceId).length, 1, "the burst identity remains retained for deduplication");
 	} finally { await restored.close(); }
 });
 

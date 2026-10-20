@@ -28,6 +28,7 @@ import { PROVIDER_BLOCK_ERROR, readProviderBlock, readInputProviderBlock, readIn
 import type { AwaitFact } from "./await-facts.ts";
 import type { CommunicationView } from "./communication.ts";
 import { captureCommunicationReader, type CapturedCommunicationReader } from "./communication-observation.ts";
+import { TASK_SENDER_ENTRY_KIND } from "./task-senders.ts";
 
 /** Byte/unit bounds used by every projection in this module. */
 export const ENTRY_PREVIEW_UNITS = 1200;
@@ -90,7 +91,7 @@ export interface DurableInspectParams {
 }
 
 /** Entry kinds a conversation surface never displays. They are not part of the visible transcript. */
-const HIDDEN_TRANSCRIPT_KINDS: ReadonlySet<string> = new Set(["pi.system", "agent.communication"]);
+const HIDDEN_TRANSCRIPT_KINDS: ReadonlySet<string> = new Set(["pi.system", "agent.communication", TASK_SENDER_ENTRY_KIND]);
 
 /** True for an entry kind the transcript surface hides; hidden entries never consume transcript bounds. */
 export function isHiddenTranscriptKind(kind: string): boolean {
@@ -991,7 +992,7 @@ async function dashboardSummary(
 		harness.conversation(record.id, context),
 	]);
 	const agent = conversation ? await conversation.agent(context) : undefined;
-	const entries = conversation ? await activeEntries(conversation, context) : [];
+	const entries = conversation ? (await activeEntries(conversation, context)).filter((entry) => entry.kind !== "agent.communication" && entry.kind !== TASK_SENDER_ENTRY_KIND) : [];
 	const receipt = currentReceipt(delivery, record.id, entries);
 	const state = dashboardState(live?.run !== undefined, entries, receipt);
 	const cost = usageCost(usage);
@@ -1173,8 +1174,9 @@ async function joinedSnapshotPage(selection: SnapshotSelection, before: EntryId 
 	const page = snapshotPage(selection, before);
 	if (reader === undefined) return page;
 	const views = await reader.views(selection.entries);
-	const revision = `${page.revision}:${createHash("sha256").update(JSON.stringify(views)).digest("hex")}`;
-	return { ...page, revision, entries: page.entries.map((entry, index) => ({ ...entry, communication: views[index] ?? { state: "unavailable", reason: "limit" } })) };
+	const taskSenders = await reader.taskSenders(selection.entries);
+	const revision = `${page.revision}:${createHash("sha256").update(JSON.stringify([views, taskSenders])).digest("hex")}`;
+	return { ...page, revision, ...(taskSenders === undefined ? {} : { taskSenders }), entries: page.entries.map((entry, index) => ({ ...entry, communication: views[index] ?? { state: "unavailable", reason: "limit" } })) };
 }
 
 /** One earlier page from the conversation's fork-aware history, newest first at the source. */
@@ -1252,7 +1254,7 @@ function collectHistoryEntries(items: readonly EntryRecord[], params: DurableIns
 	for (const entry of items) {
 		if (seen.has(entry.id)) continue;
 		seen.add(entry.id);
-		if (readable && entry.kind === "agent.communication") continue;
+		if (readable && (entry.kind === "agent.communication" || entry.kind === TASK_SENDER_ENTRY_KIND)) continue;
 		if (params.source !== undefined && entrySource(entry.kind) !== params.source) continue;
 		entries.push(entry);
 		if (entries.length >= remaining) return { entries, hitLimit: true };
@@ -1833,7 +1835,7 @@ async function readActivity(harness: Harness, storageId: string, conversation: C
 	const reader = await captureCommunicationReader(harness, storageId, conversation, context);
 	const turnLimit = boundedLimit(params.limit, ACTIVITY_TURN_LIMIT_DEFAULT, ACTIVITY_TURN_LIMIT_MAX);
 	const scan = await scanActivity(conversation, params, turnLimit, context);
-	const allGroups = groupActivityTurns(scan.collected.filter((entry) => entry.kind !== "agent.communication"));
+	const allGroups = groupActivityTurns(scan.collected.filter((entry) => entry.kind !== "agent.communication" && entry.kind !== TASK_SENDER_ENTRY_KIND));
 	const groups = allGroups.slice(-turnLimit);
 	const candidates = activityCandidates(groups);
 	const oldestSelected = groups[0]?.[0] ?? scan.collected[scan.collected.length - 1];

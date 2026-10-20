@@ -770,6 +770,18 @@ a crash before owner capture leaves an unresolved association. See the
 [Agent host contract](../../docs/agent-host-contract.md#native-communication-provenance)
 for envelopes, exact fork visibility, public limits and operation identities.
 
+Snapshot pages and conversation frames optionally expose `taskSenders`, keyed by
+native input entry ID, with `{identity, name?}` for the structured task requester.
+This hint is separate from `communication` and reply routing. Local and wire task
+admission capture it; only checked same-storage metadata supplies a name. Missing
+hints mean unknown. Model-less `agent.task-sender` companions retain first capture
+and use the existing point index, native submission checks and fork-aware cutoff.
+Display and compact reads hide those companions; raw exact and branch reads retain
+them. Existing no-envelope records remain unresolved rather than backfilled. The
+hint bound never removes native entries, and the native-admission crash boundary
+above remains unchanged. See the [task input sender contract](../../docs/agent-host-contract.md#task-input-sender-hints)
+for the public shape and bounds.
+
 History and activity mark every page and entry row with `format: "compact"`,
 including empty pages. Their schemas require this marker; raw branch and exact
 reads do not carry it. Compact entry rows contain entry ID, kind, source, role,
@@ -889,6 +901,36 @@ not proof of absence. A dead or absent writer claim marks
 previously working retained metadata Interrupted. Claim errors remain explicit.
 Host health belongs to the publication time; later publications clear it.
 The manager adds current recovery errors without rewriting published views.
+
+A serialized catalog view stays within 24 KiB. Published `latestReply` and
+`currentTool.argument` text stays within 2,000 UTF-16 code units, including the
+` […]` truncation marker. Truncation does not split a surrogate pair. Trimmed
+text makes the base view's coverage incomplete.
+
+The host also publishes optional top-level `attention` hints, separate from
+native observation rows. `attention.rows` joins to the base rows by `identity`.
+Each hint has one `kind`:
+
+- `provider-blocked`, with `blockId`: retained provider control requires explicit
+  recovery.
+- `task-blocked`, with `taskId` and `reason`: the host requires repair because the
+  native scheduler reports `missing_task`, `task_too_old`, or `migration_failed`.
+  This is not a question awaiting a user answer.
+- `failed-turn`: the native summary reports a failed turn.
+
+For one identity, provider blocks take priority over blocked tasks, then failed
+turns. Each publication recomputes the hints from owned facts. Explicit provider
+recovery removes the provider block. A usable task definition or terminal task
+removes the blocked-task hint. A later native turn state replaces failed-turn
+attention. Automatic retries, compaction diagnostics alone, and reply prose do
+not produce these hints.
+
+`attention.coverage` records publication coverage through `complete` and
+`omitted`. Hints use only the bytes left by operational rows and profile hints;
+budget pressure drops attention hints before operational rows. Missing hints
+remain unknown even when their publication coverage is complete. They do not
+establish the absence of a human question or a need for intervention. Consumers
+must read the top-level hints explicitly; native row shapes remain unchanged.
 
 Profile hints are a separate retained catalog projection joined by canonical
 identity, not added fields in base host observation rows. Missing hints mean
@@ -1144,8 +1186,23 @@ intact. Explicit configuration of the same model permits a deliberate retry
 after capacity returns. A subsequent send creates a new result reference; the
 original failed request remains inspectable with its original identity.
 
-Unknown provider-limit wording does not depend on the exhaustion classifier:
-the first exact native retry still reaches the requester. A retry notice is not
+Unknown provider-limit wording does not depend on the exhaustion classifier.
+For each observed native generation retry burst, the host retains attempt evidence
+without sending start or per-attempt reports. Failure retains one ordinary end
+summary per exact model-origin reply recipient; successful recovery uses the
+normal result instead. Abort and interruption send no failure summary. Ordinary
+primaries receive no automatic report between the first retry and the failure
+summary or normal successful result. Native await observations remain immediate
+and retain their selected retry threshold. End summaries do not replace terminal
+results.
+
+The conversation-scoped burst retains its run identity, attempt evidence and
+recipient routes. Failure report identities are stable across reopen, and those
+summaries remain ordinary retained reports. A successful retention commit
+preserves burst state; it is not atomic with the native retry commit. A crash before first observer capture can
+leave no burst to recover after the native generation finishes. Latest-only
+native state and terminal tasks retain no exact retry-decision history for that
+gap. The extension does not infer a retry from error text. A retry notice is not
 proof of exhaustion. Provider reset strings remain uninterpreted evidence;
 missing timezones are not guessed, and reset text never schedules recovery.
 

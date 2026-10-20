@@ -8,6 +8,7 @@
  */
 import type { Message } from "@earendil-works/pi-ai";
 import type { CommunicationView } from "./communication.ts";
+import type { TaskSenders } from "./task-senders.ts";
 import type { ProfileHint } from "./profile-schema.ts";
 import type { AwaitFact } from "./await-facts.ts";
 import type { CatalogPriorityCoverage } from "./catalog.ts";
@@ -128,6 +129,8 @@ export interface AgentConversationEntry {
 /** Active transcript of one conversation, oldest first. */
 export interface AgentConversationSnapshot {
 	entries: readonly AgentConversationEntry[];
+	/** Exact requester hints for selected inputs; absent hints mean unknown. */
+	taskSenders?: TaskSenders;
 	/** True when the source bounded or could not completely read the transcript. */
 	partial: boolean;
 	/** Opaque revision that changes with the visible transcript. */
