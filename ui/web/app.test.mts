@@ -1541,6 +1541,48 @@ test('Commands lists only the sidebar action that applies on wide and narrow win
   app.toggleSidebar(true); assert.deepEqual(listed(), ['Hide sidebar']);
   app.toggleSidebar(false); host.viewport = 1200; app.renderNavigation();
 });
+test('Commands, Notifications and Appearance move between the sidebar foot and the status line with the sidebar state', async t => {
+  t.after(() => {app.toggleSidebar(false); host.viewport = 1200;});
+  const ids = ['commands-button', 'notifications-button', 'appearance-button'];
+  const root = () => hostDocument.body;
+  const where = () => ids.map(id => byId(id).parentNode?.id);
+  const once = () => ids.every(id => root().querySelectorAll(`#${id}`).length === 1 && root().querySelectorAll('#notices-count').length === 1);
+  const inStatusLine = () => {
+    const status = byId('workbench-status'), group = byId('status-controls');
+    assert.equal(group.parentNode, status); assert.equal(group.hidden, false); assert.equal(status.children.indexOf(group), 0);
+    assert.ok(status.children.indexOf(group) < status.children.indexOf(byId('workbench-scope')));
+    assert.deepEqual(group.children.map(node => node.id), ids); assert.deepEqual(where(), ids.map(() => 'status-controls'));
+    for (const id of ids) assert.equal(byId(id).hidden, false);
+    assert.equal(byId('sidebar-footer').children.length, 0);
+  };
+  const inSidebarFoot = () => {
+    assert.equal(byId('status-controls').hidden, true); assert.equal(byId('status-controls').children.length, 0);
+    assert.deepEqual(byId('sidebar-footer').children.map(node => node.id), ids); assert.deepEqual(where(), ids.map(() => 'sidebar-footer'));
+    assert.equal(byId('sidebar-footer').parentNode, byId('sidebar'));
+  };
+  host.viewport = 1200;
+  await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'primary', key: 'p', epoch: 1}, sidebarVisible: true}, primaries: [primaryFixture()], roster: []});
+  inSidebarFoot(); assert.ok(once());
+  const bell = byId('notifications-button'), count = () => byId('notices-count');
+  app.toggleSidebar(false); await settle();
+  assert.equal(app.state.workspace?.sidebarVisible, false); assert.equal(byId('sidebar').hidden, true); inStatusLine(); assert.ok(once());
+  event('notice', {id: 'moved-notice', level: 'info', message: 'A notification', at: 'now'});
+  assert.equal(byId('notifications-button'), bell); assert.equal(count().textContent, '1'); assert.equal(count().hidden, false);
+  assert.equal(count().parentNode, bell); assert.equal(bell.attributes.get('aria-label'), 'Notifications (1 unread)');
+  byId('commands-button').click(); assert.equal(byId('modal-title').textContent, 'Commands'); byId('modal-close').click();
+  byId('appearance-button').click(); assert.ok(byId('modal-body').textContent.length > 0); byId('modal-close').click();
+  bell.click(); assert.match(byId('modal-body').textContent, /A notification/); byId('modal-close').click();
+  app.renderNavigation(); inStatusLine(); assert.ok(once());
+  app.toggleSidebar(true); await settle();
+  assert.equal(app.state.workspace?.sidebarVisible, true); inSidebarFoot(); assert.ok(once());
+  host.viewport = 760; app.renderNavigation();
+  assert.equal(app.drawerOpen, false); assert.equal(byId('sidebar').hidden, true); inStatusLine(); assert.ok(once());
+  event('notice', {id: 'narrow-notice', level: 'info', message: 'Another notification', at: 'now'});
+  assert.equal(count().textContent, '1'); assert.equal(count().parentNode, bell);
+  app.toggleSidebar(true); assert.equal(byId('sidebar').hidden, false); inSidebarFoot(); assert.ok(once());
+  assert.equal(count().textContent, '1'); assert.equal(count().hidden, false); assert.equal(count().parentNode, bell);
+  app.toggleSidebar(false); inStatusLine(); assert.ok(once()); assert.equal(count().textContent, '1');
+});
 test('projected Message pointers stay inside the drawer without exempting the conversation transcript', async t => {
   t.after(() => {app.toggleSidebar(false); byId('agent-message-close').click(); host.viewport = 1200;});
   for (const visiblePane of [false, true]) {

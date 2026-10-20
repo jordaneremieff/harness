@@ -508,6 +508,18 @@ test('three direct utility controls retain named SVG slots and a separate unread
   assert.match(rule('.icon-button'), /display: inline-flex;[^}]*min-width: 24px; height: 24px/);
   assert.doesNotMatch(css, /\.sidebar-footer \.ui-icon\s*\{/);
 });
+test('the status line holds the three utility controls in a quiet group before the conversation name', () => {
+  const status = html.match(/<footer id="workbench-status"[\s\S]*?<\/footer>/)?.[0]; assert.ok(status);
+  const group = status.match(/<div id="status-controls"[^>]*>/)?.[0]; assert.ok(group);
+  assert.match(group, /class="status-controls"/); assert.match(group, /\shidden/); assert.match(group, /aria-label="Workbench controls"/);
+  assert.ok(status.indexOf(group) < status.indexOf('id="workbench-scope"'));
+  for (const id of ['commands-button', 'notifications-button', 'appearance-button']) assert.equal(status.includes(`id="${id}"`), false);
+  assert.match(rule('.status-controls'), /display: flex; flex: none; align-items: center; gap: var\(--s1\)/);
+  assert.match(rule('.status-controls[hidden]'), /display: none/);
+  assert.match(rule('.status-controls > .icon-button'), /justify-content: flex-start; padding: 0 4px/);
+  assert.doesNotMatch(rule('.status-controls'), /border|background/);
+  assert.match(media('@media (pointer:coarse)'), /\.status-controls > \.icon-button > \.card-icon \{ margin-inline: 10px/);
+});
 test('card actions and expanded content share fixed geometry without label-width drift', () => {
   assert.match(rule('.card-action'), /width: 24px; height: 24px; min-width: 24px; min-height: 24px/);
   assert.match(rule('.card-icon'), /width: 16px; height: 16px/);

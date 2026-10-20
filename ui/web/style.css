@@ -211,6 +211,10 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .sidebar-footer { display: flex; flex: none; align-items: center; gap: var(--s1); margin-top: auto; padding: var(--s1) var(--s2) 0; font-size: 13px; }
 .sidebar-footer > .icon-button { justify-content: flex-start; padding: 0 4px; }
 .sidebar-footer > .icon-button > .card-icon { margin-inline: 2px; }
+.status-controls { display: flex; flex: none; align-items: center; gap: var(--s1); }
+.status-controls[hidden] { display: none; }
+.status-controls > .icon-button { justify-content: flex-start; padding: 0 4px; }
+.status-controls > .icon-button > .card-icon { margin-inline: 2px; }
 .sidebar-conversations { max-height: 25dvh; overflow-y: auto; scrollbar-width: thin; }
 .conversation-heading, .conversation-group-title { display: flex; align-items: center; min-height: 24px; padding: 0 var(--s3); color: var(--dim); font-size: 11px; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; }
 .conversation-heading { min-height: 28px; }
@@ -1309,6 +1313,7 @@ button.thread-person:hover, button.thread-sender:hover { background: var(--raise
   .file-naming > .file-name-input { flex-basis: calc(100% - 24px); }
   .file-naming > .file-name-actions { margin-left: auto; }
   .sidebar-footer > .icon-button > .card-icon { margin-inline: 10px; }
+  .status-controls > .icon-button > .card-icon { margin-inline: 10px; }
   button, summary, .row-age, .row-message, .message-actions button, .transcript-actions button, .latest, .source-header button, .source-disclosure > .source-wrap, .tool-copy, .composer-model, .composer-thinking, .icon-button { min-height: 44px; min-width: 44px; }
   .source-disclosure > summary.source-header { min-height: 49px; }
   .card-action, .section-toggle, .attachment-row > button, .source-header button.card-action, .source-disclosure > .source-wrap.card-action { min-height: 44px; min-width: 44px; }

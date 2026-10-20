@@ -51,7 +51,7 @@
 <p class="message-panel-status" role="status"><span id="agent-message-status"></span><button id="agent-message-retry" type="button" hidden disabled></button></p>
 </section>
 
-<footer class="sidebar-footer" aria-label="Workbench controls"><button id="commands-button" class="icon-button" type="button" aria-haspopup="dialog" data-control-icon="commands" aria-label="Commands" title="Commands"><span class="sr-only">Commands</span></button><button id="notifications-button" class="icon-button notifications-button" type="button" aria-haspopup="dialog" data-control-icon="notifications" aria-label="Notifications" title="Notifications"><span class="sr-only">Notifications</span><span id="notices-count" class="notices-count" aria-hidden="true" hidden></span></button><button id="appearance-button" class="icon-button" type="button" aria-haspopup="dialog" data-control-icon="appearance" aria-label="Appearance" title="Appearance"><span class="sr-only">Appearance</span></button></footer>
+<footer class="sidebar-footer" id="sidebar-footer" aria-label="Workbench controls"><button id="commands-button" class="icon-button" type="button" aria-haspopup="dialog" data-control-icon="commands" aria-label="Commands" title="Commands"><span class="sr-only">Commands</span></button><button id="notifications-button" class="icon-button notifications-button" type="button" aria-haspopup="dialog" data-control-icon="notifications" aria-label="Notifications" title="Notifications"><span class="sr-only">Notifications</span><span id="notices-count" class="notices-count" aria-hidden="true" hidden></span></button><button id="appearance-button" class="icon-button" type="button" aria-haspopup="dialog" data-control-icon="appearance" aria-label="Appearance" title="Appearance"><span class="sr-only">Appearance</span></button></footer>
 <div id="sidebar-resizer" class="resizer" data-axis="x" tabindex="0" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" aria-controls="sidebar"></div>
 </nav>
 <main id="workspace" class="workspace">
@@ -63,6 +63,7 @@
 </div>
 <dialog id="modal" aria-labelledby="modal-title"><div class="modal-heading"><h2 id="modal-title"></h2><button id="modal-close" type="button" data-control-icon="close" aria-label="Close dialog" title="Close dialog"><span class="sr-only">Close dialog</span></button></div><div id="modal-body"></div><div id="modal-error" class="error" role="alert"></div></dialog>
 <footer id="workbench-status" class="workbench-status" aria-label="Focused conversation status">
+<div id="status-controls" class="status-controls" role="group" aria-label="Workbench controls" hidden></div>
 <span id="workbench-scope" class="workbench-scope"></span><span id="workbench-activity" class="workbench-activity"></span>
 <div id="focused-composer-status" class="workbench-draft-state"></div>
 <button id="file-retained-drafts" type="button" hidden>Review retained draft</button>

@@ -1310,6 +1310,7 @@ export function renderNavigation(): void {
   byId('sidebar-show').hidden = false; byId('navigation-access').hidden = visible;
   byId('sidebar-show').setAttribute('aria-expanded', String(visible));
   if (drawerClosed && !visible && byId('sidebar').contains(document.activeElement)) byId('sidebar-show').focus({preventScroll: true});
+  placeWorkbenchControls(visible);
   const layout = currentLayout(); const tab = activeTab(layout);
   if (tab && tab.kind !== 'file') lastConversationPane = layout.focusedPane;
   renderPaneTree(layout); renderSessionEntry(!!tab); byId('conversation-panes').hidden = !hasConversation();
@@ -1320,6 +1321,16 @@ export function renderNavigation(): void {
   const navigation = byId('navigation-access'); const leading = paneRegions.get(layout.focusedPane)?.node.querySelector<HTMLElement>('.tab-bar') ?? byId('workspace');
   if (navigation.parentElement !== leading) leading.prepend(navigation);
   renderSidebarSections();renderFiles(); renderConnection();
+}
+/** Commands, Notifications and Appearance sit in the sidebar foot while the sidebar shows, and at the left of the status line while it is hidden. */
+function placeWorkbenchControls(sidebarShown: boolean): void {
+  const status = byId('status-controls'); status.hidden = sidebarShown;
+  const home = sidebarShown ? byId('sidebar-footer') : status;
+  const buttons = ['commands-button', 'notifications-button', 'appearance-button'].map(id => byId(id));
+  if (buttons.every((button, index) => button.parentElement === home && home.children[index] === button)) return;
+  const focused = buttons.find(button => button === document.activeElement);
+  home.append(...buttons);
+  focused?.focus({preventScroll: true});
 }
 function renderSessionEntry(hasTab: boolean): void {
   const firstUse = !hasConversation();
