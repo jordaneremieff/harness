@@ -11,9 +11,9 @@ export class FilesViews {
   private owners = new Map<string,FileOwner>();private views = new Map<string,FileView>();
   private refreshQueue = new Set<FileOwner>();private refreshWork?:Promise<void>;
   private saves = new Map<string,{workspace:string;key:string;position:FileView['position'];timer:ReturnType<typeof setTimeout>}>();
-  private host:()=>StableViews;private read:FileRead;private current:()=>Workspace|undefined;private io?:FileIO;
+  private host:()=>StableViews;private read:FileRead;private current:()=>Workspace|undefined;private io?:FileIO;private switchView?:(tab:FileTab)=>void;
   private save:(workspace:string,key:string,position:FileView['position'])=>void;private changed:()=>void;
-  constructor(host:()=>StableViews,read:FileRead,current:()=>Workspace|undefined,save:(workspace:string,key:string,position:FileView['position'])=>void,changed:()=>void,io?:FileIO) {this.host = host;this.read = read;this.current = current;this.save = save;this.changed = changed;this.io = io;}
+  constructor(host:()=>StableViews,read:FileRead,current:()=>Workspace|undefined,save:(workspace:string,key:string,position:FileView['position'])=>void,changed:()=>void,io?:FileIO,switchView?:(tab:FileTab)=>void) {this.switchView = switchView;this.host = host;this.read = read;this.current = current;this.save = save;this.changed = changed;this.io = io;}
   private key(workspace:string,tab:FileTab):string {return JSON.stringify([workspace,workspaceTabKey(tab)]);}
   private ownerKey(workspace:string,tab:FileTab):string {return JSON.stringify([workspace,tab.rootId,tab.path]);}
   owner(workspace:string,tab:FileTab):FileOwner|undefined {return this.owners.get(this.ownerKey(workspace,tab));}
@@ -28,7 +28,7 @@ export class FilesViews {
       const currentTab = {...documentOwner.tab,...(tab.view === 'preview' ? {view:'preview' as const} : {})}, currentKey = this.key(workspace.id,currentTab);
       const old = this.saves.get(currentKey);clearTimeout(old?.timer);
       this.saves.set(currentKey,{workspace:workspace.id,key:workspaceTabKey(currentTab),position,timer:setTimeout(()=>this.flush(currentKey),120)});
-    },tab.view === 'preview');
+    },tab.view === 'preview',this.switchView && (()=> {this.switchView?.({kind:'file',rootId:documentOwner.tab.rootId,path:documentOwner.tab.path,...(tab.view === 'preview' ? {view:'preview' as const} : {})});}));
     this.views.set(key,view);this.host().mount(view.root);void owner.load(reopening);return view;
   }
   private flush(key:string):void {

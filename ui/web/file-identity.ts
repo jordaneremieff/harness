@@ -1,5 +1,6 @@
 import {workspaceTabKey, type FileTab, type PaneNode, type Workspace} from '../shared/api.ts';
 import {movedFilePath as movedPath,type FileMove as DiskMove} from '../shared/files.ts';
+export function markdownPath(path:string):boolean {return /\.(md|markdown|mdown)$/i.test(path);}
 export type FileMove = {rootId:string}&Pick<DiskMove,'from'|'to'>;
 export function movedFilePath(path:string,move:Pick<FileMove,'from'|'to'>):string {return movedPath(path,move.from,move.to);}
 export function movedFileTab(tab:FileTab,move:FileMove):FileTab {return tab.rootId === move.rootId ? {...tab,path:movedFilePath(tab.path,move)} : tab;}

@@ -124,9 +124,9 @@ test('a bounded type scale separates metadata, controls, prose and headings', ()
   assert.deepEqual(declarations('font').filter(value => value !== '400 14px/1.5 var(--sans)' && value !== '13px/1.5 var(--mono)' && value !== 'inherit'), []);
 });
 test('Save, Health and Version retain quiet desktop hit heights without weakening coarse targets', () => {
-  assert.equal(rule(':where(.file-save, .workbench-health, .workbench-version)').trim(), 'min-height: 24px;');
+  assert.equal(rule(':where(.file-save, .file-view-switch, .workbench-health, .workbench-version)').trim(), 'min-height: 24px;');
   assert.match(media('@media (pointer:coarse)'), /button, summary,[^{}]+\{ min-height: 44px; min-width: 44px/);
-  for (const selector of ['.file-save', '.workbench-health', '.workbench-version']) {
+  for (const selector of ['.file-save', '.file-view-switch', '.workbench-health', '.workbench-version']) {
     assert.doesNotMatch(rule(selector), /(?:^|;)\s*(?:height|min-height|max-height):/);
   }
 });

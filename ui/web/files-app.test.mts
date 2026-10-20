@@ -159,6 +159,22 @@ test('stable file pointer and native focus select their pane without moving view
   app.applyLayout({...app.state.workspace?.conversationLayout as ConversationLayout,focusedPane:'primary-pane'});primaryControl('editor').focus();editor.focus();await app.selectionQueue.drain();
   assert.equal(app.focusedPane,'file-pane');assert.equal(byId('workbench-status').dataset.pane,'file');assert.equal(hostDocument.activeElement,editor);assert.equal(editor.parentNode,parent);assert.equal(root.parentNode,host);assert.equal(root.moves,moves);assert.deepEqual(app.state.workspace?.selectedTarget,target);
 });
+test('a Markdown file offers Preview and Source beside Save and runs the tab-menu action; other files offer neither',async context=> {
+  fileTransport(context);const target = {kind:'primary' as const,key:'p',epoch:941},source:FileTab = {kind:'file',rootId:'root',path:'doc.md'},preview:FileTab = {...source,view:'preview'},code:FileTab = {kind:'file',rootId:'root',path:'code.ts'},data:FileTab = {kind:'file',rootId:'root',path:'data.json'};
+  const layout:ConversationLayout = {focusedPane:'file-pane',root:{kind:'pane',id:'file-pane',tabs:[source,code,data],active:tabKey(source)}};
+  await arrive({workspace:{id:'markdown-switch',revision:1,primaryKey:'p',selectedTarget:target,conversationLayout:layout},primaries:[primaryFixture({epoch:941})],roster:[],targets:[targetFixture('markdown-switch-primary',target)]});await settle();
+  const workspace = app.state.workspace;assert.ok(workspace);
+  const control = (view:ReturnType<typeof app.filesViews.view>)=> (view.root as unknown as HostNode).querySelectorAll('button').filter(item=>item.className === 'file-view-switch');
+  const sourceView = app.filesViews.view(workspace,source),sourceRoot = sourceView.root as unknown as HostNode,row = sourceRoot.querySelector('.file-view-actions');assert.ok(row);
+  assert.deepEqual(control(sourceView).map(item=>item.textContent),['Preview']);assert.deepEqual(row.children.map(item=>item.textContent),['Preview','Save']);
+  for (const other of [code,data]) assert.equal(control(app.filesViews.view(workspace,other)).length,0);
+  app.openTabsList();const menu = hostDocument.body.querySelector('.context-menu');assert.ok(menu);assert.ok(menu.children.some(item=>item.textContent === 'Re-read file'));contextMenu.close();
+  control(sourceView)[0]?.dispatch('click');await settle();
+  assert.deepEqual(activeTab(currentLayout()),preview);assert.equal(paneLeaves(currentLayout().root)[0]?.tabs.some(item=>tabKey(item) === tabKey(source)),true);
+  const previewView = app.filesViews.view(app.state.workspace as typeof workspace,preview);assert.equal(previewView.owner,sourceView.owner);assert.deepEqual(control(previewView).map(item=>item.textContent),['Source']);
+  control(previewView)[0]?.dispatch('click');await settle();assert.deepEqual(activeTab(currentLayout()),source);
+  assert.equal(paneLeaves(currentLayout().root).flatMap(pane=>pane.tabs).filter(item=>item.kind === 'file' && item.path === 'doc.md').length,2);
+});
 test('explicit session completion selects its exact Primary while ordinary refresh retains the file',async context=> {
   fileTransport(context);const target = {kind:'primary' as const,key:'p',epoch:910},other = {kind:'primary' as const,key:'returned',epoch:911},tab:FileTab = {kind:'file',rootId:'root',path:'retained.md'};
   await arrive({workspace:{id:'resume-file',revision:1,primaryKey:'p',selectedTarget:target,conversationLayout:{focusedPane:'file-pane',root:{kind:'pane',id:'file-pane',tabs:[tab],active:tabKey(tab)}}},primaries:[primaryFixture({epoch:910}),primaryFixture({key:'returned',epoch:911})],roster:[],targets:[targetFixture('original-primary',target),targetFixture('returned-primary',other)]});await settle();
