@@ -165,16 +165,39 @@ test('card preview limits describe the applied bounds for tool details', () => {
   assert.match(cardPreviewLimits(), /16384 characters of supplied text in total, and 8 replacements/);
 });
 test('collapsed results summarize supplied structure without parsing literal text or changing source', () => {
-  const parts: PartView[] = [{type: 'text', text: '{\n  "count": 2\n}', structured: {value: {count: 2, valid: false, tag: 'kept', extra: 'expanded only'}, truncated: false}}];
+  const parts: PartView[] = [{type: 'text', text: '{\n  "count": 2\n}', structured: {value: {count: 2, valid: true, tag: 'kept', extra: 'expanded only'}, truncated: false}}];
   const before = JSON.stringify(parts);
-  assert.equal(resultPreview(parts), 'count: 2 · valid: false · tag: kept');
+  assert.equal(resultPreview(parts), 'count: 2 · valid: true · tag: kept');
   assert.equal(JSON.stringify(parts), before);
   assert.equal(resultPreview([{type: 'text', text: "{\n\"role\": \"assistant\"\n}"}]), "{\n\"role\": \"assistant\"\n}");
-  assert.equal(resultPreview([{type: 'text', text: 'retained', structured: {value: ['one', 'two'], truncated: true}}]), 'Array preview limited');
-  assert.equal(resultPreview([{type: 'text', text: 'retained', structured: {value: ['one', 'two'], truncated: false}}]), '2 items');
-  assert.equal(resultPreview([{type: 'text', text: 'retained', structured: {value: ['one', '[omitted]'], truncated: false}}]), '2 items');
-  assert.equal(resultPreview([{type: 'text', text: 'retained', structured: {value: ['one', '[omitted]'], truncated: true}}]), 'Array preview limited');
+  assert.equal(resultPreview([{type: 'text', text: '["one","two"]', structured: {value: ['one', 'two'], truncated: true}}]), 'Array preview limited');
+  assert.equal(resultPreview([{type: 'text', text: '  ["one","two"]', structured: {value: ['one', 'two'], truncated: false}}]), '2 items');
+  assert.equal(resultPreview([{type: 'text', text: '["one","[omitted]"]', structured: {value: ['one', '[omitted]'], truncated: false}}]), '2 items');
+  assert.equal(resultPreview([{type: 'text', text: '["one","[omitted]"]', structured: {value: ['one', '[omitted]'], truncated: true}}]), 'Array preview limited');
   assert.equal(resultPreview([{type: 'text', text: '[protected text]', redacted: true, structured: {value: {hidden: 'never preview'}, truncated: false}}]), '[protected text]');
+});
+test('text made of prose and JSON lines previews as its own lines, not as an item count', () => {
+  const mixed = 'fatal: Needed a single revision\n{"cwd":"/work","ok":false}';
+  const parts = (text: string, value: unknown): PartView[] => [{type: 'text', text, structured: {value, truncated: false}}];
+  assert.equal(resultPreview(parts(mixed, ['fatal: Needed a single revision', {cwd: '/work', ok: false}])), mixed);
+  assert.equal(resultPreview(parts(mixed, ['fatal: Needed a single revision', {cwd: '/work', ok: false}]), {tidy: true}), mixed);
+  assert.equal(resultPreview(parts('{"a":1}\n{"b":2}', [{a: 1}, {b: 2}])), '{"a":1}\n{"b":2}');
+  assert.equal(resultPreview(parts('[1,2,3]', [1, 2, 3])), '3 items');
+  assert.equal(resultPreview(parts('\n  [{"a":1}]\n', [{a: 1}])), '1 item');
+  assert.equal(resultPreview(parts('{"a":1}', {a: 1})), 'a: 1');
+  const shown = presentResultPreview({callId: 'tool', name: 'custom', status: 'success', result: parts(mixed, ['fatal: Needed a single revision', {cwd: '/work', ok: false}])});
+  assert.equal(shown, undefined, 'mixed text is a literal preview, not a prose summary');
+});
+test('a summary that repeats the card title or only holds false flags shows no preview line', () => {
+  setup();
+  const session = 'ead53d8c-af9d-0bda-1416-21a6ba18ab6c:57', name = (identity: string) => identity === session ? 'Web UI designer' : undefined;
+  const value = {identity: session, result: {sessionId: session}, deduped: false};
+  const result: PartView[] = [{type: 'text', text: JSON.stringify(value), structured: {value, truncated: false}}];
+  const title = 'Sent a message to Web UI designer: “Round 8”';
+  assert.equal(resultPreview(result, {resolve: name, title}), '');
+  assert.equal(resultPreview(result, {resolve: name}), 'Web UI designer');
+  assert.equal(presentResultPreview({callId: 'tool', name: 'custom', status: 'success', result}, name, title), undefined);
+  assert.equal(node(presentResultPreview({callId: 'tool', name: 'custom', status: 'success', result}, name)).textContent, 'Web UI designer');
 });
 test('nested retained results use supplied structured summaries without changing the literal source', () => {
   const parts: PartView[] = [{type: 'toolResult', callId: 'nested', name: 'query', isError: false, parts: [

@@ -1548,10 +1548,10 @@ export class Transcript {
   private toolContent(tool: ToolNode): void {
     const source = tool.source; if (!source) return;
     if (!this.protectedNode(tool.preview)) {
-      const resolve = this.nameResolver();
-      const supplied = presentToolPreview(source) ?? presentResultPreview(source, resolve);
+      const resolve = this.nameResolver(), title = tool.title.textContent ?? '';
+      const supplied = presentToolPreview(source) ?? presentResultPreview(source, resolve, title);
       if (supplied) this.replaceContent(tool.preview, supplied);
-      else setText(tool.preview, resultPreview(source.result ?? [], {resolve, tidy: source.status !== 'error'}));
+      else setText(tool.preview, resultPreview(source.result ?? [], {resolve, tidy: source.status !== 'error', title}));
       tool.preview.classList.toggle('tool-error', source.status === 'error');
       tool.previewSource = source;
     }

@@ -423,15 +423,15 @@ test('callId joins call and results across entries with one bounded disclosure a
   assert.equal(card.parentNode?.dataset.status, 'error'); assert.match(card.querySelector('.tool-status')?.textContent ?? '', /Failed/);
 });
 test('collapsed cards prefer supplied structured summaries and keep exact raw copy, timing and arguments', async () => {
-  setup(); const view = transcript(); const raw = '{\n  "count": 2,\n  "valid": false\n}';
+  setup(); const view = transcript(); const raw = '{\n  "count": 2,\n  "valid": true\n}';
   const source = contentEntry('summary', {path: 'result.txt', offset: 40, limit: 8}, raw);
   const parts = source.messages[0]?.parts; assert.ok(parts);
   const call = parts.find(part => part.type === 'toolCall'); const result = parts.find(part => part.type === 'toolResult');
   assert.ok(call && result); call.name = 'read'; result.name = 'read';
-  result.parts = [{type: 'text', text: raw, structured: {value: {count: 2, valid: false}, truncated: false}}];
+  result.parts = [{type: 'text', text: raw, structured: {value: {count: 2, valid: true}, truncated: false}}];
   view.set([source], new Map([[call.callId, {callId: call.callId, name: 'read', phase: 'end', durationMs: 37}]])); flush();
   const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card);
-  assert.equal(card.querySelector('.tool-preview')?.textContent, 'count: 2 · valid: false');
+  assert.equal(card.querySelector('.tool-preview')?.textContent, 'count: 2 · valid: true');
   assert.equal(card.querySelector('.tool-secondary')?.textContent, 'lines 40–47 · 37 ms');
   assert.equal(card.querySelector('summary')?.querySelectorAll('.card-icon-disclosure').length, 0);
   const action = card.parentNode?.querySelector('.tool-copy'); assert.ok(action); assert.equal(action.textContent, 'Copy output');
@@ -3129,7 +3129,7 @@ test('a collapsed agent card reads as a sentence with no identifiers, and the op
   known = true;
   const named = {...unknown, parts: [{type: 'text' as const, text: '{}', structured: {value: {sessionId: session}, truncated: false}}]};
   view.set([call, {...result, messages: [{...message('send-result-message', ''), role: 'toolResult', parts: [named]}]}]); flush();
-  assert.equal(card.querySelector('.tool-preview')?.textContent, 'Web UI lead');
+  assert.equal(card.querySelector('.tool-preview')?.hidden, true, 'a name the card title already shows is not repeated');
   card.open = true; view.set([call, result]); flush();
   assert.match(card.textContent, /ead53d8c-af9d-0bda-1416-21a6ba18ab6c:57/); assert.match(card.textContent, /20039/); assert.match(card.textContent, /agent-deliver:20034/);
 });

@@ -107,7 +107,7 @@ test('structured collapsed summaries use at most three supplied facts or an arra
   const display = (value: unknown): JsonDisplay => ({value, truncated: false});
   assert.equal(structuredResultPreview(undefined), undefined);
   assert.equal(structuredResultPreview(display(undefined)), undefined);
-  assert.equal(structuredResultPreview(display({alpha: 'kept', count: 0, ready: false, ignored: 'only after expansion'})), 'alpha: kept · count: 0 · ready: false');
+  assert.equal(structuredResultPreview(display({alpha: 'kept', count: 0, ready: true, ignored: 'only after expansion'})), 'alpha: kept · count: 0 · ready: true');
   assert.equal(structuredResultPreview(display({nested: {role: 'assistant'}, records: [1, 2], nullable: null})), 'records: 2 items · nested · nullable: null');
   assert.equal(structuredResultPreview(display([])), '0 items'); assert.equal(structuredResultPreview(display([{}])), '1 item');
   assert.equal(structuredResultPreview(display([{}, {}, {}])), '3 items');
@@ -151,9 +151,9 @@ test('structured summaries bound keys and strings without evaluating getters or 
 });
 test('collapsed summaries leave full rich fields and omission callbacks in the shared expanded budget', () => {
   const context = setup(); let calls = 0;
-  const value = {alpha: 'A', beta: 0, gamma: false, delta: 'D'};
+  const value = {alpha: 'A', beta: 0, gamma: true, delta: 'D'};
   const display = {value, truncated: false};
-  assert.equal(structuredResultPreview(display), 'alpha: A · beta: 0 · gamma: false');
+  assert.equal(structuredResultPreview(display), 'alpha: A · beta: 0 · gamma: true');
   const expanded = cast(presentResult(display, context)); assert.match(expanded.textContent, /deltaD/); bounded(expanded);
   const budget = new PreviewBudget({copySavedText: () => { calls++; }});
   const argument = cast(presentArguments({value: {code: 'x'.repeat(10000)}, truncated: false}, context, budget));
@@ -974,11 +974,27 @@ const display = (value: unknown) => ({value, truncated: false});
 test('compact summaries leave identifiers out and name a conversation only when the name is known', () => {
   const session = 'ead53d8c-af9d-0bda-1416-21a6ba18ab6c:57';
   assert.equal(structuredResultPreview(display({result: {sessionId: session, submissionId: 16781, requestId: 'agent-deliver:20034'}, conversationId: 4250})), '');
-  assert.equal(structuredResultPreview(display({threadId: 'ead53d8c-af9d-0bda-1416-21a6ba18ab6c/6e47146e288681286069a74bf69cfd6e', sequence: 292, deduped: false})), 'sequence: 292 · deduped: false');
+  assert.equal(structuredResultPreview(display({threadId: 'ead53d8c-af9d-0bda-1416-21a6ba18ab6c/6e47146e288681286069a74bf69cfd6e', sequence: 292, deduped: true})), 'sequence: 292 · deduped: true');
   assert.equal(structuredResultPreview(display({result: {sessionId: session, submissionId: 20039}}), identity => identity === session ? 'Web UI lead' : undefined), 'Web UI lead');
   assert.equal(structuredResultPreview(display({status: 'queued', owner: session, digestLike: 'a'.repeat(40)})), 'status: queued');
   assert.equal(structuredResultPreview(display({nested: {role: 'assistant', id: 4}})), 'nested');
   assert.equal(structuredResultPreview(display(session)), ''); assert.equal(structuredResultPreview(display(session), () => 'Builder'), 'Builder');
+  assert.equal(structuredResultPreview(display({})), 'Empty object');
+});
+test('compact summaries show a name once, leave out a name the title shows, and leave out false flags', () => {
+  const a = 'ead53d8c-af9d-0bda-1416-21a6ba18ab6c:57', b = '4736382d-0d0b-8764-22db-73e3ec0287bd';
+  const both = (identity: string) => identity === a || identity === b ? 'Web UI designer' : undefined;
+  assert.equal(structuredResultPreview(display({identity: a, result: {sessionId: b}}), both), 'Web UI designer');
+  assert.equal(structuredResultPreview(display({identity: a, status: 'queued'}), both, 'Sent a message to Web UI designer'), 'status: queued');
+  assert.equal(structuredResultPreview(display({identity: a, status: 'queued'}), both, 'Sent a message to someone'), 'Web UI designer · status: queued');
+  assert.equal(structuredResultPreview(display({identity: a, deduped: false}), both, 'Sent a message to Web UI designer: “Hi”'), '');
+  assert.equal(structuredResultPreview(display({deduped: false, sequence: 3, deduped2: true}), undefined), 'sequence: 3 · deduped2: true');
+  assert.equal(structuredResultPreview(display({deduped: false})), '');
+  assert.equal(structuredResultPreview(display({sequence: 3, deduped: true})), 'sequence: 3 · deduped: true');
+  assert.equal(structuredResultPreview(display({ok: false, sequence: 3})), 'ok: false · sequence: 3');
+  assert.equal(structuredResultPreview(display({success: false, sequence: 3})), 'success: false · sequence: 3');
+  assert.match(structuredResultPreview(display({error: {message: 'Request refused'}, deduped: false})) ?? '', /Request refused/);
+  assert.equal(structuredResultPreview(display({errors: false, sequence: 3})), 'sequence: 3');
   assert.equal(structuredResultPreview(display({})), 'Empty object');
 });
 test('expanded fields keep every identifier', () => {

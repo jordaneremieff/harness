@@ -1,6 +1,6 @@
 import { element } from './dom.ts';
 import type { PartView } from '../shared/api.ts';
-import { structuredResultPreview, type NameResolver } from './generic-content.ts';
+import { decodedArray, structuredResultPreview, type NameResolver } from './generic-content.ts';
 import type { PresentationContext, ToolPresentationSource } from './transcript-presentation.ts';
 import { previewText } from './format.ts';
 import { highlight, isMarkdownPath, languageFromPath } from './highlight.ts';
@@ -149,7 +149,7 @@ function tidied(source: string, tidy: boolean): string {
     return true;
   }).join('\n');
 }
-type PreviewOptions = {resolve?: NameResolver; tidy?: boolean};
+type PreviewOptions = {resolve?: NameResolver; tidy?: boolean; title?: string};
 function resultPreviewText(parts: readonly PartView[], skipFrontmatter: boolean, options: PreviewOptions): ResultPreviewText | undefined {
   for (const part of parts) {
     if (part.type === 'toolResult') { const nested = resultPreviewText(part.parts, skipFrontmatter, options); if (nested) return nested; }
@@ -159,7 +159,9 @@ function resultPreviewText(parts: readonly PartView[], skipFrontmatter: boolean,
   return undefined;
 }
 function textPreview(part: Extract<PartView, {type: 'text'}>, skipFrontmatter: boolean, options: PreviewOptions): ResultPreviewText | undefined {
-  const summary = !part.redacted ? structuredResultPreview(part.structured, options.resolve) : undefined;
+  // An array summarizes text that is one JSON array; text of prose or JSON lines keeps its own lines.
+  const summarizable = !decodedArray(part.structured) || part.text.trimStart().startsWith('[');
+  const summary = !part.redacted && summarizable ? structuredResultPreview(part.structured, options.resolve, options.title) : undefined;
   const text = withoutOuterBlankLines(summary ?? tidied(previewSource(part, skipFrontmatter), !!options.tidy && !part.redacted));
   if (!text) return undefined;
   const shown = preview(text, 1200, 6);
@@ -175,9 +177,9 @@ export function resultPreview(parts: readonly PartView[], options: PreviewOption
  * Prose previews come only from explicit content facts: a structured summary, or a successful
  * read of a path with a Markdown extension. Every other result stays a literal text prefix.
  */
-export function presentResultPreview(source: ToolPresentationSource, resolve?: NameResolver): HTMLElement | undefined {
+export function presentResultPreview(source: ToolPresentationSource, resolve?: NameResolver, title = ''): HTMLElement | undefined {
   if (source.status === 'error') return undefined;
-  const shown = resultPreviewText(source.result ?? [], false, {resolve}); if (!shown) return undefined;
+  const shown = resultPreviewText(source.result ?? [], false, {resolve, title}); if (!shown) return undefined;
   const args = record(source.args?.value);
   const markdown = !shown.summary && !shown.redacted && source.name === 'read' && source.status === 'success' && isMarkdownPath(args.file_path ?? args.path);
   if (!shown.summary && !markdown) return undefined;

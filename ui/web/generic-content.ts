@@ -113,7 +113,8 @@ class ResultSummary {
   private readonly facts: SummaryField[] = [];
   private omitted = false;
   private readonly resolve: NameResolver | undefined;
-  constructor(resolve?: NameResolver) {this.resolve = resolve;}
+  private readonly title: string;
+  constructor(resolve?: NameResolver, title = '') {this.resolve = resolve; this.title = title;}
   private entries(value: Record<string, unknown>, metadata: boolean): SummaryField[] {
     const fields: SummaryField[] = []; let visited = 0;
     for (const key in value) {
@@ -151,24 +152,41 @@ class ResultSummary {
     }
     return false;
   }
+  /** A name the card title already shows, or a false flag other than an outcome or an explicit error, warning or truncation fact, adds nothing to the line. */
+  private redundant(field: SummaryField): boolean {
+    if (field.label !== undefined) return this.title.includes(field.label);
+    if (field.value !== false) return false;
+    const name = words(field.key.slice(field.key.lastIndexOf('.') + 1));
+    return name !== 'ok' && name !== 'success' && !explicitKey(field.key);
+  }
   text(value: Record<string, unknown>, truncated: boolean): string {
     this.collect(value, '', 0, false, false);
     const useful = this.facts.some(field => field.rank < 4);
     const readable = this.facts.find(field => field.rank === 1 && typeof field.value === 'string');
-    const facts = this.facts.filter(field => !useful || field.rank < 4).sort((a, b) => a.rank - b.rank).slice(0, 3).map(field => field === readable ? prefix(String(field.value), 240, 2) : field.label ?? summaryFact(field.key, field.value, truncated));
+    const shown = new Set<string>(); let dropped = false;
+    const facts = this.facts.filter(field => !useful || field.rank < 4).sort((a, b) => a.rank - b.rank).flatMap(field => {
+      if (this.redundant(field)) {dropped = true; return [];}
+      const text = field === readable ? prefix(String(field.value), 240, 2) : field.label ?? summaryFact(field.key, field.value, truncated);
+      if (shown.has(text)) {dropped = true; return [];}
+      shown.add(text); return [text];
+    }).slice(0, 3);
     const notice = [truncated ? 'Partial preview.' : '', this.limited ? 'Summary scan limited.' : ''].filter(Boolean).join(' ');
     const suffix = notice ? ` · ${notice}` : '';
-    if (!facts.length && this.omitted) return '';
+    if (!facts.length && (this.omitted || dropped)) return '';
     return prefix(facts.length ? facts.join(' · ') : 'Empty object', 240 - suffix.length, 2) + suffix;
   }
 }
+/** True when the decoded value is an array, which the server also uses for text made of several JSON lines or prose mixed with JSON lines. */
+export function decodedArray(display: JsonDisplay | undefined): boolean {
+  return record(display) && Array.isArray(own(display, 'value'));
+}
 /** Summarize only decoded own data; bounded classification never parses raw output. */
-export function structuredResultPreview(display: JsonDisplay | undefined, resolve?: NameResolver): string | undefined {
+export function structuredResultPreview(display: JsonDisplay | undefined, resolve?: NameResolver, title = ''): string | undefined {
   if (!record(display)) return undefined;
   const value = own(display, 'value'); const truncated = own(display, 'truncated') === true;
   if (value === undefined) return undefined;
   if (Array.isArray(value)) return summaryArray(value, truncated);
-  if (record(value)) return new ResultSummary(resolve).text(value, truncated);
+  if (record(value)) return new ResultSummary(resolve, title).text(value, truncated);
   if (typeof value === 'string' && identifierField('', value)) return resolve?.(value) ?? '';
   const suffix = truncated ? ' · Partial preview.' : '';
   return prefix(scalar(value), 240 - suffix.length, 2) + suffix;
