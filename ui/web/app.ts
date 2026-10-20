@@ -179,7 +179,7 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
   const latest = add('latest', 'button', 'latest') as HTMLButtonElement; latest.type = 'button'; latest.append(cardIcon('latest'), element('span', 'latest-text', 'Latest')); latest.setAttribute('aria-label', 'Latest message'); latest.hidden = true;
   nodes.set('transcript-region',region);region.append(absent, scroller); const above = add('widgets-above', 'div', 'widgets'), below = add('widgets-below', 'div', 'widgets');
   const elements = createComposerElements(instanceId); elements.root.hidden = false;
-  // The jump control follows the state note in the control row: tab order and visual order agree.
+  // Transcript navigation shares the utility row above the writing surface.
   elements.state?.after(latest);
   for (const [name, node] of Object.entries(elements)) if (node) nodes.set(name === 'root' ? 'composer' : name, node);
   const stop = elements.root.querySelector<HTMLButtonElement>('.stop'); if (!stop) throw new Error('Stop control is missing.'); nodes.set('stop', stop); nodes.set('abort', stop);
@@ -1432,17 +1432,16 @@ function wireSettingPickers(target: Target, elements: import('./composer.ts').Co
 function renderAllComposerSettings(): void { for (const controller of controllers.values()) renderComposerSettings(controller, presentation(controller.target)); }
 function listedModelText(model: NonNullable<ConversationPresentation['model']>): string { return modelText(model, actions.modelName(model.provider, model.modelId)); }
 function renderComposerSettings(controller: ConversationController, view: ConversationPresentation): void {
-  const {model, thinking, settings} = controller.elements; const text = settings?.querySelector<HTMLElement>('.composer-settings-text'), separator = settings?.querySelector<HTMLElement>('.composer-settings-separator');
-  if (!model || !thinking || !text || !separator) return;
+  const {model, thinking, settings} = controller.elements; const text = settings?.querySelector<HTMLElement>('.composer-settings-text');
+  if (!model || !thinking || !text) return;
   if (view.model) actions.readModelNames();
   if (controller.target.kind === 'primary') renderPrimarySettings(model, thinking, view); else renderAgentSettingsText(model, thinking, view, text);
-  separator.hidden = model.hidden || thinking.hidden;
   if (controller.target.kind === 'primary') text.hidden = true;
 }
 function renderPrimarySettings(model: HTMLButtonElement, thinking: HTMLButtonElement, view: ConversationPresentation): void {
   const ready = view.input, id = view.model ? `${view.model.provider}/${view.model.modelId}` : '';
-  model.hidden = !view.model && !ready; model.disabled = !ready; setText(model, view.model ? listedModelText(view.model) : 'Choose model'); model.title = id ? `${id} · Primary` : 'Choose Primary model'; model.setAttribute('aria-label', id ? `Model for Primary: ${id}` : 'Choose Primary model');
-  thinking.hidden = !view.thinking; thinking.disabled = !ready; setText(thinking, effortText(view.thinking ?? '')); thinking.title = view.thinking ? `Thinking level: ${view.thinking}` : 'Choose thinking level'; thinking.setAttribute('aria-label', view.thinking ? `Thinking level for Primary: ${view.thinking}` : 'Choose Primary thinking level');
+  model.hidden = !view.model && !ready; model.disabled = !ready; setText(model.querySelector<HTMLElement>('.composer-setting-label') as HTMLElement, view.model ? listedModelText(view.model) : 'Choose model'); model.title = id ? `${id} · Primary` : 'Choose Primary model'; model.setAttribute('aria-label', id ? `Model for Primary: ${id}` : 'Choose Primary model');
+  thinking.hidden = !view.thinking; thinking.disabled = !ready; setText(thinking.querySelector<HTMLElement>('.composer-setting-label') as HTMLElement, effortText(view.thinking ?? '')); thinking.title = view.thinking ? `Thinking level: ${view.thinking}` : 'Choose thinking level'; thinking.setAttribute('aria-label', view.thinking ? `Thinking level for Primary: ${view.thinking}` : 'Choose Primary thinking level');
 }
 function renderAgentSettingsText(model: HTMLButtonElement, thinking: HTMLButtonElement, view: ConversationPresentation, text: HTMLElement): void {
   model.hidden = thinking.hidden = true; const full = settingsLabel(view, true);
@@ -1670,9 +1669,13 @@ function refreshStaleConnection(controller: ConversationController): void {
   if (controller.connection?.stale && !controller.connectionError && !controller.root.hidden && !controller.root.inert) prepareAgentConnection(controller);
 }
 const ACTION_TITLES: Partial<Record<AgentComposerState['kind'], string>> = {start: 'Start agent. This can resume unfinished work before the agent is ready.', failed: 'Check whether the agent started.'};
+function composerStateLabel(view: AgentComposerState): string | undefined {
+  if (!view.label) return undefined;
+  return view.kind === 'start' ? 'Not running. Start to send.' : view.line;
+}
 function composerStateView(view: AgentComposerState, run: () => void): ComposerStateView {
   const {action} = view;
-  return {line: view.line, label: view.label, ...(view.kind === 'failed' ? {tone: 'error' as const} : view.kind === 'unreachable' ? {tone: 'warning' as const} : {}), blocksSend: view.kind === 'read-only' || view.kind === 'checking', ...(view.kind === 'read-only' ? {hideSend: true} : {}), ...(view.kind === 'start' || view.kind === 'starting' ? {} : {detail: view.detail || undefined, showDetail: () => showDetails('Agent details', view.detail)}),
+  return {line: view.line, label: composerStateLabel(view), ...(view.kind === 'failed' ? {tone: 'error' as const} : view.kind === 'unreachable' ? {tone: 'warning' as const} : {}), blocksSend: view.kind === 'read-only' || view.kind === 'checking', ...(view.kind === 'read-only' ? {hideSend: true} : {}), ...(view.kind === 'start' || view.kind === 'starting' ? {} : {detail: view.detail || undefined}),
     ...(action ? {action: {...action, ...(view.kind === 'failed' || view.kind === 'unreachable' ? {recovery: true} : {}), ...(ACTION_TITLES[view.kind] ? {title: ACTION_TITLES[view.kind]} : {}), disabled: action.disabled || !connected || !!checkingAgent, run}} : {})};
 }
 /** Without a draft only the unreachable and checking states keep the composer on screen; checking then holds the action slot so the composer keeps its shape. */

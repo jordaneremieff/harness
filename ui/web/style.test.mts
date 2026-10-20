@@ -119,7 +119,7 @@ test('a bounded type scale separates metadata, controls, prose and headings', ()
   assert.match(rule('.communication-card > .communication-body'), /font-size: 16px; line-height: 1\.6; font-weight: 400; font-style: normal/);
   assert.match(rule('.message-body'), /font-size: 16px; line-height: 1\.6/);
   assert.match(rule('.markdown-content:is(h1)'), /font-size: 18px/);
-  assert.match(rule('.composer textarea'), /font-size: 16px; line-height: 1\.6/);
+  assert.match(rule('.composer textarea'), /font-size: 16px; line-height: 24px/);
   assert.deepEqual([...new Set(declarations('font-weight'))].sort(), ['400', '500', '600']);
   assert.deepEqual(declarations('font').filter(value => value !== '400 14px/1.5 var(--sans)' && value !== '13px/1.5 var(--mono)' && value !== 'inherit'), []);
 });
@@ -180,10 +180,12 @@ test('blue marks focus while selected rows and tabs use neutral rules and surfac
   assert.deepEqual(fills.filter(item => item.value.includes('--edge')), [
     {selector: '.pane-split > .pane-divider:hover::after', property: 'background', value: 'var(--edge)'},
   ]);
-  const graphicTokens = new Map([['.tab-dot', 'var(--muted)'], ['.tab-dot[data-state=working]', 'var(--link)'], ['.tab-dot[data-state=failed]', 'var(--error)'], ['.send', 'var(--fg)'], ['.send:not(:disabled):hover', 'var(--muted)']]);
+  const graphicTokens = new Map([['.tab-dot', 'var(--muted)'], ['.tab-dot[data-state=working]', 'var(--link)'], ['.tab-dot[data-state=failed]', 'var(--error)'], ['.send', 'var(--fg)'], ['.send:not(:disabled):hover', 'var(--muted)'], ['.stop', 'var(--fg)'], ['.stop:hover', 'var(--muted)']]);
   for (const item of fills.filter(item => !item.value.includes('--edge'))) {
     const graphic = graphicTokens.get(item.selector);
-    if (graphic) assert.equal(item.value, graphic); else assert.doesNotMatch(item.value, /--(?:fg|muted|dim|link)\b/, `ink used as a fill: ${item.value}`);
+    if (graphic) assert.equal(item.value, graphic);
+    else if (/^\.composer(?:-input|\b)|^\.queue:not\(:disabled\):hover$|^\.send:disabled$/.test(item.selector)) assert.match(item.value, /color-mix|transparent|ButtonText|ButtonFace|var\(--composer-fill\)/);
+    else assert.doesNotMatch(item.value, /--(?:fg|muted|dim|link)\b/, `ink used as a fill: ${item.value}`);
   }
   assert.match(rule('.context-menu-item > .choice-check'), /color: var\(--muted\)/);
   assert.match(rule('.context-menu-item[aria-checked=false] > .choice-check'), /visibility: hidden/);
@@ -212,11 +214,8 @@ test('stored and live conversation names use primary text while metadata stays q
 });
 test('small radii and quiet surfaces permit only the reduced-motion-aware busy marker', () => {
   const radii = declarations('border-radius');
-  assert.deepEqual(radii.filter(value => value === '6px'), ['6px', '6px'], 'only the composer surface and its Add menu take the larger corner'); assert.match(rule('.composer-input'), /border-radius: 6px/); assert.match(rule('.context-menu-compact'), /border-radius: 6px/);
-  for (const value of radii) {
-    if (value === '50%' || value === '6px') continue;
-    for (const length of value.match(/[\d.]+px/g) ?? []) assert.ok(Number.parseFloat(length) <= 4, `radius ${value}`);
-  }
+  assert.match(rule('.composer-input'), /border-radius: 16px/); assert.match(rule('.context-menu-compact'), /border-radius: 6px/);
+  assert.deepEqual([...new Set(radii)].sort(), ['0', '0 4px 4px 0', '10px', '16px', '2px', '3px', '4px', '50%', '6px', '8px']);
   assert.deepEqual([...new Set(declarations('box-shadow'))].sort(), ['inset 0 -2px var(--accent)', 'inset 0 -2px var(--edge)', 'none', 'var(--shadow)']);
   assert.match(rule('dialog[open][data-variant=find]'), /box-shadow: none/);
   const shadowed = [...css.matchAll(/(?:^|\n)\s*([^{}\n]+)\{[^}]*box-shadow: var\(--shadow\)/g)].map(match => match[1].trim()).sort();
@@ -239,7 +238,7 @@ test('neutral tools keep lifecycle accents in marks and errors while source diff
   assert.match(rule(':is(.tab-dot, .conversation-state, .row-state)[data-tone=success]'), /color: var\(--success\)/);
   assert.match(rule(':is(.tab-dot, .conversation-state, .row-state)[data-tone=error]'), /color: var\(--error\)/);
   assert.match(rule('a'), /color: var\(--link\)/);
-  assert.match(rule('.stop'), /color: var\(--error\)/);
+  assert.match(rule('.composer[data-working=draft] .stop:hover'), /color: var\(--error\)/);
 });
 test('tool status labels have natural width and disclosure marks stay separate from status', () => {
   assert.match(rule('.tool-status'), /flex: none/);
@@ -266,8 +265,8 @@ test('file message source and exact destination details wrap within the dialog',
 });
 test('model and thinking leave the footer for separate readable targets under the composer', () => {
   assert.doesNotMatch(html, /id="(?:model-button|thinking-button|model-value|thinking-value|agent-status)"|workbench-model/);
-  assert.match(rule('.composer-settings'), /margin: 0 6px 0 auto/); assert.match(rule('.composer-model, .composer-thinking'), /min-height: 30px;[^}]*font-size: 13px; white-space: nowrap/);
-  assert.match(rule('.composer-meta'), /display: flex; flex: 1 1 0; flex-wrap: nowrap; align-items: center/);
+  assert.match(rule('.composer-settings'), /display: flex; flex: 0 1 auto; align-items: center/); assert.match(rule('.composer-model, .composer-thinking'), /min-height: 32px;[^}]*font-size: 14px; white-space: nowrap/);
+  assert.match(rule('.composer-meta'), /display: contents/);
   assert.doesNotMatch(css, /\.composer-model[^{}]*\{[^}]*min-width: 10ch/);
   assert.match(media('@media (pointer:coarse)'), /\.composer-model, \.composer-thinking, \.icon-button/);
   assert.equal((html.match(/<footer id="workbench-status"/g) ?? []).length, 1);
@@ -428,7 +427,7 @@ test('lean chrome: gutter-marked user turns, no pills, wrapping roster rows and 
   assert.match(rule('.message.user > .message-body::before'), /content: "";[^}]*left: 0; border-left: 2px solid var\(--accent\)/);
   assert.doesNotMatch(css, /content: "You"/);
   const circles = [...css.matchAll(/(?:^|\n)\s*([^{}]+)\{[^{}]*border-radius: 50%;/g)].map(match => match[1].replace(/\/\*[\s\S]*?\*\//g, '').trim());
-  assert.deepEqual(circles, ['.composer-state::before', '.workbench-activity[data-busy=true]::before']);
+  assert.deepEqual(circles, ['.workbench-activity[data-busy=true]::before']);
   for (const value of declarations('border-radius')) if (value !== '50%') assert.doesNotMatch(value, /999|50%|9999/);
   assert.match(rule('.communication-unverified'), /display: inline-flex;[^}]*align-items: center;[^}]*width: auto/);
   assert.match(rule('.communication-unverified > .card-action-label'), /white-space: nowrap/);
@@ -460,29 +459,32 @@ test('prose table cells wrap at words while wide data keeps horizontal scroll an
   assert.match(rule('.tool-rows th, .tool-rows td'), /white-space: normal; overflow-wrap: anywhere/);
   assert.match(rule('.tool-rows'), /max-width: 100%; overflow-x: auto/);
 });
-test('composer actions keep Attach left and submission right with one padded keyboard-focus boundary', () => {
-  assert.match(rule('.composer-intake'), /display: inline-flex; flex: none; align-items: center; margin-right: auto/); assert.doesNotMatch(rule('.attach'), /flex: 1|flex-grow/);
-  assert.match(rule('.attachment-sources'),/width: 30px; height: 30px; min-width: 30px; min-height: 30px/);
-  assert.match(rule('.working-file-list'),/max-height: 36dvh; overflow: auto/);
-  assert.match(rule('.working-file-row .file-name'),/white-space: normal; overflow-wrap: anywhere/);
-  assert.doesNotMatch(rule('.composer-bar'), /margin-left: auto/);
+test('the writing surface groups Add and settings before a fixed icon action', () => {
+  assert.match(rule('.composer-intake'), /display: inline-flex; flex: none; align-items: center/);
+  assert.match(rule('.composer .attachment-sources'), /width: 32px; height: 32px; min-width: 32px; min-height: 32px/);
+  assert.match(rule('.working-file-list'), /max-height: 36dvh; overflow: auto/);
+  assert.match(rule('.working-file-row .file-name'), /white-space: normal; overflow-wrap: anywhere/);
+  assert.match(rule('.composer-bar'), /margin-left: auto/);
   assert.match(rule('.composer-submit'), /flex: none; flex-wrap: nowrap/);
-  assert.match(rule('.send, .stop'), /height: 30px;[^}]*padding: 0 12px 0 10px;[^}]*border-radius: 4px;[^}]*font-weight: 500/); assert.match(rule('.send'), /background: var\(--fg\); color: var\(--canvas\)/);
-  assert.match(rule('.send:disabled'), /border-color: var\(--rule\); background: transparent; color: var\(--dim\)/); assert.match(rule('.send[data-kind=recovery]'), /border-color: var\(--rule\); background: transparent; color: var\(--fg\)/);
-  assert.doesNotMatch(rule('.stop'), /background:/);
-  assert.match(rule('.composer textarea'), /min-width: 0/);
-  assert.match(rule('.composer-input'), /display: grid; grid-template-columns: auto minmax\(0,1fr\)/); assert.match(rule('.composer-input'), /border: 1px solid var\(--rule\); border-radius: 6px; background: var\(--raised\)/);
-  assert.match(rule('.composer-input > .composer-intake'), /grid-column: 1; grid-row: 3/); assert.match(rule('.composer-input > .composer-line'), /grid-column: 2; grid-row: 3/);
+  assert.match(rule('.send, .stop'), /width: 36px; height: 36px; min-width: 36px; min-height: 36px; padding: 0; border: 0; border-radius: 10px/);
+  assert.match(rule('.send'), /background: var\(--fg\); color: var\(--canvas\)/);
+  assert.match(rule('.send:disabled'), /opacity: 1; background: color-mix\(in srgb, var\(--fg\) 14%, var\(--composer-fill\)\); color: var\(--muted\)/);
+  assert.doesNotMatch(css, /\.send\[data-kind=recovery\]/);
+  assert.match(rule('.composer-input'), /padding: 20px 16px 12px; border: 0; border-radius: 16px; background: var\(--composer-fill\)/);
+  assert.match(rule('.composer'), /--composer-fill: color-mix\(in srgb, var\(--canvas\) 88%, var\(--fg\)\)/);
+  assert.match(rule(':root[data-appearance=light] .composer'), /--composer-fill: color-mix\(in srgb, var\(--canvas\) 94%, var\(--fg\)\)/);
+  assert.match(rule('.composer-line'), /min-height: 36px; margin-top: 16px/);
+  assert.match(rule('.start'), /width: auto; min-width: 82px; gap: 6px; padding: 0 12px; font-size: 14px; font-weight: 500; white-space: nowrap/);
 });
 test('narrow composer controls wrap only as needed and retain right alignment with unbroken control labels', () => {
   const narrow = [...css.matchAll(/@container conversation \(max-width: 480px\) \{([\s\S]*?)\n\}/g)].map(match => match[1]).join('\n');
-  assert.match(rule('.composer-bar'), /flex-wrap: wrap;[^}]*justify-content: flex-end/);
+  assert.match(rule('.composer-bar'), /flex-wrap: nowrap;[^}]*justify-content: flex-end/);
   assert.match(narrow, /\.composer-bar \{ justify-content: flex-end; \}/);
   assert.doesNotMatch(narrow, /\.composer-bar[^}]*flex-basis: 100%/);
   assert.doesNotMatch(css, /\.composer-bar[^{}]*\{[^}]*justify-content: (?:center|flex-start)/);
   assert.match(rule('.queue'), /flex: none;[^}]*white-space: nowrap/);
   assert.doesNotMatch(css, /\.queue[^{}]*\{[^}]*flex-wrap: wrap/);
-  assert.match(rule('.send, .stop'), /flex: none;[^}]*white-space: nowrap/);
+  assert.match(rule('.send, .stop'), /flex: none;[^}]*width: 36px/);
   assert.match(rule(':focus-visible'), /outline: 2px solid var\(--accent\)/);
   assert.match(media('@media (pointer:coarse)'), /button, summary,[^{}]*\{ min-height: 44px; min-width: 44px; \}/);
   assert.doesNotMatch(narrow, /\.send[^{}]*\{[^}]*(?:display: none|overflow: hidden|min-width: 0)/);
@@ -490,8 +492,8 @@ test('narrow composer controls wrap only as needed and retain right alignment wi
 test('working controls: Stop alone in the action slot without a draft, quiet Stop beside Queue with one', () => {
   const alone = /\.composer\[data-working=empty\] \.composer-bar:has\(> \.stop:not\(\[hidden\]\)\) \.composer-submit \{ display: none; \}/;
   assert.match(css, alone);
-  assert.match(css, /\.composer\[data-working=draft\] \.stop \{[^}]*border-color: transparent[^}]*font-weight: 400/);
-  assert.match(rule('.stop'), /border-color: color-mix\(in srgb, var\(--error\) 55%, transparent\); color: var\(--error\)/);
+  assert.match(rule('.composer[data-working=draft] .stop'), /width: 32px; height: 32px;[^}]*background: transparent; color: var\(--muted\)/);
+  assert.match(rule('.stop'), /background: var\(--fg\); color: var\(--canvas\)/);
   assert.match(rule('.queue'), /color: var\(--muted\)/);
   assert.doesNotMatch(css, /\.modes\b/);
 });
@@ -646,7 +648,7 @@ test('Latest occupies the existing composer control line outside the transcript 
   assert.match(latest, /gap: 4px/);
   assert.match(latest, /margin: 0 0 0 8px/, 'the jump control stands apart from what precedes it');
   assert.match(css, /\.latest\[hidden\] \{ display: none/);
-  assert.match(css, /\.composer-meta\[data-recall=true\] > \.latest \{ display: none/);
+  assert.match(rule('.composer-meta > .latest'), /grid-column: 2; grid-row: 1; min-height: 32px; margin: 0/);
   const app = await readFile(new URL('./app.ts', import.meta.url), 'utf8');
   assert.match(app, /const scroller = add\('transcript', 'div', 'transcript'\)/);
   assert.match(app, /const latest = add\('latest', 'button', 'latest'\)/);
@@ -666,8 +668,8 @@ test('editor text and prose share a bounded left-aligned column without moving t
   assert.match(rule('.transcript'), /padding: var\(--s3\) var\(--work-gutter\)/);
   assert.match(css, /@container conversation \(max-width: 700px\)[\s\S]*?--work-gutter: 16px/);
   assert.match(rule('.transcript-region > .empty-state'), /left: var\(--work-gutter\); right: var\(--work-gutter\); max-width: 960px/);
-  assert.match(rule('.composer-input'), /padding: 0 0 6px; border: 1px solid var\(--rule\)/);
-  assert.match(rule('.composer textarea'), /padding: 12px 14px 4px; border: 0/);
+  assert.match(rule('.composer-input'), /padding: 20px 16px 12px; border: 0/);
+  assert.match(rule('.composer textarea'), /padding: 0; border: 0/);
   for (const selector of ['.transcript', '.composer-input', '.composer textarea']) {
     assert.doesNotMatch(rule(selector), /margin-left: -|translateX|left: -/);
   }
@@ -710,7 +712,7 @@ test('neutral tabs and split panes retain 320px tracks with divider-aware equal-
   assert.doesNotMatch(css, /\.conversation-panes\.is-split|#conversation-splitter/);
   assert.match(html, /id="conversation-panes" class="conversation-panes pane-tree" data-focus-only="false"/);
   assert.match(rule('.conversation'), /min-width: 0; min-height: 0/);
-  assert.match(rule('.composer-bar'), /flex-wrap: wrap/);
+  assert.match(rule('.composer-bar'), /flex-wrap: nowrap/);
   assert.match(media('@media (forced-colors:active)'), /\.conversation-tab\[aria-selected=true\][^{]*\{ outline: 2px solid Highlight/);
 });
 test('long tab names ellipsize without crowding their status and close action', () => {
@@ -739,11 +741,11 @@ test('one workbench footer owns wrapped facts while settings sit under the compo
   const factory = composer.slice(composer.indexOf('export function createComposerElements('), composer.indexOf('\ntype Edit ='));
   assert.match(factory, /const root = element\('form', 'composer'\); root\.id = id/);
   assert.match(factory, /const id = `composer-\$\{encodeURIComponent\(instanceId\)\}`/);
-  assert.match(factory, /root\.append\(receipt, input\)/);
+  assert.match(factory, /root\.append\(receipt, utilities, input\)/);
   assert.match(factory, /submit\.append\(queue, start, send\)/);
   assert.match(factory, /bar\.append\(stop, submit\)/);
   assert.match(factory, /intake\.append\(attach,sources,picker\)/);
-  assert.match(factory, /line\.append\(meta, bar, recallLine\)/);
+  assert.match(factory, /line\.append\(intake, settings, bar\)/);
   assert.doesNotMatch(factory, /usage-details|workbench-status-facts|root\.append\([^)]*\b(?:save|receiptDetails)\b/);
   assert.doesNotMatch(html, /<form id="(?:primary|agent)-composer"/);
   const app = await readFile(new URL('./app.ts', import.meta.url), 'utf8');
@@ -794,8 +796,8 @@ test('supplied roles stay inline metadata and expanded thinking separates from p
 
 test('focus marks the actual editor and its local split identity without changing placement', () => {
   assert.match(rule('.composer textarea:focus-visible'), /outline: none/);
-  assert.match(rule('.composer-input:has(textarea:focus-visible)'), /border-color: var\(--edge\)/);
-  assert.match(rule('.composer-input'), /border: 1px solid var\(--rule\)/);
+  assert.match(rule('.composer-input:has(textarea:focus-visible)'), /outline: 1px solid var\(--edge\); outline-offset: 0/);
+  assert.match(rule('.composer-input'), /border: 0/);
   assert.doesNotMatch(css.replace(/\.composer\[data-file-drop=true\][^\n]*/, ''), /\.composer-input[^{}]*\{[^}]*(?:border|outline)[^;}]*var\(--accent\)/);
   assert.match(rule('.pane-leaf[data-focused=true] > .tab-bar .conversation-tab[aria-selected=true]'), /box-shadow: inset 0 -2px var\(--accent\)/);
   assert.doesNotMatch(css, /\.pane-heading/);
@@ -901,35 +903,33 @@ test('drawer and overflow controls share accessible inline stroke icons', async 
   assert.doesNotMatch(css, /\.tab-overflow\s*\{|\.tab-actions\s*\{/);
 });
 
-test('each element of the composer control row reads as what it is, with tokens only and no resting fill', () => {
-  const state = rule('.composer-state');
-  assert.match(state, /gap: 6px[^}]*padding-left: 10px; border-left: 1px solid var\(--rule\); color: var\(--fg\); font-size: 13px/);
-  assert.match(rule('.composer-state::before'), /width: 6px; height: 6px; border: 1\.5px solid var\(--dim\); border-radius: 50%/);
-  assert.match(rule('.composer-state[data-tone=warning]::before'), /border-color: var\(--warning\); background: var\(--warning\)/);
-  assert.match(rule('.composer-state[data-tone=error]::before'), /border-color: var\(--error\); background: var\(--error\)/);
-  assert.match(rule('.composer-state.sr-only::before'), /display: none/);
-  assert.match(rule('.composer-model, .composer-thinking'), /position: relative; min-width: 0; min-height: 30px; padding: 0 7px 0 8px[^}]*color: var\(--fg\)[^}]*overflow: hidden; text-overflow: ellipsis/);
-  assert.doesNotMatch(rule('.composer-model, .composer-thinking'), /display|align-items|gap/, 'the pickers stay ordinary blocks so the ellipsis can draw');
-  assert.match(rule('.composer-model:not(:disabled), .composer-thinking:not(:disabled)'), /padding-right: 20px/, 'room for the chevron only when the picker has one');
-  assert.match(rule('.composer-thinking'), /color: var\(--muted\)/);
-  const chevron = rule('.composer-model:not(:disabled)::after, .composer-thinking:not(:disabled)::after');
-  assert.match(chevron, /position: absolute; right: 8px; top: 50%; width: 5px; height: 5px; margin-top: -5px; border-right: 1\.5px solid var\(--dim\); border-bottom: 1\.5px solid var\(--dim\); transform: rotate\(45deg\)/);
-  assert.match(rule('.composer-settings-text'), /color: var\(--dim\); font-size: 12px/); assert.match(rule('.composer-settings-effort'), /color: var\(--dim\)/);
-  assert.doesNotMatch(css, /\.composer-settings-text[^{}]*::after|\.composer-settings-effort[^{}]*::after/, 'an agent model is a fact and carries no chevron');
-  assert.match(rule('.attachment-sources'), /color: var\(--fg\)/);
-  for (const selector of ['.composer-state', '.composer-model, .composer-thinking', '.composer-settings-text', '.attachment-sources', '.composer-state-detail']) {
-    assert.doesNotMatch(rule(selector), /background|box-shadow/, selector);
-    for (const radius of rule(selector).matchAll(/border-radius: (\d+)px/g)) assert.ok(Number(radius[1]) <= 6, selector);
-  }
-  assert.match(css, /@container composer \(max-width: 460px\) \{\s*\.composer-thinking, \.composer-settings-effort \{ display: none; \}/, 'the effort and its chevron leave together');
+test('the composer uses shared SVGs, passive agent facts and visible effort at narrow widths', () => {
+  assert.doesNotMatch(css, /\.composer-state::before|\.composer-model:not\(:disabled\)::after/);
+  assert.match(rule('.composer-model, .composer-thinking'), /display: inline-flex; align-items: center/);
+  assert.match(rule('.composer-setting-label'), /overflow: hidden; text-overflow: ellipsis/);
+  assert.match(rule('.composer-model > .card-icon-chevron, .composer-thinking > .card-icon-chevron'), /width: 12px; height: 12px/);
+  assert.match(rule('.composer-settings-text'), /color: var\(--muted\); font-size: 14px/);
+  assert.doesNotMatch(css, /\.composer-settings-text[^{}]*::after|\.composer-settings-effort[^{}]*::after/);
+  assert.match(rule('.composer .attachment-sources'), /color: var\(--fg\)/);
+  assert.doesNotMatch(css, /\.composer-thinking, \.composer-settings-effort \{ display: none/);
+  assert.match(css, /@container composer \(max-width: 420px\) \{\s*\.composer-line \{ flex-wrap: wrap; \}\s*\.composer-settings \{ flex-basis: calc\(100% - 40px\); \}/);
+});
+test('composer utilities share the editor inset and keep expanded errors inside the pane', () => {
+  assert.match(rule('.composer-utilities'), /display: grid; grid-template-columns: minmax\(0,1fr\) auto;[^}]*padding: 0 16px/);
+  assert.match(rule('.composer-meta > .composer-state'), /grid-column: 1; grid-row: 1/);
+  assert.match(rule('.composer-meta > .latest'), /grid-column: 2; grid-row: 1/);
+  assert.match(rule('.composer-recall, .composer-state-details'), /grid-column: 1 \/ -1/);
+  assert.match(rule('.composer-state-details'), /overflow: auto;[^}]*white-space: pre-wrap; overflow-wrap: anywhere/);
+  assert.match(rule('.composer .attachment-sources:disabled'), /background: transparent; color: var\(--dim\); opacity: \.55/);
+  assert.doesNotMatch(css, /\.attachment-sources:hover(?!:not\(:disabled\))/);
 });
 test('the history note and composer state are plain lines with flat actions', () => {
   assert.match(rule('.history-note'), /flex: none/); assert.match(rule('.history-note > p'), /font-weight: 400/);
   assert.match(rule('.history-note'), /display: flex; flex: none; flex-wrap: wrap/);
   assert.match(rule('.history-note > button, #agent-message-retry'), /border: 0; border-radius: 0/);
   assert.doesNotMatch(rule('.history-note > button, #agent-message-retry'), /box-shadow|background/); assert.doesNotMatch(css, /agent-start-help|agent-absent|\.agent-state/);
-  assert.match(rule('.composer-state'), /display: inline-flex; flex: 0 1 auto; align-items: center/); assert.doesNotMatch(rule('.composer-state'), /background|box-shadow|border(?!-left: 1px solid var\(--rule\))/);
-  assert.match(rule('.composer-state-label'), /overflow: hidden; text-overflow: ellipsis; white-space: nowrap/); assert.doesNotMatch(css, /\.composer-state-line \{/);
+  assert.match(rule('.composer-state'), /display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: center/); assert.doesNotMatch(rule('.composer-state'), /background|box-shadow|border/);
+  assert.match(rule('.composer-state-label'), /overflow-wrap: anywhere/); assert.doesNotMatch(css, /\.composer-state-line \{/);
   assert.match(rule('.conversation'), /display: flex; flex-direction: column;[^}]*min-height: 0/);
   assert.match(rule('.transcript-region'), /display: grid; grid-template-rows: minmax\(0,1fr\); flex: 1;[^}]*min-height: 0/);
   assert.doesNotMatch(css, /\.conversation\.agent-empty > \.transcript-region\s*\{/);
@@ -1036,7 +1036,7 @@ test('phone footer keeps direct settings and identity while full facts stay in t
   const phone = media('@media (max-width:599px)');
   assert.match(phone,/\.workbench-status > \.workbench-status-facts \{ display: contents/);
   assert.doesNotMatch(phone,/\.composer-meta \{|\.composer-settings \{/);
-  assert.match(media('@container composer (max-width: 460px)'), /\.composer-thinking, \.composer-settings-effort \{ display: none; \}/);
+  assert.doesNotMatch(css, /\.composer-thinking, \.composer-settings-effort \{ display: none; \}/);
   assert.match(phone,/\.composer-details > summary > span:not\(\.composer-details-label\) \{ display: none/);
   assert.match(phone,/\.composer-details-label \{[^}]*min-width: 44px; min-height: 44px/);
   assert.match(phone,/\.workbench-status \.workbench-version \{ max-width: 14ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap/);
@@ -1095,7 +1095,7 @@ test('the composer editor and its color layer share the editor-derived reading m
   for (const name of ['fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'paddingTop', 'paddingLeft', 'whiteSpace', 'overflowWrap']) assert.match(metrics, new RegExp(`'${name}'`));
   assert.match(overlay, /getComputedStyle\(this\.editor\)/);
   assert.doesNotMatch(overlay, /\b(?:15|16|24|25\.6)px\b/);
-  assert.match(rule('.composer textarea'), /padding: 12px 14px 4px/);
+  assert.match(rule('.composer textarea'), /padding: 0/);
   assert.match(rule('.communication-card > .communication-body'), /font-size: 16px/);
   assert.match(rule('.task-answer, .step-answer'), /font-size: 16px; line-height: 1\.6/);
 });
@@ -1159,25 +1159,22 @@ test('a status row holds sender, kind and first line on one 28px line without fi
   assert.match(rule('.communication-toggle > .communication-sender'), /font-weight: 500/);
 });
 
-test('the message box handle is a short grip on the surface edge and the model stays at the right in every state', () => {
+test('the message box keeps its centered grip and its state above the left settings group', () => {
   assert.match(rule('.composer-input > .resizer[data-axis=y]'), /top: -5px; right: auto; left: 50%; width: 40px; height: 10px; margin-left: -20px/);
   assert.match(rule('.resizer::after'), /opacity: 0/);
   assert.match(rule('.composer-input:hover > .resizer[data-axis=y]::after'), /opacity: 1/);
-  assert.doesNotMatch(css, /\.composer-state[^{}]*~\s*\.composer-settings/, 'a visible state note never moves the model to the left');
-  assert.match(rule('.composer-settings'), /margin: 0 6px 0 auto/);
-  assert.match(rule('.composer-state'), /margin: 0 0 0 2px/);
+  assert.doesNotMatch(rule('.composer-settings'), /margin:.*auto/);
+  assert.match(rule('.composer-state'), /margin: 0/);
   assert.match(rule('.composer-state[data-tone=error]'), /color: var\(--error\)/); assert.match(rule('.composer-state[data-tone=warning]'), /color: var\(--warning\)/);
-  const narrow = media('@container composer (max-width: 460px)');
-  assert.match(narrow, /\.composer-state:not\(\[data-tone\]\) > :not\(\.composer-state-line\) \{ display: none; \}/);
-  assert.doesNotMatch(narrow, /\.composer-state(?::not\(\[data-tone\]\))?\s*\{[^}]*display: none/, "a container rule never hides the status region that holds the spoken sentence");
-  assert.match(narrow, /\.composer-meta:has\(> \.composer-state\[data-tone\]:not\(\[hidden\]\)\) > \.composer-settings \{ display: none; \}/);
+  assert.doesNotMatch(css, /\.composer-state:not\(\[data-tone\]\) >|\.composer-meta:has\(> \.composer-state\[data-tone\]/);
+  assert.match(rule('.composer-state-detail'), /min-width: 32px; min-height: 32px/);
 });
 test('the compact Add menu draws 34px rows with a 20px icon column and the trigger at the right, and the control row gives the action its width first', () => {
   assert.match(rule('.context-menu-compact'), /width: 272px/);
   assert.match(rule('.context-menu-compact > .context-menu-item'), /display: grid; grid-template-columns: 20px minmax\(0, 1fr\) auto/);
   assert.match(rule('.context-menu-compact > .context-menu-item'), /min-height: 34px/);
   assert.match(rule('.context-menu-compact .context-menu-label'), /overflow: hidden; text-overflow: ellipsis/);
-  assert.match(rule('.composer-meta'), /flex: 1 1 0;/);
+  assert.match(rule('.composer-bar'), /flex: none;[^}]*margin-left: auto/);
 });
 
 test('a responder name above a wait answer reads like a role label in muted 12px ink', () => {

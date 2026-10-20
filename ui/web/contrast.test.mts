@@ -71,8 +71,6 @@ const graphicForegrounds = new Map([
 const graphicBackgrounds = new Map([
   [".pane-split > .pane-divider:hover::after", "edge"],
   [".pane-split > .pane-divider:focus-visible::after", "accent"],
-  [".composer-state[data-tone=warning]::before", "warning"],
-  [".composer-state[data-tone=error]::before", "error"],
 
 ]);
 const graphicShadows = new Map([
@@ -288,13 +286,21 @@ function blend(foreground: string, background: string, weight: number): string {
 	const mixed = rgb(foreground).map((channel, index) => Math.round(channel * weight + (rgb(background)[index] as number) * (1 - weight)));
 	return `#${mixed.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
 }
+const composerFill = (palette: Palette): string => blend(palette['--canvas'] as string, palette['--fg'] as string, palette['color-scheme'] === 'light' ? .94 : .88);
+const composerHoverFills = new Map([
+  ['.composer-input :is(.composer-model, .composer-thinking):not(:disabled):hover', 9],
+  ['.composer .attachment-sources', 7],
+  ['.composer .attachment-sources:hover:not(:disabled)', 13],
+  ['.queue:not(:disabled):hover', 9],
+  ['.composer[data-working=draft] .stop:hover', 2],
+]);
 // Text whose exact paint is modeled elsewhere: the quiet placeholder blend and the canvas text of an inverted fill.
 function modeledText(context: Context, property: string, value: string): boolean {
 	const { theme, source, exclusions, measure, decl, palette } = context;
 	if (property !== "color") return false;
 	const mix = placeholderMix.exec(value);
 	if (mix && context.rule.selector === ".composer textarea::placeholder") {
-		measure("placeholder", `${source} ${value} / --${mix[3]}`, blend(palette["--muted"] as string, palette["--raised"] as string, Number(mix[2]) / 100), mix[3] as string, 3);
+		measure("placeholder", `${source} ${value} / --${mix[3]}`, blend(palette["--muted"] as string, palette["--raised"] as string, Number(mix[2]) / 100), composerFill(palette), 3);
 		return true;
 	}
 	const filled = token(decl["background-color"] ?? decl.background ?? "");
@@ -338,16 +344,34 @@ function inverseBackground(context: Context, fill: string) {
 	if (fg) measure("background-declaration", `${source} explicit --${fg} on --${fill}`, fg, fill, 4.5);
 	else issues.push(`${theme}: ink fill lacks an explicit foreground: ${source}`);
 }
+function composerBackground(context: Context, value: string): boolean {
+  const {rule, palette, measure, source} = context;
+  if (rule.selector === '.composer-input' && value === 'var(--composer-fill)') {
+    for (const fg of ['fg', 'muted']) measure('composer-text', `${source} --${fg} / derived surface`, fg, composerFill(palette), 4.5);
+    measure('composer-focus', `${source} --edge / derived surface`, 'edge', composerFill(palette), 3);
+    return true;
+  }
+  const weight = composerHoverFills.get(rule.selector);
+  if (weight !== undefined && value === `color-mix(in srgb, var(--fg) ${weight}%, transparent)`) {
+    const fill = blend(palette['--fg'] as string, composerFill(palette), weight / 100);
+    const names = rule.selector === '.composer[data-working=draft] .stop:hover' ? ['error'] : ['fg'];
+    for (const fg of names) measure('composer-text', `${source} --${fg} / composited control`, fg, fill, 4.5);
+    return true;
+  }
+  if (rule.selector === '.send:disabled' && value === 'color-mix(in srgb, var(--fg) 14%, var(--composer-fill))') {
+    measure('composer-disabled', `${source} --muted / inactive action`, 'muted', blend(palette['--fg'] as string, composerFill(palette), .14), 3); return true;
+  }
+  return false;
+}
 function backgroundDeclaration(context: Context, value: string) {
-	const { theme, source, exclusions, issues, rule, palette, measure } = context;
-	if (["transparent", "none", "inherit"].includes(value)) {
-		exclusions.push(`${theme}: inherited/transparent background ${source}`);
-		return;
-	}
-	if (decorativeBackgrounds.has(`${rule.selector}|${value}`)) {
-		exclusions.push(`${theme}: non-content paint ${source}: ${value}`);
-		return;
-	}
+  const {theme, source, exclusions, issues, rule, palette, measure} = context;
+  if (["transparent", "none", "inherit"].includes(value)) {
+    exclusions.push(`${theme}: inherited/transparent background ${source}`); return;
+  }
+  if (decorativeBackgrounds.has(`${rule.selector}|${value}`)) {
+    exclusions.push(`${theme}: non-content paint ${source}: ${value}`); return;
+  }
+  if (composerBackground(context, value)) return;
 	const name = token(value);
 	if (!name || !palette[`--${name}`]) {
 		issues.push(`${theme}: unmodeled background ${source}: ${value}`);
@@ -407,19 +431,32 @@ function edgeDeclaration(context: Context, property: string, value: string): boo
 }
 function forcedDeclaration(context: Context, property: string, value: string) {
 	const { source, theme, issues, exclusions } = context;
-	if (!/^(?:[\d.]+px\s+(?:solid|dotted)\s+)?(?:ButtonText|CanvasText|Highlight|Canvas|ButtonFace)$/.test(value))
+	if (!/^(?:[\d.]+px\s+(?:solid|dotted)\s+)?(?:ButtonText|CanvasText|Highlight|Canvas|ButtonFace|GrayText)$/.test(value))
 		issues.push(`Unexpected forced-colors declaration: ${source} ${property}: ${value}`);
 	else exclusions.push(`${theme}: OS palette owns ${source} ${property}: ${value}`);
+}
+function composerFillDeclaration(context: Context, property: string, value: string): boolean {
+  if (property !== '--composer-fill') return false;
+  const {rule} = context;
+  if (rule.selector === '.composer' && !rule.contexts.length) return value === 'color-mix(in srgb, var(--canvas) 88%, var(--fg))';
+  if (rule.selector === ':root[data-appearance=light] .composer' && !rule.contexts.length) return value === 'color-mix(in srgb, var(--canvas) 94%, var(--fg))';
+  return rule.selector === ':root[data-appearance=system] .composer' && rule.contexts.length === 1 && rule.contexts[0] === '@media (prefers-color-scheme: light)' && value === 'color-mix(in srgb, var(--canvas) 94%, var(--fg))';
+}
+function opacityDeclaration(context: Context, value: string): void {
+  const {rule, theme, source, issues, exclusions} = context;
+  if (['0', '1'].includes(value)) return;
+  if (rule.selector === '.composer .attachment-sources:disabled' && value === '.55' && !rule.contexts.length) exclusions.push(`${theme}: inactive Add has no contrast requirement: ${source}`);
+  else issues.push(`${theme}: partial opacity requires compositing analysis: ${source}: ${value}`);
+}
+function variableDeclaration(context: Context, property: string, value: string): void {
+  if (composerFillDeclaration(context, property, value)) return;
+  // Component-local lengths adjust layout; other values need an exact paint model.
+  if (!/^:where\(:root(?:\[data-appearance=(?:light|system)\])?\)$/.test(context.rule.selector) && !/^-?[\d.]+(?:px|rem|em)$/.test(value)) context.issues.push(`Component-local variable requires explicit analysis: ${context.source} ${property}`);
 }
 function auditDeclaration(context: Context, property: string, raw: string): boolean {
 	const { rule, source, theme, issues } = context;
 	const value = raw.replace(/\s*!important$/, "");
-	if (property.startsWith("--")) {
-		// Component-local lengths adjust layout; any other local value could change a modeled color.
-		if (!/^:where\(:root(?:\[data-appearance=(?:light|system)\])?\)$/.test(rule.selector) && !/^-?[\d.]+(?:px|rem|em)$/.test(value))
-			issues.push(`Component-local variable requires explicit analysis: ${source} ${property}`);
-		return false;
-	}
+	if (property.startsWith("--")) {variableDeclaration(context, property, value); return false;}
 	const text = textProperties.has(property);
   const caret = property === 'caret-color';
 	const background = ["background", "background-color"].includes(property);
@@ -435,8 +472,7 @@ function auditDeclaration(context: Context, property: string, raw: string): bool
 	if (edge) return edgeDeclaration(context, property, value);
 	if (contrastEffects.has(property))
 		issues.push(`${theme}: contrast-altering property requires analysis: ${source} ${property}: ${value}`);
-	if (property === "opacity" && !["0", "1"].includes(value))
-		issues.push(`${theme}: partial opacity requires compositing analysis: ${source}: ${value}`);
+	if (property === 'opacity') opacityDeclaration(context, value);
 	return false;
 }
 function audit(input: string): Audit {
@@ -624,6 +660,14 @@ test("hardcoded and unknown text colors, extra pairs, and alpha effects are dete
 	assert.ok(audit(`${css}\n.transcript-region::before { background: linear-gradient(to bottom,var(--canvas),transparent); }`).issues.some((i) => i.includes("unmodeled background")), "transcript edges have no gradient exception");
 	assert.ok(audit(`${css}\n.probe { --dim: #000000; }`).issues.some((i) => i.includes("Component-local variable")));
 	assert.deepEqual(audit(`${css}\n.probe { --edge: 12px; }`).issues, []);
+});
+test('composer surfaces measure their derived fill and control composites without a general alpha exception', () => {
+  const rows = result.measurements.filter(row => row.kind.startsWith('composer-'));
+  assert.ok(rows.some(row => row.theme === 'dark')); assert.ok(rows.some(row => row.theme === 'light'));
+  assert.ok(rows.every(row => row.ratio >= row.threshold));
+  assert.ok(audit(css.replace('var(--canvas) 88%, var(--fg)', 'var(--canvas) 90%, var(--fg)')).issues.some(issue => issue.includes('Component-local variable requires explicit analysis')));
+  assert.ok(audit(`${css}\n.send:disabled { opacity: .29; }`).issues.some(issue => issue.includes('partial opacity')));
+  assert.ok(audit(`${css}\n.send { opacity: .28; }`).issues.some(issue => issue.includes('partial opacity')));
 });
 test("contrast thresholds use exact ratios, not rounded display values", () => {
 	assert.ok(ratio("#777777", "#ffffff") < 4.5);

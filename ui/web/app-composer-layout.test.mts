@@ -37,9 +37,16 @@ test('conversation state and split width changes retain editor ancestry, draft i
     const intake = surface.querySelector('.composer-intake'), sources = intake?.querySelector('.attachment-sources'), attach = intake?.querySelector('.attach'), picker = intake?.querySelector('input'); assert.ok(intake); assert.ok(sources); assert.ok(attach); assert.ok(picker);
     assert.equal(sources.getAttribute('aria-label'),'Add to message');assert.equal(sources.getAttribute('aria-haspopup'),'menu'); assert.equal(attach.hidden, true);
     assert.deepEqual(intake.children,[attach,sources,picker]);
-    // One surface holds the add control, the editor and one control row in that tab order; Latest follows the state note in the row.
-    const order = surface.children.filter(node => [intake, control('editor').parentNode, line].includes(node));
-    assert.deepEqual(order, [intake, control('editor').parentNode, line]); assert.equal(latest.parentNode, meta); assert.deepEqual(meta.children, [control('state'), latest, control('settings')], 'Latest follows the state note in the control row'); assert.ok(latest.querySelector('.card-icon-latest'), 'Latest shows the down-arrow icon'); assert.equal(latest.querySelector('.latest-text')?.textContent, 'Latest'); assert.equal(latest.getAttribute('aria-label'), 'Latest message'); assert.equal(meta.parentNode, line); const recallLine = form.querySelector('.composer-recall'); assert.ok(recallLine); assert.deepEqual(line.children, [meta, bar, recallLine], 'the recall line follows the action in tab order'); assert.equal(form.querySelectorAll('.composer-input ~ *').length, 0, 'nothing sits under the box');
+    // Utility rows precede the surface; the native editor and shelf retain their ancestry.
+    assert.equal(intake.parentNode, line);
+    assert.equal(latest.parentNode, meta); assert.deepEqual(meta.children, [control('state'), latest]);
+    assert.ok(latest.querySelector('.card-icon-latest')); assert.equal(latest.querySelector('.latest-text')?.textContent, 'Latest'); assert.equal(latest.getAttribute('aria-label'), 'Latest message');
+    const utilities = form.querySelector('.composer-utilities'), recallLine = form.querySelector('.composer-recall'); assert.ok(utilities); assert.ok(recallLine);
+    assert.deepEqual(utilities.children, [meta, recallLine, form.querySelector('.composer-state-details')]); assert.equal(utilities.parentNode, form);
+    assert.deepEqual(line.children, [intake, control('settings'), bar]); assert.equal(line.parentNode, surface);
+    assert.equal(surface.contains(meta), false); assert.equal(surface.contains(recallLine), false);
+    assert.equal(form.querySelectorAll('.composer-input ~ *').length, 0);
+    for (const name of ['model', 'thinking']) assert.ok(control(name).querySelector('.card-icon-chevron'));
     const submit = bar.querySelector('.composer-submit'); assert.ok(submit);
     assert.deepEqual(bar.children, [control('stop'), submit]); assert.deepEqual(submit.children, [control('queue'), control('start'), control('send')]);
     assert.equal(control('editor').rows, 1);
