@@ -294,6 +294,24 @@ test("offline working rows become interrupted; unknown claims make owner unavail
 	assert.equal(decoded.view?.rows[0]?.state, "working");
 });
 
+test("profile handles join base rows by exact identity without inheriting a root or private profile", async (t) => {
+	const {root, record} = await fixture(t), child = `${storageId}:2`, unrelated = "00000000-0000-4000-8000-000000000002";
+	const hint = (identity: string, handle: string | null) => ({identity, handle, role: "Not roster data", revision: "revision", hasExpertise: true, updatedAt: null});
+	const rows = [{...summary(record), handle: "not-a-public-row-field", profile: {handle: "private-handle"}}, summary(record, child)];
+	const profiles = {rows: [hint(unrelated, "unrelated"), hint(storageId, "@sample-agent"), hint(child, null)], coverage: {complete: false, omitted: 1}};
+	const decoded = decodeRecord({...record, view: publication(record, {rows, profiles})}, storageId, root);
+	const retained = retainedRows(decoded, {state: "live"});
+	assert.equal(retained[0]?.handle, "@sample-agent"); assert.equal(retained[1]?.handle, undefined); assert.equal(retained.length, 2);
+	assert.equal(decoded.view?.rows[0]?.id, storageId); assert.equal(decoded.view?.profiles?.coverage.omitted, 1);
+	for (const hints of [undefined, {...profiles, rows: []}, {...profiles, rows: [hint(storageId, null)]},
+		{...profiles, rows: [hint(storageId, "first"), hint(storageId, "second")]}, {...profiles, rows: [hint(child, "child-only")]}]) {
+		const view = publication(record, {rows, ...(hints === undefined ? {} : {profiles: hints})});
+		const result = retainedRows(decodeRecord({...record, view}, storageId, root), {state: "absent"});
+		assert.equal(result[0]?.handle, undefined);
+		assert.equal(result[1]?.handle, hints?.rows[0]?.identity === child ? "child-only" : undefined);
+	}
+});
+
 test("malformed and mismatched publications retain metadata but never become control rows", async (t) => {
 	const { root, record } = await fixture(t);
 	for (const view of [
@@ -301,6 +319,8 @@ test("malformed and mismatched publications retain metadata but never become con
 		publication(record, { storageId: "other" }),
 		publication(record, { rows: [{ ...summary(record), id: "other", storageId: "other" }] }),
 		publication(record, { rows: [{ ...summary(record), state: "invented" }] }),
+		publication(record, {profiles: {rows: [{identity: storageId, handle: "@sample-agent"}], coverage: {complete: true, omitted: 0}}}),
+		publication(record, {profiles: null}),
 	]) {
 		const decoded = decodeRecord({ ...record, view }, storageId, root);
 		assert.equal(decoded.view, undefined);

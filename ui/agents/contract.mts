@@ -23,8 +23,11 @@ export type Summary = {
 	error?: string; toolCalls?: number; currentTool?: { name: string; argument: string }; durationMs?: number;
 	health?: JsonObject; awaiting?: JsonValue; profile?: JsonValue;
 };
+export type ProfileHint = { identity: string; handle: string | null; role: string; revision: string;
+	hasExpertise: boolean; updatedAt: number | null };
+export type ProfileHints = { rows: ProfileHint[]; coverage: { complete: boolean; omitted: number } };
 export type Publication = { updatedAt: string; rows: Summary[]; coverage: { complete: boolean; omitted: number };
-	storageId?: string; unavailable?: string; profiles?: JsonValue; profileSeed?: JsonValue; modelEvidence?: JsonValue };
+	storageId?: string; unavailable?: string; profiles?: ProfileHints; profileSeed?: JsonValue; modelEvidence?: JsonValue };
 type Entry = JsonObject & { id: string; kind: string };
 type Coverage = JsonObject & { complete: boolean; entries: number; bytes: number; hiddenExcluded: number;
 	entryLimitReached: boolean; byteLimitReached: boolean };
@@ -304,6 +307,17 @@ function health(value: JsonValue, maxText: number): void {
 		string(r.errorMessage, maxText, true);
 	}
 }
+function profileHints(value: JsonValue): void {
+	const o = object(value); only(o, ["rows", "coverage"]);
+	array(o.rows, value => {
+		const hint = object(value); only(hint, ["identity", "handle", "role", "revision", "hasExpertise", "updatedAt"]);
+		fields(hint, ["identity", "role", "revision"], v => string(v, 24 * 1024, true));
+		if (hint.handle !== null) string(hint.handle, 24 * 1024, true);
+		boolean(hint.hasExpertise);
+		requireValue(hint.updatedAt === null || typeof hint.updatedAt === "number", "Invalid profile timestamp");
+	});
+	const c = object(o.coverage); only(c, ["complete", "omitted"]); boolean(c.complete); integer(c.omitted);
+}
 export function decodePublication(value: unknown, storageId: string): Publication {
 	requireValue(identity(storageId).storageId === storageId, "Expected a storage identity");
 	const o = object(json(value)); timestamp(o.updatedAt);
@@ -311,6 +325,7 @@ export function decodePublication(value: unknown, storageId: string): Publicatio
 	array(o.rows, row => { summary(row, 2000); requireValue(object(row).storageId === storageId, "Publication row mismatch"); });
 	const c = object(o.coverage); boolean(c.complete); integer(c.omitted);
 	optional(o, ["unavailable"], v => string(v, 2000, true));
+	if (o.profiles !== undefined) profileHints(o.profiles);
 	requireValue(Buffer.byteLength(JSON.stringify(o)) <= 24 * 1024, "Publication exceeds 24 KiB"); return o as unknown as Publication;
 }
 function entry(value: JsonValue, live = false): void {

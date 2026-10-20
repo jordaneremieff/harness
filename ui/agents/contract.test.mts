@@ -250,6 +250,28 @@ test("empty-publication fixture and native dashboard are different shapes", () =
 	refusal(() => decodePublication({ ...value, rows: [{ ...row(), owner: "remote" }] }, storageId));
 });
 
+test("public profile hints validate every field without imposing profile-edit constraints", () => {
+	const hint = {identity: storageId, handle: "@sample-agent", role: "Sample role", revision: "sample-revision", hasExpertise: true, updatedAt: 1.5};
+	const profiles = {rows: [hint], coverage: {complete: false, omitted: 2}};
+	const value = {...fixture("empty-publication"), profiles};
+	assert.deepEqual(decodePublication(value, storageId).profiles, profiles);
+	assert.deepEqual(decodePublication({...value, profiles: {rows: [], coverage: {complete: true, omitted: 0}}}, storageId).profiles?.rows, []);
+	const nullable = {...hint, identity: "", handle: null, role: "x".repeat(2001), revision: "", hasExpertise: false, updatedAt: null};
+	assert.deepEqual(decodePublication({...value, profiles: {...profiles, rows: [nullable]}}, storageId).profiles?.rows, [nullable]);
+	for (const patch of [{identity: null}, {handle: 1}, {role: false}, {revision: 1}, {hasExpertise: "true"}, {updatedAt: "now"}, {updatedAt: Number.NaN}, {extra: true}])
+		refusal(() => decodePublication({...value, profiles: {...profiles, rows: [{...hint, ...patch}]}}, storageId));
+	for (const key of Object.keys(hint)) {
+		const missing: Record<string, unknown> = {...hint}; delete missing[key];
+		refusal(() => decodePublication({...value, profiles: {...profiles, rows: [missing]}}, storageId));
+	}
+	for (const invalid of [null, [], {}, {...profiles, rows: null}, {...profiles, extra: true}, {...profiles, rows: [null]},
+		{rows: []}, {...profiles, coverage: null}, {...profiles, coverage: {complete: true}},
+		...[-1, 0.5, "0"].map(omitted => ({...profiles, coverage: {complete: false, omitted}})),
+		{...profiles, coverage: {complete: "true", omitted: 0}}, {...profiles, coverage: {complete: true, omitted: 0, extra: true}}])
+		refusal(() => decodePublication({...value, profiles: invalid}, storageId));
+	refusal(() => decodePublication({...value, profiles: {...profiles, rows: [{...hint, role: "x".repeat(24 * 1024)}]}}, storageId));
+});
+
 test("change feed accepts a complete revision value without a transport envelope", () => {
 	for (const revision of [0, 1, 7]) assert.deepEqual(decodeResponse("changes", {revision}), {revision});
 	for (const changed of [{revision: -1}, {revision: 0.5}, {revision: "1"}, {revision: 1, sequence: 1}, {},

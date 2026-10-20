@@ -3,6 +3,8 @@ import test from 'node:test';
 import type { CatalogPage, CatalogRow } from '../agents/index.mts';
 import { decodePublication } from '../agents/contract.mts';
 import type { Publication, Summary } from '../agents/contract.mts';
+import type { CatalogRecord } from '../agents/catalog-record.mts';
+import { retainedRows } from '../agents/catalog-state.mts';
 import { jsonDisplay, projectEntry, projectFrame, projectJson, projectMessage, projectRoster, projectSavedEntry, protectedTextPage, safeText } from './projection.mts';
 
 import type { MessageView, PartView } from '../shared/api.ts';
@@ -452,6 +454,20 @@ test('decoded current publication rows survive the production catalog page bound
   assert.equal(selectedAgent.identity, catalogStorage); assert.deepEqual(selectedAgent, projected.rows[0]);
   assert.equal(selectedAgent.model?.thinkingLevel, 'high'); assert.equal(selectedAgent.currentTool?.argument, 'fixture.txt');
   assert.equal(selectedAgent.observedAt, decoded.updatedAt); assert.equal(selectedAgent.capabilities, undefined);
+});
+
+test('public profile hints reach projected roster handles only through exact catalog joins', () => {
+  const child = `${catalogStorage}:2`;
+  const hint = (identity: string, handle: string | null) => ({identity, handle, role: 'Private role text', revision: 'private-revision', hasExpertise: true, updatedAt: null});
+  const decoded = decodePublication({updatedAt: catalogStamp, rows: [catalogSummary, {...catalogSummary, id: child, name: 'Child agent'}],
+    coverage: {complete: true, omitted: 0}, profiles: {rows: [hint(child, null), hint(catalogStorage, '@sample-agent')], coverage: {complete: true, omitted: 0}}}, catalogStorage);
+  const record: CatalogRecord = {storageId: catalogStorage, cwd: '/fixture-project', agentDir: '/fixture-agent', packageDir: '/fixture-package',
+    storagePath: '/fixture-storage.sqlite', model: {provider: 'fixture', modelId: 'fixture'}, thinkingLevel: 'high', createdAt: catalogStamp, view: decoded};
+  const rows = retainedRows(record, {state: 'live'}), projected = projectRoster({rows});
+  assert.equal(projected.rows[0]?.identity, catalogStorage); assert.equal(projected.rows[0]?.handle, '@sample-agent');
+  assert.equal(projected.rows[1]?.identity, child); assert.equal(projected.rows[1]?.handle, undefined);
+  assert.doesNotMatch(JSON.stringify(projected), /Private role|private-revision|hasExpertise|not-exposed-profile/);
+  assert.deepEqual(projectRoster(projected), projected);
 });
 
 test('public tool truncation and inert output references survive saved and repeated projections without details dumps', () => {
