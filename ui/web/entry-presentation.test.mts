@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import type { EntryView, MessageView, PartView } from '../shared/api.ts';
 import { entryVisible, messageAriaLabel, presentEntry, presentMessage, sessionEventsSummary } from './entry-presentation.ts';
@@ -13,10 +14,12 @@ test('contentless messages and entries have no visible chrome', () => {
   }
   assert.equal(entryVisible({id: 'entry', kind: 'message', messages: []}), false);
   assert.equal(presentMessage(message([], {role: 'assistant', state: 'partial'})).visible, false);
-  assert.deepEqual(presentMessage(message([{type: 'text', text: 'hello'}], {role: 'user'})), {label: 'Input', visible: true});
+  assert.deepEqual(presentMessage(message([{type: 'text', text: 'hello'}], {role: 'user'})), {label: '', visible: true});
   assert.deepEqual(presentMessage(message([{type: 'text', text: 'hello'}], {role: 'user'}), true), {label: 'You', visible: true});
   assert.deepEqual(presentMessage(message([{type: 'text', text: 'hello'}], {role: 'assistant'}), true), {label: '', visible: true});
   assert.equal(messageAriaLabel(message([], {role: 'assistant'})), 'Agent response');
+  assert.equal(messageAriaLabel(message([], {role: 'user'})), 'Incoming message');
+  assert.equal(messageAriaLabel(message([], {role: 'user'}), true), 'Your message');
 });
 test('communication state remains visible without original content', () => {
   const value = message([], {communication: {state: 'unresolved'}}); assert.equal(presentMessage(value).visible, true); assert.equal(entryVisible({id: 'entry', kind: 'message', messages: [value]}), true);
@@ -90,4 +93,12 @@ test('the session events line names the settings or counts each kind, never a ba
   assert.equal(sessionEventsSummary([model, custom, {...custom, id: 'c2'}]), '1 settings change, 2 extension records');
   assert.equal(sessionEventsSummary([{id: 'u', kind: 'vendor.thing'}, {id: 'v', kind: 'unknown_kind'}, {id: 'i', kind: 'session_info'}]), '2 records, 1 session info update');
   assert.equal(sessionEventsSummary([{...model, data: {value: {provider: 'p'}, truncated: false}}]), '1 settings change');
+});
+test('a user-role block takes the width of its text and keeps Message actions at its edge when it has no role word', async () => {
+  const css = await readFile(new URL('./style.css', import.meta.url), 'utf8');
+  assert.match(css, /\.message\.user \{ width: fit-content; max-width: min\(100%, calc\(72ch \+ 24px\)\)/);
+  assert.match(css, /\.message\.user > \.message-header \{ max-width: 100%; \}/);
+  assert.match(css, /\.message\.user:has\(> \.message-header > :is\(\.message-role, \.communication-sender\)\[hidden\]\) > \.message-header \{ position: absolute; top: 4px; right: 4px;/);
+  assert.match(css, /\.message\.user:has\(> \.message-header > :is\(\.message-role, \.communication-sender\)\[hidden\]\) \{ max-width: min\(100%, calc\(72ch \+ 52px\)\); \}/);
+  assert.match(css, /\[hidden\]\) > \.message-body \{ margin-top: 0; padding-right: 40px; \}/);
 });

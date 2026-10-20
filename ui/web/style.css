@@ -570,6 +570,12 @@ a.reference-link[href] { color: var(--link); text-decoration: underline; overflo
 .markdown-content:is(p, ul, ol, blockquote) { max-width: 72ch; }
 .message.user > .message-body { position: relative; padding: 8px 12px; border: 0; border-radius: 3px; background: var(--side); font-weight: 400; }
 .message.user > .message-body::before { content: ""; position: absolute; top: 5px; bottom: 5px; left: 0; border-left: 2px solid var(--accent); }
+.message.user { width: fit-content; max-width: min(100%, calc(72ch + 24px)); font-family: var(--sans); font-size: 16px; }
+.message.user > .message-header { max-width: 100%; }
+.message.user:has(> .message-header > :is(.message-role, .communication-sender)[hidden]) { max-width: min(100%, calc(72ch + 52px)); }
+.message.user:has(> .message-header > :is(.message-role, .communication-sender)[hidden]) > .message-header { position: absolute; top: 4px; right: 4px; z-index: 2; max-width: 100%; min-height: 24px; }
+.message.user:has(> .message-header > :is(.message-role, .communication-sender)[hidden]) > .message-header > .message-actions { background: var(--side); }
+.message.user:has(> .message-header > :is(.message-role, .communication-sender)[hidden]) > .message-body { margin-top: 0; padding-right: 40px; }
 .message-actions { display: flex; flex: none; align-items: center; gap: 2px 8px; min-height: 24px; margin-top: 0; margin-left: auto; color: var(--muted); font-size: 12px; opacity: 0; pointer-events: none; }
 .message-menu { min-width: 24px; min-height: 24px; font-size: 16px; line-height: 1; }
 .message:hover > .message-header > .message-actions, .message:focus-within > .message-header > .message-actions { opacity: 1; pointer-events: auto; }
@@ -1311,6 +1317,7 @@ button.thread-person:hover, button.thread-sender:hover { background: var(--raise
   .message-actions, .tool-copy, .row-message { opacity: 1; pointer-events: auto; }
   .message-actions { min-height: 44px; }
   .message:is(.thinking-only, .tool-only) > .message-header { position: static; transform: none; min-height: 44px; margin-bottom: 4px; }
+  .message.user:has(> .message-header > :is(.message-role, .communication-sender)[hidden]) > .message-header { position: static; min-height: 44px; margin-bottom: 4px; }
   .tool-tier { min-height: 44px; }
   .tool-inspection > .source-header { opacity: 1; }
   .tool-inspection > .source-header + pre { padding-right: 52px; min-height: 48px; }

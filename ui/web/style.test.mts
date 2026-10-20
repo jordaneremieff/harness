@@ -110,7 +110,7 @@ test('two families: system sans for interface and prose, system monospace for co
 });
 test('a bounded type scale separates metadata, controls, prose and headings', () => {
   const glyphs = [...css.matchAll(/(?:^|\n)\s*([^{}]+)\{[^{}]*font-size: (11px|16px);/g)].map(match => [match[1].replace(/\/\*[\s\S]*?\*\//g, '').trim(), match[2]]);
-  assert.deepEqual(glyphs, [['.conversation-heading, .conversation-group-title', '11px'], ['.nav-heading', '11px'], ['.section-toggle', '11px'], ['.task-answer, .step-answer', '16px'], ['.pane-actions', '16px'], ['.message-body', '16px'], ['.message-menu', '16px'], ['.communication-card > .communication-body', '16px'], ['.message-source-close', '16px'], ['.composer textarea', '16px']]);
+  assert.deepEqual(glyphs, [['.conversation-heading, .conversation-group-title', '11px'], ['.nav-heading', '11px'], ['.section-toggle', '11px'], ['.task-answer, .step-answer', '16px'], ['.pane-actions', '16px'], ['.message-body', '16px'], ['.message.user', '16px'], ['.message-menu', '16px'], ['.communication-card > .communication-body', '16px'], ['.message-source-close', '16px'], ['.composer textarea', '16px']]);
   assert.deepEqual([...new Set(declarations('font-size'))].filter(value => value !== '11px' && value !== '16px').sort(), ['12px', '13px', '14px', '15px', '18px', 'inherit']);
   assert.match(rule('.message-role'), /font-size: 12px; line-height: 18px; font-weight: 500/);
   assert.match(rule('.communication-card > .communication-body'), /font-size: 16px; line-height: 1\.6; font-weight: 400; font-style: normal/);

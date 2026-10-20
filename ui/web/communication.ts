@@ -193,9 +193,9 @@ export class CommunicationCard {
     const heading=sender?this.senderLabel(sender):input?presentMessage(message,this.hooks.operatorInput).label:'';
     setText(this.shell.heading,heading);
     this.arrangeLine(value, heading);
-    this.shell.heading.hidden = !sender && !input; this.shell.heading.title = sender?.identity ?? '';
+    this.shell.heading.hidden = !sender && !(input && heading); this.shell.heading.title = sender?.identity ?? '';
     this.unverified.hidden = value.state === 'ready' || input;
-    this.shell.node.setAttribute('aria-label', heading || 'Message with unverified source');
+    this.shell.node.setAttribute('aria-label', heading || (input ? messageAriaLabel(message, this.hooks.operatorInput) : 'Message with unverified source'));
   }
   /** A check-in or thread notice takes one row whose button discloses the full card; other kinds keep the card as is. */
   private arrangeLine(value: CommunicationPresentation, heading: string): void {

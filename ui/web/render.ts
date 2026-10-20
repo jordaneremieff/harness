@@ -1178,7 +1178,7 @@ export class Transcript {
     const error = this.messageError(cached, message);
     if (this.communicationMessage(cached, message, entryId)) return cached;
     const label = presentMessage(message, this.hooks.operatorInput).label;
-    setText(cached.heading, bounded(label, 4096));
+    setText(cached.heading, bounded(label, 4096)); cached.heading.hidden = !label;
     const children = this.messagePartNodes(cached, message, entryId, selected);
     if (message.coverage.truncated || message.coverage.omitted > 0 || !message.coverage.complete) {
       const reason = bounded(message.coverage.reason ?? '', 4096, 6).trim();

@@ -1084,7 +1084,7 @@ test('ordinary turns expose supplied roles without adding headers to compact tho
   const entries: EntryView[] = ['user', 'assistant', 'custom', 'system'].map(role => ({id: role, kind: 'message', messages: [{...message(role, 'Retained text'), role}]}));
   entries.push({id: 'thought-role', kind: 'message', messages: [{...message('thought-role', ''), parts: [{type: 'thinking', text: 'Retained thought'}]}]});
   view.set(entries); flush(); const root = node('primary-transcript'); const headers = root.querySelectorAll('.message-role');
-  assert.deepEqual(headers.map(header => [header.textContent, header.hidden]), [['Input', false], ['', true], ['Notice', false], ['Notice', false], ['', true]]);
+  assert.deepEqual(headers.map(header => [header.textContent, header.hidden]), [['', true], ['', true], ['Notice', false], ['Notice', false], ['', true]]);
   assert.equal(root.querySelectorAll('.message-body').filter(body => body.textContent === 'Retained text').length, 4);
   const body = root.querySelector('.message-body'); assert.ok(body); const first = headers[0];
   view.set(entries); flush(); assert.equal(root.querySelector('.message-role'), first); assert.equal(root.querySelector('.message-body'), body);
@@ -1134,13 +1134,13 @@ test('turns preserve body and action hooks with a compact role label', () => {
   view.set([{id: 'user', kind: 'message', messages: [{...message('u', 'Hello'), role: 'user'}]}, entry('assistant', 'Reply')]); flush();
   const container = node('primary-transcript'); const user = container.querySelector('.user'); assert.ok(user);
   const header = user.querySelector('.message-header'); assert.ok(header);
-  assert.equal(user.children[0], header); assert.equal(user.children[1], user.querySelector('.message-body')); assert.equal(user.attributes['aria-label'], 'Input message');
+  assert.equal(user.children[0], header); assert.equal(user.children[1], user.querySelector('.message-body')); assert.equal(user.attributes['aria-label'], 'Incoming message');
   assert.equal(header.children[0], user.querySelector('.message-role')); assert.equal(header.children[1], user.querySelector('.message-actions')); assert.equal(messageAction(user, 'Fork').label, 'Fork');
   assert.equal(user.querySelector('.message-menu')?.attributes['aria-label'], 'Message actions'); assert.doesNotMatch(user.textContent, /Fork/);
   const body = user.querySelector('.message-body'); const actions = user.querySelector('.message-actions');
   view.set([{id: 'user', kind: 'message', messages: [{...message('u', 'Hello'), role: 'user'}]}, entry('assistant', 'Reply')]); flush();
   assert.equal(user.querySelector('.message-header'), header); assert.equal(user.querySelector('.message-body'), body); assert.equal(user.querySelector('.message-actions'), actions);
-  assert.deepEqual(container.querySelectorAll('.message-role').map(label => label.textContent), ['Input', '']);
+  assert.deepEqual(container.querySelectorAll('.message-role').map(label => label.textContent), ['', '']);
   const reply = container.querySelectorAll('.message-role')[1]; assert.equal(reply?.hidden, true); assert.equal(reply?.parentNode?.parentNode?.attributes['aria-label'], 'Agent response');
   assert.deepEqual(container.querySelectorAll('.message-body').map(body => body.textContent), ['Hello', 'Reply']);
 });
@@ -2417,8 +2417,8 @@ test('ordinary unresolved user input keeps its public role without a source warn
   setup(); const view = transcript(); const source = communicationEntry('unresolved'); const input = source.messages?.[0]; assert.ok(input);
   input.role = 'user'; input.parts = [{type: 'text', text: '**A genuine prompt** with no peer association'}];
   view.set([source]); flush(); const card = node('primary-transcript').querySelector('.communication-card'); assert.ok(card);
-  assert.equal(card.querySelector('.communication-sender')?.textContent, 'Input');
-  assert.equal(card.querySelector('.communication-sender')?.hidden, false); assert.equal(card.querySelector('.communication-unverified')?.hidden, true);
+  assert.equal(card.querySelector('.communication-sender')?.textContent, '');
+  assert.equal(card.querySelector('.communication-sender')?.hidden, true); assert.equal(card.attributes['aria-label'], 'Incoming message'); assert.equal(card.querySelector('.communication-unverified')?.hidden, true);
   assert.equal(card.querySelector('.communication-text')?.classList.contains('communication-quoted'), false); assert.equal(card.classList.contains('user'), true);
   assert.equal(card.querySelector('.communication-text')?.querySelector('strong')?.textContent, 'A genuine prompt');
   assert.doesNotMatch(messageAction(card, 'Copy').description ?? '', /unverified/);
@@ -3080,7 +3080,7 @@ test('native unresolved input displays verified attachments while Source and bot
   t.after(() => {if (descriptor) Object.defineProperty(globalThis, 'navigator', descriptor); else Reflect.deleteProperty(globalThis, 'navigator'); view.reset();});
   view.set([source]); flush();
   const card = node('primary-transcript').querySelector('.communication-card'); assert.ok(card);
-  assert.equal(card.dataset.state, 'unresolved'); assert.equal(card.querySelector('.message-role')?.textContent, 'Input');
+  assert.equal(card.dataset.state, 'unresolved'); assert.equal(card.querySelector('.message-role')?.textContent, '');
   const img = card.querySelector('img'); assert.ok(img); assert.equal(Reflect.get(img, 'alt'), 'sample.png');
   assert.doesNotMatch(card.textContent, /\/fixture\/retained.bin/);
   messageAction(card, 'Copy').run(); await Promise.resolve(); assert.equal(copied[0], text);
