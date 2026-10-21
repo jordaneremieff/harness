@@ -112,7 +112,7 @@ export class ExtensionDialogs {
       const result = respondDialog(this.get().dialogs, item.target, item.dialog.id, value);
       if (!result.command) { await request(`/api/operations/${encodeURIComponent(id)}`, 'DELETE'); return; }
       this.put({...this.get(), dialogs: result.state}); this.publish();
-      if (this.modal.owns(token)) this.modal.body.append(element('p', 'secondary', 'Sending response…'));
+      if (this.modal.owns(token)) this.modal.body.append(element('p', 'secondary', 'Sending response'));
       await operation('primary.dialog', `/api/primaries/${encodeURIComponent(item.target.key)}/dialogs/${encodeURIComponent(item.dialog.id)}`, result.command.response, item.target, id);
       if (this.shown === key) { this.shown = undefined; if (this.modal.owns(token)) this.modal.close(); } this.update();
     } catch (error) {this.answerError(error,id,token,inline);}
@@ -144,7 +144,7 @@ function statusPreview(rows: StatusRows): {text: string; omitted: number} {
   for (const [, value] of rows) {
     const points = Array.from(value); const added = points.length + (visible.length ? 3 : 0);
     if (length + added > 56) {
-      if (!visible.length) visible.push(`${points.slice(0, 55).join('')}…`);
+      if (!visible.length) visible.push(value);
       break;
     }
     visible.push(value); length += added;
@@ -171,7 +171,7 @@ function renderStatuses(root: HTMLElement, statuses: Record<string, string>): vo
   }
   disclosure.rows = visible; disclosure.signature = signature;
   const compact = statusPreview(visible);
-  setText(disclosure.preview, compact.text); setText(disclosure.count, compact.omitted ? ` · ${compact.omitted} more` : '');
+  setText(disclosure.preview, compact.text); disclosure.preview.title=compact.text; setText(disclosure.count, compact.omitted ? ` · ${compact.omitted} more` : '');
   disclosure.count.hidden = compact.omitted === 0;
   disclosure.summary.setAttribute('aria-label', `${visible.length} extension statuses. Expand for details.`);
   if (disclosure.node.open) statusList(disclosure);

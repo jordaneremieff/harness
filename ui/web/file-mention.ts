@@ -100,7 +100,7 @@ export class FileMentionMenu {
     return node;
   }
   private status(): string {
-    if (this.view.state === 'searching') return 'Searching…';
+    if (this.view.state === 'searching') return 'Searching';
     if (this.view.state === 'failed') return this.view.error ?? 'Files are unavailable.';
     if (!this.view.rows.length) return this.view.reason ? `No matches in the searched part of the folder. ${this.view.reason}` : 'No matching files.';
     return this.view.reason ?? '';

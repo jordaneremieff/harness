@@ -35,7 +35,7 @@ import {RecentSidebar, SessionSidebar} from './sidebar-useful.ts';
 import { HealthStatus } from './health-status.ts';
 import { ReleaseNotice, loadedRelease, readReleaseHealth, type ReleaseReloadState, type ReleaseIdentity } from './release-notice.ts';
 import { ConnectionRecovery, connectionSurface as connectionSurfaceFor, type ConnectionPhase } from './connection-state.ts';
-import { announce, byId, button, copy, details, element, empty, placeRetained, rawText, setText } from './dom.ts';
+import { announce, byId, button, copy, details, element, empty, placeRetained, rawText, refreshLabelFades, setText } from './dom.ts';
 import {StableViews} from './stable-views.ts';
 import { ExtensionDialogs, extensionStatus } from './extensions.ts';
 import { Modal } from './modal.ts';
@@ -496,7 +496,7 @@ function renderFiles():void {
   const workspace = state.workspace;if (!workspace) return;
   fileRoot.observe(workspace.id,primary()?.cwd ?? launchCwd);
   filesTree.setRoot(fileRoot.selection?.root ?? undefined,workspace.id);
-  if (!fileRoot.selection?.root) filesTree.unavailable(fileRoot.loading ? 'Loading folder…' : fileRoot.error ?? 'Choose a working folder.');
+  if (!fileRoot.selection?.root) filesTree.unavailable(fileRoot.loading ? 'Loading folder' : fileRoot.error ?? 'Choose a working folder.');
   const tab = activeTab(currentLayout());filesTree.selectFile(tab?.kind === 'file' ? tab.rootId : undefined,tab?.kind === 'file' ? tab.path : undefined);
 }
 function remapFileViews(workspace:string,move:FileMove):void {
@@ -510,7 +510,7 @@ function fileChanges(change:FileChanges,workspaceId?:string):void {
   void filesViews.refresh(workspace.id,change.rootId,change.files,change.rescan);if (change.move) renderAll();
 }
 async function mutateFile(workspace:string,rootId:string,action:FileTreeAction,path:string,value?:string,current?:()=>boolean):Promise<undefined|(()=>void)> {
-  let release:(()=>void)|undefined;fileActionStatus = action === 'trash' ? 'Moving to Trash…' : 'Updating files…';renderWorkbenchStatus();
+  let release:(()=>void)|undefined;fileActionStatus = action === 'trash' ? 'Moving to Trash' : 'Updating files';renderWorkbenchStatus();
   try {
     if (action === 'rename' || action === 'move') {await filesViews.drain();await selectionQueue.drain();release = await filesViews.prepareMove(workspace,{rootId,from:path,to:value ?? ''});}
     const result = await requestFileMutation(workspace,rootId,action,path,value);
@@ -1118,6 +1118,7 @@ function restorePaneGeometry(): void {
   for (const controller of controllers.values()) if (controller.geometry) controller.transcript.applyGeometry(controller.geometry);
 }
 function refreshTreeGeometry(): void {
+  refreshLabelFades();
   const layout = sessionReadLayout(), root = byId('conversation-panes'), box = root.getBoundingClientRect(), minimum = minimumPaneSize(layout.root);
   const focusOnly = matchMedia('(max-width: 599px)').matches || box.width < minimum.width || box.height < minimum.height; root.dataset.focusOnly = String(focusOnly);
   for (const [id, pane] of paneRegions) {pane.node.hidden = focusOnly && id !== layout.focusedPane; pane.node.inert = pane.node.hidden;}
@@ -1347,7 +1348,7 @@ export function renderConnection(): void {
   const node = byId('connection'); node.hidden = !visible; node.replaceChildren();
   if (!visible) return;
   if (connectionPhase === 'offline') node.append(element('span', undefined, 'Disconnected. Your draft is still in this tab.'), button('Reconnect', () => connectionRecovery.reconnect()), button('Details', connectionDetails));
-  else setText(node, 'Connection lost. Reconnecting…');
+  else setText(node, 'Connection lost. Reconnecting');
 }
 async function resync(signal: AbortSignal): Promise<void> {
   signal.throwIfAborted();
@@ -1646,7 +1647,7 @@ function latestSettingsOperation(target:Target):OperationView|undefined {
   return [...state.operations.values()].findLast(value=>sameTarget(value.target,target)&&(value.kind==='agent.configure'||value.kind==='primary.control'&&['model','thinking'].includes(value.action??'')));
 }
 function settingsFeedback(latest:OperationView|undefined,pending:boolean,uncertain:boolean):ComposerStateView|undefined {
-  if(pending)return {line:'Updating settings…',label:'Updating settings…'};
+  if(pending)return {line:'Updating settings',label:'Updating settings'};
   const issue=latest&&['rejected','uncertain'].includes(latest.state)?latest.error?.message:undefined;
   if(issue){
     let line='Settings change failed.';
@@ -1660,7 +1661,7 @@ function composerSettingsStatus(controller:ConversationController) {
   const target=controller.target,selection=settingSelection(controller),base=settingsReason(controller),latest=latestSettingsOperation(target);
   const pending=actions.modelChanging(target,state.operations.values())||!!latest&&['reserved','dispatched'].includes(latest.state);
   const uncertain=latest?.state==='uncertain'&&!configurationReadback(target,latest);
-  const common=pending?'Updating settings…':uncertain?'Settings update was not confirmed. Check the conversation before another change.':base;
+  const common=pending?'Updating settings':uncertain?'Settings update was not confirmed. Check the conversation before another change.':base;
   return {pending,modelReason:common||(!actions.hasModelCatalog()?'The model catalog is unavailable.':undefined),
     thinkingReason:common||(target.kind==='agent'&&!selection.levels?.length?'Thinking capabilities are unavailable for this exact model.':undefined),
     feedback:settingsFeedback(latest,pending,uncertain)};
@@ -1808,7 +1809,7 @@ function renderMessagePanel(): void {
 }
 function renderMessageStatus(captured: import('./selection-state.ts').MessageCapture): void {
   const status = byId('agent-message-status'); status.title = captured.error ?? captured.prepared?.reason ?? '';
-  let text = captured.prepared ? '' : 'Preparing message…';
+  let text = captured.prepared ? '' : 'Preparing message';
   if (captured.prepared?.reason) text = 'Agent connection is unavailable.';
   if (captured.error) text = 'Message connection is unavailable. Your draft is unchanged.';
   if (captured.invalidated) text = 'Message access changed. Your draft is unchanged.';
@@ -1916,7 +1917,7 @@ function refreshStaleConnection(controller: ConversationController): void {
 const ACTION_TITLES: Partial<Record<AgentComposerState['kind'], string>> = {start: 'Start agent. This can resume unfinished work before the agent is ready.', failed: 'Check whether the agent started.'};
 function composerStateLabel(view: AgentComposerState): string | undefined {
   if (!view.label) return undefined;
-  return ({start: 'Not running', starting: 'Starting…', failed: 'Start did not complete', unreachable: 'Could not reach the agent', 'read-only': 'Read only'} as Partial<Record<AgentComposerState['kind'], string>>)[view.kind] ?? view.line;
+  return ({start: 'Not running', starting: 'Starting', failed: 'Start did not complete', unreachable: 'Could not reach the agent', 'read-only': 'Read only'} as Partial<Record<AgentComposerState['kind'], string>>)[view.kind] ?? view.line;
 }
 function composerStateView(view: AgentComposerState, run: () => void): ComposerStateView {
   const {action} = view;
@@ -1927,7 +1928,7 @@ function composerStateView(view: AgentComposerState, run: () => void): ComposerS
 function composerStateWithoutDraft(view: AgentComposerState, run: () => void): ComposerStateView {
   const shown = composerStateView(view, run);
   if (view.kind === 'unreachable') return {...shown, withoutDraft: true};
-  if (view.kind === 'checking') return {...shown, withoutDraft: true, action: {label: 'Checking…', pending: true, disabled: true, run}};
+  if (view.kind === 'checking') return {...shown, withoutDraft: true, action: {label: 'Checking', pending: true, disabled: true, run}};
   return shown;
 }
 function showDetails(title: string, detail: string): void {
@@ -2655,7 +2656,7 @@ function agentMenuItems(identity: string): ContextItem[] {
     {label: 'Copy agent ID', run: () => { void copy(identity, agentNode('view-notice')); }},
     {label: 'Conversation details', run: () => actions.conversationDetails(identity)},
   ];
-  items.push({label: 'Sent and received tasks…', run: () => inspectAgent(identity)}, {label: 'Open in Pi terminal…', run: () => showAgentCommand(identity)});
+  items.push({label: 'Sent and received tasks', run: () => inspectAgent(identity)}, {label: 'Open in Pi terminal', run: () => showAgentCommand(identity)});
   items.push(...conversationMenuItems({kind: 'agent', identity}).filter(item => !items.some(existing => existing.label === item.label)));
   return items;
 }
@@ -2670,12 +2671,12 @@ export function openConversationActions(paneId: string = focusedPane, key?: stri
   const entries = (tab.kind === 'agent' ? agentMenuItems(tab.identity) : conversationMenuItems(target)).filter(item => item.label !== 'Show conversation');
   const groups: [string, ContextItem[]][] = [
     ['View', [...choices, ...['Show thinking', 'Find text', 'Expand loaded tools', 'Collapse loaded tools'].flatMap(name => entries.filter(item => item.label === name))]],
-    ['Messages and tasks', ['Message', 'Refresh messages', 'Review message', 'Sent and received tasks…', 'Saved drafts and messages', 'Message input…'].flatMap(name => entries.filter(item => item.label === name))],
-    ['Session', ['New session', 'Continue a handover…', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Open in Pi terminal…'].flatMap(name => entries.filter(item => item.label === name))],
+    ['Messages and tasks', ['Message', 'Refresh messages', 'Review message', 'Sent and received tasks', 'Saved drafts and messages', 'Message input'].flatMap(name => entries.filter(item => item.label === name))],
+    ['Session', ['New session', 'Continue a handover', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Open in Pi terminal'].flatMap(name => entries.filter(item => item.label === name))],
     ['Details', ['Conversation details', 'Copy agent ID'].flatMap(name => entries.filter(item => item.label === name))],
   ];
   const grouped = groups.flatMap(([heading, items], group) => items.map((item, index) => index === 0 ? {...item, heading, separatorBefore: group > 0} : item));
-  const box = trigger.getBoundingClientRect(); contextMenu.open(trigger, {x: box.right, y: box.bottom}, 'Conversation actions', [...grouped, {label: 'Commands…', separatorBefore: true, run: () => actions.palette()}],
+  const box = trigger.getBoundingClientRect(); contextMenu.open(trigger, {x: box.right, y: box.bottom}, 'Conversation actions', [...grouped, {label: 'Commands', separatorBefore: true, run: () => actions.palette()}],
     () => state.workspace?.id === workspace && samePaneLayout(currentLayout(), current) && sameTarget(controllerTarget(tab), target) && (target.kind === 'primary' || state.roster.has(target.identity) === rowAtOpen));
 }
 function paneSpace(id: string): {width: number; height: number; divider: number} { const box = paneRegions.get(id)?.node.getBoundingClientRect(); return {width: box?.width ?? 0, height: box?.height ?? 0, divider: 4}; }

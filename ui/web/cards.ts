@@ -31,12 +31,8 @@ function replacements(args: Record<string, unknown>): {edits: Replacement[]; cou
   return {edits: result, count: edits.length};
 }
 function preview(text: string, maxChars: number, maxLines = PREVIEW_LINES): {text: string; limited: boolean} {
-  let end = Math.min(text.length, Math.max(0, Math.floor(maxChars))); let lines = 1;
-  for (let index = 0; index < end; index++) {
-    if ((text[index] === '\n' || (text[index] === '\r' && text[index + 1] !== '\n')) && ++lines > maxLines) { end = index; break; }
-  }
-  if (end > 0 && /[\uD800-\uDBFF]/.test(text[end - 1] ?? '')) end--;
-  return {text: text.slice(0, end), limited: end < text.length};
+  const shown = previewText(text, maxLines, maxChars);
+  return {text: shown.text, limited: shown.truncated};
 }
 /** Marked preview lines: shared lines take a space, removed lines "-", added lines "+". */
 function comparisonLines(edit: Replacement, comparison: SuppliedDifference): string[] {
@@ -175,7 +171,7 @@ function textPreview(part: Extract<PartView, {type: 'text'}>, skipFrontmatter: b
     const joined = withoutOuterBlankLines(lines.map(line => line.kind === 'text' ? tidied(line.text, !!options.tidy) : line.text).join('\n'));
     if (!joined) return undefined;
     const shown = preview(joined, 1200, 6);
-    return {text: shown.limited ? `${preview(shown.text, 1199, 6).text}…` : shown.text, summary: false, redacted: false, literal: false};
+    return {text: shown.text, summary: false, redacted: false, literal: false};
   }
   // An array summarizes text that is one JSON array; text of prose or JSON lines keeps its own lines.
   const summarizable = !decodedArray(part.structured) || part.text.trimStart().startsWith('[');
@@ -183,7 +179,7 @@ function textPreview(part: Extract<PartView, {type: 'text'}>, skipFrontmatter: b
   const text = withoutOuterBlankLines(summary ?? tidied(previewSource(part, skipFrontmatter), !!options.tidy && !part.redacted));
   if (!text) return undefined;
   const shown = preview(text, 1200, 6);
-  return {text: shown.limited ? `${preview(shown.text, 1199, 6).text}…` : shown.text, summary: summary !== undefined, redacted: !!part.redacted, literal: summary === undefined};
+  return {text: shown.text, summary: summary !== undefined, redacted: !!part.redacted, literal: summary === undefined};
 }
 
 /** A collapsed result describes supplied structured data or keeps a literal text prefix. */
@@ -237,7 +233,7 @@ export function presentToolPreview(source: ToolPresentationSource): HTMLElement 
   const args = record(source.args?.value);
   if (source.name === 'write' && typeof args.content === 'string') {
     const text = previewText(args.content, 6, 1199);
-    return args.content === '' ? element('pre', 'tool-content-preview', '(empty content)') : writePreview(source, `${text.text}${text.truncated ? '…' : ''}`, 'tool-content-preview');
+    return args.content === '' ? element('pre', 'tool-content-preview', '(empty content)') : writePreview(source, text.text, 'tool-content-preview');
   }
   return source.name === 'edit' ? collapsedReplacement(source, args) : undefined;
 }

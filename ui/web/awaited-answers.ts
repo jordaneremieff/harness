@@ -7,7 +7,6 @@ export type AwaitedResult = {identity?: string; status: 'done' | 'unanswered' | 
 export type AwaitedAnswers = {results: AwaitedResult[]; unresolved: number};
 export type AnswerNamer = (identity: string) => string | undefined;
 
-const LINE_CHARS = 80;
 const MAX_RESULTS = 64;
 const plain = (value: unknown): value is Record<string, unknown> => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -110,7 +109,7 @@ export function missingAnswerNote(result: AwaitedResult): string | undefined {
 }
 function firstLine(answer: string): string {
   const line = answer.split(/\r\n|\r|\n/).map(plainPreviewWords).find(Boolean) ?? '';
-  return line.length > LINE_CHARS ? `${line.slice(0, LINE_CHARS).trimEnd()}…` : line;
+  return line;
 }
 
 /** What a wait with no answers yet says: how many results are still awaited. */

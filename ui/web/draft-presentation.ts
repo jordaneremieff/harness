@@ -26,6 +26,6 @@ export function draftPresentation(state: DraftPresentation, now: number): string
   if (state.conflict) return '';
   if (state.failed) return 'Draft not saved';
   if (!state.connected && state.unsaved && (state.text.length || state.images?.length)) return 'Draft not saved';
-  if (state.outstandingSince !== undefined && now - state.outstandingSince >= SLOW_SAVE_MS) return 'Saving draft…';
+  if (state.outstandingSince !== undefined && now - state.outstandingSince >= SLOW_SAVE_MS) return 'Saving draft';
   return '';
 }

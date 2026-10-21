@@ -2,7 +2,7 @@ import type { JsonDisplay } from '../shared/api.ts';
 import { awaitedAnswers, missingAnswerNote, responderName, type AnswerNamer } from './awaited-answers.ts';
 import { button, element } from './dom.ts';
 import { highlight, languageFromPath } from './highlight.ts';
-import { plainPreviewWords } from './format.ts';
+import { plainPreviewWords, previewText } from './format.ts';
 import { markdownDom, withoutFrontmatter } from './safe-markdown.ts';
 import type { PresentationContext } from './transcript-presentation.ts';
 import { suppliedDifference, differenceNotice } from './supplied-difference.ts';
@@ -67,14 +67,7 @@ export function appendKey(node: HTMLElement, key: string): void {
 }
 function multiline(value: string): boolean { return /[\r\n]/.test(value); }
 function prefix(text: string, chars: number, lines = DOC_LINES): string {
-  let end = Math.min(text.length, Math.max(0, chars)); let count = 1;
-  for (let i = 0; i < end; i++) {
-    if ((text[i] === '\n' || (text[i] === '\r' && text[i + 1] !== '\n')) && ++count > lines) { end = i; break; }
-  }
-  const cut = end < text.length;
-  if (cut && end === chars) end = Math.max(0, end - 1);
-  if (end && /[\uD800-\uDBFF]/.test(text[end - 1] ?? '')) end--;
-  return text.slice(0, end) + (cut && chars > 0 ? '…' : '');
+  return previewText(text, lines, chars).text;
 }
 function summaryFact(key: string, value: unknown, truncated: boolean): string {
   const name = prefix(key, 80, 1).replace(/[\r\n\t]/g, ' ');
@@ -252,7 +245,7 @@ function scalar(value: unknown): string {
   if (value === null) return 'null';
   if (typeof value === 'string' || typeof value === 'boolean') return String(value);
   if (typeof value === 'number' && Number.isFinite(value)) return String(value);
-  return '…';
+  return 'Value not displayed';
 }
 function shortScalar(value: unknown): boolean {
   return value === null || typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value)) ||

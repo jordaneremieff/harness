@@ -43,7 +43,7 @@ export class Recovery {
   constructor(ctx: RecoveryContext) { this.ctx = ctx; }
   open(): void {
     const modal = this.ctx.modal; modal.open('Saved drafts and messages');
-    const token = modal.token; modal.body.append(element('p', 'secondary', 'Loading saved drafts…'));
+    const token = modal.token; modal.body.append(element('p', 'secondary', 'Loading saved drafts'));
     void modal.run(async () => { await this.ctx.reload(); if (modal.owns(token)) this.paint(); }, false);
   }
   private paint(): void {
@@ -91,14 +91,14 @@ export class Recovery {
     row.append(cardAction('copy', 'Copy text only', () => {void copy(item.text, row);}), button('Restore to this draft', () => {void modal.run(async () => {
       await request(`/api/workspaces/${encodeURIComponent(workspace)}/unconfirmed/${encodeURIComponent(item.operationId)}/restore`, 'POST', {expectedDraftRevision: saved.draft.revision});
       await this.ctx.reload(); setText(row, 'The complete copy was restored to its draft. No message was sent.');
-    }, false);}), button('Discard copy…', () => modal.confirm('Discard message copy', 'Delete only this saved copy. This does not cancel work or establish whether the original ran.', async () => {
+    }, false);}), button('Discard copy', () => modal.confirm('Discard message copy', 'Delete only this saved copy. This does not cancel work or establish whether the original ran.', async () => {
       await request(`/api/workspaces/${encodeURIComponent(workspace)}/unconfirmed/${encodeURIComponent(item.operationId)}`, 'DELETE'); await this.ctx.reload(); this.open();
     }, 'Discard copy')));
     if (item.admission === 'unconfirmed') row.append(cardAction('restart', 'Check delivery', () => {void modal.run(async () => {
       const receipt = await request(`/api/operations/${encodeURIComponent(item.operationId)}/reconcile`, 'POST', {});
       const details = element('details', 'receipt-disclosure'); details.append(element('summary', undefined, 'Delivery details'), element('pre', undefined, JSON.stringify(receipt, null, 2))); row.append(details);
     }, false);}));
-    if (item.admission === 'unconfirmed' && saved.target.kind === 'agent') row.append(button('Retry original message…', () => modal.confirm('Retry original message', 'Retry the original message with its existing request key.', async () => {
+    if (item.admission === 'unconfirmed' && saved.target.kind === 'agent') row.append(button('Retry original message', () => modal.confirm('Retry original message', 'Retry the original message with its existing request key.', async () => {
       await request(`/api/operations/${encodeURIComponent(item.operationId)}/reconcile`, 'POST', {retry: true}); await this.ctx.reload(); this.open();
     }, 'Retry original message')));
     if (item.admission === 'queued-image' || item.admission === 'handled-image') {

@@ -36,7 +36,7 @@ export class FilesTree {
   }
   refresh(): void {this.invalidate(this.root?.id ?? '',[],true);}
   diagnostics():string {
-    return [...this.directories].flatMap(([path,directory])=>[directory.loading?'Loading files…':'',directory.error,directory.incomplete].filter(Boolean).map(line=>`${path||this.root?.path||'Files'}: ${line}`)).join('\n');
+    return [...this.directories].flatMap(([path,directory])=>[directory.loading?'Loading files':'',directory.error,directory.incomplete].filter(Boolean).map(line=>`${path||this.root?.path||'Files'}: ${line}`)).join('\n');
   }
   private chooseFolder():HTMLElement {const node=element('button','file-tree-more','Choose folder');node.type='button';node.addEventListener('click',()=>this.hooks.choose?.());return node;}
   disclosed():string[] {return [...this.directories].filter(([path,directory])=>!path || directory.expanded).map(([path])=>path);}
@@ -202,7 +202,7 @@ export class FilesTree {
     const root = this.root,entry = this.entry(origin.closest<HTMLElement>('[data-path]')?.dataset.path ?? '');
     if (entry && entry.kind !== 'file' && entry.kind !== 'directory') return;
     const items = [{label:'New file',run:()=>this.name('file',entry)},{label:'New folder',run:()=>this.name('directory',entry)}];
-    if (entry?.kind === 'file' && this.hooks.addToMessage) items.push({label:'Add to message…',run:()=>this.hooks.addToMessage?.(root.id,entry.path)});
+    if (entry?.kind === 'file' && this.hooks.addToMessage) items.push({label:'Add to message',run:()=>this.hooks.addToMessage?.(root.id,entry.path)});
     if (entry) items.push({label:'Rename',run:()=>this.name('rename',entry)},{label:'Move',run:()=>this.name('move',entry)},{label:'Move to Trash',run:()=>this.trash(entry)});
     contextMenu.open(origin,point,'File actions',items,()=>this.root === root && (!entry || !!this.entry(entry.path)));
   }

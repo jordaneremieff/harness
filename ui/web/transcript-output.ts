@@ -27,7 +27,7 @@ export function outputPages(more: OutputContinuation, load: OutputLoader | undef
   const active = (request: number) => request === version && current();
   const requestPage = async (offset: number, index: number) => {
     if (!load || busy || !current()) return;
-    busy = true; const request = ++version; setText(status, 'Loading output…'); controls(); changed();
+    busy = true; const request = ++version; setText(status, 'Loading output'); controls(); changed();
     try {
       const page = await load({...more, offset});
       if (!active(request)) return;

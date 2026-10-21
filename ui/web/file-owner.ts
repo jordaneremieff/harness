@@ -25,9 +25,9 @@ export class FileOwner {
   get unsaved():boolean {return this.text !== this.acknowledged || !!this.draftError;}
   get canDispose():boolean {return !this.retained && !this.unsaved && !this.timer && !this.queued && !this.persisting && !this.saving && !this.moving && !this.saveFailed;}
   get status():string {
-    if (this.saving) return 'Saving file…';if (this.persisting) return 'Saving draft…';
+    if (this.saving) return 'Saving file';if (this.persisting) return 'Saving draft';
     const unsaved = `${this.conflict ? 'Local edits' : 'Draft'} not saved.${this.draftError ? ` ${this.draftError}` : ''}`;
-    if (this.moving) return 'Moving file…';
+    if (this.moving) return 'Moving file';
     if (this.missing) return `${this.error ?? 'The file is missing.'}${this.text !== undefined ? this.modified ? ' Draft retained.' : ' Source retained.' : ''}`;
     if (this.conflict) return `File changed on disk. ${this.unsaved ? unsaved : 'Draft retained.'}`;
     if (this.unsaved) return unsaved;if (this.error) return this.error;

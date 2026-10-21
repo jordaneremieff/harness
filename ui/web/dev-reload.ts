@@ -44,7 +44,7 @@ function reloadWords(notice: DevReloadNotice): ReloadPresentation {
     return {text:'Update did not finish.', action:['stylesheet', 'drain', 'ack'].includes(notice.code) ? 'retry' : null};
   }
   if (notice.state === 'held' || notice.state === 'deferred') return {text:pausedText(notice.code), action:notice.state === 'deferred' && notice.retryable ? 'retry' : null};
-  const labels = {idle:'', applied:'', ready:'Updating…', building:'Updating…', navigating:'Updating…', offline:'Reconnecting updates…', 'restart-required':'Restart required', reconnecting:'Reconnecting updates…'};
+  const labels = {idle:'', applied:'', ready:'Updating', building:'Updating', navigating:'Updating', offline:'Reconnecting updates', 'restart-required':'Restart required', reconnecting:'Reconnecting updates'};
   return {text:labels[notice.state], action:null};
 }
 export function devReloadPresentation(notice: DevReloadNotice): ReloadPresentation & {detail: string} {

@@ -1,5 +1,4 @@
 const COMPARE_CHARS = 65536;
-const CONTEXT_CHARS = 80;
 const CONTEXT_LINE_CHARS = 200;
 
 /**
@@ -33,20 +32,15 @@ function terminatorLength(value: string, end: number): number {
 function terminatorBefore(value: string, position: number): number {
   return value[position - 2] === '\r' && value[position - 1] === '\n' ? 2 : 1;
 }
-function contextStart(value: string, difference: number, chars: number): number {
-  let start = difference;
-  const minimum = Math.max(0, difference - Math.min(CONTEXT_CHARS, Math.floor(chars / 4)));
-  while (start > minimum && value[start - 1] !== '\n' && value[start - 1] !== '\r') start--;
-  if (start > 0 && /[\uDC00-\uDFFF]/.test(value[start] ?? '') && /[\uD800-\uDBFF]/.test(value[start - 1] ?? '')) start--;
-  if (start > 0 && value[start - 1] === '\r' && value[start] === '\n') start--;
-  return start;
-}
 function windowText(value: string, start: number, chars: number, lines: number): string {
   let end = Math.min(value.length, start + chars); let count = 1;
   for (let index = start; index < end; index++) {
     if ((value[index] === '\n' || (value[index] === '\r' && value[index + 1] !== '\n')) && ++count > lines) {end = index; break;}
   }
-  if (end < value.length && end > start && /[\uD800-\uDBFF]/.test(value[end - 1] ?? '')) end--;
+  if (end < value.length && end > start && !isBreak(value[end])) {
+    while (end > start && !isBreak(value[end - 1])) end--;
+    if (end > start) end -= terminatorBefore(value, end);
+  }
   if (end < value.length && end > start && value[end - 1] === '\r' && value[end] === '\n') end--;
   return value.slice(start, end);
 }
@@ -57,14 +51,11 @@ function windowLines(region: string, present: boolean, chars: number, lines: num
   const truncated = shown.length < region.length;
   return {lines: shown === '' && region !== '' ? [] : shown.split(/\r\n|\r|\n/), truncated};
 }
-/** One shared line, shortened to the context bound and ended with "…"; `cut` reports that shared text was left out. */
+/** A shared line is present whole or omitted; `cut` reports an omitted line. */
 function contextLine(line: string, chars: number): {text: string | null; cut: boolean} {
   const limit = Math.min(CONTEXT_LINE_CHARS, Math.floor(chars / 2));
   if (line.length <= limit) return {text: line, cut: false};
-  if (limit <= 0) return {text: null, cut: true};
-  let end = limit - 1;
-  if (/[\uD800-\uDBFF]/.test(line[end - 1] ?? '')) end--;
-  return {text: `${line.slice(0, end)}…`, cut: true};
+  return {text: null, cut: true};
 }
 
 type Start = {oldFrom: number; newFrom: number; displayOld: number; displayNew: number; contextBefore: string | null;
@@ -84,7 +75,7 @@ function commonStart(oldText: string, newText: string, difference: number, width
     return {oldFrom, newFrom, displayOld: oldFrom, displayNew: newFrom, contextBefore: line.text, omittedBefore: line.text === null || lineStart > 0,
       oldTrailing: oldBreak > 0 && oldFrom === oldText.length, newTrailing: newBreak > 0 && newFrom === newText.length};
   }
-  const start = Math.max(lineStart, contextStart(oldText, difference, width));
+  const start = lineStart;
   const base = {oldFrom: lineStart, newFrom: lineStart, oldTrailing: false, newTrailing: false};
   if (start > lineStart) return {...base, displayOld: start, displayNew: start, contextBefore: null, omittedBefore: true};
   if (lineStart === 0) return {...base, displayOld: 0, displayNew: 0, contextBefore: null, omittedBefore: false};

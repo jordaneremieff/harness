@@ -70,10 +70,7 @@ function usefulName(value: string | undefined, identity: string): string | undef
   const text = value?.trim(); return text && text !== identity && !conversationIdentityText(text) ? text : undefined;
 }
 function firstMessageTitle(firstMessage: string | undefined, identity: string): string | undefined {
-  const excerpt = usefulName(firstMessage?.slice(0, 162).trim().split(/\r?\n/, 1)[0], identity);
-  if (!excerpt) return;
-  const points = Array.from(excerpt);
-  return points.length > 80 ? `${points.slice(0, 79).join('')}…` : excerpt;
+  return usefulName(firstMessage?.trim().split(/\r?\n/, 1)[0], identity);
 }
 export function agentName(name: string | undefined, handle: string | undefined, identity: string, reported?: string, firstMessage?: string): string {
   for (const value of [reported, name, handle]) {const text = usefulName(value, identity); if (text) return text;}

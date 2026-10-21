@@ -47,7 +47,7 @@ class WorkingFileChooser {
     return this.entries.length?'No visible files in this folder.':'No files loaded in this folder.';
   }
   private statusText(shown:number):string {
-    const activity=this.loading?'Loading files…':this.adding?'Reading saved file…':this.error??'';
+    const activity=this.loading?'Loading files':this.adding?'Reading saved file':this.error??'';
     return [activity,this.incomplete,this.cursor?'More entries are available.':'',this.emptyText(shown)].filter(Boolean).join(' ');
   }
   private paint():void {

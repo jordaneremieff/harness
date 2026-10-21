@@ -84,7 +84,7 @@ export function transcriptImage(part: ImageView, url?: string, changed: () => vo
       else {setText(status,'The image could not be loaded.'); retry.hidden = false; changed();}
     });
     record('started',attempt); figure.insertBefore(attempt,retry); retry.hidden = true;
-    setText(status,attemptKind === 'automatic' ? 'Retrying image…' : 'Loading image…'); attempt.src = url; changed();
+    setText(status,attemptKind === 'automatic' ? 'Retrying image' : 'Loading image'); attempt.src = url; changed();
   };
   const retry = button('Reload image',()=>activate('manual')); retry.hidden = true;
   figure.append(retry,disclosure); activate('initial'); return figure;

@@ -53,7 +53,7 @@ function ordinaryResumeWarning(): HTMLElement {
 function durableCoverage(roster?: CachedRoster): string {
   const notes: string[] = [];
   if (!roster || roster.scan.state === 'not-started') notes.push('The Durable catalog is not loaded.');
-  else if (roster.scan.state === 'running') notes.push('Loading Durable conversations…');
+  else if (roster.scan.state === 'running') notes.push('Loading Durable conversations');
   else if (roster.error || roster.scan.state === 'failed') notes.push('The Durable catalog could not refresh.');
   if (roster?.stale) notes.push('Saved Durable catalog; current coverage is not confirmed.');
   return notes.join(' ');
@@ -120,7 +120,7 @@ export class ProjectPicker {
   newSession(project?: string): void {
     const cwd = project ?? this.project();
     if (!cwd) { this.openProject(); return; }
-    if (!this.inline) this.begin('Starting session…');
+    if (!this.inline) this.begin('Starting session');
     void this.run(() => this.start(cwd));
   }
   private project(): string | undefined { return this.ctx.project?.() ?? this.ctx.primary()?.cwd ?? (this.ctx.snapshot() as Bootstrap | undefined)?.launchCwd; }
@@ -192,7 +192,7 @@ export class ProjectPicker {
     if (!project) { this.selectProject(); return; }
     const {body, token} = this.begin(`Sessions in ${this.projectName(project)}`); this.shownProject = project;
     this.sessionContext(body, project);
-    body.append(element('p', 'secondary', 'Loading sessions…'));
+    body.append(element('p', 'secondary', 'Loading sessions'));
     void this.sessions(project).catch(cause => {
       if (!this.owns(token)) return;
       body.replaceChildren(); this.sessionContext(body, project);
@@ -255,12 +255,12 @@ export class ProjectPicker {
   }
   private projectStatus(control: HTMLElement | undefined, loading: boolean, failed: boolean): ContextItem[] {
     const items: ContextItem[] = [];
-    if (loading && !this.projects) items.push({label: 'Loading projects…', enabled: false, run() {}});
+    if (loading && !this.projects) items.push({label: 'Loading projects', enabled: false, run() {}});
     if (failed) items.push({label: 'Recent projects are unavailable.', enabled: false, run() {}}, {key: 'retry', label: 'Try again', run: () => this.selectProject(control)});
     const coverage = this.projects && projectCoverage(this.projects);
     if (coverage) items.push({label: coverage, enabled: false, run() {}});
     if (this.projects?.nextCursor) items.push({key: 'more', label: 'More recent projects', run: () => this.selectProject(control, this.projects?.nextCursor ?? undefined)});
-    items.push({key: 'folder', label: 'Other folder…', separatorBefore: true, run: () => this.selectFolder()}, {key: 'refresh', label: 'Refresh recent projects', description: this.projects ? `Saved list · ${relativeTime(this.projects.observedAt, Date.now())}` : undefined, run: () => this.selectProject(control)});
+    items.push({key: 'folder', label: 'Other folder', separatorBefore: true, run: () => this.selectFolder()}, {key: 'refresh', label: 'Refresh recent projects', description: this.projects ? `Saved list · ${relativeTime(this.projects.observedAt, Date.now())}` : undefined, run: () => this.selectProject(control)});
     return items;
   }
   private async chooseWorkingFolder(path:string):Promise<void> {
@@ -374,7 +374,7 @@ export class ProjectPicker {
       const box = options.getBoundingClientRect();
       contextMenu.open(options, {x: box.left, y: box.bottom}, 'Saved session options', [
         {key: 'details', label: 'List details', run: () => { heading.disclosure.hidden = false; heading.disclosure.open = true; heading.summary.focus(); }},
-        {key: 'file', label: 'Session file…', run: () => { file.hidden = false; file.open = true; file.querySelector<HTMLInputElement>('#picker-session-path')?.focus(); }},
+        {key: 'file', label: 'Session file', run: () => { file.hidden = false; file.open = true; file.querySelector<HTMLInputElement>('#picker-session-path')?.focus(); }},
       ], () => this.owns(token));
     });
     options.setAttribute('aria-haspopup', 'menu'); options.setAttribute('aria-expanded', 'false');
@@ -411,7 +411,7 @@ export class ProjectPicker {
     const updateRegisteredDetails=()=> {
       const published=loaded?this.published:undefined;
       registeredHeading.update(published ? savedListDetails(published, true) : '', !!published && partialSessions(published));
-      status.textContent=failed ? 'Registered ordinary sessions are unavailable. Refresh the session picker.' : published ? '' : 'Loading registered ordinary sessions…'; status.hidden=!status.textContent;
+      status.textContent=failed ? 'Registered ordinary sessions are unavailable. Refresh the session picker.' : published ? '' : 'Loading registered ordinary sessions'; status.hidden=!status.textContent;
     };
     const paint=()=> {
       const focused=selectable().find(row=>row===document.activeElement);
@@ -505,7 +505,7 @@ export class ProjectPicker {
     rows[index]?.focus();
   }
   private sessionFile(project: string, search: HTMLElement): HTMLDetailsElement {
-    const disclosure = element('details', 'picker-file'); const summary = element('summary', 'secondary', 'Session file…'); cardDisclosure(summary); disclosure.append(summary);
+    const disclosure = element('details', 'picker-file'); const summary = element('summary', 'secondary', 'Session file'); cardDisclosure(summary); disclosure.append(summary);
     const session = input('Session file'); session.field.id = 'picker-session-path'; session.label.htmlFor = session.field.id;
     const error = element('p', 'error'); error.id = 'picker-file-error'; error.setAttribute('role', 'alert'); session.field.setAttribute('aria-describedby', error.id);
     const resume = () => {

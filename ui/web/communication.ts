@@ -15,7 +15,7 @@ type Ready = Extract<CommunicationPresentation, {state: 'ready'}>;
 type Row = [string, string, QualifiedReference?];
 function qualified(label: string, text: string, owner: string, field: ReferenceField): Row { return [label, text, {text, owner, field}]; }
 function bounded(value: string, chars: number): string {
-  const shown = previewText(value, Number.MAX_SAFE_INTEGER, value.length > chars ? chars - 1 : chars); return shown.text + (shown.truncated ? '…' : '');
+  return previewText(value, Number.MAX_SAFE_INTEGER, chars).text;
 }
 /** Status kinds that read as one line until opened: the producer's own check-ins and thread notices. */
 function statusLine(value: CommunicationPresentation): {kind: string; preview: string} | undefined {

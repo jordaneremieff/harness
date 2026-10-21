@@ -119,7 +119,7 @@ export type PaneMenuHooks = {layout: () => PaneLayout; valid: () => boolean; spa
 type Guard = (run: () => void) => () => void;
 function moveChoices(layout: PaneLayout, paneId: string, key: string | null, hooks: PaneMenuHooks, guard: Guard): ContextItem[] {
   const leaves = paneLeaves(layout.root); const destinations = leaves.filter(leaf => leaf.id !== paneId);
-  if (!destinations.length) return [{label: 'Move tab to pane…', enabled: false, disabledReason: 'No other pane', run() {}}];
+  if (!destinations.length) return [{label: 'Move tab to pane', enabled: false, disabledReason: 'No other pane', run() {}}];
   return destinations.map(destination => {
     const number = leaves.indexOf(destination) + 1; const name = destination.active ? hooks.label(destination.active) : 'Empty';
     return {label: `Move tab to ${name} (pane ${number})`, enabled: !!key, run: guard(() => {if (key) hooks.change(movePaneTab(layout, key, destination.id));})};
@@ -142,12 +142,12 @@ export function paneMenuItems(target: PaneMenuTarget, hooks: PaneMenuHooks): Con
   };
   const split = (axis: PaneAxis): ContextItem => ({label: axis === 'x' ? 'Split right' : 'Split down', enabled: canSplitPane(layout, pane.id, axis, space),
     disabledReason: leaves.length >= MAX_PANES ? 'Four panes maximum' : 'Not enough space', run: guard(() => hooks.split(pane.id, axis, key))});
-  const items: ContextItem[] = [{label: 'New tab…', run: guard(() => hooks.newTab(pane.id))}, split('x'), split('y')];
+  const items: ContextItem[] = [{label: 'New tab', run: guard(() => hooks.newTab(pane.id))}, split('x'), split('y')];
   if (hooks.purpose === 'add') return items;
   items.push(...moveChoices(layout, pane.id, key, hooks, guard));
   items.push({label: 'Close tab', enabled: !!key, run: guard(() => {if (key) hooks.closeTab(key);})},
     {label: 'Close pane', enabled: leaves.length > 1, run: guard(() => hooks.change(closePane(layout, pane.id)))});
-  if (pane.tabs.find(tab=>tabKey(tab) === key)?.kind !== 'file') items.push({label: 'Conversation actions…', enabled: !!key, separatorBefore: true, run: guard(() => {if (key) hooks.conversation(pane.id, key);})});
+  if (pane.tabs.find(tab=>tabKey(tab) === key)?.kind !== 'file') items.push({label: 'Conversation actions', enabled: !!key, separatorBefore: true, run: guard(() => {if (key) hooks.conversation(pane.id, key);})});
   if (hooks.overflow) items.push(...tabChoices(layout, hooks, guard));
   return items;
 }

@@ -33,8 +33,7 @@ function blockPreview(block: MarkdownBlock): string {
   }
 }
 export function rosterPreview(source: string): string {
-  const words = parseMarkdown(source.slice(0, 4096)).map(blockPreview).join(' ').replace(/\s+/g, ' ');
-  return previewText(words, 1, 180).text;
+  return parseMarkdown(source).map(blockPreview).join(' ').replace(/\s+/g, ' ');
 }
 function rowName(row: AgentRow): string {return row.handle ? `@${row.handle.replace(/^@/,'')}` : agentName(row.name, row.handle, row.identity, undefined, row.firstMessage);}
 export type RosterStatus = {attention?: Attention; hideVisibleState?: boolean; glyph: string; label: string; tone?: PresentationTone; name?: string; tail?: string; tool?: AgentRow['currentTool']};
@@ -164,7 +163,7 @@ export class Roster {
     const cursor = this.meta?.nextCursor;
     if (!cursor || (!more && this.filtered().length)) return;
     this.searchQuery = query; const controller = new AbortController(); this.searchController = controller;
-    this.searchNotice = 'Searching agents…'; this.searchError = ''; this.footer(this.rows.length, this.meta, Date.now()); this.schedule();
+    this.searchNotice = 'Searching agents'; this.searchError = ''; this.footer(this.rows.length, this.meta, Date.now()); this.schedule();
     try { await this.searchPages(this.search, query, cursor, controller); } catch (error) {
       if (!controller.signal.aborted) { this.searchNotice = 'Agents could not be searched.'; this.searchError = error instanceof Error ? error.message : String(error); }
     } finally {
@@ -219,7 +218,7 @@ export class Roster {
   private controls(query: string): HTMLElement[] {
     const controls: HTMLElement[] = [], label = this.pagingLabel();
     if ((this.expanded || query) && label && !this.searchController) {cardActionLabel(this.paging, query ? 'More agents' : label);controls.push(this.paging);}
-    setText(this.older,this.rows.length ? `All agents (${this.rows.length})` : 'New agent…');
+    setText(this.older,this.rows.length ? `All agents (${this.rows.length})` : 'New agent');
     this.older.setAttribute('aria-expanded',String(this.expanded));controls.push(this.older);return controls;
   }
   private filterVisibility(query: string): void {
@@ -299,7 +298,7 @@ export class Roster {
     return cached;
   }
   private updatePreview(cached: RowNode, source?: string): void {
-    if (cached.previewSource !== source) {cached.previewSource = source; setText(cached.preview, rosterPreview((source ?? '').slice(0, 4096).split(/\r?\n/, 1)[0] ?? '')); cached.preview.title = cached.preview.textContent ?? '';}
+    if (cached.previewSource !== source) {cached.previewSource = source; setText(cached.preview, rosterPreview((source ?? '').split(/\r?\n/, 1)[0] ?? '')); cached.preview.title = source ?? '';}
     cached.preview.hidden = !cached.preview.textContent;
     cached.separator.hidden = cached.state.hidden || cached.preview.hidden;
     cached.summary.hidden = cached.state.hidden && cached.preview.hidden;

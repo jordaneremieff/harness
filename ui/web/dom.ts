@@ -1,9 +1,22 @@
 
+const fadeLabels='.row-title,.row-name,.row-preview,.tab-label,.tab-identity,.tool-name,.tool-name-directory,.tool-state-word,.conversation-name,.conversation-identity,.project-context,.file-name,.source-language,.extension-status-preview,.composer-state-label,.composer-setting-label,.communication-line-preview,.communication-line-kind,.communication-sender,.message-role,.desk-row-title,.desk-agent,.thread-purpose,.thread-line-note,.thread-reply,.notice-block-title,.response-failure-preview,.thinking-preview,.command-name,.command-desc,#workbench-scope,.workbench-activity-text';
+const pendingLabels=new Set<HTMLElement>(),labelTitles=new WeakMap<HTMLElement,string>();
+let labelFrame:number|undefined;
+/** Measure painted labels together; full text and explicit source tooltips stay unchanged. */
+function queueLabel(node:HTMLElement,text?:string):void {
+  if(!node.matches(fadeLabels))return;
+  if(text!==undefined&&(!node.title||node.title===labelTitles.get(node))){node.title=text;labelTitles.set(node,text);}
+  pendingLabels.add(node);
+  if(labelFrame!==undefined)return;
+  labelFrame=requestAnimationFrame(()=>{labelFrame=undefined;for(const label of pendingLabels)if(label.isConnected)label.dataset.labelOverflow=String(label.scrollWidth>label.clientWidth);pendingLabels.clear();});
+}
+export function refreshLabelFades(root:ParentNode=document):void {for(const label of root.querySelectorAll<HTMLElement>(fadeLabels))queueLabel(label);}
 export function element<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
   if (className) node.className = className;
   if (text !== undefined) node.textContent = text;
   if (tag === 'summary') { node.className = `${node.className} card-disclosure`.trim(); }
+  queueLabel(node,text);
   return node;
 }
 export function byId<T extends HTMLElement = HTMLElement>(id: string): T {
@@ -27,6 +40,7 @@ export function setText(node: Node, text: string): void {
   if (node.textContent !== text) {
     node.textContent = text;
   }
+  if(node instanceof HTMLElement)queueLabel(node,text);
 }
 export function announce(text: string): void { setText(byId('announcements'), text); }
 export async function copy(text: string, into?: HTMLElement | (() => HTMLElement)): Promise<boolean> {

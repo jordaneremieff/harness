@@ -378,7 +378,7 @@ export class Actions {
   modelPicker(selection?: SettingsSelection): void {
     const primary = selection?.primary ?? (selection ? (this.ctx.namingPrimary ?? this.ctx.primary)() : this.ctx.primary()); if (!primary) return;
     const selected=selection?.model ?? (primary.model?{provider:primary.model.provider,modelId:primary.model.id}:undefined);
-    const modal = this.ctx.modal; modal.open(selection?.target.kind==='agent'?'Choose model for agent':'Choose model for Primary',undefined,selection?.closed); const token = modal.token; modal.body.append(element('p', 'secondary', 'Loading models…'));
+    const modal = this.ctx.modal; modal.open(selection?.target.kind==='agent'?'Choose model for agent':'Choose model for Primary',undefined,selection?.closed); const token = modal.token; modal.body.append(element('p', 'secondary', 'Loading models'));
     void modal.run(async () => {
       const page = await this.resourcePage(primary,'models'); this.learnModels(page.items as ModelChoice[]); if (!modal.owns(token)) return;
       modal.body.replaceChildren(); const search = input('Search models'); const list = element('div', 'options'); list.setAttribute('role', 'menu'); list.setAttribute('aria-label', 'Models'); modal.body.append(search.label, search.field, list);
@@ -441,16 +441,16 @@ export class Actions {
       entry('New session', 'Start a new session', () => this.newSession(), true, 'new'),
       entry('Sessions', 'Open retained session history', () => this.projectPicker(), true, 'resume'),
       ...this.conversionEntries(),
-      ...this.ctx.handover ? [entry('Continue a handover…', 'Pick up a handover in a browser session', this.ctx.handover)] : [],
-      entry('Fork from message…', 'Branch from a loaded user message', () => this.forkPicker(), ready, 'fork'),
-      entry('Compact…', 'Summarize primary context', () => this.compact(), ready, 'compact'),
-      entry('Automatic retry…', 'Enable or disable Pi retry', () => this.automaticSettings('autoRetry'), ready),
-      entry('Automatic compaction…', 'Enable or disable Pi compaction', () => this.automaticSettings('autoCompaction'), ready),
-      entry('Continue in terminal…', 'Continue this session in the terminal', () => this.handoff(), !!this.readyPrimary(primary,'handoff')),
+      ...this.ctx.handover ? [entry('Continue a handover', 'Pick up a handover in a browser session', this.ctx.handover)] : [],
+      entry('Fork from message', 'Branch from a loaded user message', () => this.forkPicker(), ready, 'fork'),
+      entry('Compact', 'Summarize primary context', () => this.compact(), ready, 'compact'),
+      entry('Automatic retry', 'Enable or disable Pi retry', () => this.automaticSettings('autoRetry'), ready),
+      entry('Automatic compaction', 'Enable or disable Pi compaction', () => this.automaticSettings('autoCompaction'), ready),
+      entry('Continue in terminal', 'Continue this session in the terminal', () => this.handoff(), !!this.readyPrimary(primary,'handoff')),
       entry('Conversation details', 'Identity, reported facts and diagnostics', () => agent ? this.conversationDetails(agent.identity) : this.sessionDetails(primary), !!primary || !!agent, undefined, 'Requires a selected conversation'),
       entry('Saved drafts and messages', 'Review saved text', () => this.ctx.recovery()),
       {...entry('Appearance', 'Choose a theme', () => this.appearance()), search: ['theme', 'stylesheet', 'css', ...appearanceChoices.flat()]},
-      {...entry('Message input…', 'Set the message box Enter action', () => this.messageInput()), search: ['Enter sends messages', 'Enter', 'newline', 'Shift+Enter', 'Ctrl+Enter', 'Command+Enter']},
+      {...entry('Message input', 'Set the message box Enter action', () => this.messageInput()), search: ['Enter sends messages', 'Enter', 'newline', 'Shift+Enter', 'Ctrl+Enter', 'Command+Enter']},
       {...entry('Agent presentation control', 'Allow agents to arrange this workspace and show notices', () => {
         void this.ctx.selection({agentControl:this.ctx.snapshot()?.workspace.agentControl === false}).catch(error=> {
           this.ctx.modal.open('Agent presentation control');this.ctx.modal.error(error,'The preference was not saved.');
@@ -471,8 +471,8 @@ export class Actions {
         ? {...entry('Hide sidebar', 'Hide the conversation sidebar', () => this.ctx.sidebar(false)), search: ['sidebar', 'hide', 'show', 'Show sidebar']}
         : {...entry('Show sidebar', 'Show the conversation sidebar', () => this.ctx.sidebar(true)), search: ['sidebar', 'hide', 'show', 'Hide sidebar']},
       entry('Projects', 'Choose a project', () => this.openProject()),
-      entry('Workspaces…','Open a saved workspace',()=>this.workspaces(),workspaceReady),
-      entry('Archived workspaces…','Restore a saved workspace',()=>this.workspaces(true),workspaceReady),
+      entry('Workspaces','Open a saved workspace',()=>this.workspaces(),workspaceReady),
+      entry('Archived workspaces','Restore a saved workspace',()=>this.workspaces(true),workspaceReady),
       entry('Model', 'Choose Primary model', () => this.modelPicker(), primary?.lifecycle === 'ready', 'model', 'Requires a ready Primary'),
       entry('Thinking', 'Choose the thinking level for Primary', () => this.thinkingPicker(), primary?.lifecycle === 'ready', 'thinking', 'Requires a ready Primary'),
     ];
@@ -487,16 +487,16 @@ export class Actions {
       entries.push(entry('Copy agent ID', agent.identity, () => this.ctx.copyAgent()));
 
     }
-    entries.push(entry('Sent and received tasks…','Recorded asks and available answers',this.ctx.resultLookup??(()=>this.ctx.inspectAgent()),!!(agent||primary), undefined, 'Requires a selected conversation'));
+    entries.push(entry('Sent and received tasks','Recorded asks and available answers',this.ctx.resultLookup??(()=>this.ctx.inspectAgent()),!!(agent||primary), undefined, 'Requires a selected conversation'));
     if (primary?.lifecycle === 'ready' && this.resourceTarget === `${primary.key}:${primary.epoch}:${primary.lifecycle}`) {
       for (const command of this.commands.filter(item => item.name !== 'resume')) {
         entries.push({...command, name: `Insert /${command.name}`, search: [`/${command.name}`], enabled: true, run: () => this.prepareText(`/${command.name}`)});
       }
     }
-    const conversation = new Set(['Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Copy agent ID', 'Sent and received tasks…', 'Close conversation tab']);
-    const primaryActions = new Set(['Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Model', 'Thinking', 'Review message', 'Insert /agent new']);
-    const workspace = new Set(['New session', 'Sessions', 'Continue a handover…', 'Saved drafts and messages', 'Appearance', 'Message input…', 'Agent presentation control', 'Help', 'Notifications', 'Refresh agents', 'Refresh files', 'Hide sidebar', 'Show sidebar', 'Projects', 'Next conversation tab', 'Previous conversation tab']);
-    const preferences = new Set(['Appearance','Message input…','Agent presentation control','Hide sidebar','Show sidebar']);
+    const conversation = new Set(['Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Copy agent ID', 'Sent and received tasks', 'Close conversation tab']);
+    const primaryActions = new Set(['Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Model', 'Thinking', 'Review message', 'Insert /agent new']);
+    const workspace = new Set(['New session', 'Sessions', 'Continue a handover', 'Saved drafts and messages', 'Appearance', 'Message input', 'Agent presentation control', 'Help', 'Notifications', 'Refresh agents', 'Refresh files', 'Hide sidebar', 'Show sidebar', 'Projects', 'Next conversation tab', 'Previous conversation tab']);
+    const preferences = new Set(['Appearance','Message input','Agent presentation control','Hide sidebar','Show sidebar']);
     return [...entries.filter(item => item.enabled && (workspaceReady || !preferences.has(item.name))).map(item => {
       let priority = 2;
       if (item.source === 'app') {
@@ -518,7 +518,7 @@ export class Actions {
     return agents.slice().sort((a, b) => agentOrder(a) - agentOrder(b)).map(row => ({...(this.ctx.agentCaption?.(row.identity) ?? this.captions.get(row.identity)), description: [this.ctx.agentStatus(row), compactAge(row.modifiedAt, now)].filter(Boolean).join(' · '), search: [row.identity, ...row.handle ? [row.handle] : []], title: row.identity, source: 'agent', enabled: true, run: () => chooseTarget ? chooseTarget({kind: 'agent', identity: row.identity}) : this.ctx.selectAgent(row)}));
   }
   sessionMenuEntries(agent = false): PaletteEntry[] {
-    const names = new Set(agent ? ['Conversation details', 'Copy agent ID', 'Sent and received tasks…', 'Saved drafts and messages', 'Message input…', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Appearance', 'Help'] : ['New session', 'Sessions', 'Continue a handover…', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Sent and received tasks…', 'Saved drafts and messages', 'Message input…', 'Appearance', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Model', 'Thinking', 'Review message']);
+    const names = new Set(agent ? ['Conversation details', 'Copy agent ID', 'Sent and received tasks', 'Saved drafts and messages', 'Message input', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Appearance', 'Help'] : ['New session', 'Sessions', 'Continue a handover', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Conversation details', 'Sent and received tasks', 'Saved drafts and messages', 'Message input', 'Appearance', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Model', 'Thinking', 'Review message']);
     return this.paletteEntries().filter(item => item.source === 'app' && names.has(item.name));
   }
   sessionMenu(agent = false): void {
@@ -527,7 +527,7 @@ export class Actions {
     for (const item of this.sessionMenuEntries(agent)) {
       const row = button(item.name, () => { if (!item.enabled) return; modal.close(); item.run(); }); row.disabled = !item.enabled; row.title = item.disabledReason ?? item.description; list.append(row);
     }
-    list.append(button('Commands…', () => this.palette()));
+    list.append(button('Commands', () => this.palette()));
     list.addEventListener('keydown', event => navigateOptions(event, list)); modal.body.append(list);
     list.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
   }
@@ -644,8 +644,8 @@ export class Actions {
   }
   private terminalOnly(name: string): void {
     const modal = this.ctx.modal; modal.open('Terminal-only panel'); modal.body.append(element('p', undefined, `The bare /${name} panel requires the terminal. Text actions remain available through the primary.`));
-    modal.actions(button('Cancel', () => modal.close()),...(this.readyPrimary(this.ctx.primary(),'handoff') ? [button('Continue in terminal…', () => this.handoff())] : []));
-    if (name === 'agent') modal.body.append(button('Insert /agent new…', () => { modal.close(); this.prepareText('/agent new'); }));
+    modal.actions(button('Cancel', () => modal.close()),...(this.readyPrimary(this.ctx.primary(),'handoff') ? [button('Continue in terminal', () => this.handoff())] : []));
+    if (name === 'agent') modal.body.append(button('Insert /agent new', () => { modal.close(); this.prepareText('/agent new'); }));
   }
   workspaces(archived = false): void {
     if(!this.ctx.snapshot()?.workspace)return;
@@ -657,7 +657,7 @@ export class Actions {
       if(!modal.owns(token))return;cursor=page.nextCursor;
       for(const item of page.items)list.append(this.workspaceChoice(item,archived,token));
       if(!list.children.length)list.append(element('p','secondary',archived ? 'No archived workspaces.' : 'No saved workspaces.'));
-      modal.actions(button('Projects…',()=>this.openProject()),button(archived ? 'Workspaces' : 'Archived workspaces…',()=>this.workspaces(!archived)),...(cursor ? [button('More',()=>{void modal.run(load,false);})] : []));
+      modal.actions(button('Projects',()=>this.openProject()),button(archived ? 'Workspaces' : 'Archived workspaces',()=>this.workspaces(!archived)),...(cursor ? [button('More',()=>{void modal.run(load,false);})] : []));
     };
     void modal.run(load,false,'Workspaces could not be loaded.');
   }
@@ -741,7 +741,7 @@ export class Actions {
       this.ctx.result(result);
     };
     modal.actions(button('Cancel', () => modal.close()), button(primary.activity === 'idle' ? 'Continue in terminal' : 'Finish work, then continue', () => { void modal.run(() => release('settle'), false); }));
-    if (primary.activity !== 'idle') modal.actions(button('Stop and continue in terminal…', () => modal.confirm('Stop and continue in terminal', 'Pi clears queued input and aborts current work. The backend retains cleared text copies.', () => release('abort'), 'Stop and continue')));
+    if (primary.activity !== 'idle') modal.actions(button('Stop and continue in terminal', () => modal.confirm('Stop and continue in terminal', 'Pi clears queued input and aborts current work. The backend retains cleared text copies.', () => release('abort'), 'Stop and continue')));
   }
   handoffResult(result: OperationView): void {
     if (result.kind !== 'primary.handoff' || result.state !== 'completed' || result.receipt?.kind !== 'rpc') return;
@@ -750,6 +750,6 @@ export class Actions {
     const {cwd, sessionFile} = data; const modal = this.ctx.modal; modal.open('Ready for terminal');
     modal.body.append(element('pre', undefined, data.command), cardAction('copy', 'Copy command', () => { void copy(data.command, modal.body); }), element('p', undefined, 'Browser control is stopped. Other Durable agents continue.'), element('p', 'secondary', 'Exit Pi in the terminal before you resume here. The browser does not detect other writers.'));
     const resumable = typeof cwd === 'string' && savedPathValid(cwd) && typeof sessionFile === 'string' && savedPathValid(sessionFile);
-    modal.actions(...(resumable ? [button('Resume here', () => this.sessionPicker().resume(cwd, sessionFile), 'main-action')] : []), button('Open session…', () => this.projectPicker()));
+    modal.actions(...(resumable ? [button('Resume here', () => this.sessionPicker().resume(cwd, sessionFile), 'main-action')] : []), button('Open session', () => this.projectPicker()));
   }
 }

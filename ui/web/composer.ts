@@ -42,6 +42,10 @@ function paintAction(node: HTMLButtonElement, icon: CardIcon, label: string, vis
   parts.icon = icon; parts.mark = cardIcon(icon);
   node.replaceChildren(parts.mark, parts.label);
 }
+function receiptNoticeText(notice:string):string {
+  if(notice==='Sending…')return 'Sending';
+  return /^Running \/.*…$/.test(notice)?notice.slice(0,-1):notice;
+}
 /** Creates one editor; the detached save/receipt-detail nodes belong in the shared footer. */
 export function createComposerElements(instanceId: string): ComposerElements {
   const id = `composer-${encodeURIComponent(instanceId)}`;
@@ -604,7 +608,7 @@ export class Composer {
     return row;
   }
   private preparationInfo(item: AttachmentItem): HTMLElement {
-    const status = item.state === 'failed' ? 'Unavailable' : item.state === 'including' ? 'Including text…' : item.state === 'text' ? item.prepared === undefined ? 'Text not included' : 'Ready to insert' : 'Preparing…';
+    const status = item.state === 'failed' ? 'Unavailable' : item.state === 'including' ? 'Including text' : item.state === 'text' ? item.prepared === undefined ? 'Text not included' : 'Ready to insert' : 'Preparing';
     const explanation = item.error ?? (item.state === 'text' ? 'File text is not included. Use the explicit text action to insert it into this draft.' : 'Local file preparation is pending. This file is not included in a sent message until preparation completes.');
     return this.attachmentInfo(item.name, item.file?.type || 'File', item.file?.size, status, explanation, item.state === 'failed');
   }
@@ -858,7 +862,7 @@ export class Composer {
   /** Why a slash draft cannot go yet: the list is still loading, or a command cannot carry attachments. */
   private commandHold(buffer: Buffer): string {
     if (buffer.state.target.kind !== 'agent' || !this.hooks.commands || !/^\/\S/.test(buffer.data.text)) return '';
-    if (this.hooks.commands(true).state === 'loading') return 'Loading commands…';
+    if (this.hooks.commands(true).state === 'loading') return 'Loading commands';
     return this.commandDraft(buffer) && (buffer.data.images.length || buffer.attachments?.pending) ? 'Remove attachments to run a command.' : '';
   }
   private sendGuidance(): string {
@@ -878,7 +882,7 @@ export class Composer {
   }
   private saveSummary(buffer?: Buffer): string {
     if (!buffer) return '';
-    if (buffer.attachments?.pending) return buffer.attachments.busy ? 'Preparing attachments…' : 'Attachment needs attention';
+    if (buffer.attachments?.pending) return buffer.attachments.busy ? 'Preparing attachments' : 'Attachment needs attention';
     return draftPresentation({connected: this.connected, unsaved: !draftSaved(buffer.data), text: buffer.data.text, images: buffer.data.images,
       failed: !!buffer.saveError, conflict: buffer.review, outstandingSince: buffer.outstandingSince}, Date.now());
   }
@@ -993,7 +997,7 @@ export class Composer {
     if (!guard || guard.state === 'clear') return;
     if (guard.state === 'unavailable') {slot.append(element('p', 'warning', 'Queue recovery information is unavailable. Sending is blocked; confirmation does not override it.')); return;}
     slot.append(element('p', 'warning', 'Image copies remain from this queue clear. This text is not an image-free replacement for those copies.'));
-    const ask = button('Send a different message…', () => {
+    const ask = button('Send a different message', () => {
       const consent = this.consent(buffer, true);
       slot.append(element('p', 'warning', 'Confirm that this exact draft is a different message, not a resend of a retained image copy.'), button('Confirm different message', () => {if (this.consentMatches(buffer, consent)) void this.send(false, consent);}));
     });
@@ -1013,7 +1017,8 @@ export class Composer {
   private receiptNotices(buffer: Buffer, records: OperationView[], slot: HTMLElement): void {
     const ordinary = buffer.lastOperation?.state === 'accepted' && buffer.notice === 'Message sent';
     const notice = this.waiting && buffer.submitting && (buffer.notice === 'Sending…' || buffer.notice.startsWith('Running /')) ? 'Waiting for your answer' : buffer.notice;
-    if (notice && !ordinary && buffer.notice !== buffer.saveError) slot.append(element('p', queuedAdmissionNotice(notice) ? 'secondary' : 'warning', notice));
+    const display=receiptNoticeText(notice);
+    if (notice && !ordinary && buffer.notice !== buffer.saveError) slot.append(element('p', queuedAdmissionNotice(notice) ? 'secondary' : 'warning', display));
     if (buffer.noticeDetails && !buffer.saveError && !(!notice && this.reasonInPanel(buffer))) slot.append(this.details(buffer.noticeDetails));
     if (buffer.insertionCopy !== undefined) slot.append(button('Insert prepared text', () => {
       const captured = this.insertionCapture(); if (captured?.buffer === buffer && buffer.insertionCopy !== undefined) this.insertPrepared(captured, buffer.insertionCopy);
@@ -1097,7 +1102,7 @@ export class Composer {
         else void this.restore(buffer, item, origin);
       }).catch(error => this.recoveryError(buffer, error));
     }));
-    if (!pending.original?.queueRecovery && captured.target.kind === 'primary') row.append(button('Send again…', () => {
+    if (!pending.original?.queueRecovery && captured.target.kind === 'primary') row.append(button('Send again', () => {
       const consent = this.consent(buffer);
       row.append(element('p', 'warning', 'The message might already be sent. Sending again risks duplicate work.'), button('Send again', () => {
         if (this.current !== buffer || buffer.submitting || !this.consentMatches(buffer, consent)) return;

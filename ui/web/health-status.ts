@@ -35,7 +35,7 @@ export class HealthStatus {
     const refresh = button('Refresh health', () => {void load();});
     const load = async () => {
       if (busy || !this.modal.owns(token)) return;
-      busy = true; refresh.disabled = true; content.replaceChildren(element('p', undefined, 'Read backend health…'));
+      busy = true; refresh.disabled = true; content.replaceChildren(element('p', undefined, 'Read backend health'));
       sidebar.replaceChildren(...this.sidebarDiagnostics().filter(Boolean).map(text=>details('Sidebar list details',text)));
       try {
         const snapshot = readHealthSnapshot(await this.read(controller.signal));
@@ -57,7 +57,6 @@ export function uptimeText(milliseconds: number): string {
   if (first < 0) return '0 s';
   return counts.slice(first, first + 2).filter((item, index) => index === 0 || item.count > 0).map(item => `${item.count} ${item.unit}`).join(' ');
 }
-const ASSET_DIGEST_CHARS = 12;
 function renderHealth(content: HTMLElement, snapshot: HealthSnapshot, loaded: UiIdentity, generation: string | null): void {
   const facts = element('dl', 'health-facts');
   const row = (name: string, value: string, title?: string) => {
@@ -69,7 +68,7 @@ function renderHealth(content: HTMLElement, snapshot: HealthSnapshot, loaded: Ui
   row('UI', snapshot.identity.iteration);
   if (snapshot.identity.commit) row('Commit', snapshot.identity.commit);
   const digest = snapshot.identity.assetDigest;
-  if (digest) row('Assets', digest.length > ASSET_DIGEST_CHARS ? `${digest.slice(0, ASSET_DIGEST_CHARS)}…` : digest, digest);
+  if (digest) row('Assets', digest, digest);
   row('User stylesheet', {none: 'Not configured', applied: 'Applied', missing: 'File not found', 'too-large': 'File too large', unreadable: 'File not readable', invalid: 'Setting invalid'}[snapshot.userStylesheet.state]);
   for (const service of snapshot.services) row({files: 'File worker', agents: 'Agent worker', rpc: 'Primary RPC'}[service.name],
     service.state === 'stopped' && service.name === 'rpc' ? 'idle (no primary running)' : service.reason ? `${service.state}: ${service.reason}` : service.state);

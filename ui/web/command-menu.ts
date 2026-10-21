@@ -119,7 +119,7 @@ export class CommandMenu {
     if (!this.state.incomplete || !this.more) { hint.setAttribute('aria-hidden', 'true'); return hint; }
     if (count) hint.append(element('span', undefined, ' · The command list is incomplete.'));
     if (this.continuationError) hint.append(element('span', 'command-error', `Could not load more commands. ${this.continuationError}`));
-    const label = this.continuing ? 'Loading commands…' : this.continuationError ? 'Try again' : 'More commands';
+    const label = this.continuing ? 'Loading commands' : this.continuationError ? 'Try again' : 'More commands';
     const action = button(label, () => { void this.continue(); }); action.disabled = this.continuing;
     action.addEventListener('pointerdown', event => event.preventDefault()); hint.append(action); return hint;
   }
@@ -130,7 +130,7 @@ export class CommandMenu {
     this.menu.replaceChildren();
     if (!this.state.open) { this.menu.scrollTop = 0; return; }
     const heading = element('div', 'composer-menu-heading', 'Commands'); heading.setAttribute('role', 'presentation'); heading.setAttribute('aria-hidden', 'true'); this.menu.append(heading);
-    if (this.state.inventory === 'loading') this.menu.append(element('div', 'command-empty', 'Loading commands…'));
+    if (this.state.inventory === 'loading') this.menu.append(element('div', 'command-empty', 'Loading commands'));
     else if (!this.state.matches.length) this.menu.append(element('div', 'command-empty', this.emptyText()));
     else this.menu.append(...this.state.matches.map((match, index) => this.row(match, index)));
     if (this.state.inventory === 'unavailable') return;

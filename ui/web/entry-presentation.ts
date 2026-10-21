@@ -72,7 +72,7 @@ export function entryVisible(entry: EntryView): boolean {
 export function inputDelivery(entry: EntryView): string | undefined {
   if (entry.kind !== 'ui.input' || !entry.data) return undefined;
   const label = record(entry.data).delivery;
-  return label === 'Sending…' || label === 'Sent' ? label : undefined;
+  return label === 'Sending…' ? 'Sending' : label === 'Sent' ? label : undefined;
 }
 function record(display: JsonDisplay): Record<string, unknown> {
   const value = display.value;
@@ -93,10 +93,9 @@ function entryHeading(entry: EntryView): string {
 function dataPreview(display: JsonDisplay, anyString = false): string {
   const value = display.value; const fields = record(display);
   const text = typeof value === 'string' ? value : ['text', 'message', 'summary', 'content', 'label', 'title'].map(key => fields[key]).find(item => typeof item === 'string') ?? (anyString ? Object.entries(fields).find(([key, item]) => typeof item === 'string' && item.trim() && !identifierField(key, item))?.[1] : undefined);
-  if (typeof text === 'string') return previewText(text.replace(/\s+/g, ' ').trim(), 1, 160).text;
+  if (typeof text === 'string') return text.replace(/\s+/g, ' ').trim();
   if (anyString) return '';
-  const keys = Object.keys(fields).slice(0, 4);
-  return keys.length ? `${keys.join(', ')}${Object.keys(fields).length > 4 ? ', …' : ''}` : '';
+  return Object.keys(fields).join(', ');
 }
 function sessionNote(entry: EntryView, data: JsonDisplay): string | undefined {
   const value = record(data);

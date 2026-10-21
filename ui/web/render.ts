@@ -86,8 +86,7 @@ function imageParts(parts: readonly PartView[], images: ImageView[] = []): Image
 }
 function bounded(text: string, limit = RAW_LIMIT, lines = Number.MAX_SAFE_INTEGER): string {
   const value = previewText(text, lines, limit);
-  const shown = value.truncated && value.text.length >= limit ? previewText(value.text, lines, Math.max(0, limit - 1)).text : value.text;
-  return shown + (value.truncated ? '…' : '');
+  return value.text;
 }
 /** The error line of the person's own message states its own failure; the generic phrases belong to agent replies. An unconfirmed copy is an unknown state, so its line uses the warning tone. */
 function errorPresentation(message: MessageView): {summary: string; diagnostic?: string; warning: boolean} {
@@ -205,7 +204,7 @@ type TurnMessage = {entry: EntryView; message: MessageView};
 type AssistantTurn = {key: string; input?: TurnMessage; copy?: TurnMessage; assistant: boolean; end?: string};
 type TurnActions = {node: HTMLElement; copy: HTMLButtonElement; fork: HTMLButtonElement; turn: AssistantTurn; generation: number};
 type EntryNode = {node: HTMLElement; messages: Map<string, MessageNode>; dayDivider?: HTMLTimeElement; turnActions?: TurnActions; source?: EntryView; custom?: HTMLElement; session?: SessionNode; groupHeader?: HTMLElement};
-type ToolNode = {previewSource?: JoinedTool; previewSubjectRevision?: number; answerText?: string; subject?: ToolSubjectCaption; card: HTMLElement; node: HTMLDetailsElement; copy: HTMLButtonElement; title: HTMLElement; target: HTMLElement; glyph: HTMLElement; stateWord: HTMLElement; meta: HTMLElement; preview: HTMLElement; qualification: HTMLElement; expanded: HTMLElement; resultArea: HTMLElement; technical: HTMLDetailsElement; actions: HTMLElement; info: HTMLElement; source?: JoinedTool; inspectionSources?: Map<HTMLDetailsElement, JoinedTool>; presentation?: HTMLElement; argumentsDocument?: HTMLElement; argumentsSource?: JoinedTool; output?: HTMLElement; contentSource?: JoinedTool; viewport?: HTMLElement; pageViewports?: Set<HTMLElement>; resultDocument?: HTMLElement; documentSource?: JoinedTool; previewBudget?: PreviewBudget; outputNotice?: {node: HTMLElement; source: JoinedTool}; inspections?: {arguments: HTMLDetailsElement; output: HTMLDetailsElement; details: HTMLDetailsElement}};
+type ToolNode = {previewMore?: HTMLButtonElement; previewSource?: JoinedTool; previewSubjectRevision?: number; answerText?: string; subject?: ToolSubjectCaption; card: HTMLElement; node: HTMLDetailsElement; copy: HTMLButtonElement; title: HTMLElement; target: HTMLElement; glyph: HTMLElement; stateWord: HTMLElement; meta: HTMLElement; preview: HTMLElement; qualification: HTMLElement; expanded: HTMLElement; resultArea: HTMLElement; technical: HTMLDetailsElement; actions: HTMLElement; info: HTMLElement; source?: JoinedTool; inspectionSources?: Map<HTMLDetailsElement, JoinedTool>; presentation?: HTMLElement; argumentsDocument?: HTMLElement; argumentsSource?: JoinedTool; output?: HTMLElement; contentSource?: JoinedTool; viewport?: HTMLElement; pageViewports?: Set<HTMLElement>; resultDocument?: HTMLElement; documentSource?: JoinedTool; previewBudget?: PreviewBudget; outputNotice?: {node: HTMLElement; source: JoinedTool}; inspections?: {arguments: HTMLDetailsElement; output: HTMLDetailsElement; details: HTMLDetailsElement}};
 export type TranscriptGeometry = {generation: number; followTail: boolean; anchor: {id: string; offsetPx: number} | null; scrollTop: number};
 export type FindStatus = {total: number; position: number; moved: boolean; end: 'none' | 'first' | 'last' | 'unavailable' | null};
 export type FindSession = {next: (query: string) => FindStatus; previous: (query: string) => FindStatus; reset: () => void; close: () => void};
@@ -1396,7 +1395,7 @@ export class Transcript {
     if (!rect.width || !Number.isFinite(lineHeight) || lineHeight <= 0) return;
     const lines = Math.ceil(rect.height / lineHeight), open = this.expanded.has(fold.key), long = lines > 12;
     fold.viewport.dataset.folded = String(long && !open); fold.toggle.hidden = !long;
-    fold.toggle.setAttribute('aria-expanded',String(open)); setText(fold.toggle,open?'Show less':`Show all ${lines} lines`);
+    fold.toggle.setAttribute('aria-expanded',String(open)); setText(fold.toggle,open?'Show less':`Show ${Math.max(0,lines-8)} more lines`);
   }
   private refreshOperatorFolds(): void {
     if (this.hidden()) return;
@@ -1675,7 +1674,7 @@ export class Transcript {
     const card = element('div', 'tool-shell'); const node = element('details', 'tool-card'); card.append(node); const summary = element('summary');
     const tier = element('span', 'tool-tier'); const glyph = element('span', 'tool-status'); glyph.setAttribute('aria-hidden', 'true');
     const title = element('span', 'tool-name'); const stateWord = element('span', 'tool-state-word'); const target = element('span', 'tool-target'); const meta = element('span', 'tool-secondary');
-    tier.append(glyph, title, stateWord); cardDisclosure(summary); summary.append(tier);
+    tier.append(title, glyph, stateWord); cardDisclosure(summary); summary.append(tier);
     const preview = element('div', 'tool-preview'); const qualification = element('p', 'tool-preview-qualification', 'Partial output'); qualification.hidden = true;
     const expanded = element('div', 'tool-expanded'), resultArea = element('div', 'tool-result');
     resultArea.tabIndex = 0; resultArea.setAttribute('role', 'region'); resultArea.setAttribute('aria-label', 'Tool result');
@@ -1820,7 +1819,7 @@ export class Transcript {
   }
   private toolTitle(tool: ToolNode, source: JoinedTool): void {
     const parts=toolLabelParts(source,{subject:this.hooks.subject,cwd:this.hooks.cwd?.(),nestedCount:this.rows.nestedCounts.get(source.callId)});
-    tool.title.title=parts.find(part=>part.title)?.title??'';
+    tool.title.title=[parts.map(part=>part.text).join(''),...parts.flatMap(part=>part.title?[part.title]:[])].join('\n');
     if(parts.length===1&&!parts[0]?.role)setText(tool.title,parts[0]?.text??'');
     else if(tool.title.children.length!==parts.length||parts.some((part,index)=>tool.title.children[index]?.textContent!==part.text||tool.title.children[index]?.className!==(part.role?`tool-name-${part.role}`:'')||tool.title.children[index]?.getAttribute('title')!==(part.title??'')))tool.title.replaceChildren(...parts.map(part=>this.toolTitlePart(part)));
   }
@@ -1866,17 +1865,37 @@ export class Transcript {
       if (supplied) this.replaceContent(tool.preview, supplied);
       else setText(tool.preview, literal());
       tool.preview.classList.toggle('tool-error', source.status === 'error');
+      this.toolPreviewFold(tool,source,quietReport);
       tool.previewSource = source;
       tool.previewSubjectRevision = this.subjectRevision;
     }
     tool.preview.hidden = tool.node.open || !tool.preview.textContent;
     if (tool.node.open) this.expandTool(tool);
   }
+  private toolPreviewFold(tool:ToolNode,source:JoinedTool,quietReport:boolean):void {
+    const args=record(source.args),full=quietReport||source.status==='success'&&quietTextResult(source)?'':source.name==='write'&&typeof args.content==='string'?args.content:partText(source.result??[]);
+    const normalized=full.replace(/\r\n?/g,'\n').replace(/^(?:[ \t]*\n)+/,'').trimEnd(),shown=tool.preview.textContent??'';
+    const prefix=normalized.startsWith(shown),total=normalized?normalized.split('\n').length:0,visible=shown?shown.split('\n').length:0;
+    const remaining=prefix?Math.max(0,total-visible):0;
+    tool.preview.classList.toggle('preview-fade',remaining>0);
+    if(!tool.previewMore){
+      const more=button('',()=>this.openToolPreview(tool),'tool-preview-more');
+      more.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();});tool.node.querySelector('summary')?.append(more);tool.previewMore=more;
+    }
+    tool.previewMore.hidden=remaining===0||tool.node.open;
+    setText(tool.previewMore,`Show ${remaining} more lines`);tool.previewMore.title='Expand the retained content. This count excludes unavailable source lines.';
+  }
+  private openToolPreview(tool:ToolNode):void {
+    if(!tool.source||!this.currentToolSource(tool,tool.source,this.generation))return;
+    tool.node.open=true;this.toolExpansion(tool);tool.technical.open=true;
+    if(tool.inspections){if(tool.source.name==='write'||tool.source.name==='edit')tool.inspections.arguments.open=true;else tool.inspections.output.open=true;}
+  }
   private toolExpansion(tool: ToolNode): void {
     if (this.destroyed) return;
     if (!tool.source || this.tools.get(tool.source.callId) !== tool) return;
     this.toolHeading(tool, tool.source);
     tool.preview.hidden = tool.node.open || !tool.preview.textContent; tool.expanded.hidden = !tool.node.open;
+    if(tool.previewMore)tool.previewMore.hidden=tool.node.open||!tool.preview.classList.contains('preview-fade');
     if (tool.node.open) this.expandTool(tool);
   }
   private toolArguments(tool: ToolNode): string {

@@ -39,12 +39,12 @@ function rpcHealth(registry:Registry):'ready'|'unavailable'|'stopped' {
   if(sessions.some(session=>session.view.lifecycle==='ready'||session.view.lifecycle==='starting'))return 'ready';
   return 'stopped';
 }
-/** One line of at most HEALTH_REASON_CHARACTERS characters: control characters are dropped, whitespace runs collapse to one space, and a cut ends in an ellipsis. */
+/** One line of at most HEALTH_REASON_CHARACTERS characters: control characters are dropped, whitespace runs collapse to one space, without a generated cut suffix. */
 export function healthReason(text:string|undefined,fallback:string):string {
   const flat=(text??'').replace(/[\u0000-\u0008\u000e-\u001f\u007f]/g,'').replace(/\s+/g,' ').trim()||fallback;
   if(flat.length<=HEALTH_REASON_CHARACTERS)return flat;
   const cut=flat.slice(0,HEALTH_REASON_CHARACTERS-1),last=cut.charCodeAt(cut.length-1);
-  return `${last>=0xd800&&last<=0xdbff?cut.slice(0,-1):cut}…`;
+  return last>=0xd800&&last<=0xdbff?cut.slice(0,-1):cut;
 }
 /** The agents service is unavailable while its worker is down or the last catalog scan failed; the reason is the one the roster shows. */
 function agentsHealth(registry:Registry):BackendHealthFacts['services'][number] {

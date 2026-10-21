@@ -50,7 +50,7 @@ function listBlock(node: Extract<MarkdownBlock, {type: 'list'}>): HTMLElement {
 }
 /** Wrap changes only the scrollport's whitespace mode, not its text nodes. */
 export function sourceWrap(pre: HTMLElement, subject = 'source lines'): HTMLButtonElement {
-  pre.dataset.wrap = 'true';
+  pre.dataset.wrap = 'false';
   const label = subject === 'source lines' ? 'Wrap' : `Wrap ${subject}`;
   const wrap = cardAction('wrap', label, () => {
     pre.dispatchEvent(new Event('source-wrap', {bubbles: true}));
@@ -58,7 +58,7 @@ export function sourceWrap(pre: HTMLElement, subject = 'source lines'): HTMLButt
     pre.dataset.wrap = String(wrapped); wrap.setAttribute('aria-pressed', String(wrapped));
     wrap.title = `${wrapped ? 'Do not wrap' : 'Wrap'} ${subject}`;
   }, 'source-wrap');
-  wrap.setAttribute('aria-pressed', 'true'); cardActionLabel(wrap, label, `Wrap ${subject}`); wrap.title = `Do not wrap ${subject}`;
+  wrap.setAttribute('aria-pressed', 'false'); cardActionLabel(wrap, label, `Wrap ${subject}`); wrap.title = `Wrap ${subject}`;
   return wrap;
 }
 /** Controls stay outside the source's scrollport and never replace its text nodes. */
@@ -161,7 +161,7 @@ export function markdownPreviewDom(text: string): DocumentFragment {
   if (title) { title.className = `${title.className} prose-preview-title`; fragment.append(title); }
   const body = element('span', 'prose-preview-body');
   blocks.forEach((block, index) => { if (index) body.append(document.createTextNode(' ')); body.append(block); });
-  if (budget.limited) body.append(document.createTextNode('…'));
+  if (budget.limited) {body.classList.add('preview-fade');body.title='This preview reached its display bound. Expand for retained content.';}
   if (blocks.length || budget.limited) fragment.append(body);
   return fragment;
 }

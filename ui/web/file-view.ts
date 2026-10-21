@@ -47,7 +47,7 @@ export class FileView {
   paint():void {
     const owner = this.owner;
     if (this.path !== owner.tab.path) {this.path = owner.tab.path;this.scroller.setAttribute('aria-label',this.path);this.overlay?.invalidate();}
-    this.status.textContent = owner.loading ? 'Loading file…' : owner.text === undefined ? owner.error ?? '' : '';
+    this.status.textContent = owner.loading ? 'Loading file' : owner.text === undefined ? owner.error ?? '' : '';
     this.status.hidden = !this.status.textContent;
     this.syncSwitch();this.syncSource();
     if (this.editor) {this.editor.hidden = owner.text === undefined;this.editor.readOnly = owner.loading || owner.moving || owner.retained;}

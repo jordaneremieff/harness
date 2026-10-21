@@ -112,9 +112,9 @@ export class AgentInspection {
   private historyTask(entry:InspectionEntry,local:readonly ConversationTask[]):ConversationTask{
     const carrier=entry.communication,reference=historyReference(entry),nativeKey=this.hooks.entryKey?.(entry.id)??String(entry.id);
     const existing=local.find(row=>row.asked&&(compatibleReference(reference,row.reference)||row.entryId===nativeKey));
-    if(existing)return {...existing,subject:entry.text.text.split(/\r?\n/,1)[0]?.slice(0,80)||existing.subject};
+    if(existing)return {...existing,subject:entry.text.text.split(/\r?\n/,1)[0]||existing.subject};
     const replies=reference?undefined:recordedReplies(entry.id,this.historyAll?.entries??[]),body=carrier?.state==='ready'?carrier.value.body.text:entry.text.text;
-    return {key:`history:${entry.id}`,entryId:nativeKey,reference,subject:body.split(/\r?\n/,1)[0]?.slice(0,80)||'Recorded input',asked:true,state:reference?'awaiting':'recorded',...(replies?{answer:replies}:{}),input:carrier?.state==='ready'?carrier.value.body:{text:body,complete:!entry.text.shortened,redacted:entry.text.protected},...(carrier?.state==='ready'?{sender:carrier.value.sender}:{})};
+    return {key:`history:${entry.id}`,entryId:nativeKey,reference,subject:body.split(/\r?\n/,1)[0]||'Recorded input',asked:true,state:reference?'awaiting':'recorded',...(replies?{answer:replies}:{}),input:carrier?.state==='ready'?carrier.value.body:{text:body,complete:!entry.text.shortened,redacted:entry.text.protected},...(carrier?.state==='ready'?{sender:carrier.value.sender}:{})};
   }
   private pendingTask(value:unknown,rows:readonly ConversationTask[]):ConversationTask|undefined{
     if(!value||typeof value!=='object'||Array.isArray(value))return;
@@ -122,7 +122,7 @@ export class AgentInspection {
     const reference=taskReference({sessionId:this.identity,submissionId:item.id,...(typeof item.requestId==='string'&&item.requestId?{requestId:item.requestId}:{})});
     if(!reference||rows.some(row=>referenceKey(row.reference)===referenceKey(reference)))return;
     const entry=this.history?.entries.find(entry=>entry.id===item.entryId);
-    return {key:`pending:${reference.submissionId}`,entryId:entry?String(entry.id):'',reference,subject:entry?.text.text.split(/\r?\n/,1)[0]?.slice(0,80)||'Admitted input',state:item.status==='queued'?'queued':'awaiting',asked:true};
+    return {key:`pending:${reference.submissionId}`,entryId:entry?String(entry.id):'',reference,subject:entry?.text.text.split(/\r?\n/,1)[0]||'Admitted input',state:item.status==='queued'?'queued':'awaiting',asked:true};
   }
   private async readVisibleAnswers(serial:number,signal:AbortSignal):Promise<void>{
     const rows=this.rows().filter(row=>row.reference&&!row.answer).slice(0,20);
@@ -233,7 +233,7 @@ export class AgentInspection {
   private async load():Promise<void>{
     if(!this.visible||!this.hooks.current())return;
     const request:InspectRequest=this.mode==='exact'?{view:'exact',entryId:this.entryId as number,offset:this.offset}:{view:'result',...this.selector};
-    this.cancel();const controller=new AbortController(),serial=this.serial;this.controller=controller;this.pending=true;this.refresh.disabled=true;setText(this.status,'Reading the selected answer…');
+    this.cancel();const controller=new AbortController(),serial=this.serial;this.controller=controller;this.pending=true;this.refresh.disabled=true;setText(this.status,'Reading the selected answer');
     try{
       const value=await this.hooks.read(request,controller.signal);if(!this.current(serial,controller.signal))return;
       validateRead(value,request,this.identity);

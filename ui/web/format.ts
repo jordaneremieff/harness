@@ -65,11 +65,12 @@ export function previewText(text: string, maxLines = 6, maxChars = 2000): { text
   const lines = safe.split('\n');
   const lineLimit = Math.max(0, Math.floor(maxLines));
   const charLimit = Math.max(0, Math.floor(maxChars));
-  let preview = lines.slice(0, lineLimit).join('\n');
-  if (preview.length > charLimit) {
-    let end = charLimit;
-    if (end && /[\uD800-\uDBFF]/.test(preview.charAt(end - 1))) end--;
-    preview = preview.slice(0, end);
+  const shown: string[] = []; let length = 0;
+  for (const line of lines.slice(0, lineLimit)) {
+    const next = length + (shown.length ? 1 : 0) + line.length;
+    if (next > charLimit) break;
+    shown.push(line); length = next;
   }
+  const preview = shown.join('\n');
   return { text: preview, truncated: preview.length < safe.length };
 }

@@ -21,7 +21,7 @@ export function agentHistoryNote(source: AgentHistoryState): AgentHistoryNote {
     return historyNote(format ? 'Saved messages use an unsupported format.' : 'Saved messages could not be read.', true, 'Reload messages', error.message);
   }
   if (source.hasEntries) return historyNote('', false, 'Load messages');
-  if (source.loading) return historyNote(readsSavedMessages(source) ? 'Reading saved messages…' : 'Loading messages…', false, 'Load messages');
+  if (source.loading) return historyNote(readsSavedMessages(source) ? 'Reading saved messages' : 'Loading messages', false, 'Load messages');
   if (!source.connected) return historyNote('Messages are unavailable while the browser is disconnected.', false, 'Load messages');
   if (!source.ready) return historyNote('Messages not loaded.', true, 'Load messages');
   if (source.complete) return historyNote('No messages yet.', false, 'Load messages');
@@ -32,10 +32,10 @@ export type AgentComposerState = {kind: 'start' | 'starting' | 'failed' | 'check
 /** What the composer must say before the draft can be sent; undefined means the agent accepts messages as usual. */
 export function agentComposerState(source: AgentComposerSource): AgentComposerState | undefined {
   const attempt = source.startAttempt, detail = [attempt?.reason, source.connectionError, source.reason].filter(Boolean).join('\n');
-  if (attempt?.pending) return {kind: 'starting', line: 'Starting the agent…', label: 'Starting the agent', action: {label: 'Starting…', pending: true, disabled: true}, detail};
+  if (attempt?.pending) return {kind: 'starting', line: 'Starting the agent', label: 'Starting the agent', action: {label: 'Starting', pending: true, disabled: true}, detail};
   if (attempt) return {kind: 'failed', line: 'Start did not complete.', label: 'Start did not complete', action: {label: 'Try again', disabled: !source.connected}, detail};
   if (!source.connected) return undefined;
-  if (source.checking) return {kind: 'checking', line: 'Checking the agent…', label: 'Checking the agent…', detail: ''};
+  if (source.checking) return {kind: 'checking', line: 'Checking the agent', label: 'Checking the agent', detail: ''};
   if (source.connectionError) return {kind: 'unreachable', line: 'Could not reach the agent.', label: 'Could not reach the agent', action: {label: 'Check again'}, detail};
   if (source.availability === 'incompatible' || source.availability === 'unavailable') return {kind: 'read-only', line: 'This agent cannot run here. Messages are read only.', label: 'This agent cannot run here', detail};
   if (source.availability === 'stored') return {kind: 'start', line: 'Not running. Start it to send a message.', label: 'Not running', action: {label: 'Start'}, detail};
@@ -76,10 +76,10 @@ function outcomeLabel(outcome?: ResponseOutcome): string | undefined { return ou
 function retryTime(at: number): string { return Number.isSafeInteger(at) && at >= 0 && at <= 8640000000000000 ? absoluteTime(at) : 'unavailable'; }
 const emptyPresentation = (connected: boolean): ConversationPresentation => ({name: 'Primary', tone: 'warning', activity: '', input: false, busy: false, guidance: '', lastObserved: !connected, retainedModel: false, retainedThinking: false});
 function primaryActivity(item: PrimaryView, outcome?: ResponseOutcome): string {
-  if (item.lifecycle !== 'ready') return {starting: 'Starting session…', switching: 'Switching session…', stopped: 'Stopped', failed: 'Session stopped', stopping: 'Stopping…'}[item.lifecycle];
+  if (item.lifecycle !== 'ready') return {starting: 'Starting session', switching: 'Switching session', stopped: 'Stopped', failed: 'Session stopped', stopping: 'Stopping'}[item.lifecycle];
   if (item.activity === 'retrying' && item.retry) return `Retrying · retry ${item.retry.attempt} of ${item.retry.maxAttempts} · next about ${retryTime(item.retry.at)}`;
   if (item.activity === 'idle' && outcome) return outcomeLabel(outcome) as string;
-  return {idle: 'Ready', running: 'Working', compacting: 'Compacting…', retrying: 'Retrying…', unknown: 'Connected'}[item.activity];
+  return {idle: 'Ready', running: 'Working', compacting: 'Compacting', retrying: 'Retrying', unknown: 'Connected'}[item.activity];
 }
 function primaryTone(item: PrimaryView, outcome: ResponseOutcome | undefined, connected: boolean): PresentationTone {
   if (item.lifecycle === 'failed') return 'error';
@@ -112,14 +112,14 @@ function agentSettings(row?: AgentRow, frame?: ProjectedFrame): Pick<Conversatio
 }
 function startActivity(state: AgentRow['availability'], start: AgentStartAttempt | undefined): string | undefined {
   if (!start || state === 'live') return undefined;
-  return start.pending ? 'Starting…' : 'Start failed';
+  return start.pending ? 'Starting' : 'Start failed';
 }
 function agentActivity(state: AgentRow['availability'], input: boolean, frame: ProjectedFrame | undefined, connected: boolean, checked: boolean, start?: AgentStartAttempt): string {
   if (!connected) return 'Connection lost; activity unknown';
   const attempt = startActivity(state, start); if (attempt) return attempt;
   if (state === 'live' && !checked) return 'Running';
   if (state !== 'live') return {stored: 'Not running', incompatible: 'Read only', unavailable: 'Read only'}[state];
-  if (Array.isArray(frame?.status.compactions?.value) && frame.status.compactions.value.length) return 'Compacting…';
+  if (Array.isArray(frame?.status.compactions?.value) && frame.status.compactions.value.length) return 'Compacting';
   if (frame?.status.retry && frame.status.busy) return `Retrying · attempt ${frame.status.retry.attempt} · next ${retryTime(frame.status.retry.at)}`;
   if (frame?.status.busy) return 'Working';
   if (frame?.status.providerBlock) return 'Provider blocked';

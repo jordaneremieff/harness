@@ -24,9 +24,9 @@ export function thinkingLabel(time: {start: number; end?: number} | undefined, s
 }
 /** The first non-blank line of a thinking block as plain words: heading, list, quote and emphasis marks are dropped. */
 export function thinkingPreview(text: string): string {
-  for (const line of text.slice(0, 2000).split('\n')) {
+  for (const line of text.split('\n')) {
     const words = plainPreviewWords(line);
-    if (words) return words.slice(0, 300);
+    if (words) return words;
   }
   return '';
 }

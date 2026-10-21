@@ -135,7 +135,7 @@ export class ThreadExplorer {
   }
   diagnostics(): string {
     const overview = this.overview;
-    return [this.loading ? 'Reading threads…' : '',this.failure === undefined ? '' : errorText(this.failure),...(overview ? overviewLines(overview) : []),...(overview?.storages.filter(state=>state.state!=='answered').map(state=>this.troubleLine(state)) ?? [])].filter(Boolean).join('\n');
+    return [this.loading ? 'Reading threads' : '',this.failure === undefined ? '' : errorText(this.failure),...(overview ? overviewLines(overview) : []),...(overview?.storages.filter(state=>state.state!=='answered').map(state=>this.troubleLine(state)) ?? [])].filter(Boolean).join('\n');
   }
   private troubleLine(state: ThreadOverview['storages'][number]): string {
     const name = this.hooks.name(state.storageId);
@@ -374,7 +374,7 @@ export class ThreadReader {
     const entry = this.entry, more = entry ? olderBoundary(entry.events) !== null : false;
     this.earlierRow.hidden = !more || !!this.failure && !entry?.events.length;
     this.earlier.disabled = this.loadingEarlier;
-    setText(this.earlier, this.loadingEarlier ? 'Loading earlier events…' : 'Load earlier events');
+    setText(this.earlier, this.loadingEarlier ? 'Loading earlier events' : 'Load earlier events');
   }
   private paint(): void {
     const entry = this.entry; if (!entry) return;
@@ -398,14 +398,14 @@ export class ThreadReader {
     this.reading = this.anchorRow();
   }
   private statusText(thread: ThreadView | undefined, events: readonly ThreadEventView[]): string {
-    if (!thread) return this.loading ? 'Reading thread…' : '';
+    if (!thread) return this.loading ? 'Reading thread' : '';
     const updated = thread.updatedAt ? `updated ${eventTime(thread.updatedAt, Date.now())}` : '';
     setText(this.earlierNote, `Newest ${events.length} of ${thread.sequence}`);
-    return [thread.closed ? 'Closed' : 'Open', `${thread.members.length} participants`, updated, this.entry?.source === 'retained' ? 'Read from saved storage' : '', this.loading ? 'Refreshing…' : ''].filter(Boolean).join(' · ');
+    return [thread.closed ? 'Closed' : 'Open', `${thread.members.length} participants`, updated, this.entry?.source === 'retained' ? 'Read from saved storage' : '', this.loading ? 'Refreshing' : ''].filter(Boolean).join(' · ');
   }
   private noticeNodes(entry: Cached): HTMLElement[] {
     const nodes: HTMLElement[] = [];
-    if (this.loading && !entry.thread) nodes.push(element('p', 'thread-note', 'Reading thread…'));
+    if (this.loading && !entry.thread) nodes.push(element('p', 'thread-note', 'Reading thread'));
     const failure = this.failure;
     if (failure?.kind === 'unavailable') nodes.push(element('p', 'thread-note thread-failure', NOT_OFFERED));
     else if (failure) {
@@ -507,7 +507,7 @@ export class ThreadReader {
   private postReply(row: Extract<ExchangeRow, {type: 'message'}>, item: HTMLElement): void {
     if (row.replyTo !== null) {
       const parent = this.entry?.events.find(event => event.sequence === row.replyTo);
-      const label = parent ? `↳ Reply to ${parent.origin === 'operator' ? OPERATOR : this.hooks.name(parent.sender)} “${parent.message.slice(0, 120)}”` : `↳ Reply to post #${row.replyTo}`;
+      const label = parent ? `↳ Reply to ${parent.origin === 'operator' ? OPERATOR : this.hooks.name(parent.sender)} “${parent.message.split(/\r?\n/,1)[0]??''}”` : `↳ Reply to post #${row.replyTo}`;
       item.append(button(label, () => {if (parent) this.reveal(parent.sequence); else void this.loadEarlier();}, 'thread-reply'));
       if (!parent) item.append(button('Load earlier events', () => { void this.loadEarlier(); }, 'thread-earlier'));
       item.classList.toggle('thread-direct-reply', this.entry?.events.find(event => event.sequence === row.sequence - 1)?.sequence === row.replyTo);

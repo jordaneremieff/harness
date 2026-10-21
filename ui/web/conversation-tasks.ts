@@ -45,7 +45,7 @@ type ReadyCarrier=Extract<NonNullable<MessageView['communication']>,{state:'read
 function subject(tool:JoinedTool):string {
   const value=own(tool.args?.value,tool.name==='agent_spawn'?'prompt':'message');
   if(typeof value!=='string')return 'Task';
-  const first=value.split(/\r?\n/,1)[0]??'';return first.slice(0,80)+(first.length>80?'…':'')||'Task';
+  const first=value.split(/\r?\n/,1)[0]??'';return first||'Task';
 }
 export class ConversationTasks {
   readonly sent:ConversationTask[]=[];

@@ -43,7 +43,7 @@ export class SessionReader {
     this.node.addEventListener('focusin',hooks.focus);
     this.node.addEventListener('keydown',event=>{if(event.key==='Escape'&&!event.defaultPrevented){event.preventDefault();hooks.close();}});
     this.node.addEventListener('contextmenu',event=>{if(!(event.target instanceof Element)||!event.target.closest('.transcript'))event.stopPropagation();});
-    this.transcript=new Transcript({transcript:this.scroller,latest:this.latest,earlier:this.earlier},{operatorInput:true,presentation:(expanded,showThinking,transcriptView,thinking)=>{this.reloadPresentation={...this.reloadPresentation,revision:this.reloadPresentation.revision+1,expanded:[...expanded],showThinking,...(transcriptView?{transcriptView}:{}),...(thinking?{thinking}:{})};},reading:()=>{},earlier:()=>{void this.read(true);}});
+    this.transcript=new Transcript({transcript:this.scroller,latest:this.latest,earlier:this.earlier},{operatorInput:true,cwd:()=>this.source?.saved?.project??(this.source&&'primary' in this.source?this.source.primary.cwd:undefined),presentation:(expanded,showThinking,transcriptView,thinking)=>{this.reloadPresentation={...this.reloadPresentation,revision:this.reloadPresentation.revision+1,expanded:[...expanded],showThinking,...(transcriptView?{transcriptView}:{}),...(thinking?{thinking}:{})};},reading:()=>{},earlier:()=>{void this.read(true);}});
   }
   open(source:SessionReadSource):void {
     this.controller?.abort();this.source=source;this.entries=[];this.before=null;this.primaryCursor=null;this.leaf=null;this.reading=false;this.loaded=false;setText(this.time,'');

@@ -43,7 +43,7 @@ export function openImagePreview(host: ImagePreviewHost, part: ImageView, url: s
     if (previous) { previous.removeAttribute('src'); previous.remove(); }
   }
   function load(): void {
-    clear(); reload.hidden = true; setText(status, 'Loading image…');
+    clear(); reload.hidden = true; setText(status, 'Loading image');
     const attempt = element('img', 'image-preview-content'); image = attempt;
     attempt.alt = part.alt; attempt.decoding = 'async'; attempt.referrerPolicy = 'no-referrer';
     attempt.addEventListener('load', () => {

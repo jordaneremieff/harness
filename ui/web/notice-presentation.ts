@@ -14,7 +14,7 @@ function communications(entries:readonly EntryView[]):Arrival[]{
   for(const entry of entries)for(const message of entry.messages??[]){
     const carrier=message.communication;if(carrier?.state!=='ready'||carrier.value.kind==='notice')continue;
     const value=carrier.value,line=value.body.text.split(/\r?\n/).find(line=>line.trim())?.trim()??'';
-    result.push({entryId:entry.id,messageId:message.id,kind:value.kind,sender:value.sender,firstLine:line.slice(0,240)+(line.length>240?'…':''),...noticeTimestamp(message.timestamp)});
+    result.push({entryId:entry.id,messageId:message.id,kind:value.kind,sender:value.sender,firstLine:line,...noticeTimestamp(message.timestamp)});
   }
   return result;
 }

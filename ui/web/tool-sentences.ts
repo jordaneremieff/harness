@@ -6,29 +6,29 @@ export type NamedDestination = {text: string; name?: string; provenance?: 'repor
 export type SentenceContext = {nestedCount?:number; cwd?: string; subject?: (identity: string) => NamedDestination | undefined};
 type VerbForms = {done: string; active: string; action: string};
 type Words = VerbForms & {emphasis?: {recipient: string; message: string}; file?: {prefix: VerbForms; path: string; name: string; directory: string; suffix: string}};
-export type ToolLabelPart = {text: string; role?: 'recipient' | 'message' | 'file' | 'directory'; title?: string};
+export type ToolLabelPart = {text: string; role?: 'recipient' | 'message' | 'file' | 'directory' | 'range'; title?: string};
 const text = (value: unknown): string => typeof value === 'string' ? value : '';
-function first(value: unknown, limit = 60): string {
-  const source = text(value), line = source.split(/\r?\n/, 1)[0] ?? '';
-  return line.slice(0, limit) + (line.length > limit || source.length > line.length ? '…' : '');
+function first(value: unknown): string {
+  return text(value).split(/\r?\n/, 1)[0] ?? '';
 }
 function quote(value: unknown): string {
   const source = text(value), raw = source.split(/\r?\n/, 1)[0] ?? '', words = plainPreviewWords(raw);
-  const line = words.slice(0, 60) + (words.length > 60 || source.length > raw.length ? '…' : '');
+  const line = words;
   return line ? `: “${line}”` : '';
 }
 function pathName(value: unknown, cwd?: string): string {
   const path = text(value);if (!path) return '';
-  const root = cwd?.replace(/\/$/, '');
+  const root = cwd === '/' ? cwd : cwd?.replace(/\/+$/, '');
   if (root && path.startsWith(`${root}/`)) return path.slice(root.length + 1);
-  if (!path.startsWith('/')) return first(path, 100);
-  return `…/${path.split('/').filter(Boolean).slice(-2).join('/')}`;
+  if (!path.startsWith('/') || !root?.startsWith('/')) return path;
+  const base = root.split('/').filter(Boolean), parts = path.split('/').filter(Boolean);
+  let common = 0; while (common < base.length && common < parts.length && base[common] === parts[common]) common++;
+  return [...base.slice(common).map(() => '..'), ...parts.slice(common)].join('/') || '.';
 }
 const leadingCd = /^\s*cd\s+(?:"([^"$`\\]+)"|'([^']+)'|([^\s;&|<>()$`"'\\]+))\s*(?:&&|;)\s*(?=\S)/;
-/** A command title is one line: every run of white space, line breaks included, folds to one space before the cut. */
-function oneLine(value: string, limit = 60): string {
-  const folded = value.replace(/\s+/g, ' ').trim();
-  return folded.slice(0, limit) + (folded.length > limit ? '…' : '');
+/** A command title folds whitespace; its retained command remains unchanged. */
+function oneLine(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
 }
 function commandSentence(value: unknown, cwd?: string): string {
   const command = text(value);if (!command) return ' a command';
@@ -53,9 +53,9 @@ function argsOf(tool: JoinedTool): Record<string, unknown> {
 type SentenceInput = {tool:JoinedTool;context:SentenceContext;args:Record<string,unknown>;identity:string;name:string;target:string};
 function fileWords(input: SentenceInput, done: string, active: string, action: string, suffix = '', pathInSentence = true): Words {
   const value = words(done,active,action,pathInSentence ? (input.target || ' a file') + suffix : suffix);
-  const path = text(input.args.path ?? input.args.file_path), split = path.lastIndexOf('/'), name = path.slice(split + 1);
+  const path = text(input.args.path ?? input.args.file_path), shown = pathName(path, text(input.args.cwd) || input.context.cwd), split = shown.lastIndexOf('/'), name = shown.slice(split + 1);
   if (!name) return value;
-  const directory = split < 0 ? '' : path.slice(0,split) || '/';
+  const directory = split < 0 ? '' : shown.slice(0,split) || '/';
   return {...value, file: {prefix: words(done,active,action), path, name, directory, suffix}};
 }
 function destinationName(caption?:NamedDestination):string {
@@ -122,7 +122,7 @@ function pillarWords({args}:SentenceInput):Words {
 function webWords({args}:SentenceInput):Words {
   let url:URL|undefined;try{url=args.url?new URL(text(args.url)):undefined;}catch{/* Invalid supplied URL has no display destination. */}
   if(args.find)return words('Looked for','Looking for','Look for',` ${quote(args.find).slice(2)}${url?` on ${url.host}`:''}`);
-  return words('Read','Reading','Read',url?` ${url.host}${first(url.pathname,80)}`:' a web page');
+  return words('Read','Reading','Read',url?` ${url.host}${first(url.pathname)}`:' a web page');
 }
 function registryWords({args}:SentenceInput):Words {
   if(Object.hasOwn(args,'search')){const quoted=quote(args.search);return words('Searched tools and resources','Searching tools and resources','Search tools and resources',quoted?` for ${quoted.slice(2)}`:'');}
@@ -198,7 +198,7 @@ export function toolLabel(tool:JoinedTool,context:SentenceContext={}):string{
 }
 function labelForm(tool: JoinedTool, value: VerbForms): string {
   if (tool.status === 'success') return value.done;
-  if (tool.status === 'working') return tool.argumentText !== undefined && !tool.args ? 'Preparing…' : value.active;
+  if (tool.status === 'working') return tool.argumentText !== undefined && !tool.args ? 'Preparing' : value.active;
   return value.action;
 }
 /** Styled spans retain source caption, path and quote boundaries independently of layout. */
@@ -207,7 +207,7 @@ export function toolLabelParts(tool:JoinedTool,context:SentenceContext={}):ToolL
   if(value.file){
     const file=value.file, parts:ToolLabelPart[]=[{text:`${labelForm(tool,file.prefix)} `},{text:file.name,role:'file',title:file.path}];
     if(file.directory)parts.push({text:`  ${file.directory}`,role:'directory',title:file.path});
-    if(file.suffix)parts.push({text:file.suffix});
+    if(file.suffix)parts.push({text:file.suffix,role:'range'});
     return parts;
   }
   const recipient=value.emphasis?.recipient??'', message=value.emphasis?.message??'', suffix=recipient+message;
@@ -219,7 +219,7 @@ export function toolSentence(tool: JoinedTool, context: SentenceContext = {}): s
   const value = sentenceWords(tool, context);
   if (tool.status === 'success') return value.done;
   if (tool.status === 'preparing') return `Preparing call: ${value.action}`;
-  if (tool.status === 'working') return tool.argumentText !== undefined && !tool.args ? 'Preparing…' : value.active;
+  if (tool.status === 'working') return tool.argumentText !== undefined && !tool.args ? 'Preparing' : value.active;
   if (tool.status === 'error') return `Failed: ${value.action}`;
   if (tool.status === 'pending') return `Queued: ${value.action}`;
   if (tool.status === 'ended') return `Ended without a result: ${value.action}`;

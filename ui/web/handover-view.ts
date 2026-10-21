@@ -20,7 +20,7 @@ export class HandoverDialog {
   constructor(hooks: Hooks) {this.hooks = hooks;}
   open(): void {
     const hooks = this.hooks, modal = hooks.modal, workspace = hooks.workspace(), cwd = hooks.cwd();
-    const body = modal.open('Continue a handover…'), token = modal.token;
+    const body = modal.open('Continue a handover'), token = modal.token;
     const current = () => modal.owns(token) && workspace === hooks.workspace();
     const selectOpened = hooks.captureSelection();
     const handover = input('Handover'), note = input('Note for this pickup (newer than the handover)', '', true);
