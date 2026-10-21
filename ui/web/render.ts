@@ -482,11 +482,12 @@ export class Transcript {
     this.view = presentation?.transcriptView ?? 'chronological'; this.pendingView = undefined;
     this.node.dataset.view = this.view;
     this.expanded = new Set(presentation?.expanded ?? []); this.showThinking = thinkingExpanded(presentation); this.thinkingChoice = presentation?.thinking;
+    if(!this.hooks.owner)this.deriveRows();
     if (reading) {
       this.follow = reading.followTail; this.readingRevision = reading.revision; this.restoring = reading.followTail ? undefined : reading;
       this.reflowAnchor = reading.anchorId ? {id: this.displayId(reading.anchorId), offsetPx: reading.offsetPx} : null;
     }
-    this.deriveRows();
+    if(this.hooks.owner)this.deriveRows();
     this.applyPreferences();
   }
   isExpanded(key:string):boolean {return this.expanded.has(key);}
