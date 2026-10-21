@@ -207,7 +207,8 @@ type SessionNode = {source?: SessionGroup; details: HTMLDetailsElement; events: 
 type TurnMessage = {entry: EntryView; message: MessageView};
 type AssistantTurn = {key: string; input?: TurnMessage; copy?: TurnMessage; assistant: boolean; end?: string};
 type TurnSource = {turn:AssistantTurn;generation:number;node?:HTMLElement};
-type TurnActions = TurnSource & {node: HTMLElement; copy: HTMLButtonElement; fork: HTMLButtonElement};
+type MessageMenuActions = {items:ContextItem[];ask?:ContextItem;valid:()=>boolean};
+type TurnActions = TurnSource & {node: HTMLElement; copy: HTMLButtonElement; fork: HTMLButtonElement; ask:HTMLButtonElement; more:HTMLButtonElement; askAction?:{item:ContextItem;valid:()=>boolean}};
 type FailedStep = {entryId:string;rowId:string;callId?:string};
 type ReceivedResult = {entryId:string;messageId:string;rowId:string;entryAt:number;messageAt:number};
 type EntryNode = {node: HTMLElement; messages: Map<string, MessageNode>; dayDivider?: HTMLTimeElement; turnActions?: TurnActions; source?: EntryView; custom?: HTMLElement; session?: SessionNode; groupHeader?: HTMLElement};
@@ -229,8 +230,6 @@ export class Transcript {
   private noticeBlocks:NoticeBlocks;
   private tasks = new ConversationTasks();
   private turnRows = new Map<string,AssistantTurn>();
-  private latestTurn?: string;
-  private hoveredTurn?: string;
   private taskReads=new Map<string,AbortController>();
   private taskReadStamps=new Map<string,string>();
   private get groups(): TranscriptGroups { return this.index.groups; }
@@ -333,10 +332,6 @@ export class Transcript {
       this.observers.push(visibility);
     }
     this.listen(this.node, 'contextmenu', event => this.itemMenu(event as MouseEvent));
-    this.listen(this.node, 'pointerover', event => { this.hoveredTurn = this.turnAt(event.target); this.refreshTurnVisibility(); });
-    this.listen(this.node, 'pointerout', event => { this.hoveredTurn = this.turnAt((event as PointerEvent).relatedTarget); this.refreshTurnVisibility(); });
-    this.listen(this.node, 'focusin', () => this.refreshTurnVisibility());
-    this.listen(this.node, 'focusout', () => { this.frame(() => this.refreshTurnVisibility()); });
     this.listen(this.node, 'source-wrap', () => {
       const anchor = this.follow ? null : this.anchor();
       this.restoring = undefined; this.reflowAnchor = anchor;
@@ -527,7 +522,7 @@ export class Transcript {
     this.resize?.disconnect(); if (!this.destroyed) this.resize?.observe(this.node); this.sizes = new WeakMap(); this.scrolling = new WeakSet(); this.reflowAnchor = undefined; this.writtenScrollTop = undefined;
     this.clearFind(false); this.findRevision++;
     this.initialSettings.clear(); this.toolStates = new Map(); this.indexedFindId = undefined;
-    this.generation++; this.entries = []; this.displayed = []; this.turnRows.clear(); this.latestTurn = undefined; this.hoveredTurn = undefined; this.cache.clear(); this.tools.clear(); this.liveThinking.clear(); this.thinkingTimes = new Map(); this.index = new TranscriptIndex(); this.joined = this.index.joined; this.rows = new TranscriptRows(); this.noticeBlocks.clear(); this.tasks = new ConversationTasks(); this.visible.clear(); this.dirtyLayout = true; this.pins.clear(); this.heights.clear(); this.gaps.clear(); this.timeGaps.clear();
+    this.generation++; this.entries = []; this.displayed = []; this.turnRows.clear(); this.cache.clear(); this.tools.clear(); this.liveThinking.clear(); this.thinkingTimes = new Map(); this.index = new TranscriptIndex(); this.joined = this.index.joined; this.rows = new TranscriptRows(); this.noticeBlocks.clear(); this.tasks = new ConversationTasks(); this.visible.clear(); this.dirtyLayout = true; this.pins.clear(); this.heights.clear(); this.gaps.clear(); this.timeGaps.clear();
     this.expanded.clear(); this.streamedThinking.clear(); this.showThinking = false; this.thinkingChoice = undefined; this.follow = true; this.readingRevision = 0;
     this.layout = layoutItems([], this.heights, 140); this.restoring = undefined; this.node.replaceChildren(...(this.lead ? [this.lead] : [])); this.scrollTo(0); this.hold = undefined; this.arrivals.reset(); this.referenceNamesPending = false; this.syncLatest();
   }
@@ -607,13 +602,12 @@ export class Transcript {
     if (message.role === 'user') return {key:JSON.stringify([entry.id,message.id]),input:{entry,message},assistant:false};
     if (message.role !== 'assistant') return previous;
     const turn = previous ?? {key:JSON.stringify([entry.id,message.id]),assistant:false};
-    turn.assistant = true; this.latestTurn = turn.key;
+    turn.assistant = true;
     if (this.textBearing(message)) turn.copy = {entry,message};
     return turn;
   }
   private sourceTurns(): {messages: Map<MessageView,AssistantTurn>; tools: Map<string,AssistantTurn>} {
     const messages = new Map<MessageView,AssistantTurn>(), tools = new Map<string,AssistantTurn>(); let turn: AssistantTurn | undefined;
-    this.latestTurn = undefined;
     for (const entry of this.chronological) {
       for (const message of entry.messages ?? []) {
         turn = this.extendTurn(entry,message,turn);
@@ -1089,7 +1083,7 @@ export class Transcript {
     this.evict(new Set(selected.map(item => item.id)));
     this.refreshMountedTools();
     this.refreshMountedCommunications();
-    this.refreshTurnVisibility();
+    this.refreshTurnActions();
     this.readVisibleTaskAnswers(new Set(selected.map(item=>item.id)));
     this.finishScroll(anchor);
     this.refreshFind();
@@ -1283,16 +1277,46 @@ export class Transcript {
     if(!cached){const node=element('div','entry');node.dataset.entryId=id;node.style.display='flow-root';cached={node,messages:new Map()};this.cache.set(id,cached);}
     return cached;
   }
-  private turnAt(target: EventTarget | null): string | undefined {
-    if (!(target instanceof Element) || !this.node.contains(target)) return;
-    return target.closest<HTMLElement>('.entry[data-assistant-turn]')?.dataset.assistantTurn;
-  }
-  private refreshTurnVisibility(): void {
-    const focused = this.turnAt(document.activeElement);
-    for (const cached of this.cache.values()) if (cached.turnActions) {
-      const {node,turn} = cached.turnActions;
-      node.dataset.visible = String(turn.key === this.latestTurn || turn.key === this.hoveredTurn || turn.key === focused);
+  private turnMessageMenus(actions:TurnSource,origin:HTMLElement):MessageMenuActions[] {
+    const turn=this.currentTurn(actions);if(!turn)return [];
+    const owners:MessageMenuActions[]=[];
+    for(const row of this.displayed){
+      if(this.turnRows.get(row.id)!==turn)continue;
+      const entry=this.cache.get(row.id);if(!entry)continue;
+      for(const message of entry.messages.values())if(message.source.role==='assistant'){
+        const menu=this.messageMenuActions(entry,message.source.id,origin,true);
+        if(menu)owners.push(menu);
+      }
     }
+    return owners;
+  }
+  private turnAsk(actions:TurnSource,owners:MessageMenuActions[]):TurnActions['askAction'] {
+    const menu=owners.findLast(owner=>owner.ask);
+    if(menu?.ask)return {item:menu.ask,valid:menu.valid};
+    const input=this.currentTurn(actions)?.input,entry=input&&this.cache.get(this.displayId(input.entry.id));
+    if(!input||!entry||entry.messages.get(input.message.id)?.source!==input.message||!this.currentTurnMessage(input))return;
+    const source=this.messageMenuActions(entry,input.message.id,actions.node??entry.node);
+    return source?.ask?{item:source.ask,valid:source.valid}:undefined;
+  }
+  private refreshTurnActions():void {
+    for(const cached of this.cache.values())if(cached.turnActions){
+      const actions=cached.turnActions,owners=this.turnMessageMenus(actions,actions.more);
+      actions.askAction=this.turnAsk(actions,owners);
+      actions.ask.hidden=!actions.askAction;actions.ask.disabled=actions.askAction?.item.enabled===false;
+      const reason=actions.askAction?.item.description;
+      actions.ask.title=reason?`Ask in Primary: ${reason}`:'Ask in Primary';
+      actions.more.disabled=!owners.some(owner=>owner.items.length);
+    }
+  }
+  private turnMenu(actions:TurnActions):void {
+    const snapshot:TurnSource={turn:actions.turn,generation:actions.generation,node:actions.node};
+    const owners=this.turnMessageMenus(snapshot,actions.more),ask=this.turnAsk(snapshot,owners);
+    const items=owners.flatMap((owner,at)=>owner.items.filter(item=>item!==ask?.item).map((item,index)=>({...item,
+      heading:!index&&owners.length>1?`Message ${at+1}`:item.heading,separatorBefore:!index&&at>0||item.separatorBefore})));
+    const valid=()=>snapshot.generation===this.generation&&this.currentTurn(actions)?.key===snapshot.turn.key&&owners.every(owner=>owner.valid());
+    if(!valid())return;
+    const box=actions.more.getBoundingClientRect();
+    contextMenu.open(actions.more,{x:box.right,y:box.bottom},'Message actions',items,valid);
   }
   private currentTurn(actions: TurnSource): AssistantTurn | undefined {
     if (this.deferred || this.hidden() || actions.generation !== this.generation || actions.node && !this.node.contains(actions.node)) return;
@@ -1334,7 +1358,10 @@ export class Transcript {
       const node = element('div','assistant-turn-actions');
       const copy = cardAction('copy','Copy',()=>{ if (cached.turnActions) this.copyTurn(cached.turnActions,cached.turnActions.copy); });
       const fork = cardAction('fork','Fork',()=>{ if (cached.turnActions) this.forkTurn(cached.turnActions); });
-      node.append(copy,fork); actions = {node,copy,fork,turn,generation:this.generation}; cached.turnActions = actions;
+      const ask=cardAction('message','Ask in Primary',()=>{const current=cached.turnActions;if(current&&this.currentTurn(current)&&current.askAction?.valid())current.askAction.item.run();});ask.hidden=true;
+      const more=cardAction('menu','More',()=>{if(cached.turnActions)this.turnMenu(cached.turnActions);});
+      more.setAttribute('aria-haspopup','menu');more.setAttribute('aria-expanded','false');
+      node.append(copy,fork,ask,more); actions = {node,copy,fork,ask,more,turn,generation:this.generation}; cached.turnActions = actions;
     }
     actions.turn = turn; actions.generation = this.generation;
     actions.copy.disabled = !turn.copy || !messageCopyText(turn.copy.message,message => partText(message.parts));
@@ -1374,8 +1401,8 @@ export class Transcript {
     const children: HTMLElement[] = [];
     if (cached.turnActions && !cached.turnActions.node.hidden) {
       const failed=[...cached.messages.values()].findLast(message=>message.failure);
-      if(failed?.failure){cached.turnActions.copy.hidden=cached.turnActions.copy.disabled;cardActionLabel(cached.turnActions.copy,'Copy response text');failed.failure.actions.append(cached.turnActions.node);}
-      else {cached.turnActions.copy.hidden=false;cardActionLabel(cached.turnActions.copy,'Copy');children.push(cached.turnActions.node);}
+      cached.turnActions.copy.hidden=!!failed?.failure&&cached.turnActions.copy.disabled;
+      cardActionLabel(cached.turnActions.copy,'Copy');children.push(cached.turnActions.node);
     }
     if (cached.dayDivider) children.push(cached.dayDivider);
     return children;
@@ -1583,7 +1610,7 @@ export class Transcript {
     node.setAttribute('aria-label', bounded(messageAriaLabel(message, this.hooks.operatorInput), 4096));
     const menu = cardAction('menu', 'Message actions', () => this.messageMenu(entry, message.id, menu), 'message-menu');
     menu.setAttribute('aria-label', 'Message actions'); menu.title = 'Message actions'; menu.setAttribute('aria-haspopup', 'menu'); menu.setAttribute('aria-expanded', 'false');
-    actions.append(menu); header.append(heading, delivery, actions); node.append(header, body, error);
+    actions.hidden=message.role==='assistant';actions.append(menu); header.append(heading, delivery, actions); node.append(header, body, error);
     const cached = {node, header, heading, delivery, actions, body, error, menu, forkRevision: 0, parts: new Map<string, PartNode>(), source: message}; entry.messages.set(message.id, cached); return cached;
   }
   private operatorMessage(message: MessageView, retained?: EntryView): boolean {
@@ -1647,7 +1674,7 @@ export class Transcript {
     if (message.communication) {
       cached.source = message;
       if (!this.protectedNode(cached.node)) this.updateCommunication(cached, message, entryId);
-      cached.actions.hidden = false; return true;
+      cached.actions.hidden = message.role==='assistant'; return true;
     }
     if (!cached.communication) return false;
     cached.source = message;
@@ -1754,7 +1781,7 @@ export class Transcript {
     const thinkingOnly = content.length > 0 && content.every(child => child.classList.contains('thinking')) && !error;
     if (thinkingOnly) cached.node.classList.add('thinking-only'); else cached.node.classList.remove('thinking-only');
     cached.heading.hidden = toolOnly || thinkingOnly || !cached.heading.textContent;
-    cached.actions.hidden = false;
+    cached.actions.hidden = cached.source.role==='assistant';
   }
   private pruneParts(message: MessageNode, keys: ReadonlySet<string>): void {
     for (const [key, part] of message.parts) if (!keys.has(key)) { this.releaseFrames(part.node); message.parts.delete(key); }
@@ -1776,24 +1803,29 @@ export class Transcript {
   private forkEligible(entry: EntryView, message: MessageView): boolean {
     return entry.kind === 'message' && !/^(message:|live:)/.test(entry.id) && message.role === 'user' && message.state === 'final' && !!this.hooks.fork;
   }
-  private messageMenu(entry: EntryNode, id: string, origin: HTMLElement, point?: {x: number; y: number}): void {
+  private messageMenuActions(entry:EntryNode,id:string,origin:HTMLElement,assistantRow=false):MessageMenuActions|undefined {
     const cached = entry.messages.get(id); if (!cached) return;
     const generation = this.generation; const source = cached.source;
     const current = () => this.currentMessage(entry, id, cached.node, generation);
     const valid = () => current()?.source === source && (!cached.communication || !!cached.communication.current());
     if (!valid()) return;
-    if (!['BUTTON', 'A', 'INPUT', 'TEXTAREA'].includes(origin.tagName.toUpperCase())) origin.tabIndex = -1;
     const copyItem = {label: 'Copy', enabled: !!messageCopyText(source, item => partText(item.parts)), description: messageCopyDescription(source), run: () => this.copyMessage(entry, id, cached.node, generation)};
-    const items: ContextItem[] = [...selectionCopy(cached.node), ...(source.role === 'assistant' && origin === cached.menu ? [] : [copyItem]), {label: 'Source', run: () => {
+    const items: ContextItem[] = [...selectionCopy(cached.node), ...(source.role === 'assistant' && (assistantRow||origin === cached.menu) ? [] : [copyItem]), {label: 'Source', run: () => {
       if (!valid()) return;
       if (cached.communication) cached.communication.openSource(origin); else this.openOrdinarySource(entry, cached, origin, generation);
     }}];
     const carrier = source.communication;
-    if (carrier?.state === 'ready' && (carrier.value.kind === 'report' || carrier.value.kind === 'result')) items.push(...this.primaryAskItems(this.messageDraftSource(entry,cached)));
+    const ask=carrier?.state === 'ready' && (carrier.value.kind === 'report' || carrier.value.kind === 'result')?this.primaryAskItems(this.messageDraftSource(entry,cached))[0]:undefined;
+    if(ask)items.push(ask);
     const retained = this.index.entries.get(entry.source?.id ?? ''); const revision = cached.forkRevision;
     if (retained && this.forkEligible(retained, source)) items.push({label: 'Fork', run: () => { const currentEntry = this.index.entries.get(retained.id); if (revision === cached.forkRevision && valid() && currentEntry && this.forkEligible(currentEntry, source)) this.hooks.fork?.(source, retained.id); }});
+    return {items,ask,valid};
+  }
+  private messageMenu(entry: EntryNode, id: string, origin: HTMLElement, point?: {x: number; y: number}): void {
+    const actions=this.messageMenuActions(entry,id,origin);if(!actions)return;
+    if (!['BUTTON', 'A', 'INPUT', 'TEXTAREA'].includes(origin.tagName.toUpperCase())) origin.tabIndex = -1;
     const box = origin.getBoundingClientRect();
-    contextMenu.open(origin, point ?? {x: box.right, y: box.bottom}, 'Message actions', items, valid);
+    contextMenu.open(origin, point ?? {x: box.right, y: box.bottom}, 'Message actions', actions.items, actions.valid);
   }
   private sourceLayout(entryId: string): void {
     this.reflowAnchor = this.follow ? null : this.anchor(); this.restoring = undefined;

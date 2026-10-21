@@ -690,9 +690,10 @@ a.reference-link[href]:is(:hover, :focus-visible) { text-decoration: underline; 
 .message:hover > .message-header > .message-actions, .message:focus-within > .message-header > .message-actions { opacity: 1; pointer-events: auto; }
 .message-actions button { min-height: 24px; padding: var(--s1) var(--s2); color: var(--muted); white-space: nowrap; }
 .message-actions button:hover { color: var(--fg); background: var(--raised); }
-.assistant-turn-actions { display: flex; align-items: center; gap: var(--s1); min-height: 24px; margin-top: var(--s2); color: var(--muted); opacity: 0; pointer-events: none; }
-.assistant-turn-actions[data-visible=true] { opacity: 1; pointer-events: auto; }
-@media (pointer: coarse) { .assistant-turn-actions { opacity: 1; pointer-events: auto; } }
+.message[data-role=assistant] > .message-header:has(> .message-role[hidden]):has(> .message-delivery[hidden]) { display: none; }
+.assistant-turn-actions { display: flex; align-items: center; justify-content: flex-start; gap: var(--s1); min-height: 28px; margin-top: var(--s2); color: var(--muted); }
+.assistant-turn-actions > .card-action { width: 28px; height: 28px; min-width: 28px; min-height: 28px; padding: 0; }
+.assistant-turn-actions > .card-action:is(:hover, :focus-visible) { color: var(--muted); }
 .message:is(.thinking-only, .tool-only) > .message-header { position: absolute; top: 2px; right: 2px; z-index: 2; max-width: 100%; }
 .message.tool-only > .message-header { top: 12px; right: 12px; }
 .message:is(.thinking-only, .tool-only) > .message-body > .thinking:first-child > summary { max-width: calc(100% - 32px); }
@@ -977,7 +978,6 @@ pre.tool-document { font-family: var(--mono); font-size: var(--fs-code); line-he
 .response-failure-body { grid-column: 1 / -1; min-width: 0; padding-block: 12px; color: var(--fg); }
 .response-failure-body[hidden] { display: none; }
 .response-failure-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--s2); }
-.response-failure-actions > .assistant-turn-actions { margin: 0; min-height: 24px; opacity: 1; pointer-events: auto; }
 .response-failure-message > .message-header { display: none; }
 .entry:has(> .response-failure-message) { padding-bottom: 0; }
 .communication-card { min-width: 0; max-width: 100%; padding: 0; border: 0; background: transparent; font-family: var(--sans); }
