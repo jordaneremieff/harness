@@ -211,6 +211,12 @@ A backend switch does not replace the running owner or its code. A candidate wit
 
 The jump uses the existing go-to-entry path without moving keyboard focus. The revealed entry shows the normal focus outline for 1.5 seconds, without animation. At loaded boundaries the keys do nothing; navigation never wraps, loads history, switches conversations or starts a Primary. Inputs, textareas, selection controls and editable content keep their normal Option-arrow behavior. Open dialogs and context menus keep their own keys. Composer text, mode, images and selection stay unchanged.
 
+## Failed step navigation
+
+**Option-Shift-Up** and **Option-Shift-Down** jump between loaded failed steps in the active main conversation. Commands offers **Previous failed step** and **Next failed step** only when a stop exists in that direction. Stops use original loaded entry order and existing within-entry rows, not grouped display order. A tool stop requires a supplied true result error flag and its exact current call row. A response stop uses the same visible-message and assistant failure classification as **Response failed**. Prose, exit codes, tool names, delivery warnings and stopped responses do not create stops.
+
+The jump uses the existing no-focus reveal path and the same 1.5-second outline as own-message navigation. Exact derived row and call associations distinguish failures within one source entry. Navigation does not expand tool or event disclosures, load history, wrap, switch conversations, start a Primary or move DOM focus. Each navigation keeps its own bottom-boundary cursor. Drafts, modes, images and native editor ranges stay unchanged. Editable fields, IME composition, dialogs, context menus and other modifier bindings retain their normal keys.
+
 ## Desk
 
 **Commands → Open Desk** opens an on-demand list in a companion pane, beside the retained Primary. An existing second pane hosts the list. A single-pane window gets a page-local split only after this command, with at least 360px per pane. At narrower widths, Desk covers the Primary as a reader with **Back to Primary**; its native draft and reading position stay retained. Desk does not change the Primary draft, native editor, or reading position. Close restores the covered pane. **Open** selects the exact agent conversation in the companion; **Back to Desk** returns to the retained list.

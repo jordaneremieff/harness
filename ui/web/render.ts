@@ -98,6 +98,9 @@ function errorPresentation(message: MessageView): {summary: string; diagnostic?:
   if (warning) return {summary: 'The response stopped.', warning: true};
   return {summary: '', warning: false};
 }
+function failedResponse(message:MessageView,shown=errorPresentation(message)):boolean {
+  return message.role==='assistant'&&!!shown.summary&&!shown.warning;
+}
 function record(display?: JsonDisplay): Record<string, unknown> {
   const value = display?.value;
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -204,6 +207,7 @@ type SessionNode = {source?: SessionGroup; details: HTMLDetailsElement; events: 
 type TurnMessage = {entry: EntryView; message: MessageView};
 type AssistantTurn = {key: string; input?: TurnMessage; copy?: TurnMessage; assistant: boolean; end?: string};
 type TurnActions = {node: HTMLElement; copy: HTMLButtonElement; fork: HTMLButtonElement; turn: AssistantTurn; generation: number};
+type FailedStep = {entryId:string;rowId:string;callId?:string};
 type EntryNode = {node: HTMLElement; messages: Map<string, MessageNode>; dayDivider?: HTMLTimeElement; turnActions?: TurnActions; source?: EntryView; custom?: HTMLElement; session?: SessionNode; groupHeader?: HTMLElement};
 type ToolNode = {previewMore?: HTMLButtonElement; previewSource?: JoinedTool; previewSubjectRevision?: number; answerText?: string; subject?: ToolSubjectCaption; card: HTMLElement; node: HTMLDetailsElement; copy: HTMLButtonElement; title: HTMLElement; target: HTMLElement; glyph: HTMLElement; stateWord: HTMLElement; meta: HTMLElement; preview: HTMLElement; qualification: HTMLElement; expanded: HTMLElement; resultArea: HTMLElement; technical: HTMLDetailsElement; actions: HTMLElement; info: HTMLElement; source?: JoinedTool; inspectionSources?: Map<HTMLDetailsElement, JoinedTool>; presentation?: HTMLElement; argumentsDocument?: HTMLElement; argumentsSource?: JoinedTool; output?: HTMLElement; contentSource?: JoinedTool; viewport?: HTMLElement; pageViewports?: Set<HTMLElement>; resultDocument?: HTMLElement; documentSource?: JoinedTool; previewBudget?: PreviewBudget; outputNotice?: {node: HTMLElement; source: JoinedTool}; inspections?: {arguments: HTMLDetailsElement; output: HTMLDetailsElement; details: HTMLDetailsElement}};
 export type TranscriptGeometry = {generation: number; followTail: boolean; anchor: {id: string; offsetPx: number} | null; scrollTop: number};
@@ -216,6 +220,7 @@ export class Transcript {
   /** Keeps repeated jumps in source order when the bottom boundary prevents top alignment. */
   private ownMessageCursor?:{id:string;anchorId:string|null;offsetPx:number};
   private ownMessageMarker?:{node:HTMLElement;timer:ReturnType<typeof setTimeout>};
+  private failedStepCursor?:{id:string;anchorId:string|null;offsetPx:number};
   private rows = new TranscriptRows();
   private noticeBlocks:NoticeBlocks;
   private tasks = new ConversationTasks();
@@ -492,7 +497,7 @@ export class Transcript {
     this.paint(anchor); this.hooks.presentation([...this.expanded], this.showThinking, this.view); this.saveReading();
   }
   reset(): void {
-    this.clearOwnMessageMarker();this.ownMessageCursor=undefined;
+    this.clearOwnMessageMarker();this.ownMessageCursor=undefined;this.failedStepCursor=undefined;
     this.cancelTaskReads();this.taskReadStamps.clear();this.dismissPreview();
     this.cancelRender(); if (this.inputFrame !== undefined) this.pending = false;
     this.clearTiming(); this.streamPending = false; this.deferred = undefined; this.chronological = []; this.view = 'chronological'; this.pendingView = undefined;
@@ -874,7 +879,46 @@ export class Transcript {
     const id=this.ownMessageEntry(direction);if(!id)return false;
     this.revealEntry(id,false);
     const reading=this.geometryAnchor();this.ownMessageCursor={id,anchorId:reading?.id??null,offsetPx:reading?.offsetPx??0};
-    const node=this.cache.get(this.displayId(id))?.node;if(!node)return false;
+    return this.markNavigationEntry(this.displayId(id));
+  }
+  private failedToolResults():Map<string,boolean>{
+    const results=new Map<string,boolean>();
+    for(const entry of this.chronological){
+      if(entry.tool?.status==='done'&&typeof entry.tool.isError==='boolean')results.set(entry.tool.callId,entry.tool.isError);
+      for(const part of entry.messages?.flatMap(message=>message.parts)??[])if(part.type==='toolResult')results.set(part.callId,part.isError);
+    }
+    for(const [callId,state] of this.toolStates)if(state.phase==='end'&&typeof state.isError==='boolean')results.set(callId,state.isError);
+    return results;
+  }
+  private failedStepAt(row:TranscriptRow|undefined,results:ReadonlyMap<string,boolean>):FailedStep|undefined{
+    if(!row)return;
+    const tool=row.steps?.tools[0];
+    if(tool&&results.get(tool.callId)===true&&tool.owner===row.source.id&&this.rows.calls.get(tool.callId)===row.view.id)return {entryId:tool.owner,rowId:row.view.id,callId:tool.callId};
+    if(!row.actionsOnly&&row.parts&&row.source.messages?.some(message=>this.rowMessageVisible(row.source.id,message,row.parts)&&failedResponse(message)))return {entryId:row.source.id,rowId:row.view.id};
+    return undefined;
+  }
+  failedStep(direction:-1|1):FailedStep|undefined{
+    if(this.destroyed||this.hidden()||this.deferred)return;
+    const order=new Map(this.chronological.map((entry,at)=>[entry.id,at]));
+    const rows=this.displayed.flatMap(entry=>{const row=this.rows.byId.get(entry.id);return row&&order.has(row.source.id)?[row]:[];})
+      .sort((a,b)=>(order.get(a.source.id)??0)-(order.get(b.source.id)??0));
+    const reading=this.geometryAnchor(),cursor=this.failedStepCursor;
+    const anchored=cursor&&cursor.anchorId===(reading?.id??null)&&cursor.offsetPx===(reading?.offsetPx??0)?cursor.id:this.restoring?.anchorId??reading?.id;
+    const rowId=anchored&&(this.rows.byId.has(anchored)?anchored:this.displayId(anchored));
+    const at=this.follow?rows.length:rows.findIndex(row=>row.view.id===rowId),results=this.failedToolResults();
+    for(let index=at+direction;index>=0&&index<rows.length;index+=direction){
+      const step=this.failedStepAt(rows[index],results);if(step)return step;
+    }
+    return undefined;
+  }
+  jumpFailedStep(direction:-1|1):boolean{
+    const step=this.failedStep(direction);if(!step)return false;
+    this.revealEntry(step.entryId,false,step.callId,step.rowId);
+    const reading=this.geometryAnchor();this.failedStepCursor={id:step.rowId,anchorId:reading?.id??null,offsetPx:reading?.offsetPx??0};
+    return this.markNavigationEntry(step.rowId);
+  }
+  private markNavigationEntry(id:string):boolean{
+    const node=this.cache.get(id)?.node;if(!node)return false;
     this.clearOwnMessageMarker();node.classList.add('own-message-focus');
     this.ownMessageMarker={node,timer:setTimeout(()=>this.clearOwnMessageMarker(),1500)};
     return true;
@@ -883,13 +927,18 @@ export class Transcript {
     const marker=this.ownMessageMarker;if(!marker)return;
     clearTimeout(marker.timer);marker.node.classList.remove('own-message-focus');this.ownMessageMarker=undefined;
   }
-  revealEntry(entryId: string, focus = true, callId?: string): void {
-    this.ownMessageCursor=undefined;
+  private revealRowId(entryId:string,callId?:string,rowId?:string):string|undefined{
+    if(rowId===undefined)return callId?this.rows.calls.get(callId)??this.displayId(entryId):this.displayId(entryId);
+    return this.rows.byId.get(rowId)?.source.id===entryId&&(callId===undefined||this.rows.calls.get(callId)===rowId)?rowId:undefined;
+  }
+  revealEntry(entryId: string, focus = true, callId?: string, rowId?:string): void {
+    this.ownMessageCursor=undefined;this.failedStepCursor=undefined;
     if (!this.index.entries.has(entryId)) return;
+    const id=this.revealRowId(entryId,callId,rowId);if(id===undefined)return;
     this.scrolling.delete(this.node);
-    const id = callId ? this.rows.calls.get(callId) ?? this.displayId(entryId) : this.displayId(entryId); this.follow = false; this.pins.clear(); this.pins.add(entryId);
-    const group=this.openEntryEvents(id,entryId);
-    this.restoring = {revision: this.readingRevision, anchorId: callId ? id : entryId, offsetPx: 0, followTail: false}; this.paint();
+    this.follow = false; this.pins.clear(); this.pins.add(entryId);
+    const group=rowId===undefined?this.openEntryEvents(id,entryId):undefined;
+    this.restoring = {revision: this.readingRevision, anchorId: callId || rowId ? id : entryId, offsetPx: 0, followTail: false}; this.paint();
     const session = this.cache.get(id)?.session;
     if (session && group) {
       session.events.page = Math.floor(group.entries.findIndex(member => member.id === entryId) / 32);
@@ -1309,7 +1358,7 @@ export class Transcript {
   private messageError(cached: MessageNode, message: MessageView): string {
     const shown = errorPresentation(message);
     cached.error.className = `${shown.warning ? 'warning' : 'error'} message-error`; cached.error.hidden = !shown.summary;
-    const failed=message.role === 'assistant' && !!shown.summary && !shown.warning;
+    const failed=failedResponse(message,shown);
     cached.node.classList.toggle('response-failure-message',failed);
     if(failed)return this.responseFailure(cached,message,shown.diagnostic);
     if(cached.failure){cached.header.append(cached.actions);cached.failure.node.remove();cached.failure=undefined;}

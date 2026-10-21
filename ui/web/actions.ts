@@ -109,6 +109,7 @@ export type SettingsSelection = {target: Target; model?: {provider: string; mode
 export type SelectionChange = Partial<Omit<Workspace, 'selectedTarget'>> & {selectedTarget?: Target | null};
 export type ActionContext = {
   ownMessages?:()=>{previous?:()=>void;next?:()=>void};
+  failedSteps?:()=>{previous?:()=>void;next?:()=>void};
   readSession:ConstructorParameters<typeof ProjectPicker>[0]['readSession'];convertSession?:()=>void;hasConvertibleSession?:()=>boolean;desk?:()=>void; nextUnread?:()=>void; hasUnread?:()=>boolean; handover?: () => void; agentPresentation: ConstructorParameters<typeof ProjectPicker>[0]['agentPresentation']; snapshot: () => Snapshot | undefined; primary: () => PrimaryView | undefined; /** The Primary whose model list names models: the selected Primary when it is ready, else any ready Primary. */ namingPrimary?: () => PrimaryView | undefined; composer: Composer; commandsChanged: () => void; modelChanged?: () => void; modelNamesChanged?: () => void; modal: Modal;
   selection: (change: SelectionChange) => Promise<void>; reload: () => Promise<void>; result: (result: OperationView) => void; rosterRefresh: () => void; filesRefresh: () => void; hasTranscript: () => boolean; find: () => FindSession | undefined; recovery: () => void; primaryEntries: () => EntryView[]; agents: () => AgentRow[]; selectedAgent: () => Pick<AgentRow, 'identity' | 'capabilities'> | undefined; selectAgent: (row: AgentRow) => void; selectPrimary: () => void; notices: () => void; sidebar: (visible: boolean) => void; sidebarShown: () => boolean; view: (tools: boolean, expand: boolean) => void; copyAgent: () => void; inspectAgent: () => void; resultLookup?: () => void; agentCaption?: (identity: string) => ConversationCaption; agentStatus: (row: AgentRow) => string; conversationFacts?: (identity: string) => readonly ReportedFact[]; tabs?: {close: () => void; switch: (direction: number) => void; layout: () => ConversationLayout}};
 export class Actions {
@@ -465,6 +466,7 @@ export class Actions {
       entry('Hide thinking', 'Hide loaded thinking text', () => this.ctx.view(false, false), transcript, undefined, 'Requires a conversation transcript'),
       entry('Find text', 'Find text in this session', () => this.find(), transcript, undefined, 'Requires a conversation transcript'),
       ...this.ownMessageEntries(),
+      ...this.failedStepEntries(),
       ...this.deskEntries(),
       entry('Notifications', 'Read and dismiss notices', () => this.ctx.notices()),
       entry('Refresh agents', 'Refresh the agent list', () => this.ctx.rosterRefresh()),
@@ -513,6 +515,12 @@ export class Actions {
     const actions=this.ctx.ownMessages?.(),entries:PaletteEntry[]=[];
     if(actions?.previous)entries.push({name:'Previous own message',description:'Jump to your previous loaded message',source:'app',enabled:true,run:actions.previous,shortcut:{text:'⌥↑',keys:'Alt+ArrowUp'}});
     if(actions?.next)entries.push({name:'Next own message',description:'Jump to your next loaded message',source:'app',enabled:true,run:actions.next,shortcut:{text:'⌥↓',keys:'Alt+ArrowDown'}});
+    return entries;
+  }
+  private failedStepEntries():PaletteEntry[]{
+    const actions=this.ctx.failedSteps?.(),entries:PaletteEntry[]=[];
+    if(actions?.previous)entries.push({name:'Previous failed step',description:'Jump to the previous loaded failed step',source:'app',enabled:true,run:actions.previous,shortcut:{text:'⌥⇧↑',keys:'Alt+Shift+ArrowUp'}});
+    if(actions?.next)entries.push({name:'Next failed step',description:'Jump to the next loaded failed step',source:'app',enabled:true,run:actions.next,shortcut:{text:'⌥⇧↓',keys:'Alt+Shift+ArrowDown'}});
     return entries;
   }
   private deskEntries():PaletteEntry[]{
