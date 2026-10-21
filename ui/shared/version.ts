@@ -10,6 +10,8 @@ export const RECENT_ENCODED_CHARS = 8 * 1024;
 
 export type UiIdentity = Readonly<{
   iteration: string;
+  /** The sealed release that supplied this page, absent for a checkout run. */
+  release?: string;
   git?: Readonly<{commit: string; shortCommit: string; branch: string; modified: boolean; committedAt: string}>;
   assets?: Readonly<{digest: string; builtAt?: string}>;
   startedAt?: string;
@@ -26,6 +28,7 @@ export function identityText(identity: UiIdentity): string {
   if (!identity.git) return identityLabel(identity);
   return [identityLabel(identity), `Commit at server start: ${identity.git.commit}`, `Branch: ${identity.git.branch}`,
     `UI source at server start: ${identity.git.modified ? 'modified' : 'clean'}`, `Commit time: ${identity.git.committedAt}`,
+    ...(identity.release ? [`Release: ${identity.release}`] : []),
     `Asset build time: ${identity.assets?.builtAt ?? 'unknown'}`, `Served asset set: ${identity.assets?.digest ?? 'unknown'}`,
     `Server start: ${identity.startedAt ?? 'unknown'}`, `Pi runtime: ${identity.pi ?? 'unknown'}`, `Resolved Durable: ${identity.durable ?? 'unknown'}`].join('\n');
 }
@@ -45,6 +48,7 @@ export function readIdentity(encoded: string | null): UiIdentity {
     if (!date(value.startedAt) || !text(value.pi, 128) || !text(value.durable, 128) || !record(value.assets)
       || typeof value.assets.digest !== 'string' || !/^[a-f0-9]{64}$/.test(value.assets.digest)
       || (value.assets.builtAt !== undefined && !date(value.assets.builtAt))) return declared;
+    if (value.release !== undefined && (typeof value.release !== 'string' || !/^[a-f0-9]{64}$/.test(value.release))) return declared;
     const recent = readRecent(value.recent);
     const {recent: _unchecked, ...identity} = value as UiIdentity & Record<string, unknown>;
     return (recent ? {...identity, recent} : identity) as UiIdentity;

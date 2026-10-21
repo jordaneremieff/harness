@@ -164,16 +164,21 @@ export class CommunicationCard {
   }
   private results(value:CommunicationPresentation):void {
     const result=value.state==='ready'&&value.value.kind==='result'?value.value:undefined;
-    const signature=this.hooks.result&&result?JSON.stringify([result.sender.identity,result.metadata.references]):'';
+    const signature=this.hooks.result&&result?.metadata.references.length?JSON.stringify([result.sender.identity,result.body.complete,result.metadata.references]):'';
     if(signature===this.resultSignature)return;this.resultSignature=signature;this.resultActions.replaceChildren();
     this.resultActions.hidden=!signature;if(!signature||!result)return;
+    const multiple=result.metadata.references.length>1;
+    if(!result.body.complete)this.resultActions.append(document.createTextNode(`Shortened · ${multiple?'full text: ':''}`));
+    else if(multiple)this.resultActions.append(document.createTextNode('Result records: '));
     result.metadata.references.forEach((reference,index)=>{
-      const action=cardAction('search',`${result.body.complete?'Open answer':'Show full answer'}${result.metadata.references.length>1?` ${index+1}`:''}`,()=>{
+      if(index)this.resultActions.append(document.createTextNode(' · '));
+      const label=`${result.body.complete?'Result record':'Full text of result'} ${index+1}`;
+      const action=button(multiple?String(index+1):result.body.complete?'Result record':'full text',()=>{
         const current=this.current()?.communication;
         if(current?.state!=='ready'||current.value.kind!=='result'||current.value.sender.identity!==result.sender.identity)return;
         const selected=current.value.metadata.references[index];if(!selected||selected.submissionId!==reference.submissionId||selected.requestId!==reference.requestId)return;
         this.hooks.result?.(current.value.sender.identity,{submissionId:selected.submissionId,...(selected.requestId?{requestId:selected.requestId}:{})});
-      });action.querySelector('.card-action-label')?.classList.remove('sr-only');this.resultActions.append(action);
+      },'communication-result-link');action.setAttribute('aria-label',label);action.title=label;this.resultActions.append(action);
     });
   }
   private senderLabel(sender: Communication['sender']): string {

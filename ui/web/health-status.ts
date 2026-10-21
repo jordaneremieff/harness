@@ -15,8 +15,10 @@ export class HealthStatus {
   private modal: HealthDialog;
   private identity: UiIdentity;
   private read: HealthRead;
-  constructor(modal: HealthDialog, identity: UiIdentity, trigger: HTMLElement = byId('workbench-version'), readHealth: HealthRead = read) {
-    this.modal = modal; this.identity = identity; this.read = readHealth;
+  private generation: string | null;
+  constructor(modal: HealthDialog, identity: UiIdentity, trigger: HTMLElement = byId('workbench-version'), readHealth: HealthRead = read,
+    generation: string | null = document.querySelector('meta[name="ui-generation"]')?.getAttribute('content') ?? null) {
+    this.modal = modal; this.identity = identity; this.read = readHealth; this.generation = generation;
     trigger.addEventListener('click', () => this.open());
   }
   open(): void {
@@ -33,7 +35,7 @@ export class HealthStatus {
       busy = true; refresh.disabled = true; content.replaceChildren(element('p', undefined, 'Read backend health…'));
       try {
         const snapshot = readHealthSnapshot(await this.read(controller.signal));
-        if (this.modal.owns(token)) renderHealth(content, snapshot);
+        if (this.modal.owns(token)) renderHealth(content, snapshot, this.identity, this.generation);
       } catch {
         if (this.modal.owns(token)) content.replaceChildren(element('p', undefined, 'Backend health is unavailable. Select Refresh health to retry.'));
       } finally {busy = false; if (this.modal.owns(token)) refresh.disabled = false;}
@@ -52,7 +54,7 @@ export function uptimeText(milliseconds: number): string {
   return counts.slice(first, first + 2).filter((item, index) => index === 0 || item.count > 0).map(item => `${item.count} ${item.unit}`).join(' ');
 }
 const ASSET_DIGEST_CHARS = 12;
-function renderHealth(content: HTMLElement, snapshot: HealthSnapshot): void {
+function renderHealth(content: HTMLElement, snapshot: HealthSnapshot, loaded: UiIdentity, generation: string | null): void {
   const facts = element('dl', 'health-facts');
   const row = (name: string, value: string, title?: string) => {
     const field = element('dd', undefined, value); if (title) field.title = title;
@@ -69,5 +71,12 @@ function renderHealth(content: HTMLElement, snapshot: HealthSnapshot): void {
     service.state === 'stopped' && service.name === 'rpc' ? 'idle (no primary running)' : service.reason ? `${service.state}: ${service.reason}` : service.state);
   row('Build', snapshot.build.state); row('Memory RSS', `${Math.round(snapshot.process.rssBytes / (1024 * 1024))} MiB`);
   row('Active API requests', `${snapshot.requests.active} / ${snapshot.requests.limit}`);
-  content.replaceChildren(element('p', undefined, 'This snapshot changes only when you select Refresh health.'), facts);
+  const identityFields = (name: string, commit: string | undefined, release: string | undefined, browserGeneration: string | undefined) => {
+    const section = element('section', 'health-identity'), fields = element('dl', 'health-facts');
+    for (const [label, value] of [['Commit', commit], ['Release id', release], ['Browser generation', browserGeneration]]) fields.append(element('dt', undefined, label), element('dd', undefined, value ?? 'Not provided'));
+    section.append(element('h3', undefined, name), fields); return section;
+  };
+  content.replaceChildren(element('p', undefined, 'This snapshot changes only when you select Refresh health.'),
+    identityFields('This tab', loaded.git?.commit, loaded.release, generation && /^[a-f0-9]{64}$/.test(generation) ? generation : undefined),
+    identityFields('Served', snapshot.identity.commit, snapshot.backend?.release, snapshot.identity.assetDigest), facts);
 }

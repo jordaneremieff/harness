@@ -19,6 +19,16 @@ export function messageAriaLabel(message: MessageView, operatorInput = false): s
   if (message.role === 'user') return operatorInput ? 'Your message' : 'Incoming message';
   return message.role === 'assistant' ? 'Agent response' : `${presentMessage(message).label} message`;
 }
+/** Initial settings remain available to raw inspection and Find, without a duplicate transcript line. */
+export function initialSettings(entries: readonly EntryView[], historyBeginning = true): Set<string> {
+  const hidden = new Set<string>();
+  if (!historyBeginning) return hidden;
+  for (const entry of entries) {
+    if (entry.messages?.some(message => message.role === 'user')) break;
+    if (entry.kind === 'model_change' || entry.kind === 'thinking_level_change') hidden.add(entry.id);
+  }
+  return hidden;
+}
 export function entryVisible(entry: EntryView): boolean {
   if (entry.data) return true;
   if (entry.messages) return entry.messages.some(message => presentMessage(message).visible);

@@ -1202,7 +1202,7 @@ test('the browser copy of a sent message reads as the operator\'s own with its d
 });
 test('known session changes use quiet system notes with retained data under disclosure', () => {
   setup(); const view = transcript();
-  view.set([{id: 'model', kind: 'model_change', data: {value: {provider: 'fixture', modelId: 'test'}, truncated: false}}, {id: 'thinking', kind: 'thinking_level_change', data: {value: {thinkingLevel: 'high'}, truncated: false}}, {id: 'unknown', kind: 'future_change', data: {value: {fact: 'known'}, truncated: false}}]); flush();
+  view.set([{id: 'first-user', kind: 'message', messages: [{...message('first-input', 'First message'), role: 'user'}]}, {id: 'model', kind: 'model_change', data: {value: {provider: 'fixture', modelId: 'test'}, truncated: false}}, {id: 'thinking', kind: 'thinking_level_change', data: {value: {thinkingLevel: 'high'}, truncated: false}}, {id: 'unknown', kind: 'future_change', data: {value: {fact: 'known'}, truncated: false}}]); flush();
   const events = node('primary-transcript').querySelector('.session-events'); assert.ok(events);
   assert.match(events.textContent, /2 settings changes, 1 record/); assert.doesNotMatch(events.textContent, /session events/); assert.equal(events.querySelectorAll('.system-note').length, 0);
   events.open = true; events.dispatch('toggle');
@@ -2810,7 +2810,7 @@ test('Source offers one original Copy with Wrap without duplicating the header m
 });
 test('action hover cues remain neutral while actual links and keyboard focus remain visible', () => {
   const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8'); const blocks = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)];
-  for (const [, selectors, body] of blocks) if (selectors?.includes(':hover')) assert.doesNotMatch(body ?? '', /text-decoration\s*:\s*underline/);
+  for (const [, selectors, body] of blocks) if (selectors?.includes(':hover') && !/communication-result-link|workbench-release/.test(selectors)) assert.doesNotMatch(body ?? '', /text-decoration\s*:\s*underline/);
   for (const selector of ['.row-message:hover', '.message-actions button:hover', '.source-header button:hover', '.card-action:hover']) {
     const block = blocks.find(([, selectors]) => selectors?.split(',').some(value => value.trim() === selector)); assert.ok(block, selector); assert.match(block[2] ?? '', /background:\s*var\(--raised\)/);
   }
@@ -2866,7 +2866,7 @@ test('static workbench markup owns one footer and keeps composer actions without
   assert.match(factory, /const intake = element\('span','composer-intake'\); intake\.append\(attach,sources,picker\)/);
   assert.match(factory, /cardAction\('plus', 'Add to message'/);
   assert.match(factory, /const queueGuidance = element\('span', 'sr-only', queueDescription\)/);
-  assert.match(factory, /root\.append\(receipt, utilities, input, meta, queueGuidance\)/); assert.match(factory, /meta\.append\(state, settings, stateDetails\)/); assert.match(factory, /utilities\.append\(recallLine\)/); assert.match(factory, /line\.append\(intake, stop, bar\)/); assert.match(factory, /bar\.append\(submit\)/); assert.match(factory, /submit\.append\(queue, start, send\)/);
+  assert.match(factory, /root\.append\(receipt, utilities, input, meta, queueGuidance\)/); assert.match(factory, /meta\.append\(state, stateDetails\)/); assert.match(factory, /utilities\.append\(recallLine\)/); assert.match(factory, /line\.append\(intake, stop, settings, bar\)/); assert.match(factory, /bar\.append\(submit\)/); assert.match(factory, /submit\.append\(queue, start, send\)/);
   assert.doesNotMatch(factory, /composer-guidance|usage-details|class="statusline"|root\.append\([^)]*receiptDetails/);
   assert.equal([...html.matchAll(/id="focused-composer-status" class="workbench-draft-state"/g)].length, 1);
 });
@@ -2878,8 +2878,8 @@ test('composer utilities precede the writing surface and transcript paints retai
   assert.ok(elements.queueGuidance); assert.equal(elements.queueGuidance.className, 'sr-only');
   assert.deepEqual(root.children, [elements.receipt, utilities, input, elements.meta, elements.queueGuidance]);
   assert.deepEqual(utilities.children, [elements.recallLine]);
-  assert.deepEqual((elements.meta as unknown as FakeNode).children, [elements.state, elements.settings, elements.stateDetails]);
-  assert.deepEqual(shelf.children, [input.querySelector('.composer-intake'), input.querySelector('.stop'), input.querySelector('.composer-bar')]);
+  assert.deepEqual((elements.meta as unknown as FakeNode).children, [elements.state, elements.stateDetails]);
+  assert.deepEqual(shelf.children, [input.querySelector('.composer-intake'), input.querySelector('.stop'), elements.settings, input.querySelector('.composer-bar')]);
   assert.equal(surface.parentNode, input); assert.equal(editor.parentNode, surface); assert.equal(surface.children[1], editor);
   const host = new FakeNode('section'); roots.push(host); root.hidden = false; host.append(node('primary-transcript'), root);
   editor.value = 'Retained native draft'; const moves = editor.moves;

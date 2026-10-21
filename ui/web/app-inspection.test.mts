@@ -26,25 +26,56 @@ test('exact result reads use the producer identity and native references without
   globalThis.fetch=async(path,init)=>{if(/\/agents\/[^/]+\/inspect(?:\?|$)/.test(String(path))){requests.push({path:String(path),body:JSON.parse(String(init?.body))});return Response.json({ok:true,data:{view:'result',identity,readAt:'now',status:'done',submissionId:9,requestId:'producer-request',answerEntryId:17,answer:{text:'Exact producer answer',shortened:false,protected:false},usage:{value:{},truncated:false}}});}return original(path,init);};
   const message:MessageView={id:'result-message',role:'custom',state:'final',parts:[{type:'text',text:'Transport paragraph'}],coverage:f.coverage,communication:{state:'ready',origin:{kind:'ordinary-custom',customType:'agent.peer',renderEntryId:'result-message'},value:{format:'agent.communication/1',sender:{identity,name:'Worker'},body:{text:'Task complete',complete:false,redacted:false},recordedAt:1700000000000,kind:'result',metadata:{status:'done',references:[{submissionId:9,requestId:'producer-request',answerEntryId:'17'}],omittedReferences:0}}}};
   const primary=primaryFixture({epoch:7011});await arrive({workspace:{id:'result-link',revision:1,primaryKey:primary.key,conversationLayout:singlePane()},primaries:[primary],roster:[agentFixture(identity,{availability:'stored'})],targets:[targetFixture('link-primary',{kind:'primary',key:primary.key,epoch:primary.epoch}),targetFixture('link-agent',target)],history:[f.entryFixture('result-entry',[message])]});
-  const before=transportLog.length, action=primaryControl('root').querySelector('.communication-results .card-action');assert.ok(action);
-  assert.equal(action.getAttribute('aria-label'),'Show full answer');assert.equal(action.querySelector('.card-action-label')?.textContent,'Show full answer');
+  const before=transportLog.length, action=primaryControl('root').querySelector('.communication-results .communication-result-link');assert.ok(action);
+  assert.equal(action.getAttribute('aria-label'),'Full text of result 1');assert.equal(action.textContent,'full text');
+  assert.equal(action.parentNode?.textContent,'Shortened · full text');
   action.click();await settle();
   assert.equal(requests.length,1);assert.match(requests[0]?.path??'',new RegExp(encodeURIComponent(identity)));assert.deepEqual(requests[0]?.body,{view:'result',submissionId:9,requestId:'producer-request'});assert.match(activeInspection().textContent,/Exact producer answer/);assert.deepEqual(transportLog.slice(before).filter(row=>row.method==='POST'&&/\/(targets|inputs|start|abort)$/.test(row.path)),[]);
 });
 
-test('complete and incomplete result cards retain named numbered answer actions for every reference',async()=>{
-  for(const complete of [false,true])for(const count of [1,2]){
-    const references=Array.from({length:count},(_,index)=>({submissionId:20+index,requestId:`answer-${index}`}));
-    const message:MessageView={id:`answer-${complete}-${count}`,role:'custom',state:'final',parts:[{type:'text',text:'Transport'}],coverage:f.coverage,communication:{state:'ready',origin:{kind:'ordinary-custom',customType:'agent.peer',renderEntryId:`answer-${complete}-${count}`},value:{format:'agent.communication/1',sender:{identity,name:'Worker'},body:{text:'Answer body',complete,redacted:false},recordedAt:1700000000000,kind:'result',metadata:{status:'done',references,omittedReferences:0}}}};
-    const primary=primaryFixture({epoch:7020});
-    await arrive({workspace:{id:`answer-label-${complete}-${count}`,revision:1,primaryKey:primary.key,conversationLayout:singlePane()},primaries:[primary],roster:[agentFixture(identity)],history:[f.entryFixture(`answer-entry-${complete}-${count}`,[message])]});
-    const row=primaryControl('root').querySelector('.communication-results');assert.ok(row);assert.equal(row.hidden,false);assert.equal(row.children.length,count);
-    row.children.forEach((action,index)=>{
-      const label=`${complete?'Open answer':'Show full answer'}${count>1?` ${index+1}`:''}`;
-      assert.equal(action.getAttribute('aria-label'),label);assert.equal(action.title,label);
-      assert.equal(action.querySelector('.card-action-label')?.textContent,label);assert.ok(action.querySelector('.card-icon-search'));
-    });
+type ResultRead = {path:string;body:unknown};
+function referenceLine(complete:boolean,count:number,numbers:string):string {
+  if (complete) return count===1?'Result record':`Result records: ${numbers}`;
+  return count===1?'Shortened · full text':`Shortened · full text: ${numbers}`;
+}
+async function referenceCase(complete:boolean,count:number,requests:ResultRead[]):Promise<void> {
+  const references=Array.from({length:count},(_,index)=>({submissionId:20+index,...(index===1?{}:{requestId:`answer-${index}`})}));
+  const message:MessageView={id:`answer-${complete}-${count}`,role:'custom',state:'final',parts:[{type:'text',text:'Transport'}],coverage:f.coverage,communication:{state:'ready',origin:{kind:'ordinary-custom',customType:'agent.peer',renderEntryId:`answer-${complete}-${count}`},value:{format:'agent.communication/1',sender:{identity,name:'Worker'},body:{text:'Answer body',complete,redacted:false},recordedAt:1700000000000,kind:'result',metadata:{status:'done',references,omittedReferences:0}}}};
+  const primary=primaryFixture({epoch:7020});
+  await arrive({workspace:{id:`answer-label-${complete}-${count}`,revision:1,primaryKey:primary.key,conversationLayout:singlePane()},primaries:[primary],roster:[agentFixture(identity)],history:[f.entryFixture(`answer-entry-${complete}-${count}`,[message])]});
+  const row=primaryControl('root').querySelector('.communication-results');assert.ok(row);assert.equal(row.hidden,false);
+  const numbers=references.map((_,index)=>String(index+1)).join(' · ');
+  assert.equal(row.textContent,referenceLine(complete,count,numbers));
+  assert.equal(row.querySelector('.card-action'),null);assert.equal(row.querySelector('svg'),null);
+  const actions=row.querySelectorAll('.communication-result-link');assert.equal(actions.length,count);
+  for(const [index,action] of actions.entries()){
+    const label=`${complete?'Result record':'Full text of result'} ${index+1}`;
+    assert.equal(action.getAttribute('aria-label'),label);assert.equal(action.title,label);assert.equal(action.tagName,'button');
+    const single=complete?'Result record':'full text';
+    assert.equal(action.textContent,count>1?String(index+1):single);assert.equal(action.children.length,0);
+    const before=requests.length;action.click();await settle();
+    assert.equal(requests.length,before+1);assert.match(requests.at(-1)?.path??'',new RegExp(encodeURIComponent(identity)));
+    assert.deepEqual(requests.at(-1)?.body,{view:'result',...references[index]});
   }
+}
+test('result references use all four exact plain-text variants and retain every native selector',async t=>{
+  const original=globalThis.fetch;t.after(()=>{globalThis.fetch=original;});const requests:ResultRead[]=[];
+  globalThis.fetch=async(path,init)=>{if(/\/agents\/[^/]+\/inspect(?:\?|$)/.test(String(path))){const selector=JSON.parse(String(init?.body)) as {view:'result';submissionId:number;requestId?:string};requests.push({path:String(path),body:selector});return Response.json({ok:true,data:{...selector,identity,readAt:'now',status:'done',answer:{text:'Exact answer',shortened:false,protected:false},usage:{value:{},truncated:false}}});}return original(path,init);};
+  for(const complete of [false,true])for(const count of [1,2,3])await referenceCase(complete,count,requests);
+});
+test('result reference labels follow completeness changes with unchanged native references',async()=>{
+  const references=[{submissionId:40,requestId:'same-result'}],primary=primaryFixture({epoch:7021});
+  const base={id:'same-completeness-card',role:'custom',state:'final' as const,parts:[{type:'text' as const,text:'Transport'}],coverage:f.coverage};
+  const message=(complete:boolean):MessageView=>({...base,communication:{state:'ready',origin:{kind:'ordinary-custom',customType:'agent.peer',renderEntryId:base.id},value:{format:'agent.communication/1',sender:{identity,name:'Worker'},body:{text:'Retained answer body',complete,redacted:false},recordedAt:1700000000000,kind:'result',metadata:{status:'done',references,omittedReferences:0}}}});
+  const frame=(complete:boolean,revision:number)=>({workspace:{id:'same-completeness-workspace',revision,primaryKey:primary.key,conversationLayout:singlePane()},primaries:[primary],roster:[agentFixture(identity)],history:[f.entryFixture('same-completeness-entry',[message(complete)])]});
+  await arrive(frame(false,1));const row=primaryControl('root').querySelector('.communication-results');assert.ok(row);assert.equal(row.textContent,'Shortened · full text');
+  await arrive(frame(true,2));assert.equal(primaryControl('root').querySelector('.communication-results'),row);assert.equal(row.textContent,'Result record');assert.equal(row.querySelector('.communication-result-link')?.getAttribute('aria-label'),'Result record 1');
+  await arrive(frame(false,3));assert.equal(primaryControl('root').querySelector('.communication-results'),row);assert.equal(row.textContent,'Shortened · full text');assert.equal(row.querySelector('.communication-result-link')?.getAttribute('aria-label'),'Full text of result 1');
+});
+test('result cards with no references do not display a reference lead-in',async()=>{
+  const message:MessageView={id:'unreferenced-result',role:'custom',state:'final',parts:[{type:'text',text:'Transport'}],coverage:f.coverage,communication:{state:'ready',origin:{kind:'ordinary-custom',customType:'agent.peer',renderEntryId:'unreferenced-result'},value:{format:'agent.communication/1',sender:{identity,name:'Worker'},body:{text:'Retained answer',complete:false,redacted:false},recordedAt:1700000000000,kind:'result',metadata:{status:'done',references:[],omittedReferences:0}}}};
+  const primary=primaryFixture({epoch:7022});await arrive({workspace:{id:'unreferenced-result',revision:1,primaryKey:primary.key,conversationLayout:singlePane()},primaries:[primary],roster:[agentFixture(identity)],history:[f.entryFixture('unreferenced-result-entry',[message])]});
+  const row=primaryControl('root').querySelector('.communication-results');assert.ok(row);assert.equal(row.hidden,true);assert.equal(row.textContent,'');
 });
 test('retained Tasks stays reachable when an agent lacks a live inspect capability',async t=>{
   const original=globalThis.fetch;t.after(()=>{globalThis.fetch=original;});const reads:unknown[]=[];

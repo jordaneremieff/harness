@@ -23,7 +23,7 @@ import { acknowledgeDraft, beginDraftSave, captureSubmission, createDraft, draft
 import type { DraftSave, DraftState, Submission } from './draft-state.ts';
 import { ApiError, draftImageUrl, errorMessage, operation, request, reserve } from './transport.ts';
 
-export type ComposerHooks = {recallItems?: () => readonly string[]; fileSearch?: (query: string, signal: AbortSignal) => Promise<FileSearchResult> | undefined; fileStage?: (path: string, signal: AbortSignal, current: () => boolean, stage: (files: readonly File[]) => boolean) => Promise<boolean>; workingFile?:(stage:(files:readonly File[])=>boolean)=>void; changed?:()=>void; captured?: (submission:Submission)=>void; failed?: (operationId:string,uncertain:boolean)=>void; prepareInput?: () => boolean; imageState?: (workspace: string, state: TargetState) => void; imageInput?: (target: Target) => {allowed: boolean; reason?: string}; recovery?: () => void; layoutHeight?: () => number | undefined; timing?: (start: number, end: number) => void; submitted: (operation: OperationView) => void; unknownCommand: (text: string, sendLiteral: () => void) => boolean; enterSends?: () => boolean; commands?: (deliberate: boolean) => CommandInventory; moreCommands?: (target: Target) => Promise<void>; retained?: (workspace: string, target: Target, retained: boolean) => void};
+export type ComposerHooks = {recallItems?: () => readonly string[]; fileSearch?: (query: string, signal: AbortSignal) => Promise<FileSearchResult> | undefined; fileStage?: (path: string, signal: AbortSignal, current: () => boolean, stage: (files: readonly File[]) => boolean) => Promise<boolean>; workingFile?:(stage:(files:readonly File[])=>boolean)=>void; changed?:()=>void; draftStatusChanged?:()=>void; captured?: (submission:Submission)=>void; failed?: (operationId:string,uncertain:boolean)=>void; prepareInput?: () => boolean; imageState?: (workspace: string, state: TargetState) => void; imageInput?: (target: Target) => {allowed: boolean; reason?: string}; recovery?: () => void; layoutHeight?: () => number | undefined; timing?: (start: number, end: number) => void; submitted: (operation: OperationView) => void; unknownCommand: (text: string, sendLiteral: () => void) => boolean; enterSends?: () => boolean; commands?: (deliberate: boolean) => CommandInventory; moreCommands?: (target: Target) => Promise<void>; retained?: (workspace: string, target: Target, retained: boolean) => void};
 export type ComposerElements = {root: HTMLFormElement; editor: HTMLTextAreaElement; recipient: HTMLElement; receipt: HTMLElement;
   receiptDetails: HTMLElement; queue: HTMLButtonElement; queueGuidance?: HTMLElement; send: HTMLButtonElement; save: HTMLElement; fileMenu?: HTMLElement; recallHint?: HTMLElement; recallLine?: HTMLElement; recallRestore?: HTMLButtonElement; meta?: HTMLElement; model?: HTMLButtonElement; thinking?: HTMLButtonElement; settings?: HTMLElement; utilities?: HTMLElement; commandMenu?: HTMLElement; overlay?: HTMLElement; attachments?: HTMLElement; attach?: HTMLButtonElement; sources?: HTMLButtonElement; picker?: HTMLInputElement; state?: HTMLElement; stateDetails?: HTMLElement; start?: HTMLButtonElement};
 /** An agent-specific state below the writing surface, with at most one action in the Send position (`hideSend` removes the disabled Send when the state offers none) and optional exact details. `line` is the full assistive sentence; `label` is its visible summary. `withoutDraft` keeps the composer on screen, with the editor and add control disabled, while no draft is attached, so the state and its action stay reachable. */
@@ -86,9 +86,9 @@ export function createComposerElements(instanceId: string): ComposerElements {
   // Recall stays outside the shelf so it never competes with the input controls.
   const recallRestore = element('button', 'composer-recall-restore', 'Restore draft'); recallRestore.type = 'button';
   const recallLine = element('div', 'composer-recall'); recallLine.hidden = true; recallLine.append(recallHint, recallRestore);
-  const meta = element('div', 'composer-meta'); meta.append(state, settings, stateDetails);
+  const meta = element('div', 'composer-meta'); meta.append(state, stateDetails);
   const utilities = element('div', 'composer-utilities'); utilities.append(recallLine);
-  line.append(intake, stop, bar);
+  line.append(intake, stop, settings, bar);
   // The handle is absolutely placed on the surface's top edge.
   input.append(commandMenu, fileMenu, recipient, surface, attachments, line, resize); root.append(receipt, utilities, input, meta, queueGuidance);
   const save = element('span', 'draft-state'); save.id = `${id}-save`;
@@ -307,6 +307,14 @@ export class Composer {
   }
   receipts(operations: Iterable<OperationView>): void { this.operations = [...operations]; this.receipt(this.current); this.render(); }
   get serverDraftRevision(): number | undefined { return this.current?.data.server.revision; }
+  /** All retained buffers count, including conversations outside the focused pane. */
+  get releaseReloadState(): 'ready' | 'pending' | 'failed' | 'blocked' {
+    const buffers = [...this.buffers.values()];
+    if (buffers.some(buffer => !!buffer.saveError || buffer.review || !!buffer.data.conflict)) return 'failed';
+    if (this.reloadHold || buffers.some(buffer => buffer.localCopy !== undefined || buffer.insertionCopy !== undefined || buffer.attachments?.pending && !buffer.attachments.busy)) return 'blocked';
+    if (buffers.some(buffer => !draftSaved(buffer.data) || !!buffer.saving || buffer.attachments?.busy)) return 'pending';
+    return 'ready';
+  }
   get reloadHold(): 'ime' | 'conflict' | 'uncertain' | undefined {
     if (this.composing) return 'ime';
     if ([...this.buffers.values()].some(buffer => buffer.submitting || buffer.pending.size > 0 || buffer.state.unconfirmed.some(item => !buffer.resolved.has(item.operationId)))) return 'uncertain';
@@ -785,6 +793,7 @@ export class Composer {
     this.elements.send.disabled = !buffer || !this.ready || this.sendSuppressed || buffer.submitting || this.textLimit || this.pendingBlocks(buffer) || !!this.commandHold(buffer) || buffer.data.server.recoverySendGuard?.state === 'blocked' || buffer.data.server.recoverySendGuard?.state === 'unavailable' || !draftHasContent({text: buffer.data.text.trim(), images: buffer.data.images});
     this.elements.queue.disabled = this.elements.send.disabled;
     setText(this.elements.save, this.saveSummary(buffer));
+    this.hooks.draftStatusChanged?.();
   }
   private renderControls(): void {
     if (this.destroyed) return;
@@ -951,6 +960,7 @@ export class Composer {
     this.paint(buffer); this.receipt(buffer); this.flush(buffer); if (this.current === buffer) this.focus();
   }
   private receipt(buffer?: Buffer): void {
+    this.hooks.draftStatusChanged?.();
     if (buffer) this.notifyRetained(buffer);
     if (this.destroyed || !buffer || this.current !== buffer) return;
     const slot = this.slot(); slot.replaceChildren();

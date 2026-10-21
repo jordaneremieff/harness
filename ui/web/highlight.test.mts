@@ -57,6 +57,48 @@ test('config scalar comments and types depend on whole values, not prose words',
   setup(); for (const language of ['yaml', 'toml']) assert.equal(output(text, language).textContent, text);
 });
 
+test('shell paths, hashes, dates and capitalized arguments stay plain without partial numeric tones', () => {
+  const text = 'node /Projects/sample/Workspace/dump/x-2026-10-21/run.mts --expected-commit 99c8d87 \\\n';
+  for (const language of ['sh', 'bash', 'zsh']) {
+    const ranges=tokenRanges(text,language);assert.ok(ranges);
+    const toneAt=(word:string)=>ranges.find(range=>range.start<=text.indexOf(word)&&range.end>text.indexOf(word))?.tone;
+    assert.equal(toneAt('node'),'fn');assert.equal(toneAt('--expected-commit'),'property');
+    for(const word of ['Projects','Workspace','2026-10-21','99c8d87'])assert.equal(toneAt(word),undefined,`${language}: ${word}`);
+    assert.equal(ranges.some(range=>range.tone==='type'||range.tone==='number'),false);
+    setup();assert.equal(output(text,language).textContent,text);
+  }
+  const textArguments='printf Users Workspace Type number 42abc abc42 123/456 5.txt v2.5 2026-10-21 abc-42 0xff 1e3 12_000';
+  const ranges=tokenRanges(textArguments,'bash');assert.ok(ranges);
+  assert.deepEqual(ranges.map(range=>[textArguments.slice(range.start,range.end),range.tone]),[['printf','fn']]);
+});
+test('shell numbers require whole signed or decimal words bounded by whitespace or shell operators', () => {
+  const text='sleep 5; printf -2 +3 1.25 .5 5. +.75 -.25|node 8&&echo 9>10\t11\r\n12';
+  const ranges=tokenRanges(text,'bash');assert.ok(ranges);
+  assert.deepEqual(ranges.filter(range=>range.tone==='number').map(range=>text.slice(range.start,range.end)),['5','-2','+3','1.25','.5','5.','+.75','-.25','8','9','10','11','12']);
+  assert.ok(ranges.some(range=>range.tone==='operator'&&text.slice(range.start,range.end)==='&&'));
+  const fragments='echo x"quoted"42 42"suffix" x\\ 42 1.2.3 123abc foo/42 /42 +42px 2026-10-21';
+  assert.equal(tokenRanges(fragments,'bash')?.some(range=>range.tone==='number'),false);
+});
+test('shell command positions color commands without coloring paths or plain arguments as functions', () => {
+  const text='node PlainArgument /Projects/sample/node.mts && node OtherArgument; node FinalArgument | node LastArgument';
+  const ranges=tokenRanges(text,'bash');assert.ok(ranges);
+  assert.deepEqual(ranges.filter(range=>range.tone==='fn').map(range=>text.slice(range.start,range.end)),['node','node','node','node']);
+  for(const word of ['PlainArgument','/Projects/sample/node.mts','OtherArgument','FinalArgument','LastArgument']){
+    const at=text.indexOf(word);assert.equal(ranges.some(range=>range.start<at+word.length&&range.end>at),false,word);
+  }
+});
+test('shell keywords, functions, flags, strings and comments keep distinct inert tones', () => {
+  const text='if true; then printf --format "%s 42" -n 5; fi # comment 99c8d87';
+  const ranges=tokenRanges(text,'bash');assert.ok(ranges);
+  const toneAt=(word:string)=>ranges.find(range=>range.start<=text.indexOf(word)&&range.end>text.indexOf(word))?.tone;
+  for(const word of ['if','then','fi #'])assert.equal(toneAt(word),'keyword');
+  assert.equal(toneAt('printf'),'fn');assert.equal(toneAt('--format'),'property');assert.equal(toneAt('-n'),'property');
+  assert.equal(toneAt('"%s 42"'),'string');assert.equal(toneAt('# comment'),'comment');
+  setup();assert.equal(output(text,'bash').textContent,text);
+  assert.ok(tokenRanges('class Example {} const count = 0xff + 1.2e3;','ts')?.some(range=>range.tone==='type'));
+  assert.deepEqual(tokenRanges('0xff 1.2e3','ts')?.filter(range=>range.tone==='number').map(range=>'0xff 1.2e3'.slice(range.start,range.end)),['0xff','1.2e3']);
+});
+
 test('all requested fence aliases and file extensions select supported languages', () => {
   setup();
   const samples: Record<string, string> = {

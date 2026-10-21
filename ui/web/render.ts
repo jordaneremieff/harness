@@ -9,7 +9,7 @@ import { highlight, languageFromPath } from './highlight.ts';
 import { transcriptImage } from './image.ts';
 import { pairedTimestamp, thinkingKey, type ThinkingTime, type ToolState } from './state.ts';
 import { isValidTimestamp, previewText } from './format.ts';
-import { entryVisible, inputDelivery, messageAriaLabel, presentEntry, presentMessage, sessionEventsSummary } from './entry-presentation.ts';
+import { entryVisible, initialSettings, inputDelivery, messageAriaLabel, presentEntry, presentMessage, sessionEventsSummary } from './entry-presentation.ts';
 import { cardPreviewLimits, readRange, presentResultPreview, presentToolPreview, resultPreview } from './cards.ts';
 import { thinkingExpanded } from './transcript-presentation.ts';
 import { TranscriptIndex, ToolElapsedClock, toolTime, thinkingLabel, thinkingPreview, slot, communicationDisclosureKeys } from './transcript-tools.ts';
@@ -222,6 +222,10 @@ export class Transcript {
   private index = new TranscriptIndex();
   private joined = this.index.joined;
   private visible = new Map<string, boolean>();
+  private initialSettings = new Set<string>();
+  private historyBeginning = true;
+  private toolStates: ReadonlyMap<string, ToolState> = new Map();
+  private indexedFindId?: string;
   private visibilityPredicate = (entry: EntryView) => this.visibleEntry(entry);
   private dirtyLayout = true;
   private generation = 0;
@@ -442,7 +446,8 @@ export class Transcript {
     if (this.geometryTimer !== undefined) clearTimeout(this.geometryTimer);
     this.geometryTimer = undefined; this.geometryDirty.clear(); this.outputNodes.clear();
     this.resize?.disconnect(); if (!this.destroyed) this.resize?.observe(this.node); this.sizes = new WeakMap(); this.scrolling = new WeakSet(); this.reflowAnchor = undefined; this.writtenScrollTop = undefined;
-    this.clearFind(); this.findRevision++;
+    this.clearFind(false); this.findRevision++;
+    this.initialSettings.clear(); this.toolStates = new Map(); this.indexedFindId = undefined;
     this.generation++; this.entries = []; this.displayed = []; this.cache.clear(); this.tools.clear(); this.liveThinking.clear(); this.thinkingTimes = new Map(); this.index = new TranscriptIndex(); this.joined = this.index.joined; this.rows = new TranscriptRows(); this.tasks = new ConversationTasks(); this.visible.clear(); this.dirtyLayout = true; this.pins.clear(); this.heights.clear(); this.gaps.clear();
     this.expanded.clear(); this.streamedThinking.clear(); this.showThinking = false; this.thinkingChoice = undefined; this.follow = true; this.readingRevision = 0;
     this.layout = layoutItems([], this.heights, 140); this.restoring = undefined; this.node.replaceChildren(...(this.lead ? [this.lead] : [])); this.scrollTo(0); this.hold = undefined; this.arrivals.reset(); this.syncLatest();
@@ -457,13 +462,16 @@ export class Transcript {
     }
     this.schedule();
   }
-  set(entries: EntryView[], tools: ReadonlyMap<string, ToolState> = new Map(), thinking: ReadonlyMap<string, ThinkingTime> = new Map()): void {
-    this.thinkingTimes = thinking;
+  set(entries: EntryView[], tools: ReadonlyMap<string, ToolState> = new Map(), thinking: ReadonlyMap<string, ThinkingTime> = new Map(), historyBeginning = true): void {
+    this.thinkingTimes = thinking; this.toolStates = tools; this.historyBeginning = historyBeginning;
+    const hidden = initialSettings(entries, historyBeginning);
+    const visibilityChanged = this.indexedFindId !== this.findId || hidden.size !== this.initialSettings.size || [...hidden].some(id => !this.initialSettings.has(id));
+    this.initialSettings = hidden; this.indexedFindId = this.findId;
     this.receivedAt = undefined; this.streamPending = false; this.deferred = undefined;
     const sessions = new Map(this.index.sessions);
     const prepended = this.entries.length > 0 && entries[0]?.id !== this.entries[0]?.id && entries.some(candidate => candidate.id === this.entries[0]?.id);
     if (prepended && !this.follow) this.holdAnchor(this.geometryAnchor());
-    this.entries = entries; this.index.update(entries, tools, this.visibilityPredicate, {incrementalVisibility: true}); this.retireForks(); this.reconcileSessions(sessions);
+    this.entries = entries; this.index.update(entries, tools, this.visibilityPredicate, {incrementalVisibility: !visibilityChanged}); this.retireForks(); this.reconcileSessions(sessions);
     for (const id of this.index.changed) {
       const entry = this.index.entries.get(id);
       if (entry) this.visible.set(id, this.visibleEntry(entry)); else this.visible.delete(id);
@@ -488,7 +496,8 @@ export class Transcript {
   }
   private deriveRows(): void {
     const previous = new Map(this.rows.runs);
-    const ordered = this.view === 'grouped' ? this.groups.rows(this.chronological) : this.chronological;
+    const visible = this.chronological.filter(entry => !this.initialSettings.has(entry.id) || entry.id === this.findId);
+    const ordered = this.view === 'grouped' ? this.groups.rows(visible) : visible;
     const retained = new Set([...this.cache].filter(([id, cached]) => cached.messages.size > 0 && (this.rows.byId.get(id)?.actionsOnly || this.protectedNode(cached.node))).map(([id]) => id));
     const displayed = this.rows.derive(ordered, this.joined, this.index.sessionOwners, this.showThinking,this.index.sessions,retained);
     this.migrateStepRows(previous);
@@ -789,6 +798,7 @@ export class Transcript {
     return {bounded, rawText, inspection: (title: string, source: () => string) => this.inspection(title, source),
       structured: (display: JsonDisplay) => { const node = structured(display); this.registerContent(node); return node; }};
   }
+  preserveReading(): void { this.saveReading(); }
   private saveReading(): void {
     if (this.hidden() || this.restoring) return;
     const anchor = this.geometryAnchor(); this.reflowAnchor = anchor;
@@ -1089,6 +1099,7 @@ export class Transcript {
     });
   }
   private visibleEntry(entry: EntryView): boolean {
+    if (this.initialSettings.has(entry.id) && entry.id !== this.findId) return false;
     if (!entryVisible(entry)) return false;
     if (entry.data || !entry.messages?.length) return true;
     return entry.messages.some(message => presentMessage(message).visible && !this.joinedMessage(entry.id, message));
@@ -1941,10 +1952,12 @@ export class Transcript {
     if (!tools) ids.push(...[...this.expanded].filter(id => id.endsWith(':group') && this.index.disclosures.has(id.slice(0, -6))));
     return ids;
   }
-  private clearFind(): void {
+  private clearFind(restore = true): void {
     this.findNode?.classList.remove('find-current'); this.findNode = undefined;
     if (this.findId) this.pins.delete(this.findId);
+    const hidden = this.findId && this.initialSettings.has(this.findId);
     this.findId = undefined;
+    if (hidden && restore && !this.destroyed) this.set(this.entries, this.toolStates, this.thinkingTimes, this.historyBeginning);
   }
   private refreshFind(): void {
     const cached = this.findId ? this.cache.get(this.displayId(this.findId)) : undefined;
@@ -1956,6 +1969,15 @@ export class Transcript {
     if (!query.trim()) return [];
     const needle = query.toLocaleLowerCase();
     return [...new Set(this.entries.filter(entry => rawText(entry).toLocaleLowerCase().includes(needle)).map(entry => entry.id))];
+  }
+  private revealFind(destination: string): void {
+    const changedVisibility = this.initialSettings.has(this.findId ?? '') || this.initialSettings.has(destination);
+    this.findId = destination;
+    if (changedVisibility) this.set(this.entries, this.toolStates, this.thinkingTimes, this.historyBeginning);
+    this.revealEntry(destination, false);
+  }
+  private findEnd(direction: number, index: number, total: number): FindStatus {
+    return {total, position: index + 1, moved: false, end: direction < 0 ? 'first' : 'last'};
   }
   find(active: () => boolean = () => true): FindSession {
     this.clearFind(); const revision = ++this.findRevision, generation = this.generation;
@@ -1973,8 +1995,8 @@ export class Transcript {
       const index = matches.indexOf(current);
       const next = index < 0 ? initial(direction, changed, matches.length) : index + direction;
       const destination = matches[next];
-      if (!destination) return {total: matches.length, position: index + 1, moved: false, end: direction < 0 ? 'first' : 'last'};
-      current = destination; this.findId = current; this.revealEntry(current, false);
+      if (!destination) return this.findEnd(direction, index, matches.length);
+      current = destination; this.revealFind(current);
       return {total: matches.length, position: next + 1, moved: true, end: null};
     };
     return {next: query => step(query, 1), previous: query => step(query, -1), reset, close};

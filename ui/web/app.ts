@@ -31,6 +31,7 @@ import { WorkbenchStatus } from './workbench-status.ts';
 import { VersionStatus } from './version-status.ts';
 import { UpdateNotice } from './update-notice.ts';
 import { HealthStatus } from './health-status.ts';
+import { ReleaseNotice, loadedRelease, readReleaseHealth, type ReleaseReloadState } from './release-notice.ts';
 import { ConnectionRecovery, connectionSurface as connectionSurfaceFor, type ConnectionPhase } from './connection-state.ts';
 import { announce, byId, button, copy, details, element, empty, placeRetained, rawText, setText } from './dom.ts';
 import {StableViews} from './stable-views.ts';
@@ -55,7 +56,7 @@ import { hydrateVisible, refreshVisible } from './hydrate.ts';
 import { MessageTarget, SelectionQueue, navigationState } from './selection-state.ts';
 import { usageFacts } from './usage.ts';
 import { createResizer, type Resizer } from './resize.ts';
-import { entryVisible } from './entry-presentation.ts';
+import { entryVisible, initialSettings } from './entry-presentation.ts';
 import { primaryBusy, primaryEmpty } from './primary-presentation.ts';
 import { inputOperation, operationLabel } from './operation-label.ts';
 import { PreferenceQueue } from './preference-queue.ts';
@@ -114,8 +115,14 @@ const modal = new Modal(focusEditor);
 const preferences = new PreferenceQueue();
 const diagnostics = new BrowserDiagnostics();
 const versionStatus = new VersionStatus();
-new UpdateNotice(versionStatus.identity, {storage: sessionStorage, before: byId('workbench-version'), details: (title, body) => {modal.open(title); modal.body.append(...body);}, copy: (text, anchor) => {void copy(text, anchor);}});
-new HealthStatus(modal, versionStatus.identity, versionStatus.node);
+const updateNotice = new UpdateNotice(versionStatus.identity, {storage: sessionStorage, before: byId('workbench-version'), details: (title, body) => {modal.open(title); modal.body.append(...body);}, copy: (text, anchor) => {void copy(text, anchor);}});
+const healthStatus = new HealthStatus(modal, versionStatus.identity, versionStatus.node);
+const releaseNotice = new ReleaseNotice(loadedRelease(versionStatus.identity, document.querySelector('meta[name="ui-generation"]')?.getAttribute('content') ?? null), {
+  before: versionStatus.node, read: readReleaseHealth, reload: reloadRelease, details: () => healthStatus.open(), reloadState: releaseReloadState,
+  changed: visible => {versionStatus.node.hidden = visible; updateNotice.suppress(visible);},
+  failure: () => announce('Reload did not finish. Your drafts remain in this page.'),
+  clock: {set: (callback, delay) => window.setTimeout(callback, delay), clear: timer => window.clearTimeout(timer)},
+});
 let diagnosticsActive = false;
 let devReload: DevReload | undefined;
 let devInteractionRevision = 0;
@@ -191,7 +198,7 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
   if (target.kind === 'agent') root.insertBefore(createHistoryNote(add), region);
   const controller = {workspaceId, target: {...target}, instanceId, root, nodes, elements, abort: new AbortController(), historyAbort: new AbortController(), cursor: null, before: null, loading: false, preparing: false, passive: true, historyReady: false, historyBoundaryLoaded: false, initialized: false, showThinking: false} as ConversationController;
   wireSettingPickers(controller);
-  controller.composer = new Composer(elements, {workingFile:stage=>composerWorkingFile(controller,stage),recallItems:()=>recallItems(inputEchoes.entries(controller.workspaceId,controller.target,(()=>{const conversation=state.conversations.get(targetIdentity(controller.target));return conversation?conversationBlocks(conversation):[];})())),fileSearch:(query,signal)=>searchWorkingFiles(controller,query,signal),fileStage:(path,signal,present,stage)=>stageMentionedFile(controller,path,signal,present,stage),changed:()=>{devInteractionRevision++;},captured: submission=>{const conversation=state.conversations.get(targetIdentity(controller.target));inputEchoes.capture(workspaceId,submission,conversation?conversationBlocks(conversation):[]);renderController(controller);},failed:(id,uncertain)=>{inputEchoes.failed(id,uncertain);renderController(controller);},prepareInput: () => !controller.passive, imageState: refreshComposerImages, imageInput: captured => composerImageInput(controller, captured), recovery: () => recovery.open(), layoutHeight: () => stableViews().height(elements.root), enterSends: () => state.workspace?.enterSendsMessages === true, timing: (start, end) => {if (controller.workspaceId === state.workspace?.id && !elements.root.closest('[hidden],[inert]')) diagnostics.measure('editor-echo', start, end);}, submitted: result => {inputEchoes.settle(result);showOperation(result, workspaceId);renderController(controller);}, unknownCommand: (text, literal) => target.kind === 'primary' && sameTarget(primaryTarget(), target) ? actions.unknown(text, literal) : false,
+  controller.composer = new Composer(elements, {workingFile:stage=>composerWorkingFile(controller,stage),recallItems:()=>recallItems(inputEchoes.entries(controller.workspaceId,controller.target,(()=>{const conversation=state.conversations.get(targetIdentity(controller.target));return conversation?conversationBlocks(conversation):[];})())),fileSearch:(query,signal)=>searchWorkingFiles(controller,query,signal),fileStage:(path,signal,present,stage)=>stageMentionedFile(controller,path,signal,present,stage),changed:()=>{devInteractionRevision++;},draftStatusChanged:()=>releaseNotice.refresh(),captured: submission=>{const conversation=state.conversations.get(targetIdentity(controller.target));inputEchoes.capture(workspaceId,submission,conversation?conversationBlocks(conversation):[]);renderController(controller);},failed:(id,uncertain)=>{inputEchoes.failed(id,uncertain);renderController(controller);},prepareInput: () => !controller.passive, imageState: refreshComposerImages, imageInput: captured => composerImageInput(controller, captured), recovery: () => recovery.open(), layoutHeight: () => stableViews().height(elements.root), enterSends: () => state.workspace?.enterSendsMessages === true, timing: (start, end) => {if (controller.workspaceId === state.workspace?.id && !elements.root.closest('[hidden],[inert]')) diagnostics.measure('editor-echo', start, end);}, submitted: result => {inputEchoes.settle(result);showOperation(result, workspaceId);renderController(controller);}, unknownCommand: (text, literal) => target.kind === 'primary' && sameTarget(primaryTarget(), target) ? actions.unknown(text, literal) : false,
     ...(target.kind === 'primary' ? {commands: () => actions.commandOptions(), moreCommands: (captured: Target) => actions.continueCommands(captured)} : {}),
     ...agentCommandHooks(controller),
     retained: (workspace, captured) => { if (workspace === state.workspace?.id && captured.kind === 'agent') renderMessageResume(captured.identity); }});
@@ -402,6 +409,10 @@ export function addFileToMessage(rootId:string,path:string):void {
 /** Working recipients invite follow-ups; unavailable recipients retain an explicit draft invitation. */
 function messagePlaceholder(name:string,input:boolean,busy=false):string {
   return !connected||!input?`Draft for ${name}`:busy?'Write a change or follow-up':`Message ${name}`;
+}
+function composerName(controller: ConversationController, view: ConversationPresentation): string {
+  const primary = controller.target.kind === 'primary' ? state.primaries.get(controller.target.key) : undefined;
+  return controller.target.kind === 'primary' && view.name === 'Primary' && !view.nameDetail && !primary?.sessionName?.trim() && !primary?.extension?.title?.trim() ? 'Pi' : presentationName(view);
 }
 /** An agent composer reads its host's commands on the first deliberate slash and keeps them for the connection epoch. */
 function agentCommandHooks(controller:ConversationController):{commands?:(deliberate:boolean)=>import('./command-menu-state.ts').CommandInventory} {
@@ -629,6 +640,7 @@ async function prepareMessageTarget(workspaceId: string, target: Extract<Target,
 const extensionDialogs = new ExtensionDialogs(modal, () => state, next => { state = next; }, primary, item => presentationName(presentation({kind: 'primary', key: item.key, epoch: item.epoch})), syncAwaitingAnswer);
 const connectionRecovery = new ConnectionRecovery({attempt: resync, paint: (phase, error) => {
   connectionPhase = phase; connectionError = error; connected = phase === 'healthy'; renderConnection();
+  releaseNotice.readiness(connected && uiReady && !document.hidden);
   if (connected) {renderAll(); void finishStartup().catch(showError);} else renderAvailability();
 }});
 export const selectionQueue = new SelectionQueue({current: () => state.workspace, reload, save: (workspace, change, control) => request<Workspace>(`/api/workspaces/${encodeURIComponent(workspace.id)}/selection`, 'PUT', {expectedRevision: workspace.revision, ...change,...(control ? {control} : {})},undefined,control ? AbortSignal.timeout(CONTROL_LIMITS.executionMs) : undefined), paint: (workspace, pending) => { selecting = pending; state = {...state, workspace}; renderAll(); }});
@@ -775,7 +787,8 @@ function refreshCaptionConsumers(): void {
     controller.transcript.refreshSubjects();
     const view = presentation(controller.target);
     renderComposerSettings(controller, view);
-    controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + presentationName(view), controllerGuidance(controller, view), messagePlaceholder(presentationName(view),view.input,view.busy));
+    const name = composerName(controller, view);
+    controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + name, controllerGuidance(controller, view), messagePlaceholder(name,view.input,view.busy));
   }
   const captured = messageTarget.current;
   if (captured && messageTarget.valid(captured)) {
@@ -845,6 +858,7 @@ function updateConversationStatus(target: Target | undefined, view: Conversation
   activity.setAttribute('role', 'status');
 }
 function renderWorkbenchStatus(): void {
+  releaseNotice.refresh();
   byId('files-refresh').hidden = !fileWatch.status;
   renderControlAttribution();
   const notice = fileStatusNotice();
@@ -1231,7 +1245,7 @@ function stream(signal?: AbortSignal): Promise<void> {
   return (signal ? waitForSignal(promise, signal) : promise).finally(() => { window.clearTimeout(timer); if (streamWait === ready) streamWait = undefined; });
 }
 function disconnected(error: unknown = new Error('The event stream closed.')): void {
-  source?.close(); connectionId = undefined; connected = false; renderAvailability(); devRestoreWake?.();
+  source?.close(); connectionId = undefined; connected = false; releaseNotice.readiness(false); renderAvailability(); devRestoreWake?.();
   if (streamWait) streamWait.reject(error);
   else connectionRecovery.lost(error);
 }
@@ -1250,7 +1264,7 @@ export function renderConnection(): void {
 async function resync(signal: AbortSignal): Promise<void> {
   signal.throwIfAborted();
   if (resynchronizing) return resynchronizing;
-  source?.close(); connected = false; renderAvailability(); devRestoreWake?.();
+  source?.close(); connected = false; releaseNotice.readiness(false); renderAvailability(); devRestoreWake?.();
   const task = (async () => {
     if (state.workspace) await reload(signal); else await refreshVisible(() => bootstrap(signal), loadVisibleHistory, showError);
     signal.throwIfAborted();
@@ -1446,7 +1460,7 @@ function renderController(controller: ConversationController, deferred = false, 
     controller.composer.attach(controller.workspaceId, saved);
   } else prepareController(controller);
   controller.composer.receipts(state.operations.values());
-  const view = presentation(controller.target); controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + presentationName(view), controllerGuidance(controller, view), messagePlaceholder(presentationName(view),view.input,view.busy));
+  const view = presentation(controller.target), name = composerName(controller, view); controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + name, controllerGuidance(controller, view), messagePlaceholder(name,view.input,view.busy));
   controller.composer.availability(connected, !!saved && (controller.target.kind === 'agent' || view.input), view.busy, selecting, view.input);
   controller.composer.awaitingAnswer(awaitingAnswer(controller.target));
   if (firstDraft && !controller.passive && !controller.root.hidden && sameTarget(layoutTarget(currentLayout(), primaryTarget()) ?? undefined, controller.target) && document.activeElement === document.body) controller.composer.focus();
@@ -1456,10 +1470,13 @@ function renderController(controller: ConversationController, deferred = false, 
   refreshStaleConnection(controller);
   const paint = () => {
     const conversation = state.conversations.get(targetIdentity(controller.target)); const entries = inputEchoes.entries(controller.workspaceId,controller.target,conversation ? conversationBlocks(conversation) : []);
-    controller.transcript.set(entries, conversation?.tools, conversation?.thinking); const hasEntries = entries.some(entry => !['model_change', 'thinking_level_change'].includes(entry.kind) && entryVisible(entry));
-    controller.hasEntries = hasEntries; renderControllerEmpty(controller);
+    if (controller.target.kind === 'agent' && !controller.historyBoundaryLoaded && conversation?.frame) controller.before = conversation.frame.nextBefore;
+    const historyBeginning = controller.target.kind === 'primary' ? controller.cursor === null : controller.before === null;
+    const settings = initialSettings(entries, historyBeginning);
+    controller.transcript.set(entries, conversation?.tools, conversation?.thinking, historyBeginning);
+    controller.hasEntries = entries.some(entry => !settings.has(entry.id) && entryVisible(entry) && (entry.kind !== 'ui.input' || (entry.data?.value as {delivery?: string})?.delivery !== 'Sending…'));
+    renderControllerEmpty(controller);
     if (controller.target.kind === 'agent') {
-      if (!controller.historyBoundaryLoaded && conversation?.frame) controller.before = conversation.frame.nextBefore;
       controller.transcript.historyAvailable(controller.before !== null);
     }
   };
@@ -1469,6 +1486,9 @@ function clearPreparationError(controller: ConversationController): void {
   const notice = controllerNode(controller, 'view-notice'); if (notice.querySelector('.preparation-error')) notice.replaceChildren();
 }
 function renderControllerEmpty(controller: ConversationController): void {
+  const primary = controller.target.kind === 'primary' ? state.primaries.get(controller.target.key) : undefined;
+  const ready = controller.target.kind === 'primary' ? primary?.lifecycle === 'ready' && primary.activity === 'idle' : agentReadAvailability(controller) === 'live' && !presentation(controller.target).busy;
+  controller.root.classList.toggle('conversation-empty', !controller.hasEntries && controller.historyReady && !controller.loading && !controller.historyError && !controller.connectionError && connected && ready);
   if (controller.target.kind === 'agent') {renderAgentState(controller); return;}
   const prerequisite = renderPrimaryHistoryAccess(controller);
   const emptyView = prerequisite ? undefined : primaryEmpty(state.primaries.get(controller.target.key), !!controller.hasEntries, controller.historyReady);
@@ -1888,8 +1908,8 @@ function agentFacts(row?: AgentRow, frame?: ProjectedFrame): {key: string; label
 function renderAvailability(): void {
   for (const controller of controllers.values()) {
     if (!connected && controller.connection?.availability === 'live') controller.connection = {...controller.connection, stale: true};
-    const view = presentation(controller.target), current = controller.workspaceId === state.workspace?.id;
-    controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + presentationName(view), controllerGuidance(controller, view), messagePlaceholder(presentationName(view),view.input,view.busy));
+    const view = presentation(controller.target), current = controller.workspaceId === state.workspace?.id, name = composerName(controller, view);
+    controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + name, controllerGuidance(controller, view), messagePlaceholder(name,view.input,view.busy));
     controller.composer.availability(connected && current, current && !!controller.saved && (controller.target.kind === 'agent' || view.input), current && view.busy, selecting, view.input);
     controllerNode(controller, 'stop').hidden = !canStopController(controller); renderControllerEmpty(controller); renderComposerSettings(controller,view);
   }
@@ -2101,7 +2121,7 @@ async function saveView(captured: TranscriptTarget | undefined, kind: 'reading' 
       const latest = state.targets.get(saved.targetKey); const transcript = controller.transcript;
       controller.showThinking = thinkingExpanded(latest?.presentation); transcript.configure(latest?.presentation, latest?.reading); notice.replaceChildren();
     }).catch(showError); }));
-  }
+  } finally { releaseNotice.refresh(); }
 }
 function currentTranscriptTarget(captured: TranscriptTarget): boolean {
   return captured.workspaceId === state.workspace?.id && controllers.get(controllerKey(captured.workspaceId, captured.saved.target)) === captured.controller && captured.controller.saved?.targetKey === captured.saved.targetKey;
@@ -2434,7 +2454,8 @@ function bind(): void {
     devInteractionRevision++;if (name !== 'select' && name !== 'scroll') selectionIntentRevision++;
     devRestoreWake?.();
   }, {capture: true, passive: true});
-  window.addEventListener('pagehide', event => {if (!event.persisted && !devNavigating) devReload?.destroy();});
+  window.addEventListener('pagehide', event => {releaseNotice.readiness(false); if (!event.persisted) releaseNotice.destroy(); if (!event.persisted && !devNavigating) devReload?.destroy();});
+  window.addEventListener('pageshow', () => releaseNotice.readiness(connected && uiReady && !document.hidden));
   setRequestTiming((start, end) => {diagnostics.measure('control-roundtrip', start, end);});
   diagnostics.setHidden(document.hidden);
   document.addEventListener('contextmenu', appContextMenu);
@@ -2470,7 +2491,7 @@ function bind(): void {
   window.addEventListener('resize', () => { renderNavigation(); for (const controller of controllers.values()) controller.composer.resize(); roster.schedule(); });
   window.addEventListener('beforeunload', event => { if (!(devNavigating&&preparedReloadState?.revision===devInteractionRevision&&preparedReloadState.workspace===state.workspace?.id) && (!filesViews.canDispose || [...controllers.values()].some(controller => !controller.composer.canDispose))) event.preventDefault(); });
   document.addEventListener('visibilitychange', () => {
-    diagnostics.setHidden(document.hidden); for (const controller of controllers.values()) controller.transcript.visibilityChanged();
+    diagnostics.setHidden(document.hidden); releaseNotice.readiness(connected && uiReady && !document.hidden); for (const controller of controllers.values()) controller.transcript.visibilityChanged();
     if (!document.hidden && !uiReady) void finishStartup().catch(showError);
     if (!document.hidden) { threadExplorer.refreshIfStale(); threadReader.refreshIfStale(); picker.writersChanged(); }
   });
@@ -2677,9 +2698,11 @@ async function finishStartup(): Promise<void> {
   if (!current()) return;
   await initializeDevReload(current);
   if (uiReady || !current()) return;
-  uiReady = true; document.dispatchEvent(new Event('ui-ready')); renderNavigation();
+  uiReady = true; releaseNotice.readiness(true); document.dispatchEvent(new Event('ui-ready')); renderNavigation();
 }
 async function initializeDevReload(current:()=>boolean): Promise<void> {
+  // Sealed releases adopt a new page only through the explicit release control.
+  if (versionStatus.identity.release) return;
   if (devReload) {await devReload.ready; if (!current()) return; devReload.reconnect(); await devReload.resume(); return;}
   const notice = element('span', 'secondary workbench-update'); notice.setAttribute('role', 'status');
   devReload = new DevReload({interaction: () => {const reason = devHold(); return {revision: devInteractionRevision, safe: !reason, ...(reason ? {reason} : {})};}, drain: drainDev,
@@ -2688,6 +2711,31 @@ async function initializeDevReload(current:()=>boolean): Promise<void> {
     captureCssState: captureDevCssState, afterCssApply: applyDevCssState,
     status: status => renderDevReloadNotice(notice, status)});
   await devReload.ready;
+}
+export function releaseReloadState(): ReleaseReloadState {
+  const states = [...controllers.values()].map(controller => controller.composer.releaseReloadState);
+  if (states.includes('failed')) return 'failed';
+  if (states.includes('pending')) return 'pending';
+  if (states.includes('blocked') || !connected || selecting || selectionQueue.unsettled || preferences.pending || !filesViews.canDispose) return 'blocked';
+  return 'ready';
+}
+/** Only an explicit release action leaves this page; no input operation is replayed. */
+export async function reloadRelease(signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted();
+  if (releaseReloadState() !== 'ready') throw new Error('Retained drafts are not ready for reload.');
+  const workspace = state.workspace?.id, revision = devInteractionRevision, retained = [...controllers.values()];
+  if (!workspace) throw new Error('No workspace owns this page.');
+  for (const controller of retained) controller.transcript.preserveReading();
+  await Promise.all(retained.map(controller => controller.composer.drain(signal)));
+  await waitForSignal(filesViews.drain(), signal);
+  await waitForSignal(selectionQueue.drain(), signal);
+  await waitForSignal(preferences.drain(), signal);
+  signal.throwIfAborted();
+  const current = [...controllers.values()];
+  if (workspace !== state.workspace?.id || revision !== devInteractionRevision || releaseReloadState() !== 'ready' ||
+    current.length !== retained.length || current.some((controller, index) => controller !== retained[index])) throw new Error('Retained drafts or view ownership changed. Reload did not leave this page.');
+  const url = new URL('/', location.href); url.searchParams.set('workspace', workspace);
+  location.assign(url.href);
 }
 export async function reloadDev(): Promise<void> {
   const workspace = state.workspace?.id, revision = devInteractionRevision, retained = [...controllers.values()];

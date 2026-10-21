@@ -130,7 +130,6 @@ function identifierTone(word: string, scan: Scanner, family: Family, state: LexS
   if (keywords[family].has(word)) return 'keyword';
   const next = nextSign(scan);
   if (next === ':' && propertyPosition(scan, family, state)) return 'property';
-  if (family === 'shell' && shellFunctions.has(word)) return 'fn';
   if (types.has(word) || (word.charAt(0) >= 'A' && word.charAt(0) <= 'Z')) return 'type';
   return next === '(' ? 'fn' : undefined;
 }
@@ -159,15 +158,49 @@ function markupToken(scan: Scanner, state: LexState): Tone | undefined {
   return token(scan, 'markup', state);
 }
 function identifierStart(scan: Scanner, family: Family): boolean {return letter(scan.char()) || family === 'css' && scan.text.startsWith('--', scan.at);}
+function shellBoundary(char: string): boolean { return !char || /\s/.test(char) || ';&|<>()'.includes(char); }
+function punctuationTone(char: string): Tone | undefined {
+  if (!punctuation(char)) return;
+  return '=+-*/%!&|^~<>?'.includes(char) ? 'operator' : 'punct';
+}
+function shellCommand(word: string, scan: Scanner, state: LexState): boolean {
+  return /^[A-Za-z_][\w.-]*$/.test(word) && (state.lineStart || [';',';;','&&','||','|','&','('].includes(state.previous) || nextSign(scan)==='(');
+}
+function shellWordTone(word: string, whole: boolean, scan: Scanner, state: LexState): Tone | undefined {
+  if (whole && /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(word)) return 'number';
+  if (keywords.shell.has(word)) return 'keyword';
+  if (shellFunctions.has(word)) return 'fn';
+  if (whole && /^--?[A-Za-z][\w-]*(?:=.*)?$/.test(word)) return 'property';
+  if (shellCommand(word, scan, state)) return 'fn';
+  return word.length === 1 ? punctuationTone(word) : undefined;
+}
+/** Shell numbers belong to whole words, never fragments of paths, hashes or dates. */
+function shellToken(scan: Scanner, state: LexState): Tone | undefined {
+  const start=scan.at, first=scan.char();
+  if (/\s/.test(first)) { scan.take(); return undefined; }
+  if (';&|<>()'.includes(first)) {
+    scan.take();
+    if (';&|<>'.includes(first) && scan.char()===first) scan.take();
+    return '();'.includes(first)?'punct':'operator';
+  }
+  while(scan.has() && !shellBoundary(scan.char()) && !"\"'`#".includes(scan.char())) {
+    if(scan.char()==='\\')scan.consume(2);else scan.take();
+  }
+  if(scan.at===start) { scan.take(); return undefined; }
+  const word=scan.text.slice(start,scan.at);
+  const whole=shellBoundary(scan.text.charAt(start-1)) && shellBoundary(scan.char());
+  return shellWordTone(word, whole, scan, state);
+}
 function token(scan: Scanner, family: Family, state: LexState): Tone | undefined {
   if (comment(scan, family)) return 'comment';
   if (family === 'markup' && (!state.inTag || scan.char() === '>')) return markupToken(scan, state);
   if (quoted(scan, family)) return nextSign(scan) === ':' && propertyPosition(scan, family, state) ? 'property' : 'string';
+  if (family === 'shell') return shellToken(scan, state);
   if (digit(scan.char())) { numeric(scan); return 'number'; }
   if (identifierStart(scan, family)) { const tone = identifier(scan, family, state); state.tagName = false; return tone; }
   const char = scan.char(); scan.take();
   if (family === 'diff' && char === '@') return 'keyword';
-  return punctuation(char) ? '=+-*/%!&|^~<>?'.includes(char) ? 'operator' : 'punct' : undefined;
+  return punctuationTone(char);
 }
 
 export type TokenRange = {start: number; end: number; tone: Tone};

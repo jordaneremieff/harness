@@ -57,15 +57,18 @@ test('roster activity owns a 10px inline spinner and filters stay quiet until fo
   assert.match(media('@media (pointer:coarse)'), /\.nav-search \{ height: 44px; \}/);
   assert.match(rule('input:focus-visible, select:focus-visible'), /outline: 2px solid var\(--accent\)/);
 });
-test('result answer actions use content width and normal-flow height instead of icon-only geometry', () => {
-  const row = rule('.communication-results'), action = rule('.communication-results > .card-action');
-  assert.match(row, /display: flex; flex-wrap: wrap; gap:/);
-  assert.match(action, /display: inline-flex; align-items: center; gap: var\(--s2\)/);
-  assert.match(action, /width: auto; height: auto; max-width: 100%/);
+test('result references are plain inline text with zero horizontal inset and vertical hit areas', () => {
+  const row = rule('.communication-results'), action = rule('.communication-results > .communication-result-link');
+  assert.match(row, /display: block; padding: 0; color: var\(--muted\); font-size: var\(--fs-meta\)/);
+  assert.match(action, /display: inline-block; vertical-align: baseline; min-width: 0; min-height: 24px/);
+  assert.match(action, /margin: 0; padding: var\(--s1\) 0; border: 0; border-radius: 0; background: transparent/);
+  assert.match(action, /color: var\(--link\); font: inherit; line-height: 16px/);
   assert.match(action, /white-space: normal; overflow-wrap: normal; word-break: normal/);
-  assert.doesNotMatch(action, /(?:^|;)\s*(?:min-width|min-height|position|overflow|text-overflow):|line-clamp/);
-  assert.match(rule('.card-action'), /width: 24px; height: 24px; min-width: 24px; min-height: 24px/);
-  assert.match(media('@media (pointer:coarse)'), /\.card-action, \.section-toggle[^{}]+\{ min-height: 44px; min-width: 44px/);
+  assert.doesNotMatch(action, /(?:^|;)\s*(?:gap|position|overflow|text-overflow):|line-clamp/);
+  assert.equal(rule('.communication-results > .communication-result-link:is(:hover, :focus-visible)').trim(), 'text-decoration: underline;');
+  assert.match(rule(':focus-visible'), /outline: 2px solid var\(--accent\); outline-offset: 2px/);
+  assert.match(media('@media (pointer:coarse)'), /\.communication-results > \.communication-result-link \{ min-height: 44px; padding-block: calc\(var\(--s3\) \+ var\(--s1\) \/ 2\); \}/);
+  assert.doesNotMatch(css, /\.communication-results > \.card-action/);
 });
 test('conversation actions live in the pane tab row and keep shared desktop and coarse targets', () => {
   assert.doesNotMatch(css, /inspection-navigation/);
@@ -380,9 +383,9 @@ test('file message source and exact destination details wrap within the dialog',
   assert.match(rule('.file-message-fact'), /min-width: 0; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere/);
   assert.match(rule('.file-message-destination'), /width: 100%; min-width: 0; max-width: 100%/);
 });
-test('model and thinking leave the footer for separate readable targets under the composer', () => {
+test('model and thinking use separate readable targets on the composer shelf', () => {
   assert.doesNotMatch(html, /id="(?:model-button|thinking-button|model-value|thinking-value|agent-status)"|workbench-model/);
-  assert.match(rule('.composer-settings'), /display: flex; flex: 0 1 auto; align-items: center/); assert.match(rule('.composer-model, .composer-thinking'), /min-height: 32px;[^}]*font-size: var\(--fs-meta\); white-space: nowrap/);
+  assert.match(rule('.composer-settings'), /display: flex; flex: 1 1 auto; justify-content: flex-end; align-items: center/); assert.match(rule('.composer-model, .composer-thinking'), /min-height: 32px;[^}]*font-size: var\(--fs-meta\); white-space: nowrap/);
   assert.match(rule('.composer-meta'), /display: grid/);
   assert.doesNotMatch(css, /\.composer-model[^{}]*\{[^}]*min-width: 10ch/);
   assert.match(media('@media (pointer:coarse)'), /\.composer-model, \.composer-thinking, \.icon-button/);
@@ -618,7 +621,7 @@ test('working controls keep a quiet named Stop and visible delivery choices with
   assert.match(rule('.composer-delivery-guidance .composer-state-label'), /overflow: visible; text-overflow: clip; white-space: normal/);
   assert.match(css, /@container composer \(max-width: 760px\)/);
   assert.match(rule('.composer-meta:has(.composer-delivery-guidance) > .composer-state'), /grid-column: 1 \/ -1; grid-row: 1/);
-  assert.match(rule('.composer-meta:has(.composer-delivery-guidance) > .composer-settings'), /grid-column: 1 \/ -1; grid-row: 2; justify-self: start/);
+  assert.match(rule('.composer-settings'), /justify-content: flex-end/);
   assert.doesNotMatch(css, /\.modes\b/);
 });
 test('three direct utility controls retain named SVG slots and a separate unread badge', () => {
@@ -871,7 +874,7 @@ test('long tab names ellipsize without crowding their status and close action', 
   assert.match(coarse, /button, summary,[^{}]*\{ min-height: 44px; min-width: 44px; \}/);
   assert.match(coarse, /\.tab-close \{ opacity: 1; \}/);
 });
-test('one workbench footer owns wrapped facts while settings sit under the composer', async () => {
+test('one workbench footer owns wrapped facts while settings sit on the composer shelf', async () => {
   assert.match(rule('.workbench-status'), /display: flex;[^}]*flex-wrap: wrap/);
   assert.match(rule('.workbench-status'), /font-size: var\(--fs-meta\); line-height: 1\.5;/);
   assert.match(rule('.workbench-status-facts'), /flex-wrap: wrap/);
@@ -887,7 +890,7 @@ test('one workbench footer owns wrapped facts while settings sit under the compo
   assert.match(factory, /submit\.append\(queue, start, send\)/);
   assert.match(factory, /bar\.append\(submit\)/);
   assert.match(factory, /intake\.append\(attach,sources,picker\)/);
-  assert.match(factory, /line\.append\(intake, stop, bar\)/);
+  assert.match(factory, /line\.append\(intake, stop, settings, bar\)/);
   assert.doesNotMatch(factory, /usage-details|workbench-status-facts|root\.append\([^)]*\b(?:save|receiptDetails)\b/);
   assert.doesNotMatch(html, /<form id="(?:primary|agent)-composer"/);
   const app = await readFile(new URL('./app.ts', import.meta.url), 'utf8');
@@ -1056,14 +1059,14 @@ test('the composer uses shared SVG selectors and visible effort at narrow widths
   assert.match(rule('.composer .attachment-sources'), /color: var\(--fg\)/);
   assert.doesNotMatch(css, /\.composer-thinking, \.composer-settings-effort \{ display: none/);
   assert.match(css, /@container composer \(max-width: 420px\) \{\s*\.composer-line \{ flex-wrap: wrap; \}/);
-  assert.match(rule('.composer-meta:has(.composer-state:not([hidden]):not(.sr-only)) .composer-settings'), /max-width: 180px/);
+  assert.match(rule('.composer-settings'), /min-width: 0; max-width: 100%/);
 });
 test('empty composer regions collapse and plain intake/settings retain focus and open-state feedback', () => {
   assert.match(rule('.composer-utilities:not(:has(.latest:not([hidden]), .composer-recall:not([hidden])))'), /display: none/);
-  assert.match(rule('.composer-meta:not(:has(.composer-state:not([hidden]):not(.sr-only), .composer-settings > :not([hidden]), .composer-state-details:not([hidden])))'), /display: none/);
+  assert.match(rule('.composer-meta:not(:has(.composer-state:not([hidden]):not(.sr-only), .composer-state-details:not([hidden])))'), /display: none/);
   assert.match(rule('.composer .attachment-sources'), /background: transparent/);
   assert.match(rule('.composer .attachment-sources:hover:not(:disabled), .composer .attachment-sources[aria-expanded=true]:not(:disabled)'), /var\(--fg\) 2%, transparent/);
-  for (const selector of ['.composer-model, .composer-thinking', '.composer-meta :is(.composer-model, .composer-thinking):not(:disabled):is(:hover,[aria-expanded=true])']) assert.match(rule(selector), /background: transparent/);
+  for (const selector of ['.composer-model, .composer-thinking', '.composer-settings :is(.composer-model, .composer-thinking):not(:disabled):is(:hover,[aria-expanded=true])']) assert.match(rule(selector), /background: transparent/);
   assert.match(rule('.composer textarea'), /min-height: 26px;[^}]*font-size: var\(--fs-body\); line-height: 1\.65/);
   assert.doesNotMatch(rule('.composer-input'), /(?:^|;)\s*(?:min-)?height:/);
 });

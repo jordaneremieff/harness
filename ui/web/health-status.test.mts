@@ -29,7 +29,7 @@ function host(context:TestContext, refused = false) {
   }
   const nodes=new Map(['modal','modal-body','modal-close','modal-title','modal-error','announcements','workbench-version'].map(id=>[id,new Node()]));
   const version=nodes.get('workbench-version');assert.ok(version);const footer=new Node();footer.append(version);const body=nodes.get('modal-body');assert.ok(body);
-  const document={get activeElement(){return active;},getElementById:(id:string)=>nodes.get(id),createElement:()=>new Node()};
+  const document={get activeElement(){return active;},getElementById:(id:string)=>nodes.get(id),querySelector:()=>null,createElement:()=>new Node()};
   const navigator={clipboard:{writeText:async(text:string)=>{copied.push(text);if(refused)throw new Error('Clipboard refused');}}};
   for(const [name,value] of [['document',document],['navigator',navigator],['HTMLElement',Node]] as const) {const previous=Object.getOwnPropertyDescriptor(globalThis,name);Object.defineProperty(globalThis,name,{configurable:true,value});context.after(()=>{if(previous)Object.defineProperty(globalThis,name,previous);else Reflect.deleteProperty(globalThis,name);});}
   const modal=new Modal(), texts=(node:Node):string=>[node.textContent,...node.children.map(texts)].join('\n');

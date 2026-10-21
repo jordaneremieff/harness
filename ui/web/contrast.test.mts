@@ -565,6 +565,20 @@ const result = audit(css);
 const failures = result.measurements.filter((m) => m.ratio < m.threshold);
 const minimum = (rows: Measurement[]) => Math.min(...rows.map((r) => r.ratio));
 
+test('Dark uses the exact neutral palette and retains its accent and hover mappings', () => {
+  const expected={canvas:'#1c1d21',side:'#17181b',code:'#17181b',raised:'#26272c','run-bg':'#222327',
+    fg:'#eef0f4',muted:'#c6c9d1',dim:'#b9bdc6',rule:'#34363d',edge:'#8b8f99','add-bg':'#22302a','del-bg':'#33252a','peer-bg':'#29253a',
+    accent:'#9dbcf5',link:'#9dbcf5',info:'#9dbcf5',warning:'#ecc98a',error:'#f2a7a8',success:'#a9d68c','peer-label':'#d7b4ef',
+    'md-heading':'#eef0f4','md-strong':'#eef0f4','md-marker':'#c6c9d1','run-hover':'var(--raised)','menu-hover':'var(--canvas)'};
+  for(const [name,value]of Object.entries(expected))assert.equal(result.themes.dark[`--${name}`],value,name);
+});
+test('Light retains its current background, text, accent and diff values', () => {
+  const expected={canvas:'#fcfcfb',side:'#f4f4f3',raised:'#ffffff',code:'#f2f3f4','run-bg':'#f1f2f3','run-hover':'#edeef0',
+    fg:'#16191b',muted:'#454d52',dim:'#4d555a',accent:'#1d5f7e',link:'#1d5f7e',info:'#1d5f7e',warning:'#6b4e00',error:'#a01e32',success:'#1e5b3d',
+    edge:'#767e83',rule:'#c7ccd0','add-bg':'#e7f3ec','del-bg':'#fae9ea','peer-bg':'#f1edf8','peer-label':'#6f42a8','menu-hover':'var(--side)'};
+  for(const [name,value]of Object.entries(expected))assert.equal(result.themes.light[`--${name}`],value,name);
+});
+
 test('tool hover measures every actual text tier in both appearances', () => {
   const tones = foregrounds.filter(name => name !== 'peer-label');
   for (const theme of ['dark', 'light']) {

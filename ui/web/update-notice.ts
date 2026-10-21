@@ -16,6 +16,7 @@ const short = (commit: string): string => commit.slice(0, 8);
 export class UpdateNotice {
   readonly node = element('span', 'secondary workbench-updated');
   private record?: UpdateRecord;
+  private suppressed = false;
   private readonly identity: UiIdentity;
   private readonly hooks: UpdateNoticeHooks;
   constructor(identity: UiIdentity, hooks: UpdateNoticeHooks) {
@@ -27,9 +28,14 @@ export class UpdateNotice {
     this.paint();
     hooks.before.before(this.node);
   }
+  /** A newer served release takes precedence without changing this tab's update record. */
+  suppress(value: boolean): void {
+    if (this.suppressed === value) return;
+    this.suppressed = value; this.paint();
+  }
   private paint(): void {
     const record = this.record; this.node.replaceChildren();
-    this.node.hidden = !record || record.dismissed || !record.from;
+    this.node.hidden = this.suppressed || !record || record.dismissed || !record.from;
     if (!record || this.node.hidden || !record.from) return;
     this.node.title = `Updated from ${short(record.from)} to ${short(record.to)}`;
     this.node.append(element('span', undefined, `Updated to ${short(record.to)}`), button('Details', () => this.open()), button('Dismiss', () => this.dismiss()));

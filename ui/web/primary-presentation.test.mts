@@ -3,9 +3,9 @@ import test from 'node:test';
 import type { PrimaryView } from '../shared/api.ts';
 import { primaryBusy, primaryActivityLabel, primaryEmpty } from './primary-presentation.ts';
 const primary = (lifecycle: PrimaryView['lifecycle'], activity: PrimaryView['activity']): PrimaryView => ({key: 'p', epoch: 1, cwd: '/project', lifecycle, activity, pendingOperationIds: [], pendingDialogs: [], capabilities: {}});
-test('ready empty primary offers a starting prompt only after history is known', () => {
+test('ready empty primary omits start text and retains its loading state', () => {
   const ready = primary('ready', 'idle');
-  assert.deepEqual(primaryEmpty(ready, false, true), {heading: 'Start this session', caption: 'Write your first message below.'});
+  assert.equal(primaryEmpty(ready, false, true), undefined);
   assert.equal(primaryEmpty(ready, true, true), undefined);
   assert.deepEqual(primaryEmpty(ready, false, false), {heading: 'Loading messages…', caption: ''});
   assert.equal(primaryEmpty(primary('ready', 'running'), false, true), undefined);

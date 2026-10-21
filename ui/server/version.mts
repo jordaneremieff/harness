@@ -57,7 +57,7 @@ async function durableVersion(): Promise<string> {
 }
 async function releaseIdentity(assets:ReadonlyMap<string,Asset>,release:ReleaseManifest,startedAt?:string):Promise<UiIdentity> {
   if(assetDigest(assets)!==release.assetDigest)throw new ApiError('not_ready','Sealed release assets do not match their identity.',503);
-  return Object.freeze({iteration:release.iteration,git:{commit:release.sourceCommit,shortCommit:release.sourceCommit.slice(0,8),branch:release.branch,modified:false,committedAt:release.committedAt},assets:{digest:release.generation,builtAt:release.stagedAt},startedAt:startedAt??new Date().toISOString(),pi:VERSION,durable:await durableVersion(),...(release.recent?.length?{recent:boundedRecent(release.recent)}:{})});
+  return Object.freeze({iteration:release.iteration,release:release.id,git:{commit:release.sourceCommit,shortCommit:release.sourceCommit.slice(0,8),branch:release.branch,modified:false,committedAt:release.committedAt},assets:{digest:release.generation,builtAt:release.stagedAt},startedAt:startedAt??new Date().toISOString(),pi:VERSION,durable:await durableVersion(),...(release.recent?.length?{recent:boundedRecent(release.recent)}:{})});
 }
 export async function collectIdentity(assets: ReadonlyMap<string, Asset>, options: {
   root?: string; assetRoot?: string; startedAt?: string; execute?: GitExec;
