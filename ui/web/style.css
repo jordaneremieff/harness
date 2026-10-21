@@ -1546,6 +1546,10 @@ button.thread-person:hover, button.thread-sender:hover { background: var(--raise
 @media (pointer:coarse) and (min-width:600px) {
   .palette-list { --palette-row-size: 44px; }
 }
+@media (forced-colors:none) {
+  .transcript, .sidebar :is(.sidebar-scroll, .section-body, .roster, .threads-list, .thread-scroll, .agent-message-panel) { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--edge) 60%, transparent) transparent; }
+  .transcript:hover, .sidebar :is(.sidebar-scroll, .section-body, .roster, .threads-list, .thread-scroll, .agent-message-panel):hover { scrollbar-color: var(--edge) transparent; }
+}
 @media (prefers-reduced-motion:reduce) {
   * { scroll-behavior: auto; }
 }
