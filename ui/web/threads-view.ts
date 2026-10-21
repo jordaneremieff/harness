@@ -254,7 +254,7 @@ export class ThreadReader {
     this.node.append(header, meta, this.scroller);
     if (typeof ResizeObserver === 'function') { this.resize = new ResizeObserver(() => {this.measurePosts(); this.settle();}); this.resize.observe(this.exchange); }
     this.scroller.addEventListener('scroll', () => {
-      const navigation = this.postNavigationScroll; this.postNavigationScroll = false;
+      const navigation = this.postNavigationScroll && this.postCursor?.top === this.scroller.scrollTop; this.postNavigationScroll = false;
       if (this.postCursor && this.postCursor.top !== this.scroller.scrollTop) this.clearPostNavigation();
       this.rememberScroll(); this.reading = this.anchorRow();
       const top = this.scroller.scrollTop, up = top < this.lastTop; this.lastTop = top;
