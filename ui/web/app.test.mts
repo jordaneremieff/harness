@@ -1096,7 +1096,8 @@ test('sidebar width commits preserve transcript requests and pane refresh follow
   const panes = source.slice(source.indexOf('function refreshPaneSizes('), source.indexOf('function currentSnapshot('));
   assert.ok(panes.includes('selectionQueue.select({sidebarWidth: value})')); assert.doesNotMatch(panes, /\bselection\(|historyAbort/);
   assert.ok(panes.includes('if (workspace.id !== paneWorkspace)')); assert.ok(panes.includes('resizer.destroy()')); assert.ok(panes.includes('paneResizers[0]?.refresh()'));
-  assert.ok(panes.includes('read: () => state.workspace?.sidebarWidth ?? (innerWidth <= 1100 ? 200 : 224)'));
+  assert.ok(panes.includes('read: () => state.workspace?.sidebarWidth ?? 280'));
+  assert.ok(panes.includes("axis: 'x', min: 200, max: 480, defaultValue: 280"));
   const render = source.slice(source.indexOf('function renderAll('), source.indexOf('function renderNavigation('));
   assert.ok(render.indexOf('refreshPaneSizes()') > render.indexOf('renderMessagePanel()'));
   const composer = source.slice(source.indexOf('function composerResizer('), source.indexOf('function refreshPaneSizes('));

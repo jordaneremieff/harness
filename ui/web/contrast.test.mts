@@ -11,15 +11,23 @@ const cssPath = process.env.CONTRAST_CSS
 	: fileURLToPath(new URL("./style.css", import.meta.url));
 const css = readFileSync(cssPath, "utf8");
 const syntaxTokens = TONES.map(tone=>tone.startsWith('md-') ? tone : `syntax-${tone}`);
-const foregrounds = ["fg", "muted", "dim", "success", "error", "warning", "link", "accent", "info", ...syntaxTokens];
-// Every painted surface, including tool-status tints and diff rows, carries any foreground.
-const surfaces = ["canvas", "side", "raised", "code", "run-bg", "ok-bg", "err-bg", "add-bg", "del-bg"];
+const foregrounds = ["fg", "muted", "dim", "success", "error", "warning", "link", "accent", "info", "peer-label", ...syntaxTokens];
+// Generic text and syntax inherit across these content surfaces.
+const surfaces = ["canvas", "side", "raised", "code", "run-bg", "ok-bg", "err-bg", "peer-bg"];
+// Diff producers emit plain spans with explicit ink, not nested syntax or arbitrary content.
+const diffSurfaces = new Map([['add-bg', {selector: '.diff-add', foreground: 'success'}], ['del-bg', {selector: '.diff-del', foreground: 'error'}]]);
+function textThreshold(name: string, theme: string, background?: string): number {
+  const primary = ['fg', 'md-heading', 'md-strong'].includes(name);
+  const secondary = ['muted', 'dim', 'md-marker'].includes(name) || name.startsWith('syntax-');
+  const threshold = primary ? theme === 'dark' ? 11 : 15 : secondary ? 6.5 : 6;
+  return ['add-bg', 'del-bg'].includes(background ?? '') ? Math.max(6.5, threshold) : threshold;
+}
 // An inverted fill carries the canvas color as its text. The list stays explicit so a new one needs a deliberate model.
 // The action that will act is filled with the primary ink, and its hover with the secondary ink.
 const inverseFills: string[] = ['fg', 'muted'];
 // The edge token marks controls, status rules and neutral selections; the accent marks focus.
 const graphics = ["edge", "accent"];
-const required = [...foregrounds, ...surfaces, ...graphics, "rule"];
+const required = [...foregrounds, ...surfaces, ...diffSurfaces.keys(), ...graphics, "rule"];
 // Rule hairlines decorate content already identified by text or position.
 // Any new use of the low-contrast rule needs a deliberate classification.
 const decorativeHairlines = new Set([
@@ -39,6 +47,7 @@ const decorativeHairlines = new Set([
 	".extension-status-list|border",
 	".agent-message-panel|border-top",
 	".markdown-content th, .markdown-content td|border-bottom",
+  ".markdown-content thead th|border-bottom",
 	".markdown-content:is(hr)|border-top",
 	".code-block > .copy|border",
 	".thinking > .stream-text|border-left",
@@ -274,12 +283,14 @@ function themeValues(rules: Rule[]): Record<string, Palette> {
 	return { dark: darkValues, light: { ...darkValues, ...lightOverrides } };
 }
 function matrix(palette: Palette, theme: string, measure: Measure) {
+  assert.equal(palette['--menu-hover'], theme === 'dark' ? 'var(--canvas)' : 'var(--side)', `${theme}: --menu-hover must alias its exact content surface`);
 	for (const name of required) {
 		assert.ok(palette[`--${name}`], `${theme} lacks --${name}`);
 		rgb(palette[`--${name}`]);
 	}
-	for (const fg of foregrounds) for (const bg of surfaces) measure("text-matrix", `--${fg} / --${bg}`, fg, bg, 4.5);
-	for (const fill of inverseFills) measure("inverse-text", `--canvas / --${fill}`, "canvas", fill, 4.5);
+	for (const fg of foregrounds) for (const bg of surfaces) measure("text-matrix", `--${fg} / --${bg}`, fg, bg, textThreshold(fg, theme, bg));
+  for (const [bg, {foreground}] of diffSurfaces) measure('diff-text', `--${foreground} / --${bg}`, foreground, bg, 6.5);
+	for (const fill of inverseFills) measure("inverse-text", `--canvas / --${fill}`, "canvas", fill, textThreshold(fill, theme));
 	for (const bg of surfaces) measure("border-matrix", `--edge / --${bg}`, "edge", bg, 3);
 	for (const bg of surfaces) measure("focus-matrix", `--accent / --${bg}`, "accent", bg, 3);
 }
@@ -287,10 +298,10 @@ function blend(foreground: string, background: string, weight: number): string {
 	const mixed = rgb(foreground).map((channel, index) => Math.round(channel * weight + (rgb(background)[index] as number) * (1 - weight)));
 	return `#${mixed.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
 }
-const composerFill = (palette: Palette): string => blend(palette['--canvas'] as string, palette['--fg'] as string, palette['color-scheme'] === 'light' ? .94 : .88);
+const composerFill = (palette: Palette): string => blend(palette['--canvas'] as string, palette['--fg'] as string, .96);
 const composerHoverFills = new Map([
-  ['.composer .attachment-sources:hover:not(:disabled), .composer .attachment-sources[aria-expanded=true]:not(:disabled)', 9],
-  ['.queue:not(:disabled):hover', 9],
+  ['.composer .attachment-sources:hover:not(:disabled), .composer .attachment-sources[aria-expanded=true]:not(:disabled)', 2],
+  ['.queue:not(:disabled):hover', 2],
   ['.stop:hover', 2],
 ]);
 // Inverted controls pair canvas text with their own filled background.
@@ -318,11 +329,11 @@ function textDeclaration(context: Context, property: string, value: string) {
 		return;
 	}
 	for (const bg of surfaces)
-		measure("text-declaration", `${source} ${property}: ${value} / --${bg}`, name, bg, 4.5);
+		measure("text-declaration", `${source} ${property}: ${value} / --${bg}`, name, bg, textThreshold(name, theme, bg));
   if (property === 'color' && graphicForegrounds.get(context.rule.selector) === name)
     for (const bg of surfaces) measure('graphic-paint', `${source} ${property}: ${value} / --${bg}`, name, bg, 3);
 	const localBg = token(decl["background-color"] ?? decl.background ?? "");
-	if (localBg) measure("local-pair", `${source} ${property} on --${localBg}`, name, localBg, 4.5);
+	if (localBg) measure("local-pair", `${source} ${property} on --${localBg}`, name, localBg, textThreshold(name, theme, localBg));
 }
 function caretDeclaration(context: Context, value: string) {
   const {theme, source, issues, measure, decl} = context;
@@ -335,23 +346,25 @@ function caretDeclaration(context: Context, value: string) {
 function inverseBackground(context: Context, fill: string) {
 	const { theme, source, decl, measure, issues } = context;
 	const fg = token(decl.color ?? "");
-	if (fg) measure("background-declaration", `${source} explicit --${fg} on --${fill}`, fg, fill, 4.5);
+	if (fg) measure("background-declaration", `${source} explicit --${fg} on --${fill}`, fg, fill, textThreshold(fill, theme));
 	else issues.push(`${theme}: ink fill lacks an explicit foreground: ${source}`);
 }
 function composerBackground(context: Context, value: string): boolean {
   const {rule, palette, measure, source} = context;
   if (rule.selector === '.composer-input' && value === 'var(--composer-fill)') {
-    for (const fg of ['fg', 'muted', 'dim']) measure('composer-text', `${source} --${fg} / derived surface`, fg, composerFill(palette), 4.5);
+    for (const fg of foregrounds) measure('composer-text', `${source} --${fg} / derived surface`, fg, composerFill(palette), textThreshold(fg, context.theme));
     measure('composer-focus', `${source} --edge / derived surface`, 'edge', composerFill(palette), 3);
+    measure('composer-focus', `${source} --accent / derived surface`, 'accent', composerFill(palette), 3);
     return true;
   }
   const weight = composerHoverFills.get(rule.selector);
   if (weight !== undefined && value === `color-mix(in srgb, var(--fg) ${weight}%, transparent)`) {
     const fill = blend(palette['--fg'] as string, composerFill(palette), weight / 100);
     const names = rule.selector === '.stop:hover' ? ['error'] : ['fg'];
-    for (const fg of names) measure('composer-text', `${source} --${fg} / composited control`, fg, fill, 4.5);
+    for (const fg of names) measure('composer-text', `${source} --${fg} / composited control`, fg, fill, textThreshold(fg, context.theme));
     return true;
   }
+  // Only muted ink is painted on this inactive control; it retains a separate 3:1 floor.
   if (rule.selector === '.send:disabled' && value === 'color-mix(in srgb, var(--fg) 14%, var(--composer-fill))') {
     measure('composer-disabled', `${source} --muted / inactive action`, 'muted', blend(palette['--fg'] as string, composerFill(palette), .14), 3); return true;
   }
@@ -362,9 +375,20 @@ const menuHoverFills = new Set([
   '.command-option:hover, .command-option[aria-selected=true]',
 ]);
 function menuBackground(context: Context, value: string): boolean {
-  if (!menuHoverFills.has(context.rule.selector) || value !== 'color-mix(in srgb, var(--fg) 7%, transparent)') return false;
-  const fill = blend(context.palette['--fg'] as string, context.palette['--raised'] as string, .07);
-  for (const fg of ['fg', 'muted', 'dim']) context.measure('menu-text', `${context.source} --${fg} / composited row`, fg, fill, 4.5);
+  if (!menuHoverFills.has(context.rule.selector)) return false;
+  if (value !== 'var(--menu-hover)') {
+    context.issues.push(`${context.theme}: unmodeled menu background ${context.source}: ${value}`);
+    return true;
+  }
+  const surface = token(context.palette['--menu-hover'] as string) as string;
+  for (const fg of ['fg', 'muted', 'dim']) context.measure('menu-text', `${context.source} --${fg} / aliased row --${surface}`, fg, surface, textThreshold(fg, context.theme));
+  return true;
+}
+function diffBackground(context: Context, name: string): boolean {
+  const diff = diffSurfaces.get(name);
+  if (!diff) return false;
+  if (context.rule.selector !== diff.selector || token(context.decl.color ?? '') !== diff.foreground) context.issues.push(`${context.theme}: diff surface requires its explicit foreground: ${context.source}`);
+  else context.measure('diff-background', `${context.source} --${diff.foreground} / --${name}`, diff.foreground, name, 6.5);
   return true;
 }
 function backgroundDeclaration(context: Context, value: string) {
@@ -386,9 +410,10 @@ function backgroundDeclaration(context: Context, value: string) {
 		for (const bg of surfaces) measure("graphic-paint", `${source} --${name} / --${bg}`, name, bg, 3);
 		return;
 	}
+  if (diffBackground(context, name)) return;
 	if (inverseFills.includes(name)) inverseBackground(context, name);
 	else if (!surfaces.includes(name)) issues.push(`${theme}: non-surface background ${source}: ${value}`);
-	else for (const fg of foregrounds) measure("background-declaration", `${source} --${fg} / --${name}`, fg, name, 4.5);
+	else for (const fg of foregrounds) measure("background-declaration", `${source} --${fg} / --${name}`, fg, name, textThreshold(fg, theme, name));
 }
 function selectionShadow(context: Context, value: string) {
   const name = graphicShadows.get(context.rule.selector); if (!name) return;
@@ -442,9 +467,9 @@ function forcedDeclaration(context: Context, property: string, value: string) {
 function composerFillDeclaration(context: Context, property: string, value: string): boolean {
   if (property !== '--composer-fill') return false;
   const {rule} = context;
-  if (rule.selector === '.composer' && !rule.contexts.length) return value === 'color-mix(in srgb, var(--canvas) 88%, var(--fg))';
-  if (rule.selector === ':root[data-appearance=light] .composer' && !rule.contexts.length) return value === 'color-mix(in srgb, var(--canvas) 94%, var(--fg))';
-  return rule.selector === ':root[data-appearance=system] .composer' && rule.contexts.length === 1 && rule.contexts[0] === '@media (prefers-color-scheme: light)' && value === 'color-mix(in srgb, var(--canvas) 94%, var(--fg))';
+  if (rule.selector === '.composer' && !rule.contexts.length) return value === 'color-mix(in srgb, var(--canvas) 96%, var(--fg))';
+  if (rule.selector === ':root[data-appearance=light] .composer' && !rule.contexts.length) return value === 'color-mix(in srgb, var(--canvas) 96%, var(--fg))';
+  return rule.selector === ':root[data-appearance=system] .composer' && rule.contexts.length === 1 && rule.contexts[0] === '@media (prefers-color-scheme: light)' && value === 'color-mix(in srgb, var(--canvas) 96%, var(--fg))';
 }
 function opacityDeclaration(context: Context, value: string): void {
   const {rule, theme, source, issues, exclusions} = context;
@@ -545,15 +570,33 @@ test("every required matrix pair is measured in both themes", () => {
 		result.measurements.filter((m) => m.kind === "text-matrix").length,
 		foregrounds.length * surfaces.length * 2,
 	);
+  assert.equal(result.measurements.filter((m) => m.kind === 'diff-text').length, diffSurfaces.size * 2);
 	assert.equal(result.measurements.filter((m) => m.kind === "inverse-text").length, inverseFills.length * 2);
 	assert.equal(result.measurements.filter((m) => m.kind === "border-matrix").length, surfaces.length * 2);
 	assert.equal(result.measurements.filter((m) => m.kind === "focus-matrix").length, surfaces.length * 2);
 });
-test("normal text meets 4.5:1; meaningful borders and focus meet 3:1", (context) => {
+test('text tiers reach every opaque surface, syntax token and diff row', () => {
+  for (const theme of ['dark', 'light']) {
+    assert.equal(textThreshold('fg', theme), theme === 'dark' ? 11 : 15);
+    for (const name of ['muted', 'dim', 'md-marker', ...syntaxTokens.filter(name => name.startsWith('syntax-'))]) assert.equal(textThreshold(name, theme), 6.5);
+    for (const name of ['accent', 'link', 'info', 'warning', 'error', 'success', 'peer-label']) assert.equal(textThreshold(name, theme), 6);
+    for (const fg of foregrounds) for (const bg of surfaces) {
+      const rows = result.measurements.filter(row => row.theme === theme && row.kind === 'text-matrix' && row.source === `--${fg} / --${bg}`);
+      assert.equal(rows.length, 1, `${theme}: ${fg} on ${bg}`);
+      assert.equal(rows[0]?.threshold, textThreshold(fg, theme, bg));
+    }
+    for (const [bg, {foreground}] of diffSurfaces) {
+      const row = result.measurements.find(row => row.theme === theme && row.kind === 'diff-text' && row.source === `--${foreground} / --${bg}`);
+      assert.equal(row?.threshold, 6.5);
+    }
+  }
+  assert.ok(audit(`${css}\n.probe { background: var(--add-bg); color: var(--dim); }`).issues.some(issue => issue.includes('diff surface requires its explicit foreground')));
+});
+test("text meets its theme and semantic tier; meaningful borders and focus meet 3:1", (context) => {
 	for (const theme of ["dark", "light"]) {
 		const rows = result.measurements.filter((m) => m.theme === theme);
 		context.diagnostic(
-			`${theme}: text minimum ${minimum(rows.filter((m) => m.threshold === 4.5)).toFixed(6)}; border minimum ${minimum(rows.filter((m) => m.kind.startsWith("border"))).toFixed(6)}; focus minimum ${minimum(rows.filter((m) => m.kind.startsWith("focus"))).toFixed(6)}.`,
+			`${theme}: primary minimum ${minimum(rows.filter((m) => m.kind === 'text-matrix' && m.threshold === (theme === 'dark' ? 11 : 15))).toFixed(6)}; secondary minimum ${minimum(rows.filter((m) => m.threshold === 6.5)).toFixed(6)}; accent minimum ${minimum(rows.filter((m) => m.threshold === 6)).toFixed(6)}; border minimum ${minimum(rows.filter((m) => m.kind.startsWith("border"))).toFixed(6)}; focus minimum ${minimum(rows.filter((m) => m.kind.startsWith("focus"))).toFixed(6)}.`,
 		);
 	}
 	assert.deepEqual(failures, [], failures.map((m) => `${m.theme} ${m.source}: ${m.ratio}`).join("\n"));
@@ -567,7 +610,7 @@ test("regular user prose retains normal-text contrast and the left rule retains 
 	assert.equal(declarations.color, undefined, "User prose inherits the primary foreground");
 	for (const [theme, palette] of Object.entries(result.themes)) {
     for (const bg of ['canvas', 'side']) {
-      assert.ok(ratio(palette['--fg'], palette[`--${bg}`]) >= 4.5, `${theme}: regular prose on ${bg} requires normal-text AA`);
+      assert.ok(ratio(palette['--fg'], palette[`--${bg}`]) >= textThreshold('fg', theme), `${theme}: regular prose on ${bg} requires the primary text tier`);
     }
 		const borders = result.measurements.filter((row) => row.theme === theme && row.kind === "border-declaration" && row.source.startsWith(".message.user > .message-body::before "));
 		assert.equal(borders.length, surfaces.length, `${theme}: left rule needs every modeled surface`);
@@ -585,12 +628,12 @@ test('native insertion caret is measured as graphics without weakening text or i
   for (const theme of ['dark', 'light']) {
     const palette = result.themes[theme]; const measured = ratio(palette['--accent'], palette['--canvas']);
     context.diagnostic(`${theme} native caret: ${palette['--accent']} on ${palette['--canvas']} = ${measured}:1`);
-    assert.ok(measured >= 4.5);
+    assert.ok(measured >= 6);
   }
   for (const value of ['#fff', 'transparent', 'auto', 'var(--unexpected)', 'var(--rule)', 'var(--accent, #fff)']) assert.ok(audit(`${css}\n.probe { caret-color: ${value}; }`).issues.some(issue => issue.includes('unmodeled caret color')), value);
-  const weakened = audit(css.replace('--accent: #a3bbf1', '--accent: #303446'));
+  const weakened = audit(css.replace(/--accent:\s*#[\da-f]{6};/i, '--accent: #1f2128;'));
   assert.ok(weakened.measurements.some(row => row.kind === 'caret-declaration' && row.ratio < row.threshold));
-  const accentText = audit(`${css}\n.probe { color: var(--accent); }`); assert.deepEqual(accentText.issues, []); assert.ok(accentText.measurements.some(row=>row.source.startsWith('.probe ')&&row.kind==='text-declaration'&&row.threshold===4.5));
+  const accentText = audit(`${css}\n.probe { color: var(--accent); }`); assert.deepEqual(accentText.issues, []); assert.ok(accentText.measurements.some(row=>row.source.startsWith('.probe ')&&row.kind==='text-declaration'&&row.threshold===6));
 });
 test('source highlights and rendered spans use identical complete foreground tokens',()=> {
   const rules=parse(css);
@@ -614,11 +657,11 @@ test("graphic paint measures selected marks and divider hover/focus without open
   assert.ok(rows.every(row => row.threshold === 3 && row.ratio >= 3));
   const checks = result.measurements.filter(row => row.kind === "text-declaration" && row.source.startsWith(".context-menu-item > .choice-check "));
   assert.equal(checks.length, surfaces.length * 2);
-  assert.ok(checks.every(row => row.threshold === 4.5 && row.ratio >= 4.5));
+  assert.ok(checks.every(row => row.threshold === 6.5 && row.ratio >= 6.5));
   assert.ok(audit(`${css}\n.probe { background: var(--dim); }`).issues.some(issue => issue.includes("non-surface background")));
   assert.ok(audit(`${css}\n.probe { background: var(--muted); }`).issues.some(issue => issue.includes("ink fill lacks an explicit foreground")), "an inverted fill needs its own canvas text");
   assert.ok(audit(`${css}\n.pane-split > .pane-divider:hover::after { background: var(--rule); }`).issues.some(issue => issue.includes("non-surface background")));
-  const weakened = audit(css.replace("--edge: #8f97b5", "--edge: #303446"));
+  const weakened = audit(css.replace(/--edge:\s*#[\da-f]{6};/i, '--edge: #1f2128;'));
   assert.ok(weakened.measurements.some(row => row.kind === "graphic-paint" && row.ratio < row.threshold));
 });
 test("hardcoded and unknown text colors, extra pairs, and alpha effects are detected", () => {
@@ -668,20 +711,43 @@ test("hardcoded and unknown text colors, extra pairs, and alpha effects are dete
 test('composer placeholder ink meets normal text contrast against the actual derived fill', () => {
   assert.match(css, /\.composer textarea::placeholder \{ color: var\(--dim\); \}/);
   const rows = result.measurements.filter(row => row.kind === 'composer-text' && row.source.endsWith('--dim / derived surface'));
-  assert.equal(rows.length, 2); assert.ok(rows.every(row => row.threshold === 4.5 && row.ratio >= 4.5));
+  assert.equal(rows.length, 2); assert.ok(rows.every(row => row.threshold === 6.5 && row.ratio >= 6.5));
 });
 test('composer surfaces measure their derived fill and control composites without a general alpha exception', () => {
   const rows = result.measurements.filter(row => row.kind.startsWith('composer-'));
-  assert.ok(rows.some(row => row.theme === 'dark')); assert.ok(rows.some(row => row.theme === 'light'));
+  for (const theme of ['dark', 'light']) {
+    const derived = rows.filter(row => row.theme === theme && row.kind === 'composer-text' && row.source.endsWith('/ derived surface'));
+    assert.equal(derived.length, foregrounds.length, `${theme}: the decorated composer needs every text token`);
+    for (const name of foregrounds) assert.ok(derived.some(row => row.source.endsWith(`--${name} / derived surface`) && row.threshold === textThreshold(name, theme)));
+    const control = rows.filter(row => row.theme === theme && row.kind === 'composer-text' && row.source.endsWith('/ composited control'));
+    assert.equal(control.length, composerHoverFills.size);
+    assert.ok(control.every(row => row.threshold === textThreshold(row.source.includes('--error /') ? 'error' : 'fg', theme)));
+    const focus = rows.filter(row => row.theme === theme && row.kind === 'composer-focus');
+    assert.equal(focus.length, 2); assert.ok(focus.every(row => row.threshold === 3));
+  }
   assert.ok(rows.every(row => row.ratio >= row.threshold));
-  assert.ok(audit(css.replace('var(--canvas) 88%, var(--fg)', 'var(--canvas) 90%, var(--fg)')).issues.some(issue => issue.includes('Component-local variable requires explicit analysis')));
+  assert.ok(audit(css.replace('var(--canvas) 96%, var(--fg)', 'var(--canvas) 95%, var(--fg)')).issues.some(issue => issue.includes('Component-local variable requires explicit analysis')));
   assert.ok(audit(`${css}\n.send:disabled { opacity: .29; }`).issues.some(issue => issue.includes('partial opacity')));
   assert.ok(audit(`${css}\n.send { opacity: .28; }`).issues.some(issue => issue.includes('partial opacity')));
 });
-test('menu rows measure their exact raised-surface composites without a general tint exception', () => {
+test('menu rows measure the exact theme surface alias at each text tier', () => {
   const rows = result.measurements.filter(row => row.kind === 'menu-text');
-  assert.equal(rows.length, 12); assert.ok(rows.every(row => row.threshold === 4.5 && row.ratio >= 4.5));
-  assert.ok(audit(`${css}\n.command-option:hover, .command-option[aria-selected=true] { background: color-mix(in srgb, var(--fg) 8%, transparent); }`).issues.some(issue => issue.includes('unmodeled background')));
+  assert.equal(rows.length, menuHoverFills.size * 3 * 2);
+  for (const theme of ['dark', 'light']) {
+    const surface = theme === 'dark' ? 'canvas' : 'side';
+    assert.equal(result.themes[theme]['--menu-hover'], `var(--${surface})`);
+    for (const selector of menuHoverFills) for (const name of ['fg', 'muted', 'dim']) {
+      const row = rows.find(row => row.theme === theme && row.source === `${selector} --${name} / aliased row --${surface}`);
+      assert.ok(row); assert.equal(row.background, result.themes[theme][`--${surface}`]);
+      assert.equal(row.threshold, textThreshold(name, theme)); assert.ok(row.ratio >= row.threshold);
+    }
+  }
+  assert.throws(() => audit(css.replace('--menu-hover: var(--canvas);', '--menu-hover: var(--side);')), /dark: --menu-hover must alias/);
+  for (const alias of ['canvas', 'raised', 'unexpected']) assert.throws(() => audit(css.replaceAll('--menu-hover: var(--side);', `--menu-hover: var(--${alias});`)), /light: --menu-hover must alias/);
+  assert.throws(() => audit(css.replace('--menu-hover: var(--canvas);', '--menu-hover: var(--unexpected);')), /dark: --menu-hover must alias/);
+  assert.throws(() => audit(`${css}\n@media (prefers-color-scheme: light) { :where(:root[data-appearance=system]) { --menu-hover: var(--raised); } }`), /System light override differs/);
+  assert.ok(audit(`${css}\n.probe { background: var(--menu-hover); }`).issues.some(issue => issue.includes('non-surface background')));
+  for (const value of ['var(--canvas)', 'var(--side)', 'var(--unexpected)', 'color-mix(in srgb, var(--fg) 1%, transparent)']) assert.ok(audit(`${css}\n.command-option:hover, .command-option[aria-selected=true] { background: ${value}; }`).issues.some(issue => issue.includes('unmodeled menu background')));
 });
 test("contrast thresholds use exact ratios, not rounded display values", () => {
 	assert.ok(ratio("#777777", "#ffffff") < 4.5);
@@ -690,7 +756,7 @@ test("contrast thresholds use exact ratios, not rounded display values", () => {
 	assert.throws(() => ratio("#ffffff80", "#ffffff"), /opaque hex/);
 });
 test("no rule that defines a theme token has nonzero specificity", () => {
-	const defining = parse(css).filter((r) => r.declarations.some((d) => required.includes(d.property.replace(/^--/, ""))));
+	const defining = parse(css).filter((r) => r.declarations.some((d) => d.property === '--menu-hover' || required.includes(d.property.replace(/^--/, ""))));
 	assert.ok(defining.length >= 3);
 	for (const rule of defining) assert.ok(zeroSpecificity(rule.selector), `Token rule has specificity: ${rule.selector}`);
 	assert.equal(zeroSpecificity(":root"), false);

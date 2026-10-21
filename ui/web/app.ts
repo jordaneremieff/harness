@@ -658,8 +658,8 @@ function refreshPaneSizes(): void {
     const panelKey = `ui:pane:${workspace.id}:message-panel`;
     let panelHeight = tabSize(panelKey, 160, 640) ?? 320;
     paneResizers = [
-      createResizer({handle: byId('sidebar-resizer'), axis: 'x', min: 200, max: 480, defaultValue: 224,
-        read: () => state.workspace?.sidebarWidth ?? (innerWidth <= 1100 ? 200 : 224),
+      createResizer({handle: byId('sidebar-resizer'), axis: 'x', min: 200, max: 480, defaultValue: 280,
+        read: () => state.workspace?.sidebarWidth ?? 280,
         write: value => app.style.setProperty('--sidebar-width', `${value}px`),
         onCommit: value => {void selectionQueue.select({sidebarWidth: value}).catch(showError);}}),
 

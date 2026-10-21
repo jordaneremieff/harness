@@ -2770,7 +2770,8 @@ test('static workbench markup owns one footer and keeps composer actions without
   assert.match(factory, /const input = element\('div', 'composer-input'\)/); assert.match(factory, /input\.append\(commandMenu, fileMenu, recipient, surface, attachments, line, resize\)/);
   assert.match(factory, /const intake = element\('span','composer-intake'\); intake\.append\(attach,sources,picker\)/);
   assert.match(factory, /cardAction\('plus', 'Add to message'/);
-  assert.match(factory, /root\.append\(receipt, utilities, input, meta\)/); assert.match(factory, /meta\.append\(state, settings, stateDetails\)/); assert.match(factory, /utilities\.append\(recallLine\)/); assert.match(factory, /line\.append\(intake, stop, bar\)/); assert.match(factory, /bar\.append\(submit\)/); assert.match(factory, /submit\.append\(queue, start, send\)/);
+  assert.match(factory, /const queueGuidance = element\('span', 'sr-only', queueDescription\)/);
+  assert.match(factory, /root\.append\(receipt, utilities, input, meta, queueGuidance\)/); assert.match(factory, /meta\.append\(state, settings, stateDetails\)/); assert.match(factory, /utilities\.append\(recallLine\)/); assert.match(factory, /line\.append\(intake, stop, bar\)/); assert.match(factory, /bar\.append\(submit\)/); assert.match(factory, /submit\.append\(queue, start, send\)/);
   assert.doesNotMatch(factory, /composer-guidance|usage-details|class="statusline"|root\.append\([^)]*receiptDetails/);
   assert.equal([...html.matchAll(/id="focused-composer-status" class="workbench-draft-state"/g)].length, 1);
 });
@@ -2779,7 +2780,8 @@ test('composer utilities precede the writing surface and transcript paints retai
   const root = elements.root as unknown as FakeNode, editor = elements.editor as unknown as FakeNode;
   const utilities = root.querySelector('.composer-utilities'), input = root.querySelector('.composer-input'), surface = root.querySelector('.composer-surface'), shelf = root.querySelector('.composer-line');
   assert.ok(utilities && input && surface && shelf);
-  assert.deepEqual(root.children, [elements.receipt, utilities, input, elements.meta]);
+  assert.ok(elements.queueGuidance); assert.equal(elements.queueGuidance.className, 'sr-only');
+  assert.deepEqual(root.children, [elements.receipt, utilities, input, elements.meta, elements.queueGuidance]);
   assert.deepEqual(utilities.children, [elements.recallLine]);
   assert.deepEqual((elements.meta as unknown as FakeNode).children, [elements.state, elements.settings, elements.stateDetails]);
   assert.deepEqual(shelf.children, [input.querySelector('.composer-intake'), input.querySelector('.stop'), input.querySelector('.composer-bar')]);
@@ -2792,7 +2794,7 @@ test('composer utilities precede the writing surface and transcript paints retai
     view.set(entries); flush();
     assert.equal(root.querySelector('textarea'), editor); assert.equal(root.querySelectorAll('textarea').length, 1); assert.equal(editor.value, 'Retained native draft');
     assert.deepEqual(ancestry(), originalAncestry); assert.equal(editor.moves, moves);
-    assert.deepEqual(root.children, [elements.receipt, utilities, input, elements.meta]);
+    assert.deepEqual(root.children, [elements.receipt, utilities, input, elements.meta, elements.queueGuidance]);
   }
   view.reset(); assert.equal(root.querySelector('textarea'), editor); assert.deepEqual(ancestry(), originalAncestry);
 });

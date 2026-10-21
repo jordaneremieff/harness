@@ -1215,9 +1215,34 @@ test('confirmed work keeps named Steer and Queue visible with empty drafts disab
   f.composer.setText('Look at the failing test'); f.saved('Look at the failing test');
   assert.equal(root.dataset.working, 'draft'); assert.equal(queue.hidden, false); assert.equal(queue.disabled, false); assert.equal(send.disabled, false);
   assert.equal(actionText(send), 'Steer'); assert.equal(send.getAttribute('aria-label'), 'Steer message'); assert.equal(send.title, 'Steer: send now; the agent reads it at its next step');
-  assert.equal(queue.title, 'Add a follow-up message.');
+  const description = 'Queue this message for a later step. During a wait for agent results, the message joins the current work.';
+  assert.equal(queue.title, description); assert.equal(queue.getAttribute('aria-description'), description);
   f.composer.setText(''); assert.equal(root.dataset.working, 'empty'); assert.equal(queue.hidden, false); assert.equal(queue.disabled, true);
   f.composer.availability(true, true, false); assert.equal(root.dataset.working, undefined); assert.equal(queue.hidden, true); assert.equal(actionText(send), 'Send'); assert.equal(send.getAttribute('aria-label'), 'Send message');
+});
+test('Queue keeps its exact explanation and an accessible local reason without changing delivery or the draft', () => {
+  const host = fixture('agent'), elements = {...createComposerElements('queue-explanation'), overlay: undefined};
+  const composer = new Composer(elements, {submitted() {}, unknownCommand() {return false;}});
+  const description = 'Queue this message for a later step. During a wait for agent results, the message joins the current work.';
+  composer.attach('w', state('queue-explanation', draft(2, 'Exact draft', 'followUp'), true));
+  composer.availability(true, true, true);
+  const queue = elements.queue, guidance = elements.queueGuidance;
+  assert.ok(guidance); assert.equal(queue.textContent, 'Queue');
+  assert.equal(queue.title, description); assert.equal(queue.getAttribute('aria-description'), description);
+  assert.equal(guidance.textContent, description);
+  assert.equal(queue.getAttribute('aria-describedby'), `${guidance.id} ${elements.state?.id}-line`);
+  composer.setState({line: 'Message input is unavailable.', blocksSend: true});
+  composer.availability(true, false, true);
+  composer.recipient('Draft for Example', 'Exact unavailable reason.');
+  assert.equal(queue.disabled, true); assert.equal(queue.title, description);
+  assert.equal(queue.getAttribute('aria-description'), description);
+  assert.equal(guidance.textContent, `${description} Exact unavailable reason.`);
+  assert.equal(queue.getAttribute('aria-describedby'), `${guidance.id} ${elements.state?.id}-line`);
+  composer.setState(undefined); composer.availability(true, true, true);
+  assert.equal(guidance.textContent, description); assert.equal(queue.disabled, false);
+  assert.equal(composer.editor.value, 'Exact draft');
+  assert.equal(host.calls.length, 0); assert.equal(host.submitted.length, 0);
+  composer.destroy();
 });
 test('working image-only drafts retain both delivery actions and recognized commands omit Queue', () => {
   const commands = () => ({state: 'ready' as const, items: [{name: 'status', description: 'Read status', source: 'extension'}]});

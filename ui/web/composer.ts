@@ -25,11 +25,12 @@ import { ApiError, draftImageUrl, errorMessage, operation, request, reserve } fr
 
 export type ComposerHooks = {recallItems?: () => readonly string[]; fileSearch?: (query: string, signal: AbortSignal) => Promise<FileSearchResult> | undefined; fileStage?: (path: string, signal: AbortSignal, current: () => boolean, stage: (files: readonly File[]) => boolean) => Promise<boolean>; workingFile?:(stage:(files:readonly File[])=>boolean)=>void; changed?:()=>void; captured?: (submission:Submission)=>void; failed?: (operationId:string,uncertain:boolean)=>void; prepareInput?: () => boolean; imageState?: (workspace: string, state: TargetState) => void; imageInput?: (target: Target) => {allowed: boolean; reason?: string}; recovery?: () => void; layoutHeight?: () => number | undefined; timing?: (start: number, end: number) => void; submitted: (operation: OperationView) => void; unknownCommand: (text: string, sendLiteral: () => void) => boolean; enterSends?: () => boolean; commands?: (deliberate: boolean) => CommandInventory; moreCommands?: (target: Target) => Promise<void>; retained?: (workspace: string, target: Target, retained: boolean) => void};
 export type ComposerElements = {root: HTMLFormElement; editor: HTMLTextAreaElement; recipient: HTMLElement; receipt: HTMLElement;
-  receiptDetails: HTMLElement; queue: HTMLButtonElement; send: HTMLButtonElement; save: HTMLElement; fileMenu?: HTMLElement; recallHint?: HTMLElement; recallLine?: HTMLElement; recallRestore?: HTMLButtonElement; meta?: HTMLElement; model?: HTMLButtonElement; thinking?: HTMLButtonElement; settings?: HTMLElement; utilities?: HTMLElement; commandMenu?: HTMLElement; overlay?: HTMLElement; attachments?: HTMLElement; attach?: HTMLButtonElement; sources?: HTMLButtonElement; picker?: HTMLInputElement; state?: HTMLElement; stateDetails?: HTMLElement; start?: HTMLButtonElement};
+  receiptDetails: HTMLElement; queue: HTMLButtonElement; queueGuidance?: HTMLElement; send: HTMLButtonElement; save: HTMLElement; fileMenu?: HTMLElement; recallHint?: HTMLElement; recallLine?: HTMLElement; recallRestore?: HTMLButtonElement; meta?: HTMLElement; model?: HTMLButtonElement; thinking?: HTMLButtonElement; settings?: HTMLElement; utilities?: HTMLElement; commandMenu?: HTMLElement; overlay?: HTMLElement; attachments?: HTMLElement; attach?: HTMLButtonElement; sources?: HTMLButtonElement; picker?: HTMLInputElement; state?: HTMLElement; stateDetails?: HTMLElement; start?: HTMLButtonElement};
 /** An agent-specific state below the writing surface, with at most one action in the Send position (`hideSend` removes the disabled Send when the state offers none) and optional exact details. `line` is the full assistive sentence; `label` is its visible summary. `withoutDraft` keeps the composer on screen, with the editor and add control disabled, while no draft is attached, so the state and its action stay reachable. */
 export type ComposerStateView = {line: string; label?: string; tone?: 'error' | 'warning'; hideSend?: boolean; withoutDraft?: boolean; action?: {label: string; title?: string; pending?: boolean; disabled?: boolean; recovery?: boolean; run: () => void}; blocksSend?: boolean; detail?: string};
 /** An accepted queued input is expected behaviour, so its notice uses the quiet tier, not the warning tier. */
 const queuedAdmissionNotice = (text: string): boolean => text === 'Message queued' || text === 'Steer queued';
+const queueDescription = 'Queue this message for a later step. During a wait for agent results, the message joins the current work.';
 /** Delivery choices and lifecycle controls retain visible labels beside their glyphs. */
 const actionParts = new WeakMap<HTMLElement, {label: HTMLElement; icon?: CardIcon; mark?: SVGSVGElement}>();
 function paintAction(node: HTMLButtonElement, icon: CardIcon, label: string, visible = false): void {
@@ -62,6 +63,7 @@ export function createComposerElements(instanceId: string): ComposerElements {
   const input = element('div', 'composer-input');
   // Queue chooses followUp mode; the send key and Steer reach the next step.
   const queue = element('button', 'queue', 'Queue'); queue.id = `${id}-queue`; queue.type = 'button'; queue.hidden = true; queue.setAttribute('aria-label', 'Queue message');
+  const queueGuidance = element('span', 'sr-only', queueDescription); queueGuidance.id = `${id}-queue-guidance`;
   const stop = element('button', 'stop'); stop.id = `${id}-stop`; stop.type = 'button'; stop.hidden = true; paintAction(stop, 'stop', 'Stop', true);
   const send = element('button', 'send'); send.id = `${id}-send`; send.type = 'submit'; send.disabled = true; paintAction(send, 'send', 'Send');
   send.setAttribute('aria-label', 'Send message'); stop.setAttribute('aria-label', 'Stop response');
@@ -88,10 +90,10 @@ export function createComposerElements(instanceId: string): ComposerElements {
   const utilities = element('div', 'composer-utilities'); utilities.append(recallLine);
   line.append(intake, stop, bar);
   // The handle is absolutely placed on the surface's top edge.
-  input.append(commandMenu, fileMenu, recipient, surface, attachments, line, resize); root.append(receipt, utilities, input, meta);
+  input.append(commandMenu, fileMenu, recipient, surface, attachments, line, resize); root.append(receipt, utilities, input, meta, queueGuidance);
   const save = element('span', 'draft-state'); save.id = `${id}-save`;
   const receiptDetails = element('span', 'receipt-details'); receiptDetails.id = `${id}-receipt-details`;
-  return {root, editor, recipient, receipt, receiptDetails, queue, send, save, fileMenu, recallHint, recallLine, recallRestore, meta, model, thinking, settings, utilities, commandMenu, overlay, attachments, attach, sources, picker, state, stateDetails, start};
+  return {root, editor, recipient, receipt, receiptDetails, queue, queueGuidance, send, save, fileMenu, recallHint, recallLine, recallRestore, meta, model, thinking, settings, utilities, commandMenu, overlay, attachments, attach, sources, picker, state, stateDetails, start};
 }
 type Edit = {text: string; mode: string; images: DraftImage[]; edit: number};
 type InsertionCapture = {buffer: Buffer; edit: number; text: string; start: number; end: number; direction: 'forward' | 'backward' | 'none'};
@@ -795,8 +797,9 @@ export class Composer {
     const reason = this.sendGuidance(), run = buffer && this.commandDraft(buffer);
     queue.hidden = !working || !!run || send.hidden;
     this.describeSend(reason, run ? run.name : undefined, working);
-    queue.setAttribute('aria-description', reason);
-    queue.title = reason || 'Add a follow-up message.';
+    queue.setAttribute('aria-description', queueDescription);
+    queue.title = queueDescription;
+    if (this.elements.queueGuidance) setText(this.elements.queueGuidance, [queueDescription, reason].filter(Boolean).join(' '));
     this.paintControlState(!!run);
   }
   private paintControlState(hasCommand: boolean): void {
@@ -804,10 +807,13 @@ export class Composer {
     if (state) {
       this.paintStateText(state, view);
       state.classList.toggle('composer-delivery-guidance', !!view && !this.stateView && !this.settingsState && !hasCommand);
-      for (const control of [this.elements.start, this.elements.send, this.elements.queue]) {
+      for (const control of [this.elements.start, this.elements.send]) {
         if (view) control?.setAttribute('aria-describedby', `${state.id}-line`); else control?.removeAttribute('aria-describedby');
       }
     }
+    const queueDescriptions = [this.elements.queueGuidance?.id, state && view ? `${state.id}-line` : undefined].filter(Boolean).join(' ');
+    if (queueDescriptions) this.elements.queue.setAttribute('aria-describedby', queueDescriptions);
+    else this.elements.queue.removeAttribute('aria-describedby');
   }
   /** The action names what the key will do: run a host command, steer running work, or send. */
   private describeSend(reason: string, command: string | undefined, working: boolean): void {

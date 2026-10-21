@@ -750,7 +750,8 @@ test('chooser style bindings preserve ordinary actions and full-width Durable ro
   assert.match(css, /\.picker-header \{[^}]*align-items: center;[^}]*justify-content: space-between;/);
   assert.match(css, /\.picker-context \{[^}]*grid-template-columns: minmax\(0,1fr\) auto;[^}]*align-items: start;/);
   assert.match(css, /\.picker-path \{ min-width: 0; overflow-wrap: anywhere; \}/);
-  assert.match(css, /\.picker-context-actions \{ display: flex; align-items: center; gap: 8px; \}/);
+  assert.match(css, /--s2: 8px;/);
+  assert.match(css, /\.picker-context-actions \{ display: flex; align-items: center; gap: var\(--s2\); \}/);
   assert.match(css, /@media \(pointer: coarse\) \{ \.picker-context > \.picker-path > summary \{ min-height: 44px;/);
   assert.match(css, /\.picker-session \{[^}]*grid-template-columns: minmax\(0,1fr\) auto auto auto auto;/);
   assert.match(css, /\.picker-session-details\[open\] \{[^}]*grid-column: 1 \/ -1; grid-row: 2;/);
