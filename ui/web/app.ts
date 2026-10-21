@@ -572,9 +572,14 @@ const threadExplorer = new ThreadExplorer({
   name: threadName,
   open: item => openThread(item),
 });
-function openThread(item: ThreadEntry): void {
+function threadOpeningPane(preferred?: ConversationController): PaneLeaf | undefined {
+  const layout = currentLayout();
+  const source = preferred?.workspaceId === state.workspace?.id ? paneLeaves(layout.root).find(pane => pane.tabs.some(tab => tabKey(tab) === pane.active && sameTarget(controllerTarget(tab), preferred?.target))) : undefined;
+  return source ?? paneById(layout, layout.focusedPane);
+}
+function openThread(item: ThreadEntry, preferred?: ConversationController): void {
   const workspace = state.workspace; if (!workspace) return;
-  const layout = currentLayout(), leaf = paneById(layout, layout.focusedPane); if (!leaf) return;
+  const leaf = threadOpeningPane(preferred); if (!leaf) return;
   if (threadPane && threadPane.paneId !== leaf.id) closeThread(false);
   const tab = leaf.tabs.find(item => tabKey(item) === leaf.active), target = tab ? controllerTarget(tab) : undefined;
   const controller = target ? conversationController(target) : undefined;
