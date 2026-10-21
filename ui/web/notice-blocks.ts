@@ -10,7 +10,7 @@ import {noticeTimeOrder} from './transcript-groups.ts';
 type Notice = Extract<Communication,{kind:'notice'|'check-in'}>;
 type Item = {id:string; message:MessageView; value:Notice; key:string; at?:number};
 type Run = {id:string; key:string; items:Item[]};
-type Block = {node:HTMLElement; body:HTMLElement; header:HTMLElement; title:HTMLButtonElement; plain:HTMLElement; count:HTMLElement; run:Run};
+type Block = {node:HTMLElement; body:HTMLElement; header:HTMLElement; title:HTMLButtonElement; plain:HTMLElement; count:HTMLElement; run:Run; painted?:string};
 export type NoticeChild = {node:HTMLElement; id?:string};
 type Hooks = {senderCaption?:(sender:CommunicationSender)=>string; subject?:(identity:string)=>NamedDestination|undefined; thread?:(id:string,title?:string)=>void;
   source:(id:string)=>CommunicationCard|undefined; protected:(id:string)=>boolean; reconcile:(node:HTMLElement,children:HTMLElement[])=>void};
@@ -77,10 +77,12 @@ export class NoticeBlocks {
     const run=this.byRow.get(id), first=run?.items[0];
     card?.groupRow(first ? {hideSender:first.value.kind === 'check-in',at:run?.items.find(item=>item.id === id)?.at} : undefined);
   }
-  overhead(id:string):number {
-    const run=this.byRow.get(id);if(!run)return 0;
-    return (run.items[0]?.id === id ? 12+(this.blocks.get(run.id)?.header.offsetHeight ?? 32) : 0)+(run.items.at(-1)?.id === id ? 12 : 0);
+  leading(id:string):number {
+    const run=this.byRow.get(id);
+    return run?.items[0]?.id === id ? 12+(this.blocks.get(run.id)?.header.offsetHeight ?? 32) : 0;
   }
+  trailing(id:string):number {const run=this.byRow.get(id);return run?.items.at(-1)?.id === id ? 12 : 0;}
+  overhead(id:string):number {return this.leading(id)+this.trailing(id);}
   wrap(children:NoticeChild[]):HTMLElement[] {
     const result:HTMLElement[]=[], bodies=new Map<Block,HTMLElement[]>();let current:Block|undefined;let pending:HTMLElement[]=[];
     for(const child of children) {
@@ -118,11 +120,14 @@ export class NoticeBlocks {
   private paint(block:Block):void {
     const {run}=block, first=run.items[0];if(!first || this.hooks.protected(first.id))return;
     const label=this.label(run), enabled=first.value.kind === 'notice' ? !!this.hooks.thread : !!this.hooks.source(first.id);
-    setText(block.title,label);setText(block.plain,label);block.title.hidden=!enabled;block.plain.hidden=enabled;
     const identity=first.value.kind === 'notice' ? first.value.metadata.threadId : first.value.metadata.sourceId;
-    block.title.title=`${label}\n${identity}`;block.plain.title=block.title.title;
     const newest=run.items.reduce((at,item)=>Math.max(at,item.at ?? 0),0);
-    setText(block.count,`${run.items.length} notices${newest > 0 ? ` · ${compactAge(newest,Date.now())}` : ''}`);
+    const count=`${run.items.length} notices${newest > 0 ? ` · ${compactAge(newest,Date.now())}` : ''}`, signature=JSON.stringify([label,enabled,identity,count]);
+    if(block.painted===signature)return;
+    block.painted=signature;
+    setText(block.title,label);setText(block.plain,label);block.title.hidden=!enabled;block.plain.hidden=enabled;
+    block.title.title=`${label}\n${identity}`;block.plain.title=block.title.title;
+    setText(block.count,count);
     block.node.setAttribute('aria-label',label);
   }
   private open(block:Block):void {
@@ -133,7 +138,9 @@ export class NoticeBlocks {
   private mount(block:Block,children:HTMLElement[]):void {
     const first=block.run.items[0]?.id,last=block.run.items.at(-1)?.id;
     const starts=children.some(node=>node.dataset.entryId === first), ends=children.some(node=>node.dataset.entryId === last);
-    block.header.hidden=!starts;block.node.dataset.start=String(starts);block.node.dataset.end=String(ends);
+    block.header.hidden=!starts;
+    if(block.node.dataset.start!==String(starts))block.node.dataset.start=String(starts);
+    if(block.node.dataset.end!==String(ends))block.node.dataset.end=String(ends);
     this.hooks.reconcile(block.body,children);this.paint(block);
   }
 }

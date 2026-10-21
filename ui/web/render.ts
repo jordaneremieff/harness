@@ -196,7 +196,7 @@ function setEntryRhythm(node: HTMLElement, children: readonly HTMLElement[], ses
   if (compact) node.classList.add('compact-entry'); else node.classList.remove('compact-entry');
 }
 type PartNode = {node: HTMLElement; source: PartView; partial: boolean};
-type OperatorFold = {content: HTMLElement; viewport: HTMLElement; toggle: HTMLButtonElement; key: string};
+type OperatorFold = {content: HTMLElement; viewport: HTMLElement; toggle: HTMLButtonElement; key: string; source?: MessageView; width?: number; lines?: number};
 type MessageNode = {inputFold?: OperatorFold; inputTime?: HTMLElement; communication?: CommunicationCard; node: HTMLElement; header: HTMLElement; heading: HTMLElement; delivery: HTMLElement; actions: HTMLElement; body: HTMLElement; error: HTMLElement; failure?:ResponseFailure; parts: Map<string, PartNode>; source: MessageView; menu: HTMLButtonElement; forkRevision: number; inspection?: HTMLElement; inspectionSource?: MessageView; sourceOpener?: HTMLElement; thinkingGroups?: Map<string, {node: HTMLDetailsElement; body: HTMLElement}>};
 type EventPage = {node: HTMLElement; rows: HTMLElement; page: number; previous: HTMLButtonElement; next: HTMLButtonElement; cache: Map<string, {source: EntryView; node: HTMLElement}>};
 type SessionNode = {source?: SessionGroup; details: HTMLDetailsElement; events: EventPage; notices: EventPage};
@@ -334,27 +334,27 @@ export class Transcript {
       if (this.node.scrollTop === this.writtenScrollTop) {this.writtenScrollTop = undefined; this.lastScrollTop = this.node.scrollTop; return;}
       this.writtenScrollTop = undefined;
       this.scrolling.add(this.node); this.reflowAnchor = undefined; this.restoring = undefined;
-      this.follow = this.node.scrollHeight - this.node.scrollTop - this.node.clientHeight < 48 && !this.hasSelection();
+      const upward = this.node.scrollTop < this.lastScrollTop;
+      this.follow = !upward && this.node.scrollHeight - this.node.scrollTop - this.node.clientHeight < 48 && !this.hasSelection();
       this.syncLatest();
-      this.readEarlier(this.node.scrollTop < this.lastScrollTop);
+      this.readEarlier(upward);
       this.lastScrollTop = this.node.scrollTop;
       this.schedule();
     }, {passive: true});
     this.listen(this.node, 'wheel', event => this.readEarlier((event as WheelEvent).deltaY < 0), {passive: true});
     this.listen(this.node, 'scrollend', event => {
       if (event.target !== this.node) return;
-      this.writtenScrollTop = undefined; this.scrolling.delete(this.node); this.queueGeometry(); this.saveReading();
+      this.writtenScrollTop = undefined; this.scrolling.delete(this.node); this.queueGeometry(); this.schedule(); this.saveReading();
     });
     if (typeof ResizeObserver === 'function') {
       this.resize = new ResizeObserver(entries => {
         if (this.destroyed) return;
         for (const entry of entries) this.resizeGeometry(entry);
-        this.refreshOperatorFolds();
         if (this.geometryDirty.size) this.queueGeometry();
       });
       this.resize.observe(this.node);
     }
-    this.listen(this.latest, 'click', () => { this.follow = true; this.pins.clear(); this.paint(); this.queueGeometry(); });
+    this.listen(this.latest, 'click', () => { this.scrolling.delete(this.node); this.follow = true; this.pins.clear(); this.paint(); this.queueGeometry(); });
     this.listen(document, 'selectionchange', () => {
       if (!this.hidden() && this.hasSelection()) { this.follow = false; this.schedule(); }
       else { this.queueGeometry(); if (!this.hidden()) this.schedule(); }
@@ -641,26 +641,31 @@ export class Transcript {
     this.hooks.timing?.('render', start, end);
     if (receivedAt !== undefined && receivedAt <= end && current()) this.hooks.timing?.('stream-to-render', receivedAt, end);
   }
+  /** A notice row owns its leading header/margin, while its last row also owns the trailing margin. */
+  private rowStart(node: HTMLElement, origin = this.node.getBoundingClientRect().top - this.node.scrollTop + this.node.clientTop): number {
+    return node.getBoundingClientRect().top - origin - this.noticeBlocks.leading(node.dataset.entryId ?? '');
+  }
   private anchor(): {id: string; offsetPx: number} | null {
-    let first = true;
-    for (const child of this.node.children) {
-      const node = child as HTMLElement;
-      if (node === this.lead) continue;
-      const top = node.offsetTop - this.node.offsetTop;
-      // Above the first laid-out item (padding and the earlier control) there is no entry to anchor.
-      if (first && this.node.scrollTop < top) return null;
-      first = false;
-      if (node.dataset.entryId && top <= this.node.scrollTop && top + node.offsetHeight > this.node.scrollTop) {
-        return {id: node.dataset.entryId, offsetPx: this.node.scrollTop - (node.offsetTop - this.node.offsetTop)};
+    let first = Infinity, closest = -Infinity, anchor: {id: string; offsetPx: number} | null = null;
+    const origin = this.node.getBoundingClientRect().top - this.node.scrollTop + this.node.clientTop;
+    for (const [id, entry] of this.cache) {
+      if (!this.node.contains(entry.node) || !this.layout.byId.has(id)) continue;
+      const top = this.rowStart(entry.node,origin), bottom = top + entry.node.offsetHeight + this.noticeBlocks.overhead(id);
+      first = Math.min(first, top);
+      if (top <= this.node.scrollTop && bottom > this.node.scrollTop && top > closest) {
+        closest = top; anchor = {id, offsetPx: this.node.scrollTop - top};
       }
     }
+    if (anchor) return anchor;
+    // Padding and the earlier-history control do not belong to a virtual row.
+    if (this.node.scrollTop < first && this.node.scrollTop < this.layoutOrigin()) return null;
     return captureAnchor(this.layout, this.node.scrollTop - this.layoutOrigin());
   }
-  /** Layout positions start at the first laid-out item; the earlier-history row and padding above it are not part of the layout. */
   private layoutOrigin(): number {
     const first = Array.from(this.node.children).find(child => child !== this.lead) as HTMLElement | undefined;
-    // Rectangles and scroll position do not depend on which ancestor is the offset parent.
-    return first ? Math.max(0, first.getBoundingClientRect().top - this.node.getBoundingClientRect().top + this.node.scrollTop - this.node.clientTop) : 0;
+    if (!first) return 0;
+    const margin = first.matches('.notice-block[data-start=true]') ? 12 : 0;
+    return Math.max(0, first.getBoundingClientRect().top - this.node.getBoundingClientRect().top + this.node.scrollTop - this.node.clientTop - margin);
   }
   private geometryAnchor(override?: {id: string; offsetPx: number} | null): {id: string; offsetPx: number} | null {
     if (this.follow) return null;
@@ -818,6 +823,7 @@ export class Transcript {
   }
   revealEntry(entryId: string, focus = true, callId?: string): void {
     if (!this.index.entries.has(entryId)) return;
+    this.scrolling.delete(this.node);
     const id = callId ? this.rows.calls.get(callId) ?? this.displayId(entryId) : this.displayId(entryId); this.follow = false; this.pins.clear(); this.pins.add(entryId);
     const group=this.openEntryEvents(id,entryId);
     this.restoring = {revision: this.readingRevision, anchorId: callId ? id : entryId, offsetPx: 0, followTail: false}; this.paint();
@@ -904,6 +910,8 @@ export class Transcript {
     return true;
   }
   private finishScroll(anchor: {id: string; offsetPx: number} | null): void {
+    // A virtual-window paint must not compete with an active scroll gesture.
+    if (this.scrolling.has(this.node)) { this.reflowAnchor = undefined; this.syncLatest(); return; }
     if (this.follow && !this.hasSelection()) this.scrollTo(this.node.scrollHeight);
     else this.restorePosition(anchor);
     if (!this.restoring) this.reflowAnchor = this.follow ? null : this.anchor();
@@ -964,8 +972,8 @@ export class Transcript {
       const time = this.inputTimestamp(cached, message, this.index.entries.get(entryId));
       const root = cached.body.querySelector('.communication-text') ?? cached.body;
       if (time && !root.contains(time)) root.prepend(time);
+      this.registerContent(cached.body);
     }
-    this.registerContent(cached.body);
   }
   private communicationInput(cached: MessageNode, message: MessageView, root: HTMLElement, entryId: string): boolean {
     const supplied = message.parts.some((_part, index) => attachmentParts(message, index).some(part => part.type === 'image' && !!part.attachment));
@@ -1018,7 +1026,7 @@ export class Transcript {
     const item = wanted && this.layout.byId.get(wanted.id);
     if (node?.isConnected && wanted && item) {
       const position = restoreAnchor(this.layout, wanted, 0);
-      this.scrollTo(node.offsetTop - this.node.offsetTop + position - item.top);
+      this.scrollTo(this.rowStart(node) + position - item.top);
     }
     if (this.restoring && (!this.restoring.anchorId || original === saved && node?.isConnected)) this.restoring = undefined;
   }
@@ -1380,6 +1388,11 @@ export class Transcript {
       const content = element('div','operator-message-content'), viewport = element('div','operator-message-viewport'); viewport.append(content);
       const toggle = button('',()=>this.toggleOperatorFold(cached,entryId),'operator-message-toggle'); toggle.hidden = true;
       fold = {content,viewport,toggle,key:`input-fold:${communicationDisclosureKeys(entryId,message.id)[0]}`}; cached.inputFold = fold;
+      viewport.dataset.folded = String(!this.expanded.has(fold.key));
+    }
+    if (fold.source !== message) {
+      if (!fold.source || JSON.stringify(fold.source.parts) !== JSON.stringify(message.parts)) fold.lines = undefined;
+      fold.source = message;
     }
     this.reconcileContent(fold.content,children);
     return [fold.viewport,fold.toggle];
@@ -1387,19 +1400,29 @@ export class Transcript {
   private toggleOperatorFold(cached: MessageNode, entryId: string): void {
     const fold = cached.inputFold, retained = this.index.entries.get(entryId), message = retained?.messages?.find(item=>item.id===cached.source.id);
     if (!fold || message !== cached.source || !this.operatorMessage(message,retained) || this.deferred || !this.node.contains(cached.node)) return;
-    this.sourceLayout(entryId); this.sourcePreference(fold.key,!this.expanded.has(fold.key)); this.measureOperatorFold(fold);
+    this.sourceLayout(entryId); this.sourcePreference(fold.key,!this.expanded.has(fold.key)); this.paintOperatorFold(fold);
   }
-  private measureOperatorFold(fold: OperatorFold): void {
-    const rect = fold.content.getBoundingClientRect(), lineHeight = Number.parseFloat(getComputedStyle(fold.content).lineHeight);
-    if (!rect.width || !Number.isFinite(lineHeight) || lineHeight <= 0) return;
-    const lines = Math.ceil(rect.height / lineHeight), open = this.expanded.has(fold.key), long = lines > 12;
-    fold.viewport.dataset.folded = String(long && !open); fold.toggle.hidden = !long;
-    fold.toggle.setAttribute('aria-expanded',String(open)); setText(fold.toggle,open?'Show less':`Show ${Math.max(0,lines-8)} more lines`);
+  private measureOperatorFold(fold: OperatorFold, width: number): void {
+    if (fold.lines === undefined || fold.width !== width) {
+      const rect = fold.content.getBoundingClientRect(), lineHeight = Number.parseFloat(getComputedStyle(fold.content).lineHeight);
+      if (!rect.width || !Number.isFinite(lineHeight) || lineHeight <= 0) return;
+      fold.lines = Math.ceil(rect.height / lineHeight); fold.width = width;
+    }
+    this.paintOperatorFold(fold);
+  }
+  private paintOperatorFold(fold: OperatorFold): void {
+    if (fold.lines === undefined) return;
+    const open = this.expanded.has(fold.key), long = fold.lines > 12, folded = String(long && !open);
+    if (fold.viewport.dataset.folded !== folded) fold.viewport.dataset.folded = folded;
+    fold.toggle.hidden = !long;
+    if (fold.toggle.getAttribute('aria-expanded') !== String(open)) fold.toggle.setAttribute('aria-expanded',String(open));
+    setText(fold.toggle,open?'Show less':`Show ${Math.max(0,fold.lines-8)} more lines`);
   }
   private refreshOperatorFolds(): void {
-    if (this.hidden()) return;
+    if (this.hidden() || this.scrolling.has(this.node)) return;
+    const width = this.node.clientWidth;
     for (const entry of this.cache.values()) for (const cached of entry.messages.values()) {
-      if (cached.inputFold?.content.isConnected && !this.protectedNode(cached.node)) this.measureOperatorFold(cached.inputFold);
+      if (cached.inputFold?.content.isConnected && !this.protectedNode(cached.node)) this.measureOperatorFold(cached.inputFold, width);
     }
   }
   private inputTimestamp(cached: MessageNode, message: MessageView, retained?: EntryView): HTMLElement | undefined {

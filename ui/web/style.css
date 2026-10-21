@@ -916,6 +916,8 @@ pre.tool-document { font-family: var(--mono); font-size: var(--fs-code); line-he
 .notice-block { width: 100%; max-width: var(--read-width); margin-inline: auto; overflow: hidden; border: 0; border-radius: 8px; background: var(--raised); }
 .notice-block[data-start=true] { margin-top: 12px; }
 .notice-block[data-end=true] { margin-bottom: 12px; }
+/* Adjacent blocks retain both margins charged to their virtual rows. */
+.notice-block[data-end=true] + .notice-block[data-start=true] { margin-top: 24px; }
 .notice-block[data-start=false] { border-top-left-radius: 0; border-top-right-radius: 0; }
 .notice-block[data-end=false] { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 .notice-block-header { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 12px; height: 32px; padding-inline: 12px; }
@@ -993,7 +995,7 @@ pre.tool-document { font-family: var(--mono); font-size: var(--fs-code); line-he
 }
 
 /* Composer */
-/* Transcript utilities stay above the writing surface. */
+/* Transcript navigation shares the permanent input control row. */
 .latest { position: static; flex: none; display: inline-flex; align-items: center; align-self: center; gap: var(--s1); min-width: 24px; min-height: 24px; margin: 0 0 0 var(--s2); padding: 0; border-radius: var(--r-sm); background: transparent; color: var(--muted); font-size: var(--fs-ui); }
 .latest[hidden] { display: none; }
 .latest:hover { color: var(--fg); background: var(--raised); }
@@ -1013,9 +1015,10 @@ pre.tool-document { font-family: var(--mono); font-size: var(--fs-code); line-he
 /* The shelf holds input controls; only state remains below the surface. */
 .composer-input { position: relative; padding: var(--s5); border: 1px solid var(--rule); border-radius: var(--r-lg); background: var(--composer-fill); }
 .composer-utilities { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 0 var(--s2); padding: 0; }
-.composer-utilities:not(:has(.latest:not([hidden]), .composer-recall:not([hidden]))) { display: none; }
-.composer-utilities:has(.latest:not([hidden]), .composer-recall:not([hidden])) { margin-bottom: var(--s2); }
-.composer-utilities > .latest { grid-column: 2; grid-row: 1; min-height: 32px; margin: 0; }
+.composer-utilities:not(:has(.composer-recall:not([hidden]))) { display: none; }
+.composer-utilities:has(.composer-recall:not([hidden])) { margin-bottom: var(--s2); }
+.composer-intake:has(> .latest) { flex-basis: 180px; max-width: 100%; }
+.composer-intake > .latest { min-height: 32px; max-width: 140px; margin-left: var(--s2); white-space: nowrap; }
 .composer-recall { grid-column: 1; grid-row: 1; }
 .composer-meta { display: grid; grid-template-columns: minmax(0,1fr); align-items: center; gap: 0 var(--s3); padding: var(--s2) var(--s5) 0; min-width: 0; color: var(--muted); }
 .composer-meta:not(:has(.composer-state:not([hidden]):not(.sr-only), .composer-state-details:not([hidden]))) { display: none; }
@@ -1694,7 +1697,9 @@ button.thread-person:hover, button.thread-sender:hover { background: var(--raise
 .tool-preview:has(> .tool-prose-preview) { font-family: var(--sans); font-size: var(--fs-meta); line-height: 20px; }
 .message.tool-only > .message-header { top: 4px; }
 .message.tool-only > .message-body > .tool-shell:first-child .tool-tier { padding-right: 28px; }
-.tool-preview.preview-fade, .preview-fade, .operator-message-viewport[data-folded=true] { mask-image: linear-gradient(to bottom,#000 max(0px,calc(100% - 2lh)),transparent); }
+.preview-fade, .operator-message-viewport[data-folded=true] { position: relative; }
+.preview-fade::after, .operator-message-viewport[data-folded=true]::after { content: ""; position: absolute; inset: auto 0 0; height: 2lh; max-height: 100%; background: linear-gradient(to bottom,transparent,var(--canvas)); pointer-events: none; }
+.operator-message-viewport[data-folded=true]::after { background: linear-gradient(to bottom,transparent,var(--side)); }
 .tool-preview-more { grid-column: 1 / -1; justify-self: start; min-height: 24px; color: var(--muted); font-size: var(--fs-meta); }
 .tool-expanded pre { padding: 8px 0; background: var(--canvas); }
 .tool-record { padding-left: 0; }

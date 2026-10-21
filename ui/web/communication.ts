@@ -145,6 +145,7 @@ export class CommunicationCard {
   private original?: HTMLElement;
   private structured?: HTMLElement;
   private originalCopy?: HTMLButtonElement;
+  private replyText?: string;
   private bodyValue?: string;
   private bodyFormatted?: boolean;
   private bodyAttachments = false;
@@ -176,17 +177,24 @@ export class CommunicationCard {
   sync(message: MessageView): boolean {
     if (this.source !== message && this.hooks.protected(this.shell.node)) return false;
     const value = message.communication; if (!value) return false;
+    const reply=this.hooks.reply?.(message), open=this.hooks.expanded(this.lineKey);
+    if(this.source===message && this.replyText===reply?.text && (!this.lineMode || this.lineOpen===open))return false;
+    this.replyText=reply?.text;
     this.source = message; this.header(value, message); this.content(value, message);this.results(value);
-    const reply=this.hooks.reply?.(message);this.reply.hidden=!reply;
+    this.reply.hidden=!reply;
     if(reply){const link=button(reply.text,()=>{if(this.current())this.hooks.reply?.(this.hooks.current())?.open();});this.reply.replaceChildren(document.createTextNode('Reply to: '),link);}else this.reply.replaceChildren();
     if (!this.inspection.hidden) this.renderSource();
     return true;
   }
   groupRow(value: {hideSender:boolean;at?:number}|undefined):void {
     if(this.hooks.protected(this.shell.node) || !value && !this.noticeRow)return;
+    const at=value?.at, age=at === undefined ? '' : compactAge(at,Date.now());
+    if(this.age.textContent!==age)setText(this.age,age);
+    if(this.noticeRow?.hideSender===value?.hideSender && this.noticeRow?.at===at)return;
     this.noticeRow=value;this.shell.node.classList.toggle('communication-group-row',!!value);
-    if(value)this.shell.body.append(this.shell.actions);else this.shell.header.append(this.shell.actions);
-    const at=value?.at;setText(this.age,at === undefined ? '' : compactAge(at,Date.now()));this.age.hidden=at === undefined;
+    const parent=value?this.shell.body:this.shell.header;
+    if(this.shell.actions.parentElement!==parent)parent.append(this.shell.actions);
+    this.age.hidden=at === undefined;
     this.age.title=at === undefined ? '' : timestampDetails(at).display;
     const source=this.source;if(source?.communication)this.header(source.communication,source);
   }

@@ -193,8 +193,8 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
   const latest = add('latest', 'button', 'latest') as HTMLButtonElement; latest.type = 'button'; latest.append(cardIcon('latest'), element('span', 'latest-text', 'Latest')); latest.setAttribute('aria-label', 'Latest message'); latest.hidden = true;
   nodes.set('transcript-region',region);region.append(absent, scroller); const above = add('widgets-above', 'div', 'widgets'), below = add('widgets-below', 'div', 'widgets');
   const elements = createComposerElements(instanceId); elements.root.hidden = false;
-  // Transcript navigation shares the utility row above the writing surface.
-  elements.utilities?.append(latest);
+  // Navigation uses the permanent control row, so its visibility never resizes the transcript.
+  elements.sources?.after(latest);
   for (const [name, node] of Object.entries(elements)) if (node) nodes.set(name === 'root' ? 'composer' : name, node);
   const stop = elements.root.querySelector<HTMLButtonElement>('.stop'); if (!stop) throw new Error('Stop control is missing.'); nodes.set('stop', stop); nodes.set('abort', stop);
   const resize = elements.root.querySelector<HTMLElement>('.resizer'); if (resize) nodes.set('composer-resizer', resize);
