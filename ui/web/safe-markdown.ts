@@ -4,17 +4,43 @@ import { copy, element } from './dom.ts';
 import { cardAction, cardActionLabel } from './card-icons.ts';
 import { highlight, knownSyntax } from './highlight.ts';
 
-function inlineNode(node: MarkdownInline): Node {
-  if (node.type === 'text') return document.createTextNode(node.text);
+function hashBoundary(character: string, after = false): boolean {
+  return !character || /\s/.test(character) || "()[]{}<>,;.!?\"'`".includes(character) || after && character === ':';
+}
+/** The complete token remains the selectable text; CSS limits only its painted width. */
+function proseText(text: string, before = '', after = ''): DocumentFragment {
+  const fragment = document.createDocumentFragment(); let cursor = 0;
+  for (const match of text.matchAll(/[a-f0-9]{40,}/gi)) {
+    const value = match[0], start = match.index, end = start + value.length;
+    if (value.length !== 40 && value.length !== 64) continue;
+    if (!hashBoundary(text[start - 1] ?? before) || !hashBoundary(text[end] ?? after,true)) continue;
+    if (start > cursor) fragment.append(document.createTextNode(text.slice(cursor,start)));
+    const token = element('span','prose-hash',value); token.title = value; fragment.append(token); cursor = end;
+  }
+  if (cursor < text.length) fragment.append(document.createTextNode(text.slice(cursor)));
+  return fragment;
+}
+function inlineBoundaryText(node: MarkdownInline): string {
+  if (node.type === 'text') return node.text;
+  if (node.type === 'strong' || node.type === 'emphasis') return node.children.map(inlineBoundaryText).join('');
+  return ' ';
+}
+function inlineNode(node: MarkdownInline, before = '', after = ''): Node {
+  if (node.type === 'text') return proseText(node.text,before,after);
   if (node.type === 'code') return element('code', 'markdown-inline-code', node.text);
   if (node.type === 'omitted') return element('span', 'secondary', node.label);
   if (node.type === 'link') {
     const link = element('a'); link.href = node.href; link.rel = 'noopener noreferrer'; link.target = '_blank'; link.append(inline(node.children)); return link;
   }
-  const emphasis = element(node.type === 'strong' ? 'strong' : 'em'); emphasis.append(inline(node.children)); return emphasis;
+  const emphasis = element(node.type === 'strong' ? 'strong' : 'em'); emphasis.append(inline(node.children,before,after)); return emphasis;
 }
-function inline(nodes: MarkdownInline[]): DocumentFragment {
-  const fragment = document.createDocumentFragment(); fragment.append(...nodes.map(inlineNode)); return fragment;
+function inline(nodes: MarkdownInline[], before = '', after = ''): DocumentFragment {
+  const fragment = document.createDocumentFragment(), boundaries = nodes.map(inlineBoundaryText); let previous = before;
+  nodes.forEach((node,index) => {
+    const next = boundaries.slice(index + 1).find(Boolean)?.[0] ?? after;
+    fragment.append(inlineNode(node,previous,next)); previous = boundaries[index]?.at(-1) ?? previous;
+  });
+  return fragment;
 }
 function listBlock(node: Extract<MarkdownBlock, {type: 'list'}>): HTMLElement {
   const list = node.ordered ? element('ol') : element('ul');
@@ -81,15 +107,20 @@ function markdownBlock(node: MarkdownBlock): HTMLElement {
 const PREVIEW_BLOCKS = 12;
 const PREVIEW_NODES = 160;
 type PreviewBudget = {nodes: number; blocks: number; limited: boolean};
-function previewInline(nodes: MarkdownInline[], budget: PreviewBudget, parent: HTMLElement): void {
-  for (const node of nodes) {
+function previewInlineNode(node: MarkdownInline, budget: PreviewBudget, parent: HTMLElement, before: string, after: string): void {
+  if (node.type === 'text') parent.append(proseText(node.text,before,after));
+  else if (node.type === 'code') parent.append(element('code', 'prose-preview-code', node.text));
+  else if (node.type === 'omitted') parent.append(document.createTextNode(node.label));
+  else if (node.type === 'link') previewInline(node.children,budget,parent);
+  else { const emphasis = element(node.type === 'strong' ? 'strong' : 'em'); previewInline(node.children,budget,emphasis,before,after); parent.append(emphasis); }
+}
+function previewInline(nodes: MarkdownInline[], budget: PreviewBudget, parent: HTMLElement, before = '', after = ''): void {
+  const boundaries = nodes.map(inlineBoundaryText); let previous = before;
+  for (const [index,node] of nodes.entries()) {
     if (budget.nodes <= 0) { budget.limited = true; return; }
-    budget.nodes--;
-    if (node.type === 'text') parent.append(document.createTextNode(node.text));
-    else if (node.type === 'code') parent.append(element('code', 'prose-preview-code', node.text));
-    else if (node.type === 'omitted') parent.append(document.createTextNode(node.label));
-    else if (node.type === 'link') previewInline(node.children, budget, parent);
-    else { const emphasis = element(node.type === 'strong' ? 'strong' : 'em'); previewInline(node.children, budget, emphasis); parent.append(emphasis); }
+    budget.nodes--; const next = boundaries.slice(index + 1).find(Boolean)?.[0] ?? after;
+    previewInlineNode(node,budget,parent,previous,next);
+    previous = boundaries[index]?.at(-1) ?? previous;
   }
 }
 function previewSpan(budget: PreviewBudget, out: HTMLElement[], className: string): HTMLElement | undefined {

@@ -694,6 +694,7 @@ a.reference-link[href]:is(:hover, :focus-visible) { text-decoration: underline; 
 .markdown-content li > * + *, .markdown-content li > ul, .markdown-content li > ol { margin-top: var(--s1); }
 .markdown-content li + li { margin-top: var(--s1); }
 .markdown-content .markdown-inline-code { font-size: var(--fs-code); padding: calc(var(--s1) / 4) calc(var(--s1) * 1.25); border-radius: var(--r-sm); background: var(--code); color: var(--fg); overflow-wrap: anywhere; }
+.prose-hash { display: inline-block; width: 8ch; overflow: hidden; vertical-align: bottom; white-space: nowrap; font-family: var(--mono); user-select: all; }
 .markdown-content strong { color: var(--fg); }
 .markdown-content a { color: var(--link); text-decoration: none; }
 .markdown-content a:is(:hover, :focus-visible) { text-decoration: underline; }
