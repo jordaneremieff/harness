@@ -317,7 +317,9 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .file-editor:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
 .file-editor-color { position: absolute; inset: 0; overflow: hidden; pointer-events: none; color: var(--fg); }
 .file-editor[data-decorated=true] { color: transparent; }
-.file-editor::selection { background: var(--raised); color: var(--fg); }
+@media (forced-colors: none) {
+  :is(.transcript, .transcript *, pre, pre *, code, code *, .file-editor)::selection { background: color-mix(in srgb, var(--accent) 35%, transparent); color: currentColor; }
+}
 .file-view-actions { display: flex; justify-content: flex-end; gap: var(--s3); padding-block: var(--s1); }
 .file-view-actions[hidden] { display: none; }
 .file-save { color: var(--dim); font-size: var(--fs-meta); }
