@@ -1694,7 +1694,10 @@ button.thread-person:hover, button.thread-sender:hover { background: var(--raise
 .review-change { border-bottom: 1px solid var(--rule); padding-block: var(--s2); }
 .review-supplied, .review-ask-text { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
 .review-ask-text { font-family: var(--sans); font-size: var(--fs-body); line-height: 1.65; }
-.review-answer, .review-asked { margin-block: var(--s3); }
+.review-answer, .review-asked, .review-since { margin-block: var(--s3); }
+.review-since-body { position: relative; }
+.review-since-transcript { height: min(52dvh, 520px); min-height: 180px; padding-inline: 0; }
+.review-since-transcript:focus-visible { outline: 1px solid var(--muted); outline-offset: -1px; }
 .review-supplied .diff-row { display: flex; }
 .composer[data-desk-panel=true] { z-index: 3; }
 .composer[data-desk-panel=true] .composer-input > label { display: block; color: var(--muted); font-size: var(--fs-meta); padding-inline: var(--s3); }

@@ -1,8 +1,9 @@
-import type { AgentHistoryPage, AgentRow, Bootstrap, EventData, HistoryPage, OperationView, PrimaryView, PresentationView, ProjectedFrame, Snapshot, Target, TargetState, ThreadOverview, ThreadPageView, Workspace } from '../shared/api.ts';
+import type { AgentHistoryPage, AgentRow, Bootstrap, EntryView, EventData, HistoryPage, OperationView, PrimaryView, PresentationView, ProjectedFrame, Snapshot, Target, TargetState, ThreadOverview, ThreadPageView, Workspace } from '../shared/api.ts';
 import { draftHasContent, draftImageFingerprint, LIMITS, resolveAppearance } from '../shared/api.ts';
 import { Actions } from './actions.ts';
 import {Desk, type DeskRow} from './desk.ts';
-import {Review, reviewChanges, type ReviewData} from './review.ts';
+import {Review, reviewChanges, type ReviewData, type ReviewSince} from './review.ts';
+import {instructionSince} from './agent-request.ts';
 import { AgentCommandInventory } from './agent-commands.ts';
 import {InputEchoes} from './input-echoes.ts';
 import {PrimaryDraftSelection, primaryDraftText, type PrimaryDraftActions, type PrimaryDraftSource, type TranscriptDraftActions} from './primary-draft-actions.ts';
@@ -923,7 +924,7 @@ function refreshCaptionConsumers(): void {
   const captions = presentationCaptions(), references = `${captionReferences()}|${identityNames.revision}`;
   if (captionPaintRevision === captions.revision && paintedCaptionReferenceKey === references) return;
   captionPaintRevision = captions.revision; paintedCaptionReferenceKey = references;
-  refreshCommunicationCaptions();
+  refreshCommunicationCaptions();review.refreshNames();
   for (const controller of controllers.values()) {
     if (controller.workspaceId !== state.workspace?.id) continue;
     controller.transcript.refreshSubjects(); controller.inspection?.refreshNames();
@@ -2395,9 +2396,9 @@ function reviewSource(row:DeskRow):{controller:ConversationController;task:Conve
   if(!controller||!current||!primaryBlocks(state,target.key).some(entry=>entry.id===current.entryId))return;
   return {controller,task:current,reference,generation:controller.transcript.captureGeometry().generation};
 }
-type DeskReviewSession={context:string;row:DeskRow;source:NonNullable<ReturnType<typeof reviewSource>>;recipient:ConversationController;abort:AbortController;data:ReviewData};
+type DeskReviewSession={context:string;row:DeskRow;source:NonNullable<ReturnType<typeof reviewSource>>;recipient:ConversationController;abort:AbortController;data:ReviewData;sinceLoading?:boolean};
 let deskReview:DeskReviewSession|undefined;
-const review=new Review(backToDesk,openReviewStep);
+const review=new Review(backToDesk,openReviewStep,()=>{void loadReviewEarlier();},{subject:toolSubjectCaption,senderCaption:currentSenderCaption,senderSummary:identity=>state.roster.get(identity)??identityNames.get(identity),image:part=>{const session=deskReview;return session&&reviewCurrent(session)?imageUrl(part,session.recipient.target,session.recipient.workspaceId):undefined;}});
 function endDeskReview():void {deskReview?.abort.abort();deskReview=undefined;review.visibility(false);}
 function backToDesk():void {endDeskReview();if(deskPane){deskPane.list=true;renderNavigation();renderDesk();}}
 function reviewCurrent(session:DeskReviewSession):boolean {
@@ -2425,14 +2426,49 @@ function deskReviewData(session:DeskReviewSession,result:ResultInspection):Revie
   const resolve=(id:number|undefined,field:'entryId'|'answerEntryId')=>id===undefined?undefined:loadedReference(entries,{text:String(id),owner:identity,field},undefined,identity);
   const changes=reviewChanges(entries,conversation?.tools??new Map(),resolve(result.entryId,'entryId'),resolve(result.answerEntryId,'answerEntryId'));
   const answer=result.answer?{text:result.answer.text,complete:!result.answer.shortened,redacted:result.answer.protected}:session.data.answer;
-  return {...session.data,answer,changes:changes.changes,turnLoaded:changes.loaded,loading:false,error:result.reason?.text??session.recipient.historyError?.message};
+  return {...session.data,answer,changes:changes.changes,turnLoaded:changes.loaded,loading:false,error:result.reason?.text??session.recipient.historyError?.message,since:deskReviewSince(session)};
+}
+function reviewBrowserInputs(session:DeskReviewSession,entries:readonly EntryView[]):ReadonlySet<string> {
+  const recipient=session.recipient,identity=session.source.reference.sessionId,owned=new Set<string>();
+  for(const operation of state.operations.values()){
+    const receipt=operation.receipt;
+    if(operation.kind!=='agent.input'||operation.state!=='accepted'||!operation.target||!sameTarget(operation.target,recipient.target)||receipt?.kind!=='durable'||receipt.identity!==identity)continue;
+    const request={text:receipt.requestId,owner:identity,field:'requestId' as const},submission={text:String(receipt.submissionId),owner:identity,field:'submissionId' as const};
+    const id=loadedReference(entries,request,undefined,identity);
+    if(!id||id!==loadedReference(entries,submission,undefined,identity))continue;
+    const entry=entries.find(candidate=>candidate.id===id);
+    if(entry?.messages?.some(message=>message.role==='user'&&loadedReference([{...entry,messages:[message]}],request,undefined,identity)===id&&loadedReference([{...entry,messages:[message]}],submission,undefined,identity)===id))owned.add(id);
+  }
+  return owned;
+}
+function deskReviewSince(session:DeskReviewSession):ReviewSince|undefined {
+  const recipient=session.recipient,identity=session.source.reference.sessionId;
+  if(!recipient.historyReady||recipient.abort.signal.aborted||recipient.workspaceId!==state.workspace?.id||recipient.target.kind!=='agent'||recipient.target.identity!==identity)return;
+  const conversation=state.conversations.get(targetIdentity(recipient.target)),entries=conversation?conversationBlocks(conversation):[];
+  const selected=instructionSince(entries,reviewBrowserInputs(session,entries)),earlier=!selected&&earlierBoundary(recipient)!==null;
+  if(!selected&&!earlier)return;
+  return {entries:selected?.entries??[],tools:conversation?.tools??new Map(),thinking:conversation?.thinking??new Map(),yours:selected?.yours??false,earlier,loading:session.sinceLoading===true,error:recipient.historyError?.message};
+}
+async function loadReviewEarlier():Promise<void> {
+  const session=deskReview;if(!session||!reviewCurrent(session)||session.sinceLoading)return;
+  const recipient=session.recipient,before=earlierBoundary(recipient),history=recipient.historyAbort,generation=recipient.transcript.captureGeometry().generation;
+  const current=()=>reviewCurrent(session)&&recipient.workspaceId===state.workspace?.id&&recipient.target.kind==='agent'&&recipient.target.identity===session.source.reference.sessionId&&controllers.get(controllerKey(recipient.workspaceId,recipient.target))===recipient&&!recipient.abort.signal.aborted&&recipient.historyAbort===history&&!history.signal.aborted&&recipient.transcript.captureGeometry().generation===generation;
+  if(!current()||!deskReviewSince(session)?.earlier||before===null||recipient.loading||recipient.historyWork)return;
+  session.sinceLoading=true;session.data={...session.data,since:deskReviewSince(session)};review.update(session.data);
+  let failure:string|undefined;
+  try {if(current()&&earlierBoundary(recipient)===before)await loadControllerHistory(recipient,true);}
+  catch(error){failure=errorMessage(error);}
+  finally {
+    session.sinceLoading=false;
+    if(current()&&!recipient.historyWork){const since=deskReviewSince(session);session.data={...session.data,since:since?{...since,error:failure??since.error}:undefined};review.update(session.data);}
+  }
 }
 async function loadDeskReview(session:DeskReviewSession):Promise<void> {
   try {
     const [result]=await Promise.all([readDeskReviewResult(session),loadControllerHistory(session.recipient)]);
     if(!reviewCurrent(session))return;
     session.data=deskReviewData(session,result);review.update(session.data);
-  }catch(error){if(reviewCurrent(session)){session.data={...session.data,loading:false,error:errorMessage(error)};review.update(session.data);}}
+  }catch(error){if(reviewCurrent(session)){session.data={...session.data,loading:false,error:errorMessage(error),since:deskReviewSince(session)};review.update(session.data);}}
 }
 function openReviewStep():void {
   const session=deskReview;if(!session||!reviewCurrent(session))return;
@@ -2515,7 +2551,7 @@ function renderDesk():void {
   if(!deskPane)return;
   if(deskPane.context!==deskContext()||!paneById(deskLayout(),deskPane.id)){closeDesk();return;}
   if(!deskPane.list){endDeskReview();clearDeskComposer();extensionDialogs.inline();return;}
-  if(deskReview){if(reviewCurrent(deskReview)){deskReview.data.caption=deskCaption(deskReview.source.reference.sessionId);review.update(deskReview.data);return;}endDeskReview();renderNavigation();}
+  if(deskReview){if(reviewCurrent(deskReview)){deskReview.data.caption=deskCaption(deskReview.source.reference.sessionId);deskReview.data.since=deskReviewSince(deskReview);review.update(deskReview.data);return;}endDeskReview();renderNavigation();}
   const tasks=deskTasks(),agents=state.rosterOrder.flatMap(identity=>{const row=agentRow(identity);return row?[row]:[];});
   const notices=[...communicationNotices.items.values()].filter(unreadReviewNotice).sort((a,b)=>(b.timestamp??0)-(a.timestamp??0));
   const rows=[...deskDialogRows(),...notices.map(notice=>deskNoticeRow(notice,tasks)),...deskAgentRows(agents,tasks)];rows.push(...deskTaskRows(tasks,rows));

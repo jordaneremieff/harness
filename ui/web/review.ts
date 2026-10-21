@@ -1,10 +1,12 @@
 import type {CommunicationBody, EntryView} from '../shared/api.ts';
 import {button, copy, element, setText} from './dom.ts';
 import {TranscriptIndex, type JoinedTool} from './transcript-tools.ts';
-import type {ToolState} from './state.ts';
+import type {ThinkingTime, ToolState} from './state.ts';
+import {Transcript, type ViewHooks} from './render.ts';
 import {suppliedDifference, differenceNotice} from './supplied-difference.ts';
 
-export type ReviewData = {caption:string;outcome:string;ask?:CommunicationBody;answer?:CommunicationBody;changes:JoinedTool[];turnLoaded:boolean;loading:boolean;error?:string};
+export type ReviewSince = {entries:EntryView[];tools:ReadonlyMap<string,ToolState>;thinking:ReadonlyMap<string,ThinkingTime>;yours:boolean;earlier:boolean;loading:boolean;error?:string};
+export type ReviewData = {caption:string;outcome:string;ask?:CommunicationBody;answer?:CommunicationBody;changes:JoinedTool[];turnLoaded:boolean;loading:boolean;error?:string;since?:ReviewSince};
 function record(value:unknown):Record<string,unknown>{return value&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:{};}
 const text=(value:unknown):string|undefined=>typeof value==='string'?value:undefined;
 function requestEntry(entry:EntryView):boolean {
@@ -69,6 +71,14 @@ export class Review {
   private answer=element('section','review-answer');
   private status=element('p','secondary');
   private content=element('div','review-content');
+  private since=element('section','review-since');
+  private sinceTitle=element('h3');
+  private sinceEarlier=element('p','secondary');
+  private sinceError=element('p','secondary');
+  private sinceBody=element('div','review-since-body');
+  private sinceLoad:HTMLButtonElement;
+  private sinceView:Transcript;
+  private sinceBoundary?:string;
   private step:HTMLButtonElement;
   private observed=new ResizeObserver(()=>this.measureAsk());
   private signature='';
@@ -76,18 +86,25 @@ export class Review {
   private answerSignature='';
   private askWidth?:number;
   private askLines?:number;
-  constructor(back:()=>void,step:()=>void){
+  constructor(back:()=>void,step:()=>void,load:()=>void,hooks:Pick<ViewHooks,'subject'|'senderCaption'|'senderSummary'|'image'>){
     this.node.hidden=true;this.node.setAttribute('aria-label','Review');
     const header=element('div','review-header');header.append(this.title,button('Back to Desk',back));
-    this.step=button('Open the step that sent it',step);this.content.append(this.changes,this.asked,this.answer);
+    const transcript=element('div','transcript review-since-transcript'),latest=element('button','latest','Latest');
+    transcript.tabIndex=0;transcript.setAttribute('aria-label','Since the last instruction');
+    this.sinceView=new Transcript({transcript,latest},{...hooks,sourceOrder:true,operatorInput:true,presentation:()=>{},reading:()=>{}});
+    this.sinceLoad=button('Load',load);this.sinceEarlier.append(document.createTextNode('Earlier entries not loaded · '),this.sinceLoad);
+    this.sinceBody.append(transcript,latest);this.since.append(this.sinceTitle,this.sinceEarlier,this.sinceError,this.sinceBody);this.since.hidden=true;
+    this.step=button('Open the step that sent it',step);this.content.append(this.changes,this.asked,this.answer,this.since);
     this.node.append(header,this.outcome,this.status,this.content,this.step);this.observed.observe(this.asked);
   }
-  reset():void {this.signature='';this.askSignature='';this.answerSignature='';this.content.scrollTop=0;this.changes.replaceChildren();this.asked.replaceChildren();this.answer.replaceChildren();}
+  reset():void {this.signature='';this.askSignature='';this.answerSignature='';this.content.scrollTop=0;this.changes.replaceChildren();this.asked.replaceChildren();this.answer.replaceChildren();this.clearSince();}
   update(data:ReviewData):void {
     setText(this.title,`Review · ${data.caption}`);setText(this.outcome,data.outcome);setText(this.status,data.error??(data.loading?'Reading exact task result':''));this.status.hidden=!this.status.textContent;
     const signature=JSON.stringify([data.ask,data.answer,data.changes,data.turnLoaded]);
     const selection=document.getSelection();
-    if(signature===this.signature||selection&&!selection.isCollapsed&&this.content.contains(selection.anchorNode))return;
+    if(selection&&!selection.isCollapsed&&this.content.contains(selection.anchorNode))return;
+    this.paintSince(data.since);
+    if(signature===this.signature)return;
     this.signature=signature;this.changes.replaceChildren(element('h3',undefined,'Changes'));
     if(data.changes.length)this.changes.append(...data.changes.map(changeView));
     else this.changes.append(element('p','secondary',data.turnLoaded?'No supplied edit or write calls in this answer turn.':'Exact answer-turn changes are not in the loaded history.'));
@@ -104,8 +121,24 @@ export class Review {
     if(body){this.answer.append(element('pre','review-supplied',body.text),button('Copy answer',()=>{void copy(body.text,this.answer);}));coverage(this.answer,body);}
     else this.answer.append(element('p','secondary','Answer text is not supplied.'));
   }
-  visibility(visible:boolean):void {this.node.hidden=!visible;if(visible)this.measureAsk();}
-  destroy():void {this.observed.disconnect();}
+  private clearSince():void {this.since.hidden=true;this.sinceBoundary=undefined;this.sinceView.reset();}
+  private paintSince(data:ReviewSince|undefined):void {
+    if(!data){if(!this.since.hidden)this.clearSince();return;}
+    const boundary=data.entries[0]?.id;
+    this.since.hidden=false;setText(this.sinceTitle,`Since the last instruction${data.yours?' · yours':''}`);
+    this.sinceEarlier.hidden=!data.earlier;this.sinceLoad.disabled=data.loading;
+    this.sinceLoad.setAttribute('aria-busy',String(data.loading));
+    this.sinceError.hidden=!data.error;setText(this.sinceError,data.error??'');this.sinceBody.hidden=!boundary;
+    if(!boundary){if(this.sinceBoundary){this.sinceView.reset();this.sinceBoundary=undefined;}this.sinceView.visibilityChanged();return;}
+    const changed=boundary!==this.sinceBoundary;
+    if(changed)this.sinceView.reset();
+    this.sinceView.set(data.entries,data.tools,data.thinking,false);
+    if(changed){this.sinceBoundary=boundary;this.sinceView.revealEntry(boundary,false);}
+    this.sinceView.visibilityChanged();
+  }
+  refreshNames():void {this.sinceView.refreshSubjects();}
+  visibility(visible:boolean):void {this.node.hidden=!visible;if(visible)this.measureAsk();this.sinceView.visibilityChanged();}
+  destroy():void {this.observed.disconnect();this.sinceView.destroy();}
   private askBody(body:CommunicationBody):void {
     this.askWidth=undefined;this.askLines=undefined;
     const viewport=element('div','operator-message-viewport'),content=element('pre','review-ask-text',body.text);viewport.append(content);

@@ -30,3 +30,10 @@ export function agentRequest(entries:readonly EntryView[],frame:ProjectedFrame|u
   return selected;
 }
 export function requestKey(request:Pick<AgentRequest,'entry'|'message'>):string {return `agent-request:${JSON.stringify([request.entry.id,request.message.id])}`;}
+
+/** Browser ownership is supplied only after an exact receipt resolves to a loaded native input. */
+export function instructionSince(entries:readonly EntryView[],owned:ReadonlySet<string>):{entries:EntryView[];yours:boolean}|undefined {
+  const start=entries.findLastIndex(entry=>entry.kind!=='ui.input'&&(owned.has(entry.id)||!entry.sender&&!!entry.messages?.some(realUser)));
+  const boundary=entries[start];
+  return boundary?{entries:entries.slice(start),yours:owned.has(boundary.id)}:undefined;
+}
