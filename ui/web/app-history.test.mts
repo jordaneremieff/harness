@@ -145,6 +145,70 @@ for (const change of ['epoch', 'workspace', 'hidden'] as const) {
   });
 }
 
+test('a hostless stopped Primary shows its resume prerequisite without a history request', async t => {
+  const original = globalThis.fetch, target = {kind: 'primary' as const, key: 'p', epoch: 11980};
+  const reading = {revision: 7, anchorId: 'resumed-anchor', offsetPx: 25, followTail: false};
+  const saved = targetFixture('stopped-empty-draft', target, {reading, draft: {revision: 2, text: 'Keep this draft', mode: 'prompt', persisted: true}});
+  const stopped = primaryFixture({epoch: target.epoch, lifecycle: 'stopped', activity: 'unknown', capabilities: {history: false}});
+  let reads = 0;
+  t.after(() => {globalThis.fetch = original;});
+  globalThis.fetch = async (input, init) => {
+    if (new URL(String(input), 'http://ui.test').pathname !== '/api/primaries/p/history') return original(input, init);
+    reads++; return response(target, [row('resumed-anchor')], null);
+  };
+  await arrive({workspace: {id: 'stopped-empty', revision: 1, primaryKey: 'p'}, primaries: [stopped], roster: [], targets: [saved]});
+  const editor = primaryControl('editor'), transcript = primaryControl('transcript'), notice = primaryControl('view-notice');
+  const before = fixtureHost.transportLog.length;
+  assert.equal(reads, 0); assert.equal(notice.textContent, 'Resume this session to load messages.');
+  assert.equal(notice.querySelector('button'), null); assert.equal(primaryControl('earlier').hidden, true); assert.equal(editor.value, 'Keep this draft');
+  transcript.scrollTop = 9; transcript.dispatch('scroll'); transcript.dispatch('scrollend'); await settle();
+  assert.deepEqual(app.state.targets.get(saved.targetKey)?.reading, reading);
+  assert.equal(fixtureHost.transportLog.slice(before).some(call => call.method === 'POST' && call.path === '/api/primaries'), false);
+  event('primary.state', {...stopped, lifecycle: 'ready', activity: 'idle', capabilities: {history: true}}, target); await settle();
+  assert.equal(reads, 1); assert.equal(primaryControl('editor'), editor); assert.equal(editor.value, 'Keep this draft');
+  assert.equal(notice.querySelector('.history-prerequisite'), null); assert.match(transcript.textContent, /resumed-anchor/);
+  assert.deepEqual(app.state.targets.get(saved.targetKey)?.reading, reading);
+});
+for (const stopped of [true, false]) test(`a late history not_ready ${stopped ? 'after stop becomes a resume prerequisite' : 'on an available Primary remains an error'}`, async t => {
+  const original = globalThis.fetch, target = {kind: 'primary' as const, key: 'p', epoch: stopped ? 11981 : 11982};
+  const pending = Promise.withResolvers<Response>(); let reads = 0;
+  const ready = primaryFixture({epoch: target.epoch, lifecycle: 'ready', activity: 'idle', capabilities: {history: true}});
+  t.after(() => {globalThis.fetch = original; pending.resolve(response(target, [], null));});
+  globalThis.fetch = async (input, init) => {
+    if (new URL(String(input), 'http://ui.test').pathname !== '/api/primaries/p/history') return original(input, init);
+    reads++; return reads === 1 ? pending.promise : response(target, [row('resumed-after-late')], null);
+  };
+  await arrive({workspace: {id: `late-stopped-${stopped}`, revision: 1, primaryKey: 'p'}, primaries: [ready], roster: [], selectedPage: {target, items: [row('already-visible')], nextCursor: 'older', coverage}});
+  assert.equal(reads, 1);
+  if (stopped) event('primary.state', {...ready, lifecycle: 'stopped'}, target);
+  pending.resolve(Response.json({ok: false, error: {code: 'not_ready', message: 'The primary requires explicit resume.', retry: 'manual'}}, {status: 503})); await settle();
+  const notice = primaryControl('view-notice'); assert.match(primaryControl('transcript').textContent, /already-visible/);
+  if (stopped) {
+    assert.equal(notice.textContent, 'Resume this session to load messages.'); assert.equal(notice.querySelector('button'), null); assert.equal(primaryControl('earlier').hidden, true);
+    event('primary.state', ready, target); await settle();
+    assert.equal(reads, 2); assert.equal(notice.querySelector('.history-prerequisite'), null); assert.match(primaryControl('transcript').textContent, /resumed-after-late/);
+  } else {
+    assert.match(notice.textContent, /History could not be loaded/); assert.ok(notice.querySelector('[aria-label="Retry history"]')); assert.equal(reads, 1);
+  }
+});
+
+test('resume replaces an in-flight stopped read and ignores its late not_ready reply', async t => {
+  const original = globalThis.fetch, target = {kind: 'primary' as const, key: 'p', epoch: 11983};
+  const pending = Promise.withResolvers<Response>(); let reads = 0;
+  const ready = primaryFixture({epoch: target.epoch, lifecycle: 'ready', activity: 'idle', capabilities: {history: true}});
+  t.after(() => {globalThis.fetch = original; pending.resolve(response(target, [], null));});
+  globalThis.fetch = async (input, init) => {
+    if (new URL(String(input), 'http://ui.test').pathname !== '/api/primaries/p/history') return original(input, init);
+    reads++; return reads === 1 ? pending.promise : response(target, [row('fresh-resume')], null);
+  };
+  await arrive({workspace: {id: 'resume-before-late', revision: 1, primaryKey: 'p'}, primaries: [ready], roster: []});
+  event('primary.state', {...ready, lifecycle: 'stopped', capabilities: {history: false}}, target); await settle();
+  assert.equal(primaryControl('view-notice').textContent, 'Resume this session to load messages.');
+  event('primary.state', ready, target);
+  pending.resolve(Response.json({ok: false, error: {code: 'not_ready', message: 'The primary requires explicit resume.', retry: 'manual'}}, {status: 503})); await settle();
+  assert.equal(reads, 2); assert.equal(primaryControl('view-notice').textContent, ''); assert.match(primaryControl('transcript').textContent, /fresh-resume/);
+});
+
 let readingSerial = 12000;
 async function pendingResume(t: TestContext) {
   const original = globalThis.fetch, target = {kind: 'primary' as const, key: 'p', epoch: ++readingSerial}, workspace = `reading-${target.epoch}`;
@@ -156,13 +220,14 @@ async function pendingResume(t: TestContext) {
   globalThis.fetch = async (input, init) => {
     if (new URL(String(input), 'http://ui.test').pathname !== '/api/primaries/p/history') return original(input, init);
     if (phase === 'resume' && !held) {held = true; entered.resolve(); return pending.promise;}
-    return response(target, phase === 'stopped' ? [] : items, null);
+    assert.notEqual(phase, 'stopped', 'A hostless stopped Primary must not request history');
+    return response(target, items, null);
   };
   const baseline = {workspace: {id: workspace, revision: 1, primaryKey: 'p'}, primaries: [ready], roster: [], targets: [saved]};
   await arrive(baseline); const root = primaryControl('root'), transcript = primaryControl('transcript');
   // The shared host fixes its event boot ID; relabel the prior boot before the real snapshot replacement.
   app.state.bootId = 'prior-boot'; app.state.cursor = `prior-boot:${app.state.sequence}`;
-  phase = 'stopped'; await arrive({...baseline, primaries: [{...ready, lifecycle: 'stopped', capabilities: {}}]});
+  phase = 'stopped'; await arrive({...baseline, primaries: [{...ready, lifecycle: 'stopped', capabilities: {history: false}}]});
   transcript.scrollTop = 0; transcript.dispatch('scroll');
   assert.deepEqual(app.state.targets.get(saved.targetKey)?.reading, reading);
   phase = 'resume'; event('primary.state', ready, target); await entered.promise; await settle();
@@ -247,11 +312,18 @@ test('a same-session stopped snapshot retains the native reader and editor as La
   await arrive({workspace:{id:workspace,revision:1,primaryKey:'p'},primaries:[current],roster:[],targets:[saved],history:items});
   const editor=primaryControl('editor'),transcript=primaryControl('transcript'),anchor=transcript.querySelector('[data-entry-id="retained-anchor"]');assert.ok(anchor);editor.focus();editor.setSelectionRange(0,0,'none');editor.scrollTop=16;
   const before=transcript.scrollTop;
-  fixtureHost.fixture={...fixtureHost.fixture,primaries:[{...current,lifecycle:'stopped',activity:'unknown',pid:undefined}],history:[],selectedPage:{target,items:[],nextCursor:null,coverage}};
-  globalThis.fetch=async(input,init)=>new URL(String(input),'http://ui.test').pathname==='/api/snapshot'?Response.json({ok:true,data:{...fixtureHost.snapshotOf(fixtureHost.fixture,0),bootId:'restarted',cursor:'restarted:0'}}):original(input,init);
-  await app.reload();await settle();await app.drainDev(AbortSignal.timeout(2000));await settle();
+  fixtureHost.fixture={...fixtureHost.fixture,primaries:[{...current,lifecycle:'stopped',activity:'unknown',pid:undefined,capabilities:{history:false}}],history:[],selectedPage:undefined};
+  let stoppedReads=0;
+  globalThis.fetch=async(input,init)=> {
+    const path=new URL(String(input),'http://ui.test').pathname;
+    if(path==='/api/snapshot')return Response.json({ok:true,data:{...fixtureHost.snapshotOf(fixtureHost.fixture,0),bootId:'restarted',cursor:'restarted:0'}});
+    if(path==='/api/primaries/p/history'){stoppedReads++;return Response.json({ok:false,error:{code:'not_ready',message:'The primary requires explicit resume.',retry:'manual'}},{status:503});}
+    return original(input,init);
+  };
+  await app.reload();await settle();await app.drainDev(AbortSignal.timeout(2000));await settle();assert.equal(stoppedReads,0);
   assert.equal(primaryControl('editor'),editor);assert.equal(primaryControl('transcript'),transcript);assert.equal(transcript.querySelector('[data-entry-id="retained-anchor"]'),anchor);assert.equal(transcript.scrollTop,before);assert.equal(editor.scrollTop,16);assert.equal(fixtureHost.hostDocument.activeElement,editor);
   assert.equal(app.state.bootId,'restarted');assert.equal(app.state.primaries.get('p')?.lifecycle,'stopped');assert.deepEqual(app.state.conversations.get(targetIdentity(target))?.retainedSession,{id:'retained',file:'/fixture/project/retained.jsonl'});
+  assert.equal(primaryControl('view-notice').textContent,'Resume this session to load messages.');assert.equal(primaryControl('view-notice').querySelector('button'),null);
   assert.equal(primaryControl('observed').hidden,false);assert.equal(primaryControl('observed').textContent,'Last observed');assert.equal(primaryControl('earlier').hidden,true);assert.equal(editor.disabled,false);assert.equal(primaryControl('send').disabled,true);assert.equal(app.state.primaries.get('p')?.lifecycle,'stopped');assert.deepEqual(app.state.targets.get(saved.targetKey)?.reading,reading);
 });
 test('a failed resume read releases reading persistence without applying the saved position', async t => {

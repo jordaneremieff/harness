@@ -291,7 +291,7 @@ const composerFill = (palette: Palette): string => blend(palette['--canvas'] as 
 const composerHoverFills = new Map([
   ['.composer .attachment-sources:hover:not(:disabled), .composer .attachment-sources[aria-expanded=true]:not(:disabled)', 9],
   ['.queue:not(:disabled):hover', 9],
-  ['.composer[data-working=draft] .stop:hover', 2],
+  ['.stop:hover', 2],
 ]);
 // Inverted controls pair canvas text with their own filled background.
 function modeledText(context: Context, property: string, value: string): boolean {
@@ -348,7 +348,7 @@ function composerBackground(context: Context, value: string): boolean {
   const weight = composerHoverFills.get(rule.selector);
   if (weight !== undefined && value === `color-mix(in srgb, var(--fg) ${weight}%, transparent)`) {
     const fill = blend(palette['--fg'] as string, composerFill(palette), weight / 100);
-    const names = rule.selector === '.composer[data-working=draft] .stop:hover' ? ['error'] : ['fg'];
+    const names = rule.selector === '.stop:hover' ? ['error'] : ['fg'];
     for (const fg of names) measure('composer-text', `${source} --${fg} / composited control`, fg, fill, 4.5);
     return true;
   }

@@ -449,6 +449,11 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .composer-state[data-tone=warning] { color: var(--warning); }
 .composer-state-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer-state-label[hidden] { display: none; }
+.composer-delivery-guidance .composer-state-label { overflow: visible; text-overflow: clip; white-space: normal; }
+@container composer (max-width: 760px) {
+  .composer-meta:has(.composer-delivery-guidance) > .composer-state { grid-column: 1 / -1; grid-row: 1; }
+  .composer-meta:has(.composer-delivery-guidance) > .composer-settings { grid-column: 1 / -1; grid-row: 2; justify-self: start; }
+}
 .composer-state-detail { flex: none; min-width: 32px; min-height: 32px; padding: 0; border-radius: 6px; color: inherit; font-size: 13px; text-decoration: underline; text-underline-offset: 3px; }
 .composer-state-detail:hover { text-decoration-thickness: 2px; }
 .conversation.agent-empty .transcript { padding-block: 0; }
@@ -984,18 +989,16 @@ pre.tool-document { font-family: var(--mono); font-size: 13px; line-height: 1.5;
 .queue { display: inline-flex; flex: none; align-items: center; height: 32px; min-height: 32px; min-width: 32px; padding: 0 8px; border-radius: 8px; color: var(--muted); font-size: 14px; line-height: 1; white-space: nowrap; }
 .queue:not(:disabled):hover { background: color-mix(in srgb, var(--fg) 9%, transparent); color: var(--fg); }
 .queue:disabled { color: var(--dim); cursor: default; }
-/* Message actions stay square; lifecycle labels use the same height and corner radius. */
+/* Named delivery and lifecycle actions expand without changing the control height. */
 .send, .stop { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 36px; height: 36px; min-width: 36px; min-height: 36px; padding: 0; border: 0; border-radius: 10px; line-height: 1; }
 .send { background: var(--fg); color: var(--canvas); }
 .send:not(:disabled):hover { background: var(--muted); color: var(--canvas); }
 .send:disabled { opacity: 1; background: color-mix(in srgb, var(--fg) 14%, var(--composer-fill)); color: var(--muted); cursor: default; }
 .start { width: auto; min-width: 82px; gap: 6px; padding: 0 12px; font-size: 14px; font-weight: 500; white-space: nowrap; }
 .send[aria-busy=true] { cursor: progress; }
-.stop { background: var(--fg); color: var(--canvas); }
-.stop:hover { background: var(--muted); color: var(--canvas); }
-.composer[data-working=empty] .composer-bar:has(> .stop:not([hidden])) .composer-submit { display: none; }
-.composer[data-working=draft] .stop { width: 32px; height: 32px; min-width: 32px; min-height: 32px; border-radius: 8px; background: transparent; color: var(--muted); }
-.composer[data-working=draft] .stop:hover { background: color-mix(in srgb, var(--fg) 2%, transparent); color: var(--error); }
+.send-named { width: auto; gap: 6px; padding: 0 12px; font-size: 14px; font-weight: 500; white-space: nowrap; }
+.stop { width: auto; height: 32px; min-width: 32px; min-height: 32px; gap: 6px; padding: 0 8px; border-radius: 8px; background: transparent; color: var(--muted); font-size: 14px; white-space: nowrap; }
+.stop:hover { background: color-mix(in srgb, var(--fg) 2%, transparent); color: var(--error); }
 .receipt { display: flex; flex-wrap: wrap; gap: 2px 12px; max-height: 30dvh; margin-bottom: 6px; overflow: auto; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
 .receipt:empty { display: none; }
 .receipt:has(> .receipt-save-failure:only-child) { max-height: none; overflow: visible; }
@@ -1363,7 +1366,7 @@ button.thread-person:hover, button.thread-sender:hover { background: var(--raise
   .nav-search { height: 44px; }
   .tab-bar { min-height: 44px; }
   .composer-line { flex-wrap: wrap; min-height: 44px; }
-  .composer :is(.attachment-sources, .composer-model, .composer-thinking, .send, .stop, .queue, .composer-state-detail, .composer-recall-restore), .composer[data-working=draft] .stop { min-width: 44px; min-height: 44px; }
+  .composer :is(.attachment-sources, .composer-model, .composer-thinking, .send, .stop, .queue, .composer-state-detail, .composer-recall-restore) { min-width: 44px; min-height: 44px; }
   .composer-meta { grid-template-columns: minmax(74px,1fr) minmax(0,auto); }
   .command-option, .palette-row, .nav-row, .row-select { min-height: 44px; height: auto; }
   .row-age, .row-message { top: 0; height: 44px; display: inline-flex; align-items: center; }
@@ -1401,7 +1404,8 @@ button.thread-person:hover, button.thread-sender:hover { background: var(--raise
   .pane-split > .pane-divider:focus-visible { outline: 2px solid Highlight; outline-offset: -2px; }
   .composer-input { border: 1px solid CanvasText; }
   .composer :is(.send, .stop, .attachment-sources, .composer-model, .composer-thinking, .queue) { border: 1px solid ButtonText; }
-  .composer .send, .composer[data-working=empty] .stop { background: ButtonText; color: ButtonFace; }
+  .composer .send { background: ButtonText; color: ButtonFace; }
+  .composer .stop { background: ButtonFace; color: ButtonText; }
   .composer .send:disabled { background: ButtonFace; opacity: 1; color: GrayText; }
   .composer button:focus-visible, .composer-input:has(textarea:focus-visible) { outline: 2px solid Highlight; }
 }

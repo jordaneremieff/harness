@@ -2770,7 +2770,7 @@ test('static workbench markup owns one footer and keeps composer actions without
   assert.match(factory, /const input = element\('div', 'composer-input'\)/); assert.match(factory, /input\.append\(commandMenu, fileMenu, recipient, surface, attachments, line, resize\)/);
   assert.match(factory, /const intake = element\('span','composer-intake'\); intake\.append\(attach,sources,picker\)/);
   assert.match(factory, /cardAction\('plus', 'Add to message'/);
-  assert.match(factory, /root\.append\(receipt, utilities, input, meta\)/); assert.match(factory, /meta\.append\(state, settings, stateDetails\)/); assert.match(factory, /utilities\.append\(recallLine\)/); assert.match(factory, /line\.append\(intake, bar\)/); assert.match(factory, /bar\.append\(stop, submit\)/); assert.match(factory, /submit\.append\(queue, start, send\)/);
+  assert.match(factory, /root\.append\(receipt, utilities, input, meta\)/); assert.match(factory, /meta\.append\(state, settings, stateDetails\)/); assert.match(factory, /utilities\.append\(recallLine\)/); assert.match(factory, /line\.append\(intake, stop, bar\)/); assert.match(factory, /bar\.append\(submit\)/); assert.match(factory, /submit\.append\(queue, start, send\)/);
   assert.doesNotMatch(factory, /composer-guidance|usage-details|class="statusline"|root\.append\([^)]*receiptDetails/);
   assert.equal([...html.matchAll(/id="focused-composer-status" class="workbench-draft-state"/g)].length, 1);
 });
@@ -2782,7 +2782,7 @@ test('composer utilities precede the writing surface and transcript paints retai
   assert.deepEqual(root.children, [elements.receipt, utilities, input, elements.meta]);
   assert.deepEqual(utilities.children, [elements.recallLine]);
   assert.deepEqual((elements.meta as unknown as FakeNode).children, [elements.state, elements.settings, elements.stateDetails]);
-  assert.deepEqual(shelf.children, [input.querySelector('.composer-intake'), input.querySelector('.composer-bar')]);
+  assert.deepEqual(shelf.children, [input.querySelector('.composer-intake'), input.querySelector('.stop'), input.querySelector('.composer-bar')]);
   assert.equal(surface.parentNode, input); assert.equal(editor.parentNode, surface); assert.equal(surface.children[1], editor);
   const host = new FakeNode('section'); roots.push(host); root.hidden = false; host.append(node('primary-transcript'), root);
   editor.value = 'Retained native draft'; const moves = editor.moves;

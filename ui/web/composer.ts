@@ -30,7 +30,7 @@ export type ComposerElements = {root: HTMLFormElement; editor: HTMLTextAreaEleme
 export type ComposerStateView = {line: string; label?: string; tone?: 'error' | 'warning'; hideSend?: boolean; withoutDraft?: boolean; action?: {label: string; title?: string; pending?: boolean; disabled?: boolean; recovery?: boolean; run: () => void}; blocksSend?: boolean; detail?: string};
 /** An accepted queued input is expected behaviour, so its notice uses the quiet tier, not the warning tier. */
 const queuedAdmissionNotice = (text: string): boolean => text === 'Message queued' || text === 'Steer queued';
-/** Lifecycle controls retain visible labels; familiar message actions use assistive-only labels. */
+/** Delivery choices and lifecycle controls retain visible labels beside their glyphs. */
 const actionParts = new WeakMap<HTMLElement, {label: HTMLElement; icon?: CardIcon; mark?: SVGSVGElement}>();
 function paintAction(node: HTMLButtonElement, icon: CardIcon, label: string, visible = false): void {
   let parts = actionParts.get(node);
@@ -60,9 +60,9 @@ export function createComposerElements(instanceId: string): ComposerElements {
   stateLabel.setAttribute('aria-hidden', 'true'); stateLine.id = `${id}-state-line`; stateDetail.id = `${id}-state-detail`; stateDetail.type = 'button'; stateDetail.hidden = true; stateDetail.setAttribute('aria-expanded', 'false'); setText(stateDetail, 'Details'); state.append(stateLabel, stateLine, stateDetail);
   const stateDetails = element('pre', 'composer-state-details'); stateDetails.id = `${id}-state-details`; stateDetails.hidden = true; stateDetails.setAttribute('aria-label', 'Agent details'); stateDetail.setAttribute('aria-controls', stateDetails.id);
   const input = element('div', 'composer-input');
-  // While work runs and the draft has content, Queue sends it after the current response; the send key and the action slot steer it.
+  // Queue chooses followUp mode; the send key and Steer reach the next step.
   const queue = element('button', 'queue', 'Queue'); queue.id = `${id}-queue`; queue.type = 'button'; queue.hidden = true; queue.setAttribute('aria-label', 'Queue message');
-  const stop = element('button', 'stop'); stop.id = `${id}-stop`; stop.type = 'button'; stop.hidden = true; paintAction(stop, 'stop', 'Stop');
+  const stop = element('button', 'stop'); stop.id = `${id}-stop`; stop.type = 'button'; stop.hidden = true; paintAction(stop, 'stop', 'Stop', true);
   const send = element('button', 'send'); send.id = `${id}-send`; send.type = 'submit'; send.disabled = true; paintAction(send, 'send', 'Send');
   send.setAttribute('aria-label', 'Send message'); stop.setAttribute('aria-label', 'Stop response');
   const attach = element('button', 'attach', 'Attach'); attach.type = 'button'; attach.hidden = true; attach.tabIndex = -1; attach.setAttribute('aria-label', 'Upload files');
@@ -72,7 +72,7 @@ export function createComposerElements(instanceId: string): ComposerElements {
   const intake = element('span','composer-intake'); intake.append(attach,sources,picker);
   const start = element('button', 'send start'); start.id = `${id}-start`; start.type = 'button'; start.hidden = true; paintAction(start, 'play', 'Start', true);
   const submit = element('div', 'composer-submit'); submit.append(queue, start, send);
-  const bar = element('div', 'composer-bar'); bar.append(stop, submit); const line = element('div', 'composer-line');
+  const bar = element('div', 'composer-bar'); bar.append(submit); const line = element('div', 'composer-line');
   const model = element('button', 'composer-model'), thinking = element('button', 'composer-thinking'), settingsText = element('span', 'composer-settings-text');
   model.id = `${id}-model`; thinking.id = `${id}-thinking`; settingsText.id = `${id}-settings-text`; model.type = thinking.type = 'button'; model.hidden = thinking.hidden = settingsText.hidden = true;
   const settings = element('div', 'composer-settings'); settings.id = `${id}-settings`; settings.setAttribute('role', 'group'); settings.setAttribute('aria-label', 'Model and thinking');
@@ -86,7 +86,7 @@ export function createComposerElements(instanceId: string): ComposerElements {
   const recallLine = element('div', 'composer-recall'); recallLine.hidden = true; recallLine.append(recallHint, recallRestore);
   const meta = element('div', 'composer-meta'); meta.append(state, settings, stateDetails);
   const utilities = element('div', 'composer-utilities'); utilities.append(recallLine);
-  line.append(intake, bar);
+  line.append(intake, stop, bar);
   // The handle is absolutely placed on the surface's top edge.
   input.append(commandMenu, fileMenu, recipient, surface, attachments, line, resize); root.append(receipt, utilities, input, meta);
   const save = element('span', 'draft-state'); save.id = `${id}-save`;
@@ -220,20 +220,24 @@ export class Composer {
     this.paintState(view);
   }
   setSettingsState(view?: ComposerStateView): void { this.settingsState=view;this.paintState(this.stateView); }
+  private get working(): boolean { return !!this.current && this.ready && this.connected && this.busy && this.deliverySupported; }
   private combinedState(view?:ComposerStateView):ComposerStateView|undefined {
-    const settings=this.settingsState;if(!settings)return view;if(!view)return settings;
+    const settings=this.settingsState;
+    if(!settings&&!view&&this.working&&!this.gated){
+      const line=this.current&&this.commandDraft(this.current)?'Working':'Working · Steer at the next step; Queue adds a follow-up.';
+      return {line,label:line};
+    }
+    if(!settings)return view;if(!view)return settings;
     return {...view,line:[view.line,settings.line].join(' '),label:[view.label,settings.label].filter(Boolean).join(' · '),detail:[view.detail,settings.detail].filter(Boolean).join('\n')};
   }
   private paintState(view?: ComposerStateView): void {
     view=this.combinedState(view);
     const {state, start} = this.elements; if (!state || !start) return;
-    this.paintStateText(state, view);
     start.hidden = !view?.action; start.disabled = !!view?.action?.disabled; start.setAttribute('aria-busy', String(!!view?.action?.pending));
     paintAction(start, view?.action?.pending ? 'working' : view?.action?.recovery ? 'restart' : 'play', view?.action?.label ?? 'Start', true);
     start.setAttribute('aria-label', view?.action?.label ?? 'Start');
     if (view?.action?.recovery) start.dataset.kind = 'recovery'; else delete start.dataset.kind;
     start.title = view?.action?.title ?? ''; start.onclick = view?.action ? () => view.action?.run() : null;
-    for (const control of [start, this.elements.send]) { if (view) control.setAttribute('aria-describedby', `${state.id}-line`); else control.removeAttribute('aria-describedby'); }
     this.render();
   }
   private paintStateText(state: HTMLElement, view?: ComposerStateView): void {
@@ -783,21 +787,30 @@ export class Composer {
   private renderControls(): void {
     if (this.destroyed) return;
     const {send, queue, root} = this.elements, buffer = this.current;
-    const working = !!buffer && this.ready && this.connected && this.busy && this.deliverySupported;
+    const working = this.working;
     const content = !!buffer && draftHasContent({text: buffer.data.text.trim(), images: buffer.data.images});
-    // Work with nothing to send leaves Stop alone in the action slot; a draft makes Stop quiet and offers Queue beside the Steer action.
+    // Empty working drafts keep the delivery choices visible without permitting empty input.
     if (working) root.dataset.working = content ? 'draft' : 'empty'; else delete root.dataset.working;
     send.hidden = !!this.stateView?.action || !!this.stateView?.hideSend || (!working && this.ready && !content);
     const reason = this.sendGuidance(), run = buffer && this.commandDraft(buffer);
-    queue.hidden = !working || !content || !!run || send.hidden;
+    queue.hidden = !working || !!run || send.hidden;
     this.describeSend(reason, run ? run.name : undefined, working);
     queue.setAttribute('aria-description', reason);
-    queue.title = reason || 'Queue: send after the current response ends';
+    queue.title = reason || 'Add a follow-up message.';
+    const state = this.elements.state, view = this.combinedState(this.stateView);
+    if (state) {
+      this.paintStateText(state, view);
+      state.classList.toggle('composer-delivery-guidance', !!view && !this.stateView && !this.settingsState && !run);
+      for (const control of [this.elements.start, send, queue]) {
+        if (view) control?.setAttribute('aria-describedby', `${state.id}-line`); else control?.removeAttribute('aria-describedby');
+      }
+    }
   }
   /** The action names what the key will do: run a host command, steer running work, or send. */
   private describeSend(reason: string, command: string | undefined, working: boolean): void {
     const send = this.elements.send, steer = working && command === undefined;
-    paintAction(send, command !== undefined ? 'commands' : steer ? 'steer' : 'send', command !== undefined ? 'Run command' : steer ? 'Steer' : 'Send');
+    paintAction(send, command !== undefined ? 'commands' : steer ? 'steer' : 'send', command !== undefined ? 'Run command' : steer ? 'Steer' : 'Send', steer || command !== undefined);
+    send.classList.toggle('send-named', steer || command !== undefined);
     send.setAttribute('aria-label', command !== undefined ? `Run command /${command}` : steer ? 'Steer message' : 'Send message');
     send.setAttribute('aria-description', reason);
     send.title = reason || (command !== undefined ? `Run /${command} on this agent. It sends no message` : steer ? 'Steer: send now; the agent reads it at its next step' : 'Send');
@@ -822,7 +835,7 @@ export class Composer {
     if (hold) return hold;
     return this.current?.attachments?.pending ? 'Unfinished local files stay in this tab and are not included in this message.' : '';
   }
-  /** The mode a send captures. While work runs the sender chooses: the send key and Steer reach the next step, Queue follows the current response. A Primary that is not working takes a plain prompt; an agent that is not working queues, so a message that meets unobserved work waits instead of interrupting it. A saved draft mode never decides. */
+  /** The mode a send captures. While work runs, the send key and Steer choose steer; Queue chooses followUp. An idle Primary takes a plain prompt; an idle agent takes followUp. The native recipient decides when it admits the follow-up, including during an open answer. A saved draft mode never decides. */
   private deliveryMode(buffer: Buffer, delivery: 'steer' | 'followUp'): 'prompt' | 'steer' | 'followUp' {
     if (this.busy) return delivery;
     return buffer.state.target.kind === 'primary' ? 'prompt' : 'followUp';

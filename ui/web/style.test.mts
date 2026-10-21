@@ -196,7 +196,7 @@ test('blue marks focus while selected rows and tabs use neutral rules and surfac
   assert.deepEqual(fills.filter(item => item.value.includes('--edge')), [
     {selector: '.pane-split > .pane-divider:hover::after', property: 'background', value: 'var(--edge)'},
   ]);
-  const graphicTokens = new Map([['.tab-dot', 'var(--muted)'], ['.tab-dot[data-state=working]', 'var(--link)'], ['.tab-dot[data-state=failed]', 'var(--error)'], ['.send', 'var(--fg)'], ['.send:not(:disabled):hover', 'var(--muted)'], ['.stop', 'var(--fg)'], ['.stop:hover', 'var(--muted)']]);
+  const graphicTokens = new Map([['.tab-dot', 'var(--muted)'], ['.tab-dot[data-state=working]', 'var(--link)'], ['.tab-dot[data-state=failed]', 'var(--error)'], ['.send', 'var(--fg)'], ['.send:not(:disabled):hover', 'var(--muted)'], ['.stop', 'transparent'], ['.stop:hover', 'color-mix(in srgb, var(--fg) 2%, transparent)']]);
   for (const item of fills.filter(item => !item.value.includes('--edge'))) {
     const graphic = graphicTokens.get(item.selector);
     if (graphic) assert.equal(item.value, graphic);
@@ -258,7 +258,7 @@ test('neutral tools keep lifecycle accents in marks and errors while source diff
   assert.match(rule(':is(.tab-dot, .conversation-state, .row-state)[data-tone=success]'), /color: var\(--success\)/);
   assert.match(rule(':is(.tab-dot, .conversation-state, .row-state)[data-tone=error]'), /color: var\(--error\)/);
   assert.match(rule('a'), /color: var\(--link\)/);
-  assert.match(rule('.composer[data-working=draft] .stop:hover'), /color: var\(--error\)/);
+  assert.match(rule('.stop:hover'), /color: var\(--error\)/);
 });
 test('tool status labels have natural width and disclosure marks stay separate from status', () => {
   assert.match(rule('.tool-status'), /flex: none/);
@@ -511,12 +511,16 @@ test('narrow composer controls wrap only as needed and retain right alignment wi
   assert.match(media('@media (pointer:coarse)'), /button, summary,[^{}]*\{ min-height: 44px; min-width: 44px; \}/);
   assert.doesNotMatch(narrow, /\.send[^{}]*\{[^}]*(?:display: none|overflow: hidden|min-width: 0)/);
 });
-test('working controls: Stop alone in the action slot without a draft, quiet Stop beside Queue with one', () => {
-  const alone = /\.composer\[data-working=empty\] \.composer-bar:has\(> \.stop:not\(\[hidden\]\)\) \.composer-submit \{ display: none; \}/;
-  assert.match(css, alone);
-  assert.match(rule('.composer[data-working=draft] .stop'), /width: 32px; height: 32px;[^}]*background: transparent; color: var\(--muted\)/);
-  assert.match(rule('.stop'), /background: var\(--fg\); color: var\(--canvas\)/);
+test('working controls keep a quiet named Stop and visible delivery choices with wrapping guidance', () => {
+  assert.doesNotMatch(css, /\.composer\[data-working=empty\][^{]*\.composer-submit/);
+  assert.match(rule('.stop'), /width: auto; height: 32px;[^}]*background: transparent; color: var\(--muted\)/);
+  assert.match(rule('.stop'), /gap: 6px; padding: 0 8px/);
+  assert.match(rule('.send-named'), /width: auto; gap: 6px; padding: 0 12px; font-size: 14px/);
   assert.match(rule('.queue'), /color: var\(--muted\)/);
+  assert.match(rule('.composer-delivery-guidance .composer-state-label'), /overflow: visible; text-overflow: clip; white-space: normal/);
+  assert.match(css, /@container composer \(max-width: 760px\)/);
+  assert.match(rule('.composer-meta:has(.composer-delivery-guidance) > .composer-state'), /grid-column: 1 \/ -1; grid-row: 1/);
+  assert.match(rule('.composer-meta:has(.composer-delivery-guidance) > .composer-settings'), /grid-column: 1 \/ -1; grid-row: 2; justify-self: start/);
   assert.doesNotMatch(css, /\.modes\b/);
 });
 test('three direct utility controls retain named SVG slots and a separate unread badge', () => {
@@ -581,7 +585,7 @@ test('visible controls carry labels and one icon stroke style', async () => {
   const composer = await readFile(new URL('./composer.ts', import.meta.url), 'utf8');
   const factory = composer.slice(composer.indexOf('export function createComposerElements('), composer.indexOf('\ntype Edit ='));
   assert.match(factory, /const id = `composer-\$\{encodeURIComponent\(instanceId\)\}`/);
-  assert.match(factory, /const stop = element\('button', 'stop'\); stop\.id = `\$\{id\}-stop`; stop\.type = 'button'; stop\.hidden = true; paintAction\(stop, 'stop', 'Stop'\)/);
+  assert.match(factory, /const stop = element\('button', 'stop'\); stop\.id = `\$\{id\}-stop`; stop\.type = 'button'; stop\.hidden = true; paintAction\(stop, 'stop', 'Stop', true\)/);
   assert.match(factory, /const send = element\('button', 'send'\); send\.id = `\$\{id\}-send`; send\.type = 'submit'; send\.disabled = true; paintAction\(send, 'send', 'Send'\)/);
   assert.match(factory, /send\.setAttribute\('aria-label', 'Send message'\)/);
   assert.match(factory, /stop\.setAttribute\('aria-label', 'Stop response'\)/);

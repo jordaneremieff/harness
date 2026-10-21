@@ -757,7 +757,7 @@ test('a clean same-target snapshot updates saved text and mode', () => {
   const f = fixture(); f.connect(state('a', draft(1, 'old'))); f.composer.attach('w', state('a', draft(2, 'remote', 'steer')));
   assert.equal(f.composer.editor.value, 'remote'); assert.equal(f.composer.state?.draft.revision, 2); assert.equal(f.composer.unsaved, false);
 });
-test('the send key and the action slot steer a busy conversation, Queue follows the response, and idle sends plain', async () => {
+test('the send key and the action slot capture steer, Queue captures followUp, and idle Primary sends prompt', async () => {
   const sent = async (kind: 'primary' | 'agent', saved: string, busy: boolean, act: (f: ReturnType<typeof fixture>) => void) => {
     const f = fixture(kind, undefined, true, undefined, () => true); const target = f.connect(state('a', draft(1, 'words', saved), kind === 'agent'));
     f.composer.availability(true, true, busy); act(f); const call = await f.waitCall('POST', '/inputs'); const mode = call.body.mode; f.admit(target, 'rejected'); await turn(); return mode;
@@ -1207,16 +1207,37 @@ test('recipient placeholders and busy delivery capability preserve the exact nat
   }
   assert.equal(f.calls.length, 0); assert.equal(f.submitted.length, 0);
 });
-test('working with an empty draft offers only Stop, and a draft adds Steer and Queue, each described once', () => {
+test('confirmed work keeps named Steer and Queue visible with empty drafts disabled', () => {
   const f = fixture(); f.connect(); f.composer.recipient('Message Primary'); f.composer.availability(true, true, true);
   const root = f.node('composer'), send = f.node('send'), queue = f.node('queue');
-  assert.equal(root.dataset.working, 'empty'); assert.equal(queue.hidden, true); assert.equal(send.disabled, true); assert.equal(actionText(send), 'Steer');
+  assert.equal(root.dataset.working, 'empty'); assert.equal(queue.hidden, false); assert.equal(queue.disabled, true); assert.equal(send.hidden, false); assert.equal(send.disabled, true); assert.equal(actionText(send), 'Steer'); assert.equal(send.querySelector('.action-label')?.classList.contains('sr-only'), false);
   f.composer.setText('Look at the failing test'); f.saved('Look at the failing test');
   assert.equal(root.dataset.working, 'draft'); assert.equal(queue.hidden, false); assert.equal(queue.disabled, false); assert.equal(send.disabled, false);
   assert.equal(actionText(send), 'Steer'); assert.equal(send.getAttribute('aria-label'), 'Steer message'); assert.equal(send.title, 'Steer: send now; the agent reads it at its next step');
-  assert.equal(queue.title, 'Queue: send after the current response ends');
-  f.composer.setText(''); assert.equal(root.dataset.working, 'empty'); assert.equal(queue.hidden, true);
+  assert.equal(queue.title, 'Add a follow-up message.');
+  f.composer.setText(''); assert.equal(root.dataset.working, 'empty'); assert.equal(queue.hidden, false); assert.equal(queue.disabled, true);
   f.composer.availability(true, true, false); assert.equal(root.dataset.working, undefined); assert.equal(queue.hidden, true); assert.equal(actionText(send), 'Send'); assert.equal(send.getAttribute('aria-label'), 'Send message');
+});
+test('working image-only drafts retain both delivery actions and recognized commands omit Queue', () => {
+  const commands = () => ({state: 'ready' as const, items: [{name: 'status', description: 'Read status', source: 'extension'}]});
+  const f = fixture('agent', commands); f.connect(state('images', {...draft(2, '', 'followUp'), images: [image()]}, true));
+  f.composer.availability(true, true, true);
+  assert.equal(f.node('send').disabled, false); assert.equal(f.node('queue').hidden, false); assert.equal(f.node('queue').disabled, false);
+  f.composer.attach('w', state('command', draft(3, '/status', 'followUp'), true));
+  assert.equal(actionText(f.node('send')), 'Run command'); assert.equal(f.node('send').disabled, false); assert.equal(f.node('queue').hidden, true);
+  assert.equal(f.calls.some(call => call.path.endsWith('/inputs') || call.path.endsWith('/command')), false);
+});
+test('recognized working commands replace delivery guidance until an ordinary message returns', () => {
+  const host = fixture('agent'), elements = createComposerElements('working-command');
+  const composer = new Composer(elements, {commands: () => ({state: 'ready', items: [{name: 'status', description: 'Read status', source: 'extension'}]}), submitted() {}, unknownCommand() {return false;}});
+  composer.attach('w', state('command-guidance', draft(1, '/status', 'followUp'), true)); composer.availability(true, true, true);
+  const label = elements.state?.querySelector('.composer-state-label');
+  assert.equal(label?.textContent, 'Working'); assert.equal(elements.queue.hidden, true); assert.equal(elements.send.getAttribute('aria-label'), 'Run command /status');
+  assert.equal(elements.send.title, 'Run /status on this agent. It sends no message');
+  composer.setText('Continue with this change');
+  assert.equal(label?.textContent, 'Working · Steer at the next step; Queue adds a follow-up.'); assert.equal(elements.queue.hidden, false); assert.equal(elements.send.getAttribute('aria-label'), 'Steer message');
+  composer.setText('/status'); assert.equal(label?.textContent, 'Working'); assert.equal(elements.queue.hidden, true);
+  assert.equal(host.calls.some(call => call.path.endsWith('/inputs') || call.path.endsWith('/command')), false); composer.destroy();
 });
 test('empty ready drafts omit Send while text, images and required recovery retain their actions', () => {
   for (const kind of ['primary', 'agent'] as const) {
@@ -1267,6 +1288,7 @@ test('scoped element factories create distinct editors and exact label/resize/co
   assert.equal(new Set(ids).size, ids.length); assert.notEqual(first.editor, second.editor); assert.equal((first.recipient as HTMLLabelElement).htmlFor, first.editor.id);
   assert.equal(first.root.querySelector('.resizer')?.getAttribute('aria-controls'), first.editor.id); assert.equal(first.root.querySelector('.resizer')?.getAttribute('aria-orientation'), 'horizontal');
   assert.equal(first.root.querySelector('.stop')?.getAttribute('aria-label'), 'Stop response');
+  const stop = first.root.querySelector('.stop'); assert.equal(actionText(stop as NodeFake), 'Stop'); assert.equal(stop?.querySelector('.action-label')?.classList.contains('sr-only'), false);
   assert.equal(first.send.getAttribute('aria-label'), 'Send message'); assert.equal(actionText(first.send), 'Send'); assert.equal(first.send.children.length, 2);
   assert.equal(first.queue.getAttribute('aria-label'), 'Queue message'); assert.equal(first.queue.textContent, 'Queue'); assert.equal(first.queue.hidden, true); assert.equal(first.root.querySelector('select'), undefined); assert.equal(first.send.type, 'submit'); assert.equal(first.send.disabled, true);
   assert.equal(first.root.contains(first.editor), true); assert.equal(first.root.contains(first.save), false); assert.equal(first.root.contains(first.receiptDetails), false);

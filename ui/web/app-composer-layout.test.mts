@@ -2,7 +2,37 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type {DraftImage} from '../shared/api.ts';
 import {createAppFixture, type HostNode} from './app-fixture.mts';
-const {app, arrive, settle, event, primaryControl, agentControl, primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, twoPanes, observation, coverage, host} = await createAppFixture();
+const {app, arrive, settle, event, primaryControl, agentControl, primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, twoPanes, observation, coverage, host, streamSources} = await createAppFixture();
+
+test('working delivery guidance yields to lifecycle and settings feedback without changing the draft', async () => {
+  const identity = 'working-guidance-agent', target = {kind: 'agent' as const, identity};
+  const draft = targetFixture('working-guidance-draft', target);
+  const frame = {revision: 1, observedAt: 'now', entries: [], live: [], nextBefore: null, status: {busy: true}, coverage};
+  await arrive({workspace: {id: 'working-guidance', revision: 1, primaryKey: null, selectedTarget: target}, primaries: [], roster: [agentFixture(identity)], targets: [draft], observations: [observation(identity, frame)]});
+  const epoch = app.state.agentEpochs.get(identity) ?? 1;
+  event('agent.availability', {identity, connectionEpoch: epoch, state: 'live', capabilities: agentFixture(identity).capabilities}); await settle();
+  const editor = agentControl('editor') as HostNode & {placeholder: string}, line = agentControl('state');
+  const chain = ancestors(editor); editor.focus();
+  assert.equal(editor.placeholder, 'Write a change or follow-up…'); assert.match(editor.getAttribute('aria-label') ?? '', /^Message /);
+  assert.equal(line.querySelector('.composer-state-label')?.textContent, 'Working · Steer at the next step; Queue adds a follow-up.');
+  assert.equal(line.classList.contains('composer-delivery-guidance'), true);
+  for (const key of ['send', 'queue']) {assert.equal(agentControl(key).hidden, false); assert.equal(agentControl(key).disabled, true);}
+  assert.equal(agentControl('stop').querySelector('.action-label')?.textContent, 'Stop');
+  const composer = app.agentComposer();
+  composer.setSettingsState({line: 'Updating settings…', label: 'Updating settings…'});
+  assert.equal(line.querySelector('.composer-state-label')?.textContent, 'Updating settings…'); assert.equal(line.classList.contains('composer-delivery-guidance'), false);
+  composer.setSettingsState({line: 'Settings update not confirmed.', label: 'Settings update not confirmed.', detail: 'Exact native reason', tone: 'warning'});
+  assert.doesNotMatch(line.textContent, /Steer at the next step/); assert.equal(agentControl('state-details').textContent, 'Exact native reason');
+  composer.setSettingsState();
+  for (const availability of ['stored', 'unavailable', 'incompatible'] as const) {
+    event('agent.availability', {identity, connectionEpoch: epoch, state: availability, capabilities: agentFixture(identity).capabilities}); await settle();
+    assert.match(editor.placeholder, /^Draft for /); assert.doesNotMatch(line.textContent, /Steer at the next step/); assert.equal(agentControl('queue').hidden, true);
+    if (availability === 'stored') {assert.equal(agentControl('start').hidden, false); assert.equal(agentControl('start').querySelector('.action-label')?.textContent, 'Start');}
+    assert.equal(app.agentComposer().editor, editor); assert.deepEqual(ancestors(editor), chain); assert.equal(editor.value, '');
+  }
+  streamSources.at(-1)?.onerror?.(); await settle();
+  assert.match(editor.placeholder, /^Draft for /); assert.doesNotMatch(line.textContent, /Steer at the next step/); assert.equal(agentControl('queue').hidden, true);
+});
 
 function ancestors(node: HostNode): HostNode[] {
   const result: HostNode[] = [];
@@ -43,12 +73,12 @@ test('conversation state and split width changes retain editor ancestry, draft i
     assert.ok(latest.querySelector('.card-icon-latest')); assert.equal(latest.querySelector('.latest-text')?.textContent, 'Latest'); assert.equal(latest.getAttribute('aria-label'), 'Latest message');
     const utilities = form.querySelector('.composer-utilities'), recallLine = form.querySelector('.composer-recall'); assert.ok(utilities); assert.ok(recallLine);
     assert.deepEqual(utilities.children, [recallLine, latest]); assert.equal(utilities.parentNode, form);
-    assert.deepEqual(line.children, [intake, bar]); assert.equal(line.parentNode, surface);
+    assert.deepEqual(line.children, [intake, control('stop'), bar]); assert.equal(line.parentNode, surface);
     assert.equal(surface.contains(meta), false); assert.equal(surface.contains(recallLine), false);
     assert.ok(form.children.indexOf(meta) > form.children.indexOf(surface));
     assert.ok(control('model').querySelector('.card-icon-chevron')); assert.ok(control('thinking').querySelector('.card-icon-chevron'));
     const submit = bar.querySelector('.composer-submit'); assert.ok(submit);
-    assert.deepEqual(bar.children, [control('stop'), submit]); assert.deepEqual(submit.children, [control('queue'), control('start'), control('send')]);
+    assert.deepEqual(bar.children, [submit]); assert.deepEqual(submit.children, [control('queue'), control('start'), control('send')]);
     assert.equal(control('editor').rows, 1);
     assert.equal(control('transcript').parentNode?.contains(latest), false);
     assert.equal(control('editor').parentNode?.classList.contains('composer-surface'), true);
@@ -71,7 +101,7 @@ test('conversation state and split width changes retain editor ancestry, draft i
       assert.equal((editor.style as {height?: string}).height, height);
       assert.equal(root.classList.contains('agent-empty'), next !== 'populated');
       assert.equal(agentControl('queue').hidden, next !== 'running'); assert.equal(agentControl('stop').hidden, next !== 'running');
-      assert.match(editor.placeholder, /^Message .*…$/); assert.match(editor.getAttribute('aria-label') ?? '', /^(?:Message |Draft for )/);
+      assert.match(editor.placeholder, next === 'running' ? /^Write a change or follow-up…$/ : next === 'incompatible' ? /^Draft for .*…$/ : /^Message .*…$/); assert.match(editor.getAttribute('aria-label') ?? '', /^(?:Message |Draft for )/);
     }
   }
 });

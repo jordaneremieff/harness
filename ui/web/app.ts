@@ -399,8 +399,10 @@ export function addFileToMessage(rootId:string,path:string):void {
   modal.body.append(element('p','file-message-fact',`Saved file: ${sourcePath}`),element('p','secondary','Uses the saved file. Unsaved editor changes are not included. Text files up to 32 KiB. After adding, use Include text in the selected conversation. Nothing is sent.'),label,select,destinationDetail);
   modal.actions(button('Cancel',()=>modal.close()),add); select.focus();
 }
-/** The placeholder names only the recipient; the Add menu lists the typed triggers. */
-function messagePlaceholder(name:string):string {return `Message ${name}`;}
+/** Working recipients invite follow-ups; unavailable recipients retain an explicit draft invitation. */
+function messagePlaceholder(name:string,input:boolean,busy=false):string {
+  return !connected||!input?`Draft for ${name}`:busy?'Write a change or follow-up':`Message ${name}`;
+}
 /** An agent composer reads its host's commands on the first deliberate slash and keeps them for the connection epoch. */
 function agentCommandHooks(controller:ConversationController):{commands?:(deliberate:boolean)=>import('./command-menu-state.ts').CommandInventory} {
   const {target,workspaceId}=controller;if(target.kind!=='agent')return {};
@@ -773,14 +775,14 @@ function refreshCaptionConsumers(): void {
     controller.transcript.refreshSubjects();
     const view = presentation(controller.target);
     renderComposerSettings(controller, view);
-  controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + presentationName(view), controllerGuidance(controller, view), messagePlaceholder(presentationName(view)));
+    controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + presentationName(view), controllerGuidance(controller, view), messagePlaceholder(presentationName(view),view.input,view.busy));
   }
   const captured = messageTarget.current;
   if (captured && messageTarget.valid(captured)) {
-    const name = presentationName(presentation({kind: 'agent', identity: captured.identity})), ready = messageTarget.ready;
+    const view = presentation({kind: 'agent', identity: captured.identity}), name = presentationName(view), ready = messageTarget.ready;
     setText(byId('agent-message-name'), name);
     const controller = controllers.get(controllerKey(captured.workspaceId, {kind: 'agent', identity: captured.identity}));
-    controller?.composer.recipient((ready ? 'Message ' : 'Draft for ') + name, ready || !captured.prepared || captured.invalidated ? '' : 'This agent is not ready for messages.', messagePlaceholder(name));
+    controller?.composer.recipient((ready ? 'Message ' : 'Draft for ') + name, ready || !captured.prepared || captured.invalidated ? '' : 'This agent is not ready for messages.', messagePlaceholder(name,ready&&view.input,view.busy));
   }
   tabStrip.render(); roster.schedule(); renderIdentity(); threadExplorer.refreshNames(); threadReader.refreshNames();
 }
@@ -1279,7 +1281,10 @@ export function receive(event: ReceivedEvent): void {
 function refreshReadyHistory(previous:PrimaryView|undefined,current:PrimaryView):void {
   if(!historyBecameReady(previous,current,state.workspace?.primaryKey))return;
   const target = primaryTarget(), controller = target && state.workspace ? controllers.get(controllerKey(state.workspace.id,target)) : undefined;
-  if(controller)controller.historyReady = false;
+  if(controller){
+    controller.historyReady = false;
+    if(previous?.capabilities.history===false||previous?.lifecycle==='stopped')controller.historyAbort.abort();
+  }
   void loadVisibleHistory();
 }
 function bufferSnapshotEvent(event:UiEvent,bytes = 512):void {
@@ -1441,7 +1446,7 @@ function renderController(controller: ConversationController, deferred = false, 
     controller.composer.attach(controller.workspaceId, saved);
   } else prepareController(controller);
   controller.composer.receipts(state.operations.values());
-  const view = presentation(controller.target); controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + presentationName(view), controllerGuidance(controller, view), messagePlaceholder(presentationName(view)));
+  const view = presentation(controller.target); controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + presentationName(view), controllerGuidance(controller, view), messagePlaceholder(presentationName(view),view.input,view.busy));
   controller.composer.availability(connected, !!saved && (controller.target.kind === 'agent' || view.input), view.busy, selecting, view.input);
   controller.composer.awaitingAnswer(awaitingAnswer(controller.target));
   if (firstDraft && !controller.passive && !controller.root.hidden && sameTarget(layoutTarget(currentLayout(), primaryTarget()) ?? undefined, controller.target) && document.activeElement === document.body) controller.composer.focus();
@@ -1465,7 +1470,8 @@ function clearPreparationError(controller: ConversationController): void {
 }
 function renderControllerEmpty(controller: ConversationController): void {
   if (controller.target.kind === 'agent') {renderAgentState(controller); return;}
-  const emptyView = primaryEmpty(state.primaries.get(controller.target.key), !!controller.hasEntries, controller.historyReady);
+  const prerequisite = renderPrimaryHistoryAccess(controller);
+  const emptyView = prerequisite ? undefined : primaryEmpty(state.primaries.get(controller.target.key), !!controller.hasEntries, controller.historyReady);
   controllerNode(controller, 'empty').hidden = !emptyView; setText(controllerNode(controller, 'empty-heading'), emptyView?.heading ?? ''); setText(controllerNode(controller, 'empty-caption'), emptyView?.caption ?? '');
 }
 function prepareController(controller: ConversationController): void {
@@ -1502,7 +1508,7 @@ function settingsReason(controller:ConversationController):string|undefined {
   if(!connected)return 'Settings are unavailable while disconnected.';
   const view=presentation(controller.target);
   if(controller.target.kind==='primary')return view.input?undefined:'This Primary is not ready.';
-  if(view.busy)return 'Wait while the agent works.';
+  if(view.busy)return 'Model and thinking are locked while this agent works.';
   const negotiated=agentNegotiation(controller.target,controller),observed=state.agentAvailability.get(controller.target.identity);
   const availability=negotiated?.availability??observed?.state,capabilities=negotiated?.capabilities??observed?.capabilities;
   if(availability!=='live'||!capabilities?.configure)return 'This host does not offer model and thinking changes.';
@@ -1521,7 +1527,7 @@ function listedModelText(model: NonNullable<ConversationPresentation['model']>):
 function latestSettingsOperation(target:Target):OperationView|undefined {
   return [...state.operations.values()].findLast(value=>sameTarget(value.target,target)&&(value.kind==='agent.configure'||value.kind==='primary.control'&&['model','thinking'].includes(value.action??'')));
 }
-function settingsFeedback(latest:OperationView|undefined,pending:boolean,uncertain:boolean,base?:string):ComposerStateView|undefined {
+function settingsFeedback(latest:OperationView|undefined,pending:boolean,uncertain:boolean):ComposerStateView|undefined {
   if(pending)return {line:'Updating settings…',label:'Updating settings…'};
   const issue=latest&&['rejected','uncertain'].includes(latest.state)?latest.error?.message:undefined;
   if(issue){
@@ -1530,7 +1536,6 @@ function settingsFeedback(latest:OperationView|undefined,pending:boolean,uncerta
     else if(latest?.state==='uncertain')line='Settings checked after unconfirmed change.';
     return {line,label:line,detail:issue,tone:'warning'};
   }
-  if(base==='Wait while the agent works.')return {line:base,label:base};
   return undefined;
 }
 function composerSettingsStatus(controller:ConversationController) {
@@ -1540,7 +1545,7 @@ function composerSettingsStatus(controller:ConversationController) {
   const common=pending?'Updating settings…':uncertain?'Settings update was not confirmed. Check the conversation before another change.':base;
   return {pending,modelReason:common||(!actions.hasModelCatalog()?'The model catalog is unavailable.':undefined),
     thinkingReason:common||(target.kind==='agent'&&!selection.levels?.length?'Thinking capabilities are unavailable for this exact model.':undefined),
-    feedback:settingsFeedback(latest,pending,uncertain,base)};
+    feedback:settingsFeedback(latest,pending,uncertain)};
 }
 function paintModelSetting(node:HTMLButtonElement,view:ConversationPresentation,owner:string,reason?:string):void {
   const id=view.model?`${view.model.provider}/${view.model.modelId}`:'';
@@ -1676,7 +1681,7 @@ function renderMessagePanel(): void {
     state = {...state, targets: new Map(state.targets).set(saved.targetKey, saved)}; controller.saved = saved; controller.composer.attach(captured.workspaceId, saved);
   } else controller.composer.attachRetained(captured.workspaceId, target);
   placeMessageEditor(controller, panel);
-  const ready = messageTarget.ready; controller.composer.recipient((ready ? 'Message ' : 'Draft for ') + name, ready || !captured.prepared || captured.invalidated ? '' : 'This agent is not ready for messages.', messagePlaceholder(name));
+  const ready = messageTarget.ready; controller.composer.recipient((ready ? 'Message ' : 'Draft for ') + name, ready || !captured.prepared || captured.invalidated ? '' : 'This agent is not ready for messages.', messagePlaceholder(name,ready&&view.input,view.busy));
   controller.composer.availability(connected, !!controller.saved, view.busy, selecting, view.input); controller.composer.receipts(state.operations.values()); controllerNode(controller, 'stop').hidden = true;
   renderAgentSettings(view,target);renderWorkbenchStatus();
 }
@@ -1735,7 +1740,7 @@ function controllerGuidance(controller: ConversationController, view: Conversati
   return controller.target.kind === 'agent' ? '' : view.guidance;
 }
 function renderAgentRecipient(identity: string, view: ConversationPresentation = presentation({kind: 'agent', identity})): void {
-  agentComposer().recipient(`${view.input ? 'Message' : 'Draft for'} ${presentationName(view)}`, '', messagePlaceholder(presentationName(view)));
+  agentComposer().recipient(`${view.input ? 'Message' : 'Draft for'} ${presentationName(view)}`, '', messagePlaceholder(presentationName(view),view.input,view.busy));
 }
 function renderStoredAgent(identity: string, _row?: AgentRow): void {
   renderAgentState(conversationController({kind: 'agent', identity}));
@@ -1900,6 +1905,20 @@ export async function selectAgent(row: AgentRow): Promise<void> {
 async function loadVisibleHistory(): Promise<void> {
   await Promise.all(paneLeaves(currentLayout().root).flatMap(pane => { const tab = pane.tabs.find(tab => tabKey(tab) === pane.active), target = tab ? controllerTarget(tab) : undefined; return target ? [loadControllerHistory(conversationController(target))] : []; }));
 }
+function primaryHistoryNeedsResume(controller: ConversationController): boolean {
+  if (controller.target.kind !== 'primary') return false;
+  const primary = state.primaries.get(controller.target.key);
+  if (!primary || primary.epoch !== controller.target.epoch) return false;
+  return primary.capabilities.history === false || primary.lifecycle === 'stopped' && controller.historyError?.code === 'not_ready';
+}
+function renderPrimaryHistoryAccess(controller: ConversationController): boolean {
+  const notice = controllerNode(controller, 'view-notice'), prerequisite = primaryHistoryNeedsResume(controller);
+  if (prerequisite) {
+    controller.transcript.historyAvailable(false);
+    if (!notice.querySelector('.history-prerequisite')) notice.replaceChildren(element('p', 'history-prerequisite', 'Resume this session to load messages.'));
+  } else if (notice.querySelector('.history-prerequisite')) notice.replaceChildren();
+  return prerequisite;
+}
 function historyPath(controller: ConversationController, earlier: boolean): string {
   const target = controller.target, base = target.kind === 'primary' ? `/api/primaries/${encodeURIComponent(target.key)}/history?limit=50` : `/api/agents/${encodeURIComponent(target.identity)}/history?limit=50&workspace=${encodeURIComponent(controller.workspaceId)}`;
   if (!earlier) return base;
@@ -1961,6 +1980,7 @@ function loadControllerHistory(controller: ConversationController, earlier = fal
 }
 async function runControllerHistory(controller: ConversationController, earlier = false, restoring = false): Promise<void> {
   if (controller.loading || controller.abort.signal.aborted || controller.workspaceId !== state.workspace?.id) return;
+  if (primaryHistoryNeedsResume(controller)) {renderPrimaryHistoryAccess(controller); return;}
   if (controller.historyAbort.signal.aborted) controller.historyAbort = new AbortController();
   // Saved positions initialize history; refreshes preserve the transcript's newer intent.
   const abort = controller.historyAbort, reading = earlier || restoring || controller.historyReady ? undefined : controller.saved?.reading ?? targetState(controller.target)?.reading;
@@ -1990,7 +2010,7 @@ async function requestControllerHistory(controller: ConversationController, abor
   startControllerHistory(controller); const control = controllerNode(controller, 'earlier') as HTMLButtonElement; historyLoadingFeedback(control, earlier); let loaded = false;
   try {
     const page = await request<HistoryPage | AgentHistoryPage>(historyPath(controller, earlier), 'GET', undefined, undefined, AbortSignal.any([abort.signal, controller.abort.signal, AbortSignal.timeout(15_000)]));
-    if (!historyCurrent(controller, abort)) return false;
+    if (!historyCurrent(controller, abort) || primaryHistoryNeedsResume(controller)) return false;
     if (controller.historyReading) controller.transcript.restore(controller.historyReading);
     mergeControllerHistory(controller, page, earlier); loaded = true; historyLoadedFeedback(earlier, restoring);
   } catch (error) {controllerHistoryFailed(controller, abort, error);}
@@ -2005,6 +2025,7 @@ function controllerHistoryFailed(controller: ConversationController, abort: Abor
   if (!historyCurrent(controller, abort)) return;
   controller.historyError = {message: errorMessage(error), ...(error instanceof ApiError ? {code: error.view.code} : {})};
   if (controller.target.kind === 'agent') renderAgentState(controller);
+  else if (primaryHistoryNeedsResume(controller)) renderPrimaryHistoryAccess(controller);
   else {
     const actions = element('div', 'history-actions'); actions.append(historyDetails(error), cardAction('restart', 'Retry history', () => {void loadControllerHistory(controller);}));
     controllerNode(controller, 'view-notice').replaceChildren(element('p', undefined, 'History could not be loaded.'), actions);
@@ -2044,7 +2065,7 @@ async function stopController(controller: ConversationController): Promise<void>
   catch (error) {showStatusError(controller.elements.receipt, 'Stop could not be confirmed.', error);}
 }
 function saveReading(captured: TranscriptTarget | undefined, reading: TargetState['reading']): Promise<void> {
-  if (!captured || captured.controller.historyReading) return Promise.resolve();
+  if (!captured || captured.controller.historyReading || primaryHistoryNeedsResume(captured.controller)) return Promise.resolve();
   return saveView(captured, 'reading', {anchorId: reading.anchorId, offsetPx: reading.offsetPx, followTail: reading.followTail});
 }
 function savePresentation(captured: TranscriptTarget | undefined, expanded: string[], showThinking: boolean, transcriptView: import('../shared/api.ts').TranscriptView = 'chronological', thinking?: import('../shared/api.ts').ThinkingChoice): Promise<void> {
