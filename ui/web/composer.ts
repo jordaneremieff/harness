@@ -1,6 +1,7 @@
 import { LIMITS, draftHasContent, draftImageFingerprint, sameDraftTuple } from '../shared/api.ts';
 import { ComposerAttachments, attachmentSummary, includedText, missingImageIndexes, previewAttachment } from './composer-attachments.ts';
 import type { AttachmentItem, AttachmentReloadState } from './composer-attachments.ts';
+import {handoverPickup, pickupInput} from './handover.ts';
 import { insertNativeText } from './native-insertion.ts';
 import { ComposerOverlay } from './composer-overlay.ts';
 import type { DraftImage, DraftView, OperationView, RecoveryInput, Target, TargetIndex, TargetState, UnconfirmedInput } from '../shared/api.ts';
@@ -25,7 +26,7 @@ import { ApiError, draftImageUrl, errorMessage, operation, request, reserve } fr
 
 export type ComposerHooks = {recallItems?: () => readonly string[]; fileSearch?: (query: string, signal: AbortSignal) => Promise<FileSearchResult> | undefined; fileStage?: (path: string, signal: AbortSignal, current: () => boolean, stage: (files: readonly File[]) => boolean) => Promise<boolean>; workingFile?:(stage:(files:readonly File[])=>boolean)=>void; changed?:()=>void; draftStatusChanged?:()=>void; captured?: (submission:Submission)=>void; failed?: (operationId:string,uncertain:boolean)=>void; prepareInput?: () => boolean; imageState?: (workspace: string, state: TargetState) => void; imageInput?: (target: Target) => {allowed: boolean; reason?: string}; recovery?: () => void; layoutHeight?: () => number | undefined; timing?: (start: number, end: number) => void; submitted: (operation: OperationView) => void; unknownCommand: (text: string, sendLiteral: () => void) => boolean; enterSends?: () => boolean; commands?: (deliberate: boolean) => CommandInventory; moreCommands?: (target: Target) => Promise<void>; retained?: (workspace: string, target: Target, retained: boolean) => void};
 export type ComposerElements = {root: HTMLFormElement; editor: HTMLTextAreaElement; recipient: HTMLElement; receipt: HTMLElement;
-  receiptDetails: HTMLElement; queue: HTMLButtonElement; queueGuidance?: HTMLElement; send: HTMLButtonElement; save: HTMLElement; fileMenu?: HTMLElement; recallHint?: HTMLElement; recallLine?: HTMLElement; recallRestore?: HTMLButtonElement; meta?: HTMLElement; model?: HTMLButtonElement; thinking?: HTMLButtonElement; settings?: HTMLElement; utilities?: HTMLElement; commandMenu?: HTMLElement; overlay?: HTMLElement; attachments?: HTMLElement; attach?: HTMLButtonElement; sources?: HTMLButtonElement; picker?: HTMLInputElement; state?: HTMLElement; stateDetails?: HTMLElement; start?: HTMLButtonElement};
+  receiptDetails: HTMLElement; queue: HTMLButtonElement; queueGuidance?: HTMLElement; send: HTMLButtonElement; save: HTMLElement; fileMenu?: HTMLElement; recallHint?: HTMLElement; handoverHint?: HTMLElement; recallLine?: HTMLElement; recallRestore?: HTMLButtonElement; meta?: HTMLElement; model?: HTMLButtonElement; thinking?: HTMLButtonElement; settings?: HTMLElement; utilities?: HTMLElement; commandMenu?: HTMLElement; overlay?: HTMLElement; attachments?: HTMLElement; attach?: HTMLButtonElement; sources?: HTMLButtonElement; picker?: HTMLInputElement; state?: HTMLElement; stateDetails?: HTMLElement; start?: HTMLButtonElement};
 /** An agent-specific state below the writing surface, with at most one action in the Send position (`hideSend` removes the disabled Send when the state offers none) and optional exact details. `line` is the full assistive sentence; `label` is its visible summary. `withoutDraft` keeps the composer on screen, with the editor and add control disabled, while no draft is attached, so the state and its action stay reachable. */
 export type ComposerStateView = {line: string; label?: string; tone?: 'error' | 'warning'; hideSend?: boolean; withoutDraft?: boolean; action?: {label: string; title?: string; pending?: boolean; disabled?: boolean; recovery?: boolean; run: () => void}; blocksSend?: boolean; detail?: string};
 /** An accepted queued input is expected behaviour, so its notice uses the quiet tier, not the warning tier. */
@@ -87,13 +88,14 @@ export function createComposerElements(instanceId: string): ComposerElements {
   const recallRestore = element('button', 'composer-recall-restore', 'Restore draft'); recallRestore.type = 'button';
   const recallLine = element('div', 'composer-recall'); recallLine.hidden = true; recallLine.append(recallHint, recallRestore);
   const meta = element('div', 'composer-meta'); meta.append(state, stateDetails);
-  const utilities = element('div', 'composer-utilities'); utilities.append(recallLine);
+  const handoverHint = element('p', 'composer-handover'); handoverHint.hidden = true;
+  const utilities = element('div', 'composer-utilities'); utilities.append(recallLine, handoverHint);
   line.append(intake, stop, settings, bar);
   // The handle is absolutely placed on the surface's top edge.
   input.append(commandMenu, fileMenu, recipient, surface, attachments, line, resize); root.append(receipt, utilities, input, meta, queueGuidance);
   const save = element('span', 'draft-state'); save.id = `${id}-save`;
   const receiptDetails = element('span', 'receipt-details'); receiptDetails.id = `${id}-receipt-details`;
-  return {root, editor, recipient, receipt, receiptDetails, queue, queueGuidance, send, save, fileMenu, recallHint, recallLine, recallRestore, meta, model, thinking, settings, utilities, commandMenu, overlay, attachments, attach, sources, picker, state, stateDetails, start};
+  return {root, editor, recipient, receipt, receiptDetails, queue, queueGuidance, send, save, fileMenu, recallHint, handoverHint, recallLine, recallRestore, meta, model, thinking, settings, utilities, commandMenu, overlay, attachments, attach, sources, picker, state, stateDetails, start};
 }
 type Edit = {text: string; mode: string; images: DraftImage[]; edit: number};
 type InsertionCapture = {buffer: Buffer; edit: number; text: string; start: number; end: number; direction: 'forward' | 'backward' | 'none'};
@@ -789,11 +791,20 @@ export class Composer {
     const buffer = this.current;
     this.elements.root.hidden = !buffer && !this.showsWithoutDraft; this.editor.disabled = !buffer;
     if (this.elements.sources) this.elements.sources.disabled = !buffer && this.showsWithoutDraft;
-    this.renderControls();
+    this.renderControls(); this.renderHandover();
     this.elements.send.disabled = !buffer || !this.ready || this.sendSuppressed || buffer.submitting || this.textLimit || this.pendingBlocks(buffer) || !!this.commandHold(buffer) || buffer.data.server.recoverySendGuard?.state === 'blocked' || buffer.data.server.recoverySendGuard?.state === 'unavailable' || !draftHasContent({text: buffer.data.text.trim(), images: buffer.data.images});
     this.elements.queue.disabled = this.elements.send.disabled;
     setText(this.elements.save, this.saveSummary(buffer));
     this.hooks.draftStatusChanged?.();
+  }
+  private renderHandover(): void {
+    const hint = this.elements.handoverHint; if (!hint) return;
+    const parsed = this.current?.state.target.kind === 'primary' ? handoverPickup(this.editor.value) : undefined;
+    hint.hidden = !parsed?.terminal;
+    if (!hint.firstChild) hint.append(element('span', undefined, 'This is a terminal command. '), button('Run it here as /stash get', () => {
+      const latest = this.current?.state.target.kind === 'primary' ? handoverPickup(this.editor.value) : undefined;
+      if (latest?.terminal) {this.setText(pickupInput(latest)); this.focus();}
+    }, 'quiet'));
   }
   private renderControls(): void {
     if (this.destroyed) return;

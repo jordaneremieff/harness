@@ -1227,6 +1227,13 @@ dialog textarea:focus-visible { border-color: var(--edge); outline: 2px solid va
 .picker-project-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); color: var(--muted); font-size: var(--fs-ui); }
 .picker-footer { margin-top: var(--s2); padding-top: var(--s2); border-top: 1px solid var(--edge); }
 .picker-footer > p { margin: 0; }
+.composer-handover { margin: 0; color: var(--muted); font-size: var(--fs-meta); }
+.composer-handover button { padding: 0; color: var(--muted); font-size: var(--fs-meta); }
+#modal-body:has(#handover-pickup) { display: grid; gap: var(--s2); }
+#modal-body:has(#handover-pickup) > :is(input, textarea, select) { width: 100%; min-width: 0; }
+.handover-boundary p { margin: var(--s2) 0; }
+.handover-hint { margin: 0; }
+.picker-show-all { display: block; width: 100%; padding: var(--s2) var(--s3); text-align: left; }
 .picker-group-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s2); }
 .picker-group-heading > h2 { margin: 0; }
 .picker-group-heading > .picker-list-details { min-width: 0; max-width: 100%; }

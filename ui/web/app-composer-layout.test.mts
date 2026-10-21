@@ -75,7 +75,7 @@ test('conversation state and split width changes retain editor ancestry, draft i
     assert.equal(latest.parentNode, form.querySelector('.composer-utilities')); assert.deepEqual(meta.children, [control('state'), control('state-details')]);
     assert.ok(latest.querySelector('.card-icon-latest')); assert.equal(latest.querySelector('.latest-text')?.textContent, 'Latest'); assert.equal(latest.getAttribute('aria-label'), 'Latest message');
     const utilities = form.querySelector('.composer-utilities'), recallLine = form.querySelector('.composer-recall'); assert.ok(utilities); assert.ok(recallLine);
-    assert.deepEqual(utilities.children, [recallLine, latest]); assert.equal(utilities.parentNode, form);
+    assert.deepEqual(utilities.children, [recallLine, form.querySelector('.composer-handover'), latest]); assert.equal(utilities.parentNode, form);
     assert.deepEqual(line.children, [intake, control('stop'), control('settings'), bar]); assert.equal(line.parentNode, surface);
     assert.equal(surface.contains(meta), false); assert.equal(surface.contains(recallLine), false);
     assert.ok(form.children.indexOf(meta) > form.children.indexOf(surface));

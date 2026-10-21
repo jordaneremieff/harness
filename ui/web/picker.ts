@@ -303,9 +303,8 @@ export class ProjectPicker {
     const search = input('Search sessions'); search.field.id = 'picker-search'; search.label.htmlFor = search.field.id; search.field.placeholder = 'Search sessions';
     const searchRow = element('div', 'picker-search-row'); searchRow.append(pickerField(search)); body.append(searchRow, safety);
     const results = element('div', 'picker-results'); body.append(results);
-    const publishedPaths=new Set<string>();
-    const paintCatalog = this.catalog(results,signal,token,()=>search.field.value,()=>search.field.focus(),paths=>{if(paths){publishedPaths.clear();for(const path of paths)publishedPaths.add(path);}paint();},{resumable:flag=>{catalogResumable=flag;syncSafety();},partial:markPartial});
-    const ordinary = element('section', 'picker-folder-ordinary'), heading = groupHeading('Ordinary sessions in this folder', undefined, partial => markPartial('folder', partial)); ordinary.append(heading.node);
+    const paintCatalog = this.catalog(results,signal,token,()=>search.field.value,()=>search.field.focus(),()=>paint(),{resumable:flag=>{catalogResumable=flag;syncSafety();},partial:markPartial},project);
+    const ordinary = element('section', 'picker-folder-ordinary'), heading = groupHeading(`Your sessions in ${this.projectName(project)}`, undefined, partial => markPartial('folder', partial)); ordinary.append(heading.node);
     const list = element('div', 'picker-sessions'); const coverage = element('p', 'secondary'); coverage.id = 'picker-coverage'; coverage.setAttribute('aria-live', 'polite');
     const error = element('p', 'error'); error.setAttribute('role', 'alert');
     let data = first ? mergeSessions(undefined, first) : existing;
@@ -313,23 +312,29 @@ export class ProjectPicker {
     const more = cardAction('next', 'More saved sessions', () => { void load(data?.nextCursor ?? undefined); }); more.id = 'picker-more';
     const moreLabel = more.querySelector('.card-action-label'); if (moreLabel) moreLabel.className = 'card-action-label';
     const updateCoverage = () => {
-      const count = results.querySelectorAll('.picker-durable-select, .picker-select').length;
+      const count = results.querySelectorAll('.picker-select').length + Number(results.querySelector<HTMLElement>('.picker-durable-list')?.dataset.matches ?? 0);
       coverage.textContent = search.field.value.trim() ? `${count} ${count === 1 ? 'match' : 'matches'} in loaded sessions` : `${count} loaded ${count === 1 ? 'session' : 'sessions'}`;
-      if (data) heading.update(savedListDetails(data), partialSessions(data));
+      if (data) {
+        const registered = this.published?.items.filter(item => item.project === project).length ?? 0;
+        heading.update([savedListDetails(data), registered ? `${registered} registered records also supply this folder's rows.` : ''].filter(Boolean).join('\n'), partialSessions(data));
+      }
     };
     const paint = () => {
       const focusedPath = [...list.querySelectorAll<HTMLButtonElement>('.picker-select')].find(row=>row===document.activeElement)?.dataset.sessionPath;
       const version = ++render; paintCatalog(); list.replaceChildren();
       if (!data) { updateCoverage(); return; }
-      const matches = filterSessions(data.items, search.field.value).filter(item=>!publishedPaths.has(item.path));
-      const tails = duplicateIdentityTails(data.items.map(item => ({name: sessionLabel(item), identity: item.id})));
+      const folder = new Map(data.items.map(item => [item.path, item]));
+      for (const item of this.published?.items ?? []) if (item.project === project) folder.set(item.path, item);
+      const folderItems = [...folder.values()];
+      const matches = filterSessions(folderItems, search.field.value);
+      const tails = duplicateIdentityTails(folderItems.map(item => ({name: sessionLabel(item), identity: item.id})));
       if (focusedPath && !matches.some(item => item.path === focusedPath)) { search.field.focus(); error.textContent = 'The selected session is no longer in this loaded list.'; }
       more.hidden = !data.nextCursor; folderResumable = matches.some(item => !sessionOwner(this.ctx.snapshot()?.primaries ?? [], item.path)); syncSafety();
       let offset = 0;
       const batch = () => {
         if (version !== render || !this.owns(token)) return;
         const fragment = document.createDocumentFragment();
-        const latest = new Map(data?.items.map(item => [item.path, item]));
+        const latest = new Map(folderItems.map(item => [item.path, item]));
         const rows = matches.slice(offset, offset + 20).map(item => this.row(latest.get(item.path) ?? item, tails.get(item.id)));
         fragment.append(...rows); list.append(fragment); offset += 20; updateCoverage();
         if (focusedPath) rows.find(row => row.querySelector<HTMLButtonElement>('.picker-select')?.dataset.sessionPath === focusedPath)?.querySelector<HTMLButtonElement>('.picker-select')?.focus();
@@ -382,7 +387,7 @@ export class ProjectPicker {
     options.setAttribute('aria-haspopup', 'menu'); options.setAttribute('aria-expanded', 'false');
     searchRow.append(options);
     const footer = element('div', 'picker-project-actions picker-footer'); footer.append(coverage, partialNote);
-    ordinary.append(list, error, more, file); results.append(ordinary); body.append(footer);
+    ordinary.append(list, error, more, file); results.prepend(ordinary); body.append(footer);
     results.addEventListener('keydown', event => {
       if (event.target instanceof HTMLButtonElement && event.target.matches('.picker-select, .picker-durable-select')) this.navigate(event, results);
     });
@@ -393,17 +398,18 @@ export class ProjectPicker {
     });
     save(); paint(); for (const page of data?.pendingTitles ?? []) void fillTitles(page); search.field.focus();
   }
-  private catalog(body:HTMLElement,signal:AbortSignal,token:number,query:()=>string,focusSearch:()=>void,changed:(paths?:string[])=>void,hooks:{resumable:(flag:boolean)=>void;partial:(group:string,flag:boolean)=>void}):()=>void {
-    const durable=element('section','picker-durable'), durableHeading=groupHeading('Durable conversations',undefined,partial=>hooks.partial('durable',partial));
+  private catalog(body:HTMLElement,signal:AbortSignal,token:number,query:()=>string,focusSearch:()=>void,changed:()=>void,hooks:{resumable:(flag:boolean)=>void;partial:(group:string,flag:boolean)=>void},project:string):()=>void {
+    const durable=element('section','picker-durable'), durableHeading=groupHeading('Agent conversations',undefined,partial=>hooks.partial('durable',partial));
     const roster = this.ctx.snapshot()?.roster, list = element('div', 'picker-durable-list');
     const coverage = element('p', 'secondary picker-durable-coverage', durableCoverage(roster)); coverage.hidden = !coverage.textContent;
     durableHeading.update(durableListDetails(roster), !!roster && (!!roster.nextCursor || !roster.scan.complete || !!roster.scan.skipped || !!roster.scan.omitted));
     durable.append(durableHeading.node, coverage, list);
-    const ordinary=element('section','picker-ordinary'), registered=element('div','picker-registered-list'), registeredHeading=groupHeading('Registered ordinary sessions', 'All folders', partial=>hooks.partial('registered',partial));
+    const ordinary=element('section','picker-ordinary'), registered=element('div','picker-registered-list'), registeredHeading=groupHeading('Your sessions in other folders', undefined, partial=>hooks.partial('registered',partial));
     const status=element('p','secondary'); status.setAttribute('aria-live','polite');
     ordinary.append(registeredHeading.node, status, registered);
-    body.append(durable,ordinary);
-    let loaded=false,failed=false;
+    body.append(ordinary,durable);
+    let loaded=false,failed=false,expanded=false;
+    const showAll = button('Show all', () => {expanded = true; changed();}, 'picker-show-all quiet'); showAll.hidden = true; durable.append(showAll);
     const selectable=()=>[...list.querySelectorAll<HTMLButtonElement>('.picker-durable-select'),...registered.querySelectorAll<HTMLButtonElement>('.picker-select')];
     const restoreFocus=(focused?:HTMLButtonElement)=> {
       if(!focused)return;
@@ -422,10 +428,13 @@ export class ProjectPicker {
         const view=this.ctx.agentPresentation(row);
         return !needle || [presentationName(view),row.identity,view.cwd].some(value=>value?.toLocaleLowerCase().includes(needle));
       });
-      list.replaceChildren(...matches.map(row=>this.durableRow(row)));
+      list.dataset.matches = String(matches.length);
+      const visible = expanded || needle ? matches : matches.slice(0, 5);
+      list.replaceChildren(...visible.map(row=>this.durableRow(row)));
+      showAll.hidden = expanded || !!needle || matches.length <= 5; showAll.textContent = `Show all ${matches.length}`;
       if(!matches.length && roster?.scan.state === 'ready' && !roster.error)list.append(element('p','secondary',sessionEmptyMessage(query())));
       const published=loaded?this.published:undefined;
-      const items=filterSessions(published?.items ?? [],query());
+      const items=filterSessions(published?.items ?? [],query()).filter(item=>item.project !== project);
       const tails=duplicateIdentityTails((published?.items ?? []).map(item=>({name:sessionLabel(item),identity:item.id})));
       registered.replaceChildren(...items.map(item=>this.row(item,tails.get(item.id))));
       hooks.resumable(items.some(item=>!sessionOwner(this.ctx.snapshot()?.primaries ?? [],item.path)));
@@ -435,7 +444,7 @@ export class ProjectPicker {
     };
     const readPublished=()=>void request<SavedSessionPage>('/api/sessions/published','GET',undefined,undefined,signal).then(page=>{
       if(!this.owns(token)||signal.aborted)return;
-      this.noteWriters(page.items);this.published=page;loaded=true;failed=false;this.ctx.titlesChanged?.();changed(page.items.map(item=>item.path));
+      this.noteWriters(page.items);this.published=page;loaded=true;failed=false;this.ctx.titlesChanged?.();changed();
     }).catch(()=>{if(this.owns(token)&&!signal.aborted){failed=true;changed();}});
     this.reloadPublished=readPublished;readPublished();
     return paint;

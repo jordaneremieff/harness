@@ -46,6 +46,7 @@ import { IdentityLookup } from './identity-lookup.ts';
 import { Roster, rosterWorking, type RosterStatus } from './roster.ts';
 import {conversationAttention, attentionCounts, type Attention} from './attention.ts';
 import {activeDialog} from './dialog-state.ts';
+import {HandoverDialog} from './handover-view.ts';
 import { ThreadExplorer, ThreadReader, type ThreadEntry } from './threads-view.ts';
 import { THREAD_PAGE_EVENTS } from './threads.ts';
 import {noticeGroups, noticeGroupText, noticeTarget, type NoticeGroup} from './notice-presentation.ts';
@@ -316,7 +317,7 @@ const references = new ReferenceResolver(resolveReference, destination => { void
   root: () => fileRoot.loading ? undefined : fileRoot.selection?.root ?? undefined,
   navigate: destination => { void navigateFileReference(destination).catch(showError); },
 });
-const actions: Actions = new Actions({snapshot: currentSnapshot, primary, modelChanged: renderAvailability, namingPrimary: () => { const selected = primary(); return selected?.lifecycle === 'ready' ? selected : [...state.primaries.values()].find(item => item.lifecycle === 'ready'); }, modelNamesChanged: renderAllComposerSettings, get composer() { return primaryComposer(); }, commandsChanged: () => {const target = primaryTarget(); if (target && state.workspace) controllers.get(controllerKey(state.workspace.id, target))?.composer.commandsChanged();}, modal, selection, reload: reloadSelection, result: showOperation, rosterRefresh: refreshRoster, filesRefresh: refreshFiles, hasTranscript: () => !!focusedTranscript(), find: () => captureFind(), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, sidebarShown: () => !byId('sidebar').hidden, view: (tools, expand) => focusedTranscript()?.expandLoaded(tools, expand), selectPrimary, agentCaption: identity => {return presentationCaptions().get(identity);}, agentStatus: row => presentation({kind: 'agent', identity: row.identity}).activity, agentPresentation:row=>presentation({kind:'agent',identity:row.identity}), conversationFacts: identity => agentFacts(agentRow(identity), state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame), copyAgent: () => { void copy(selectedAgent() ?? '', agentNode('view-notice')); }, inspectAgent,resultLookup:()=>{const target=layoutTarget(currentLayout(),primaryTarget());if(target)conversationController(target).inspection?.open('result');},
+const actions: Actions = new Actions({handover: () => handover.open(), snapshot: currentSnapshot, primary, modelChanged: renderAvailability, namingPrimary: () => { const selected = primary(); return selected?.lifecycle === 'ready' ? selected : [...state.primaries.values()].find(item => item.lifecycle === 'ready'); }, modelNamesChanged: renderAllComposerSettings, get composer() { return primaryComposer(); }, commandsChanged: () => {const target = primaryTarget(); if (target && state.workspace) controllers.get(controllerKey(state.workspace.id, target))?.composer.commandsChanged();}, modal, selection, reload: reloadSelection, result: showOperation, rosterRefresh: refreshRoster, filesRefresh: refreshFiles, hasTranscript: () => !!focusedTranscript(), find: () => captureFind(), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, sidebarShown: () => !byId('sidebar').hidden, view: (tools, expand) => focusedTranscript()?.expandLoaded(tools, expand), selectPrimary, agentCaption: identity => {return presentationCaptions().get(identity);}, agentStatus: row => presentation({kind: 'agent', identity: row.identity}).activity, agentPresentation:row=>presentation({kind:'agent',identity:row.identity}), conversationFacts: identity => agentFacts(agentRow(identity), state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame), copyAgent: () => { void copy(selectedAgent() ?? '', agentNode('view-notice')); }, inspectAgent,resultLookup:()=>{const target=layoutTarget(currentLayout(),primaryTarget());if(target)conversationController(target).inspection?.open('result');},
   tabs: {close: () => { const tab = activeTab(currentLayout()); if (tab) applyLayout(closeTab(currentLayout(), tabKey(tab))); }, switch: direction => applyLayout(switchTab(currentLayout(), direction)), layout: currentLayout},
 });
 const fileBrowse = new FileBrowseState();
@@ -540,6 +541,9 @@ function fileTreeOperation(rootId:string,action:FileTreeAction,path:string,value
 }
 const picker = new ProjectPicker({snapshot: currentSnapshot, primary, modal, agentPresentation:row=>presentation({kind:'agent',identity:row.identity}), selection:change=>{if(change.selectedTarget?.kind==='agent')conversationController(change.selectedTarget).passive=false;return selection(change);}, reload, selectOpened:capturePrimarySelection, selectConverted:captureNativeSelection, project: projectPath, projectsChanged: renderIdentity,titlesChanged:primaryTitlesChanged,workingFolder:path=>fileRoot.choose(path)});
 actions.projectPicker = () => picker.open(projectPath());
+const handover = new HandoverDialog({modal, workspace: () => state.workspace?.id, cwd: () => launchCwd ?? projectPath() ?? '', primaries: () => [...state.primaries.values()],
+  caption: item => presentationName(presentation({kind: 'primary', key: item.key, epoch: item.epoch})), savedAt: item => picker.savedSession(item)?.modifiedAt,
+  captureSelection: capturePrimarySelection, target: targetState, reload, result: showOperation});
 const recovery = new Recovery({snapshot: currentSnapshot, reload, modal});
 const roster = new Roster(row => { void selectAgent(row).catch(showError); }, action => { if (action === 'refresh') refreshRoster(); else moreRoster(); }, {
   load: (cursor, signal) => request<import('../shared/api.ts').CachedRoster>(`/api/agents?limit=20&cursor=${encodeURIComponent(cursor)}`, 'GET', undefined, undefined, signal),
@@ -2337,7 +2341,7 @@ export function openConversationActions(paneId: string = focusedPane, key?: stri
   const groups: [string, ContextItem[]][] = [
     ['View', [...choices, ...['Show thinking', 'Find text', 'Expand loaded tools', 'Collapse loaded tools'].flatMap(name => entries.filter(item => item.label === name))]],
     ['Messages and tasks', ['Message', 'Refresh messages', 'Review message', 'Sent and received tasks…', 'Saved drafts and messages', 'Message input…'].flatMap(name => entries.filter(item => item.label === name))],
-    ['Session', ['New session', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Open in Pi terminal…'].flatMap(name => entries.filter(item => item.label === name))],
+    ['Session', ['New session', 'Continue a handover…', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Open in Pi terminal…'].flatMap(name => entries.filter(item => item.label === name))],
     ['Details', ['Conversation details', 'Copy agent ID'].flatMap(name => entries.filter(item => item.label === name))],
   ];
   const grouped = groups.flatMap(([heading, items], group) => items.map((item, index) => index === 0 ? {...item, heading, separatorBefore: group > 0} : item));
@@ -2486,6 +2490,7 @@ function bind(): void {
   byId('appearance-button').addEventListener('click', () => actions.appearance());
   for (const id of ['session-open', 'tabs-open-session']) byId(id).addEventListener('click', () => picker.open(projectPath()));
   byId('session-new').addEventListener('click', () => picker.newSession(projectPath()));
+  byId('session-handover').addEventListener('click', () => handover.open());
   byId('agent-refresh').addEventListener('click', refreshRoster);
   byId('agent-new').addEventListener('click', () => actions.prepareText('/agent new'));
 

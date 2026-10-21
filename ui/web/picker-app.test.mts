@@ -94,3 +94,60 @@ test('cold agent history distinguishes no read, an active read, and a confirmed 
   history.resolve();await pending;await settle();assert.match(agentControl('history-note-line').textContent,/^No messages yet\./);
   assert.equal(transportLog.slice(before).some(call=>call.path.includes('/inputs') || call.path.endsWith('/start')),false);
 });
+
+for (const destination of ['new', 'existing'] as const) test(`handover Continue uses one input in the chosen ${destination} session`, async t => {
+  const target = {kind: 'primary' as const, key: `handover-${destination}`, epoch: 130};
+  const old = primaryFixture({...target, activity: 'idle'}), saved = targetFixture(`draft-${destination}`, target, {draft: {revision: 3, text: 'Keep current draft', mode: 'prompt', persisted: true, images: []}});
+  await arrive({workspace: {id: `handover-${destination}`, revision: 1, primaryKey: target.key, selectedTarget: target}, primaries: [old, primaryFixture({key: 'busy', epoch: 131, activity: 'running'})], roster: [], targets: [saved]});
+  const original = globalThis.fetch, gate = Promise.withResolvers<void>(); let opens = 0; const inputs: Record<string, unknown>[] = [];
+  t.after(() => {gate.resolve(); globalThis.fetch = original;});
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input), 'http://ui.test');
+    if (url.pathname === '/api/primaries' && init?.method === 'POST') {
+      opens++; assert.deepEqual(JSON.parse(String(init.body)), {cwd: byId('handover-destination').querySelector('option')?.title});
+      const opened = primaryFixture({key: 'handover-opened', epoch: 132, activity: 'idle'}), selected = {kind: 'primary' as const, key: opened.key, epoch: opened.epoch};
+      browser.fixture = {...browser.fixture, workspace: {...browser.fixture.workspace, primaryKey: opened.key, selectedTarget: selected}, primaries: [old, opened], targets: [saved, targetFixture('handover-opened', selected)]};
+      return Response.json({ok: true, data: {primaryKey: opened.key, operation: {state: 'completed'}}});
+    }
+    if (url.pathname.endsWith('/inputs') && init?.method === 'POST') {
+      const body = JSON.parse(String(init.body)); inputs.push(body); await gate.promise;
+      const headers = init.headers as Record<string, string>;
+      return Response.json({ok: true, data: {id: headers['Idempotency-Key'], kind: 'primary.input', target: {kind: 'primary', key: destination === 'new' ? 'handover-opened' : target.key, epoch: destination === 'new' ? 132 : target.epoch}, state: 'accepted', createdAt: '', updatedAt: '', receipt: {kind: 'rpc', disposition: 'handled'}}});
+    }
+    return original(input, init);
+  };
+  byId('session-handover').click(); await settle();
+  const body = byId('modal-body'); assert.match(body.textContent, /marks the handover active/); assert.match(body.textContent, /cannot show or control a session that runs in a terminal/);
+  assert.equal(byId('handover-destination').value, 'new'); assert.equal(body.querySelectorAll('option').some(option => option.value === 'busy:131'), false);
+  assert.equal(opens, 0); assert.equal(inputs.length, 0);
+  byId('handover-pickup').value = 'pi "/stash get 20260101T000000Z-sample-handover remember the new port"'; byId('handover-pickup').dispatch('input');
+  assert.equal(byId('handover-note').value, 'remember the new port');
+  if (destination === 'existing') {byId('handover-destination').value = `${target.key}:${target.epoch}`; byId('handover-destination').dispatch('change');}
+  const next = byId('handover-continue'); next.click(); next.click(); await settle();
+  assert.equal(opens, destination === 'new' ? 1 : 0); assert.equal(inputs.length, 1); assert.equal(next.disabled, true);
+  assert.equal(inputs[0]?.message, '/stash get 20260101T000000Z-sample-handover remember the new port'); assert.equal(inputs[0]?.mode, 'prompt');
+  assert.equal(saved.draft.text, 'Keep current draft');
+  gate.resolve(); await settle(); assert.equal(byId('modal').open, false);
+});
+
+test('a failed handover open retains the fields and exposes Details and Try again', async t => {
+  const primary = primaryFixture({key: 'handover-error', epoch: 140, activity: 'idle'});
+  await arrive({workspace: {id: 'handover-error', revision: 1, primaryKey: primary.key}, primaries: [primary], roster: []});
+  const original = globalThis.fetch; t.after(() => {globalThis.fetch = original; byId('modal-close').click();});
+  globalThis.fetch = async (input, init) => new URL(String(input), 'http://ui.test').pathname === '/api/primaries' && init?.method === 'POST'
+    ? Response.json({ok: false, error: {code: 'host_unavailable', message: 'Session did not start', retry: 'read'}}) : original(input, init);
+  byId('session-handover').click(); byId('handover-pickup').value = 'sample-handover'; byId('handover-pickup').dispatch('input'); byId('handover-note').value = 'Keep the note';
+  byId('handover-continue').click(); await settle();
+  assert.equal(byId('modal').open, true); assert.equal(byId('handover-pickup').value, 'sample-handover'); assert.equal(byId('handover-note').value, 'Keep the note');
+  assert.equal(byId('handover-continue').textContent, 'Try again'); assert.match(byId('modal-error').textContent, /Details.*Session did not start/);
+});
+
+test('the terminal pickup shortcut changes the Primary draft only after its action and sends nothing', async () => {
+  const primary = primaryFixture({key: 'handover-shortcut', epoch: 150, activity: 'idle'}), target = {kind: 'primary' as const, key: primary.key, epoch: primary.epoch};
+  await arrive({workspace: {id: 'handover-shortcut', revision: 1, primaryKey: primary.key}, primaries: [primary], roster: [], targets: [targetFixture('handover-shortcut', target)]});
+  const composer = app.primaryComposer(), text = 'pi "/stash get sample-handover extra note"'; composer.setText(text); await settle();
+  const hint = hostDocument.querySelector('.composer-handover:not([hidden])') ?? hostDocument.querySelectorAll('.composer-handover').find(node => !node.hidden); assert.ok(hint);
+  const before = transportLog.length; assert.equal(composer.editor.value, text); hint.querySelector('button')?.click(); await settle();
+  assert.equal(composer.editor.value, '/stash get sample-handover extra note'); assert.equal(hint.hidden, true);
+  assert.equal(transportLog.slice(before).some(call => call.path.includes('/inputs')), false);
+});

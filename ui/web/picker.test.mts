@@ -170,6 +170,19 @@ test('an unchecked live connection leaves no visible state line but stays in the
   const search = setup.body.querySelector('#picker-search'); assert.ok(search); search.value = 'quiet'; search.dispatch('input');
   assert.equal(setup.body.querySelectorAll('.picker-durable-select').length, 1);
 });
+test('ordinary groups precede five agent rows and search reaches collapsed agents', async t => {
+  const rows = Array.from({length: 40}, (_, index) => catalogRow(`agent-${index}`));
+  const setup = directPicker(t, undefined, saved, undefined, {roster: catalogRoster(rows), published: {...saved, items: [{...ordinarySample, project: '/other-project', path: '/other-project/other.jsonl'}]}});
+  setup.picker.open(); await settle(); const results = setup.body.querySelector('.picker-results'); assert.ok(results);
+  assert.deepEqual(results.children.map(node => node.className), ['picker-folder-ordinary', 'picker-ordinary', 'picker-durable']);
+  assert.match(results.children[0]?.textContent ?? '', /Your sessions in/); assert.match(results.children[1]?.textContent ?? '', /Your sessions in other folders/);
+  assert.equal(setup.body.querySelectorAll('.picker-durable-select').length, 5);
+  const showAll = setup.body.querySelector('.picker-show-all'), search = setup.body.querySelector('#picker-search'); assert.ok(showAll && search); assert.equal(showAll.textContent, 'Show all 40');
+  const calls = setup.calls.length; search.value = 'agent-39'; search.dispatch('input'); assert.equal(setup.body.querySelectorAll('.picker-durable-select').length, 1); assert.equal(setup.body.querySelector('.picker-durable-select')?.dataset.agentIdentity, 'agent-39');
+  search.value = ''; search.dispatch('input'); assert.equal(setup.body.querySelectorAll('.picker-durable-select').length, 5); showAll.click(); assert.equal(setup.body.querySelectorAll('.picker-durable-select').length, 40);
+  assert.equal(setup.calls.length, calls);
+});
+
 test('Durable picker rows use projected names and truthful state with native keyboard selection only', async t => {
   const original = Object.getOwnPropertyDescriptor(globalThis, 'HTMLButtonElement');
   Object.defineProperty(globalThis, 'HTMLButtonElement', {configurable: true, value: Node});
@@ -192,7 +205,7 @@ test('Durable picker rows use projected names and truthful state with native key
   assert.equal(setup.calls.some(call => call.path === '/api/primaries' || call.path === '/api/agents/convert'), false);
 });
 test('ordinary Resume warnings stay inside their groups and exact-file disclosure', async t => {
-  const published = {...saved, items: [{...ordinarySample, path: '/published/session.jsonl'}]};
+  const published = {...saved, items: [{...ordinarySample, project: '/published', path: '/published/session.jsonl'}]};
   const setup = directPicker(t, undefined, saved, undefined, {roster: catalogRoster(), published}); setup.picker.open(); await settle();
   const registered = setup.body.querySelector('.picker-ordinary'), folder = setup.body.querySelector('.picker-folder-ordinary'); assert.ok(registered); assert.ok(folder);
   const once = setup.body.children.filter(node => node.classList.contains('picker-safety')); assert.equal(once.length, 1); assert.equal(once[0]?.hidden, false);
@@ -219,7 +232,7 @@ test('one query filters every loaded group without fetching or weakening coverag
   const setup=directPicker(t,undefined,{...saved,items:[ordinarySample,duplicate]},undefined,catalog);setup.picker.open();await settle();
   const search=setup.body.querySelector('#picker-search'),results=setup.body.querySelector('.picker-results');assert.ok(search&&results);
   const rows=()=>results.querySelectorAll('.picker-durable-select, .picker-select');const calls=setup.calls.length;
-  assert.deepEqual(rows().map(row=>row.dataset.agentIdentity??row.dataset.sessionPath),['designer','other','/registered.jsonl',ordinarySample.path]);
+  assert.deepEqual(rows().map(row=>row.dataset.agentIdentity??row.dataset.sessionPath),[ordinarySample.path,'/registered.jsonl','designer','other']);
   for(const [query,expected] of [['Web UI designer','designer'],['Registered planning','/registered.jsonl'],['Saved title',ordinarySample.path]] as const) {
     search.value=query;search.dispatch('input');assert.deepEqual(rows().map(row=>row.dataset.agentIdentity??row.dataset.sessionPath),[expected]);
     assert.equal(setup.body.querySelector('.picker-partial')?.hidden,false);assert.equal(results.querySelector('.picker-durable')?.querySelector('.picker-list-details')?.children[0]?.textContent,'List details');assert.equal(results.querySelector('.picker-ordinary')?.querySelector('.picker-list-details')?.children[0]?.textContent,'List details');
@@ -340,7 +353,7 @@ test('group disclosures preserve exact coverage while unsettled states never cla
   const facts = durable.querySelector('.picker-list-details'); assert.ok(facts);
   assert.equal(facts.open, false); assert.match(facts.textContent, /List details.*0 Durable conversations loaded/); assert.equal(setup.body.querySelector('.picker-partial')?.hidden, false);
   assert.match(facts.textContent, /3 skipped; 4 omitted/); assert.match(facts.textContent, /Exact catalog failure/);
-  assert.match(facts.children[0]?.attributes['aria-label'] ?? '', /Durable conversations/);
+  assert.match(facts.children[0]?.attributes['aria-label'] ?? '', /Agent conversations/);
   assert.match(registered.querySelector('.picker-list-details')?.textContent ?? '', /62 discovery records are unavailable or outside the bound/);
   assert.doesNotMatch(registered.textContent, /Conversion copies saved context only/); assert.match(registered.textContent, /All folders/);
 });
@@ -641,7 +654,7 @@ test('chooser controls stay with their title, search and list disclosure while r
   const folder = nodes.find(node => node.className === 'picker-folder-ordinary'); assert.ok(folder);
   const listDetails = folder.querySelector('.picker-list-details'); assert.ok(listDetails);
   const results = nodes.find(node => node.className === 'picker-results'); assert.ok(results); assert.equal(descendants(results).includes(footer), false); assert.ok(nodes.find(node => node.children.includes(results) && node.children.includes(footer)));
-  assert.equal(results.children.at(-1), folder); assert.ok(folder.children.includes(folder.querySelector('#picker-more') as Node));
+  assert.equal(results.children[0], folder); assert.ok(folder.children.includes(folder.querySelector('#picker-more') as Node));
   assert.equal(listDetails.children.some(node => node.textContent === 'Session file…'), false);
   const file = nodes.find(node => node.className === 'picker-file'); assert.ok(file);
   assert.equal(file.children[0]?.textContent, 'Session file…');
@@ -820,13 +833,13 @@ test('a saved file a terminal writes reads "Open in a terminal" with Resume disa
   select.click(); await settle();
   assert.equal(setup.calls.filter(call => call.path === '/api/primaries').length, 1);
 });
-test('a file that left the registered list after its terminal exited returns to the folder list on Refresh and on reopen', async t => {
+test('a registered file in the current folder keeps one folder row before and after writer release', async t => {
   const held = {...ordinarySample, writer: 'live' as const};
   const catalog = {roster: catalogRoster(), published: {...noPublished, items: [held], total: 1}};
   const page = {...saved, items: [held]};
   const setup = directPicker(t, undefined, page, undefined, catalog); setup.picker.open(); await settle();
   const registered = () => setup.body.querySelector('.picker-registered-list')?.querySelectorAll('.picker-select').length;
-  assert.equal(registered(), 1); assert.equal(setup.body.querySelector('.picker-folder-ordinary')?.querySelectorAll('.picker-select').length, 0, 'a registered file lists once');
+  assert.equal(registered(), 0); assert.equal(setup.body.querySelector('.picker-folder-ordinary')?.querySelectorAll('.picker-select').length, 1, 'a registered file lists once in its folder');
   page.items = [{...ordinarySample}]; catalog.published = {...noPublished}; setup.picker.writersChanged(); await settle();
   assert.equal(registered(), 0);
   let select = rowOf(setup);
