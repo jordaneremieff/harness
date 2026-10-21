@@ -8,6 +8,7 @@ import {PrimaryDraftSelection, primaryDraftText, type PrimaryDraftActions, type 
 import {recallItems} from './message-recall.ts';
 const inputEchoes=new InputEchoes();
 import {AgentInspection} from './agent-inspection.ts';
+import {createAgentLiveStrip, type AgentLiveStrip} from './agent-live-strip.ts';
 import {taskReference, type ConversationTask} from './conversation-tasks.ts';
 import type {AgentInspectionView, ResultSelector} from '../shared/inspection.ts';
 import type { ConversationLayout, WorkspaceTab as ConversationTab, FileTab } from '../shared/api.ts';
@@ -141,7 +142,7 @@ let reloadStateKey:string|undefined;
 let preparedReloadState:{key:string;revision:number;workspace:string}|undefined;
 const devCheckpointKey = 'ui:dev-checkpoint';
 type ConversationController = {workspaceId: string; target: Target; instanceId: string; root: HTMLElement; nodes: Map<string, HTMLElement>;
-  elements: import('./composer.ts').ComposerElements; composer: Composer; transcript: Transcript; inspection?: AgentInspection; readingGeometry?: ReturnType<Transcript['captureGeometry']>; saved?: TargetState; geometry?: ReturnType<Transcript['captureGeometry']>; messageRetention?: object;
+  elements: import('./composer.ts').ComposerElements; composer: Composer; transcript: Transcript; liveStrip?: AgentLiveStrip; inspection?: AgentInspection; readingGeometry?: ReturnType<Transcript['captureGeometry']>; saved?: TargetState; geometry?: ReturnType<Transcript['captureGeometry']>; messageRetention?: object;
   abort: AbortController; historyAbort: AbortController; cursor: string | null; before: number | null; loading: boolean; preparing: boolean; passive?: boolean; historyReading?: TargetState['reading']; historyReady: boolean; historyBoundaryLoaded: boolean; historyComplete?: boolean; historyError?: {code?: string; message: string}; hasEntries?: boolean; initialized: boolean; showThinking: boolean; historyWork?: Promise<void>; connectionError?: string; connection?: Pick<import('../shared/api.ts').TargetPreparation, 'availability' | 'capabilities' | 'reason'> & {stale?: true}; refreshing?: boolean; resizer?: Resizer; fillingEarlier?: boolean};
 const controllers = new Map<string, ConversationController>();
 let primaryDraftSelection: PrimaryDraftSelection|undefined;
@@ -280,8 +281,9 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
   const resize = elements.root.querySelector<HTMLElement>('.resizer'); if (resize) nodes.set('composer-resizer', resize);
   const activity = add('activity', 'p', 'exception'); activity.setAttribute('role', 'status'); const queued = element('ul', 'queued-list'); queued.hidden = true; queued.setAttribute('aria-label', 'Queued messages'); nodes.set('queued', queued); elements.root.prepend(activity, queued);
   root.append(observed, notice, region, above, elements.root, below); stableViews().mount(root);
+  const liveStrip=createAgentLiveStrip(target.kind,root);
   if (target.kind === 'agent') root.insertBefore(createHistoryNote(add), region);
-  const controller = {workspaceId, target: {...target}, instanceId, root, nodes, elements, abort: new AbortController(), historyAbort: new AbortController(), cursor: null, before: null, loading: false, preparing: false, passive: true, historyReady: false, historyBoundaryLoaded: false, initialized: false, showThinking: false} as ConversationController;
+  const controller = {workspaceId, target: {...target}, instanceId, root, nodes, elements, liveStrip, abort: new AbortController(), historyAbort: new AbortController(), cursor: null, before: null, loading: false, preparing: false, passive: true, historyReady: false, historyBoundaryLoaded: false, initialized: false, showThinking: false} as ConversationController;
   wireSettingPickers(controller);
   controller.composer = new Composer(elements, {workingFile:stage=>composerWorkingFile(controller,stage),recallItems:()=>recallItems(inputEchoes.entries(controller.workspaceId,controller.target,(()=>{const conversation=state.conversations.get(targetIdentity(controller.target));return conversation?conversationBlocks(conversation):[];})())),fileSearch:(query,signal)=>searchWorkingFiles(controller,query,signal),fileStage:(path,signal,present,stage)=>stageMentionedFile(controller,path,signal,present,stage),changed:()=>{devInteractionRevision++;},draftStatusChanged:()=>releaseNotice.refresh(),captured: submission=>{const conversation=state.conversations.get(targetIdentity(controller.target));inputEchoes.capture(workspaceId,submission,conversation?conversationBlocks(conversation):[]);renderController(controller);},failed:(id,uncertain)=>{inputEchoes.failed(id,uncertain);renderController(controller);},prepareInput: () => !controller.passive, imageState: refreshComposerImages, imageInput: captured => composerImageInput(controller, captured), recovery: () => recovery.open(), layoutHeight: () => stableViews().height(elements.root), enterSends: () => state.workspace?.enterSendsMessages === true, timing: (start, end) => {if (controller.workspaceId === state.workspace?.id && !elements.root.closest('[hidden],[inert]')) diagnostics.measure('editor-echo', start, end);}, submitted: result => {inputEchoes.settle(result);showOperation(result, workspaceId);renderController(controller);}, unknownCommand: (text, literal) => target.kind === 'primary' && sameTarget(primaryTarget(), target) ? actions.unknown(text, literal) : false,
     ...(target.kind === 'primary' ? {commands: () => actions.commandOptions(), moreCommands: (captured: Target) => actions.continueCommands(captured)} : {}),
@@ -1028,10 +1030,18 @@ function renderIdentity(): void {
     control.setAttribute('aria-description', project.path ?? 'No working folder selected');
   }
   document.title = view.activity ? `Pi · ${presentationName(view)} · ${view.activity}` : `Pi · ${project.name}`;
-  for (const controller of controllers.values()) renderObserved(controller, connected || !presentation(controller.target).activity);
+  for (const controller of controllers.values()) {
+    const view=presentation(controller.target);renderObserved(controller,connected || !view.activity);renderAgentLiveStrip(controller,view);
+  }
+}
+function renderAgentLiveStrip(controller: ConversationController, view: ConversationPresentation): void {
+  if(controller.target.kind !== 'agent' || !controller.liveStrip)return;
+  const conversation=state.conversations.get(targetIdentity(controller.target));
+  controller.liveStrip.update(agentRow(controller.target.identity),view,attentionFor(controller.target),!!conversation?.frame);
+  if(controller.inspection?.active)controller.liveStrip.node.hidden=true;
 }
 function renderObserved(controller:ConversationController, hide:boolean):void {
-  controllerNode(controller,'observed').hidden=!state.conversations.get(targetIdentity(controller.target))?.retainedSession&&hide;
+  controllerNode(controller,'observed').hidden=controller.target.kind === 'agent' || !state.conversations.get(targetIdentity(controller.target))?.retainedSession&&hide;
 }
 function selectedAgent(): string | undefined { const tab=activeTab(currentLayout());return tab?.kind === 'agent' ? tab.identity : undefined; }
 function targetState(target?: Target): TargetState | undefined {
@@ -1634,6 +1644,7 @@ function composerShown(controller: ConversationController): boolean { return !!c
 function renderController(controller: ConversationController, deferred = false, receivedAt?: number): void {
   const saved = targetState(controller.target); controller.saved = saved; controller.resizer ??= composerResizer(controller);
   const firstDraft = !!saved && !controller.initialized;
+  renderAgentLiveStrip(controller,presentation(controller.target));
   if (saved) {
     clearPreparationError(controller);
     if (!controller.initialized) {controller.initialized = true; controller.showThinking = thinkingExpanded(saved.presentation); controller.transcript.configure(saved.presentation, saved.reading);}
@@ -1968,7 +1979,7 @@ function renderAgentState(controller: ConversationController): void {
   const reload = controllerNode(controller, 'history-reload') as HTMLButtonElement, details = controllerNode(controller, 'history-details') as HTMLButtonElement;
   setText(reload, history.label); reload.hidden = !history.reload; reload.disabled = !connected || controller.loading || !!checkingAgent || attempt?.pending === true; reload.onclick = () => {void retryAgentRead(controller);};
   details.hidden = !history.detail; details.onclick = () => showDetails('Saved messages', history.detail);
-  const current = presentation(controller.target);
+  const current = presentation(controller.target);renderAgentLiveStrip(controller,current);
   const composerState = agentComposerState({connected, availability: availability?.state ?? row?.availability, input: current.input, checked: !!negotiated || !!availability, reason: negotiated?.reason ?? availability?.reason, startAttempt: attempt, connectionError: controller.connectionError, checking: !!controller.refreshing, blocked: current.activity === 'Provider blocked' ? current.detail : undefined});
   controllerNode(controller, 'empty').hidden = true; controller.root.classList.toggle('agent-empty', !controller.hasEntries);
   controller.composer.setState(composerState && (controller.saved ? composerStateView : composerStateWithoutDraft)(composerState, () => {
