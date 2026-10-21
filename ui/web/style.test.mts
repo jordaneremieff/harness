@@ -437,7 +437,7 @@ test('results-first tool regions keep output and technical details inside local 
   assert.match(rule('.tool-details'), /min-width: 0; max-width: 100%/);
   assert.match(rule('.tool-expanded pre'), /max-height: 480px/);
   assert.match(rule('.tool-inspection > pre'), /max-height: 320px/);
-  assert.match(rule('.tool-shell'), /width: fit-content/);
+  assert.match(rule('.tool-shell'), /box-sizing: border-box; width: 100%;/);
 });
 test('structured content uses readable prose, wrapped fields, compact tables and plain event disclosures', () => {
   assert.match(rule('.tool-document'), /min-width: 0; color: var\(--fg\); font-family: var\(--sans\)/);
@@ -703,9 +703,22 @@ test('code wraps, output scrolls inside its block, and disclosures stay reachabl
   assert.match(rule('.message:hover > .message-header > .message-actions, .message:focus-within > .message-header > .message-actions'), /opacity: 1; pointer-events: auto/);
   assert.match(rule('.thinking > .stream-text'), /font-style: normal/);
 });
+test('machine-output boxes span the column without content-sized widths', () => {
+  for (const selector of ['.tool-shell', '.tool-inspection', '.tool-expanded pre']) {
+    const body = rule(selector);
+    assert.match(body, /box-sizing: border-box;/, selector);
+    assert.match(body, /(?:^|;)\s*width: 100%;/, selector);
+    assert.doesNotMatch(body, /(?:^|;)\s*min-width:/, selector);
+  }
+  for (const selector of ['.tool-shell', '.tool-inspection', '.tool-expanded pre', '.communication-card', 'pre']) {
+    assert.doesNotMatch(rule(selector), /fit-content|min-content|max-content|(?:^|;)\s*min-width:[^;]*(?:ch|em|rem)/, selector);
+  }
+  assert.match(rule('.message.user'), /width: fit-content; max-width: 100%;/);
+  for (const selector of ['.thinking > summary, .system-note > details > summary, .custom-entry > details > summary, .facts-panel summary', '.tool-source > summary, .tool-metadata > summary, .tool-fact > summary, .tool-row-content > summary, .session-events > summary']) assert.match(rule(selector), /width: fit-content;/, selector);
+});
 test('expanded output retains bounded native scrollports with fixed gutters', () => {
   const output = rule('.tool-expanded pre');
-  assert.match(output, /box-sizing: border-box; width: fit-content; min-width: min\(24ch,100%\); max-width: 100%; max-height: 480px/);
+  assert.match(output, /box-sizing: border-box; width: 100%; max-width: 100%; max-height: 480px/);
   assert.match(output, /padding: var\(--s1\) var\(--s2\); border: 0/);
   assert.match(output, /border-radius: 3px; background: var\(--code\)/);
   assert.match(rule('.tool-expanded'), /margin: var\(--s1\) 0 var\(--s2\) 0/);
@@ -749,8 +762,8 @@ test('Find occupies app flow above status with visible coverage and compact cont
   assert.match(rule('dialog[data-variant=find] #modal-title'), /width: 1px; height: 1px/);
   assert.match(media('@media (pointer:coarse)'), /dialog\[data-variant=find\] #modal-body > input \{ min-height: 44px/);
 });
-test('short tool output sizes to content and wrap controls retain reserved space', () => {
-  assert.match(rule('.tool-expanded pre'), /width: fit-content;[^}]*max-width: 100%/);
+test('short tool output spans the column and wrap controls retain reserved space', () => {
+  assert.match(rule('.tool-expanded pre'), /width: 100%;[^}]*max-width: 100%/);
   assert.match(rule('.tool-inspection > .source-header + pre'), /padding-right: var\(--s6\)/);
   assert.match(rule('.tool-inspection > .source-header'), /opacity: 0/);
   const coarse = media('@media (pointer:coarse)');

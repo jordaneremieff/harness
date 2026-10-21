@@ -611,9 +611,8 @@ a.reference-link[href] { color: var(--link); text-decoration: underline; overflo
 .markdown-content:is(p, ul, ol, blockquote) { max-width: 100%; }
 .message.user > .message-body { position: relative; padding: var(--s2) var(--s3); border: 0; border-radius: 3px; background: var(--side); font-weight: 400; }
 .message.user > .message-body::before { content: ""; position: absolute; top: 5px; bottom: 5px; left: 0; border-left: 2px solid var(--accent); }
-.message.user { width: fit-content; max-width: min(100%, calc(72ch + 24px)); font-family: var(--sans); font-size: var(--fs-body); }
+.message.user { width: fit-content; max-width: 100%; font-family: var(--sans); font-size: var(--fs-body); }
 .message.user > .message-header { max-width: 100%; }
-.message.user:has(> .message-header > :is(.message-role, .communication-sender)[hidden]) { max-width: min(100%, calc(72ch + 52px)); }
 .message.user:has(> .message-header > :is(.message-role, .communication-sender)[hidden]) > .message-header { position: absolute; top: 4px; right: 4px; z-index: 2; max-width: 100%; min-height: 24px; }
 .message.user:has(> .message-header > :is(.message-role, .communication-sender)[hidden]) > .message-header > .message-actions { background: var(--side); }
 .message.user:has(> .message-header > :is(.message-role, .communication-sender)[hidden]) > .message-body { margin-top: 0; padding-right: var(--s7); }
@@ -722,7 +721,7 @@ summary::before { content: none; }
 .tool-source-header { display: flex; align-items: center; gap: var(--s1); }
 
 /* Each original tool call owns one visible compact block and its native details. */
-.tool-shell { position: relative; display: block; width: fit-content; min-width: min(32ch,100%); max-width: 100%; margin: 0; padding: var(--s2) var(--s2); border: 1px solid var(--rule); border-radius: 4px; background: var(--raised); color: var(--fg); font-family: var(--sans); font-size: var(--fs-ui); line-height: 1.6; }
+.tool-shell { position: relative; display: block; box-sizing: border-box; width: 100%; max-width: 100%; margin: 0; padding: var(--s2) var(--s2); border: 1px solid var(--rule); border-radius: 4px; background: var(--raised); color: var(--fg); font-family: var(--sans); font-size: var(--fs-ui); line-height: 1.6; }
 .tool-shell[data-status=error] > .tool-card > summary { color: var(--error); }
 .message-body > .tool-shell, .message-body > * > .tool-shell { font-size: var(--fs-ui); }
 .message-body > .tool-shell + .tool-shell { margin-top: var(--s2); }
@@ -765,14 +764,14 @@ summary::before { content: none; }
 .tool-expanded { margin: var(--s1) 0 var(--s2) 0; color: var(--fg); font-size: var(--fs-ui); }
 .tool-expanded > * + * { margin-top: var(--s1); }
 .tool-expanded .source-disclosure > summary.source-header { padding: var(--s1) var(--s6) var(--s1) 0; }
-.tool-inspection { position: relative; width: fit-content; max-width: 100%; }
+.tool-inspection { position: relative; box-sizing: border-box; width: 100%; max-width: 100%; }
 .tool-inspection > .source-header { position: absolute; top: 2px; right: 2px; z-index: 1; justify-content: flex-end; padding: 0; border: 0; opacity: 0; }
 .tool-inspection:hover > .source-header, .tool-inspection:focus-within > .source-header { opacity: 1; }
 .tool-inspection > .source-header + pre { margin: 0; padding-right: var(--s6); }
 .tool-result-label { color: var(--muted); font-family: var(--sans); font-size: var(--fs-meta); }
 .tool-expanded > .secondary { display: block; color: var(--muted); font-size: var(--fs-meta); }
 /* Native output scrollports retain bounded height without hiding text lines. */
-.tool-expanded pre { display: block; box-sizing: border-box; width: fit-content; min-width: min(24ch,100%); max-width: 100%; max-height: 480px; padding: var(--s1) var(--s2); border: 0; border-radius: 3px; background: var(--code); }
+.tool-expanded pre { display: block; box-sizing: border-box; width: 100%; max-width: 100%; max-height: 480px; padding: var(--s1) var(--s2); border: 0; border-radius: 3px; background: var(--code); }
 .tool-expanded .tool-result pre { max-height: none; }
 .tool-expanded .tool-output-text { color: var(--fg); }
 .tool-output-info { max-width: 100%; color: var(--muted); font-size: var(--fs-meta); white-space: pre-wrap; overflow-wrap: anywhere; }

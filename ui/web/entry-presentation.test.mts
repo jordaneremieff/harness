@@ -106,10 +106,10 @@ test('the session events line names the settings or counts each kind, never a ba
 });
 test('a user-role block takes the width of its text and keeps Message actions at its edge when it has no role word', async () => {
   const css = await readFile(new URL('./style.css', import.meta.url), 'utf8');
-  assert.match(css, /\.message\.user \{ width: fit-content; max-width: min\(100%, calc\(72ch \+ 24px\)\)/);
+  assert.match(css, /\.message\.user \{ width: fit-content; max-width: 100%;/);
   assert.match(css, /\.message\.user > \.message-header \{ max-width: 100%; \}/);
   assert.match(css, /\.message\.user:has\(> \.message-header > :is\(\.message-role, \.communication-sender\)\[hidden\]\) > \.message-header \{ position: absolute; top: 4px; right: 4px;/);
-  assert.match(css, /\.message\.user:has\(> \.message-header > :is\(\.message-role, \.communication-sender\)\[hidden\]\) \{ max-width: min\(100%, calc\(72ch \+ 52px\)\); \}/);
+  assert.doesNotMatch(css, /\.message\.user[^{}]*\{[^}]*max-width:[^;]*ch/);
   assert.match(css, /--s7: 48px;/);
   assert.match(css, /\[hidden\]\) > \.message-body \{ margin-top: 0; padding-right: var\(--s7\); \}/);
 });
