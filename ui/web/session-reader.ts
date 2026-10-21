@@ -1,4 +1,4 @@
-import type {EntryView, HistoryPage, PrimaryView, SavedSession, SavedSessionRead} from '../shared/api.ts';
+import type {EntryView, HistoryPage, PresentationView, PrimaryView, ReadingView, SavedSession, SavedSessionRead} from '../shared/api.ts';
 import {button, element, setText} from './dom.ts';
 import {absoluteTime} from './format.ts';
 import {sessionLabel} from './picker-state.ts';
@@ -6,6 +6,7 @@ import {Transcript} from './render.ts';
 import {request} from './transport.ts';
 
 export type SessionReadSource={saved:SavedSession}|{primary:PrimaryView;saved?:SavedSession};
+export type SessionReaderReload={source:SessionReadSource;entries:EntryView[];leaf:string|null;before:string|null;primaryCursor:string|null;loaded:boolean;asOf:string;status:string;reading:ReadingView;presentation:PresentationView;scrollLeft:number;focused:boolean};
 type Hooks={focus:()=>void;close:()=>void;resume:(source:SessionReadSource)=>void};
 /** A page-local read-only view has no conversation target, writer, composer, or saved layout entry. */
 export class SessionReader {
@@ -27,6 +28,8 @@ export class SessionReader {
   private primaryCursor:string|null=null;
   private reading=false;
   private loaded=false;
+  private reloadPresentation:PresentationView={revision:0,expanded:[],showThinking:false};
+  get reloadReady():boolean{return !this.source||!this.reading;}
   get saved():SavedSession|undefined{return this.loaded?this.source?.saved:undefined;}
   private hooks:Hooks;
   constructor(hooks:Hooks){
@@ -40,11 +43,32 @@ export class SessionReader {
     this.node.addEventListener('focusin',hooks.focus);
     this.node.addEventListener('keydown',event=>{if(event.key==='Escape'&&!event.defaultPrevented){event.preventDefault();hooks.close();}});
     this.node.addEventListener('contextmenu',event=>{if(!(event.target instanceof Element)||!event.target.closest('.transcript'))event.stopPropagation();});
-    this.transcript=new Transcript({transcript:this.scroller,latest:this.latest,earlier:this.earlier},{operatorInput:true,presentation:()=>{},reading:()=>{},earlier:()=>{void this.read(true);}});
+    this.transcript=new Transcript({transcript:this.scroller,latest:this.latest,earlier:this.earlier},{operatorInput:true,presentation:(expanded,showThinking,transcriptView,thinking)=>{this.reloadPresentation={...this.reloadPresentation,revision:this.reloadPresentation.revision+1,expanded:[...expanded],showThinking,...(transcriptView?{transcriptView}:{}),...(thinking?{thinking}:{})};},reading:()=>{},earlier:()=>{void this.read(true);}});
   }
   open(source:SessionReadSource):void {
     this.controller?.abort();this.source=source;this.entries=[];this.before=null;this.primaryCursor=null;this.leaf=null;this.reading=false;this.loaded=false;setText(this.time,'');
-    this.transcript.reset();this.node.hidden=false;this.paintHeader();void this.read(false);
+    this.transcript.reset();this.reloadPresentation={revision:0,expanded:[],showThinking:false};this.node.hidden=false;this.paintHeader();void this.read(false);
+  }
+  captureReload():SessionReaderReload|undefined {
+    if(!this.source)return;
+    if(this.reading)throw new Error('The session snapshot read is still pending.');
+    const geometry=this.transcript.captureGeometry();
+    return structuredClone({source:this.source,entries:this.entries,leaf:this.leaf,before:this.before,primaryCursor:this.primaryCursor,loaded:this.loaded,asOf:this.time.textContent??'',status:this.status.textContent??'',presentation:this.reloadPresentation,scrollLeft:this.scroller.scrollLeft,focused:this.node.contains(document.activeElement),reading:{revision:0,anchorId:geometry.anchor?.id??null,offsetPx:geometry.anchor?.offsetPx??0,followTail:geometry.followTail}});
+  }
+  restoreReload(value:SessionReaderReload):void {
+    if(value.entries.length>500)throw new Error('The retained session snapshot exceeds its view bound.');
+    this.controller?.abort();this.controller=undefined;this.source=structuredClone(value.source);this.entries=structuredClone(value.entries);
+    this.leaf=value.leaf;this.before=value.before;this.primaryCursor=value.primaryCursor;this.loaded=value.loaded;this.reading=false;
+    this.refresh.disabled=false;this.earlier.disabled=false;this.node.hidden=false;this.transcript.reset();this.reloadPresentation=structuredClone(value.presentation);
+    this.transcript.configure(this.reloadPresentation,value.reading);this.transcript.set(this.entries,undefined,undefined,!this.before&&!this.primaryCursor);this.transcript.historyAvailable(!!this.before||!!this.primaryCursor);
+    setText(this.time,value.asOf);setText(this.status,value.status);this.paintHeader();this.transcript.restore(value.reading);this.transcript.schedule();
+    const source=this.source;requestAnimationFrame(()=>{if(this.source!==source)return;this.scroller.scrollLeft=value.scrollLeft;if(value.focused)this.focus();});
+  }
+  captureGeometry():{source:SessionReadSource;geometry:ReturnType<Transcript['captureGeometry']>;scrollLeft:number}|undefined {
+    if(this.source)return {source:this.source,geometry:this.transcript.captureGeometry(),scrollLeft:this.scroller.scrollLeft};
+  }
+  applyGeometry(value:ReturnType<SessionReader['captureGeometry']>):void {
+    if(value&&this.source===value.source){this.transcript.applyGeometry(value.geometry);this.scroller.scrollLeft=value.scrollLeft;}
   }
   close():void {this.controller?.abort();this.source=undefined;this.reading=false;this.node.hidden=true;this.node.remove();}
   focus():void {this.scroller.focus({preventScroll:true});}

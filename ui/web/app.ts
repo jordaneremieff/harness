@@ -50,7 +50,7 @@ import {conversationAttention, type Attention} from './attention.ts';
 import {activeDialog} from './dialog-state.ts';
 import {HandoverDialog} from './handover-view.ts';
 import { ThreadExplorer, ThreadReader, type ThreadEntry } from './threads-view.ts';
-import {SessionReader,type SessionReadSource} from './session-reader.ts';
+import {SessionReader,type SessionReadSource,type SessionReaderReload} from './session-reader.ts';
 import { THREAD_PAGE_EVENTS } from './threads.ts';
 import {noticeGroups, noticeGroupText, noticeTarget, unreadReviewNotice, CommunicationNoticeShelf, type CommunicationNotice, type NoticeGroup} from './notice-presentation.ts';
 import { Recovery } from './recovery.ts';
@@ -3054,12 +3054,15 @@ function restoreDevInspections(checkpoint:DevReloadCheckpoint):boolean {
   return true;
 }
 let cssState: Array<{controller: ConversationController; geometry: ReturnType<Transcript['captureGeometry']>; inspectionTop?:number}> = [];
+let cssSessionState:ReturnType<SessionReader['captureGeometry']>;
 export function captureDevCssState(): unknown {
+  cssSessionState=sessionReader.captureGeometry();
   cssState = [...controllers.values()].filter(controller => controller.workspaceId === state.workspace?.id && !controller.root.hidden && !controller.root.inert).map(controller => ({controller, geometry: controller.transcript.captureGeometry(),...(controller.inspection?.active?{inspectionTop:controller.inspection.scroller.scrollTop}:{})})); return cssState;
 }
 export function applyDevCssState(captured: unknown): void {
   if (captured !== cssState) return; refreshPaneSizes();
   for (const {controller, geometry,inspectionTop} of cssState) {controller.transcript.applyGeometry(geometry); controller.composer.resize();if(controller.inspection&&inspectionTop!==undefined)controller.inspection.scroller.scrollTop=inspectionTop;}
+  sessionReader.applyGeometry(cssSessionState);
 }
 let uiReady = false;
 async function finishStartup(): Promise<void> {
@@ -3086,6 +3089,7 @@ type ReleasePage = {
   release: ReleaseIdentity; checkpoint: DevReloadCheckpoint; workspace: Workspace; entry: ReturnType<WorkspaceEntry['captureReload']>; drawer: boolean;
   deskPane?: typeof deskPane; desk: ReturnType<Desk['captureReload']>;
   thread?: {pane: NonNullable<typeof threadPane>; reader: ReturnType<ThreadReader['captureReload']>};
+  session?:{pane:NonNullable<typeof sessionReadPane>;reader:SessionReaderReload};
   controllers: Array<{workspace:string;target:Target;passive:boolean;geometry:ReturnType<Transcript['captureGeometry']>;scrollLeft:number;editorTop:number;editorLeft:number}>;
 };
 let releasePage: ReleasePage | undefined;
@@ -3113,6 +3117,7 @@ async function restoreReleasePage(page:ReleasePage,current:()=>boolean):Promise<
     if(!await restoreDevCheckpoint(page.checkpoint,signal)||!current())throw new Error('The exact page restore did not finish. Preserved drafts remain in reload storage.');
     restoreReleaseControllers(page);
     drawerOpen=page.drawer;renderNavigation();
+    if(page.session)restoreReleaseSession(page.session);
     const actual=loadedRelease(versionStatus.identity,document.querySelector('meta[name="ui-generation"]')?.getAttribute('content')??null,document.querySelector('meta[name="ui-module-family"]')?.getAttribute('content')??null);
     if(actual)releaseNotice.updated(actual);
     const url=new URL(location.href),key=url.searchParams.get('update');url.searchParams.delete('update');history.replaceState(null,'',url);
@@ -3130,6 +3135,17 @@ function restoreReleaseCompanions(page:ReleasePage):void {
     desk.restoreReload({...page.desk,retained:page.desk.retained.map(canonical),direct:page.desk.direct&&canonical(page.desk.direct)});
   }
   if(page.thread?.reader.entry)restoreReleaseThread(page.thread);
+}
+function restoreReleaseSession(value:NonNullable<ReleasePage['session']>):void {
+  const {pane,reader}=value;
+  if(pane.provisional&&!validPaneLayout(pane.provisional))throw new Error('The retained session pane layout is invalid.');
+  const layout=pane.provisional??deskLayout();
+  if(!paneById(layout,pane.id)||!paneById(layout,pane.focus))throw new Error('The retained session pane is unavailable.');
+  if('primary' in reader.source){
+    const saved=reader.source.primary,current=state.primaries.get(saved.key);
+    if(!current||current.epoch!==saved.epoch||current.sessionId!==saved.sessionId||saved.sessionFile&&current.sessionFile!==saved.sessionFile)throw new Error('The retained session identity changed.');
+  }
+  sessionReadPane={...structuredClone(pane),context:deskContext()};renderNavigation();sessionReader.restoreReload(reader);
 }
 function restoreReleaseThread(value:NonNullable<ReleasePage['thread']>):void {
   const pane=paneById(currentLayout(),value.pane.paneId),region=paneRegions.get(value.pane.paneId),entry=value.reader.entry;
@@ -3171,7 +3187,7 @@ export function releaseReloadState(): ReleaseReloadState {
   const states = [...controllers.values()].map(controller => controller.composer.releaseReloadState);
   if (states.includes('failed')) return 'failed';
   if (states.includes('pending')) return 'pending';
-  if (states.includes('blocked') || devHold() || !releaseNotice.quiet || !connected || selecting || selectionQueue.unsettled || preferences.pending || !filesViews.canDispose) return 'blocked';
+  if (states.includes('blocked') || !sessionReader.reloadReady || devHold() || !releaseNotice.quiet || !connected || selecting || selectionQueue.unsettled || preferences.pending || !filesViews.canDispose) return 'blocked';
   return 'ready';
 }
 /** A release returns to this exact page view; it never replays an input or starts a fresh workspace entry. */
@@ -3188,7 +3204,10 @@ export async function reloadRelease(signal: AbortSignal, release: ReleaseIdentit
   view.targets=view.targets.map(entry=>entry.target.kind==='agent'&&preserved.has(entry.targetKey)?{...entry,target:{kind:'agent',identity:entry.target.identity,retained:true}}:entry);
   const checkpoint: DevReloadCheckpoint = {...view, version: 1, generation: release.generation, oldClient: document.querySelector('meta[name="ui-client"]')?.getAttribute('content') ?? '', capturedAt: Date.now(), interactionRevision: revision};
   if (!validateDevReloadCheckpoint(checkpoint, release.generation, Date.now())) throw new Error('The exact page checkpoint is unavailable.');
-  const page: ReleasePage = {release, checkpoint, workspace: {...structuredClone(state.workspace as Workspace),conversationLayout:structuredClone(workspaceLayout(state.workspace))}, entry: workspaceEntry.captureReload(state.workspace as Workspace), drawer: drawerOpen,
+  const reader=sessionReadPane?sessionReader.captureReload():undefined;
+  if(sessionReadPane&&!reader)throw new Error('The exact retained session snapshot is unavailable.');
+  const session=sessionReadPane&&reader?{pane:structuredClone(sessionReadPane),reader}:undefined;
+  const page: ReleasePage = {release, checkpoint, session, workspace: {...structuredClone(state.workspace as Workspace),conversationLayout:structuredClone(workspaceLayout(state.workspace))}, entry: workspaceEntry.captureReload(state.workspace as Workspace), drawer: drawerOpen,
     deskPane: deskPane && structuredClone(deskPane), desk: desk.captureReload(),
     thread: threadPane && {pane: {...threadPane}, reader: threadReader.captureReload()},
     controllers: retained.map(controller => ({workspace: controller.workspaceId, target: {...controller.target}, passive: controller.passive === true, geometry: controller.transcript.captureGeometry(), scrollLeft: controllerNode(controller, 'transcript').scrollLeft, editorTop: controller.composer.editor.scrollTop, editorLeft: controller.composer.editor.scrollLeft}))};
