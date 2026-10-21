@@ -7,7 +7,7 @@ import { paneById, paneForTab, paneLeaves, type PaneLayout } from './pane-layout
 
 export type TabRegion = {id: string; tabs: HTMLElement; controls: string};
 export type TabRegions = {panes: () => TabRegion[]; conversations: HTMLElement};
-export type TabHooks = {layout: () => PaneLayout; activate: (pane: string, key: string) => void; close: (key: string) => void;
+export type TabHooks = {layout: () => PaneLayout; reopen?: () => {count: number; run: () => void} | undefined; activate: (pane: string, key: string) => void; close: (key: string) => void;
   move: (key: string, pane: string, index: number) => void; label: (tab: ConversationTab) => string;
   identity?: (tab: ConversationTab) => string | undefined;unnamed?:(tab:ConversationTab)=>boolean;
   fallback?:()=>HTMLElement|undefined;
@@ -31,6 +31,7 @@ export class TabStrip {
   private sectionToggle: HTMLButtonElement;
   private count: HTMLElement;
   private attention: HTMLElement;
+  private reopenRow?: HTMLButtonElement;
   private destroyed = false;
   private hooks: TabHooks;
   private regions: TabRegions;
@@ -97,7 +98,7 @@ export class TabStrip {
       host.dataset.sole = String(pane.tabs.length === 1);
       host.tabIndex = pane.tabs.length ? -1 : 0; host.dataset.focused = String(layout.focusedPane === pane.id);
     });
-    this.renderSection(tabs,this.paintFallback());
+    this.renderSection(tabs,this.paintFallback());this.renderReopen();
     for (const pane of panes) {const group = this.groups.get(pane.id); if (group) group.hidden = !pane.tabs.length;}
     this.fitStatuses(); if (reveal) this.revealActive();
     if (hadFocus) { if (focused && [...regions.map(region => region.tabs), this.regions.conversations].some(host => host.contains(focused))) focused.focus({preventScroll: true}); else this.focusActive(); }
@@ -106,6 +107,15 @@ export class TabStrip {
     const fallback=this.hooks.fallback?.();
     if(this.fallback&&this.fallback!==fallback)this.fallback.hidden=true;this.fallback=fallback;
     if(fallback){fallback.hidden=false;this.sectionBody.prepend(fallback);}return !!fallback;
+  }
+  private renderReopen(): void {
+    const action=this.hooks.reopen?.();
+    if(!action?.count){if(this.reopenRow)this.reopenRow.hidden=true;return;}
+    if(!this.reopenRow){
+      const row=this.regions.conversations.ownerDocument.createElement('button');row.type='button';row.className='conversation-row conversation-reopen';
+      row.addEventListener('click',()=>this.hooks.reopen?.()?.run());this.reopenRow=row;
+    }
+    this.reopenRow.textContent=`Reopen ${action.count} older tabs`;this.reopenRow.hidden=false;this.sectionBody.append(this.reopenRow);
   }
   private renderSection(tabs: readonly ConversationTab[], fallback=false): void {
     const collapsed = this.hooks.section?.collapsed() === true;

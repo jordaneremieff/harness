@@ -1,4 +1,4 @@
-import { APPEARANCES, LIMITS, type OperationKind } from '../shared/api.ts';
+import { APPEARANCES, LIMITS, validAgentViews, type OperationKind } from '../shared/api.ts';
 import type { Registry } from './registry.mts';
 import type { RequestContext } from './http.mts';
 import { ApiError } from './errors.mts';
@@ -13,13 +13,35 @@ export async function dispatchView(registry:Registry,context:RequestContext):Pro
   if(parts[1]==='bootstrap'||parts[1]==='snapshot') return registry.snapshot(context.workspace,parts[1]==='bootstrap');
   if(parts[1]==='operations') return operations(registry,context);
   if(parts[1]!=='workspaces') throw new ApiError('invalid_request','The route does not exist.',404);
-  if(parts.length===2) {v.fields(body,[]);return {workspace:await registry.store.createWorkspace()};}
+  if(parts.length===2)return workspaceCollection(registry,context);
   const workspace=v.string(parts[2],'workspace ID');
   if(parts[3]==='targets' && parts.length===4 && method==='POST') return prepareTarget(registry,workspace,body);
+  if(parts.length===4 && method === 'POST')return workspaceAction(registry,workspace,context);
   await registry.store.workspace(workspace);
   if(parts[3]==='selection') return selection(registry,workspace,context);
   if(parts[3]==='unconfirmed') return unconfirmed(registry,workspace,context);
   return targetAction(registry, workspace, context);
+}
+async function workspaceCollection(registry: Registry, context: RequestContext): Promise<unknown> {
+  v.fields(context.body,[]);
+  if(context.method === 'POST')return {workspace:await registry.store.createWorkspace()};
+  if(context.method !== 'GET')throw new ApiError('invalid_request','The workspace method is unavailable.',405);
+  const flag=context.url.searchParams.get('archived'), raw=context.url.searchParams.get('cursor') ?? '0';
+  if(flag !== null && flag !== 'true' && flag !== 'false')throw new ApiError('invalid_request','The workspace archive filter is invalid.');
+  if(!/^\d+$/.test(raw))throw new ApiError('invalid_request','The workspace cursor is invalid.');
+  const offset=v.integer(Number(raw),'workspace cursor'), limit=v.integer(Number(context.url.searchParams.get('limit') ?? '50'),'workspace page size',1);
+  if(limit > 100)throw new ApiError('invalid_request','The workspace page is too large.');
+  return registry.workspacePage(flag === 'true',offset,limit);
+}
+async function workspaceAction(registry: Registry, workspace: string, context: RequestContext): Promise<unknown> {
+  const {parts,body}=context;
+  if(parts[3] === 'restore'){v.fields(body,[]);return {workspace:await registry.store.workspace(workspace)};}
+  if(parts[3] !== 'observation')throw new ApiError('invalid_request','The workspace action does not exist.',404);
+  v.fields(body,['clientId','connectionId','identities'],['clientId','connectionId','identities']);
+  if(!validAgentViews(body.identities))throw new ApiError('invalid_request','The agent view list is invalid.');
+  const client=v.string(body.clientId,'browser page'), connection=v.string(body.connectionId,'browser connection');
+  if(!registry.journal.setAgentViews(workspace,client,connection,body.identities))throw new ApiError('not_ready','The browser page is not connected.',409,'read');
+  await registry.store.workspace(workspace);await registry.observe(workspace);return {observing:true};
 }
 async function targetAction(registry: Registry, workspace: string, context: RequestContext): Promise<unknown> {
   const {parts, body, method} = context;

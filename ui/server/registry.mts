@@ -45,6 +45,34 @@ interface AgentObservationSlot {epoch: number; afterEpoch: number; started: bool
 interface WorkspaceObservation {version: number; dirty: boolean; desired: Map<string,AgentObservationSlot>; attached: Map<string,AgentObservationSlot>; running?: Promise<void>}
 /** Process ownership is independent of browser connections and saved view state. */
 export class Registry {
+  fileDraftWorkspaces?: () => Promise<ReadonlySet<string>>;
+  private archiveCheckedAt?: number;
+  private primaryStarts = new Map<string,Promise<void>>();
+  private workspaceAgentIds(workspace: import('../shared/api.ts').Workspace): string[] {
+    const visit=(node:import('../shared/api.ts').PaneNode):string[]=>node.kind === 'pane' ? node.tabs.flatMap(tab=>tab.kind === 'agent' ? [tab.identity] : []) : [...visit(node.first),...visit(node.second)];
+    return workspace.conversationLayout ? visit(workspace.conversationLayout.root) : workspace.selectedTarget?.kind === 'agent' ? [workspace.selectedTarget.identity] : [];
+  }
+  async archiveWorkspaces(): Promise<void> {
+    if (!this.fileDraftWorkspaces || this.archiveCheckedAt !== undefined && Date.now()-this.archiveCheckedAt < 60_000) return;
+    const drafts=await this.fileDraftWorkspaces().catch(()=>undefined);if (!drafts) return;
+    const protectedIds=new Set(drafts), primaries=this.views();
+    for (const workspace of await this.store.workspaceList(true))if(this.workspaceNeedsProtection(workspace,primaries))protectedIds.add(workspace.id);
+    await this.store.archiveUnused(protectedIds);this.archiveCheckedAt=Date.now();
+  }
+  private workspaceNeedsProtection(workspace: import('../shared/api.ts').Workspace, primaries: readonly PrimaryView[]): boolean {
+    if(this.journal.workspaceClients(workspace.id))return true;
+    const primary=primaries.find(item=>item.key === workspace.primaryKey);
+    if(primary && (['starting','switching','stopping'].includes(primary.lifecycle) || ['running','compacting','retrying'].includes(primary.activity) || primary.pendingDialogs.length > 0))return true;
+    return this.workspaceAgentIds(workspace).some(identity=> {
+      const raw=this.agents.rosterRow(identity), row=raw ? projectRoster({rows:[raw]}).rows[0] : undefined;
+      return !row || row.availability === 'unavailable' || row.availability === 'incompatible' || row.state === 'working';
+    });
+  }
+  async workspacePage(archived: boolean, offset: number, limit: number) {await this.archiveWorkspaces();return this.store.workspacePage(archived,offset,limit);}
+  private async keepClientWorkspaces(): Promise<void> {
+    const workspaces=await this.store.workspaceList(true);
+    await Promise.all(workspaces.filter(workspace=>this.journal.workspaceClients(workspace.id)>0).map(workspace=>this.store.keepWorkspace(workspace.id)));
+  }
   publishedSessions() {return publishedOrdinarySessions(this.options.agentStore).then(page=>this.withWriters(page));}
   /** Marks each saved file that a terminal session may still write. A file this backend owns is never marked; its row already reads as open here. */
   async withWriters(page: SavedSessionPage): Promise<SavedSessionPage> {
@@ -373,10 +401,16 @@ export class Registry {
     if(!workspaceId&&this.options.owner)workspaceId=await this.workspace();
     if(workspaceId)this.queueWorkspaces.set(key,workspaceId);return workspaceId;
   }
+  private async previousPrimary(cwd: string, sessionFile?: string, workspaceId?: string): Promise<PrimaryView | undefined> {
+    if(sessionFile)return this.retainedPrimary(cwd,sessionFile,workspaceId);
+    const workspace=workspaceId ? await this.store.workspace(workspaceId) : undefined;
+    const retained=workspace?.primaryKey ? this.saved.get(workspace.primaryKey) : undefined;
+    return retained && !retained.sessionFile && !live(retained) && retained.cwd === cwd ? retained : undefined;
+  }
   private async openOnce(cwd: string, sessionFile?: string, workspaceId?: string) {
     this.admitPrimary(true);
     if(sessionFile) sessionFile = await this.validatePath(sessionFile,false);
-    const previous = sessionFile ? await this.retainedPrimary(cwd,sessionFile,workspaceId) : undefined;
+    const previous=await this.previousPrimary(cwd,sessionFile,workspaceId);
     const key = previous?.key ?? randomUUID();
     const priorSession = this.sessions.get(key); const priorWorkspace = this.queueWorkspaces.get(key);
     if(this.openingKeys.has(key) || priorSession && (owned(priorSession) || needsStorage(priorSession))) throw new ApiError('operation_conflict','This primary already has a backend writer or an open in progress.',409,'manual');
@@ -395,8 +429,14 @@ export class Registry {
       await this.rollbackPrimary(key,previous,priorSession,priorWorkspace);
       throw error;
     } finally {this.openingKeys.delete(key);}
-    void session.start().catch(()=>{}).finally(()=>this.metadataChanged());
+    const start=session.start();this.primaryStarts.set(key,start);
+    void start.catch(()=>{}).finally(()=>{if(this.primaryStarts.get(key) === start)this.primaryStarts.delete(key);this.metadataChanged();});
     return key;
+  }
+  async waitPrimaryReady(key: string): Promise<void> {
+    await this.primaryStarts.get(key);
+    const current=this.primary(key).view;
+    if(current.lifecycle !== 'ready')throw new ApiError('not_ready',current.lastError?.message ?? 'Primary is not ready. Resume it from Sessions.',503,'manual');
   }
   private createPrimary(key: string, cwd: string, sessionFile?: string, previous?: PrimaryView, descriptor?: OwnerDescriptor) {
     const owner = this.options.owner, epoch = descriptor?.epoch ?? previous?.epoch ?? 1;
@@ -460,6 +500,7 @@ export class Registry {
     slot.epoch = epoch; return true;
   }
   async snapshot(workspaceId?: string, bootstrap = false): Promise<Snapshot | Bootstrap> {
+    if (bootstrap) await this.archiveWorkspaces();
     const workspace = await this.store.workspace(workspaceId);
     if (workspace.primaryKey) {
       const view = this.sessions.get(workspace.primaryKey)?.view ?? this.saved.get(workspace.primaryKey);
@@ -494,9 +535,9 @@ export class Registry {
       record = {version:0,dirty:false,desired:new Map(),attached:new Map()}; this.observations.set(workspaceId,record);
     }
     const version = ++record.version;
-    const workspace = await this.store.workspace(workspaceId);
+    const workspace = await this.store.workspace(workspaceId,false);
     if(record.version !== version || this.closing) return;
-    const identities = this.journal.workspaceClients(workspaceId) ? this.visibleAgents(workspace) : [];
+    const identities = this.journal.agentViews(workspaceId,this.visibleAgents(workspace));
     const next = new Map<string, AgentObservationSlot>();
     for(const identity of identities) next.set(identity,record.desired.get(identity) ?? {epoch:0,afterEpoch:record.attached.get(identity)?.epoch ?? 0,started:false});
     record.desired = next; record.dirty = true;
@@ -551,6 +592,7 @@ export class Registry {
     }
   }
   detached(workspaceId: string) {
+    if (!this.closing) void this.store.keepWorkspace(workspaceId).catch(()=>{});
     if(!this.journal.workspaceClients(workspaceId)) void this.observe(workspaceId).catch(()=>{});
   }
   async uploadImage(context: ImageUploadContext, headers: ImageUploadHeaders, body: AsyncIterable<Uint8Array>): Promise<unknown> {
@@ -586,6 +628,7 @@ export class Registry {
     return dispatchView(this,context);
   }
   async detach(): Promise<void> {
+    await this.keepClientWorkspaces();
     this.closing = true; this.starter.close(); this.#writerWatch?.close();
     await Promise.all([...this.opens]);
     await Promise.all([...this.sessions.values()].map(session => session.detach()));
@@ -597,6 +640,7 @@ export class Registry {
     this.closePromise ??= this.closeOnce().catch(error => {this.closePromise = undefined; throw error;}); return this.closePromise;
   }
   private async closeOnce() {
+    await this.keepClientWorkspaces();
     this.closing = true; this.starter.close(); this.#writerWatch?.close(); this.journal.close();
     await Promise.allSettled([...this.opens]);
     const results = await Promise.allSettled([...this.sessions.values()].map(session=>session.close()).concat(this.agents.close()));

@@ -6,7 +6,7 @@ export const LIMITS = {
   requestBytes: 128 * 1024, textBytes: 64 * 1024, displayBytes: 256 * 1024,
   pageBytes: 64 * 1024, pageItems: 100, pathChars: 4096, idChars: 256,
   cursorBytes: 4096, primaryBytes: 8 * 1024 * 1024, rosterBytes: 8 * 1024 * 1024,
-  rosterRows: 2048, identityLookup: 16, agentCacheBytes: 1024 * 1024, primaries: 4, workspaces: 16,
+  rosterRows: 2048, identityLookup: 16, agentCacheBytes: 1024 * 1024, primaries: 4, workspaces: Number.MAX_SAFE_INTEGER,
   targets: 128, draftPreviewChars: 240, rpcPending: 64, hostPending: 32, workspaceReservations: 16,
   operations: 2048, unconfirmed: 128, journalEvents: 4096,
   sidebarWidthMin: 200, sidebarWidthMax: 480, conversationTabs: 128,
@@ -138,6 +138,11 @@ export type ConversationLayout = {root: PaneNode; focusedPane: string};
 export type Workspace = {id: string; revision: number; primaryKey?: string; selectedTarget?: Target;
   panelVisible?: boolean; sidebarVisible?: boolean; sidebarWidth?: number; appearance?: Appearance; enterSendsMessages?: boolean; agentControl?: boolean;
   conversationLayout?: ConversationLayout; filePositions?: Record<string, FilePosition>};
+export function validAgentViews(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length <= LIMITS.identityLookup && new Set(value).size === value.length && value.every(identity=>typeof identity === 'string' && identity.length > 0 && identity.length <= 256 && !/[\u0000-\u001f\u007f]/.test(identity));
+}
+export type WorkspaceSummary = {id: string; name: string; lastUsedAt?: string; archivedAt?: string; tabCount: number};
+export type WorkspacePage = {items: WorkspaceSummary[]; nextCursor: string | null; total: number};
 export type DraftImage = {digest: string; mimeType: 'image/png' | 'image/jpeg'; bytes: number; width: number; height: number; name: string};
 export type DraftTuple = {text: string; mode: string; images: DraftImage[]};
 export type QueueRecovery = {clearOperationId: string; mode: 'steer' | 'followUp'; index: number};
@@ -273,7 +278,7 @@ export const ROUTES = [
   'GET /api/control/layout', 'POST /api/control/requests', 'GET /api/control/requests/:id', 'POST /api/control/ack',
   'POST /api/dev/lease',
   'GET /', 'GET /api/bootstrap', 'GET /api/events', 'GET /api/snapshot',
-  'POST /api/workspaces', 'POST /api/operations', 'GET /api/operations/:id', 'POST /api/operations/:id/reconcile', 'DELETE /api/operations/:id',
+  'GET /api/workspaces', 'POST /api/workspaces', 'POST /api/workspaces/:id/restore', 'POST /api/workspaces/:id/observation', 'POST /api/operations', 'GET /api/operations/:id', 'POST /api/operations/:id/reconcile', 'DELETE /api/operations/:id',
   'POST /api/primaries', 'GET /api/primaries/:key', 'GET /api/primaries/:key/history', 'GET /api/primaries/:key/history/output', 'GET /api/primaries/:key/history/image', 'GET /api/primaries/:key/resources/:kind',
   'GET /api/primaries/:key/diagnostics', 'POST /api/primaries/:key/inputs', 'POST /api/primaries/:key/stop',
   'POST /api/primaries/:key/session', 'POST /api/primaries/:key/control', 'POST /api/primaries/:key/dialogs/:dialogId', 'POST /api/primaries/:key/handoff',

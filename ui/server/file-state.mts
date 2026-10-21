@@ -74,6 +74,10 @@ export class FileState {
     } finally {await handle.close();}
   }
   roots() {return this.data.roots.map(publicRoot);}
+  draftWorkspaces(): string[] {
+    const roots = new Set(Object.entries(this.drafts.drafts).filter(([,draft])=>draft.text !== undefined).map(([key])=>(JSON.parse(key) as string[])[0]));
+    return Object.entries(this.data.selections).filter(([,selection])=>selection.root && roots.has(selection.root.id)).map(([workspace])=>workspace);
+  }
   selection(workspace:string):FileRootSelection {return structuredClone(this.data.selections[workspace] ?? {revision:0,root:null});}
   root(id:string):RegisteredRoot {
     const root = this.data.roots.find(root=>root.id === id);

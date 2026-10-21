@@ -27,6 +27,8 @@ export type OperationRecord = {view: OperationView; workspaceId: string; digest?
 export type ImageLease = {image: ValidatedImage; expiresAt: string};
 type SentImageSource = {workspaceId: string; receipt: SentImageReceipt};
 type StoredTarget = Omit<TargetState, 'draft' | 'unconfirmed' | 'retainedInputs' | 'imageAvailability' | 'imageStorageError' | 'recoveryPreviewTruncated'> & {workspaceId: string; draft: StoredDraft; imageLeases?: ImageLease[]};
+type WorkspaceActivity = {id: string; savedAt: number; trackedAt: number; lastUsedAt?: number; clientSeenAt?: number; archivedAt?: number};
+const WORKSPACE_UNUSED_MS = 7 * 24 * 60 * 60 * 1000;
 
 export class StateError extends Error {
   readonly retry: 'none' | 'read' | 'manual';
@@ -221,6 +223,8 @@ export class StateStore {
   private readonly refusedOperations = new Set<string>();
   private refusedOperationBytes = 0;
   private workspaces = new Map<string, Workspace>();
+  private workspaceActivity = new Map<string, WorkspaceActivity>();
+  private lastUsedWorkspace?: string;
   private fileIdentity:'ready'|'pending'|'uncertain' = 'ready';
   private fileDeadlineMs:number = LIMITS.fileReadMs;
   private targetRecords = new Map<string, StoredTarget>();
@@ -242,7 +246,7 @@ export class StateStore {
     const info = await lstat(store.root);
     if (!info.isDirectory() || info.isSymbolicLink()) throw new StateError('not_ready', 'State root must be a private directory', 503);
     await chmod(store.root, 0o700);
-    for (const name of ['workspaces', 'targets', 'operations']) {
+    for (const name of ['workspaces', 'workspace-activity', 'targets', 'operations']) {
       const dir = join(store.root, name); await mkdir(dir, {mode: 0o700}).catch(error => { if (error.code !== 'EEXIST') throw error; });
       const stat = await lstat(dir); if (!stat.isDirectory() || stat.isSymbolicLink()) throw new StateError('not_ready', 'State subdirectory is not a directory', 503);
       await chmod(dir, 0o700);
@@ -284,7 +288,7 @@ export class StateStore {
         }
   }
   private async loadSavedRecords(): Promise<void> {
-      await this.load('workspaces', LIMITS.workspaces, LIMITS.requestBytes, value => {
+      await this.load('workspaces', LIMITS.workspaces, LIMITS.requestBytes, (value, modifiedAt) => {
         const record = value as Workspace;
         if (!UUID.test(record.id) || !Number.isSafeInteger(record.revision)) throw new StateError('not_ready', 'Invalid saved workspace', 503);
         if(record.agentControl!==undefined&&typeof record.agentControl!=='boolean')throw new StateError('not_ready','Invalid saved agent control setting',503);
@@ -292,7 +296,16 @@ export class StateStore {
         if (record.conversationLayout !== undefined) validateConversationLayout(record.conversationLayout);
         if (record.filePositions !== undefined) validateFilePositions(record.filePositions,record.conversationLayout);
         this.workspaces.set(record.id, record);
+        this.workspaceActivity.set(record.id,{id:record.id,savedAt:modifiedAt ?? this.now(),trackedAt:this.now()});
       });
+      const untracked = new Set(this.workspaces.keys());
+      await this.load('workspace-activity', LIMITS.workspaces, 1024, value => {
+        const record = value as WorkspaceActivity;
+        const validTime=(time:unknown)=>typeof time === 'number' && Number.isFinite(new Date(time).getTime());
+        if (!UUID.test(record.id) || !this.workspaces.has(record.id) || !validTime(record.savedAt) || !validTime(record.trackedAt) || record.lastUsedAt !== undefined && !validTime(record.lastUsedAt) || record.archivedAt !== undefined && !validTime(record.archivedAt) || record.clientSeenAt !== undefined && !validTime(record.clientSeenAt)) throw new StateError('not_ready','Invalid workspace activity',503);
+        this.workspaceActivity.set(record.id,record); untracked.delete(record.id);
+      });
+      for (const id of untracked) await this.atomic(`workspace-activity/${id}.json`,this.workspaceActivity.get(id),1024);
       await this.load('targets', LIMITS.targets, 96 * 1024, value => {
         const record = value as StoredTarget; validateTarget(record.target);
         if (!UUID.test(record.targetKey) || !this.workspaces.has(record.workspaceId)) throw new StateError('not_ready', 'Invalid saved target', 503);
@@ -370,7 +383,7 @@ export class StateStore {
       await unlink(join(this.root, 'lock.json')); this.lockHeld = false; await syncDirectory(this.root);
     } finally { const guard = this.lockGuard; this.lockGuard = undefined; await guard?.close(); }
   }
-  private async load(directory: string, count: number, bound: number, accept: (value: unknown) => void): Promise<void> {
+  private async load(directory: string, count: number, bound: number, accept: (value: unknown, modifiedAt?: number) => void): Promise<void> {
     const dir = await opendir(join(this.root, directory)); let visited = 0;
     const maxVisits = count + 64;
     for await (const item of dir) {
@@ -378,8 +391,9 @@ export class StateStore {
       if (!item.name.endsWith('.json')) continue;
       if (!UUID.test(item.name.slice(0, -5)) || !item.isFile()) throw new StateError('not_ready', 'Invalid saved state file', 503);
       if (--count < 0) throw new StateError('capacity', 'Saved state record limit reached', 429);
-      const value = await readJson(join(this.root, directory, item.name), bound);
-      try { accept(value); }
+      const path = join(this.root, directory, item.name), value = await readJson(path, bound);
+      const modifiedAt = directory === 'workspaces' ? (await lstat(path)).mtimeMs : undefined;
+      try { accept(value, modifiedAt); }
       catch (error) { this.refuseSavedRecord(directory, item.name, value, error); }
     }
   }
@@ -426,17 +440,52 @@ export class StateStore {
   private requireWorkspace(id: string): Workspace {
     const value = this.workspaces.get(id); if (!value) throw new StateError('invalid_request', 'Unknown workspace', 404); return value;
   }
-  async workspace(id?: string): Promise<Workspace> {
-    if (id) { await this.queue; return structuredClone(this.requireWorkspace(id)); }
+  async workspace(id?: string, recordUse = true): Promise<Workspace> {
     return this.transaction(async () => {
-      const first = this.workspaces.values().next().value as Workspace | undefined;
-      return first ? structuredClone(first) : this.createWorkspaceRecord();
+      const value = id ? this.requireWorkspace(id) : [...this.workspaces.values()].filter(item => this.workspaceActivity.get(item.id)?.archivedAt === undefined).sort((a,b) => this.workspaceRecency(b.id)-this.workspaceRecency(a.id) || a.id.localeCompare(b.id))[0];
+      if (!value) return this.createWorkspaceRecord();
+      if(recordUse)await this.useWorkspace(value.id); return structuredClone(value);
     });
   }
+  private workspaceRecency(id: string): number { const value = this.workspaceActivity.get(id); return value?.lastUsedAt ?? value?.savedAt ?? 0; }
+  private async useWorkspace(id: string): Promise<void> {
+    const current = this.workspaceActivity.get(id), now = this.now();
+    if (this.lastUsedWorkspace === id && current && current.archivedAt === undefined && current.lastUsedAt !== undefined && now-current.lastUsedAt < 5000) return;
+    const value: WorkspaceActivity = {...current,id,savedAt:current?.savedAt ?? now,trackedAt:current?.trackedAt ?? now,lastUsedAt:now}; delete value.archivedAt;
+    await this.atomic(`workspace-activity/${id}.json`,value,1024);this.workspaceActivity.set(id,value);this.lastUsedWorkspace=id;
+  }
+  keepWorkspace(id: string): Promise<void> { return this.transaction(async () => {
+    this.requireWorkspace(id); const current=this.workspaceActivity.get(id), now=this.now();
+    const value:WorkspaceActivity={...current,id,savedAt:current?.savedAt ?? now,trackedAt:current?.trackedAt ?? now,clientSeenAt:now};
+    await this.atomic(`workspace-activity/${id}.json`,value,1024);this.workspaceActivity.set(id,value);
+  }); }
+  async archiveUnused(protectedIds: ReadonlySet<string>): Promise<void> {
+    await this.transaction(async () => {
+      const now = this.now();
+      for (const [id,current] of this.workspaceActivity) {
+        if (current.archivedAt !== undefined || protectedIds.has(id) || now-Math.max(current.lastUsedAt ?? current.trackedAt,current.trackedAt,current.clientSeenAt ?? 0) < WORKSPACE_UNUSED_MS || this.workspaceHasDraft(id)) continue;
+        const value = {...current,archivedAt:now};await this.atomic(`workspace-activity/${id}.json`,value,1024);this.workspaceActivity.set(id,value);
+      }
+    });
+  }
+  private workspaceHasDraft(id: string): boolean {
+    if ([...this.targetRecords.values()].some(record => record.workspaceId === id && (record.draft.text.length > 0 || record.draft.images.length > 0))) return true;
+    return [...this.operationRecords.values()].some(record => record.workspaceId === id && (!!record.retainedInput || !!record.input && record.inputResolved !== true || ['reserved','dispatched','uncertain'].includes(record.view.state)));
+  }
+  async workspacePage(archived: boolean, offset = 0, limit = 50): Promise<import('../shared/api.ts').WorkspacePage> {
+    await this.queue;
+    const rows = [...this.workspaces.values()].filter(value => (this.workspaceActivity.get(value.id)?.archivedAt !== undefined) === archived).sort((a,b)=>this.workspaceRecency(b.id)-this.workspaceRecency(a.id) || a.id.localeCompare(b.id));
+    const count = (node: import('../shared/api.ts').PaneNode): number => node.kind === 'pane' ? node.tabs.length : count(node.first)+count(node.second);
+    const items = rows.slice(offset,offset+limit).map(value => {
+      const activity=this.workspaceActivity.get(value.id), primary=this.primaries.find(item=>item.key === value.primaryKey);
+      return {id:value.id,name:primary?.sessionName ?? primary?.cwd.split('/').filter(Boolean).at(-1) ?? 'Workspace',tabCount:value.conversationLayout ? count(value.conversationLayout.root) : Number(!!value.primaryKey)+Number(value.selectedTarget?.kind === 'agent'),...(activity?.lastUsedAt !== undefined ? {lastUsedAt:new Date(activity.lastUsedAt).toISOString()} : {}),...(activity?.archivedAt !== undefined ? {archivedAt:new Date(activity.archivedAt).toISOString()} : {})};
+    });
+    return {items,nextCursor:offset+limit < rows.length ? String(offset+limit) : null,total:rows.length};
+  }
   private async createWorkspaceRecord(): Promise<Workspace> {
-    if (this.workspaces.size >= LIMITS.workspaces) throw new StateError('capacity', 'Workspace limit reached', 429);
     const value: Workspace = {id: randomUUID(), revision: 0, panelVisible: true, appearance: 'system'};
     await this.atomic(`workspaces/${value.id}.json`, value, 8192); this.workspaces.set(value.id, value);
+    await this.useWorkspace(value.id);
     this.changed('workspace.changed', value, value.id); return structuredClone(value);
   }
   createWorkspace(): Promise<Workspace> { return this.transaction(() => this.createWorkspaceRecord()); }
@@ -485,7 +534,7 @@ export class StateStore {
     catch {throw new StateError('file_identity_uncertain','The file moved, but its workspace identity did not complete. Restart the backend and inspect both paths.',503);}
     return changed;
   }
-  async workspaceList():Promise<Workspace[]> {await this.queue;return structuredClone([...this.workspaces.values()]);}
+  async workspaceList(includeArchived = false):Promise<Workspace[]> {await this.queue;return structuredClone([...this.workspaces.values()].filter(workspace=>includeArchived || this.workspaceActivity.get(workspace.id)?.archivedAt === undefined));}
   updateSelection(id: string, input: SelectionInput,guard?:(current:Workspace)=>void): Promise<Workspace> {
     return this.transaction(async () => {
       if (this.fileIdentity === 'uncertain' || input.conversationLayout !== undefined || input.filePositions !== undefined) this.requireFileIdentity();

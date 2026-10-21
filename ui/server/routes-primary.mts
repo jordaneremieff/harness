@@ -46,17 +46,19 @@ async function control(session: ReturnType<Registry['primary']>, body: PrimaryCo
   return session.control(body);
 }
 async function open(registry: Registry, context: RequestContext, workspace: string) {
-  const {body} = context; v.fields(body,['cwd','sessionFile'],['cwd']);
+  const {body} = context; v.fields(body,['cwd','sessionFile','select'],['cwd']);
+  const select=body.select === undefined ? true : v.boolean(body.select,'select Primary');
   const cwd = await registry.validatePath(v.string(body.cwd,'project path',4096),true);
   const sessionFile = body.sessionFile === undefined ? undefined : await registry.validatePath(v.string(body.sessionFile,'session file',4096),false);
   const operation = await execute(registry,context.operationId,{workspaceId:workspace,kind:'primary.open',body},async()=> {
     const primaryKey = await registry.openPrimary(cwd,sessionFile,workspace);
     const current = await registry.store.workspace(workspace);
     const view = registry.primary(primaryKey).view;
-    if(current.primaryKey !== primaryKey || current.selectedTarget?.kind !== 'primary' || current.selectedTarget.key !== primaryKey || current.selectedTarget.epoch !== view.epoch) {
-      await registry.store.updateSelection(workspace,{expectedRevision:current.revision,primaryKey,selectedTarget:{kind:'primary',key:primaryKey,epoch:view.epoch}});
+    if(current.primaryKey !== primaryKey || select && (current.selectedTarget?.kind !== 'primary' || current.selectedTarget.key !== primaryKey || current.selectedTarget.epoch !== view.epoch)) {
+      await registry.store.updateSelection(workspace,{expectedRevision:current.revision,primaryKey,...(select ? {selectedTarget:{kind:'primary' as const,key:primaryKey,epoch:view.epoch}} : {})});
     }
     await registry.store.target(workspace,{kind:'primary',key:primaryKey,epoch:view.epoch});
+    await registry.waitPrimaryReady(primaryKey);
     return {state:'completed',receipt:{kind:'rpc',result:{value:{primaryKey},truncated:false}}};
   });
   const value = operation.receipt?.kind === 'rpc' ? operation.receipt.result?.value : undefined;

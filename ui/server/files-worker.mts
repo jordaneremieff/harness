@@ -16,6 +16,7 @@ async function execute(job:FileJob,id:number):Promise<unknown> {
   switch(job.kind) {
     case 'selection':return state.selection(job.workspace);
     case 'roots':return state.roots();
+    case 'draft-workspaces':return state.draftWorkspaces();
     case 'select':return state.select(job.workspace,job.path,job.expectedRevision);
     case 'draft':return state.draft(job.rootId,job.path);
     case 'put-draft':return state.putDraft(job.rootId,job.path,job.expectedRevision,job.base,job.text,job.encoding);

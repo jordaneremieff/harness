@@ -54,7 +54,8 @@ import {noticeGroups, noticeGroupText, noticeTarget, CommunicationNoticeShelf, t
 import { Recovery } from './recovery.ts';
 import { conversationBlocks, createState, dismissNotice, markReadNotices, unreadNotices, mergeRosterPage, mergeAgentPage, mergePrimaryPage, primaryBlocks, reduceEvent, replaceSnapshot, targetIdentity } from './state.ts';
 import type { UiEvent } from './state.ts';
-import { hydrateVisible, refreshVisible } from './hydrate.ts';
+import { hydrateVisible, refreshVisible, type SnapshotReader } from './hydrate.ts';
+import { WorkspaceEntry } from './workspace-entry.ts';
 import { MessageTarget, SelectionQueue, navigationState } from './selection-state.ts';
 import { usageFacts } from './usage.ts';
 import { createResizer, type Resizer } from './resize.ts';
@@ -115,6 +116,7 @@ let reloadTail = Promise.resolve();
 const snapshotBuffers = new Set<{events: UiEvent[]; bytes: number; overflow: boolean}>();
 const modal = new Modal(focusEditor);
 const preferences = new PreferenceQueue();
+const workspaceEntry = new WorkspaceEntry();
 const diagnostics = new BrowserDiagnostics();
 const versionStatus = new VersionStatus();
 const updateNotice = new UpdateNotice(versionStatus.identity, {storage: sessionStorage, before: byId('workbench-version'), details: (title, body) => {modal.open(title); modal.body.append(...body);}, copy: (text, anchor) => {void copy(text, anchor);}});
@@ -325,7 +327,7 @@ const fileBrowse = new FileBrowseState();
 const paneRegions = new Map<string, {node: HTMLElement; tabs: HTMLElement; content: HTMLElement; plus: HTMLButtonElement; menu: HTMLButtonElement; actions: HTMLButtonElement; previous: HTMLButtonElement; next: HTMLButtonElement}>();
 const paneSplits = new Map<string, {node: HTMLElement; handle: HTMLElement; resizer?: Resizer; extent?: number}>();
 const primaryCreationRow=button('New session',()=>picker.newSession(projectPath()),'nav-row sidebar-action');
-const tabStrip = new TabStrip({layout: currentLayout, activate: activateConversationTab, close: key => applyLayout(closeTab(currentLayout(), key)),
+const tabStrip = new TabStrip({layout: currentLayout, reopen: () => workspaceEntry.count && state.workspace ? {count:workspaceEntry.count,run:()=>{if(state.workspace)applyLayout(workspaceEntry.reopen(state.workspace,primaryTarget()));}} : undefined, activate: activateConversationTab, close: key => applyLayout(closeTab(currentLayout(), key)),
   fallback:()=>{if(paneLeaves(currentLayout().root).some(pane=>pane.tabs.some(tab=>tab.kind==='primary')))return;const row=byId('primary-row');if(primary()){row.hidden=false;return row;}return primaryCreationRow;},
   move: (key, pane, index) => {fileBrowse.keep(key);applyLayout(movePaneTab(currentLayout(), key, pane, index));}, label: tabLabel,unnamed:unnamedTab,keep:key=>fileBrowse.keep(key),
   identity: tab => tab.kind !== 'file' ? tabPresentation(tab).identityTail ?? '' : undefined,
@@ -657,7 +659,7 @@ const connectionRecovery = new ConnectionRecovery({attempt: resync, paint: (phas
   releaseNotice.readiness(connected && uiReady && !document.hidden);
   if (connected) {renderAll(); void finishStartup().catch(showError);} else renderAvailability();
 }});
-export const selectionQueue = new SelectionQueue({current: () => state.workspace, reload, save: (workspace, change, control) => request<Workspace>(`/api/workspaces/${encodeURIComponent(workspace.id)}/selection`, 'PUT', {expectedRevision: workspace.revision, ...change,...(control ? {control} : {})},undefined,control ? AbortSignal.timeout(CONTROL_LIMITS.executionMs) : undefined), paint: (workspace, pending) => { selecting = pending; state = {...state, workspace}; renderAll(); }});
+export const selectionQueue = new SelectionQueue({current: () => state.workspace, reload, save: (workspace, change, control) => request<Workspace>(`/api/workspaces/${encodeURIComponent(workspace.id)}/selection`, 'PUT', {expectedRevision: workspace.revision, ...workspaceEntry.save(workspace,change),...(control ? {control} : {})},undefined,control ? AbortSignal.timeout(CONTROL_LIMITS.executionMs) : undefined), paint: (workspace, pending) => { selecting = pending; state = {...state, workspace}; renderAll(); }});
 
 let paneWorkspace = '';
 let paneResizers: Resizer[] = [];
@@ -945,13 +947,13 @@ function renderIdentity(): void {
 function renderObserved(controller:ConversationController, hide:boolean):void {
   controllerNode(controller,'observed').hidden=!state.conversations.get(targetIdentity(controller.target))?.retainedSession&&hide;
 }
-function selectedAgent(): string | undefined { return state.workspace?.selectedTarget?.kind === 'agent' ? state.workspace.selectedTarget.identity : undefined; }
+function selectedAgent(): string | undefined { const tab=activeTab(currentLayout());return tab?.kind === 'agent' ? tab.identity : undefined; }
 function targetState(target?: Target): TargetState | undefined {
   if (!target) return undefined; const identity = targetIdentity(target);
   return [...state.targets.values()].find(item => targetIdentity(item.target) === identity);
 }
 function sameTarget(a?: Target, b?: Target): boolean { return !!a && !!b && targetIdentity(a) === targetIdentity(b); }
-function currentLayout(): ConversationLayout { return workspaceLayout(state.workspace); }
+function currentLayout(): ConversationLayout { return workspaceEntry.layout(state.workspace,primaryTarget()); }
 export function splitActive(): boolean { return paneLeaves(currentLayout().root).length > 1; }
 function hasConversation(): boolean { return !!primary() || paneLeaves(currentLayout().root).some(pane => !!pane.active); }
 export function applyLayout(layout: ConversationLayout): void {
@@ -1119,6 +1121,8 @@ function refreshPaneSplit(node: import('../shared/api.ts').PaneNode): void {
   refreshPaneSplit(node.first); refreshPaneSplit(node.second);
 }
 function selection(change: SelectionChange): Promise<void> {
+  if (!state.workspace) return Promise.reject(new Error('The workspace is not ready. Wait for the page to connect.'));
+  workspaceEntry.explicit(state.workspace,change);
   if (change.primaryKey !== undefined || change.selectedTarget !== undefined || change.conversationLayout !== undefined) paneSelectionRevision++;
   if (change.selectedTarget && !change.conversationLayout) {
     try { change = {...change, conversationLayout: openTab(currentLayout(), tabForTarget(change.selectedTarget))}; }
@@ -1264,7 +1268,7 @@ async function refreshSnapshot(signal?: AbortSignal): Promise<void> {
   try {
     const explicit = messageTarget.current;
     const read = <T>(path: string, method = 'GET', body?: unknown) => request<T>(path, method, body, undefined, signal && (method === 'GET' ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : signal));
-    const pending = read<Snapshot>(`/api/snapshot?workspace=${encodeURIComponent(state.workspace.id)}`).then(value => hydrateVisible(value, read, explicit?.workspaceId === value.workspace.id ? {kind: 'agent', identity: explicit.identity} : undefined));
+    const pending = read<Snapshot>(`/api/snapshot?workspace=${encodeURIComponent(state.workspace.id)}`).then(value => hydrateWorkspace(value, read, explicit?.workspaceId === value.workspace.id ? {kind: 'agent', identity: explicit.identity} : undefined));
     const current = await (signal ? waitForSignal(pending, signal) : pending); signal?.throwIfAborted();
     if (buffered.overflow) throw new Error('Current view changed too quickly during restore. Reconnect to request a fresh baseline.');
     updateDiagnostics(); snapshot = current; state = replaceSnapshot({...before, dismissedNotices: state.dismissedNotices, readNotices: state.readNotices}, current, buffered.events); if (state.workspace) state = {...state, workspace: selectionQueue.observe(state.workspace)};
@@ -1272,13 +1276,33 @@ async function refreshSnapshot(signal?: AbortSignal): Promise<void> {
     renderAll();
   } finally { snapshotBuffers.delete(buffered); }
 }
+function visibleAgentViews(): string[] {
+  const identities=new Set<string>();
+  for(const pane of paneLeaves(currentLayout().root)) {
+    const tab=pane.tabs.find(tab=>tabKey(tab) === pane.active);if(tab?.kind === 'agent')identities.add(tab.identity);
+  }
+  if(messageTarget.current && messageTarget.valid(messageTarget.current))identities.add(messageTarget.current.identity);
+  return [...identities];
+}
+let agentViewSignature='';
+let agentViewTail=Promise.resolve();
+function syncAgentViews(): void {
+  if(!connected || !connectionId || !state.workspace)return;
+  const workspace=state.workspace.id, identities=visibleAgentViews(), connection=connectionId;
+  const signature=JSON.stringify([workspace,connection,identities]);if(signature === agentViewSignature)return;
+  agentViewSignature=signature;
+  agentViewTail=agentViewTail.then(async()=> {
+    if(agentViewSignature !== signature)return;
+    await request(`/api/workspaces/${encodeURIComponent(workspace)}/observation`,'POST',{clientId:fileWatch.clientId,connectionId:connection,identities});
+  }).catch(()=>{if(agentViewSignature === signature)agentViewSignature='';});
+}
 function stream(signal?: AbortSignal): Promise<void> {
   signal?.throwIfAborted();
   source?.close(); connectionId = undefined;
   if (!state.workspace || !state.cursor) return Promise.reject(new Error('No current workspace baseline.'));
   const ready = {resolve: () => {}, reject: (_error: unknown) => {}};
   const promise = new Promise<void>((resolve, reject) => { ready.resolve = resolve; ready.reject = reject; }); streamWait = ready;
-  const current = connect(state.workspace.id, state.cursor, event => { if (source === current) receive(event); }, () => { if (source === current) disconnected(); },fileWatch.clientId);
+  const current = connect(state.workspace.id, state.cursor, event => { if (source === current) receive(event); }, () => { if (source === current) disconnected(); },fileWatch.clientId,visibleAgentViews());
   source = current;
   const timer = window.setTimeout(() => { if (source === current) disconnected(new Error('The event stream did not become ready.')); }, 15_000);
   return (signal ? waitForSignal(promise, signal) : promise).finally(() => { window.clearTimeout(timer); if (streamWait === ready) streamWait = undefined; });
@@ -1415,6 +1439,8 @@ function updateDraft(event: EventData['draft.changed']): void {
 function renderAll(): void {
   if (!state.workspace) return;
   document.documentElement.dataset.appearance = resolveAppearance(state.workspace.appearance);
+  actions.refreshPreferences();
+  syncAgentViews();
   renderNavigation();
   if (messageTarget.current && !messageTarget.valid(messageTarget.current)) closeMessagePanel(false);
   syncThreadHost(); renderPrimary(); renderRoster(); renderAgent(); renderMessagePanel(); refreshPaneSizes(); noticesBadge(); extensionDialogs.update(); refreshCaptionConsumers();
@@ -1423,10 +1449,11 @@ export function renderNavigation(): void {
   const narrow = !matchMedia('(min-width: 900px)').matches;
   const drawerClosed = !narrow && drawerOpen;
   if (!narrow) drawerOpen = false;
-  const {sidebarVisible: visible, agentSelected} = navigationState(state.workspace, narrow, drawerOpen);
+  const {sidebarVisible: visible, agentSelected} = navigationState(state.workspace ? workspaceEntry.view(state.workspace,primaryTarget()) : undefined, narrow, drawerOpen);
   byId('app').classList.toggle('drawer-open', narrow && drawerOpen);
   byId('sidebar').hidden = !visible;
   byId('sidebar-show').hidden = false; byId('navigation-access').hidden = visible;
+  renderWorkspaceAccess();
   byId('sidebar-show').setAttribute('aria-expanded', String(visible));
   if (drawerClosed && !visible && byId('sidebar').contains(document.activeElement)) byId('sidebar-show').focus({preventScroll: true});
   placeWorkbenchControls(visible);
@@ -1439,6 +1466,13 @@ export function renderNavigation(): void {
   const navigation = byId('navigation-access'); const leading = paneRegions.get(layout.focusedPane)?.node.querySelector<HTMLElement>('.tab-bar') ?? byId('workspace');
   if (navigation.parentElement !== leading) leading.prepend(navigation);
   renderSidebarSections();renderFiles(); renderConnection();
+}
+function renderWorkspaceAccess(): void {
+  byId('appearance-button').hidden = !state.workspace;
+  for(const id of ['project-button','compact-project-button']) {
+    const button=byId<HTMLButtonElement>(id);button.disabled=!state.workspace;
+    if(!state.workspace)button.title='Waiting for workspace';else if(button.title === 'Waiting for workspace')button.title='';
+  }
 }
 /** Commands, Notifications and Appearance sit in the sidebar foot while the sidebar shows, and at the left of the status line while it is hidden. */
 function placeWorkbenchControls(sidebarShown: boolean): void {
@@ -1623,7 +1657,7 @@ function renderComposerSettings(controller: ConversationController, view: Conver
   paintModelSetting(model,view,owner,status.modelReason);paintThinkingSetting(thinking,view,owner,status.thinkingReason);
   controller.composer.setSettingsState(status.feedback);
   for(const [node,reason]of [[model,status.modelReason],[thinking,status.thinkingReason]] as const){
-    node.hidden=false;node.disabled=!!reason;node.setAttribute('aria-haspopup','dialog');node.setAttribute('aria-busy',String(status.pending));
+    node.hidden=!!reason&&!status.pending;node.disabled=!!reason;node.setAttribute('aria-haspopup','dialog');node.setAttribute('aria-busy',String(status.pending));
     if(reason)node.setAttribute('aria-description',reason);else node.removeAttribute('aria-description');
     if(status.feedback)node.setAttribute('aria-describedby',`${controller.elements.state?.id}-line`);else node.removeAttribute('aria-describedby');
   }
@@ -1728,6 +1762,7 @@ function placeMessageEditor(controller: ConversationController, panel: HTMLEleme
   controller.elements.root.dataset.messagePanel = 'true'; stableViews().project(controller.elements.root, slot); stableViews().sync(); controller.composer.placement(true);
 }
 function renderMessagePanel(): void {
+  syncAgentViews();
   const captured = messageTarget.current, panel = byId('agent-message-panel'); panel.hidden = !captured;
   if (!captured) {clearMessageProjections(); workspaceViews?.sync(); return;}
   if (!messageTarget.valid(captured)) {closeMessagePanel(false); return;}
@@ -2582,7 +2617,7 @@ function bind(): void {
     if (!navigationFrame) navigationFrame = requestAnimationFrame(() => {navigationFrame = 0; renderNavigation();});
   }).observe(byId('conversation-panes'));
   matchMedia('(pointer: coarse)').addEventListener('change', renderNavigation);
-  for (const id of ['project-button', 'compact-project-button']) byId(id).addEventListener('click', () => picker.openProject(byId(id)));
+  for (const id of ['project-button', 'compact-project-button']) byId(id).addEventListener('click', () => actions.workspaces());
   byId('commands-button').addEventListener('click', () => actions.palette());
   byId('notifications-button').addEventListener('click', notices);
   byId('appearance-button').addEventListener('click', () => actions.appearance());
@@ -2895,13 +2930,40 @@ function updateDiagnostics(): void {
   const active = /^[a-f0-9]{64}$/.test(generation) && /^[a-f0-9]{24}$/.test(client);
   if (active !== diagnosticsActive) {diagnosticsActive = active; diagnostics.setActive(active);}
 }
+async function hydrateWorkspace<T extends Snapshot>(value: T, read: SnapshotReader, messageTarget?: Target): Promise<T> {
+  const primary=value.primaries.find(item=>item.key === value.workspace.primaryKey);
+  const target:Target|undefined=primary ? {kind:'primary',key:primary.key,epoch:primary.epoch} : undefined;
+  const hydrated=await hydrateVisible({...value,workspace:workspaceEntry.view(value.workspace,target)},read,messageTarget);
+  return {...hydrated,workspace:value.workspace};
+}
+async function entryAgents(value: Bootstrap, read: SnapshotReader): Promise<AgentRow[]> {
+  const rows=new Map(value.roster.rows.map(row=>[row.identity,row]));
+  const identities=paneLeaves(workspaceLayout(value.workspace).root).flatMap(pane=>pane.tabs.flatMap(tab=>tab.kind === 'agent' ? [tab.identity] : []));
+  const missing=[...new Set(identities)].filter(identity=>!rows.has(identity));
+  for(let at=0;at<missing.length;at+=LIMITS.identityLookup) {
+    const query=missing.slice(at,at+LIMITS.identityLookup).map(identity=>`identity=${encodeURIComponent(identity)}`).join('&');
+    try {const page=await read<import('../shared/api.ts').CachedRoster>(`/api/agents?${query}`);for(const row of page.rows)rows.set(row.identity,row);} catch { /* Unknown activity never restores an old agent tab. */ }
+  }
+  return [...rows.values()];
+}
+async function entryPrimary(value: Bootstrap, read: SnapshotReader, signal?: AbortSignal): Promise<Bootstrap> {
+  const current=value.primaries.find(item=>item.key === value.workspace.primaryKey);
+  if(current && !['stopped','failed'].includes(current.lifecycle))return value;
+  const query=`workspace=${encodeURIComponent(value.workspace.id)}`;
+  const reserved=await read<{operationId:string}>(`/api/operations?${query}`,'POST',{kind:'primary.open'});
+  const result=await request<{operation:OperationView}>(`/api/primaries?${query}`,'POST',{cwd:current?.cwd ?? value.launchCwd,...(current?.sessionFile ? {sessionFile:current.sessionFile} : {}),select:false},reserved.operationId,signal);
+  if(result.operation.error)throw new Error(result.operation.error.message);
+  return read<Bootstrap>(`/api/bootstrap?${query}`);
+}
 async function bootstrap(signal?: AbortSignal): Promise<void> {
-  const workspace = new URL(location.href).searchParams.get('workspace');
-  const read = <T>(path: string, method = 'GET', body?: unknown) => request<T>(path, method, body, undefined, signal && (method === 'GET' ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : signal));
-  const pending = read<Bootstrap>(`/api/bootstrap${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''}`).then(value => hydrateVisible(value, read));
-  const data = await (signal ? waitForSignal(pending, signal) : pending); signal?.throwIfAborted();
+  const page=new URL(location.href), workspace=page.searchParams.get('workspace');
+  const read:SnapshotReader = <T>(path: string, method = 'GET', body?: unknown) => request<T>(path, method, body, undefined, signal && (method === 'GET' ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : signal));
+  let data=await read<Bootstrap>(`/api/bootstrap${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''}`);
+  try {data=await entryPrimary(data,read,signal);} catch(error) {data=await read<Bootstrap>(`/api/bootstrap?workspace=${encodeURIComponent(data.workspace.id)}`);showError(error);}
+  if(page.searchParams.get('restore') !== 'workspace')workspaceEntry.begin(data.workspace,await entryAgents(data,read));
+  data=await hydrateWorkspace(data,read);signal?.throwIfAborted();
   snapshot = data; launchCwd = data.launchCwd; state = replaceSnapshot(state, data); updateDiagnostics();
-  const url = new URL(location.href); url.searchParams.set('workspace', data.workspace.id); history.replaceState(null, '', url);
+  const url = new URL(location.href); url.searchParams.set('workspace', data.workspace.id);url.searchParams.delete('restore');history.replaceState(null, '', url);
 }
 async function start(): Promise<void> {
   bind(); renderNavigation();

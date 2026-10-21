@@ -1175,6 +1175,10 @@ pre.tool-document { font-family: var(--mono); font-size: var(--fs-code); line-he
 .command-desc, .palette-desc, .command-source, .palette-source, .palette-tail { overflow: hidden; color: var(--muted); font-size: var(--fs-meta); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
 .command-source, .palette-source { font-size: var(--fs-meta); text-align: right; }
 .palette-tail { font-family: var(--mono); font-size: var(--fs-code); }
+.workspace-choice { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: var(--s1) var(--s3); text-align: left; }
+.workspace-name { min-width: 0; overflow-wrap: anywhere; }
+.workspace-action { grid-column: 2; grid-row: 1 / 3; align-self: center; }
+.workspace-meta { grid-column: 1; color: var(--muted); font-size: var(--fs-meta); }
 @container composer (max-width: 540px) {
   .command-option { grid-template-columns: minmax(0,1fr) auto; gap: var(--s1) var(--s2); padding-block: var(--s1); }
   .command-name { grid-column: 1; grid-row: 1; }

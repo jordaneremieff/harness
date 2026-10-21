@@ -3,7 +3,7 @@ import { ProjectPicker } from './picker.ts';
 import { savedPathValid } from './picker-state.ts';
 import { renderFacts, type ReportedFact } from './facts.ts';
 import { resolveAppearance } from '../shared/api.ts';
-import type { AgentRow, Appearance, CommandView, ConversationLayout, EntryView, HandoffView, ModelChoice, OperationView, PrimaryControl, PrimaryView, ResourcePage, Snapshot, Target, Workspace } from '../shared/api.ts';
+import type { AgentRow, Appearance, CommandView, ConversationLayout, EntryView, HandoffView, ModelChoice, OperationView, PrimaryControl, PrimaryView, ResourcePage, Snapshot, Target, Workspace, WorkspacePage, WorkspaceSummary } from '../shared/api.ts';
 import { button, copy, details, element, input, rawText } from './dom.ts';
 import type { Modal } from './modal.ts';
 import type { FindSession, FindStatus } from './render.ts';
@@ -12,7 +12,7 @@ import type { Composer } from './composer.ts';
 import { rankCommands } from './command-menu-state.ts';
 import { DECORATION_BYTES, DECORATION_LINES, DECORATION_SPANS } from './composer-syntax.ts';
 import { ConversationCaptions, type ConversationCaption } from './tabs.ts';
-import { compactAge } from './format.ts';
+import { absoluteTime, compactAge, relativeTime } from './format.ts';
 import { navigateOptions } from './list-navigation.ts';
 import { responseOutcome } from './conversation-presentation.ts';
 import type { CommandInventory, CommandOption, CommandMatch } from './command-menu-state.ts';
@@ -263,8 +263,13 @@ export class Actions {
     const result = await operation('primary.control', this.path(primary, 'control'), {...control, epoch: primary.epoch}, this.target(primary), operationId);
     this.ctx.result(result); return result;
   }
+  private readyPrimary(primary = this.ctx.primary(), capability = 'control'): PrimaryView | undefined {
+    const current = primary && this.ctx.snapshot()?.primaries.find(item => item.key === primary.key && item.epoch === primary.epoch);
+    return current?.lifecycle === 'ready' && current.capabilities[capability] === true ? current : undefined;
+  }
   async control(control: Omit<PrimaryControl, 'epoch'>, captured?: PrimaryView): Promise<void> {
-    const primary = captured ?? this.ctx.primary(); if (!primary) return;
+    const primary = this.readyPrimary(captured ?? this.ctx.primary());
+    if (!primary) throw new Error('Resume Primary from Sessions before this action.');
     const result = control.action === 'model' || control.action === 'thinking' ? await this.modelControl(primary, control) : await this.performControl(primary, control);
     if (result.error) throw new Error(result.error.message);
   }
@@ -301,12 +306,14 @@ export class Actions {
     this.ctx.result(result); if (result.error) throw new Error(result.error.message); await this.ctx.reload();
   }
   fork(entryId: string, excerpt: string): void {
-    const primary = this.ctx.primary(); if (!primary) return;
+    const primary = this.readyPrimary(); if (!primary) return;
     this.ctx.modal.confirm('Fork from message', excerpt, async () => {
+      if (!this.readyPrimary(primary)) throw new Error('Resume Primary from Sessions before this action.');
       const result = await operation('primary.session', this.path(primary, 'session'), {epoch: primary.epoch, action: 'fork', entryId}, this.target(primary)); this.ctx.result(result); await this.ctx.reload();
     }, 'Fork');
   }
   forkPicker(): void {
+    if (!this.readyPrimary()) return;
     const modal = this.ctx.modal; modal.open('Fork from a user message');
     const entries = this.ctx.primaryEntries().filter(entry => entry.kind === 'message' && !/^(message:|live:)/.test(entry.id));
     const list = element('div', 'options message-choices');
@@ -317,13 +324,13 @@ export class Actions {
     modal.body.append(element('p', 'secondary', 'Only loaded messages appear here.'));
   }
   compact(): void {
-    const primary = this.ctx.primary(); if (!primary) return;
+    const primary = this.readyPrimary(); if (!primary) return;
     const modal = this.ctx.modal; modal.open(`Compact · ${primary.sessionName ?? primary.sessionId ?? 'Primary'}`);
     const instructions = input('Optional instructions', '', true); modal.body.append(instructions.label, instructions.field);
     modal.actions(button('Cancel', () => modal.close()), button('Compact', () => { void modal.run(() => this.control({action: 'compact', customInstructions: instructions.field.value} as PrimaryControl, primary)); }, 'main-action'));
   }
   automaticSettings(action: 'autoRetry' | 'autoCompaction'): void {
-    const primary = this.ctx.primary(); if (!primary) return;
+    const primary = this.readyPrimary(); if (!primary) return;
     const modal = this.ctx.modal; modal.open(action === 'autoRetry' ? 'Automatic retry' : 'Automatic compaction');
     modal.body.append(element('p', 'secondary', 'The current setting is not reported.'));
     modal.actions(button('Enable', () => { void modal.run(() => this.control({action, enabled: true} as PrimaryControl, primary)); }), button('Disable', () => { void modal.run(() => this.control({action, enabled: false} as PrimaryControl, primary)); }));
@@ -406,32 +413,35 @@ export class Actions {
     }, false, 'Thinking levels could not be loaded.');
   }
   messageInput(): void {
+    if (!this.ctx.snapshot()?.workspace) return;
     const modal = this.ctx.modal; modal.open('Message input'); const token = modal.token;
-    const label = element('label', 'message-input-setting'), field = element('input'); field.type = 'checkbox'; field.checked = this.ctx.snapshot()?.workspace.enterSendsMessages === true;
-    label.append(field, element('span', undefined, 'Enter sends messages'));
+    const label = element('label', 'message-input-setting'), field = element('input'), progress=element('span','secondary','Saving preference'); field.type = 'checkbox'; field.checked = this.ctx.snapshot()?.workspace.enterSendsMessages === true;progress.hidden=true;
+    label.append(field, element('span', undefined, 'Enter sends messages'), progress);
+    this.preferencePaint=()=>{if(!modal.owns(token)){this.preferencePaint=undefined;return;}if(!field.disabled)field.checked=this.ctx.snapshot()?.workspace.enterSendsMessages === true;};
     modal.body.append(element('p', 'secondary', 'Applies to this workspace.'), label, element('p', 'secondary', 'When off, Enter adds a new line. When on, Enter sends. Shift+Enter adds a new line. Ctrl+Enter or Command+Enter sends.'));
     field.addEventListener('change', () => {
-      if (!modal.owns(token) || field.disabled) return;
-      const previous = this.ctx.snapshot()?.workspace.enterSendsMessages === true; field.disabled = true;
+      if (!modal.owns(token) || field.disabled || !this.ctx.snapshot()?.workspace) return;
+      const previous = this.ctx.snapshot()?.workspace.enterSendsMessages === true; field.disabled = true;progress.hidden=false;
       modal.node.querySelector('#modal-error')?.replaceChildren();
       void this.ctx.selection({enterSendsMessages: field.checked}).catch(error => {
         if (modal.owns(token)) {field.checked = previous; modal.error(error, 'The preference was not saved.');}
-      }).finally(() => {if (modal.owns(token)) field.disabled = false;});
+      }).finally(() => {if (modal.owns(token)) {field.disabled = false;progress.hidden=true;this.refreshPreferences();}});
     });
     field.focus();
   }
   paletteEntries(): PaletteEntry[] {
     const primary = this.ctx.primary(); const agent = this.ctx.selectedAgent(); const transcript = this.ctx.hasTranscript(); const sidebarShown = this.ctx.sidebarShown();
+    const ready = !!this.readyPrimary(primary), workspaceReady = !!this.ctx.snapshot()?.workspace;
     const entry = (name: string, description: string, run: () => void, enabled = true, alias?: string, disabledReason = 'Requires a Primary session'): PaletteEntry => ({name, description, source: 'app', enabled, run, ...(!enabled ? {disabledReason} : {}), ...(alias ? {search: [alias, `/${alias}`]} : {})});
     const entries = [
       entry('New session', 'Start a new session', () => this.newSession(), true, 'new'),
       entry('Sessions', 'Resume a saved session', () => this.projectPicker(), true, 'resume'),
       ...this.ctx.handover ? [entry('Continue a handover…', 'Pick up a handover in a browser session', this.ctx.handover)] : [],
-      entry('Fork from message…', 'Branch from a loaded user message', () => this.forkPicker(), !!primary, 'fork'),
-      entry('Compact…', 'Summarize primary context', () => this.compact(), !!primary, 'compact'),
-      entry('Automatic retry…', 'Enable or disable Pi retry', () => this.automaticSettings('autoRetry'), !!primary),
-      entry('Automatic compaction…', 'Enable or disable Pi compaction', () => this.automaticSettings('autoCompaction'), !!primary),
-      entry('Continue in terminal…', 'Continue this session in the terminal', () => this.handoff(), !!primary),
+      entry('Fork from message…', 'Branch from a loaded user message', () => this.forkPicker(), ready, 'fork'),
+      entry('Compact…', 'Summarize primary context', () => this.compact(), ready, 'compact'),
+      entry('Automatic retry…', 'Enable or disable Pi retry', () => this.automaticSettings('autoRetry'), ready),
+      entry('Automatic compaction…', 'Enable or disable Pi compaction', () => this.automaticSettings('autoCompaction'), ready),
+      entry('Continue in terminal…', 'Continue this session in the terminal', () => this.handoff(), !!this.readyPrimary(primary,'handoff')),
       entry('Conversation details', 'Identity, reported facts and diagnostics', () => agent ? this.conversationDetails(agent.identity) : this.sessionDetails(primary), !!primary || !!agent, undefined, 'Requires a selected conversation'),
       entry('Saved drafts and messages', 'Review saved text', () => this.ctx.recovery()),
       {...entry('Appearance', 'Choose a theme', () => this.appearance()), search: ['theme', 'stylesheet', 'css', ...appearanceChoices.flat()]},
@@ -455,6 +465,8 @@ export class Actions {
         ? {...entry('Hide sidebar', 'Hide the conversation sidebar', () => this.ctx.sidebar(false)), search: ['sidebar', 'hide', 'show', 'Show sidebar']}
         : {...entry('Show sidebar', 'Show the conversation sidebar', () => this.ctx.sidebar(true)), search: ['sidebar', 'hide', 'show', 'Hide sidebar']},
       entry('Projects', 'Choose a project', () => this.openProject()),
+      entry('Workspaces…','Open a saved workspace',()=>this.workspaces(),workspaceReady),
+      entry('Archived workspaces…','Restore a saved workspace',()=>this.workspaces(true),workspaceReady),
       entry('Model', 'Choose Primary model', () => this.modelPicker(), primary?.lifecycle === 'ready', 'model', 'Requires a ready Primary'),
       entry('Thinking', 'Choose the thinking level for Primary', () => this.thinkingPicker(), primary?.lifecycle === 'ready', 'thinking', 'Requires a ready Primary'),
     ];
@@ -478,7 +490,8 @@ export class Actions {
     const conversation = new Set(['Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Copy agent ID', 'Sent and received tasks…', 'Close conversation tab']);
     const primaryActions = new Set(['Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Model', 'Thinking', 'Review message', 'Insert /agent new']);
     const workspace = new Set(['New session', 'Sessions', 'Continue a handover…', 'Saved drafts and messages', 'Appearance', 'Message input…', 'Agent presentation control', 'Help', 'Notifications', 'Refresh agents', 'Refresh files', 'Hide sidebar', 'Show sidebar', 'Projects', 'Next conversation tab', 'Previous conversation tab']);
-    return [...entries.map(item => {
+    const preferences = new Set(['Appearance','Message input…','Agent presentation control','Hide sidebar','Show sidebar']);
+    return [...entries.filter(item => item.enabled && (workspaceReady || !preferences.has(item.name))).map(item => {
       let priority = 2;
       if (item.source === 'app') {
         if (conversation.has(item.name) || !agent && primaryActions.has(item.name)) priority = 0;
@@ -619,17 +632,52 @@ export class Actions {
   }
   private terminalOnly(name: string): void {
     const modal = this.ctx.modal; modal.open('Terminal-only panel'); modal.body.append(element('p', undefined, `The bare /${name} panel requires the terminal. Text actions remain available through the primary.`));
-    modal.actions(button('Cancel', () => modal.close()), button('Continue in terminal…', () => this.handoff()));
+    modal.actions(button('Cancel', () => modal.close()),...(this.readyPrimary(this.ctx.primary(),'handoff') ? [button('Continue in terminal…', () => this.handoff())] : []));
     if (name === 'agent') modal.body.append(button('Insert /agent new…', () => { modal.close(); this.prepareText('/agent new'); }));
   }
+  workspaces(archived = false): void {
+    if(!this.ctx.snapshot()?.workspace)return;
+    const modal=this.ctx.modal;modal.open(archived ? 'Archived workspaces' : 'Workspaces');const token=modal.token;
+    const list=element('div','options workspace-choices');list.addEventListener('keydown',event=>navigateOptions(event,list));modal.body.append(list);
+    let cursor:string|null=null;
+    const load=async()=> {
+      const page=await request<WorkspacePage>(`/api/workspaces?archived=${archived}&limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+      if(!modal.owns(token))return;cursor=page.nextCursor;
+      for(const item of page.items)list.append(this.workspaceChoice(item,archived,token));
+      if(!list.children.length)list.append(element('p','secondary',archived ? 'No archived workspaces.' : 'No saved workspaces.'));
+      modal.actions(button('Projects…',()=>this.openProject()),button(archived ? 'Workspaces' : 'Archived workspaces…',()=>this.workspaces(!archived)),...(cursor ? [button('More',()=>{void modal.run(load,false);})] : []));
+    };
+    void modal.run(load,false,'Workspaces could not be loaded.');
+  }
+  private workspaceChoice(item: WorkspaceSummary, archived: boolean, token: Modal['token']): HTMLButtonElement {
+    const modal=this.ctx.modal, row=button('',()=>{void modal.run(async()=> {
+      if(!modal.owns(token))return;
+      await request(`/api/workspaces/${encodeURIComponent(item.id)}/restore`,'POST',{});
+      const url=new URL('/',location.href);url.searchParams.set('workspace',item.id);url.searchParams.set('restore','workspace');location.assign(url);
+    },false,'The workspace did not open.');},'workspace-choice');
+    row.title=item.id;row.append(element('span','workspace-name',item.name),element('span','workspace-action',archived ? 'Restore' : 'Open'),element('span','workspace-meta',`${item.lastUsedAt ? `Last used ${relativeTime(item.lastUsedAt,Date.now())}` : 'Last use not recorded'} · ${item.tabCount} tabs`));
+    const meta=row.querySelector<HTMLElement>('.workspace-meta');if(meta && item.lastUsedAt)meta.title=absoluteTime(item.lastUsedAt);
+    return row;
+  }
+  private preferencePaint?: () => void;
+  refreshPreferences(): void { this.preferencePaint?.(); }
   appearance(): void {
-    const modal = this.ctx.modal; modal.open('Appearance'); const rows = element('div', 'options');
+    if (!this.ctx.snapshot()?.workspace) return;
+    const modal = this.ctx.modal; modal.open('Appearance'); const token = modal.token; const rows = element('div', 'options');
     const current = resolveAppearance(this.ctx.snapshot()?.workspace.appearance); let selected: HTMLButtonElement | undefined;
     rows.setAttribute('role', 'menu'); rows.setAttribute('aria-label', 'Appearance');
     for (const [appearance, label] of appearanceChoices) {
-      const row = choice(label, appearance === current, () => { void modal.run(() => this.ctx.selection({appearance})); }); rows.append(row);
+      const row = choice(label, appearance === current, () => { if (this.ctx.snapshot()?.workspace) void modal.run(() => this.ctx.selection({appearance})); }); row.dataset.appearance = appearance; rows.append(row);
       if (appearance === current) selected = row;
     }
+    this.preferencePaint = () => {
+      if (!modal.owns(token)) { this.preferencePaint = undefined; return; }
+      const appearance = resolveAppearance(this.ctx.snapshot()?.workspace.appearance);
+      for (const row of rows.querySelectorAll<HTMLButtonElement>('button')) {
+        const checked = row.dataset.appearance === appearance; row.setAttribute('aria-checked',String(checked));
+        const check = row.querySelector<HTMLElement>('.choice-check'); if (check) check.style.visibility = checked ? 'visible' : 'hidden';
+      }
+    };
     rows.addEventListener('keydown', event => navigateOptions(event, rows)); modal.body.append(rows, element('p', 'appearance-note', userStylesheetApplied() ? 'Your stylesheet is applied.' : 'Add your own stylesheet with ui.userStylesheet in harness.json.')); selected?.focus();
   }
   find(findTarget: () => FindSession | undefined = this.ctx.find): void {
@@ -672,10 +720,11 @@ export class Actions {
     if (draft) this.ctx.modal.body.append(element('p', undefined, 'Current draft'), element('pre', undefined, draft));
   }
   handoff(): void {
-    const primary = this.ctx.primary(); if (!primary) return;
+    const primary = this.readyPrimary(this.ctx.primary(),'handoff'); if (!primary) return;
     const modal = this.ctx.modal; modal.open('Continue in terminal');
     modal.body.append(element('p', 'identity', primary.sessionFile ?? 'No saved session yet'), element('p', undefined, 'Browser control stops before you continue in the terminal. Other agents continue.'));
     const release = async (mode: 'settle' | 'abort') => {
+      if (!this.readyPrimary(primary,'handoff')) throw new Error('Resume Primary from Sessions before this action.');
       const result = await operation('primary.handoff', this.path(primary, 'handoff'), {epoch: primary.epoch, mode, clearQueue: mode === 'abort'}, this.target(primary));
       this.ctx.result(result);
     };

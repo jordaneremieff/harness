@@ -5,7 +5,7 @@ import { ApiError } from './errors.mts';
 import { safeText } from './projection.mts';
 
 export type JournalRecord = {id: string; name: EventName; envelope: EventEnvelope; wire: string; bytes: number};
-type Client = {response: ServerResponse; workspace: string; connectionId:string; clientId?:string; queue: {wire:string;id:string}[]; bytes: number; blocked: boolean; closed: boolean; onClose?: () => void};
+type Client = {response: ServerResponse; workspace: string; connectionId:string; clientId?:string; agents?:readonly string[]; queue: {wire:string;id:string}[]; bytes: number; blocked: boolean; closed: boolean; onClose?: () => void};
 /** Optional monotonic instrumentation is consumer-owned; it never records prompt text. */
 export type Measure = (stage: string, id: string, at: number, bytes?: number) => void;
 function control(name: 'ready' | 'resync', data: unknown) { return `event: ${name}\ndata: ${JSON.stringify({at: new Date().toISOString(), data})}\n\n`; }
@@ -75,7 +75,16 @@ export class Journal {
     return client?.clientId?{pageId:client.clientId,connectionId:client.connectionId}:undefined;
   }
   hasConnection(workspace:string,pageId:string,connectionId:string):boolean {return [...this.clients].some(client=>!client.closed&&client.workspace===workspace&&client.clientId===pageId&&client.connectionId===connectionId);}
-  attach(response: ServerResponse, workspace: string, after?: string, onClose?: () => void,clientId?:string) {
+  agentViews(workspace: string, inherited: readonly string[]): string[] {
+    const identities=new Set<string>();
+    for(const client of this.clients)if(!client.closed && client.workspace === workspace)for(const identity of client.agents ?? inherited)identities.add(identity);
+    return [...identities];
+  }
+  setAgentViews(workspace:string,clientId:string,connectionId:string,identities:readonly string[]):boolean {
+    const client=[...this.clients].find(client=>!client.closed && client.workspace === workspace && client.clientId === clientId && client.connectionId === connectionId);
+    if(!client)return false;client.agents=[...identities];return true;
+  }
+  attach(response: ServerResponse, workspace: string, after?: string, onClose?: () => void,clientId?:string,agents?:readonly string[]) {
     if (clientId) for (const old of [...this.clients]) if (old.workspace === workspace && old.clientId === clientId) {
       old.response.end();this.detach(old);
     }
@@ -86,7 +95,7 @@ export class Journal {
       response.end(control('resync', {reason: replay.reason, snapshotUrl: `/api/snapshot?workspace=${encodeURIComponent(workspace)}`, cursor: this.cursor}));
       onClose?.(); return;
     }
-    const client: Client = {response, workspace,connectionId:randomUUID(),clientId, queue: [], bytes: 0, blocked: false, closed: false, onClose};
+    const client: Client = {response, workspace,connectionId:randomUUID(),clientId,agents, queue: [], bytes: 0, blocked: false, closed: false, onClose};
     response.on('close', () => this.detach(client));
     response.on('error', () => this.detach(client));
     response.on('drain', () => { client.blocked = false; this.flush(client); });

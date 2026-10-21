@@ -105,7 +105,7 @@ export class SelectionQueue {
     return this.enqueue(input,structuredClone(control)).then(value=> {if(!value)throw new Error('The workspace changed.');return value;});
   }
   private enqueue(input:SelectionChange,control?:ControlProvenance):Promise<Workspace|undefined> {
-    const current = this.hooks.current(); if (!current) return Promise.resolve(undefined);
+    const current = this.hooks.current(); if (!current) return Promise.reject(new Error('The workspace is not ready. Wait for the page to connect.'));
     const workspaceId = current.id, lane = this.lane(current), id = ++this.serial, change = structuredClone(input);
     this.inFlight++;lane.pending.set(id,change);this.paint(workspaceId);
     const task = this.tail.then(async()=> {

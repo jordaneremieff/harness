@@ -3,7 +3,7 @@ import { open, opendir } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
-import { LIMITS, ROUTES } from '../shared/api.ts';
+import { LIMITS, ROUTES, validAgentViews } from '../shared/api.ts';
 import { LocalBoundary, securityHeaders } from './boundary.mts';
 import { ApiError, errorView } from './errors.mts';
 import { IMAGE_BYTES, ImageResponse } from './images.mts';
@@ -477,7 +477,14 @@ export class LocalHttp {
     if (method !== 'GET' && method !== 'HEAD') throw new ApiError('invalid_request', 'The asset does not accept this method.', 405);
     response.writeHead(200, {'Content-Type': asset.type, 'Content-Length': asset.data.length}); response.end(method === 'HEAD' ? undefined : asset.data);
   }
+  private agentViews(url: URL): string[] | undefined {
+    const raw=url.searchParams.get('agents');if(raw === null)return;
+    if(raw.length > LIMITS.identityLookup*260 || url.searchParams.getAll('agents').length !== 1)throw new ApiError('invalid_request','The agent view list is invalid.');
+    let parsed:unknown;try {parsed=JSON.parse(raw);}catch {throw new ApiError('invalid_request','The agent view list is invalid.');}
+    if(!validAgentViews(parsed))throw new ApiError('invalid_request','The agent view list is invalid.');return parsed;
+  }
   private async events(request: IncomingMessage, response: ServerResponse, url: URL) {
+    const agents=this.agentViews(url);
     const workspace = await this.backend.workspace(url.searchParams.get('workspace') ?? undefined);
     const rawClient = url.searchParams.get('clientId'),clientId = rawClient === null ? undefined : fileWatchClientId(rawClient);
     if (url.searchParams.getAll('clientId').length > 1) throw new ApiError('invalid_request','The page scope repeats.');
@@ -487,7 +494,7 @@ export class LocalHttp {
     this.backend.journal.attach(response, workspace, last ?? url.searchParams.get('after') ?? undefined, () => {
       this.backend.detached(workspace);
       if (clientId) this.development.files?.releaseWatch(workspace,clientId);
-    },clientId);
+    },clientId,agents);
     if (this.backend.journal.workspaceClients(workspace)) void this.backend.observe(workspace).catch(() => {
       this.backend.journal.publish('notice', undefined, {level: 'warning', message: 'The selected agent observation is unavailable.'}, workspace);
     });

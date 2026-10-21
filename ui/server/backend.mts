@@ -88,6 +88,7 @@ export async function startBackend(options:Options, injection:Partial<Pick<Regis
       catch {process.stderr.write('Local diagnostics are unavailable.\n');}
     }
     files=await Files.open(stateDir,()=>registry.fileIdentityFailed());
+    registry.fileDraftWorkspaces=()=>files?.draftWorkspaces() ?? Promise.reject(new Error('File draft state is unavailable.'));
     files.observe((change,workspace)=>registry.journal.publish('files.changed',undefined,change,workspace));
     await registry.validatePath(options.cwd,true);
     control=new Control(registry,files,log);controlDiscovery=new ControlDiscovery();registry.control=control;

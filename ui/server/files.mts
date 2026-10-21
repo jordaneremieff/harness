@@ -2,7 +2,7 @@ import {Worker} from 'node:worker_threads';
 import {LIMITS, type Retry} from '../shared/api.ts';
 import {ApiError,fileIdentityUncertain} from './errors.mts';
 import {movedFilePath, type FileRevision, type FileEncoding, type FileWatchScope, type FileChanges} from '../shared/files.ts';
-export type FileJob = {kind:'open'; directory:string} | {kind:'roots'} | {kind:'selection'; workspace:string} |
+export type FileJob = {kind:'open'; directory:string} | {kind:'roots'} | {kind:'draft-workspaces'} | {kind:'selection'; workspace:string} |
   {kind:'select'; workspace:string; path:string; expectedRevision:number} |
   {kind:'directory'; rootId:string; path:string; limit:number; cursor?:string} |
   {kind:'search'; workspace:string; rootId:string; query:string} | {kind:'text'; rootId:string; path:string} | {kind:'draft'; rootId:string; path:string} |
@@ -71,6 +71,10 @@ export class Files {
   private check(response:FileResponse):void {
     const result = JSON.parse(response.json);
     if (!result.ok) throw new ApiError(result.error.code,result.error.message,response.status,result.error.retry as Retry);
+  }
+  async draftWorkspaces(): Promise<ReadonlySet<string>> {
+    const response=await this.request({kind:'draft-workspaces'});this.check(response);
+    const value=JSON.parse(response.json) as {data:string[]};return new Set(value.data);
   }
   request(job:FileJob, signal?:AbortSignal):Promise<FileResponse> {
     if (this.failure) return Promise.reject(this.failure);
