@@ -18,7 +18,7 @@ import {FilesViews} from './files-views.ts';
 import {FileRootChoice} from './file-root.ts';
 import {chooseWorkingFile} from './working-file-chooser.ts';
 import { activeTab, ConversationCaptions, conversationIdentityText, type CaptionRow, closeTab, duplicateTabTails, FileBrowseState, layoutTarget, openTab, switchTab, tabForTarget, tabKey, workspaceLayout } from './tabs.ts';
-import { paneLeaves, paneById, activatePaneTab, movePaneTab, resizePaneSplit, minimumPaneSize, paneSplitGeometry, splitPane, normalizePaneLayout, samePaneLayout, type PaneLeaf } from './pane-layout.ts';
+import { paneLeaves, paneById, activatePaneTab, movePaneTab, resizePaneSplit, minimumPaneSize, paneSplitGeometry, splitPane, normalizePaneLayout, samePaneLayout, validPaneLayout, type PaneLeaf } from './pane-layout.ts';
 import { TabStrip } from './tabs-view.ts';
 import { cardAction, cardIcon, controlIcon, type CardIcon } from './card-icons.ts';
 import { thinkingExpanded } from './transcript-presentation.ts';
@@ -31,9 +31,8 @@ import {writeReloadState,readReloadState,deleteReloadState} from './reload-stora
 import { WorkbenchStatus } from './workbench-status.ts';
 import { VersionStatus } from './version-status.ts';
 import {RecentSidebar, SessionSidebar} from './sidebar-useful.ts';
-import { UpdateNotice } from './update-notice.ts';
 import { HealthStatus } from './health-status.ts';
-import { ReleaseNotice, loadedRelease, readReleaseHealth, type ReleaseReloadState } from './release-notice.ts';
+import { ReleaseNotice, loadedRelease, readReleaseHealth, type ReleaseReloadState, type ReleaseIdentity } from './release-notice.ts';
 import { ConnectionRecovery, connectionSurface as connectionSurfaceFor, type ConnectionPhase } from './connection-state.ts';
 import { announce, byId, button, copy, details, element, empty, placeRetained, rawText, setText } from './dom.ts';
 import {StableViews} from './stable-views.ts';
@@ -65,7 +64,7 @@ import { primaryBusy, primaryEmpty } from './primary-presentation.ts';
 import { inputOperation, operationLabel } from './operation-label.ts';
 import { PreferenceQueue } from './preference-queue.ts';
 import { BrowserDiagnostics } from './diagnostics.ts';
-import {DevReload, devReloadPresentation, type DevReloadCheckpoint, type DevReloadHooks, type DevCheckpointEntry, type DevReloadHold, type DevReloadNotice} from './dev-reload.ts';
+import {DevReload, devReloadPresentation, validateDevReloadCheckpoint, type DevReloadCheckpoint, type DevReloadHooks, type DevCheckpointEntry, type DevReloadHold, type DevReloadNotice} from './dev-reload.ts';
 import { conversationPresentation, effortText, modelText, presentationGlyph, presentationName, projectIdentity, composerFolder, agentHistoryNote, readsSavedMessages, agentComposerState, settingsLabel } from './conversation-presentation.ts';
 import type { AgentComposerState, ConversationPresentation } from './conversation-presentation.ts';
 import type { ComposerStateView } from './composer.ts';
@@ -120,13 +119,11 @@ const preferences = new PreferenceQueue();
 const workspaceEntry = new WorkspaceEntry();
 const diagnostics = new BrowserDiagnostics();
 const versionStatus = new VersionStatus();
-const updateNotice = new UpdateNotice(versionStatus.identity, {storage: sessionStorage, before: byId('workbench-version'), details: (title, body) => {modal.open(title); modal.body.append(...body);}, copy: (text, anchor) => {void copy(text, anchor);}});
 const healthStatus = new HealthStatus(modal, versionStatus.identity, versionStatus.node);
-const releaseNotice = new ReleaseNotice(loadedRelease(versionStatus.identity, document.querySelector('meta[name="ui-generation"]')?.getAttribute('content') ?? null), {
-  before: versionStatus.node, read: readReleaseHealth, reload: reloadRelease, details: () => healthStatus.open(), reloadState: releaseReloadState,
-  changed: visible => {versionStatus.node.hidden = visible; updateNotice.suppress(visible);},
-  failure: () => announce('Reload did not finish. Your drafts remain in this page.'),
-  clock: {set: (callback, delay) => window.setTimeout(callback, delay), clear: timer => window.clearTimeout(timer)},
+const releaseNotice = new ReleaseNotice(versionStatus.identity.release ? loadedRelease(versionStatus.identity, document.querySelector('meta[name="ui-generation"]')?.getAttribute('content') ?? null, document.querySelector('meta[name="ui-module-family"]')?.getAttribute('content') ?? null) : undefined, {
+  before: versionStatus.node, read: readReleaseHealth, reload: reloadRelease, stylesheet: swapReleaseStylesheet, reloadState: releaseReloadState,
+  failure: error => {versionStatus.node.dataset.updateError = errorMessage(error);},
+  clock: {now: Date.now, set: (callback, delay) => window.setTimeout(callback, delay), clear: timer => window.clearTimeout(timer)},
 });
 let diagnosticsActive = false;
 let devReload: DevReload | undefined;
@@ -664,7 +661,7 @@ async function prepareMessageTarget(workspaceId: string, target: Extract<Target,
 const extensionDialogs = new ExtensionDialogs(modal, () => state, next => { state = next; }, primary, item => presentationName(presentation({kind: 'primary', key: item.key, epoch: item.epoch})), syncAwaitingAnswer);
 const connectionRecovery = new ConnectionRecovery({attempt: resync, paint: (phase, error) => {
   connectionPhase = phase; connectionError = error; connected = phase === 'healthy'; renderConnection();
-  releaseNotice.readiness(connected && uiReady && !document.hidden);
+  releaseNotice.readiness(connected && !releasePage);
   if (connected) {renderAll(); void finishStartup().catch(showError);} else renderAvailability();
 }});
 export const selectionQueue = new SelectionQueue({current: () => state.workspace, reload, save: (workspace, change, control) => request<Workspace>(`/api/workspaces/${encodeURIComponent(workspace.id)}/selection`, 'PUT', {expectedRevision: workspace.revision, ...workspaceEntry.save(workspace,change),...(control ? {control} : {})},undefined,control ? AbortSignal.timeout(CONTROL_LIMITS.executionMs) : undefined), paint: (workspace, pending) => { selecting = pending; state = {...state, workspace}; renderAll(); }});
@@ -2771,6 +2768,7 @@ export function appKey(event: KeyboardEvent): void {
   event.preventDefault(); if (!event.repeat && !modal.openNow) actions.palette(mode);
 }
 function bind(): void {
+  document.addEventListener('keydown', () => releaseNotice.key(), true);
   document.addEventListener('compositionstart', event=> {if(event.target)composingFields.add(event.target);},true);
   document.addEventListener('compositionend', event=> {if(event.target)composingFields.delete(event.target);},true);
   for (const toggle of document.querySelectorAll<HTMLElement>('.section-toggle')) toggle.prepend(cardIcon('chevron'));
@@ -2788,7 +2786,7 @@ function bind(): void {
     devRestoreWake?.();
   }, {capture: true, passive: true});
   window.addEventListener('pagehide', event => {releaseNotice.readiness(false); if (!event.persisted) releaseNotice.destroy(); if (!event.persisted && !devNavigating) devReload?.destroy();});
-  window.addEventListener('pageshow', () => releaseNotice.readiness(connected && uiReady && !document.hidden));
+  window.addEventListener('pageshow', () => {devNavigating=false;releaseNotice.readiness(connected && !releasePage);});
   setRequestTiming((start, end) => {diagnostics.measure('control-roundtrip', start, end);});
   diagnostics.setHidden(document.hidden);
   document.addEventListener('contextmenu', appContextMenu);
@@ -2826,7 +2824,7 @@ function bind(): void {
   window.addEventListener('resize', () => { renderNavigation(); for (const controller of controllers.values()) controller.composer.resize(); roster.schedule(); });
   window.addEventListener('beforeunload', event => { if (!(devNavigating&&preparedReloadState?.revision===devInteractionRevision&&preparedReloadState.workspace===state.workspace?.id) && (!filesViews.canDispose || [...controllers.values()].some(controller => !controller.composer.canDispose))) event.preventDefault(); });
   document.addEventListener('visibilitychange', () => {
-    diagnostics.setHidden(document.hidden); releaseNotice.readiness(connected && uiReady && !document.hidden); for (const controller of controllers.values()) controller.transcript.visibilityChanged();
+    diagnostics.setHidden(document.hidden); releaseNotice.readiness(connected && !releasePage); for (const controller of controllers.values()) controller.transcript.visibilityChanged();
     if (!document.hidden && !uiReady) void finishStartup().catch(showError);
     if (!document.hidden) { threadExplorer.refreshIfStale(); threadReader.refreshIfStale(); picker.writersChanged(); }
   });
@@ -3031,12 +3029,13 @@ let uiReady = false;
 async function finishStartup(): Promise<void> {
   const connection = source,current = ()=>!!connection && connection === source && connected && !document.hidden;
   if (!current()) return;
+  if (releasePage) await restoreReleasePage(releasePage, current);
   await initializeDevReload(current);
   if (uiReady || !current()) return;
   uiReady = true; releaseNotice.readiness(true); document.dispatchEvent(new Event('ui-ready')); renderNavigation();
 }
 async function initializeDevReload(current:()=>boolean): Promise<void> {
-  // Sealed releases adopt a new page only through the explicit release control.
+  // Sealed releases use the health observer and the same local preservation primitives.
   if (versionStatus.identity.release) return;
   if (devReload) {await devReload.ready; if (!current()) return; devReload.reconnect(); await devReload.resume(); return;}
   const notice = element('span', 'secondary workbench-update'); notice.setAttribute('role', 'status');
@@ -3047,30 +3046,136 @@ async function initializeDevReload(current:()=>boolean): Promise<void> {
     status: status => renderDevReloadNotice(notice, status)});
   await devReload.ready;
 }
+type ReleasePage = {
+  release: ReleaseIdentity; checkpoint: DevReloadCheckpoint; workspace: Workspace; entry: ReturnType<WorkspaceEntry['captureReload']>; drawer: boolean;
+  deskPane?: typeof deskPane; desk: ReturnType<Desk['captureReload']>;
+  thread?: {pane: NonNullable<typeof threadPane>; reader: ReturnType<ThreadReader['captureReload']>};
+  controllers: Array<{workspace:string;target:Target;passive:boolean;geometry:ReturnType<Transcript['captureGeometry']>;scrollLeft:number;editorTop:number;editorLeft:number}>;
+};
+let releasePage: ReleasePage | undefined;
+let releasePageRead = false;
+let releaseRestore: Promise<void> | undefined;
+async function readReleasePage(signal:AbortSignal):Promise<void> {
+  if(releasePageRead)return;
+  const key=new URL(location.href).searchParams.get('update');
+  if(key){
+    const value=await readReloadState(key,signal) as ReleasePage|undefined;
+    if(!value?.checkpoint || !validateDevReloadCheckpoint(value.checkpoint,value.checkpoint.generation,Date.now()) ||
+      !value.workspace || value.workspace.id!==value.checkpoint.workspaceId || !validPaneLayout(value.workspace.conversationLayout) ||
+      !value.entry || value.entry.workspaceId!==value.workspace.id || !Array.isArray(value.entry.hidden) || !Array.isArray(value.controllers) || value.controllers.length>LIMITS.conversationTabs || !value.desk) {
+      throw new Error('The exact page checkpoint is unavailable. This page did not apply fresh-entry defaults.');
+    }
+    releasePage=value;reloadStateKey=value.checkpoint.composerStateKey;
+  }
+  releasePageRead=true;
+}
+async function restoreReleasePage(page:ReleasePage,current:()=>boolean):Promise<void> {
+  if(releaseRestore)return releaseRestore;
+  const work=(async()=>{
+    const signal=AbortSignal.timeout(30_000);
+    restoreReleaseCompanions(page);
+    if(!await restoreDevCheckpoint(page.checkpoint,signal)||!current())throw new Error('The exact page restore did not finish. Preserved drafts remain in reload storage.');
+    restoreReleaseControllers(page);
+    drawerOpen=page.drawer;renderNavigation();
+    const actual=loadedRelease(versionStatus.identity,document.querySelector('meta[name="ui-generation"]')?.getAttribute('content')??null,document.querySelector('meta[name="ui-module-family"]')?.getAttribute('content')??null);
+    if(actual)releaseNotice.updated(actual);
+    const url=new URL(location.href),key=url.searchParams.get('update');url.searchParams.delete('update');history.replaceState(null,'',url);
+    releasePage=undefined;delete versionStatus.node.dataset.updateError;
+    if(key)void deleteReloadState(key).catch(()=>{});
+    if(page.checkpoint.composerStateKey)void deleteReloadState(page.checkpoint.composerStateKey).catch(()=>{});
+    reloadStateKey=undefined;preparedReloadState=undefined;
+  })();
+  releaseRestore=work;
+  try{await work;}finally{if(releaseRestore===work)releaseRestore=undefined;}
+}
+function restoreReleaseCompanions(page:ReleasePage):void {
+  if(page.deskPane){deskPane={...page.deskPane,context:deskContext()};renderNavigation();
+    const canonical=(row:DeskRow):DeskRow=>{if(!row.notice)return row;const notice=communicationNotices.items.get(row.notice.key)??row.notice;communicationNotices.items.set(notice.key,notice);return {...row,notice};};
+    desk.restoreReload({...page.desk,retained:page.desk.retained.map(canonical),direct:page.desk.direct&&canonical(page.desk.direct)});
+  }
+  if(page.thread?.reader.entry)restoreReleaseThread(page.thread);
+}
+function restoreReleaseThread(value:NonNullable<ReleasePage['thread']>):void {
+  const pane=paneById(currentLayout(),value.pane.paneId),region=paneRegions.get(value.pane.paneId),entry=value.reader.entry;
+  if(!pane||!region||!entry)throw new Error('The retained thread pane is unavailable.');
+  const tab=pane.tabs.find(tab=>tabKey(tab)===pane.active),target=tab&&controllerTarget(tab);
+  threadPane={...value.pane};threadHost=target?conversationController(target):undefined;threadOpener=entry.item.id;
+  region.content.hidden=true;region.content.inert=true;region.node.append(threadReader.node);
+  threadExplorer.setCurrent(entry.item.id);threadReader.restoreReload(value.reader);renderNavigation();
+}
+function restoreReleaseControllers(page:ReleasePage):void {
+  for(const saved of page.controllers){const controller=controllers.get(controllerKey(saved.workspace,saved.target));if(!controller)continue;
+    controller.passive=saved.passive;
+    if(!controller.root.hidden&&!controller.root.inert){
+      const reading={revision:controller.saved?.reading.revision??0,anchorId:saved.geometry.anchor?.id??null,offsetPx:saved.geometry.anchor?.offsetPx??0,followTail:saved.geometry.followTail};
+      controller.transcript.configure(controller.saved?.presentation,reading);controller.transcript.restore(reading);controller.transcript.schedule();
+      controllerNode(controller,'transcript').scrollLeft=saved.scrollLeft;
+    }
+    controller.composer.editor.scrollTop=saved.editorTop;controller.composer.editor.scrollLeft=saved.editorLeft;
+  }
+}
+async function swapReleaseStylesheet(release:ReleaseIdentity,signal:AbortSignal):Promise<void> {
+  if(releaseReloadState()!=='ready')throw new Error('The page is not ready for a stylesheet update.');
+  const old=[...document.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]')].find(link=>new URL(link.href).pathname.endsWith('/style.css'));
+  if(!old)throw new Error('The current stylesheet is unavailable.');
+  const revision=devInteractionRevision,next=document.createElement('link');next.rel='stylesheet';next.media='not all';
+  next.href=`/_ui/${release.generation}/style.css`;
+  try{
+    await new Promise<void>((resolve,reject)=>{const cleanup=()=>{next.onload=null;next.onerror=null;signal.removeEventListener('abort',abort);};
+      const abort=()=>{cleanup();reject(signal.reason);};next.onload=()=>{cleanup();resolve();};next.onerror=()=>{cleanup();reject(new Error('The stylesheet did not load.'));};
+      signal.addEventListener('abort',abort,{once:true});if(signal.aborted){abort();return;}old.after(next);
+    });
+    signal.throwIfAborted();if(revision!==devInteractionRevision||releaseReloadState()!=='ready')throw new Error('The page changed during the stylesheet update.');
+    const geometry=captureDevCssState(),deskTop=desk.node.scrollTop,threadTop=threadReader.scrollNode.scrollTop;
+    next.media='all';applyDevCssState(geometry);desk.node.scrollTop=deskTop;threadReader.scrollNode.scrollTop=threadTop;old.remove();
+    delete versionStatus.node.dataset.updateError;
+  }catch(error){next.remove();throw error;}
+}
 export function releaseReloadState(): ReleaseReloadState {
   const states = [...controllers.values()].map(controller => controller.composer.releaseReloadState);
   if (states.includes('failed')) return 'failed';
   if (states.includes('pending')) return 'pending';
-  if (states.includes('blocked') || !connected || selecting || selectionQueue.unsettled || preferences.pending || !filesViews.canDispose) return 'blocked';
+  if (states.includes('blocked') || devHold() || !releaseNotice.quiet || !connected || selecting || selectionQueue.unsettled || preferences.pending || !filesViews.canDispose) return 'blocked';
   return 'ready';
 }
-/** Only an explicit release action leaves this page; no input operation is replayed. */
-export async function reloadRelease(signal: AbortSignal): Promise<void> {
+/** A release returns to this exact page view; it never replays an input or starts a fresh workspace entry. */
+export async function reloadRelease(signal: AbortSignal, release: ReleaseIdentity): Promise<void> {
   signal.throwIfAborted();
   if (releaseReloadState() !== 'ready') throw new Error('Retained drafts are not ready for reload.');
   const workspace = state.workspace?.id, revision = devInteractionRevision, retained = [...controllers.values()];
   if (!workspace) throw new Error('No workspace owns this page.');
   for (const controller of retained) controller.transcript.preserveReading();
   await Promise.all(retained.map(controller => controller.composer.drain(signal)));
-  await waitForSignal(filesViews.drain(), signal);
-  await waitForSignal(selectionQueue.drain(), signal);
-  await waitForSignal(preferences.drain(), signal);
-  signal.throwIfAborted();
+  await drainDev(signal);
+  const view = captureDevCheckpoint(), key = crypto.randomUUID();
+  const preserved=new Set(retained.flatMap(controller=>controller.composer.captureReload().filter(value=>value.workspace===workspace).map(value=>value.targetKey)));
+  view.targets=view.targets.map(entry=>entry.target.kind==='agent'&&preserved.has(entry.targetKey)?{...entry,target:{kind:'agent',identity:entry.target.identity,retained:true}}:entry);
+  const checkpoint: DevReloadCheckpoint = {...view, version: 1, generation: release.generation, oldClient: document.querySelector('meta[name="ui-client"]')?.getAttribute('content') ?? '', capturedAt: Date.now(), interactionRevision: revision};
+  if (!validateDevReloadCheckpoint(checkpoint, release.generation, Date.now())) throw new Error('The exact page checkpoint is unavailable.');
+  const page: ReleasePage = {release, checkpoint, workspace: {...structuredClone(state.workspace as Workspace),conversationLayout:structuredClone(workspaceLayout(state.workspace))}, entry: workspaceEntry.captureReload(state.workspace as Workspace), drawer: drawerOpen,
+    deskPane: deskPane && structuredClone(deskPane), desk: desk.captureReload(),
+    thread: threadPane && {pane: {...threadPane}, reader: threadReader.captureReload()},
+    controllers: retained.map(controller => ({workspace: controller.workspaceId, target: {...controller.target}, passive: controller.passive === true, geometry: controller.transcript.captureGeometry(), scrollLeft: controllerNode(controller, 'transcript').scrollLeft, editorTop: controller.composer.editor.scrollTop, editorLeft: controller.composer.editor.scrollLeft}))};
+  await writeReloadState(key, page, signal); signal.throwIfAborted();
   const current = [...controllers.values()];
   if (workspace !== state.workspace?.id || revision !== devInteractionRevision || releaseReloadState() !== 'ready' ||
-    current.length !== retained.length || current.some((controller, index) => controller !== retained[index])) throw new Error('Retained drafts or view ownership changed. Reload did not leave this page.');
-  const url = new URL('/', location.href); url.searchParams.set('workspace', workspace);
-  location.assign(url.href);
+    current.length !== retained.length || current.some((controller, index) => controller !== retained[index])) {
+    await deleteReloadState(key); throw new Error('Retained drafts or view ownership changed. Reload did not leave this page.');
+  }
+  const url = new URL(location.href); url.searchParams.set('workspace', workspace); url.searchParams.set('update', key);
+  try{await navigateRelease(url.href,signal);}catch(error){await deleteReloadState(key).catch(()=>{});throw error;}
+}
+function navigateRelease(url:string,signal:AbortSignal):Promise<void> {
+  signal.throwIfAborted();
+  return new Promise((resolve,reject)=>{
+    const inert=document.body.inert,previous=location.href;
+    const cleanup=()=>{window.removeEventListener('pagehide',leave,true);signal.removeEventListener('abort',abort);document.body.inert=inert;};
+    const leave=()=>{cleanup();resolve();};
+    const abort=()=>{window.stop();cleanup();devNavigating=false;history.replaceState(null,'',previous);reject(signal.reason);};
+    window.addEventListener('pagehide',leave,{once:true,capture:true});signal.addEventListener('abort',abort,{once:true});
+    document.body.inert=true;devNavigating=true;
+    try{location.assign(url);}catch(error){cleanup();devNavigating=false;reject(error);}
+  });
 }
 export async function reloadDev(): Promise<void> {
   const workspace = state.workspace?.id, revision = devInteractionRevision, retained = [...controllers.values()];
@@ -3115,6 +3220,7 @@ function updateDiagnostics(): void {
   if (active !== diagnosticsActive) {diagnosticsActive = active; diagnostics.setActive(active);}
 }
 async function hydrateWorkspace<T extends Snapshot>(value: T, read: SnapshotReader, messageTarget?: Target): Promise<T> {
+  if(releasePage?.workspace.id===value.workspace.id)value={...value,workspace:{...releasePage.workspace,revision:value.workspace.revision}};
   const primary=value.primaries.find(item=>item.key === value.workspace.primaryKey);
   const target:Target|undefined=primary ? {kind:'primary',key:primary.key,epoch:primary.epoch} : undefined;
   const hydrated=await hydrateVisible({...value,workspace:workspaceEntry.view(value.workspace,target)},read,messageTarget);
@@ -3142,9 +3248,14 @@ async function entryPrimary(value: Bootstrap, read: SnapshotReader, signal?: Abo
 async function bootstrap(signal?: AbortSignal): Promise<void> {
   const page=new URL(location.href), workspace=page.searchParams.get('workspace');
   const read:SnapshotReader = <T>(path: string, method = 'GET', body?: unknown) => request<T>(path, method, body, undefined, signal && (method === 'GET' ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : signal));
+  await readReleasePage(signal ?? AbortSignal.timeout(30_000));
   let data=await read<Bootstrap>(`/api/bootstrap${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''}`);
-  try {data=await entryPrimary(data,read,signal);} catch(error) {data=await read<Bootstrap>(`/api/bootstrap?workspace=${encodeURIComponent(data.workspace.id)}`);showError(error);}
-  if(page.searchParams.get('restore') !== 'workspace')workspaceEntry.begin(data.workspace,await entryAgents(data,read));
+  if (releasePage) {
+    if (releasePage.workspace.id !== data.workspace.id) throw new Error('The retained page belongs to a different workspace.');
+    data={...data,workspace:{...releasePage.workspace,revision:data.workspace.revision}};workspaceEntry.restoreReload(releasePage.entry);
+  }
+  try {if(!releasePage)data=await entryPrimary(data,read,signal);} catch(error) {data=await read<Bootstrap>(`/api/bootstrap?workspace=${encodeURIComponent(data.workspace.id)}`);showError(error);}
+  if(!releasePage && page.searchParams.get('restore') !== 'workspace')workspaceEntry.begin(data.workspace,await entryAgents(data,read));
   data=await hydrateWorkspace(data,read);signal?.throwIfAborted();
   snapshot = data; launchCwd = data.launchCwd; state = replaceSnapshot(state, data); updateDiagnostics();
   const url = new URL(location.href); url.searchParams.set('workspace', data.workspace.id);url.searchParams.delete('restore');history.replaceState(null, '', url);

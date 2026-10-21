@@ -287,7 +287,7 @@ export class LocalHttp {
       return readHealthSnapshot({...this.development.health(),
         process: {pid: process.pid, uptimeMs: Math.floor(process.uptime() * 1000), rssBytes: process.memoryUsage.rss()},
         requests: {active: this.active, limit: 64},
-        identity: {iteration: identity?.iteration ?? UI_ITERATION, commit: identity?.git?.commit, assetDigest: identity?.assets?.digest},
+        identity: {iteration: identity?.iteration ?? UI_ITERATION, commit: identity?.git?.commit, assetDigest: identity?.assets?.digest, moduleFamily: this.development.generations?.identity()?.moduleFamily},
         userStylesheet: {state: this.development.userStylesheet ? (await this.development.userStylesheet()).state : 'none'}});
     } catch {throw new ApiError('not_ready', 'Backend health details are unavailable.', 503, 'read');}
   }

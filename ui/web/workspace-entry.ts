@@ -19,6 +19,13 @@ export class WorkspaceEntry {
       this.hidden.set(tabKey(tab),{tab:structuredClone(tab),pane:pane.id,index});
     });
   }
+  captureReload(workspace:Workspace): {workspaceId:string;hidden:SavedTab[];primaryFirst:boolean} {
+    if(workspace.id!==this.workspaceId)return {workspaceId:workspace.id,hidden:[],primaryFirst:false};
+    return {workspaceId:workspace.id,hidden:structuredClone([...this.hidden.values()]),primaryFirst:this.primaryFirst};
+  }
+  restoreReload(value:ReturnType<WorkspaceEntry['captureReload']>):void {
+    this.workspaceId=value.workspaceId;this.hidden=new Map(value.hidden.map(saved=>[tabKey(saved.tab),structuredClone(saved)]));this.primaryFirst=value.primaryFirst;
+  }
   get count(): number {return this.hidden.size;}
   hiddenAgent(identity:string):boolean {return this.hidden.has(tabKey({kind:'agent',identity}));}
   layout(workspace?: Workspace, primary?: Target): ConversationLayout {

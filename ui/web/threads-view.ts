@@ -239,6 +239,15 @@ export class ThreadReader {
     });
   }
   returnLabel(label: string): void { setText(this.backButton, label); }
+  captureReload():{entry?:Cached;scrolls:[string,number|'end'][];expanded:string[];participants:boolean;back:string} {
+    this.rememberScroll();return structuredClone({entry:this.entry,scrolls:[...this.scrolls],expanded:[...this.expandedPosts],participants:this.participantsOpen,back:this.backButton.textContent??'Close thread'});
+  }
+  restoreReload(value:ReturnType<ThreadReader['captureReload']>):void {
+    this.cancel();this.scrolls.clear();for(const [key,position] of value.scrolls)this.scrolls.set(key,position);
+    this.expandedPosts.clear();for(const key of value.expanded)this.expandedPosts.add(key);
+    this.participantsOpen=value.participants;this.participants.open=value.participants;setText(this.backButton,value.back);
+    if(value.entry){this.entry=value.entry;this.cache.set(value.entry.item.id,value.entry);this.rows.clear();this.framed='';this.node.hidden=false;this.paint();this.restoreScroll();this.reading=this.anchorRow();this.lastTop=this.scroller.scrollTop;this.restorePending=false;}
+  }
   get active(): ThreadEntry | undefined { return this.node.hidden ? undefined : this.entry?.item; }
   get scrollNode(): HTMLElement { return this.scroller; }
   /** Shows a thread. A thread read earlier in this page appears at once at its old position, then refreshes. */

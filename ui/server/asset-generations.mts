@@ -120,7 +120,7 @@ export class AssetGenerations {
     const lease=this.leases.get(client);
     return {...this.state,change:lease&&this.jsFamily(lease.generation)?.id===this.active.family.id?'css':'reload'};
   }
-  identity(id = this.active.id) {const generation = this.find(id); return generation ? {digest: generation.id, builtAt: generation.builtAt} : undefined;}
+  identity(id = this.active.id) {const generation = this.find(id); return generation ? {digest: generation.id, builtAt: generation.builtAt, moduleFamily: generation.family.id} : undefined;}
   observe(observer:(status:BuildStatus)=>void) {this.observer=observer;observer(this.status());}
   counts() {
     const snapshots=[this.active,this.previous,this.candidate].filter((item):item is AssetGeneration=>!!item);

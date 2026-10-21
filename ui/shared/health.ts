@@ -14,7 +14,7 @@ export type HealthSnapshot = BackendHealthFacts & {
   userStylesheet: {state: UserStylesheetState};
   process: {pid: number; uptimeMs: number; rssBytes: number};
   requests: {active: number; limit: number};
-  identity: {iteration: string; commit?: string; assetDigest?: string};
+  identity: {iteration: string; commit?: string; assetDigest?: string; moduleFamily?: string};
 };
 export const HEALTH_REASON_CHARACTERS = 160;
 const failure = () => new Error('Backend health details are unavailable.');
@@ -69,6 +69,10 @@ export function readHealthSnapshot(value: unknown): HealthSnapshot {
   if (identity.assetDigest !== undefined) {
     if (typeof identity.assetDigest !== 'string' || !/^[a-f0-9]{64}$/.test(identity.assetDigest)) throw failure();
     safeIdentity.assetDigest = identity.assetDigest;
+  }
+  if (identity.moduleFamily !== undefined) {
+    if (typeof identity.moduleFamily !== 'string' || !/^[a-f0-9]{64}$/.test(identity.moduleFamily)) throw failure();
+    safeIdentity.moduleFamily = identity.moduleFamily;
   }
   const stylesheet = record(snapshot.userStylesheet);
   const limit = integer(requests.limit, 64), active = integer(requests.active, limit);

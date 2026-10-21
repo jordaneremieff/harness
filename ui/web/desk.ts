@@ -37,6 +37,13 @@ export class Desk {
     this.heading.append(element('h2',undefined,'Desk'),this.close);
     this.node.append(this.heading,this.scope,this.arrivals,this.next,this.list);
   }
+  captureReload():{queue:string[];retained:DeskRow[];pending:string[];selected?:string;direct?:DeskRow;all:boolean;initialized:boolean;catalog:boolean;scrollTop:number} {
+    return structuredClone({queue:this.queue,retained:[...this.retained.values()],pending:this.pending,selected:this.selected,direct:this.direct,all:this.all,initialized:this.initialized,catalog:this.catalog,scrollTop:this.node.scrollTop});
+  }
+  restoreReload(value:ReturnType<Desk['captureReload']>):void {
+    this.queue=value.queue;this.retained=new Map(value.retained.map(row=>[row.key,row]));this.pending=value.pending;this.selected=value.selected;this.direct=value.direct;
+    this.all=value.all;this.initialized=value.initialized;this.catalog=value.catalog;this.paint();this.node.scrollTop=value.scrollTop;
+  }
   reset():void{
     this.queue=[];this.retained.clear();this.pending=[];this.selected=undefined;this.initialized=false;
     this.catalog=false;this.direct=undefined;this.rows.clear();this.list.replaceChildren();

@@ -527,21 +527,8 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 #workbench-scope { flex: 1 1 0; min-width: 8ch; max-width: max-content; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workbench-version { flex: none; margin-left: auto; min-width: 0; max-width: none; padding: var(--s1) var(--s2); border: 0; background: transparent; color: var(--muted); font-size: var(--fs-meta); text-align: right; white-space: nowrap; }
 :where(.file-save, .file-view-switch, .workbench-version) { min-height: 24px; }
-.workbench-release { display: flex; flex: none; align-items: center; gap: var(--s2); margin-left: auto; min-width: 0; max-width: 100%; color: var(--info); font-size: var(--fs-meta); white-space: nowrap; }
+.workbench-release { flex: none; min-width: 0; max-width: 100%; color: var(--muted); font-size: var(--fs-meta); white-space: nowrap; }
 .workbench-release[hidden] { display: none; }
-.workbench-release > button, .workbench-release-disclosure button { min-height: 24px; padding: 0; border: 0; background: transparent; color: var(--link); font-size: var(--fs-meta); }
-.workbench-release button:hover, .workbench-release button:focus-visible { text-decoration: underline; }
-.workbench-release button:disabled { color: var(--muted); cursor: default; text-decoration: none; }
-.workbench-release-disclosure { display: none; }
-@media (max-width: 700px) {
-  .workbench-release { gap: var(--s1); }
-  .workbench-release-tab, .workbench-release-details { display: none; }
-  .workbench-release-disclosure { display: block; }
-  .workbench-release-disclosure > summary { min-height: 24px; color: var(--link); font-size: var(--fs-meta); }
-}
-@media (pointer: coarse) {
-  .workbench-release > button, .workbench-release-disclosure > summary, .workbench-release-disclosure button { min-height: 44px; }
-}
 .health-facts { display: grid; grid-template-columns: minmax(8ch, 1fr) minmax(0, 2fr); gap: var(--s1) var(--s3); }
 .health-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .workbench-status-facts { display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s4); min-width: 0; max-width: 100%; }
