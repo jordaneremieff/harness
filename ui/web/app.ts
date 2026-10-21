@@ -327,7 +327,7 @@ const fileBrowse = new FileBrowseState();
 const paneRegions = new Map<string, {node: HTMLElement; tabs: HTMLElement; content: HTMLElement; plus: HTMLButtonElement; menu: HTMLButtonElement; actions: HTMLButtonElement; previous: HTMLButtonElement; next: HTMLButtonElement}>();
 const paneSplits = new Map<string, {node: HTMLElement; handle: HTMLElement; resizer?: Resizer; extent?: number}>();
 const primaryCreationRow=button('New session',()=>picker.newSession(projectPath()),'nav-row sidebar-action');
-const tabStrip = new TabStrip({layout: currentLayout, reopen: () => workspaceEntry.count && state.workspace ? {count:workspaceEntry.count,run:()=>{if(state.workspace)applyLayout(workspaceEntry.reopen(state.workspace,primaryTarget()));}} : undefined, activate: activateConversationTab, close: key => applyLayout(closeTab(currentLayout(), key)),
+const tabStrip = new TabStrip({layout: currentLayout, reopen: () => workspaceEntry.count && state.workspace ? {count:workspaceEntry.count,drafts:new Set([...state.targetIndex.values()].flatMap(item=>item.hasDraft&&item.target.kind==='agent'&&workspaceEntry.hiddenAgent(item.target.identity)?[item.target.identity]:[])).size,run:()=>{if(state.workspace)applyLayout(workspaceEntry.reopen(state.workspace,primaryTarget()));}} : undefined, activate: activateConversationTab, close: key => applyLayout(closeTab(currentLayout(), key)),
   fallback:()=>{if(paneLeaves(currentLayout().root).some(pane=>pane.tabs.some(tab=>tab.kind==='primary')))return;const row=byId('primary-row');if(primary()){row.hidden=false;return row;}return primaryCreationRow;},
   move: (key, pane, index) => {fileBrowse.keep(key);applyLayout(movePaneTab(currentLayout(), key, pane, index));}, label: tabLabel,unnamed:unnamedTab,keep:key=>fileBrowse.keep(key),
   identity: tab => tab.kind !== 'file' ? tabPresentation(tab).identityTail ?? '' : undefined,
@@ -2041,7 +2041,7 @@ function mergeControllerHistory(controller: ConversationController, page: Histor
   }
   else throw new Error('History response does not match its target.');
   controller.historyReady = true; controller.historyComplete = page.coverage.complete && !page.coverage.truncated && page.coverage.omitted === 0; controller.historyError = undefined; controller.transcript.historyAvailable(target.kind === 'primary' ? controller.cursor !== null : controller.before !== null); renderController(controller);
-  if (target.kind === 'primary' && sameTarget(target, primaryTarget())) renderPrimaryUsage(primary());
+  if (target.kind === 'primary' && sameTarget(target, primaryTarget())) {renderPrimaryUsage(primary());noticesBadge();}
 }
 /** Rows one upward trigger tries to add, and the pages it may read to get them. */
 const EARLIER_FILL = {rows: 10, pages: 3};
@@ -2249,14 +2249,21 @@ function captureWatchedCommunications(previous: typeof state, event: string): bo
   }
   return changed;
 }
+function seedPrimaryCommunications():void {
+  communicationNotices.scope(JSON.stringify([state.bootId,state.workspace?.id]));
+  const target=primaryTarget(),conversation=target?state.conversations.get(targetIdentity(target)):undefined;
+  if(target?.kind==='primary'&&conversation)communicationNotices.seed(target,conversationBlocks(conversation));
+}
 function notificationsLabel(): string { const unread = unreadNotices(state) + communicationNotices.unread(); return unread ? `Notifications (${unread} unread)` : 'Notifications'; }
 function noticesBadge(): void {
+  seedPrimaryCommunications();
   const unread = unreadNotices(state) + communicationNotices.unread(); setText(byId('notices-count'), String(unread)); byId('notices-count').hidden = !unread;
   const label = notificationsLabel(); byId('notifications-button').setAttribute('aria-label', label); byId('notifications-button').title = label;
   setText(byId('notices-label'),`Notices ${unread}`);recentSidebar.render([...communicationNotices.items.values()]);
 }
 function notices(): void {
-  state = markReadNotices(state); noticesBadge(); modal.open('Notifications');
+  state = markReadNotices(state); noticesBadge();
+  modal.open(communicationNotices.droppedUnread?`Notifications · ${communicationNotices.droppedUnread} older notices dropped in this page`:'Notifications');
   if (!state.notices.length && !communicationNotices.items.size) modal.body.append(empty('No notifications'));
   for (const notice of [...communicationNotices.items.values()].reverse()) renderCommunicationNotice(notice);
   for (const group of noticeGroups(state.notices, noticeConversationName)) renderNoticeGroup(group);

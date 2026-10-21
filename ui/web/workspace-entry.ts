@@ -20,6 +20,7 @@ export class WorkspaceEntry {
     });
   }
   get count(): number {return this.hidden.size;}
+  hiddenAgent(identity:string):boolean {return this.hidden.has(tabKey({kind:'agent',identity}));}
   layout(workspace?: Workspace, primary?: Target): ConversationLayout {
     if(!workspace || workspace.id !== this.workspaceId)return workspaceLayout(workspace);
     const selected=this.primaryFirst && primary ? primary : workspace.selectedTarget;

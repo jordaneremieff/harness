@@ -7,7 +7,7 @@ import { paneById, paneForTab, paneLeaves, type PaneLayout } from './pane-layout
 
 export type TabRegion = {id: string; tabs: HTMLElement; controls: string};
 export type TabRegions = {panes: () => TabRegion[]; conversations: HTMLElement};
-export type TabHooks = {layout: () => PaneLayout; reopen?: () => {count: number; run: () => void} | undefined; activate: (pane: string, key: string) => void; close: (key: string) => void;
+export type TabHooks = {layout: () => PaneLayout; reopen?: () => {count: number; drafts?: number; run: () => void} | undefined; activate: (pane: string, key: string) => void; close: (key: string) => void;
   move: (key: string, pane: string, index: number) => void; label: (tab: ConversationTab) => string;
   identity?: (tab: ConversationTab) => string | undefined;unnamed?:(tab:ConversationTab)=>boolean;
   fallback?:()=>HTMLElement|undefined;
@@ -115,7 +115,7 @@ export class TabStrip {
       const row=this.regions.conversations.ownerDocument.createElement('button');row.type='button';row.className='conversation-row conversation-reopen';
       row.addEventListener('click',()=>this.hooks.reopen?.()?.run());this.reopenRow=row;
     }
-    this.reopenRow.textContent=`Reopen ${action.count} older tabs`;this.reopenRow.hidden=false;this.sectionBody.append(this.reopenRow);
+    this.reopenRow.textContent=`Reopen ${action.count} older tabs${action.drafts ? ` · ${action.drafts} with drafts` : ''}`;this.reopenRow.hidden=false;this.sectionBody.append(this.reopenRow);
   }
   private renderSection(tabs: readonly ConversationTab[], fallback=false): void {
     const collapsed = this.hooks.section?.collapsed() === true;

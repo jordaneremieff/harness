@@ -42,7 +42,13 @@ export function rosterWorking(row: AgentRow, status: RosterStatus): boolean {
   return status.label === 'Working' || status.hideVisibleState === true && row.availability === 'live' && row.state === 'working';
 }
 function servedFact(row: AgentRow, status: RosterStatus): string | undefined {
-  if (status.attention) return [row.attention?.kind,row.attention?.kind === 'task-blocked' ? row.attention.reason : status.attention.title].filter(Boolean).join(' · ') || undefined;
+  if (status.attention) {
+    const hint=row.attention;
+    if(hint?.kind==='provider-blocked')return 'Provider blocked';
+    if(hint?.kind==='failed-turn')return 'Turn failed';
+    if(hint?.kind==='task-blocked')return hint.reason?`Task blocked: ${hint.reason.replaceAll('_',' ')}`:'Task blocked';
+    return status.attention.label==='Failed'?'Turn failed':status.attention.title;
+  }
   if (rosterWorking(row,status)) return status.tool ? `${status.tool.name} · ${status.tool.argument}` : undefined;
   return row.role;
 }

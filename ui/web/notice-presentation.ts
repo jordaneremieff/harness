@@ -17,20 +17,38 @@ function communications(entries:readonly EntryView[]):Arrival[]{
   }
   return result;
 }
-/** This browser shelf records live communication arrivals, not preexisting history or backend notices. */
+const retentionPriority=(notice:CommunicationNotice):number=>notice.read?0:notice.kind==='check-in'?1:2;
+/** Loaded Primary communications and live arrivals share this workspace-scoped browser shelf. */
 export class CommunicationNoticeShelf {
   readonly items=new Map<string,CommunicationNotice>();
   private context='';
-  scope(context:string):boolean{if(this.context===context)return false;this.context=context;this.items.clear();return true;}
+  // Exact IDs survive row eviction so repeated loaded history never restores a dropped row.
+  private known=new Set<string>();
+  private importantDrops=0;
+  get droppedUnread():number {return this.importantDrops;}
+  scope(context:string):boolean{
+    if(this.context===context)return false;
+    this.context=context;this.items.clear();this.known.clear();this.importantDrops=0;return true;
+  }
+  seed(target:Extract<Target,{kind:'primary'}>,entries:readonly EntryView[]):boolean{
+    let changed=false;for(const item of communications(entries))changed=this.retain(target,item,true)||changed;return changed;
+  }
   capture(target:Target,previous:readonly EntryView[],current:readonly EntryView[],baseline=false):boolean{
     if(baseline)return false;
-    const known=new Set(communications(previous).map(item=>item.messageId));let changed=false;
-    for(const item of communications(current)){
-      const key=JSON.stringify([targetKey(target),item.messageId]);if(known.has(item.messageId)||this.items.has(key))continue;
-      this.items.set(key,{...item,key,target,read:false});changed=true;
-    }
-    while(this.items.size>32){const first=this.items.keys().next().value;if(first===undefined)break;this.items.delete(first);}
+    const previousIds=new Set(communications(previous).map(item=>item.messageId));let changed=false;
+    for(const item of communications(current))if(!previousIds.has(item.messageId))changed=this.retain(target,item,false)||changed;
     return changed;
+  }
+  private retain(target:Target,item:Arrival,read:boolean):boolean{
+    const key=JSON.stringify([targetKey(target),item.messageId]),existing=this.items.get(key);
+    if(existing){if(read&&existing.entryId!==item.entryId){existing.entryId=item.entryId;return true;}return false;}
+    if(this.known.has(key))return false;
+    this.known.add(key);this.items.set(key,{...item,key,target,read});
+    if(this.items.size>32){
+      const oldest=[...this.items.values()].sort((a,b)=>retentionPriority(a)-retentionPriority(b)||(a.timestamp??0)-(b.timestamp??0))[0];
+      if(oldest){this.items.delete(oldest.key);if(retentionPriority(oldest)===2)this.importantDrops++;}
+    }
+    return true;
   }
   unread():number{return [...this.items.values()].filter(item=>!item.read).length;}
 }

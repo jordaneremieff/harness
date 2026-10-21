@@ -1573,6 +1573,11 @@ button.thread-person:hover, button.thread-sender:hover { background: var(--raise
 .sidebar .roster { flex: none; overflow: visible; }
 .sidebar .roster[data-catalog=true] { max-height: min(50dvh,400px); overflow-y: auto; }
 .sidebar .threads-list { max-height: none; overflow: visible; }
+.sidebar .nav-row.thread-row { flex-direction: row; align-items: center; gap: var(--s2); height: 48px; min-height: 48px; }
+.sidebar .thread-name { display: grid; flex: 1; min-width: 0; grid-template-rows: 30px 18px; }
+.sidebar .thread-name .row-title { line-height: 30px; }
+.sidebar .thread-purpose { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; line-height: 18px; color: var(--muted); font-size: var(--fs-meta); }
+.sidebar .thread-row .row-meta { align-self: flex-start; overflow: visible; text-overflow: clip; }
 .sidebar .threads-section[data-catalog=true] .threads-list { max-height: min(50dvh,400px); overflow-y: auto; }
 .sidebar .nav-row, .sidebar .sidebar-action { position: relative; display: flex; align-items: center; gap: var(--s2); width: 100%; min-width: 0; height: 30px; min-height: 30px; padding: 0 var(--s3); border: 0; border-radius: 0; background: transparent; line-height: 30px; text-align: left; }
 .sidebar .nav-row:hover, .sidebar .sidebar-action:hover { background: var(--raised); }

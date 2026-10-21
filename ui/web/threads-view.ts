@@ -140,9 +140,12 @@ export class ThreadExplorer {
     const row = element('button', `nav-row thread-row${item.closed ? ' closed' : ''}`);
     row.type = 'button'; row.dataset.threadId = item.id;
     const meta = `${item.members} · ${compactAge(item.updatedAt,now)}`, detail = threadMeta(item,now);
-    row.append(element('span', 'row-title', item.title || 'Untitled thread'), element('span', 'row-meta', meta));
+    const name=element('span','thread-name');
+    const purpose=item.purpose.split(/\r?\n/,1)[0];
+    name.append(element('span','row-title',item.title||'Untitled thread'),element('span','thread-purpose',purpose));
+    row.append(name, element('span', 'row-meta', meta));
     row.title = [item.title, item.purpose, detail, item.updatedAt ? `Updated ${absoluteTime(item.updatedAt)}` : ''].filter(Boolean).join('\n');
-    row.setAttribute('aria-label', `${item.title || 'Untitled thread'}, ${detail}`);
+    row.setAttribute('aria-label', [item.title || 'Untitled thread',purpose,detail].filter(Boolean).join(', '));
     if (item.id === this.current) row.setAttribute('aria-current', 'page');
     row.addEventListener('click', () => this.hooks.open(item, row));
     entry.append(row); return entry;
