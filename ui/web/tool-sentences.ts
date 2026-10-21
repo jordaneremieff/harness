@@ -4,7 +4,8 @@ import {plainPreviewWords} from './format.ts';
 
 export type NamedDestination = {text: string; name?: string; provenance?: 'reported' | 'supplied' | 'handle'; derived?: boolean; fallback?: string; title?: string; open?: () => void};
 export type SentenceContext = {nestedCount?:number; cwd?: string; subject?: (identity: string) => NamedDestination | undefined};
-type Words = {done: string; active: string; action: string};
+type Words = {done: string; active: string; action: string; emphasis?: {recipient: string; message: string}};
+export type ToolLabelPart = {text: string; role?: 'recipient' | 'message'};
 const text = (value: unknown): string => typeof value === 'string' ? value : '';
 function first(value: unknown, limit = 60): string {
   const source = text(value), line = source.split(/\r?\n/, 1)[0] ?? '';
@@ -54,11 +55,14 @@ function destinationName(caption?:NamedDestination):string {
   return caption.text===caption.name||caption.text.startsWith(`${caption.name} · `)?caption.text:caption.name;
 }
 function sendWords({tool,args,identity,name}:SentenceInput):Words {
-  const subject=identity?` ${name}`:'';
-  if(typeof args.deliverAt==='string')return words('Scheduled a message to','Scheduling a message to','Schedule a message to',subject+quote(args.message));
-  if(tool.name==='agent_steer'||args.mode==='steer')return words('Redirected','Redirecting','Redirect',subject+quote(args.message));
-  if(args.mode==='report')return words('Reported to','Reporting to','Report to',subject+quote(args.message));
-  return identity?words('Sent a message to','Sending a message to','Send a message to',subject+quote(args.message)):words('Sent a message','Sending a message','Send a message');
+  const subject=identity?` ${name}`:'', message=quote(args.message);
+  let value: Words;
+  if(typeof args.deliverAt==='string')value=words('Scheduled a message to','Scheduling a message to','Schedule a message to',subject+message);
+  else if(tool.name==='agent_steer'||args.mode==='steer')value=words('Redirected','Redirecting','Redirect',subject+message);
+  else if(args.mode==='report')value=words('Reported to','Reporting to','Report to',subject+message);
+  else if(identity)value=words('Sent a message to','Sending a message to','Send a message to',subject+message);
+  else return words('Sent a message','Sending a message','Send a message');
+  return {...value, emphasis: {recipient: subject, message}};
 }
 function inspectWords({args,name}:SentenceInput):Words {
   if(args.view==='result')return words('Checked a task result from','Checking a task result from','Check a task result from',` ${name}`);
@@ -182,10 +186,15 @@ function sentenceWords(tool: JoinedTool, context: SentenceContext): Words {
 }
 /** A call title describes the action; its separate state stays with the original invocation. */
 export function toolLabel(tool:JoinedTool,context:SentenceContext={}):string{
+  return toolLabelParts(tool,context).map(part=>part.text).join('');
+}
+/** Send emphasis follows the same caption and quote boundaries as the plain title. */
+export function toolLabelParts(tool:JoinedTool,context:SentenceContext={}):ToolLabelPart[]{
   const value=sentenceWords(tool,context);
-  if(tool.status==='success')return value.done;
-  if(tool.status==='working')return tool.argumentText!==undefined&&!tool.args?'Preparing…':value.active;
-  return value.action;
+  const label=tool.status==='success'?value.done:tool.status==='working'?(tool.argumentText!==undefined&&!tool.args?'Preparing…':value.active):value.action;
+  const recipient=value.emphasis?.recipient??'', message=value.emphasis?.message??'', suffix=recipient+message;
+  if(!suffix||!label.endsWith(suffix))return [{text:label}];
+  return [{text:label.slice(0,label.length-suffix.length)},...(recipient?[{text:recipient,role:'recipient' as const}]:[]),...(message?[{text:message,role:'message' as const}]:[])];
 }
 /** Public call arguments describe the action; completion never describes a recipient's task outcome. */
 export function toolSentence(tool: JoinedTool, context: SentenceContext = {}): string {

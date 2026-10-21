@@ -795,6 +795,8 @@ summary::before { content: none; }
 .tool-state-word.working { color: var(--info); }
 .tool-state-word.missing { color: var(--warning); }
 .tool-name { color: inherit; flex: 1 1 auto; min-width: 0; max-width: 100%; font-weight: 500; line-height: 24px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-name-recipient { color: var(--fg); font-weight: 600; }
+.tool-name-message { color: var(--muted); font-weight: 400; }
 .tool-target { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 .tool-subject-link { color: var(--link); text-decoration: underline; text-underline-offset: 2px; white-space: inherit; overflow-wrap: anywhere; }
 .tool-secondary { padding-top: var(--s1); flex: 0 1 auto; min-width: 0; max-width: 100%; color: var(--muted); font-size: var(--fs-meta); white-space: normal; overflow-wrap: anywhere; }

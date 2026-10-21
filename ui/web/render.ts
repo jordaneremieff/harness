@@ -16,7 +16,7 @@ import { TranscriptIndex, ToolElapsedClock, toolTime, thinkingLabel, thinkingPre
 import { CommunicationCard, messageCopyText, messageCopyDescription, type SenderSummary } from './communication.ts';
 import type { TranscriptGroups } from './transcript-groups.ts';
 import {TranscriptRows, type StepRun, type TranscriptRow} from './transcript-rows.ts';
-import {toolSentence,toolLabel,quietTextResult, type NamedDestination} from './tool-sentences.ts';
+import {toolSentence,toolLabelParts,quietTextResult, type NamedDestination} from './tool-sentences.ts';
 import {ConversationTasks, type ConversationTask, type TaskReference} from './conversation-tasks.ts';
 import { loadedReference, type ReferenceQuery, type ReferenceResolver } from './references.ts';
 import type { JoinedTool } from './transcript-tools.ts';
@@ -1720,8 +1720,13 @@ export class Transcript {
       }
     }
   }
+  private toolTitle(tool: ToolNode, source: JoinedTool): void {
+    const parts=toolLabelParts(source,{subject:this.hooks.subject,cwd:this.hooks.cwd?.(),nestedCount:this.rows.nestedCounts.get(source.callId)});
+    if(parts.length===1&&!parts[0]?.role)setText(tool.title,parts[0]?.text??'');
+    else if(tool.title.children.length!==parts.length||parts.some((part,index)=>tool.title.children[index]?.textContent!==part.text||tool.title.children[index]?.className!==(part.role?`tool-name-${part.role}`:'')))tool.title.replaceChildren(...parts.map(part=>element('span',part.role?`tool-name-${part.role}`:undefined,part.text)));
+  }
   private toolHeading(tool: ToolNode, source: JoinedTool): void {
-    setText(tool.title,toolLabel(source,{subject:this.hooks.subject,cwd:this.hooks.cwd?.(),nestedCount:this.rows.nestedCounts.get(source.callId)}));
+    this.toolTitle(tool,source);
     const args = record(source.args), value = args.sessionId ?? args.target;
     const eligible = typeof value === 'string' && subject(source, RAW_LIMIT, Number.MAX_SAFE_INTEGER) === value;
     const caption = eligible ? this.hooks.subject?.(value) : undefined; tool.subject = caption;
