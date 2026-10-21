@@ -252,6 +252,7 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .conversation-row { position: relative; display: grid; grid-template-columns: minmax(0,1fr) auto auto; align-items: baseline; gap: var(--s2); width: 100%; min-width: 0; min-height: 30px; padding: 0 var(--s3); border: 0; border-radius: var(--r-sm); text-align: left; }
 .conversation-row[aria-current=true] { background: var(--raised); font-weight: 500; }
 .conversation-row:hover { background: var(--raised); }
+.conversation-row[aria-current=true]:not([data-kind=file])::before, .agent-row:has(> .row-select[aria-current=page])::before { content: ""; position: absolute; inset-block: 0; left: 0; z-index: 2; border-left: 2px solid var(--accent); pointer-events: none; }
 .conversation-row-close { position: absolute; right: var(--s3); top: 50%; transform: translateY(-50%); display: none; align-items: center; justify-content: center; min-width: 24px; min-height: 24px; padding: 0; color: var(--muted); }
 .conversation-row-close .card-icon { width: 14px; height: 14px; }
 .conversation-row:is(:hover,:focus-within) .conversation-row-close { display: inline-flex; }
@@ -340,6 +341,7 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .roster-body > :not(.roster) { flex: none; }
 .roster { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; overflow-anchor: none; scrollbar-width: thin; scrollbar-color: var(--edge) transparent; container-type: inline-size; container-name: roster; }
 .agent-row { position: relative; display: grid; grid-template-columns: minmax(0,1fr) max-content; align-items: start; }
+.agent-row:hover, .agent-row:has(> .row-select[aria-current=page]) { background: var(--raised); border-radius: var(--r-sm); }
 .agent-row:is([data-action=message],[data-action=resume]) { grid-template-columns: minmax(0,1fr) max-content 24px; }
 .agent-row .row-select { grid-column: 1 / -1; grid-row: 1; display: grid; grid-template-columns: subgrid; grid-template-rows: 30px auto; row-gap: 0; align-items: start; height: auto; min-height: 30px; padding: 0 var(--s2) 0 var(--s3); }
 .agent-row .row-heading { grid-column: 1; grid-row: 1; display: flex; align-items: center; gap: var(--s1); height: 30px; min-width: 0; overflow: hidden; }

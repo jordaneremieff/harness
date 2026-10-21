@@ -74,6 +74,7 @@ export class Roster {
   private captions = new ConversationCaptions();
   private displayName(row: AgentRow): string {const status = this.resolvedStatus(row), name = status.name ?? rowName(row), tail = status.name !== undefined ? status.tail : this.tails.get(row.identity); return tail ? `${name} · ${tail}` : name;}
   private selected?: string;
+  private focused?: string;
   private message?: (identity: string) => void;
   private resumes = new Set<string>();
   private expanded = false;
@@ -113,12 +114,12 @@ export class Roster {
     this.node.addEventListener('scroll', () => this.schedule(), {passive: true});
   }
   focusSearch(): void { this.filterBox.hidden = false; byId<HTMLInputElement>('agent-search').focus(); }
-  set(rows: AgentRow[], meta?: Omit<CachedRoster, 'rows'>, selected?: string): void {
+  set(rows: AgentRow[], meta?: Omit<CachedRoster, 'rows'>, selected?: string, focused?: string): void {
     const now = Date.now();
     for (const row of rows) if (this.arrivals.get(row.identity)?.source !== row) this.arrivals.set(row.identity, {source: row, now});
     const incoming = new Map(rows.map(row => [row.identity, row]));
     this.rows = this.rows.flatMap(row => { const current = incoming.get(row.identity); incoming.delete(row.identity); return current ? [current] : []; });
-    this.rows.push(...incoming.values()); this.selected = selected;
+    this.rows.push(...incoming.values()); this.selected = selected; this.focused = focused;
     this.prune(new Set(rows.map(row => row.identity))); this.schedule();
     if (this.meta !== meta || this.footerCount !== rows.length) { this.meta = meta; this.footerCount = rows.length; this.footer(rows.length, meta, now); }
     void this.searchCached();
@@ -340,7 +341,7 @@ export class Roster {
     const reported = !state.tool && row.currentTool ? `Last reported tool · ${row.currentTool.name} · ${row.currentTool.argument}` : '';
     const description = [state.attention?.title, modelText(row), activityLine({...row, currentTool: state.tool}, state.label), reported, publishedRetryDescription(row)].filter(Boolean).join('\n');
     cached.select.title = description; cached.select.setAttribute('aria-description', [description, cached.preview.textContent ? `Preview: ${cached.preview.textContent}` : ''].filter(Boolean).join('\n'));
-    cached.select.setAttribute('aria-current', row.identity === this.selected ? 'page' : 'false');
+    cached.select.setAttribute('aria-current', row.identity === this.focused ? 'page' : 'false');
     cached.select.setAttribute('aria-label', `${this.displayName(row)} · ${row.identity} · ${state.label}`);
     cached.node.setAttribute('aria-label', this.displayName(row));
     cached.node.title = `${row.identity}\n${state.label}${state.attention?.title ? `: ${state.attention.title}` : ''}\n${row.ownerLabel ?? row.availability}`;

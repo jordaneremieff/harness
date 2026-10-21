@@ -1689,7 +1689,8 @@ export function renderPrimaryQueue(queue?: EventData['primary.queue']): void {
 function renderRoster(): void {
   tabStrip.render(); renderIdentity();
   renderSectionCounts();
-  roster.set(state.rosterOrder.flatMap(id => { const row = state.roster.get(id); return row ? [row] : []; }), state.rosterMeta, selectedAgent());
+  const focused = layoutTarget(currentLayout(), primaryTarget());
+  roster.set(state.rosterOrder.flatMap(id => { const row = state.roster.get(id); return row ? [row] : []; }), state.rosterMeta, selectedAgent(), focused?.kind === 'agent' ? focused.identity : undefined);
   for (const identity of state.roster.keys()) renderMessageResume(identity);
   refreshCaptionConsumers();
 }
