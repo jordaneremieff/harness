@@ -19,9 +19,9 @@ export function filterThreads(items: readonly ThreadListItem[], query: string): 
   if (!words.length) return [...items];
   return items.filter(item => { const text = `${item.title}\n${item.purpose}\n${item.id}`.toLowerCase(); return words.every(word => text.includes(word)); });
 }
-/** Active threads stay visible, with the newest destinations retained when activity is sparse. */
+/** Supplied membership gates eligibility before recency selects the compact destinations. */
 export function sidebarThreads(items: readonly ThreadListItem[], now = Date.now()): ThreadListItem[] {
-  return [...items].sort((a,b)=>b.updatedAt-a.updatedAt).filter((item,index)=>index<3 || item.updatedAt>=now-7*24*60*60*1000);
+  return items.filter(item=>item.members>=2).sort((a,b)=>b.updatedAt-a.updatedAt).filter((item,index)=>index<3 || item.updatedAt>=now-7*24*60*60*1000);
 }
 /** The second line of a list row: state, member count and an age that reads as an age. */
 export function threadMeta(item: ThreadListItem, now: number): string {
@@ -30,10 +30,9 @@ export function threadMeta(item: ThreadListItem, now: number): string {
   const when = !age ? '' : age === 'now' ? 'just now' : /^\d+[a-z]+$/.test(age) ? `${age} ago` : age;
   return [item.closed ? 'Closed' : '', members, when].filter(Boolean).join(' · ');
 }
-/** The heading carries the list size; a cut list adds a plus sign. */
+/** The supplied unique total precedes the overview response cut, not the member or search filter. */
 export function threadCount(overview: ThreadOverview | undefined): string {
-  if (!overview?.items.length) return '';
-  return `${overview.items.length}${overview.truncated ? '+' : ''}`;
+  return overview?String(overview.items.length+overview.omitted):'';
 }
 /** Names known stopped agents whose threads use the independent saved-storage reader. */
 function stoppedAgentsLine(count: number): string {

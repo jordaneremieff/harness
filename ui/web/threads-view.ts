@@ -5,7 +5,7 @@ import {navigateOptions} from './list-navigation.ts';
 import {markdownDom} from './safe-markdown.ts';
 import {
   FRAME_LABELS, eventTime, exchangeRows, filterThreads, mergeEvents, noteFitsInline, olderBoundary,
-  overviewLines, pageEvents, prependEvents, purposeNeedsExpansion, sidebarThreads, threadMeta, type ExchangeRow, type FrameChange, type ThreadNameFor} from './threads.ts';
+  overviewLines, pageEvents, prependEvents, purposeNeedsExpansion, sidebarThreads, threadCount, threadMeta, type ExchangeRow, type FrameChange, type ThreadNameFor} from './threads.ts';
 
 const SECTION_KEY = 'ui:sections:threads';
 const OPERATOR = 'You';
@@ -125,11 +125,15 @@ export class ThreadExplorer {
     const focused = this.list.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.threadId : undefined;
     const now = Date.now();
     this.list.replaceChildren(...items.map(item => this.row(item, now)));
-    if (focused) this.rowFor(focused)?.focus({preventScroll: true});
-    setText(this.all,overview?.items.length ? `All threads (${overview.items.length})` : 'All threads');
-    this.retry.disabled=this.loading;this.retry.title=this.diagnostics();
-    this.footer.replaceChildren(this.failedEmpty()?this.retry:this.all);
+    this.paintFooter(focused);
     } catch (error) {try {window.reportClientError?.('Threads',error);} catch {} throw error;}
+  }
+  private paintFooter(focused:string|undefined):void {
+    const total=threadCount(this.overview);
+    setText(this.all,total ? `All threads (${total})` : 'All threads');
+    this.retry.disabled=this.loading;this.retry.title=this.diagnostics();
+    this.footer.replaceChildren(...(this.failedEmpty()?[this.retry,this.all]:[this.all]));
+    if (focused) (this.rowFor(focused)??this.all).focus({preventScroll: true});
   }
   private failedEmpty():boolean {
     const overview=this.overview;
