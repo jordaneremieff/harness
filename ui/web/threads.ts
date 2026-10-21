@@ -19,6 +19,10 @@ export function filterThreads(items: readonly ThreadListItem[], query: string): 
   if (!words.length) return [...items];
   return items.filter(item => { const text = `${item.title}\n${item.purpose}\n${item.id}`.toLowerCase(); return words.every(word => text.includes(word)); });
 }
+/** Active threads stay visible, with the newest destinations retained when activity is sparse. */
+export function sidebarThreads(items: readonly ThreadListItem[], now = Date.now()): ThreadListItem[] {
+  return [...items].sort((a,b)=>b.updatedAt-a.updatedAt).filter((item,index)=>index<3 || item.updatedAt>=now-7*24*60*60*1000);
+}
 /** The second line of a list row: state, member count and an age that reads as an age. */
 export function threadMeta(item: ThreadListItem, now: number): string {
   const members = `${item.members} ${item.members === 1 ? 'member' : 'members'}`;

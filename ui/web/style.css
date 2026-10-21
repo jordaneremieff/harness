@@ -1563,6 +1563,40 @@ button.thread-person:hover, button.thread-sender:hover { background: var(--raise
   .transcript, .sidebar :is(.sidebar-scroll, .section-body, .roster, .threads-list, .thread-scroll, .agent-message-panel) { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--edge) 60%, transparent) transparent; }
   .transcript:hover, .sidebar :is(.sidebar-scroll, .section-body, .roster, .threads-list, .thread-scroll, .agent-message-panel):hover { scrollbar-color: var(--edge) transparent; }
 }
+.sidebar .sidebar-scroll { display: block; flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.sidebar .sidebar-scroll > .nav-section { flex: none; min-height: 0; }
+.sidebar .sidebar-conversations > .section-body, .sidebar #files-section-body { max-height: none; overflow: visible; }
+.sidebar .roster { flex: none; overflow: visible; }
+.sidebar .roster[data-catalog=true] { max-height: min(50dvh,400px); overflow-y: auto; }
+.sidebar .threads-list { max-height: none; overflow: visible; }
+.sidebar .threads-section[data-catalog=true] .threads-list { max-height: min(50dvh,400px); overflow-y: auto; }
+.sidebar .nav-row, .sidebar .sidebar-action { position: relative; display: flex; align-items: center; gap: var(--s2); width: 100%; min-width: 0; height: 30px; min-height: 30px; padding: 0 var(--s3); border: 0; border-radius: 0; background: transparent; line-height: 30px; text-align: left; }
+.sidebar .nav-row:hover, .sidebar .sidebar-action:hover { background: var(--raised); }
+.sidebar .nav-row[aria-current=page] { background: var(--raised); }
+.sidebar .nav-row[aria-current=page]::before { content: ""; position: absolute; inset-block: 0; left: 0; border-left: 2px solid var(--accent); pointer-events: none; }
+.sidebar .row-title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.sidebar .row-meta { flex: none; margin: 0; color: var(--muted); font-size: var(--fs-meta); white-space: nowrap; }
+.sidebar .conversation-row { min-height: 30px; height: 30px; border-radius: 0; }
+.sidebar .agent-row { min-height: 30px; height: 30px; border-radius: 0; }
+.sidebar .agent-row[data-detail=true] { min-height: 48px; height: 48px; }
+.sidebar .agent-row .row-select { grid-column: 1; grid-template-columns: minmax(0,1fr) max-content; grid-template-rows: 30px; min-height: 30px; height: 100%; padding: 0 var(--s3); }
+.sidebar .agent-row[data-detail=true] .row-select { grid-template-rows: 30px 18px; }
+.sidebar .agent-row .row-heading { grid-column: 1; grid-row: 1; min-width: 0; }
+.sidebar .agent-row .row-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.sidebar .agent-row .row-summary { display: contents; }
+.sidebar .agent-row .row-state { grid-column: 2; grid-row: 1; align-self: center; height: auto; font-size: var(--fs-meta); }
+.sidebar .agent-row .row-preview { display: block; grid-column: 1 / -1; grid-row: 2; min-width: 0; height: 18px; line-height: 18px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--muted); font-size: var(--fs-meta); }
+.sidebar .agent-row .row-separator, .sidebar .agent-row .row-identity { display: none; }
+.sidebar .agent-row > .row-age { height: 30px; min-height: 30px; }
+.sidebar .agent-row > .row-message { width: 24px; height: 30px; min-height: 30px; }
+.sidebar .row-state[data-busy=true]::before { content: none; }
+.sidebar .roster-footer { padding: 0; }
+.sidebar-content-row[data-unread=true] > .row-title::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: var(--s2); border-radius: 50%; background: var(--accent); vertical-align: middle; }
+.footer-label { display: none; }
+.sidebar-footer { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: var(--s1); }
+.sidebar-footer > .icon-button { width: auto; min-width: 0; gap: 2px; font-size: var(--fs-meta); }
+.sidebar-footer .footer-label { display: inline; white-space: nowrap; }
+.sidebar-footer #notices-count { display: none; }
 @media (prefers-reduced-motion:reduce) {
   * { scroll-behavior: auto; }
 }

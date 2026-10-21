@@ -1,6 +1,6 @@
 import type { AgentRow, CachedRoster } from '../shared/api.ts';
 import {cardAction, cardActionLabel} from './card-icons.ts';
-import { byId, button, details, element, setText } from './dom.ts';
+import { byId, button, element, setText } from './dom.ts';
 import { captureAnchor, layoutItems, restoreAnchor, visibleWindow } from './virtual.ts';
 import type { LayoutItem, VirtualLayout } from './virtual.ts';
 import { absoluteTime, compactAge, isValidTimestamp, previewText, relativeTime, timestampDetails } from './format.ts';
@@ -9,7 +9,6 @@ import {ConversationCaptions, agentName} from './tabs.ts';
 import type {PresentationTone} from './conversation-presentation.ts';
 import type {Attention} from './attention.ts';
 import {parseMarkdown, type MarkdownBlock, type MarkdownInline} from './markdown.ts';
-import {THREAD_FILTER_THRESHOLD} from './threads.ts';
 
 export type CachedPageSearch = {load: (cursor: string, signal: AbortSignal) => Promise<CachedRoster>; merge: (page: CachedRoster) => void};
 export function savedRosterLabel(meta: Omit<CachedRoster,'rows'> | undefined, now = Date.now()): string {
@@ -18,8 +17,7 @@ export function savedRosterLabel(meta: Omit<CachedRoster,'rows'> | undefined, no
   return Number.isFinite(at) && observed ? `Saved agent list · ${relativeTime(observed,now)}` : 'Saved agent list';
 }
 const SEARCH_PAGE_LIMIT = 20;
-const ROW_HEIGHT = 44;
-const RECENT_AGE = 24 * 60 * 60 * 1000;
+const ROW_HEIGHT = 30;
 type RowNode = {node: HTMLElement; select: HTMLButtonElement; state: HTMLElement; name: HTMLElement; summary: HTMLElement; separator: HTMLElement; preview: HTMLElement; identity: HTMLElement; ageButton: HTMLButtonElement; message: HTMLButtonElement; age: HTMLTimeElement; source: AgentRow; absolute: boolean; previewSource?: string};
 function inlinePreview(nodes: MarkdownInline[]): string {
   return nodes.map(node => node.type === 'text' || node.type === 'code' ? node.text : 'children' in node ? inlinePreview(node.children) : '').join('');
@@ -38,15 +36,24 @@ export function rosterPreview(source: string): string {
   const words = parseMarkdown(source.slice(0, 4096)).map(blockPreview).join(' ').replace(/\s+/g, ' ');
   return previewText(words, 1, 180).text;
 }
-function rowName(row: AgentRow): string {return agentName(row.name, row.handle, row.identity, undefined, row.firstMessage);}
+function rowName(row: AgentRow): string {return row.handle ? `@${row.handle.replace(/^@/,'')}` : agentName(row.name, row.handle, row.identity, undefined, row.firstMessage);}
 export type RosterStatus = {attention?: Attention; hideVisibleState?: boolean; glyph: string; label: string; tone?: PresentationTone; name?: string; tail?: string; tool?: AgentRow['currentTool']};
 export function rosterWorking(row: AgentRow, status: RosterStatus): boolean {
   return status.label === 'Working' || status.hideVisibleState === true && row.availability === 'live' && row.state === 'working';
+}
+function servedFact(row: AgentRow, status: RosterStatus): string | undefined {
+  if (status.attention) return [row.attention?.kind,row.attention?.kind === 'task-blocked' ? row.attention.reason : status.attention.title].filter(Boolean).join(' · ') || undefined;
+  if (rosterWorking(row,status)) return status.tool ? `${status.tool.name} · ${status.tool.argument}` : undefined;
+  return row.role;
 }
 function modelText(row: AgentRow): string {
   if (!row.model) return '';
   const thinking = row.model.thinkingLevel ?? row.thinkingLevel;
   return `${row.model.provider}/${row.model.modelId}${thinking ? ` · ${thinking}` : ''}`;
+}
+function rosterDescription(row:AgentRow,state:RosterStatus):string {
+  const reported = !state.tool && row.currentTool ? `Last reported tool · ${row.currentTool.name} · ${row.currentTool.argument}` : '';
+  return [state.attention?.title,modelText(row),state.label,state.tool ? `${state.tool.name} · ${state.tool.argument}` : '',row.role ? `Role: ${row.role}` : '',row.latestReply ? `Last reply: ${row.latestReply}` : '',reported,publishedRetryDescription(row)].filter(Boolean).join('\n');
 }
 /** A catalog retry is a publication, never current input or execution authority. */
 export function publishedRetryDescription(row: AgentRow): string {
@@ -72,13 +79,13 @@ export class Roster {
   private rows: AgentRow[] = [];
   private tails = new Map<string, string>();
   private captions = new ConversationCaptions();
-  private displayName(row: AgentRow): string {const status = this.resolvedStatus(row), name = status.name ?? rowName(row), tail = status.name !== undefined ? status.tail : this.tails.get(row.identity); return tail ? `${name} · ${tail}` : name;}
+  private displayName(row: AgentRow): string {const status = this.resolvedStatus(row), name = row.handle ? rowName(row) : status.name ?? rowName(row), tail = status.name !== undefined ? status.tail : this.tails.get(row.identity); return tail ? `${name} · ${tail}` : name;}
   private selected?: string;
   private focused?: string;
   private message?: (identity: string) => void;
   private resumes = new Set<string>();
   private expanded = false;
-  private older = button('', () => { this.expanded = !this.expanded; this.paint(); }, 'roster-older');
+  private older = button('', () => { if (!this.rows.length) {byId<HTMLButtonElement>('agent-new').click();return;} this.expanded = true; this.focusSearch(); this.paint(); }, 'nav-row roster-older');
   private paging = cardAction('next', 'More agents', () => { if (this.query() && this.search) void this.searchCached(true); else this.more('more'); }, 'roster-more');
   private pending = false;
   private meta?: Omit<CachedRoster, 'rows'>;
@@ -92,7 +99,6 @@ export class Roster {
   private resolvedStatus: (row: AgentRow) => RosterStatus;
   private select: (row: AgentRow) => void;
   private more: (action?: 'refresh' | 'more') => void;
-  private empty = element('p', 'empty-state');
   private filterBox = byId('agent-filter-box');
   readonly node = byId('roster');
   constructor(select: (row: AgentRow) => void, more: (action?: 'refresh' | 'more') => void, search: CachedPageSearch | undefined, message: ((identity: string) => void) | undefined, resolvedStatus: (row: AgentRow) => RosterStatus) {
@@ -178,42 +184,13 @@ export class Roster {
     for (const [id, cached] of this.cache) if (!ids.has(id)) { cached.node.remove(); this.cache.delete(id); this.heights.delete(id); }
     for (const id of this.arrivals.keys()) if (!ids.has(id)) this.arrivals.delete(id);
   }
+  diagnostics(): string {
+    const meta = this.meta;
+    return [savedRosterLabel(meta),this.searchNotice,this.searchError,meta?.error?.message,meta ? `Agent scan: ${meta.scan.state}; complete: ${meta.scan.complete}; skipped: ${meta.scan.skipped}` : '',meta?.nextCursor ? 'More cached agent rows are available.' : ''].filter(Boolean).join('\n');
+  }
   private footer(count: number, meta: Omit<CachedRoster, 'rows'> | undefined, now: number): void {
-    const footer = byId('roster-footer'); footer.replaceChildren();
-    if (this.searchNotice) footer.append(element('p', 'roster-search-status', this.searchNotice));
-    if (this.searchError) footer.append(details('Details', this.searchError));
-    if (count && (meta?.error || meta?.scan.state === 'failed')) footer.append(element('p', 'error', 'Agents could not be loaded.'));
-    if (meta?.error) footer.append(details('Details', meta.error.message));
-    if (count && meta?.scan.state === 'running') footer.append(element('p', undefined, 'Loading agents…'));
-    const saved = savedRosterLabel(meta,now); if (saved) footer.append(details('Details',saved));
-    this.footerAction(footer, meta);
-    if (meta?.scan.skipped) footer.append(element('p', undefined, 'Some records could not be read'));
-    footer.hidden = !footer.children.length && !meta?.stale && !meta?.error && meta?.scan.state !== 'failed' && meta?.scan.state !== 'running';
-  }
-  private footerAction(footer: HTMLElement, meta?: Omit<CachedRoster, 'rows'>): void {
-    const state = meta?.scan.state ?? 'not-started';
-    if (meta?.error || state === 'failed') footer.append(cardAction('restart', 'Refresh agents', () => this.more('refresh')));
-    else if (state === 'not-started' || meta?.stale) footer.append(cardAction('restart', 'Refresh agents', () => this.more('refresh')));
-    if (this.query() && this.search && this.searchNotice) this.cachedSearchAction(footer, meta);
-  }
-  private cachedSearchAction(footer: HTMLElement, meta?: Omit<CachedRoster, 'rows'>): void {
-    if (meta?.nextCursor && !this.searchController) footer.append(cardAction('next', 'More agents', () => { void this.searchCached(true); }));
-  }
-  private emptyState(): HTMLElement {
-    let text: string;
-    if (this.rows.length) text = 'No loaded agents match';
-    else {
-      switch (this.meta?.scan.state ?? 'not-started') {
-        case 'not-started': text = 'Agents are not loaded.'; break;
-        case 'running': text = 'Loading agents…'; break;
-        case 'failed': text = 'Agents could not be loaded.'; break;
-        case 'ready': text = 'No agents in this view'; break;
-      }
-    }
-    const failed = this.meta?.scan.state === 'failed' && !this.rows.length;
-    this.empty.className = failed ? 'roster-error error' : 'empty-state';
-    setText(this.empty, text);
-    return this.empty;
+    const footer = byId('roster-footer'); footer.replaceChildren(); footer.hidden = true;
+    byId('agent-refresh').title = ['Refresh agents',`${count} loaded`,savedRosterLabel(meta,now),this.diagnostics()].filter(Boolean).join('\n');
   }
   schedule(): void {
     if (this.pending) return;
@@ -233,38 +210,37 @@ export class Roster {
     const scan = this.meta?.scan;
     return scan?.state === 'ready' && !scan.complete && scan.scanId ? 'Load more agents' : '';
   }
-  private controls(olderCount: number, query: string): HTMLElement[] {
-    const controls: HTMLElement[] = [];
-    if (olderCount) {
-      setText(this.older, this.expanded ? 'Hide older agents' : `Show ${olderCount} older ${olderCount === 1 ? 'agent' : 'agents'}`);
-      this.older.setAttribute('aria-expanded', String(this.expanded)); controls.push(this.older);
-    }
-    const label = this.pagingLabel();
-    const searchMore = query && this.search && this.meta?.nextCursor && !this.searchController && !this.searchNotice;
-    const pageMore = !query && label && (this.expanded || !olderCount);
-    if (searchMore || pageMore) { cardActionLabel(this.paging, query ? 'More agents' : label); controls.push(this.paging); }
-    return controls;
+  private controls(query: string): HTMLElement[] {
+    const controls: HTMLElement[] = [], label = this.pagingLabel();
+    if ((this.expanded || query) && label && !this.searchController) {cardActionLabel(this.paging, query ? 'More agents' : label);controls.push(this.paging);}
+    setText(this.older,this.rows.length ? `All agents (${this.rows.length})` : 'New agent…');
+    this.older.setAttribute('aria-expanded',String(this.expanded));controls.push(this.older);return controls;
   }
   private filterVisibility(query: string): void {
-    this.filterBox.hidden = this.rows.length <= THREAD_FILTER_THRESHOLD && !query && document.activeElement !== byId('agent-search');
+    this.filterBox.hidden = !this.expanded && !query && document.activeElement !== byId('agent-search');
+  }
+  private priority(row: AgentRow): number {
+    const status = this.rowStatus(row);return status.attention ? 0 : rosterWorking(row,status) ? 1 : row.handle ? 2 : 3;
+  }
+  private selectedRows(filtered: AgentRow[], query: string): AgentRow[] {
+    const all = this.expanded || !!query;
+    const rows = (all ? filtered : filtered.filter(row=>this.priority(row)<3)).sort((a,b)=>this.priority(a)-this.priority(b)||b.modifiedAt-a.modifiedAt);
+    if (all) return rows;
+    const selected = rows.slice(0,8),focused = filtered.find(row=>this.cache.get(row.identity)?.node.contains(document.activeElement));
+    if (focused && !selected.includes(focused)) selected.splice(7,1,focused);
+    return selected;
   }
   private paint(): void {
     const anchor = captureAnchor(this.layout, this.node.scrollTop); const pins = this.pins();
-    const now = Date.now(); const filtered = this.filtered(); const query = this.query(); this.filterVisibility(query);
-    const scoped = query ? filtered : filtered.filter(row => this.rowStatus(row).attention || row.availability === 'live' || row.state === 'working' ||
-      (isValidTimestamp(row.modifiedAt) && row.modifiedAt >= now - RECENT_AGE) || pins.has(row.identity) || this.resumes.has(row.identity));
-    const olderCount = filtered.length - scoped.length;
-    const rows = this.expanded && !query ? filtered : scoped;
-    const priorities = new Map(rows.map(row => {const status = this.rowStatus(row); return [row.identity, status.attention ? 0 : rosterWorking(row, status) ? 1 : 2];}));
-    rows.sort((a, b) => (priorities.get(a.identity) ?? 2) - (priorities.get(b.identity) ?? 2));
+    const filtered = this.filtered(); const query = this.query(); this.filterVisibility(query);this.node.dataset.catalog=String(this.expanded||!!query);
+    const rows = this.selectedRows(filtered,query);
     this.layout = layoutItems(rows.map(row => row.identity), this.heights, ROW_HEIGHT);
     if (anchor) pins.add(anchor.id);
     const selected = rows.length > 100 ? visibleWindow(this.layout, this.node.scrollTop, this.node.clientHeight, {pins}).items : this.layout.items;
     this.captions.update(this.rows);
     this.tails = new Map(this.rows.flatMap(row => {const tail = this.captions.get(row.identity).tail; return tail ? [[row.identity, tail]] : [];}));
     const children = this.children(selected, rows, this.tails);
-    const controls = this.controls(olderCount, query);
-    if (!rows.length && !olderCount) children.push(this.emptyState());
+    const controls = this.controls(query);
     children.push(...controls);
     reconcileChildren(this.node, children);
     for (const item of selected) {
@@ -331,20 +307,22 @@ export class Roster {
   private row(row: AgentRow, identity: string): RowNode {
     const cached = this.cache.get(row.identity) ?? this.createRow(row);
     const state = this.rowStatus(row);
-    setText(cached.state, state.label==='Ready'?'Idle':state.label); cached.state.hidden = state.hideVisibleState === true || !cached.state.textContent; cached.state.title = state.attention?.title ?? state.label; cached.state.dataset.tone = state.tone ?? 'secondary'; cached.state.dataset.busy = String(state.label === 'Working'); setText(cached.name, state.name ?? rowName(row));
+    const working = rosterWorking(row,state);
+    setText(cached.state, state.attention ? 'Blocked' : working ? 'Working' : ''); cached.state.hidden = !cached.state.textContent; cached.state.title = state.attention?.title ?? state.label; cached.state.dataset.tone = state.tone ?? 'secondary'; cached.state.dataset.busy = String(working); setText(cached.name, row.handle ? rowName(row) : state.name ?? rowName(row));
     const caption=this.captions.get(row.identity);cached.name.title=`${cached.name.textContent}\n${caption.source==='first-message'?'Title from first message, not a supplied name':'Conversation name'}`;
-    this.updatePreview(cached, row.latestReply);
+    const fact = servedFact(row,state);
+    this.updatePreview(cached, fact); cached.node.dataset.detail = String(!cached.preview.hidden);
     identity = state.name !== undefined ? state.tail ?? '' : identity; setText(cached.identity, identity); cached.identity.hidden = !identity; cached.identity.title = `Agent ID: ${row.identity}`;
     cached.identity.setAttribute('aria-label', cached.identity.title);
     cached.node.dataset.live = String(row.availability === 'live');
     cached.node.dataset.tool = String(!!state.tool);
-    const reported = !state.tool && row.currentTool ? `Last reported tool · ${row.currentTool.name} · ${row.currentTool.argument}` : '';
-    const description = [state.attention?.title, modelText(row), activityLine({...row, currentTool: state.tool}, state.label), reported, publishedRetryDescription(row)].filter(Boolean).join('\n');
+    const description = rosterDescription(row,state);
+    cached.name.title = [cached.name.title,description].filter(Boolean).join('\n');
     cached.select.title = description; cached.select.setAttribute('aria-description', [description, cached.preview.textContent ? `Preview: ${cached.preview.textContent}` : ''].filter(Boolean).join('\n'));
     cached.select.setAttribute('aria-current', row.identity === this.focused ? 'page' : 'false');
     cached.select.setAttribute('aria-label', `${this.displayName(row)} · ${row.identity} · ${state.label}`);
     cached.node.setAttribute('aria-label', this.displayName(row));
-    cached.node.title = `${row.identity}\n${state.label}${state.attention?.title ? `: ${state.attention.title}` : ''}\n${row.ownerLabel ?? row.availability}`;
+    cached.node.title = `${row.identity}\n${description}\n${row.ownerLabel ?? row.availability}`;
     cached.source = row; this.messageAction(cached); this.updateAge(cached);
     return cached;
   }
@@ -352,7 +330,8 @@ export class Roster {
     const row = cached.source; const now = deliberate ? Date.now() : this.arrivals.get(row.identity)?.now ?? Date.now();
     if (deliberate) this.arrivals.set(row.identity, {source: row, now});
     const label = cached.absolute ? absoluteTime(row.modifiedAt) : relativeTime(row.modifiedAt, now);
-    const valid = row.modifiedAt > 0 && isValidTimestamp(row.modifiedAt) && !!label;
+    const state = this.rowStatus(row);
+    const valid = !state.attention && !rosterWorking(row,state) && row.modifiedAt > 0 && isValidTimestamp(row.modifiedAt) && !!label;
     cached.ageButton.dataset.absolute = String(cached.absolute);
     cached.ageButton.hidden = !valid; cached.ageButton.disabled = !valid; cached.ageButton.tabIndex = valid ? 0 : -1;
     setText(cached.age, valid ? cached.absolute ? label : compactAge(row.modifiedAt, now) : '');

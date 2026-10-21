@@ -10,6 +10,7 @@ export type TabRegions = {panes: () => TabRegion[]; conversations: HTMLElement};
 export type TabHooks = {layout: () => PaneLayout; activate: (pane: string, key: string) => void; close: (key: string) => void;
   move: (key: string, pane: string, index: number) => void; label: (tab: ConversationTab) => string;
   identity?: (tab: ConversationTab) => string | undefined;unnamed?:(tab:ConversationTab)=>boolean;
+  fallback?:()=>HTMLElement|undefined;
   status: (tab: ConversationTab) => {label: string; rowLabel?: string; glyph: string; tone?: PresentationTone; attention?: Attention}; section?: {collapsed(): boolean; toggle(): void}; keep?: (key:string)=>void; overflow?: (overflow: boolean, pane: string) => void};
 /** Keyed tab and sidebar nodes follow real pane ownership, independent of target kind. */
 export class TabStrip {
@@ -26,6 +27,7 @@ export class TabStrip {
   private observer: ResizeObserver;
   private heading: HTMLElement;
   private sectionBody: HTMLElement;
+  private fallback?:HTMLElement;
   private sectionToggle: HTMLButtonElement;
   private count: HTMLElement;
   private attention: HTMLElement;
@@ -95,16 +97,21 @@ export class TabStrip {
       host.dataset.sole = String(pane.tabs.length === 1);
       host.tabIndex = pane.tabs.length ? -1 : 0; host.dataset.focused = String(layout.focusedPane === pane.id);
     });
-    this.renderSection(tabs);
+    this.renderSection(tabs,this.paintFallback());
     for (const pane of panes) {const group = this.groups.get(pane.id); if (group) group.hidden = !pane.tabs.length;}
     this.fitStatuses(); if (reveal) this.revealActive();
     if (hadFocus) { if (focused && [...regions.map(region => region.tabs), this.regions.conversations].some(host => host.contains(focused))) focused.focus({preventScroll: true}); else this.focusActive(); }
   }
-  private renderSection(tabs: readonly ConversationTab[]): void {
+  private paintFallback():boolean {
+    const fallback=this.hooks.fallback?.();
+    if(this.fallback&&this.fallback!==fallback)this.fallback.hidden=true;this.fallback=fallback;
+    if(fallback){fallback.hidden=false;this.sectionBody.prepend(fallback);}return !!fallback;
+  }
+  private renderSection(tabs: readonly ConversationTab[], fallback=false): void {
     const collapsed = this.hooks.section?.collapsed() === true;
     this.sectionBody.hidden = collapsed; this.sectionToggle.setAttribute('aria-expanded', String(!collapsed));
     this.regions.conversations.dataset.collapsed = String(collapsed);
-    this.count.textContent = String(tabs.length); this.count.hidden = !collapsed;
+    this.count.textContent = String(tabs.length+Number(fallback)); this.count.hidden = !collapsed;
     const needs = tabs.flatMap(tab => {const attention = this.hooks.status(tab).attention; return attention ? [attention] : [];});
     this.attention.textContent = needs.length ? ` · ${needs.length} ${needs.length === 1 ? 'needs' : 'need'} you` : '';
     this.attention.hidden = !collapsed || !needs.length; this.attention.dataset.tone = needs.some(item => item.tone === 'error') ? 'error' : 'warning';

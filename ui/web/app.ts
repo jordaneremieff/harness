@@ -29,6 +29,7 @@ import { includedText } from './composer-attachments.ts';
 import {writeReloadState,readReloadState,deleteReloadState} from './reload-storage.ts';
 import { WorkbenchStatus } from './workbench-status.ts';
 import { VersionStatus } from './version-status.ts';
+import {RecentSidebar, SessionSidebar} from './sidebar-useful.ts';
 import { UpdateNotice } from './update-notice.ts';
 import { HealthStatus } from './health-status.ts';
 import { ReleaseNotice, loadedRelease, readReleaseHealth, type ReleaseReloadState } from './release-notice.ts';
@@ -44,7 +45,7 @@ import { imageUrl } from './image.ts';
 import { historyBecameReady, pageToReadingAnchor } from './transcript-history.ts';
 import { IdentityLookup } from './identity-lookup.ts';
 import { Roster, rosterWorking, savedRosterLabel, type RosterStatus } from './roster.ts';
-import {conversationAttention, attentionCounts, type Attention} from './attention.ts';
+import {conversationAttention, type Attention} from './attention.ts';
 import {activeDialog} from './dialog-state.ts';
 import {HandoverDialog} from './handover-view.ts';
 import { ThreadExplorer, ThreadReader, type ThreadEntry } from './threads-view.ts';
@@ -323,7 +324,9 @@ const actions: Actions = new Actions({handover: () => handover.open(), snapshot:
 const fileBrowse = new FileBrowseState();
 const paneRegions = new Map<string, {node: HTMLElement; tabs: HTMLElement; content: HTMLElement; plus: HTMLButtonElement; menu: HTMLButtonElement; actions: HTMLButtonElement; previous: HTMLButtonElement; next: HTMLButtonElement}>();
 const paneSplits = new Map<string, {node: HTMLElement; handle: HTMLElement; resizer?: Resizer; extent?: number}>();
+const primaryCreationRow=button('New session',()=>picker.newSession(projectPath()),'nav-row sidebar-action');
 const tabStrip = new TabStrip({layout: currentLayout, activate: activateConversationTab, close: key => applyLayout(closeTab(currentLayout(), key)),
+  fallback:()=>{if(paneLeaves(currentLayout().root).some(pane=>pane.tabs.some(tab=>tab.kind==='primary')))return;const row=byId('primary-row');if(primary()){row.hidden=false;return row;}return primaryCreationRow;},
   move: (key, pane, index) => {fileBrowse.keep(key);applyLayout(movePaneTab(currentLayout(), key, pane, index));}, label: tabLabel,unnamed:unnamedTab,keep:key=>fileBrowse.keep(key),
   identity: tab => tab.kind !== 'file' ? tabPresentation(tab).identityTail ?? '' : undefined,
   section: {collapsed: () => sidebarSections.tabs, toggle: () => setSidebarSection('tabs', !sidebarSections.tabs)},
@@ -346,6 +349,7 @@ export const filesViews = new FilesViews(stableViews,(workspace,tab,signal)=>req
   },tab=> {if (state.workspace) switchMarkdownView(tab);});
 function fileDocumentRoute(workspace:string,tab:FileTab,kind:'draft'|'text'):string {return `/api/files/roots/${encodeURIComponent(tab.rootId)}/${kind}?path=${encodeURIComponent(tab.path)}&workspace=${encodeURIComponent(workspace)}`;}
 export const filesTree = new FilesTree(byId('files-tree'),{
+  choose:()=>picker.openProject(byId('project-button')),
   page:(rootId,path,cursor)=> {const workspace = state.workspace?.id;if (!workspace) return Promise.reject(new Error('No workspace is selected.'));return request<FileDirectoryPage>(`/api/files/roots/${encodeURIComponent(rootId)}/directory?path=${encodeURIComponent(path)}&workspace=${encodeURIComponent(workspace)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);},
   select:chooseFile,keep:(rootId,path)=>fileBrowse.keep(tabKey({kind:'file',rootId,path})),addToMessage:addFileToMessage,escape:focusEditor,scope:()=>{renderSectionCounts();return watchFiles();},status:message=> {fileActionStatus = message;renderWorkbenchStatus();},operation:fileTreeOperation});
 export const fileRoot = new FileRootChoice({get:workspace=>request<FileRootSelection>(`/api/workspaces/${encodeURIComponent(workspace)}/files/root`),put:(workspace,path,revision)=>request<FileRootSelection>(`/api/workspaces/${encodeURIComponent(workspace)}/files/root`,'PUT',{path,expectedRevision:revision})},()=> {renderFiles();renderIdentity();for (const controller of controllers.values()) controller.transcript.refreshReferences();});
@@ -695,13 +699,13 @@ function refreshPaneSizes(): void {
 }
 
 let sidebarSectionWorkspace = '';
-const sidebarSections = {tabs:false,agents: true,files:false};
+const sidebarSections = {tabs:false,agents:false,files:false};
 function sidebarSectionKey(section: 'tabs' | 'agents' | 'files'): string { return `ui:sections:${state.workspace?.id ?? ''}:${section}`; }
 export function renderSidebarSections(): void {
   const workspace = state.workspace?.id ?? '';
   if (sidebarSectionWorkspace !== workspace) {
     sidebarSectionWorkspace = workspace;
-    for (const section of ['tabs','agents','files'] as const) { try {const saved = sessionStorage.getItem(sidebarSectionKey(section));sidebarSections[section] = saved === null ? section === 'agents' : saved !== 'false';} catch {sidebarSections[section] = section === 'agents';} }
+    for (const section of ['tabs','agents','files'] as const) { try {const saved = sessionStorage.getItem(sidebarSectionKey(section));sidebarSections[section] = saved === null ? false : saved !== 'false';} catch {sidebarSections[section] = false;} }
   }
   for (const section of ['tabs','agents','files'] as const) {
     const roots = {tabs:'sidebar-conversations', agents:'roster-section', files:'files-section'};
@@ -714,11 +718,17 @@ export function renderSidebarSections(): void {
 /** Agent headings count attention before work; file totals appear only above a closed tree. */
 export function renderSectionCounts(): void {
   const files = filesTree.rootCount(), agents = state.rosterOrder.flatMap(identity => {
-    const row = state.roster.get(identity); if (row?.availability !== 'live' || !connected) return [];
-    const status = rosterStatus(row); return [{attention: status.attention, working: rosterWorking(row, status)}];
+    const row = state.roster.get(identity); if (!row) return [];
+    const status = rosterStatus(row); return status.attention || rosterWorking(row,status) || row.handle ? [row] : [];
   });
   byId('agents-heading').title = savedRosterLabel(state.rosterMeta);
-  const labels = {files: files ? `${files.count}${files.more ? '+' : ''}` : '', agents: attentionCounts(agents)};
+  const labels = {files: files ? `${files.count}${files.more ? '+' : ''}` : '', agents: agents.length ? String(Math.min(8,agents.length)) : ''};
+  const heading = byId('files-heading'), folder = projectPath();
+  const titleNode = [...heading.childNodes].find(node=>node.nodeType===Node.TEXT_NODE);
+  if (titleNode) titleNode.textContent = folder ? `FILES · ${folder.split('/').filter(Boolean).at(-1) ?? folder}` : 'FILES';
+  heading.title = folder ?? 'Files';
+  byId('files-refresh').title=['Refresh files',filesTree.diagnostics()].filter(Boolean).join('\n');
+  renderUsefulSidebar();
   for (const section of ['files', 'agents'] as const) {
     const count = byId(`${section}-count`); setText(count, labels[section]); count.hidden = !labels[section] || section === 'files' && !sidebarSections.files;
   }
@@ -1424,7 +1434,7 @@ export function renderNavigation(): void {
   renderPaneTree(layout); renderSessionEntry(!!tab); byId('conversation-panes').hidden = !hasConversation() && !threadPane;
   tabStrip.render(); renderIdentity();
   byId('primary-row').hidden = !primary() || paneLeaves(layout.root).some(pane => pane.tabs.some(tab => tab.kind === 'primary'));
-  byId('primary-section').hidden = !hasConversation(); byId('primary-section-body').hidden = false;
+  byId('primary-section').hidden = false; byId('primary-section-body').hidden = false;
   byId('primary-row').setAttribute('aria-label', 'Return to Primary'); byId('primary-row').setAttribute('aria-current', agentSelected ? 'false' : 'page');
   const navigation = byId('navigation-access'); const leading = paneRegions.get(layout.focusedPane)?.node.querySelector<HTMLElement>('.tab-bar') ?? byId('workspace');
   if (navigation.parentElement !== leading) leading.prepend(navigation);
@@ -2171,6 +2181,12 @@ function showOperation(result: OperationView, workspaceId = state.workspace?.id)
   if (result.state !== 'reserved' && result.state !== 'dispatched') announce(operationLabel(result));
 }
 const communicationNotices = new CommunicationNoticeShelf();
+const recentSidebar = new RecentSidebar(notice=>senderName(notice.sender,toolSubjectCaption(notice.sender.identity)),notice=>{void openCommunicationNotice(notice).catch(showError);},notices);
+const sessionSidebar = new SessionSidebar({primaries:()=>[...state.primaries.values()],selected:()=>{const target=layoutTarget(currentLayout(),primaryTarget());return target?.kind==='primary'?target.key:undefined;},
+  choose:(item,saved)=>{if(item.lifecycle!=='ready'&&saved?.writer==='live')picker.open(item.cwd);else if(item.lifecycle!=='ready'&&item.sessionFile)picker.resume(item.cwd,item.sessionFile);else void capturePrimarySelection()(item.key).catch(showError);},
+  resume:item=>{if(item.writer==='live')picker.open(item.project);else picker.resume(item.project,item.path);},create:()=>picker.newSession(projectPath())});
+healthStatus.setSidebarDiagnostics(()=>[roster.diagnostics(),threadExplorer.diagnostics(),sessionSidebar.diagnostics(),filesTree.diagnostics()]);
+function renderUsefulSidebar():void {recentSidebar.render([...communicationNotices.items.values()]);sessionSidebar.refresh(state.workspace?.id);}
 function collectCommunicationNotices(previous: typeof state, event: ReceivedEvent): void {
   let changed = communicationNotices.scope(JSON.stringify([state.bootId,state.workspace?.id]));
   if (['primary.message','primary.entry','agent.frame'].includes(event.name)) changed = captureWatchedCommunications(previous, event.name) || changed;
@@ -2202,6 +2218,7 @@ function notificationsLabel(): string { const unread = unreadNotices(state) + co
 function noticesBadge(): void {
   const unread = unreadNotices(state) + communicationNotices.unread(); setText(byId('notices-count'), String(unread)); byId('notices-count').hidden = !unread;
   const label = notificationsLabel(); byId('notifications-button').setAttribute('aria-label', label); byId('notifications-button').title = label;
+  setText(byId('notices-label'),`Notices ${unread}`);recentSidebar.render([...communicationNotices.items.values()]);
 }
 function notices(): void {
   state = markReadNotices(state); noticesBadge(); modal.open('Notifications');
@@ -2215,6 +2232,7 @@ function communicationNoticeText(notice: CommunicationNotice): string {
   return [kind,sender,notice.firstLine].filter(Boolean).join(' · ');
 }
 function refreshCommunicationCaptions(): void {
+  recentSidebar.render([...communicationNotices.items.values()]);
   for (const control of modal.body.querySelectorAll<HTMLButtonElement>('.communication-notice-open')) {
     const notice = communicationNotices.items.get(control.dataset.noticeKey ?? ''); if (notice) setText(control,communicationNoticeText(notice));
   }
@@ -2539,9 +2557,9 @@ function bind(): void {
   document.addEventListener('compositionend', event=> {if(event.target)composingFields.delete(event.target);},true);
   for (const toggle of document.querySelectorAll<HTMLElement>('.section-toggle')) toggle.prepend(cardIcon('chevron'));
   for (const node of document.querySelectorAll<HTMLElement>('[data-control-icon]')) {
-    const count = node.querySelector<HTMLElement>('#notices-count');
+    const count = node.querySelector<HTMLElement>('#notices-count'),label = node.querySelector<HTMLElement>('.footer-label');
     controlIcon(node, node.dataset.controlIcon as CardIcon, node.getAttribute('aria-label') ?? node.textContent ?? '');
-    if (count) node.append(count);
+    if (count) node.append(count);if(label)node.append(label);
   }
   byId('files-heading').addEventListener('click',()=>setSidebarSection('files',!sidebarSections.files));
   byId('files-refresh').addEventListener('click',refreshFiles);

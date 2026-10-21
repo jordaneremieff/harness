@@ -1,11 +1,11 @@
 import type {AgentRow, ErrorView, ThreadEventView, ThreadListItem, ThreadOverview, ThreadPageView, ThreadView} from '../shared/api.ts';
 import {button, byId, copy, details, element, setText} from './dom.ts';
-import {absoluteTime} from './format.ts';
+import {absoluteTime, compactAge} from './format.ts';
 import {navigateOptions} from './list-navigation.ts';
 import {markdownDom} from './safe-markdown.ts';
 import {
-  FRAME_LABELS, THREAD_FILTER_THRESHOLD, emptyListText, eventTime, exchangeRows, filterThreads, mergeEvents, noteFitsInline, olderBoundary,
-  overviewLines, pageEvents, prependEvents, purposeNeedsExpansion, threadCount, threadMeta, type ExchangeRow, type FrameChange, type ThreadNameFor} from './threads.ts';
+  FRAME_LABELS, eventTime, exchangeRows, filterThreads, mergeEvents, noteFitsInline, olderBoundary,
+  overviewLines, pageEvents, prependEvents, purposeNeedsExpansion, sidebarThreads, threadMeta, type ExchangeRow, type FrameChange, type ThreadNameFor} from './threads.ts';
 
 const SECTION_KEY = 'ui:sections:threads';
 const OPERATOR = 'You';
@@ -42,7 +42,9 @@ export class ThreadExplorer {
   private readonly filter = byId<HTMLInputElement>('threads-filter');
   private readonly list = byId('threads-list');
   private readonly footer = byId('threads-footer');
-  private collapsed = true;
+  private collapsed = false;
+  private catalog = false;
+  private readonly all = button('All threads',()=>{this.catalog=true;this.paint();this.filter.focus();},'nav-row sidebar-action');
   private overview?: ThreadOverview;
   private failure?: unknown;
   private loading = false;
@@ -52,13 +54,13 @@ export class ThreadExplorer {
   private lastNames = '';
   constructor(hooks: ExplorerHooks) {
     this.hooks = hooks;
-    try { this.collapsed = sessionStorage.getItem(SECTION_KEY) !== 'false'; } catch { this.collapsed = true; }
+    try { this.collapsed = sessionStorage.getItem(SECTION_KEY) === 'true'; } catch { this.collapsed = false; }
     this.heading.addEventListener('click', () => this.toggle(!this.collapsed));
     this.refreshButton.addEventListener('click', () => { if (!this.collapsed) void this.load(); });
     this.filter.addEventListener('input', () => this.paint());
     this.filter.addEventListener('keydown', event => {
       if (event.key !== 'Escape' || !this.filter.value) return;
-      event.preventDefault(); event.stopPropagation(); this.filter.value = ''; this.paint();
+      event.preventDefault(); event.stopPropagation(); this.filter.value = ''; this.catalog = false; this.paint();
     });
     this.list.addEventListener('keydown', event => navigateOptions(event, this.list));
     this.paint();
@@ -109,33 +111,25 @@ export class ThreadExplorer {
     this.section.dataset.collapsed = String(this.collapsed);
     this.heading.setAttribute('aria-expanded', String(!this.collapsed));
     this.body.hidden = this.collapsed;
-    const count = threadCount(overview); setText(this.count, count); this.count.hidden = !count;
+    const selected = sidebarThreads(overview?.items ?? []);
+    setText(this.count,String(selected.length)); this.count.hidden = !selected.length;
+    this.refreshButton.title = ['Refresh threads',this.diagnostics()].filter(Boolean).join('\n');
     this.refreshButton.disabled = this.loading || this.collapsed;
-    const query = this.filter.value.trim();
-    this.filterBox.hidden = !(overview && overview.items.length > THREAD_FILTER_THRESHOLD || query || document.activeElement === this.filter);
+    const query = this.filter.value.trim();this.section.dataset.catalog=String(this.catalog||!!query);
+    this.filterBox.hidden = !this.catalog && !query && document.activeElement !== this.filter;
     this.lastNames = this.nameSignature();
     if (this.collapsed) return;
-    const items = overview ? filterThreads(overview.items, query) : [];
+    const items = filterThreads(this.catalog || query ? overview?.items ?? [] : selected,query);
     const focused = this.list.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.threadId : undefined;
     const now = Date.now();
     this.list.replaceChildren(...items.map(item => this.row(item, now)));
     if (focused) this.rowFor(focused)?.focus({preventScroll: true});
-    this.footer.replaceChildren(...this.footerNodes(overview, query, items.length));
+    setText(this.all,overview?.items.length ? `All threads (${overview.items.length})` : 'All threads');
+    this.footer.replaceChildren(this.all);
   }
-  private footerNodes(overview: ThreadOverview | undefined, query: string, shown: number): HTMLElement[] {
-    const lines: HTMLElement[] = [];
-    if (this.loading) lines.push(element('p', 'threads-note', overview ? 'Refreshing threads…' : 'Reading threads…'));
-    if (this.failure !== undefined) {
-      const failed = element('p', 'threads-note threads-failure', 'Threads could not be listed.');
-      lines.push(failed, details('Details', errorText(this.failure)), button('Try again', () => { void this.load(); }, 'threads-retry'));
-    }
-    if (!overview) return lines;
-    if (query && !shown && overview.items.length) lines.push(element('p', 'threads-note', 'No threads match.'));
-    else if (!overview.items.length) lines.push(element('p', 'threads-note', emptyListText(overview)));
-    for (const text of overviewLines(overview)) lines.push(element('p', 'threads-note', text));
-    const trouble = overview.storages.filter(state => state.state !== 'answered');
-    if (trouble.length) lines.push(details('Details', trouble.map(state => this.troubleLine(state)).join('\n')));
-    return lines;
+  diagnostics(): string {
+    const overview = this.overview;
+    return [this.loading ? 'Reading threads…' : '',this.failure === undefined ? '' : errorText(this.failure),...(overview ? overviewLines(overview) : []),...(overview?.storages.filter(state=>state.state!=='answered').map(state=>this.troubleLine(state)) ?? [])].filter(Boolean).join('\n');
   }
   private troubleLine(state: ThreadOverview['storages'][number]): string {
     const name = this.hooks.name(state.storageId);
@@ -145,10 +139,10 @@ export class ThreadExplorer {
     const entry = element('li', 'thread-item');
     const row = element('button', `nav-row thread-row${item.closed ? ' closed' : ''}`);
     row.type = 'button'; row.dataset.threadId = item.id;
-    const meta = threadMeta(item, now);
+    const meta = `${item.members} · ${compactAge(item.updatedAt,now)}`, detail = threadMeta(item,now);
     row.append(element('span', 'row-title', item.title || 'Untitled thread'), element('span', 'row-meta', meta));
-    row.title = [item.title, item.purpose, meta, item.updatedAt ? `Updated ${absoluteTime(item.updatedAt)}` : ''].filter(Boolean).join('\n');
-    row.setAttribute('aria-label', `${item.title || 'Untitled thread'}, ${meta}`);
+    row.title = [item.title, item.purpose, detail, item.updatedAt ? `Updated ${absoluteTime(item.updatedAt)}` : ''].filter(Boolean).join('\n');
+    row.setAttribute('aria-label', `${item.title || 'Untitled thread'}, ${detail}`);
     if (item.id === this.current) row.setAttribute('aria-current', 'page');
     row.addEventListener('click', () => this.hooks.open(item, row));
     entry.append(row); return entry;

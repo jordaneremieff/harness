@@ -17,7 +17,7 @@ export function visibleFileRows(directories: ReadonlyMap<string, Directory>, pat
   const directory = directories.get(path); if (!directory?.expanded) return [];
   return directory.entries.flatMap(entry => !visibleFileEntry(entry) ? [] : [{entry, depth, parent: path}, ...(entry.kind === 'directory' ? visibleFileRows(directories, entry.path, depth + 1) : [])]);
 }
-export type FilesTreeHooks = {page(rootId: string, path: string, cursor?: string): Promise<FileDirectoryPage>; select(rootId: string, path: string): void; keep?(rootId:string,path:string):void; addToMessage?(rootId:string,path:string):void; escape(): void; scope?():Promise<void>|void;status?(message:string):void;operation?(rootId:string,action:FileTreeAction,path:string,value?:string):Promise<undefined|(()=>void)>};
+export type FilesTreeHooks = {choose?():void;page(rootId: string, path: string, cursor?: string): Promise<FileDirectoryPage>; select(rootId: string, path: string): void; keep?(rootId:string,path:string):void; addToMessage?(rootId:string,path:string):void; escape(): void; scope?():Promise<void>|void;status?(message:string):void;operation?(rootId:string,action:FileTreeAction,path:string,value?:string):Promise<undefined|(()=>void)>};
 /** Disclosed directories retain their rows while bounded disk changes refresh their pages. */
 export class FilesTree {
   readonly node: HTMLElement;
@@ -35,6 +35,10 @@ export class FilesTree {
     this.paint(); if (root) void this.load('');
   }
   refresh(): void {this.invalidate(this.root?.id ?? '',[],true);}
+  diagnostics():string {
+    return [...this.directories].flatMap(([path,directory])=>[directory.loading?'Loading files…':'',directory.error,directory.incomplete].filter(Boolean).map(line=>`${path||this.root?.path||'Files'}: ${line}`)).join('\n');
+  }
+  private chooseFolder():HTMLElement {const node=element('button','file-tree-more','Choose folder');node.type='button';node.addEventListener('click',()=>this.hooks.choose?.());return node;}
   disclosed():string[] {return [...this.directories].filter(([path,directory])=>!path || directory.expanded).map(([path])=>path);}
   rootId():string|undefined {return this.root?.id;}
   /** Loaded top-level entries; a following page is reported so a count never claims to be complete. */
@@ -126,19 +130,17 @@ export class FilesTree {
     if (icon.classList.contains(`card-icon-${name}`)) return;
     const next = cardIcon(name);icon.setAttribute('class',next.getAttribute('class') ?? '');icon.querySelector('path')?.setAttribute('d',next.querySelector('path')?.getAttribute('d') ?? '');
   }
-  private directoryStatus(path: string, directory: Directory, depth: number): HTMLElement[] {
+  private directoryStatus(path: string, directory: Directory): HTMLElement[] {
     const children: HTMLElement[] = []; if (!directory.expanded) return children;
-    const line = directory.loading ? 'Loading files…' : directory.error ?? directory.incomplete;
-    if (line) {const status = element('p', 'file-tree-status', line); status.style.setProperty('--file-depth', String(depth)); status.setAttribute('role', 'status'); children.push(status);}
     if (directory.error || directory.nextCursor) {const more = element('button', 'file-tree-more', directory.error ? 'Retry files' : 'More files'); more.type = 'button'; more.addEventListener('click', () => {void this.load(path, !directory.error);}); children.push(more);}
     return children;
   }
   private rootStatus(rows: FileTreeRow[]): HTMLElement[] {
-    if (!this.root) return [element('p', 'file-tree-status', 'Choose a working folder.')];
+    if (!this.root) return [this.chooseFolder()];
     const base = this.directories.get(''); if (!base) return [];
     const children: HTMLElement[] = [];
-    if (!rows.length && !base.loading && !base.error && !base.incomplete && !base.nextCursor) children.push(element('p', 'file-tree-status', base.entries.length ? 'No visible files in this folder.' : 'No files in this folder.'));
-    return [...children, ...this.directoryStatus('', base, 0)];
+    if (!rows.length && !base.error && !base.nextCursor) children.push(this.chooseFolder());
+    return [...children, ...this.directoryStatus('', base)];
   }
   private paint(): void {
     const focus = this.node.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.path : undefined;
@@ -149,7 +151,7 @@ export class FilesTree {
     const children: HTMLElement[] = rows.map(row => this.paintRow(row, tabStop)); children.push(...this.rootStatus(rows));
     for (const [path, directory] of this.directories) {
       const row = rows.find(row => row.entry.path === path);
-      if (path && row) children.push(...this.directoryStatus(path, directory, row.depth + 1));
+      if (path && row) children.push(...this.directoryStatus(path, directory));
     }
     this.namingChildren(children);this.syncChildren(children);
     this.restoreFocus(focus,tabStop);

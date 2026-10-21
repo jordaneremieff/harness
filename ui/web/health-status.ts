@@ -1,6 +1,6 @@
 import { readHealthSnapshot, type HealthSnapshot } from '../shared/health.ts';
 import { identityText, type UiIdentity } from '../shared/version.ts';
-import { button, byId, copy, element } from './dom.ts';
+import { button, byId, copy, details, element } from './dom.ts';
 import { localDateTime } from './format.ts';
 import type { Modal } from './modal.ts';
 import { request } from './transport.ts';
@@ -16,6 +16,8 @@ export class HealthStatus {
   private identity: UiIdentity;
   private read: HealthRead;
   private generation: string | null;
+  private sidebarDiagnostics:()=>readonly string[] = ()=>[];
+  setSidebarDiagnostics(read:()=>readonly string[]):void {this.sidebarDiagnostics=read;}
   constructor(modal: HealthDialog, identity: UiIdentity, trigger: HTMLElement = byId('workbench-version'), readHealth: HealthRead = read,
     generation: string | null = document.querySelector('meta[name="ui-generation"]')?.getAttribute('content') ?? null) {
     this.modal = modal; this.identity = identity; this.read = readHealth; this.generation = generation;
@@ -26,13 +28,15 @@ export class HealthStatus {
     const controller = new AbortController();
     const body = this.modal.open('Version and health', undefined, () => controller.abort()), token = this.modal.token;
     this.token = token;
-    const content = element('div', 'health-details'); content.setAttribute('aria-live', 'polite'); body.append(content);
+    const content = element('div', 'health-details'); content.setAttribute('aria-live', 'polite');
+    const sidebar = element('section','health-sidebar'); body.append(content,sidebar);
     let busy = false;
     const copyVersion = button('Copy version', () => { void copy(identityText(this.identity)); });
     const refresh = button('Refresh health', () => {void load();});
     const load = async () => {
       if (busy || !this.modal.owns(token)) return;
       busy = true; refresh.disabled = true; content.replaceChildren(element('p', undefined, 'Read backend health…'));
+      sidebar.replaceChildren(...this.sidebarDiagnostics().filter(Boolean).map(text=>details('Sidebar list details',text)));
       try {
         const snapshot = readHealthSnapshot(await this.read(controller.signal));
         if (this.modal.owns(token)) renderHealth(content, snapshot, this.identity, this.generation);

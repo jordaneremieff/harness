@@ -5,14 +5,15 @@ import type {UiState} from './state.ts';
 export type NoticeGroup = {items: NoticeView[]; level: NoticeView['level']; message: string; times?: number};
 /** Resolves the conversation a notice names; undefined leaves the notice text as supplied. */
 export type NoticeNamer = (target: Target) => string | undefined;
-export type CommunicationNotice = {key:string;target:Target;entryId:string;messageId:string;kind:'report'|'result'|'check-in';sender:TaskSender;firstLine:string;read:boolean};
+export type CommunicationNotice = {key:string;target:Target;entryId:string;messageId:string;kind:'report'|'result'|'check-in';sender:TaskSender;firstLine:string;timestamp?:number;read:boolean};
 type Arrival = Omit<CommunicationNotice,'key'|'target'|'read'>;
+function noticeTimestamp(value:unknown):{timestamp?:number}{return typeof value==='number'&&Number.isFinite(value)?{timestamp:value}:{};}
 function communications(entries:readonly EntryView[]):Arrival[]{
   const result:Arrival[]=[];
   for(const entry of entries)for(const message of entry.messages??[]){
     const carrier=message.communication;if(carrier?.state!=='ready'||carrier.value.kind==='notice')continue;
     const value=carrier.value,line=value.body.text.split(/\r?\n/).find(line=>line.trim())?.trim()??'';
-    result.push({entryId:entry.id,messageId:message.id,kind:value.kind,sender:value.sender,firstLine:line.slice(0,240)+(line.length>240?'…':'')});
+    result.push({entryId:entry.id,messageId:message.id,kind:value.kind,sender:value.sender,firstLine:line.slice(0,240)+(line.length>240?'…':''),...noticeTimestamp(message.timestamp)});
   }
   return result;
 }
