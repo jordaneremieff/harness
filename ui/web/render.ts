@@ -213,7 +213,8 @@ type FailedStep = {entryId:string;rowId:string;callId?:string};
 type ReceivedResult = {entryId:string;messageId:string;rowId:string;entryAt:number;messageAt:number};
 type EntryNode = {node: HTMLElement; messages: Map<string, MessageNode>; dayDivider?: HTMLTimeElement; turnActions?: TurnActions; source?: EntryView; custom?: HTMLElement; session?: SessionNode; groupHeader?: HTMLElement};
 type ToolPathCopy = {path:string;run:()=>void};
-type ToolNode = {filePath?:string;filePathSource?:JoinedTool;pathCopySource?: JoinedTool; previewMore?: HTMLButtonElement; previewSource?: JoinedTool; previewSubjectRevision?: number; answerText?: string; subject?: ToolSubjectCaption; card: HTMLElement; node: HTMLDetailsElement; copy: HTMLButtonElement; title: HTMLElement; target: HTMLElement; glyph: HTMLElement; stateWord: HTMLElement; meta: HTMLElement; preview: HTMLElement; qualification: HTMLElement; expanded: HTMLElement; resultArea: HTMLElement; technical: HTMLDetailsElement; actions: HTMLElement; info: HTMLElement; source?: JoinedTool; inspectionSources?: Map<HTMLDetailsElement, JoinedTool>; presentation?: HTMLElement; argumentsDocument?: HTMLElement; argumentsSource?: JoinedTool; output?: HTMLElement; contentSource?: JoinedTool; viewport?: HTMLElement; pageViewports?: Set<HTMLElement>; resultDocument?: HTMLElement; documentSource?: JoinedTool; previewBudget?: PreviewBudget; outputNotice?: {node: HTMLElement; source: JoinedTool}; inspections?: {arguments: HTMLDetailsElement; output: HTMLDetailsElement; details: HTMLDetailsElement}};
+type ToolFileOpen = {source:JoinedTool;generation:number;path:string;destination:FileReferenceDestination;run:(control:HTMLElement)=>void};
+type ToolNode = {fileOpen?:ToolFileOpen;filePath?:string;filePathSource?:JoinedTool;pathCopySource?: JoinedTool; previewMore?: HTMLButtonElement; previewSource?: JoinedTool; previewSubjectRevision?: number; answerText?: string; subject?: ToolSubjectCaption; card: HTMLElement; node: HTMLDetailsElement; copy: HTMLButtonElement; title: HTMLElement; target: HTMLElement; glyph: HTMLElement; stateWord: HTMLElement; meta: HTMLElement; preview: HTMLElement; qualification: HTMLElement; expanded: HTMLElement; resultArea: HTMLElement; technical: HTMLDetailsElement; actions: HTMLElement; info: HTMLElement; source?: JoinedTool; inspectionSources?: Map<HTMLDetailsElement, JoinedTool>; presentation?: HTMLElement; argumentsDocument?: HTMLElement; argumentsSource?: JoinedTool; output?: HTMLElement; contentSource?: JoinedTool; viewport?: HTMLElement; pageViewports?: Set<HTMLElement>; resultDocument?: HTMLElement; documentSource?: JoinedTool; previewBudget?: PreviewBudget; outputNotice?: {node: HTMLElement; source: JoinedTool}; inspections?: {arguments: HTMLDetailsElement; output: HTMLDetailsElement; details: HTMLDetailsElement}};
 export type TranscriptGeometry = {generation: number; followTail: boolean; anchor: {id: string; offsetPx: number} | null; scrollTop: number};
 export type FindStatus = {total: number; position: number; moved: boolean; end: 'none' | 'first' | 'last' | 'unavailable' | null};
 export type FindSession = {next: (query: string) => FindStatus; previous: (query: string) => FindStatus; reset: () => void; close: () => void};
@@ -1980,21 +1981,33 @@ export class Transcript {
     if(!this.hooks.openFile||!source.args||source.args.truncated||tool.filePathSource!==source)return;
     return tool.filePath?this.hooks.references?.fileDestination(tool.filePath,this.hooks.cwd?.()):undefined;
   }
-  private openToolFile(tool:ToolNode,expected?:FileReferenceDestination):void {
-    const source=tool.source;if(!source||!this.currentToolSource(tool,source,this.generation))return;
-    const destination=this.toolFileDestination(tool,source);if(!destination)return;
-    if(expected&&(destination.rootId!==expected.rootId||destination.path!==expected.path))return;
-    this.hooks.openFile?.(destination);
+  private toolFileOpen(tool:ToolNode,source:JoinedTool):ToolFileOpen|undefined {
+    const resolved=this.toolFileDestination(tool,source),path=tool.filePath;if(!resolved||!path)return;
+    const captured={...source},generation=this.generation,owner=tool.card,destination={rootId:resolved.rootId,path:resolved.path};
+    return {source:captured,generation,path,destination,run:control=>{
+      const current=tool.source;
+      if(!current||this.hidden()||tool.card!==owner||!owner.isConnected||!control.isConnected||!owner.contains(control)||control.closest('[hidden],[inert]'))return;
+      if(control!==owner&&!tool.node.open)return;
+      if(!this.index.entries.has(captured.owner)||!this.sameToolPathSource(captured,current)||!this.currentToolSource(tool,current,generation))return;
+      if(toolLabelParts(current,{cwd:this.hooks.cwd?.()}).find(part=>part.role==='file')?.title!==path)return;
+      const next=this.toolFileDestination(tool,current);if(next?.rootId!==destination.rootId||next.path!==destination.path)return;
+      this.hooks.openFile?.(destination);
+    }};
   }
   private toolFileItems(tool:ToolNode|undefined):ContextItem[] {
-    if(!tool?.source)return [];const destination=this.toolFileDestination(tool,tool.source);if(!destination)return [];
-    return [{label:'Open beside',run:()=>this.openToolFile(tool,destination)}];
+    if(!tool?.source)return [];const open=this.toolFileOpen(tool,tool.source);if(!open)return [];
+    const owner=tool.card;return [{label:'Open beside',run:()=>open.run(owner)}];
   }
   private toolFileAction(tool:ToolNode,source:JoinedTool):void {
-    const destination=this.toolFileDestination(tool,source);let action=tool.actions.querySelector<HTMLButtonElement>('.tool-open-beside');
-    if(!destination){if(action)action.hidden=true;return;}
-    if(!action){action=button('Open beside',()=>this.openToolFile(tool),'tool-open-beside');action.addEventListener('pointerdown',event=>{if(event.button===0)event.preventDefault();});action.addEventListener('click',event=>event.stopPropagation());tool.actions.append(action);}
-    action.hidden=false;action.title=`Open ${destination.path} read-only beside Primary`;
+    const open=this.toolFileOpen(tool,source),previous=tool.fileOpen,action=tool.actions.querySelector<HTMLButtonElement>('.tool-open-beside');
+    const same=open&&previous&&open.generation===previous.generation&&this.sameToolPathSource(previous.source,source)&&open.path===previous.path&&open.destination.rootId===previous.destination.rootId&&open.destination.path===previous.destination.path;
+    if(action&&!same&&this.protectedNode(action))return;
+    if(!open){action?.remove();tool.fileOpen=undefined;return;}
+    if(action&&same)return;
+    const control:HTMLButtonElement=button('Open beside',()=>open.run(control),'tool-open-beside');
+    control.addEventListener('pointerdown',event=>{if(event.button===0)event.preventDefault();});control.addEventListener('click',event=>event.stopPropagation());
+    control.title=`Open ${open.destination.path} read-only beside Primary`;
+    if(action)action.replaceWith(control);else tool.actions.append(control);tool.fileOpen=open;
   }
   private toolState(tool: ToolNode, source: JoinedTool): void {
     const awaited = source.name === 'agent_await' ? awaitedToolState(source) : undefined;
