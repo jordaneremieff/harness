@@ -1,4 +1,5 @@
 import type { JsonDisplay, PartView } from '../shared/api.ts';
+import type { JoinedTool } from './transcript-tools.ts';
 import { plainPreviewWords } from './format.ts';
 
 /** One awaited result: who answered, how it ended, and the answer text when there is one. */
@@ -51,6 +52,50 @@ export function awaitedFromParts(parts: readonly PartView[]): AwaitedAnswers | u
     if (part.type !== 'text' || part.redacted || !part.structured) continue;
     const found = awaitedAnswers(part.structured); if (found) return found;
   }
+  return undefined;
+}
+
+type AwaitedState = {label: string; status: string};
+function awaitedDecisionState(decision: unknown, answered: number, unresolved: number, outcomes: number): AwaitedState | undefined {
+  if (decision === 'awaiting') return {label: `Waiting · ${unresolved} results`, status: 'working'};
+  if (decision === 'failed') return {label: 'Failed', status: 'error'};
+  if (decision === 'released') return {label: `Released · ${answered} answered, ${unresolved} unresolved`, status: 'available'};
+  if (decision === 'settled') {
+    const unanswered = outcomes - answered;
+    return {label: `${answered} answered${unanswered ? `, ${unanswered} unanswered` : ''}`, status: 'available'};
+  }
+  return undefined;
+}
+function awaitedResultState(display: JsonDisplay): AwaitedState | undefined {
+  const value = own(display, 'value'); if (!plain(value) || display.truncated) return undefined;
+  const decision = own(value, 'decision'), results = own(value, 'results'), unresolved = own(value, 'unresolved');
+  if (!Array.isArray(results) || !Array.isArray(unresolved) || results.length > MAX_RESULTS || unresolved.length > MAX_RESULTS) return undefined;
+  const answered = results.filter(item => plain(item) && own(item, 'status') === 'done').length;
+  return awaitedDecisionState(decision, answered, unresolved.length, results.length);
+}
+function awaitedPartState(parts: readonly PartView[]): AwaitedState | undefined {
+  for (const part of parts) {
+    if (part.type === 'toolResult') { const nested = awaitedPartState(part.parts); if (nested) return nested; }
+    if (part.type !== 'text' || part.redacted || !part.structured) continue;
+    const state = awaitedResultState(part.structured); if (state) return state;
+  }
+  return undefined;
+}
+function awaitedRequestCount(args: JsonDisplay | undefined): number | undefined {
+  if (!args || args.truncated || !plain(args.value)) return undefined;
+  const references = own(args.value, 'results');
+  return Array.isArray(references) && references.length > 0 && references.length <= 16 ? references.length : undefined;
+}
+/** The public await result owns release counts; only an exact running call establishes an unfinished wait. */
+export function awaitedToolState(source: Pick<JoinedTool, 'status' | 'result' | 'args'>): AwaitedState | undefined {
+  if (source.status === 'error') return undefined;
+  const result = awaitedPartState(source.result ?? []); if (result) return result;
+  if (source.status === 'working') {
+    const count = awaitedRequestCount(source.args);
+    return {label: count === undefined ? 'Waiting' : `Waiting · ${count} results`, status: 'working'};
+  }
+  if (source.status === 'ended' && source.result === undefined) return {label: 'No result recorded', status: 'missing'};
+  if (source.status === 'missing') return {label: '', status: 'unknown'};
   return undefined;
 }
 

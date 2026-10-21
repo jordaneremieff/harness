@@ -21,7 +21,7 @@ import {ConversationTasks, type ConversationTask, type TaskReference} from './co
 import { loadedReference, type ReferenceQuery, type ReferenceResolver } from './references.ts';
 import type { JoinedTool } from './transcript-tools.ts';
 import { outputPages } from './transcript-output.ts';
-import { awaitedAnswers, awaitedFieldsFromParts, awaitedFromParts, stillWaitingSentence } from './awaited-answers.ts';
+import { awaitedAnswers, awaitedFieldsFromParts, awaitedFromParts, awaitedToolState, stillWaitingSentence } from './awaited-answers.ts';
 import { appendKey, presentArguments, presentAwaited, presentResult, previewLimits, PreviewBudget } from './generic-content.ts';
 import type { PreviewActions } from './generic-content.ts';
 import type { SessionGroup } from './transcript-tools.ts';
@@ -1491,8 +1491,10 @@ export class Transcript {
     this.trackDisclosure(node, `tool:${source.callId}`);
     node.addEventListener('toggle', () => this.toolExpansion(tool)); this.registerContent(card); return tool;
   }
-  private toolState(tool: ToolNode, status: string): void {
-    const stateLabel = toolStateLabels[status] ?? 'State unavailable';
+  private toolState(tool: ToolNode, source: JoinedTool): void {
+    const awaited = source.name === 'agent_await' ? awaitedToolState(source) : undefined;
+    const status = awaited?.status ?? source.status;
+    const stateLabel = awaited?.label ?? toolStateLabels[status] ?? 'State unavailable';
     const stateIcon = toolStateIcons[status] ?? 'unknown';
     if (status === 'success') { if (tool.glyph.childNodes.length) tool.glyph.replaceChildren(); }
     else if (!tool.glyph.querySelector(`.card-icon-${stateIcon}`)) tool.glyph.replaceChildren(cardIcon(stateIcon));
@@ -1510,7 +1512,7 @@ export class Transcript {
       return tool.card;
     }
     tool.card.dataset.status = source.status;
-    this.toolState(tool, source.status);
+    this.toolState(tool, source);
     this.toolMetadata(tool, source);
     const explanation = [metadata(source), outputExplanation(source), source.args?.truncated ? 'Some arguments are not available.' : ''].filter(Boolean).join('\n');
     tool.qualification.hidden = !this.partialToolOutput(source);
@@ -1785,7 +1787,8 @@ export class Transcript {
     const output = partText(source.result ?? []); const pre = this.toolOutputNode(tool, source);
     this.presentToolRegion(tool, source); this.expandedContent(tool, source);
     this.updateResultDocument(tool, source, pre);
-    if (!tool.resultDocument) this.paintToolOutput(pre, source, bounded(output || this.emptyToolResult(source.status)));
+    const wait = source.name === 'agent_await' ? awaitedToolState(source)?.label : undefined;
+    if (!tool.resultDocument) this.paintToolOutput(pre, source, bounded(output || wait || this.emptyToolResult(source.status)));
     else if (pre.textContent) setText(preTextFrame(pre as HTMLElement), '');
     this.updateOutputNotice(tool, source, pre as HTMLElement, output);
     this.refreshToolPages(tool, source); this.refreshToolInspections(tool, source);
