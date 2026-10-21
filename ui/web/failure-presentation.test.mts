@@ -50,7 +50,9 @@ test('native retry and block facts cross the worker boundary into separate quiet
   await f.arrive({workspace: {id: 'native-failure', revision: 1, selectedTarget: agentTarget}, primaries: [], roster: [row], observations: [f.observation(identity, display)], targets: [f.targetFixture('native-failure', agentTarget, {draft: {revision: 1, text: 'Unsent native draft', mode: 'followUp', images: [], persisted: true}})]});
   const epoch = f.app.state.agentEpochs.get(identity); f.event('agent.availability', {identity, connectionEpoch: epoch, state: 'live', capabilities: row.capabilities}); await f.settle();
   assert.match(f.byId('workbench-activity').textContent, /^Retrying · attempt 2 · next /);
-  assert.equal(f.agentControl('state-line').textContent, 'Wait while the agent works.');
+  assert.equal(f.agentControl('state-line').textContent, 'Working · Steer at the next step; Queue adds a follow-up.');
+  assert.equal(f.agentControl('model').getAttribute('aria-description'), 'Model and thinking are locked while this agent works.');
+  assert.equal(f.agentControl('thinking').getAttribute('aria-description'), 'Model and thinking are locked while this agent works.');
   assert.equal(f.agentControl('model').disabled, true); assert.equal(f.agentControl('thinking').disabled, true);
   assert.doesNotMatch(f.agentControl('state-line').textContent, /Unclassified failure text/);
   source.revision = 2; source.status.live = {generation: {attempt: 3}};

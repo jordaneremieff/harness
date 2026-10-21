@@ -30,8 +30,6 @@ test('working delivery guidance yields to lifecycle and settings feedback withou
     if (availability === 'stored') {assert.equal(agentControl('start').hidden, false); assert.equal(agentControl('start').querySelector('.action-label')?.textContent, 'Start');}
     assert.equal(app.agentComposer().editor, editor); assert.deepEqual(ancestors(editor), chain); assert.equal(editor.value, '');
   }
-  streamSources.at(-1)?.onerror?.(); await settle();
-  assert.match(editor.placeholder, /^Draft for /); assert.doesNotMatch(line.textContent, /Steer at the next step/); assert.equal(agentControl('queue').hidden, true);
 });
 
 function ancestors(node: HostNode): HostNode[] {
@@ -104,4 +102,27 @@ test('conversation state and split width changes retain editor ancestry, draft i
       assert.match(editor.placeholder, next === 'running' ? /^Write a change or follow-up…$/ : next === 'incompatible' ? /^Draft for .*…$/ : /^Message .*…$/); assert.match(editor.getAttribute('aria-label') ?? '', /^(?:Message |Draft for )/);
     }
   }
+});
+
+test('a working recipient refreshes its placeholder across disconnect and reconnect', async t => {
+  const identity = 'disconnected-guidance-agent', target = {kind: 'agent' as const, identity};
+  const saved = targetFixture('disconnected-guidance-draft', target, {draft: {revision: 1, text: 'Retained draft', mode: 'followUp', persisted: true}});
+  const frame = {revision: 1, observedAt: 'now', entries: [], live: [], nextBefore: null, status: {busy: true}, coverage};
+  await arrive({workspace: {id: identity, revision: 1, primaryKey: null, selectedTarget: target}, primaries: [], roster: [agentFixture(identity)], targets: [saved], observations: [observation(identity, frame)]});
+  event('agent.availability', {identity, connectionEpoch: app.state.agentEpochs.get(identity), state: 'live', capabilities: agentFixture(identity).capabilities}); await settle();
+  const editor = agentControl('editor') as HostNode & {placeholder: string}; editor.focus(); editor.setSelectionRange(2, 7, 'backward'); editor.dispatch('select');
+  assert.equal(agentControl('queue').hidden, false); assert.equal(editor.placeholder, 'Write a change or follow-up…');
+  const now = Date.now(); t.mock.method(Date, 'now', () => now);
+  let recover: (() => void) | undefined; const timeout = window.setTimeout.bind(window);
+  t.mock.method(window, 'setTimeout', (callback, delay, ...args) => {
+    if (delay === 250) {recover = () => {if (typeof callback === 'function') callback(...args);}; return 0;}
+    return timeout(callback, delay, ...args);
+  });
+  const previous = streamSources.at(-1); assert.ok(previous); previous.onerror?.(); await settle();
+  assert.match(editor.placeholder, /^Draft for /); assert.doesNotMatch(agentControl('state').textContent, /Steer at the next step/); assert.equal(agentControl('queue').hidden, true);
+  assert.ok(recover); recover(); await settle(); const fresh = streamSources.at(-1); assert.ok(fresh); assert.notEqual(fresh, previous);
+  fresh.emit('ready', {bootId: 'boot', connectionId: 'restored-guidance-stream'}); await settle();
+  assert.equal(editor.placeholder, 'Write a change or follow-up…'); assert.equal(agentControl('queue').hidden, false);
+  assert.equal(app.agentComposer().editor, editor); assert.equal(editor.value, saved.draft.text);
+  assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [2, 7, 'backward']);
 });

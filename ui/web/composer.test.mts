@@ -820,13 +820,14 @@ test('truncated recovery Copy fetches exact text for the captured workspace and 
   f.ok(f.pick('POST', '/restore'), draft(4, ' exact\n original ')); await turn(); assert.equal(f.composer.editor.value, ' exact\n original '); assert.equal(f.calls.length, 0);
 });
 test('delayed draft restoration returns focus only to the original action owner', async () => {
-  for (const nextFocus of ['delivery', 'external', 'restore'] as const) {
+  for (const nextFocus of ['composer-action', 'external', 'restore'] as const) {
     const f = fixture(); const a = state('a', draft(3, '', 'steer'));
     const item = {admission: 'unconfirmed' as const, images: [], operationId: 'retained', target: a.target, text: 'preview', mode: 'steer', submittedDraftRevision: 2, createdAt: '', reason: 'unknown', textTruncated: true as const}; a.unconfirmed.push(item);
-    f.connect(a); f.composer.availability(true, true, true); assert.equal(f.node('queue').hidden, true);
+    f.connect(a); f.composer.availability(true, true, true); assert.equal(f.node('queue').hidden, false); assert.equal(f.node('queue').disabled, true);
+    const otherAction = new NodeFake(); otherAction.tag = 'button'; otherAction.type = 'button'; otherAction.setAttribute('aria-label', 'Add to message'); f.node('composer').append(otherAction);
     const restore = f.node('receipt').find('Restore to draft'); assert.ok(restore); restore.focus(); restore.fire('click');
     const fetch = f.pick('GET', '/retained'); assert.equal(fetch.path, '/api/workspaces/w/unconfirmed/retained');
-    const origin = nextFocus === 'delivery' ? f.node('queue') : nextFocus === 'external' ? new NodeFake() : restore; assert.ok(origin); origin.focus();
+    const origin = nextFocus === 'composer-action' ? otherAction : nextFocus === 'external' ? new NodeFake() : restore; assert.ok(origin); assert.equal(origin.disabled, false); origin.focus();
     f.ok(fetch, {...item, text: 'full original', textTruncated: undefined}); await turn();
     assert.equal(f.composer.editor.value, ''); assert.equal(f.pick('POST', '/restore').body.expectedDraftRevision, 3);
     f.ok(f.pick('POST', '/restore'), draft(4, 'full original', 'steer')); await turn(); assert.equal(f.composer.editor.value, 'full original'); assert.equal(document.activeElement === (nextFocus === 'restore' ? f.composer.editor : origin), true, `saved focus owner: ${nextFocus}`);
@@ -1228,7 +1229,7 @@ test('working image-only drafts retain both delivery actions and recognized comm
   assert.equal(f.calls.some(call => call.path.endsWith('/inputs') || call.path.endsWith('/command')), false);
 });
 test('recognized working commands replace delivery guidance until an ordinary message returns', () => {
-  const host = fixture('agent'), elements = createComposerElements('working-command');
+  const host = fixture('agent'), elements = {...createComposerElements('working-command'), overlay: undefined};
   const composer = new Composer(elements, {commands: () => ({state: 'ready', items: [{name: 'status', description: 'Read status', source: 'extension'}]}), submitted() {}, unknownCommand() {return false;}});
   composer.attach('w', state('command-guidance', draft(1, '/status', 'followUp'), true)); composer.availability(true, true, true);
   const label = elements.state?.querySelector('.composer-state-label');

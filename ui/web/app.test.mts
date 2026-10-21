@@ -1151,8 +1151,8 @@ test('every stored appearance value reads as dark, light or system and a missing
     assert.equal(hostDocument.documentElement.dataset.appearance, appearance ? expected[appearance] : 'system');
   }
 });
-test('editors keep accessible recipient labels and recipient placeholders', async () => {
-  const row=agentFixture('labels-agent'); await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:{kind:'agent',identity:row.identity},conversationLayout:twoPanes(row.identity)},primaries:[primaryFixture({epoch:709})],roster:[row]});
+test('idle editors keep accessible recipient labels and recipient placeholders', async () => {
+  const row=agentFixture('labels-agent'); await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:{kind:'agent',identity:row.identity},conversationLayout:twoPanes(row.identity)},primaries:[primaryFixture({epoch:709,activity:'idle'})],roster:[row]});
   for(const control of [primaryControl,agentControl]){const editor=control('editor') as HostNode & {placeholder:string}; assert.equal(editor.placeholder,`${control('recipient').textContent.replace(/^Draft for /, 'Message ')}…`); assert.doesNotMatch(editor.placeholder,/@ files|\/ commands/,'the placeholder names only the recipient'); assert.equal((control('recipient') as HostNode & {htmlFor:string}).htmlFor,editor.id); assert.match(control('recipient').textContent,/^Message /);}
 });
 
