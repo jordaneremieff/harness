@@ -745,6 +745,9 @@ summary::before { content: none; }
 .system-note, .custom-entry { margin: 0 0 var(--s4); }
 .thinking > summary, .system-note > details > summary, .custom-entry > details > summary, .facts-panel summary { width: fit-content; max-width: 100%; padding: var(--s1) var(--s2) var(--s1) 0; overflow: hidden; color: var(--muted); font-size: var(--fs-meta); text-overflow: ellipsis; white-space: nowrap; }
 .thinking > summary { font-weight: 400; line-height: 20px; }
+.message-body > .tool-shell + .thinking:not([open]):has(+ .tool-shell) { margin-top: var(--s1); }
+.message-body > .tool-shell + .thinking:not([open]):has(+ .tool-shell) > summary { padding-block: 0; color: var(--dim); font-size: var(--fs-meta); }
+.message-body > .tool-shell + .thinking:not([open]) + .tool-shell { margin-top: var(--s1); }
 .thinking-label { font-weight: 500; }
 .thinking[open] > summary > .thinking-preview { display: none; }
 .thinking > summary:hover, .system-note > details > summary:hover, .custom-entry > details > summary:hover { color: var(--fg); }
