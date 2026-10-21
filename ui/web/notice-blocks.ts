@@ -36,6 +36,7 @@ function receivedNotice(item:Item,owner:string|undefined):boolean {
 function continuesRun(run:Run,item:Item,received:boolean,position:number|undefined,prior:number|undefined):boolean {
   if(run.key!==item.key||run.received!==received||position===undefined||prior===undefined)return false;
   if(position!==prior&&position!==prior+1)return false;
+  if(!received)return true;
   const before=run.items.at(-1)?.message.timestamp,after=item.message.timestamp;
   return !(typeof before==='number'&&typeof after==='number'&&isValidTimestamp(before)&&isValidTimestamp(after)&&after-before>30*60_000);
 }
