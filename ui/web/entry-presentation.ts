@@ -1,9 +1,32 @@
-import type { EntryView, JsonDisplay, MessageView, PartView } from '../shared/api.ts';
-import { element } from './dom.ts';
+import type { EntryView, JsonDisplay, MessageView, PartView, TaskSender } from '../shared/api.ts';
+import { button, element, setText } from './dom.ts';
+import {conversationIdentityText} from './tabs.ts';
+import type {NamedDestination} from './tool-sentences.ts';
 import { previewText } from './format.ts';
 import { identifierField } from './generic-content.ts';
 import type { PresentationContext } from './transcript-presentation.ts';
 
+export function senderName(sender: TaskSender, loaded?: NamedDestination): string {
+  if (loaded?.name && loaded.provenance) return loaded.name;
+  const supplied = sender.name?.trim();
+  if (supplied && supplied !== sender.identity && !conversationIdentityText(supplied)) return supplied;
+  if (loaded?.derived) return loaded.text;
+  if (loaded?.open && loaded.text && !loaded.text.startsWith('Unnamed')) return loaded.text;
+  return loaded?.fallback ?? `Conversation ${sender.identity.slice(0, 8)}`;
+}
+export function taskSenderHeading(node: HTMLElement, sender: TaskSender, subject: () => NamedDestination | undefined, active: () => boolean): string {
+  const destination = subject(), name = senderName(sender, destination);
+  if (destination?.open) {
+    let link = node.querySelector<HTMLButtonElement>('.task-sender');
+    if (!link || link.dataset.identity !== sender.identity) {
+      link = button('', () => {if (active()) subject()?.open?.();}, 'task-sender'); link.dataset.identity = sender.identity;
+      node.replaceChildren(element('span', undefined, 'From '), link);
+    }
+    setText(link, name); link.title = sender.identity;
+  } else {if (node.querySelector('.task-sender')) node.replaceChildren(); setText(node, `From ${name}`);}
+  node.title = sender.identity;
+  return name;
+}
 function meaningfulPart(part: PartView): boolean {
   if (part.type === 'text' || part.type === 'thinking') return !!part.text.trim() || part.redacted === true || !!part.more;
   return true;

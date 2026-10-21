@@ -25,7 +25,7 @@ import type {Control} from './control.mts';
 import type {OwnerConnection} from './owner-client.mts';
 import type {OwnerDescriptor, OwnerStateIdentity, OwnerRecovery} from '../shared/owner.ts';
 
-export type AgentAdapter = Pick<AgentService, 'roster' | 'rosterRow' | 'prepare' | 'refresh' | 'select' | 'hide' | 'reconnect' | 'history' | 'image' | 'imageInputAvailable' | 'inspect' | 'inventory' | 'command' | 'threads' | 'thread' | 'submit' | 'retrySubmit' | 'abort' | 'configure' | 'disconnectWorkspace' | 'close'> & {readonly available?:boolean};
+export type AgentAdapter = Pick<AgentService, 'roster' | 'rosterRow' | 'lookup' | 'prepare' | 'refresh' | 'select' | 'hide' | 'reconnect' | 'history' | 'image' | 'imageInputAvailable' | 'inspect' | 'inventory' | 'command' | 'threads' | 'thread' | 'submit' | 'retrySubmit' | 'abort' | 'configure' | 'disconnectWorkspace' | 'close'> & {readonly available?:boolean};
 export type RegistryOptions = {stateDir: string; cwd: string; executable: string; agentStore: string;
   agents?: (options: AgentServiceOptions) => AgentAdapter; primary?: (options: PrimarySessionOptions) => PrimarySession; measure?: Measure;
   agentStart?: Pick<StartOptions,'spawn'|'timeoutMs'|'agentDir'>;

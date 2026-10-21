@@ -155,7 +155,7 @@ test('a member name opens that conversation and leaves the reader', async () => 
 
 test('older events load on request and join the loaded ones', async () => {
   const newest = page(events.slice(2), {id: MORE, sequence: 6}); newest.nextBefore = 3; newest.coverage = {complete: false};
-  const older = page(events.slice(0, 2), {id: MORE});
+  const older = page(events.slice(0, 2), {id: MORE, sequence: 6});
   fixtureControl.threadHandler = url => url.pathname !== '/api/threads/read' ? overview : url.searchParams.get('before') ? older : newest;
   byId('threads-list').querySelectorAll('button')[1]?.click(); await settle();
   const node = reader(); assert.ok(node);

@@ -11,10 +11,11 @@ const catalogRow = (id: string, name?: string) => ({id, storageId: id.split(':')
 const scan = {state: 'ready', complete: true, visited: 3, skipped: 0, omitted: 0};
 const rows = new Map([['a', catalogRow('a', 'Alpha')], ['b', catalogRow('b')], ['c:2', catalogRow('c:2', 'Child')]]);
 function registry() {
-  const calls = {roster: [] as unknown[], row: [] as string[]};
+  const calls = {roster: [] as unknown[], row: [] as string[], lookup: [] as string[][]};
   const agents = {
     roster: (options: unknown) => {calls.roster.push(options); return {rows: [...rows.values()].slice(0, 1), nextCursor: 'next', coverage: {complete: false, omitted: 0}, observedAt: 'now', stale: false, scan};},
     rosterRow: (identity: string) => {calls.row.push(identity); return rows.get(identity);},
+    lookup: async (identities: string[]) => {calls.lookup.push(identities);},
   };
   return {registry: {agents} as unknown as Registry, calls};
 }
@@ -25,7 +26,8 @@ test('an identity lookup returns the catalog rows for exactly those identities, 
   const {registry: target, calls} = registry();
   const result = await lookup(target, '?identity=c%3A2&identity=missing&identity=a&identity=c%3A2');
   assert.deepEqual(result.rows.map(row => [row.identity, row.name]), [['c:2', 'Child'], ['a', 'Alpha']]);
-  assert.deepEqual(calls.row, ['c:2', 'missing', 'a'], 'a repeated identity is read once');
+  assert.deepEqual(calls.row, ['c:2', 'missing', 'a', 'missing'], 'cached identities are read once and a miss is checked after its named read');
+  assert.deepEqual(calls.lookup, [['missing']]);
   assert.equal(result.nextCursor, null);
 });
 

@@ -2867,7 +2867,7 @@ test('static workbench markup owns one footer and keeps composer actions without
   assert.match(factory, /const intake = element\('span','composer-intake'\); intake\.append\(attach,sources,picker\)/);
   assert.match(factory, /cardAction\('plus', 'Add to message'/);
   assert.match(factory, /const queueGuidance = element\('span', 'sr-only', queueDescription\)/);
-  assert.match(factory, /root\.append\(receipt, utilities, input, meta, queueGuidance\)/); assert.match(factory, /meta\.append\(state, stateDetails\)/); assert.match(factory, /utilities\.append\(recallLine\)/); assert.match(factory, /line\.append\(intake, stop, settings, bar\)/); assert.match(factory, /bar\.append\(submit\)/); assert.match(factory, /submit\.append\(queue, start, send\)/);
+  assert.match(factory, /root\.append\(receipt, utilities, input, meta, queueGuidance\)/); assert.match(factory, /meta\.append\(state, stateDetails\)/); assert.match(factory, /utilities\.append\(recallLine, handoverHint\)/); assert.match(factory, /line\.append\(intake, stop, settings, bar\)/); assert.match(factory, /bar\.append\(submit\)/); assert.match(factory, /submit\.append\(queue, start, send\)/);
   assert.doesNotMatch(factory, /composer-guidance|usage-details|class="statusline"|root\.append\([^)]*receiptDetails/);
   assert.equal([...html.matchAll(/id="focused-composer-status" class="workbench-draft-state"/g)].length, 1);
 });
@@ -2878,7 +2878,7 @@ test('composer utilities precede the writing surface and transcript paints retai
   assert.ok(utilities && input && surface && shelf);
   assert.ok(elements.queueGuidance); assert.equal(elements.queueGuidance.className, 'sr-only');
   assert.deepEqual(root.children, [elements.receipt, utilities, input, elements.meta, elements.queueGuidance]);
-  assert.deepEqual(utilities.children, [elements.recallLine]);
+  assert.deepEqual(utilities.children, [elements.recallLine, elements.handoverHint]);
   assert.deepEqual((elements.meta as unknown as FakeNode).children, [elements.state, elements.stateDetails]);
   assert.deepEqual(shelf.children, [input.querySelector('.composer-intake'), input.querySelector('.stop'), elements.settings, input.querySelector('.composer-bar')]);
   assert.equal(surface.parentNode, input); assert.equal(editor.parentNode, surface); assert.equal(surface.children[1], editor);

@@ -362,6 +362,10 @@ export class AgentService {
 		const cached = this.#rows.get(identity);
 		return cached ? structuredClone(cached.row) : undefined;
 	}
+	lookup(identities: string[]): Promise<void> {
+		this.#ready();
+		return this.#request<void>("lookup", [identities]);
+	}
 	refresh(scanId?: string): Promise<CatalogScan> {
 		this.#ready();
 		return this.#request("refresh", [scanId]);

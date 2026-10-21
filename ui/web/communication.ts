@@ -1,17 +1,16 @@
-import type { AgentRow, Communication, CommunicationPresentation, JsonDisplay, MessageView } from '../shared/api.ts';
+import type { AgentRow, Communication, CommunicationPresentation, JsonDisplay, MessageView, TaskSender } from '../shared/api.ts';
 import type {ResultSelector} from '../shared/inspection.ts';
 import { button, copy, element, rawText, setText } from './dom.ts';
 import { cardAction, cardActionLabel } from './card-icons.ts';
 import { markdownDom, sourceWrap } from './safe-markdown.ts';
 import { isValidTimestamp, previewText } from './format.ts';
-import { messageAriaLabel, presentMessage } from './entry-presentation.ts';
+import { messageAriaLabel, presentMessage, senderName, taskSenderHeading } from './entry-presentation.ts';
 import type { QualifiedReference, ReferenceField, ReferenceQuery } from './references.ts';
 import type {NamedDestination} from './tool-sentences.ts';
-import {conversationIdentityText} from './tabs.ts';
 
 type Shell = {node: HTMLElement; header: HTMLElement; heading: HTMLElement; actions: HTMLElement; body: HTMLElement};
 export type SenderSummary = Pick<AgentRow, 'handle' | 'model' | 'thinkingLevel'>;
-type Hooks = {senderSummary?: (identity:string)=>SenderSummary|undefined; thread?: (id:string,title?:string)=>void; operatorInput?: boolean; structured?: (display: JsonDisplay) => HTMLElement | undefined; inputContent?: (message:MessageView, root:HTMLElement)=>boolean; reply?: (message:MessageView)=>{text:string;open():void}|undefined; subject?: (identity:string)=>NamedDestination|undefined; result?: (identity:string,selector:ResultSelector)=>void; reference?: (query: ReferenceQuery, active: (node: HTMLElement) => boolean) => HTMLElement; active(): boolean; current(): MessageView; protected(node: HTMLElement): boolean; raw(message: MessageView): string; expanded(key: string): boolean; disclosure(key: string, open: boolean): void; layout(): void};
+type Hooks = {taskSender?: ()=>TaskSender|undefined; senderSummary?: (identity:string)=>SenderSummary|undefined; thread?: (id:string,title?:string)=>void; operatorInput?: boolean; structured?: (display: JsonDisplay) => HTMLElement | undefined; inputContent?: (message:MessageView, root:HTMLElement)=>boolean; reply?: (message:MessageView)=>{text:string;open():void}|undefined; subject?: (identity:string)=>NamedDestination|undefined; result?: (identity:string,selector:ResultSelector)=>void; reference?: (query: ReferenceQuery, active: (node: HTMLElement) => boolean) => HTMLElement; active(): boolean; current(): MessageView; protected(node: HTMLElement): boolean; raw(message: MessageView): string; expanded(key: string): boolean; disclosure(key: string, open: boolean): void; layout(): void};
 type Ready = Extract<CommunicationPresentation, {state: 'ready'}>;
 type Row = [string, string, QualifiedReference?];
 function qualified(label: string, text: string, owner: string, field: ReferenceField): Row { return [label, text, {text, owner, field}]; }
@@ -121,6 +120,7 @@ export class CommunicationCard {
   private readonly toggle = element('button', 'communication-toggle');
   private readonly kindLabel = element('span', 'communication-line-kind');
   private readonly preview = element('span', 'communication-line-preview');
+  private taskName?: string;
   private lineMode = false;
   private lineOpen = false;
   private readonly text = element('div', 'communication-text');
@@ -203,30 +203,34 @@ export class CommunicationCard {
       },'communication-result-link');action.setAttribute('aria-label',label);action.title=label;this.resultActions.append(action);
     });
   }
-  private senderLabel(sender: Communication['sender']): string {
-    const loaded=this.hooks.subject?.(sender.identity);
-    if (loaded?.name && loaded.provenance) return loaded.name;
-    const supplied=sender.name?.trim();
-    if (supplied && supplied!==sender.identity && !conversationIdentityText(supplied)) return supplied;
-    if (loaded?.derived) return loaded.text;
-    if (loaded?.open && loaded.text && !loaded.text.startsWith('Unnamed')) return loaded.text;
-    return loaded?.fallback ?? `Conversation ${sender.identity.slice(0, 8)}`;
+  private senderHeading(value: CommunicationPresentation, message: MessageView, input: boolean): string {
+    const sender = value.state === 'ready' ? value.value.sender : undefined;
+    const task = message.role === 'user' && !this.hooks.operatorInput ? this.hooks.taskSender?.() : undefined;
+    this.taskName = undefined;
+    setText(this.headingKind, sender ? communicationKind(value) : '');
+    if (!sender && task) {
+      this.taskName = taskSenderHeading(this.headingName, task, () => this.hooks.subject?.(task.identity), () => !!this.current() && this.hooks.taskSender?.()?.identity === task.identity);
+      return `From ${this.taskName}`;
+    }
+    const heading = sender ? senderName(sender, this.hooks.subject?.(sender.identity)) : input ? presentMessage(message, this.hooks.operatorInput).label : '';
+    if (this.headingName.querySelector('.task-sender')) this.headingName.replaceChildren();
+    setText(this.headingName, heading); this.headingName.title = '';
+    return heading;
   }
   private header(value: CommunicationPresentation, message: MessageView): void {
     this.shell.node.dataset.state = value.state;
     this.shell.node.dataset.reason = value.state === 'unavailable' ? value.reason : '';
     const sender=value.state==='ready'?value.value.sender:undefined;
     const input=unassociatedInput(message); this.shell.node.classList.toggle('user',input);
-    const heading=sender?this.senderLabel(sender):input?presentMessage(message,this.hooks.operatorInput).label:'';
-    setText(this.headingKind, sender ? communicationKind(value) : ''); setText(this.headingName,heading);
+    const heading = this.senderHeading(value, message, input);
     this.paintMetadata(sender?.identity);
     this.paintStatus(value);
     this.arrangeLine(value, heading);
     if (input) {this.headingKind.hidden = true; this.headingSeparator.hidden = true;}
-    this.shell.heading.hidden = !sender && !(input && heading); this.shell.heading.title = sender?.identity ?? '';
+    this.shell.heading.hidden = !sender && !this.taskName && !(input && heading); this.shell.heading.title = sender?.identity ?? '';
     this.unverified.hidden = value.state === 'ready' || input;
-    const accessible = heading || (input ? messageAriaLabel(message, this.hooks.operatorInput) : 'Message with unverified source');
-    this.shell.node.setAttribute('aria-label', input ? accessible : `${communicationKind(value)} · ${accessible}`);
+    const accessible = this.taskName ? `Message from ${this.taskName}` : heading || (input ? messageAriaLabel(message, this.hooks.operatorInput) : 'Message with unverified source');
+    this.shell.node.setAttribute('aria-label', input || this.taskName ? accessible : `${communicationKind(value)} · ${accessible}`);
   }
   private paintStatus(value: CommunicationPresentation): void {
     const unanswered = value.state === 'ready' && value.value.kind === 'result' && value.value.metadata.status === 'unanswered' ? value.value.metadata : undefined;

@@ -30,6 +30,9 @@ function sourceCoverage(source: ConversationFrame["coverage"], display: ReturnTy
     truncated: display.coverage.truncated || statusTruncated === true,
     uiOmitted: display.coverage.omitted, uiComplete: display.coverage.complete && statusTruncated !== true };
 }
+function senderHints(entries: EntryView[]): JsonObject {
+  return Object.fromEntries(entries.flatMap(entry => entry.sender ? [[entry.id, entry.sender]] : []));
+}
 export function transferFrame(source: ConversationFrame): ConversationFrame {
   const display = projectFrame(source);
   const bounded: ConversationFrame = { scope: source.scope, storageId: source.storageId, conversationId: source.conversationId,
@@ -37,6 +40,7 @@ export function transferFrame(source: ConversationFrame): ConversationFrame {
     nextBefore: displayBoundary(source.nextBefore, source.entries.length, display.entries), sourceNextBefore: source.nextBefore, entries: display.entries.map(nativeEntry) as ConversationFrame["entries"],
     live: display.live.map(nativeEntry) as ConversationFrame["live"], status: status(source, display),
     coverage: sourceCoverage(source.coverage, display) };
+  if (display.entries.some(entry => entry.sender)) bounded.taskSenders = senderHints(display.entries);
   assertTransferBound(bounded);
   return bounded;
 }
@@ -45,6 +49,7 @@ export function transferSnapshot(source: Snapshot): Snapshot {
   const bounded: Snapshot = { entries: display.entries.map(nativeEntry) as Snapshot["entries"], partial: source.partial,
     revision: source.revision, nextBefore: displayBoundary(source.nextBefore, source.entries.length, display.entries),
     sourceNextBefore: source.nextBefore, coverage: sourceCoverage(source.coverage, display) };
+  if (display.entries.some(entry => entry.sender)) bounded.taskSenders = senderHints(display.entries);
   assertTransferBound(bounded);
   return bounded;
 }

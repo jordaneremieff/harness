@@ -85,6 +85,7 @@ export class AgentService {
     this.#observations = new ObservationManager({ getLink: identity => this.#link(identity, true, true), onFrame: options.onFrame ?? (() => {}), onAvailability: options.onAvailability, projectFrame: options.frameProjection });
   }
   roster(options: { cursor?: string; limit?: number } = {}): CatalogPage { return this.#catalog.page(options); }
+  async lookup(identities: string[]): Promise<void> { this.#ready(); await this.#catalog.lookup(identities); }
   refresh(scanId?: string): Promise<CatalogScan> {
     this.#ready();
     const scan = this.#catalog.refresh(scanId);

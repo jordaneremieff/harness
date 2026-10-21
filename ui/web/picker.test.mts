@@ -355,7 +355,7 @@ test('group disclosures preserve exact coverage while unsettled states never cla
   assert.match(facts.textContent, /3 skipped; 4 omitted/); assert.match(facts.textContent, /Exact catalog failure/);
   assert.match(facts.children[0]?.attributes['aria-label'] ?? '', /Agent conversations/);
   assert.match(registered.querySelector('.picker-list-details')?.textContent ?? '', /62 discovery records are unavailable or outside the bound/);
-  assert.doesNotMatch(registered.textContent, /Conversion copies saved context only/); assert.match(registered.textContent, /All folders/);
+  assert.doesNotMatch(registered.textContent, /Conversion copies saved context only/); assert.match(registered.textContent, /Your sessions in other folders/);
 });
 const active = {key: 'current', cwd: '/project', epoch: 1, lifecycle: 'ready'} as PrimaryView;
 for (const owner of ['new','current'] as const) test(`successful Resume selects the exact ${owner} Primary after refresh`,async t=> {

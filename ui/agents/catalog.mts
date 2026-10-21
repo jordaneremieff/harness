@@ -4,6 +4,8 @@ import { setImmediate as yieldTurn } from "node:timers/promises";
 import type { CatalogRecord } from "./catalog-record.mts";
 import type { CatalogEntry, CatalogPage, CatalogRow, CatalogScan, CatalogUpdate } from "./catalog-state.mts";
 import { compareRosterRows, initialScan } from "./catalog-state.mts";
+import {retainedTarget} from "./contract.mts";
+import {LIMITS} from "../shared/api.ts";
 export { deriveEndpoint, readClaim } from "./catalog-record.mts";
 export type { CatalogRecord, ClaimObservation, ClaimOptions, WriterClaim } from "./catalog-record.mts";
 export type { CatalogPage, CatalogRow, CatalogScan } from "./catalog-state.mts";
@@ -16,7 +18,7 @@ interface Pending {
 	reject: (error: Error) => void;
 }
 
-/** Cached reads do not touch the filesystem or acquire a host. */
+/** Paging stays cached; exact misses request bounded named reads without a host. */
 export class AgentCatalog {
 	private readonly worker: Worker;
 	private readonly onChange?: (page: CatalogPage) => void;
@@ -138,13 +140,20 @@ export class AgentCatalog {
 	private changed(): void {
 		this.onChange?.({ ...this.metadata([], null), changed: [], removed: [] });
 	}
-	private request(kind: string, scanId?: string): Promise<CatalogScan> {
+	private request(kind: string, scanId?: string, storageIds?: string[]): Promise<CatalogScan> {
 		if (this.exited) return Promise.reject(new Error("Catalog worker exited"));
 		const id = ++this.serial;
 		return new Promise((resolve, reject) => {
 			this.pending.set(id, { resolve, reject });
-			this.worker.postMessage({ id, kind, scanId });
+			this.worker.postMessage({ id, kind, scanId, storageIds });
 		});
+	}
+	lookup(identities: string[]): Promise<CatalogScan> {
+		if (this.closed) return Promise.reject(new Error("Catalog is closed"));
+		const storages = [...new Set(identities.slice(0, LIMITS.identityLookup).flatMap(id => {
+			try {return [retainedTarget(id).storageId];} catch {return [];}
+		}))];
+		return this.request("lookup", undefined, storages);
 	}
 	refresh(scanId?: string): Promise<CatalogScan> {
 		if (this.closed) return Promise.reject(new Error("Catalog is closed"));

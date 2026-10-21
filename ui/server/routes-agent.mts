@@ -55,12 +55,18 @@ export async function dispatchAgent(registry: Registry,context: RequestContext) 
   }
   return controlAction(registry,context,workspace,target,identity);
 }
-/** Rows for exact identities from the catalog already in memory, in request order. An identity the catalog does not hold has no row. Paging does not apply. */
-function identityRows(registry:Registry,url:URL) {
+/** Exact misses request bounded named record reads; answers retain request order and never start a host. */
+async function identityRows(registry:Registry,url:URL) {
   if(url.searchParams.has('cursor')||url.searchParams.has('limit')) throw new ApiError('invalid_request','An identity lookup takes no paging fields.');
   const identities=[...new Set(url.searchParams.getAll('identity').map(value=>v.string(value,'agent identity')))];
   if(identities.length>LIMITS.identityLookup) throw new ApiError('invalid_request',`An identity lookup names at most ${LIMITS.identityLookup} identities.`);
-  const rows=identities.flatMap(identity=>{const row=registry.agents.rosterRow(identity);return row?[row]:[];});
+  const cached=new Map(identities.map(identity=>[identity,registry.agents.rosterRow(identity)]));
+  const missing=identities.filter(identity=>!cached.get(identity));
+  if(missing.length) {
+    try {await registry.agents.lookup(missing);} catch { /* A bounded read failure leaves cached answers intact. */ }
+    for(const identity of missing) cached.set(identity,registry.agents.rosterRow(identity));
+  }
+  const rows=identities.flatMap(identity=>{const row=cached.get(identity);return row?[row]:[];});
   const page=registry.agents.roster({limit:1}),roster=projectRoster({...page,rows,nextCursor:null});
   return {rows:roster.rows,nextCursor:null,coverage:page.coverage,observedAt:roster.observedAt,stale:roster.stale,scan:roster.scan};
 }

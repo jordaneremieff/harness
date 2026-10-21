@@ -77,7 +77,8 @@ export type MessageView = {id: string; role: string; timestamp?: number; parts: 
 export type NestedToolView = {callId: string; name: string; taskId: number; parentTaskId: number; parentCallId: string;
   status: 'pending' | 'running' | 'done'; arguments: JsonDisplay; parts?: PartView[]; isError?: boolean;
   durationMs?: number; output?: ToolOutputInfo; coverage: DisplayCoverage};
-export type EntryView = {id: string; kind: string; messages?: MessageView[]; data?: JsonDisplay; head?: string; tool?: NestedToolView};
+export type TaskSender = {identity: string; name?: string};
+export type EntryView = {id: string; kind: string; sender?: TaskSender; messages?: MessageView[]; data?: JsonDisplay; head?: string; tool?: NestedToolView};
 export type ModelChoice = {provider: string; id: string; name: string; reasoning: boolean; input: string[]; thinkingLevels?: string[]};
 export type CommandView = {name: string; description: string; source: 'extension' | 'skill' | 'prompt'};
 export type DialogView = {id: string; method: 'select' | 'confirm' | 'input' | 'editor'; title: string;
@@ -183,6 +184,7 @@ export type AgentRow = {identity: string; storageId: string; cwd: string; name?:
   thinkingLevel?: string; latestReply?: string; firstMessage?: string; error?: string;
   currentTool?: {name: string; argument: string}; partial: boolean; observedAt?: string;
   ownerLabel?: string; capabilities?: AgentCapabilities;
+  attention?: {kind: 'provider-blocked' | 'task-blocked' | 'failed-turn'; reason?: 'missing_task' | 'task_too_old' | 'migration_failed'};
   publishedRetry?: {attempt: number; maxAttempts: number; delayMs: number; error: string}};
 export type ScanView = {state: 'not-started' | 'running' | 'ready' | 'failed'; complete: boolean;
   visited: number; skipped: number; omitted: number; scanId?: string};

@@ -15,7 +15,7 @@ const assets = new Map([['/', {type: 'text/html; charset=utf-8', data: Buffer.fr
 const executable = fileURLToPath(new URL('../rpc/fake-pi.mts', import.meta.url));
 const empty: CatalogPage = {rows: [], nextCursor: null, coverage: {complete: true, omitted: 0}, stale: false, scan: {state: 'ready', complete: true, visited: 0, skipped: 0, omitted: 0}};
 const forbidden = async (): Promise<never> => { throw new Error('No native agent work belongs in this fixture'); };
-const adapter: AgentAdapter = {roster: () => empty, rosterRow: () => undefined, imageInputAvailable: () => false, refresh: async () => empty.scan, prepare: forbidden, select: forbidden, reconnect: forbidden, history: forbidden, image: forbidden,
+const adapter: AgentAdapter = {roster: () => empty, rosterRow: () => undefined, lookup: forbidden, imageInputAvailable: () => false, refresh: async () => empty.scan, prepare: forbidden, select: forbidden, reconnect: forbidden, history: forbidden, image: forbidden,
   inspect: forbidden, inventory: forbidden, command: forbidden, threads: forbidden, thread: forbidden, submit: forbidden, retrySubmit: forbidden, abort: forbidden, configure: () => { throw new Error('No native agent configuration'); },
   hide: async () => {}, disconnectWorkspace: async () => {}, close: async () => {}};
 async function project(context: TestContext) {

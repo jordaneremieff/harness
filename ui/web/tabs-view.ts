@@ -199,8 +199,8 @@ export class TabStrip {
     const key = tabKey(tab); let row = this.rows.get(key);
     if (!row) {row = this.createConversationRow(key); this.rows.set(key, row);}
     const status = this.hooks.status(tab); const label = this.hooks.label(tab); const tail = this.tail(tab), word = status.rowLabel ?? status.label;
-    row.title = [label, word, tab.kind === 'file' ? tab.path : tab.kind === 'agent' ? tab.identity : ''].filter(Boolean).join('\n'); row.setAttribute('aria-label', [label, tail, word].filter(Boolean).join(', ')); row.setAttribute('aria-controls', controls);
-    const state = row.querySelector<HTMLElement>('.conversation-state'); if (state) {state.textContent = word; state.hidden = !word; state.title = word; state.dataset.tone = status.attention?.tone ?? status.tone ?? 'secondary'; state.setAttribute('aria-hidden', 'true');}
+    row.title = [label, status.attention?.title ? `${word}: ${status.attention.title}` : word, tab.kind === 'file' ? tab.path : tab.kind === 'agent' ? tab.identity : ''].filter(Boolean).join('\n'); row.setAttribute('aria-label', [label, tail, word].filter(Boolean).join(', ')); row.setAttribute('aria-controls', controls);
+    const state = row.querySelector<HTMLElement>('.conversation-state'); if (state) {state.textContent = word; state.hidden = !word; state.title = status.attention?.title ?? word; state.dataset.tone = status.attention?.tone ?? status.tone ?? 'secondary'; state.setAttribute('aria-hidden', 'true');}
     const caption = row.querySelector<HTMLElement>('.conversation-name'); if (caption) caption.textContent = label;
     const identity = row.querySelector<HTMLElement>('.conversation-identity'); if (identity) {identity.textContent = tail ?? ''; identity.hidden = !tail; identity.title = tab.kind === 'agent' ? `Agent ID: ${tab.identity}` : '';}
     const close = row.querySelector<HTMLElement>('.conversation-row-close'); if (close) {close.setAttribute('aria-label', `Close ${label} tab`); close.title = `Close ${label} tab`;}

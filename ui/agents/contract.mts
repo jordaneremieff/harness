@@ -26,8 +26,10 @@ export type Summary = {
 export type ProfileHint = { identity: string; handle: string | null; role: string; revision: string;
 	hasExpertise: boolean; updatedAt: number | null };
 export type ProfileHints = { rows: ProfileHint[]; coverage: { complete: boolean; omitted: number } };
+export type AttentionHint = {identity: string} & ({kind: "provider-blocked"; blockId: string} | {kind: "task-blocked"; taskId: number; reason: "missing_task" | "task_too_old" | "migration_failed"} | {kind: "failed-turn"});
+export type AttentionHints = {rows: AttentionHint[]; coverage: {complete: boolean; omitted: number}};
 export type Publication = { updatedAt: string; rows: Summary[]; coverage: { complete: boolean; omitted: number };
-	storageId?: string; unavailable?: string; profiles?: ProfileHints; profileSeed?: JsonValue; modelEvidence?: JsonValue };
+	storageId?: string; unavailable?: string; profiles?: ProfileHints; attention?: AttentionHints; profileSeed?: JsonValue; modelEvidence?: JsonValue };
 type Entry = JsonObject & { id: string; kind: string };
 type Coverage = JsonObject & { complete: boolean; entries: number; bytes: number; hiddenExcluded: number;
 	entryLimitReached: boolean; byteLimitReached: boolean };
@@ -338,6 +340,32 @@ function profileHints(value: JsonValue): void {
 	});
 	const c = object(o.coverage); only(c, ["complete", "omitted"]); boolean(c.complete); integer(c.omitted);
 }
+function attentionHints(value: JsonValue): void {
+	const o = object(value); only(o, ["rows", "coverage"]);
+	array(o.rows, value => {
+		const hint = object(value); identity(hint.identity);
+		choice(hint.kind, ["provider-blocked", "task-blocked", "failed-turn"]);
+		const keys = ["identity", "kind"];
+		if (hint.kind === "provider-blocked") {keys.push("blockId"); string(hint.blockId, 2000);}
+		if (hint.kind === "task-blocked") {keys.push("taskId", "reason"); integer(hint.taskId, 1); choice(hint.reason, ["missing_task", "task_too_old", "migration_failed"]);}
+		only(hint, keys);
+	});
+	const c = object(o.coverage); only(c, ["complete", "omitted"]); boolean(c.complete); integer(c.omitted);
+}
+/** Invalid optional sender facts never invalidate native transcript entries. */
+export function taskSenderHints(value: unknown): Record<string, {identity: string; name?: string}> | undefined {
+	if (value === undefined) return;
+	try {
+		const hints = object(value), keys = Object.keys(hints);
+		requireValue(keys.length <= 200 && Buffer.byteLength(JSON.stringify(hints)) <= 32768, "Task sender hints exceed their bound");
+		for (const key of keys) {
+			requireValue(/^[1-9]\d*$/.test(key) && Number.isSafeInteger(Number(key)), "Invalid task entry ID");
+			const hint = object(hints[key]); only(hint, ["identity", "name"]); identity(hint.identity);
+			optional(hint, ["name"], v => string(v, 2000, true));
+		}
+		return hints as Record<string, {identity: string; name?: string}>;
+	} catch { return; }
+}
 export function decodePublication(value: unknown, storageId: string): Publication {
 	requireValue(identity(storageId).storageId === storageId, "Expected a storage identity");
 	const o = object(json(value)); timestamp(o.updatedAt);
@@ -346,6 +374,7 @@ export function decodePublication(value: unknown, storageId: string): Publicatio
 	const c = object(o.coverage); boolean(c.complete); integer(c.omitted);
 	optional(o, ["unavailable"], v => string(v, 2000, true));
 	if (o.profiles !== undefined) profileHints(o.profiles);
+	if (o.attention !== undefined) attentionHints(o.attention);
 	requireValue(Buffer.byteLength(JSON.stringify(o)) <= 24 * 1024, "Publication exceeds 24 KiB"); return o as unknown as Publication;
 }
 function entry(value: JsonValue, live = false): void {
@@ -370,6 +399,7 @@ function coverage(value: JsonValue): void {
 	fields(o, ["entries", "bytes", "hiddenExcluded"], v => integer(v));
 }
 function transcript(o: JsonObject): void {
+	if (o.taskSenders !== undefined) {const hints = taskSenderHints(o.taskSenders); if (hints) o.taskSenders = hints; else delete o.taskSenders;}
 	array(o.entries, v => entry(v), 200); nullableId(o.nextBefore); coverage(o.coverage);
 	const entries = o.entries as Entry[];
 	for (let i = 1; i < entries.length; i++) requireValue(Number(entries[i - 1].id) < Number(entries[i].id), "Unordered entries");

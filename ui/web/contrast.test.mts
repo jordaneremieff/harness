@@ -33,7 +33,7 @@ const required = [...foregrounds, ...surfaces, ...diffSurfaces.keys(), ...graphi
 const decorativeHairlines = new Set([
   ".project-bar|border-bottom", ".connection-banner|border-bottom", ".pane-heading|border-bottom",
   ".workbench-status|border-top", ".workbench-status .composer-detail-body|border",
-  ".transcript-group-header|border-top", ".message-source|border",
+  ".transcript-group-header|border-top", ".message-source|border", ".thread-message|border-top",
   ".communication-source-section + .communication-source-section|border-top",
   ".context-menu-separator|border-top",
   ".nav-top|border-bottom", ".nav-search:focus-within|border-bottom-color", ".composer-input|border",

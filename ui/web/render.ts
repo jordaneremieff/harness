@@ -9,7 +9,7 @@ import { highlight, languageFromPath } from './highlight.ts';
 import { transcriptImage } from './image.ts';
 import { pairedTimestamp, thinkingKey, type ThinkingTime, type ToolState } from './state.ts';
 import { isValidTimestamp, previewText } from './format.ts';
-import { entryVisible, initialSettings, inputDelivery, messageAriaLabel, presentEntry, presentMessage, sessionEventsSummary } from './entry-presentation.ts';
+import { entryVisible, initialSettings, inputDelivery, messageAriaLabel, presentEntry, presentMessage, sessionEventsSummary, taskSenderHeading } from './entry-presentation.ts';
 import { cardPreviewLimits, readRange, presentResultPreview, presentToolPreview, resultPreview } from './cards.ts';
 import { thinkingExpanded } from './transcript-presentation.ts';
 import { TranscriptIndex, ToolElapsedClock, toolTime, thinkingLabel, thinkingPreview, slot, communicationDisclosureKeys } from './transcript-tools.ts';
@@ -887,7 +887,7 @@ export class Transcript {
   private updateCommunication(cached: MessageNode, message: MessageView, entryId: string): void {
     if (!cached.communication) {
       const generation = this.generation;
-      cached.communication = new CommunicationCard(cached, {inputContent:(message,root)=>this.communicationInput(cached,message,root,entryId),subject:this.hooks.subject,senderSummary:this.hooks.senderSummary,thread:this.hooks.thread, operatorInput:this.hooks.operatorInput, structured:display=>presentResult(display,this.presentationContext()), reply:message=>{const task=this.tasks.replies.get(message);return task?.tool?{text:this.sentence(task.tool),open:()=>this.openTaskAnswer(task)}:undefined;}, active: () => !this.deferred && generation === this.generation && cached.node.isConnected && !this.hidden() && this.index.entries.get(entryId)?.messages?.includes(cached.source) === true, current: () => cached.source, result:this.hooks.result, protected: node => this.protectedNode(node), raw: source => partText(source.parts), expanded: key => this.expanded.has(key), disclosure: (key, open) => this.sourcePreference(key, open), layout: () => this.sourceLayout(entryId), reference: this.hooks.references ? (text, active) => this.hooks.references?.render(text, active) ?? element('span', undefined, typeof text === 'string' ? text : text.text) : undefined}, communicationDisclosureKeys(entryId, message.id));
+      cached.communication = new CommunicationCard(cached, {taskSender:()=>this.index.entries.get(entryId)?.sender,inputContent:(message,root)=>this.communicationInput(cached,message,root,entryId),subject:this.hooks.subject,senderSummary:this.hooks.senderSummary,thread:this.hooks.thread, operatorInput:this.hooks.operatorInput, structured:display=>presentResult(display,this.presentationContext()), reply:message=>{const task=this.tasks.replies.get(message);return task?.tool?{text:this.sentence(task.tool),open:()=>this.openTaskAnswer(task)}:undefined;}, active: () => !this.deferred && generation === this.generation && cached.node.isConnected && !this.hidden() && this.index.entries.get(entryId)?.messages?.includes(cached.source) === true, current: () => cached.source, result:this.hooks.result, protected: node => this.protectedNode(node), raw: source => partText(source.parts), expanded: key => this.expanded.has(key), disclosure: (key, open) => this.sourcePreference(key, open), layout: () => this.sourceLayout(entryId), reference: this.hooks.references ? (text, active) => this.hooks.references?.render(text, active) ?? element('span', undefined, typeof text === 'string' ? text : text.text) : undefined}, communicationDisclosureKeys(entryId, message.id));
     }
     if (cached.communication.sync(message)) {
       this.messageError(cached, message);
@@ -1217,10 +1217,8 @@ export class Transcript {
     const cached = entry.messages.get(message.id) ?? this.createMessage(entry, message);
     const error = this.messageError(cached, message);
     if (this.communicationMessage(cached, message, entryId)) return cached;
-    const label = presentMessage(message, this.hooks.operatorInput, retained.head).label;
-    setText(cached.heading, bounded(label, 4096)); cached.heading.hidden = !label;
+    this.messageHeading(cached, message, retained);
     cached.node.classList.toggle('extension-notice', message.role === 'custom');
-    cached.node.setAttribute('aria-label', bounded(messageAriaLabel(message, this.hooks.operatorInput, retained.head), 4096));
     const delivery = inputDelivery(retained);
     setText(cached.delivery, delivery ? `· ${delivery}` : ''); cached.delivery.hidden = !delivery;
     const children = this.messagePartNodes(cached, message, entryId, selected);
@@ -1234,6 +1232,19 @@ export class Transcript {
     this.reconcileContent(cached.body, displayed);
     this.updateMessageLayout(cached, displayed, error);
     cached.source = message; return cached;
+  }
+  private messageHeading(cached: MessageNode, message: MessageView, retained: EntryView): void {
+    if (this.protectedNode(cached.heading)) return;
+    const sender = message.role === 'user' && !this.hooks.operatorInput ? retained.sender : undefined;
+    if (sender) {
+      const generation = this.generation;
+      const name = taskSenderHeading(cached.heading, sender, () => this.hooks.subject?.(sender.identity), () => generation === this.generation && this.node.contains(cached.node) && !this.hidden() && this.index.entries.get(retained.id)?.sender?.identity === sender.identity);
+      cached.heading.hidden = false; cached.node.setAttribute('aria-label', `Message from ${name}`); return;
+    }
+    const label = presentMessage(message, this.hooks.operatorInput, retained.head).label;
+    if (cached.heading.querySelector('.task-sender')) cached.heading.replaceChildren();
+    setText(cached.heading, bounded(label, 4096)); cached.heading.hidden = !label; cached.heading.title = '';
+    cached.node.setAttribute('aria-label', bounded(messageAriaLabel(message, this.hooks.operatorInput, retained.head), 4096));
   }
   private messagePartNodes(cached: MessageNode, message: MessageView, entryId: string, selected?: ReadonlySet<number>): HTMLElement[] {
     const children: HTMLElement[] = []; const keys = new Set<string>();
@@ -1575,7 +1586,16 @@ export class Transcript {
     this.subjectRevision++;
     if (this.deferred) return;
     for (const tool of this.tools.values()) if (tool.source && this.node.contains(tool.card)) { this.toolHeading(tool, tool.source); if (!tool.node.open) this.toolContent(tool); }
-    for(const entry of this.cache.values())for(const message of entry.messages.values())message.communication?.refreshSender();
+    this.refreshSenders();
+  }
+  private refreshSenders(): void {
+    for (const [id, entry] of this.cache) {
+      const retained = this.index.entries.get(id); if (!retained) continue;
+      for (const message of entry.messages.values()) {
+        if (message.communication) message.communication.refreshSender();
+        else this.messageHeading(message, message.source, retained);
+      }
+    }
   }
   private toolHeading(tool: ToolNode, source: JoinedTool): void {
     setText(tool.title,toolLabel(source,{subject:this.hooks.subject,cwd:this.hooks.cwd?.(),nestedCount:this.rows.nestedCounts.get(source.callId)}));

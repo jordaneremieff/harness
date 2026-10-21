@@ -12,7 +12,7 @@ const failed=(error:string)=>({state:'failed' as const,complete:false,visited:0,
 const page=(scan:typeof ready|ReturnType<typeof failed>)=>({rows:[],nextCursor:null,coverage:{complete:scan.state==='ready',omitted:0},stale:scan.state!=='ready',scan});
 function adapter(scan:typeof ready|ReturnType<typeof failed>,refresh:()=>Promise<unknown>):AgentAdapter {
   const forbidden=async():Promise<never>=>{throw new Error('Not used.');};
-  return {roster:()=>page(scan),rosterRow:()=>undefined,imageInputAvailable:()=>false,refresh:refresh as AgentAdapter['refresh'],prepare:forbidden,select:forbidden,reconnect:forbidden,history:forbidden,image:forbidden,inspect:forbidden,inventory:forbidden,command:forbidden,threads:forbidden,thread:forbidden,submit:forbidden,retrySubmit:forbidden,abort:forbidden,configure:()=>{throw new Error('Not used.');},hide:async()=>{},disconnectWorkspace:async()=>{},close:async()=>{}};
+  return {roster:()=>page(scan),rosterRow:()=>undefined,lookup:forbidden,imageInputAvailable:()=>false,refresh:refresh as AgentAdapter['refresh'],prepare:forbidden,select:forbidden,reconnect:forbidden,history:forbidden,image:forbidden,inspect:forbidden,inventory:forbidden,command:forbidden,threads:forbidden,thread:forbidden,submit:forbidden,retrySubmit:forbidden,abort:forbidden,configure:()=>{throw new Error('Not used.');},hide:async()=>{},disconnectWorkspace:async()=>{},close:async()=>{}};
 }
 async function backend(t:TestContext,agents:AgentAdapter) {
   const directory=await mkdtemp(join(tmpdir(),'ui-unavailable-')),project=join(directory,'project'),stateDir=join(directory,'state');await mkdir(project);await mkdir(stateDir,{mode:0o700});

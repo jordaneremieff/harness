@@ -7,6 +7,7 @@ import { parentPort, workerData } from "node:worker_threads";
 import { CACHE_BYTES, CACHE_ROWS, readClaim, readRecord, RECORD_BYTES, storageName } from "./catalog-record.mts";
 import type { CatalogEntry, CatalogScan, CatalogUpdate } from "./catalog-state.mts";
 import { initialScan, retainedRows } from "./catalog-state.mts";
+import {LIMITS} from "../shared/api.ts";
 
 export const SEGMENT_ENTRIES = 4096;
 export const SEGMENT_BYTES = 8 * 1024 * 1024;
@@ -34,6 +35,7 @@ export class CatalogInventory {
 	private watcher?: Watcher;
 	private records = new Map<string, Stored>();
 	private hints = new Set<string>();
+	private lookupTimes = new Map<string, number>();
 	private scan = initialScan();
 	private generation = 0;
 	private bytes = 0;
@@ -130,9 +132,31 @@ export class CatalogInventory {
 		this.changed.delete(id);
 		this.removed.add(id);
 	}
-	private async load(filename: string, discovery: boolean): Promise<number> {
+	private expireLookups(now: number): void {
+		for (const [id, at] of this.lookupTimes) if (now - at >= 60000) this.lookupTimes.delete(id);
+	}
+	lookup(storageIds: string[]): Promise<CatalogScan> {
+		return this.serialize(async () => {
+			if (this.closed) return this.currentScan();
+			const now = Date.now();
+			this.expireLookups(now);
+			for (const id of [...new Set(storageIds)].slice(0, LIMITS.identityLookup)) {
+				storageName(id);
+				if (this.lookupTimes.has(id) || this.lookupTimes.size >= CACHE_ROWS) continue;
+				this.lookupTimes.set(id, now);
+				await this.load(`${id}.json`, false, true);
+			}
+			if (this.changed.size || this.removed.size) await this.publish();
+			return this.currentScan();
+		});
+	}
+	private fitsRecord(id: string, rows: number, bytes: number): boolean {
+		const old = this.records.get(id);
+		return this.records.size - (old ? 1 : 0) < CACHE_ROWS && this.rows - (old?.entry.rows.length ?? 0) + rows <= CACHE_ROWS && this.bytes - (old?.bytes ?? 0) + bytes <= CACHE_BYTES;
+	}
+	private async load(filename: string, discovery: boolean, exact = false): Promise<number> {
 		const id = filename.slice(0, -5);
-		if (!discovery && !this.records.has(id)) {
+		if (!discovery && !exact && !this.records.has(id)) {
 			this.markStale();
 			return 0;
 		}
@@ -142,12 +166,7 @@ export class CatalogInventory {
 			const rows = retainedRows(record, claim);
 			const entry = { record, rows };
 			const size = Buffer.byteLength(JSON.stringify(entry));
-			const old = this.records.get(id);
-			if (
-				this.records.size - (old ? 1 : 0) >= CACHE_ROWS ||
-				this.rows - (old?.entry.rows.length ?? 0) + rows.length > CACHE_ROWS ||
-				this.bytes - (old?.bytes ?? 0) + size > CACHE_BYTES
-			) {
+			if (!this.fitsRecord(id, rows.length, size)) {
 				this.drop(id);
 				this.scan.omitted += Math.max(1, rows.length);
 				return bytes;
@@ -161,6 +180,7 @@ export class CatalogInventory {
 			this.changed.add(id);
 			return bytes;
 		} catch (error) {
+			if (exact) return RECORD_BYTES;
 			this.drop(id);
 			if (discovery) this.scan.skipped++;
 			else if ((error as NodeJS.ErrnoException).code !== "ENOENT") this.markStale();
@@ -295,6 +315,7 @@ export class CatalogInventory {
 			this.watcher?.close();
 			this.watcher = undefined;
 			this.hints.clear();
+			this.lookupTimes.clear();
 			this.records.clear();
 		});
 	}
@@ -313,13 +334,13 @@ if (parentPort) {
 				port.postMessage({ kind: "update", update, batchId });
 			}),
 	);
-	port.on("message", (message: { id: number; kind: string; scanId?: string; batchId?: number }) => {
+	port.on("message", (message: { id: number; kind: string; scanId?: string; storageIds?: string[]; batchId?: number }) => {
 		if (message.kind === "ack" && message.batchId !== undefined) {
 			acknowledgments.get(message.batchId)?.();
 			acknowledgments.delete(message.batchId);
 			return;
 		}
-		const action = message.kind === "close" ? inventory.close() : inventory.refresh(message.scanId);
+		const action = message.kind === "close" ? inventory.close() : message.kind === "lookup" ? inventory.lookup(message.storageIds ?? []) : inventory.refresh(message.scanId);
 		void action.then(
 			(result) => {
 				port.postMessage({ kind: "response", id: message.id, result });

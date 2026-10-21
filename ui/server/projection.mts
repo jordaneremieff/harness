@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { CatalogRow } from '../agents/index.mts';
+import {taskSenderHints} from '../agents/contract.mts';
 import type { AgentRow, CachedRoster, DisplayCoverage, EntryView, ImageSource, JsonDisplay, MessageView, PartView, ProjectedFrame, ToolOutputInfo, GenerationRetry, ProviderBlock } from '../shared/api.ts';
 import { imagePart, imageSource } from './images.mts';
 import { projectCommunication, type CommunicationSource } from './communication.mts';
@@ -553,15 +554,21 @@ function unavailableLiveImages(parts: PartView[]): void {
 }
 class FrameProjector {
   private bytes: number;
-  constructor(statusBytes = 0) { this.bytes = 4096 + statusBytes; }
+  private readonly senders: ReturnType<typeof taskSenderHints>;
+  constructor(statusBytes = 0, senders = taskSenderHints(undefined)) { this.bytes = 4096 + statusBytes; this.senders = senders; }
   omitted = 0;
   truncated = false;
+  private sender(entry: EntryView): void {
+    const sender = this.senders?.[entry.id];
+    if (sender && entry.messages?.some(message => message.role === 'user')) entry.sender = {identity: sender.identity, ...(sender.name !== undefined ? {name: safeText(sender.name, 2000)} : {})};
+  }
   collect(value: unknown, partial: boolean, communicationSource: CommunicationSource): EntryView[] {
     if (!Array.isArray(value)) { this.truncated = true; return []; }
     const rows: EntryView[] = [];
     for (let index = value.length - 1; index >= 0; index--) {
       if (rows.length >= 100 || this.bytes >= 230 * 1024) { this.omitted += index + 1; break; }
       const entry = projectEntry(value[index], undefined, {communicationSource});
+      this.sender(entry);
       if (partial) entry.messages?.forEach(message => { message.state = 'partial'; unavailableLiveImages(message.parts); });
       const size = sizeOf(entry);
       if (this.bytes + size > 230 * 1024) { this.omitted += index + 1; break; }
@@ -579,7 +586,7 @@ function frameCoverage(raw: unknown, projected: FrameProjector): DisplayCoverage
 }
 export function projectFrame(raw: unknown): ProjectedFrame {
   try {
-    const source = object(raw), status = frameStatus(source.status), projector = new FrameProjector(sizeOf(status));
+    const source = object(raw), status = frameStatus(source.status), projector = new FrameProjector(sizeOf(status), taskSenderHints(source.taskSenders));
     const communicationSource: CommunicationSource = {storageId: typeof source.storageId === 'string' ? source.storageId : undefined, conversationId: typeof source.conversationId === 'number' ? source.conversationId : undefined};
     const live = projector.collect(source.live ?? [], true, communicationSource), entries = projector.collect(source.entries ?? [], false, communicationSource);
     projector.truncated ||= status.compactions?.truncated === true || status.compactionFailure?.truncated === true || !!status.toolsOmitted;
@@ -593,6 +600,11 @@ function publishedRetry(source: Record<string, unknown>): AgentRow['publishedRet
   if (!Number.isSafeInteger(retry.attempt) || Number(retry.attempt) < 1 || !Number.isSafeInteger(retry.maxAttempts) || Number(retry.maxAttempts) < 1 || !Number.isSafeInteger(retry.delayMs) || Number(retry.delayMs) < 0 || typeof (retry.errorMessage ?? retry.error) !== 'string') return;
   return {attempt: Number(retry.attempt), maxAttempts: Number(retry.maxAttempts), delayMs: Number(retry.delayMs), error: safeText(retry.errorMessage ?? retry.error, 512)};
 }
+function rosterAttention(raw: unknown): AgentRow['attention'] {
+  const need = object(raw);
+  if (need.kind === 'provider-blocked' || need.kind === 'failed-turn') return {kind: need.kind};
+  if (need.kind === 'task-blocked' && ['missing_task', 'task_too_old', 'migration_failed'].includes(String(need.reason))) return {kind: 'task-blocked', reason: need.reason as 'missing_task' | 'task_too_old' | 'migration_failed'};
+}
 function rosterOptionals(row: AgentRow, source: Record<string, unknown>): void {
   for (const key of ['name', 'handle', 'thinkingLevel', 'latestReply', 'firstMessage', 'error', 'observedAt', 'ownerLabel'] as const) {
     if (typeof source[key] === 'string') row[key] = safeText(source[key], key === 'latestReply' || key === 'firstMessage' ? 2048 : 256);
@@ -603,6 +615,7 @@ function rosterOptionals(row: AgentRow, source: Record<string, unknown>): void {
   const tool = object(source.currentTool);
   if (typeof tool.name === 'string') row.currentTool = {name: safeText(tool.name, 256), argument: safeText(tool.argument, 1024)};
   const retry = publishedRetry(source); if (retry) row.publishedRetry = retry;
+  const attention = rosterAttention(source.attention); if (attention) row.attention = attention;
   const caps = object(source.capabilities);
   if (typeof source.identity === 'string' && source.capabilities) row.capabilities = {history: caps.history === true, observe: caps.observe === true, input: caps.input === true, abort: caps.abort === true, configure: caps.configure === true, inspect: caps.inspect === true, commands: caps.commands === true};
 }

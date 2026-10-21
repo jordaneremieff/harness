@@ -1,5 +1,5 @@
 import type { CatalogRecord, ClaimObservation, Publication } from "./catalog-record.mts";
-export type CatalogRow = Publication["rows"][number] & { claim: ClaimObservation["state"]; publishedAt?: string; handle?: string; role?: string };
+export type CatalogRow = Publication["rows"][number] & { claim: ClaimObservation["state"]; publishedAt?: string; handle?: string; role?: string; attention?: {kind: "provider-blocked" | "task-blocked" | "failed-turn"; reason?: "missing_task" | "task_too_old" | "migration_failed"} };
 /** Last native activity defines order; identity breaks equal-time ties without locale dependence. */
 export function compareRosterRows(a: CatalogRow, b: CatalogRow): number {
 	return b.modifiedAt - a.modifiedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
@@ -41,6 +41,11 @@ export const initialScan = (): CatalogScan => ({
 	skipped: 0,
 	omitted: 0,
 });
+function publishedAttention(publication: Publication): Map<string, NonNullable<Publication['attention']>['rows'][number] | null> {
+	const attention = new Map<string, NonNullable<Publication['attention']>['rows'][number] | null>();
+	for (const hint of publication.attention?.rows ?? []) attention.set(hint.identity, attention.has(hint.identity) ? null : hint);
+	return attention;
+}
 export function retainedRows(record: CatalogRecord, claim: ClaimObservation): CatalogRow[] {
 	const owner = claim.state === "live" ? "here" : claim.state === "unknown" ? "unavailable" : "unknown";
 	const publication = record.view;
@@ -70,10 +75,13 @@ export function retainedRows(record: CatalogRecord, claim: ClaimObservation): Ca
 	for (const hint of publication.profiles?.rows ?? []) {
 		profiles.set(hint.identity, profiles.has(hint.identity) ? null : hint);
 	}
+	const attention = publishedAttention(publication);
 	return publication.rows.map((source) => {
 		const row: CatalogRow = { ...source, owner, ownerLabel: label, claim: claim.state, publishedAt: stamp };
 		// Only an unambiguous public hint for this exact conversation supplies profile facts.
-		delete row.handle; delete row.role;
+		delete row.handle; delete row.role; delete row.attention;
+		const need = attention.get(source.id);
+		if (need) row.attention = {kind: need.kind, ...(need.kind === "task-blocked" ? {reason: need.reason} : {})};
 		const profile = profiles.get(source.id);
 		if (typeof profile?.handle === "string") row.handle = profile.handle;
 		if (profile?.role) row.role = profile.role;

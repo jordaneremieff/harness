@@ -325,7 +325,7 @@ export class Roster {
   private row(row: AgentRow, identity: string): RowNode {
     const cached = this.cache.get(row.identity) ?? this.createRow(row);
     const state = this.rowStatus(row);
-    setText(cached.state, state.label==='Ready'?'Idle':state.label); cached.state.hidden = state.hideVisibleState === true || !cached.state.textContent; cached.state.title = state.label; cached.state.dataset.tone = state.tone ?? 'secondary'; cached.state.dataset.busy = String(state.label === 'Working'); setText(cached.name, state.name ?? rowName(row));
+    setText(cached.state, state.label==='Ready'?'Idle':state.label); cached.state.hidden = state.hideVisibleState === true || !cached.state.textContent; cached.state.title = state.attention?.title ?? state.label; cached.state.dataset.tone = state.tone ?? 'secondary'; cached.state.dataset.busy = String(state.label === 'Working'); setText(cached.name, state.name ?? rowName(row));
     const caption=this.captions.get(row.identity);cached.name.title=`${cached.name.textContent}\n${caption.source==='first-message'?'Title from first message, not a supplied name':'Conversation name'}`;
     this.updatePreview(cached, row.latestReply);
     identity = state.name !== undefined ? state.tail ?? '' : identity; setText(cached.identity, identity); cached.identity.hidden = !identity; cached.identity.title = `Agent ID: ${row.identity}`;
@@ -333,12 +333,12 @@ export class Roster {
     cached.node.dataset.live = String(row.availability === 'live');
     cached.node.dataset.tool = String(!!state.tool);
     const reported = !state.tool && row.currentTool ? `Last reported tool · ${row.currentTool.name} · ${row.currentTool.argument}` : '';
-    const description = [modelText(row), activityLine({...row, currentTool: state.tool}, state.label), reported, publishedRetryDescription(row)].filter(Boolean).join('\n');
+    const description = [state.attention?.title, modelText(row), activityLine({...row, currentTool: state.tool}, state.label), reported, publishedRetryDescription(row)].filter(Boolean).join('\n');
     cached.select.title = description; cached.select.setAttribute('aria-description', [description, cached.preview.textContent ? `Preview: ${cached.preview.textContent}` : ''].filter(Boolean).join('\n'));
     cached.select.setAttribute('aria-current', row.identity === this.selected ? 'page' : 'false');
     cached.select.setAttribute('aria-label', `${this.displayName(row)} · ${row.identity} · ${state.label}`);
     cached.node.setAttribute('aria-label', this.displayName(row));
-    cached.node.title = `${row.identity}\n${state.label}\n${row.ownerLabel ?? row.availability}`;
+    cached.node.title = `${row.identity}\n${state.label}${state.attention?.title ? `: ${state.attention.title}` : ''}\n${row.ownerLabel ?? row.availability}`;
     cached.source = row; this.messageAction(cached); this.updateAge(cached);
     return cached;
   }

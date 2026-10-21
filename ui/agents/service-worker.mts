@@ -27,6 +27,7 @@ async function invoke(member: string, args: unknown[], signal?: AbortSignal): Pr
   const identity = args[0] as string;
   switch (member) {
     case "refresh": return service.refresh(args[0] as string | undefined);
+    case "lookup": return service.lookup(args[0] as string[]);
     case "select": return service.select(identity, args[1] as string | undefined, args[2] as number | undefined);
     case "hide": return service.hide(identity, args[1] as string | undefined);
     case "reconnect": return service.reconnect(identity, args[1] as string, args[2] as number | undefined);

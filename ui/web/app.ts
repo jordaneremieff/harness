@@ -825,7 +825,7 @@ function attentionFor(target?: Target): Attention | undefined {
   }
   const live = liveConnection(controller), availability = live?.availability ?? state.agentAvailability.get(target.identity)?.state ?? agentRow(target.identity)?.availability;
   const observed = conversation?.connectionEpoch !== undefined && conversation.connectionEpoch === state.agentEpochs.get(target.identity);
-  return conversationAttention({connected, agent: {live: observed && availability === 'live', connectionError: controller?.connectionError, frame: conversation?.frame}});
+  return conversationAttention({connected, catalog: agentRow(target.identity)?.attention, agent: {live: observed && availability === 'live', connectionError: controller?.connectionError, frame: conversation?.frame}});
 }
 function presentation(target?: Target): ConversationPresentation {
   const row = target?.kind === 'agent' ? agentRow(target.identity) : undefined;
@@ -957,7 +957,10 @@ function activateConversationTab(pane: string, key: string): void {
   const layout = activatePaneTab(currentLayout(), pane, key); if (paneById(layout, pane)?.active !== key) return;
   const target = layoutTarget(layout, primaryTarget()); if (target&&!conversationController(target).inspection?.active) conversationController(target).passive = false;
   applyLayout(layout); focusEditor();
-  if (target) revealAttention(target);
+  if (!target) return;
+  const controller = conversationController(target);
+  if (attentionFor(target)?.label === 'Failed' && !controller.historyReady) void loadControllerHistory(controller).then(() => revealAttention(target));
+  else revealAttention(target);
 }
 function revealAttention(target: Target): void {
   const attention = attentionFor(target); if (!attention || attention.label === 'Question') return;
