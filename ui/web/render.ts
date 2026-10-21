@@ -8,7 +8,7 @@ import { markdownDom, sourceHeader, sourceWrap } from './safe-markdown.ts';
 import { highlight, languageFromPath } from './highlight.ts';
 import { transcriptImage } from './image.ts';
 import { pairedTimestamp, thinkingKey, type ThinkingTime, type ToolState } from './state.ts';
-import { isValidTimestamp, previewText } from './format.ts';
+import { clockTime, isValidTimestamp, previewText, timestampDetails } from './format.ts';
 import { entryVisible, initialSettings, inputDelivery, messageAriaLabel, presentEntry, presentMessage, sessionEventsSummary, taskSenderHeading } from './entry-presentation.ts';
 import { cardPreviewLimits, readRange, presentResultPreview, presentToolPreview, resultPreview } from './cards.ts';
 import { thinkingExpanded } from './transcript-presentation.ts';
@@ -194,7 +194,7 @@ function setEntryRhythm(node: HTMLElement, children: readonly HTMLElement[], ses
   if (compact) node.classList.add('compact-entry'); else node.classList.remove('compact-entry');
 }
 type PartNode = {node: HTMLElement; source: PartView; partial: boolean};
-type MessageNode = {communication?: CommunicationCard; node: HTMLElement; header: HTMLElement; heading: HTMLElement; delivery: HTMLElement; actions: HTMLElement; body: HTMLElement; error: HTMLElement; parts: Map<string, PartNode>; source: MessageView; menu: HTMLButtonElement; forkRevision: number; inspection?: HTMLElement; inspectionSource?: MessageView; sourceOpener?: HTMLElement; thinkingGroups?: Map<string, {node: HTMLDetailsElement; body: HTMLElement}>};
+type MessageNode = {inputTime?: HTMLElement; communication?: CommunicationCard; node: HTMLElement; header: HTMLElement; heading: HTMLElement; delivery: HTMLElement; actions: HTMLElement; body: HTMLElement; error: HTMLElement; parts: Map<string, PartNode>; source: MessageView; menu: HTMLButtonElement; forkRevision: number; inspection?: HTMLElement; inspectionSource?: MessageView; sourceOpener?: HTMLElement; thinkingGroups?: Map<string, {node: HTMLDetailsElement; body: HTMLElement}>};
 type EventPage = {node: HTMLElement; rows: HTMLElement; page: number; previous: HTMLButtonElement; next: HTMLButtonElement; cache: Map<string, {source: EntryView; node: HTMLElement}>};
 type SessionNode = {source?: SessionGroup; details: HTMLDetailsElement; events: EventPage; notices: EventPage};
 type EntryNode = {node: HTMLElement; messages: Map<string, MessageNode>; source?: EntryView; custom?: HTMLElement; session?: SessionNode; groupHeader?: HTMLElement};
@@ -895,6 +895,9 @@ export class Transcript {
     }
     if (cached.communication.sync(message)) {
       this.messageError(cached, message);
+      const time = this.inputTimestamp(cached, message, this.index.entries.get(entryId));
+      const root = cached.body.querySelector('.communication-text') ?? cached.body;
+      if (time && time.parentNode !== root) root.prepend(time);
     }
     this.registerContent(cached.body);
   }
@@ -1205,6 +1208,18 @@ export class Transcript {
     actions.append(menu); header.append(heading, delivery, actions); node.append(header, body, error);
     const cached = {node, header, heading, delivery, actions, body, error, menu, forkRevision: 0, parts: new Map<string, PartNode>(), source: message}; entry.messages.set(message.id, cached); return cached;
   }
+  private inputTimestamp(cached: MessageNode, message: MessageView, retained?: EntryView): HTMLElement | undefined {
+    const input = message.role === 'user' && (this.hooks.operatorInput === true || retained?.kind === 'ui.input') && !retained?.sender;
+    const ordinary = !message.communication || message.communication.state === 'unresolved';
+    if (!input || !ordinary || message.timestamp === undefined || !isValidTimestamp(message.timestamp)) { cached.inputTime?.remove(); return undefined; }
+    const exact = new Date(message.timestamp).toISOString();
+    cached.inputTime ??= element('time', 'operator-message-time');
+    const time = cached.inputTime;
+    if (time.getAttribute('datetime') !== exact) {
+      time.setAttribute('datetime', exact); time.title = timestampDetails(message.timestamp).display; setText(time, clockTime(message.timestamp));
+    }
+    return time;
+  }
   private communicationMessage(cached: MessageNode, message: MessageView, entryId: string): boolean {
     if (message.communication) {
       cached.source = message;
@@ -1226,6 +1241,7 @@ export class Transcript {
     const delivery = inputDelivery(retained);
     setText(cached.delivery, delivery ? `· ${delivery}` : ''); cached.delivery.hidden = !delivery;
     const children = this.messagePartNodes(cached, message, entryId, selected);
+    const time = this.inputTimestamp(cached, message, retained); if (time) children.unshift(time);
     if (message.coverage.truncated || message.coverage.omitted > 0 || !message.coverage.complete) {
       const reason = bounded(message.coverage.reason ?? '', 4096, 6).trim();
       const notice = element('p', 'secondary message-coverage', reason || 'Some message content is not shown.');

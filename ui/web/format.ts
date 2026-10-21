@@ -31,6 +31,11 @@ export function compactAge(value: number, now: number, timeZone?: string): strin
   if (seconds < -60 || seconds >= 30 * 86400) return formatDate(value, {month: 'short', day: 'numeric'}, timeZone);
   return full.replace(/hr ago$/, 'h').replace(/ ago$/, '');
 }
+/** A zero-padded 24-hour clock in the local zone. */
+export function clockTime(value: Timestamp): string {
+  const date = timestampDate(value);
+  return isValidTimestamp(date) ? `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}` : '';
+}
 export function absoluteTime(value: Timestamp, options: { timeZone?: string } = {}): string {
   return formatDate(value, {year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'}, options.timeZone);
 }
