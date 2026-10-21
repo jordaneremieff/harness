@@ -715,6 +715,7 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 	const capacityDoc = host.durable.defineDoc<CapacityDocState>({
 		kind: "stash.capacity",
 		version: 1,
+		checkpointWhen: () => false,
 		scope: "conversation",
 		history: "latest",
 		fork: "initial",
@@ -723,6 +724,7 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 	const launchDoc = host.durable.defineDocFamily<CapturedCreation, null>({
 		kind: "stash.launch",
 		version: 1,
+		checkpointWhen: () => false,
 		family: true,
 		scope: "conversation",
 		history: "latest",
@@ -732,6 +734,7 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 	const receiptDoc = host.durable.defineDoc<DistillReceiptState>({
 		kind: "stash.distill",
 		version: 2,
+		checkpointWhen: () => false,
 		scope: "conversation",
 		history: "latest",
 		fork: "initial",

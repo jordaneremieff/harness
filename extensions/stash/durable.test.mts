@@ -32,6 +32,7 @@ after(() => {
 
 interface TestHarness {
 	readonly launches: IndependentCommandInput[];
+	readonly storage: MemoryStorage;
 	readonly harness: Durable.Harness;
 	readonly root: Durable.Conversation;
 	readonly faux: ReturnType<typeof fauxProvider>;
@@ -86,14 +87,15 @@ async function startHarness(
 		t.after(() => sandbox.close());
 		registry.install(createCodemodeExtension({ sandbox, models: false }));
 	}
-	const harness = await Harness.open(new MemoryStorage(), { models, registry }, context);
+	const storage = new MemoryStorage();
+	const harness = await Harness.open(storage, { models, registry }, context);
 	const root = await harness.root(context, {
 		agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: workdir },
 	});
 	t.after(async () => {
 		await harness.close(context);
 	});
-	return { harness, root, faux, host, contribution, extension, storeDir, workdir, launches };
+	return { harness, root, faux, host, contribution, extension, storeDir, workdir, launches, storage };
 }
 
 function messageText(message: Message | undefined): string {
@@ -326,6 +328,31 @@ test("declares an explicit replay class for every tool", async (t) => {
 	assert.equal(classes.get("stash_edit"), "unsafe");
 	assert.equal(classes.get("stash_complete"), "unsafe");
 	assert.equal(classes.get("stash_rotate"), "unsafe");
+});
+
+test("capacity resets retain document deltas without automatic checkpoints", async (t) => {
+	const h = await startHarness(t);
+	const command = h.contribution.commands?.[0];
+	assert.ok(command);
+	for (let reset = 0; reset < 2; reset++) {
+		await command.run({
+			args: "capacity reset",
+			conversation: h.root,
+			context,
+			host: h.host,
+			invocationId: `capacity-delta-${reset}`,
+			harness: h.harness,
+		});
+	}
+	const record = await h.storage.findDocument({
+		kind: "stash.capacity",
+		scope: { kind: "conversation", conversationId: h.root.id },
+	}, "current", context);
+	assert.ok(record);
+	const stored = await h.storage.document(record.id, "current", context);
+	assert.ok(stored);
+	assert.deepEqual(stored.value, { episode: 3 });
+	assert.equal(stored.deltasSinceBase, 1, "the second reset remains a delta after the initial base");
 });
 
 test("keeps native list text and UI details separate from structured output", { timeout: 30000 }, async (t) => {

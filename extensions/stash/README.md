@@ -596,7 +596,11 @@ The native extension supplies `stash_write`, `stash_list`, `stash_read`,
 `stash_edit`, `stash_complete`, and `stash_rotate` with the same parameter schemas,
 tool descriptions, and model guidance as the ordinary tools. Artifacts remain
 files in the external store; Durable documents hold capacity and distillation
-control/outcome state. Each tool declares its replay class explicitly:
+control/outcome state. The `stash.capacity`, `stash.launch`, and `stash.distill`
+documents explicitly disable automatic checkpoints; ordinary changes remain
+deltas after their initial base. This storage policy does not affect
+`stash_write({ checkpoint: true })`, which saves a Markdown synthesis outside
+handover discovery. Each tool declares its replay class explicitly:
 
 | Tool | Replay | Why |
 |---|---|---|
