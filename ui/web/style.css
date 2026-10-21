@@ -631,6 +631,8 @@ a.reference-link[href]:is(:hover, :focus-visible) { text-decoration: underline; 
 /* Messages */
 .entry { padding-bottom: var(--s5); }
 .entry.compact-entry { padding-block: var(--s1); }
+.transcript-day-divider { display: flex; align-items: center; gap: var(--s3); margin-top: var(--s2); color: var(--dim); font-size: var(--fs-meta); line-height: 20px; white-space: nowrap; }
+.transcript-day-divider::before, .transcript-day-divider::after { content: ""; flex: 1; border-top: 1px solid var(--rule); }
 .entry:has(.message[data-role=assistant]):not(.compact-entry):has(+ .entry.compact-entry .tool-shell) { padding-bottom: var(--s3); }
 .transcript-event { padding-block: 0; }
 .message { position: relative; margin: 0; }

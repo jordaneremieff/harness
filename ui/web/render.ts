@@ -8,7 +8,7 @@ import { markdownDom, sourceHeader, sourceWrap } from './safe-markdown.ts';
 import { highlight, languageFromPath } from './highlight.ts';
 import { transcriptImage } from './image.ts';
 import { pairedTimestamp, thinkingKey, type ThinkingTime, type ToolState } from './state.ts';
-import { clockTime, isValidTimestamp, previewText, timestampDetails } from './format.ts';
+import { clockTime, formatDate, isValidTimestamp, previewText, timestampDetails } from './format.ts';
 import { entryVisible, initialSettings, inputDelivery, messageAriaLabel, presentEntry, presentMessage, sessionEventsSummary, taskSenderHeading } from './entry-presentation.ts';
 import { cardPreviewLimits, readRange, presentResultPreview, presentToolPreview, resultPreview } from './cards.ts';
 import { thinkingExpanded } from './transcript-presentation.ts';
@@ -201,7 +201,7 @@ type SessionNode = {source?: SessionGroup; details: HTMLDetailsElement; events: 
 type TurnMessage = {entry: EntryView; message: MessageView};
 type AssistantTurn = {key: string; input?: TurnMessage; copy?: TurnMessage; assistant: boolean; end?: string};
 type TurnActions = {node: HTMLElement; copy: HTMLButtonElement; fork: HTMLButtonElement; turn: AssistantTurn; generation: number};
-type EntryNode = {node: HTMLElement; messages: Map<string, MessageNode>; turnActions?: TurnActions; source?: EntryView; custom?: HTMLElement; session?: SessionNode; groupHeader?: HTMLElement};
+type EntryNode = {node: HTMLElement; messages: Map<string, MessageNode>; dayDivider?: HTMLTimeElement; turnActions?: TurnActions; source?: EntryView; custom?: HTMLElement; session?: SessionNode; groupHeader?: HTMLElement};
 type ToolNode = {previewSource?: JoinedTool; previewSubjectRevision?: number; answerText?: string; subject?: ToolSubjectCaption; card: HTMLElement; node: HTMLDetailsElement; copy: HTMLButtonElement; title: HTMLElement; target: HTMLElement; glyph: HTMLElement; stateWord: HTMLElement; meta: HTMLElement; preview: HTMLElement; qualification: HTMLElement; expanded: HTMLElement; resultArea: HTMLElement; technical: HTMLDetailsElement; actions: HTMLElement; info: HTMLElement; source?: JoinedTool; inspectionSources?: Map<HTMLDetailsElement, JoinedTool>; presentation?: HTMLElement; argumentsDocument?: HTMLElement; argumentsSource?: JoinedTool; output?: HTMLElement; contentSource?: JoinedTool; viewport?: HTMLElement; pageViewports?: Set<HTMLElement>; resultDocument?: HTMLElement; documentSource?: JoinedTool; previewBudget?: PreviewBudget; outputNotice?: {node: HTMLElement; source: JoinedTool}; inspections?: {arguments: HTMLDetailsElement; output: HTMLDetailsElement; details: HTMLDetailsElement}};
 export type TranscriptGeometry = {generation: number; followTail: boolean; anchor: {id: string; offsetPx: number} | null; scrollTop: number};
 export type FindStatus = {total: number; position: number; moved: boolean; end: 'none' | 'first' | 'last' | 'unavailable' | null};
@@ -1035,7 +1035,7 @@ export class Transcript {
     for (const item of items) {
       if (item.top > offset) children.push(this.gap(item.id, item.top - offset));
       const entry = this.displayed[item.index]; if (!entry) continue;
-      children.push(this.updateEntry(entry)); offset = item.bottom;
+      children.push(this.updateEntry(entry,item.index)); offset = item.bottom;
     }
     if (offset < this.layout.totalHeight) children.push(this.gap('tail', this.layout.totalHeight - offset));
     const keep = new Set(children); for (const [key, node] of this.gaps) if (!keep.has(node)) this.gaps.delete(key);
@@ -1119,9 +1119,37 @@ export class Transcript {
     actions.fork.hidden = !turn.input || !this.forkEligible(turn.input.entry,turn.input.message);
     actions.node.hidden = false;
   }
-  private updateEntry(entry: EntryView): HTMLElement {
-    this.updateTurnFooter(this.entryCacheNode(entry.id),entry.id);
+  private entryTimestamp(entry?: EntryView): number | undefined {
+    if (!entry) return;
+    const row = this.rows.byId.get(entry.id);
+    for (const message of (row?.source ?? entry).messages ?? []) {
+      if (row?.parts && !row.parts.has(message.id)) continue;
+      if (typeof message.timestamp === 'number' && isValidTimestamp(message.timestamp)) return message.timestamp;
+    }
+    return;
+  }
+  /** A boundary belongs to the preceding row so added history leaves the following content anchor intact. */
+  private updateDayDivider(cached: EntryNode, entry: EntryView, index: number): void {
+    const before = this.entryTimestamp(entry), after = this.entryTimestamp(this.displayed[index + 1]);
+    if (before === undefined || after === undefined) { cached.dayDivider = undefined; return; }
+    const previous = new Date(before), date = new Date(after);
+    if (previous.toDateString() === date.toDateString()) { cached.dayDivider = undefined; return; }
+    cached.dayDivider ??= element('time','transcript-day-divider');
+    const divider = cached.dayDivider;
+    divider.dateTime = date.toISOString(); divider.title = timestampDetails(date).display;
+    setText(divider, date.toDateString() === new Date().toDateString() ? 'Today' : `${formatDate(date,{weekday:'long'})} ${formatDate(date,{day:'numeric',month:'short'})}`);
+  }
+  private updateEntry(entry: EntryView, index: number): HTMLElement {
+    const cached = this.entryCacheNode(entry.id);
+    this.updateDayDivider(cached,entry,index);
+    this.updateTurnFooter(cached,entry.id);
     return this.entryContent(entry);
+  }
+  private entryTail(cached: EntryNode): HTMLElement[] {
+    const children: HTMLElement[] = [];
+    if (cached.turnActions && !cached.turnActions.node.hidden) children.push(cached.turnActions.node);
+    if (cached.dayDivider) children.push(cached.dayDivider);
+    return children;
   }
   private entryContent(entry: EntryView): HTMLElement {
     const cached=this.entryCacheNode(entry.id);
@@ -1140,7 +1168,7 @@ export class Transcript {
     children.push(...this.updateMessages(cached, entry, row?.parts, row?.actionsOnly));
     setEntryRhythm(cached.node, children, session !== undefined);
     const header = this.groupHeader(cached, entry.id); if (header) children.unshift(header);
-    if (cached.turnActions && !cached.turnActions.node.hidden) children.push(cached.turnActions.node);
+    children.push(...this.entryTail(cached));
     reconcileChildren(cached.node, children); this.registerContent(cached.node); cached.source = entry; return cached.node;
   }
   private updateMessages(cached: EntryNode, entry: EntryView, parts?: Map<string, Set<number>>, actionsOnly = false): HTMLElement[] {
@@ -1161,7 +1189,7 @@ export class Transcript {
     const children=parts?this.updateMessages(cached,entry,parts,true):[];
     if(!parts)this.pruneMessages(cached,new Set());
     children.push(...run.tools.map(tool=>this.updateTool(tool)));this.stepEvents(cached,run);
-    if(cached.turnActions&&!cached.turnActions.node.hidden)children.push(cached.turnActions.node);
+    children.push(...this.entryTail(cached));
     reconcileChildren(cached.node,children);this.registerContent(cached.node);
   }
   private stepEvents(cached:EntryNode,run:StepRun):void{
