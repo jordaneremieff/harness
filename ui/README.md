@@ -217,6 +217,12 @@ The jump uses the existing go-to-entry path without moving keyboard focus. The r
 
 The jump uses the existing no-focus reveal path and the same 1.5-second outline as own-message navigation. Exact derived row and call associations distinguish failures within one source entry. Navigation does not expand tool or event disclosures, load history, wrap, switch conversations, start a Primary or move DOM focus. Each navigation keeps its own bottom-boundary cursor. Drafts, modes, images and native editor ranges stay unchanged. Editable fields, IME composition, dialogs, context menus and other modifier bindings retain their normal keys.
 
+## Received result navigation
+
+**Option-[** and **Option-]** jump between loaded received reports and results in the active main conversation. Commands offers **Previous result** and **Next result** only when a stop exists in that direction. A stop requires a ready structured communication whose kind is report or result. Check-ins, thread notices, unresolved carriers, sent tool steps and prose-only mentions never create stops. Stops follow original entry and message order, with exact source-derived row identities.
+
+The jump uses the existing no-focus row reveal and 1.5-second outline. It keeps communication bodies collapsed and retains an exact entry/message cursor for repeated navigation. Notice groups contain only notices and check-ins; this action adds no report grouping. Navigation does not load history, wrap, select another conversation, start a Primary, expand a disclosure or change a draft. The shortcut uses the physical bracket key codes, so macOS Option characters do not change its meaning. Editable fields, IME composition, dialogs, context menus and other modifier bindings retain their normal keys. Native focus, draft text, modes, images and editor ranges stay unchanged.
+
 ## Desk
 
 **Commands → Open Desk** opens an on-demand list in a companion pane, beside the retained Primary. An existing second pane hosts the list. A single-pane window gets a page-local split only after this command, with at least 360px per pane. At narrower widths, Desk covers the Primary as a reader with **Back to Primary**; its native draft and reading position stay retained. Desk does not change the Primary draft, native editor, or reading position. Close restores the covered pane. **Open** selects the exact agent conversation in the companion; **Back to Desk** returns to the retained list.

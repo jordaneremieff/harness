@@ -208,6 +208,7 @@ type TurnMessage = {entry: EntryView; message: MessageView};
 type AssistantTurn = {key: string; input?: TurnMessage; copy?: TurnMessage; assistant: boolean; end?: string};
 type TurnActions = {node: HTMLElement; copy: HTMLButtonElement; fork: HTMLButtonElement; turn: AssistantTurn; generation: number};
 type FailedStep = {entryId:string;rowId:string;callId?:string};
+type ReceivedResult = {entryId:string;messageId:string;rowId:string;entryAt:number;messageAt:number};
 type EntryNode = {node: HTMLElement; messages: Map<string, MessageNode>; dayDivider?: HTMLTimeElement; turnActions?: TurnActions; source?: EntryView; custom?: HTMLElement; session?: SessionNode; groupHeader?: HTMLElement};
 type ToolNode = {previewMore?: HTMLButtonElement; previewSource?: JoinedTool; previewSubjectRevision?: number; answerText?: string; subject?: ToolSubjectCaption; card: HTMLElement; node: HTMLDetailsElement; copy: HTMLButtonElement; title: HTMLElement; target: HTMLElement; glyph: HTMLElement; stateWord: HTMLElement; meta: HTMLElement; preview: HTMLElement; qualification: HTMLElement; expanded: HTMLElement; resultArea: HTMLElement; technical: HTMLDetailsElement; actions: HTMLElement; info: HTMLElement; source?: JoinedTool; inspectionSources?: Map<HTMLDetailsElement, JoinedTool>; presentation?: HTMLElement; argumentsDocument?: HTMLElement; argumentsSource?: JoinedTool; output?: HTMLElement; contentSource?: JoinedTool; viewport?: HTMLElement; pageViewports?: Set<HTMLElement>; resultDocument?: HTMLElement; documentSource?: JoinedTool; previewBudget?: PreviewBudget; outputNotice?: {node: HTMLElement; source: JoinedTool}; inspections?: {arguments: HTMLDetailsElement; output: HTMLDetailsElement; details: HTMLDetailsElement}};
 export type TranscriptGeometry = {generation: number; followTail: boolean; anchor: {id: string; offsetPx: number} | null; scrollTop: number};
@@ -221,6 +222,7 @@ export class Transcript {
   private ownMessageCursor?:{id:string;anchorId:string|null;offsetPx:number};
   private ownMessageMarker?:{node:HTMLElement;timer:ReturnType<typeof setTimeout>};
   private failedStepCursor?:{id:string;anchorId:string|null;offsetPx:number};
+  private receivedResultCursor?:{entryId:string;messageId:string;anchorId:string|null;offsetPx:number};
   private rows = new TranscriptRows();
   private noticeBlocks:NoticeBlocks;
   private tasks = new ConversationTasks();
@@ -497,7 +499,7 @@ export class Transcript {
     this.paint(anchor); this.hooks.presentation([...this.expanded], this.showThinking, this.view); this.saveReading();
   }
   reset(): void {
-    this.clearOwnMessageMarker();this.ownMessageCursor=undefined;this.failedStepCursor=undefined;
+    this.clearOwnMessageMarker();this.ownMessageCursor=undefined;this.failedStepCursor=undefined;this.receivedResultCursor=undefined;
     this.cancelTaskReads();this.taskReadStamps.clear();this.dismissPreview();
     this.cancelRender(); if (this.inputFrame !== undefined) this.pending = false;
     this.clearTiming(); this.streamPending = false; this.deferred = undefined; this.chronological = []; this.view = 'chronological'; this.pendingView = undefined;
@@ -917,6 +919,37 @@ export class Transcript {
     const reading=this.geometryAnchor();this.failedStepCursor={id:step.rowId,anchorId:reading?.id??null,offsetPx:reading?.offsetPx??0};
     return this.markNavigationEntry(step.rowId);
   }
+  private loadedReceivedResults():ReceivedResult[]{
+    const rows=new Map<string,string>();
+    for(const entry of this.displayed){
+      const row=this.rows.byId.get(entry.id);if(!row?.parts||row.actionsOnly)continue;
+      for(const messageId of row.parts.keys())rows.set(JSON.stringify([row.source.id,messageId]),row.view.id);
+    }
+    return this.chronological.flatMap((entry,entryAt)=>(entry.messages??[]).flatMap((message,messageAt)=>{
+      const carrier=message.communication;
+      if(carrier?.state!=='ready'||(carrier.value.kind!=='report'&&carrier.value.kind!=='result'))return [];
+      const rowId=rows.get(JSON.stringify([entry.id,message.id]));
+      return rowId?[{entryId:entry.id,messageId:message.id,rowId,entryAt,messageAt}]:[];
+    }));
+  }
+  receivedResult(direction:-1|1):ReceivedResult|undefined{
+    if(this.destroyed||this.hidden()||this.deferred)return;
+    const stops=this.loadedReceivedResults(),reading=this.geometryAnchor(),cursor=this.receivedResultCursor;
+    if(!this.follow&&cursor&&cursor.anchorId===(reading?.id??null)&&cursor.offsetPx===(reading?.offsetPx??0)){
+      const at=stops.findIndex(stop=>stop.entryId===cursor.entryId&&stop.messageId===cursor.messageId);
+      if(at>=0)return stops[at+direction];
+    }
+    const anchored=this.restoring?.anchorId??reading?.id,row=anchored?this.rows.byId.get(anchored):undefined;
+    const entryId=row?.source.id??anchored,entryAt=this.follow?this.chronological.length:this.chronological.findIndex(entry=>entry.id===entryId);
+    const messageAt=this.chronological[entryAt]?.messages?.findIndex(message=>row?.parts?.has(message.id))??-1;
+    return direction<0?stops.findLast(stop=>stop.entryAt<entryAt||stop.entryAt===entryAt&&stop.messageAt<messageAt):stops.find(stop=>stop.entryAt>entryAt||stop.entryAt===entryAt&&stop.messageAt>messageAt);
+  }
+  jumpReceivedResult(direction:-1|1):boolean{
+    const stop=this.receivedResult(direction);if(!stop)return false;
+    this.revealEntry(stop.entryId,false,undefined,stop.rowId);
+    const reading=this.geometryAnchor();this.receivedResultCursor={entryId:stop.entryId,messageId:stop.messageId,anchorId:reading?.id??null,offsetPx:reading?.offsetPx??0};
+    return this.markNavigationEntry(stop.rowId);
+  }
   private markNavigationEntry(id:string):boolean{
     const node=this.cache.get(id)?.node;if(!node)return false;
     this.clearOwnMessageMarker();node.classList.add('own-message-focus');
@@ -932,7 +965,7 @@ export class Transcript {
     return this.rows.byId.get(rowId)?.source.id===entryId&&(callId===undefined||this.rows.calls.get(callId)===rowId)?rowId:undefined;
   }
   revealEntry(entryId: string, focus = true, callId?: string, rowId?:string): void {
-    this.ownMessageCursor=undefined;this.failedStepCursor=undefined;
+    this.ownMessageCursor=undefined;this.failedStepCursor=undefined;this.receivedResultCursor=undefined;
     if (!this.index.entries.has(entryId)) return;
     const id=this.revealRowId(entryId,callId,rowId);if(id===undefined)return;
     this.scrolling.delete(this.node);
