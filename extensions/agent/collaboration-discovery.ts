@@ -28,8 +28,22 @@ function collectRecentHints(page: RecentCollaborationPage, record: CatalogRecord
 		if (page.items.length > page.limits.results) { page.items.pop(); page.coverage.omittedResults += 1; recentPartial(page, "result-limit"); }
 	}
 }
-function collectRecentRecord(page: RecentCollaborationPage, catalog: AgentCatalog, entry: import("node:fs").Dirent): void {
-	if (!CATALOG_RECORD_NAME.test(entry.name)) return;
+function collectPriorityRecord(page: RecentCollaborationPage, catalog: AgentCatalog, name: string): void {
+	try {
+		const record = catalog.read(name.slice(0, -5));
+		page.coverage.records += 1;
+		collectRecentHints(page, record);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+			page.coverage.records += 1;
+			page.coverage.unreadable += 1;
+			recentPartial(page, "unreadable-records");
+		}
+	}
+}
+function collectRecentRecord(page: RecentCollaborationPage, catalog: AgentCatalog, entry: import("node:fs").Dirent, seen: Set<string>): void {
+	if (!CATALOG_RECORD_NAME.test(entry.name) || seen.has(entry.name)) return;
+	seen.add(entry.name);
 	page.coverage.records += 1;
 	try {
 		if (!entry.isFile()) throw new Error("Not a catalog file");
@@ -37,12 +51,20 @@ function collectRecentRecord(page: RecentCollaborationPage, catalog: AgentCatalo
 	} catch { page.coverage.unreadable += 1; recentPartial(page, "unreadable-records"); }
 }
 
-/** Newest active published hints in a bounded directory sample, not a complete store history. */
-export async function readRecentCollaboration(catalog: AgentCatalog): Promise<RecentCollaborationPage> {
+/** Known contact and live storages precede the bounded directory sample; native history remains authoritative. */
+export async function readRecentCollaboration(catalog: AgentCatalog, priorityIdentities: readonly string[] = []): Promise<RecentCollaborationPage> {
 	const page: RecentCollaborationPage = {
 		items: [], limits: RECENT_COLLABORATION_LIMITS,
 		coverage: { visited: 0, records: 0, unreadable: 0, missingHints: 0, omittedHints: 0, omittedResults: 0, unvisited: false, complete: true, reasons: [] },
 	};
+	const seen = new Set<string>();
+	for (const identity of priorityIdentities.slice(0, page.limits.visits)) {
+		const name = `${identity.split(":")[0]}.json`;
+		if (!CATALOG_RECORD_NAME.test(name) || seen.has(name)) continue;
+		seen.add(name);
+		page.coverage.visited += 1;
+		collectPriorityRecord(page, catalog, name);
+	}
 	let directory: Awaited<ReturnType<typeof opendir>>;
 	try { directory = await opendir(catalog.root, { bufferSize: 1 }); }
 	catch (error) {
@@ -55,7 +77,7 @@ export async function readRecentCollaboration(catalog: AgentCatalog): Promise<Re
 			const entry = await directory.read();
 			if (entry === null) break;
 			page.coverage.visited += 1;
-			collectRecentRecord(page, catalog, entry);
+			collectRecentRecord(page, catalog, entry, seen);
 		}
 		if (page.coverage.visited === page.limits.visits) { page.coverage.unvisited = true; recentPartial(page, "visit-limit"); }
 	} catch { page.coverage.unvisited = true; recentPartial(page, "directory-unreadable"); }

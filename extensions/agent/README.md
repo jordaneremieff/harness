@@ -1336,10 +1336,11 @@ hints refuses if that storage's thread publication changed:
 `Thread discovery changed; restart the query`. There is no background relevance
 search or polling loop.
 
-Catalog thread hints contain only the last eight index keys, newest creation
-first, and the summary array fits 4,000 UTF-8 bytes. Older threads do not enter
-that selection merely because a peer updates them. `omitted` records indexed
-threads without a returned summary; missing hints mean unknown coverage.
+Catalog thread hints rank active threads before closed threads, then newest
+update first with a stable thread-ID tie break. Selection reads the existing
+bounded native index before the eight-summary and 4,000-UTF-8-byte limits.
+`omitted` records indexed threads without a returned summary; missing hints
+mean unknown coverage.
 Hints preserve the existing `items`, `omitted`, and `updatedAt` shape. They are
 not full thread frames or a complete native index.
 
@@ -1477,7 +1478,12 @@ and declared machine-gate use are marked. Agents judge purpose-level relevance;
 the extension does not infer intent from file names or coordinate work for them.
 Carried operator directions appear as quoted, scoped claims, never as permission
 for the reader. Active peer-thread hints appear newest-first within the covered
-store records. Missing hints and unvisited records leave global recency unknown.
+store records. Declared contact-thread owners receive priority catalog reads,
+followed by current and live effort identities, before the directory sample.
+These reads share one visit budget; duplicate and irrelevant directory entries
+still consume visits without repeating hints. An absent optional priority record
+does not mark the general sample unreadable. Missing hints and unvisited records
+leave global recency unknown.
 
 Ordinary primaries and Durable agents read this view through untargeted
 `agent_status`. Their model context receives a separate current-effort section

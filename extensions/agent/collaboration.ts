@@ -370,10 +370,12 @@ export async function listCollaboration(session: Session, input: Record<string, 
 export async function projectCollaboration(session: Session, context: Context): Promise<CollaborationProjection> {
 	const keys = await readIndex(session, context);
 	const items: CollaborationSummary[] = [];
-	for (const key of keys.slice(-8).reverse()) {
+	for (const key of keys) {
 		const snapshot = await session.snapshot(CollaborationThreads, key, context);
 		if (snapshot?.thread) items.push(collaborationSummary(readThread(snapshot, key, true)));
 	}
+	items.sort((a, b) => Number(a.closed) - Number(b.closed) || b.updatedAt - a.updatedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+	items.splice(8);
 	while (Buffer.byteLength(JSON.stringify(items)) > 4000) items.pop();
 	return { items, omitted: keys.length - items.length, updatedAt: new Date().toISOString() };
 }

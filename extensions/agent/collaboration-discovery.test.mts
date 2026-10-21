@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { opendir } from "node:fs/promises";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { Session } from "@earendil-works/pi-durable";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { AgentCatalog } from "./catalog.ts";
-import type { CollaborationSummary } from "./collaboration.ts";
+import { CollaborationIndex, CollaborationThreads, type CollaborationSummary, type CollaborationThread, listCollaboration, projectCollaboration } from "./collaboration.ts";
 import { discoverCollaboration, readRecentCollaboration, RECENT_COLLABORATION_LIMITS } from "./collaboration-discovery.ts";
 
 function fixture(t: { after(fn: () => void): void }) {
@@ -97,6 +100,76 @@ it("counts irrelevant directory entries against traversal and handles absent or 
 	const unavailable = await readRecentCollaboration(new AgentCatalog(fileRoot));
 	assert.equal(unavailable.coverage.complete, false);
 	assert.deepEqual(unavailable.coverage.reasons, ["directory-unreadable"]);
+});
+
+it("reads priority contacts outside the directory sample without expanding its visit bound", async (t) => {
+	const { catalog, input } = fixture(t);
+	const records = Array.from({ length: 270 }, () => catalog.create(input));
+	const sampled = new Set<string>();
+	const directory = await opendir(catalog.root, { bufferSize: 1 });
+	try {
+		for (let visit = 0; visit < RECENT_COLLABORATION_LIMITS.visits; visit++) {
+			const entry = await directory.read();
+			if (entry === null) break;
+			sampled.add(entry.name);
+		}
+	} finally { await directory.close(); }
+	const contact = records.find((record) => !sampled.has(`${record.storageId}.json`));
+	assert.ok(contact, "the contact owner lies outside the unprioritized directory prefix");
+	const thread: CollaborationSummary = { id: `${contact.storageId}/${"0".repeat(32)}`, title: "Active contact", purpose: "Current collaboration", updatedAt: 100, closed: false, members: 1 };
+	const originalRead = catalog.read.bind(catalog);
+	const read = t.mock.method(catalog, "read", (identity: string) => {
+		const record = originalRead(identity);
+		return identity === contact.storageId ? { ...record, threads: { items: [thread], omitted: 0, updatedAt: "2026-10-04T10:00:00.000Z" } } : record;
+	});
+	const page = await readRecentCollaboration(catalog, [contact.storageId]);
+	assert.deepEqual(page.items, [thread]);
+	assert.equal(page.coverage.visited, RECENT_COLLABORATION_LIMITS.visits);
+	assert.equal(page.coverage.unvisited, true);
+	assert.equal(read.mock.calls[0].arguments[0], contact.storageId);
+	assert.ok(read.mock.callCount() <= RECENT_COLLABORATION_LIMITS.visits);
+});
+
+it("counts duplicate directory encounters without duplicate hints and ignores absent optional priorities", async (t) => {
+	const { catalog, input } = fixture(t);
+	const [thread] = publish(catalog, input, [10]);
+	const storageId = thread.id.split("/")[0];
+	const baseline = await readRecentCollaboration(catalog);
+	const read = t.mock.method(catalog, "read");
+	const page = await readRecentCollaboration(catalog, [`${storageId}:2`, storageId, randomUUID()]);
+	assert.deepEqual(page.items, baseline.items);
+	assert.equal(page.coverage.records, 1);
+	assert.equal(page.coverage.visited, baseline.coverage.visited + 2);
+	assert.equal(page.coverage.unreadable, 0);
+	assert.equal(page.coverage.missingHints, 0);
+	assert.equal(page.coverage.complete, true);
+	assert.equal(read.mock.callCount(), 2);
+});
+
+it("keeps old active threads ahead of newer closed hints with activity and stable ID ordering", async () => {
+	const storageId = randomUUID();
+	const keys = Array.from({ length: 256 }, (_, index) => `${storageId}/${index.toString(16).padStart(32, "0")}`);
+	const threads = new Map(keys.map((id, index): [string, CollaborationThread] => [id, {
+		id, title: "Thread", purpose: "Purpose", authority: "Authority", source: "Source", restrictions: "Restrictions", acceptance: "Acceptance", integrator: storageId,
+		creator: storageId, createdAt: index, updatedAt: index < 3 ? index === 0 ? 50 : 100 : 1000 + index, revision: 1, sequence: 1, closed: index >= 3, members: [],
+	}]));
+	const reads: string[] = [];
+	const session = { async snapshot(doc: unknown, key: unknown) {
+		if (doc === CollaborationIndex) return { keys };
+		assert.equal(doc, CollaborationThreads);
+		assert.equal(typeof key, "string");
+		reads.push(key as string);
+		return { thread: threads.get(key as string) };
+	} } as unknown as Session;
+	const projection = await projectCollaboration(session, BACKGROUND_CONTEXT);
+	assert.deepEqual(projection.items.map((item) => item.id), [keys[1], keys[2], keys[0], ...keys.slice(-5).reverse()]);
+	assert.equal(projection.omitted, 248);
+	assert.equal(reads.length, 256);
+	assert.ok(Buffer.byteLength(JSON.stringify(projection.items)) <= 4000);
+	const first = await listCollaboration(session, { limit: 1 }, BACKGROUND_CONTEXT);
+	assert.equal(first.items[0].id, keys[0]);
+	assert.equal(first.nextCursor, "1");
+	assert.equal(first.coverage.visited, 1);
 });
 
 it("retains the existing paged discovery cursor and closed-thread behavior", async (t) => {

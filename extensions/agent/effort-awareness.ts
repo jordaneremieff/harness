@@ -29,7 +29,14 @@ export async function readEffortAwareness(sessionsRoot: string, self: EffortSelf
 	if (Buffer.byteLength(JSON.stringify(projection)) > EFFORT_AWARENESS_SELF_BYTES) {
 		projection = { id: self.id.slice(0, 256), cwd: location.cwd.slice(0, 512), ...(location.repository === undefined ? {} : { repository: location.repository.slice(0, 512) }), ...(location.repositoryState === undefined ? {} : { repositoryState: location.repositoryState }), omitted: true };
 	}
-	const [presence, threads] = await Promise.all([readRelatedEfforts(sessionsRoot, projection), readRecentCollaboration(catalog)]);
+	const presence = await readRelatedEfforts(sessionsRoot, projection);
+	const contacts = [self.intentClaim?.contactThread, ...presence.efforts.map((effort) => effort.intentClaim?.contactThread ?? effort.contactThreadClaim)];
+	const priorities = [
+		...contacts.filter((thread): thread is string => thread !== undefined).map((thread) => thread.split("/")[0]),
+		self.id,
+		...presence.efforts.filter((effort) => effort.liveness === "live").map((effort) => effort.id),
+	];
+	const threads = await readRecentCollaboration(catalog, priorities);
 	return { self: projection, presence, threads };
 }
 
