@@ -1,14 +1,14 @@
 import type {AgentRow, CommunicationBody, DialogView, Target} from '../shared/api.ts';
 import type {ConversationTask} from './conversation-tasks.ts';
-import type {CommunicationNotice} from './notice-presentation.ts';
+import {unreadReviewNotice, type CommunicationNotice} from './notice-presentation.ts';
 import {button, element, setText} from './dom.ts';
 
 export type DeskRow = {key:string; target:Target; caption:string; fact:string; reason:string; kind:'dialog'|'notice'|'blocked'|'working'|'task'; notice?:CommunicationNotice; task?:ConversationTask; dialog?:DialogView; ask?:CommunicationBody; answer?:CommunicationBody};
 export type DeskData = {rows:DeskRow[]; agents:AgentRow[]; tasks:ConversationTask[]; complete:boolean};
-type Hooks = {select:(row:DeskRow,slot:HTMLElement)=>void; open:(row:DeskRow)=>void; dialog:(row:DeskRow,slot:HTMLElement)=>void; close:()=>void; changed:()=>void; caption:(agent:AgentRow)=>string};
+type Hooks = {select:(row:DeskRow,slot:HTMLElement)=>void; open:(row:DeskRow)=>void; dialog:(row:DeskRow,slot:HTMLElement)=>void; close:()=>void; changed:()=>void; caption:(agent:AgentRow)=>string;canOpen:(row:DeskRow)=>boolean};
 type RowView = {node:HTMLElement; title:HTMLButtonElement; body:HTMLElement; slot:HTMLElement; signature:string};
 const rank={dialog:0,notice:1,blocked:2,working:3,task:4};
-const reviewable=(row:DeskRow|undefined):boolean=>row?.kind==='dialog'||!!row?.notice&&!row.notice.read;
+const reviewable=(row:DeskRow|undefined):boolean=>row?.kind==='dialog'||unreadReviewNotice(row?.notice);
 const active=(row:DeskRow):boolean=>row.kind==='dialog'||row.kind==='blocked'||row.kind==='working';
 
 /** A page-local review queue. New arrivals never replace the open answer or reorder retained notices. */
@@ -25,18 +25,21 @@ export class Desk {
   private retained=new Map<string,DeskRow>();
   private pending:string[]=[];
   private selected?:string;
+  private direct?:DeskRow;
+  private close=button('Close',()=>this.hooks.close());
+  closeLabel(label:string):void{setText(this.close,label);}
   private all=false;
   private initialized=false;
   private catalog=false;
   private hooks:Hooks;
   constructor(hooks:Hooks){
     this.hooks=hooks;this.node.setAttribute('aria-label','Desk');
-    this.heading.append(element('h2',undefined,'Desk'),button('Close',hooks.close));
+    this.heading.append(element('h2',undefined,'Desk'),this.close);
     this.node.append(this.heading,this.scope,this.arrivals,this.next,this.list);
   }
   reset():void{
     this.queue=[];this.retained.clear();this.pending=[];this.selected=undefined;this.initialized=false;
-    this.catalog=false;this.rows.clear();this.list.replaceChildren();
+    this.catalog=false;this.direct=undefined;this.rows.clear();this.list.replaceChildren();
   }
   update(data:DeskData):void{
     this.data=data;
@@ -52,8 +55,8 @@ export class Desk {
   private inScope(row:DeskRow):boolean{
     if(this.all)return row.kind!=='task';
     if(row.kind==='dialog'||row.task)return true;
-    const target=row.target;
-    return target.kind==='agent'&&this.data.tasks.some(task=>task.reference?.sessionId===target.identity);
+    const target=row.target,identity=row.notice?.sender.identity??(target.kind==='agent'?target.identity:undefined);
+    return !!identity&&this.data.tasks.some(task=>task.reference?.sessionId===identity);
   }
   private eligible():DeskRow[]{return this.data.rows.filter(row=>this.inScope(row));}
   private retain(row:DeskRow):void{if(!this.queue.includes(row.key))this.queue.push(row.key);this.retained.set(row.key,row);}
@@ -61,13 +64,13 @@ export class Desk {
   private admit():void{for(const row of this.eligible())this.retain(row);this.pending=[];this.order();}
   private showNew():void{this.admit();this.paint();}
   isNoticeSelected(key:string):boolean{return this.selected===key&&!this.catalog;}
-  nextUnread():CommunicationNotice|undefined{return this.queued().find(row=>row.notice&&!row.notice.read)?.notice;}
-  refreshNotice(row:DeskRow):void{if(this.retained.has(row.key)){this.retained.set(row.key,row);this.paint();}}
-  showNotice(row:DeskRow):void{this.all=true;this.catalog=false;this.retain(row);this.selected=row.key;this.paint();}
+  nextUnread():CommunicationNotice|undefined{return this.queued().find(row=>unreadReviewNotice(row.notice))?.notice;}
+  refreshNotice(row:DeskRow):void{if(this.direct?.key===row.key)this.direct=row;if(this.retained.has(row.key))this.retained.set(row.key,row);this.paint();}
+  showNotice(row:DeskRow):void{this.all=true;this.catalog=false;if(row.notice?.kind==='check-in')this.direct=row;else{this.direct=undefined;this.retain(row);}this.selected=row.key;this.paint();}
   private queued():DeskRow[]{return this.queue.flatMap(key=>{const row=this.retained.get(key);return row?[row]:[];});}
-  private nextReview():void{const row=this.queued().find(reviewable);if(row){this.selected=row.key;this.catalog=false;this.paint();}}
+  private nextReview():void{const row=this.queued().find(reviewable);if(row){this.direct=undefined;this.selected=row.key;this.catalog=false;this.paint();}}
   private changeScope(all:boolean):void{
-    this.all=all;this.catalog=false;this.queue=[];this.retained.clear();this.selected=undefined;this.admit();this.paint();
+    this.all=all;this.catalog=false;this.direct=undefined;this.queue=[];this.retained.clear();this.selected=undefined;this.admit();this.paint();
   }
   private paintHeader(queue:DeskRow[]):void{
     const labels=[this.data.complete?'This conversation':'Loaded tasks','All agents'];
@@ -84,6 +87,7 @@ export class Desk {
   }
   private paint():void{
     const queue=this.queued();this.paintHeader(queue);
+    if(this.direct){this.selected=this.direct.key;this.place([this.paintRow(this.direct)]);this.hooks.changed();return;}
     if(!this.selected)this.selected=queue.find(row=>row.kind==='dialog'||row.kind==='notice')?.key;
     if(!queue.some(row=>row.key===this.selected))this.selected=undefined;
     const nodes=this.showsCatalog(queue)?this.agentNodes():queue.map(row=>this.paintRow(row));
@@ -108,13 +112,13 @@ export class Desk {
     return view.node;
   }
   private paintAnswer(row:DeskRow,view:RowView):void{
-    const signature=JSON.stringify([row.ask,row.answer,row.dialog,row.task?.state,row.task?.reason]);
+    const signature=JSON.stringify([row.ask,row.answer,row.dialog,row.task?.state,row.task?.reason,this.hooks.canOpen(row)]);
     if(view.signature!==signature){
       view.signature=signature;view.body.replaceChildren();
       if(row.ask)this.body(view.body,'Asked',row.ask);
       if(row.answer)this.body(view.body,'Answer',row.answer);
       if(row.task)view.body.append(element('p','secondary',[row.task.state,row.task.reason].filter(Boolean).join(' · ')));
-      if(!row.dialog)view.body.append(button('Open',()=>this.hooks.open(this.retained.get(row.key)??row)));
+      if(!row.dialog&&this.hooks.canOpen(row))view.body.append(button('Open',()=>this.hooks.open(this.retained.get(row.key)??row)));
     }
     if(row.dialog){view.slot.hidden=true;this.hooks.dialog(row,view.body);}
     else this.hooks.select(row,view.slot);

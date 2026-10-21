@@ -1,11 +1,12 @@
-import type {EntryView, NoticeView, Target, TaskSender} from '../shared/api.ts';
+import type {EntryView, NoticeView, Target, CommunicationSender} from '../shared/api.ts';
 import type {UiState} from './state.ts';
 
 /** `times` is set only when identical notices for one conversation share the row. */
 export type NoticeGroup = {items: NoticeView[]; level: NoticeView['level']; message: string; times?: number};
 /** Resolves the conversation a notice names; undefined leaves the notice text as supplied. */
 export type NoticeNamer = (target: Target) => string | undefined;
-export type CommunicationNotice = {key:string;target:Target;entryId:string;messageId:string;kind:'report'|'result'|'check-in';sender:TaskSender;firstLine:string;timestamp?:number;read:boolean};
+export type CommunicationNotice = {key:string;target:Target;entryId:string;messageId:string;kind:'report'|'result'|'check-in';sender:CommunicationSender;firstLine:string;timestamp?:number;read:boolean};
+export function unreadReviewNotice(notice:CommunicationNotice|undefined):boolean{return !!notice&&!notice.read&&(notice.kind==='report'||notice.kind==='result');}
 type Arrival = Omit<CommunicationNotice,'key'|'target'|'read'>;
 function noticeTimestamp(value:unknown):{timestamp?:number}{return typeof value==='number'&&Number.isFinite(value)?{timestamp:value}:{};}
 function communications(entries:readonly EntryView[]):Arrival[]{

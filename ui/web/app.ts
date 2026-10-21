@@ -51,7 +51,7 @@ import {activeDialog} from './dialog-state.ts';
 import {HandoverDialog} from './handover-view.ts';
 import { ThreadExplorer, ThreadReader, type ThreadEntry } from './threads-view.ts';
 import { THREAD_PAGE_EVENTS } from './threads.ts';
-import {noticeGroups, noticeGroupText, noticeTarget, CommunicationNoticeShelf, type CommunicationNotice, type NoticeGroup} from './notice-presentation.ts';
+import {noticeGroups, noticeGroupText, noticeTarget, unreadReviewNotice, CommunicationNoticeShelf, type CommunicationNotice, type NoticeGroup} from './notice-presentation.ts';
 import { Recovery } from './recovery.ts';
 import { conversationBlocks, createState, dismissNotice, markReadNotices, unreadNotices, mergeRosterPage, mergeAgentPage, mergePrimaryPage, primaryBlocks, reduceEvent, replaceSnapshot, targetIdentity } from './state.ts';
 import type { UiEvent } from './state.ts';
@@ -2231,16 +2231,40 @@ function showOperation(result: OperationView, workspaceId = state.workspace?.id)
   for (const controller of controllers.values()) controller.composer.receipts(state.operations.values()); collectControllers();
   if (result.state !== 'reserved' && result.state !== 'dispatched') announce(operationLabel(result));
 }
-let deskPane:{workspace:string;context:string;id:string;list:boolean;provisional?:ConversationLayout}|undefined;
+let deskPane:{workspace:string;context:string;id:string;list:boolean;overPrimary?:boolean;provisional?:ConversationLayout}|undefined;
 let deskOpeningNotice:string|undefined;
 function deskContext():string{return JSON.stringify([state.bootId,state.workspace?.id,primaryTarget()]);}
 let deskFrame=0;
 const deskNoticeReads=new Set<string>();
 let deskComposer:ConversationController|undefined;
 const deskBack=button('Back to Desk',()=>{if(deskPane){deskPane.list=true;renderNavigation();scheduleDesk();}},'desk-back');
-const desk=new Desk({select:selectDeskComposer,open:row=>{void openDeskConversation(row).catch(showError);},dialog:(_row,slot)=>{clearDeskComposer();extensionDialogs.inline(slot);},close:closeDesk,caption:row=>row.handle?`@${row.handle}`:row.name??toolSubjectCaption(row.identity)?.text??row.identity,changed:()=>{if(deskComposer&&stableViews().slot(deskComposer.elements.root)?.closest('[hidden]'))clearDeskComposer();stableViews().request();}});
+const desk=new Desk({select:selectDeskComposer,open:row=>{void openDeskConversation(row).catch(showError);},dialog:(_row,slot)=>{clearDeskComposer();extensionDialogs.inline(slot);},close:closeDesk,canOpen:deskCanOpen,caption:row=>row.handle?`@${row.handle}`:row.name??toolSubjectCaption(row.identity)?.text??row.identity,changed:()=>{if(deskComposer&&stableViews().slot(deskComposer.elements.root)?.closest('[hidden]'))clearDeskComposer();stableViews().request();}});
+function deskReplyTarget(row:DeskRow):Extract<Target,{kind:'agent'}>|undefined {
+  if(row.notice){const sender=row.notice.sender;return sender.kind==='agent'&&state.roster.has(sender.identity)?{kind:'agent',identity:sender.identity}:undefined;}
+  return row.target.kind==='agent'&&state.roster.has(row.target.identity)?row.target:undefined;
+}
+function deskSession(row:DeskRow):PrimaryView|undefined {const sender=row.notice?.sender;return sender?.kind==='session'?[...state.primaries.values()].find(item=>item.sessionId===sender.identity&&(item.lifecycle==='ready'||!!item.sessionFile)):undefined;}
+function deskCanOpen(row:DeskRow):boolean {return !!deskReplyTarget(row)||!!deskSession(row)||row.notice?.sender.kind==='session'&&!!sessionSidebar.registered(row.notice.sender.identity);}
+function openDeskSession(row:DeskRow):void {
+  const primary=deskSession(row);if(primary){if(primary.lifecycle==='ready')void capturePrimarySelection()(primary.key).catch(showError);else if(primary.sessionFile)picker.resume(primary.cwd,primary.sessionFile);return;}
+  const sender=row.notice?.sender;if(sender?.kind!=='session')return;
+  const saved=sessionSidebar.registered(sender.identity);if(!saved)return;
+  if(saved.writer==='live')picker.open(saved.project);else picker.resume(saved.project,saved.path);
+}
+function deskPrimaryFallback(row:DeskRow,slot:HTMLElement):void {
+  clearDeskComposer();slot.replaceChildren();const notice=row.notice;if(!notice)return;
+  const source=button('Source',()=>{void navigateReference({target:notice.target,entryId:notice.entryId},true).catch(showError);});
+  slot.append(source,button('Ask in Primary',()=>askDeskPrimary(row)));
+}
+function askDeskPrimary(row:DeskRow):void {
+  const notice=row.notice,target=primaryTarget();if(!notice||!target)return;
+  const composer=primaryComposer();if(!composer.state){announce('The Primary draft is not loaded.');return;}
+  const destination={target:notice.target,entryId:notice.entryId},label=`${row.caption} · ${notice.kind}`.replaceAll('[',' ').replaceAll(']',' ').replaceAll('\r',' ').replaceAll('\n',' ');
+  const source=`[${label}](#reference=${encodeURIComponent(JSON.stringify(destination))})`;
+  composer.setText(`${composer.editor.value}${composer.editor.value?'\n\n':''}Source: ${source}`);announce('Source added to Primary draft.');
+}
 function deskCaption(identity:string):string {const row=agentRow(identity);return row?.handle?`@${row.handle}`:row?.name??toolSubjectCaption(identity)?.text??identity;}
-function nextUnreadNotice():CommunicationNotice|undefined {return (deskPane?.list?desk.nextUnread():undefined)??[...communicationNotices.items.values()].filter(item=>!item.read&&item.kind!=='check-in').sort((a,b)=>(b.timestamp??0)-(a.timestamp??0))[0];}
+function nextUnreadNotice():CommunicationNotice|undefined {return (deskPane?.list?desk.nextUnread():undefined)??[...communicationNotices.items.values()].filter(unreadReviewNotice).sort((a,b)=>(b.timestamp??0)-(a.timestamp??0))[0];}
 function openNextUnread():void {const notice=nextUnreadNotice();if(notice)void openDeskNotice(notice).catch(showError);}
 function scheduleDesk():void {if(deskFrame||!deskPane)return;deskFrame=requestAnimationFrame(()=>{deskFrame=0;renderDesk();});}
 function deskTasks():ConversationTask[]{const target=primaryTarget();if(!target||!state.workspace)return [];return [...(controllers.get(controllerKey(state.workspace.id,target))?.transcript.taskRows()??[])].filter(task=>!task.asked&&!!task.reference);}
@@ -2249,12 +2273,13 @@ function deskNoticeRow(notice:CommunicationNotice,tasks=deskTasks()):DeskRow {
   const message=conversation&&conversationBlocks(conversation).flatMap(entry=>entry.messages??[]).find(message=>message.id===notice.messageId);
   const carrier=message?.communication,value=carrier?.state==='ready'?carrier.value:undefined;
   const task=value?.kind==='result'?tasks.find(task=>task.reference?.sessionId===value.sender.identity&&value.metadata.references.some(reference=>reference.submissionId===task.reference?.submissionId&&!(reference.requestId&&task.reference?.requestId&&reference.requestId!==task.reference.requestId))):undefined;
-  return {key:notice.key,target:{kind:'agent',identity:notice.sender.identity},caption:deskCaption(notice.sender.identity),fact:notice.firstLine,reason:`Unread ${notice.kind} from ${deskCaption(notice.sender.identity)}`,kind:'notice',notice,task,ask:task?.input,answer:value?.body};
+  return {key:notice.key,target:notice.target,caption:deskCaption(notice.sender.identity),fact:notice.firstLine,reason:`Unread ${notice.kind} from ${deskCaption(notice.sender.identity)}`,kind:'notice',notice,task,ask:task?.input,answer:value?.body};
 }
 function deskCompanion(id:string):boolean{return !!deskPane&&deskPane.workspace===state.workspace?.id&&deskPane.id===id;}
 function mountDeskCompanion(id:string,node:HTMLElement):void {
   if(!deskCompanion(id)||!deskPane)return;
   if(desk.node.parentElement!==node)node.append(desk.node);
+  desk.closeLabel(deskPane.overPrimary?'Back to Primary':'Close');
   desk.node.hidden=!deskPane.list;const bar=node.querySelector<HTMLElement>('.tab-bar');if(bar)placeRetained(deskBack,bar);deskBack.hidden=deskPane.list;
 }
 function deskDialogRows():DeskRow[]{
@@ -2287,7 +2312,7 @@ function renderDesk():void {
   if(deskPane.context!==deskContext()||!paneById(deskLayout(),deskPane.id)){closeDesk();return;}
   if(!deskPane.list){clearDeskComposer();extensionDialogs.inline();return;}
   const tasks=deskTasks(),agents=state.rosterOrder.flatMap(identity=>{const row=agentRow(identity);return row?[row]:[];});
-  const notices=[...communicationNotices.items.values()].filter(item=>!item.read&&item.kind!=='check-in').sort((a,b)=>(b.timestamp??0)-(a.timestamp??0));
+  const notices=[...communicationNotices.items.values()].filter(unreadReviewNotice).sort((a,b)=>(b.timestamp??0)-(a.timestamp??0));
   const rows=[...deskDialogRows(),...notices.map(notice=>deskNoticeRow(notice,tasks)),...deskAgentRows(agents,tasks)];rows.push(...deskTaskRows(tasks,rows));
   const target=primaryTarget(),controller=target&&state.workspace?controllers.get(controllerKey(state.workspace.id,target)):undefined;
   desk.update({rows,agents,tasks,complete:controller?.historyComplete===true&&controller.cursor===null});
@@ -2297,15 +2322,16 @@ function clearDeskComposer(keep?:ConversationController):void {
   if(deskComposer!==keep)deskComposer=keep;
 }
 function selectDeskComposer(row:DeskRow,slot:HTMLElement):void {
-  if(row.target.kind!=='agent'||deskOpeningNotice&&row.notice?.key!==deskOpeningNotice)return;
+  if(deskOpeningNotice&&row.notice?.key!==deskOpeningNotice)return;
   extensionDialogs.inline(undefined,true);
   if(row.notice&&!row.notice.read&&!deskNoticeReads.has(row.notice.key)){const notice=row.notice;deskNoticeReads.add(notice.key);void loadDeskNotice(notice).then(()=>{if(deskPane?.list)desk.refreshNotice(deskNoticeRow(notice));}).catch(showError).finally(()=>deskNoticeReads.delete(notice.key));}
-  const controller=conversationController(row.target);clearDeskComposer(controller);controller.messageRetention??={};controller.passive=false;
+  const target=deskReplyTarget(row);if(!target){deskPrimaryFallback(row,slot);return;}
+  const controller=conversationController(target);clearDeskComposer(controller);controller.messageRetention??={};controller.passive=false;
   let editor=slot.querySelector<HTMLElement>('.message-editor-slot');if(!editor){editor=element('div','message-editor-slot');editor.id=`${slot.id}-editor`;slot.append(editor);}
   controller.elements.root.dataset.deskPanel='true';
   const pane=viewPane(controller.root);if(!pane||pane.closest('[hidden],[inert]')){stableViews().place(controller.root,slot);controller.root.dataset.messageOnly='true';}
   stableViews().project(controller.elements.root,editor);controller.composer.placement(true);renderController(controller);
-  controller.elements.recipient.classList.remove('sr-only');setText(controller.elements.recipient,`To ${row.caption}`);controller.elements.recipient.title=row.target.identity;deskComposer=controller;syncAgentViews();stableViews().request();
+  controller.elements.recipient.classList.remove('sr-only');setText(controller.elements.recipient,`To ${row.caption}`);controller.elements.recipient.title=target.identity;deskComposer=controller;syncAgentViews();stableViews().request();
 }
 function ensureDeskPane():boolean {
   const workspace=state.workspace?.id;if(!workspace)return false;
@@ -2315,7 +2341,8 @@ function ensureDeskPane():boolean {
   const companion=leaves.find(pane=>pane.id!==primaryPane?.id);
   if(companion&&leaves.length>1){deskPane={workspace,context:deskContext(),id:companion.id,list:true};return true;}
   const source=primaryPane??leaves[0];if(!source)return false;
-  const box=paneRegions.get(source.id)?.node.getBoundingClientRect();if(!box||box.width<644||box.height<240){announce('Desk needs space beside Primary. Widen this window.');return false;}
+  const box=paneRegions.get(source.id)?.node.getBoundingClientRect();
+  if(!box||box.width<724){deskPane={workspace,context:deskContext(),id:source.id,list:true,overPrimary:true};return true;}
   const ids=new Set(leaves.map(pane=>pane.id));let index=1;while(ids.has(`desk-pane-${index}`))index++;
   const id=`desk-pane-${index}`,root={kind:'split' as const,id:`desk-split-${index}`,axis:'x' as const,ratio:50,first:layout.root,second:{kind:'pane' as const,id,tabs:[],active:null}};
   deskPane={workspace,context:deskContext(),id,list:true,provisional:{root,focusedPane:layout.focusedPane}};return true;
@@ -2329,17 +2356,18 @@ async function openDeskNotice(notice:CommunicationNotice):Promise<void> {
   await loadDeskNotice(notice);if(deskPane?.list)desk.refreshNotice(deskNoticeRow(notice));
 }
 async function openDeskConversation(row:DeskRow):Promise<void> {
-  if(row.target.kind!=='agent'||!ensureDeskPane()||!deskPane)return;const captured=deskPane;
+  const target=deskReplyTarget(row);if(!target){openDeskSession(row);return;}
+  if(!ensureDeskPane()||!deskPane)return;const captured=deskPane;
   clearDeskComposer();extensionDialogs.inline();captured.list=false;
-  let layout=deskLayout(),key=`agent:${row.target.identity}`,existing=paneLeaves(layout.root).find(pane=>pane.tabs.some(tab=>tabKey(tab)===key));
+  let layout=deskLayout(),key=`agent:${target.identity}`,existing=paneLeaves(layout.root).find(pane=>pane.tabs.some(tab=>tabKey(tab)===key));
   if(existing&&existing.id!==captured.id){
     if(existing.tabs.some(tab=>tab.kind==='primary'))layout=movePaneTab(layout,key,captured.id);
     else captured.id=existing.id;
   }
-  layout=openTab({...layout,focusedPane:captured.id},{kind:'agent',identity:row.target.identity});captured.provisional=undefined;
-  await selection({conversationLayout:layout,selectedTarget:row.target,panelVisible:true});
+  layout=openTab({...layout,focusedPane:captured.id},{kind:'agent',identity:target.identity});captured.provisional=undefined;
+  await selection({conversationLayout:layout,selectedTarget:target,panelVisible:true});
   if(deskPane!==captured||state.workspace?.id!==captured.workspace)return;
-  const controller=conversationController(row.target);controller.passive=false;controller.inspection?.conversation();renderNavigation();renderController(controller);await loadControllerHistory(controller);
+  const controller=conversationController(target);controller.passive=false;controller.inspection?.conversation();renderNavigation();renderController(controller);await loadControllerHistory(controller);
 }
 function closeDesk():void {clearDeskComposer();deskPane=undefined;desk.node.remove();deskBack.remove();extensionDialogs.inline();desk.reset();if(state.workspace)renderNavigation();}
 const communicationNotices = new CommunicationNoticeShelf();
@@ -2713,6 +2741,20 @@ function paletteModeForKey(event: KeyboardEvent): 'commands' | 'goto' | undefine
   if (key === 'k' && !event.shiftKey) return 'commands';
   return undefined;
 }
+function savedReferenceTarget(value:unknown):Target|undefined {
+  if(!value||typeof value!=='object')return;const target=value as Target;
+  if(target.kind==='agent'&&typeof target.identity==='string'&&state.roster.has(target.identity))return {kind:'agent',identity:target.identity};
+  if(target.kind==='primary'&&typeof target.key==='string'&&state.primaries.get(target.key)?.epoch===target.epoch)return {kind:'primary',key:target.key,epoch:target.epoch};
+  return;
+}
+function savedReferenceClick(event:MouseEvent):void {
+  if(event.defaultPrevented||event.button!==0)return;
+  const anchor=(event.target as HTMLElement|null)?.closest<HTMLAnchorElement>('a[href^="#reference="]');if(!anchor)return;
+  event.preventDefault();
+  try {const value=JSON.parse(decodeURIComponent(anchor.getAttribute('href')?.slice(11)??'')) as {target?:unknown;entryId?:unknown},target=savedReferenceTarget(value.target);
+    if(target&&typeof value.entryId==='string'&&value.entryId.length<=256)void navigateReference({target,entryId:value.entryId},true).catch(showError);
+  }catch{announce('Source reference is not available.');}
+}
 function deskShortcut(event:KeyboardEvent):boolean {
   if(modal.openNow||!event.metaKey||!event.shiftKey||event.altKey||event.ctrlKey||event.key.toLowerCase()!=='u')return false;
   if(nextUnreadNotice()){event.preventDefault();if(!event.repeat)openNextUnread();}return true;
@@ -2780,6 +2822,7 @@ function bind(): void {
   byId('skip-composer').addEventListener('click', event => { event.preventDefault(); focusEditor(); });
 
   document.addEventListener('keydown', appKey);
+  document.addEventListener('click',savedReferenceClick);
   window.addEventListener('resize', () => { renderNavigation(); for (const controller of controllers.values()) controller.composer.resize(); roster.schedule(); });
   window.addEventListener('beforeunload', event => { if (!(devNavigating&&preparedReloadState?.revision===devInteractionRevision&&preparedReloadState.workspace===state.workspace?.id) && (!filesViews.canDispose || [...controllers.values()].some(controller => !controller.composer.canDispose))) event.preventDefault(); });
   document.addEventListener('visibilitychange', () => {

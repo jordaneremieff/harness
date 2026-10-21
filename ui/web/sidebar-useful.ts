@@ -90,6 +90,7 @@ export class SessionSidebar {
     this.saved=[...saved.values()];this.published=catalog.published;this.notes=catalog.notes;
     byId('session-open').title=['Find session',...catalog.notes].join('\n');
   }
+  registered(identity:string):SavedSession|undefined{return this.saved.find(item=>item.id===identity&&this.published.has(item.path));}
   private sessionRows():SessionRow[]{
     const metadata=new Map(this.saved.map(item=>[item.path,item])),seen=new Set<string>(),rows:SessionRow[]=[];
     const primaries=[...this.hooks.primaries()].sort((a,b)=>Number(b.lifecycle==='ready')-Number(a.lifecycle==='ready'));
