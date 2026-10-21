@@ -833,8 +833,10 @@ summary::before { content: none; }
 .tool-name { color: inherit; flex: 1 1 auto; min-width: 0; max-width: 100%; font-weight: 500; line-height: 24px; overflow: hidden; text-overflow: clip; mask-image: linear-gradient(to right,#000 calc(100% - 24px),transparent); white-space: nowrap; }
 .tool-name-recipient { color: var(--fg); font-weight: 600; }
 .tool-name-message { color: var(--muted); font-weight: 400; }
-.tool-name:has(> .tool-name-file) { display: flex; align-items: baseline; gap: var(--s1); }
-.tool-name:has(> .tool-name-file) > :not(.tool-name-file, .tool-name-directory) { flex: none; }
+.tool-name:has(> .tool-name-file, > .tool-path-copy) { display: flex; align-items: baseline; gap: var(--s1); }
+.tool-name:has(> .tool-name-file, > .tool-path-copy) > :not(.tool-name-file, .tool-name-directory, .tool-path-copy) { flex: none; }
+.tool-path-copy { display: inline-flex; align-items: baseline; gap: var(--s1); flex: 0 1 auto; min-width: 0; max-width: 100%; border-radius: 0; }
+.tool-path-copy:has(> .tool-name-directory) { flex: 1 1 auto; }
 .tool-name-file { flex: 0 1 auto; min-width: 0; overflow: hidden; color: var(--fg); font-weight: 500; text-overflow: clip; mask-image: linear-gradient(to right,#000 calc(100% - 24px),transparent); }
 .tool-name-directory { flex: 0 1 auto; min-width: 0; max-width: 50%; overflow: hidden; color: var(--muted); font-weight: 400; direction: rtl; text-align: left; text-overflow: clip; mask-image: linear-gradient(to right,#000 calc(100% - 24px),transparent); }
 .tool-name-directory > span { direction: ltr; unicode-bidi: isolate; }

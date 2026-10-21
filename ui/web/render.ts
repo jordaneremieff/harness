@@ -211,7 +211,8 @@ type TurnActions = TurnSource & {node: HTMLElement; copy: HTMLButtonElement; for
 type FailedStep = {entryId:string;rowId:string;callId?:string};
 type ReceivedResult = {entryId:string;messageId:string;rowId:string;entryAt:number;messageAt:number};
 type EntryNode = {node: HTMLElement; messages: Map<string, MessageNode>; dayDivider?: HTMLTimeElement; turnActions?: TurnActions; source?: EntryView; custom?: HTMLElement; session?: SessionNode; groupHeader?: HTMLElement};
-type ToolNode = {previewMore?: HTMLButtonElement; previewSource?: JoinedTool; previewSubjectRevision?: number; answerText?: string; subject?: ToolSubjectCaption; card: HTMLElement; node: HTMLDetailsElement; copy: HTMLButtonElement; title: HTMLElement; target: HTMLElement; glyph: HTMLElement; stateWord: HTMLElement; meta: HTMLElement; preview: HTMLElement; qualification: HTMLElement; expanded: HTMLElement; resultArea: HTMLElement; technical: HTMLDetailsElement; actions: HTMLElement; info: HTMLElement; source?: JoinedTool; inspectionSources?: Map<HTMLDetailsElement, JoinedTool>; presentation?: HTMLElement; argumentsDocument?: HTMLElement; argumentsSource?: JoinedTool; output?: HTMLElement; contentSource?: JoinedTool; viewport?: HTMLElement; pageViewports?: Set<HTMLElement>; resultDocument?: HTMLElement; documentSource?: JoinedTool; previewBudget?: PreviewBudget; outputNotice?: {node: HTMLElement; source: JoinedTool}; inspections?: {arguments: HTMLDetailsElement; output: HTMLDetailsElement; details: HTMLDetailsElement}};
+type ToolPathCopy = {path:string;run:()=>void};
+type ToolNode = {pathCopySource?: JoinedTool; previewMore?: HTMLButtonElement; previewSource?: JoinedTool; previewSubjectRevision?: number; answerText?: string; subject?: ToolSubjectCaption; card: HTMLElement; node: HTMLDetailsElement; copy: HTMLButtonElement; title: HTMLElement; target: HTMLElement; glyph: HTMLElement; stateWord: HTMLElement; meta: HTMLElement; preview: HTMLElement; qualification: HTMLElement; expanded: HTMLElement; resultArea: HTMLElement; technical: HTMLDetailsElement; actions: HTMLElement; info: HTMLElement; source?: JoinedTool; inspectionSources?: Map<HTMLDetailsElement, JoinedTool>; presentation?: HTMLElement; argumentsDocument?: HTMLElement; argumentsSource?: JoinedTool; output?: HTMLElement; contentSource?: JoinedTool; viewport?: HTMLElement; pageViewports?: Set<HTMLElement>; resultDocument?: HTMLElement; documentSource?: JoinedTool; previewBudget?: PreviewBudget; outputNotice?: {node: HTMLElement; source: JoinedTool}; inspections?: {arguments: HTMLDetailsElement; output: HTMLDetailsElement; details: HTMLDetailsElement}};
 export type TranscriptGeometry = {generation: number; followTail: boolean; anchor: {id: string; offsetPx: number} | null; scrollTop: number};
 export type FindStatus = {total: number; position: number; moved: boolean; end: 'none' | 'first' | 'last' | 'unavailable' | null};
 export type FindSession = {next: (query: string) => FindStatus; previous: (query: string) => FindStatus; reset: () => void; close: () => void};
@@ -452,6 +453,10 @@ export class Transcript {
     const reason = actions.reason();
     return [{label:'Ask in Primary',enabled:!reason,description:reason,run:()=>actions.append(source)}];
   }
+  private toolPathItems(tool?:ToolNode):ContextItem[] {
+    const pathCopy=tool?.source?this.toolPathCopy(tool,tool.source):undefined;
+    return pathCopy?[{label:'Copy path',run:pathCopy.run}]:[];
+  }
   private itemMenu(event: MouseEvent): void {
     if (nativeEditingTarget(event.target)) return;
     const target = event.target as HTMLElement | null;
@@ -463,7 +468,7 @@ export class Transcript {
     const source = tool?.source ?? message?.source ?? entry?.source;
     if (message && entry) { this.messageMenu(entry, message.source.id, origin, {x: event.clientX, y: event.clientY}); event.preventDefault(); event.stopPropagation(); return; }
     const text = menuText(tool, message, entry);
-    const items: ContextItem[] = [...selectionCopy(origin), {label: 'Copy', run: () => { void copy(text, origin); }}, ...this.primaryAskItems(tool?.source ? this.toolDraftSource(tool,tool.source) : undefined)];
+    const items: ContextItem[] = [...selectionCopy(origin), {label: 'Copy', run: () => { void copy(text, origin); }}, ...this.toolPathItems(tool), ...this.primaryAskItems(tool?.source ? this.toolDraftSource(tool,tool.source) : undefined)];
     const disclosure = target?.closest<HTMLDetailsElement>('details') ?? origin.querySelector<HTMLDetailsElement>('details');
     if (disclosure && origin.contains(disclosure)) items.push({label: disclosure.open ? 'Collapse details' : 'Expand details', run: () => { disclosure.open = !disclosure.open; }});
     origin.tabIndex = -1;
@@ -2044,11 +2049,42 @@ export class Transcript {
     if(part.role==='directory')node.append(element('span',undefined,part.text));else setText(node,part.text);
     return node;
   }
+  private sameToolPathSource(a:JoinedTool|undefined,b:JoinedTool):boolean {
+    return !!a&&a.callId===b.callId&&a.owner===b.owner&&a.slot===b.slot&&a.name===b.name&&a.args===b.args&&a.argumentText===b.argumentText;
+  }
+  private toolPathCopy(tool:ToolNode,source:JoinedTool,parts=toolLabelParts(source,{cwd:this.hooks.cwd?.()})):ToolPathCopy|undefined {
+    const path=parts.find(part=>part.role==='file')?.title,generation=this.generation;
+    if(!path?.startsWith('/')||path.includes('\0'))return;
+    return {path,run:()=>{
+      const current=tool.source;
+      if(!current||this.hidden()||!tool.card.isConnected||!this.sameToolPathSource(source,current)||!this.currentToolSource(tool,current,generation))return;
+      if(toolLabelParts(current,{cwd:this.hooks.cwd?.()}).find(part=>part.role==='file')?.title!==path)return;
+      void copy(path,tool.card);
+    }};
+  }
+  private toolTitleNodes(tool:ToolNode,parts:ToolLabelPart[],pathCopy?:ToolPathCopy):HTMLElement[] {
+    const nodes=parts.map(part=>this.toolTitlePart(part));if(!pathCopy)return nodes;
+    const at=parts.findIndex(part=>part.role==='file');if(at<0)return nodes;
+    const count=parts[at+1]?.role==='directory'?2:1,labels=nodes.splice(at,count);
+    const control=element('button','tool-path-copy');control.type='button';control.title=`Copy path ${pathCopy.path}`;control.setAttribute('aria-label',control.title);
+    control.onmousedown=event=>{if(event.button===0)event.preventDefault();};
+    control.onclick=event=>{event.preventDefault();event.stopPropagation();if(control.isConnected&&tool.title.contains(control))pathCopy.run();};
+    for(const label of labels)label.removeAttribute('title');control.append(...labels);nodes.splice(at,0,control);return nodes;
+  }
   private toolTitle(tool: ToolNode, source: JoinedTool): void {
-    const parts=toolLabelParts(source,{subject:this.hooks.subject,cwd:this.hooks.cwd?.(),nestedCount:this.rows.nestedCounts.get(source.callId)});
+    const parts=toolLabelParts(source,{subject:this.hooks.subject,cwd:this.hooks.cwd?.(),nestedCount:this.rows.nestedCounts.get(source.callId)}),pathCopy=this.toolPathCopy(tool,source,parts);
     tool.title.title=[parts.map(part=>part.text).join(''),...parts.flatMap(part=>part.title?[part.title]:[])].join('\n');
+    const control=tool.title.querySelector<HTMLButtonElement>(':scope > .tool-path-copy');
+    const children=[...tool.title.children].flatMap(node=>node===control?[...node.children]:[node]);
+    const samePath=pathCopy?!!control&&control.title===`Copy path ${pathCopy.path}`&&this.sameToolPathSource(tool.pathCopySource,source):!control;
+    const sameParts=children.length===parts.length&&parts.every((part,index)=>{
+      const title=pathCopy&&(part.role==='file'||part.role==='directory')?'':part.title??'';
+      return children[index]?.textContent===part.text&&children[index]?.className===(part.role?`tool-name-${part.role}`:'')&&(children[index]?.getAttribute('title')??'')===title;
+    });
+    if((control||pathCopy)&&(!samePath||!sameParts)&&this.protectedNode(tool.title))return;
     if(parts.length===1&&!parts[0]?.role)setText(tool.title,parts[0]?.text??'');
-    else if(tool.title.children.length!==parts.length||parts.some((part,index)=>tool.title.children[index]?.textContent!==part.text||tool.title.children[index]?.className!==(part.role?`tool-name-${part.role}`:'')||tool.title.children[index]?.getAttribute('title')!==(part.title??'')))tool.title.replaceChildren(...parts.map(part=>this.toolTitlePart(part)));
+    else if(!samePath||!sameParts)tool.title.replaceChildren(...this.toolTitleNodes(tool,parts,pathCopy));
+    tool.pathCopySource=pathCopy?source:undefined;
   }
   private toolHeading(tool: ToolNode, source: JoinedTool): void {
     this.toolTitle(tool,source);
