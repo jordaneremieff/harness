@@ -128,13 +128,13 @@ test('agent filters follow the loaded eight-row threshold, query and explicit fo
 test('routine ready roster hides the footer without a refresh control', t => {
   t.mock.method(Date, 'now', () => 600000);
   const fixture = setup(); const roster = new Roster(() => {}, () => {});
-  const meta = {...page([]), observedAt: new Date(0).toISOString()};
+  const meta = {...page([]), observedAt: new Date(Date.now()).toISOString()};
   roster.set([row('one')], meta); fixture.flush();
   const refresh = required(fixture.document.getElementById('agent-refresh')); refresh.title = 'Unchanged';
   assert.equal(fixture.footer.hidden, true); assert.equal(fixture.footer.textContent, '');
   assert.equal(refresh.title, 'Unchanged');
-  roster.set([row('one')], {...meta, stale: true}); fixture.flush();
-  assert.equal(fixture.footer.hidden, false); assert.equal(fixture.footer.children[0]?.textContent, 'Saved agent list · 10m ago');
+  roster.set([row('one')], {...meta, stale: true, observedAt: new Date(0).toISOString()}); fixture.flush();
+  assert.equal(fixture.footer.hidden, false); assert.equal(fixture.footer.children[0]?.tagName, 'details'); assert.equal(fixture.footer.children[0]?.textContent, 'DetailsSaved agent list · 10m ago');
   assert.equal(fixture.footer.children[1]?.textContent, 'Refresh agents');
   assert.equal(refresh.title, 'Unchanged');
   roster.set([], page([])); fixture.flush();
@@ -188,7 +188,7 @@ test('exception footer actions preserve refresh and retry without routine paging
   roster.set([], {stale: false, scan: {...page([]).scan, state: 'not-started'}}); f.flush();
   assert.equal(f.footer.textContent, 'Refresh agents'); required(f.footer.children[0]).click();
   roster.set([row('one')], {...page([]), stale: true}); f.flush();
-  assert.equal(f.footer.children[0]?.textContent, 'Saved agent list'); assert.equal(f.footer.children[1]?.textContent, 'Refresh agents'); required(f.footer.children[1]).click();
+  assert.equal(f.footer.children[0]?.tagName, 'details'); assert.equal(f.footer.children[0]?.textContent, 'DetailsSaved agent list'); assert.equal(f.footer.children[1]?.textContent, 'Refresh agents'); required(f.footer.children[1]).click();
   roster.set([row('one')], {...page([]), scan: {...page([]).scan, state: 'failed'}}); f.flush();
   assert.match(f.footer.textContent, /Agents could not be loaded/); const retry = required(f.footer.children.find(child => child.tagName === 'button'));
   assert.equal(retry.attributes['aria-label'], 'Refresh agents'); assert.equal(retry.title, 'Refresh agents'); assert.equal(retry.query('card-action-label').textContent, 'Refresh agents'); retry.click(); assert.deepEqual(actions, ['refresh', 'refresh', 'refresh']);

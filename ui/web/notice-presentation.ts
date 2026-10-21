@@ -1,10 +1,38 @@
-import type {NoticeView, Target} from '../shared/api.ts';
+import type {EntryView, NoticeView, Target, TaskSender} from '../shared/api.ts';
 import type {UiState} from './state.ts';
 
 /** `times` is set only when identical notices for one conversation share the row. */
 export type NoticeGroup = {items: NoticeView[]; level: NoticeView['level']; message: string; times?: number};
 /** Resolves the conversation a notice names; undefined leaves the notice text as supplied. */
 export type NoticeNamer = (target: Target) => string | undefined;
+export type CommunicationNotice = {key:string;target:Target;entryId:string;messageId:string;kind:'report'|'result'|'check-in';sender:TaskSender;firstLine:string;read:boolean};
+type Arrival = Omit<CommunicationNotice,'key'|'target'|'read'>;
+function communications(entries:readonly EntryView[]):Arrival[]{
+  const result:Arrival[]=[];
+  for(const entry of entries)for(const message of entry.messages??[]){
+    const carrier=message.communication;if(carrier?.state!=='ready'||carrier.value.kind==='notice')continue;
+    const value=carrier.value,line=value.body.text.split(/\r?\n/).find(line=>line.trim())?.trim()??'';
+    result.push({entryId:entry.id,messageId:message.id,kind:value.kind,sender:value.sender,firstLine:line.slice(0,240)+(line.length>240?'…':'')});
+  }
+  return result;
+}
+/** This browser shelf records live communication arrivals, not preexisting history or backend notices. */
+export class CommunicationNoticeShelf {
+  readonly items=new Map<string,CommunicationNotice>();
+  private context='';
+  scope(context:string):boolean{if(this.context===context)return false;this.context=context;this.items.clear();return true;}
+  capture(target:Target,previous:readonly EntryView[],current:readonly EntryView[],baseline=false):boolean{
+    if(baseline)return false;
+    const known=new Set(communications(previous).map(item=>item.messageId));let changed=false;
+    for(const item of communications(current)){
+      const key=JSON.stringify([targetKey(target),item.messageId]);if(known.has(item.messageId)||this.items.has(key))continue;
+      this.items.set(key,{...item,key,target,read:false});changed=true;
+    }
+    while(this.items.size>32){const first=this.items.keys().next().value;if(first===undefined)break;this.items.delete(first);}
+    return changed;
+  }
+  unread():number{return [...this.items.values()].filter(item=>!item.read).length;}
+}
 const severity = {info: 0, warning: 1, error: 2};
 const targetKey = (target: Target) => target.kind === 'agent' ? `agent:${target.identity}` : `primary:${target.key}:${target.epoch}`;
 function raise(group: NoticeGroup, level: NoticeView['level']): void {if (severity[level] > severity[group.level]) group.level = level;}

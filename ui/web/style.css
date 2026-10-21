@@ -411,6 +411,14 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .communication-reply > button { color: var(--link); text-align: left; text-decoration: underline; }
 .task-section { max-width: 100%; }
 .task-row { padding-block: var(--s1); }
+.task-group { margin-block: var(--s1); }
+.task-group > summary { min-height: 28px; font-size: var(--fs-meta); }
+.task-group-rows { padding-left: var(--s3); }
+.task-prose { margin-block: var(--s2); }
+.task-text[data-open=false] { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.task-text[data-open=true] { display: block; }
+.communication-notice-open { display: block; width: 100%; min-width: 0; padding: var(--s2) 0; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.notification-unread > .communication-notice-open { font-weight: 600; }
 .task-select { display: block; width: 100%; color: var(--fg); text-align: left; font-family: var(--sans); font-size: var(--fs-ui); overflow-wrap: anywhere; }
 .task-select[data-state="no answer"] { color: var(--error); }
 .task-answer, .step-answer { max-width: 100%; margin: var(--s2) 0 var(--s3) var(--s5); color: var(--fg); font-family: var(--sans); font-size: var(--fs-body); line-height: 1.65; }

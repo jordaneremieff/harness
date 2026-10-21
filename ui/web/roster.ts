@@ -12,6 +12,11 @@ import {parseMarkdown, type MarkdownBlock, type MarkdownInline} from './markdown
 import {THREAD_FILTER_THRESHOLD} from './threads.ts';
 
 export type CachedPageSearch = {load: (cursor: string, signal: AbortSignal) => Promise<CachedRoster>; merge: (page: CachedRoster) => void};
+export function savedRosterLabel(meta: Omit<CachedRoster,'rows'> | undefined, now = Date.now()): string {
+  const observed = meta?.observedAt, at = Date.parse(observed ?? '');
+  if (!meta?.stale && (!Number.isFinite(at) || now - at <= 300000)) return '';
+  return Number.isFinite(at) && observed ? `Saved agent list · ${relativeTime(observed,now)}` : 'Saved agent list';
+}
 const SEARCH_PAGE_LIMIT = 20;
 const ROW_HEIGHT = 44;
 const RECENT_AGE = 24 * 60 * 60 * 1000;
@@ -179,7 +184,7 @@ export class Roster {
     if (count && (meta?.error || meta?.scan.state === 'failed')) footer.append(element('p', 'error', 'Agents could not be loaded.'));
     if (meta?.error) footer.append(details('Details', meta.error.message));
     if (count && meta?.scan.state === 'running') footer.append(element('p', undefined, 'Loading agents…'));
-    if (meta?.stale) footer.append(element('p', undefined, meta.observedAt ? `Saved agent list · ${relativeTime(meta.observedAt, now)}` : 'Saved agent list'));
+    const saved = savedRosterLabel(meta,now); if (saved) footer.append(details('Details',saved));
     this.footerAction(footer, meta);
     if (meta?.scan.skipped) footer.append(element('p', undefined, 'Some records could not be read'));
     footer.hidden = !footer.children.length && !meta?.stale && !meta?.error && meta?.scan.state !== 'failed' && meta?.scan.state !== 'running';

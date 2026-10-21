@@ -43,13 +43,13 @@ import { ReferenceResolver, type ReferenceDestination, type ReferenceQuery, type
 import { imageUrl } from './image.ts';
 import { historyBecameReady, pageToReadingAnchor } from './transcript-history.ts';
 import { IdentityLookup } from './identity-lookup.ts';
-import { Roster, rosterWorking, type RosterStatus } from './roster.ts';
+import { Roster, rosterWorking, savedRosterLabel, type RosterStatus } from './roster.ts';
 import {conversationAttention, attentionCounts, type Attention} from './attention.ts';
 import {activeDialog} from './dialog-state.ts';
 import {HandoverDialog} from './handover-view.ts';
 import { ThreadExplorer, ThreadReader, type ThreadEntry } from './threads-view.ts';
 import { THREAD_PAGE_EVENTS } from './threads.ts';
-import {noticeGroups, noticeGroupText, noticeTarget, type NoticeGroup} from './notice-presentation.ts';
+import {noticeGroups, noticeGroupText, noticeTarget, CommunicationNoticeShelf, type CommunicationNotice, type NoticeGroup} from './notice-presentation.ts';
 import { Recovery } from './recovery.ts';
 import { conversationBlocks, createState, dismissNotice, markReadNotices, unreadNotices, mergeRosterPage, mergeAgentPage, mergePrimaryPage, primaryBlocks, reduceEvent, replaceSnapshot, targetIdentity } from './state.ts';
 import type { UiEvent } from './state.ts';
@@ -57,7 +57,7 @@ import { hydrateVisible, refreshVisible } from './hydrate.ts';
 import { MessageTarget, SelectionQueue, navigationState } from './selection-state.ts';
 import { usageFacts } from './usage.ts';
 import { createResizer, type Resizer } from './resize.ts';
-import { entryVisible, initialSettings } from './entry-presentation.ts';
+import { entryVisible, initialSettings, senderName } from './entry-presentation.ts';
 import { primaryBusy, primaryEmpty } from './primary-presentation.ts';
 import { inputOperation, operationLabel } from './operation-label.ts';
 import { PreferenceQueue } from './preference-queue.ts';
@@ -224,7 +224,7 @@ function attachInspection(controller:ConversationController,region:HTMLElement):
     controller.inspection=new AgentInspection(identity,{
       read:(body,signal)=>target.kind==='agent'?request<AgentInspectionView>(`/api/agents/${encodeURIComponent(target.identity)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',body,undefined,AbortSignal.any([signal,AbortSignal.timeout(15_000)])):Promise.reject(new Error('Primary tasks use recorded conversation history.')),
       readResult:async(identity,selector,signal)=>{const value=await request<AgentInspectionView>(`/api/agents/${encodeURIComponent(identity)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',{view:'result',...selector},undefined,AbortSignal.any([signal,AbortSignal.timeout(15_000)]));if(value.view==='result')controller.transcript.acceptTaskResult(value);return value;},
-      tasks:()=>inspectionTaskRows(controller),entryKey:id=>target.kind==='agent'?controller.transcript.loadedReference({text:String(id),owner:target.identity,field:'entryId'},target.identity):undefined,history:target.kind==='agent',showConversation:(entry,identity)=>{if(identity&&(controller.target.kind!=='agent'||identity!==controller.target.identity)){void navigateReference({target:{kind:'agent',identity},entryId:entry},true).catch(showError);return;}const owner=controller.target.kind==='agent'?controller.target.identity:state.primaries.get(controller.target.key)?.sessionId;const loaded=owner?controller.transcript.loadedReference({text:entry,owner,field:'entryId'},owner):undefined;controller.transcript.revealEntry(loaded??entry);},moreConversation:()=>{void loadControllerHistory(controller,true);},
+      subject:toolSubjectCaption,tasks:()=>inspectionTaskRows(controller),entryKey:id=>target.kind==='agent'?controller.transcript.loadedReference({text:String(id),owner:target.identity,field:'entryId'},target.identity):undefined,history:target.kind==='agent',showConversation:(entry,identity)=>{if(identity&&(controller.target.kind!=='agent'||identity!==controller.target.identity)){void navigateReference({target:{kind:'agent',identity},entryId:entry},true).catch(showError);return;}const owner=controller.target.kind==='agent'?controller.target.identity:state.primaries.get(controller.target.key)?.sessionId;const loaded=owner?controller.transcript.loadedReference({text:entry,owner,field:'entryId'},owner):undefined;controller.transcript.revealEntry(loaded??entry);},moreConversation:()=>{void loadControllerHistory(controller,true);},
       returned:()=>{controllerNode(controller,'transcript').focus({preventScroll:true});},changed:()=>{devInteractionRevision++;if(controller.inspection?.active)controller.passive=true;renderController(controller);},current:()=>controller.workspaceId===state.workspace?.id&&!controller.abort.signal.aborted,
       restore:()=>{const value=sessionStorage.getItem(storageKey);return value?JSON.parse(value):null;},save:value=>{if(value)sessionStorage.setItem(storageKey,JSON.stringify(value));else sessionStorage.removeItem(storageKey);}});
     root.insertBefore(controller.inspection.node,region);
@@ -235,7 +235,7 @@ function inspectionTaskRows(controller:ConversationController):ConversationTask[
     const receipt=operation.receipt;if(receipt?.kind!=='durable'||receipt.identity!==controller.target.identity)continue;
     const reference=taskReference({sessionId:receipt.identity,submissionId:receipt.submissionId,requestId:receipt.requestId});if(!reference)continue;
     const input=controller.saved?.retainedInputs.find(item=>item.operationId===operation.id);
-    rows.push({key:`ui:${operation.id}`,entryId:'',reference,subject:input?.text.split(/\r?\n/,1)[0]?.slice(0,80)||'Message from this UI',state:'awaiting',asked:true,asker:'You',time:Date.parse(operation.createdAt)});
+    rows.push({key:`ui:${operation.id}`,entryId:'',reference,subject:input?.text.split(/\r?\n/,1)[0]?.slice(0,80)||'Message from this UI',state:'awaiting',asked:true,fromUi:true,time:Date.parse(operation.createdAt)});
   }
   return rows;
 }
@@ -714,18 +714,26 @@ export function renderSidebarSections(): void {
 /** Agent headings count attention before work; file totals appear only above a closed tree. */
 export function renderSectionCounts(): void {
   const files = filesTree.rootCount(), agents = state.rosterOrder.flatMap(identity => {
-    const row = state.roster.get(identity); if (!row) return [];
+    const row = state.roster.get(identity); if (row?.availability !== 'live' || !connected) return [];
     const status = rosterStatus(row); return [{attention: status.attention, working: rosterWorking(row, status)}];
   });
+  byId('agents-heading').title = savedRosterLabel(state.rosterMeta);
   const labels = {files: files ? `${files.count}${files.more ? '+' : ''}` : '', agents: attentionCounts(agents)};
   for (const section of ['files', 'agents'] as const) {
     const count = byId(`${section}-count`); setText(count, labels[section]); count.hidden = !labels[section] || section === 'files' && !sidebarSections.files;
   }
 }
 export function setSidebarSection(section: 'tabs' | 'agents' | 'files', collapsed: boolean): void {
-  renderSidebarSections(); sidebarSections[section] = collapsed;
+  renderSidebarSections(); const wasCollapsed = sidebarSections[section]; sidebarSections[section] = collapsed;
   try { sessionStorage.setItem(sidebarSectionKey(section), String(collapsed)); } catch { /* The current tab retains its in-memory section state. */ }
   renderSidebarSections(); tabStrip.render(); roster.schedule();
+  if (section === 'agents' && wasCollapsed && !collapsed) refreshStaleRoster();
+}
+let refreshedRosterObservation = '';
+function refreshStaleRoster(): void {
+  const observedAt = state.rosterMeta?.observedAt, at = Date.parse(observedAt ?? '');
+  if (!observedAt || !Number.isFinite(at) || Date.now() - at <= 300000 || refreshedRosterObservation === observedAt || state.rosterMeta?.scan.state === 'running') return;
+  refreshedRosterObservation = observedAt; refreshRoster();
 }
 export function focusAgentSearch(): void {
   setSidebarSection('agents', false); if (byId('sidebar').hidden) toggleSidebar(true); roster.focusSearch();
@@ -793,9 +801,10 @@ function refreshCaptionConsumers(): void {
   const captions = presentationCaptions(), references = captionReferences();
   if (captionPaintRevision === captions.revision && paintedCaptionReferenceKey === references) return;
   captionPaintRevision = captions.revision; paintedCaptionReferenceKey = references;
+  refreshCommunicationCaptions();
   for (const controller of controllers.values()) {
     if (controller.workspaceId !== state.workspace?.id) continue;
-    controller.transcript.refreshSubjects();
+    controller.transcript.refreshSubjects(); controller.inspection?.refreshNames();
     const view = presentation(controller.target);
     renderComposerSettings(controller, view);
     const name = composerName(controller, view);
@@ -1306,7 +1315,7 @@ export function receive(event: ReceivedEvent): void {
     if (event.name === 'ready') { connectionId = (event.envelope.data as EventData['ready']).connectionId;streamWait?.resolve();refreshFileConnection();return; }
     if (old === state) return;
     if (event.name === 'control.request') {void browserControl.receive(event.envelope.data as ControlRequest);return;}
-    applyEvent(event); refreshCaptionConsumers();
+    collectCommunicationNotices(old, event); applyEvent(event); refreshCaptionConsumers();
     if (event.name === 'primary.state') {
       const current = event.envelope.data as PrimaryView; refreshReadyHistory(old.primaries.get(current.key),current);
     }
@@ -2160,14 +2169,77 @@ function showOperation(result: OperationView, workspaceId = state.workspace?.id)
   for (const controller of controllers.values()) controller.composer.receipts(state.operations.values()); collectControllers();
   if (result.state !== 'reserved' && result.state !== 'dispatched') announce(operationLabel(result));
 }
-function notificationsLabel(): string { const unread = unreadNotices(state); return unread ? `Notifications (${unread} unread)` : 'Notifications'; }
+const communicationNotices = new CommunicationNoticeShelf();
+function collectCommunicationNotices(previous: typeof state, event: ReceivedEvent): void {
+  let changed = communicationNotices.scope(JSON.stringify([state.bootId,state.workspace?.id]));
+  if (['primary.message','primary.entry','agent.frame'].includes(event.name)) changed = captureWatchedCommunications(previous, event.name) || changed;
+  if (changed) noticesBadge();
+}
+function watchedConversationTargets(): Target[] {
+  const targets: Target[] = [], primary = primaryTarget(); if (primary) targets.push(primary);
+  for (const pane of paneLeaves(currentLayout().root)) {
+    const tab = pane.tabs.find(tab=>tabKey(tab)===pane.active), target = tab ? controllerTarget(tab) : undefined;
+    if (target?.kind === 'agent') targets.push(target);
+  }
+  return targets;
+}
+function inactiveAgentTabCount(): number {
+  const watched = new Set(watchedConversationTargets().flatMap(target=>target.kind==='agent'?[target.identity]:[]));
+  return paneLeaves(currentLayout().root).flatMap(pane=>pane.tabs).filter(tab=>tab.kind==='agent'&&!watched.has(tab.identity)).length;
+}
+function captureWatchedCommunications(previous: typeof state, event: string): boolean {
+  let changed = false; const seen = new Set<string>();
+  for (const target of watchedConversationTargets()) {
+    const key = targetIdentity(target); if (seen.has(key)) continue; seen.add(key);
+    const before = previous.conversations.get(key), after = state.conversations.get(key); if (!after || before === after) continue;
+    const baseline = event === 'agent.frame' && (!before?.frame || before.connectionEpoch !== after.connectionEpoch);
+    changed = communicationNotices.capture(target,before ? conversationBlocks(before) : [],conversationBlocks(after),baseline) || changed;
+  }
+  return changed;
+}
+function notificationsLabel(): string { const unread = unreadNotices(state) + communicationNotices.unread(); return unread ? `Notifications (${unread} unread)` : 'Notifications'; }
 function noticesBadge(): void {
-  const unread = unreadNotices(state); setText(byId('notices-count'), String(unread)); byId('notices-count').hidden = !unread;
+  const unread = unreadNotices(state) + communicationNotices.unread(); setText(byId('notices-count'), String(unread)); byId('notices-count').hidden = !unread;
   const label = notificationsLabel(); byId('notifications-button').setAttribute('aria-label', label); byId('notifications-button').title = label;
 }
 function notices(): void {
-  state = markReadNotices(state); noticesBadge(); modal.open('Notifications'); if (!state.notices.length) modal.body.append(empty('No notifications'));
+  state = markReadNotices(state); noticesBadge(); modal.open('Notifications');
+  if (!state.notices.length && !communicationNotices.items.size) modal.body.append(empty('No notifications'));
+  for (const notice of [...communicationNotices.items.values()].reverse()) renderCommunicationNotice(notice);
   for (const group of noticeGroups(state.notices, noticeConversationName)) renderNoticeGroup(group);
+  const inactive = inactiveAgentTabCount(); if (inactive) modal.body.append(element('p','secondary',`Not watched: ${inactive} inactive agent tabs. Their messages appear when you open them.`));
+}
+function communicationNoticeText(notice: CommunicationNotice): string {
+  const kind = {report:'Report',result:'Result','check-in':'Still working'}[notice.kind], sender = senderName(notice.sender,toolSubjectCaption(notice.sender.identity));
+  return [kind,sender,notice.firstLine].filter(Boolean).join(' · ');
+}
+function refreshCommunicationCaptions(): void {
+  for (const control of modal.body.querySelectorAll<HTMLButtonElement>('.communication-notice-open')) {
+    const notice = communicationNotices.items.get(control.dataset.noticeKey ?? ''); if (notice) setText(control,communicationNoticeText(notice));
+  }
+}
+function renderCommunicationNotice(notice: CommunicationNotice): void {
+  const row = element('div',`notification communication-notification${notice.read ? '' : ' notification-unread'}`); row.dataset.unread = String(!notice.read);
+  const open = button(communicationNoticeText(notice),()=>{void openCommunicationNotice(notice).catch(showError);},'communication-notice-open'); open.dataset.noticeKey = notice.key;
+  row.append(open); modal.body.append(row);
+}
+async function openCommunicationNotice(notice: CommunicationNotice): Promise<void> {
+  if (communicationNotices.items.get(notice.key) !== notice) return;
+  const context = JSON.stringify([state.bootId,state.workspace?.id]); modal.close(false);
+  await navigateReference({target:notice.target,entryId:notice.entryId},true);
+  const workspace = state.workspace?.id; if (!workspace || context !== JSON.stringify([state.bootId,workspace])) return;
+  const controller = controllers.get(controllerKey(workspace,notice.target)); if (!controller) return;
+  controller.inspection?.conversation();
+  if (threadPane?.paneId === threadOpeningPane(controller)?.id) closeThread(false);
+  let entry: string | undefined;
+  for (let page = 0; page <= EARLIER_FILL.pages; page++) {
+    await new Promise<void>(resolve=>requestAnimationFrame(()=>resolve()));
+    if (context !== JSON.stringify([state.bootId,state.workspace?.id]) || !sameTarget(notice.target,layoutTarget(currentLayout(),primaryTarget()) ?? undefined)) return;
+    entry = controller.transcript.entryForMessage(notice.messageId); if (entry || page === EARLIER_FILL.pages || !hasEarlierHistory(controller)) break;
+    await loadControllerHistory(controller,true);
+  }
+  if (!entry) {announce('That message is not in the loaded conversation.'); return;}
+  controller.transcript.revealEntry(entry); notice.read = true; noticesBadge();
 }
 /** A notice names its conversation as the tab does. A Primary of another epoch is not named. */
 function noticeConversationName(target: Target): string | undefined {

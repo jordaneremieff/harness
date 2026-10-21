@@ -131,7 +131,7 @@ function quiet(template: (input: SentenceInput) => Words, when: true | ((args: R
   return Object.assign((input: SentenceInput) => template(input), {quietTextResult: when});
 }
 const templates:Record<string,SentenceTemplate>={
-  agent_send:sendWords,agent_steer:quiet(sendWords),agent_inspect:inspectWords,agent_await:awaitWords,agent_collaborate:collaborateWords,
+  agent_send:quiet(sendWords, args=>args.mode==='report'),agent_steer:quiet(sendWords),agent_inspect:inspectWords,agent_await:awaitWords,agent_collaborate:collaborateWords,
   agent_spawn:({args})=>words('Started','Starting','Start',` ${first(args.name)||'a new agent'}${quote(args.prompt)}`),
   agent_abort:({args,identity,name})=>typeof args.timerId==='number'?words('Canceled a timer','Canceling a timer','Cancel a timer',identity?` for ${name}`:''):words('Stopped work','Stopping work','Stop work',identity?` in ${name}`:''),
   agent_status:()=>words('Checked agent status','Checking agent status','Check agent status'),

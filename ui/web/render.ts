@@ -875,6 +875,10 @@ export class Transcript {
       this.stepHold();
     });
   }
+  entryForMessage(messageId: string): string | undefined {
+    for (const entry of this.index.entries.values()) if (entry.messages?.some(message => message.id === messageId)) return entry.id;
+    return;
+  }
   /** Rows the reader can scroll through, for judging how much a page added. */
   rowCount(): number { return this.displayed.length; }
   private refreshMountedCommunications(): void {
@@ -1626,12 +1630,16 @@ export class Transcript {
       return caption.text === caption.name || caption.text.startsWith(`${caption.name} · `) ? caption.text : caption.name;
     };
   }
+  private quietReportResult(source: ToolState): boolean {
+    return source.name === 'agent_send' && source.status !== 'error' && quietTextResult(source);
+  }
   private toolContent(tool: ToolNode): void {
     const source = tool.source; if (!source) return;
     if (!this.protectedNode(tool.preview)) {
       const resolve = source.name === 'agent_await' && awaitedFromParts(source.result ?? []) ? this.responderNames() : this.nameResolver(), title = tool.title.textContent ?? '';
-      const supplied = presentToolPreview(source) ?? presentResultPreview(source, resolve, title);
-      const literal = () => source.status === 'success' && quietTextResult(source) ? '' : resultPreview(source.result ?? [], {resolve, tidy: source.status !== 'error', title});
+      const quietReport = this.quietReportResult(source);
+      const supplied = quietReport ? undefined : presentToolPreview(source) ?? presentResultPreview(source, resolve, title);
+      const literal = () => quietReport || source.status === 'success' && quietTextResult(source) ? '' : resultPreview(source.result ?? [], {resolve, tidy: source.status !== 'error', title});
       if (supplied) this.replaceContent(tool.preview, supplied);
       else setText(tool.preview, literal());
       tool.preview.classList.toggle('tool-error', source.status === 'error');
