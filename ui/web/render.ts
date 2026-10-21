@@ -932,6 +932,14 @@ export class Transcript {
       return rowId?[{entryId:entry.id,messageId:message.id,rowId,entryAt,messageAt}]:[];
     }));
   }
+  private receivedRowMessageAt(row:TranscriptRow|undefined,entry:EntryView|undefined):number{
+    if(!row||!entry||row.source.id!==entry.id)return -1;
+    const messages=entry.messages??[];
+    if(row.parts)return messages.findIndex(message=>row.parts?.has(message.id));
+    const tool=row.steps?.tools[0];
+    if(!tool||tool.owner!==entry.id||this.rows.calls.get(tool.callId)!==row.view.id)return -1;
+    return messages.findIndex(message=>message.parts.some((part,at)=>(part.type==='toolCall'||part.type==='toolResult')&&part.callId===tool.callId&&tool.slot===slot(entry.id,message.id,at)));
+  }
   receivedResult(direction:-1|1):ReceivedResult|undefined{
     if(this.destroyed||this.hidden()||this.deferred)return;
     const stops=this.loadedReceivedResults(),reading=this.geometryAnchor(),cursor=this.receivedResultCursor;
@@ -941,7 +949,7 @@ export class Transcript {
     }
     const anchored=this.restoring?.anchorId??reading?.id,row=anchored?this.rows.byId.get(anchored):undefined;
     const entryId=row?.source.id??anchored,entryAt=this.follow?this.chronological.length:this.chronological.findIndex(entry=>entry.id===entryId);
-    const messageAt=this.chronological[entryAt]?.messages?.findIndex(message=>row?.parts?.has(message.id))??-1;
+    const messageAt=this.receivedRowMessageAt(row,this.chronological[entryAt]);
     return direction<0?stops.findLast(stop=>stop.entryAt<entryAt||stop.entryAt===entryAt&&stop.messageAt<messageAt):stops.find(stop=>stop.entryAt>entryAt||stop.entryAt===entryAt&&stop.messageAt>messageAt);
   }
   jumpReceivedResult(direction:-1|1):boolean{
