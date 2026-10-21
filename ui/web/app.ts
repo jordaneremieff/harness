@@ -1635,7 +1635,7 @@ export function primaryChrome(item?: PrimaryView): void {
 function renderPrimaryUsage(item?: PrimaryView): void {
   const usage = usageFacts(item, item ? primaryBlocks(state, item.key) : undefined), current = item?.lifecycle === 'ready';
   byId('primary-context').replaceChildren(...(current ? usageNodes({facts: usage.facts.filter(fact => fact.key === 'context' || fact.key === 'contextTokens'), contextFraction: usage.contextFraction}, true) : []));
-  byId('primary-usage-summary').replaceChildren(...(current ? usageNodes({facts: usage.facts.filter(fact => fact.key !== 'context' && fact.key !== 'contextTokens'), contextFraction: null}, true) : []));
+  byId('primary-usage-summary').replaceChildren(...(current ? usageNodes({facts: usage.facts.filter(fact => fact.key === 'cost'), contextFraction: null}, true) : []));
   byId('primary-usage').replaceChildren(...(!current && item ? [element('p', 'usage-detail', 'Last reported; Primary is not running.')] : []), ...usageNodes(usage, false));
   byId('primary-usage-details').hidden = !item;
   renderComposerFolder('primary-folder', composerFolder({cwd: item?.cwd}, false));

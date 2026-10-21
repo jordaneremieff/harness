@@ -588,6 +588,7 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
   .workbench-status[data-pane=file] > .workbench-activity { flex: 0 1 auto; white-space: normal; }
 }
 .usage-details { display: block; }
+#primary-usage-summary:not(:empty)::before { content: "·"; margin-right: var(--s2); }
 .usage-group { display: inline-flex; flex: none; align-items: center; gap: var(--s1); white-space: nowrap; }
 .workspace-alert { display: flex; flex-wrap: wrap; flex: none; gap: 0 var(--s3); max-height: 25dvh; margin-top: var(--s2); padding: var(--s2) var(--s3); overflow: auto; border-left: 2px solid var(--warning); border-radius: 0 var(--r-sm) var(--r-sm) 0; background: var(--run-bg); color: var(--fg); font-size: var(--fs-ui); }
 .workspace-alert pre { white-space: pre-wrap; }
