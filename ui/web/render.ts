@@ -15,7 +15,7 @@ import { thinkingExpanded } from './transcript-presentation.ts';
 import { TranscriptIndex, ToolElapsedClock, toolTime, thinkingLabel, thinkingPreview, slot, communicationDisclosureKeys } from './transcript-tools.ts';
 import { CommunicationCard, messageCopyText, messageCopyDescription, type SenderSummary } from './communication.ts';
 import type { TranscriptGroups } from './transcript-groups.ts';
-import {TranscriptRows, type StepRun} from './transcript-rows.ts';
+import {TranscriptRows, type StepRun, type TranscriptRow} from './transcript-rows.ts';
 import {toolSentence,toolLabel,quietTextResult, type NamedDestination} from './tool-sentences.ts';
 import {ConversationTasks, type ConversationTask, type TaskReference} from './conversation-tasks.ts';
 import { loadedReference, type ReferenceQuery, type ReferenceResolver } from './references.ts';
@@ -197,7 +197,10 @@ type PartNode = {node: HTMLElement; source: PartView; partial: boolean};
 type MessageNode = {inputTime?: HTMLElement; communication?: CommunicationCard; node: HTMLElement; header: HTMLElement; heading: HTMLElement; delivery: HTMLElement; actions: HTMLElement; body: HTMLElement; error: HTMLElement; parts: Map<string, PartNode>; source: MessageView; menu: HTMLButtonElement; forkRevision: number; inspection?: HTMLElement; inspectionSource?: MessageView; sourceOpener?: HTMLElement; thinkingGroups?: Map<string, {node: HTMLDetailsElement; body: HTMLElement}>};
 type EventPage = {node: HTMLElement; rows: HTMLElement; page: number; previous: HTMLButtonElement; next: HTMLButtonElement; cache: Map<string, {source: EntryView; node: HTMLElement}>};
 type SessionNode = {source?: SessionGroup; details: HTMLDetailsElement; events: EventPage; notices: EventPage};
-type EntryNode = {node: HTMLElement; messages: Map<string, MessageNode>; source?: EntryView; custom?: HTMLElement; session?: SessionNode; groupHeader?: HTMLElement};
+type TurnMessage = {entry: EntryView; message: MessageView};
+type AssistantTurn = {key: string; input?: TurnMessage; copy?: TurnMessage; assistant: boolean; end?: string};
+type TurnActions = {node: HTMLElement; copy: HTMLButtonElement; fork: HTMLButtonElement; turn: AssistantTurn; generation: number};
+type EntryNode = {node: HTMLElement; messages: Map<string, MessageNode>; turnActions?: TurnActions; source?: EntryView; custom?: HTMLElement; session?: SessionNode; groupHeader?: HTMLElement};
 type ToolNode = {previewSource?: JoinedTool; previewSubjectRevision?: number; answerText?: string; subject?: ToolSubjectCaption; card: HTMLElement; node: HTMLDetailsElement; copy: HTMLButtonElement; title: HTMLElement; target: HTMLElement; glyph: HTMLElement; stateWord: HTMLElement; meta: HTMLElement; preview: HTMLElement; qualification: HTMLElement; expanded: HTMLElement; resultArea: HTMLElement; technical: HTMLDetailsElement; actions: HTMLElement; info: HTMLElement; source?: JoinedTool; inspectionSources?: Map<HTMLDetailsElement, JoinedTool>; presentation?: HTMLElement; argumentsDocument?: HTMLElement; argumentsSource?: JoinedTool; output?: HTMLElement; contentSource?: JoinedTool; viewport?: HTMLElement; pageViewports?: Set<HTMLElement>; resultDocument?: HTMLElement; documentSource?: JoinedTool; previewBudget?: PreviewBudget; outputNotice?: {node: HTMLElement; source: JoinedTool}; inspections?: {arguments: HTMLDetailsElement; output: HTMLDetailsElement; details: HTMLDetailsElement}};
 export type TranscriptGeometry = {generation: number; followTail: boolean; anchor: {id: string; offsetPx: number} | null; scrollTop: number};
 export type FindStatus = {total: number; position: number; moved: boolean; end: 'none' | 'first' | 'last' | 'unavailable' | null};
@@ -208,6 +211,9 @@ export class Transcript {
   private chronological: EntryView[] = [];
   private rows = new TranscriptRows();
   private tasks = new ConversationTasks();
+  private turnRows = new Map<string,AssistantTurn>();
+  private latestTurn?: string;
+  private hoveredTurn?: string;
   private taskReads=new Map<string,AbortController>();
   private taskReadStamps=new Map<string,string>();
   private get groups(): TranscriptGroups { return this.index.groups; }
@@ -306,6 +312,10 @@ export class Transcript {
       this.observers.push(visibility);
     }
     this.listen(this.node, 'contextmenu', event => this.itemMenu(event as MouseEvent));
+    this.listen(this.node, 'pointerover', event => { this.hoveredTurn = this.turnAt(event.target); this.refreshTurnVisibility(); });
+    this.listen(this.node, 'pointerout', event => { this.hoveredTurn = this.turnAt((event as PointerEvent).relatedTarget); this.refreshTurnVisibility(); });
+    this.listen(this.node, 'focusin', () => this.refreshTurnVisibility());
+    this.listen(this.node, 'focusout', () => { this.frame(() => this.refreshTurnVisibility()); });
     this.listen(this.node, 'source-wrap', () => {
       const anchor = this.follow ? null : this.anchor();
       this.restoring = undefined; this.reflowAnchor = anchor;
@@ -448,7 +458,7 @@ export class Transcript {
     this.resize?.disconnect(); if (!this.destroyed) this.resize?.observe(this.node); this.sizes = new WeakMap(); this.scrolling = new WeakSet(); this.reflowAnchor = undefined; this.writtenScrollTop = undefined;
     this.clearFind(false); this.findRevision++;
     this.initialSettings.clear(); this.toolStates = new Map(); this.indexedFindId = undefined;
-    this.generation++; this.entries = []; this.displayed = []; this.cache.clear(); this.tools.clear(); this.liveThinking.clear(); this.thinkingTimes = new Map(); this.index = new TranscriptIndex(); this.joined = this.index.joined; this.rows = new TranscriptRows(); this.tasks = new ConversationTasks(); this.visible.clear(); this.dirtyLayout = true; this.pins.clear(); this.heights.clear(); this.gaps.clear();
+    this.generation++; this.entries = []; this.displayed = []; this.turnRows.clear(); this.latestTurn = undefined; this.hoveredTurn = undefined; this.cache.clear(); this.tools.clear(); this.liveThinking.clear(); this.thinkingTimes = new Map(); this.index = new TranscriptIndex(); this.joined = this.index.joined; this.rows = new TranscriptRows(); this.tasks = new ConversationTasks(); this.visible.clear(); this.dirtyLayout = true; this.pins.clear(); this.heights.clear(); this.gaps.clear();
     this.expanded.clear(); this.streamedThinking.clear(); this.showThinking = false; this.thinkingChoice = undefined; this.follow = true; this.readingRevision = 0;
     this.layout = layoutItems([], this.heights, 140); this.restoring = undefined; this.node.replaceChildren(...(this.lead ? [this.lead] : [])); this.scrollTo(0); this.hold = undefined; this.arrivals.reset(); this.syncLatest();
   }
@@ -504,6 +514,47 @@ export class Transcript {
     for (const [id, run] of this.rows.runs) this.index.disclosures.set(run.key,id);
     if (displayed.length !== this.displayed.length || displayed.some((entry, at) => entry.id !== this.displayed[at]?.id)) this.dirtyLayout = true;
     this.displayed = displayed;
+    this.deriveTurns();
+  }
+  private textBearing(message: MessageView): boolean {
+    if (message.communication?.state === 'ready') return !!message.communication.value.body.text.trim();
+    return message.parts.some(part => part.type === 'text' && !!part.text.trim());
+  }
+  private extendTurn(entry: EntryView, message: MessageView, previous?: AssistantTurn): AssistantTurn | undefined {
+    if (message.role === 'user') return {key:JSON.stringify([entry.id,message.id]),input:{entry,message},assistant:false};
+    if (message.role !== 'assistant') return previous;
+    const turn = previous ?? {key:JSON.stringify([entry.id,message.id]),assistant:false};
+    turn.assistant = true; this.latestTurn = turn.key;
+    if (this.textBearing(message)) turn.copy = {entry,message};
+    return turn;
+  }
+  private sourceTurns(): {messages: Map<MessageView,AssistantTurn>; tools: Map<string,AssistantTurn>} {
+    const messages = new Map<MessageView,AssistantTurn>(), tools = new Map<string,AssistantTurn>(); let turn: AssistantTurn | undefined;
+    this.latestTurn = undefined;
+    for (const entry of this.chronological) {
+      for (const message of entry.messages ?? []) {
+        turn = this.extendTurn(entry,message,turn);
+        if (message.role === 'assistant' && turn) messages.set(message,turn);
+      }
+      if (entry.tool && turn) tools.set(entry.id,turn);
+    }
+    return {messages,tools};
+  }
+  private rowTurn(row: TranscriptRow, messages: ReadonlyMap<MessageView,AssistantTurn>, tools: ReadonlyMap<string,AssistantTurn>): AssistantTurn | undefined {
+    if (row.actionsOnly) return;
+    for (const message of row.source.messages ?? []) {
+      const turn = messages.get(message); if (!turn) continue;
+      if (row.parts?.has(message.id)) return turn;
+      if (row.steps?.tools.some(tool => message.parts.some((_part,at) => tool.slot === slot(row.source.id,message.id,at)))) return turn;
+    }
+    return tools.get(row.source.id);
+  }
+  private deriveTurns(): void {
+    const {messages,tools} = this.sourceTurns(); this.turnRows.clear();
+    for (const entry of this.displayed) {
+      const row = this.rows.byId.get(entry.id), turn = row ? this.rowTurn(row,messages,tools) : undefined;
+      if (!turn?.assistant) continue; this.turnRows.set(entry.id,turn); turn.end = entry.id;
+    }
   }
   private migrateStepRows(previous:ReadonlyMap<string,StepRun>):void{
     for(const [id,run] of previous){
@@ -829,6 +880,7 @@ export class Transcript {
     this.evict(new Set(selected.map(item => item.id)));
     this.refreshMountedTools();
     this.refreshMountedCommunications();
+    this.refreshTurnVisibility();
     this.readVisibleTaskAnswers(new Set(selected.map(item=>item.id)));
     this.finishScroll(anchor);
     this.refreshFind();
@@ -1014,7 +1066,54 @@ export class Transcript {
     if(!cached){const node=element('div','entry');node.dataset.entryId=id;node.style.display='flow-root';cached={node,messages:new Map()};this.cache.set(id,cached);}
     return cached;
   }
+  private turnAt(target: EventTarget | null): string | undefined {
+    if (!(target instanceof Element) || !this.node.contains(target)) return;
+    return target.closest<HTMLElement>('.entry[data-assistant-turn]')?.dataset.assistantTurn;
+  }
+  private refreshTurnVisibility(): void {
+    const focused = this.turnAt(document.activeElement);
+    for (const cached of this.cache.values()) if (cached.turnActions) {
+      const {node,turn} = cached.turnActions;
+      node.dataset.visible = String(turn.key === this.latestTurn || turn.key === this.hoveredTurn || turn.key === focused);
+    }
+  }
+  private currentTurn(actions: TurnActions): AssistantTurn | undefined {
+    if (this.deferred || this.hidden() || actions.generation !== this.generation || !this.node.contains(actions.node)) return;
+    const turn = actions.turn;
+    return turn.end && this.turnRows.get(turn.end) === turn ? turn : undefined;
+  }
+  private currentTurnMessage(source: TurnMessage): boolean {
+    return this.index.entries.get(source.entry.id)?.messages?.find(message => message.id === source.message.id) === source.message;
+  }
+  private copyTurn(actions: TurnActions): void {
+    const source = this.currentTurn(actions)?.copy; if (!source || !this.currentTurnMessage(source)) return;
+    const text = messageCopyText(source.message,message => partText(message.parts)); if (text) void copy(text,actions.copy);
+  }
+  private forkTurn(actions: TurnActions): void {
+    const source = this.currentTurn(actions)?.input;
+    if (source && this.currentTurnMessage(source) && this.forkEligible(source.entry,source.message)) this.hooks.fork?.(source.message,source.entry.id);
+  }
+  private updateTurnFooter(cached: EntryNode, entryId: string): void {
+    const turn = this.turnRows.get(entryId);
+    if (turn) cached.node.dataset.assistantTurn = turn.key; else delete cached.node.dataset.assistantTurn;
+    if (!turn || turn.end !== entryId) { if (cached.turnActions) cached.turnActions.node.hidden = true; return; }
+    let actions = cached.turnActions;
+    if (!actions) {
+      const node = element('div','assistant-turn-actions');
+      const copy = cardAction('copy','Copy',()=>{ if (cached.turnActions) this.copyTurn(cached.turnActions); });
+      const fork = cardAction('fork','Fork',()=>{ if (cached.turnActions) this.forkTurn(cached.turnActions); });
+      node.append(copy,fork); actions = {node,copy,fork,turn,generation:this.generation}; cached.turnActions = actions;
+    }
+    actions.turn = turn; actions.generation = this.generation;
+    actions.copy.disabled = !turn.copy || !messageCopyText(turn.copy.message,message => partText(message.parts));
+    actions.fork.hidden = !turn.input || !this.forkEligible(turn.input.entry,turn.input.message);
+    actions.node.hidden = false;
+  }
   private updateEntry(entry: EntryView): HTMLElement {
+    this.updateTurnFooter(this.entryCacheNode(entry.id),entry.id);
+    return this.entryContent(entry);
+  }
+  private entryContent(entry: EntryView): HTMLElement {
     const cached=this.entryCacheNode(entry.id);
     const row = this.rows.byId.get(entry.id);
     if (row?.steps) {
@@ -1031,6 +1130,7 @@ export class Transcript {
     children.push(...this.updateMessages(cached, entry, row?.parts, row?.actionsOnly));
     setEntryRhythm(cached.node, children, session !== undefined);
     const header = this.groupHeader(cached, entry.id); if (header) children.unshift(header);
+    if (cached.turnActions && !cached.turnActions.node.hidden) children.push(cached.turnActions.node);
     reconcileChildren(cached.node, children); this.registerContent(cached.node); cached.source = entry; return cached.node;
   }
   private updateMessages(cached: EntryNode, entry: EntryView, parts?: Map<string, Set<number>>, actionsOnly = false): HTMLElement[] {
@@ -1051,6 +1151,7 @@ export class Transcript {
     const children=parts?this.updateMessages(cached,entry,parts,true):[];
     if(!parts)this.pruneMessages(cached,new Set());
     children.push(...run.tools.map(tool=>this.updateTool(tool)));this.stepEvents(cached,run);
+    if(cached.turnActions&&!cached.turnActions.node.hidden)children.push(cached.turnActions.node);
     reconcileChildren(cached.node,children);this.registerContent(cached.node);
   }
   private stepEvents(cached:EntryNode,run:StepRun):void{
@@ -1361,7 +1462,7 @@ export class Transcript {
     if (!valid()) return;
     if (!['BUTTON', 'A', 'INPUT', 'TEXTAREA'].includes(origin.tagName.toUpperCase())) origin.tabIndex = -1;
     const copyItem = {label: 'Copy', enabled: !!messageCopyText(source, item => partText(item.parts)), description: messageCopyDescription(source), run: () => this.copyMessage(entry, id, cached.node, generation)};
-    const items: ContextItem[] = [...selectionCopy(cached.node), copyItem, {label: 'Source', run: () => {
+    const items: ContextItem[] = [...selectionCopy(cached.node), ...(source.role === 'assistant' && origin === cached.menu ? [] : [copyItem]), {label: 'Source', run: () => {
       if (!valid()) return;
       if (cached.communication) cached.communication.openSource(origin); else this.openOrdinarySource(entry, cached, origin, generation);
     }}];

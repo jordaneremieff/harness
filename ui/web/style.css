@@ -661,6 +661,9 @@ a.reference-link[href] { color: var(--link); text-decoration: underline; overflo
 .message:hover > .message-header > .message-actions, .message:focus-within > .message-header > .message-actions { opacity: 1; pointer-events: auto; }
 .message-actions button { min-height: 24px; padding: var(--s1) var(--s2); color: var(--muted); white-space: nowrap; }
 .message-actions button:hover { color: var(--fg); background: var(--raised); }
+.assistant-turn-actions { display: flex; align-items: center; gap: var(--s1); min-height: 24px; margin-top: var(--s2); color: var(--muted); opacity: 0; pointer-events: none; }
+.assistant-turn-actions[data-visible=true] { opacity: 1; pointer-events: auto; }
+@media (pointer: coarse) { .assistant-turn-actions { opacity: 1; pointer-events: auto; } }
 .message:is(.thinking-only, .tool-only) > .message-header { position: absolute; top: 2px; right: 2px; z-index: 2; max-width: 100%; }
 .message.tool-only > .message-header { top: 12px; right: 12px; }
 .message:is(.thinking-only, .tool-only) > .message-body > .thinking:first-child > summary { max-width: calc(100% - 32px); }
