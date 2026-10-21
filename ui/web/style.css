@@ -351,7 +351,8 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .agent-row > .row-age { grid-column: 2; width: auto; height: 30px; min-height: 30px; max-width: 96px; line-height: 30px; }
 .row-age time { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row-age:disabled { color: var(--muted); }
-.row-message { grid-column: 3; opacity: 1; pointer-events: auto; color: var(--muted); }
+.row-message { grid-column: 3; opacity: 0; pointer-events: none; color: var(--muted); }
+.agent-row:is(:hover, :focus-within) > .row-message { opacity: 1; pointer-events: auto; }
 .row-message:hover { background: var(--raised); color: var(--fg); }
 .roster-older, .roster-more { display: block; width: 100%; height: 26px; padding: 0 var(--s3) 0 var(--s6); border-radius: 0; color: var(--muted); font-size: var(--fs-ui); text-align: left; }
 .roster-more.card-action { display: inline-flex; width: 28px; height: 28px; margin-left: var(--s5); padding: 0; }
