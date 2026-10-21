@@ -1,11 +1,10 @@
 import type { PrimaryView, SavedSession, SavedSessionPage } from '../shared/api.ts';
-import {previewText} from './format.ts';
 
 export function sessionLabel(item: SavedSession): string {
-  if (item.titleState === 'pending') return 'Loading title…';
-  if (item.titleSource !== 'prompt') return item.title;
-  const excerpt = previewText(item.title, 1, 64);
-  return excerpt.text + (excerpt.truncated ? '…' : '');
+  const line=item.title.split(/\r?\n/,1)[0]?.trim();
+  if(item.titleState==='ready'&&(item.titleSource==='name'||item.titleSource==='prompt')&&line)return line;
+  const folder=item.project.split('/').filter(Boolean).at(-1)||item.project;
+  return `${folder} · ${item.id.slice(-4)}`;
 }
 
 /** A newer loaded snapshot supersedes older title evidence, even when its title is unavailable. */

@@ -5,7 +5,7 @@ import type { AgentAdapter } from './registry.mts';
 import { projectThreadItems } from './threads.mts';
 
 /** A host keeps at most 256 threads per storage, so the per-host bound reaches every thread the host can hold. */
-export const THREAD_BOUNDS = {perHost: 256, total: 200, hostCalls: 16, pageLimit: 20, concurrency: 4, hostTimeoutMs: 10_000, responseBytes: 160 * 1024} as const;
+export const THREAD_BOUNDS = {perHost: 256, total: 200, hostCalls: 16, pageLimit: 20, concurrency: 4, overviewTimeoutMs: 12_000, hostTimeoutMs: 10_000, responseBytes: 160 * 1024} as const;
 const ROSTER_PAGES = 50;
 const ROSTER_PAGE_ROWS = 100;
 type Agents = Pick<AgentAdapter, 'roster' | 'threads'>;
@@ -26,22 +26,21 @@ function liveStorages(agents: Agents): {storages: string[]; notRunning: number; 
   let live = new Set<string>(), known = new Set<string>();
   for (let attempt = 0; attempt < 2; attempt++) {
     live = new Set(); known = new Set();
-    try { const complete = scanRoster(agents, live, known); return {storages: [...known], notRunning: notRunning(known, live), complete}; }
+    try { const complete = scanRoster(agents, live, known); return {storages: [...known].sort((a,b)=>Number(live.has(b))-Number(live.has(a))), notRunning: notRunning(known, live), complete}; }
     catch (error) { if (!(attempt === 0 && error instanceof AgentError && error.code === 'stale_revision')) break; }
   }
-  return {storages: [...known], notRunning: notRunning(known, live), complete: false};
+  return {storages: [...known].sort((a,b)=>Number(live.has(b))-Number(live.has(a))), notRunning: notRunning(known, live), complete: false};
 }
 function notRunning(known: Set<string>, live: Set<string>): number { return [...known].filter(id => !live.has(id)).length; }
 function failure(error: unknown): {code: string; message: string} {
   const code = error instanceof AgentError ? error.code : 'host_error';
   return {code, message: safeText(error instanceof Error ? error.message : 'The host did not answer.', 512)};
 }
-async function listHost(agents: Agents, storageId: string, signal: AbortSignal): Promise<{items: ThreadListItem[]; truncated: boolean}> {
-  const items: ThreadListItem[] = [];
+async function listHost(agents: Agents, storageId: string, signal: AbortSignal,items:ThreadListItem[]): Promise<{items: ThreadListItem[]; truncated: boolean}> {
   let cursor: string | undefined, calls = 0;
   do {
     const page = await agents.threads(storageId, {limit: THREAD_BOUNDS.pageLimit, ...(cursor === undefined ? {} : {cursor})}, signal);
-    calls++;
+    signal.throwIfAborted();calls++;
     for (const item of projectThreadItems(storageId, page)) {
       if (item.id.split('/')[0] !== storageId) throw new AgentError('protocol_error', 'The host listed a thread that another storage owns.');
       items.push(item);
@@ -57,16 +56,17 @@ function hostFailure(storageId: string, error: unknown, timedOut: boolean): Thre
   return {...base, state: 'failed', ...(timedOut ? {code: 'timeout', message: 'The host did not answer in time.'} : failure(error))};
 }
 async function collectHost(agents: Agents, storageId: string, timeoutMs: number, outer?: AbortSignal): Promise<{state: ThreadHostState; items: ThreadListItem[]}> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const controller = new AbortController(),received:ThreadListItem[]=[];
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  const expired=new Promise<never>((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(new AgentError('timeout','The host did not answer in time.'));},timeoutMs);});
   const relay = () => controller.abort();
   outer?.addEventListener('abort', relay, {once: true});
   try {
-    const {items, truncated} = await listHost(agents, storageId, controller.signal);
+    const {items, truncated} = await Promise.race([listHost(agents, storageId, controller.signal,received),expired]);
     return {state: {storageId, state: 'answered', threads: items.length, truncated}, items};
   } catch (error) {
     if (outer?.aborted) throw error;
-    return {state: hostFailure(storageId, error, controller.signal.aborted), items: []};
+    return {state: {...hostFailure(storageId,error,controller.signal.aborted),threads:received.length,truncated:received.length>0}, items: [...received]};
   } finally {
     clearTimeout(timer);
     outer?.removeEventListener('abort', relay);
@@ -91,12 +91,14 @@ function bound(all: ThreadListItem[]): {items: ThreadListItem[]; omitted: number
 export async function collectThreads(agents: Agents, options: OverviewOptions = {}): Promise<ThreadOverview> {
   const {storages, notRunning, complete} = liveStorages(agents);
   const results = new Array<Awaited<ReturnType<typeof collectHost>>>(storages.length);
-  let next = 0;
+  let next = 0;const deadline=performance.now()+THREAD_BOUNDS.overviewTimeoutMs;
   const worker = async () => {
     while (next < storages.length) {
       options.signal?.throwIfAborted();
       const index = next++;
-      results[index] = await collectHost(agents, storages[index], options.hostTimeoutMs ?? THREAD_BOUNDS.hostTimeoutMs, options.signal);
+      const remaining=Math.floor(deadline-performance.now());
+      results[index] = remaining>0 ? await collectHost(agents, storages[index], Math.min(remaining,options.hostTimeoutMs ?? THREAD_BOUNDS.hostTimeoutMs), options.signal) : {
+        items:[],state:{storageId:storages[index],state:'failed',threads:0,truncated:false,code:'read_limit',message:'The bounded thread read did not reach this host. Retry to refresh.'}};
     }
   };
   await Promise.all(Array.from({length: Math.min(THREAD_BOUNDS.concurrency, storages.length)}, worker));

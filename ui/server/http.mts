@@ -12,6 +12,7 @@ import type { Journal } from './journal.mts';
 import {FileResponse, type Files} from './files.mts';
 import {dispatchFiles, isFileRoute,fileWatchClientId} from './routes-files.mts';
 import { SessionStore, validateSessionProject } from './sessions.mts';
+import {SessionRead} from './session-read.mts';
 import type { AssetGenerations } from './asset-generations.mts';
 import type { DiagnosticSink } from './diagnostics.mts';
 import { UI_ITERATION, type UiIdentity } from '../shared/version.ts';
@@ -169,6 +170,7 @@ export class LocalHttp {
   readonly backend: HttpBackend;
   private assets: Map<string, Asset>;
   private sessions: Pick<SessionStore, 'sessions' | 'projects' | 'titles'>;
+  private sessionRead=new SessionRead();
   private development:DevelopmentHttp;
   private buildStreams=new Set<ServerResponse>();
   private closeWork?: Promise<void>;
@@ -205,11 +207,11 @@ export class LocalHttp {
   private async finishClose(): Promise<void> {
     this.stopAdmission(); this.backend.journal.close();
     for(const response of this.buildStreams) response.end();
-    await new Promise<void>((resolve, reject) => {
+    try {await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(() => this.server.closeAllConnections(), HTTP_CLOSE_GRACE_MS); timer.unref();
         this.server.close(error => {clearTimeout(timer); if (error) reject(error); else resolve();});
         this.server.closeIdleConnections();
-    });
+    });} finally {await this.sessionRead.close();}
   }
   private rate(key: string) {
     const now = performance.now(); const bucket = this.buckets.get(key) ?? {tokens: 240, at: now};
@@ -459,6 +461,11 @@ export class LocalHttp {
     } finally { this.imageReads--; }
   }
   private async savedMetadata(url: URL, response: ServerResponse): Promise<boolean> {
+    if(url.pathname==='/api/sessions/history'){
+      const writers=this.backend.withWriters?.bind(this.backend);
+      if(!writers)throw new ApiError('not_ready','Saved-session writer coverage is unavailable.',503);
+      respond(response,await this.sessionRead.read(url,writers));return true;
+    }
     if(url.pathname==='/api/sessions/published'){if(!this.backend.publishedSessions)throw new ApiError('not_ready','Ordinary discovery is unavailable.',503);respond(response,await this.backend.publishedSessions());return true;}
     if (url.pathname === '/api/projects') { respond(response, await this.sessions.projects(url.searchParams.get('cursor'))); return true; }
     if (url.pathname === '/api/sessions') {

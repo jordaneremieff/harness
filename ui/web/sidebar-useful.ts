@@ -3,6 +3,7 @@ import type {CommunicationNotice} from './notice-presentation.ts';
 import {button, byId, element, setText} from './dom.ts';
 import {absoluteTime, compactAge, isValidTimestamp} from './format.ts';
 import {request} from './transport.ts';
+import {sessionLabel} from './picker-state.ts';
 
 function row(label:string,state:string,title:string,run:()=>void):HTMLButtonElement {
   const node=button('',run,'nav-row sidebar-content-row');
@@ -45,15 +46,15 @@ export class RecentSidebar {
   }
 }
 type SessionRow={key:string;name:string;at:number;state:string;title:string;primary?:PrimaryView;saved?:SavedSession};
-type SessionHooks={primaries:()=>readonly PrimaryView[];selected:()=>string|undefined;choose:(primary:PrimaryView,saved?:SavedSession)=>void;resume:(saved:SavedSession)=>void;create:()=>void};
+type SessionHooks={primaries:()=>readonly PrimaryView[];selected:()=>string|undefined;openPrimary:(primary:PrimaryView,saved?:SavedSession)=>void;openSaved:(saved:SavedSession)=>void;create:()=>void};
 type Catalog={pages:SavedSessionPage[];notes:string[];published:Set<string>};
 function primarySession(primary:PrimaryView,saved:SavedSession|undefined):SessionRow {
-  const at=saved?Date.parse(saved.modifiedAt):0,name=primary.sessionName||saved?.title||primary.cwd.split('/').filter(Boolean).at(-1)||'Primary';
-  return {key:primary.sessionFile??primary.key,name,at,state:primary.lifecycle!=='ready'&&saved?.writer==='live'?'live':at?compactAge(at,Date.now()):'',title:[name,primary.cwd,primary.lifecycle,saved?.modifiedAt,saved?.writer==='live'?'Live publisher; open session options':''].filter(Boolean).join('\n'),primary,saved};
+  const at=saved?Date.parse(saved.modifiedAt):0,name=primary.sessionName?.trim()||(saved?sessionLabel(saved):`${primary.cwd.split('/').filter(Boolean).at(-1)||primary.cwd} · ${(primary.sessionId??primary.key).slice(-4)}`);
+  return {key:primary.sessionFile??primary.key,name,at,state:primary.lifecycle!=='ready'&&saved?.writer==='live'?'live':at?compactAge(at,Date.now()):'',title:[name,primary.sessionId,`Primary ${primary.key}`,primary.sessionFile,primary.cwd,primary.lifecycle,saved?.modifiedAt,saved?.writer==='live'?'Live in terminal · read-only snapshot':''].filter(Boolean).join('\n'),primary,saved};
 }
 function publishedSession(saved:SavedSession):SessionRow {
-  const at=Date.parse(saved.modifiedAt),name=saved.title||saved.project.split('/').filter(Boolean).at(-1)||'Session';
-  return {key:saved.path,name,at,state:saved.writer==='live'?'live':compactAge(at,Date.now()),title:[name,saved.project,saved.path,saved.modifiedAt,saved.writer==='live'?'Live in terminal; open session options':''].filter(Boolean).join('\n'),saved};
+  const at=Date.parse(saved.modifiedAt),name=sessionLabel(saved);
+  return {key:saved.path,name,at,state:saved.writer==='live'?'live in terminal':compactAge(at,Date.now()),title:[name,saved.id,saved.project,saved.path,saved.modifiedAt,saved.writer==='live'?'Live in terminal · read-only snapshot':''].filter(Boolean).join('\n'),saved};
 }
 /** Saved-session catalogs supply ages; publisher presence never grants an execution capability. */
 export class SessionSidebar {
@@ -101,7 +102,7 @@ export class SessionSidebar {
   private paint():void{
     const focused=(document.activeElement as HTMLElement|null)?.dataset.sessionKey;
     const nodes=this.sessionRows().map(item=>{
-      const node=row(item.name,item.state,item.title,()=>{if(item.primary)this.hooks.choose(item.primary,item.saved);else if(item.saved)this.hooks.resume(item.saved);});
+      const node=row(item.name,item.state,item.title,()=>{if(item.primary)this.hooks.openPrimary(item.primary,item.saved);else if(item.saved)this.hooks.openSaved(item.saved);});
       node.dataset.sessionKey=item.key;if(item.primary?.key===this.hooks.selected())node.setAttribute('aria-current','page');return node;
     });
     this.node.replaceChildren(...(nodes.length?nodes:[this.create]));

@@ -45,6 +45,7 @@ export class ThreadExplorer {
   private collapsed = false;
   private catalog = false;
   private readonly all = button('All threads',()=>{this.catalog=true;this.paint();this.filter.focus();},'nav-row sidebar-action');
+  private readonly retry = button('Threads did not load · Retry',()=>{void this.load();},'nav-row sidebar-action');
   private overview?: ThreadOverview;
   private failure?: unknown;
   private loading = false;
@@ -125,7 +126,12 @@ export class ThreadExplorer {
     this.list.replaceChildren(...items.map(item => this.row(item, now)));
     if (focused) this.rowFor(focused)?.focus({preventScroll: true});
     setText(this.all,overview?.items.length ? `All threads (${overview.items.length})` : 'All threads');
-    this.footer.replaceChildren(this.all);
+    this.retry.disabled=this.loading;this.retry.title=this.diagnostics();
+    this.footer.replaceChildren(this.failedEmpty()?this.retry:this.all);
+  }
+  private failedEmpty():boolean {
+    const overview=this.overview;
+    return !overview?.items.length&&(this.failure!==undefined||!!overview&&(!overview.rosterComplete||overview.hosts.failed>0||overview.hosts.unavailable>0));
   }
   diagnostics(): string {
     const overview = this.overview;

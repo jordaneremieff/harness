@@ -46,7 +46,7 @@ function paintAction(node: HTMLButtonElement, icon: CardIcon, label: string, vis
 export function createComposerElements(instanceId: string): ComposerElements {
   const id = `composer-${encodeURIComponent(instanceId)}`;
   const root = element('form', 'composer'); root.id = id; root.hidden = true;
-  const editor = element('textarea'); editor.id = `${id}-editor`; editor.rows = 1; editor.placeholder = 'Write a message…'; editor.spellcheck = false;
+  const editor = element('textarea'); editor.id = `${id}-editor`; editor.rows = 1; editor.placeholder = 'Message'; editor.spellcheck = false;
   const recipient = element('label', 'sr-only', 'Message'); recipient.id = `${id}-recipient`; recipient.htmlFor = editor.id;
   const resize = element('div', 'resizer'); resize.id = `${id}-resizer`; resize.dataset.axis = 'y'; resize.tabIndex = 0;
   resize.setAttribute('role', 'separator'); resize.setAttribute('aria-orientation', 'horizontal'); resize.setAttribute('aria-label', 'Resize message box'); resize.setAttribute('aria-controls', editor.id);
@@ -189,7 +189,7 @@ export class Composer {
     if (elements.fileMenu && fileSearch && hooks.fileStage) this.fileMenu = new FileMentionMenu(this.editor, elements.fileMenu, {search: (query, signal) => this.current ? fileSearch(query, signal) : undefined, accept: (token, row) => this.mention(token, row)});
     this.listen(this.editor, 'pointerup', () => this.rememberSelection());
     this.listen(elements.root, 'submit', event => { event.preventDefault(); void this.send(); });
-    this.editor.placeholder = 'Write a message…';
+    this.editor.placeholder = 'Message';
     this.listen(elements.queue, 'click', () => { if (this.current && !this.textLimit) void this.send(false, undefined, 'followUp'); });
     if (elements.recallRestore) {
       this.listen(elements.recallRestore, 'mousedown', event => event.preventDefault());
@@ -209,9 +209,9 @@ export class Composer {
     for (const buffer of this.buffers.values()) {clearTimeout(buffer.slowTimer); buffer.slowTimer = undefined; buffer.attachments?.destroy();}
     this.elements.receipt.replaceChildren(); this.elements.receiptDetails.replaceChildren();
   }
-  recipient(label: string, guidance = 'This agent is not ready for messages.', placeholder = label): void {
+  recipient(label: string, guidance = 'This agent is not ready for messages.'): void {
     setText(this.elements.recipient, label);
-    this.editor.placeholder = `${placeholder}…`;
+    this.editor.placeholder = 'Message';
     this.editor.setAttribute('aria-label', label);
     this.recipientGuidance = guidance; this.renderControls();
   }

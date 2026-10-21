@@ -24,7 +24,7 @@ export function sessionRecord(line: string): Record<string, unknown> | null {
   } catch { return null; }
 }
 function userText(value: unknown): string {
-  if (typeof value === 'string') return titleExcerpt(value);
+  if (typeof value === 'string') return titleExcerpt(value.split(/\r?\n/,1)[0]??'');
   if (!Array.isArray(value)) return '';
   let text = '';
   for (const block of value) {
@@ -33,7 +33,7 @@ function userText(value: unknown): string {
       if (text.length >= TITLE_CHARS * 2) break;
     }
   }
-  return titleExcerpt(text);
+  return titleExcerpt(text.trimStart().split(/\r?\n/,1)[0]??'');
 }
 function consume(line: string, state: ScanState): boolean {
   if (!line.trim()) return true;

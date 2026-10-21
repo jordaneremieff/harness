@@ -274,7 +274,7 @@ export type EventName = keyof EventData;
 export type EventEnvelope<N extends EventName = EventName> = {at: string; workspaceId?: string; target?: Target; data: EventData[N]};
 /** Closed HTTP route vocabulary. Dynamic segments are encoded single path segments. */
 export const ROUTES = [
-  'POST /api/agents/convert', 'GET /api/sessions/published',
+  'POST /api/agents/convert', 'GET /api/sessions/published', 'GET /api/sessions/history',
   'GET /api/control/layout', 'POST /api/control/requests', 'GET /api/control/requests/:id', 'POST /api/control/ack',
   'POST /api/dev/lease',
   'GET /', 'GET /api/bootstrap', 'GET /api/events', 'GET /api/snapshot',
@@ -294,6 +294,7 @@ export const ROUTES = [
 
 /** `writer: 'live'` means a terminal session may still be writing the file; its absence is proof of release for the files this backend does not own. */
 export type SavedSession = {writer?: 'live'; id: string; path: string; revision: string; project: string; title: string; titleSource?: 'name' | 'prompt'; titleState?: 'pending' | 'ready' | 'unavailable'; modifiedAt: string; size: number};
+export type SavedSessionRead = {session: SavedSession; entries: EntryView[]; coverage: DisplayCoverage; leaf: string | null; before: string | null; observedAt: string};
 export type RecentProject = {path: string; name: string; modifiedAt: string};
 export type SavedSessionPage = {items: SavedSession[]; total: number; omitted: number; nextCursor: string | null; titleCursor: string | null; observedAt: string};
 export type RecentProjectPage = {items: RecentProject[]; total: number; omitted: number; nextCursor: string | null; observedAt: string};

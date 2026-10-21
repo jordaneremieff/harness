@@ -107,7 +107,7 @@ function findStatusText(result: FindStatus | undefined, query: string): string {
 }
 export type SettingsSelection = {target: Target; model?: {provider: string; modelId: string}; thinking?: string; levels?: string[]; primary?: PrimaryView; closed?: () => void; guard: () => string | undefined};
 export type SelectionChange = Partial<Omit<Workspace, 'selectedTarget'>> & {selectedTarget?: Target | null};
-export type ActionContext = {desk?:()=>void; nextUnread?:()=>void; hasUnread?:()=>boolean; handover?: () => void; agentPresentation: ConstructorParameters<typeof ProjectPicker>[0]['agentPresentation']; snapshot: () => Snapshot | undefined; primary: () => PrimaryView | undefined; /** The Primary whose model list names models: the selected Primary when it is ready, else any ready Primary. */ namingPrimary?: () => PrimaryView | undefined; composer: Composer; commandsChanged: () => void; modelChanged?: () => void; modelNamesChanged?: () => void; modal: Modal;
+export type ActionContext = {readSession:ConstructorParameters<typeof ProjectPicker>[0]['readSession'];convertSession?:()=>void;hasConvertibleSession?:()=>boolean;desk?:()=>void; nextUnread?:()=>void; hasUnread?:()=>boolean; handover?: () => void; agentPresentation: ConstructorParameters<typeof ProjectPicker>[0]['agentPresentation']; snapshot: () => Snapshot | undefined; primary: () => PrimaryView | undefined; /** The Primary whose model list names models: the selected Primary when it is ready, else any ready Primary. */ namingPrimary?: () => PrimaryView | undefined; composer: Composer; commandsChanged: () => void; modelChanged?: () => void; modelNamesChanged?: () => void; modal: Modal;
   selection: (change: SelectionChange) => Promise<void>; reload: () => Promise<void>; result: (result: OperationView) => void; rosterRefresh: () => void; filesRefresh: () => void; hasTranscript: () => boolean; find: () => FindSession | undefined; recovery: () => void; primaryEntries: () => EntryView[]; agents: () => AgentRow[]; selectedAgent: () => Pick<AgentRow, 'identity' | 'capabilities'> | undefined; selectAgent: (row: AgentRow) => void; selectPrimary: () => void; notices: () => void; sidebar: (visible: boolean) => void; sidebarShown: () => boolean; view: (tools: boolean, expand: boolean) => void; copyAgent: () => void; inspectAgent: () => void; resultLookup?: () => void; agentCaption?: (identity: string) => ConversationCaption; agentStatus: (row: AgentRow) => string; conversationFacts?: (identity: string) => readonly ReportedFact[]; tabs?: {close: () => void; switch: (direction: number) => void; layout: () => ConversationLayout}};
 export class Actions {
   private captions = new ConversationCaptions();
@@ -429,13 +429,18 @@ export class Actions {
     });
     field.focus();
   }
+  private conversionEntries():PaletteEntry[]{
+    const run=this.ctx.convertSession;
+    return run&&this.ctx.hasConvertibleSession?.()?[{name:'Convert to Durable',description:'Create a Durable conversation from the selected saved snapshot',source:'app',enabled:true,run}]:[];
+  }
   paletteEntries(): PaletteEntry[] {
     const primary = this.ctx.primary(); const agent = this.ctx.selectedAgent(); const transcript = this.ctx.hasTranscript(); const sidebarShown = this.ctx.sidebarShown();
     const ready = !!this.readyPrimary(primary), workspaceReady = !!this.ctx.snapshot()?.workspace;
     const entry = (name: string, description: string, run: () => void, enabled = true, alias?: string, disabledReason = 'Requires a Primary session'): PaletteEntry => ({name, description, source: 'app', enabled, run, ...(!enabled ? {disabledReason} : {}), ...(alias ? {search: [alias, `/${alias}`]} : {})});
     const entries = [
       entry('New session', 'Start a new session', () => this.newSession(), true, 'new'),
-      entry('Sessions', 'Resume a saved session', () => this.projectPicker(), true, 'resume'),
+      entry('Sessions', 'Open retained session history', () => this.projectPicker(), true, 'resume'),
+      ...this.conversionEntries(),
       ...this.ctx.handover ? [entry('Continue a handover…', 'Pick up a handover in a browser session', this.ctx.handover)] : [],
       entry('Fork from message…', 'Branch from a loaded user message', () => this.forkPicker(), ready, 'fork'),
       entry('Compact…', 'Summarize primary context', () => this.compact(), ready, 'compact'),

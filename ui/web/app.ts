@@ -49,6 +49,7 @@ import {conversationAttention, type Attention} from './attention.ts';
 import {activeDialog} from './dialog-state.ts';
 import {HandoverDialog} from './handover-view.ts';
 import { ThreadExplorer, ThreadReader, type ThreadEntry } from './threads-view.ts';
+import {SessionReader,type SessionReadSource} from './session-reader.ts';
 import { THREAD_PAGE_EVENTS } from './threads.ts';
 import {noticeGroups, noticeGroupText, noticeTarget, unreadReviewNotice, CommunicationNoticeShelf, type CommunicationNotice, type NoticeGroup} from './notice-presentation.ts';
 import { Recovery } from './recovery.ts';
@@ -105,6 +106,7 @@ export function focusPane(pane: Pane): void {
 }
 function updatePaneFocus(pane: Pane, event?: Event): void {
   if (focusedPane === pane) return;
+  if(sessionReadPane){sessionReadPane.focus=pane;focusedPane=pane;markFocusedPane();return;}
   if (event?.type === 'pointerdown') workbenchStatus.holdGeometry(event as PointerEvent);
   applyLayout({...currentLayout(), focusedPane: pane});
 }
@@ -325,7 +327,7 @@ const references = new ReferenceResolver(resolveReference, destination => { void
   root: () => fileRoot.loading ? undefined : fileRoot.selection?.root ?? undefined,
   navigate: destination => { void navigateFileReference(destination).catch(showError); },
 });
-const actions: Actions = new Actions({desk:()=>openDesk(),nextUnread:openNextUnread,hasUnread:()=>!!nextUnreadNotice(),handover: () => handover.open(), snapshot: currentSnapshot, primary, modelChanged: renderAvailability, namingPrimary: () => { const selected = primary(); return selected?.lifecycle === 'ready' ? selected : [...state.primaries.values()].find(item => item.lifecycle === 'ready'); }, modelNamesChanged: renderAllComposerSettings, get composer() { return primaryComposer(); }, commandsChanged: () => {const target = primaryTarget(); if (target && state.workspace) controllers.get(controllerKey(state.workspace.id, target))?.composer.commandsChanged();}, modal, selection, reload: reloadSelection, result: showOperation, rosterRefresh: refreshRoster, filesRefresh: refreshFiles, hasTranscript: () => !!focusedTranscript(), find: () => captureFind(), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, sidebarShown: () => !byId('sidebar').hidden, view: (tools, expand) => focusedTranscript()?.expandLoaded(tools, expand), selectPrimary, agentCaption: identity => {return presentationCaptions().get(identity);}, agentStatus: row => presentation({kind: 'agent', identity: row.identity}).activity, agentPresentation:row=>presentation({kind:'agent',identity:row.identity}), conversationFacts: identity => agentFacts(agentRow(identity), state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame), copyAgent: () => { void copy(selectedAgent() ?? '', agentNode('view-notice')); }, inspectAgent,resultLookup:()=>{const target=layoutTarget(currentLayout(),primaryTarget());if(target)conversationController(target).inspection?.open('result');},
+const actions: Actions = new Actions({readSession:saved=>openSessionRead({saved}),hasConvertibleSession:()=>!!sessionReader.saved,convertSession:()=>{const item=sessionReader.saved;if(item)picker.convertSaved(item);},desk:()=>openDesk(),nextUnread:openNextUnread,hasUnread:()=>!!nextUnreadNotice(),handover: () => handover.open(), snapshot: currentSnapshot, primary, modelChanged: renderAvailability, namingPrimary: () => { const selected = primary(); return selected?.lifecycle === 'ready' ? selected : [...state.primaries.values()].find(item => item.lifecycle === 'ready'); }, modelNamesChanged: renderAllComposerSettings, get composer() { return primaryComposer(); }, commandsChanged: () => {const target = primaryTarget(); if (target && state.workspace) controllers.get(controllerKey(state.workspace.id, target))?.composer.commandsChanged();}, modal, selection, reload: reloadSelection, result: showOperation, rosterRefresh: refreshRoster, filesRefresh: refreshFiles, hasTranscript: () => !!focusedTranscript(), find: () => captureFind(), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, sidebarShown: () => !byId('sidebar').hidden, view: (tools, expand) => focusedTranscript()?.expandLoaded(tools, expand), selectPrimary, agentCaption: identity => {return presentationCaptions().get(identity);}, agentStatus: row => presentation({kind: 'agent', identity: row.identity}).activity, agentPresentation:row=>presentation({kind:'agent',identity:row.identity}), conversationFacts: identity => agentFacts(agentRow(identity), state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame), copyAgent: () => { void copy(selectedAgent() ?? '', agentNode('view-notice')); }, inspectAgent,resultLookup:()=>{const target=layoutTarget(currentLayout(),primaryTarget());if(target)conversationController(target).inspection?.open('result');},
   tabs: {close: () => { const tab = activeTab(currentLayout()); if (tab) applyLayout(closeTab(currentLayout(), tabKey(tab))); }, switch: direction => applyLayout(switchTab(currentLayout(), direction)), layout: currentLayout},
 });
 const fileBrowse = new FileBrowseState();
@@ -420,9 +422,6 @@ export function addFileToMessage(rootId:string,path:string):void {
   modal.actions(button('Cancel',()=>modal.close()),add); select.focus();
 }
 /** Working recipients invite follow-ups; unavailable recipients retain an explicit draft invitation. */
-function messagePlaceholder(name:string,input:boolean,busy=false):string {
-  return !connected||!input?`Draft for ${name}`:busy?'Write a change or follow-up':`Message ${name}`;
-}
 function composerName(controller: ConversationController, view: ConversationPresentation): string {
   const primary = controller.target.kind === 'primary' ? state.primaries.get(controller.target.key) : undefined;
   return controller.target.kind === 'primary' && view.name === 'Primary' && !view.nameDetail && !primary?.sessionName?.trim() && !primary?.extension?.title?.trim() ? 'Pi' : presentationName(view);
@@ -550,7 +549,7 @@ function fileTreeOperation(rootId:string,action:FileTreeAction,path:string,value
   const pane = currentLayout().focusedPane,input = document.activeElement;
   return mutateFile(workspace,rootId,action,path,value,()=>state.workspace?.id === workspace && currentLayout().focusedPane === pane && document.activeElement === input);
 }
-const picker = new ProjectPicker({snapshot: currentSnapshot, primary, modal, agentPresentation:row=>presentation({kind:'agent',identity:row.identity}), selection:change=>{if(change.selectedTarget?.kind==='agent')conversationController(change.selectedTarget).passive=false;return selection(change);}, reload, selectOpened:capturePrimarySelection, selectConverted:captureNativeSelection, project: projectPath, projectsChanged: renderIdentity,titlesChanged:primaryTitlesChanged,workingFolder:path=>fileRoot.choose(path)});
+const picker = new ProjectPicker({readSession:saved=>openSessionRead({saved}),snapshot: currentSnapshot, primary, modal, agentPresentation:row=>presentation({kind:'agent',identity:row.identity}), selection:change=>{if(change.selectedTarget?.kind==='agent')conversationController(change.selectedTarget).passive=false;return selection(change);}, reload, selectOpened:capturePrimarySelection, selectConverted:captureNativeSelection, project: projectPath, projectsChanged: renderIdentity,titlesChanged:primaryTitlesChanged,workingFolder:path=>fileRoot.choose(path)});
 actions.projectPicker = () => picker.open(projectPath());
 const handover = new HandoverDialog({modal, workspace: () => state.workspace?.id, cwd: () => launchCwd ?? projectPath() ?? '', primaries: () => [...state.primaries.values()],
   caption: item => presentationName(presentation({kind: 'primary', key: item.key, epoch: item.epoch})), savedAt: item => picker.savedSession(item)?.modifiedAt,
@@ -594,6 +593,7 @@ function threadOpeningPane(preferred?: ConversationController): PaneLeaf | undef
   return source ?? paneById(layout, layout.focusedPane);
 }
 function openThread(item: ThreadEntry, preferred?: ConversationController): void {
+  dismissSessionRead();
   const workspace = state.workspace; if (!workspace) return;
   const leaf = threadOpeningPane(preferred); if (!leaf) return;
   if (threadPane && threadPane.paneId !== leaf.id) closeThread(false);
@@ -825,14 +825,14 @@ function refreshCaptionConsumers(): void {
     const view = presentation(controller.target);
     renderComposerSettings(controller, view);
     const name = composerName(controller, view);
-    controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + name, controllerGuidance(controller, view), messagePlaceholder(name,view.input,view.busy));
+    controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + name, controllerGuidance(controller, view));
   }
   const captured = messageTarget.current;
   if (captured && messageTarget.valid(captured)) {
     const view = presentation({kind: 'agent', identity: captured.identity}), name = presentationName(view), ready = messageTarget.ready;
     setText(byId('agent-message-name'), name);
     const controller = controllers.get(controllerKey(captured.workspaceId, {kind: 'agent', identity: captured.identity}));
-    controller?.composer.recipient((ready ? 'Message ' : 'Draft for ') + name, ready || !captured.prepared || captured.invalidated ? '' : 'This agent is not ready for messages.', messagePlaceholder(name,ready&&view.input,view.busy));
+    controller?.composer.recipient((ready ? 'Message ' : 'Draft for ') + name, ready || !captured.prepared || captured.invalidated ? '' : 'This agent is not ready for messages.');
   }
   tabStrip.render(); roster.schedule(); renderIdentity(); threadExplorer.refreshNames(); threadReader.refreshNames();
 }
@@ -960,9 +960,14 @@ function targetState(target?: Target): TargetState | undefined {
 function sameTarget(a?: Target, b?: Target): boolean { return !!a && !!b && targetIdentity(a) === targetIdentity(b); }
 function currentLayout(): ConversationLayout { return workspaceEntry.layout(state.workspace,primaryTarget()); }
 function deskLayout():ConversationLayout {return deskPane&&deskPane.workspace===state.workspace?.id&&deskPane.provisional?deskPane.provisional:currentLayout();}
+function sessionReadLayout():ConversationLayout {
+  if(sessionReadPane&&sessionReadPane.context!==deskContext()){sessionReader.close();sessionReadPane=undefined;}
+  return sessionReadPane?{...(sessionReadPane.provisional??deskLayout()),focusedPane:sessionReadPane.focus}:deskLayout();
+}
 export function splitActive(): boolean { return paneLeaves(currentLayout().root).length > 1; }
 function hasConversation(): boolean { return !!primary() || paneLeaves(currentLayout().root).some(pane => !!pane.active); }
 export function applyLayout(layout: ConversationLayout): void {
+  dismissSessionRead();
   const old = currentLayout();if (paneLeaves(old.root).length !== paneLeaves(layout.root).length) fileBrowse.hold();
   const workspace = state.workspace?.id, remaining = new Set(paneLeaves(layout.root).flatMap(pane => pane.tabs.map(tabKey)));
   // A close acknowledgment must not release a newer Message intent or a reopened tab.
@@ -1053,13 +1058,17 @@ function mountPaneLeaf(leaf: PaneLeaf, layout: ConversationLayout): HTMLElement 
   pane.previous.dataset.unreachable = String(pane.previous.disabled); pane.next.dataset.unreachable = String(pane.next.disabled);
   pane.previous.hidden = pane.next.hidden = leaf.tabs.length <= 1;
   pane.plus.disabled = !state.workspace; pane.menu.disabled = !leaf.tabs.length;
-  pane.content.hidden = threadPane?.paneId === leaf.id || deskCompanion(leaf.id)&&deskPane?.list===true; pane.content.inert = pane.content.hidden;
+  const reading=sessionReadPane?.id===leaf.id;
+  pane.content.hidden = reading || threadPane?.paneId === leaf.id || deskCompanion(leaf.id)&&deskPane?.list===true; pane.content.inert = pane.content.hidden;
   mountDeskCompanion(leaf.id,pane.node);
+  const bar=pane.node.querySelector<HTMLElement>(':scope > .tab-bar');if(bar)bar.hidden=reading;
+  if(reading){if(sessionReader.node.parentElement!==pane.node)pane.node.append(sessionReader.node);const deskNode=pane.node.querySelector<HTMLElement>(':scope > .desk');if(deskNode)deskNode.hidden=true;}
   const activeTab = leaf.tabs[activeIndex]; pane.actions.hidden = !activeTab || activeTab.kind === 'file'; pane.actions.disabled = pane.actions.hidden || !state.workspace;
   pane.node.dataset.focused = String(leaf.id === layout.focusedPane);
   return pane.node;
 }
 function placePaneContent(leaf:PaneLeaf):void {
+  if(sessionReadPane?.id===leaf.id)return;
   if(deskCompanion(leaf.id)&&deskPane?.list)return;
   const pane = paneRegions.get(leaf.id);if(!pane)throw new Error(`Missing pane region for ${leaf.id}.`);
   const tab = leaf.tabs.find(tab => tabKey(tab) === leaf.active), target = tab ? controllerTarget(tab) : undefined;
@@ -1108,7 +1117,7 @@ function restorePaneGeometry(): void {
   for (const controller of controllers.values()) if (controller.geometry) controller.transcript.applyGeometry(controller.geometry);
 }
 function refreshTreeGeometry(): void {
-  const layout = deskLayout(), root = byId('conversation-panes'), box = root.getBoundingClientRect(), minimum = minimumPaneSize(layout.root);
+  const layout = sessionReadLayout(), root = byId('conversation-panes'), box = root.getBoundingClientRect(), minimum = minimumPaneSize(layout.root);
   const focusOnly = matchMedia('(max-width: 599px)').matches || box.width < minimum.width || box.height < minimum.height; root.dataset.focusOnly = String(focusOnly);
   for (const [id, pane] of paneRegions) {pane.node.hidden = focusOnly && id !== layout.focusedPane; pane.node.inert = pane.node.hidden;}
   if (!focusOnly) refreshPaneSplit(layout.root);
@@ -1125,10 +1134,14 @@ function refreshPaneSplit(node: import('../shared/api.ts').PaneNode): void {
     split.resizer = createResizer({handle: split.handle, axis: node.axis, min: size.min, max: size.max, defaultValue: Math.round(size.extent / 2),
       read: () => size.extent * ((paneSplits.get(node.id)?.node.style.getPropertyValue('--pane-first') ? Number.parseFloat(split.node.style.getPropertyValue('--pane-first')) / size.extent : node.ratio / 100)),
       write: pixels => split.node.style.setProperty('--pane-first', `${pixels}px`),
-      onCommit: pixels => applyLayout(resizePaneSplit(currentLayout(), node.id, Math.round(pixels / size.extent * 100))), onReset: () => applyLayout(resizePaneSplit(currentLayout(), node.id, 50))});
+      onCommit: pixels => resizeDisplayedPane(node.id,Math.round(pixels / size.extent * 100)), onReset: () => resizeDisplayedPane(node.id,50)});
   }
   if (!split.handle.hasAttribute('data-dragging')) split.node.style.setProperty('--pane-first', `${size.first}px`); split.resizer?.refresh();
   refreshPaneSplit(node.first); refreshPaneSplit(node.second);
+}
+function resizeDisplayedPane(id:string,ratio:number):void {
+  if(sessionReadPane){sessionReadPane.provisional=resizePaneSplit(sessionReadLayout(),id,ratio);renderNavigation();return;}
+  applyLayout(resizePaneSplit(currentLayout(),id,ratio));
 }
 function selection(change: SelectionChange): Promise<void> {
   if (!state.workspace) return Promise.reject(new Error('The workspace is not ready. Wait for the page to connect.'));
@@ -1469,8 +1482,8 @@ export function renderNavigation(): void {
   byId('sidebar-show').setAttribute('aria-expanded', String(visible));
   if (drawerClosed && !visible && byId('sidebar').contains(document.activeElement)) byId('sidebar-show').focus({preventScroll: true});
   placeWorkbenchControls(visible);
-  const layout = deskLayout(); const tab = activeTab(layout);
-  renderPaneTree(layout); renderSessionEntry(!!tab); byId('conversation-panes').hidden = !hasConversation() && !threadPane;
+  const layout = sessionReadLayout(); const tab = activeTab(layout);
+  renderPaneTree(layout); renderSessionEntry(!!tab); byId('conversation-panes').hidden = !hasConversation() && !threadPane && !sessionReadPane;
   tabStrip.render(); renderIdentity();
   byId('primary-row').hidden = !primary() || paneLeaves(layout.root).some(pane => pane.tabs.some(tab => tab.kind === 'primary'));
   byId('primary-section').hidden = false; byId('primary-section-body').hidden = false;
@@ -1497,12 +1510,12 @@ function placeWorkbenchControls(sidebarShown: boolean): void {
   focused?.focus({preventScroll: true});
 }
 function renderSessionEntry(hasTab: boolean): void {
-  const firstUse = !hasConversation() && !threadPane;
+  const firstUse = !hasConversation() && !threadPane && !sessionReadPane;
   byId('tabs-empty').hidden = hasTab || firstUse || !!threadPane; byId('tabs-open-primary').hidden = !primary();
   const chooser = byId('session-chooser'); chooser.hidden = !firstUse;
   if (firstUse && snapshot) picker.mount(chooser, projectPath()); else picker.unmount();
 }
-function focusEditor(): void {if(threadPane?.paneId===currentLayout().focusedPane){threadReader.focus();return;}const selected=layoutTarget(currentLayout(),primaryTarget());const owner=selected&&state.workspace?controllers.get(controllerKey(state.workspace.id,selected)):undefined;if(owner&&threadHost===owner){threadReader.focus();return;}if(owner?.inspection?.active){owner.inspection.scroller.focus({preventScroll:true});return;}const tab = activeTab(currentLayout());if (tab?.kind === 'file' && state.workspace) {filesViews.view(state.workspace,tab).focus();return;}const target = layoutTarget(currentLayout(), primaryTarget()); if (target) conversationController(target).composer.focus(); }
+function focusEditor(): void {if(sessionReadPane){sessionReader.focus();return;}if(threadPane?.paneId===currentLayout().focusedPane){threadReader.focus();return;}const selected=layoutTarget(currentLayout(),primaryTarget());const owner=selected&&state.workspace?controllers.get(controllerKey(state.workspace.id,selected)):undefined;if(owner&&threadHost===owner){threadReader.focus();return;}if(owner?.inspection?.active){owner.inspection.scroller.focus({preventScroll:true});return;}const tab = activeTab(currentLayout());if (tab?.kind === 'file' && state.workspace) {filesViews.view(state.workspace,tab).focus();return;}const target = layoutTarget(currentLayout(), primaryTarget()); if (target) conversationController(target).composer.focus(); }
 export function toggleSidebar(visible: boolean): void {
   if (!matchMedia('(min-width: 900px)').matches) {
     drawerOpen = visible; renderNavigation(); roster.schedule(); byId(visible ? 'project-button' : 'sidebar-show').focus(); return;
@@ -1544,7 +1557,7 @@ function renderController(controller: ConversationController, deferred = false, 
     controller.composer.attach(controller.workspaceId, saved);
   } else prepareController(controller);
   controller.composer.receipts(state.operations.values());
-  const view = presentation(controller.target), name = composerName(controller, view); controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + name, controllerGuidance(controller, view), messagePlaceholder(name,view.input,view.busy));
+  const view = presentation(controller.target), name = composerName(controller, view); controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + name, controllerGuidance(controller, view));
   controller.composer.availability(connected, !!saved && (controller.target.kind === 'agent' || view.input), view.busy, selecting, view.input);
   controller.composer.awaitingAnswer(awaitingAnswer(controller.target));
   if (firstDraft && !controller.passive && !controller.root.hidden && sameTarget(layoutTarget(currentLayout(), primaryTarget()) ?? undefined, controller.target) && document.activeElement === document.body) controller.composer.focus();
@@ -1788,7 +1801,7 @@ function renderMessagePanel(): void {
     state = {...state, targets: new Map(state.targets).set(saved.targetKey, saved)}; controller.saved = saved; controller.composer.attach(captured.workspaceId, saved);
   } else controller.composer.attachRetained(captured.workspaceId, target);
   placeMessageEditor(controller, panel);
-  const ready = messageTarget.ready; controller.composer.recipient((ready ? 'Message ' : 'Draft for ') + name, ready || !captured.prepared || captured.invalidated ? '' : 'This agent is not ready for messages.', messagePlaceholder(name,ready&&view.input,view.busy));
+  const ready = messageTarget.ready; controller.composer.recipient((ready ? 'Message ' : 'Draft for ') + name, ready || !captured.prepared || captured.invalidated ? '' : 'This agent is not ready for messages.');
   controller.composer.availability(connected, !!controller.saved, view.busy, selecting, view.input); controller.composer.receipts(state.operations.values()); controllerNode(controller, 'stop').hidden = true;
   renderAgentSettings(view,target);renderWorkbenchStatus();
 }
@@ -1847,7 +1860,7 @@ function controllerGuidance(controller: ConversationController, view: Conversati
   return controller.target.kind === 'agent' ? '' : view.guidance;
 }
 function renderAgentRecipient(identity: string, view: ConversationPresentation = presentation({kind: 'agent', identity})): void {
-  agentComposer().recipient(`${view.input ? 'Message' : 'Draft for'} ${presentationName(view)}`, '', messagePlaceholder(presentationName(view),view.input,view.busy));
+  agentComposer().recipient(`${view.input ? 'Message' : 'Draft for'} ${presentationName(view)}`, '');
 }
 function renderStoredAgent(identity: string, _row?: AgentRow): void {
   renderAgentState(conversationController({kind: 'agent', identity}));
@@ -1996,7 +2009,7 @@ function renderAvailability(): void {
   for (const controller of controllers.values()) {
     if (!connected && controller.connection?.availability === 'live') controller.connection = {...controller.connection, stale: true};
     const view = presentation(controller.target), current = controller.workspaceId === state.workspace?.id, name = composerName(controller, view);
-    controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + name, controllerGuidance(controller, view), messagePlaceholder(name,view.input,view.busy));
+    controller.composer.recipient((view.input ? 'Message ' : 'Draft for ') + name, controllerGuidance(controller, view));
     controller.composer.availability(connected && current, current && !!controller.saved && (controller.target.kind === 'agent' || view.input), current && view.busy, selecting, view.input);
     controllerNode(controller, 'stop').hidden = !canStopController(controller); renderControllerEmpty(controller); renderComposerSettings(controller,view);
   }
@@ -2246,7 +2259,7 @@ function openDeskSession(row:DeskRow):void {
   const primary=deskSession(row);if(primary){if(primary.lifecycle==='ready')void capturePrimarySelection()(primary.key).catch(showError);else if(primary.sessionFile)picker.resume(primary.cwd,primary.sessionFile);return;}
   const sender=row.notice?.sender;if(sender?.kind!=='session')return;
   const saved=sessionSidebar.registered(sender.identity);if(!saved)return;
-  if(saved.writer==='live')picker.open(saved.project);else picker.resume(saved.project,saved.path);
+  openSessionRead({saved});
 }
 function deskPrimaryFallback(row:DeskRow,slot:HTMLElement):void {
   clearDeskComposer();slot.replaceChildren();const notice=row.notice;if(!notice)return;
@@ -2344,7 +2357,7 @@ function ensureDeskPane():boolean {
   const id=`desk-pane-${index}`,root={kind:'split' as const,id:`desk-split-${index}`,axis:'x' as const,ratio:50,first:layout.root,second:{kind:'pane' as const,id,tabs:[],active:null}};
   deskPane={workspace,context:deskContext(),id,list:true,provisional:{root,focusedPane:layout.focusedPane}};return true;
 }
-function openDesk():void {modal.close(false);if(!ensureDeskPane()||!deskPane)return;deskPane.list=true;extensionDialogs.inline(undefined,true);renderNavigation();renderDesk();}
+function openDesk():void {dismissSessionRead();modal.close(false);if(!ensureDeskPane()||!deskPane)return;deskPane.list=true;extensionDialogs.inline(undefined,true);renderNavigation();renderDesk();}
 async function openDeskNotice(notice:CommunicationNotice):Promise<void> {
   if(communicationNotices.items.get(notice.key)!==notice)return;
   deskOpeningNotice=notice.key;
@@ -2367,11 +2380,33 @@ async function openDeskConversation(row:DeskRow):Promise<void> {
   const controller=conversationController(target);controller.passive=false;controller.inspection?.conversation();renderNavigation();renderController(controller);await loadControllerHistory(controller);
 }
 function closeDesk():void {clearDeskComposer();deskPane=undefined;desk.node.remove();deskBack.remove();extensionDialogs.inline();desk.reset();if(state.workspace)renderNavigation();}
+let sessionReadPane:{context:string;id:string;focus:string;returnKey:string;provisional?:ConversationLayout}|undefined;
+const sessionReader=new SessionReader({focus:()=>{if(sessionReadPane){sessionReadPane.focus=sessionReadPane.id;focusedPane=sessionReadPane.id;markFocusedPane();}},close:()=>closeSessionRead(),resume:source=>{
+  closeSessionRead();if(source.saved)picker.resume(source.saved.project,source.saved.path);
+  else if('primary' in source&&source.primary.lifecycle==='ready')void capturePrimarySelection()(source.primary.key).catch(showError);
+}});
+function openSessionRead(source:SessionReadSource):void {
+  modal.close(false);const layout=deskLayout(),leaves=paneLeaves(layout.root),anchor=leaves.find(pane=>pane.tabs.some(tab=>tab.kind==='primary'))??leaves[0];if(!anchor)return;
+  const companion=leaves.find(pane=>pane.id!==anchor.id),width=paneRegions.get(anchor.id)?.node.getBoundingClientRect().width??0;
+  let id=companion?.id??anchor.id,provisional:ConversationLayout|undefined;
+  if(!companion&&width>=724){
+    const ids=new Set(leaves.map(pane=>pane.id));let number=1;while(ids.has(`session-reader-${number}`))number++;
+    id=`session-reader-${number}`;provisional={root:{kind:'split',id:`session-reader-split-${number}`,axis:'x',ratio:50,first:layout.root,second:{kind:'pane',id,tabs:[],active:null}},focusedPane:id};
+  }
+  const primary='primary' in source?source.primary:undefined;
+  sessionReadPane={context:deskContext(),id,focus:id,provisional,returnKey:source.saved?.path??primary?.sessionFile??primary?.key??''};
+  sessionReader.open(source);renderNavigation();sessionReader.focus();
+}
+function dismissSessionRead():void {if(!sessionReadPane)return;sessionReader.close();sessionReadPane=undefined;}
+function closeSessionRead():void {
+  const key=sessionReadPane?.returnKey;dismissSessionRead();renderNavigation();
+  const row=[...byId('recent-sessions').querySelectorAll<HTMLButtonElement>('button')].find(node=>node.dataset.sessionKey===key);(row??byId('session-open')).focus({preventScroll:true});
+}
 const communicationNotices = new CommunicationNoticeShelf();
 const recentSidebar = new RecentSidebar(notice=>senderName(notice.sender,toolSubjectCaption(notice.sender.identity)),notice=>{void openCommunicationNotice(notice).catch(showError);},notices);
 const sessionSidebar = new SessionSidebar({primaries:()=>[...state.primaries.values()],selected:()=>{const target=layoutTarget(currentLayout(),primaryTarget());return target?.kind==='primary'?target.key:undefined;},
-  choose:(item,saved)=>{if(item.lifecycle!=='ready'&&saved?.writer==='live')picker.open(item.cwd);else if(item.lifecycle!=='ready'&&item.sessionFile)picker.resume(item.cwd,item.sessionFile);else void capturePrimarySelection()(item.key).catch(showError);},
-  resume:item=>{if(item.writer==='live')picker.open(item.project);else picker.resume(item.project,item.path);},create:()=>picker.newSession(projectPath())});
+  openPrimary:(primary,saved)=>openSessionRead({primary,saved}),
+  openSaved:saved=>openSessionRead({saved}),create:()=>picker.newSession(projectPath())});
 healthStatus.setSidebarDiagnostics(()=>[roster.diagnostics(),threadExplorer.diagnostics(),sessionSidebar.diagnostics(),filesTree.diagnostics()]);
 function renderUsefulSidebar():void {recentSidebar.render([...communicationNotices.items.values()]);sessionSidebar.refresh(state.workspace?.id);}
 function collectCommunicationNotices(previous: typeof state, event: ReceivedEvent): void {
