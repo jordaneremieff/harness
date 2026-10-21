@@ -62,7 +62,7 @@ test('shell paths, hashes, dates and capitalized arguments stay plain without pa
   for (const language of ['sh', 'bash', 'zsh']) {
     const ranges=tokenRanges(text,language);assert.ok(ranges);
     const toneAt=(word:string)=>ranges.find(range=>range.start<=text.indexOf(word)&&range.end>text.indexOf(word))?.tone;
-    assert.equal(toneAt('node'),'fn');assert.equal(toneAt('--expected-commit'),'property');
+    assert.equal(toneAt('node'),undefined);assert.equal(toneAt('--expected-commit'),undefined);
     for(const word of ['Projects','Workspace','2026-10-21','99c8d87'])assert.equal(toneAt(word),undefined,`${language}: ${word}`);
     assert.equal(ranges.some(range=>range.tone==='type'||range.tone==='number'),false);
     setup();assert.equal(output(text,language).textContent,text);
@@ -79,20 +79,20 @@ test('shell numbers require whole signed or decimal words bounded by whitespace 
   const fragments='echo x"quoted"42 42"suffix" x\\ 42 1.2.3 123abc foo/42 /42 +42px 2026-10-21';
   assert.equal(tokenRanges(fragments,'bash')?.some(range=>range.tone==='number'),false);
 });
-test('shell command positions color commands without coloring paths or plain arguments as functions', () => {
+test('shell command positions and plain arguments keep their existing uncolored words', () => {
   const text='node PlainArgument /Projects/sample/node.mts && node OtherArgument; node FinalArgument | node LastArgument';
   const ranges=tokenRanges(text,'bash');assert.ok(ranges);
-  assert.deepEqual(ranges.filter(range=>range.tone==='fn').map(range=>text.slice(range.start,range.end)),['node','node','node','node']);
+  assert.deepEqual(ranges.filter(range=>range.tone==='fn'),[]);
   for(const word of ['PlainArgument','/Projects/sample/node.mts','OtherArgument','FinalArgument','LastArgument']){
     const at=text.indexOf(word);assert.equal(ranges.some(range=>range.start<at+word.length&&range.end>at),false,word);
   }
 });
-test('shell keywords, functions, flags, strings and comments keep distinct inert tones', () => {
+test('shell keywords, builtins, strings and comments keep their tones without new flag coloring', () => {
   const text='if true; then printf --format "%s 42" -n 5; fi # comment 99c8d87';
   const ranges=tokenRanges(text,'bash');assert.ok(ranges);
   const toneAt=(word:string)=>ranges.find(range=>range.start<=text.indexOf(word)&&range.end>text.indexOf(word))?.tone;
   for(const word of ['if','then','fi #'])assert.equal(toneAt(word),'keyword');
-  assert.equal(toneAt('printf'),'fn');assert.equal(toneAt('--format'),'property');assert.equal(toneAt('-n'),'property');
+  assert.equal(toneAt('printf'),'fn');assert.equal(toneAt('--format'),undefined);assert.equal(toneAt('-n'),undefined);
   assert.equal(toneAt('"%s 42"'),'string');assert.equal(toneAt('# comment'),'comment');
   setup();assert.equal(output(text,'bash').textContent,text);
   assert.ok(tokenRanges('class Example {} const count = 0xff + 1.2e3;','ts')?.some(range=>range.tone==='type'));

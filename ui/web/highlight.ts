@@ -163,19 +163,15 @@ function punctuationTone(char: string): Tone | undefined {
   if (!punctuation(char)) return;
   return '=+-*/%!&|^~<>?'.includes(char) ? 'operator' : 'punct';
 }
-function shellCommand(word: string, scan: Scanner, state: LexState): boolean {
-  return /^[A-Za-z_][\w.-]*$/.test(word) && (state.lineStart || [';',';;','&&','||','|','&','('].includes(state.previous) || nextSign(scan)==='(');
-}
-function shellWordTone(word: string, whole: boolean, scan: Scanner, state: LexState): Tone | undefined {
+function shellWordTone(word: string, whole: boolean, scan: Scanner): Tone | undefined {
   if (whole && /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(word)) return 'number';
   if (keywords.shell.has(word)) return 'keyword';
   if (shellFunctions.has(word)) return 'fn';
-  if (whole && /^--?[A-Za-z][\w-]*(?:=.*)?$/.test(word)) return 'property';
-  if (shellCommand(word, scan, state)) return 'fn';
+  if (/^[A-Za-z_]\w*$/.test(word) && nextSign(scan) === '(') return 'fn';
   return word.length === 1 ? punctuationTone(word) : undefined;
 }
 /** Shell numbers belong to whole words, never fragments of paths, hashes or dates. */
-function shellToken(scan: Scanner, state: LexState): Tone | undefined {
+function shellToken(scan: Scanner): Tone | undefined {
   const start=scan.at, first=scan.char();
   if (/\s/.test(first)) { scan.take(); return undefined; }
   if (';&|<>()'.includes(first)) {
@@ -189,13 +185,13 @@ function shellToken(scan: Scanner, state: LexState): Tone | undefined {
   if(scan.at===start) { scan.take(); return undefined; }
   const word=scan.text.slice(start,scan.at);
   const whole=shellBoundary(scan.text.charAt(start-1)) && shellBoundary(scan.char());
-  return shellWordTone(word, whole, scan, state);
+  return shellWordTone(word, whole, scan);
 }
 function token(scan: Scanner, family: Family, state: LexState): Tone | undefined {
   if (comment(scan, family)) return 'comment';
   if (family === 'markup' && (!state.inTag || scan.char() === '>')) return markupToken(scan, state);
   if (quoted(scan, family)) return nextSign(scan) === ':' && propertyPosition(scan, family, state) ? 'property' : 'string';
-  if (family === 'shell') return shellToken(scan, state);
+  if (family === 'shell') return shellToken(scan);
   if (digit(scan.char())) { numeric(scan); return 'number'; }
   if (identifierStart(scan, family)) { const tone = identifier(scan, family, state); state.tagName = false; return tone; }
   const char = scan.char(); scan.take();

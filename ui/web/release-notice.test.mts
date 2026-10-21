@@ -76,6 +76,8 @@ test('equal identities show no notice and a later match restores version', async
   const f = fixture(t); f.notice.readiness(true); f.requests[0]?.resolve(snapshot()); await settle();
   assert.equal(f.node.hidden, true); assert.equal(f.version.hidden, false); assert.deepEqual(f.visibility, []);
   f.tick(); f.requests[1]?.resolve(snapshot({...loaded, generation: generation('d')})); await settle(); assert.equal(f.node.hidden, false);
+  assert.equal(f.notice.facts.textContent, 'Release dddddddd live · this tab bbbbbbbb');
+  assert.equal(f.reloadButton.attributes.get('aria-label'), 'Reload to release dddddddd');
   f.tick(); f.requests[2]?.resolve(snapshot()); await settle(); assert.equal(f.node.hidden, true); assert.equal(f.version.hidden, false); assert.deepEqual(f.visibility, [true, false]);
 });
 

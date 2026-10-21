@@ -18,6 +18,10 @@ export function differentRelease(loaded: ReleaseIdentity, served: ReleaseIdentit
   return loaded.commit !== served.commit || loaded.generation !== served.generation ||
     loaded.release !== undefined && served.release !== undefined && loaded.release !== served.release;
 }
+function releaseLabels(loaded: ReleaseIdentity, served: ReleaseIdentity): [string, string] {
+  const generation = loaded.commit === served.commit && loaded.generation !== served.generation;
+  return [(generation ? served.generation : served.commit).slice(0, 8), (generation ? loaded.generation : loaded.commit).slice(0, 8)];
+}
 export type ReleaseNoticeHooks = {
   before: HTMLElement;
   read(signal: AbortSignal): Promise<unknown>;
@@ -100,7 +104,7 @@ export class ReleaseNotice {
     this.node.hidden = !visible;
     if (changed) this.hooks.changed(visible);
     if (!visible || !this.loaded || !this.served) {setText(this.announcement, ''); this.announced = ''; return;}
-    const live = this.served.commit.slice(0, 8), loaded = this.loaded.commit.slice(0, 8);
+    const [live, loaded] = releaseLabels(this.loaded, this.served);
     const text = `Release ${live} live · this tab ${loaded}`;
     setText(this.servedText, `Release ${live} live`); setText(this.loadedText, ` · this tab ${loaded}`);
     this.node.title = text;
