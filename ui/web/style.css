@@ -1682,6 +1682,18 @@ button.thread-person:hover, button.thread-sender:hover { background: var(--raise
 .desk-answer h3 { color: var(--muted); font-size: var(--fs-meta); font-weight: 500; margin-block: var(--s2); }
 .desk-body { font-family: var(--sans); font-size: var(--fs-body); line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; margin-block: var(--s2); }
 .desk-composer { min-height: 180px; }
+.desk-review { display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; gap: var(--s2); padding: var(--s4); }
+.desk-review[hidden] { display: none; }
+.review-header { display: flex; align-items: center; gap: var(--s2); }
+.review-header h2 { flex: 1; margin: 0; font-size: var(--fs-ui); }
+.review-header button, .desk-review > button { color: var(--muted); font-size: var(--fs-meta); }
+.review-content { min-height: 0; overflow: auto; }
+.review-content h3, .review-content h4 { font-size: var(--fs-ui); font-weight: 500; }
+.review-change { border-bottom: 1px solid var(--rule); padding-block: var(--s2); }
+.review-supplied, .review-ask-text { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
+.review-ask-text { font-family: var(--sans); font-size: var(--fs-body); line-height: 1.65; }
+.review-answer, .review-asked { margin-block: var(--s3); }
+.review-supplied .diff-row { display: flex; }
 .composer[data-desk-panel=true] { z-index: 3; }
 .composer[data-desk-panel=true] .composer-input > label { display: block; color: var(--muted); font-size: var(--fs-meta); padding-inline: var(--s3); }
 .conversation.conversation-empty > .composer[data-desk-panel=true] { top: auto; transform: none; }

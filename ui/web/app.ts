@@ -2,6 +2,7 @@ import type { AgentHistoryPage, AgentRow, Bootstrap, EventData, HistoryPage, Ope
 import { draftHasContent, draftImageFingerprint, LIMITS, resolveAppearance } from '../shared/api.ts';
 import { Actions } from './actions.ts';
 import {Desk, type DeskRow} from './desk.ts';
+import {Review, reviewChanges, type ReviewData} from './review.ts';
 import { AgentCommandInventory } from './agent-commands.ts';
 import {InputEchoes} from './input-echoes.ts';
 import {PrimaryDraftSelection, primaryDraftText, type PrimaryDraftActions, type PrimaryDraftSource, type TranscriptDraftActions} from './primary-draft-actions.ts';
@@ -10,7 +11,7 @@ const inputEchoes=new InputEchoes();
 import {AgentInspection} from './agent-inspection.ts';
 import {createAgentLiveStrip, type AgentLiveStrip, type AgentContextReload} from './agent-live-strip.ts';
 import {taskReference, type ConversationTask} from './conversation-tasks.ts';
-import type {AgentInspectionView, ResultSelector} from '../shared/inspection.ts';
+import type {AgentInspectionView, ResultInspection, ResultSelector} from '../shared/inspection.ts';
 import type { ConversationLayout, WorkspaceTab as ConversationTab, FileTab } from '../shared/api.ts';
 import type {FileDirectoryPage, FileSearchResult, FileRootSelection, FileText, FileDraftState, FileDraft, FileSave, FileMutation, FileWatchState, FileWatchScope, FileChanges} from '../shared/files.ts';
 import {FilesTree, type FileTreeAction} from './files-tree.ts';
@@ -43,7 +44,7 @@ import { ExtensionDialogs, extensionStatus } from './extensions.ts';
 import { Modal } from './modal.ts';
 import { openImagePreview } from './image-preview.ts';
 import { Transcript, type ToolSubjectCaption } from './render.ts';
-import { ReferenceResolver, type ReferenceDestination, type ReferenceQuery, type ReferenceResolution, type FileReferenceDestination } from './references.ts';
+import { ReferenceResolver, loadedReference, type ReferenceDestination, type ReferenceQuery, type ReferenceResolution, type FileReferenceDestination } from './references.ts';
 import { imageUrl } from './image.ts';
 import { historyBecameReady, pageToReadingAnchor } from './transcript-history.ts';
 import { IdentityLookup } from './identity-lookup.ts';
@@ -2381,7 +2382,64 @@ let deskFrame=0;
 const deskNoticeReads=new Set<string>();
 let deskComposer:ConversationController|undefined;
 const deskBack=button('Back to Desk',()=>{if(deskPane){deskPane.list=true;renderNavigation();scheduleDesk();}},'desk-back');
-const desk=new Desk({select:selectDeskComposer,open:row=>{void openDeskConversation(row).catch(showError);},dialog:(_row,slot)=>{clearDeskComposer();extensionDialogs.inline(slot);},close:closeDesk,canOpen:deskCanOpen,caption:currentSenderCaption,changed:()=>{if(deskComposer&&stableViews().slot(deskComposer.elements.root)?.closest('[hidden]'))clearDeskComposer();stableViews().request();}});
+const desk=new Desk({review:openDeskReview,canReview:row=>!!reviewSource(row),select:selectDeskComposer,open:row=>{void openDeskConversation(row).catch(showError);},dialog:(_row,slot)=>{clearDeskComposer();extensionDialogs.inline(slot);},close:closeDesk,canOpen:deskCanOpen,caption:currentSenderCaption,changed:()=>{if(deskComposer&&stableViews().slot(deskComposer.elements.root)?.closest('[hidden]'))clearDeskComposer();stableViews().request();}});
+function sameReviewTask(a:ConversationTask,b:ConversationTask):boolean {
+  return a.key===b.key&&a.entryId===b.entryId&&a.reference?.sessionId===b.reference?.sessionId&&a.reference?.submissionId===b.reference?.submissionId&&a.reference?.requestId===b.reference?.requestId;
+}
+function reviewSource(row:DeskRow):{controller:ConversationController;task:ConversationTask;reference:NonNullable<ConversationTask['reference']>;generation:number}|undefined {
+  if(row.kind!=='task'&&row.kind!=='notice')return;
+  const task=row.task,target=primaryTarget(),workspace=state.workspace?.id,reference=taskReference(task?.reference);
+  if(!task||!target||target.kind!=='primary'||!workspace||!reference)return;
+  const controller=controllers.get(controllerKey(workspace,target));
+  const current=controller?.transcript.taskRows().find(candidate=>!candidate.asked&&sameReviewTask(candidate,task));
+  if(!controller||!current||!primaryBlocks(state,target.key).some(entry=>entry.id===current.entryId))return;
+  return {controller,task:current,reference,generation:controller.transcript.captureGeometry().generation};
+}
+type DeskReviewSession={context:string;row:DeskRow;source:NonNullable<ReturnType<typeof reviewSource>>;recipient:ConversationController;abort:AbortController;data:ReviewData};
+let deskReview:DeskReviewSession|undefined;
+const review=new Review(backToDesk,openReviewStep);
+function endDeskReview():void {deskReview?.abort.abort();deskReview=undefined;review.visibility(false);}
+function backToDesk():void {endDeskReview();if(deskPane){deskPane.list=true;renderNavigation();renderDesk();}}
+function reviewCurrent(session:DeskReviewSession):boolean {
+  if(deskReview!==session||session.abort.signal.aborted||session.context!==deskContext()||!deskPane?.list)return false;
+  const source=reviewSource(session.row);
+  return source?.controller===session.source.controller&&source.generation===session.source.generation&&threadPane?.paneId!==deskPane.id&&sessionReadPane?.id!==deskPane.id;
+}
+function openDeskReview(row:DeskRow):void {
+  const source=reviewSource(row);if(!source||!ensureDeskPane()||!deskPane)return;
+  endDeskReview();clearDeskComposer();extensionDialogs.inline(undefined,true);deskPane.list=true;
+  const recipient=conversationController({kind:'agent',identity:source.reference.sessionId});
+  const captured={...row,task:{...source.task},caption:deskCaption(source.reference.sessionId)};
+  const data:ReviewData={caption:captured.caption,outcome:source.task.state,ask:source.task.input,answer:row.answer??source.task.answer,changes:[],turnLoaded:false,loading:true};
+  const session:DeskReviewSession={context:deskContext(),row:captured,source,recipient,abort:new AbortController(),data};deskReview=session;
+  review.reset();review.update(data);renderNavigation();void loadDeskReview(session);
+}
+async function readDeskReviewResult(session:DeskReviewSession):Promise<ResultInspection> {
+  const reference=session.source.reference;
+  const value=await request<AgentInspectionView>(`/api/agents/${encodeURIComponent(reference.sessionId)}/inspect?workspace=${encodeURIComponent(session.source.controller.workspaceId)}`,'POST',{view:'result',submissionId:reference.submissionId,...(reference.requestId?{requestId:reference.requestId}:{})},undefined,AbortSignal.any([session.abort.signal,session.source.controller.abort.signal,AbortSignal.timeout(15_000)]));
+  if(value.view!=='result'||value.identity!==reference.sessionId||value.submissionId!==reference.submissionId||reference.requestId&&value.requestId&&reference.requestId!==value.requestId)throw new Error('The exact task result is unavailable.');
+  return value;
+}
+function deskReviewData(session:DeskReviewSession,result:ResultInspection):ReviewData {
+  const identity=session.source.reference.sessionId,conversation=state.conversations.get(targetIdentity(session.recipient.target)),entries=conversation?conversationBlocks(conversation):[];
+  const resolve=(id:number|undefined,field:'entryId'|'answerEntryId')=>id===undefined?undefined:loadedReference(entries,{text:String(id),owner:identity,field},undefined,identity);
+  const changes=reviewChanges(entries,conversation?.tools??new Map(),resolve(result.entryId,'entryId'),resolve(result.answerEntryId,'answerEntryId'));
+  const answer=result.answer?{text:result.answer.text,complete:!result.answer.shortened,redacted:result.answer.protected}:session.data.answer;
+  return {...session.data,answer,changes:changes.changes,turnLoaded:changes.loaded,loading:false,error:result.reason?.text??session.recipient.historyError?.message};
+}
+async function loadDeskReview(session:DeskReviewSession):Promise<void> {
+  try {
+    const [result]=await Promise.all([readDeskReviewResult(session),loadControllerHistory(session.recipient)]);
+    if(!reviewCurrent(session))return;
+    session.data=deskReviewData(session,result);review.update(session.data);
+  }catch(error){if(reviewCurrent(session)){session.data={...session.data,loading:false,error:errorMessage(error)};review.update(session.data);}}
+}
+function openReviewStep():void {
+  const session=deskReview;if(!session||!reviewCurrent(session))return;
+  const source=reviewSource(session.row);
+  if(source?.controller!==session.source.controller||source.generation!==session.source.generation||!sameTarget(source.controller.target,primaryTarget()))return;
+  source.controller.transcript.revealEntry(source.task.entryId,false);
+}
 function deskReplyTarget(row:DeskRow):Extract<Target,{kind:'agent'}>|undefined {
   if(row.notice){const sender=row.notice.sender;return sender.kind==='agent'&&state.roster.has(sender.identity)?{kind:'agent',identity:sender.identity}:undefined;}
   return row.target.kind==='agent'&&state.roster.has(row.target.identity)?row.target:undefined;
@@ -2424,7 +2482,9 @@ function mountDeskCompanion(id:string,node:HTMLElement):void {
   if(!deskCompanion(id)||!deskPane)return;
   if(desk.node.parentElement!==node)node.append(desk.node);
   desk.closeLabel(deskPane.overPrimary?'Back to Primary':'Close');
-  desk.node.hidden=!deskPane.list;const bar=node.querySelector<HTMLElement>('.tab-bar');if(bar)placeRetained(deskBack,bar);deskBack.hidden=deskPane.list;
+  if(review.node.parentElement!==node)node.append(review.node);
+  const reviewing=!!deskReview&&deskPane.list;desk.node.hidden=!deskPane.list||reviewing;
+  review.visibility(reviewing&&threadPane?.paneId!==id&&sessionReadPane?.id!==id);const bar=node.querySelector<HTMLElement>('.tab-bar');if(bar)placeRetained(deskBack,bar);deskBack.hidden=deskPane.list;
 }
 function deskDialogRows():DeskRow[]{
   const target=primaryTarget();if(target?.kind!=='primary')return [];
@@ -2454,7 +2514,8 @@ function deskTaskRows(tasks:ConversationTask[],rows:DeskRow[]):DeskRow[]{
 function renderDesk():void {
   if(!deskPane)return;
   if(deskPane.context!==deskContext()||!paneById(deskLayout(),deskPane.id)){closeDesk();return;}
-  if(!deskPane.list){clearDeskComposer();extensionDialogs.inline();return;}
+  if(!deskPane.list){endDeskReview();clearDeskComposer();extensionDialogs.inline();return;}
+  if(deskReview){if(reviewCurrent(deskReview)){review.update(deskReview.data);return;}endDeskReview();renderNavigation();}
   const tasks=deskTasks(),agents=state.rosterOrder.flatMap(identity=>{const row=agentRow(identity);return row?[row]:[];});
   const notices=[...communicationNotices.items.values()].filter(unreadReviewNotice).sort((a,b)=>(b.timestamp??0)-(a.timestamp??0));
   const rows=[...deskDialogRows(),...notices.map(notice=>deskNoticeRow(notice,tasks)),...deskAgentRows(agents,tasks)];rows.push(...deskTaskRows(tasks,rows));
@@ -2491,16 +2552,16 @@ function ensureDeskPane():boolean {
   const id=`desk-pane-${index}`,root={kind:'split' as const,id:`desk-split-${index}`,axis:'x' as const,ratio:50,first:layout.root,second:{kind:'pane' as const,id,tabs:[],active:null}};
   deskPane={workspace,context:deskContext(),id,list:true,provisional:{root,focusedPane:layout.focusedPane}};return true;
 }
-function openDesk():void {dismissSessionRead();modal.close(false);if(!ensureDeskPane()||!deskPane)return;deskPane.list=true;extensionDialogs.inline(undefined,true);renderNavigation();renderDesk();}
+function openDesk():void {endDeskReview();dismissSessionRead();modal.close(false);if(!ensureDeskPane()||!deskPane)return;deskPane.list=true;extensionDialogs.inline(undefined,true);renderNavigation();renderDesk();}
 async function openDeskNotice(notice:CommunicationNotice):Promise<void> {
   if(communicationNotices.items.get(notice.key)!==notice)return;
   deskOpeningNotice=notice.key;
-  try{openDesk();if(!deskPane)return;desk.showNotice(deskNoticeRow(notice));}
+  try{openDesk();if(!deskPane)return;const row=deskNoticeRow(notice);if(reviewSource(row)){desk.showNotice(row,false);openDeskReview(row);await loadDeskNotice(notice);return;}desk.showNotice(row);}
   finally{deskOpeningNotice=undefined;}
   await loadDeskNotice(notice);if(deskPane?.list)desk.refreshNotice(deskNoticeRow(notice));
 }
 async function openDeskConversation(row:DeskRow):Promise<void> {
-  const target=deskReplyTarget(row);if(!target){openDeskSession(row);return;}
+  endDeskReview();const target=deskReplyTarget(row);if(!target){openDeskSession(row);return;}
   if(!ensureDeskPane()||!deskPane)return;const captured=deskPane;
   clearDeskComposer();extensionDialogs.inline();captured.list=false;
   let layout=deskLayout(),key=`agent:${target.identity}`,existing=paneLeaves(layout.root).find(pane=>pane.tabs.some(tab=>tabKey(tab)===key));
@@ -2513,7 +2574,7 @@ async function openDeskConversation(row:DeskRow):Promise<void> {
   if(deskPane!==captured||state.workspace?.id!==captured.workspace)return;
   const controller=conversationController(target);controller.passive=false;controller.inspection?.conversation();renderNavigation();renderController(controller);await loadControllerHistory(controller);
 }
-function closeDesk():void {clearDeskComposer();deskPane=undefined;desk.node.remove();deskBack.remove();extensionDialogs.inline();desk.reset();if(state.workspace)renderNavigation();}
+function closeDesk():void {endDeskReview();clearDeskComposer();deskPane=undefined;desk.node.remove();review.node.remove();deskBack.remove();extensionDialogs.inline();desk.reset();if(state.workspace)renderNavigation();}
 let sessionReadPane:{context:string;id:string;focus:string;returnKey:string;provisional?:ConversationLayout}|undefined;
 const sessionReader=new SessionReader({primaryDraft:primaryDraftActions,focus:()=>{if(sessionReadPane){sessionReadPane.focus=sessionReadPane.id;focusedPane=sessionReadPane.id;markFocusedPane();}},close:()=>closeSessionRead(),resume:source=>{
   closeSessionRead();if(source.saved)picker.resume(source.saved.project,source.saved.path);
@@ -2984,7 +3045,7 @@ function bind(): void {
     devInteractionRevision++;if (name !== 'select' && name !== 'scroll') selectionIntentRevision++;
     devRestoreWake?.();
   }, {capture: true, passive: true});
-  window.addEventListener('pagehide', event => {releaseNotice.readiness(false); if (!event.persisted) {releaseNotice.destroy(); threadReader.destroy();} if (!event.persisted && !devNavigating) devReload?.destroy();});
+  window.addEventListener('pagehide', event => {releaseNotice.readiness(false); if (!event.persisted) {releaseNotice.destroy(); threadReader.destroy(); endDeskReview(); review.destroy();} if (!event.persisted && !devNavigating) devReload?.destroy();});
   window.addEventListener('pageshow', () => {devNavigating=false;releaseNotice.readiness(connected && !releasePage);});
   setRequestTiming((start, end) => {diagnostics.measure('control-roundtrip', start, end);});
   diagnostics.setHidden(document.hidden);

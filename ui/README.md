@@ -239,6 +239,12 @@ The top dialog or notice expands in place. Exact task matches supply the ask bes
 
 Desk and RECENT consume the same browser-local communication feed. New arrivals wait behind **N new · Show**, without replacing the open answer or reordering retained notice rows. Read rows stay in the open Desk. **Next review** names the actual dialog or unread-message reason. **Open next unread result** (`⇧⌘U`) and RECENT open the exact supplied message in Desk and mark only that message read once its exact body is loaded. With no unread report or result, the command is absent and the shortcut has no catalog fallback. Check-ins remain directly reachable through RECENT and All notices but never enter the review queue or unread-result shortcut. No recipient, ownership, completion, or message association comes from prose, names, or folders.
 
+### Review
+
+An exact linked sent task adds **To review** to its Desk row. That row, **Next review**, or a RECENT result with the same exact task reference opens a read-only Review in the existing Desk companion. Unlinked notices keep their existing reader. Review shows the shared recipient caption and supplied task outcome, then **Changes**, **Asked**, and **Answer**. Asked uses the existing long-message fold; Answer and copy actions retain the full supplied text and its partial/redacted flags.
+
+Changes come only from supplied edit/write arguments in the exact loaded input-to-answer turn, without an intervening request. An edit shows the supplied old/new text difference; a successful complete write shows its supplied line count. Missing arguments show the actual tool name and path. A missing exact result or loaded turn stays explicit. Review reads no file and has no apply or send action. **Open the step that sent it** revalidates the originating Primary, its generation, exact task and loaded entry, then uses the existing no-focus reveal. Opening Review itself leaves the Primary draft and reading position untouched. **Back to Desk** returns to the retained list. Review is page-local: reload returns to that list, with no Review checkpoint or reconstruction.
+
 ## Agent presentation control
 
 An ordinary or Durable agent uses the standalone command from a local shell. It is not a Pi extension:

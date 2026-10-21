@@ -5,7 +5,7 @@ import {button, element, setText} from './dom.ts';
 
 export type DeskRow = {key:string; target:Target; caption:string; fact:string; reason:string; kind:'dialog'|'notice'|'blocked'|'working'|'task'; notice?:CommunicationNotice; task?:ConversationTask; dialog?:DialogView; ask?:CommunicationBody; answer?:CommunicationBody};
 export type DeskData = {rows:DeskRow[]; agents:AgentRow[]; tasks:ConversationTask[]; complete:boolean};
-type Hooks = {select:(row:DeskRow,slot:HTMLElement)=>void; open:(row:DeskRow)=>void; dialog:(row:DeskRow,slot:HTMLElement)=>void; close:()=>void; changed:()=>void; caption:(sender:Pick<AgentRow,'identity'|'name'>)=>string;canOpen:(row:DeskRow)=>boolean};
+type Hooks = {review?:(row:DeskRow)=>void;canReview?:(row:DeskRow)=>boolean;select:(row:DeskRow,slot:HTMLElement)=>void; open:(row:DeskRow)=>void; dialog:(row:DeskRow,slot:HTMLElement)=>void; close:()=>void; changed:()=>void; caption:(sender:Pick<AgentRow,'identity'|'name'>)=>string;canOpen:(row:DeskRow)=>boolean};
 type RowView = {node:HTMLElement; title:HTMLButtonElement; body:HTMLElement; slot:HTMLElement; signature:string};
 const rank={dialog:0,notice:1,blocked:2,working:3,task:4};
 const reviewable=(row:DeskRow|undefined):boolean=>row?.kind==='dialog'||unreadReviewNotice(row?.notice);
@@ -73,9 +73,9 @@ export class Desk {
   isNoticeSelected(key:string):boolean{return this.selected===key&&!this.catalog;}
   nextUnread():CommunicationNotice|undefined{return this.queued().find(row=>unreadReviewNotice(row.notice))?.notice;}
   refreshNotice(row:DeskRow):void{if(this.direct?.key===row.key)this.direct=row;if(this.retained.has(row.key))this.retained.set(row.key,row);this.paint();}
-  showNotice(row:DeskRow):void{this.all=true;this.catalog=false;if(row.notice?.kind==='check-in')this.direct=row;else{this.direct=undefined;this.retain(row);}this.selected=row.key;this.paint();}
+  showNotice(row:DeskRow,paint=true):void{this.all=true;this.catalog=false;if(row.notice?.kind==='check-in')this.direct=row;else{this.direct=undefined;this.retain(row);}this.selected=row.key;if(paint)this.paint();}
   private queued():DeskRow[]{return this.queue.flatMap(key=>{const row=this.retained.get(key);return row?[row]:[];});}
-  private nextReview():void{const row=this.queued().find(reviewable);if(row){this.direct=undefined;this.selected=row.key;this.catalog=false;this.paint();}}
+  private nextReview():void{const row=this.queued().find(reviewable);if(row){this.direct=undefined;this.selected=row.key;this.catalog=false;if(this.hooks.canReview?.(row)&&this.hooks.review)this.hooks.review(row);else this.paint();}}
   private changeScope(all:boolean):void{
     this.all=all;this.catalog=false;this.direct=undefined;this.queue=[];this.retained.clear();this.selected=undefined;this.admit();this.paint();
   }
@@ -108,12 +108,13 @@ export class Desk {
   private view(row:DeskRow):RowView{
     const existing=this.rows.get(row.key);if(existing)return existing;
     const node=element('article','desk-row'),body=element('div','desk-answer'),slot=element('div','desk-composer');slot.id=`desk-composer-${this.rows.size}`;
-    const title=button('',()=>{this.selected=row.key;this.paint();},'desk-row-title');node.append(title,body,slot);
+    const title=button('',()=>{this.selected=row.key;const current=this.retained.get(row.key)??row;if(this.hooks.canReview?.(current)&&this.hooks.review)this.hooks.review(current);else this.paint();},'desk-row-title');node.append(title,body,slot);
     const view={node,title,body,slot,signature:''};this.rows.set(row.key,view);return view;
   }
   private paintRow(row:DeskRow):HTMLElement{
     const current=row.notice ? {...row,caption:this.hooks.caption(row.notice.sender)} : row;
-    const view=this.view(current);setText(view.title,`${current.caption} · ${current.fact}`);
+    const view=this.view(current),reviewing=this.hooks.canReview?.(current)===true;
+    setText(view.title,reviewing?`To review · ${current.caption} · ${current.task?.state}`:`${current.caption} · ${current.fact}`);
     view.title.title=row.target.kind==='agent'?row.target.identity:`${row.target.key}:${row.target.epoch}`;
     const expanded=row.key===this.selected;view.title.setAttribute('aria-expanded',String(expanded));view.body.hidden=view.slot.hidden=!expanded;
     if(expanded)this.paintAnswer(current,view);
