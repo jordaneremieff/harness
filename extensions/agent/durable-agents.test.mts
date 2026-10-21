@@ -529,6 +529,38 @@ it("declares every control tool with an explicit replay classification", () => {
 	assert.equal(contribution.source, "/abs/extensions/agent/index.ts");
 });
 
+it("describes normal follow-up timing and active await release in both tool registrations", () => {
+	const ordinary: { name: string; description: string }[] = [];
+	registerAgentExtension({ events: { on: () => () => {}, emit() {} }, on() {}, registerTool(tool: { name: string; description: string }) { ordinary.push(tool); }, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {} } as unknown as ExtensionAPI);
+	const { extension } = buildRegistry();
+	for (const tools of [ordinary, extension.tools ?? []]) {
+		const send = tools.find((tool) => tool.name === "agent_send");
+		const awaiting = tools.find((tool) => tool.name === "agent_await");
+		assert.ok(send); assert.ok(awaiting);
+		const sendText = send.description ?? "";
+		const awaitText = awaiting.description ?? "";
+		assert.match(sendText, /followUp normally waits for the current run to end/u);
+		assert.match(sendText, /admitted explicit followUp releases an active agent_await/u);
+		assert.match(sendText, /input already queued when the wait starts/u);
+		assert.match(sendText, /both inputs may share one answer/u);
+		assert.match(sendText, /A report sent from an ordinary primary uses explicit admission/u);
+		assert.match(sendText, /even from an unrelated sender/u);
+		assert.match(sendText, /A report sent from a native Durable agent uses retained report provenance/u);
+		assert.match(sendText, /only a named awaited producer's report releases the wait/u);
+		assert.match(sendText, /unrelated native reports stay queued/u);
+		assert.match(sendText, /Automatic native Reporter result copies remain raw follow-ups/u);
+		assert.match(sendText, /Model-origin reports to ordinary primaries use steer/u);
+		assert.match(sendText, /steer does not interrupt a running tool/u);
+		assert.doesNotMatch(sendText, /mode followUp or report to a Durable agent waits/u);
+		assert.doesNotMatch(sendText, /Reports and follow-ups to Durable agents wait/u);
+		assert.match(awaitText, /followUp queued before or during agent_await/u);
+		assert.match(awaitText, /input joins the current work and may share its answer/u);
+		assert.match(awaitText, /Retained report-provenance input releases the wait only for a named awaited producer/u);
+		assert.match(awaitText, /Unrelated report-provenance input, automatic traffic, and raw native Reporter result copies do not release the wait/u);
+		assert.match(awaitText, /Explicit release also returns control on the original request/u);
+	}
+});
+
 it("accepts every shared thinking level in native spawn, configure, and attach schemas", () => {
 	const { extension } = buildRegistry();
 	for (const name of ["agent_spawn", "agent_configure", "agent_attach"]) {
@@ -1718,9 +1750,14 @@ it("includes the busy-run boundary in native report receipts", async (t) => {
 	assert.equal(calls[0]?.method, "report");
 	const outcome = (await toolOutcomes(harness, root.id)).find((result) => result.name === "agent_send");
 	assert.ok(outcome && !outcome.isError);
-	assert.match(outcome.text, /report waits for its current run to end/u);
+	assert.match(outcome.text, /report to a busy Durable agent normally waits for the current run to end/u);
+	assert.match(outcome.text, /A report sent from an ordinary primary uses explicit admission/u);
+	assert.match(outcome.text, /even from an unrelated sender/u);
+	assert.match(outcome.text, /A report sent from a native Durable agent uses retained report provenance/u);
+	assert.match(outcome.text, /only a named awaited producer's report releases the wait/u);
+	assert.match(outcome.text, /unrelated native reports stay queued/u);
+	assert.match(outcome.text, /Automatic native Reporter result copies remain raw follow-ups/u);
 	assert.match(outcome.text, /Use steer.*next tool boundary/u);
-	assert.match(outcome.text, /recipient is a busy Durable agent/u);
 	assert.match(outcome.text, /reports to ordinary primaries use steer/u);
 });
 

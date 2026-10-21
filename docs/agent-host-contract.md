@@ -912,7 +912,33 @@ Text input params:
 
 The broader native input also accepts content-part arrays; a text-only consumer need not implement them. Origin and requester are required. `replyTo` defaults to requester, so a consumer seeking a self-owned result must explicitly set `replyTo` to the target conversation. The server supplies senderIdentity from that conversation; do not impersonate a native sender to create work. Source: `extensions/agent/durable-host.ts:420-430`; `extensions/agent/durable-controls.ts:221-238`.
 
-The result is `{submissionId:number,conversationId:number,deduped:boolean,identity:string,result:{sessionId:string,submissionId:number,requestId?:string}}`. The request above produces a result reference with its requestId. It confirms admitted/already-admitted work, not execution, placement mode, final answer, or operator acceptance. Steer waits for a native boundary; it does not interrupt a running tool. Follow-up waits for the current run. Held-result state can affect placement. Source: `extensions/agent/durable-host.ts:420-430`; `extensions/agent/durable-controls.ts:235-245,401-447`; `extensions/agent/result-reference.ts:53-61`.
+The result is `{submissionId:number,conversationId:number,deduped:boolean,identity:string,result:{sessionId:string,submissionId:number,requestId?:string}}`. The request above produces a result reference with its requestId. It confirms admitted/already-admitted work, not execution, placement mode, final answer, or operator acceptance. Steer waits for a native boundary; it does not interrupt a running tool. Explicit `followUp` normally waits for the current run to end. Source: `extensions/agent/durable-host.ts:420-430`; `extensions/agent/durable-controls.ts:235-245,401-447`; `extensions/agent/result-reference.ts:53-61`.
+
+During active `agent_await`, admitted explicit input, including `followUp`,
+releases the wait and joins the current work at its post-tools boundary. It does
+not guarantee a separate next answer. Native explicit report delivery carries
+report provenance: an awaited producer's report releases the wait, while an
+unrelated report on that route keeps normal follow-up placement. The ordinary
+`AgentManager` report control instead submits without report provenance; the
+recipient classifies it as explicit input, so it releases an active await even
+when its sender is not an awaited producer. A same-storage background
+`Reporter` answer notification uses raw native `followUp` without release
+provenance and does not itself release the wait. Automatic input classification,
+check-in suppression, and scheduled-message placement do not change. See
+[await admission and continuity](../extensions/agent/README.md#await-exact-peer-results).
+
+The original request remains open after release, with unresolved producer
+references retained and their work still active. The recipient applies the
+input, then awaits unresolved references again on that same request. Distinct
+admitted inputs retain distinct request IDs. Recorded requester/reply routes
+remain per request, even when several inputs share one final answer. Durability
+preserves admitted work and its routes; it does not prescribe answer timing or
+separate answers. Sources:
+`extensions/agent/durable-controls.ts` (`awaitInputMode`, `admitConversation`),
+`awaited-results.ts` (`classifyAwaitInput`, `reconcileInputRelease`),
+`request-context.ts` (`recordRequestContext`, `projectRequestContexts`),
+`manager.ts` (`controlClient`), `durable-delivery.ts` (`reportProvenance`), and
+`durable-agents.ts` (`Reporter`).
 
 The ordinary manager's `control("submit")` maps to `task-submit`; raw host `submit` is a different base operation. Match the documented wire member, not a manager method name. The standalone terminal uses operator origin and self-owned replyTo. Source: `extensions/agent/manager.ts:469-514`; `extensions/agent/terminal-client.ts:123-131`.
 

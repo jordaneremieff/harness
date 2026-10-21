@@ -87,6 +87,23 @@ for (const classification of ["explicit", "report", "automatic"] as const) it(`r
 	await reconcileInputRelease(f.tx, a.conversationId, "incoming");
 	assert.equal(f.state.declarations[0].decision, declaration.decision);
 });
+it("releases an explicit follow-up already queued before await declaration without replacing its identity", async () => {
+	const f = fixture(); const owner = f.owner(1); const result = f.result(2);
+	const live = f.live.get(1); assert.ok(live);
+	const originalInputs = [...live.run.inputs];
+	const requestId = "queued-before-await";
+	assert.deepEqual(await classifyAwaitInput(f.tx, { conversationId: 1, requestId, classification: "explicit" }), { suppress: false, defer: false, release: false });
+	f.inputs.set(`1/${requestId}`, { id: 90, type: "input", status: "queued", requestId });
+	f.inbox.set(1, { items: [{ id: 90, mode: "followUp" }] });
+	const declaration = await declareAwait(f.tx, "store", owner, [result]);
+	assert.equal(declaration.decision, "released");
+	assert.equal(declaration.releaseReason, "admitted input");
+	assert.deepEqual(declaration.inputs, originalInputs);
+	assert.deepEqual(f.inbox.get(1)?.items, [{ id: 90, mode: "steer" }]);
+	assert.equal(f.state.provenance.find((item) => item.requestId === requestId)?.submissionId, 90);
+	assert.equal(f.inputs.get(`1/${requestId}`)?.id, 90);
+});
+
 it("suppresses only check-ins for named results and defers other automatic input", async () => {
 	const f = fixture(); const a = f.owner(1); const result = f.result(2); await declareAwait(f.tx, "store", a, [result]);
 	const auto = { conversationId: 1, requestId: "check", classification: "automatic" as const, automaticKind: "checkIn" as const, sender: result.sessionId, producerRequestId: result.requestId };

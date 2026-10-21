@@ -52,7 +52,7 @@ An ordinary primary remains responsive and receives normal routed results.
 |---|---|
 | `agent_spawn` | With `handle`, resolve or create one standing root and return `created`. Otherwise create a root storage; inside a Durable agent, the same cwd uses a native conversation and a different cwd uses a new storage host. An optional prompt starts work. Model tool tasks get automatic owner check-ins; `checkInMinutes` sets the interval and 0 disables it. |
 | `agent_await` | Keep the original native request open for exact admitted results without model calls merely to wait. Explicit interaction releases the wait with partial outcomes. A real abort stops the original request without canceling its producers. Ordinary primaries use one Durable lead for answer-bearing fan-out and refuse this native-only operation. |
-| `agent_send` | Admit a task or correction. `mode: "report"` sends an explicit recipient a notice without an answer route or check-in task. Busy recipients receive steer at the next tool boundary by default; for Durable agents, `mode: "followUp"` and `mode: "report"` wait for the current run to end. Model-origin reports to ordinary primaries use steer. Report receipts state this boundary and point to steer for changes to busy work. Unanswered model tool tasks get automatic owner check-ins; `checkInMinutes` sets the interval and 0 disables it. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
+| `agent_send` | Admit a task or correction. `mode: "report"` sends an explicit recipient a notice without an answer route or check-in task. Busy recipients receive steer at the next tool boundary by default. Durable `mode: "followUp"` normally waits for the current run to end. Report admission depends on its route. During active `agent_await`, admitted explicit input, including ordinary manager reports, releases the wait and joins the current work. Native explicit report delivery releases it only for an awaited producer. These inputs do not promise separate answers. See [await admission and continuity](#await-exact-peer-results). Model-origin reports to ordinary primaries use steer. Report receipts describe this boundary and point to steer for changes to busy work. Unanswered model tool tasks get automatic owner check-ins; `checkInMinutes` sets the interval and 0 disables it. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
 | `agent_steer` | Admit steering through the recipient's storage owner. |
 | `agent_abort` | Abort the selected conversation without deleting its retained evidence. With `timerId`, cancel only that scheduled input. |
 | `agent_reset` | Start a new context for the selected conversation with an optional handoff note. History, identity, files, settings, and timers stay; no model turn starts. |
@@ -1111,14 +1111,46 @@ Inspect the facts, then use authorized abort/configure/send controls to recover,
 or await the unresolved references again. Generic retry visibility does not
 assert quota exhaustion and does not parse provider reset text.
 
-Explicit send or steer, direct operator input, and a report from an awaited
-agent release the wait after input admission. The input reaches the original
-post-tools boundary. Apply it and await unresolved references again on the same
-request. Failed admission does not release the wait. A failed or aborted
-producer returns a typed non-success outcome and releases parallel waits from
-that tool round without canceling other producers. A real conversation abort
-stops the original request. Late named results remain retained without starting
-another model run; a new explicit request still reads them.
+Explicit `followUp` normally waits for the current run to end. During active
+`agent_await`, admitted explicit input, including a queued `followUp`, releases
+the wait and reaches the original post-tools boundary. It joins the current
+work rather than guaranteeing a separate next answer. Failed admission does not
+release the wait.
+
+Report placement depends on the admission route:
+
+- Native Durable `agent_send` with `mode:"report"` uses retained report delivery
+  with report provenance. An awaited producer's explicit report releases the
+  wait; an unrelated report on this route keeps normal follow-up placement.
+- The ordinary `AgentManager` report control submits a follow-up without report
+  provenance. The recipient classifies it as explicit input, so it releases an
+  active await regardless of whether its sender is an awaited producer.
+- The same-storage background `Reporter` posts an answer notification through
+  raw native `followUp`, without release provenance. That notification does not
+  itself release the await. The covered-delivery withdrawal rules below still
+  apply.
+
+Sources: `durable-runtime.ts` (`dispatch`), `durable-delivery.ts`
+(`reportProvenance`), `manager.ts` (`controlClient`), `durable-controls.ts`
+(`admissionProvenance`, `awaitInputMode`), and `durable-agents.ts` (`Reporter`).
+
+Apply the admitted input and await unresolved references again on the same
+original request. The release keeps unresolved producers running and preserves
+the open request. Admitted inputs retain distinct request IDs. Recorded
+requester/reply routes remain per request, even when several inputs settle with
+the same final answer. Durability preserves admitted work and its routes
+across restart; it does not prescribe answer timing or separate answers.
+
+For a Queue control that sends explicit `followUp`, the button label is
+**Queue**. Its title and accessible description are:
+
+> Queue this message for a later step. During a wait for agent results, the message joins the current work.
+
+A failed or aborted producer returns a typed non-success outcome and releases
+parallel waits from that tool round without canceling other producers. A real
+conversation abort stops the original request. Late named results remain
+retained without starting another model run; a new explicit request still reads
+them.
 
 Named-result check-ins are suppressed at the waiting recipient. Other check-ins
 and scheduled messages remain queued follow-ups, even if their original mode
@@ -1126,7 +1158,9 @@ was steer. Requester check-ins about the waiting agent remain active. Passive
 writes, including reset, wait for their normal native boundary; they do not
 release the wait. Each return includes `queuedInputCount` from a committed inbox
 snapshot, excluding writes and suppressed check-ins. More inputs may arrive
-later; queued follow-ups retain their normal later runs.
+later. Follow-ups that do not release an await retain normal final-boundary
+placement. The explicit-input release rule does not change the automatic-input
+handling above.
 
 When `agent_await` returns, it withdraws only still-queued delivery inputs wholly
 covered by its returned results. It matches actual receipt and Reporter request

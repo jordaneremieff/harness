@@ -46,7 +46,7 @@ import type * as Durable from "@earendil-works/pi-durable";
 import { type Static, type TSchema, Type } from "typebox";
 import { CONTROL_BINDING_CONTRACT } from "./version-contract.ts";
 import { THINKING_LEVELS } from "./configuration.ts";
-import { AGENT_CONTROL_TOOL_NAMES, MODEL_SELECTION_GUIDANCE, REPORT_DELIVERY_BOUNDARY, agentControlGuidanceLines } from "./control-guidance.ts";
+import { AGENT_CONTROL_TOOL_NAMES, AWAIT_INPUT_DELIVERY_BOUNDARY, FOLLOW_UP_DELIVERY_BOUNDARY, MODEL_SELECTION_GUIDANCE, REPORT_DELIVERY_BOUNDARY, agentControlGuidanceLines } from "./control-guidance.ts";
 import { parseDeliverAt, TimerTask, type TimerMode } from "./durable-timers.ts";
 import { CheckInTask, checkInMinutes, createCheckIn } from "./durable-checkins.ts";
 import type { DurableCommand, DurableCommandCall } from "./durable-services.ts";
@@ -1248,7 +1248,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const sendTool = durable.defineTool({
 		name: "agent_send",
 		description:
-			"Send a message to an agent conversation. A busy conversation receives steer at its next tool boundary; mode followUp or report to a Durable agent waits for its current run to end. Model-origin reports to ordinary primaries use steer. The answer reports back to you. With deliverAt, schedule the input instead of admitting it now. Unanswered tasks send automatic owner check-ins. Assess progress, let work continue, steer a wrap-up, or abort a hung tool; steering does not interrupt a running tool. checkInMinutes 0 disables.",
+			`Send a message to an agent conversation. A busy conversation receives steer at its next tool boundary. ${FOLLOW_UP_DELIVERY_BOUNDARY} ${REPORT_DELIVERY_BOUNDARY} Task answers report back to you. With deliverAt, schedule the input instead of admitting it now. Unanswered tasks send automatic owner check-ins. Assess progress, let work continue, steer a wrap-up, or abort a hung tool. checkInMinutes 0 disables.`,
 		parameters: SendParams,
 		replay: "safe",
 		execute: async (args: SendInput, api, context) => {
@@ -1735,7 +1735,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 
 	const awaitTool = durable.defineTool({
 		name: "agent_await",
-		description: "Keep the original request open until exact admitted results arrive. Native waiting uses no model calls. The first exact producer retry releases by default with partial outcomes, unresolved references and retry facts; releaseOnProviderRetry.minAttempt deliberately selects a later attempt. Unchanged retry evidence does not repeatedly release the same held request. Explicit input or release also returns control on this same request. Release does not stop producers. Abort stops the original request, not its producers.",
+		description: `Keep the original request open until exact admitted results arrive. Native waiting uses no model calls. The first exact producer retry releases by default with partial outcomes, unresolved references and retry facts; releaseOnProviderRetry.minAttempt deliberately selects a later attempt. Unchanged retry evidence does not repeatedly release the same held request. ${AWAIT_INPUT_DELIVERY_BOUNDARY} Release does not stop producers. Abort stops the original request, not its producers.`,
 		parameters: AwaitParams,
 		replay: "safe",
 		execute: async (args, api, context) => {

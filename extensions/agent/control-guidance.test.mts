@@ -91,8 +91,31 @@ it("keeps the contract, reporting, polling, live-work, and authority guidance", 
 	assert.match(all, /substantive result or exact blocker, not a waiting note/u);
 	assert.match(all, /Never poll with sleeps or repeated status\/inspection calls/u);
 	assert.match(all, /Settlement notices arrive automatically/u);
-	assert.match(all, /report waits for its current run to end/u);
+	assert.match(all, /report to a busy Durable agent normally waits for the current run to end/u);
 	assert.match(all, /Use steer to change a busy agent's work at its next tool boundary/u);
+});
+
+it("distinguishes normal follow-up timing from admitted await interaction", () => {
+	const send = AGENT_CONTROL_GUIDANCE.agent_send.guidelines?.join("\n") ?? "";
+	assert.match(send, /followUp normally waits for the current run to end/u);
+	assert.match(send, /admitted explicit followUp releases an active agent_await/u);
+	assert.match(send, /input already queued when the wait starts/u);
+	assert.match(send, /both inputs may share one answer/u);
+	assert.match(send, /A report sent from an ordinary primary uses explicit admission/u);
+	assert.match(send, /even from an unrelated sender/u);
+	assert.match(send, /A report sent from a native Durable agent uses retained report provenance/u);
+	assert.match(send, /only a named awaited producer's report releases the wait/u);
+	assert.match(send, /unrelated native reports stay queued/u);
+	assert.match(send, /Automatic native Reporter result copies remain raw follow-ups/u);
+	assert.match(send, /Model-origin reports to ordinary primaries use steer/u);
+	assert.match(send, /steer does not interrupt a running tool/u);
+	assert.doesNotMatch(send, /this report waits for its current run to end/u);
+	const awaiting = AGENT_CONTROL_GUIDANCE.agent_await.guidelines?.join("\n") ?? "";
+	assert.match(awaiting, /followUp queued before or during agent_await/u);
+	assert.match(awaiting, /input joins the current work and may share its answer/u);
+	assert.match(awaiting, /Retained report-provenance input releases the wait only for a named awaited producer/u);
+	assert.match(awaiting, /Unrelated report-provenance input, automatic traffic, and raw native Reporter result copies do not release the wait/u);
+	assert.match(awaiting, /Explicit release also returns control on the original request/u);
 });
 
 it("describes retained delivery and automatic unfinished-task check-ins", () => {

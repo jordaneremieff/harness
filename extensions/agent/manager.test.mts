@@ -370,10 +370,20 @@ it("explains report consumption without changing follow-up admission", async (t)
 	const record = createRecord(manager, root);
 	const receipt = await manager.control("report", { sessionId: record.storageId, message: "Progress", requestId: "report-progress" }, { id: "caller", cwd: root }) as { submissionId: number; boundary: string };
 	assert.equal(receipt.submissionId, 7);
-	assert.match(receipt.boundary, /report waits for its current run to end/u);
+	assert.match(receipt.boundary, /normally waits for the current run to end/u);
+	assert.match(receipt.boundary, /A report sent from an ordinary primary uses explicit admission/u);
+	assert.match(receipt.boundary, /even from an unrelated sender/u);
+	assert.match(receipt.boundary, /A report sent from a native Durable agent uses retained report provenance/u);
+	assert.match(receipt.boundary, /only a named awaited producer's report releases the wait/u);
+	assert.match(receipt.boundary, /unrelated native reports stay queued/u);
+	assert.match(receipt.boundary, /Automatic native Reporter result copies remain raw follow-ups/u);
+	assert.match(receipt.boundary, /Model-origin reports to ordinary primaries use steer/u);
 	assert.match(receipt.boundary, /steer.*next tool boundary/u);
+	assert.match(receipt.boundary, /steer does not interrupt a running tool/u);
+	assert.doesNotMatch(receipt.boundary, /this report waits for its current run to end/u);
 	const admission = seen.find((call) => call.method === "submit");
 	assert.equal(admission?.params.whenBusy, "followUp");
+	assert.equal(admission?.params.provenance, undefined, "ordinary report admission keeps its explicit classification");
 	assert.equal(admission?.params.requestId, "report-progress");
 });
 

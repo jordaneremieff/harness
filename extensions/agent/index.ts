@@ -36,7 +36,7 @@ import {
 	readAgentTimerRows,
 	scheduleAgentInput,
 } from "./durable-reset-timers.ts";
-import { AGENT_CONTROL_GUIDANCE, MODEL_SELECTION_GUIDANCE, type AgentControlToolName } from "./control-guidance.ts";
+import { AGENT_CONTROL_GUIDANCE, AWAIT_INPUT_DELIVERY_BOUNDARY, FOLLOW_UP_DELIVERY_BOUNDARY, MODEL_SELECTION_GUIDANCE, REPORT_DELIVERY_BOUNDARY, type AgentControlToolName } from "./control-guidance.ts";
 import {
 	StatusToolOutputSchema,
 	InspectToolOutputSchema,
@@ -316,7 +316,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		renderCall: cards.agent_intent.renderCall,
 		renderResult: cards.agent_intent.renderResult,
 	});
-	register("agent_await", "Await exact admitted results on an open native Durable request. Ordinary primary sessions keep asynchronous delivery and do not block.", AwaitParams, async () => { throw new Error("agent_await requires a native Durable conversation. For answer-bearing fan-out, delegate to one Durable lead that dispatches workers, awaits their exact results natively, and returns one composed answer. This primary stays responsive."); });
+	register("agent_await", `Await exact admitted results on an open native Durable request. ${AWAIT_INPUT_DELIVERY_BOUNDARY} Ordinary primary sessions keep asynchronous delivery and do not block.`, AwaitParams, async () => { throw new Error("agent_await requires a native Durable conversation. For answer-bearing fan-out, delegate to one Durable lead that dispatches workers, awaits their exact results natively, and returns one composed answer. This primary stays responsive."); });
 	register(
 		"agent_collaborate",
 		"Discover and use shared purpose threads with full agent peers. Create preserves purpose, authority/source, restrictions, acceptance and integrator in an existing participant storage (sessionId). Join, leave and exchange sourced contributions. Joining opts into passive notices at existing boundaries. Posts wake only explicit notify recipients. Read the frame and paged exchange without starting a host.",
@@ -367,7 +367,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	);
 	register(
 		"agent_send",
-		"Admit a task, report, or correction to an agent or a live effort primary from agent_status. A primary accepts immediate messages, not Durable controls or schedules. Coordinate with one concise proposal containing its conditions and one answer, not repeated acknowledgments. Put agreements that others must see in a thread when a participant storage exists. Idle agents start; busy agents receive steer at the next tool boundary. Reports and follow-ups to Durable agents wait for the current run to end. Model-origin messages to ordinary primaries use steer. Unanswered tasks send automatic owner check-ins. Assess progress and decide whether to let work continue, steer a wrap-up, or abort a hung tool; steering does not interrupt a running tool. checkInMinutes 0 disables. A receipt does not prove action. With deliverAt, schedule the input at an absolute time.",
+		`Admit a task, report, or correction to an agent or a live effort primary from agent_status. A primary accepts immediate messages, not Durable controls or schedules. Coordinate with one concise proposal containing its conditions and one answer, not repeated acknowledgments. Put agreements that others must see in a thread when a participant storage exists. Idle agents start; busy agents receive steer at the next tool boundary. ${FOLLOW_UP_DELIVERY_BOUNDARY} ${REPORT_DELIVERY_BOUNDARY} Model-origin messages to ordinary primaries use steer. Unanswered tasks send automatic owner check-ins. Assess progress and decide whether to let work continue, steer a wrap-up, or abort a hung tool. checkInMinutes 0 disables. A receipt does not prove action. With deliverAt, schedule the input at an absolute time.`,
 		send,
 		(input, ctx, callId) => {
 			if (input.mode === "report") {
