@@ -16,7 +16,7 @@ The agent distills an effort into a durable Markdown handover. The extension own
 | `stash_edit` | tool | Correct or amend the saved body with revision-checked exact replacements; preserve the title, metadata, and lifecycle. |
 | `stash_complete` | tool | Close an open or active effort with a required concrete outcome. |
 | `stash_rotate` | tool | Archive a stale open or closed effort so it no longer appears in listings or pickup; the file moves to the store's dot-hidden `.trash` directory and remains recoverable. |
-| `/stash` | command | Browse and pick up efforts (TUI overlay); bare invocation opens the browser. |
+| `/stash` | command | Browse and pick up efforts through the TUI overlay or an RPC selection dialog. |
 | `ctrl+alt+s` | shortcut | Open the same browser directly in TUI mode without submitting or replacing the editor draft. |
 | `/stash new <hint>` | command | Admit independent Durable creation from the current context snapshot and hint; find the artifact through normal discovery. |
 | `/stash get <id>` | command | Pick up a stash by full id or unique prefix. |
@@ -47,8 +47,12 @@ is a working synthesis saved outside normal handover discovery.
    [Lifecycle](#lifecycle) for deliberate release, reopen, and archive actions.
 
 For operator pickup, `/stash get <id>` activates the handover and delivers it as
-one request. The browser requires Pi's interactive terminal (TUI) mode; direct
-commands provide the non-browser path.
+one request. Bare `/stash` opens the custom browser in Pi's interactive terminal
+(TUI) mode. In non-TUI modes with UI support, including RPC, it offers a selection
+dialog with the same newest-first handovers and preload bound. Each option shows
+the title, lifecycle state, and a distinguishing id prefix. A choice uses the same
+pickup path as `/stash get <id>`; cancellation does nothing. Print and JSON modes
+have no UI and retain directions to the direct commands and tools.
 
 ## Configuration
 
@@ -323,7 +327,7 @@ lifecycle side effect.
 Command forms are:
 
 ```text
-/stash                         browse & pick up (TUI overlay)
+/stash                         browse & pick up (TUI panel or RPC list)
 /stash new <hint>              distill the live session into a new stash
 /stash get <id> [note]         pick up a stash, optionally with an operator note
 /stash complete <id> <outcome> close an open or active stash with a concrete outcome
@@ -566,10 +570,11 @@ agent remains discoverable through the host's existing agent controls; use those
 controls for explicit inspection or cancellation, including background work.
 The artifact appears through `stash_list` discovery without a follow-up caller turn.
 
-Only TUI mode constructs the custom browser. Headless callers can use `stash_list`
-to discover ids; the explicit `get` and lifecycle verbs remain usable without the
-browser. RPC receives actionable notifications; bare JSON/print browser
-invocations fail with directions to the direct commands and model-facing tools rather
+Only TUI mode constructs the custom browser. RPC uses the public `ctx.ui.select`
+dialog for bare `/stash`, without custom terminal components or client-specific
+behavior. Callers without UI can use `stash_list` to discover ids; the explicit
+`get` and lifecycle verbs remain usable without the browser. Bare JSON/print
+browser invocations fail with directions to the direct commands and model-facing tools rather
 than silently returning or writing to Pi-owned stdout. In JSON/print, a successful
 direct verb is silent because fire-and-forget UI is a no-op in those modes,
 except for a one-time completion redaction notice; failures still throw. `stash_complete` remains the feedback-bearing closure surface for
@@ -796,7 +801,8 @@ kills native creation after publication and reopens the SQLite storage; recovery
 must preserve the exact artifact without a second generation or publication.
 Existing native tool, lifecycle, and capacity tests cover the unchanged paths.
 
-Ordinary entrypoint tests cover UI admission status and no-UI silence, concurrent
+Ordinary entrypoint tests cover RPC selection, pickup, and cancellation without a
+custom terminal panel, UI admission status and no-UI silence, concurrent
 admission completion and failure, shutdown/reload cleanup with late results,
 provider-discovery failures, snapshot immutability across an asynchronous boundary, independent
 concurrent calls, and absence of caller model selection, timers, or shutdown

@@ -939,24 +939,62 @@ describe("stash entrypoint", () => {
 		assert.deepEqual(sent, []);
 	});
 
-	it("does not construct a custom panel outside TUI mode", async () => {
-		const { commands } = registry();
-		const notifications: string[] = [];
-		await commands.get("stash").handler("", {
+	it("selects RPC handovers for pickup and leaves cancellation unchanged without a custom panel", async (t) => {
+		const rpcDir = await mkdtemp(join(dir, "rpc-browser-"));
+		process.env.PI_STASH_DIR = rpcDir;
+		t.after(async () => {
+			process.env.PI_STASH_DIR = dir;
+			await rm(rpcDir, { recursive: true, force: true });
+		});
+		const date = new Date("2026-07-24T10:00:00Z");
+		const target = await writeStash(rpcDir, { title: "RPC handover", summary: "RPC_PICKUP_BODY" }, date);
+		const untouched = await writeStash(rpcDir, { title: "RPC handover", summary: "Keep open." }, date);
+		const beforeCancel = await readFile(untouched.path, "utf8");
+		const entries = (await listStashes(rpcDir, { limit: 201, previewBytes: 32 * 1024 })).slice(0, 200);
+		const { commands, sent } = registry();
+		let selectCalls = 0;
+		const ctx: TestContext = {
 			mode: "rpc",
 			hasUI: true,
+			cwd: dir,
+			isIdle: () => true,
 			ui: {
-				notify: (message: string) => notifications.push(message),
+				select: async (title, choices) => {
+					selectCalls++;
+					assert.equal(title, "Stashes");
+					assert.equal(choices.length, entries.length);
+					assert.equal(new Set(choices).size, choices.length);
+					assert.match(choices[0], selectCalls === 1 ? /^RPC handover · open · / : /^RPC handover · active · /);
+					for (const [index, entry] of entries.entries()) {
+						const shortId = choices[index].split(" · ").at(-1);
+						assert.ok(shortId);
+						assert.ok(entry.meta.id.startsWith(shortId));
+					}
+					return selectCalls === 1
+						? choices[entries.findIndex((entry) => entry.meta.id === target.record.id)]
+						: undefined;
+				},
 				custom: () => {
 					throw new Error("custom UI must not be constructed in RPC mode");
 				},
 			},
-		});
-		assert.match(notifications.join("\n"), /requires TUI mode.*stash_list.*\/stash get/i);
-		await assert.rejects(
-			commands.get("stash").handler("", { mode: "json", hasUI: false, ui: {} }),
-			/requires TUI mode.*stash_list.*\/stash get/i,
-		);
+		};
+		await commands.get("stash").handler("", ctx);
+		assert.equal(selectCalls, 1);
+		assert.equal(sent.length, 1);
+		assert.match(sent[0].content, /RPC_PICKUP_BODY/);
+		assert.ok(sent[0].content.includes(target.record.id));
+		assert.match(await readFile(target.path, "utf8"), /^state: "active"$/m);
+		await commands.get("stash").handler("", ctx);
+		assert.equal(selectCalls, 2);
+		assert.equal(sent.length, 1);
+		assert.equal(await readFile(untouched.path, "utf8"), beforeCancel);
+		for (const mode of ["json", "print"] as const) {
+			await assert.rejects(
+				commands.get("stash").handler("", { mode, hasUI: false, ui: {} }),
+				/requires TUI mode.*stash_list.*\/stash get/i,
+			);
+		}
 	});
 
 	it("picks up the selected artifact in one injected message and retains the footer height authority", async () => {

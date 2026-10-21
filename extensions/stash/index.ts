@@ -271,7 +271,7 @@ const STASH_USAGE = [
 	"  /stash new <hint>           distill the live session into a new stash (hint guides it)",
 	"",
 	"Retrieve & manage:",
-	"  /stash                      browse & pick up (TUI overlay)",
+	"  /stash                      browse & pick up (TUI panel or RPC list)",
 	"  /stash get <id> [note]      pick up a stash; the note amends it at pickup time",
 	"  /stash complete <id> <out>  close an open or active stash with a concrete outcome",
 	"  /stash release <id>         return an active stash to open (dead-session cleanup)",
@@ -368,6 +368,29 @@ async function deliverPickup(
 	}
 }
 
+async function selectAndPickup(
+	pi: StashMessageApi,
+	ctx: ExtensionContext,
+	entries: Awaited<ReturnType<typeof listStashes>>,
+	hasMore: boolean,
+	fail: (message: string) => void,
+): Promise<void> {
+	const choices = entries.map((entry) => {
+		const id = entry.meta.id;
+		let length = 17;
+		while (
+			length < id.length &&
+			entries.some((other) => other !== entry && other.meta.id.startsWith(id.slice(0, length)))
+		) {
+			length++;
+		}
+		return `${safeLine(entry.meta.title)} · ${safeLine(stateLabel(entry.meta, entry.previewError !== undefined))} · ${id.slice(0, length)}`;
+	});
+	const selected = await ctx.ui.select(hasMore ? "Stashes (newest 200)" : "Stashes", choices);
+	const entry = selected === undefined ? undefined : entries[choices.indexOf(selected)];
+	if (entry) await deliverPickup(pi, ctx, entry.meta.id, fail);
+}
+
 /** Browse stashes and act on them; a selected entry is picked up. */
 async function browseAndPickup(
 	pi: StashMessageApi,
@@ -381,14 +404,12 @@ async function browseAndPickup(
 	let pickupId: string | undefined;
 	let pickupNote: string | undefined;
 
+	if (ctx.mode !== "tui" && !ctx.hasUI) {
+		throw new Error(
+			"The interactive stash browser requires TUI mode. Use stash_list to discover ids, /stash get <id> to pick up, /stash new <hint> to create, /stash complete <id> <outcome> to close, /stash reopen <id>, /stash rotate <id> to archive, or /stash help.",
+		);
+	}
 	while (!pickupId) {
-		if (ctx.mode !== "tui") {
-			const message =
-				"The interactive stash browser requires TUI mode. Use stash_list to discover ids, /stash get <id> to pick up, /stash new <hint> to create, /stash complete <id> <outcome> to close, /stash reopen <id>, /stash rotate <id> to archive, or /stash help.";
-			if (ctx.hasUI) ctx.ui.notify(message, "info");
-			else throw new Error(message);
-			return;
-		}
 		let entries: Awaited<ReturnType<typeof listStashes>>;
 		let hasMore = false;
 		try {
@@ -397,6 +418,10 @@ async function browseAndPickup(
 			entries = loaded.slice(0, 200);
 		} catch (error) {
 			fail(`Could not open stash store: ${safeLine(error instanceof Error ? error.message : String(error))}`);
+			return;
+		}
+		if (ctx.mode !== "tui") {
+			await selectAndPickup(pi, ctx, entries, hasMore, fail);
 			return;
 		}
 		const result = await ctx.ui.custom<StashPanelResult>(
@@ -429,7 +454,7 @@ async function browseAndPickup(
 			pickupNote = action.note;
 		}
 	}
-	if (pickupId) await deliverPickup(pi, ctx, pickupId, fail, pickupNote);
+	await deliverPickup(pi, ctx, pickupId, fail, pickupNote);
 }
 
 type BrowserAction = { kind: "stop" | "continue" } | { kind: "pickup"; id: string; note?: string };
