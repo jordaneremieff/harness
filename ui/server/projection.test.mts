@@ -16,6 +16,19 @@ function resultText(message: MessageView | undefined): Extract<PartView, {type: 
 const retainedResult = (text: string) => ({type: 'message', id: 'result', parentId: null,
   message: {role: 'toolResult', toolCallId: 'call', toolName: 'generic', content: [{type: 'text', text}]}});
 
+test('restart-limited catalog attention survives decoding, retention and roster projection', () => {
+  const id = '00000000-0000-4000-8000-000000000001';
+  const view = decodePublication({updatedAt: '2026-01-01T00:00:00.000Z', rows: [{id, storageId: id, cwd: '/project', modifiedAt: 1, owner: 'here', state: 'idle', cost: 0, partial: false}], coverage: {complete: true, omitted: 0},
+    attention: {rows: [{identity: id, kind: 'task-blocked', taskId: 7, reason: 'restart_limit'}], coverage: {complete: true, omitted: 0}}}, id);
+  const record: CatalogRecord = {storageId: id, cwd: '/project', agentDir: '/agent', packageDir: '/pi', storagePath: '/agent/store.sqlite', model: {provider: 'fixture', modelId: 'model'}, thinkingLevel: 'off', createdAt: view.updatedAt, view};
+  const rows = retainedRows(record, {state: 'live'});
+  assert.deepEqual(rows[0].attention, {kind: 'task-blocked', reason: 'restart_limit'});
+  const projected = projectRoster({rows});
+  assert.deepEqual(projected.rows[0].attention, rows[0].attention);
+  assert.equal(projected.rows[0].state, 'idle');
+  assert.equal(projected.rows[0].error, undefined);
+});
+
 test('published retry health keeps its source time without becoming live authority', () => {
   const roster = projectRoster({rows: [{identity: 'published', storageId: 'storage', cwd: '/project', modifiedAt: 1, state: 'working', owner: 'here', availability: 'stored', partial: false,
     observedAt: '2026-10-16T00:00:00Z', health: {autoRetry: {attempt: 2, maxAttempts: 5, delayMs: 60000, errorMessage: 'Bearer private-token'}}}]});

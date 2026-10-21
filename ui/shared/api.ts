@@ -235,7 +235,7 @@ export type AgentRow = {identity: string; storageId: string; cwd: string; name?:
   thinkingLevel?: string; latestReply?: string; firstMessage?: string; error?: string;
   currentTool?: {name: string; argument: string}; partial: boolean; observedAt?: string;
   ownerLabel?: string; capabilities?: AgentCapabilities;
-  attention?: {kind: 'provider-blocked' | 'task-blocked' | 'failed-turn'; reason?: 'missing_task' | 'task_too_old' | 'migration_failed'};
+  attention?: {kind: 'provider-blocked' | 'task-blocked' | 'failed-turn'; reason?: 'missing_task' | 'task_too_old' | 'migration_failed' | 'restart_limit'};
   publishedRetry?: {attempt: number; maxAttempts: number; delayMs: number; error: string}};
 export type ScanView = {state: 'not-started' | 'running' | 'ready' | 'failed'; complete: boolean;
   visited: number; skipped: number; omitted: number; scanId?: string};

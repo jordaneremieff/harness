@@ -2,6 +2,8 @@
 
 A local browser interface for ordinary Pi conversations and retained Durable agents. The terminal harness remains independent: the UI does not load as a Pi extension and imports no extension source. Its agent links use the public package-level [transport entrypoint](../transport/index.ts). Stop this process to return to terminal-only use.
 
+Published task attention accepts `restart_limit` when the native host parks a task after repeated restarts. The UI retains that reason and labels it **Blocked**, not a failed turn. Expected task sleep remains task state and does not create an attention warning.
+
 ## Start
 
 ```sh

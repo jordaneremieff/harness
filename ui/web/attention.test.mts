@@ -26,6 +26,12 @@ test('working, automatic retry, stopped, stored, read-only and disconnected fact
   assert.equal(conversationAttention({connected:false,primary,question:true}),undefined);
   assert.equal(conversationAttention({connected:false,agent:{live:false,connectionError:'offline'}}),undefined);
 });
+test('restart parking is blocked attention, while an expected task sleep is not a failed turn',()=>{
+  assert.deepEqual(conversationAttention({connected:true,catalog:{kind:'task-blocked',reason:'restart_limit'}}),{label:'Blocked',tone:'warning',title:'A task reached its restart limit'});
+  const sleeping: ProjectedFrame = {...frame,status:{busy:false,tasks:{value:[{id:7,kind:'run',status:'sleeping',background:false,abortRequested:false}],truncated:false}}};
+  assert.equal(conversationAttention({connected:true,agent:{live:true,frame:sleeping}}),undefined);
+});
+
 test('collapsed heading omits zero pieces and does not count attention twice',()=>{
   const attention = {label:'Blocked',tone:'warning'} as const;
   assert.equal(attentionCounts([{attention,working:true},{working:true},{working:true}]),'1 need you · 2 working');

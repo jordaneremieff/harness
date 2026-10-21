@@ -603,7 +603,7 @@ function publishedRetry(source: Record<string, unknown>): AgentRow['publishedRet
 function rosterAttention(raw: unknown): AgentRow['attention'] {
   const need = object(raw);
   if (need.kind === 'provider-blocked' || need.kind === 'failed-turn') return {kind: need.kind};
-  if (need.kind === 'task-blocked' && ['missing_task', 'task_too_old', 'migration_failed'].includes(String(need.reason))) return {kind: 'task-blocked', reason: need.reason as 'missing_task' | 'task_too_old' | 'migration_failed'};
+  if (need.kind === 'task-blocked' && ['missing_task', 'task_too_old', 'migration_failed', 'restart_limit'].includes(String(need.reason))) return {kind: 'task-blocked', reason: need.reason as 'missing_task' | 'task_too_old' | 'migration_failed' | 'restart_limit'};
 }
 function rosterOptionals(row: AgentRow, source: Record<string, unknown>): void {
   for (const key of ['name', 'handle', 'thinkingLevel', 'latestReply', 'firstMessage', 'error', 'observedAt', 'ownerLabel'] as const) {

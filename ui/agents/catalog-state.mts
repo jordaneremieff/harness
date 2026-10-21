@@ -1,5 +1,5 @@
 import type { CatalogRecord, ClaimObservation, Publication } from "./catalog-record.mts";
-export type CatalogRow = Publication["rows"][number] & { claim: ClaimObservation["state"]; publishedAt?: string; handle?: string; role?: string; attention?: {kind: "provider-blocked" | "task-blocked" | "failed-turn"; reason?: "missing_task" | "task_too_old" | "migration_failed"} };
+export type CatalogRow = Publication["rows"][number] & { claim: ClaimObservation["state"]; publishedAt?: string; handle?: string; role?: string; attention?: {kind: "provider-blocked" | "task-blocked" | "failed-turn"; reason?: "missing_task" | "task_too_old" | "migration_failed" | "restart_limit"} };
 /** Last native activity defines order; identity breaks equal-time ties without locale dependence. */
 export function compareRosterRows(a: CatalogRow, b: CatalogRow): number {
 	return b.modifiedAt - a.modifiedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);

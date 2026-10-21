@@ -6,7 +6,7 @@ export type AttentionSource = {connected: boolean; primary?: PrimaryView; questi
 function catalogAttention(hint: AgentRow['attention']): Attention | undefined {
   if (!hint) return;
   if (hint.kind === 'failed-turn') return {label: 'Failed', tone: 'error'};
-  const reasons = {missing_task: 'A task is missing', task_too_old: 'A task is too old to resume', migration_failed: 'A task could not be migrated'};
+  const reasons = {missing_task: 'A task is missing', task_too_old: 'A task is too old to resume', migration_failed: 'A task could not be migrated', restart_limit: 'A task reached its restart limit'};
   return {label: 'Blocked', tone: 'warning', ...(hint.kind === 'task-blocked' && hint.reason ? {title: reasons[hint.reason]} : {})};
 }
 /** A current live frame takes precedence over an exact-identity published hint. */

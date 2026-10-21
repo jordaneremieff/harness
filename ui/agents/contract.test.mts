@@ -272,6 +272,24 @@ test("public profile hints validate every field without imposing profile-edit co
 	refusal(() => decodePublication({...value, profiles: {...profiles, rows: [{...hint, role: "x".repeat(24 * 1024)}]}}, storageId));
 });
 
+test("catalog attention accepts restart-limited tasks and rejects unknown reasons", () => {
+	for (const reason of ["missing_task", "task_too_old", "migration_failed", "restart_limit"]) {
+		const attention = {rows: [{identity: storageId, kind: "task-blocked", taskId: 7, reason}], coverage: {complete: true, omitted: 0}};
+		const value = {...fixture("empty-publication"), attention};
+		assert.deepEqual(decodePublication(value, storageId).attention, attention);
+	}
+	const value = {...fixture("empty-publication"), attention: {rows: [{identity: storageId, kind: "task-blocked", taskId: 7, reason: "sleeping"}], coverage: {complete: true, omitted: 0}}};
+	refusal(() => decodePublication(value, storageId));
+});
+
+test("native task sleep and restart parking remain retained state, not failed turns", () => {
+	for (const status of ["sleeping", "pending"]) {
+		const value = frame();
+		(value.status as JsonObject).tasks = [{id: 7, kind: "run", status, background: false, abortRequested: false}];
+		assert.deepEqual(decodeFrame(value), value);
+	}
+});
+
 test("change feed accepts a complete revision value without a transport envelope", () => {
 	for (const revision of [0, 1, 7]) assert.deepEqual(decodeResponse("changes", {revision}), {revision});
 	for (const changed of [{revision: -1}, {revision: 0.5}, {revision: "1"}, {revision: 1, sequence: 1}, {},

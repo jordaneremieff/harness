@@ -26,7 +26,7 @@ export type Summary = {
 export type ProfileHint = { identity: string; handle: string | null; role: string; revision: string;
 	hasExpertise: boolean; updatedAt: number | null };
 export type ProfileHints = { rows: ProfileHint[]; coverage: { complete: boolean; omitted: number } };
-export type AttentionHint = {identity: string} & ({kind: "provider-blocked"; blockId: string} | {kind: "task-blocked"; taskId: number; reason: "missing_task" | "task_too_old" | "migration_failed"} | {kind: "failed-turn"});
+export type AttentionHint = {identity: string} & ({kind: "provider-blocked"; blockId: string} | {kind: "task-blocked"; taskId: number; reason: "missing_task" | "task_too_old" | "migration_failed" | "restart_limit"} | {kind: "failed-turn"});
 export type AttentionHints = {rows: AttentionHint[]; coverage: {complete: boolean; omitted: number}};
 export type Publication = { updatedAt: string; rows: Summary[]; coverage: { complete: boolean; omitted: number };
 	storageId?: string; unavailable?: string; profiles?: ProfileHints; attention?: AttentionHints; profileSeed?: JsonValue; modelEvidence?: JsonValue };
@@ -347,7 +347,7 @@ function attentionHints(value: JsonValue): void {
 		choice(hint.kind, ["provider-blocked", "task-blocked", "failed-turn"]);
 		const keys = ["identity", "kind"];
 		if (hint.kind === "provider-blocked") {keys.push("blockId"); string(hint.blockId, 2000);}
-		if (hint.kind === "task-blocked") {keys.push("taskId", "reason"); integer(hint.taskId, 1); choice(hint.reason, ["missing_task", "task_too_old", "migration_failed"]);}
+		if (hint.kind === "task-blocked") {keys.push("taskId", "reason"); integer(hint.taskId, 1); choice(hint.reason, ["missing_task", "task_too_old", "migration_failed", "restart_limit"]);}
 		only(hint, keys);
 	});
 	const c = object(o.coverage); only(c, ["complete", "omitted"]); boolean(c.complete); integer(c.omitted);
