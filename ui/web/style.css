@@ -622,7 +622,8 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .transcript-group-header { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s1) var(--s2); margin: var(--s1) 0 var(--s2); padding-top: var(--s2); border-top: 1px solid var(--rule); color: var(--muted); font-size: var(--fs-meta); line-height: 18px; }
 .transcript-group-label, .transcript-group-coverage { min-width: 0; overflow-wrap: anywhere; }
 .transcript-group-label { font-weight: 600; }
-a.reference-link[href] { color: var(--link); text-decoration: underline; overflow-wrap: anywhere; }
+a.reference-link[href] { color: var(--link); text-decoration: none; overflow-wrap: anywhere; }
+a.reference-link[href]:is(:hover, :focus-visible) { text-decoration: underline; }
 .reference-unresolved { padding: 0 var(--s1); border-radius: var(--r-sm); background: var(--code); color: var(--muted); text-decoration: none; cursor: text; overflow-wrap: anywhere; }
 
 /* Messages */
@@ -685,7 +686,8 @@ a.reference-link[href] { color: var(--link); text-decoration: underline; overflo
 .markdown-content li + li { margin-top: var(--s1); }
 .markdown-content .markdown-inline-code { font-size: var(--fs-code); padding: calc(var(--s1) / 4) calc(var(--s1) * 1.25); border-radius: var(--r-sm); background: var(--code); color: var(--fg); overflow-wrap: anywhere; }
 .markdown-content strong { color: var(--fg); }
-.markdown-content a { color: var(--link); text-decoration: underline; }
+.markdown-content a { color: var(--link); text-decoration: none; }
+.markdown-content a:is(:hover, :focus-visible) { text-decoration: underline; }
 .markdown-content:is(blockquote) { padding-left: var(--s3); border-left: 3px solid var(--rule); color: var(--muted); }
 .markdown-content:is(table) { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; font-size: var(--fs-ui); scrollbar-width: thin; }
 .markdown-content th, .markdown-content td { padding: var(--s2) var(--s3); border: 0; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; white-space: normal; overflow-wrap: normal; }
@@ -1537,6 +1539,7 @@ button.thread-person:hover, button.thread-sender:hover { background: var(--raise
   * { scroll-behavior: auto; }
 }
 @media (forced-colors:active) {
+  a.reference-link[href], .markdown-content a { text-decoration: underline; }
   .composer-overlay { display: none; }
   .composer textarea[data-decorated=true], .file-editor[data-decorated=true] { color: CanvasText; }
   .file-editor-color { display: none; }
