@@ -1,12 +1,12 @@
 import type {JoinedTool} from './transcript-tools.ts';
 import type {PartView} from '../shared/api.ts';
-import {plainPreviewWords} from './format.ts';
+import {lineCount,plainPreviewWords} from './format.ts';
 
 export type NamedDestination = {text: string; name?: string; provenance?: 'reported' | 'supplied' | 'handle'; derived?: boolean; fallback?: string; title?: string; open?: () => void};
 export type SentenceContext = {nestedCount?:number; cwd?: string; subject?: (identity: string) => NamedDestination | undefined};
 type VerbForms = {done: string; active: string; action: string};
 type Words = VerbForms & {emphasis?: {recipient: string; message: string}; file?: {prefix: VerbForms; path: string; name: string; directory: string; suffix: string}};
-export type ToolLabelPart = {text: string; role?: 'recipient' | 'message' | 'file' | 'directory' | 'range'; title?: string};
+export type ToolLabelPart = {text: string; role?: 'recipient' | 'message' | 'file' | 'directory' | 'range' | 'added' | 'removed'; title?: string};
 const text = (value: unknown): string => typeof value === 'string' ? value : '';
 function first(value: unknown): string {
   return text(value).split(/\r?\n/, 1)[0] ?? '';
@@ -108,12 +108,24 @@ function readWords(input:SentenceInput):Words {
   return fileWords(input,'Read','Reading','Read',range);
 }
 function editWords(input:SentenceInput):Words {
-  const n=Array.isArray(input.args.edits)?input.args.edits.length:undefined;
-  return fileWords(input,'Edited','Editing','Edit',n===undefined?'':` (${n} ${n===1?'change':'changes'})`);
+  return fileWords(input,'Edited','Editing','Edit');
 }
 function writeWords(input:SentenceInput):Words {
-  const n=typeof input.args.content==='string'?input.args.content.split('\n').length:undefined;
-  return fileWords(input,'Wrote','Writing','Write',n===undefined?'':` (${n} ${n===1?'line':'lines'})`);
+  return fileWords(input,'Wrote','Writing','Write');
+}
+function suppliedLineParts(tool:JoinedTool):ToolLabelPart[] {
+  if((tool.name!=='edit'&&tool.name!=='write')||!tool.args||tool.completeArguments!==tool.args||tool.args.truncated)return [];
+  const args=argsOf(tool);
+  if(tool.name==='write')return typeof args.content==='string'?[{text:` +${lineCount(args.content)}`,role:'added'}]:[];
+  if(!Array.isArray(args.edits))return [];
+  let added=0,removed=0;
+  for(const edit of args.edits){
+    if(!edit||typeof edit!=='object'||Array.isArray(edit))return [];
+    const oldText=Object.getOwnPropertyDescriptor(edit,'oldText')?.value,newText=Object.getOwnPropertyDescriptor(edit,'newText')?.value;
+    if(typeof oldText!=='string'||typeof newText!=='string')return [];
+    added+=lineCount(newText);removed+=lineCount(oldText);
+  }
+  return [{text:` +${added}`,role:'added'},{text:` −${removed}`,role:'removed'}];
 }
 function pillarWords({args}:SentenceInput):Words {
   if(!args.resource)return words('Listed pillars','Listing pillars','List pillars');
@@ -204,16 +216,16 @@ function labelForm(tool: JoinedTool, value: VerbForms): string {
 }
 /** Styled spans retain source caption, path and quote boundaries independently of layout. */
 export function toolLabelParts(tool:JoinedTool,context:SentenceContext={}):ToolLabelPart[]{
-  const value=sentenceWords(tool,context), label=labelForm(tool,value);
+  const value=sentenceWords(tool,context), label=labelForm(tool,value),size=suppliedLineParts(tool);
   if(value.file){
     const file=value.file, parts:ToolLabelPart[]=[{text:`${labelForm(tool,file.prefix)} `},{text:file.name,role:'file',title:file.path}];
     if(file.directory)parts.push({text:`  ${file.directory}`,role:'directory',title:file.path});
     if(file.suffix)parts.push({text:file.suffix,role:'range'});
-    return parts;
+    return [...parts,...size];
   }
   const recipient=value.emphasis?.recipient??'', message=value.emphasis?.message??'', suffix=recipient+message;
-  if(!suffix||!label.endsWith(suffix))return [{text:label}];
-  return [{text:label.slice(0,label.length-suffix.length)},...(recipient?[{text:recipient,role:'recipient' as const}]:[]),...(message?[{text:message,role:'message' as const}]:[])];
+  if(!suffix||!label.endsWith(suffix))return [{text:label},...size];
+  return [{text:label.slice(0,label.length-suffix.length)},...(recipient?[{text:recipient,role:'recipient' as const}]:[]),...(message?[{text:message,role:'message' as const}]:[]),...size];
 }
 /** Public call arguments describe the action; completion never describes a recipient's task outcome. */
 export function toolSentence(tool: JoinedTool, context: SentenceContext = {}): string {

@@ -3,6 +3,8 @@ export function plainPreviewWords(line: string): string {
   return line.replace(/^\s*(?:#{1,6}\s+|[-*+]\s+|>\s*|\d+[.)]\s+)/, '').replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/\*\*|__|[*`]/g, '').replace(/\s+/g, ' ').trim();
 }
 
+export function lineCount(value:string):number{return value===''?0:value.replace(/\r\n|\r/g,'\n').replace(/\n$/,'').split('\n').length;}
+
 type Timestamp = string | number | Date;
 function timestampDate(value: Timestamp): Date { return value instanceof Date ? value : new Date(value); }
 export function isValidTimestamp(value: Timestamp): boolean { return Number.isFinite(timestampDate(value).getTime()); }

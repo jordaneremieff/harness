@@ -10,8 +10,12 @@ import { paneLeaves } from './pane-layout.ts';
 
 export type UiEvent = { [N in EventName]: { name: N; id?: string; target?: Target; workspaceId?: string; data: EventData[N] } }[EventName];
 export interface ToolState {
-  callId: string; name: string; phase: 'start' | 'update' | 'end'; arguments?: JsonDisplay;
+  callId: string; name: string; phase: 'start' | 'update' | 'end'; arguments?: JsonDisplay; completeArguments?: JsonDisplay;
   argumentText?: string; parts?: PartView[]; isError?: boolean; durationMs?: number; observedStart?: number; output?: ToolOutputInfo; nativeStatus?: 'pending'|'running'|'done';
+}
+/** Completion names this exact argument value, not a later streamed or event replacement. */
+export function completeToolArguments(message:MessageView,part:Extract<PartView,{type:'toolCall'}>):JsonDisplay|undefined {
+  return message.role==='assistant'&&message.state==='final'&&(message.stopReason==='toolUse'||message.stopReason==='stop')&&!message.error&&part.argumentsError===undefined?part.arguments:undefined;
 }
 /** A browser-observed span of one thinking block; only blocks whose start this browser saw have one. */
 export interface ThinkingTime { start: number; end?: number }
@@ -517,7 +521,7 @@ function applyMessage(conversation: Conversation, message: MessageView): Convers
   const tools = new Map(conversation.tools);
   for (const part of message.parts) {
     if (part.type === 'toolCall') tools.set(part.callId, { ...tools.get(part.callId), callId: part.callId,
-      name: part.name, arguments: part.arguments, phase: tools.get(part.callId)?.phase ?? 'start' });
+      name: part.name, arguments: part.arguments, completeArguments:completeToolArguments(message,part), phase: tools.get(part.callId)?.phase ?? 'start' });
     if (part.type === 'toolResult') tools.set(part.callId, { ...tools.get(part.callId), callId: part.callId,
       name: part.name, parts: part.parts, isError: part.isError, output: part.output, phase: message.state === 'final' ? 'end' : 'update' });
   }
@@ -525,9 +529,14 @@ function applyMessage(conversation: Conversation, message: MessageView): Convers
   return { ...conversation, messages, tools, messageBlocks, thinking: observeThinking(conversation.thinking, message, Date.now()),
     messageOrder: conversation.messages.has(message.id) ? conversation.messageOrder : [...conversation.messageOrder, message.id] };
 }
+function retainedCompleteArguments(previous:ToolState|undefined,replacement:JsonDisplay|undefined):JsonDisplay|undefined {
+  const args=replacement??previous?.arguments;
+  return args===previous?.completeArguments?args:undefined;
+}
 function applyTool(conversation: Conversation, event: EventData['primary.tool']): Conversation {
   const previous = conversation.tools.get(event.callId);
   const tool: ToolState = { ...previous, ...event,
+    completeArguments:retainedCompleteArguments(previous,event.arguments),
     observedStart: event.phase === 'start' ? previous?.phase === 'end' ? Date.now() : previous?.observedStart ?? Date.now() : previous?.observedStart };
   const tools = new Map(conversation.tools); tools.set(tool.callId, tool);
   let next: Conversation = { ...conversation, tools };
@@ -552,8 +561,9 @@ function applyArgumentDelta(conversation: Conversation, message: MessageView, pa
   const tools = new Map(conversation.tools);
   const argumentText = (tool?.argumentText ?? '') + delta.delta;
   const name = delta.toolName ?? tool?.name ?? '';
-  tools.set(delta.callId, { ...tool, callId: delta.callId, name, phase: tool?.phase ?? 'start', argumentText });
-  parts[delta.index] = { type: 'toolCall', callId: delta.callId, name, arguments: { value: argumentText, truncated: false } };
+  const args:JsonDisplay={value:argumentText,truncated:false};
+  tools.set(delta.callId, { ...tool, callId: delta.callId, name, phase: tool?.phase ?? 'start', argumentText, arguments:args, completeArguments:undefined });
+  parts[delta.index] = { type: 'toolCall', callId: delta.callId, name, arguments:args };
   const next = applyMessage({ ...conversation, tools }, { ...message, parts });
   return { ...next, tools };
 }

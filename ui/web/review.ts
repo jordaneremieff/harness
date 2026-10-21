@@ -1,5 +1,6 @@
 import type {CommunicationBody, EntryView} from '../shared/api.ts';
 import {button, copy, element, setText} from './dom.ts';
+import {lineCount} from './format.ts';
 import {TranscriptIndex, type JoinedTool} from './transcript-tools.ts';
 import type {ThinkingTime, ToolState} from './state.ts';
 import {Transcript, type ViewHooks} from './render.ts';
@@ -31,7 +32,6 @@ function coverage(parent:HTMLElement,body:CommunicationBody):void {
   const labels=[!body.complete?'Partial text':'',body.redacted?'Redacted':''].filter(Boolean);
   if(labels.length)parent.append(element('p','secondary',labels.join(' · ')));
 }
-function lineCount(value:string):number{return value===''?0:value.replace(/\r\n|\r/g,'\n').replace(/\n$/,'').split('\n').length;}
 function diffBlock(oldText:string,newText:string):HTMLElement {
   const comparison=suppliedDifference(oldText,newText),pre=element('pre','review-supplied');
   const append=(lines:string[],kind:string,mark:string)=>{for(const line of lines){const row=element('span',`diff-row ${kind}`),marker=element('span','diff-marker',mark);marker.setAttribute('aria-hidden','true');row.append(marker,element('span','diff-text',`${line}\n`));pre.append(row);}};

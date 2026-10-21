@@ -1,9 +1,9 @@
 import type { EntryView, JsonDisplay, PartView, ToolOutputInfo } from '../shared/api.ts';
-import type { ToolState } from './state.ts';
+import { completeToolArguments, type ToolState } from './state.ts';
 import { plainPreviewWords } from './format.ts';
 import { TranscriptGroups } from './transcript-groups.ts';
 
-export type JoinedTool = {callId: string; name: string; owner: string; slot: string; args?: JsonDisplay; result?: PartView[]; output?: ToolOutputInfo; status: string; duration?: number; observedStart?: number; argumentText?: string; argumentsError?: string; parentCallId?: string; taskId?: number; parentTaskId?: number};
+export type JoinedTool = {callId: string; name: string; owner: string; slot: string; args?: JsonDisplay; completeArguments?: JsonDisplay; result?: PartView[]; output?: ToolOutputInfo; status: string; duration?: number; observedStart?: number; argumentText?: string; argumentsError?: string; parentCallId?: string; taskId?: number; parentTaskId?: number};
 /** Elapsed time starts at receipt of a tool start, not at a history timestamp. */
 export function toolTime(tool: JoinedTool, now = Date.now()): string {
   if (tool.status !== 'working') return tool.duration === undefined ? '' : `${tool.duration} ms`;
@@ -40,7 +40,7 @@ export class ToolElapsedClock {
   }
   stop(): void { if (this.timer !== undefined) clearInterval(this.timer); this.timer = undefined; }
 }
-type ToolPart = {part: Extract<PartView, {type: 'toolCall' | 'toolResult'}> | (NonNullable<EntryView['tool']> & {type: 'execution'}); owner: string; slot: string; sequence: number; partial?: boolean};
+type ToolPart = {part: Extract<PartView, {type: 'toolCall' | 'toolResult'}> | (NonNullable<EntryView['tool']> & {type: 'execution'}); owner: string; slot: string; sequence: number; partial?: boolean; completeArguments?: JsonDisplay};
 type EntryParts = {tools: ToolPart[]; thinking: string[]; communication: string[]};
 export function slot(entry: string, message: string, index: number): string { return JSON.stringify([entry, message, index]); }
 export function toolDisclosureKeys(id: string): string[] { return [`tool:${id}`, `arguments:${id}`, `raw-output:${id}`]; }
@@ -51,7 +51,7 @@ export function communicationDisclosureKeys(entry: string, message: string): [st
   const id = key.toString(16); return [`communication-details:${id}`, `communication-line:${id}`];
 }
 function sameTool(a: JoinedTool | undefined, b: JoinedTool): boolean {
-  return !!a && a.name === b.name && a.owner === b.owner && a.slot === b.slot && a.args === b.args &&
+  return !!a && a.name === b.name && a.owner === b.owner && a.slot === b.slot && a.args === b.args && a.completeArguments === b.completeArguments &&
     a.result === b.result && a.output === b.output && a.status === b.status && a.duration === b.duration && a.observedStart === b.observedStart && a.argumentText === b.argumentText && a.argumentsError === b.argumentsError &&
     a.parentCallId === b.parentCallId && a.taskId === b.taskId && a.parentTaskId === b.parentTaskId;
 }
@@ -60,8 +60,10 @@ function executionStatus(part: NonNullable<EntryView['tool']>): string {
   if (part.status === 'running') return 'working';
   return part.isError === true ? 'error' : part.isError === false ? 'success' : 'ended';
 }
+/** Native nested slots retain strict-JSON call inputs from admission, including queued calls. */
 function applyExecution(tool: JoinedTool, part: NonNullable<EntryView['tool']>): void {
-  tool.args = part.arguments; tool.result = part.parts; tool.output = part.output; tool.duration = part.durationMs;
+  tool.args = part.arguments; tool.completeArguments=part.arguments; tool.argumentsError=undefined;
+  tool.result = part.parts; tool.output = part.output; tool.duration = part.durationMs;
   tool.parentCallId = part.parentCallId; tool.taskId = part.taskId; tool.parentTaskId = part.parentTaskId;
   tool.status = executionStatus(part);
 }
@@ -74,7 +76,7 @@ function combineParts(id: string, parts: ToolPart[]): JoinedTool | undefined {
       const part = item.part;
       tool ??= {callId: id, name: part.name, owner: item.owner, slot: item.slot, status: 'missing'};
       if (part.type === 'toolCall') {
-        tool.args = part.arguments; tool.argumentsError = part.argumentsError;
+        tool.args = part.arguments; tool.completeArguments=item.completeArguments; tool.argumentsError = part.argumentsError;
         if (item.partial && tool.status === 'missing') tool.status = 'preparing';
         if (!called) { tool.name = part.name; tool.owner = item.owner; tool.slot = item.slot; called = true; }
       }
@@ -89,7 +91,9 @@ function nativeToolStatus(tool: JoinedTool, status: NonNullable<ToolState['nativ
 }
 function applyState(tool: JoinedTool, state: ToolState | undefined): void {
   if (!state) return;
-  tool.args = state.arguments ?? tool.args; tool.argumentText = state.argumentText; tool.result = state.parts ?? tool.result; tool.duration = state.durationMs;
+  if(state.arguments!==undefined){tool.args=state.arguments;tool.completeArguments=state.completeArguments===state.arguments?state.arguments:undefined;}
+  else if(state.argumentText!==undefined)tool.completeArguments=undefined;
+  tool.argumentText = state.argumentText; tool.result = state.parts ?? tool.result; tool.duration = state.durationMs;
   tool.output = state.output ?? tool.output; tool.observedStart = state.observedStart;
   if (state.nativeStatus !== undefined) { tool.status = nativeToolStatus(tool, state.nativeStatus); return; }
   if (state.phase === 'end') tool.status = state.isError ? 'error' : 'success';
@@ -198,7 +202,7 @@ export class TranscriptIndex {
       if (message.communication) parts.communication.push(...communicationDisclosureKeys(entry.id, message.id));
       message.parts.forEach((part, at) => {
         if (part.type === 'thinking') parts.thinking.push(`thinking:${entry.id}:${message.id}:${at}`);
-        if (part.type === 'toolCall' || part.type === 'toolResult') parts.tools.push({part, owner: entry.id, slot: slot(entry.id, message.id, at), sequence: parts.tools.length, partial: message.state === 'partial'});
+        if (part.type === 'toolCall' || part.type === 'toolResult') parts.tools.push({part, owner: entry.id, slot: slot(entry.id, message.id, at), sequence: parts.tools.length, partial: message.state === 'partial', completeArguments:part.type==='toolCall'?completeToolArguments(message,part):undefined});
       });
     }
     return parts;

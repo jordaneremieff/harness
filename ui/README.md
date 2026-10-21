@@ -480,6 +480,12 @@ A tool title's existing basename and directory label form one quiet **Copy path*
 
 The path button prevents the primary mouse-down default and stops its click, so the click neither changes focus or selection nor toggles the tool or opens a file. The rest of the title retains its disclosure behavior; existing separate file references remain available. Source guards reject a changed call, owner, slot, argument binding or path, a reset view, and hidden or detached owners. A changed binding replaces the button rather than retargeting its old callback. Unchanged result updates retain it. Source, Raw, Copy original, output and argument payloads remain unchanged. No clipboard write runs at startup or in the background; the existing manual fallback applies if the browser refuses a copy.
 
+## Supplied edit sizes
+
+Edit titles show small `+added −removed` line counts before the existing state word. Write titles show `+lines`. Edit counts sum the supplied `newText` and `oldText` over every pair; write counts use supplied `content`. They describe supplied text, not verified changes on disk, and never come from results or output. The added and removed parts use success and error ink. Empty text counts as zero; CRLF and CR normalize to LF, and one final LF does not add a further line. Review and tool titles use the same line-count helper.
+
+Counts require completion evidence tied to the exact displayed argument value. A successful final assistant generation or native nested-call admission supplies that evidence, not the tool's generic state word. Partial, truncated, missing or malformed text has no count or empty gap. One incomplete edit pair hides the entire edit count. A new argument value replaces its completion evidence; raw deltas clear it. Standalone tool-event replacements without matching sealed evidence remain uncounted. Path labels, Copy path, separate file actions and message controls retain their existing behavior.
+
 ## Copy last answer
 
 **Commands → Copy last answer** uses the latest eligible loaded assistant turn's existing Copy path. It copies that button's exact retained text through the same formatter and copy function, with the existing announcement. It does not concatenate a turn, reformat or clip text. With no copyable loaded answer, the command is absent. It has no keyboard shortcut; Option-Command-C remains with the browser.
