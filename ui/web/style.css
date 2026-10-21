@@ -654,6 +654,11 @@ a.reference-link[href]:is(:hover, :focus-visible) { text-decoration: underline; 
 .message.user :is(.message-body, .communication-text):has(> .operator-message-time) { display: flow-root; }
 .message.user .operator-message-time { float: right; margin-left: var(--s3); color: var(--dim); font-size: var(--fs-meta); line-height: calc(var(--fs-body) * 1.65); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .message.user .operator-message-time + * { margin-top: 0; }
+.operator-message-content { display: flow-root; }
+.operator-message-viewport[data-folded=true] { max-height: 8lh; overflow: hidden; }
+.operator-message-toggle { display: block; margin-top: var(--s2); padding: var(--s1) 0; color: var(--muted); font-size: var(--fs-meta); }
+.operator-message-content > * + *, .operator-message-content > * > * + * { margin-top: var(--s3); }
+.operator-message-content > :first-child, .operator-message-content > :first-child > :first-child { margin-top: 0; }
 .message.user { width: fit-content; max-width: 100%; font-family: var(--sans); font-size: var(--fs-body); }
 .message.user > .message-header { max-width: 100%; }
 .message.user:has(> .message-header > :is(.message-role, .communication-sender)[hidden]) > .message-header { position: absolute; top: 4px; right: 4px; z-index: 2; max-width: 100%; min-height: 24px; }

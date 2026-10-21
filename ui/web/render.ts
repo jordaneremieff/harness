@@ -194,7 +194,8 @@ function setEntryRhythm(node: HTMLElement, children: readonly HTMLElement[], ses
   if (compact) node.classList.add('compact-entry'); else node.classList.remove('compact-entry');
 }
 type PartNode = {node: HTMLElement; source: PartView; partial: boolean};
-type MessageNode = {inputTime?: HTMLElement; communication?: CommunicationCard; node: HTMLElement; header: HTMLElement; heading: HTMLElement; delivery: HTMLElement; actions: HTMLElement; body: HTMLElement; error: HTMLElement; parts: Map<string, PartNode>; source: MessageView; menu: HTMLButtonElement; forkRevision: number; inspection?: HTMLElement; inspectionSource?: MessageView; sourceOpener?: HTMLElement; thinkingGroups?: Map<string, {node: HTMLDetailsElement; body: HTMLElement}>};
+type OperatorFold = {content: HTMLElement; viewport: HTMLElement; toggle: HTMLButtonElement; key: string};
+type MessageNode = {inputFold?: OperatorFold; inputTime?: HTMLElement; communication?: CommunicationCard; node: HTMLElement; header: HTMLElement; heading: HTMLElement; delivery: HTMLElement; actions: HTMLElement; body: HTMLElement; error: HTMLElement; parts: Map<string, PartNode>; source: MessageView; menu: HTMLButtonElement; forkRevision: number; inspection?: HTMLElement; inspectionSource?: MessageView; sourceOpener?: HTMLElement; thinkingGroups?: Map<string, {node: HTMLDetailsElement; body: HTMLElement}>};
 type EventPage = {node: HTMLElement; rows: HTMLElement; page: number; previous: HTMLButtonElement; next: HTMLButtonElement; cache: Map<string, {source: EntryView; node: HTMLElement}>};
 type SessionNode = {source?: SessionGroup; details: HTMLDetailsElement; events: EventPage; notices: EventPage};
 type TurnMessage = {entry: EntryView; message: MessageView};
@@ -342,6 +343,7 @@ export class Transcript {
       this.resize = new ResizeObserver(entries => {
         if (this.destroyed) return;
         for (const entry of entries) this.resizeGeometry(entry);
+        this.refreshOperatorFolds();
         if (this.geometryDirty.size) this.queueGeometry();
       });
       this.resize.observe(this.node);
@@ -875,6 +877,7 @@ export class Transcript {
     const children = this.children(selected); const mounted = new Set(children);
     for (const child of this.node.children) if (!mounted.has(child as HTMLElement)) this.releaseFrames(child as HTMLElement);
     reconcileChildren(this.node, children);
+    this.refreshOperatorFolds();
     this.measure(selected);
     this.refreshGaps(selected);
     this.evict(new Set(selected.map(item => item.id)));
@@ -949,14 +952,16 @@ export class Transcript {
       this.messageError(cached, message);
       const time = this.inputTimestamp(cached, message, this.index.entries.get(entryId));
       const root = cached.body.querySelector('.communication-text') ?? cached.body;
-      if (time && time.parentNode !== root) root.prepend(time);
+      if (time && !root.contains(time)) root.prepend(time);
     }
     this.registerContent(cached.body);
   }
   private communicationInput(cached: MessageNode, message: MessageView, root: HTMLElement, entryId: string): boolean {
     const supplied = message.parts.some((_part, index) => attachmentParts(message, index).some(part => part.type === 'image' && !!part.attachment));
-    if (!supplied) { this.pruneParts(cached, new Set()); return false; }
-    this.reconcileContent(root, this.messagePartNodes(cached, message, entryId)); return true;
+    const retained = this.index.entries.get(entryId);
+    if (!supplied && !this.operatorMessage(message,retained)) { this.pruneParts(cached, new Set()); return false; }
+    const children = this.messagePartNodes(cached,message,entryId), time = this.inputTimestamp(cached,message,retained); if (time) children.unshift(time);
+    this.reconcileContent(root,this.operatorContent(cached,message,retained,entryId,children)); return true;
   }
   private cancelTaskReads(): void {for(const [id,controller] of this.taskReads){controller.abort();this.taskReadStamps.delete(id);}this.taskReads.clear();}
   private readVisibleTaskAnswers(visible:ReadonlySet<string>):void {
@@ -1309,10 +1314,40 @@ export class Transcript {
     actions.append(menu); header.append(heading, delivery, actions); node.append(header, body, error);
     const cached = {node, header, heading, delivery, actions, body, error, menu, forkRevision: 0, parts: new Map<string, PartNode>(), source: message}; entry.messages.set(message.id, cached); return cached;
   }
+  private operatorMessage(message: MessageView, retained?: EntryView): boolean {
+    return message.role === 'user' && (this.hooks.operatorInput === true || retained?.kind === 'ui.input') && !retained?.sender && (!message.communication || message.communication.state === 'unresolved');
+  }
+  private operatorContent(cached: MessageNode, message: MessageView, retained: EntryView | undefined, entryId: string, children: HTMLElement[]): HTMLElement[] {
+    if (!this.operatorMessage(message,retained)) return children;
+    let fold = cached.inputFold;
+    if (!fold) {
+      const content = element('div','operator-message-content'), viewport = element('div','operator-message-viewport'); viewport.append(content);
+      const toggle = button('',()=>this.toggleOperatorFold(cached,entryId),'operator-message-toggle'); toggle.hidden = true;
+      fold = {content,viewport,toggle,key:`input-fold:${communicationDisclosureKeys(entryId,message.id)[0]}`}; cached.inputFold = fold;
+    }
+    this.reconcileContent(fold.content,children);
+    return [fold.viewport,fold.toggle];
+  }
+  private toggleOperatorFold(cached: MessageNode, entryId: string): void {
+    const fold = cached.inputFold, retained = this.index.entries.get(entryId), message = retained?.messages?.find(item=>item.id===cached.source.id);
+    if (!fold || message !== cached.source || !this.operatorMessage(message,retained) || this.deferred || !this.node.contains(cached.node)) return;
+    this.sourceLayout(entryId); this.sourcePreference(fold.key,!this.expanded.has(fold.key)); this.measureOperatorFold(fold);
+  }
+  private measureOperatorFold(fold: OperatorFold): void {
+    const rect = fold.content.getBoundingClientRect(), lineHeight = Number.parseFloat(getComputedStyle(fold.content).lineHeight);
+    if (!rect.width || !Number.isFinite(lineHeight) || lineHeight <= 0) return;
+    const lines = Math.ceil(rect.height / lineHeight), open = this.expanded.has(fold.key), long = lines > 12;
+    fold.viewport.dataset.folded = String(long && !open); fold.toggle.hidden = !long;
+    fold.toggle.setAttribute('aria-expanded',String(open)); setText(fold.toggle,open?'Show less':`Show all ${lines} lines`);
+  }
+  private refreshOperatorFolds(): void {
+    if (this.hidden()) return;
+    for (const entry of this.cache.values()) for (const cached of entry.messages.values()) {
+      if (cached.inputFold?.content.isConnected && !this.protectedNode(cached.node)) this.measureOperatorFold(cached.inputFold);
+    }
+  }
   private inputTimestamp(cached: MessageNode, message: MessageView, retained?: EntryView): HTMLElement | undefined {
-    const input = message.role === 'user' && (this.hooks.operatorInput === true || retained?.kind === 'ui.input') && !retained?.sender;
-    const ordinary = !message.communication || message.communication.state === 'unresolved';
-    if (!input || !ordinary || message.timestamp === undefined || !isValidTimestamp(message.timestamp)) { cached.inputTime?.remove(); return undefined; }
+    if (!this.operatorMessage(message,retained) || message.timestamp === undefined || !isValidTimestamp(message.timestamp)) { cached.inputTime?.remove(); return undefined; }
     const exact = new Date(message.timestamp).toISOString();
     cached.inputTime ??= element('time', 'operator-message-time');
     const time = cached.inputTime;
@@ -1343,12 +1378,12 @@ export class Transcript {
     setText(cached.delivery, delivery ? `· ${delivery}` : ''); cached.delivery.hidden = !delivery;
     const children = this.messagePartNodes(cached, message, entryId, selected);
     const time = this.inputTimestamp(cached, message, retained); if (time) children.unshift(time);
+    const displayed = this.operatorContent(cached,message,retained,entryId,this.groupThinking(cached,children));
     if (message.coverage.truncated || message.coverage.omitted > 0 || !message.coverage.complete) {
       const reason = bounded(message.coverage.reason ?? '', 4096, 6).trim();
       const notice = element('p', 'secondary message-coverage', reason || 'Some message content is not shown.');
-      children.push(notice);
+      displayed.push(notice);
     }
-    const displayed = this.groupThinking(cached, children);
     if (cached.inspection) { this.updateOrdinarySource(cached, message); displayed.push(cached.inspection); }
     this.reconcileContent(cached.body, displayed);
     this.updateMessageLayout(cached, displayed, error);
