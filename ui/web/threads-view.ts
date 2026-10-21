@@ -216,6 +216,17 @@ export class ThreadReader {
   private framed = '';
   private lastNames = '';
   private loadedAt = 0;
+  selectionSource(selection: Selection): import('./primary-draft-actions.ts').PrimaryDraftSource|undefined {
+    const entry = this.entry; if (!entry) return;
+    for (const [sequence,cached] of this.rows) {
+      const body = cached.node.querySelector<HTMLElement>('.thread-post-body');
+      if (!body || !selection.anchorNode || !selection.focusNode || !body.contains(selection.anchorNode) || !body.contains(selection.focusNode)) continue;
+      const event = entry.events.find(event=>event.sequence === sequence); if (!event) return;
+      return {caption: () => `${entry.thread?.title || entry.item.title || 'Thread'} · ${event.origin === 'operator' ? OPERATOR : this.hooks.name(event.sender)} · #${sequence}`,
+        current: () => this.entry === entry && this.rows.get(sequence) === cached && entry.events.includes(event) && cached.node.isConnected && !this.node.closest('[hidden],[inert]')};
+    }
+    return undefined;
+  }
   constructor(hooks: ReaderHooks) {
     this.hooks = hooks; this.node.hidden = true;
     this.node.setAttribute('aria-label', 'Thread');

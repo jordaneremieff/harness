@@ -29,6 +29,7 @@ import { appendKey, presentArguments, presentAwaited, presentResult, previewLimi
 import type { PreviewActions } from './generic-content.ts';
 import type { SessionGroup } from './transcript-tools.ts';
 import {attachmentParts} from './attachment-parts.ts';
+import {selectionWithin, type PrimaryDraftSource, type TranscriptDraftActions} from './primary-draft-actions.ts';
 import type { OutputContinuation, OutputPage } from '../shared/api.ts';
 import { captureAnchor, layoutItems, restoreAnchor, visibleWindow, updateHeights } from './virtual.ts';
 import type { LayoutItem, VirtualLayout } from './virtual.ts';
@@ -43,7 +44,7 @@ function thinkingSpans(summary: Element): {label: HTMLElement; preview: HTMLElem
   summary.replaceChildren(made.label, made.preview); return made;
 }
 const previewSuffix = (line: string): string => line ? ` · ${line}` : '';
-export type ViewHooks = {sourceOrder?:boolean;senderCaption?: (sender:CommunicationSender)=>string; senderSummary?: (identity:string)=>SenderSummary|undefined; thread?: (id:string,title?:string)=>void; earlier?: () => void; operatorInput?: boolean; readTaskResult?: (reference:TaskReference,signal:AbortSignal)=>Promise<ResultInspection>; activity?: (text:string)=>void; cwd?: () => string | undefined; subject?: (value: string) => ToolSubjectCaption | undefined; result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView, thinking?: ThinkingChoice) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; preview?: (part: ImageView, url: string, invoker: HTMLElement) => () => void; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
+export type ViewHooks = {primaryDraft?:TranscriptDraftActions;sourceOrder?:boolean;senderCaption?: (sender:CommunicationSender)=>string; senderSummary?: (identity:string)=>SenderSummary|undefined; thread?: (id:string,title?:string)=>void; earlier?: () => void; operatorInput?: boolean; readTaskResult?: (reference:TaskReference,signal:AbortSignal)=>Promise<ResultInspection>; activity?: (text:string)=>void; cwd?: () => string | undefined; subject?: (value: string) => ToolSubjectCaption | undefined; result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView, thinking?: ThinkingChoice) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; preview?: (part: ImageView, url: string, invoker: HTMLElement) => () => void; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
 const RAW_LIMIT = 65536;
 /** Scrolling up within this many pixels of the first loaded row reads the next older page. */
 const EARLIER_ZONE_PX = 240;
@@ -407,6 +408,38 @@ export class Transcript {
     this.elapsed.sync(); if (!this.hidden()) this.schedule();
   }
   private clearTiming(): void { this.scheduledAt = undefined; this.receivedAt = undefined; }
+  selectionSource(selection: Selection): PrimaryDraftSource|undefined {
+    for (const tool of this.tools.values()) if (selectionWithin(selection, tool.card) && tool.source) return this.toolDraftSource(tool, tool.source, true);
+    for (const entry of this.cache.values()) for (const message of entry.messages.values()) {
+      const carrier = message.source.communication;
+      if ((message.source.role === 'assistant' || carrier?.state === 'ready') && selectionWithin(selection, message.body)) return this.messageDraftSource(entry, message, true);
+    }
+    return undefined;
+  }
+  private selectedMessageCurrent(entry:EntryNode,message:MessageNode,source:MessageView,entryId:string,generation:number):boolean {
+    return generation===this.generation&&!this.hidden()&&this.node.contains(message.node)&&entry.source?.id===entryId&&this.index.entries.has(entryId)&&entry.messages.get(source.id)===message&&message.source===source;
+  }
+  private messageDraftSource(entry: EntryNode, message: MessageNode, selected=false): PrimaryDraftSource|undefined {
+    const hooks = this.hooks.primaryDraft, source = message.source, retained = entry.source, generation = this.generation;
+    if (!hooks || !retained) return;
+    const carrier = source.communication?.state === 'ready' ? source.communication.value : undefined;
+    return {caption: () => carrier ? `${this.hooks.senderCaption?.(carrier.sender) ?? hooks.caption()} · ${carrier.kind}` : hooks.caption(),
+      href: () => hooks.reference?.(retained.id), current: () => hooks.current() && (selected ? this.selectedMessageCurrent(entry,message,source,retained.id,generation) : this.currentMessage(entry,source.id,message.node,generation)?.source === source && (!message.communication || !!message.communication.current()))};
+  }
+  private selectedToolCurrent(tool:ToolNode,source:JoinedTool,generation:number):boolean {
+    return generation===this.generation&&!this.hidden()&&this.node.contains(tool.card)&&this.tools.get(source.callId)===tool&&tool.source?.owner===source.owner&&tool.source.slot===source.slot&&tool.source.name===source.name&&this.index.entries.has(source.owner);
+  }
+  private toolDraftSource(tool: ToolNode, source: JoinedTool, selected=false): PrimaryDraftSource|undefined {
+    const hooks = this.hooks.primaryDraft, entry = this.index.entries.get(source.owner), generation = this.generation;
+    if (!hooks || !entry) return;
+    return {caption: () => `${hooks.caption()} · ${tool.title.textContent || source.name}`, href: () => hooks.reference?.(entry.id),
+      current: () => hooks.current() && (selected ? this.selectedToolCurrent(tool,source,generation) : !this.hidden() && this.currentToolSource(tool,source,generation) && this.index.entries.get(entry.id) === entry)};
+  }
+  private primaryAskItems(source: PrimaryDraftSource|undefined): ContextItem[] {
+    const actions = this.hooks.primaryDraft; if (!actions || !source) return [];
+    const reason = actions.reason();
+    return [{label:'Ask in Primary',enabled:!reason,description:reason,run:()=>actions.append(source)}];
+  }
   private itemMenu(event: MouseEvent): void {
     if (nativeEditingTarget(event.target)) return;
     const target = event.target as HTMLElement | null;
@@ -418,7 +451,7 @@ export class Transcript {
     const source = tool?.source ?? message?.source ?? entry?.source;
     if (message && entry) { this.messageMenu(entry, message.source.id, origin, {x: event.clientX, y: event.clientY}); event.preventDefault(); event.stopPropagation(); return; }
     const text = menuText(tool, message, entry);
-    const items = [...selectionCopy(origin), {label: 'Copy', run: () => { void copy(text, origin); }}];
+    const items: ContextItem[] = [...selectionCopy(origin), {label: 'Copy', run: () => { void copy(text, origin); }}, ...this.primaryAskItems(tool?.source ? this.toolDraftSource(tool,tool.source) : undefined)];
     const disclosure = target?.closest<HTMLDetailsElement>('details') ?? origin.querySelector<HTMLDetailsElement>('details');
     if (disclosure && origin.contains(disclosure)) items.push({label: disclosure.open ? 'Collapse details' : 'Expand details', run: () => { disclosure.open = !disclosure.open; }});
     origin.tabIndex = -1;
@@ -807,6 +840,7 @@ export class Transcript {
     }
     return true;
   }
+  hasLoadedEntry(entryId:string):boolean {return this.index.entries.has(entryId);}
   loadedReference(query: ReferenceQuery, owner?: string): string | undefined {
     return loadedReference(this.entries, query, typeof query === 'string' ? this.groups.reference(query) : undefined, owner);
   }
@@ -1580,6 +1614,8 @@ export class Transcript {
       if (!valid()) return;
       if (cached.communication) cached.communication.openSource(origin); else this.openOrdinarySource(entry, cached, origin, generation);
     }}];
+    const carrier = source.communication;
+    if (carrier?.state === 'ready' && (carrier.value.kind === 'report' || carrier.value.kind === 'result')) items.push(...this.primaryAskItems(this.messageDraftSource(entry,cached)));
     const retained = this.index.entries.get(entry.source?.id ?? ''); const revision = cached.forkRevision;
     if (retained && this.forkEligible(retained, source)) items.push({label: 'Fork', run: () => { const currentEntry = this.index.entries.get(retained.id); if (revision === cached.forkRevision && valid() && currentEntry && this.forkEligible(currentEntry, source)) this.hooks.fork?.(source, retained.id); }});
     const box = origin.getBoundingClientRect();

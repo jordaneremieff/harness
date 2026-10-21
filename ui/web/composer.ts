@@ -392,6 +392,32 @@ export class Composer {
   setText(text: string): void {
     this.overlay?.invalidate(); this.editor.value = text; this.change(text); this.editor.setSelectionRange(text.length, text.length); this.rememberSelection();
   }
+  private primaryBuffer(workspace: string, targetKey: string): Buffer|undefined {
+    const buffer=this.current;
+    return !this.destroyed&&buffer?.workspace===workspace&&buffer.state.targetKey===targetKey&&buffer.state.target.kind==='primary'?buffer:undefined;
+  }
+  appendReason(workspace: string, targetKey: string): string {
+    const buffer = this.primaryBuffer(workspace,targetKey);
+    if (!buffer) return 'The Primary draft is not loaded.';
+    if (this.admissionBlocked || this.editor.disabled) return 'The Primary draft is not ready to save.';
+    if (this.composing || this.editor.value !== buffer.data.text) return 'The Primary draft has an unfinished edit.';
+    if (buffer.review || buffer.data.conflict || buffer.saveError || buffer.submitting) return 'The Primary draft needs attention.';
+    return '';
+  }
+  /** One synchronous edit reads the latest owned buffer; its existing save queue keeps concurrent typing. */
+  appendText(workspace: string, targetKey: string, addition: string): string {
+    const reason = this.appendReason(workspace, targetKey), buffer = this.current;
+    if (reason || !buffer) return reason || 'The Primary draft is not loaded.';
+    const previous = buffer.data, text = `${previous.text}${previous.text ? '\n\n' : ''}${addition}`;
+    if (new TextEncoder().encode(text).length > LIMITS.textBytes) return 'The complete addition exceeds the Primary draft limit.';
+    const native = {start:this.editor.selectionStart,end:this.editor.selectionEnd,direction:this.editor.selectionDirection,scrollTop:this.editor.scrollTop,scrollLeft:this.editor.scrollLeft};
+    const saved = buffer.selection;
+    const range = this.elements.root.closest('[hidden],[inert]') && saved?.text === previous.text && saved.edit === previous.edit ? saved : native;
+    this.overlay?.invalidate(); this.editor.value = text; this.change(text, previous.mode);
+    this.editor.setSelectionRange(native.start,native.end,native.direction); this.editor.scrollTop = native.scrollTop; this.editor.scrollLeft = native.scrollLeft;
+    buffer.selection = {...range,text,revision:buffer.data.server.revision,edit:buffer.data.edit,imageFingerprint:draftImageFingerprint(buffer.data.images)};
+    this.persistSelection(buffer); return '';
+  }
   restoreRange(value:Pick<EditorSelection,'start'|'end'|'direction'>):void {
     const buffer=this.current;if(!buffer)return;
     buffer.selection={...value,text:buffer.data.text,revision:buffer.data.server.revision,edit:buffer.data.edit,imageFingerprint:draftImageFingerprint(buffer.data.images),scrollTop:buffer.selection?.scrollTop??this.editor.scrollTop,scrollLeft:buffer.selection?.scrollLeft??this.editor.scrollLeft};

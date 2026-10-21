@@ -17,6 +17,16 @@ export class FilesViews {
   private key(workspace:string,tab:FileTab):string {return JSON.stringify([workspace,workspaceTabKey(tab)]);}
   private ownerKey(workspace:string,tab:FileTab):string {return JSON.stringify([workspace,tab.rootId,tab.path]);}
   owner(workspace:string,tab:FileTab):FileOwner|undefined {return this.owners.get(this.ownerKey(workspace,tab));}
+  selectionSource(selection:Selection,rootId?:string):import('./primary-draft-actions.ts').PrimaryDraftSource|undefined {
+    for(const view of this.views.values()) {
+      const owner=view.owner,source=owner.source,workspace=this.current()?.id,body=view.scroller.querySelector<HTMLElement>('.file-content');
+      if(!view.preview||!source||owner.workspace!==workspace||!body||!selection.anchorNode||!selection.focusNode||!body.contains(selection.anchorNode)||!body.contains(selection.focusNode))continue;
+      const path=owner.tab.path,id=owner.tab.rootId,text=owner.acknowledged;
+      return {caption:()=>path,href:()=>id===rootId&&!owner.retained&&!owner.moving?`#file=${encodeURIComponent(JSON.stringify({rootId:id,path}))}`:undefined,
+        current:()=>this.current()?.id===workspace&&owner.source===source&&owner.acknowledged===text&&owner.tab.path===path&&owner.tab.rootId===id&&view.root.isConnected&&!view.root.closest('[hidden],[inert]')};
+    }
+    return undefined;
+  }
   view(workspace:Workspace,tab:FileTab):FileView {
     const key = this.key(workspace.id,tab);let view = this.views.get(key);if (view) return view;
     const document = this.ownerKey(workspace.id,tab);let owner = this.owners.get(document);const reopening = !!owner && ![...this.views.values()].some(view=>view.owner === owner);

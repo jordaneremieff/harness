@@ -1,6 +1,9 @@
 /* Type and spacing tokens define the shared interface rhythm.
    Two color sets carry every themed token. User stylesheets override the
    zero-specificity token selectors by order alone. */
+.primary-draft-selection { position: fixed; z-index: 70; display: flex; padding: 2px; max-width: calc(100vw - 16px); border: 1px solid var(--rule); border-radius: var(--r-sm); background: var(--raised); box-shadow: var(--shadow); }
+.primary-draft-selection[hidden] { display: none; }
+.primary-draft-selection button { color: var(--muted); white-space: nowrap; }
 :where(:root) {
   color-scheme: dark;
   --canvas: #1c1d21;

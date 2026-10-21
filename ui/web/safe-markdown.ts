@@ -30,6 +30,7 @@ function inlineNode(node: MarkdownInline, before = '', after = ''): Node {
   if (node.type === 'code') return element('code', 'markdown-inline-code', node.text);
   if (node.type === 'omitted') return element('span', 'secondary', node.label);
   if (node.type === 'link') {
+    if (node.href.startsWith('#')) {const reference=element('span','reference-unresolved');reference.dataset.referenceHref=node.href;reference.append(inline(node.children));return reference;}
     const link = element('a'); link.href = node.href; link.rel = 'noopener noreferrer'; link.target = '_blank'; link.append(inline(node.children)); return link;
   }
   const emphasis = element(node.type === 'strong' ? 'strong' : 'em'); emphasis.append(inline(node.children,before,after)); return emphasis;

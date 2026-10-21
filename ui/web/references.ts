@@ -84,7 +84,39 @@ export class ReferenceResolver {
   private files?: FileReferences;
   private lookup: (query: ReferenceQuery) => ReferenceResolution;
   private navigate: (destination: ReferenceDestination) => void;
-  constructor(lookup: (query: ReferenceQuery) => ReferenceResolution, navigate: (destination: ReferenceDestination) => void, files?: FileReferences) { this.lookup = lookup; this.navigate = navigate; this.files = files; }
+  private loaded?: (value: unknown) => ReferenceDestination|undefined;
+  constructor(lookup: (query: ReferenceQuery) => ReferenceResolution, navigate: (destination: ReferenceDestination) => void, files?: FileReferences, loaded?: (value: unknown) => ReferenceDestination|undefined) { this.lookup = lookup; this.navigate = navigate; this.files = files; this.loaded = loaded; }
+  private explicitFile(value:unknown):FileReferenceDestination|undefined {
+    const root=this.files?.root();if(!root||!value||typeof value!=='object'||Array.isArray(value))return;
+    const input=value as Record<string,unknown>;
+    if(Object.keys(input).some(key=>!['rootId','path','line'].includes(key))||input.rootId!==root.id||typeof input.path!=='string')return;
+    if(input.line!==undefined&&(!Number.isSafeInteger(input.line)||Number(input.line)<1))return;
+    const destination=fileReference(input.path,root);if(!destination||destination.path!==input.path)return;
+    return {...destination,...(input.line!==undefined?{line:Number(input.line)}:{})};
+  }
+  private explicitDestination(href:string):{reference:ReferenceDestination}|{file:FileReferenceDestination}|undefined {
+    if(href.length>8192)return;
+    try {
+      const value:unknown=JSON.parse(decodeURIComponent(href.slice(href.indexOf('=')+1)));
+      if(href.startsWith('#reference=')){const reference=this.loaded?.(value);return reference?{reference}:undefined;}
+      if(href.startsWith('#file=')){const file=this.explicitFile(value);return file?{file}:undefined;}
+    } catch {}
+    return undefined;
+  }
+  private explicitLinks(root:HTMLElement,active:(node:HTMLElement)=>boolean,protectedNode:(node:HTMLElement)=>boolean):void {
+    for(const placeholder of root.querySelectorAll<HTMLElement>('span[data-reference-href]')) {
+      if(protectedNode(placeholder))continue;
+      const href=placeholder.dataset.referenceHref??'',destination=this.explicitDestination(href);if(!destination)continue;
+      const link=element('a','reference-link');link.href=href;link.append(...placeholder.childNodes);
+      if('file' in destination){const folder=this.files?.root();link.classList.add('file-reference');link.dataset.fileRoot=folder?JSON.stringify([folder.id,folder.path]):'';}
+      link.addEventListener('click',event=>{
+        event.preventDefault();if(!link.isConnected||!active(link))return;
+        const current=this.explicitDestination(href);if(!current)return;
+        if('reference' in current)this.navigate(current.reference);else this.files?.navigate(current.file);
+      });
+      placeholder.replaceWith(link);
+    }
+  }
   renderFile(text: string, active: (node: HTMLElement) => boolean, line?: number): HTMLElement | undefined {
     const root = this.files?.root(); const destination = root && fileReference(text, root); if (!destination) return;
     if (line !== undefined) destination.line = line;
@@ -123,6 +155,7 @@ export class ReferenceResolver {
     }
   }
   decorate(root: HTMLElement, active: (node: HTMLElement) => boolean, room: (parent: Node) => number = () => Infinity, protectedNode: (node: HTMLElement) => boolean = () => false): void {
+    this.explicitLinks(root, active, protectedNode);
     this.refreshCaptions(root, protectedNode);
     const fileRoot = this.files?.root(), key = fileRoot ? JSON.stringify([fileRoot.id,fileRoot.path]) : '';
     for (const link of root.querySelectorAll<HTMLElement>('.file-reference')) if (link.dataset.fileRoot !== key) {

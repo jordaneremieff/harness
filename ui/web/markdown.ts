@@ -15,6 +15,7 @@ interface InlineRead { nodes: MarkdownInline[]; end: number }
 interface BlockRead { block: MarkdownBlock; end: number }
 
 export function safeLink(value: string): string | null {
+  if (/^#(?:reference|file)=/.test(value)) return value.length <= 8192 && !/[\x00-\x20\x7f]/.test(value) ? value : null;
   if (!/^https?:\/\//i.test(value) || /[\x00-\x20\x7f]/.test(value)) return null;
   try {
     const url = new URL(value);

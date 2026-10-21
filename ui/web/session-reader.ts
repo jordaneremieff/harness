@@ -4,10 +4,11 @@ import {absoluteTime} from './format.ts';
 import {sessionLabel} from './picker-state.ts';
 import {Transcript} from './render.ts';
 import {request} from './transport.ts';
+import type {PrimaryDraftActions, PrimaryDraftSource} from './primary-draft-actions.ts';
 
 export type SessionReadSource={saved:SavedSession}|{primary:PrimaryView;saved?:SavedSession};
 export type SessionReaderReload={source:SessionReadSource;entries:EntryView[];leaf:string|null;before:string|null;primaryCursor:string|null;loaded:boolean;asOf:string;status:string;reading:ReadingView;presentation:PresentationView;scrollLeft:number;focused:boolean};
-type Hooks={focus:()=>void;close:()=>void;resume:(source:SessionReadSource)=>void};
+type Hooks={primaryDraft?:PrimaryDraftActions;focus:()=>void;close:()=>void;resume:(source:SessionReadSource)=>void};
 /** A page-local read-only view has no conversation target, writer, composer, or saved layout entry. */
 export class SessionReader {
   readonly node=element('section','session-reader');
@@ -32,6 +33,7 @@ export class SessionReader {
   get reloadReady():boolean{return !this.source||!this.reading;}
   get saved():SavedSession|undefined{return this.loaded?this.source?.saved:undefined;}
   private hooks:Hooks;
+  selectionSource(selection:Selection):PrimaryDraftSource|undefined {return this.transcript.selectionSource(selection);}
   constructor(hooks:Hooks){
     this.hooks=hooks;
     const header=element('header','session-reader-header'),actions=element('div','session-reader-actions');
@@ -43,7 +45,7 @@ export class SessionReader {
     this.node.addEventListener('focusin',hooks.focus);
     this.node.addEventListener('keydown',event=>{if(event.key==='Escape'&&!event.defaultPrevented){event.preventDefault();hooks.close();}});
     this.node.addEventListener('contextmenu',event=>{if(!(event.target instanceof Element)||!event.target.closest('.transcript'))event.stopPropagation();});
-    this.transcript=new Transcript({transcript:this.scroller,latest:this.latest,earlier:this.earlier},{operatorInput:true,cwd:()=>this.source?.saved?.project??(this.source&&'primary' in this.source?this.source.primary.cwd:undefined),presentation:(expanded,showThinking,transcriptView,thinking)=>{this.reloadPresentation={...this.reloadPresentation,revision:this.reloadPresentation.revision+1,expanded:[...expanded],showThinking,...(transcriptView?{transcriptView}:{}),...(thinking?{thinking}:{})};},reading:()=>{},earlier:()=>{void this.read(true);}});
+    this.transcript=new Transcript({transcript:this.scroller,latest:this.latest,earlier:this.earlier},{primaryDraft:hooks.primaryDraft&&{...hooks.primaryDraft,caption:()=>this.heading.textContent??'Session',current:()=>this.loaded&&!!this.source&&!this.node.closest('[hidden],[inert]')},operatorInput:true,cwd:()=>this.source?.saved?.project??(this.source&&'primary' in this.source?this.source.primary.cwd:undefined),presentation:(expanded,showThinking,transcriptView,thinking)=>{this.reloadPresentation={...this.reloadPresentation,revision:this.reloadPresentation.revision+1,expanded:[...expanded],showThinking,...(transcriptView?{transcriptView}:{}),...(thinking?{thinking}:{})};},reading:()=>{},earlier:()=>{void this.read(true);}});
   }
   open(source:SessionReadSource):void {
     this.controller?.abort();this.source=source;this.entries=[];this.before=null;this.primaryCursor=null;this.leaf=null;this.reading=false;this.loaded=false;setText(this.time,'');

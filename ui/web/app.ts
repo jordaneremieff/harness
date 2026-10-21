@@ -4,6 +4,7 @@ import { Actions } from './actions.ts';
 import {Desk, type DeskRow} from './desk.ts';
 import { AgentCommandInventory } from './agent-commands.ts';
 import {InputEchoes} from './input-echoes.ts';
+import {PrimaryDraftSelection, primaryDraftText, type PrimaryDraftActions, type PrimaryDraftSource, type TranscriptDraftActions} from './primary-draft-actions.ts';
 import {recallItems} from './message-recall.ts';
 const inputEchoes=new InputEchoes();
 import {AgentInspection} from './agent-inspection.ts';
@@ -143,11 +144,71 @@ type ConversationController = {workspaceId: string; target: Target; instanceId: 
   elements: import('./composer.ts').ComposerElements; composer: Composer; transcript: Transcript; inspection?: AgentInspection; readingGeometry?: ReturnType<Transcript['captureGeometry']>; saved?: TargetState; geometry?: ReturnType<Transcript['captureGeometry']>; messageRetention?: object;
   abort: AbortController; historyAbort: AbortController; cursor: string | null; before: number | null; loading: boolean; preparing: boolean; passive?: boolean; historyReading?: TargetState['reading']; historyReady: boolean; historyBoundaryLoaded: boolean; historyComplete?: boolean; historyError?: {code?: string; message: string}; hasEntries?: boolean; initialized: boolean; showThinking: boolean; historyWork?: Promise<void>; connectionError?: string; connection?: Pick<import('../shared/api.ts').TargetPreparation, 'availability' | 'capabilities' | 'reason'> & {stale?: true}; refreshing?: boolean; resizer?: Resizer; fillingEarlier?: boolean};
 const controllers = new Map<string, ConversationController>();
+let primaryDraftSelection: PrimaryDraftSelection|undefined;
+const primaryDraftActions: PrimaryDraftActions = {reason: primaryDraftReason, append: (source, text) => {void appendPrimarySource(source,text).catch(error=>announce(errorMessage(error)));}};
 const agentStarts = new Map<string, {pending: boolean; reason?: string}>();
 let controllerSerial = 0;
 function controllerKey(workspace: string, target: Target): string { return JSON.stringify([workspace, targetIdentity(target)]); }
 function controllerNode(controller: ConversationController, key: string): HTMLElement {
   const node = controller.nodes.get(key); if (!node) throw new Error('Conversation control is missing.'); return node;
+}
+function primaryDraftDestination() {
+  const workspace=state.workspace?.id,target=primaryTarget(); if(!workspace||target?.kind!=='primary')return;
+  const controller=controllers.get(controllerKey(workspace,target));
+  const targetKey=controller?.composer.state?.targetKey??[...state.targetIndex.values()].find(index=>sameTarget(index.target,target))?.targetKey;
+  return targetKey?{workspace,target,targetKey,controller}:undefined;
+}
+function primaryDraftReason():string {
+  const destination=primaryDraftDestination(); if(!destination)return 'The Primary draft is not available.';
+  if(!connected||selecting||selectionQueue.unsettled)return 'The Primary draft is not ready to save.';
+  return destination.controller?.composer.state?destination.controller.composer.appendReason(destination.workspace,destination.targetKey):'';
+}
+function primaryDraftCurrent(destination:NonNullable<ReturnType<typeof primaryDraftDestination>>,source:PrimaryDraftSource):void {
+  if(state.workspace?.id!==destination.workspace||!sameTarget(primaryTarget(),destination.target)||!source.current()||selecting||selectionQueue.unsettled)throw new Error('The source or Primary destination changed.');
+}
+async function loadPrimaryDraft(destination:NonNullable<ReturnType<typeof primaryDraftDestination>>,source:PrimaryDraftSource):Promise<Composer> {
+  const {workspace,target,targetKey}=destination;
+  let controller=controllers.get(controllerKey(workspace,target));
+  if(controller?.composer.state)return controller.composer;
+  const read=await request<TargetState>(`/api/workspaces/${encodeURIComponent(workspace)}/targets/${encodeURIComponent(targetKey)}`,'GET',undefined,undefined,AbortSignal.timeout(15_000));
+  primaryDraftCurrent(destination,source);
+  if(read.targetKey!==targetKey||!sameTarget(read.target,target))throw new Error('The saved Primary draft has a different destination.');
+  controller=controllers.get(controllerKey(workspace,target))??conversationController(target,workspace);
+  if(!controller.composer.state) {
+    const current=state.targets.get(targetKey),draft=current&&current.draft.revision>read.draft.revision?current.draft:read.draft;
+    const saved=current?{...current,draft}:read;
+    state={...state,targets:new Map(state.targets).set(targetKey,saved)};controller.saved=saved;
+    // Draft-only hydration never prepares input, opens a pane, or starts the Primary.
+    const view=presentation(target);controller.composer.availability(connected,false,view.busy,selecting,view.input);
+    controller.composer.attach(workspace,saved);
+  }
+  return controller.composer;
+}
+async function appendPrimarySource(source:PrimaryDraftSource,text?:string):Promise<void> {
+  const reason=primaryDraftReason(),destination=primaryDraftDestination(); if(reason||!destination)throw new Error(reason||'The Primary draft is not available.');
+  primaryDraftCurrent(destination,source);
+  const composer=await loadPrimaryDraft(destination,source);primaryDraftCurrent(destination,source);
+  const failure=composer.appendText(destination.workspace,destination.targetKey,primaryDraftText(source,text));
+  if(failure)throw new Error(failure);announce('Added to Primary draft.');
+}
+function transcriptDraftActions(controller:ConversationController):TranscriptDraftActions {
+  return {...primaryDraftActions,caption:()=>presentationName(presentation(controller.target)),
+    reference:entryId=>entryId&&!/^(message:|live:)/.test(entryId)?`#reference=${encodeURIComponent(JSON.stringify({target:controller.target,entryId}))}`:undefined,
+    current:()=>controller.workspaceId===state.workspace?.id&&!controller.abort.signal.aborted&&controllers.get(controllerKey(controller.workspaceId,controller.target))===controller};
+}
+function loadedDraftReference(value:unknown):ReferenceDestination|undefined {
+  const workspace=state.workspace?.id;if(!workspace||!value||typeof value!=='object'||Array.isArray(value))return;
+  const input=value as Record<string,unknown>,target=input.target as Target|undefined;
+  if(Object.keys(input).some(key=>!['target','entryId'].includes(key))||!target||typeof target!=='object'||!['agent','primary'].includes(target.kind)||typeof input.entryId!=='string')return;
+  const controller=controllers.get(controllerKey(workspace,target));
+  if(!controller||!sameTarget(controller.target,target)||!controller.transcript.hasLoadedEntry(input.entryId))return;
+  return {target:controller.target,entryId:input.entryId};
+}
+function selectedDraftSource(selection:Selection):PrimaryDraftSource|undefined {
+  const workspace=state.workspace?.id;if(!workspace)return;
+  const source=filesViews.selectionSource(selection,fileRoot.selection?.root?.id)??threadReader.selectionSource(selection)??sessionReader.selectionSource(selection)
+    ??[...controllers.values()].filter(controller=>controller.workspaceId===workspace).map(controller=>controller.transcript.selectionSource(selection)).find(Boolean);
+  return source?{...source,current:()=>state.workspace?.id===workspace&&source.current()}:undefined;
 }
 function primaryNode<T extends HTMLElement = HTMLElement>(key: string): T { const target = primaryTarget(); if (!target) throw new Error('No Primary is selected.'); return controllerNode(conversationController(target), key) as T; }
 function agentNode<T extends HTMLElement = HTMLElement>(key: string): T { const identity = selectedAgent(); if (!identity) throw new Error('No agent is selected.'); return controllerNode(conversationController({kind: 'agent', identity}), key) as T; }
@@ -207,7 +268,7 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
     ...(target.kind === 'primary' ? {commands: () => actions.commandOptions(), moreCommands: (captured: Target) => actions.continueCommands(captured)} : {}),
     ...agentCommandHooks(controller),
     retained: (workspace, captured) => { if (workspace === state.workspace?.id && captured.kind === 'agent') renderMessageResume(captured.identity); }});
-  controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {earlier: () => loadEarlierRows(controller), sourceOrder:target.kind === 'agent', operatorInput: target.kind === 'primary', references, subject: toolSubjectCaption, senderSummary: identity => state.roster.get(identity) ?? identityNames.get(identity), senderCaption:currentSenderCaption, thread: (id,title) => openThread({id,...(title ? {title} : {})}, controller), readTaskResult:async(reference,signal)=>{const value=await request<AgentInspectionView>(`/api/agents/${encodeURIComponent(reference.sessionId)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',{view:'result',submissionId:reference.submissionId,...(reference.requestId?{requestId:reference.requestId}:{})},undefined,AbortSignal.any([signal,controller.abort.signal,AbortSignal.timeout(15_000)]));if(value.view!=='result')throw new Error('The task result view changed.');return value;}, activity:()=>{if (footerController === controller) renderWorkbenchStatus();}, cwd: () => target.kind === 'primary' ? state.primaries.get(target.key)?.cwd : state.roster.get(target.identity)?.cwd, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
+  controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {primaryDraft:transcriptDraftActions(controller),earlier: () => loadEarlierRows(controller), sourceOrder:target.kind === 'agent', operatorInput: target.kind === 'primary', references, subject: toolSubjectCaption, senderSummary: identity => state.roster.get(identity) ?? identityNames.get(identity), senderCaption:currentSenderCaption, thread: (id,title) => openThread({id,...(title ? {title} : {})}, controller), readTaskResult:async(reference,signal)=>{const value=await request<AgentInspectionView>(`/api/agents/${encodeURIComponent(reference.sessionId)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',{view:'result',submissionId:reference.submissionId,...(reference.requestId?{requestId:reference.requestId}:{})},undefined,AbortSignal.any([signal,controller.abort.signal,AbortSignal.timeout(15_000)]));if(value.view!=='result')throw new Error('The task result view changed.');return value;}, activity:()=>{if (footerController === controller) renderWorkbenchStatus();}, cwd: () => target.kind === 'primary' ? state.primaries.get(target.key)?.cwd : state.roster.get(target.identity)?.cwd, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
     presentation: (expanded, thinking, view, choice) => { controller.showThinking = thinking; void savePresentation(controllerCapture(controller), expanded, thinking, view, choice); },
     reading: reading => { void saveReading(controllerCapture(controller), reading); },
     ...(target.kind === 'primary' ? {fork: (message: import('../shared/api.ts').MessageView, entry: string) => { if (sameTarget(target, primaryTarget())) actions.fork(entry, rawText(message.parts)); }, output: (more: import('../shared/api.ts').OutputContinuation) => loadControllerOutput(controller, more)} : {}),
@@ -327,7 +388,7 @@ const messageTarget = new MessageTarget({workspace: () => state.workspace, prepa
 const references = new ReferenceResolver(resolveReference, destination => { void navigateReference(destination).catch(showError); }, {
   root: () => fileRoot.loading ? undefined : fileRoot.selection?.root ?? undefined,
   navigate: destination => { void navigateFileReference(destination).catch(showError); },
-});
+},loadedDraftReference);
 const actions: Actions = new Actions({readSession:saved=>openSessionRead({saved}),hasConvertibleSession:()=>!!sessionReader.saved,convertSession:()=>{const item=sessionReader.saved;if(item)picker.convertSaved(item);},desk:()=>openDesk(),nextUnread:openNextUnread,hasUnread:()=>!!nextUnreadNotice(),handover: () => handover.open(), snapshot: currentSnapshot, primary, modelChanged: renderAvailability, namingPrimary: () => { const selected = primary(); return selected?.lifecycle === 'ready' ? selected : [...state.primaries.values()].find(item => item.lifecycle === 'ready'); }, modelNamesChanged: renderAllComposerSettings, get composer() { return primaryComposer(); }, commandsChanged: () => {const target = primaryTarget(); if (target && state.workspace) controllers.get(controllerKey(state.workspace.id, target))?.composer.commandsChanged();}, modal, selection, reload: reloadSelection, result: showOperation, rosterRefresh: refreshRoster, filesRefresh: refreshFiles, hasTranscript: () => !!focusedTranscript(), find: () => captureFind(), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, sidebarShown: () => !byId('sidebar').hidden, view: (tools, expand) => focusedTranscript()?.expandLoaded(tools, expand), selectPrimary, agentCaption: identity => {return presentationCaptions().get(identity);}, agentStatus: row => presentation({kind: 'agent', identity: row.identity}).activity, agentPresentation:row=>presentation({kind:'agent',identity:row.identity}), conversationFacts: identity => agentFacts(agentRow(identity), state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame), copyAgent: () => { void copy(selectedAgent() ?? '', agentNode('view-notice')); }, inspectAgent,resultLookup:()=>{const target=layoutTarget(currentLayout(),primaryTarget());if(target)conversationController(target).inspection?.open('result');},
   tabs: {close: () => { const tab = activeTab(currentLayout()); if (tab) applyLayout(closeTab(currentLayout(), tabKey(tab))); }, switch: direction => applyLayout(switchTab(currentLayout(), direction)), layout: currentLayout},
 });
@@ -1471,6 +1532,7 @@ function renderAll(): void {
   renderNavigation();
   if (messageTarget.current && !messageTarget.valid(messageTarget.current)) closeMessagePanel(false);
   syncThreadHost(); renderPrimary(); renderRoster(); renderAgent(); renderMessagePanel(); refreshPaneSizes(); noticesBadge(); extensionDialogs.update(); refreshCaptionConsumers();
+  primaryDraftSelection?.refresh();
 }
 export function renderNavigation(): void {
   const narrow = !matchMedia('(min-width: 900px)').matches;
@@ -2384,7 +2446,7 @@ async function openDeskConversation(row:DeskRow):Promise<void> {
 }
 function closeDesk():void {clearDeskComposer();deskPane=undefined;desk.node.remove();deskBack.remove();extensionDialogs.inline();desk.reset();if(state.workspace)renderNavigation();}
 let sessionReadPane:{context:string;id:string;focus:string;returnKey:string;provisional?:ConversationLayout}|undefined;
-const sessionReader=new SessionReader({focus:()=>{if(sessionReadPane){sessionReadPane.focus=sessionReadPane.id;focusedPane=sessionReadPane.id;markFocusedPane();}},close:()=>closeSessionRead(),resume:source=>{
+const sessionReader=new SessionReader({primaryDraft:primaryDraftActions,focus:()=>{if(sessionReadPane){sessionReadPane.focus=sessionReadPane.id;focusedPane=sessionReadPane.id;markFocusedPane();}},close:()=>closeSessionRead(),resume:source=>{
   closeSessionRead();if(source.saved)picker.resume(source.saved.project,source.saved.path);
   else if('primary' in source&&source.primary.lifecycle==='ready')void capturePrimarySelection()(source.primary.key).catch(showError);
 }});
@@ -3330,4 +3392,5 @@ async function start(): Promise<void> {
     connectionRecovery.lost(error);
   }
 }
+primaryDraftSelection=new PrimaryDraftSelection(selectedDraftSource,primaryDraftActions);
 void start();
