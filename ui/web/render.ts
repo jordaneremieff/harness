@@ -44,7 +44,7 @@ function thinkingSpans(summary: Element): {label: HTMLElement; preview: HTMLElem
   summary.replaceChildren(made.label, made.preview); return made;
 }
 const previewSuffix = (line: string): string => line ? ` · ${line}` : '';
-export type ViewHooks = {primaryDraft?:TranscriptDraftActions;sourceOrder?:boolean;senderCaption?: (sender:CommunicationSender)=>string; senderSummary?: (identity:string)=>SenderSummary|undefined; thread?: (id:string,title?:string)=>void; earlier?: () => void; operatorInput?: boolean; readTaskResult?: (reference:TaskReference,signal:AbortSignal)=>Promise<ResultInspection>; activity?: (text:string)=>void; cwd?: () => string | undefined; subject?: (value: string) => ToolSubjectCaption | undefined; result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView, thinking?: ThinkingChoice) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; preview?: (part: ImageView, url: string, invoker: HTMLElement) => () => void; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
+export type ViewHooks = {primaryDraft?:TranscriptDraftActions;owner?:string;sourceOrder?:boolean;senderCaption?: (sender:CommunicationSender)=>string; senderSummary?: (identity:string)=>SenderSummary|undefined; thread?: (id:string,title?:string)=>void; earlier?: () => void; operatorInput?: boolean; readTaskResult?: (reference:TaskReference,signal:AbortSignal)=>Promise<ResultInspection>; activity?: (text:string)=>void; cwd?: () => string | undefined; subject?: (value: string) => ToolSubjectCaption | undefined; result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView, thinking?: ThinkingChoice) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; preview?: (part: ImageView, url: string, invoker: HTMLElement) => () => void; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
 const RAW_LIMIT = 65536;
 /** Scrolling up within this many pixels of the first loaded row reads the next older page. */
 const EARLIER_ZONE_PX = 240;
@@ -273,6 +273,7 @@ export class Transcript {
   private findNode?: HTMLElement;
   private heights = new Map<string, number>();
   private gaps = new Map<string, HTMLElement>();
+  private timeGaps = new Map<string,number>();
   private layout: VirtualLayout = layoutItems([], new Map(), 140);
   private restoring?: ReadingView;
   private resize?: ResizeObserver;
@@ -303,7 +304,7 @@ export class Transcript {
   constructor(elements: TranscriptElements, hooks: ViewHooks) {
     this.hooks = {...hooks, presentation: (expanded, showThinking) => hooks.presentation(expanded, showThinking, this.view, this.thinkingChoice)};
     this.node = elements.transcript; this.latest = elements.latest;
-    this.noticeBlocks=new NoticeBlocks({subject:hooks.subject,senderCaption:hooks.senderCaption,thread:hooks.thread,source:id=>this.cache.get(id)?.messages.values().next().value?.communication,
+    this.noticeBlocks=new NoticeBlocks({owner:hooks.owner,toggle:id=>this.toggleReceived(id),retained:id=>{const node=this.cache.get(id)?.node;return !!node&&!node.classList.contains('received-notice-summary')&&this.protectedNode(node);},subject:hooks.subject,senderCaption:hooks.senderCaption,thread:hooks.thread,source:id=>this.cache.get(id)?.messages.values().next().value?.communication,
       protected:id=>{const node=this.cache.get(id)?.node;return this.hasSelection() || !!node&&this.protectedNode(node);},reconcile:reconcileChildren});
     this.node.dataset.view = this.view;
     const visibilityChange = () => {
@@ -481,12 +482,21 @@ export class Transcript {
     this.view = presentation?.transcriptView ?? 'chronological'; this.pendingView = undefined;
     this.node.dataset.view = this.view;
     this.expanded = new Set(presentation?.expanded ?? []); this.showThinking = thinkingExpanded(presentation); this.thinkingChoice = presentation?.thinking;
-    this.deriveRows();
     if (reading) {
       this.follow = reading.followTail; this.readingRevision = reading.revision; this.restoring = reading.followTail ? undefined : reading;
       this.reflowAnchor = reading.anchorId ? {id: this.displayId(reading.anchorId), offsetPx: reading.offsetPx} : null;
     }
+    this.deriveRows();
     this.applyPreferences();
+  }
+  isExpanded(key:string):boolean {return this.expanded.has(key);}
+  disclosure(key:string,open:boolean):void {this.sourcePreference(key,open);}
+  capturePresentation(revision:number):PresentationView {return {revision,expanded:[...this.expanded],showThinking:this.showThinking,transcriptView:this.view,...(this.thinkingChoice?{thinking:this.thinkingChoice}:{})};}
+  private toggleReceived(id:string):void {
+    const anchor=this.anchor();if(!this.noticeBlocks.toggle(id,this.expanded))return;
+    this.follow=false;this.restoring=undefined;this.reflowAnchor=anchor;
+    this.heights.clear();this.dirtyLayout=true;this.deriveRows();
+    this.hooks.presentation([...this.expanded],this.showThinking,this.view,this.thinkingChoice);this.paint(anchor);this.noticeBlocks.focus(id);this.saveReading();
   }
   setView(view: TranscriptView): void {
     if (view === this.view) return;
@@ -510,7 +520,7 @@ export class Transcript {
     this.resize?.disconnect(); if (!this.destroyed) this.resize?.observe(this.node); this.sizes = new WeakMap(); this.scrolling = new WeakSet(); this.reflowAnchor = undefined; this.writtenScrollTop = undefined;
     this.clearFind(false); this.findRevision++;
     this.initialSettings.clear(); this.toolStates = new Map(); this.indexedFindId = undefined;
-    this.generation++; this.entries = []; this.displayed = []; this.turnRows.clear(); this.latestTurn = undefined; this.hoveredTurn = undefined; this.cache.clear(); this.tools.clear(); this.liveThinking.clear(); this.thinkingTimes = new Map(); this.index = new TranscriptIndex(); this.joined = this.index.joined; this.rows = new TranscriptRows(); this.noticeBlocks.clear(); this.tasks = new ConversationTasks(); this.visible.clear(); this.dirtyLayout = true; this.pins.clear(); this.heights.clear(); this.gaps.clear();
+    this.generation++; this.entries = []; this.displayed = []; this.turnRows.clear(); this.latestTurn = undefined; this.hoveredTurn = undefined; this.cache.clear(); this.tools.clear(); this.liveThinking.clear(); this.thinkingTimes = new Map(); this.index = new TranscriptIndex(); this.joined = this.index.joined; this.rows = new TranscriptRows(); this.noticeBlocks.clear(); this.tasks = new ConversationTasks(); this.visible.clear(); this.dirtyLayout = true; this.pins.clear(); this.heights.clear(); this.gaps.clear(); this.timeGaps.clear();
     this.expanded.clear(); this.streamedThinking.clear(); this.showThinking = false; this.thinkingChoice = undefined; this.follow = true; this.readingRevision = 0;
     this.layout = layoutItems([], this.heights, 140); this.restoring = undefined; this.node.replaceChildren(...(this.lead ? [this.lead] : [])); this.scrollTo(0); this.hold = undefined; this.arrivals.reset(); this.referenceNamesPending = false; this.syncLatest();
   }
@@ -561,12 +571,26 @@ export class Transcript {
     const visible = this.chronological.filter(entry => !this.initialSettings.has(entry.id) || entry.id === this.findId);
     const ordered = this.view === 'grouped' && !this.hooks.sourceOrder ? this.groups.rows(visible) : visible;
     const retained = new Set([...this.cache].filter(([id, cached]) => cached.messages.size > 0 && (this.rows.byId.get(id)?.actionsOnly || this.protectedNode(cached.node))).map(([id]) => id));
-    const displayed = this.noticeBlocks.rebuild(this.rows.derive(ordered, this.joined, this.index.sessionOwners, this.showThinking,this.index.sessions,retained),this.rows.byId,this.chronological);
+    const all = this.noticeBlocks.rebuild(this.rows.derive(ordered, this.joined, this.index.sessionOwners, this.showThinking,this.index.sessions,retained),this.rows.byId,this.chronological);
+    const reading=this.restoring?.anchorId??this.reflowAnchor?.id,before=this.expanded.size;
+    const displayed=this.noticeBlocks.project(all,this.expanded,reading?this.rows.owners.get(reading)??reading:undefined);
+    if(this.expanded.size!==before)this.hooks.presentation([...this.expanded],this.showThinking,this.view,this.thinkingChoice);
     this.migrateStepRows(previous);
     for (const [id, run] of this.rows.runs) this.index.disclosures.set(run.key,id);
     if (displayed.length !== this.displayed.length || displayed.some((entry, at) => entry.id !== this.displayed[at]?.id)) this.dirtyLayout = true;
     this.displayed = displayed;
-    this.deriveTurns();
+    this.deriveTimeGaps();this.deriveTurns();
+  }
+  /** Gap evidence comes from adjacent raw records, including results omitted from the view. */
+  private deriveTimeGaps():void {
+    this.timeGaps.clear();if(!this.hooks.owner)return;
+    const displayed=new Set(this.displayed.map(entry=>entry.id));let preceding:string|undefined;
+    const stamp=(entry:EntryView|undefined,last=false):number|undefined=>{const messages=entry?.messages??[];for(const message of last?[...messages].reverse():messages)if(typeof message.timestamp==='number'&&isValidTimestamp(message.timestamp))return message.timestamp;return;};
+    for(let index=1;index<this.chronological.length;index++){
+      const prior=this.chronological[index-1],id=prior&&this.displayId(prior.id);if(id&&displayed.has(id))preceding=id;
+      const before=stamp(prior,true),after=stamp(this.chronological[index]);
+      if(preceding&&before!==undefined&&after!==undefined&&after-before>30*60_000)this.timeGaps.set(preceding,after);
+    }
   }
   private textBearing(message: MessageView): boolean {
     if (message.communication?.state === 'ready') return !!message.communication.value.body.text.trim();
@@ -972,10 +996,16 @@ export class Transcript {
     if(rowId===undefined)return callId?this.rows.calls.get(callId)??this.displayId(entryId):this.displayId(entryId);
     return this.rows.byId.get(rowId)?.source.id===entryId&&(callId===undefined||this.rows.calls.get(callId)===rowId)?rowId:undefined;
   }
+  private expandedReferenceRow(entryId:string,callId?:string,rowId?:string):string|undefined {
+    const id=this.revealRowId(entryId,callId,rowId);
+    if(id===undefined||rowId!==undefined||!this.noticeBlocks.open(this.rows.owners.get(entryId)??entryId,this.expanded))return id;
+    this.heights.clear();this.dirtyLayout=true;this.deriveRows();this.hooks.presentation([...this.expanded],this.showThinking,this.view,this.thinkingChoice);
+    return this.revealRowId(entryId,callId,rowId);
+  }
   revealEntry(entryId: string, focus = true, callId?: string, rowId?:string): void {
     this.ownMessageCursor=undefined;this.failedStepCursor=undefined;this.receivedResultCursor=undefined;
     if (!this.index.entries.has(entryId)) return;
-    const id=this.revealRowId(entryId,callId,rowId);if(id===undefined)return;
+    const id=this.expandedReferenceRow(entryId,callId,rowId);if(id===undefined)return;
     this.scrolling.delete(this.node);
     this.follow = false; this.pins.clear(); this.pins.add(entryId);
     const group=rowId===undefined?this.openEntryEvents(id,entryId):undefined;
@@ -1300,18 +1330,21 @@ export class Transcript {
   }
   /** A boundary belongs to the preceding row so added history leaves the following content anchor intact. */
   private updateDayDivider(cached: EntryNode, entry: EntryView, index: number): void {
-    const before = this.entryTimestamp(entry), after = this.entryTimestamp(this.displayed[index + 1]);
-    if (before === undefined || after === undefined) { cached.dayDivider = undefined; return; }
-    const previous = new Date(before), date = new Date(after);
-    if (previous.toDateString() === date.toDateString()) { cached.dayDivider = undefined; return; }
+    const gapAt=this.timeGaps.get(entry.id),before = this.entryTimestamp(entry), after = gapAt??this.entryTimestamp(this.displayed[index + 1]);
+    if ((before === undefined&&gapAt===undefined) || after === undefined) { cached.dayDivider = undefined; return; }
+    const previous = new Date(before??after), date = new Date(after);
+    const gap=gapAt!==undefined;
+    if (previous.toDateString() === date.toDateString()&&!gap) { cached.dayDivider = undefined; return; }
     cached.dayDivider ??= element('time','transcript-day-divider');
     const divider = cached.dayDivider;
-    divider.dateTime = date.toISOString(); divider.title = timestampDetails(date).display;
-    setText(divider, date.toDateString() === new Date().toDateString() ? 'Today' : `${formatDate(date,{weekday:'long'})} ${formatDate(date,{day:'numeric',month:'short'})}`);
+    divider.dateTime = date.toISOString(); divider.title = timestampDetails(date).display;divider.dataset.gap=String(gap);
+    setText(divider,previous.toDateString()===date.toDateString()?clockTime(after):date.toDateString() === new Date().toDateString() ? 'Today' : `${formatDate(date,{weekday:'long'})} ${formatDate(date,{day:'numeric',month:'short'})}`);
   }
   private updateEntry(entry: EntryView, index: number): HTMLElement {
-    const cached = this.entryCacheNode(entry.id);
+    const cached = this.entryCacheNode(entry.id),summary=this.noticeBlocks.summary(entry.id);
+    cached.node.classList.toggle('received-notice-summary',!!summary);
     this.updateDayDivider(cached,entry,index);
+    if(summary){cached.source=this.rows.byId.get(entry.id)?.source??entry;this.reconcileContent(cached.node,[summary,...(cached.dayDivider?[cached.dayDivider]:[])]);return cached.node;}
     this.updateTurnFooter(cached,entry.id);
     return this.entryContent(entry);
   }
@@ -1435,8 +1468,8 @@ export class Transcript {
     return entry.messages.some(message => presentMessage(message).visible && !this.joinedMessage(entry.id, message));
   }
   private displayId(id: string): string {
-    const row = this.rows.owners.get(id); if (row) return row;
-    if (this.rows.byId.has(id)) return id;
+    const row = this.rows.owners.get(id); if (row) return this.noticeBlocks.alias(row);
+    if (this.rows.byId.has(id)) return this.noticeBlocks.alias(id);
     const session = this.index.sessionOwners.get(id); if (session) return session;
     if (this.visible.get(id)) return id;
     const entry = this.index.entries.get(id);

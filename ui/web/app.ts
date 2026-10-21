@@ -1,4 +1,4 @@
-import type { AgentHistoryPage, AgentRow, Bootstrap, EventData, HistoryPage, OperationView, PrimaryView, ProjectedFrame, Snapshot, Target, TargetState, ThreadOverview, ThreadPageView, Workspace } from '../shared/api.ts';
+import type { AgentHistoryPage, AgentRow, Bootstrap, EventData, HistoryPage, OperationView, PrimaryView, PresentationView, ProjectedFrame, Snapshot, Target, TargetState, ThreadOverview, ThreadPageView, Workspace } from '../shared/api.ts';
 import { draftHasContent, draftImageFingerprint, LIMITS, resolveAppearance } from '../shared/api.ts';
 import { Actions } from './actions.ts';
 import {Desk, type DeskRow} from './desk.ts';
@@ -8,7 +8,7 @@ import {PrimaryDraftSelection, primaryDraftText, type PrimaryDraftActions, type 
 import {recallItems} from './message-recall.ts';
 const inputEchoes=new InputEchoes();
 import {AgentInspection} from './agent-inspection.ts';
-import {createAgentLiveStrip, type AgentLiveStrip} from './agent-live-strip.ts';
+import {createAgentLiveStrip, type AgentLiveStrip, type AgentContextReload} from './agent-live-strip.ts';
 import {taskReference, type ConversationTask} from './conversation-tasks.ts';
 import type {AgentInspectionView, ResultSelector} from '../shared/inspection.ts';
 import type { ConversationLayout, WorkspaceTab as ConversationTab, FileTab } from '../shared/api.ts';
@@ -257,6 +257,7 @@ export function stableViews(): StableViews {
 }
 function viewPane(node: HTMLElement): HTMLElement | null {return stableViews().slot(node)?.closest<HTMLElement>('.pane-leaf') ?? null;}
 function focusViewPane(event:Event):void {const pane = viewPane(event.target as HTMLElement);if (pane?.dataset.paneId) updatePaneFocus(pane.dataset.paneId,event);}
+function transcriptSource(target:Target) {return target.kind==='agent'?{owner:target.identity,sourceOrder:true,operatorInput:false}:{sourceOrder:false,operatorInput:true};}
 function conversationController(target: Target, workspaceId = state.workspace?.id): ConversationController {
   if (!workspaceId) throw new Error('No workspace is selected.');
   const key = controllerKey(workspaceId, target); const existing = controllers.get(key); if (existing) return existing;
@@ -289,7 +290,7 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
     ...(target.kind === 'primary' ? {commands: () => actions.commandOptions(), moreCommands: (captured: Target) => actions.continueCommands(captured)} : {}),
     ...agentCommandHooks(controller),
     retained: (workspace, captured) => { if (workspace === state.workspace?.id && captured.kind === 'agent') renderMessageResume(captured.identity); }});
-  controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {primaryDraft:transcriptDraftActions(controller),earlier: () => loadEarlierRows(controller), sourceOrder:target.kind === 'agent', operatorInput: target.kind === 'primary', references, subject: toolSubjectCaption, senderSummary: identity => state.roster.get(identity) ?? identityNames.get(identity), senderCaption:currentSenderCaption, thread: (id,title) => openThread({id,...(title ? {title} : {})}, controller), readTaskResult:async(reference,signal)=>{const value=await request<AgentInspectionView>(`/api/agents/${encodeURIComponent(reference.sessionId)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',{view:'result',submissionId:reference.submissionId,...(reference.requestId?{requestId:reference.requestId}:{})},undefined,AbortSignal.any([signal,controller.abort.signal,AbortSignal.timeout(15_000)]));if(value.view!=='result')throw new Error('The task result view changed.');return value;}, activity:()=>{if (footerController === controller) renderWorkbenchStatus();}, cwd: () => target.kind === 'primary' ? state.primaries.get(target.key)?.cwd : state.roster.get(target.identity)?.cwd, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
+  controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {primaryDraft:transcriptDraftActions(controller),...transcriptSource(target),earlier: () => loadEarlierRows(controller), references, subject: toolSubjectCaption, senderSummary: identity => state.roster.get(identity) ?? identityNames.get(identity), senderCaption:currentSenderCaption, thread: (id,title) => openThread({id,...(title ? {title} : {})}, controller), readTaskResult:async(reference,signal)=>{const value=await request<AgentInspectionView>(`/api/agents/${encodeURIComponent(reference.sessionId)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',{view:'result',submissionId:reference.submissionId,...(reference.requestId?{requestId:reference.requestId}:{})},undefined,AbortSignal.any([signal,controller.abort.signal,AbortSignal.timeout(15_000)]));if(value.view!=='result')throw new Error('The task result view changed.');return value;}, activity:()=>{if (footerController === controller) renderWorkbenchStatus();}, cwd: () => target.kind === 'primary' ? state.primaries.get(target.key)?.cwd : state.roster.get(target.identity)?.cwd, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
     presentation: (expanded, thinking, view, choice) => { controller.showThinking = thinking; void savePresentation(controllerCapture(controller), expanded, thinking, view, choice); },
     reading: reading => { void saveReading(controllerCapture(controller), reading); },
     ...(target.kind === 'primary' ? {fork: (message: import('../shared/api.ts').MessageView, entry: string) => { if (sameTarget(target, primaryTarget())) actions.fork(entry, rawText(message.parts)); }, output: (more: import('../shared/api.ts').OutputContinuation) => loadControllerOutput(controller, more)} : {}),
@@ -1037,7 +1038,15 @@ function renderIdentity(): void {
 function renderAgentLiveStrip(controller: ConversationController, view: ConversationPresentation): void {
   if(controller.target.kind !== 'agent' || !controller.liveStrip)return;
   const conversation=state.conversations.get(targetIdentity(controller.target));
-  controller.liveStrip.update(agentRow(controller.target.identity),view,attentionFor(controller.target),!!conversation?.frame);
+  const row=agentRow(controller.target.identity),identity=controller.target.identity;
+  controller.liveStrip.update(row,view,attentionFor(controller.target),!!conversation?.frame);
+  controller.liveStrip.updateContext({identity,entries:conversation?conversationBlocks(conversation):[],frame:conversation?.frame,
+    beginning:controller.historyReady&&controller.historyComplete===true&&controller.before===null,earlier:controller.before!==null,
+    coverage:controller.historyError?.message??conversation?.frame?.coverage.reason??(controller.historyComplete===true?undefined:controller.historyReady?'Available history is incomplete.':'History has not loaded.'),
+    caption:currentSenderCaption,resolve:(id,answer)=>controller.transcript.loadedReference({text:id,owner:identity,field:answer?'answerEntryId':'entryId'},identity),
+    reveal:id=>controller.transcript.revealEntry(id),load:()=>loadEarlierRows(controller),expanded:key=>controller.transcript.isExpanded(key),
+    disclosure:(key,open)=>controller.transcript.disclosure(key,open),layout:change=>{const geometry=controller.transcript.captureGeometry();change();controller.transcript.applyGeometry(geometry);},
+    image:part=>imageUrl(part,controller.target,controller.workspaceId),preview:(part,url,opener)=>{openImagePreview(modal,part,url,opener);}},row);
   if(controller.inspection?.active)controller.liveStrip.node.hidden=true;
 }
 function renderObserved(controller:ConversationController, hide:boolean):void {
@@ -1647,7 +1656,7 @@ function renderController(controller: ConversationController, deferred = false, 
   renderAgentLiveStrip(controller,presentation(controller.target));
   if (saved) {
     clearPreparationError(controller);
-    if (!controller.initialized) {controller.initialized = true; controller.showThinking = thinkingExpanded(saved.presentation); controller.transcript.configure(saved.presentation, saved.reading);}
+    if (!controller.initialized) initializeController(controller,saved);
     controller.composer.attach(controller.workspaceId, saved);
   } else prepareController(controller);
   controller.composer.receipts(state.operations.values());
@@ -1665,6 +1674,7 @@ function renderController(controller: ConversationController, deferred = false, 
     const historyBeginning = controller.target.kind === 'primary' ? controller.cursor === null : controller.before === null;
     const settings = initialSettings(entries, historyBeginning);
     controller.transcript.set(entries, conversation?.tools, conversation?.thinking, historyBeginning);
+    renderAgentLiveStrip(controller,presentation(controller.target));
     controller.hasEntries = entries.some(entry => !settings.has(entry.id) && entryVisible(entry) && (entry.kind !== 'ui.input' || (entry.data?.value as {delivery?: string})?.delivery !== 'Sending…'));
     renderControllerEmpty(controller);
     if (controller.target.kind === 'agent') {
@@ -1672,6 +1682,15 @@ function renderController(controller: ConversationController, deferred = false, 
     }
   };
   if (deferred) controller.transcript.defer(()=>{paint();renderInspection(controller);}, receivedAt); else {paint();renderInspection(controller);}
+}
+function initializeController(controller:ConversationController,saved:TargetState):void {
+  controller.initialized=true;
+  const retained=controller.target.kind==='agent'?releasePage?.controllers.find(value=>value.workspace===controller.workspaceId&&sameTarget(value.target,controller.target)):undefined;
+  const retainedPresentation=retained?.presentation??saved.presentation;
+  controller.showThinking=thinkingExpanded(retainedPresentation);
+  if(retained?.agentContext)controller.liveStrip?.restoreReload(retained.agentContext);
+  const reading=retained?{revision:saved.reading.revision,anchorId:retained.geometry.anchor?.id??null,offsetPx:retained.geometry.anchor?.offsetPx??0,followTail:retained.geometry.followTail}:saved.reading;
+  controller.transcript.configure(retainedPresentation,reading);
 }
 function clearPreparationError(controller: ConversationController): void {
   const notice = controllerNode(controller, 'view-notice'); if (notice.querySelector('.preparation-error')) notice.replaceChildren();
@@ -3206,7 +3225,7 @@ type ReleasePage = {
   deskPane?: typeof deskPane; desk: ReturnType<Desk['captureReload']>;
   thread?: {pane: NonNullable<typeof threadPane>; reader: ReturnType<ThreadReader['captureReload']>};
   session?:{pane:NonNullable<typeof sessionReadPane>;reader:SessionReaderReload};
-  controllers: Array<{workspace:string;target:Target;passive:boolean;geometry:ReturnType<Transcript['captureGeometry']>;scrollLeft:number;editorTop:number;editorLeft:number}>;
+  controllers: Array<{workspace:string;target:Target;passive:boolean;geometry:ReturnType<Transcript['captureGeometry']>;presentation?:PresentationView;agentContext?:AgentContextReload;scrollLeft:number;editorTop:number;editorLeft:number}>;
 };
 let releasePage: ReleasePage | undefined;
 let releasePageRead = false;
@@ -3271,17 +3290,25 @@ function restoreReleaseThread(value:NonNullable<ReleasePage['thread']>):void {
   region.content.hidden=true;region.content.inert=true;region.node.append(threadReader.node);
   threadExplorer.setCurrent(entry.item.id);threadReader.restoreReload(value.reader);renderNavigation();
 }
-function restoreReleaseControllers(page:ReleasePage):void {
-  for(const saved of page.controllers){const controller=controllers.get(controllerKey(saved.workspace,saved.target));if(!controller)continue;
-    controller.passive=saved.passive;
-    if(!controller.root.hidden&&!controller.root.inert){
-      const reading={revision:controller.saved?.reading.revision??0,anchorId:saved.geometry.anchor?.id??null,offsetPx:saved.geometry.anchor?.offsetPx??0,followTail:saved.geometry.followTail};
-      controller.transcript.configure(controller.saved?.presentation,reading);controller.transcript.restore(reading);controller.transcript.schedule();
-      controllerNode(controller,'transcript').scrollLeft=saved.scrollLeft;
-    }
-    controller.composer.editor.scrollTop=saved.editorTop;controller.composer.editor.scrollLeft=saved.editorLeft;
-  }
+function restoreReleaseAgentHeader(controller:ConversationController,saved:ReleasePage['controllers'][number]):void {
+  const retainedPresentation=saved.presentation??controller.saved?.presentation;
+  controller.initialized=true;controller.showThinking=thinkingExpanded(retainedPresentation);
+  renderAgentLiveStrip(controller,presentation(controller.target));if(saved.agentContext)controller.liveStrip?.restoreReload(saved.agentContext);
+  if(controller.root.hidden||controller.root.inert)controller.transcript.configure(retainedPresentation,{revision:controller.saved?.reading.revision??0,anchorId:saved.geometry.anchor?.id??null,offsetPx:saved.geometry.anchor?.offsetPx??0,followTail:saved.geometry.followTail});
 }
+function restoreReleaseController(saved:ReleasePage['controllers'][number]):void {
+  const controller=controllers.get(controllerKey(saved.workspace,saved.target))??(saved.target.kind==='agent'&&saved.agentContext?conversationController(saved.target,saved.workspace):undefined);if(!controller)return;
+  controller.passive=saved.passive;
+  if(controller.target.kind==='agent')restoreReleaseAgentHeader(controller,saved);
+  if(!controller.root.hidden&&!controller.root.inert){
+    const reading={revision:controller.saved?.reading.revision??0,anchorId:saved.geometry.anchor?.id??null,offsetPx:saved.geometry.anchor?.offsetPx??0,followTail:saved.geometry.followTail};
+    const retainedPresentation=controller.target.kind==='agent'?saved.presentation??controller.saved?.presentation:controller.saved?.presentation;
+    controller.transcript.configure(retainedPresentation,reading);controller.transcript.restore(reading);controller.transcript.schedule();
+    controllerNode(controller,'transcript').scrollLeft=saved.scrollLeft;
+  }
+  controller.composer.editor.scrollTop=saved.editorTop;controller.composer.editor.scrollLeft=saved.editorLeft;
+}
+function restoreReleaseControllers(page:ReleasePage):void {for(const saved of page.controllers)restoreReleaseController(saved);}
 async function swapReleaseStylesheet(release:ReleaseIdentity,signal:AbortSignal):Promise<void> {
   if(releaseReloadState()!=='ready')throw new Error('The page is not ready for a stylesheet update.');
   const old=[...document.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]')].find(link=>new URL(link.href).pathname.endsWith('/style.css'));
@@ -3326,7 +3353,7 @@ export async function reloadRelease(signal: AbortSignal, release: ReleaseIdentit
   const page: ReleasePage = {release, checkpoint, session, workspace: {...structuredClone(state.workspace as Workspace),conversationLayout:structuredClone(workspaceLayout(state.workspace))}, entry: workspaceEntry.captureReload(state.workspace as Workspace), drawer: drawerOpen,
     deskPane: deskPane && structuredClone(deskPane), desk: desk.captureReload(),
     thread: threadPane && {pane: {...threadPane}, reader: threadReader.captureReload()},
-    controllers: retained.map(controller => ({workspace: controller.workspaceId, target: {...controller.target}, passive: controller.passive === true, geometry: controller.transcript.captureGeometry(), scrollLeft: controllerNode(controller, 'transcript').scrollLeft, editorTop: controller.composer.editor.scrollTop, editorLeft: controller.composer.editor.scrollLeft}))};
+    controllers: retained.map(controller => ({workspace: controller.workspaceId, target: {...controller.target}, passive: controller.passive === true, geometry: controller.transcript.captureGeometry(), ...(controller.target.kind==='agent'?{presentation:controller.transcript.capturePresentation(controller.saved?.presentation?.revision??0),agentContext:controller.liveStrip?.captureReload()}:{}), scrollLeft: controllerNode(controller, 'transcript').scrollLeft, editorTop: controller.composer.editor.scrollTop, editorLeft: controller.composer.editor.scrollLeft}))};
   await writeReloadState(key, page, signal); signal.throwIfAborted();
   const current = [...controllers.values()];
   if (workspace !== state.workspace?.id || revision !== devInteractionRevision || releaseReloadState() !== 'ready' ||

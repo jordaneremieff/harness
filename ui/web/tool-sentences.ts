@@ -67,7 +67,8 @@ function sendWords({tool,args,identity,name}:SentenceInput):Words {
   let value: Words;
   if(typeof args.deliverAt==='string')value=words('Scheduled a message to','Scheduling a message to','Schedule a message to',subject+message);
   else if(tool.name==='agent_steer'||args.mode==='steer')value=words('Redirected','Redirecting','Redirect',subject+message);
-  else if(args.mode==='report')value=words('Reported to','Reporting to','Report to',subject+message);
+  else if(args.mode==='report'&&identity)value=words('Reported to','Reporting to','Report to',subject+message);
+  else if(args.mode==='report')return words('Sent a report','Sending a report','Send a report',message);
   else if(identity)value=words('Sent a message to','Sending a message to','Send a message to',subject+message);
   else return words('Sent a message','Sending a message','Send a message');
   return {...value, emphasis: {recipient: subject, message}};
@@ -86,7 +87,7 @@ function awaitWords({args}:SentenceInput):Words {
 }
 function collaborateWords({args}:SentenceInput):Words {
   switch(args.action){
-    case 'post':return words('Posted to a thread','Posting to a thread','Post to a thread',quote(args.message));
+    case 'post':return typeof args.threadId==='string'&&args.threadId.trim()?words('Posted to','Posting to','Post to',` Thread · ${args.threadId.slice(-8)}${quote(args.message)}`):words('Posted a message','Posting a message','Post a message',quote(args.message));
     case 'create':return words('Created a thread','Creating a thread','Create a thread',quote(args.title));
     case 'revise':return words('Revised a thread','Revising a thread','Revise a thread',quote(args.title));
     case 'read':return words('Read a thread','Reading a thread','Read a thread');
