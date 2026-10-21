@@ -1143,6 +1143,8 @@ pre.tool-document { font-family: var(--mono); font-size: var(--fs-code); line-he
 .palette-check { position: absolute; right: 14px; width: 14px; height: 14px; color: var(--fg); }
 .palette-row[aria-checked] .palette-source { padding-right: var(--s5); }
 .palette-row[data-source=app] { grid-template-columns: minmax(0,30%) minmax(0,1fr); }
+.palette-row[data-source=app]:has(> .palette-shortcut) { grid-template-columns: minmax(0,30%) minmax(0,1fr) auto; }
+.palette-shortcut { grid-column: -2; grid-row: 1; justify-self: end; color: var(--muted); font-family: inherit; font-size: var(--fs-meta); font-weight: 400; white-space: nowrap; }
 .palette-row[data-source=app][aria-checked] .palette-desc { padding-right: var(--s5); }
 .palette-row[data-kind=conversation] { grid-template-columns: minmax(0,1fr) auto; }
 .palette-row[data-kind=conversation] .palette-name { display: flex; align-items: baseline; gap: var(--s2); min-width: 0; }
@@ -1370,7 +1372,7 @@ dialog[data-variant=menu]::backdrop { background: transparent; }
   .workbench-status > :is(.workbench-draft-state, #file-retained-drafts, #control-attribution) { order: 1; flex-basis: 100%; }
   .workbench-status[data-pane=file] > :is(.workbench-scope, .workbench-activity) { flex-basis: 100%; }
   .workbench-status > .workbench-activity[data-notice=true] { display: block; order: 1; flex-basis: 100%; }
-  .palette-row, .palette-row[data-source=app] { grid-template-columns: minmax(0,1fr) auto; }
+  .palette-row, .palette-row[data-source=app], .palette-row[data-source=app]:has(> .palette-shortcut) { grid-template-columns: minmax(0,1fr) auto; }
   .palette-desc { grid-column: 1; grid-row: 2; }
   .palette-list { --palette-row-size: 56px; }
   dialog { padding: var(--s5); }

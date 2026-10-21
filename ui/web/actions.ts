@@ -34,7 +34,7 @@ const appCommands: CommandOption[] = [
   {name: 'thinking', description: 'Choose the thinking level for Primary', source: 'app'},
 ];
 
-export type PaletteEntry = CommandOption & {enabled: boolean; run: () => void; search?: string[]; title?: string; tail?: string; checked?: boolean; priority?: number; disabledReason?: string};
+export type PaletteEntry = CommandOption & {shortcut?: {text: string; keys: string}; enabled: boolean; run: () => void; search?: string[]; title?: string; tail?: string; checked?: boolean; priority?: number; disabledReason?: string};
 function choice(label: string, selected: boolean, run: () => void): HTMLButtonElement {
   const node = button('', run, 'option-choice');
   const check = cardIcon('success'); check.classList.add('choice-check'); check.style.visibility = selected ? 'visible' : 'hidden';
@@ -63,6 +63,7 @@ function paletteRow(item: PaletteEntry, marks: number[], conversation: boolean, 
   if (conversation) row.dataset.kind = 'conversation';
   row.append(paletteName(item, marks, conversation), element('span', 'palette-desc', paletteDescription(row, item)));
   if (item.source !== 'app') row.append(element('span', 'palette-source', commandSource(item.source)));
+  if (item.shortcut) { row.append(element('kbd', 'palette-shortcut', item.shortcut.text)); row.setAttribute('aria-keyshortcuts', item.shortcut.keys); }
   if (item.checked !== undefined) {
     row.setAttribute('aria-checked', String(item.checked));
     const check = cardIcon('success'); check.classList.add('palette-check'); check.style.visibility = item.checked ? 'visible' : 'hidden'; row.append(check);
@@ -460,8 +461,8 @@ export class Actions {
     if (this.ctx.tabs) {
       const tabs = this.ctx.tabs;
       entries.push(entry('Close conversation tab', 'Keep its session and draft', tabs.close),
-        entry('Next conversation tab', 'Select the next conversation', () => tabs.switch(1)),
-        entry('Previous conversation tab', 'Select the previous conversation', () => tabs.switch(-1)));
+        {...entry('Next conversation tab', 'Select the next conversation', () => tabs.switch(1)), shortcut: {text: '⌥⇟', keys: 'Alt+PageDown'}},
+        {...entry('Previous conversation tab', 'Select the previous conversation', () => tabs.switch(-1)), shortcut: {text: '⌥⇞', keys: 'Alt+PageUp'}});
     }
     if (primary?.lifecycle === 'ready' && (primary.lastError || primary.responseOutcome === 'failed' || responseOutcome(this.ctx.primaryEntries()) === 'failed')) entries.push(entry('Review message', 'Restore the last loaded Primary user prompt for review', () => this.retryOutput()));
     if (agent) {
