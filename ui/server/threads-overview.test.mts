@@ -14,15 +14,15 @@ function agentsFor(rows: Row[], threads: AgentAdapter['threads'], pages?: (curso
   return {roster: (options: {cursor?: string; limit?: number} = {}) => pages ? pages(options.cursor) : ({rows, nextCursor: null, coverage: {complete: true, omitted: 0}, stale: false, scan: {}}), threads} as unknown as Pick<AgentAdapter, 'roster' | 'threads'>;
 }
 
-test('only storages with a live claim are queried, and the others are counted', async () => {
+test('known live and stopped storages are queried once each', async () => {
   const asked: string[] = [];
   const agents = agentsFor([{storageId: storage(1), claim: 'live'}, {storageId: storage(1), claim: 'live'}, {storageId: storage(2), claim: 'dead'}, {storageId: storage(3), claim: 'unknown'}, {storageId: storage(4), claim: 'live'}],
     async identity => {asked.push(identity); return answer([item(Number(identity.slice(-1)), 1, 5)]);});
   const overview = await collectThreads(agents);
-  assert.deepEqual(asked.sort(), [storage(1), storage(4)]);
-  assert.deepEqual(overview.hosts, {total: 2, answered: 2, unavailable: 0, failed: 0, notRunning: 2});
+  assert.deepEqual(asked.sort(), [storage(1), storage(2), storage(3), storage(4)]);
+  assert.deepEqual(overview.hosts, {total: 4, answered: 4, unavailable: 0, failed: 0, notRunning: 2});
   assert.equal(overview.rosterComplete, true);
-  assert.equal(overview.items.length, 2);
+  assert.equal(overview.items.length, 4);
   assert.equal(overview.items[0].storageId === storage(1) || overview.items[0].storageId === storage(4), true);
 });
 

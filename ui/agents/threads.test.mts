@@ -184,6 +184,19 @@ test("the service refuses a thread that another storage owns and malformed optio
 	assert.equal(s.host.calls.length, 0);
 });
 
+test('stopped storage threads use retained list and read without a host', async t => {
+  const record: CatalogRecord = {storageId: STORAGE, cwd: '/project', agentDir: '/agent', packageDir: '/package', storagePath: '/missing.sqlite', model: {provider: 'sample', modelId: 'model'}, thinkingLevel: 'off', createdAt: '2026-01-01T00:00:00.000Z'};
+  const calls: unknown[][] = [];
+  const agents = new AgentService({store: '/missing-store', stateDir: '/state', installationId: 'sample'},
+    () => ({get: () => record, close: async () => {}} as unknown as AgentCatalog),
+    () => ({request: async (member: string, identity: string, params: JsonObject) => {calls.push([member, identity, params]); return member === 'collaboration-list' ? threadList() : threadPage(params);}, close: async () => {}} as unknown as RetainedReader));
+  t.after(() => agents.close());
+  assert.equal((await agents.threads(STORAGE)).source, 'retained');
+  const page = await agents.thread(STORAGE, THREAD, {limit: 2});
+  assert.equal(page.source, 'retained'); assert.deepEqual(page.events.map(event => event.sequence), [4, 5]);
+  assert.deepEqual(calls, [['collaboration-list', STORAGE, {}], ['collaboration-read', STORAGE, {threadId: THREAD, limit: 2}]]);
+});
+
 test("a host error for an absent thread reaches the caller and the link stays usable", { timeout: 10000 }, async t => {
 	const s = await service(t);
 	await assert.rejects(s.agents.thread(STORAGE, `${STORAGE}/${"c".repeat(32)}`), /Thread not found/);

@@ -145,7 +145,7 @@ export class AgentService {
       return this.#reader.request("inspect", identity, readParams, signal);
     }
   }
-  /** Threads live in the storage that created them; the identity selects that storage's live host. No retained fallback exists. */
+  /** Thread reads use an attach-only live link or the independent retained reader; neither starts a host. */
   async threads(identity: string, options: ThreadListOptions = {}, signal?: AbortSignal): Promise<ThreadList> {
     this.#ready();
     const params: JsonObject = {};
@@ -153,8 +153,14 @@ export class AgentService {
     if (options.limit !== undefined) params.limit = options.limit;
     if (options.query !== undefined) params.query = options.query;
     validateThreadParams("collaboration-list", params);
+    await this.#catalogLoaded(identity); this.#record(identity);
     signal?.throwIfAborted();
-    return (await (await this.#threadLink(identity)).request("collaboration-list", params, {}, signal)) as ThreadList;
+    let link: HostLink | undefined;
+    try { link = await this.#threadLink(identity); return {...await link.request("collaboration-list", params, {}, signal) as ThreadList, source: "live"}; }
+    catch (error) {
+      if (!retainedEligible(error, link !== undefined)) throw error;
+      return {...await this.#reader.request("collaboration-list", identity.split(':')[0], params, signal), source: "retained"};
+    }
   }
   async thread(identity: string, threadId: string, options: ThreadReadOptions = {}, signal?: AbortSignal): Promise<ThreadPage> {
     this.#ready();
@@ -165,7 +171,12 @@ export class AgentService {
     await this.#catalogLoaded(identity);
     if (threadId.split("/")[0] !== this.#record(identity).storageId) throw new AgentError("invalid_request", "The thread belongs to a different agent storage.");
     signal?.throwIfAborted();
-    return (await (await this.#threadLink(identity)).request("collaboration-read", params, {}, signal)) as ThreadPage;
+    let link: HostLink | undefined;
+    try { link = await this.#threadLink(identity); return {...await link.request("collaboration-read", params, {}, signal) as ThreadPage, source: "live"}; }
+    catch (error) {
+      if (!retainedEligible(error, link !== undefined)) throw error;
+      return {...await this.#reader.request("collaboration-read", identity.split(':')[0], params, signal), source: "retained"};
+    }
   }
   /** An absent or unequal thread operation identity is `threads_unavailable`, distinct from transport and read failures. */
   async #threadLink(identity: string): Promise<HostLink> {

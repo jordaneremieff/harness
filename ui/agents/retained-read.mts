@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { AgentError } from "./client.mts";
 import { assertOperation, ContractError, decodeRetainedDescriptor, decodeRetainedParams, decodeRetainedResponse,
-  type RetainedMethod, type Snapshot, type InspectResult } from "./contract.mts";
+  type RetainedMethod, type Responses } from "./contract.mts";
 
 export interface RetainedReadOptions {
   store: string;
@@ -32,7 +32,7 @@ export class RetainedReader {
       if (!Number.isSafeInteger(value) || value < 1 || value > max) throw new AgentError("invalid_request", "Invalid retained reader bound.");
     this.#options = options;
   }
-  request<M extends RetainedMethod>(method: M, identity: string, input: unknown, signal?: AbortSignal): Promise<M extends "snapshot" ? Snapshot : InspectResult> {
+  request<M extends RetainedMethod>(method: M, identity: string, input: unknown, signal?: AbortSignal): Promise<Responses[M]> {
     if (this.#closed) return Promise.reject(new AgentError("not_ready", "The retained reader is closed."));
     if (this.#active.size >= 4) return Promise.reject(new AgentError("capacity", "Retained read capacity reached."));
     const controller = new AbortController();
@@ -42,13 +42,13 @@ export class RetainedReader {
     const timer = setTimeout(() => controller.abort(new AgentError("timeout", "The retained read exceeded its deadline.", false, true)), this.#options.timeoutMs ?? 30000);
     const job = this.#read(method, identity, input, controller.signal).catch(error => {
       if (error instanceof AgentError) throw error;
-      if (error instanceof ContractError) throw new AgentError(error.code === "incompatible" ? "contract_mismatch" : "protocol_error", error.message);
+      if (error instanceof ContractError) throw new AgentError(error.code === "incompatible" ? method.startsWith('collaboration-') ? "threads_unavailable" : "contract_mismatch" : "protocol_error", error.message);
       throw new AgentError("host_unavailable", "The retained reader is unavailable.", false, true);
     }).finally(() => {clearTimeout(timer);signal?.removeEventListener("abort",cancel);this.#active.delete(controller);});
     this.#active.set(controller, job);
-    return job as Promise<M extends "snapshot" ? Snapshot : InspectResult>;
+    return job as Promise<Responses[M]>;
   }
-  async #read(method: RetainedMethod, identity: string, input: unknown, signal: AbortSignal): Promise<Snapshot | InspectResult> {
+  async #read(method: RetainedMethod, identity: string, input: unknown, signal: AbortSignal): Promise<Responses[RetainedMethod]> {
     signal.throwIfAborted();
     let params: ReturnType<typeof decodeRetainedParams>;
     try {params = decodeRetainedParams(method, input, identity);}
@@ -62,9 +62,10 @@ export class RetainedReader {
     const path = await this.#options.reader();
     signal.throwIfAborted();
     if (!isAbsolute(path) || path.length > 4096 || /[\x00-\x1f\x7f-\x9f]/.test(path)) throw new AgentError("invalid_request", "Invalid retained reader path.");
-    const descriptor = await this.#process(path,["--contract"],undefined,signal);
+    const collaboration = method === "collaboration-list" || method === "collaboration-read";
+    const descriptor = await this.#process(path,collaboration ? ["--contract", "collaboration"] : ["--contract"],undefined,signal);
     if (descriptor.code !== 0) throw new AgentError("host_unavailable", "The retained reader descriptor failed.", false, true);
-    envelope.expected = assertOperation(decodeRetainedDescriptor(descriptor.value), method);
+    envelope.expected = assertOperation(decodeRetainedDescriptor(descriptor.value, collaboration), method);
     const request = `${JSON.stringify(envelope)}\n`;
     if (Buffer.byteLength(request) > REQUEST_BYTES) throw new AgentError("limit_exceeded", "The retained request exceeds its byte bound.");
     const response = await this.#process(path,[],request,signal);

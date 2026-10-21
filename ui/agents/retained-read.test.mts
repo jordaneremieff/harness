@@ -21,7 +21,7 @@ const empty = {entries:[],partial:false,revision:"empty",nextBefore:null,
 const history = {view:"history",sessionId:CHILD,conversationId:2,format:"compact",order:"newestFirst",entries:[],nextCursor:null,detail:""};
 const script = (config: Record<string,unknown>) => `
 const config=${JSON.stringify(config)};
-const descriptor=${JSON.stringify(descriptor)};
+const descriptor=config.descriptor??${JSON.stringify(descriptor)};
 const empty=${JSON.stringify(empty)};
 if(process.argv.includes('--contract')) {
   process.stdout.write(JSON.stringify(config.descriptor??descriptor)+'\\n');
@@ -69,6 +69,23 @@ test("literal descriptor and parameter grammar retain exact native identities",(
     assert.throws(()=>decodeRetainedParams("inspect",params,ROOT));
   assert.deepEqual(decodeRetainedParams("inspect",{view:"result",requestId:"native id",submissionId:2,operationId:"same operation"},ROOT),{view:"result",requestId:"native id",submissionId:2,operationId:"same operation"});
 });
+test("collaboration uses a separate descriptor and bare storage targets", async t => {
+  const collaboration = {version: descriptor.version, upstream: descriptor.upstream, operations: {
+    'collaboration-list': {request: 'collaboration-list/1.0.0', response: 'collaboration-list/1.0.0'},
+    'collaboration-read': {request: 'collaboration-read/1.0.0', response: 'collaboration-read/1.0.0'}}};
+  assert.deepEqual(decodeRetainedDescriptor(collaboration, true), collaboration);
+  assert.throws(() => decodeRetainedDescriptor(collaboration));
+  assert.throws(() => decodeRetainedParams('collaboration-list', {}, CHILD));
+  assert.throws(() => decodeRetainedParams('collaboration-list', {limit: 21}, ROOT));
+  assert.throws(() => decodeRetainedParams('collaboration-read', {threadId: `${CHILD}/${'a'.repeat(32)}`}, ROOT));
+  const list = {items: [{id: `${ROOT}/${'a'.repeat(32)}`, title: 'Plan', purpose: 'Read', updatedAt: 1, closed: false, members: 1}], nextCursor: null, coverage: {complete: true, visited: 1, omitted: 0}};
+  const f = await fixture(t, {descriptor: collaboration, result: list, expectParams: {limit: 20}});
+  assert.deepEqual(await f.reader.request('collaboration-list', ROOT, {limit: 20}), list);
+  assert.deepEqual(f.calls.map(call => call.args), [[f.path, '--contract', 'collaboration'], [f.path]]);
+  const foreign = {...list, items: [{...list.items[0], id: `00000000-0000-4000-8000-000000000099/${'a'.repeat(32)}`}]};
+  assert.throws(() => decodeRetainedResponse('collaboration-list', {version: descriptor.version, id: 'one', ok: true, method: 'collaboration-list', sessionId: ROOT, storageId: ROOT, conversationId: 1, result: foreign}, 'one', ROOT));
+});
+
 test("one-shot fake executable returns a confirmed empty snapshot, not live capability",async t=> {
   const f=await fixture(t,{stderr:'diagnostic only\n'});
   assert.deepEqual(await f.reader.request("snapshot",ROOT,{}),empty);

@@ -1,5 +1,5 @@
 import type { CatalogRecord, ClaimObservation, Publication } from "./catalog-record.mts";
-export type CatalogRow = Publication["rows"][number] & { claim: ClaimObservation["state"]; publishedAt?: string; handle?: string };
+export type CatalogRow = Publication["rows"][number] & { claim: ClaimObservation["state"]; publishedAt?: string; handle?: string; role?: string };
 /** Last native activity defines order; identity breaks equal-time ties without locale dependence. */
 export function compareRosterRows(a: CatalogRow, b: CatalogRow): number {
 	return b.modifiedAt - a.modifiedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
@@ -66,16 +66,17 @@ export function retainedRows(record: CatalogRecord, claim: ClaimObservation): Ca
 				publishedAt: stamp,
 			},
 		];
-	const handles = new Map<string, string | null>();
+	const profiles = new Map<string, NonNullable<Publication['profiles']>['rows'][number] | null>();
 	for (const hint of publication.profiles?.rows ?? []) {
-		handles.set(hint.identity, handles.has(hint.identity) ? null : hint.handle);
+		profiles.set(hint.identity, profiles.has(hint.identity) ? null : hint);
 	}
 	return publication.rows.map((source) => {
 		const row: CatalogRow = { ...source, owner, ownerLabel: label, claim: claim.state, publishedAt: stamp };
-		// Only an unambiguous public hint for this exact conversation supplies its handle.
-		delete row.handle;
-		const handle = handles.get(source.id);
-		if (typeof handle === "string") row.handle = handle;
+		// Only an unambiguous public hint for this exact conversation supplies profile facts.
+		delete row.handle; delete row.role;
+		const profile = profiles.get(source.id);
+		if (typeof profile?.handle === "string") row.handle = profile.handle;
+		if (profile?.role) row.role = profile.role;
 		if (claim.state !== "live") {
 			if (row.state === "working") row.state = "interrupted";
 			delete row.currentTool;

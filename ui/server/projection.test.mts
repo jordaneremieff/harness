@@ -458,7 +458,7 @@ test('decoded current publication rows survive the production catalog page bound
 
 test('public profile hints reach projected roster handles only through exact catalog joins', () => {
   const child = `${catalogStorage}:2`;
-  const hint = (identity: string, handle: string | null) => ({identity, handle, role: 'Private role text', revision: 'private-revision', hasExpertise: true, updatedAt: null});
+  const hint = (identity: string, handle: string | null) => ({identity, handle, role: 'Coordinate the thread', revision: 'private-revision', hasExpertise: true, updatedAt: null});
   const decoded = decodePublication({updatedAt: catalogStamp, rows: [catalogSummary, {...catalogSummary, id: child, name: 'Child agent'}],
     coverage: {complete: true, omitted: 0}, profiles: {rows: [hint(child, null), hint(catalogStorage, '@sample-agent')], coverage: {complete: true, omitted: 0}}}, catalogStorage);
   const record: CatalogRecord = {storageId: catalogStorage, cwd: '/fixture-project', agentDir: '/fixture-agent', packageDir: '/fixture-package',
@@ -466,7 +466,8 @@ test('public profile hints reach projected roster handles only through exact cat
   const rows = retainedRows(record, {state: 'live'}), projected = projectRoster({rows});
   assert.equal(projected.rows[0]?.identity, catalogStorage); assert.equal(projected.rows[0]?.handle, '@sample-agent');
   assert.equal(projected.rows[1]?.identity, child); assert.equal(projected.rows[1]?.handle, undefined);
-  assert.doesNotMatch(JSON.stringify(projected), /Private role|private-revision|hasExpertise|not-exposed-profile/);
+  assert.equal(projected.rows[0]?.role, 'Coordinate the thread'); assert.equal(projected.rows[1]?.role, 'Coordinate the thread');
+  assert.doesNotMatch(JSON.stringify(projected), /private-revision|hasExpertise|not-exposed-profile/);
   assert.deepEqual(projectRoster(projected), projected);
 });
 

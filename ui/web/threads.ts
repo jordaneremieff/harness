@@ -31,16 +31,16 @@ export function threadCount(overview: ThreadOverview | undefined): string {
   if (!overview?.items.length) return '';
   return `${overview.items.length}${overview.truncated ? '+' : ''}`;
 }
-/** Names the stopped agents whose threads the list cannot hold. */
+/** Names known stopped agents whose threads use the independent saved-storage reader. */
 function stoppedAgentsLine(count: number): string {
-  return `Threads from ${count} stopped ${count === 1 ? 'agent' : 'agents'} are not listed.`;
+  return `${count} stopped ${count === 1 ? 'agent uses' : 'agents use'} saved storage reads.`;
 }
 /** Quiet lines under the list. Each one states what the list does not cover. */
 export function overviewLines(overview: ThreadOverview): string[] {
   const lines: string[] = [];
   const {hosts} = overview;
   const coverage: string[] = [];
-  if (hosts.total > 0 && hosts.total - hosts.answered > hosts.failed + hosts.unavailable) coverage.push(`Listed by ${hosts.answered} of ${hosts.total} running ${hosts.total === 1 ? 'agent' : 'agents'}`);
+  if (hosts.total > 0 && hosts.total - hosts.answered > hosts.failed + hosts.unavailable) coverage.push(`Listed by ${hosts.answered} of ${hosts.total} ${hosts.total === 1 ? 'agent' : 'agents'}`);
   if (overview.omitted > 0) coverage.push(`Showing the newest ${overview.items.length} threads; ${overview.omitted} more not shown`);
   else if (overview.truncated) coverage.push('Some threads are not shown');
   if (!overview.rosterComplete) coverage.push('Agent list incomplete');
@@ -53,8 +53,8 @@ export function overviewLines(overview: ThreadOverview): string[] {
 /** The empty-list sentence, chosen by why the list is empty. */
 export function emptyListText(overview: ThreadOverview): string {
   if (overview.items.length) return '';
-  if (overview.hosts.total === 0) return 'No agent is running, so no threads are listed.';
-  return overview.hosts.answered === 0 ? 'No running agent listed its threads.' : 'No threads yet.';
+  if (overview.hosts.total === 0) return 'No known agent storage is available.';
+  return overview.hosts.answered === 0 ? 'No agent storage listed its threads.' : 'No threads yet.';
 }
 
 export type FrameChange = {field: keyof ThreadFrameView; label: string; before: string; after: string};

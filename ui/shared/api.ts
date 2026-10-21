@@ -176,7 +176,7 @@ export type AgentCommandList = {items: {name: string; description: string; sourc
 /** The most a command result keeps; a longer result is cut and says so. */
 export const COMMAND_RESULT_BYTES = 16 * 1024;
 /** Published metadata and claim state, not an assertion of fresh native idle state. */
-export type AgentRow = {identity: string; storageId: string; cwd: string; name?: string; handle?: string;
+export type AgentRow = {identity: string; storageId: string; cwd: string; name?: string; handle?: string; role?: string;
   modifiedAt: number; state: string; owner: 'here' | 'unavailable' | 'unknown';
   availability: 'live' | 'stored' | 'unavailable' | 'incompatible';
   model?: {provider: string; modelId: string; thinkingLevel?: string};
@@ -218,7 +218,7 @@ export type ThreadListItem = {id: string; storageId: string; title: string; purp
 /** `unavailable` means the host does not offer the exact thread operations; `failed` means the host did not answer or answered invalidly. */
 export type ThreadHostState = {storageId: string; state: 'answered' | 'unavailable' | 'failed'; threads: number; truncated: boolean; code?: string; message?: string};
 /** Open threads first, then newest update first. Bounds are stated so a cut list reports itself. */
-export type ThreadOverview = {items: ThreadListItem[]; /** `total` counts storages with a live host. `notRunning` counts the other storages in the roster, whose threads are not listed. */
+export type ThreadOverview = {items: ThreadListItem[]; /** `total` counts queried storages. `notRunning` counts known storages without a live host, read from saved storage. */
   hosts: {total: number; answered: number; unavailable: number; failed: number; notRunning: number}; storages: ThreadHostState[];
   rosterComplete: boolean; truncated: boolean; omitted: number; bounds: {perHost: number; total: number}; observedAt: string};
 export type ThreadFrameView = {title: string; purpose: string; authority: string; source: string; restrictions: string; acceptance: string; integrator: string};
@@ -227,7 +227,7 @@ export type ThreadMemberView = {identity: string; contribution: string; joinedAt
 export type ThreadEventView = {sequence: number; at: number; sender: string; origin: "model" | "operator"; kind: string; message: string; source: string;
   replyTo: number | null; revision: number; notify: string[]; frame?: ThreadFrameView};
 export type ThreadView = ThreadFrameView & {id: string; creator: string; createdAt: number; updatedAt: number; revision: number; closed: boolean; sequence: number; members: ThreadMemberView[]};
-export type ThreadPageView = {storageId: string; thread: ThreadView; events: ThreadEventView[]; nextBefore: number | null; pending: number; coverage: {complete: boolean}; observedAt: string};
+export type ThreadPageView = {storageId: string; source?: 'live' | 'retained'; thread: ThreadView; events: ThreadEventView[]; nextBefore: number | null; pending: number; coverage: {complete: boolean}; observedAt: string};
 export type ResourcePage = {items: CommandView[] | ModelChoice[] | string[]; nextCursor: string | null; revision: string};
 export type NoticeView = {id: string; target?: Target; workspaceId?: string; level: 'info' | 'warning' | 'error'; code?: string; message: string};
 export type AgentObservationView = {identity: string; connectionEpoch: number; availability?: EventData['agent.availability']; frame?: ProjectedFrame; omitted?: true};

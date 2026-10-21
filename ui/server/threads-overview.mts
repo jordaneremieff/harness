@@ -11,7 +11,7 @@ const ROSTER_PAGE_ROWS = 100;
 type Agents = Pick<AgentAdapter, 'roster' | 'threads'>;
 export interface OverviewOptions {signal?: AbortSignal; hostTimeoutMs?: number}
 
-/** Storages with a live writer claim in the cached roster, and how many other storages the roster holds. Reads no directory and starts no host. */
+/** Known storages in the cached roster. A missing roster publication leaves discovery coverage unknown. */
 function scanRoster(agents: Agents, live: Set<string>, known: Set<string>): boolean {
   let cursor: string | undefined, complete = true, pages = 0;
   do {
@@ -26,10 +26,10 @@ function liveStorages(agents: Agents): {storages: string[]; notRunning: number; 
   let live = new Set<string>(), known = new Set<string>();
   for (let attempt = 0; attempt < 2; attempt++) {
     live = new Set(); known = new Set();
-    try { const complete = scanRoster(agents, live, known); return {storages: [...live], notRunning: notRunning(known, live), complete}; }
+    try { const complete = scanRoster(agents, live, known); return {storages: [...known], notRunning: notRunning(known, live), complete}; }
     catch (error) { if (!(attempt === 0 && error instanceof AgentError && error.code === 'stale_revision')) break; }
   }
-  return {storages: [...live], notRunning: notRunning(known, live), complete: false};
+  return {storages: [...known], notRunning: notRunning(known, live), complete: false};
 }
 function notRunning(known: Set<string>, live: Set<string>): number { return [...known].filter(id => !live.has(id)).length; }
 function failure(error: unknown): {code: string; message: string} {
@@ -87,7 +87,7 @@ function bound(all: ThreadListItem[]): {items: ThreadListItem[]; omitted: number
   }
   return {items, omitted: sorted.length - items.length};
 }
-/** Lists the threads of every live storage, at most four hosts at a time, each with its own deadline. */
+/** Lists known live and stopped storages through their public reader, at most four at a time. */
 export async function collectThreads(agents: Agents, options: OverviewOptions = {}): Promise<ThreadOverview> {
   const {storages, notRunning, complete} = liveStorages(agents);
   const results = new Array<Awaited<ReturnType<typeof collectHost>>>(storages.length);

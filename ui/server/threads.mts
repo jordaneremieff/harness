@@ -34,7 +34,7 @@ export function projectThreadPage(storageId: string, source: ThreadPage, observe
       message: frame ? '' : safeText(event.message, MESSAGE_BYTES), source: safeText(event.source, 8 * 1024), replyTo: event.replyTo,
       revision: event.revision, notify: [...event.notify], ...(frame ? {frame} : {})};
   });
-  return {storageId, nextBefore: source.nextBefore, pending: source.pending, coverage: {complete: source.coverage.complete}, events, observedAt,
+  return {storageId, ...(source.source ? {source: source.source} : {}), nextBefore: source.nextBefore, pending: source.pending, coverage: {complete: source.coverage.complete}, events, observedAt,
     thread: {...frameView(thread), id: thread.id, creator: thread.creator, createdAt: thread.createdAt, updatedAt: thread.updatedAt,
       revision: thread.revision, closed: thread.closed, sequence: thread.sequence,
       members: thread.members.map(member => ({identity: member.identity, contribution: safeText(member.contribution, 1024), joinedAt: member.joinedAt}))}};

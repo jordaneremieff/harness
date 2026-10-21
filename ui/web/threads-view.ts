@@ -1,5 +1,5 @@
-import type {ErrorView, ThreadEventView, ThreadListItem, ThreadOverview, ThreadPageView, ThreadView} from '../shared/api.ts';
-import {button, byId, details, element, setText} from './dom.ts';
+import type {AgentRow, ErrorView, ThreadEventView, ThreadListItem, ThreadOverview, ThreadPageView, ThreadView} from '../shared/api.ts';
+import {button, byId, copy, details, element, setText} from './dom.ts';
 import {absoluteTime} from './format.ts';
 import {navigateOptions} from './list-navigation.ts';
 import {markdownDom} from './safe-markdown.ts';
@@ -8,11 +8,13 @@ import {
   overviewLines, pageEvents, prependEvents, purposeNeedsExpansion, threadCount, threadMeta, type ExchangeRow, type FrameChange, type ThreadNameFor} from './threads.ts';
 
 const SECTION_KEY = 'ui:sections:threads';
-const OPERATOR = 'Operator';
+const OPERATOR = 'You';
 const NOT_OFFERED = 'Threads are not available from this agent host.';
 const REFRESH_AFTER_MS = 10_000;
 
-/** The label for a conversation identity. It always answers: a short identity stands in when the browser holds no name. */
+/** An exact thread identity opens directly, even before its list metadata is available. */
+export type ThreadEntry = Pick<ThreadListItem, 'id'> & Partial<Omit<ThreadListItem, 'id'>>;
+/** The shared caption for a conversation identity. */
 export type KnownName = (identity: string) => string;
 function errorView(error: unknown): ErrorView | undefined {
   const view = (error as {view?: ErrorView} | undefined)?.view;
@@ -156,12 +158,14 @@ export class ThreadExplorer {
 export type ReaderHooks = {
   page(threadId: string, before: number | undefined, signal: AbortSignal): Promise<ThreadPageView>;
   name: KnownName;
+  profile?(identity: string): Pick<AgentRow, 'handle' | 'model' | 'role'> | undefined;
   /** Opens the member's conversation in the pane that shows the reader. */
   openMember(identity: string): void;
   /** Leaves the reader and shows the pane's conversation again. */
   back(): void;
+  changed?(): void;
 };
-type Cached = {item: ThreadListItem; thread?: ThreadView; events: ThreadEventView[]; observedAt?: string};
+type Cached = {item: ThreadEntry; thread?: ThreadView; events: ThreadEventView[]; observedAt?: string; source?: 'live' | 'retained'};
 /** Scroll positions outlive the cached content, so a thread read long ago still reopens where it was left. */
 const SCROLL_LIMIT = 50;
 type Failure = {kind: 'unavailable'} | {kind: 'failed'; message: string};
@@ -178,6 +182,11 @@ export class ThreadReader {
   private readonly refreshButton: HTMLButtonElement;
   private readonly scroller = element('div', 'thread-scroll');
   private readonly frame = element('div', 'thread-frame');
+  private readonly participants = element('details', 'thread-members');
+  private participantsOpen = true;
+  private readonly backButton: HTMLButtonElement;
+  private readonly expandedPosts = new Set<string>();
+  private highlightTimer?: ReturnType<typeof setTimeout>;
   private readonly earlier: HTMLButtonElement;
   private readonly earlierRow = element('div', 'thread-earlier-row');
   private readonly earlierNote = element('p', 'thread-note', 'Older events not loaded.');
@@ -206,7 +215,8 @@ export class ThreadReader {
     this.hooks = hooks; this.node.hidden = true;
     this.node.setAttribute('aria-label', 'Thread');
     const header = element('div', 'inspection-header');
-    header.append(this.title, button('Back to conversation', () => this.hooks.back(), 'inspection-back'));
+    this.backButton = button('Close thread', () => this.hooks.back(), 'inspection-back');
+    header.append(this.title, this.backButton);
     this.status.setAttribute('role', 'status');
     this.refreshButton = button('Refresh thread', () => { void this.refresh(); }, 'thread-refresh');
     const meta = element('div', 'thread-meta'); meta.append(this.status, this.refreshButton);
@@ -214,9 +224,13 @@ export class ThreadReader {
     this.scroller.tabIndex = 0; this.scroller.setAttribute('aria-label', 'Thread exchange');
     this.exchange.setAttribute('aria-label', 'Events, oldest first');
     this.earlierRow.append(this.earlierNote, this.earlier);
-    this.scroller.append(this.frame, this.earlierRow, this.exchange, this.notice);
+    const forum = element('div', 'thread-forum'), posts = element('div', 'thread-posts');
+    this.participants.open = this.participantsOpen;
+    this.participants.addEventListener('toggle', () => {this.participantsOpen = this.participants.open;});
+    posts.append(this.frame, this.earlierRow, this.exchange, this.notice);
+    forum.append(this.participants, posts); this.scroller.append(forum);
     this.node.append(header, meta, this.scroller);
-    if (typeof ResizeObserver === 'function') { this.resize = new ResizeObserver(() => this.settle()); this.resize.observe(this.exchange); }
+    if (typeof ResizeObserver === 'function') { this.resize = new ResizeObserver(() => {this.measurePosts(); this.settle();}); this.resize.observe(this.exchange); }
     this.scroller.addEventListener('scroll', () => {
       this.rememberScroll(); this.reading = this.anchorRow();
       const top = this.scroller.scrollTop, up = top < this.lastTop; this.lastTop = top;
@@ -227,10 +241,11 @@ export class ThreadReader {
       event.preventDefault(); event.stopPropagation(); this.hooks.back();
     });
   }
-  get active(): ThreadListItem | undefined { return this.node.hidden ? undefined : this.entry?.item; }
+  returnLabel(label: string): void { setText(this.backButton, label); }
+  get active(): ThreadEntry | undefined { return this.node.hidden ? undefined : this.entry?.item; }
   get scrollNode(): HTMLElement { return this.scroller; }
   /** Shows a thread. A thread read earlier in this page appears at once at its old position, then refreshes. */
-  open(item: ThreadListItem): void {
+  open(item: ThreadEntry): void {
     this.rememberScroll(); this.cancel(); this.failure = undefined;
     const cached = this.cache.get(item.id);
     this.entry = cached ? {...cached, item} : {item, events: []};
@@ -257,8 +272,8 @@ export class ThreadReader {
   focus(): void { this.scroller.focus({preventScroll: true}); }
   private nameSignature(): string {
     const entry = this.entry; if (!entry) return '';
-    const ids = new Set<string>([...entry.events.map(event => event.sender), ...(entry.thread?.members.map(member => member.identity) ?? []), ...(entry.thread?.integrator ? [entry.thread.integrator] : [])]);
-    return [...ids].map(id => `${id}=${this.hooks.name(id)}`).join('|');
+    const ids = new Set<string>([...entry.events.flatMap(event => [event.sender, ...event.notify]), ...(entry.thread?.members.map(member => member.identity) ?? []), ...(entry.thread?.integrator ? [entry.thread.integrator] : [])]);
+    return [...ids].map(id => `${id}=${this.hooks.name(id)}:${JSON.stringify(this.hooks.profile?.(id))}`).join('|');
   }
   private rememberScroll(): void {
     const entry = this.entry; if (!entry || this.node.hidden || this.restorePending) return;
@@ -321,8 +336,9 @@ export class ThreadReader {
   /** Scrolls by however far the anchor row moved, whatever changed above or below it. */
   private holdAnchor(anchor: {sequence: string; top: number} | undefined): void {
     if (!anchor) return;
-    const row = (Array.from(this.exchange.children) as HTMLElement[]).find(candidate => candidate.dataset.sequence === anchor.sequence);
-    const moved = row ? row.getBoundingClientRect().top - anchor.top : 0;
+    const row = [...this.exchange.querySelectorAll<HTMLElement>('[data-sequence]')].find(candidate => candidate.dataset.sequence === anchor.sequence);
+    const target = row?.closest<HTMLElement>('.thread-event-group') ?? row;
+    const moved = target ? target.getBoundingClientRect().top - anchor.top : 0;
     if (Math.abs(moved) < 0.5) return;
     this.scroller.scrollTop += moved; this.lastTop = this.scroller.scrollTop;
   }
@@ -337,8 +353,9 @@ export class ThreadReader {
   }
   private take(entry: Cached, page: ThreadPageView, older: boolean): void {
     if (page.thread.id !== entry.item.id) throw new Error('The host answered for a different thread.');
-    entry.thread = page.thread; entry.observedAt = page.observedAt;
-    entry.events = older ? prependEvents(pageEvents(page), entry.events) : mergeEvents(entry.events, pageEvents(page));
+    entry.thread = page.thread; entry.observedAt = page.observedAt; entry.source = page.source;
+    entry.item = {...entry.item, title: page.thread.title}; this.hooks.changed?.();
+    entry.events = (older ? prependEvents(pageEvents(page), entry.events) : mergeEvents(entry.events, pageEvents(page))).filter(event => event.sequence <= page.thread.sequence);
   }
   private paintControls(): void {
     this.refreshButton.disabled = this.loading || this.loadingEarlier;
@@ -354,10 +371,11 @@ export class ThreadReader {
     const thread = entry.thread, name = nameFor(this.hooks.name);
     this.lastNames = this.nameSignature();
     setText(this.title, thread?.title || entry.item.title || 'Thread');
-    setText(this.status, this.statusText(thread, entry.events)); this.status.title = thread?.integrator ? `Integrator ${thread.integrator}` : '';
+    setText(this.status, this.statusText(thread, entry.events)); this.status.title = thread ? `Updated ${absoluteTime(thread.updatedAt)}` : '';
     this.paintFrame(thread);
     const wanted = exchangeRows(entry.events, name).map(row => this.rowNode(row));
-    this.exchange.replaceChildren(...wanted);
+    this.exchange.replaceChildren(...this.groupQuiet(wanted, entry.events));
+    this.measurePosts();
     const present = new Set(entry.events.map(event => event.sequence));
     for (const key of [...this.rows.keys()]) if (!present.has(key)) this.rows.delete(key);
     this.notice.replaceChildren(...this.noticeNodes(entry));
@@ -369,10 +387,9 @@ export class ThreadReader {
   }
   private statusText(thread: ThreadView | undefined, events: readonly ThreadEventView[]): string {
     if (!thread) return this.loading ? 'Reading thread…' : '';
-    const integrator = thread.integrator ? this.hooks.name(thread.integrator) : '';
-    const updated = thread.updatedAt ? `Updated ${eventTime(thread.updatedAt, Date.now())}` : '';
-    const shown = events[0] && events[0].sequence > 1 ? `Newest ${events.length} of ${thread.sequence} events` : '';
-    return [thread.closed ? 'Closed' : 'Open', `${thread.members.length} ${thread.members.length === 1 ? 'member' : 'members'}`, integrator ? `Integrator ${integrator}` : '', shown, updated, this.loading ? 'Refreshing…' : ''].filter(Boolean).join(' · ');
+    const updated = thread.updatedAt ? `updated ${eventTime(thread.updatedAt, Date.now())}` : '';
+    setText(this.earlierNote, `Newest ${events.length} of ${thread.sequence}`);
+    return [thread.closed ? 'Closed' : 'Open', `${thread.members.length} participants`, updated, this.entry?.source === 'retained' ? 'Read from saved storage' : '', this.loading ? 'Refreshing…' : ''].filter(Boolean).join(' · ');
   }
   private noticeNodes(entry: Cached): HTMLElement[] {
     const nodes: HTMLElement[] = [];
@@ -387,10 +404,10 @@ export class ThreadReader {
     return nodes;
   }
   private paintFrame(thread: ThreadView | undefined): void {
-    const signature = JSON.stringify([thread, this.lastNames]);
+    const signature = JSON.stringify([thread, this.lastNames, this.entry?.events]);
     if (signature === this.framed) return;
     this.framed = signature;
-    if (!thread) { this.frame.replaceChildren(); return; }
+    if (!thread) { this.frame.replaceChildren(); this.participants.replaceChildren(); return; }
     const parts: HTMLElement[] = [];
     if (thread.purpose) {
       const purpose = element('div', 'thread-purpose'); purpose.append(markdownDom(thread.purpose));
@@ -404,24 +421,38 @@ export class ThreadReader {
         toggle.setAttribute('aria-expanded', 'false'); parts.push(toggle);
       }
     }
-    parts.push(this.members(thread), this.frameDetails(thread));
+    this.members(thread);
+    const decided = this.decided(); if (decided) parts.push(decided);
+    parts.push(this.frameDetails(thread));
     this.frame.replaceChildren(...parts);
   }
   private members(thread: ThreadView): HTMLElement {
-    const box = element('details', 'thread-members'); box.open = thread.members.length <= 4;
-    box.append(element('summary', undefined, `Members (${thread.members.length})`));
+    const box = this.participants; box.open = this.participantsOpen;
+    box.replaceChildren(element('summary', undefined, `Participants · ${thread.members.length}`));
     const list = element('ul', 'thread-member-list');
-    for (const member of thread.members) {
-      const item = element('li', 'thread-member');
-      const label = this.hooks.name(member.identity);
-      const who = button(label, () => this.hooks.openMember(member.identity), 'thread-person');
-      who.title = member.identity; who.setAttribute('aria-label', `Open ${label}`);
-      item.append(who);
-      if (member.identity === thread.integrator) item.append(element('span', 'thread-role', 'integrator'));
-      if (member.contribution) { const line = element('p', 'thread-contribution', member.contribution); line.title = member.contribution; item.append(line); }
-      list.append(item);
+    const events = this.entry?.events ?? [], posts = events.filter(event => event.kind === 'contribution' || event.kind === 'carried-authority');
+    const latest = (identity: string) => Math.max(0, ...posts.filter(post => post.sender === identity).map(post => post.sequence));
+    const members = [...thread.members].sort((a, b) => Number(b.identity === thread.integrator) - Number(a.identity === thread.integrator) || latest(b.identity) - latest(a.identity));
+    const former = [...new Set(posts.filter(post => post.origin !== 'operator').map(post => post.sender))].filter(identity => !members.some(member => member.identity === identity));
+    for (const member of [...members, ...former.map(identity => ({identity, contribution: '', joinedAt: 0}))]) {
+      if (member.identity === former[0]) {const earlier = element('li', 'thread-earlier-participants', 'Earlier participants'); list.append(earlier);}
+      list.append(this.memberNode(member, thread, posts));
     }
     box.append(list); return box;
+  }
+  private memberNode(member: ThreadView['members'][number], thread: ThreadView, posts: ThreadEventView[]): HTMLElement {
+      const item = element('li', 'thread-member');
+      const who = this.personButton(member.identity, 'thread-person');
+      item.append(who);
+      if (member.identity === thread.integrator) item.append(element('span', 'thread-role', 'integrator'));
+      const profile = this.hooks.profile?.(member.identity), metadata = this.profileLine(member.identity);
+      if (metadata) item.append(element('p', 'thread-profile', metadata));
+      if (profile?.role) {const role = element('p', 'thread-profile-role', profile.role); role.title = profile.role; item.append(role);}
+      if (member.contribution) { const line = element('p', 'thread-contribution', `Holds: ${member.contribution}`); line.title = member.contribution; item.append(line); }
+      const count = posts.filter(post => post.sender === member.identity).length;
+      const facts = element('p', 'thread-participant-facts', [member.joinedAt ? `joined ${eventTime(member.joinedAt, Date.now())}` : '', `${count} ${count === 1 ? 'post' : 'posts'} here`].filter(Boolean).join(' · '));
+      facts.title = olderBoundary(this.entry?.events ?? []) !== null ? 'Post count covers loaded events only.' : 'Post count covers this thread.';
+      item.append(facts); return item;
   }
   private frameDetails(thread: ThreadView): HTMLElement {
     const box = element('details', 'thread-frame-details'); box.append(element('summary', undefined, 'Details'));
@@ -434,27 +465,132 @@ export class ThreadReader {
     return box;
   }
   private rowNode(row: ExchangeRow): HTMLElement {
-    const signature = JSON.stringify([row, this.hooks.name(row.sender)]);
+    const signature = JSON.stringify([row, this.lastNames, this.entry?.events.filter(event => event.replyTo === row.sequence).map(event => [event.sequence, event.sender, event.origin])]);
     const cached = this.rows.get(row.sequence);
     if (cached?.signature === signature) return cached.node;
     const node = row.type === 'message' ? this.messageNode(row) : this.lineNode(row);
-    node.dataset.sequence = String(row.sequence);
+    node.dataset.sequence = String(row.sequence); node.tabIndex = -1;
+    node.id = `thread-post-${row.sequence}`;
     this.rows.set(row.sequence, {signature, node}); return node;
   }
   private messageNode(row: Extract<ExchangeRow, {type: 'message'}>): HTMLElement {
     const item = element('li', 'thread-event thread-message');
     item.dataset.kind = row.carried ? 'carried-authority' : 'contribution';
+    item.append(this.authorHead(row, item));
+    this.postReply(row, item);
+    this.postBody(row, item);
+    return item;
+  }
+  private authorHead(row: Extract<ExchangeRow, {type: 'message'}>, item: HTMLElement): HTMLElement {
     const head = element('div', 'thread-event-head');
     const label = row.origin === 'operator' ? OPERATOR : this.hooks.name(row.sender);
     if (row.origin === 'operator') head.append(element('span', 'thread-sender', label));
-    else { const who = button(label, () => this.hooks.openMember(row.sender), 'thread-sender'); who.title = row.sender; who.setAttribute('aria-label', `Open ${label}`); head.append(who); }
+    else head.append(this.personButton(row.sender, 'thread-sender'));
     if (row.carried) head.append(element('span', 'thread-kind', 'Carried authority'));
     const time = element('time', 'thread-time', eventTime(row.at, Date.now())); time.dateTime = new Date(row.at).toISOString(); time.title = absoluteTime(row.at); head.append(time);
-    item.append(head);
-    if (row.replyToName) item.append(element('p', 'thread-reply', `In reply to ${row.replyToName}`));
-    const prose = element('div', 'thread-prose'); prose.append(markdownDom(row.message)); item.append(prose);
+    const metadata = this.profileLine(row.sender); if (metadata && row.origin !== 'operator') head.insertBefore(element('span', 'thread-author-profile', metadata), time);
+    const anchor = button(`#${row.sequence}`, () => { void copy(`#${row.sequence}`, item); }, 'thread-anchor'); anchor.title = `Copy post #${row.sequence} anchor`; head.append(anchor);
+    return head;
+  }
+  private postReply(row: Extract<ExchangeRow, {type: 'message'}>, item: HTMLElement): void {
+    if (row.replyTo !== null) {
+      const parent = this.entry?.events.find(event => event.sequence === row.replyTo);
+      const label = parent ? `↳ Reply to ${parent.origin === 'operator' ? OPERATOR : this.hooks.name(parent.sender)} “${parent.message.slice(0, 120)}”` : `↳ Reply to post #${row.replyTo}`;
+      item.append(button(label, () => {if (parent) this.reveal(parent.sequence); else void this.loadEarlier();}, 'thread-reply'));
+      if (!parent) item.append(button('Load earlier events', () => { void this.loadEarlier(); }, 'thread-earlier'));
+      item.classList.toggle('thread-direct-reply', this.entry?.events.find(event => event.sequence === row.sequence - 1)?.sequence === row.replyTo);
+    }
+    const event = this.entry?.events.find(event => event.sequence === row.sequence);
+    if (event?.notify.length) item.append(element('p', 'thread-to', `To ${event.notify.map(identity => this.hooks.name(identity)).join(', ')}`));
+  }
+  private postBody(row: Extract<ExchangeRow, {type: 'message'}>, item: HTMLElement): void {
+    const prose = element('div', 'thread-prose thread-post-body'); prose.append(markdownDom(row.message));
+    const key = `${this.entry?.item.id}:${row.sequence}`; prose.dataset.expanded = String(this.expandedPosts.has(key));
+    const whole = button(this.expandedPosts.has(key) ? 'Show less' : 'Show whole post', () => {
+      const expanded = !this.expandedPosts.has(key); if (expanded) this.expandedPosts.add(key); else this.expandedPosts.delete(key);
+      prose.dataset.expanded = String(expanded); whole.setAttribute('aria-expanded', String(expanded)); setText(whole, expanded ? 'Show less' : 'Show whole post');
+    }, 'thread-whole-post'); whole.hidden = true; whole.setAttribute('aria-expanded', prose.dataset.expanded);
+    item.append(prose, whole, button('Copy', () => { void copy(row.message, item); }, 'thread-copy'));
     if (row.source) item.append(element('p', 'thread-source', `Source: ${row.source}`));
-    return item;
+    const replies = this.entry?.events.filter(event => event.replyTo === row.sequence) ?? [];
+    if (replies.length) {
+      const line = element('p', 'thread-replies', `${replies.length} ${replies.length === 1 ? 'reply' : 'replies'}: `); line.title = 'Loaded replies only';
+      for (const reply of replies) line.append(button(reply.origin === 'operator' ? OPERATOR : this.hooks.name(reply.sender), () => this.reveal(reply.sequence), 'thread-reply-author'));
+      item.append(line);
+    }
+  }
+  private profileLine(identity: string): string {
+    const profile = this.hooks.profile?.(identity), model = profile?.model;
+    return [profile?.handle, model ? `${model.provider}/${model.modelId}` : '', model?.thinkingLevel].filter(Boolean).join(' · ');
+  }
+  private personButton(identity: string, className: string): HTMLButtonElement {
+    const label = this.hooks.name(identity), who = button(label, () => this.hooks.openMember(identity), className);
+    if (label.startsWith('Unnamed conversation · ')) {
+      setText(who, 'Unnamed conversation'); who.append(element('span', 'thread-identity', ` · ${identity.slice(0, 8)}`));
+    }
+    who.title = identity; who.setAttribute('aria-label', `Open ${label}`); return who;
+  }
+  private measurePosts(): void {
+    for (const item of this.exchange.querySelectorAll<HTMLElement>('.thread-message')) {
+      const prose = item.querySelector<HTMLElement>('.thread-post-body'), whole = item.querySelector<HTMLButtonElement>('.thread-whole-post'); if (!prose || !whole) continue;
+      const lineHeight = Number.parseFloat(getComputedStyle(prose).lineHeight) || 26.4;
+      const long = prose.scrollHeight > lineHeight * 10;
+      prose.dataset.long = String(long); whole.hidden = !long;
+    }
+  }
+  private reveal(sequence: number): void {
+    const row = this.exchange.querySelector<HTMLElement>(`#thread-post-${sequence}`); if (!row) return;
+    const disclosure = row.closest('details'); if (disclosure) disclosure.open = true;
+    const group = row.closest<HTMLElement>('.thread-event-group'); const target = group ?? row;
+    target.scrollIntoView({block: 'center'}); row.focus({preventScroll: true});
+    for (const previous of this.exchange.querySelectorAll('.thread-highlight')) previous.classList.remove('thread-highlight');
+    row.classList.add('thread-highlight'); if (this.highlightTimer) clearTimeout(this.highlightTimer);
+    this.highlightTimer = setTimeout(() => row.classList.remove('thread-highlight'), 2000);
+  }
+  private decided(): HTMLElement | undefined {
+    const entry = this.entry; if (!entry) return;
+    const decisions = entry.events.filter(event => event.kind === 'carried-authority' || entry.thread?.closed && event.kind === 'close' && event.message);
+    if (!decisions.length) return;
+    const box = element('section', 'thread-decided'); box.append(element('h3', undefined, 'Decided'));
+    if (olderBoundary(entry.events) !== null) box.append(element('p', 'thread-note', 'From loaded events'));
+    for (const event of decisions) {
+      const row = button('', () => this.reveal(event.sequence), 'thread-decision');
+      row.append(element('span', 'thread-decision-head', `${event.origin === 'operator' ? OPERATOR : this.hooks.name(event.sender)} · ${eventTime(event.at, Date.now())}`), element('span', 'thread-decision-text', event.message));
+      if (event.source) row.append(element('span', 'thread-source', `Source: ${event.source}`)); box.append(row);
+    }
+    return box;
+  }
+  private groupQuiet(nodes: HTMLElement[], events: readonly ThreadEventView[]): HTMLElement[] {
+    const result: HTMLElement[] = []; let index = 0;
+    while (index < nodes.length) {
+      const event = events[index], node = nodes[index]; if (!node) break;
+      if (!event || !['join', 'leave'].includes(event.kind)) {result.push(node); index++; continue;}
+      const start = index; while (index < nodes.length && ['join', 'leave'].includes(events[index]?.kind ?? '')) index++;
+      if (index - start === 1) {result.push(node); continue;}
+      result.push(this.quietGroup(events.slice(start, index)));
+    }
+    return result;
+  }
+  private quietGroup(batch: readonly ThreadEventView[]): HTMLElement {
+      const group = element('li', 'thread-event thread-line thread-event-group'); group.dataset.sequence = String(batch[0]?.sequence);
+      const lines: string[] = [];
+      for (const kind of ['join', 'leave']) {
+        const names = batch.filter(event => event.kind === kind).map(event => event.origin === 'operator' ? OPERATOR : this.hooks.name(event.sender));
+        if (!names.length) continue;
+        const label = names.length > 2 ? `${names.slice(0, 2).join(', ')} and ${names.length - 2} others` : names.join(' and ');
+        lines.push(`${label} ${kind === 'join' ? 'joined' : 'left'}`);
+      }
+      const summary = element('p', 'thread-line-text', `${lines.join(' · ')} · ${eventTime(batch.at(-1)?.at ?? 0, Date.now())}`);
+      group.append(summary);
+      const more = element('details', 'thread-line-details'), originals = element('ol', 'thread-quiet-originals'); more.append(element('summary', undefined, 'Details'), originals);
+      for (const event of batch) originals.append(this.quietOriginal(event));
+      group.append(more); return group;
+  }
+  private quietOriginal(event: ThreadEventView): HTMLElement {
+        const original = element('li', 'thread-line'); original.id = `thread-post-${event.sequence}`; original.dataset.sequence = String(event.sequence); original.tabIndex = -1;
+        original.append(element('p', 'thread-line-text', `${event.origin === 'operator' ? OPERATOR : this.hooks.name(event.sender)} ${event.kind === 'join' ? 'joined' : 'left'} · ${eventTime(event.at, Date.now())}`));
+        if (event.message && !['Joined the thread.', 'Left the thread.'].includes(event.message)) original.append(element('p', 'thread-quiet-note', event.message));
+        return original;
   }
   private lineNode(row: Extract<ExchangeRow, {type: 'line'}>): HTMLElement {
     const item = element('li', 'thread-event thread-line');

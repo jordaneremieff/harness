@@ -61,7 +61,7 @@ test('the section reads nothing until it is opened and lists open threads before
   assert.equal(rows[4].classList.contains('closed'), true);
   assert.equal(byId('threads-refresh').disabled, false);
   assert.doesNotMatch(text(byId('threads-footer')), /Listed by/);
-  assert.match(text(byId('threads-footer')), /Threads from 2 stopped agents are not listed\./);
+  assert.match(text(byId('threads-footer')), /2 stopped agents use saved storage reads\./);
   assert.equal(byId('threads-filter-box').hidden, true);
   const count = byId('threads-count'); assert.equal(count.textContent, '5'); assert.equal(count.hidden, false);
   assert.equal(heading.firstChild, chevron); assert.equal(heading.contains(byId('threads-refresh')), false);
@@ -98,16 +98,17 @@ test('a thread opens in the focused pane only, reads without writing, and Escape
   const node = reader(); assert.ok(node);
   assert.equal(node.hidden, false);
   assert.equal(hostDocument.querySelectorAll('.thread-reader').length, 1);
-  const host = node.parentNode; assert.ok(host?.classList.contains('conversation'));
+  const host = node.parentNode; assert.ok(host?.classList.contains('pane-leaf'));
+  assert.equal(host.querySelector('.pane-content')?.hidden, true);
   const covered = regions().filter(region => region.hidden);
   assert.equal(covered.length, 1);
-  assert.equal(covered[0]?.parentNode, host);
+  assert.equal(covered[0]?.parentNode?.dataset.paneId, 'agent-pane');
   assert.ok(regions().length >= 2);
   assert.deepEqual(app.state.workspace?.selectedTarget, {kind: 'agent', identity: BUILDER});
   assert.equal(byId('threads-list').querySelectorAll('button')[0]?.getAttribute('aria-current'), 'page');
   assert.equal(text(node.querySelector('.thread-title') as never), 'Release plan');
-  assert.match(text(node.querySelector('.thread-status') as never), /^Open · 3 members · Integrator Web UI manager/);
-  assert.equal((node.querySelector('.thread-status') as unknown as {title: string}).title, `Integrator ${STORAGE}`);
+  assert.match(text(node.querySelector('.thread-status') as never), /^Open · 3 participants · updated/);
+  assert.match((node.querySelector('.thread-status') as unknown as {title: string}).title, /^Updated /);
   const exchange = node.querySelector('.thread-exchange'); assert.ok(exchange);
   const rows = exchange.children;
   assert.deepEqual(rows.map(row => row.classList.contains('thread-message') ? 'message' : 'line'), ['line', 'line', 'message', 'line', 'message', 'line']);
@@ -119,11 +120,11 @@ test('a thread opens in the focused pane only, reads without writing, and Escape
   assert.equal(text(rows[1]).startsWith('Builder joined'), true);
   assert.equal(text(rows[5]).startsWith('Designer archive'), true);
   assert.equal(text(rows[2].querySelector('.thread-sender') as never), 'Builder');
-  assert.match(text(rows[4]), /Carried authority/); assert.match(text(rows[4]), /In reply to Builder/); assert.match(text(rows[4]), /Source: chat/);
+  assert.match(text(rows[4]), /Carried authority/); assert.match(text(rows[4]), /Reply to Builder/); assert.match(text(rows[4]), /Source: chat/);
   assert.match(text(rows[3]), /Frame revised to revision 2 by Web UI manager/);
   assert.match(text(rows[3].querySelector('.thread-line-details') as never), /Purpose/);
   const members = node.querySelector('.thread-members'); assert.ok(members);
-  assert.deepEqual(members.querySelectorAll('.thread-person').map(person => text(person)), ['Builder', 'Designer', 'Web UI manager · 22']);
+  assert.deepEqual(members.querySelectorAll('.thread-person').map(person => text(person)), ['Designer', 'Builder', 'Web UI manager · 22']);
   assert.equal(members.querySelectorAll('.thread-person')[2]?.title, CHILD);
   node.dispatch('keydown', {key: 'Escape', isComposing: false});
   await settle();
@@ -137,7 +138,7 @@ test('a thread opens in the focused pane only, reads without writing, and Escape
 test('Back to conversation closes the reader and a reopened thread asks again', async () => {
   byId('threads-list').querySelectorAll('button')[0]?.click(); await settle();
   const node = reader(); assert.ok(node);
-  const back = node.querySelectorAll('button').find(item => text(item) === 'Back to conversation'); assert.ok(back);
+  const back = node.querySelectorAll('button').find(item => text(item) === 'Back to Builder'); assert.ok(back);
   back.click(); await settle();
   assert.equal(reader(), null);
   byId('threads-list').querySelectorAll('button')[0]?.click(); await settle();
@@ -160,7 +161,7 @@ test('older events load on request and join the loaded ones', async () => {
   const node = reader(); assert.ok(node);
   assert.equal(node.querySelector('.thread-exchange')?.children.length, 4);
   const row = node.querySelector('.thread-earlier-row'), earlier = node.querySelector('.thread-earlier'); assert.ok(row); assert.ok(earlier); assert.equal(row.hidden, false);
-  assert.match(text(row), /^Older events not loaded\.\s*Load earlier events$/); assert.match(text(node.querySelector('.thread-status') as never), /Newest 4 of 6 events/);
+  assert.match(text(row), /^Newest 4 of 6\s*Load earlier events$/); assert.doesNotMatch(text(node.querySelector('.thread-status') as never), /Newest/);
   earlier.click(); await settle();
   assert.match(threadCalls().at(-1)?.path ?? '', /before=3/);
   assert.equal(node.querySelector('.thread-exchange')?.children.length, 6);
@@ -247,7 +248,7 @@ test('a thread evicted from the content cache refetches and still reopens at its
   await closeReader();
 });
 
-test('opening from a focused file pane uses the last conversation pane and leaves the file pane alone', async () => {
+test('opening from a focused file pane covers that file pane', async () => {
   fixtureControl.threadHandler = url => url.pathname === '/api/threads/read' ? page(events) : overview;
   const file = {kind: 'file' as const, rootId: 'r', path: 'a.md'};
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'agent', identity: BUILDER}, conversationLayout: {root: {kind: 'split', id: 'split-file', axis: 'x', ratio: 50,
@@ -263,18 +264,20 @@ test('opening from a focused file pane uses the last conversation pane and leave
   assert.ok(reader());
   assert.equal(byId('modal-body').textContent, '');
   assert.equal(hostDocument.querySelectorAll('.thread-reader').length, 1);
+  assert.equal(reader()?.parentNode?.dataset.paneId, 'file-pane');
+  assert.equal(reader()?.querySelector('.inspection-back')?.textContent, 'Back to a.md');
   await closeReader();
 });
 
-test('a member with no known name reads as a short conversation id, never as an unnamed agent', async () => {
+test('an unknown participant has a readable name with a quiet identity suffix', async () => {
   const unknown = '01a149eb-cedf-7392-8808-5d73a0416bbe';
   fixtureControl.threadHandler = url => url.pathname === '/api/threads/read' ? page([event(1, 'create', STORAGE, {frame: frame(), message: ''}), event(2, 'contribution', unknown, {message: 'Hello'})],
     {id: url.searchParams.get('threadId') ?? THREAD, integrator: unknown, members: [{identity: unknown, contribution: 'Coordinates', joinedAt: 1}]}) : overview;
   byId('threads-refresh').click(); await settle();
   rowButton('Release plan').click(); await settle();
   const node = reader(); assert.ok(node);
-  assert.match(text(node.querySelector('.thread-status') as never), /Integrator Conversation 01a149eb/);
-  assert.deepEqual(node.querySelectorAll('.thread-person').map(person => text(person)), ['Conversation 01a149eb']);
+  assert.doesNotMatch(text(node.querySelector('.thread-status') as never), /Integrator/);
+  assert.deepEqual(node.querySelectorAll('.thread-person').map(person => text(person)), ['Unnamed conversation · 01a149eb']);
   assert.equal(node.querySelectorAll('.thread-person')[0]?.title, unknown);
   assert.doesNotMatch(text(node), /Unnamed agent/);
   await closeReader();
@@ -364,7 +367,54 @@ test('rows that grow after they are placed leave the first visible event where i
   }
 });
 
+test('the forum shows participants, replies, notify names, decisions, and whole-post controls', async () => {
+  const long = 'A'.repeat(1500), forumEvents = [event(1, 'create', STORAGE, {frame: frame(), message: ''}), event(2, 'join', BUILDER), event(3, 'join', DESIGNER), event(4, 'leave', DESIGNER),
+    ...Array.from({length: 12}, (_, index) => event(index + 5, 'contribution', index === 2 ? DESIGNER : BUILDER, {message: index === 0 ? long : `Post ${index}`, replyTo: index === 3 || index === 4 ? 5 : null, notify: index === 1 ? [DESIGNER] : []})),
+    event(17, 'carried-authority', STORAGE, {message: 'Proceed with the plan', source: 'Decision source'})];
+  await arrive({workspace: {id: 'forum', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'agent', identity: BUILDER}, conversationLayout: twoPanes(BUILDER, 'agent-pane')}, primaries: [primaryFixture()],
+    roster: [agentFixture(BUILDER, {name: 'Builder', handle: '@builder', role: 'Build the list', model: {provider: 'sample', modelId: 'model', thinkingLevel: 'high'}}), agentFixture(DESIGNER, {name: 'Designer'}), agentFixture(STORAGE, {name: 'Manager'})]});
+  fixtureControl.threadHandler = url => url.pathname === '/api/threads/read' ? {...page(forumEvents, {members: [{identity: BUILDER, contribution: 'The list', joinedAt: 1}, {identity: STORAGE, contribution: 'Integration', joinedAt: 1}]}), source: 'retained'} : overview;
+  byId('threads-refresh').click(); await settle(); rowButton('Release plan').click(); await settle();
+  const node = reader(); assert.ok(node);
+  assert.match(node.querySelector('.thread-status')?.textContent ?? '', /Read from saved storage/);
+  assert.deepEqual(node.querySelectorAll('.thread-person').map(person => person.textContent), ['Manager', 'Builder', 'Designer']);
+  assert.match(node.querySelector('.thread-member-list')?.textContent ?? '', /@builder · sample\/model · high/);
+  assert.match(node.querySelector('.thread-member-list')?.textContent ?? '', /Build the list/);
+  assert.match(node.querySelector('.thread-member-list')?.textContent ?? '', /Earlier participants/);
+  assert.equal(node.querySelectorAll('.thread-event-group').length, 1);
+  assert.equal(node.querySelector('.thread-event-group')?.querySelectorAll('details').length, 1);
+  assert.equal(node.querySelector('.thread-event-group')?.querySelectorAll('[data-sequence]').length, 3);
+  assert.match(node.querySelector('.thread-replies')?.textContent ?? '', /2 replies/);
+  assert.match(node.querySelector('.thread-to')?.textContent ?? '', /To Designer/);
+  assert.match(node.querySelector('.thread-decided')?.textContent ?? '', /Proceed with the plan/);
+  const first = node.querySelector('#thread-post-5'); assert.ok(first);
+  node.querySelector('.thread-reply')?.click(); await settle(); assert.equal(hostDocument.activeElement, first);
+  const body = first.querySelector('.thread-post-body'); assert.ok(body);
+  Object.defineProperty(body, 'scrollHeight', {value: 500, configurable: true});
+  const observers = (harness as unknown as {HostResizeObserver: {instances: {callback: () => void; observed: Set<unknown>}[]}}).HostResizeObserver.instances;
+  for (const observer of observers) if (observer.observed.has(node.querySelector('.thread-exchange'))) observer.callback();
+  const whole = first.querySelector('.thread-whole-post'); assert.ok(whole); assert.equal(whole.hidden, false); assert.equal(body.dataset.long, 'true');
+  whole.click(); assert.equal(body.dataset.expanded, 'true'); assert.equal(body.textContent, long);
+  await closeReader();
+});
+
+test('a thread opens in an empty pane without a layout write and Close and Escape return to its row', async () => {
+  const layout = {root: {kind: 'pane' as const, id: 'empty-pane', tabs: [], active: null}, focusedPane: 'empty-pane'};
+  await arrive({workspace: {id: 'empty', revision: 1, conversationLayout: layout}, primaries: [], roster: []});
+  fixtureControl.threadHandler = url => url.pathname === '/api/threads/read' ? page(events) : overview;
+  byId('threads-refresh').click(); await settle(); const before = JSON.stringify(app.state.workspace?.conversationLayout), calls = transportLog.length;
+  rowButton('Release plan').click(); await settle();
+  assert.equal(reader()?.parentNode?.dataset.paneId, 'empty-pane'); assert.equal(reader()?.querySelector('.inspection-back')?.textContent, 'Close thread');
+  assert.equal(byId('conversation-panes').hidden, false); assert.equal(byId('session-chooser').hidden, true);
+  assert.equal(JSON.stringify(app.state.workspace?.conversationLayout), before);
+  assert.deepEqual(transportLog.slice(calls).filter(call => call.method !== 'GET' && call.path.includes('selection')), []);
+  reader()?.querySelector('.inspection-back')?.click(); await settle(); assert.equal(reader(), null); assert.equal(hostDocument.activeElement, rowButton('Release plan'));
+  rowButton('Release plan').click(); await settle(); await closeReader(); assert.equal(reader(), null); assert.equal(hostDocument.activeElement, rowButton('Release plan'));
+  assert.equal(JSON.stringify(app.state.workspace?.conversationLayout), before);
+});
+
 test('the open session picker re-reads its rows when the window regains focus and when a release event arrives', async context => {
+  await arrive({workspace: {id: 'picker', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture()], roster: []});
   const file = {id: 'terminal-session', path: '/fixture/terminal-session.jsonl', project: '/fixture', revision: 'r1', title: 'Terminal session', titleState: 'ready', modifiedAt: '2026-01-01T00:00:00Z', size: 10};
   let writer: 'live' | undefined = 'live';
   const body = () => ({items: [{...file, ...(writer ? {writer}: {})}], total: 1, omitted: 0, nextCursor: null, titleCursor: null, observedAt: '2026-01-02T00:00:00Z'});

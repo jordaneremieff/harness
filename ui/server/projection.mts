@@ -637,7 +637,7 @@ function rosterRow(raw: unknown): AgentRow | undefined {
     modifiedAt: typeof source.modifiedAt === 'number' && Number.isFinite(source.modifiedAt) ? source.modifiedAt : 0,
     state: safeText(source.state, 256), owner: source.owner === 'here' || source.owner === 'unavailable' ? source.owner : 'unknown',
     availability: rosterAvailability(source), partial: source.partial === true};
-  rosterOptionals(row, source); catalogPresentation(row, source); return row;
+  rosterOptionals(row, source); if (typeof source.role === 'string') row.role = safeText(source.role, 24 * 1024); catalogPresentation(row, source); return row;
 }
 function rosterScan(raw: unknown, omitted: number): CachedRoster['scan'] {
   const source = object(raw); const count = (value: unknown) => Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : 0;

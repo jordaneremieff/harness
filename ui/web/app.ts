@@ -1,4 +1,4 @@
-import type { AgentHistoryPage, AgentRow, Bootstrap, EventData, HistoryPage, OperationView, PrimaryView, ProjectedFrame, Snapshot, Target, TargetState, ThreadListItem, ThreadOverview, ThreadPageView, Workspace } from '../shared/api.ts';
+import type { AgentHistoryPage, AgentRow, Bootstrap, EventData, HistoryPage, OperationView, PrimaryView, ProjectedFrame, Snapshot, Target, TargetState, ThreadOverview, ThreadPageView, Workspace } from '../shared/api.ts';
 import { draftHasContent, draftImageFingerprint, LIMITS, resolveAppearance } from '../shared/api.ts';
 import { Actions } from './actions.ts';
 import { AgentCommandInventory } from './agent-commands.ts';
@@ -46,7 +46,7 @@ import { IdentityLookup } from './identity-lookup.ts';
 import { Roster, rosterWorking, type RosterStatus } from './roster.ts';
 import {conversationAttention, attentionCounts, type Attention} from './attention.ts';
 import {activeDialog} from './dialog-state.ts';
-import { ThreadExplorer, ThreadReader } from './threads-view.ts';
+import { ThreadExplorer, ThreadReader, type ThreadEntry } from './threads-view.ts';
 import { THREAD_PAGE_EVENTS } from './threads.ts';
 import {noticeGroups, noticeGroupText, noticeTarget, type NoticeGroup} from './notice-presentation.ts';
 import { Recovery } from './recovery.ts';
@@ -550,64 +550,64 @@ function rosterStatus(row: AgentRow): RosterStatus {
 }
 /** Threads: the sidebar explorer, and one reader placed in the pane that was focused when a thread was opened. It is not part of the saved layout. */
 let threadHost: ConversationController | undefined, threadOpener: string | undefined;
+let threadPane: {workspaceId: string; paneId: string; active?: string} | undefined;
 /** Known name, then a Pi session title the browser already holds, then the short identity. Never a kind the browser does not know. */
 function threadName(identity: string): string {
   const caption = toolSubjectCaption(identity);
   if (caption?.name) return caption.name;
   if (caption && !/^(Unresolved|Unnamed)\b/.test(caption.text)) return caption.text;
-  return identityFallback(identity);
+  return picker.sessionTitle(identity) ?? `Unnamed conversation · ${identity.slice(0, 8)}`;
 }
 function identityFallback(identity: string): string { return picker.sessionTitle(identity) ?? `Conversation ${identity.slice(0, 8)}`; }
 const threadReader = new ThreadReader({
   page: (threadId, before, signal) => request<ThreadPageView>(`/api/threads/read?threadId=${encodeURIComponent(threadId)}&limit=${THREAD_PAGE_EVENTS}${before === undefined ? '' : `&before=${before}`}`, 'GET', undefined, undefined, AbortSignal.any([signal, AbortSignal.timeout(30_000)])),
   name: threadName,
+  profile: identity => state.roster.get(identity),
   openMember: identity => openThreadMember(identity),
   back: () => closeThread(true),
+  changed: () => renderWorkbenchStatus(),
 });
 const threadExplorer = new ThreadExplorer({
-  overview: signal => request<ThreadOverview>('/api/threads', 'GET', undefined, undefined, AbortSignal.any([signal, AbortSignal.timeout(45_000)])),
+  overview: signal => request<ThreadOverview>('/api/threads', 'GET', undefined, undefined, AbortSignal.any([signal, AbortSignal.timeout(120_000)])),
   name: threadName,
   open: item => openThread(item),
 });
-/** The reader sits on a conversation: the focused pane's, else the pane that last showed one while focused, else any pane that shows one. */
-let lastConversationPane: string | undefined;
-function threadHostController(): ConversationController | undefined {
-  const workspace = state.workspace; if (!workspace) return undefined;
-  const layout = currentLayout(), focused = paneById(layout, layout.focusedPane), last = lastConversationPane ? paneById(layout, lastConversationPane) : undefined;
-  for (const pane of [...(focused ? [focused] : []), ...(last ? [last] : []), ...paneLeaves(layout.root)]) {
-    const tab = pane.tabs.find(item => tabKey(item) === pane.active), target = tab ? controllerTarget(tab) : undefined;
-    const controller = target ? controllers.get(controllerKey(workspace.id, target)) : undefined;
-    if (controller) return controller;
-  }
-  return undefined;
-}
-function openThread(item: ThreadListItem): void {
-  const controller = threadHostController();
-  if (!controller) { modal.open('Open a conversation first').append(element('p', undefined, 'A thread opens beside a conversation. Open one, then choose the thread again.')); return; }
-  if (threadHost && threadHost !== controller) closeThread(false);
-  if (controller.inspection?.active) controller.inspection.conversation();
+function openThread(item: ThreadEntry): void {
+  const workspace = state.workspace; if (!workspace) return;
+  const layout = currentLayout(), leaf = paneById(layout, layout.focusedPane); if (!leaf) return;
+  if (threadPane && threadPane.paneId !== leaf.id) closeThread(false);
+  const tab = leaf.tabs.find(item => tabKey(item) === leaf.active), target = tab ? controllerTarget(tab) : undefined;
+  const controller = target ? conversationController(target) : undefined;
   threadHost = controller; threadOpener = item.id;
-  controller.root.insertBefore(threadReader.node, controllerNode(controller, 'transcript-region'));
-  threadExplorer.setCurrent(item.id); renderInspection(controller);
-  threadReader.open(item); threadReader.focus();
+  threadPane = {workspaceId: workspace.id, paneId: leaf.id, active: leaf.active ?? undefined};
+  const pane = paneRegions.get(leaf.id); if (!pane) return;
+  pane.content.hidden = true; pane.content.inert = true; pane.node.append(threadReader.node);
+  threadReader.returnLabel(tab ? `Back to ${tab.kind === 'file' ? tab.path.split('/').at(-1) : target ? presentationName(presentation(target)) : 'conversation'}` : 'Close thread');
+  threadExplorer.setCurrent(item.id); if (controller) renderInspection(controller);
+  threadReader.open(item); renderNavigation(); stableViews().sync(); threadReader.focus(); renderWorkbenchStatus();
 }
 function closeThread(restoreFocus: boolean): void {
-  const controller = threadHost, opener = threadOpener;
-  threadReader.close(); threadReader.node.remove(); threadHost = undefined; threadOpener = undefined; threadExplorer.setCurrent(undefined);
+  const controller = threadHost, opener = threadOpener, paneId = threadPane?.paneId;
+  threadReader.close(); threadReader.node.remove(); threadHost = undefined; threadOpener = undefined; threadPane = undefined; threadExplorer.setCurrent(undefined);
+  const pane = paneId ? paneRegions.get(paneId) : undefined; if (pane) {pane.content.hidden = false; pane.content.inert = false;}
+  stableViews().sync();
   if (controller && controllers.has(controllerKey(controller.workspaceId, controller.target))) renderInspection(controller);
+  renderNavigation(); renderWorkbenchStatus();
   if (!restoreFocus) return;
   if (opener && threadExplorer.focusRow(opener)) return;
-  if (controller) controllerNode(controller, 'transcript').focus({preventScroll: true});
+  pane?.plus.focus({preventScroll: true});
 }
 function openThreadMember(identity: string): void {
   if (!conversationIdentityText(identity)) return;
   const destinations = referenceIdentities(identity);
   const destination: ReferenceDestination = destinations.length === 1 && destinations[0] ? destinations[0] : {target: {kind: 'agent', identity}};
+  const paneId = threadPane?.paneId;
   closeThread(false);
-  void navigateReference(destination, true).catch(showError);
+  void navigateReference(destination, true, paneId).catch(showError);
 }
 function syncThreadHost(): void {
-  if (threadHost && (threadHost.workspaceId !== state.workspace?.id || controllers.get(controllerKey(threadHost.workspaceId, threadHost.target)) !== threadHost)) closeThread(false);
+  const leaf = threadPane ? paneById(currentLayout(), threadPane.paneId) : undefined;
+  if (threadPane && (threadPane.workspaceId !== state.workspace?.id || !leaf || (leaf.active ?? undefined) !== threadPane.active)) closeThread(false);
 }
 function openAgentMessage(identity: string): void {
   let controller: ConversationController; try {controller = conversationController({kind: 'agent', identity});} catch (error) {showError(error); return;}
@@ -865,6 +865,11 @@ function renderWorkbenchStatus(): void {
   byId('workbench-activity').dataset.notice = String(!!notice);
   const retained = byId<HTMLButtonElement>('file-retained-drafts');retained.hidden = !filesViews.retained().length;setText(retained,'Review retained draft');retained.onclick = reviewRetainedDrafts;
   const tab = activeTab(currentLayout());
+  if (threadPane?.paneId === currentLayout().focusedPane && threadReader.active) {
+    workbenchStatus.update('agent', threadReader.active.title || 'Thread', 'Thread', threadReader.active.id);
+    byId('focused-composer-status').hidden = true; return;
+  }
+  byId('focused-composer-status').hidden = false;
   const editingMessage = footerController && messageTarget.current?.identity === (footerController.target.kind === 'agent' ? footerController.target.identity : undefined) && footerController.elements.root.contains(document.activeElement);
   if (tab?.kind === 'file' && !editingMessage) {renderFileWorkbenchStatus(tab);return;}
   const selected = layoutTarget(currentLayout(), primaryTarget()) ?? undefined;
@@ -1007,6 +1012,7 @@ function mountPaneLeaf(leaf: PaneLeaf, layout: ConversationLayout): HTMLElement 
   pane.previous.dataset.unreachable = String(pane.previous.disabled); pane.next.dataset.unreachable = String(pane.next.disabled);
   pane.previous.hidden = pane.next.hidden = leaf.tabs.length <= 1;
   pane.plus.disabled = !state.workspace; pane.menu.disabled = !leaf.tabs.length;
+  pane.content.hidden = threadPane?.paneId === leaf.id; pane.content.inert = pane.content.hidden;
   const activeTab = leaf.tabs[activeIndex]; pane.actions.hidden = !activeTab || activeTab.kind === 'file'; pane.actions.disabled = pane.actions.hidden || !state.workspace;
   pane.node.dataset.focused = String(leaf.id === layout.focusedPane);
   return pane.node;
@@ -1392,8 +1398,7 @@ export function renderNavigation(): void {
   if (drawerClosed && !visible && byId('sidebar').contains(document.activeElement)) byId('sidebar-show').focus({preventScroll: true});
   placeWorkbenchControls(visible);
   const layout = currentLayout(); const tab = activeTab(layout);
-  if (tab && tab.kind !== 'file') lastConversationPane = layout.focusedPane;
-  renderPaneTree(layout); renderSessionEntry(!!tab); byId('conversation-panes').hidden = !hasConversation();
+  renderPaneTree(layout); renderSessionEntry(!!tab); byId('conversation-panes').hidden = !hasConversation() && !threadPane;
   tabStrip.render(); renderIdentity();
   byId('primary-row').hidden = !primary() || paneLeaves(layout.root).some(pane => pane.tabs.some(tab => tab.kind === 'primary'));
   byId('primary-section').hidden = !hasConversation(); byId('primary-section-body').hidden = false;
@@ -1413,12 +1418,12 @@ function placeWorkbenchControls(sidebarShown: boolean): void {
   focused?.focus({preventScroll: true});
 }
 function renderSessionEntry(hasTab: boolean): void {
-  const firstUse = !hasConversation();
-  byId('tabs-empty').hidden = hasTab || firstUse; byId('tabs-open-primary').hidden = !primary();
+  const firstUse = !hasConversation() && !threadPane;
+  byId('tabs-empty').hidden = hasTab || firstUse || !!threadPane; byId('tabs-open-primary').hidden = !primary();
   const chooser = byId('session-chooser'); chooser.hidden = !firstUse;
   if (firstUse && snapshot) picker.mount(chooser, projectPath()); else picker.unmount();
 }
-function focusEditor(): void {const selected=layoutTarget(currentLayout(),primaryTarget());const owner=selected&&state.workspace?controllers.get(controllerKey(state.workspace.id,selected)):undefined;if(owner&&threadHost===owner){threadReader.focus();return;}if(owner?.inspection?.active){owner.inspection.scroller.focus({preventScroll:true});return;}const tab = activeTab(currentLayout());if (tab?.kind === 'file' && state.workspace) {filesViews.view(state.workspace,tab).focus();return;}const target = layoutTarget(currentLayout(), primaryTarget()); if (target) conversationController(target).composer.focus(); }
+function focusEditor(): void {if(threadPane?.paneId===currentLayout().focusedPane){threadReader.focus();return;}const selected=layoutTarget(currentLayout(),primaryTarget());const owner=selected&&state.workspace?controllers.get(controllerKey(state.workspace.id,selected)):undefined;if(owner&&threadHost===owner){threadReader.focus();return;}if(owner?.inspection?.active){owner.inspection.scroller.focus({preventScroll:true});return;}const tab = activeTab(currentLayout());if (tab?.kind === 'file' && state.workspace) {filesViews.view(state.workspace,tab).focus();return;}const target = layoutTarget(currentLayout(), primaryTarget()); if (target) conversationController(target).composer.focus(); }
 export function toggleSidebar(visible: boolean): void {
   if (!matchMedia('(min-width: 900px)').matches) {
     drawerOpen = visible; renderNavigation(); roster.schedule(); byId(visible ? 'project-button' : 'sidebar-show').focus(); return;
@@ -2241,19 +2246,20 @@ function resolveReference(query: ReferenceQuery): ReferenceResolution {
   const first = destinations[0]; if (destinations.length === 1 && first) return {destination: first};
   return {reason: destinations.length ? 'Reference has more than one loaded destination.' : 'Reference is not resolved by the loaded public identities.'};
 }
-async function navigateReference(destination: ReferenceDestination, knownTaskReference = false): Promise<void> {
+async function navigateReference(destination: ReferenceDestination, knownTaskReference = false, paneId?: string): Promise<void> {
   const {target, entryId} = destination; const workspace = state.workspace?.id;
   if (!workspace) return;
+  const layout = paneId && paneById(currentLayout(), paneId) ? {...currentLayout(), focusedPane: paneId} : currentLayout();
   if (target.kind === 'agent') {
     if (!state.roster.has(target.identity) && selectedAgent() !== target.identity && !knownTaskReference) return;
     conversationController(target);
-    await selection({panelVisible: true, selectedTarget: target, conversationLayout: openTab(currentLayout(), {kind: 'agent', identity: target.identity})});
+    await selection({panelVisible: true, selectedTarget: target, conversationLayout: openTab(layout, {kind: 'agent', identity: target.identity})});
     if (workspace !== state.workspace?.id || selectedAgent() !== target.identity) return;
     focusReference(conversationController(target).transcript, entryId);
   } else {
     if (state.primaries.get(target.key)?.epoch !== target.epoch) return;
     conversationController(target);
-    await selection({primaryKey: target.key, selectedTarget: target, conversationLayout: openTab(currentLayout(), {kind: 'primary'})});
+    await selection({primaryKey: target.key, selectedTarget: target, conversationLayout: openTab(layout, {kind: 'primary'})});
     if (!referencePrimaryCurrent(workspace, target)) return;
     focusReference(conversationController(target).transcript, entryId);
   }

@@ -55,7 +55,7 @@ export type HostInventory = { contributions: { name: string; source: string; com
 export type StatusReply = JsonObject & { storageId: string; inventory?: HostInventory };
 export type CommandResult = JsonObject & { name: string; conversationId: number; identity: string; text: string };
 export type ThreadSummary = { id: string; title: string; purpose: string; updatedAt: number; closed: boolean; members: number };
-export type ThreadList = { items: ThreadSummary[]; nextCursor: string | null;
+export type ThreadList = { source?: "live" | "retained"; items: ThreadSummary[]; nextCursor: string | null;
 	coverage: { complete: boolean; visited: number; omitted: number; unavailable?: number } };
 export type ThreadMember = { identity: string; contribution: string; joinedAt: number };
 export type ThreadFrame = { title: string; purpose: string; authority: string; source: string; restrictions: string;
@@ -64,10 +64,10 @@ export type ThreadRecord = ThreadFrame & { id: string; creator: string; createdA
 	closed: boolean; sequence: number; members: ThreadMember[] };
 export type ThreadEvent = { threadId: string; sequence: number; at: number; sender: string; origin: "model" | "operator";
 	kind: string; message: string; source: string; replyTo: number | null; revision: number; notify: string[] };
-export type ThreadPage = { thread: ThreadRecord; events: ThreadEvent[]; nextBefore: number | null; pending: number;
+export type ThreadPage = { source?: "live" | "retained"; thread: ThreadRecord; events: ThreadEvent[]; nextBefore: number | null; pending: number;
 	coverage: { complete: boolean; bytes: number } };
 type Context = { identity?: string; requestId?: string; token?: string };
-type Responses = {
+export type Responses = {
 	dashboard: Summary[]; snapshot: Snapshot; inspect: InspectResult;
 	"observe-open": JsonObject & { token: string; frame: ConversationFrame | JsonObject };
 	"observe-frame": ConversationFrame | JsonObject; "observe-close": JsonObject & { closed: boolean };
@@ -210,21 +210,22 @@ export function assertOperation(descriptor: Pick<RuntimeDescriptor, "operations"
 		throw new ContractError(`Incompatible operation: ${member}`, "incompatible");
 	return local;
 }
-export type RetainedMethod = "snapshot" | "inspect";
+export type RetainedMethod = "snapshot" | "inspect" | "collaboration-list" | "collaboration-read";
 export type RetainedDescriptor = {version: "retained-read/1.0.0"; upstream: RuntimeDescriptor["upstream"];
 	operations: Record<RetainedMethod, OperationContract>};
 export type RetainedFailure = {ok: false; error: {code: string; message: string; retryable: boolean}};
 const retainedErrors: Readonly<Record<string, boolean>> = Object.freeze({invalid_request:false, incompatible:false,
 	not_found:false, source_changed:true, source_unreadable:false, limit_exceeded:false, timeout:true, cancelled:false, internal:false});
-export function decodeRetainedDescriptor(value: unknown): RetainedDescriptor {
+export function decodeRetainedDescriptor(value: unknown, collaboration = false): RetainedDescriptor {
 	const o = object(json(value)); only(o, ["version", "upstream", "operations"]);
 	if (o.version !== "retained-read/1.0.0") throw new ContractError("Incompatible retained reader version", "incompatible");
 	const upstream = object(o.upstream); only(upstream, ["codingAgent", "durable"]);
 	fields(upstream, ["codingAgent", "durable"], v => semver(v));
-	const operations = object(o.operations); only(operations, ["snapshot", "inspect"]);
-	for (const member of ["snapshot", "inspect"] as const) {
+	const members = collaboration ? ["collaboration-list", "collaboration-read"] as const : ["snapshot", "inspect"] as const;
+	const operations = object(o.operations); only(operations, [...members]);
+	for (const member of members) {
 		const parsed = operation(operations[member]);
-		requireValue(parsed.durable === upstream.durable, "Reader Durable identity disagrees with its operation");
+		requireValue(collaboration ? parsed.durable === undefined : parsed.durable === upstream.durable, "Reader Durable identity disagrees with its operation");
 	}
 	return o as unknown as RetainedDescriptor;
 }
@@ -234,12 +235,15 @@ export function retainedTarget(value: unknown): {storageId: string; conversation
 	return identity(value);
 }
 export function decodeRetainedParams(member: RetainedMethod, value: unknown, targetIdentity: string): JsonObject {
-	retainedTarget(targetIdentity);
-	requireValue(member === "snapshot" || member === "inspect", "Unsupported retained method");
+	const target = retainedTarget(targetIdentity);
+	const collaboration = member === "collaboration-list" || member === "collaboration-read";
+	requireValue(collaboration || member === "snapshot" || member === "inspect", "Unsupported retained method");
+	if (collaboration) requireValue(target.conversationId === 1, "Collaboration requires a bare storage identity");
 	const params = object(json(value));
 	requireValue(params.sessionId === undefined && params.conversationId === undefined, "Target belongs in the retained envelope");
-	decodeInput(member, {...params, sessionId: targetIdentity}, {identity: targetIdentity});
-	optional(params, ["limit"], v => integer(v, 1, 100));
+	decodeInput(member, collaboration ? params : {...params, sessionId: targetIdentity}, {identity: targetIdentity});
+	optional(params, ["limit"], v => integer(v, 1, collaboration ? 20 : 100));
+	if (member === "collaboration-read") requireValue(String(params.threadId).split('/')[0] === target.storageId, "Thread belongs to another storage");
 	if (member === "inspect") retainedInspectParams(params);
 	return params;
 }
@@ -268,7 +272,23 @@ export function decodeRetainedResponse<M extends RetainedMethod>(member: M, valu
 	const parsed = retainedTarget(targetIdentity);
 	requireValue(o.method === member && o.sessionId === targetIdentity && o.storageId === parsed.storageId && o.conversationId === parsed.conversationId, "Wrong retained response target");
 	if (member === "inspect" && params.view !== undefined) requireValue(object(o.result).view === params.view, "Wrong retained inspection view");
-	return {ok: true, result: decodeResponse(member, o.result, {identity: targetIdentity, ...(typeof params.requestId === "string" ? {requestId:params.requestId} : {})})};
+	const result = decodeResponse(member, o.result, {identity: targetIdentity, ...(typeof params.requestId === "string" ? {requestId:params.requestId} : {})});
+	retainedCollaborationContext(member, result, params, parsed.storageId);
+	return {ok: true, result};
+}
+function retainedCollaborationContext(member: RetainedMethod, result: Responses[RetainedMethod], params: JsonObject, storageId: string): void {
+	if (member === "collaboration-list") {
+		const list = result as ThreadList;
+		requireValue(list.items.length <= (typeof params.limit === "number" ? params.limit : 10), "Too many retained threads");
+		for (const item of list.items) requireValue(item.id.split('/')[0] === storageId, "Thread belongs to another storage");
+	}
+	if (member === "collaboration-read") {
+		const page = result as ThreadPage;
+		requireValue(page.thread.id === params.threadId && page.thread.id.split('/')[0] === storageId, "Wrong retained thread");
+		requireValue(page.events.length <= (typeof params.limit === "number" ? params.limit : 10), "Too many retained events");
+		const boundary = typeof params.before === "number" ? params.before : page.thread.sequence + 1;
+		requireValue(!page.events.length || page.events.at(-1)?.sequence === boundary - 1, "Wrong retained event boundary");
+	}
 }
 function identity(value: unknown): { storageId: string; conversationId: number } {
 	string(value, 512); requireValue(!/[\s\x00-\x1f\x7f]/.test(value), "Invalid identity");
