@@ -8,6 +8,7 @@ interface Window {
     const encoder = new TextEncoder(), recent = new Map<string, number>();
     const source: {release?: string; commit?: string; generation?: string} = {};
     let windowAt = Date.now(), count = 0, sending = false;
+    const pending:string[]=[];let retry:number|undefined,retries=0;
     const asset = (value: string): string => {
       try {
         const position = /(?::\d{1,8}){1,2}$/.exec(value)?.[0] ?? '';
@@ -54,18 +55,27 @@ interface Window {
       const reason = typeof error === 'string' ? error : fallback;
       return {message: message(nativeError && typeof nativeError.message === 'string' ? nativeError.message : reason), stack: stackText(nativeError, hint)};
     };
+    const failed = ():void => {
+      sending=false;if(retries>=3)return;
+      retry=window.setTimeout(()=>{retry=undefined;flush();},1000*2**retries++);
+    };
+    const flush = ():void => {
+      if(sending||retry!==undefined||!pending.length)return;sending=true;
+      try{
+        void fetch('/api/client-errors', {method:'POST',headers:{'Content-Type':'application/json'},body:pending[0],credentials:'same-origin',signal:AbortSignal.timeout(3000)})
+          .then(response=>{if(!response.ok){failed();return;}sending=false;retries=0;pending.shift();flush();},failed);
+      }catch{failed();}
+    };
     const report = (section: Parameters<NonNullable<Window['reportClientError']>>[0], error: unknown, fallback = 'Client error without an Error object.', locationHint = ''): void => {
       try {
-        const now = Date.now(); if (now - windowAt >= 60_000) {windowAt = now; count = 0;}
-        if (sending || count >= 8) return;
+        flush();const now = Date.now(); if (now - windowAt >= 60_000) {windowAt = now; count = 0;}
+        if (count >= 8 || pending.length >= 8) return;
         const details = diagnostic(error, fallback, locationHint);
         if (!admit(`${details.message}\n${details.stack}`, now)) return;
         const body = JSON.stringify({...details, section, source});
         if (encoder.encode(body).length > 8192) return;
-        sending = true;
-        void fetch('/api/client-errors', {method: 'POST', headers: {'Content-Type': 'application/json'}, body, credentials: 'same-origin', signal: AbortSignal.timeout(3000)})
-          .then(() => {sending = false;}, () => {sending = false;});
-      } catch {sending = false;}
+        pending.push(body);flush();
+      } catch {}
     };
     window.reportClientError = (section, error) => report(section, error);
     window.addEventListener('error', (event: Event) => {

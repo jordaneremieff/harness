@@ -1,4 +1,4 @@
-import type { AgentHistoryPage, AgentRow, Bootstrap, EntryView, EventData, HistoryPage, OperationView, PrimaryView, PresentationView, ProjectedFrame, Snapshot, Target, TargetState, ThreadOverview, ThreadPageView, Workspace } from '../shared/api.ts';
+import type { AgentHistoryPage, AgentRow, Bootstrap, EntryView, EventData, HistoryPage, OperationView, PrimaryView, PresentationView, ProjectedFrame, Snapshot, Target, TargetState, ThreadOverview, ThreadPageView, Workspace, WorkspacePage } from '../shared/api.ts';
 import { draftHasContent, draftImageFingerprint, LIMITS, resolveAppearance } from '../shared/api.ts';
 import { Actions } from './actions.ts';
 import {Desk, type DeskRow} from './desk.ts';
@@ -129,7 +129,7 @@ const versionStatus = new VersionStatus();
 const healthStatus = new HealthStatus(modal, versionStatus.identity, versionStatus.node);
 const releaseNotice = new ReleaseNotice(versionStatus.identity.release ? loadedRelease(versionStatus.identity, document.querySelector('meta[name="ui-generation"]')?.getAttribute('content') ?? null, document.querySelector('meta[name="ui-module-family"]')?.getAttribute('content') ?? null) : undefined, {
   before: versionStatus.node, read: readReleaseHealth, reload: reloadRelease, stylesheet: swapReleaseStylesheet, reloadState: releaseReloadState,
-  failure: error => {versionStatus.node.dataset.updateError = errorMessage(error);},
+  failure: error => {versionStatus.node.dataset.updateError = errorMessage(error);window.reportClientError?.('Client',error);},
   clock: {now: Date.now, set: (callback, delay) => window.setTimeout(callback, delay), clear: timer => window.clearTimeout(timer)},
 });
 let diagnosticsActive = false;
@@ -766,9 +766,11 @@ async function prepareMessageTarget(workspaceId: string, target: Extract<Target,
 }
 const extensionDialogs = new ExtensionDialogs(modal, () => state, next => { state = next; }, primary, item => presentationName(presentation({kind: 'primary', key: item.key, epoch: item.epoch})), syncAwaitingAnswer);
 const connectionRecovery = new ConnectionRecovery({attempt: resync, paint: (phase, error) => {
+  const recovered=phase==='healthy'&&connectionPhase!=='healthy';
   connectionPhase = phase; connectionError = error; connected = phase === 'healthy'; renderConnection();
   releaseNotice.readiness(connected && !releasePage);
-  if (connected) {renderAll(); void finishStartup().catch(showError);} else renderAvailability();
+  if(recovered)window.reportClientError?.('Client',new Error('The browser connection recovered.'));
+  if (connected) {renderAll(); void finishStartup().catch(error=>{window.reportClientError?.('Client',error);showError(error);});} else renderAvailability();
 }});
 export const selectionQueue = new SelectionQueue({current: () => state.workspace, reload, save: (workspace, change, control) => request<Workspace>(`/api/workspaces/${encodeURIComponent(workspace.id)}/selection`, 'PUT', {expectedRevision: workspace.revision, ...workspaceEntry.save(workspace,change),...(control ? {control} : {})},undefined,control ? AbortSignal.timeout(CONTROL_LIMITS.executionMs) : undefined), paint: (workspace, pending) => { selecting = pending; state = {...state, workspace}; renderAll(); }});
 
@@ -1414,8 +1416,12 @@ async function refreshSnapshot(signal?: AbortSignal): Promise<void> {
   try {
     const explicit = messageTarget.current;
     const read = <T>(path: string, method = 'GET', body?: unknown) => request<T>(path, method, body, undefined, signal && (method === 'GET' ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : signal));
-    const pending = read<Snapshot>(`/api/snapshot?workspace=${encodeURIComponent(state.workspace.id)}`).then(value => hydrateWorkspace(value, read, explicit?.workspaceId === value.workspace.id ? {kind: 'agent', identity: explicit.identity} : undefined));
+    const pending = read<Snapshot>(`/api/snapshot?workspace=${encodeURIComponent(state.workspace.id)}`).then(async value => {
+      if(before.bootId&&before.bootId!==value.bootId&&!releasePage){recoverPageCheckpoint(new Error('The backend identity changed.'));await bootstrap(signal);return;}
+      return hydrateWorkspace(value, read, explicit?.workspaceId === value.workspace.id ? {kind: 'agent', identity: explicit.identity} : undefined);
+    });
     const current = await (signal ? waitForSignal(pending, signal) : pending); signal?.throwIfAborted();
+    if(!current)return;
     if (buffered.overflow) throw new Error('Current view changed too quickly during restore. Reconnect to request a fresh baseline.');
     updateDiagnostics(); snapshot = current; state = replaceSnapshot({...before, dismissedNotices: state.dismissedNotices, readNotices: state.readNotices}, current, buffered.events); if (state.workspace) state = {...state, workspace: selectionQueue.observe(state.workspace)};
     if(before.bootId!==current.bootId) for(const controller of controllers.values()) if(state.conversations.get(targetIdentity(controller.target))?.retainedSession) {controller.cursor=null;controller.historyBoundaryLoaded=false;controller.transcript.historyAvailable(false);}
@@ -1455,6 +1461,7 @@ function stream(signal?: AbortSignal): Promise<void> {
   return (signal ? waitForSignal(promise, signal) : promise).finally(() => { window.clearTimeout(timer); if (streamWait === ready) streamWait = undefined; });
 }
 function disconnected(error: unknown = new Error('The event stream closed.')): void {
+  window.reportClientError?.('Client',error);
   source?.close(); connectionId = undefined; connected = false; releaseNotice.readiness(false); renderAvailability(); devRestoreWake?.();
   if (streamWait) streamWait.reject(error);
   else connectionRecovery.lost(error);
@@ -1476,12 +1483,12 @@ async function resync(signal: AbortSignal): Promise<void> {
   if (resynchronizing) return resynchronizing;
   source?.close(); connected = false; releaseNotice.readiness(false); renderAvailability(); devRestoreWake?.();
   const task = (async () => {
-    if (state.workspace) await reload(signal); else await refreshVisible(() => bootstrap(signal), loadVisibleHistory, showError);
+    if (state.workspace&&!freshEntryRecovery) await reload(signal); else await refreshVisible(() => bootstrap(signal), loadVisibleHistory, showError);
     signal.throwIfAborted();
     if (messageTarget.current && !messageTarget.current.invalidated) await waitForSignal(messageTarget.open(messageTarget.current.identity), signal);
     signal.throwIfAborted(); await stream(signal); renderAll();
   })();
-  const pending = task.finally(() => { if (resynchronizing === pending) resynchronizing = undefined; });
+  const pending = task.catch(error=>{if(!signal.aborted)window.reportClientError?.('Client',error);throw error;}).finally(() => { if (resynchronizing === pending) resynchronizing = undefined; });
   resynchronizing = pending; return pending;
 }
 export function receive(event: ReceivedEvent): void {
@@ -3330,7 +3337,15 @@ let uiReady = false;
 async function finishStartup(): Promise<void> {
   const connection = source,current = ()=>!!connection && connection === source && connected && !document.hidden;
   if (!current()) return;
-  if (releasePage) await restoreReleasePage(releasePage, current);
+  if (releasePage) {
+    const page=releasePage,revision=devInteractionRevision;
+    try{await restoreReleasePage(page,current);}catch(error){
+      if(!current())throw error;
+      recoverPageCheckpoint(error,page.checkpoint,revision===devInteractionRevision);
+      if(freshEntryRecovery){connectionRecovery.reconnect();return;}
+    }
+  }
+  await restoreRecoveryDrafts(current);
   await initializeDevReload(current);
   if (uiReady || !current()) return;
   uiReady = true; releaseNotice.readiness(true); document.dispatchEvent(new Event('ui-ready')); renderNavigation();
@@ -3357,17 +3372,48 @@ type ReleasePage = {
 let releasePage: ReleasePage | undefined;
 let releasePageRead = false;
 let releaseRestore: Promise<void> | undefined;
+let freshEntryRecovery=false;
+let recoveryComposerKey:string|undefined;
+function recoverPageCheckpoint(error:unknown,checkpoint?:DevReloadCheckpoint,fresh=true):void {
+  const key=checkpoint?.composerStateKey??reloadStateKey;if(typeof key==='string')recoveryComposerKey=key;
+  releasePage=undefined;releasePageRead=true;freshEntryRecovery=fresh;reloadStateKey=undefined;preparedReloadState=undefined;
+  const url=new URL(location.href);url.searchParams.delete('update');url.searchParams.delete('restore');history.replaceState(null,'',url);
+  window.reportClientError?.('Client',error);
+  window.reportClientError?.('Client',new Error(fresh?'Page recovery will use the latest workspace and fresh-entry defaults. Draft and checkpoint storage is retained.':'Page recovery retained newer interaction and draft storage instead of the old checkpoint view.'));
+}
+async function restoreRecoveryDraft(value:ComposerReloadState,signal:AbortSignal,current:()=>boolean):Promise<void> {
+  try{if(!await restorePreservedComposers([value],[],signal,current))throw new Error('Draft recovery ownership changed; stored data is retained.');}
+  catch(error){window.reportClientError?.('Client',error);}
+}
+async function restoreRecoveryDrafts(current:()=>boolean):Promise<void> {
+  const key=recoveryComposerKey;if(!key)return;recoveryComposerKey=undefined;
+  const signal=AbortSignal.timeout(15_000),revision=devInteractionRevision;
+  try{
+    const raw=await readReloadState(key,signal);
+    if(!Array.isArray(raw)||raw.length>LIMITS.conversationTabs)throw new Error('Preserved draft recovery data is unavailable; its storage is retained.');
+    const values=raw.filter(validComposerReloadState);
+    if(values.length!==raw.length)window.reportClientError?.('Client',new Error('Invalid draft recovery records remain in storage.'));
+    for(const value of values){
+      if(!current()||revision!==devInteractionRevision)return;
+      const eligible=()=>current()&&revision===devInteractionRevision&&!controllers.get(controllerKey(value.workspace,value.target))?.composer.unsaved;
+      if(!eligible()||values.filter(other=>other.workspace===value.workspace&&other.targetKey===value.targetKey).length!==1){window.reportClientError?.('Client',new Error('Draft recovery retained stored data because its owner has newer edits or ambiguous records.'));continue;}
+      await restoreRecoveryDraft(value,signal,eligible);
+    }
+    if(current())renderAll();
+  }catch(error){window.reportClientError?.('Client',error);}
+}
 async function readReleasePage(signal:AbortSignal):Promise<void> {
   if(releasePageRead)return;
-  const key=new URL(location.href).searchParams.get('update');
+  const url=new URL(location.href),key=url.searchParams.get('update');
   if(key){
-    const value=await readReloadState(key,signal) as ReleasePage|undefined;
-    if(!value?.checkpoint || !validateDevReloadCheckpoint(value.checkpoint,value.checkpoint.generation,Date.now()) ||
-      !value.workspace || value.workspace.id!==value.checkpoint.workspaceId || !validPaneLayout(value.workspace.conversationLayout) ||
-      !value.entry || value.entry.workspaceId!==value.workspace.id || !Array.isArray(value.entry.hidden) || !Array.isArray(value.controllers) || value.controllers.length>LIMITS.conversationTabs || !value.desk) {
-      throw new Error('The exact page checkpoint is unavailable. This page did not apply fresh-entry defaults.');
-    }
-    releasePage=value;reloadStateKey=value.checkpoint.composerStateKey;
+    let value:ReleasePage|undefined;
+    try{
+      value=await readReloadState(key,AbortSignal.any([signal,AbortSignal.timeout(15_000)])) as ReleasePage|undefined;
+      if(!value?.checkpoint || !validateDevReloadCheckpoint(value.checkpoint,value.checkpoint.generation,Date.now()) ||
+        !value.workspace || value.workspace.id!==value.checkpoint.workspaceId || url.searchParams.get('workspace')!==value.workspace.id || !validPaneLayout(value.workspace.conversationLayout) ||
+        !value.entry || value.entry.workspaceId!==value.workspace.id || !Array.isArray(value.entry.hidden) || !Array.isArray(value.controllers) || value.controllers.length>LIMITS.conversationTabs || !value.desk)throw new Error('The exact page checkpoint is missing or invalid.');
+      releasePage=value;reloadStateKey=value.checkpoint.composerStateKey;
+    }catch(error){if(signal.aborted)throw error;recoverPageCheckpoint(error,value?.checkpoint);}
   }
   releasePageRead=true;
 }
@@ -3524,14 +3570,14 @@ export async function reloadDev(): Promise<void> {
 export function renderDevReloadNotice(notice: HTMLElement, status: DevReloadNotice): void {
   devNavigating = status.state === 'navigating'; notice.replaceChildren();
   const view = devReloadPresentation(status); notice.hidden = !view.text && !view.action; notice.title = view.detail;
-  if (status.error) notice.dataset.reloadError = JSON.stringify(status.error); else delete notice.dataset.reloadError;
+  if (status.error) {notice.dataset.reloadError = JSON.stringify(status.error);const error=new Error(status.error.message);error.name=status.error.name;error.stack=status.error.stack;window.reportClientError?.('Client',error);} else delete notice.dataset.reloadError;
   if (view.text) notice.append(element('span', undefined, view.action && !/[.!?…]$/.test(view.text) ? `${view.text}.` : view.text));
   if (view.action === 'retry') notice.append(button('Retry', () => {if (status.state === 'offline') devReload?.reconnect(); void devReload?.resume();}));
   if (view.action === 'reload') {
     const reload = button('Reload', () => {
       reload.disabled = true;
       void reloadDev().catch(error => {
-        reload.disabled = false; notice.title = `${view.detail}\nReload did not finish.\n${errorMessage(error)}`;
+        reload.disabled = false; notice.title = `${view.detail}\nReload did not finish.\n${errorMessage(error)}`;window.reportClientError?.('Client',error);
         announce('Reload did not finish. Your drafts remain in this page.');
       });
     });
@@ -3570,19 +3616,32 @@ async function entryPrimary(value: Bootstrap, read: SnapshotReader, signal?: Abo
   if(result.operation.error)throw new Error(result.operation.error.message);
   return read<Bootstrap>(`/api/bootstrap?${query}`);
 }
+async function readBootstrap(workspace:string|null,read:SnapshotReader,signal?:AbortSignal):Promise<Bootstrap|undefined> {
+  let data:Bootstrap;
+  try{data=await read<Bootstrap>(`/api/bootstrap${workspace!==null?`?workspace=${encodeURIComponent(workspace)}`:''}`);}
+  catch(error){
+    if(!releasePage||signal?.aborted||!(error instanceof ApiError)||error.view.code!=='invalid_request')throw error;
+    recoverPageCheckpoint(error,releasePage.checkpoint);return;
+  }
+  if(releasePage&&releasePage.workspace.id!==data.workspace.id){recoverPageCheckpoint(new Error('The retained page belongs to a different workspace.'),releasePage.checkpoint);return;}
+  return data;
+}
 async function bootstrap(signal?: AbortSignal): Promise<void> {
-  const page=new URL(location.href), workspace=page.searchParams.get('workspace');
+  const page=new URL(location.href);let workspace=page.searchParams.get('workspace');
   const read:SnapshotReader = <T>(path: string, method = 'GET', body?: unknown) => request<T>(path, method, body, undefined, signal && (method === 'GET' ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : signal));
   await readReleasePage(signal ?? AbortSignal.timeout(30_000));
-  let data=await read<Bootstrap>(`/api/bootstrap${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''}`);
-  if (releasePage) {
-    if (releasePage.workspace.id !== data.workspace.id) throw new Error('The retained page belongs to a different workspace.');
-    data={...data,workspace:{...releasePage.workspace,revision:data.workspace.revision}};workspaceEntry.restoreReload(releasePage.entry);
+  if(freshEntryRecovery){
+    const active=await read<WorkspacePage>('/api/workspaces?limit=1');
+    const latest=active.items[0]??(await read<WorkspacePage>('/api/workspaces?archived=true&limit=1')).items[0];
+    if(!latest)throw new Error('No existing workspace is available for reconnect. Draft storage is retained.');
+    workspace=latest.id;messageTarget.close();
   }
-  try {if(!releasePage)data=await entryPrimary(data,read,signal);} catch(error) {data=await read<Bootstrap>(`/api/bootstrap?workspace=${encodeURIComponent(data.workspace.id)}`);showError(error);}
-  if(!releasePage && page.searchParams.get('restore') !== 'workspace')workspaceEntry.begin(data.workspace,await entryAgents(data,read));
+  let data=await readBootstrap(workspace,read,signal);if(!data)return bootstrap(signal);
+  if (releasePage) {data={...data,workspace:{...releasePage.workspace,revision:data.workspace.revision}};workspaceEntry.restoreReload(releasePage.entry);}
+  try {if(!releasePage)data=await entryPrimary(data,read,signal);} catch(error) {data=await read<Bootstrap>(`/api/bootstrap?workspace=${encodeURIComponent(data.workspace.id)}`);window.reportClientError?.('Client',error);showError(error);}
+  if(!releasePage && (freshEntryRecovery||page.searchParams.get('restore') !== 'workspace'))workspaceEntry.begin(data.workspace,await entryAgents(data,read));
   data=await hydrateWorkspace(data,read);signal?.throwIfAborted();
-  snapshot = data; launchCwd = data.launchCwd; state = replaceSnapshot(state, data); updateDiagnostics();
+  snapshot = data; launchCwd = data.launchCwd; state = replaceSnapshot(state, data); updateDiagnostics();freshEntryRecovery=false;
   const url = new URL(location.href); url.searchParams.set('workspace', data.workspace.id);url.searchParams.delete('restore');history.replaceState(null, '', url);
 }
 async function start(): Promise<void> {
@@ -3591,7 +3650,7 @@ async function start(): Promise<void> {
     await refreshVisible(bootstrap, loadVisibleHistory, showError);
     renderAll(); await stream(); connectionRecovery.healthy();
   } catch (error) {
-    connectionRecovery.lost(error);
+    window.reportClientError?.('Client',error);connectionRecovery.lost(error);
   }
 }
 primaryDraftSelection=new PrimaryDraftSelection(selectedDraftSource,primaryDraftActions);
