@@ -6,6 +6,7 @@ import { cardAction, cardActionLabel, cardDisclosure, cardIcon, type CardIcon } 
 import { contextMenu, nativeEditingTarget, type ContextItem } from './context-menu.ts';
 import { markdownDom, sourceHeader, sourceWrap } from './safe-markdown.ts';
 import { highlight, languageFromPath } from './highlight.ts';
+import { numberedRead, readLineStart, readSourcePart } from './read-lines.ts';
 import { transcriptImage } from './image.ts';
 import { pairedTimestamp, thinkingKey, type ThinkingTime, type ToolState } from './state.ts';
 import { clockTime, formatDate, isValidTimestamp, previewText, timestampDetails } from './format.ts';
@@ -2047,7 +2048,7 @@ export class Transcript {
     const root = element('section', 'tool-content'); root.append(element('p', 'secondary tool-caption', stillWaitingSentence(awaited))); return root;
   }
   private resultTextPart(section: HTMLElement, part: Extract<PartView, {type: 'text' | 'thinking'}>, source: JoinedTool, budget: PreviewBudget): void {
-    if (part.type === 'text' && part.structured) {
+    if (part.type === 'text' && part.structured && readSourcePart(source) !== part) {
       const awaited = source.name === 'agent_await' ? awaitedAnswers(part.structured) : undefined;
       const document = awaited ? this.awaitedDocument(awaited, part.structured, budget) : presentResult(part.structured, this.presentationContext(), budget);
       if (document) section.append(document);
@@ -2070,11 +2071,13 @@ export class Transcript {
     const args = record(source.args);
     const language = source.name === 'read' && source.status === 'success' ? languageFromPath(args.file_path ?? args.path) : undefined;
     const node = pre as HTMLElement;
-    if (!force && pre.textContent === text && node.dataset.language === (language ?? '')) return;
+    const start = node.classList.contains('output-page') ? undefined : readLineStart(source, text);
+    const numbering = start === undefined ? '' : String(start);
+    if (!force && pre.textContent === text && node.dataset.language === (language ?? '') && node.dataset.readLineStart === numbering) return;
     const frame = preTextFrame(node);
-    if (language) frame.replaceChildren(highlight(text, language));
-    else { if (node.dataset.language) frame.replaceChildren(); setText(frame, text); }
-    node.dataset.language = language ?? '';
+    if (start !== undefined) frame.replaceChildren(numberedRead(text, start, language));
+    else frame.replaceChildren(language ? highlight(text, language) : document.createTextNode(text));
+    node.dataset.language = language ?? ''; node.dataset.readLineStart = numbering;
   }
   private toolOutputPages(more: OutputContinuation, source: JoinedTool, tool: ToolNode, generation: number): HTMLElement {
     const current = () => generation === this.generation && this.tools.get(source.callId) === tool && tool.source?.result === source.result;

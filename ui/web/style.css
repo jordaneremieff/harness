@@ -719,6 +719,11 @@ pre { max-width: 100%; line-height: 1.55; white-space: pre-wrap; overflow-wrap: 
 .source-header button[aria-pressed=true], .source-disclosure > .source-wrap[aria-pressed=true] { color: var(--fg); }
 .source-header + pre { margin-top: 0; border-top-left-radius: 0; border-top-right-radius: 0; }
 pre[data-wrap=false], .tool-source > pre[data-wrap=false] { white-space: pre; overflow-wrap: normal; overflow-x: auto; }
+.read-source-lines { display: block; min-width: 0; }
+.read-source-line { display: grid; grid-template-columns: calc(var(--read-line-digits) * 1ch) minmax(0,1fr); column-gap: var(--s3); min-width: 0; }
+.read-line-number { grid-column: 1; color: var(--dim); font-family: var(--mono); font-size: var(--fs-code); text-align: right; white-space: pre; user-select: none; pointer-events: none; }
+.read-line-number::before { content: attr(data-line); }
+.read-line-text { grid-column: 2; min-width: 0; white-space: inherit; overflow-wrap: inherit; }
 .stream-text { white-space: pre-wrap; }
 .message-error { color: var(--error); }
 .message-error.warning { color: var(--warning); }
