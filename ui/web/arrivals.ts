@@ -13,7 +13,7 @@ function readable(message: MessageView): boolean {
 export function latestLabel(count: number): {text: string; accessible: string} {
   if (count <= 0) return {text: 'Latest', accessible: 'Latest message'};
   const shown = count > ARRIVAL_CAP ? `${ARRIVAL_CAP}+` : String(count);
-  return {text: `${shown} new \u00b7 Latest`, accessible: count > ARRIVAL_CAP ? `Latest message, more than ${ARRIVAL_CAP} new` : `Latest message, ${count} new`};
+  return {text: `Latest \u00b7 ${shown} new`, accessible: count > ARRIVAL_CAP ? `Latest message, more than ${ARRIVAL_CAP} new` : `Latest message, ${count} new`};
 }
 
 /**
