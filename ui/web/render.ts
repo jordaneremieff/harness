@@ -1630,7 +1630,7 @@ export class Transcript {
       return caption.text === caption.name || caption.text.startsWith(`${caption.name} · `) ? caption.text : caption.name;
     };
   }
-  private quietReportResult(source: ToolState): boolean {
+  private quietReportResult(source: JoinedTool): boolean {
     return source.name === 'agent_send' && source.status !== 'error' && quietTextResult(source);
   }
   private toolContent(tool: ToolNode): void {
