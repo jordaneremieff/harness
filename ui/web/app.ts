@@ -1563,6 +1563,7 @@ function composerShown(controller: ConversationController): boolean { return !!c
 function renderController(controller: ConversationController, deferred = false, receivedAt?: number): void {
   const saved = targetState(controller.target); controller.saved = saved; controller.resizer ??= composerResizer(controller);
   const firstDraft = !!saved && !controller.initialized;
+  renderAgentLiveStrip(controller,presentation(controller.target));
   if (saved) {
     clearPreparationError(controller);
     if (!controller.initialized) {controller.initialized = true; controller.showThinking = thinkingExpanded(saved.presentation); controller.transcript.configure(saved.presentation, saved.reading);}
