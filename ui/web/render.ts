@@ -213,6 +213,9 @@ export class Transcript {
   private entries: EntryView[] = [];
   private displayed: EntryView[] = [];
   private chronological: EntryView[] = [];
+  /** Keeps repeated jumps in source order when the bottom boundary prevents top alignment. */
+  private ownMessageCursor?:{id:string;anchorId:string|null;offsetPx:number};
+  private ownMessageMarker?:{node:HTMLElement;timer:ReturnType<typeof setTimeout>};
   private rows = new TranscriptRows();
   private noticeBlocks:NoticeBlocks;
   private tasks = new ConversationTasks();
@@ -489,6 +492,7 @@ export class Transcript {
     this.paint(anchor); this.hooks.presentation([...this.expanded], this.showThinking, this.view); this.saveReading();
   }
   reset(): void {
+    this.clearOwnMessageMarker();this.ownMessageCursor=undefined;
     this.cancelTaskReads();this.taskReadStamps.clear();this.dismissPreview();
     this.cancelRender(); if (this.inputFrame !== undefined) this.pending = false;
     this.clearTiming(); this.streamPending = false; this.deferred = undefined; this.chronological = []; this.view = 'chronological'; this.pendingView = undefined;
@@ -855,7 +859,32 @@ export class Transcript {
     error.scrollIntoView({block: 'center'});
     return true;
   }
+  ownMessageEntry(direction:-1|1):string|undefined{
+    if(this.destroyed||this.hidden())return;
+    const reading=this.geometryAnchor(),cursor=this.ownMessageCursor;
+    const anchored=cursor&&cursor.anchorId===(reading?.id??null)&&cursor.offsetPx===(reading?.offsetPx??0)?cursor.id:this.restoring?.anchorId??reading?.id;
+    const source=anchored&&(this.rows.byId.get(anchored)?.source.id??anchored);
+    const at=this.follow?this.chronological.length:this.chronological.findIndex(entry=>entry.id===source);
+    for(let index=at+direction;index>=0&&index<this.chronological.length;index+=direction){
+      const entry=this.chronological[index];
+      if(entry&&!entry.sender&&!entry.messages?.some(message=>!!message.communication)&&entry.messages?.some(message=>message.role==='user'))return entry.id;
+    }
+  }
+  jumpOwnMessage(direction:-1|1):boolean{
+    const id=this.ownMessageEntry(direction);if(!id)return false;
+    this.revealEntry(id,false);
+    const reading=this.geometryAnchor();this.ownMessageCursor={id,anchorId:reading?.id??null,offsetPx:reading?.offsetPx??0};
+    const node=this.cache.get(this.displayId(id))?.node;if(!node)return false;
+    this.clearOwnMessageMarker();node.classList.add('own-message-focus');
+    this.ownMessageMarker={node,timer:setTimeout(()=>this.clearOwnMessageMarker(),1500)};
+    return true;
+  }
+  private clearOwnMessageMarker():void{
+    const marker=this.ownMessageMarker;if(!marker)return;
+    clearTimeout(marker.timer);marker.node.classList.remove('own-message-focus');this.ownMessageMarker=undefined;
+  }
   revealEntry(entryId: string, focus = true, callId?: string): void {
+    this.ownMessageCursor=undefined;
     if (!this.index.entries.has(entryId)) return;
     this.scrolling.delete(this.node);
     const id = callId ? this.rows.calls.get(callId) ?? this.displayId(entryId) : this.displayId(entryId); this.follow = false; this.pins.clear(); this.pins.add(entryId);

@@ -107,7 +107,9 @@ function findStatusText(result: FindStatus | undefined, query: string): string {
 }
 export type SettingsSelection = {target: Target; model?: {provider: string; modelId: string}; thinking?: string; levels?: string[]; primary?: PrimaryView; closed?: () => void; guard: () => string | undefined};
 export type SelectionChange = Partial<Omit<Workspace, 'selectedTarget'>> & {selectedTarget?: Target | null};
-export type ActionContext = {readSession:ConstructorParameters<typeof ProjectPicker>[0]['readSession'];convertSession?:()=>void;hasConvertibleSession?:()=>boolean;desk?:()=>void; nextUnread?:()=>void; hasUnread?:()=>boolean; handover?: () => void; agentPresentation: ConstructorParameters<typeof ProjectPicker>[0]['agentPresentation']; snapshot: () => Snapshot | undefined; primary: () => PrimaryView | undefined; /** The Primary whose model list names models: the selected Primary when it is ready, else any ready Primary. */ namingPrimary?: () => PrimaryView | undefined; composer: Composer; commandsChanged: () => void; modelChanged?: () => void; modelNamesChanged?: () => void; modal: Modal;
+export type ActionContext = {
+  ownMessages?:()=>{previous?:()=>void;next?:()=>void};
+  readSession:ConstructorParameters<typeof ProjectPicker>[0]['readSession'];convertSession?:()=>void;hasConvertibleSession?:()=>boolean;desk?:()=>void; nextUnread?:()=>void; hasUnread?:()=>boolean; handover?: () => void; agentPresentation: ConstructorParameters<typeof ProjectPicker>[0]['agentPresentation']; snapshot: () => Snapshot | undefined; primary: () => PrimaryView | undefined; /** The Primary whose model list names models: the selected Primary when it is ready, else any ready Primary. */ namingPrimary?: () => PrimaryView | undefined; composer: Composer; commandsChanged: () => void; modelChanged?: () => void; modelNamesChanged?: () => void; modal: Modal;
   selection: (change: SelectionChange) => Promise<void>; reload: () => Promise<void>; result: (result: OperationView) => void; rosterRefresh: () => void; filesRefresh: () => void; hasTranscript: () => boolean; find: () => FindSession | undefined; recovery: () => void; primaryEntries: () => EntryView[]; agents: () => AgentRow[]; selectedAgent: () => Pick<AgentRow, 'identity' | 'capabilities'> | undefined; selectAgent: (row: AgentRow) => void; selectPrimary: () => void; notices: () => void; sidebar: (visible: boolean) => void; sidebarShown: () => boolean; view: (tools: boolean, expand: boolean) => void; copyAgent: () => void; inspectAgent: () => void; resultLookup?: () => void; agentCaption?: (identity: string) => ConversationCaption; agentStatus: (row: AgentRow) => string; conversationFacts?: (identity: string) => readonly ReportedFact[]; tabs?: {close: () => void; switch: (direction: number) => void; layout: () => ConversationLayout}};
 export class Actions {
   private captions = new ConversationCaptions();
@@ -462,6 +464,7 @@ export class Actions {
       entry('Show thinking', 'Show loaded thinking text', () => this.ctx.view(false, true), transcript, undefined, 'Requires a conversation transcript'),
       entry('Hide thinking', 'Hide loaded thinking text', () => this.ctx.view(false, false), transcript, undefined, 'Requires a conversation transcript'),
       entry('Find text', 'Find text in this session', () => this.find(), transcript, undefined, 'Requires a conversation transcript'),
+      ...this.ownMessageEntries(),
       ...this.deskEntries(),
       entry('Notifications', 'Read and dismiss notices', () => this.ctx.notices()),
       entry('Refresh agents', 'Refresh the agent list', () => this.ctx.rosterRefresh()),
@@ -493,7 +496,7 @@ export class Actions {
         entries.push({...command, name: `Insert /${command.name}`, search: [`/${command.name}`], enabled: true, run: () => this.prepareText(`/${command.name}`)});
       }
     }
-    const conversation = new Set(['Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Copy agent ID', 'Sent and received tasks', 'Close conversation tab']);
+    const conversation = new Set(['Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Previous own message', 'Next own message', 'Copy agent ID', 'Sent and received tasks', 'Close conversation tab']);
     const primaryActions = new Set(['Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Model', 'Thinking', 'Review message', 'Insert /agent new']);
     const workspace = new Set(['New session', 'Sessions', 'Continue a handover', 'Saved drafts and messages', 'Appearance', 'Message input', 'Agent presentation control', 'Help', 'Notifications', 'Refresh agents', 'Refresh files', 'Hide sidebar', 'Show sidebar', 'Projects', 'Next conversation tab', 'Previous conversation tab']);
     const preferences = new Set(['Appearance','Message input','Agent presentation control','Hide sidebar','Show sidebar']);
@@ -505,6 +508,12 @@ export class Actions {
       }
       return {...item, priority};
     }), ...this.agentEntries()];
+  }
+  private ownMessageEntries():PaletteEntry[]{
+    const actions=this.ctx.ownMessages?.(),entries:PaletteEntry[]=[];
+    if(actions?.previous)entries.push({name:'Previous own message',description:'Jump to your previous loaded message',source:'app',enabled:true,run:actions.previous,shortcut:{text:'⌥↑',keys:'Alt+ArrowUp'}});
+    if(actions?.next)entries.push({name:'Next own message',description:'Jump to your next loaded message',source:'app',enabled:true,run:actions.next,shortcut:{text:'⌥↓',keys:'Alt+ArrowDown'}});
+    return entries;
   }
   private deskEntries():PaletteEntry[]{
     const entries:PaletteEntry[]=[];
