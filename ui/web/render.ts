@@ -16,7 +16,7 @@ import { TranscriptIndex, ToolElapsedClock, toolTime, thinkingLabel, thinkingPre
 import { CommunicationCard, messageCopyText, messageCopyDescription, type SenderSummary } from './communication.ts';
 import type { TranscriptGroups } from './transcript-groups.ts';
 import {TranscriptRows, type StepRun, type TranscriptRow} from './transcript-rows.ts';
-import {toolSentence,toolLabelParts,quietTextResult, type NamedDestination} from './tool-sentences.ts';
+import {toolSentence,toolLabelParts,quietTextResult, type NamedDestination, type ToolLabelPart} from './tool-sentences.ts';
 import {ConversationTasks, type ConversationTask, type TaskReference} from './conversation-tasks.ts';
 import { loadedReference, type ReferenceQuery, type ReferenceResolver } from './references.ts';
 import type { JoinedTool } from './transcript-tools.ts';
@@ -1788,10 +1788,16 @@ export class Transcript {
       }
     }
   }
+  private toolTitlePart(part: ToolLabelPart): HTMLElement {
+    const node=element('span',part.role?`tool-name-${part.role}`:undefined);node.title=part.title??'';
+    if(part.role==='directory')node.append(element('span',undefined,part.text));else setText(node,part.text);
+    return node;
+  }
   private toolTitle(tool: ToolNode, source: JoinedTool): void {
     const parts=toolLabelParts(source,{subject:this.hooks.subject,cwd:this.hooks.cwd?.(),nestedCount:this.rows.nestedCounts.get(source.callId)});
+    tool.title.title=parts.find(part=>part.title)?.title??'';
     if(parts.length===1&&!parts[0]?.role)setText(tool.title,parts[0]?.text??'');
-    else if(tool.title.children.length!==parts.length||parts.some((part,index)=>tool.title.children[index]?.textContent!==part.text||tool.title.children[index]?.className!==(part.role?`tool-name-${part.role}`:'')))tool.title.replaceChildren(...parts.map(part=>element('span',part.role?`tool-name-${part.role}`:undefined,part.text)));
+    else if(tool.title.children.length!==parts.length||parts.some((part,index)=>tool.title.children[index]?.textContent!==part.text||tool.title.children[index]?.className!==(part.role?`tool-name-${part.role}`:'')||tool.title.children[index]?.getAttribute('title')!==(part.title??'')))tool.title.replaceChildren(...parts.map(part=>this.toolTitlePart(part)));
   }
   private toolHeading(tool: ToolNode, source: JoinedTool): void {
     this.toolTitle(tool,source);

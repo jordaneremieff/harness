@@ -4,8 +4,9 @@ import {plainPreviewWords} from './format.ts';
 
 export type NamedDestination = {text: string; name?: string; provenance?: 'reported' | 'supplied' | 'handle'; derived?: boolean; fallback?: string; title?: string; open?: () => void};
 export type SentenceContext = {nestedCount?:number; cwd?: string; subject?: (identity: string) => NamedDestination | undefined};
-type Words = {done: string; active: string; action: string; emphasis?: {recipient: string; message: string}};
-export type ToolLabelPart = {text: string; role?: 'recipient' | 'message'};
+type VerbForms = {done: string; active: string; action: string};
+type Words = VerbForms & {emphasis?: {recipient: string; message: string}; file?: {prefix: VerbForms; path: string; name: string; directory: string; suffix: string}};
+export type ToolLabelPart = {text: string; role?: 'recipient' | 'message' | 'file' | 'directory'; title?: string};
 const text = (value: unknown): string => typeof value === 'string' ? value : '';
 function first(value: unknown, limit = 60): string {
   const source = text(value), line = source.split(/\r?\n/, 1)[0] ?? '';
@@ -50,6 +51,13 @@ function argsOf(tool: JoinedTool): Record<string, unknown> {
   return args;
 }
 type SentenceInput = {tool:JoinedTool;context:SentenceContext;args:Record<string,unknown>;identity:string;name:string;target:string};
+function fileWords(input: SentenceInput, done: string, active: string, action: string, suffix = '', pathInSentence = true): Words {
+  const value = words(done,active,action,pathInSentence ? (input.target || ' a file') + suffix : suffix);
+  const path = text(input.args.path ?? input.args.file_path), split = path.lastIndexOf('/'), name = path.slice(split + 1);
+  if (!name) return value;
+  const directory = split < 0 ? '' : path.slice(0,split) || '/';
+  return {...value, file: {prefix: words(done,active,action), path, name, directory, suffix}};
+}
 function destinationName(caption?:NamedDestination):string {
   if(!caption?.name||!caption.provenance)return 'another conversation';
   return caption.text===caption.name||caption.text.startsWith(`${caption.name} · `)?caption.text:caption.name;
@@ -92,19 +100,19 @@ function collaborateWords({args}:SentenceInput):Words {
 function readImages(parts:readonly PartView[], types = new Set<string>()): {count:number;types:Set<string>} {
   let count=0;for(const part of parts){if(part.type==='image'){count++;types.add(part.mimeType==='image/png'?'PNG':'JPEG');}else if(part.type==='toolResult')count+=readImages(part.parts,types).count;}return {count,types};
 }
-function readWords({tool,args,target}:SentenceInput):Words {
-  const images=readImages(tool.result??[]);
-  if(images.count){const object=`${images.count===1?'image':'images'} · ${[...images.types].join('/')}`;return words(`Read ${object}`,`Reading ${object}`,`Read ${object}`);}
+function readWords(input:SentenceInput):Words {
+  const {tool,args}=input, images=readImages(tool.result??[]);
+  if(images.count){const object=`${images.count===1?'image':'images'} · ${[...images.types].join('/')}`;return fileWords(input,`Read ${object}`,`Reading ${object}`,`Read ${object}`,'',false);}
   const range=typeof args.offset==='number'&&typeof args.limit==='number'&&args.offset>0&&args.limit>0?` (lines ${args.offset}–${args.offset+args.limit-1})`:'';
-  return words('Read','Reading','Read',(target||' a file')+range);
+  return fileWords(input,'Read','Reading','Read',range);
 }
-function editWords({args,target}:SentenceInput):Words {
-  const n=Array.isArray(args.edits)?args.edits.length:undefined;
-  return words('Edited','Editing','Edit',(target||' a file')+(n===undefined?'':` (${n} ${n===1?'change':'changes'})`));
+function editWords(input:SentenceInput):Words {
+  const n=Array.isArray(input.args.edits)?input.args.edits.length:undefined;
+  return fileWords(input,'Edited','Editing','Edit',n===undefined?'':` (${n} ${n===1?'change':'changes'})`);
 }
-function writeWords({args,target}:SentenceInput):Words {
-  const n=typeof args.content==='string'?args.content.split('\n').length:undefined;
-  return words('Wrote','Writing','Write',(target||' a file')+(n===undefined?'':` (${n} ${n===1?'line':'lines'})`));
+function writeWords(input:SentenceInput):Words {
+  const n=typeof input.args.content==='string'?input.args.content.split('\n').length:undefined;
+  return fileWords(input,'Wrote','Writing','Write',n===undefined?'':` (${n} ${n===1?'line':'lines'})`);
 }
 function pillarWords({args}:SentenceInput):Words {
   if(!args.resource)return words('Listed pillars','Listing pillars','List pillars');
@@ -188,10 +196,20 @@ function sentenceWords(tool: JoinedTool, context: SentenceContext): Words {
 export function toolLabel(tool:JoinedTool,context:SentenceContext={}):string{
   return toolLabelParts(tool,context).map(part=>part.text).join('');
 }
-/** Send emphasis follows the same caption and quote boundaries as the plain title. */
+function labelForm(tool: JoinedTool, value: VerbForms): string {
+  if (tool.status === 'success') return value.done;
+  if (tool.status === 'working') return tool.argumentText !== undefined && !tool.args ? 'Preparing…' : value.active;
+  return value.action;
+}
+/** Styled spans retain source caption, path and quote boundaries independently of layout. */
 export function toolLabelParts(tool:JoinedTool,context:SentenceContext={}):ToolLabelPart[]{
-  const value=sentenceWords(tool,context);
-  const label=tool.status==='success'?value.done:tool.status==='working'?(tool.argumentText!==undefined&&!tool.args?'Preparing…':value.active):value.action;
+  const value=sentenceWords(tool,context), label=labelForm(tool,value);
+  if(value.file){
+    const file=value.file, parts:ToolLabelPart[]=[{text:`${labelForm(tool,file.prefix)} `},{text:file.name,role:'file',title:file.path}];
+    if(file.directory)parts.push({text:`  ${file.directory}`,role:'directory',title:file.path});
+    if(file.suffix)parts.push({text:file.suffix});
+    return parts;
+  }
   const recipient=value.emphasis?.recipient??'', message=value.emphasis?.message??'', suffix=recipient+message;
   if(!suffix||!label.endsWith(suffix))return [{text:label}];
   return [{text:label.slice(0,label.length-suffix.length)},...(recipient?[{text:recipient,role:'recipient' as const}]:[]),...(message?[{text:message,role:'message' as const}]:[])];
