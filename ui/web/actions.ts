@@ -108,6 +108,7 @@ function findStatusText(result: FindStatus | undefined, query: string): string {
 export type SettingsSelection = {target: Target; model?: {provider: string; modelId: string}; thinking?: string; levels?: string[]; primary?: PrimaryView; closed?: () => void; guard: () => string | undefined};
 export type SelectionChange = Partial<Omit<Workspace, 'selectedTarget'>> & {selectedTarget?: Target | null};
 export type ActionContext = {
+  copyLastAnswer?:()=>((()=>void)|undefined);
   ownMessages?:()=>{previous?:()=>void;next?:()=>void};
   failedSteps?:()=>{previous?:()=>void;next?:()=>void};
   receivedResults?:()=>{previous?:()=>void;next?:()=>void};
@@ -439,7 +440,7 @@ export class Actions {
   }
   paletteEntries(): PaletteEntry[] {
     const primary = this.ctx.primary(); const agent = this.ctx.selectedAgent(); const transcript = this.ctx.hasTranscript(); const sidebarShown = this.ctx.sidebarShown();
-    const ready = !!this.readyPrimary(primary), workspaceReady = !!this.ctx.snapshot()?.workspace;
+    const ready = !!this.readyPrimary(primary), workspaceReady = !!this.ctx.snapshot()?.workspace, copyLastAnswer=this.ctx.copyLastAnswer?.();
     const entry = (name: string, description: string, run: () => void, enabled = true, alias?: string, disabledReason = 'Requires a Primary session'): PaletteEntry => ({name, description, source: 'app', enabled, run, ...(!enabled ? {disabledReason} : {}), ...(alias ? {search: [alias, `/${alias}`]} : {})});
     const entries = [
       entry('New session', 'Start a new session', () => this.newSession(), true, 'new'),
@@ -466,6 +467,7 @@ export class Actions {
       entry('Show thinking', 'Show loaded thinking text', () => this.ctx.view(false, true), transcript, undefined, 'Requires a conversation transcript'),
       entry('Hide thinking', 'Hide loaded thinking text', () => this.ctx.view(false, false), transcript, undefined, 'Requires a conversation transcript'),
       entry('Find text', 'Find text in this session', () => this.find(), transcript, undefined, 'Requires a conversation transcript'),
+      ...copyLastAnswer?[entry('Copy last answer','Copy the latest loaded answer',copyLastAnswer)]:[],
       ...this.ownMessageEntries(),
       ...this.failedStepEntries(),
       ...this.receivedResultEntries(),

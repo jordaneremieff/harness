@@ -206,7 +206,8 @@ type EventPage = {node: HTMLElement; rows: HTMLElement; page: number; previous: 
 type SessionNode = {source?: SessionGroup; details: HTMLDetailsElement; events: EventPage; notices: EventPage};
 type TurnMessage = {entry: EntryView; message: MessageView};
 type AssistantTurn = {key: string; input?: TurnMessage; copy?: TurnMessage; assistant: boolean; end?: string};
-type TurnActions = {node: HTMLElement; copy: HTMLButtonElement; fork: HTMLButtonElement; turn: AssistantTurn; generation: number};
+type TurnSource = {turn:AssistantTurn;generation:number;node?:HTMLElement};
+type TurnActions = TurnSource & {node: HTMLElement; copy: HTMLButtonElement; fork: HTMLButtonElement};
 type FailedStep = {entryId:string;rowId:string;callId?:string};
 type ReceivedResult = {entryId:string;messageId:string;rowId:string;entryAt:number;messageAt:number};
 type EntryNode = {node: HTMLElement; messages: Map<string, MessageNode>; dayDivider?: HTMLTimeElement; turnActions?: TurnActions; source?: EntryView; custom?: HTMLElement; session?: SessionNode; groupHeader?: HTMLElement};
@@ -1288,17 +1289,32 @@ export class Transcript {
       node.dataset.visible = String(turn.key === this.latestTurn || turn.key === this.hoveredTurn || turn.key === focused);
     }
   }
-  private currentTurn(actions: TurnActions): AssistantTurn | undefined {
-    if (this.deferred || this.hidden() || actions.generation !== this.generation || !this.node.contains(actions.node)) return;
+  private currentTurn(actions: TurnSource): AssistantTurn | undefined {
+    if (this.deferred || this.hidden() || actions.generation !== this.generation || actions.node && !this.node.contains(actions.node)) return;
     const turn = actions.turn;
     return turn.end && this.turnRows.get(turn.end) === turn ? turn : undefined;
   }
   private currentTurnMessage(source: TurnMessage): boolean {
     return this.index.entries.get(source.entry.id)?.messages?.find(message => message.id === source.message.id) === source.message;
   }
-  private copyTurn(actions: TurnActions): void {
+  private lastCopyTurn():AssistantTurn|undefined {
+    if(this.destroyed||this.deferred||this.hidden())return;
+    const turns=new Map<MessageView,AssistantTurn>();
+    for(const turn of this.turnRows.values())if(turn.copy&&this.currentTurnMessage(turn.copy)&&this.currentTurn({turn,generation:this.generation}))turns.set(turn.copy.message,turn);
+    const message=this.chronological.flatMap(entry=>entry.messages??[]).findLast(message=>turns.has(message)&&!!messageCopyText(message,value=>partText(value.parts)));
+    return message?turns.get(message):undefined;
+  }
+  lastAnswerCopy():(()=>void)|undefined {
+    const turn=this.lastCopyTurn(),source=turn?.copy,generation=this.generation;if(!turn||!source||!this.currentTurnMessage(source))return;
+    return ()=>{
+      const current=this.lastCopyTurn();
+      if(generation!==this.generation||current?.key!==turn.key||current.copy?.message!==source.message||current.copy.entry.id!==source.entry.id)return;
+      this.copyTurn({turn:current,generation});
+    };
+  }
+  private copyTurn(actions: TurnSource, into:HTMLElement=this.node): void {
     const source = this.currentTurn(actions)?.copy; if (!source || !this.currentTurnMessage(source)) return;
-    const text = messageCopyText(source.message,message => partText(message.parts)); if (text) void copy(text,actions.copy);
+    const text = messageCopyText(source.message,message => partText(message.parts)); if (text) void copy(text,into);
   }
   private forkTurn(actions: TurnActions): void {
     const source = this.currentTurn(actions)?.input;
@@ -1311,7 +1327,7 @@ export class Transcript {
     let actions = cached.turnActions;
     if (!actions) {
       const node = element('div','assistant-turn-actions');
-      const copy = cardAction('copy','Copy',()=>{ if (cached.turnActions) this.copyTurn(cached.turnActions); });
+      const copy = cardAction('copy','Copy',()=>{ if (cached.turnActions) this.copyTurn(cached.turnActions,cached.turnActions.copy); });
       const fork = cardAction('fork','Fork',()=>{ if (cached.turnActions) this.forkTurn(cached.turnActions); });
       node.append(copy,fork); actions = {node,copy,fork,turn,generation:this.generation}; cached.turnActions = actions;
     }
