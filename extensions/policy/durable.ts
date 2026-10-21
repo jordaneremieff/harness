@@ -297,6 +297,7 @@ export function createPolicyDurableExtension(host: PolicyDurableHost): Durable.E
 		scope: "conversation",
 		history: "latest",
 		fork: "current",
+		checkpointWhen: () => false,
 		initial: initialPolicyStateValue,
 	});
 	const runtime = new DurablePolicyRuntime({

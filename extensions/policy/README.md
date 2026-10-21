@@ -114,7 +114,9 @@ loss returns the recorded decision instead of deciding again. Pending evidence
 for one call is stored with `api.memo()`. Hook writes go through the host's
 Harness by call or task identity, and the resolved agent comes from the host's
 conversation handle. Every state update recomputes and commits inside one
-in-process tail.
+in-process tail. The document explicitly disables automatic checkpoints: ordinary
+updates remain deltas rather than new complete bases. The document uses latest
+history and forks from the current state.
 
 Durable tools return model-visible `output`, program-visible `structuredOutput`,
 and UI `details` separately. Each registration declares `structuredOutputSchema`.

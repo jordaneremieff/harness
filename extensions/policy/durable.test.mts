@@ -172,6 +172,7 @@ interface Fixture {
 }
 
 interface FixtureOptions {
+	storage?: DurableModule.Storage;
 	configuration?: { dir: string; mode: string };
 	mode?: string;
 	extension?: DurableModule.Extension;
@@ -199,7 +200,7 @@ async function openFixture(options: FixtureOptions = {}): Promise<Fixture> {
 		const registry = DurableModule.createRegistry();
 		const reports: unknown[] = [];
 		const harness = await DurableModule.Harness.open(
-			new DurableModule.MemoryStorage(),
+			options.storage ?? new DurableModule.MemoryStorage(),
 			{
 				models,
 				registry,
@@ -893,6 +894,36 @@ test("a reset revision survives process loss", async () => {
 	}
 });
 
+test("ordinary policy state updates retain deltas without automatic checkpoints", async () => {
+	const storage = new DurableModule.MemoryStorage();
+	const fixture = await openFixture({ storage });
+	try {
+		const readState = async () => {
+			const record = await storage.findDocument(
+				{ kind: "policy.state", scope: { kind: "conversation", conversationId: fixture.root.id } },
+				"current",
+				context,
+			);
+			assert.ok(record);
+			const stored = await storage.document(record.id, "current", context);
+			assert.ok(stored);
+			return stored;
+		};
+		await submit(fixture, [fauxAssistantMessage("first")], "first request");
+		const first = await readState();
+		await submit(fixture, [fauxAssistantMessage("second")], "second request");
+		const second = await readState();
+		assert.equal(second.record.id, first.record.id);
+		assert.equal(second.record.history, "latest");
+		assert.equal(second.record.fork, "current");
+		assert.equal(second.version, 1);
+		assert.equal(second.value.turn, 2);
+		assert.ok(second.deltasSinceBase > first.deltasSinceBase);
+	} finally {
+		await fixture.close();
+	}
+});
+
 test("a malformed state document is contained without failing the read", async () => {
 	const fixture = await openFixture();
 	try {
@@ -902,6 +933,7 @@ test("a malformed state document is contained without failing the read", async (
 			scope: "conversation",
 			history: "latest",
 			fork: "current",
+			checkpointWhen: () => false,
 			initial: () => ({
 				generation: "bad",
 				turn: -1,
