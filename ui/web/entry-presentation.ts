@@ -5,6 +5,7 @@ import type {NamedDestination} from './tool-sentences.ts';
 import { previewText } from './format.ts';
 import { identifierField } from './generic-content.ts';
 import type { PresentationContext } from './transcript-presentation.ts';
+import {senderCaption} from './sender-caption.ts';
 
 export function senderName(sender: TaskSender, loaded?: NamedDestination): string {
   if (loaded?.name && loaded.provenance) return loaded.name;
@@ -12,7 +13,7 @@ export function senderName(sender: TaskSender, loaded?: NamedDestination): strin
   if (supplied && supplied !== sender.identity && !conversationIdentityText(supplied)) return supplied;
   if (loaded?.derived) return loaded.text;
   if (loaded?.open && loaded.text && !loaded.text.startsWith('Unnamed')) return loaded.text;
-  return loaded?.fallback ?? `Conversation ${sender.identity.slice(0, 8)}`;
+  return loaded?.fallback ?? senderCaption(sender);
 }
 export function taskSenderHeading(node: HTMLElement, sender: TaskSender, subject: () => NamedDestination | undefined, active: () => boolean): string {
   const destination = subject(), name = senderName(sender, destination);

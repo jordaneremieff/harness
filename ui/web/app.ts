@@ -24,7 +24,7 @@ import { cardAction, cardIcon, controlIcon, type CardIcon } from './card-icons.t
 import { thinkingExpanded } from './transcript-presentation.ts';
 import { contextMenu, nativeEditingTarget, paneMenuItems, type ContextItem } from './context-menu.ts';
 import { ProjectPicker } from './picker.ts';
-import {sessionLabel} from './picker-state.ts';
+import {senderCaption,sessionCaptionRecord,type SenderCaptionRecord} from './sender-caption.ts';
 import type { SelectionChange } from './actions.ts';
 import { Composer, createComposerElements, validComposerReloadState, type ComposerReloadState } from './composer.ts';
 import { includedText } from './composer-attachments.ts';
@@ -61,7 +61,7 @@ import { WorkspaceEntry } from './workspace-entry.ts';
 import { MessageTarget, SelectionQueue, navigationState } from './selection-state.ts';
 import { usageFacts } from './usage.ts';
 import { createResizer, type Resizer } from './resize.ts';
-import { entryVisible, initialSettings, senderName } from './entry-presentation.ts';
+import { entryVisible, initialSettings } from './entry-presentation.ts';
 import { primaryBusy, primaryEmpty } from './primary-presentation.ts';
 import { inputOperation, operationLabel } from './operation-label.ts';
 import { PreferenceQueue } from './preference-queue.ts';
@@ -207,7 +207,7 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
     ...(target.kind === 'primary' ? {commands: () => actions.commandOptions(), moreCommands: (captured: Target) => actions.continueCommands(captured)} : {}),
     ...agentCommandHooks(controller),
     retained: (workspace, captured) => { if (workspace === state.workspace?.id && captured.kind === 'agent') renderMessageResume(captured.identity); }});
-  controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {earlier: () => loadEarlierRows(controller), operatorInput: target.kind === 'primary', references, subject: toolSubjectCaption, senderSummary: identity => state.roster.get(identity) ?? identityNames.get(identity), senderCaption:sender=>{const saved=sender.kind === 'session' ? sessionSidebar.registered(sender.identity) : undefined;return saved ? sessionLabel(saved) : senderName(sender,toolSubjectCaption(sender.identity));}, thread: (id,title) => openThread({id,...(title ? {title} : {})}, controller), readTaskResult:async(reference,signal)=>{const value=await request<AgentInspectionView>(`/api/agents/${encodeURIComponent(reference.sessionId)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',{view:'result',submissionId:reference.submissionId,...(reference.requestId?{requestId:reference.requestId}:{})},undefined,AbortSignal.any([signal,controller.abort.signal,AbortSignal.timeout(15_000)]));if(value.view!=='result')throw new Error('The task result view changed.');return value;}, activity:()=>{if (footerController === controller) renderWorkbenchStatus();}, cwd: () => target.kind === 'primary' ? state.primaries.get(target.key)?.cwd : state.roster.get(target.identity)?.cwd, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
+  controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {earlier: () => loadEarlierRows(controller), sourceOrder:target.kind === 'agent', operatorInput: target.kind === 'primary', references, subject: toolSubjectCaption, senderSummary: identity => state.roster.get(identity) ?? identityNames.get(identity), senderCaption:currentSenderCaption, thread: (id,title) => openThread({id,...(title ? {title} : {})}, controller), readTaskResult:async(reference,signal)=>{const value=await request<AgentInspectionView>(`/api/agents/${encodeURIComponent(reference.sessionId)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',{view:'result',submissionId:reference.submissionId,...(reference.requestId?{requestId:reference.requestId}:{})},undefined,AbortSignal.any([signal,controller.abort.signal,AbortSignal.timeout(15_000)]));if(value.view!=='result')throw new Error('The task result view changed.');return value;}, activity:()=>{if (footerController === controller) renderWorkbenchStatus();}, cwd: () => target.kind === 'primary' ? state.primaries.get(target.key)?.cwd : state.roster.get(target.identity)?.cwd, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
     presentation: (expanded, thinking, view, choice) => { controller.showThinking = thinking; void savePresentation(controllerCapture(controller), expanded, thinking, view, choice); },
     reading: reading => { void saveReading(controllerCapture(controller), reading); },
     ...(target.kind === 'primary' ? {fork: (message: import('../shared/api.ts').MessageView, entry: string) => { if (sameTarget(target, primaryTarget())) actions.fork(entry, rawText(message.parts)); }, output: (more: import('../shared/api.ts').OutputContinuation) => loadControllerOutput(controller, more)} : {}),
@@ -574,7 +574,7 @@ function threadName(identity: string): string {
   if (caption && !/^(Unresolved|Unnamed)\b/.test(caption.text)) return caption.text;
   return picker.sessionTitle(identity) ?? `Unnamed conversation · ${identity.slice(0, 8)}`;
 }
-function identityFallback(identity: string): string { return picker.sessionTitle(identity) ?? `Conversation ${identity.slice(0, 8)}`; }
+function identityFallback(identity: string): string { return currentSenderCaption({identity}); }
 const threadReader = new ThreadReader({
   page: (threadId, before, signal) => request<ThreadPageView>(`/api/threads/read?threadId=${encodeURIComponent(threadId)}&limit=${THREAD_PAGE_EVENTS}${before === undefined ? '' : `&before=${before}`}`, 'GET', undefined, undefined, AbortSignal.any([signal, AbortSignal.timeout(30_000)])),
   name: threadName,
@@ -810,13 +810,13 @@ let captionReferenceKey = '', paintedCaptionReferenceKey = '';
 function captionReferences(): string {
   if (captionReferenceRoster !== state.roster || captionReferencePrimaries !== state.primaries) {
     captionReferenceRoster = state.roster; captionReferencePrimaries = state.primaries;
-    captionReferenceKey = JSON.stringify([[...state.roster.keys()].sort().map(identity => [identity, state.roster.get(identity)?.handle ?? null, state.roster.get(identity)?.model ?? null, state.roster.get(identity)?.thinkingLevel ?? null]), [...state.primaries.values()].map(value => [value.key, value.epoch, value.sessionId, presentationName(presentation({kind:'primary',key:value.key,epoch:value.epoch}))]).sort((a,b)=>String(a[0]).localeCompare(String(b[0])))]);
+    captionReferenceKey = JSON.stringify([[...state.roster.keys()].sort().map(identity => [identity, state.roster.get(identity)?.handle ?? null, state.roster.get(identity)?.name ?? null, state.roster.get(identity)?.cwd ?? null, state.roster.get(identity)?.model ?? null, state.roster.get(identity)?.thinkingLevel ?? null]), [...state.primaries.values()].map(value => [value.key, value.epoch, value.sessionId, presentationName(presentation({kind:'primary',key:value.key,epoch:value.epoch}))]).sort((a,b)=>String(a[0]).localeCompare(String(b[0])))]);
   }
   return captionReferenceKey;
 }
 function primaryTitlesChanged(): void { captionReferencePrimaries = undefined; refreshCaptionConsumers(); primaryNavigation(primary()); }
 function refreshCaptionConsumers(): void {
-  const captions = presentationCaptions(), references = captionReferences();
+  const captions = presentationCaptions(), references = `${captionReferences()}|${identityNames.revision}`;
   if (captionPaintRevision === captions.revision && paintedCaptionReferenceKey === references) return;
   captionPaintRevision = captions.revision; paintedCaptionReferenceKey = references;
   refreshCommunicationCaptions();
@@ -2250,7 +2250,7 @@ let deskFrame=0;
 const deskNoticeReads=new Set<string>();
 let deskComposer:ConversationController|undefined;
 const deskBack=button('Back to Desk',()=>{if(deskPane){deskPane.list=true;renderNavigation();scheduleDesk();}},'desk-back');
-const desk=new Desk({select:selectDeskComposer,open:row=>{void openDeskConversation(row).catch(showError);},dialog:(_row,slot)=>{clearDeskComposer();extensionDialogs.inline(slot);},close:closeDesk,canOpen:deskCanOpen,caption:row=>row.handle?`@${row.handle}`:row.name??toolSubjectCaption(row.identity)?.text??row.identity,changed:()=>{if(deskComposer&&stableViews().slot(deskComposer.elements.root)?.closest('[hidden]'))clearDeskComposer();stableViews().request();}});
+const desk=new Desk({select:selectDeskComposer,open:row=>{void openDeskConversation(row).catch(showError);},dialog:(_row,slot)=>{clearDeskComposer();extensionDialogs.inline(slot);},close:closeDesk,canOpen:deskCanOpen,caption:currentSenderCaption,changed:()=>{if(deskComposer&&stableViews().slot(deskComposer.elements.root)?.closest('[hidden]'))clearDeskComposer();stableViews().request();}});
 function deskReplyTarget(row:DeskRow):Extract<Target,{kind:'agent'}>|undefined {
   if(row.notice){const sender=row.notice.sender;return sender.kind==='agent'&&state.roster.has(sender.identity)?{kind:'agent',identity:sender.identity}:undefined;}
   return row.target.kind==='agent'&&state.roster.has(row.target.identity)?row.target:undefined;
@@ -2275,7 +2275,7 @@ function askDeskPrimary(row:DeskRow):void {
   const source=`[${label}](#reference=${encodeURIComponent(JSON.stringify(destination))})`;
   composer.setText(`${composer.editor.value}${composer.editor.value?'\n\n':''}Source: ${source}`);announce('Source added to Primary draft.');
 }
-function deskCaption(identity:string):string {const row=agentRow(identity);return row?.handle?`@${row.handle}`:row?.name??toolSubjectCaption(identity)?.text??identity;}
+function deskCaption(identity:string):string {return currentSenderCaption({identity});}
 function nextUnreadNotice():CommunicationNotice|undefined {return (deskPane?.list?desk.nextUnread():undefined)??[...communicationNotices.items.values()].filter(unreadReviewNotice).sort((a,b)=>(b.timestamp??0)-(a.timestamp??0))[0];}
 function openNextUnread():void {const notice=nextUnreadNotice();if(notice)void openDeskNotice(notice).catch(showError);}
 function scheduleDesk():void {if(deskFrame||!deskPane)return;deskFrame=requestAnimationFrame(()=>{deskFrame=0;renderDesk();});}
@@ -2285,7 +2285,8 @@ function deskNoticeRow(notice:CommunicationNotice,tasks=deskTasks()):DeskRow {
   const message=conversation&&conversationBlocks(conversation).flatMap(entry=>entry.messages??[]).find(message=>message.id===notice.messageId);
   const carrier=message?.communication,value=carrier?.state==='ready'?carrier.value:undefined;
   const task=value?.kind==='result'?tasks.find(task=>task.reference?.sessionId===value.sender.identity&&value.metadata.references.some(reference=>reference.submissionId===task.reference?.submissionId&&!(reference.requestId&&task.reference?.requestId&&reference.requestId!==task.reference.requestId))):undefined;
-  return {key:notice.key,target:notice.target,caption:deskCaption(notice.sender.identity),fact:notice.firstLine,reason:`Unread ${notice.kind} from ${deskCaption(notice.sender.identity)}`,kind:'notice',notice,task,ask:task?.input,answer:value?.body};
+  const caption=currentSenderCaption(notice.sender);
+  return {key:notice.key,target:notice.target,caption,fact:notice.firstLine,reason:`Unread ${notice.kind} from ${caption}`,kind:'notice',notice,task,ask:task?.input,answer:value?.body};
 }
 function deskCompanion(id:string):boolean{return !!deskPane&&deskPane.workspace===state.workspace?.id&&deskPane.id===id;}
 function mountDeskCompanion(id:string,node:HTMLElement):void {
@@ -2405,8 +2406,8 @@ function closeSessionRead():void {
   const row=[...byId('recent-sessions').querySelectorAll<HTMLButtonElement>('button')].find(node=>node.dataset.sessionKey===key);(row??byId('session-open')).focus({preventScroll:true});
 }
 const communicationNotices = new CommunicationNoticeShelf();
-const recentSidebar = new RecentSidebar(notice=>senderName(notice.sender,toolSubjectCaption(notice.sender.identity)),notice=>{void openCommunicationNotice(notice).catch(showError);},notices);
-const sessionSidebar = new SessionSidebar({updated:refreshCaptionConsumers,primaries:()=>[...state.primaries.values()],selected:()=>{const target=layoutTarget(currentLayout(),primaryTarget());return target?.kind==='primary'?target.key:undefined;},
+const recentSidebar = new RecentSidebar(notice=>currentSenderCaption(notice.sender),notice=>{void openCommunicationNotice(notice).catch(showError);},notices);
+const sessionSidebar = new SessionSidebar({caption:currentSenderCaption,updated:()=>{paintedCaptionReferenceKey='';refreshCaptionConsumers();},primaries:()=>[...state.primaries.values()],selected:()=>{const target=layoutTarget(currentLayout(),primaryTarget());return target?.kind==='primary'?target.key:undefined;},
   openPrimary:(primary,saved)=>openSessionRead({primary,saved}),
   openSaved:saved=>openSessionRead({saved}),create:()=>picker.newSession(projectPath())});
 healthStatus.setSidebarDiagnostics(()=>[roster.diagnostics(),threadExplorer.diagnostics(),sessionSidebar.diagnostics(),filesTree.diagnostics()]);
@@ -2461,11 +2462,15 @@ function notices(): void {
   const inactive = inactiveAgentTabCount(); if (inactive) modal.body.append(element('p','secondary',`Not watched: ${inactive} inactive agent tabs. Their messages appear when you open them.`));
 }
 function communicationNoticeText(notice: CommunicationNotice): string {
-  const kind = {report:'Report',result:'Result','check-in':'Still working'}[notice.kind], sender = senderName(notice.sender,toolSubjectCaption(notice.sender.identity));
+  const kind = {report:'Report',result:'Result','check-in':'Still working'}[notice.kind], sender = currentSenderCaption(notice.sender);
   return [kind,sender,notice.firstLine].filter(Boolean).join(' · ');
 }
+export function currentSenderCaption(sender:{identity:string;name?:string},registered?:SenderCaptionRecord):string {
+  const saved=registered ? undefined : sessionSidebar.registered(sender.identity);
+  return senderCaption(sender,state.roster.get(sender.identity) ?? identityNames.get(sender.identity),registered ?? (saved ? sessionCaptionRecord(saved) : undefined));
+}
 function refreshCommunicationCaptions(): void {
-  recentSidebar.render([...communicationNotices.items.values()]);
+  scheduleDesk();sessionSidebar.refreshNames();recentSidebar.render([...communicationNotices.items.values()]);
   for (const control of modal.body.querySelectorAll<HTMLButtonElement>('.communication-notice-open')) {
     const notice = communicationNotices.items.get(control.dataset.noticeKey ?? ''); if (notice) setText(control,communicationNoticeText(notice));
   }

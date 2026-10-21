@@ -1,6 +1,15 @@
 import type { CommunicationPresentation, EntryView } from '../shared/api.ts';
+import {isValidTimestamp} from './format.ts';
+
+/** Unknown timestamps keep their source slots; only known message times determine order. */
+export function noticeTimeOrder<T>(items:readonly T[],timestamp:(item:T)=>number|undefined):T[] {
+  const time=(item:T)=>{const value=timestamp(item);return value !== undefined && isValidTimestamp(value) ? value : undefined;};
+  const known=items.flatMap(item=>{const at=time(item);return at === undefined ? [] : [{item,at}];}).sort((a,b)=>a.at-b.at);
+  let at=0;return items.map(item=>time(item) === undefined ? item : known[at++]?.item ?? item);
+}
 
 export type TranscriptGroup = {key: string; id: string; label: string; kind: 'thread' | 'request'};
+type GroupBlock={group?:TranscriptGroup;entries:EntryView[]};
 /** Membership uses supplied relationships, never message text or a receiving conversation alone. */
 export function entryGroup(entry: EntryView): TranscriptGroup | undefined {
   let selected: TranscriptGroup | undefined;
@@ -44,15 +53,7 @@ export class TranscriptGroups {
   rows(entries: readonly EntryView[], structural = this.order !== entries): EntryView[] {
     // Source identity updates keep the same ordering and headers. Structural changes rebuild only row IDs.
     if (!this.dirty && !structural) return this.result;
-    const blocks: Array<{group?: TranscriptGroup; entries: EntryView[]}> = [];
-    const groups = new Map<string, {group: TranscriptGroup; entries: EntryView[]}>();
-    for (const entry of entries) {
-      const group = this.membership.get(entry.id);
-      if (!group) { blocks.push({entries: [entry]}); continue; }
-      let block = groups.get(group.key);
-      if (!block) { block = {group, entries: []}; groups.set(group.key, block); blocks.push(block); }
-      block.entries.push(entry);
-    }
+    const blocks=this.blocks(entries);
     this.headers.clear(); this.positions.clear(); this.references.clear(); this.result = [];
     for (const block of blocks) {
       this.recordHeader(block);
@@ -60,10 +61,22 @@ export class TranscriptGroups {
     }
     this.order = entries; this.dirty = false; return this.result;
   }
-  private recordHeader(block: {group?: TranscriptGroup; entries: EntryView[]}): void {
+  private blocks(entries:readonly EntryView[]):GroupBlock[] {
+    const blocks:GroupBlock[]=[],groups=new Map<string,GroupBlock>();
+    for(const entry of entries){const group=this.membership.get(entry.id);if(!group){blocks.push({entries:[entry]});continue;}this.groupBlock(group,blocks,groups).entries.push(entry);}
+    return blocks;
+  }
+  private groupBlock(group:TranscriptGroup,blocks:GroupBlock[],groups:Map<string,GroupBlock>):GroupBlock {
+    let block:GroupBlock|undefined;
+    if(group.kind === 'thread'){groups.clear();const previous=blocks.at(-1);if(previous?.group?.key === group.key)return previous;}
+    else block=groups.get(group.key);
+    if(block)return block;
+    block={group,entries:[]};if(group.kind !== 'thread')groups.set(group.key,block);blocks.push(block);return block;
+  }
+  private recordHeader(block: GroupBlock): void {
     const first = block.entries[0]; if (!block.group || !first) return;
     this.headers.set(first.id, {group: block.group, count: block.entries.length});
-    if (block.group.kind === 'thread') this.references.set(block.group.id, first.id);
+    if (block.group.kind === 'thread' && !this.references.has(block.group.id)) this.references.set(block.group.id, first.id);
   }
   reference(id: string): string | undefined { return this.references.get(id); }
   header(id: string): {group: TranscriptGroup; count: number} | undefined { return this.headers.get(id); }

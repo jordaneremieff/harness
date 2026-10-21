@@ -5,7 +5,7 @@ import {button, element, setText} from './dom.ts';
 
 export type DeskRow = {key:string; target:Target; caption:string; fact:string; reason:string; kind:'dialog'|'notice'|'blocked'|'working'|'task'; notice?:CommunicationNotice; task?:ConversationTask; dialog?:DialogView; ask?:CommunicationBody; answer?:CommunicationBody};
 export type DeskData = {rows:DeskRow[]; agents:AgentRow[]; tasks:ConversationTask[]; complete:boolean};
-type Hooks = {select:(row:DeskRow,slot:HTMLElement)=>void; open:(row:DeskRow)=>void; dialog:(row:DeskRow,slot:HTMLElement)=>void; close:()=>void; changed:()=>void; caption:(agent:AgentRow)=>string;canOpen:(row:DeskRow)=>boolean};
+type Hooks = {select:(row:DeskRow,slot:HTMLElement)=>void; open:(row:DeskRow)=>void; dialog:(row:DeskRow,slot:HTMLElement)=>void; close:()=>void; changed:()=>void; caption:(sender:Pick<AgentRow,'identity'|'name'>)=>string;canOpen:(row:DeskRow)=>boolean};
 type RowView = {node:HTMLElement; title:HTMLButtonElement; body:HTMLElement; slot:HTMLElement; signature:string};
 const rank={dialog:0,notice:1,blocked:2,working:3,task:4};
 const reviewable=(row:DeskRow|undefined):boolean=>row?.kind==='dialog'||unreadReviewNotice(row?.notice);
@@ -112,10 +112,11 @@ export class Desk {
     const view={node,title,body,slot,signature:''};this.rows.set(row.key,view);return view;
   }
   private paintRow(row:DeskRow):HTMLElement{
-    const view=this.view(row);setText(view.title,`${row.caption} · ${row.fact}`);
+    const current=row.notice ? {...row,caption:this.hooks.caption(row.notice.sender)} : row;
+    const view=this.view(current);setText(view.title,`${current.caption} · ${current.fact}`);
     view.title.title=row.target.kind==='agent'?row.target.identity:`${row.target.key}:${row.target.epoch}`;
     const expanded=row.key===this.selected;view.title.setAttribute('aria-expanded',String(expanded));view.body.hidden=view.slot.hidden=!expanded;
-    if(expanded)this.paintAnswer(row,view);
+    if(expanded)this.paintAnswer(current,view);
     return view.node;
   }
   private paintAnswer(row:DeskRow,view:RowView):void{

@@ -3,7 +3,7 @@ import type {CommunicationNotice} from './notice-presentation.ts';
 import {button, byId, element, setText} from './dom.ts';
 import {absoluteTime, compactAge, isValidTimestamp} from './format.ts';
 import {request} from './transport.ts';
-import {sessionLabel} from './picker-state.ts';
+import {senderCaption,sessionCaptionRecord,type SenderCaptionRecord} from './sender-caption.ts';
 
 function row(label:string,state:string,title:string,run:()=>void):HTMLButtonElement {
   const node=button('',run,'nav-row sidebar-content-row');
@@ -46,14 +46,16 @@ export class RecentSidebar {
   }
 }
 type SessionRow={key:string;name:string;at:number;state:string;title:string;primary?:PrimaryView;saved?:SavedSession};
-type SessionHooks={updated?:()=>void;primaries:()=>readonly PrimaryView[];selected:()=>string|undefined;openPrimary:(primary:PrimaryView,saved?:SavedSession)=>void;openSaved:(saved:SavedSession)=>void;create:()=>void};
+type SessionHooks={caption?:(sender:{identity:string;name?:string},registered?:SenderCaptionRecord)=>string;updated?:()=>void;primaries:()=>readonly PrimaryView[];selected:()=>string|undefined;openPrimary:(primary:PrimaryView,saved?:SavedSession)=>void;openSaved:(saved:SavedSession)=>void;create:()=>void};
 type Catalog={pages:SavedSessionPage[];notes:string[];published:Set<string>};
-function primarySession(primary:PrimaryView,saved:SavedSession|undefined):SessionRow {
-  const at=saved?Date.parse(saved.modifiedAt):0,name=primary.sessionName?.trim()||(saved?sessionLabel(saved):`${primary.cwd.split('/').filter(Boolean).at(-1)||primary.cwd} · ${(primary.sessionId??primary.key).slice(-4)}`);
+function primarySession(primary:PrimaryView,saved:SavedSession|undefined,caption=senderCaption):SessionRow {
+  const identity=primary.sessionId??saved?.id??primary.key,sender={identity,name:primary.sessionName};
+  const registered=saved?.id === identity ? sessionCaptionRecord(saved) : {identity,cwd:primary.cwd};
+  const at=saved?Date.parse(saved.modifiedAt):0,name=caption(sender,undefined,registered);
   return {key:primary.sessionFile??primary.key,name,at,state:primary.lifecycle!=='ready'&&saved?.writer==='live'?'live':at?compactAge(at,Date.now()):'',title:[name,primary.sessionId,`Primary ${primary.key}`,primary.sessionFile,primary.cwd,primary.lifecycle,saved?.modifiedAt,saved?.writer==='live'?'Live in terminal · read-only snapshot':''].filter(Boolean).join('\n'),primary,saved};
 }
-function publishedSession(saved:SavedSession):SessionRow {
-  const at=Date.parse(saved.modifiedAt),name=sessionLabel(saved);
+function publishedSession(saved:SavedSession,caption=senderCaption):SessionRow {
+  const at=Date.parse(saved.modifiedAt),name=caption({identity:saved.id},undefined,sessionCaptionRecord(saved));
   return {key:saved.path,name,at,state:saved.writer==='live'?'live in terminal':compactAge(at,Date.now()),title:[name,saved.id,saved.project,saved.path,saved.modifiedAt,saved.writer==='live'?'Live in terminal · read-only snapshot':''].filter(Boolean).join('\n'),saved};
 }
 /** Saved-session catalogs supply ages; publisher presence never grants an execution capability. */
@@ -63,6 +65,7 @@ export class SessionSidebar {
   private readonly node=byId('recent-sessions');private readonly create:HTMLButtonElement;private hooks:SessionHooks;
   constructor(hooks:SessionHooks){this.hooks=hooks;this.create=button('New session',hooks.create,'nav-row sidebar-action');this.node.append(this.create);}
   diagnostics():string{return this.notes.join('\n');}
+  refreshNames():void {this.paint();}
   refresh(workspace:string|undefined):void {
     if(!workspace)return;
     const projects=[...new Set(this.hooks.primaries().map(item=>item.cwd))],scope=JSON.stringify([workspace,projects]);
@@ -95,8 +98,8 @@ export class SessionSidebar {
   private sessionRows():SessionRow[]{
     const metadata=new Map(this.saved.map(item=>[item.path,item])),seen=new Set<string>(),rows:SessionRow[]=[];
     const primaries=[...this.hooks.primaries()].sort((a,b)=>Number(b.lifecycle==='ready')-Number(a.lifecycle==='ready'));
-    for(const primary of primaries){const key=primary.sessionFile??primary.key;if(seen.has(key))continue;seen.add(key);rows.push(primarySession(primary,primary.sessionFile?metadata.get(primary.sessionFile):undefined));}
-    for(const saved of this.saved)if(!seen.has(saved.path)&&this.published.has(saved.path))rows.push(publishedSession(saved));
+    for(const primary of primaries){const key=primary.sessionFile??primary.key;if(seen.has(key))continue;seen.add(key);rows.push(primarySession(primary,primary.sessionFile?metadata.get(primary.sessionFile):undefined,(sender,_roster,registered)=>this.hooks.caption?.(sender,registered)??senderCaption(sender,undefined,registered)));}
+    for(const saved of this.saved)if(!seen.has(saved.path)&&this.published.has(saved.path))rows.push(publishedSession(saved,(sender,_roster,registered)=>this.hooks.caption?.(sender,registered)??senderCaption(sender,undefined,registered)));
     return rows.sort((a,b)=>(Number.isFinite(b.at)?b.at:0)-(Number.isFinite(a.at)?a.at:0)).slice(0,6);
   }
   private paint():void{

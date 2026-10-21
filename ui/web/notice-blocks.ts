@@ -5,6 +5,7 @@ import {senderName} from './entry-presentation.ts';
 import type {NamedDestination} from './tool-sentences.ts';
 import {button, element, setText} from './dom.ts';
 import {compactAge, isValidTimestamp} from './format.ts';
+import {noticeTimeOrder} from './transcript-groups.ts';
 
 type Notice = Extract<Communication,{kind:'notice'|'check-in'}>;
 type Item = {id:string; message:MessageView; value:Notice; key:string; at?:number};
@@ -13,6 +14,12 @@ type Block = {node:HTMLElement; body:HTMLElement; header:HTMLElement; title:HTML
 export type NoticeChild = {node:HTMLElement; id?:string};
 type Hooks = {senderCaption?:(sender:CommunicationSender)=>string; subject?:(identity:string)=>NamedDestination|undefined; thread?:(id:string,title?:string)=>void;
   source:(id:string)=>CommunicationCard|undefined; protected:(id:string)=>boolean; reconcile:(node:HTMLElement,children:HTMLElement[])=>void};
+function noticeSource(entry:EntryView):boolean {
+  return !!entry.messages?.length && entry.messages.every(message=>message.communication?.state === 'ready' && (message.communication.value.kind === 'notice' || message.communication.value.kind === 'check-in'));
+}
+function sourcePositions(source:readonly EntryView[]):Map<string,number> {
+  return new Map(source.flatMap((entry,index)=>noticeSource(entry) ? [[entry.id,index] as const] : []));
+}
 function noticeItem(row:TranscriptRow|undefined):Item|undefined {
   if(!row?.parts || row.actionsOnly || row.parts.size !== 1)return;
   const message=row.source.messages?.find(message=>row.parts?.has(message.id));
@@ -30,18 +37,32 @@ export class NoticeBlocks {
   private hooks:Hooks;
   constructor(hooks:Hooks) {this.hooks=hooks;}
   clear():void {this.byRow.clear();this.blocks.clear();}
-  rebuild(entries:readonly EntryView[],rows:ReadonlyMap<string,TranscriptRow>):void {
-    const previous=this.byRow, next=new Map<string,Run>(), used=new Set<string>();let run:Run|undefined;
+  rebuild(entries:readonly EntryView[],rows:ReadonlyMap<string,TranscriptRow>,source:readonly EntryView[]):EntryView[] {
+    const previous=this.byRow,next=new Map<string,Run>(),used=new Set<string>(),positions=sourcePositions(source);
+    let run:Run|undefined,prior:number|undefined;
     for(const entry of entries) {
       const old=previous.get(entry.id);
-      const item=this.hooks.protected(entry.id) ? old?.items.find(item=>item.id === entry.id) : noticeItem(rows.get(entry.id));if(!item){run=undefined;continue;}
-      if(run?.key !== item.key) {
+      const row=rows.get(entry.id),position=row ? positions.get(row.source.id) : undefined;
+      const item=this.currentItem(entry.id,row,old);
+      if(!item){run=undefined;prior=undefined;continue;}
+      const consecutive=position !== undefined && prior !== undefined && (position === prior || position === prior+1);
+      if(run?.key !== item.key || !consecutive) {
         const reuse=old?.key === item.key && !used.has(old.id) ? old.id : item.id;
         run={id:reuse,key:item.key,items:[]};used.add(reuse);
       }
-      run.items.push(item);next.set(entry.id,run);
+      run.items.push(item);next.set(entry.id,run);prior=position;
     }
+    for(const group of new Set(next.values()))group.items=noticeTimeOrder(group.items,item=>item.message.timestamp);
     this.retainRuns(previous,next);this.byRow=next;
+    return this.ordered(entries,next);
+  }
+  private currentItem(id:string,row:TranscriptRow|undefined,old:Run|undefined):Item|undefined {
+    return this.hooks.protected(id) ? old?.items.find(item=>item.id === id) : noticeItem(row);
+  }
+  private ordered(entries:readonly EntryView[],runs:ReadonlyMap<string,Run>):EntryView[] {
+    const byId=new Map(entries.map(entry=>[entry.id,entry])),seen=new Set<Run>(),result:EntryView[]=[];
+    for(const entry of entries){const run=runs.get(entry.id);if(!run){result.push(entry);continue;}if(seen.has(run))continue;seen.add(run);for(const item of run.items){const current=byId.get(item.id);if(current)result.push(current);}}
+    return result;
   }
   private retainRuns(previous:ReadonlyMap<string,Run>,next:ReadonlyMap<string,Run>):void {
     const used=new Set<string>();
@@ -95,7 +116,7 @@ export class NoticeBlocks {
     return value.kind === 'notice' ? this.threadTitle(run) || `Thread · ${value.metadata.threadId.slice(-8)}` : `Check-ins · ${this.hooks.senderCaption?.(value.sender) ?? senderName(value.sender,this.hooks.subject?.(value.sender.identity))}`;
   }
   private paint(block:Block):void {
-    const {run}=block, first=run.items[0];if(!first)return;
+    const {run}=block, first=run.items[0];if(!first || this.hooks.protected(first.id))return;
     const label=this.label(run), enabled=first.value.kind === 'notice' ? !!this.hooks.thread : !!this.hooks.source(first.id);
     setText(block.title,label);setText(block.plain,label);block.title.hidden=!enabled;block.plain.hidden=enabled;
     const identity=first.value.kind === 'notice' ? first.value.metadata.threadId : first.value.metadata.sourceId;

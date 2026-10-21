@@ -1,10 +1,8 @@
 import type { PrimaryView, SavedSession, SavedSessionPage } from '../shared/api.ts';
+import {senderCaption,sessionCaptionRecord,type SenderCaptionRoster} from './sender-caption.ts';
 
-export function sessionLabel(item: SavedSession): string {
-  const line=item.title.split(/\r?\n/,1)[0]?.trim();
-  if(item.titleState==='ready'&&(item.titleSource==='name'||item.titleSource==='prompt')&&line)return line;
-  const folder=item.project.split('/').filter(Boolean).at(-1)||item.project;
-  return `${folder} · ${item.id.slice(-4)}`;
+export function sessionLabel(item: SavedSession,roster?:SenderCaptionRoster): string {
+  return senderCaption({identity:item.id},roster,sessionCaptionRecord(item));
 }
 
 /** A newer loaded snapshot supersedes older title evidence, even when its title is unavailable. */
