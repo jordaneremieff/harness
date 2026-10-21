@@ -2321,6 +2321,9 @@ function identitySubjectCaption(value: string): ToolSubjectCaption | undefined {
     if (current.length === 1 && current[0] && sameTarget(current[0].target, destination.target)) void navigateReference(current[0]).catch(showError);
   }};
 }
+function referencePresentation(destination: ReferenceDestination): ReferenceResolution {
+  return {destination, ...(!destination.entryId ? {caption: presentationName(presentation(destination.target))} : {})};
+}
 function resolveReference(query: ReferenceQuery): ReferenceResolution {
   const destinations = referenceIdentities(query);
   for (const controller of controllers.values()) {
@@ -2329,7 +2332,8 @@ function resolveReference(query: ReferenceQuery): ReferenceResolution {
     if (typeof query !== 'string' && (query.owner !== owner || query.field === 'identity')) continue;
     const entryId = controller.transcript.loadedReference(query, owner); if (entryId) destinations.push({target: controller.target, entryId});
   }
-  const first = destinations[0]; if (destinations.length === 1 && first) return {destination: first};
+  const first = destinations[0];
+  if (destinations.length === 1 && first) return referencePresentation(first);
   return {reason: destinations.length ? 'Reference has more than one loaded destination.' : 'Reference is not resolved by the loaded public identities.'};
 }
 async function navigateReference(destination: ReferenceDestination, knownTaskReference = false, paneId?: string): Promise<void> {

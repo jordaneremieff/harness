@@ -223,6 +223,7 @@ export class Transcript {
   private cache = new Map<string, EntryNode>();
   private tools = new Map<string, ToolNode>();
   private subjectRevision = 0;
+  private referenceNamesPending = false;
   private thinkingTimes: ReadonlyMap<string, ThinkingTime> = new Map();
   private liveThinking = new Map<string, HTMLElement>();
   private elapsed = new ToolElapsedClock(() => this.paintElapsed());
@@ -462,7 +463,7 @@ export class Transcript {
     this.initialSettings.clear(); this.toolStates = new Map(); this.indexedFindId = undefined;
     this.generation++; this.entries = []; this.displayed = []; this.turnRows.clear(); this.latestTurn = undefined; this.hoveredTurn = undefined; this.cache.clear(); this.tools.clear(); this.liveThinking.clear(); this.thinkingTimes = new Map(); this.index = new TranscriptIndex(); this.joined = this.index.joined; this.rows = new TranscriptRows(); this.tasks = new ConversationTasks(); this.visible.clear(); this.dirtyLayout = true; this.pins.clear(); this.heights.clear(); this.gaps.clear();
     this.expanded.clear(); this.streamedThinking.clear(); this.showThinking = false; this.thinkingChoice = undefined; this.follow = true; this.readingRevision = 0;
-    this.layout = layoutItems([], this.heights, 140); this.restoring = undefined; this.node.replaceChildren(...(this.lead ? [this.lead] : [])); this.scrollTo(0); this.hold = undefined; this.arrivals.reset(); this.syncLatest();
+    this.layout = layoutItems([], this.heights, 140); this.restoring = undefined; this.node.replaceChildren(...(this.lead ? [this.lead] : [])); this.scrollTo(0); this.hold = undefined; this.arrivals.reset(); this.referenceNamesPending = false; this.syncLatest();
   }
   defer(refresh: () => void, receivedAt?: number): void {
     if (this.destroyed) return;
@@ -753,7 +754,7 @@ export class Transcript {
       const content = (parent as HTMLElement).closest?.('.tool-content'); if (!content) return Infinity;
       const card = content.closest('.tool-shell'); const tool = [...this.tools.values()].find(item => item.card === card);
       return tool?.previewBudget?.room() ?? 0;
-    });
+    }, node => this.protectedNode(node));
     const outputs = root.querySelectorAll<HTMLElement>('pre, table, .tool-result');
     for (const node of outputs) {
       this.registerOutput(node); node.tabIndex = 0;
@@ -861,6 +862,9 @@ export class Transcript {
     if (!this.pendingView || this.hasSelection()) return false;
     this.setView(this.pendingView); return true;
   }
+  private refreshReferenceNames(): void {
+    if (this.referenceNamesPending && !this.protectedNode(this.node)) { this.registerContent(this.node); this.referenceNamesPending = false; }
+  }
   private paint(anchorOverride?: {id: string; offsetPx: number} | null): boolean {
     if (this.applyPendingView()) return !this.hidden();
     if (this.hidden()) { this.elapsed.stop(); return false; }
@@ -877,6 +881,7 @@ export class Transcript {
     const children = this.children(selected); const mounted = new Set(children);
     for (const child of this.node.children) if (!mounted.has(child as HTMLElement)) this.releaseFrames(child as HTMLElement);
     reconcileChildren(this.node, children);
+    this.refreshReferenceNames();
     this.refreshOperatorFolds();
     this.measure(selected);
     this.refreshGaps(selected);
@@ -1741,10 +1746,10 @@ export class Transcript {
   /** Public caption changes refresh attached cards now and closed cached previews on their next paint. */
   refreshSubjects(): void {
     if (this.destroyed) return;
-    this.subjectRevision++;
+    this.subjectRevision++; this.referenceNamesPending = true;
     if (this.deferred) return;
     for (const tool of this.tools.values()) if (tool.source && this.node.contains(tool.card)) { this.toolHeading(tool, tool.source); if (!tool.node.open) this.toolContent(tool); }
-    this.refreshSenders();
+    this.refreshSenders(); this.schedule();
   }
   private refreshSenders(): void {
     for (const [id, entry] of this.cache) {

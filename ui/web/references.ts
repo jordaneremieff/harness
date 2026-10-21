@@ -65,7 +65,7 @@ function receivingReference(message: MessageView, query: QualifiedReference): bo
   const facts = {identity: owner, recordEntryId, entryId: target.entryId, requestId: target.requestId, submissionId: target.mode === 'input' ? String(target.submissionId) : undefined, answerEntryId: undefined};
   return facts[query.field] === query.text;
 }
-export type ReferenceResolution = {destination: ReferenceDestination} | {reason: string};
+export type ReferenceResolution = {destination: ReferenceDestination; caption?: string} | {reason: string};
 // Syntax is only a candidate. The owner lookup, not this expression, supplies identity and destination.
 const candidate = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?::[1-9][0-9]*|\/[0-9a-f]+)?/g;
 export function referenceCandidates(text: string): Array<{text: string; start: number; end: number}> {
@@ -80,6 +80,7 @@ export function referenceCandidates(text: string): Array<{text: string; start: n
 /** One renderer and click path for all transcript text surfaces. Copy continues to use original sources. */
 export class ReferenceResolver {
   private seen = new WeakMap<Node, string>();
+  private prose = new WeakMap<HTMLElement, string>();
   private files?: FileReferences;
   private lookup: (query: ReferenceQuery) => ReferenceResolution;
   private navigate: (destination: ReferenceDestination) => void;
@@ -97,10 +98,13 @@ export class ReferenceResolver {
     });
     return node;
   }
-  render(query: ReferenceQuery, active: (node: HTMLElement) => boolean): HTMLElement {
+  render(query: ReferenceQuery, active: (node: HTMLElement) => boolean, prose = false): HTMLElement {
     const text = typeof query === 'string' ? query : query.text; const result = this.lookup(query);
     if ('reason' in result) { const node = element('span', 'reference-unresolved', text); node.title = result.reason; node.setAttribute('aria-description', result.reason); return node; }
     const node = element('a', 'reference-link', text);
+    if (prose && typeof query === 'string' && !result.destination.entryId) {
+      this.prose.set(node, text); node.textContent = result.caption ?? text; node.title = text;
+    }
     node.href = `#reference=${encodeURIComponent(JSON.stringify(result.destination))}`;
     node.addEventListener('click', event => {
       event.preventDefault();
@@ -110,7 +114,16 @@ export class ReferenceResolver {
     });
     return node;
   }
-  decorate(root: HTMLElement, active: (node: HTMLElement) => boolean, room: (parent: Node) => number = () => Infinity): void {
+  private refreshCaptions(root: HTMLElement, protectedNode: (node: HTMLElement) => boolean): void {
+    for (const link of root.querySelectorAll<HTMLElement>('a.reference-link')) {
+      const text = this.prose.get(link); if (!text || protectedNode(link)) continue;
+      const result = this.lookup(text);
+      const caption = 'destination' in result && !result.destination.entryId ? result.caption ?? text : text;
+      if (link.textContent !== caption) link.textContent = caption;
+    }
+  }
+  decorate(root: HTMLElement, active: (node: HTMLElement) => boolean, room: (parent: Node) => number = () => Infinity, protectedNode: (node: HTMLElement) => boolean = () => false): void {
+    this.refreshCaptions(root, protectedNode);
     const fileRoot = this.files?.root(), key = fileRoot ? JSON.stringify([fileRoot.id,fileRoot.path]) : '';
     for (const link of root.querySelectorAll<HTMLElement>('.file-reference')) if (link.dataset.fileRoot !== key) {
       link.parentNode?.insertBefore(document.createTextNode(link.textContent ?? ''),link);link.remove();
@@ -141,10 +154,11 @@ export class ReferenceResolver {
     const matches = [...identities.map(value => ({...value, file: false})), ...files.map(value => ({...value, file: true}))].sort((a,b) => a.start - b.start);
     if (!matches.length) return;
     if (room < matches.length * 3 + 1) { root.setAttribute('aria-description', 'Some references remain text within the preview node limit.'); return; }
+    const prose = !node.closest?.('pre, code, .message-source, summary');
     let offset = 0;
     for (const match of matches) {
       if (match.start > offset) parent.insertBefore(document.createTextNode(text.slice(offset, match.start)), child);
-      parent.insertBefore(match.file ? this.renderFile(match.text, active) ?? document.createTextNode(match.text) : this.render(match.text, active), child); offset = match.end;
+      parent.insertBefore(match.file ? this.renderFile(match.text, active) ?? document.createTextNode(match.text) : this.render(match.text, active, prose), child); offset = match.end;
     }
     if (offset < text.length) parent.insertBefore(document.createTextNode(text.slice(offset)), child);
     (child as ChildNode).remove();
