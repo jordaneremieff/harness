@@ -2412,7 +2412,7 @@ function openDeskReview(row:DeskRow):void {
   const captured={...row,task:{...source.task},caption:deskCaption(source.reference.sessionId)};
   const data:ReviewData={caption:captured.caption,outcome:source.task.state,ask:source.task.input,answer:row.answer??source.task.answer,changes:[],turnLoaded:false,loading:true};
   const session:DeskReviewSession={context:deskContext(),row:captured,source,recipient,abort:new AbortController(),data};deskReview=session;
-  review.reset();review.update(data);renderNavigation();void loadDeskReview(session);
+  review.reset();review.update(data);renderNavigation();void loadDeskReview(session);readDeskRowNotice(row);
 }
 async function readDeskReviewResult(session:DeskReviewSession):Promise<ResultInspection> {
   const reference=session.source.reference;
@@ -2515,7 +2515,7 @@ function renderDesk():void {
   if(!deskPane)return;
   if(deskPane.context!==deskContext()||!paneById(deskLayout(),deskPane.id)){closeDesk();return;}
   if(!deskPane.list){endDeskReview();clearDeskComposer();extensionDialogs.inline();return;}
-  if(deskReview){if(reviewCurrent(deskReview)){review.update(deskReview.data);return;}endDeskReview();renderNavigation();}
+  if(deskReview){if(reviewCurrent(deskReview)){deskReview.data.caption=deskCaption(deskReview.source.reference.sessionId);review.update(deskReview.data);return;}endDeskReview();renderNavigation();}
   const tasks=deskTasks(),agents=state.rosterOrder.flatMap(identity=>{const row=agentRow(identity);return row?[row]:[];});
   const notices=[...communicationNotices.items.values()].filter(unreadReviewNotice).sort((a,b)=>(b.timestamp??0)-(a.timestamp??0));
   const rows=[...deskDialogRows(),...notices.map(notice=>deskNoticeRow(notice,tasks)),...deskAgentRows(agents,tasks)];rows.push(...deskTaskRows(tasks,rows));
@@ -2526,10 +2526,12 @@ function clearDeskComposer(keep?:ConversationController):void {
   for(const controller of controllers.values())if(controller!==keep&&controller.elements.root.dataset.deskPanel){delete controller.elements.root.dataset.deskPanel;controller.elements.recipient.classList.add('sr-only');stableViews().project(controller.elements.root);controller.composer.placement(false);hideController(controller);}
   if(deskComposer!==keep)deskComposer=keep;
 }
+function readDeskRowNotice(row:DeskRow):void {
+  if(row.notice&&!row.notice.read&&!deskNoticeReads.has(row.notice.key)){const notice=row.notice;deskNoticeReads.add(notice.key);void loadDeskNotice(notice).then(()=>{if(deskPane?.list&&!deskReview)desk.refreshNotice(deskNoticeRow(notice));}).catch(showError).finally(()=>deskNoticeReads.delete(notice.key));}
+}
 function selectDeskComposer(row:DeskRow,slot:HTMLElement):void {
   if(deskOpeningNotice&&row.notice?.key!==deskOpeningNotice)return;
-  extensionDialogs.inline(undefined,true);
-  if(row.notice&&!row.notice.read&&!deskNoticeReads.has(row.notice.key)){const notice=row.notice;deskNoticeReads.add(notice.key);void loadDeskNotice(notice).then(()=>{if(deskPane?.list)desk.refreshNotice(deskNoticeRow(notice));}).catch(showError).finally(()=>deskNoticeReads.delete(notice.key));}
+  extensionDialogs.inline(undefined,true);readDeskRowNotice(row);
   const target=deskReplyTarget(row);if(!target){deskPrimaryFallback(row,slot);return;}
   const controller=conversationController(target);clearDeskComposer(controller);controller.messageRetention??={};controller.passive=false;
   let editor=slot.querySelector<HTMLElement>('.message-editor-slot');if(!editor){editor=element('div','message-editor-slot');editor.id=`${slot.id}-editor`;slot.append(editor);}
@@ -2556,7 +2558,7 @@ function openDesk():void {endDeskReview();dismissSessionRead();modal.close(false
 async function openDeskNotice(notice:CommunicationNotice):Promise<void> {
   if(communicationNotices.items.get(notice.key)!==notice)return;
   deskOpeningNotice=notice.key;
-  try{openDesk();if(!deskPane)return;const row=deskNoticeRow(notice);if(reviewSource(row)){desk.showNotice(row,false);openDeskReview(row);await loadDeskNotice(notice);return;}desk.showNotice(row);}
+  try{openDesk();if(!deskPane)return;const row=deskNoticeRow(notice);if(reviewSource(row)){desk.showNotice(row,false);openDeskReview(row);return;}desk.showNotice(row);}
   finally{deskOpeningNotice=undefined;}
   await loadDeskNotice(notice);if(deskPane?.list)desk.refreshNotice(deskNoticeRow(notice));
 }
