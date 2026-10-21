@@ -675,7 +675,7 @@ a.reference-link[href] { color: var(--link); text-decoration: underline; overflo
 .markdown-content li::marker { color: var(--muted); }
 .markdown-content li > * + *, .markdown-content li > ul, .markdown-content li > ol { margin-top: var(--s1); }
 .markdown-content li + li { margin-top: var(--s1); }
-.markdown-content .markdown-inline-code { font-size: var(--fs-code); padding: calc(var(--s1) / 4) calc(var(--s1) * 1.25); border-radius: var(--r-sm); background: var(--code); color: var(--md-code); overflow-wrap: anywhere; }
+.markdown-content .markdown-inline-code { font-size: var(--fs-code); padding: calc(var(--s1) / 4) calc(var(--s1) * 1.25); border-radius: var(--r-sm); background: var(--code); color: var(--fg); overflow-wrap: anywhere; }
 .markdown-content strong { color: var(--fg); }
 .markdown-content a { color: var(--link); text-decoration: underline; }
 .markdown-content:is(blockquote) { padding-left: var(--s3); border-left: 3px solid var(--rule); color: var(--muted); }
