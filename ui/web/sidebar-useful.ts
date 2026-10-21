@@ -37,12 +37,14 @@ export class RecentSidebar {
     node.setAttribute('aria-label',[label,age,!notice.read?'Unread':''].filter(Boolean).join(' · '));return node;
   }
   render(notices:readonly CommunicationNotice[]):void {
+    try {
     this.entries=new Map(notices.map(notice=>[notice.key,notice]));
     const nodes:HTMLElement[]=recentCommunications(notices).map(notice=>this.noticeRow(notice));
     setText(this.all,notices.length?`All notices (${notices.length})`:'Open notices');nodes.push(this.all);
     for(const node of nodes)this.list.append(node);
     const keep=new Set(nodes);for(const node of [...this.list.children])if(!keep.has(node as HTMLElement))node.remove();
     const keys=new Set(this.entries.keys());for(const key of this.nodes.keys())if(!keys.has(key))this.nodes.delete(key);
+    } catch (error) {try {window.reportClientError?.('Recent',error);} catch {} throw error;}
   }
 }
 type SessionRow={key:string;name:string;at:number;state:string;title:string;primary?:PrimaryView;saved?:SavedSession};
@@ -103,6 +105,7 @@ export class SessionSidebar {
     return rows.sort((a,b)=>(Number.isFinite(b.at)?b.at:0)-(Number.isFinite(a.at)?a.at:0)).slice(0,6);
   }
   private paint():void{
+    try {
     const focused=(document.activeElement as HTMLElement|null)?.dataset.sessionKey;
     const nodes=this.sessionRows().map(item=>{
       const node=row(item.name,item.state,item.title,()=>{if(item.primary)this.hooks.openPrimary(item.primary,item.saved);else if(item.saved)this.hooks.openSaved(item.saved);});
@@ -110,5 +113,6 @@ export class SessionSidebar {
     });
     this.node.replaceChildren(...(nodes.length?nodes:[this.create]));
     if(focused)[...this.node.querySelectorAll<HTMLButtonElement>('button')].find(node=>node.dataset.sessionKey===focused)?.focus({preventScroll:true});
+    } catch (error) {try {window.reportClientError?.('Sessions',error);} catch {} throw error;}
   }
 }

@@ -74,6 +74,7 @@ export class TabStrip {
     (node ?? this.region(id)?.tabs)?.focus({preventScroll: true});
   }
   render(): void {
+    try {
     if (this.destroyed) return;
     const layout = this.hooks.layout(); const panes = paneLeaves(layout.root); const tabs = panes.flatMap(pane => pane.tabs);
     const regions = this.regions.panes(); const signature = JSON.stringify([panes.map(pane => [pane.id, pane.tabs.map(tabKey), pane.active]), layout.focusedPane]);
@@ -102,6 +103,7 @@ export class TabStrip {
     for (const pane of panes) {const group = this.groups.get(pane.id); if (group) group.hidden = !pane.tabs.length;}
     this.fitStatuses(); if (reveal) this.revealActive();
     if (hadFocus) { if (focused && [...regions.map(region => region.tabs), this.regions.conversations].some(host => host.contains(focused))) focused.focus({preventScroll: true}); else this.focusActive(); }
+    } catch (error) {try {window.reportClientError?.('Open tabs',error);} catch {} throw error;}
   }
   private paintFallback():boolean {
     const fallback=this.hooks.fallback?.();

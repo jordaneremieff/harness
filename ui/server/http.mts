@@ -21,7 +21,8 @@ import { identityDocument } from './version.mts';
 import {CONTROL_LIMITS, CONTROL_ROUTES} from '../shared/control.ts';
 import type {Control} from './control.mts';
 import type {UserStylesheet, UserStylesheetSource} from './user-stylesheet.mts';
-export type DevelopmentHttp = {control?:{service:Control};generations?:AssetGenerations;diagnostics?:DiagnosticSink;identity?:UiIdentity;files?:Files;health?:()=>BackendHealthFacts;userStylesheet?:UserStylesheetSource};
+import {CLIENT_ERROR_REQUEST_BYTES, clientErrorReport, type ClientErrorLog} from './client-error-log.mts';
+export type DevelopmentHttp = {clientErrors?:ClientErrorLog;control?:{service:Control};generations?:AssetGenerations;diagnostics?:DiagnosticSink;identity?:UiIdentity;files?:Files;health?:()=>BackendHealthFacts;userStylesheet?:UserStylesheetSource};
 
 export type RequestContext = {method: string; parts: string[]; url: URL; body: Record<string, unknown>;
   operationId?: string; workspace?: string; signal?: AbortSignal};
@@ -243,6 +244,12 @@ export class LocalHttp {
     pathParts(rawPath);
     const url = new URL(request.url ?? '/', this.boundary.origin);
     const method = request.method ?? 'GET'; const parts = pathParts(url.pathname);
+    if(url.pathname === '/api/client-errors') {
+      requireMethod(method,'POST');
+      if(url.search || request.headers['idempotency-key']) throw new ApiError('invalid_request','Client error reports do not accept queries or replay keys.');
+      const report=clientErrorReport(await readBody(request,CLIENT_ERROR_REQUEST_BYTES));
+      this.development.clientErrors?.record(report);respond(response,{});return;
+    }
     if(url.pathname.startsWith('/api/control/')) {await this.controlRoute(request,response,url,method,parts);return;}
     if(await this.developmentRoute(request,response,url,method)) return;
     if (!isFileRoute(parts)) matchRoute(method, parts);

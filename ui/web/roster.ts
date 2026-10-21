@@ -236,6 +236,7 @@ export class Roster {
     return selected;
   }
   private paint(): void {
+    try {
     const anchor = captureAnchor(this.layout, this.node.scrollTop); const pins = this.pins();
     const filtered = this.filtered(); const query = this.query(); this.filterVisibility(query);this.node.dataset.catalog=String(this.expanded||!!query);
     const rows = this.selectedRows(filtered,query);
@@ -257,6 +258,7 @@ export class Roster {
     const controlsHeight = controls.reduce((height, node) => height + node.offsetHeight, 0);
     const viewport = Math.max(0, this.node.clientHeight - controlsHeight);
     if (anchor) this.node.scrollTop = restoreAnchor(this.layout, anchor, viewport, this.node.scrollTop);
+    } catch (error) {try {window.reportClientError?.('Agents',error);} catch {} throw error;}
   }
   private gap(key: string, height: number): HTMLElement {
     let node = this.gaps.get(key);

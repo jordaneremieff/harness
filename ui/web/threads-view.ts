@@ -108,6 +108,7 @@ export class ThreadExplorer {
     return ids.map(id => `${id}=${this.hooks.name(id)}`).join('|');
   }
   private paint(): void {
+    try {
     const overview = this.overview;
     this.section.dataset.collapsed = String(this.collapsed);
     this.heading.setAttribute('aria-expanded', String(!this.collapsed));
@@ -128,6 +129,7 @@ export class ThreadExplorer {
     setText(this.all,overview?.items.length ? `All threads (${overview.items.length})` : 'All threads');
     this.retry.disabled=this.loading;this.retry.title=this.diagnostics();
     this.footer.replaceChildren(this.failedEmpty()?this.retry:this.all);
+    } catch (error) {try {window.reportClientError?.('Threads',error);} catch {} throw error;}
   }
   private failedEmpty():boolean {
     const overview=this.overview;

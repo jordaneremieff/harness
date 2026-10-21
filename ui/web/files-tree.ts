@@ -143,6 +143,9 @@ export class FilesTree {
     return [...children, ...this.directoryStatus('', base)];
   }
   private paint(): void {
+    try {this.paintRows();} catch (error) {try {window.reportClientError?.('Files',error);} catch {} throw error;}
+  }
+  private paintRows(): void {
     const focus = this.node.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.path : undefined;
     const rows = visibleFileRows(this.directories), enabled = rows.filter(row=>row.entry.kind === 'file' || row.entry.kind === 'directory');
     const visible = new Set(enabled.map(row=>row.entry.path));

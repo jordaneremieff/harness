@@ -12,6 +12,7 @@ import { identityLabel, type UiIdentity } from '../shared/version.ts';
 import {HEALTH_REASON_CHARACTERS, type BackendHealthFacts} from '../shared/health.ts';
 import {readUserStylesheet, type UserStylesheetSource} from './user-stylesheet.mts';
 import {LifecycleLog,redactLifecycle} from './lifecycle-log.mts';
+import {ClientErrorLog} from './client-error-log.mts';
 import {parseArgs, type Options} from './options.mts';
 export {parseArgs} from './options.mts';
 import {Control} from './control.mts';
@@ -66,12 +67,15 @@ async function releaseGenerations(assets:Map<string,Asset>,release:BackendReleas
 /** The configured file is read on each use; tests inject a source. */
 const userStylesheetSource=(override?:UserStylesheetSource):UserStylesheetSource=>override??readUserStylesheet;
 function requireAbsoluteCwd(cwd:string):void {if(!isAbsolute(cwd))throw new ApiError('invalid_request','The project directory must be absolute.');}
+async function openClientErrorLog(directory:string):Promise<ClientErrorLog|undefined> {
+  try {return await ClientErrorLog.open(directory);} catch {return undefined;}
+}
 /** Test injection changes adapters, not the public HTTP route or request boundary. */
 export async function startBackend(options:Options, injection:Partial<Pick<RegistryOptions,'agents'|'primary'|'measure'|'connectOwner'>> & {userStylesheet?:UserStylesheetSource; assets?:Map<string,Asset>; assetRoot?:string; identity?:UiIdentity; supervisorRestarts?:number; onRestart?:()=>void; release?:{directory:string;manifest:ReleaseManifest;previous?:string}}={}) {
   const startedAt=new Date().toISOString(),paths=statePaths(),stateDir=options.stateDir??paths.stateDir;
   requireAbsoluteCwd(options.cwd);
   let development:Awaited<ReturnType<typeof DevelopmentBuild.open>>|undefined;
-  let diagnostics:DiagnosticSink|undefined,log:LifecycleLog|undefined;
+  let diagnostics:DiagnosticSink|undefined,log:LifecycleLog|undefined,clientErrors:ClientErrorLog|undefined;
   let startupRegistry:Registry|undefined,startupHttp:LocalHttp|undefined,files:Files|undefined,control:Control|undefined,controlDiscovery:ControlDiscovery|undefined;
   try {
     const release = injection.release, assetRoot = release ? resolve(release.directory, 'ui') : injection.assetRoot;
@@ -82,6 +86,7 @@ export async function startBackend(options:Options, injection:Partial<Pick<Regis
     const identity=injection.identity??await collectIdentity(assets,{root:assetRoot?resolve(assetRoot,'..'):undefined,assetRoot,startedAt,build:generations?.identity(),release:release?.manifest});
     const registry=await Registry.open({stateDir,cwd:options.cwd,executable:options.pi,agentStore:paths.agentStore,agents:injection.agents,primary:injection.primary,measure:injection.measure,connectOwner:injection.connectOwner});startupRegistry=registry;
     try {log=await LifecycleLog.open(stateDir);log.record('restart',`Supervisor replacements: ${injection.supervisorRestarts??0}.`);} catch {process.stderr.write('Local lifecycle logging is unavailable.\n');}
+    clientErrors=await openClientErrorLog(stateDir);
     registry.unavailable=detail=>{const text=redactLifecycle(detail);log?.record('unavailable',text);process.stderr.write(`${text}\n`);};
     if(options.devDiagnostics) {
       try {diagnostics=new DiagnosticSink(await DiagnosticDisk.open(stateDir),undefined,undefined,()=>development?.generations.status().generation);}
@@ -97,7 +102,7 @@ export async function startBackend(options:Options, injection:Partial<Pick<Regis
       services:serviceHealth(registry,files,stopping),
       build:{state:generations?.status().status??'static'},
       ...(registry.options.owner ? {owner:{pid:process.ppid,incarnation:registry.options.owner.hello.ownerIncarnation,protocol:registry.options.owner.hello.protocol},backend:{pid:process.pid,...(release?{release:release.manifest.id}:{})}} : {})});
-    const http=new LocalHttp(registry,assets,undefined,{generations,diagnostics,identity,files,health,control:{service:control},userStylesheet:userStylesheetSource(injection.userStylesheet)});startupHttp=http;
+    const http=new LocalHttp(registry,assets,undefined,{clientErrors,generations,diagnostics,identity,files,health,control:{service:control},userStylesheet:userStylesheetSource(injection.userStylesheet)});startupHttp=http;
     const url=await http.listen(options.port);
     await controlDiscovery.publish(stateDir,http.boundary.origin,registry.journal.bootId);
     development?.generations.observe(status=> {
@@ -114,7 +119,7 @@ export async function startBackend(options:Options, injection:Partial<Pick<Regis
       const controls=await Promise.allSettled([control?.close(),controlDiscovery?.close()]);
       registry.journal.close();log?.record('shutdown','Admission stopped; owned resources will close.');
       const primaries=await Promise.allSettled([registry.close()]);
-      closedServices??=Promise.allSettled([http.close(),files?.close(),development?.build.close(),diagnostics?.close(),log?.close()]);
+      closedServices??=Promise.allSettled([http.close(),files?.close(),development?.build.close(),diagnostics?.close(),log?.close(),clientErrors?.close()]);
       const services=await closedServices;
       const failed=[...controls,...primaries,...services].find(item=>item.status==='rejected');if(failed?.status==='rejected') throw failed.reason;
     })().catch(error=>{closing=undefined;throw error;});
@@ -134,12 +139,12 @@ export async function startBackend(options:Options, injection:Partial<Pick<Regis
       stopping = true;
       await control?.close(); await controlDiscovery?.close();
       await http.close(); await registry.detach();
-      await Promise.all([files?.close(), development?.build.close(), diagnostics?.close(), log?.close()]);
+      await Promise.all([files?.close(), development?.build.close(), diagnostics?.close(), log?.close(), clientErrors?.close()]);
     };
     return {registry,http,url,identity,close,detach,prepareRelease,cancelRelease,log};
   } catch(error) {
     await Promise.allSettled([control?.close(),controlDiscovery?.close()]);
-    await Promise.allSettled([files?.close(),startupHttp?.close(),development?.build.close(),diagnostics?.close(),log?.close()]);
+    await Promise.allSettled([files?.close(),startupHttp?.close(),development?.build.close(),diagnostics?.close(),log?.close(),clientErrors?.close()]);
     await Promise.allSettled([startupRegistry?.close()]);throw error;
   }
 }
