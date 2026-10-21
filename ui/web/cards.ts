@@ -82,7 +82,11 @@ function replacementBlock(text: string): HTMLElement {
   if (!text) return block;
   for (const line of text.split('\n')) {
     const className = line.startsWith('- ') ? 'diff-del' : line.startsWith('+ ') ? 'diff-add' : undefined;
-    block.append(className ? element('span', className, line) : document.createTextNode(line), document.createTextNode('\n'));
+    if (className || line.startsWith('  ')) {
+      const row = element('span', `diff-row${className ? ` ${className}` : ''}`);
+      row.append(element('span', 'diff-marker', line.slice(0, 2)), element('span', 'diff-text', `${line.slice(2)}\n`));
+      block.append(row);
+    } else block.append(document.createTextNode(line), document.createTextNode('\n'));
   }
   return block;
 }

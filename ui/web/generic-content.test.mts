@@ -626,7 +626,7 @@ test('argument source details select generic hints and path extensions and own t
 test('supplied edits use at most eight old and new pairs without an inferred diff or tail scan', () => {
   const edits = Array.from({length: 8}, (_, i) => ({oldText: `before${i}\n<script>`, newText: `after${i}\n<strong>`}));
   Object.defineProperty(edits, 8, {get: () => { throw new Error('Do not scan the edit tail'); }}); edits.length = 10000;
-  const node = args({edits}); assert.equal(classes(node, 'diff-del').length, 8); assert.equal(classes(node, 'diff-add').length, 8);
+  const node = args({edits}); assert.equal(classes(node, 'diff-del').length, 16); assert.equal(classes(node, 'diff-add').length, 16);
   assert.match(node.textContent, /- before0\n- <script>/); assert.match(node.textContent, /\+ after0\n\+ <strong>/);
   assert.doesNotMatch(node.textContent, /@@/); assert.equal(node.querySelectorAll('script').length, 0);
   // The caption identifies supplied text; diff safety remains checked above.
@@ -635,18 +635,43 @@ test('supplied edits use at most eight old and new pairs without an inferred dif
 
 test('supplied edits color only changed lines and show shared lines in plain text', () => {
   const append = args({edits: [{oldText: 'a\nb.', newText: 'a\nb.\nc\nd'}]});
-  assert.deepEqual(classes(append, 'diff-add').map(child => child.textContent), ['+ c\n+ d']); assert.equal(classes(append, 'diff-del').length, 0);
+  assert.deepEqual(classes(append, 'diff-add').map(child => child.textContent), ['+ c\n', '+ d\n']); assert.equal(classes(append, 'diff-del').length, 0);
   assert.ok(append.textContent.includes('Earlier context omitted.\n  b.\n+ c\n+ d\n'));
   const insertion = args({edits: [{oldText: 'x\ny\nz', newText: 'x\nI\ny\nz'}]});
-  assert.deepEqual(classes(insertion, 'diff-add').map(child => child.textContent), ['+ I']); assert.equal(classes(insertion, 'diff-del').length, 0);
+  assert.deepEqual(classes(insertion, 'diff-add').map(child => child.textContent), ['+ I\n']); assert.equal(classes(insertion, 'diff-del').length, 0);
   assert.ok(insertion.textContent.includes('  x\n+ I\n  y\nLater context omitted.'));
   const deletion = args({edits: [{oldText: 'x\ny\nz', newText: 'x\nz'}]});
-  assert.deepEqual(classes(deletion, 'diff-del').map(child => child.textContent), ['- y']); assert.equal(classes(deletion, 'diff-add').length, 0);
+  assert.deepEqual(classes(deletion, 'diff-del').map(child => child.textContent), ['- y\n']); assert.equal(classes(deletion, 'diff-add').length, 0);
   assert.ok(deletion.textContent.includes('  x\n- y\n  z\n'));
   const inline = args({edits: [{oldText: 'a\nfoo bar\nc', newText: 'a\nfoo baz\nc'}]});
-  assert.deepEqual([classes(inline, 'diff-del'), classes(inline, 'diff-add')].map(list => list.map(child => child.textContent)), [['- foo bar'], ['+ foo baz']]);
+  assert.deepEqual([classes(inline, 'diff-del'), classes(inline, 'diff-add')].map(list => list.map(child => child.textContent)), [['- foo bar\n'], ['+ foo baz\n']]);
   const empty = args({edits: [{oldText: '', newText: 'new'}]});
   assert.match(empty.textContent, /Old text: empty\n\+ new/); assert.equal(classes(empty, 'diff-del').length, 0);
+});
+
+test('supplied diff rows separate literal markers from exact indented and blank source lines', () => {
+  const oldText = '  head\n\told <script>😀\n\n  tail';
+  const long = `\tnew ${'wide '.repeat(35)}😀`;
+  const newText = `  head\n${long}\n  extra\n  tail`;
+  const value = {edits: [{oldText, newText}]}; const retained = JSON.stringify(value);
+  const node = args(value); const frame = classes(node, 'pre-text-frame')[0]; assert.ok(frame);
+  const expected = [['  ', '  head\n'], ['- ', '\told <script>😀\n'], ['- ', '\n'], ['+ ', `${long}\n`], ['+ ', '  extra\n'], ['  ', '  tail\n']];
+  const rows = classes(frame, 'diff-row'); assert.equal(rows.length, expected.length);
+  assert.deepEqual(rows.map(row => row.childNodes.map(child => [child.className, child.textContent])),
+    expected.map(([marker, text]) => [['diff-marker', marker], ['diff-text', text]]));
+  assert.deepEqual(rows.map(row => row.className), ['diff-row', 'diff-row diff-del', 'diff-row diff-del', 'diff-row diff-add', 'diff-row diff-add', 'diff-row']);
+  assert.equal(frame.textContent, expected.map(([marker, text]) => `${marker}${text}`).join(''));
+  assert.equal(frame.childNodes.every(child => child.className.split(' ').includes('diff-row')), true);
+  assert.equal(node.querySelectorAll('script').length, 0); assert.equal(JSON.stringify(value), retained); bounded(node);
+});
+
+test('dense supplied diff rows retain exact text when the shared node limit requires plain output', () => {
+  const old = Array.from({length: 80}, (_, index) => `old ${index}`);
+  const next = Array.from({length: 80}, (_, index) => `new ${index}`);
+  const node = args({edits: [{oldText: old.join('\n'), newText: next.join('\n')}]});
+  const frame = classes(node, 'pre-text-frame')[0]; assert.ok(frame);
+  assert.equal(frame.textContent, [...old.map(line => `- ${line}\n`), ...next.map(line => `+ ${line}\n`)].join(''));
+  assert.equal(classes(frame, 'diff-row').length, 0); bounded(node);
 });
 
 test('expanded supplied replacements locate later changes and preserve their shared content budget', () => {

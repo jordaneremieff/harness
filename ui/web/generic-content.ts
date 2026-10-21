@@ -587,6 +587,11 @@ class Preview {
       if (!this.append(body, tr)) break;
     }
   }
+  private diffRow(frame: HTMLElement, text: string, className?: string): void {
+    const row = element('span', `diff-row${className ? ` ${className}` : ''}`);
+    row.append(element('span', 'diff-marker', text.slice(0, 2)), element('span', 'diff-text', text.slice(2)));
+    frame.append(row);
+  }
   private editSide(frame: HTMLElement, lines: string[], sign: string, className: string, empty: boolean): void {
     if (!this.budget.text) { this.limit(); return; }
     if (empty) {
@@ -596,12 +601,15 @@ class Preview {
     }
     if (!lines.length) return;
     const text = this.take(lines.map(line => `${sign} ${line}`).join('\n'), DOC_CHARS);
-    if (text) frame.append(element('span', className, text), document.createTextNode(this.take('\n', 1)));
+    if (text) {
+      const shown = text.split('\n');
+      for (const [index, line] of shown.entries()) this.diffRow(frame, `${line}${index < shown.length - 1 ? '\n' : this.take('\n', 1)}`, className);
+    }
   }
   private contextLine(frame: HTMLElement, line: string | null): void {
     if (line === null) return;
     if (!this.budget.text) { this.limit(); return; }
-    frame.append(document.createTextNode(this.take(`  ${line}`, DOC_CHARS)), document.createTextNode(this.take('\n', 1)));
+    this.diffRow(frame, this.take(`  ${line}`, DOC_CHARS) + this.take('\n', 1));
   }
   private replacementFrame(old: string, next: string): HTMLPreElement {
     const comparison = suppliedDifference(old, next, Math.min(DOC_CHARS - DOC_LINES * 2, Math.max(0, Math.floor((this.budget.text - 240) / 2))), DOC_LINES);

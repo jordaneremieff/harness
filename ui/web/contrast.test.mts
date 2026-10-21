@@ -38,6 +38,9 @@ const decorativeHairlines = new Set([
   ".context-menu-separator|border-top",
   ".nav-top|border-bottom", ".nav-search:focus-within|border-bottom-color", ".composer-input|border",
   ".context-menu|border", "dialog[data-variant=find] #modal-body > input|border",
+  'input, select|border', 'dialog textarea|border',
+  ':root[data-appearance=light] :is(dialog:not([data-variant=find]), .context-menu, .command-menu, .composer-intake-menu, .workbench-status .composer-detail-body, .receipt-details pre)|border',
+  ':root[data-appearance=system] :is(dialog:not([data-variant=find]), .context-menu, .command-menu, .composer-intake-menu, .workbench-status .composer-detail-body, .receipt-details pre)|border',
 	".source-header|border-bottom",
 	".sidebar|border-right",
 	".sidebar-footer|border-top",
@@ -373,6 +376,8 @@ function composerBackground(context: Context, value: string): boolean {
 const menuHoverFills = new Set([
   '.composer-intake-menu > .context-menu-item:hover, .composer-intake-menu > .context-menu-item:focus-visible',
   '.command-option:hover, .command-option[aria-selected=true]',
+  '.context-menu > button:hover',
+  '.context-menu > button:focus-visible',
 ]);
 function menuBackground(context: Context, value: string): boolean {
   if (!menuHoverFills.has(context.rule.selector)) return false;
@@ -382,6 +387,18 @@ function menuBackground(context: Context, value: string): boolean {
   }
   const surface = token(context.palette['--menu-hover'] as string) as string;
   for (const fg of ['fg', 'muted', 'dim']) context.measure('menu-text', `${context.source} --${fg} / aliased row --${surface}`, fg, surface, textThreshold(fg, context.theme));
+  return true;
+}
+function runBackground(context: Context, value: string): boolean {
+  if (context.rule.selector !== '.tool-shell:hover') return false;
+  const expected = context.theme === 'dark' ? 'var(--raised)' : '#edeef0';
+  if (value !== 'var(--run-hover)' || context.palette['--run-hover'] !== expected) {
+    context.issues.push(`${context.theme}: unmodeled tool hover ${context.source}: ${value}`);
+    return true;
+  }
+  const background = context.theme === 'dark' ? 'raised' : expected;
+  // Peer labels belong to notices, not tool output. All other inherited text includes syntax previews.
+  for (const fg of foregrounds.filter(name => name !== 'peer-label')) context.measure('tool-hover-text', `${context.source} --${fg}`, fg, background, textThreshold(fg, context.theme));
   return true;
 }
 function diffBackground(context: Context, name: string): boolean {
@@ -399,7 +416,7 @@ function backgroundDeclaration(context: Context, value: string) {
   if (decorativeBackgrounds.has(`${rule.selector}|${value}`)) {
     exclusions.push(`${theme}: non-content paint ${source}: ${value}`); return;
   }
-  if (composerBackground(context, value) || menuBackground(context, value)) return;
+  if (composerBackground(context, value) || menuBackground(context, value) || runBackground(context, value)) return;
 	const name = token(value);
 	if (!name || !palette[`--${name}`]) {
 		issues.push(`${theme}: unmodeled background ${source}: ${value}`);
@@ -547,6 +564,17 @@ function audit(input: string): Audit {
 const result = audit(css);
 const failures = result.measurements.filter((m) => m.ratio < m.threshold);
 const minimum = (rows: Measurement[]) => Math.min(...rows.map((r) => r.ratio));
+
+test('tool hover measures every actual text tier in both appearances', () => {
+  const tones = foregrounds.filter(name => name !== 'peer-label');
+  for (const theme of ['dark', 'light']) {
+    const rows = result.measurements.filter(row => row.theme === theme && row.kind === 'tool-hover-text');
+    assert.equal(rows.length, tones.length);
+    assert.ok(rows.every(row => row.ratio >= row.threshold), JSON.stringify(rows.filter(row => row.ratio < row.threshold)));
+    assert.ok(!rows.some(row => row.source.includes('peer-label')));
+  }
+  assert.ok(audit(css.replace('.tool-shell:hover { background: var(--run-hover); }', '.tool-shell:hover { background: var(--raised); }')).issues.some(issue => issue.includes('unmodeled tool hover')));
+});
 
 test("WCAG sRGB reference ratios", () => {
 	assert.equal(ratio("#000000", "#ffffff"), 21);

@@ -2,7 +2,7 @@ import type { EntryView, ImageView, JsonDisplay, MessageView, PartView, Presenta
 import type {ResultInspection, ResultSelector} from '../shared/inspection.ts';
 import { announce, button, copy, details, element, rawText, setText } from './dom.ts';
 import { ArrivalCounter, latestLabel } from './arrivals.ts';
-import { cardAction, cardActionLabel, cardDisclosure } from './card-icons.ts';
+import { cardAction, cardActionLabel, cardDisclosure, cardIcon, type CardIcon } from './card-icons.ts';
 import { contextMenu, nativeEditingTarget, type ContextItem } from './context-menu.ts';
 import { markdownDom, sourceHeader, sourceWrap } from './safe-markdown.ts';
 import { highlight, languageFromPath } from './highlight.ts';
@@ -48,6 +48,7 @@ const EARLIER_ZONE_PX = 240;
 const ANCHOR_HOLD_MS = 500;
 const TASK_READ_CONCURRENCY = 4;
 const toolStateLabels:Record<JoinedTool['status'],string>={success:'',preparing:'Preparing call',working:'Working',pending:'Queued',error:'Failed',ended:'Ended without result',available:'Result available',missing:'No result recorded'};
+const toolStateIcons: Record<string, CardIcon> = {preparing: 'working', working: 'working', pending: 'history', error: 'error', ended: 'unknown', available: 'info', missing: 'unknown'};
 function selectionCopy(origin: HTMLElement): ContextItem[] {
   const selection = document.getSelection();
   if (!selection || selection.isCollapsed || !origin.contains(selection.anchorNode) || !origin.contains(selection.focusNode)) return [];
@@ -197,7 +198,7 @@ type MessageNode = {communication?: CommunicationCard; node: HTMLElement; header
 type EventPage = {node: HTMLElement; rows: HTMLElement; page: number; previous: HTMLButtonElement; next: HTMLButtonElement; cache: Map<string, {source: EntryView; node: HTMLElement}>};
 type SessionNode = {source?: SessionGroup; details: HTMLDetailsElement; events: EventPage; notices: EventPage};
 type EntryNode = {node: HTMLElement; messages: Map<string, MessageNode>; source?: EntryView; custom?: HTMLElement; session?: SessionNode; groupHeader?: HTMLElement};
-type ToolNode = {previewSource?: JoinedTool; previewSubjectRevision?: number; answerText?: string; subject?: ToolSubjectCaption; card: HTMLElement; node: HTMLDetailsElement; copy: HTMLButtonElement; title: HTMLElement; target: HTMLElement; glyph: HTMLElement; meta: HTMLElement; preview: HTMLElement; qualification: HTMLElement; expanded: HTMLElement; resultArea: HTMLElement; technical: HTMLDetailsElement; actions: HTMLElement; info: HTMLElement; source?: JoinedTool; inspectionSources?: Map<HTMLDetailsElement, JoinedTool>; presentation?: HTMLElement; argumentsDocument?: HTMLElement; argumentsSource?: JoinedTool; output?: HTMLElement; contentSource?: JoinedTool; viewport?: HTMLElement; pageViewports?: Set<HTMLElement>; resultDocument?: HTMLElement; documentSource?: JoinedTool; previewBudget?: PreviewBudget; outputNotice?: {node: HTMLElement; source: JoinedTool}; inspections?: {arguments: HTMLDetailsElement; output: HTMLDetailsElement; details: HTMLDetailsElement}};
+type ToolNode = {previewSource?: JoinedTool; previewSubjectRevision?: number; answerText?: string; subject?: ToolSubjectCaption; card: HTMLElement; node: HTMLDetailsElement; copy: HTMLButtonElement; title: HTMLElement; target: HTMLElement; glyph: HTMLElement; stateWord: HTMLElement; meta: HTMLElement; preview: HTMLElement; qualification: HTMLElement; expanded: HTMLElement; resultArea: HTMLElement; technical: HTMLDetailsElement; actions: HTMLElement; info: HTMLElement; source?: JoinedTool; inspectionSources?: Map<HTMLDetailsElement, JoinedTool>; presentation?: HTMLElement; argumentsDocument?: HTMLElement; argumentsSource?: JoinedTool; output?: HTMLElement; contentSource?: JoinedTool; viewport?: HTMLElement; pageViewports?: Set<HTMLElement>; resultDocument?: HTMLElement; documentSource?: JoinedTool; previewBudget?: PreviewBudget; outputNotice?: {node: HTMLElement; source: JoinedTool}; inspections?: {arguments: HTMLDetailsElement; output: HTMLDetailsElement; details: HTMLDetailsElement}};
 export type TranscriptGeometry = {generation: number; followTail: boolean; anchor: {id: string; offsetPx: number} | null; scrollTop: number};
 export type FindStatus = {total: number; position: number; moved: boolean; end: 'none' | 'first' | 'last' | 'unavailable' | null};
 export type FindSession = {next: (query: string) => FindStatus; previous: (query: string) => FindStatus; reset: () => void; close: () => void};
@@ -1434,9 +1435,9 @@ export class Transcript {
   }
   private createTool(source: JoinedTool): ToolNode {
     const card = element('div', 'tool-shell'); const node = element('details', 'tool-card'); card.append(node); const summary = element('summary');
-    const tier = element('span', 'tool-tier'); const glyph = element('span', 'tool-status');
-    const title = element('span', 'tool-name'); const target = element('span', 'tool-target'); const meta = element('span', 'tool-secondary');
-    tier.append(title, glyph); cardDisclosure(summary); summary.append(tier);
+    const tier = element('span', 'tool-tier'); const glyph = element('span', 'tool-status'); glyph.setAttribute('aria-hidden', 'true');
+    const title = element('span', 'tool-name'); const stateWord = element('span', 'tool-state-word'); const target = element('span', 'tool-target'); const meta = element('span', 'tool-secondary');
+    tier.append(glyph, title, stateWord); cardDisclosure(summary); summary.append(tier);
     const preview = element('div', 'tool-preview'); const qualification = element('p', 'tool-preview-qualification', 'Partial output'); qualification.hidden = true;
     const expanded = element('div', 'tool-expanded'), resultArea = element('div', 'tool-result');
     resultArea.tabIndex = 0; resultArea.setAttribute('role', 'region'); resultArea.setAttribute('aria-label', 'Tool result');
@@ -1458,9 +1459,17 @@ export class Transcript {
     const controls=element('div','tool-source-actions');
     controls.append(button('Copy arguments',()=>{const source=tool.source;if(source&&this.currentToolSource(tool,source,generation))void copy(this.toolArguments(tool),controls);}),button('Copy ID',()=>{const source=tool.source;if(source&&this.currentToolSource(tool,source,generation))void copy(source.callId,controls);}));
     technical.append(controls); const actions = element('div', 'tool-output-actions'); actions.append(action); expanded.append(resultArea, actions, technical);
-    const tool: ToolNode = {card, node, copy: action, title, target, glyph, meta, preview, qualification, expanded, resultArea, technical, actions, info}; this.tools.set(source.callId, tool);
+    const tool: ToolNode = {card, node, copy: action, title, target, glyph, stateWord, meta, preview, qualification, expanded, resultArea, technical, actions, info}; this.tools.set(source.callId, tool);
     this.trackDisclosure(node, `tool:${source.callId}`);
     node.addEventListener('toggle', () => this.toolExpansion(tool)); this.registerContent(card); return tool;
+  }
+  private toolState(tool: ToolNode, status: string): void {
+    const stateLabel = toolStateLabels[status] ?? 'State unavailable';
+    const stateIcon = toolStateIcons[status] ?? 'unknown';
+    if (status === 'success') { if (tool.glyph.childNodes.length) tool.glyph.replaceChildren(); }
+    else if (!tool.glyph.querySelector(`.card-icon-${stateIcon}`)) tool.glyph.replaceChildren(cardIcon(stateIcon));
+    tool.glyph.className = `tool-status ${status}`;
+    setText(tool.stateWord, stateLabel); tool.stateWord.className = `tool-state-word ${status}`;
   }
   private updateTool(source: JoinedTool): HTMLElement {
     const tool = this.tools.get(source.callId) ?? this.createTool(source);
@@ -1473,8 +1482,7 @@ export class Transcript {
       return tool.card;
     }
     tool.card.dataset.status = source.status;
-    setText(tool.glyph,toolStateLabels[source.status]??'State unavailable');
-    tool.glyph.className = `tool-status ${source.status}`;
+    this.toolState(tool, source.status);
     this.toolMetadata(tool, source);
     const explanation = [metadata(source), outputExplanation(source), source.args?.truncated ? 'Some arguments are not available.' : ''].filter(Boolean).join('\n');
     tool.qualification.hidden = !this.partialToolOutput(source);
@@ -1626,11 +1634,17 @@ export class Transcript {
     node.addEventListener('toggle', materialize); this.observeDisclosure(node); materialize();
     return node;
   }
+  private attachToolArguments(tool: ToolNode): void {
+    const cached = tool.presentation ?? tool.argumentsDocument;
+    if (tool.inspections && cached && cached.parentElement !== tool.inspections.arguments) {
+      tool.inspections.arguments.append(cached); this.registerContent(cached);
+    }
+  }
   private presentToolRegion(tool: ToolNode, source: JoinedTool): void {
     const previous = tool.argumentsSource;
     const sameArgs = previous?.args === source.args || previous?.args?.value === source.args?.value && previous?.args?.truncated === source.args?.truncated;
     if (sameArgs && previous?.name === source.name && (tool.presentation || tool.argumentsDocument)) {
-      tool.argumentsSource = source; return;
+      this.attachToolArguments(tool); tool.argumentsSource = source; return;
     }
     const context = this.presentationContext();
     if ([tool.presentation, tool.argumentsDocument, tool.resultDocument].some(root => root && this.protectedNode(root))) return;

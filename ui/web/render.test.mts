@@ -12,7 +12,7 @@ import { markdownDom } from './safe-markdown.ts';
 import { outputPages } from './transcript-output.ts';
 import { ReferenceResolver, referenceCandidates } from './references.ts';
 import { TranscriptGroups, entryGroup } from './transcript-groups.ts';
-import {createState, reduceEvent, conversationBlocks, targetIdentity} from './state.ts';
+import {createState, reduceEvent, conversationBlocks, targetIdentity, type ToolState} from './state.ts';
 import {projectFrame} from '../server/projection.mts';
 import {transferFrame} from '../agents/transfer.mts';
 import {frame} from '../agents/fake-host.mts';
@@ -317,6 +317,44 @@ test('reset keeps both earlier controls connected and discoverable before the ne
     } finally { fakeDocument.getElementById = lookup; }
   }
 });
+test('tool state slots precede titles and visible words while success stays empty and nodes stay stable', () => {
+  setup(); const view = transcript(); const callId = 'state-icon';
+  const state = (extra: Partial<ToolState> = {}): ToolState => ({callId, name: 'read', phase: 'update', ...extra});
+  const cases: {status: string; icon: string | null; label: string; partial?: boolean; tool?: ToolState}[] = [
+    {status: 'missing', icon: 'unknown', label: 'No result recorded'},
+    {status: 'preparing', icon: 'working', label: 'Preparing call', partial: true},
+    {status: 'working', icon: 'working', label: 'Working', tool: state({nativeStatus: 'running'})},
+    {status: 'pending', icon: 'history', label: 'Queued', tool: state({nativeStatus: 'pending'})},
+    {status: 'ended', icon: 'unknown', label: 'Ended without result', tool: state({nativeStatus: 'done'})},
+    {status: 'available', icon: 'info', label: 'Result available', tool: state({parts: [{type: 'text', text: 'Retained partial output'}]})},
+    {status: 'success', icon: null, label: '', tool: state({phase: 'end', isError: false})},
+    {status: 'error', icon: 'error', label: 'Failed', tool: state({phase: 'end', isError: true})},
+  ];
+  let previousIcon: FakeNode | null = null; let previousKind: string | null = null; let previousStatus: FakeNode | null = null; let previousWord: FakeNode | null = null;
+  for (const item of cases) {
+    const source: EntryView = {id: 'state-icon-entry', kind: 'pi.assistant', messages: [{...message('state-icon-message', '', item.partial ? 'partial' : 'final'),
+      parts: [{type: 'toolCall', callId, name: 'read', arguments: {value: {path: 'notes.md'}, truncated: false}}]}]};
+    view.set([source], new Map(item.tool ? [[callId, item.tool]] : [])); flush();
+    const card = node('primary-transcript').querySelector('.tool-card'); const status = card?.querySelector('.tool-status');
+    const word = card?.querySelector('.tool-state-word'); assert.ok(card); assert.ok(status); assert.ok(word); const icon = status.querySelector('svg');
+    assert.equal(card.parentNode?.dataset.status, item.status);
+    assert.deepEqual(card.querySelector('.tool-tier')?.children, [status, card.querySelector('.tool-name'), word]);
+    assert.equal(status.className, `tool-status ${item.status}`); assert.equal(status.attributes['aria-hidden'], 'true');
+    assert.equal(status.attributes.role, undefined); assert.equal(status.attributes['aria-label'], undefined); assert.equal(status.querySelector('.sr-only'), null);
+    assert.equal(status.textContent, ''); assert.equal(word.className, `tool-state-word ${item.status}`); assert.equal(word.textContent, item.label);
+    assert.equal(word.hidden, false); assert.equal(word.attributes['aria-hidden'], undefined); assert.equal(word.querySelector('.sr-only'), null);
+    if (item.icon) {
+      assert.ok(icon); assert.deepEqual(status.children, [icon]); assert.equal(icon.className, `card-icon card-icon-${item.icon}`);
+      assert.equal(icon.attributes['aria-hidden'], 'true'); assert.equal(icon.attributes.focusable, 'false');
+    } else { assert.equal(icon, null); assert.equal(status.children.length, 0); assert.equal(word.children.length, 0); }
+    if (previousStatus) { assert.equal(status, previousStatus); assert.equal(word, previousWord); }
+    if (previousKind === item.icon) assert.equal(icon, previousIcon);
+    view.set([source], new Map(item.tool ? [[callId, {...item.tool, durationMs: 17}]] : [])); flush();
+    assert.equal(card.querySelector('.tool-status'), status); assert.equal(status.querySelector('svg'), icon); assert.equal(card.querySelector('.tool-state-word'), word);
+    previousStatus = status; previousWord = word; previousIcon = icon; previousKind = item.icon;
+  }
+});
+
 test('native nested tool cards retain parent context without fabricated messages or start times', () => {
   setup(); const view = transcript();
   const tool: NonNullable<EntryView['tool']> = {callId: 'parent/child', name: 'read', taskId: 3, parentTaskId: 2, parentCallId: 'parent',
@@ -327,10 +365,10 @@ test('native nested tool cards retain parent context without fabricated messages
   assert.equal(root.querySelectorAll('.message').length, 0); assert.equal(root.querySelectorAll('.session-events').length, 0);
   assert.equal(card.querySelector('.tool-name')?.textContent, 'Reading notes.md'); assert.equal(card.querySelector('.tool-target')?.textContent, '');
   assert.equal(card.querySelector('.tool-target')?.title, 'notes.md'); assert.equal(card.querySelector('.tool-target')?.hidden, true);
-  assert.equal(card.querySelector('.tool-status')?.textContent, 'Working'); assert.equal(card.querySelector('.tool-secondary')?.textContent, 'Within parent');
+  assert.equal(card.querySelector('.tool-state-word')?.textContent, 'Working'); assert.equal(card.querySelector('.tool-secondary')?.textContent, 'Within parent');
   assert.match(card.textContent, /partial output/); assert.doesNotMatch(card.textContent, /elapsed|ms/);
   view.set([nested({...tool, status: 'done', isError: true, durationMs: 7})]); flush();
-  assert.equal(root.querySelector('.tool-card'), card); assert.equal(card.querySelector('.tool-status')?.textContent, 'Failed');
+  assert.equal(root.querySelector('.tool-card'), card); assert.equal(card.querySelector('.tool-state-word')?.textContent, 'Failed');
   assert.equal(card.querySelector('.tool-secondary')?.textContent, 'Within parent · 7 ms');
   view.set([]); flush(); assert.equal(root.querySelector('.tool-card'), null);
 });
@@ -340,7 +378,7 @@ for (const status of ['pending', 'done'] as const) test(`empty native ${status} 
     status, arguments: {value: {}, truncated: false}, coverage: {complete: true, truncated: false, omitted: 0}};
   view.set([{id: 'live:tool:parent/child', kind: 'pi.tool-result', tool}]); flush();
   const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card);
-  assert.equal(card.querySelector('.tool-status')?.textContent, status === 'pending' ? 'Queued' : 'Ended without result');
+  assert.equal(card.querySelector('.tool-state-word')?.textContent, status === 'pending' ? 'Queued' : 'Ended without result');
   card.open = true; card.dispatch('toggle'); flush();
   assert.match(card.textContent, status === 'pending' ? /The tool has not started\./ : /The tool ended\. No outcome is available\./);
   assert.doesNotMatch(card.textContent, /completed without output|success|Success/);
@@ -364,7 +402,7 @@ test('transferred tool frames distinguish argument preparation, execution and hi
   const root = node('primary-transcript'), shells = root.querySelectorAll('.tool-shell');
   const historical = shells.find(shell => shell.dataset.status === 'missing'); assert.ok(historical);
   const shell = shells.find(shell => shell.dataset.status === 'preparing'), card = shell?.querySelector('.tool-card'); assert.ok(shell); assert.ok(card);
-  assert.equal(card.querySelector('.tool-status')?.textContent, 'Preparing call');
+  assert.equal(card.querySelector('.tool-state-word')?.textContent, 'Preparing call');
   assert.doesNotMatch(card.textContent, /No result recorded|Queued|Working/);
   card.open = true; card.dispatch('toggle'); flush();
   assert.match(card.querySelector('.tool-output-text')?.textContent ?? '', /preparing this call/);
@@ -373,7 +411,7 @@ test('transferred tool frames distinguish argument preparation, execution and hi
   raw.entries.push({id:'2',kind:'pi.assistant',model:[modelCall('read-current',{path:'notes.md'})]}); raw.live = [];
   for (const [status, label] of [['pending','Queued'],['running','Working'],['done','Ended without result']] as const) {
     raw.status.live = {tools:[{callId:'read-current',name:'read',status}]}; paint();
-    assert.equal(shell.querySelector('.tool-card'), card); assert.equal(card.querySelector('.tool-status')?.textContent, label);
+    assert.equal(shell.querySelector('.tool-card'), card); assert.equal(card.querySelector('.tool-state-word')?.textContent, label);
     assert.equal(historical.dataset.status, 'missing'); assert.equal(card.open, true);
   }
   raw.status.live = null; raw.status.busy = false;
@@ -387,11 +425,11 @@ test('native running tool cards retain their block and details before the result
     parts: [{type: 'toolCall', callId: 'read-current', name: 'read', arguments: {value: {path: 'notes.md'}, truncated: false}}]}]};
   view.set([source], new Map([['read-current', {callId: 'read-current', name: 'read', phase: 'update', nativeStatus: 'running'}]])); flush();
   const root = node('primary-transcript'), shell = root.querySelector('.tool-shell'), card = shell?.querySelector('.tool-card'); assert.ok(shell); assert.ok(card);
-  assert.equal(shell.dataset.status, 'working'); assert.equal(card.querySelector('.tool-status')?.textContent, 'Working'); assert.doesNotMatch(card.textContent, /No result recorded/);
+  assert.equal(shell.dataset.status, 'working'); assert.equal(card.querySelector('.tool-state-word')?.textContent, 'Working'); assert.doesNotMatch(card.textContent, /No result recorded/);
   card.open = true; card.dispatch('toggle'); flush(); assert.match(card.querySelector('.tool-output-text')?.textContent ?? '', /Working/);
   assert.ok(card.querySelector('.tool-arguments')); assert.ok(card.querySelectorAll('summary').some(item => item.textContent === 'Details'));
   view.set([source], new Map([['read-current', {callId: 'read-current', name: 'read', phase: 'update', nativeStatus: 'pending'}]])); flush();
-  assert.equal(root.querySelector('.tool-card'), card); assert.equal(shell.dataset.status, 'pending'); assert.equal(card.querySelector('.tool-status')?.textContent, 'Queued');
+  assert.equal(root.querySelector('.tool-card'), card); assert.equal(shell.dataset.status, 'pending'); assert.equal(card.querySelector('.tool-state-word')?.textContent, 'Queued');
   const output: EntryView = {id: 'native-result', kind: 'pi.tool-result', messages: [{...message('native-result', '', 'final'), role: 'toolResult',
     parts: [{type: 'toolResult', callId: 'read-current', name: 'read', isError: false, parts: [{type: 'text', text: 'Actual source output'}]}]}]};
   view.set([source, output], new Map()); flush(); assert.equal(root.querySelector('.tool-card'), card); assert.equal(shell.dataset.status, 'success');
@@ -406,9 +444,9 @@ test('callId joins call and results across entries with one bounded disclosure a
   const card = cards[0]; assert.ok(card); assert.equal(card.querySelector('.tool-name')?.textContent, 'Read …/full/path (lines 1–10)'); assert.equal(card.querySelector('.tool-target')?.title, '/full/path');
   assert.equal(card.querySelector('.tool-target')?.hidden, true);
   assert.equal(card.querySelector('.tool-secondary')?.textContent, 'lines 1–10');
-  assert.equal(card.parentNode?.dataset.status, 'success'); assert.equal(card.querySelector('.tool-tier')?.children[0], card.querySelector('.tool-name'));
-  assert.equal(card.querySelector('.tool-status')?.attributes.role, undefined); assert.equal(card.querySelector('.tool-status')?.textContent, '');
-  assert.deepEqual(card.querySelector('.tool-tier')?.children.map(child=>child.className), ['tool-name','tool-status success']);
+  assert.equal(card.parentNode?.dataset.status, 'success'); assert.equal(card.querySelector('.tool-tier')?.children[0], card.querySelector('.tool-status'));
+  assert.equal(card.querySelector('.tool-status')?.attributes['aria-hidden'], 'true'); assert.equal(card.querySelector('.tool-state-word')?.textContent, '');
+  assert.deepEqual(card.querySelector('.tool-tier')?.children.map(child=>child.className), ['tool-status success','tool-name','tool-state-word success']);
   assert.equal(card.querySelector('.tool-target')?.parentNode, card.querySelector('.tool-details')); assert.equal(card.querySelector('.tool-status')?.querySelector('svg'), null);
   assert.doesNotMatch(card.textContent, /The tool completed without output\.|Working|Tool error/); assert.ok((card.querySelector('.tool-preview')?.textContent.length ?? Infinity) < 2000);
   assert.match(card.querySelector('.tool-preview')?.textContent ?? '', /…$/); assert.ok((card.querySelector('.tool-preview')?.textContent.length ?? Infinity) <= 1200);
@@ -420,8 +458,8 @@ test('callId joins call and results across entries with one bounded disclosure a
   assert.equal(card.querySelector('summary')?.querySelectorAll('.card-icon-disclosure').length, 0); assert.equal(card.parentNode?.querySelectorAll('.tool-copy').length, 1);
   view.set(entries, new Map([['call-1', {callId: 'call-1', name: 'read', phase: 'end' as const, parts: [{type: 'text' as const, text: 'failure cause'}], isError: true}]])); flush();
   assert.equal(node('primary-transcript').querySelector('.tool-card'), card); assert.match(card.textContent, /failure cause/);
-  assert.equal(card.querySelector('.tool-status')?.textContent, 'Failed');
-  assert.equal(card.parentNode?.dataset.status, 'error'); assert.match(card.querySelector('.tool-status')?.textContent ?? '', /Failed/);
+  assert.equal(card.querySelector('.tool-state-word')?.textContent, 'Failed');
+  assert.equal(card.parentNode?.dataset.status, 'error'); assert.match(card.querySelector('.tool-state-word')?.textContent ?? '', /Failed/);
 });
 test('collapsed cards prefer supplied structured summaries and keep exact raw copy, timing and arguments', async () => {
   setup(); const view = transcript(); const raw = '{\n  "count": 2,\n  "valid": true\n}';
@@ -1033,8 +1071,8 @@ test('collapsed edit and write show supplied previews but failures show the reta
   ];
   const entries = calls.map(call => ({id: call.callId, kind: 'message', messages: [{...message(call.callId, ''), parts: [call]}]}));
   view.set(entries); flush(); const cards = node('primary-transcript').querySelectorAll('.tool-card');
-  assert.equal(cards[0]?.querySelector('.diff-del')?.textContent, '- old line');
-  assert.equal(cards[0]?.querySelector('.diff-add')?.textContent, '+ new line');
+  assert.equal(cards[0]?.querySelector('.diff-del')?.textContent, '- old line\n');
+  assert.equal(cards[0]?.querySelector('.diff-add')?.textContent, '+ new line\n');
   assert.equal(cards[1]?.querySelector('.tool-preview')?.textContent, 'file content');
   view.set(entries, new Map([['edit', {callId: 'edit', name: 'edit', phase: 'end', isError: true, parts: [{type: 'text', text: 'Replacement did not match'}]}]])); flush();
   assert.equal(cards[0]?.querySelector('.tool-preview')?.textContent, 'Replacement did not match');
@@ -1494,7 +1532,7 @@ test('quiet successful lookup text stays exact in expanded output, Raw output an
   const original = structuredClone(source);
   view.set([source]); flush(); const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card);
   assert.equal(card.querySelector('.tool-name')?.textContent, 'Looked up sample_resource');
-  assert.equal(card.querySelector('.tool-status')?.textContent, ''); assert.equal(card.parentNode?.dataset.status, 'success');
+  assert.equal(card.querySelector('.tool-state-word')?.textContent, ''); assert.equal(card.parentNode?.dataset.status, 'success');
   assert.equal(card.querySelector('.tool-preview')?.textContent, ''); assert.equal(card.querySelector('.tool-preview')?.hidden, true);
   card.open = true; card.dispatch('toggle'); flush();
   assert.equal(card.querySelector('.tool-output-text')?.textContent, raw);
@@ -1937,6 +1975,48 @@ test('generic source arguments stay in Details and their own collapse survives r
   source.open = false; source.dispatch('toggle'); view.set([contentEntry('program', args, 'second result')]); flush();
   assert.equal(card.querySelector('.tool-source'), source); assert.equal(source.open, false); assert.equal(card.querySelector('.tool-output-text')?.textContent, 'second result');
 });
+test('a closed edit reference refresh attaches its cached diff on first open and preserves it on reopen', async () => {
+  setup(); const view = transcript(); const args = {oldText: '\tbefore 😀\n\nend', newText: '  after 😀\nnext\nend'};
+  const source = contentEntry('cached-edit', args, 'Retained result');
+  for (const part of source.messages[0]?.parts ?? []) part.name = 'edit';
+  view.set([source]); flush(); const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card); assert.equal(card.open, false);
+  view.refreshReferences();
+  const tool = Reflect.get(view, 'tools').get('cached-edit');
+  const rich = tool.presentation as FakeNode; const budget = tool.previewBudget; assert.ok(rich); assert.ok(budget);
+  assert.equal(tool.inspections, undefined); assert.equal(rich.parentNode, null);
+  const removed = rich.querySelector('.diff-del'); const added = rich.querySelector('.diff-add'); assert.ok(removed); assert.ok(added);
+  const pre = rich.querySelector('pre'); assert.ok(pre);
+  const text = pre.textContent; const limits = [budget.text, budget.visits, budget.scanned];
+  card.open = true; card.dispatch('toggle'); flush();
+  const technical = card.querySelector('.tool-details'); const argumentsNode = card.querySelector('.tool-arguments'); assert.ok(technical); assert.ok(argumentsNode);
+  technical.open = true; technical.dispatch('toggle'); argumentsNode.open = true; argumentsNode.dispatch('toggle'); flush();
+  assert.equal(argumentsNode.querySelector('.tool-content'), rich); assert.equal(rich.parentNode, argumentsNode);
+  assert.equal(rich.querySelector('.diff-del'), removed); assert.equal(rich.querySelector('.diff-add'), added); assert.equal(pre.textContent, text);
+  assert.equal(tool.previewBudget, budget); assert.deepEqual([budget.text, budget.visits, budget.scanned], limits);
+  const raw = argumentsNode.children.find(child => child.tagName === 'pre'); assert.ok(raw); assert.equal(raw.textContent, JSON.stringify(args, null, 2));
+  assert.equal(rich.querySelector('pre'), pre); assert.equal(pre.attributes.role, 'region'); assert.equal(pre.tabIndex, 0);
+  assert.equal(rich.querySelectorAll('.source-wrap').length, 1);
+  const range = {isCollapsed: false, anchorNode: removed, focusNode: added}; selection = range; pre.focus(); pre.scrollTop = 11.25;
+  const moves = rich.moves;
+  card.open = false; card.dispatch('toggle'); flush(); card.open = true; card.dispatch('toggle'); flush();
+  assert.equal(card.querySelector('.tool-arguments'), argumentsNode); assert.equal(argumentsNode.querySelector('.tool-content'), rich);
+  assert.equal(argumentsNode.children.find(child => child.tagName === 'pre'), raw); assert.equal(rich.querySelector('pre'), pre); assert.equal(pre.textContent, text);
+  assert.equal(rich.querySelector('.diff-del'), removed); assert.equal(rich.querySelector('.diff-add'), added);
+  assert.equal(selection, range); assert.equal(fakeDocument.activeElement, pre); assert.equal(pre.scrollTop, 11.25); assert.equal(rich.moves, moves);
+  assert.equal(tool.previewBudget, budget); assert.deepEqual([budget.text, budget.visits, budget.scanned], limits);
+  selection = null; fakeDocument.activeElement = null;
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator'); const copied: string[] = [];
+  Object.defineProperty(globalThis, 'navigator', {configurable: true, value: {clipboard: {writeText: async (text: string) => {copied.push(text);}}}});
+  try {
+    const argumentCopy = card.querySelector('.tool-source-actions')?.children.find(button => button.textContent === 'Copy arguments');
+    const outputCopy = card.parentNode?.querySelector('.tool-copy'); assert.ok(argumentCopy); assert.ok(outputCopy);
+    argumentCopy.dispatch('click'); outputCopy.dispatch('click', {stopPropagation() {}}); await Promise.resolve();
+    assert.deepEqual(copied, [JSON.stringify(args, null, 2), 'Retained result']);
+  } finally {
+    if (previous) Object.defineProperty(globalThis, 'navigator', previous); else Reflect.deleteProperty(globalThis, 'navigator');
+  }
+});
+
 test('generic supplied edits and documents keep output distinct while errors remain plain', () => {
   setup(); const view = transcript(); const args = {edits: [{oldText: 'before supplied', newText: 'after supplied'}], document: '# Supplied\n\nRetained text'};
   view.set([contentEntry('edits', args, 'ordinary output')]); flush(); const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card);
@@ -1994,12 +2074,27 @@ test('transcript context distinguishes selected text from full content and captu
     if (previous) Object.defineProperty(globalThis, 'navigator', previous); else Reflect.deleteProperty(globalThis, 'navigator');
   }
 });
-test('supplied diffs and image captions remain readable without a line measurement registry', () => {
-  setup(); const view = transcript(); const args = {edits: [{oldText: 'before\nsecond before', newText: 'after\nsecond after'}]};
-  view.set([contentEntry('diff-native', args, 'result')]); flush();
+test('supplied diff rows retain exact source copy and stable row nodes alongside image captions', async () => {
+  setup(); const view = transcript(); const args = {edits: [{oldText: '\tbefore <script>😀\n\nsecond before\n', newText: '  after 😀\nsecond after\n'}]};
+  const output = '\tretained\r\n\n  raw 😀\n';
+  view.set([contentEntry('diff-native', args, output)]); flush();
   const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card); card.open = true; card.dispatch('toggle'); flush();
   const removed = card.querySelector('.diff-del'); const added = card.querySelector('.diff-add'); assert.ok(removed); assert.ok(added);
-  assert.match(removed.textContent, /second before/); assert.match(added.textContent, /second after/);
+  assert.equal(removed.querySelector('.diff-marker')?.textContent, '- '); assert.equal(added.querySelector('.diff-marker')?.textContent, '+ ');
+  assert.deepEqual(card.querySelectorAll('.diff-del').map(row => row.textContent), ['- \tbefore <script>😀\n', '- \n', '- second before\n']);
+  assert.deepEqual(card.querySelectorAll('.diff-add').map(row => row.textContent), ['+   after 😀\n', '+ second after\n']);
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator'); const copied: string[] = [];
+  Object.defineProperty(globalThis, 'navigator', {configurable: true, value: {clipboard: {writeText: async (text: string) => {copied.push(text);}}}});
+  try {
+    const outputCopy = card.parentNode?.querySelector('.tool-copy');
+    const argumentCopy = card.querySelector('.tool-source-actions')?.children.find(button => button.textContent === 'Copy arguments');
+    assert.ok(outputCopy); assert.ok(argumentCopy);
+    outputCopy.dispatch('click', {stopPropagation() {}}); argumentCopy.dispatch('click'); await Promise.resolve();
+    assert.deepEqual(copied, [output, JSON.stringify(args, null, 2)]);
+    assert.equal(card.querySelector('.diff-del'), removed);
+  } finally {
+    if (previous) Object.defineProperty(globalThis, 'navigator', previous); else Reflect.deleteProperty(globalThis, 'navigator');
+  }
   view.set([contentEntry('diff-native', args, 'new result')]); flush(); assert.equal(card.querySelector('.diff-del'), removed);
   view.set([{id: 'caption', kind: 'message', messages: [{...message('caption', ''), parts: [{type: 'image', mimeType: 'image/png', digest: 'a'.repeat(64), width: 2, height: 2, bytes: 20, alt: 'Retained image'}]}]}]); flush();
   const caption = node('primary-transcript').querySelector('figcaption'); assert.ok(caption); assert.match(caption.textContent, /PNG/);
@@ -2235,7 +2330,7 @@ test('expanded source disclosures avoid the raw inspection scroll cap', () => {
   limits.open = true; limits.dispatch('toggle');
   assert.match(limits.querySelector('pre')?.textContent ?? '', /8192 characters/);
   assert.match(limits.querySelector('pre')?.textContent ?? '', /65536 characters/);
-  assert.equal(card.querySelector('.tool-name')?.textContent, 'Used custom'); assert.equal(card.querySelector('.tool-status')?.textContent, '');
+  assert.equal(card.querySelector('.tool-name')?.textContent, 'Used custom'); assert.equal(card.querySelector('.tool-state-word')?.textContent, '');
 });
 test('authored subject captions preserve exact arguments, output and guarded navigation', async () => {
   setup(); const root = '00000000-0000-4000-8000-000000000001', child = `${root}:7906`, calls: string[] = [], copies: string[] = [];

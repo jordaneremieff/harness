@@ -20,7 +20,7 @@ test('raised-menu hover and keyboard selection use visible mode-aware surfaces',
   for (const selector of ['.composer-intake-menu > .context-menu-item:hover, .composer-intake-menu > .context-menu-item:focus-visible', '.command-option:hover, .command-option[aria-selected=true]']) {
     assert.equal(rule(selector).trim(), 'background: var(--menu-hover);');
   }
-  assert.equal(declarations('background').filter(value => value === 'var(--menu-hover)').length, 2);
+  assert.equal(declarations('background').filter(value => value === 'var(--menu-hover)').length, 4);
 });
 test('roster rows have one 30px heading line and one optional 20px summary line', () => {
   assert.match(rule('.agent-row'), /grid-template-columns: minmax\(0,1fr\) max-content/);
@@ -29,6 +29,8 @@ test('roster rows have one 30px heading line and one optional 20px summary line'
   assert.match(select, /grid-column: 1 \/ -1; grid-row: 1;/);
   assert.match(select, /grid-template-columns: subgrid; grid-template-rows: 30px auto; row-gap: 0/);
   assert.match(select, /height: auto; min-height: 30px; padding: 0 var\(--s2\) 0 var\(--s3\)/);
+  assert.match(media('@media (pointer:coarse)'), /\.agent-row \.row-select \{ grid-template-rows: 44px auto; min-height: 44px; \}/);
+  assert.match(media('@media (pointer:coarse)'), /\.agent-row \.row-heading \{ height: 44px; \}/);
   assert.match(rule('.agent-row .row-heading'), /grid-column: 1; grid-row: 1; display: flex/);
   assert.match(rule('.agent-row .row-heading'), /height: 30px; min-width: 0; overflow: hidden/);
   assert.match(rule('.agent-row .row-name'), /flex: 1; font-size: var\(--fs-ui\); line-height: 30px; white-space: nowrap/);
@@ -130,7 +132,8 @@ test('post-heading spacing excludes every heading level and preserves adjacent h
 test('the tool status from active execution receives the information tone', async () => {
   const tools = await readFile(new URL('./transcript-tools.ts', import.meta.url), 'utf8');
   const rendered = /if \(part.status === 'running'\) return '([^']+)'/.exec(tools)?.[1]; assert.ok(rendered);
-  const renderer = await readFile(new URL('./render.ts', import.meta.url), 'utf8'); assert.match(renderer, /tool\.glyph\.className = `tool-status \$\{source.status\}`/);
+  const renderer = await readFile(new URL('./render.ts', import.meta.url), 'utf8'); assert.match(renderer, /this\.toolState\(tool, source.status\)/);
+  assert.match(renderer, /tool\.glyph\.className = `tool-status \$\{status\}`/);
   assert.match(rule(`.tool-status.${rendered}`), /color: var\(--info\)/);
   assert.doesNotMatch(css, /\.tool-status\.running\s*\{/);
 });
@@ -255,7 +258,7 @@ test('draft attachments keep a fixed contained preview and bounded wrapping deta
 });
 test('attachment metadata uses the fixed scale and preview inherits the dialog hairline', () => {
   assert.match(rule('.attachment-digest'), /font-size: var\(--fs-meta\); color: var\(--muted\)/);
-  assert.match(rule('dialog'), /border: 1px solid var\(--rule\)/);
+  assert.match(rule('dialog'), /border: 0/);
   assert.doesNotMatch(rule('.attachment-dialog'), /\bborder(?:-[\w-]+)?:/);
 });
 test('off-pane Message roots pass header pointers through while the original composer stays interactive', () => {
@@ -304,16 +307,16 @@ test('blue marks focus while selected rows and tabs use neutral rules and surfac
   assert.match(rule('.nav-row[aria-current=page], .row-select[aria-current=page]'), /background: var\(--raised\)/);
   assert.match(rule('.palette-row[aria-selected=true]'), /background: var\(--canvas\)/);
   assert.match(rule('.command-option:hover, .command-option[aria-selected=true]'), /background: var\(--menu-hover\)/);
-  assert.match(rule('.context-menu > button:hover'), /background: var\(--canvas\)/);
+  assert.match(rule('.context-menu > button:hover'), /background: var\(--menu-hover\)/);
   assert.doesNotMatch(rule('.context-menu > button:hover'), /outline:/);
   assert.match(rule('.context-menu > button:focus-visible'), /outline: 2px solid var\(--accent\)/);
   assert.match(rule('.conversation-tab[aria-selected=true]'), /background: transparent;[^}]*box-shadow: inset 0 -2px var\(--edge\)/);
   assert.match(rule('.pane-leaf[data-focused=true] > .tab-bar .conversation-tab[aria-selected=true]'), /box-shadow: inset 0 -2px var\(--accent\)/);
-  assert.match(rule('.pane-split > .pane-divider:focus-visible'), /outline: 2px solid var\(--accent\); outline-offset: -2px/);
+  assert.match(rule('.pane-split > .pane-divider:focus-visible'), /outline: 2px solid var\(--accent\); outline-offset: 2px/);
 });
-test('pane statusline focus retains a full indicator inside compact controls', () => {
+test('pane statusline focus uses the shared offset without removing its indicator', () => {
   assert.match(rule(':focus-visible'), /outline: 2px solid var\(--accent\)/);
-  assert.match(rule('.navigation-access :focus-visible'), /outline-offset: -2px/);
+  assert.match(rule('.navigation-access :focus-visible'), /outline-offset: 2px/);
   assert.doesNotMatch(rule('.navigation-access :focus-visible'), /outline:\s*(?:none|0)|outline-width:\s*0/);
   assert.match(media('@media (forced-colors:active)'), /:focus-visible \{ outline: 2px solid Highlight; \}/);
 });
@@ -326,22 +329,22 @@ test('stored and live conversation names use primary text while metadata stays q
 });
 test('small radii and quiet surfaces limit motion to the busy marker and section chevrons', () => {
   const radii = declarations('border-radius');
-  assert.match(rule('.composer-input'), /border-radius: 16px/); assert.match(rule('.context-menu-compact'), /border-radius: 6px/);
-  assert.deepEqual([...new Set(radii)].sort(), ['0', '0 4px 4px 0', '10px', '12px', '16px', '2px', '3px', '4px', '50%', '6px', '8px']);
-  assert.deepEqual([...new Set(declarations('box-shadow'))].sort(), ['0 6px 20px color-mix(in srgb, var(--side) 24%, transparent)', 'inset 0 -2px var(--accent)', 'inset 0 -2px var(--edge)', 'none', 'var(--shadow)']);
+  assert.match(rule('.composer-input'), /border-radius: var\(--r-lg\)/); assert.match(rule('.context-menu-compact'), /border-radius: var\(--r-md\)/);
+  assert.deepEqual([...new Set(radii)].sort(), ['0', '0 var(--r-sm) var(--r-sm) 0', '50%', 'var(--r-lg)', 'var(--r-md)', 'var(--r-sm)']);
+  assert.deepEqual([...new Set(declarations('box-shadow'))].sort(), ['inset 0 -2px var(--accent)', 'inset 0 -2px var(--edge)', 'none', 'var(--shadow)']);
   assert.match(rule('dialog[open][data-variant=find]'), /box-shadow: none/);
   const shadowed = [...css.matchAll(/(?:^|\n)\s*([^{}\n]+)\{[^}]*box-shadow: var\(--shadow\)/g)].map(match => match[1].trim()).sort();
-  assert.deepEqual(shadowed, ['.app.drawer-open .workbench > .sidebar', '.context-menu', '.receipt-details pre', '.workbench-status .composer-detail-body', 'dialog']);
+  assert.deepEqual(shadowed, ['.app.drawer-open .workbench > .sidebar', '.command-menu, .composer-intake-menu', '.context-menu', '.context-menu.composer-intake-menu', '.receipt-details pre', '.workbench-status .composer-detail-body', 'dialog']);
   assert.doesNotMatch(css, /scroll-behavior:\s*smooth|backdrop-filter|text-shadow|gradient/);
   assert.deepEqual(declarations('filter'), []);
   assert.deepEqual(declarations('transition'), ['transform 120ms', 'none']);
-  assert.deepEqual(declarations('animation'), ['work-pulse 900ms linear infinite', 'none', 'work-pulse 900ms linear infinite', 'none']);
+  assert.deepEqual(declarations('animation'), ['work-pulse 900ms linear infinite', 'none', 'work-pulse 900ms linear infinite', 'none', 'work-pulse 900ms linear infinite', 'none']);
   assert.match(rule('.workbench-activity[data-busy=true]::before'), /animation: work-pulse 900ms linear infinite/);
   assert.match(css, /^@keyframes work-pulse \{ to \{ transform: rotate\(360deg\); \} \}$/m);
   assert.match(css, /@media \(prefers-reduced-motion:reduce\) \{ \.workbench-activity\[data-busy=true\]::before \{ animation: none; \} \}/);
 });
 test('neutral tools keep lifecycle accents in marks and errors while source diffs retain colors', () => {
-  assert.match(rule('.tool-shell'), /padding: var\(--s2\) var\(--s2\); border: 1px solid var\(--rule\); border-radius: 4px; background: var\(--raised\)/);
+  assert.match(rule('.tool-shell'), /padding: var\(--s3\) var\(--s4\); border: 0; border-radius: var\(--r-md\); background: var\(--run-bg\)/);
   assert.doesNotMatch(css, /\.tool-shell\[data-status=success\]/);
   assert.match(rule('.tool-status'), /color: var\(--muted\)/);
   assert.match(rule('.tool-shell[data-status=error] > .tool-card > summary'), /color: var\(--error\)/);
@@ -363,7 +366,7 @@ test('tool status labels have natural width and disclosure marks stay separate f
   assert.doesNotMatch(css, /card-icon-disclosure/);
   assert.match(rule('.tool-card > summary > .tool-tier'), /grid-column: 1; grid-row: 1; min-width: 0/);
   assert.match(rule('.tool-card > summary > :is(.tool-preview, .tool-preview-qualification)'), /grid-column: 1 \/ -1/);
-  assert.match(rule('.tool-shell:hover'), /border-color: var\(--edge\)/);
+  assert.equal(rule('.tool-shell:hover').trim(), 'background: var(--run-hover);');
   assert.match(rule('.tool-preview'), /color: var\(--fg\)/);
   assert.match(rule('.tool-secondary'), /color: var\(--muted\)/);
   assert.match(rule('.tool-output-info'), /max-width: 100%; color: var\(--muted\); font-size: var\(--fs-meta\); white-space: pre-wrap; overflow-wrap: anywhere/);
@@ -423,7 +426,7 @@ test('Durable picker choices use full-width native rows with wrapping state and 
   assert.match(text, /max-width: none; overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere/);
   assert.match(rule('.picker-durable-select .picker-session-tail'), /max-width: 100%; flex: 0 1 auto/);
   assert.match(rule('.picker-durable-select .picker-session-meta'), /display: block; min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere/);
-  assert.match(rule('.picker-durable-select:focus-visible'), /border-left-color: var\(--accent\)/);
+  assert.match(rule('.picker-durable-select:focus-visible'), /outline: 2px solid var\(--accent\); outline-offset: 2px/);
   assert.doesNotMatch(rule('.picker-durable-list'), /max-height:|overflow/);
 });
 test('results-first tool regions keep output and technical details inside local bounds', () => {
@@ -431,7 +434,7 @@ test('results-first tool regions keep output and technical details inside local 
   assert.match(result, /min-width: 0; max-width: 100%/);
   assert.match(result, /min-height: 0; max-height: min\(480px,50dvh\); overflow: auto/);
   assert.doesNotMatch(result, /(?:^|;)\s*height:|overflow: hidden|line-clamp/);
-  assert.match(rule('.tool-result:focus-visible'), /outline-offset: -2px/);
+  assert.match(rule('.tool-result:focus-visible'), /outline-offset: 2px/);
   assert.match(rule('.tool-expanded .tool-result pre'), /max-height: none/);
   assert.match(rule('.tool-output-actions'), /display: flex; flex-wrap: wrap/);
   assert.match(rule('.tool-details'), /min-width: 0; max-width: 100%/);
@@ -538,7 +541,7 @@ test('lean chrome: gutter-marked user turns, no pills, compact roster rows and n
   const user = rule('.message.user > .message-body');
   assert.doesNotMatch(user, /max-width|margin-left|float/);
   assert.match(user, /background: var\(--side\)/);
-  assert.match(user, /border: 0; border-radius: 3px/);
+  assert.match(user, /border: 0; border-radius: var\(--r-lg\)/);
   assert.match(user, /padding: var\(--s2\) var\(--s3\)/);
   assert.match(user, /font-weight: 400/);
   assert.match(rule('.message.user > .message-body::before'), /content: "";[^}]*left: 0; border-left: 2px solid var\(--accent\)/);
@@ -583,11 +586,11 @@ test('the writing surface groups Add and the required action below native text',
   assert.match(rule('.working-file-row .file-name'), /white-space: normal; overflow-wrap: anywhere/);
   assert.match(rule('.composer-bar'), /margin-left: auto/);
   assert.match(rule('.composer-submit'), /flex: none; flex-wrap: nowrap/);
-  assert.match(rule('.send, .stop'), /width: 36px; height: 36px; min-width: 36px; min-height: 36px; padding: 0; border: 0; border-radius: 10px/);
+  assert.match(rule('.send, .stop'), /width: 36px; height: 36px; min-width: 36px; min-height: 36px; padding: 0; border: 0; border-radius: var\(--r-md\)/);
   assert.match(rule('.send'), /background: var\(--fg\); color: var\(--canvas\)/);
   assert.match(rule('.send:disabled'), /opacity: 1; background: color-mix\(in srgb, var\(--fg\) 14%, var\(--composer-fill\)\); color: var\(--muted\)/);
   assert.doesNotMatch(css, /\.send\[data-kind=recovery\]/);
-  assert.match(rule('.composer-input'), /padding: var\(--s5\); border: 1px solid color-mix\(in srgb, var\(--edge\) 28%, transparent\); border-radius: 16px; background: var\(--composer-fill\)/);
+  assert.match(rule('.composer-input'), /padding: var\(--s5\); border: 1px solid var\(--rule\); border-radius: var\(--r-lg\); background: var\(--composer-fill\)/);
   assert.match(rule('.composer'), /--composer-fill: color-mix\(in srgb, var\(--canvas\) 96%, var\(--fg\)\)/);
   assert.match(rule(':root[data-appearance=light] .composer'), /--composer-fill: color-mix\(in srgb, var\(--canvas\) 96%, var\(--fg\)\)/);
   assert.match(rule('.composer-line'), /min-height: 36px; margin-top: var\(--s4\)/);
@@ -651,11 +654,12 @@ test('card actions and expanded content share fixed geometry without label-width
   assert.match(rule('.tool-output-actions > button'), /min-height: 24px; padding: var\(--s1\) var\(--s1\); color: var\(--muted\)/);
   assert.match(rule('.tool-expanded'), /margin: var\(--s1\) 0 var\(--s2\) 0/);
   assert.match(rule('.tool-expanded .source-disclosure > summary.source-header'), /padding: var\(--s1\) var\(--s6\) var\(--s1\) 0/);
-  assert.match(rule('button'), /border: 0; border-radius: 4px; background: transparent/);
+  assert.match(rule('button'), /border: 0; border-radius: var\(--r-sm\); background: transparent/);
 });
-test('multiline tool targets retain an inline status inside the whole-card control', () => {
+test('tool titles share one line with a centered state icon inside the whole-card control', () => {
   const tier = rule('.tool-tier');
-  assert.match(tier, /align-items: baseline/);
+  assert.match(tier, /align-items: center; gap: var\(--s2\)/);
+  assert.doesNotMatch(css, /\.tool-tier\s*\{[^}]*flex-wrap:\s*wrap/);
   assert.doesNotMatch(tier, /justify-content: space-between/);
   assert.match(rule('.tool-secondary'), /padding-top: var\(--s1\)/);
   assert.match(rule('.tool-status'), /flex: none; color: var\(--muted\); font-size: var\(--fs-meta\)/);
@@ -694,7 +698,7 @@ test('code wraps, output scrolls inside its block, and disclosures stay reachabl
   assert.match(rule('pre'), /white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: hidden; overflow-y: auto/);
   assert.match(rule('.tool-expanded pre'), /max-height: 480px/);
   assert.match(rule('.tool-preview'), /-webkit-line-clamp: 6/);
-  assert.match(rule('.tool-tier'), /display: flex; flex-wrap: wrap;[^}]*min-width: 0/);
+  assert.match(rule('.tool-tier'), /display: flex; flex-wrap: nowrap;[^}]*min-width: 0/);
   assert.match(rule('.tool-target'), /min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere/);
   assert.match(rule('.tool-preview.tool-error'), /color: var\(--error\)/);
   assert.match(rule('.message-actions'), /opacity: 0; pointer-events: none/);
@@ -719,8 +723,8 @@ test('machine-output boxes span the column without content-sized widths', () => 
 test('expanded output retains bounded native scrollports with fixed gutters', () => {
   const output = rule('.tool-expanded pre');
   assert.match(output, /box-sizing: border-box; width: 100%; max-width: 100%; max-height: 480px/);
-  assert.match(output, /padding: var\(--s1\) var\(--s2\); border: 0/);
-  assert.match(output, /border-radius: 3px; background: var\(--code\)/);
+  assert.match(output, /padding: var\(--s2\) var\(--s3\); border: 0/);
+  assert.match(output, /border-radius: var\(--r-sm\); background: var\(--code\)/);
   assert.match(rule('.tool-expanded'), /margin: var\(--s1\) 0 var\(--s2\) 0/);
   assert.match(rule('pre'), /line-height: 1\.55; white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: hidden; overflow-y: auto/);
   assert.doesNotMatch(output, /(?:^|;\s*)(?:height|line-height):|padding-(?:top|bottom|block):|overflow(?:-y)?:|clip-path:|transform:|margin:/);
@@ -934,16 +938,16 @@ test('supplied roles stay inline metadata and expanded thinking separates from p
 
 test('focus marks the actual editor and its local split identity without changing placement', () => {
   assert.match(rule('.composer textarea:focus-visible'), /outline: none/);
-  assert.match(rule('.composer-input:has(textarea:focus-visible)'), /border-color: var\(--edge\); outline: none/);
-  assert.match(rule('.composer-input'), /border: 1px solid color-mix\(in srgb, var\(--edge\) 28%, transparent\)/);
-  assert.doesNotMatch(css.replace(/\.composer\[data-file-drop=true\][^\n]*/, ''), /\.composer-input[^{}]*\{[^}]*(?:border|outline)[^;}]*var\(--accent\)/);
+  assert.match(rule('.composer-input:has(textarea:focus-visible)'), /border-color: var\(--edge\); outline: 2px solid var\(--accent\); outline-offset: 2px/);
+  assert.match(rule('.composer-input'), /border: 1px solid var\(--rule\)/);
+  assert.doesNotMatch(rule('.composer-input:has(textarea:focus-visible)'), /box-shadow/);
   assert.match(rule('.pane-leaf[data-focused=true] > .tab-bar .conversation-tab[aria-selected=true]'), /box-shadow: inset 0 -2px var\(--accent\)/);
   assert.doesNotMatch(css, /\.pane-heading/);
 });
 
 test('recovery controls are bounded buttons and a ready Message panel reserves no status row', () => {
-  assert.match(rule('.connection-banner button'), /border: 1px solid var\(--edge\)/);
-  assert.match(rule('.message-panel-status > button'), /border: 1px solid var\(--edge\)/);
+  assert.match(rule('.connection-banner button'), /border: 0/);
+  assert.match(rule('.message-panel-status > button'), /border: 0/);
   assert.match(rule('.message-panel-status:has(> span:empty):has(> button[hidden])'), /display: none/);
 });
 
@@ -982,7 +986,7 @@ test('transcript images retain aspect ratio within the pane and expose readable 
   assert.doesNotMatch(image, /position: absolute|overflow: hidden/);
   assert.match(rule('.transcript-image-caption'), /color: var\(--muted\); font-family: var\(--sans\); font-size: var\(--fs-meta\)/);
   assert.match(rule('.transcript-image-status'), /color: var\(--fg\)/);
-  assert.match(rule('.transcript-image button'), /border: 1px solid var\(--edge\)/);
+  assert.match(rule('.transcript-image button'), /border: 0/);
   assert.doesNotMatch(rule('.transcript-image button'), /min-height:|opacity:|display: none/);
 });
 test('both themes use blue focus, never lavender or mauve', () => {
@@ -1116,11 +1120,11 @@ test('source headers reserve controls outside local wrap scrollports and preserv
   assert.doesNotMatch(rule('.source-header button, .source-disclosure > .source-wrap'), /position: absolute|opacity:/);
   assert.match(rule('pre[data-wrap=false], .tool-source > pre[data-wrap=false]'), /white-space: pre; overflow-wrap: normal; overflow-x: auto/);
   assert.match(rule('pre'), /white-space: pre-wrap/);
-  assert.doesNotMatch(rule('.diff-del, .diff-add'), /display: block/);
+  assert.doesNotMatch(rule('.diff-del, .diff-add'), /box-decoration-break/);
 });
 test('dialog word-button chrome never changes shared SVG action geometry', () => {
   const words = rule('#modal-body > button:not(.card-action, .icon-button), .dialog-actions > button:not(.card-action, .icon-button), .picker-project-actions > button:not(.card-action, .icon-button)');
-  assert.match(words, /padding: var\(--s1\) var\(--s3\); border: 1px solid var\(--edge\)/);
+  assert.match(words, /padding: var\(--s1\) var\(--s3\); border: 0/);
   assert.doesNotMatch(css, /(?:#modal-body|\.dialog-actions|\.picker-project-actions) > button(?:\s*,[^{}]+)?\s*\{[^}]*border:/);
   assert.match(rule('.card-action'), /padding: 0; border: 0/);
   assert.match(rule('.icon-button'), /min-width: 24px; height: 24px; padding: 0 var\(--s1\)/);
@@ -1220,8 +1224,8 @@ test('tool titles weigh more than their regular-weight supporting text', () => {
   assert.match(rule('.tool-card > summary'), /align-items: baseline/);
 });
 test('thinking keeps one quiet tier for streaming text and completed Markdown', () => {
-  assert.match(rule('.thinking-content'), /color: var\(--muted\); font-size: var\(--fs-ui\); line-height: 21px/);
-  assert.match(rule('.thinking > .stream-text'), /color: var\(--muted\); font-size: var\(--fs-ui\); line-height: 21px/);
+  assert.match(rule('.thinking-content'), /color: var\(--muted\); font-size: var\(--fs-ui\); line-height: 1\.65/);
+  assert.match(rule('.thinking > .stream-text'), /color: var\(--muted\); font-size: var\(--fs-ui\); line-height: 1\.65/);
   assert.match(rule('.thinking .thinking-content :is(strong, em)'), /color: inherit/);
   assert.equal(rule('.thinking .thinking-content .markdown-inline-code').trim(), 'color: inherit;');
   assert.equal(rule('.thinking .thinking-content .code-block > pre > code').trim(), 'color: inherit;');
@@ -1293,7 +1297,7 @@ test('sidebar section headings keep their own row in normal flow so no heading d
   assert.match(rule('.sidebar-scroll > :is(.roster-section, .files-section)[data-collapsed=true]'), /flex: none; min-height: 0/);
   const threads = rule('.threads-section'); assert.match(threads, /display: flex; flex-direction: column;/); assert.match(threads, /min-height: 28px/); assert.match(threads, /overflow: hidden/); assert.doesNotMatch(threads, /position: (?:absolute|fixed)|margin-top: -/);
   assert.match(rule('.threads-section > .nav-heading-row'), /flex: none/); assert.match(rule('.threads-body[hidden]'), /display: none/);
-  assert.match(rule('.thread-scroll:focus-visible'), /outline-offset: -2px/); assert.doesNotMatch(css, /data-pointer/);
+  assert.match(rule('.thread-scroll:focus-visible'), /outline-offset: 2px/); assert.doesNotMatch(css, /data-pointer/);
 });
 test('the transcript scroller is not positioned, because render.ts measures its rows by offsetTop against a shared offset parent', () => {
   const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter(rule => (rule[1] ?? '').split(',').some(selector => /(?:^|[\s>+~])\.transcript$/.test(selector.trim())));
@@ -1328,10 +1332,10 @@ test('the message box keeps its centered grip and its state beside the settings 
   assert.doesNotMatch(css, /\.composer-state:not\(\[data-tone\]\) >|\.composer-meta:has\(> \.composer-state\[data-tone\]/);
   assert.match(rule('.composer-state-detail'), /min-width: 32px; min-height: 32px/);
 });
-test('the compact Add menu draws 34px rows with a 20px icon column and the trigger at the right, and the control row gives the action its width first', () => {
+test('the compact Add menu draws 32px rows with a 20px icon column and the trigger at the right, and the control row gives the action its width first', () => {
   assert.match(rule('.context-menu-compact'), /width: 272px/);
   assert.match(rule('.context-menu-compact > .context-menu-item'), /display: grid; grid-template-columns: 20px minmax\(0, 1fr\) auto/);
-  assert.match(rule('.context-menu-compact > .context-menu-item'), /min-height: 34px/);
+  assert.match(rule('.context-menu-compact > .context-menu-item'), /min-height: 32px/);
   assert.match(rule('.context-menu-compact .context-menu-label'), /overflow: hidden; text-overflow: ellipsis/);
   assert.match(rule('.composer-bar'), /flex: none;[^}]*margin-left: auto/);
 });
@@ -1339,4 +1343,89 @@ test('the compact Add menu draws 34px rows with a 20px icon column and the trigg
 test('a responder name above a wait answer uses the shared metadata tier', () => {
   assert.match(rule('.tool-awaited-name'), /color: var\(--muted\); font-size: var\(--fs-meta\); line-height: 18px; font-weight: 500/);
   assert.match(rule('.tool-content > .tool-awaited-answer + .tool-awaited-answer'), /margin-top: var\(--s3\)/);
+});
+
+function assertCornerScale(selectors: string, body: string): void {
+  for (const [, value] of body.matchAll(/border(?:-[a-z-]+)?-radius:\s*([^;]+)/g)) {
+    for (const corner of value.trim().split(/\s+/)) assert.ok(['0', 'var(--r-sm)', 'var(--r-md)', 'var(--r-lg)', '50%'].includes(corner), `${selectors}: ${value}`);
+    if (value === '50%') {
+      assert.match(selectors, /(?:row-state|workbench-activity)\[data-busy=true\]::before/);
+      for (const [, dimension] of body.matchAll(/(?:width|height): (\d+)px/g)) assert.ok(Number(dimension) <= 12);
+    }
+  }
+}
+test('surface corners use the shared scale and only small status glyphs stay round', () => {
+  for (const [name, size] of [['sm', 6], ['md', 10], ['lg', 16]]) assert.match(rule(':where(:root)'), new RegExp(`--r-${name}: ${size}px;`));
+  const blocks = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)];
+  for (const [, selectors, body] of blocks) assertCornerScale(selectors, body);
+  assert.doesNotMatch(css, /999px/);
+  for (const selector of ['.tool-shell', '.message-body pre, .code-block > pre', '.message-source', '.context-menu', '.context-menu-compact']) assert.match(rule(selector), /border-radius: var\(--r-md\)/, selector);
+  for (const selector of ['dialog', '.composer-input', '.message.user > .message-body']) assert.match(rule(selector), /border-radius: var\(--r-lg\)/, selector);
+});
+test('transcript surfaces have no enclosing borders and semantic side rules stay', () => {
+  for (const selector of ['.tool-shell', '.message-body pre, .code-block > pre', '.tool-expanded pre', '.communication-card', '.message-source']) assert.match(rule(selector), /(?:^|;)\s*border: 0;/, selector);
+  const blocks = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)];
+  const forced = css.indexOf('@media (forced-colors:active)');
+  for (const match of blocks) {
+    const [, selectors, body] = match;
+    if ((match.index ?? 0) >= forced || selectors.includes(':is(dialog:not([data-variant=find])') || !/\.(?:tool-shell|communication-card|session-event-group|thinking|markdown-content)\b|(?:^|,|\s)pre\b/.test(selectors)) continue;
+    for (const [, property, value] of body.matchAll(/(?:^|;)\s*(border(?:-(?:top|right|bottom|left))?)\s*:\s*([^;]+)/g)) {
+      if (property === 'border') assert.ok(['0', 'none'].includes(value.trim()), `${selectors}: ${value}`);
+      else assert.match(value, /^(?:0|[123]px solid var\(--[a-z-]+\))$/, `${selectors}: ${value}`);
+    }
+  }
+  assert.match(rule('.thinking-content'), /border-left: 2px solid var\(--rule\)/);
+  assert.match(rule('.markdown-content:is(blockquote)'), /border-left: 3px solid var\(--rule\)/);
+  assert.match(rule('.message.user > .message-body::before'), /border-left: 2px solid var\(--accent\)/);
+});
+test('soft tools keep full-width output, distinct inner code and the text-to-run gap', () => {
+  assert.match(rule('.tool-shell'), /padding: var\(--s3\) var\(--s4\); border: 0; border-radius: var\(--r-md\); background: var\(--run-bg\)/);
+  assert.equal(rule('.tool-shell:hover').trim(), 'background: var(--run-hover);');
+  assert.match(rule('.tool-expanded pre'), /padding: var\(--s2\) var\(--s3\); border: 0; border-radius: var\(--r-sm\); background: var\(--code\)/);
+  assert.match(rule('.tool-status'), /width: 14px; height: 14px/);
+  assert.equal(rule('.tool-status > .card-icon').trim(), 'width: 14px; height: 14px;');
+  assert.doesNotMatch(css, /\.tool-status:empty\s*\{/);
+  assert.match(rule('.tool-state-word'), /flex: none; max-width: 50%; margin-left: auto;/);
+  assert.match(rule('.tool-state-word'), /font-size: var\(--fs-meta\); text-overflow: ellipsis; white-space: nowrap/);
+  assert.match(rule('.tool-state-word:empty'), /display: none/);
+  for (const [state, tone] of [['error', 'error'], ['working', 'info'], ['missing', 'warning']]) assert.ok(rule(`.tool-state-word.${state}`).includes(`color: var(--${tone});`));
+  assert.match(rule('.tool-status > .card-icon-working'), /animation: work-pulse 900ms linear infinite/);
+  assert.match(css, /@media \(prefers-reduced-motion:reduce\) \{ \.tool-status > \.card-icon-working \{ animation: none; \} \}/);
+  assert.match(rule('.tool-name'), /font-weight: 500;[^}]*text-overflow: ellipsis; white-space: nowrap/);
+  assert.match(rule('.entry:has(.message[data-role=assistant]):not(.compact-entry):has(+ .entry.compact-entry .tool-shell)'), /padding-bottom: var\(--s3\)/);
+  assert.match(rule('.entry.compact-entry'), /padding-block: var\(--s1\)/);
+  assert.match(rule('.message-body > :not(.tool-shell) + .tool-shell'), /margin-top: var\(--s4\)/);
+  assert.match(rule('.message-body > .tool-shell + .tool-shell'), /margin-top: var\(--s2\)/);
+});
+test('Markdown code actions stay quiet until hover or focus and touch keeps them visible', () => {
+  assert.match(rule('.code-block'), /position: relative; min-width: 0/);
+  assert.match(rule('.code-block > .source-header'), /position: absolute; top: 0; right: 0;[^}]*border: 0; opacity: 0/);
+  assert.match(rule('.code-block:hover > .source-header, .code-block:focus-within > .source-header'), /opacity: 1/);
+  assert.match(media('@media (pointer:coarse)'), /\.code-block > \.source-header \{ position: static; opacity: 1/);
+});
+test('focus uses an offset accent outline without a blur and floating surfaces share one shadow', () => {
+  assert.match(rule(':focus-visible'), /outline: 2px solid var\(--accent\); outline-offset: 2px/);
+  assert.match(rule('.composer[data-file-drop=true] .composer-input'), /outline: 2px solid var\(--accent\); outline-offset: 2px/);
+  assert.match(media('@media (forced-colors:active)'), /\.composer button:focus-visible, \.composer-input:has\(textarea:focus-visible\), \.composer\[data-file-drop=true\] \.composer-input \{ outline: 2px solid Highlight; \}/);
+  assert.match(media('@media (forced-colors:active)'), /:root\[data-appearance\] :is\(dialog:not\(\[data-variant=find\]\),[^{}]+\{ border: 1px solid ButtonText;/);
+  for (const [, selector, body] of css.matchAll(/([^{}]*:focus[^{}]*)\{([^{}]*)\}/g)) {
+    assert.doesNotMatch(body, /box-shadow:(?!\s*none)/, selector);
+  }
+  for (const selector of ['dialog', '.context-menu', '.command-menu, .composer-intake-menu']) {
+    assert.match(rule(selector), /box-shadow: var\(--shadow\)/);
+    assert.match(rule(selector), /border: 0/);
+  }
+  assert.match(rule(':where(:root)'), /--shadow: 0 8px 28px color-mix\(in srgb, var\(--backdrop\) 40%, transparent\)/);
+  for (const mode of ['light', 'system']) assert.match(rule(`:root[data-appearance=${mode}] :is(dialog:not([data-variant=find]), .context-menu, .command-menu, .composer-intake-menu, .workbench-status .composer-detail-body, .receipt-details pre)`), /border: 1px solid var\(--rule\)/);
+  assert.match(rule('dialog'), /padding: var\(--s5\)/);
+  assert.match(rule('.context-menu'), /padding: var\(--s1\)/);
+  assert.match(rule('.context-menu > button'), /min-height: 32px; padding: var\(--s1\) var\(--s3\)/);
+});
+test('diff fills span each row and signs own a two-character gutter', () => {
+  assert.match(rule('.diff-row'), /display: grid; grid-template-columns: 2ch minmax\(0,1fr\); width: 100%; min-width: 0/);
+  assert.match(rule('.diff-marker'), /grid-column: 1; white-space: pre/);
+  assert.match(rule('.diff-text'), /grid-column: 2; min-width: 0; white-space: inherit; overflow-wrap: inherit/);
+  assert.equal(rule('.diff-del, .diff-add').trim(), 'padding: 0;');
+  assert.match(rule('.diff-del'), /background: var\(--del-bg\); color: var\(--error\)/);
+  assert.match(rule('.diff-add'), /background: var\(--add-bg\); color: var\(--success\)/);
 });

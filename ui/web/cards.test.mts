@@ -36,15 +36,31 @@ test('structured edit previews every supplied old/new pair without invented file
   assert.equal(card.children.some(child => ['h3', 'h4'].includes(child.tag)), false);
   const blocks = card.children.filter(child => child.tag === 'pre');
   assert.deepEqual(blocks[0]?.children.filter(child => child.tag === 'span').map(child => [child.className, child.textContent]),
-    [['diff-del', '- return a - b;'], ['diff-add', '+ return a + b;']]);
-  for (const block of blocks) for (let i = 1; i < block.children.length; i += 2) {
-    assert.equal(block.children[i]?.tag, '#text'); assert.equal(block.children[i]?.textContent, '\n');
-  }
+    [['diff-row diff-del', '- return a - b;\n'], ['diff-row diff-add', '+ return a + b;\n']]);
   assert.deepEqual(blocks[1]?.children.map(child => [child.tag, child.className, child.textContent]),
-    [['span', 'diff-del', '- <script>'], ['#text', '', '\n'], ['#text', '', 'New text: empty'], ['#text', '', '\n']]);
+    [['span', 'diff-row diff-del', '- <script>\n'], ['#text', '', 'New text: empty'], ['#text', '', '\n']]);
   assert.doesNotMatch(card.textContent, /@@|successfully replaced/);
   assert.equal(card.children.filter(child => child.tag === 'pre').length, 2);
 });
+test('collapsed and expanded diff rows preserve literal markers, indentation, blank lines and newline text', () => {
+  const {context} = setup();
+  const oldText = '  head\n\told <script>😀\n\n  tail';
+  const long = `\tnew ${'wide '.repeat(35)}😀`;
+  const newText = `  head\n${long}\n  extra\n  tail`;
+  const value = {oldText, newText}; const retained = JSON.stringify(value);
+  const call = source('edit', value);
+  const expected = [['  ', '  head\n'], ['- ', '\told <script>😀\n'], ['- ', '\n'], ['+ ', `${long}\n`], ['+ ', '  extra\n'], ['  ', '  tail\n']];
+  for (const block of [node(presentToolPreview(call)), node(presentTool(call, context)).children.find(child => child.tag === 'pre')]) {
+    assert.ok(block);
+    assert.equal(block.textContent, expected.map(([marker, text]) => `${marker}${text}`).join(''));
+    assert.deepEqual(block.children.map(row => row.className), ['diff-row', 'diff-row diff-del', 'diff-row diff-del', 'diff-row diff-add', 'diff-row diff-add', 'diff-row']);
+    assert.deepEqual(block.children.map(row => row.children.map(child => [child.className, child.textContent])),
+      expected.map(([marker, text]) => [['diff-marker', marker], ['diff-text', text]]));
+    assert.equal(block.children.every(row => row.tag === 'span' && row.children.every(child => child.tag === 'span')), true);
+  }
+  assert.equal(JSON.stringify(value), retained);
+});
+
 test('empty supplied old and new text keep plain labels inside their replacement', () => {
   const {context} = setup();
   const card = node(presentTool(source('edit', {oldText: '', newText: ''}), context));
@@ -108,7 +124,7 @@ test('bash command uses inert supplied text and preserves multiline commands on 
 test('collapsed write and edit previews expose supplied content with diff classes', () => {
   setup();
   const edit = node(presentToolPreview(source('edit', {edits: [{oldText: '<script>\nold', newText: 'new\ntext'}, {oldText: 'x', newText: 'y'}]})));
-  assert.deepEqual(edit.children.filter(child => child.tag === 'span').map(child => child.className), ['diff-del', 'diff-del', 'diff-add', 'diff-add']);
+  assert.deepEqual(edit.children.filter(child => child.tag === 'span').map(child => child.className), ['diff-row diff-del', 'diff-row diff-del', 'diff-row diff-add', 'diff-row diff-add']);
   assert.match(edit.textContent, /- <script>\n- old\n\+ new\n\+ text\n1 more replacement in Arguments\./);
   assert.equal(edit.className, 'tool-content-preview');
   const write = node(presentToolPreview(source('write', {content: 'one\ntwo\nthree'})));
@@ -129,8 +145,8 @@ test('write previews highlight by extension and preserve exact supplied text and
   }
   const edit = node(presentTool(source('edit', {path: 'source.ts', oldText: content, newText: 'return 2;'}), context));
   const lines = edit.children.filter(child => child.tag === 'pre').flatMap(child => child.children).filter(child => child.tag === 'span');
-  assert.equal(lines.every(child => child.className === 'diff-del' || child.className === 'diff-add'), true);
-  assert.equal(lines.every(child => child.children.length === 0), true);
+  assert.equal(lines.every(child => child.className === 'diff-row diff-del' || child.className === 'diff-row diff-add'), true);
+  assert.equal(lines.every(child => child.children.length === 2 && child.children[0]?.className === 'diff-marker' && child.children[1]?.className === 'diff-text'), true);
 });
 test('collapsed successful source reads add syntax without changing their bounded literal preview or source', () => {
   setup();
@@ -461,11 +477,11 @@ test('edit previews mark shared lines with a space and color only changed lines'
   const append = {edits: [{oldText: 'a\nb.', newText: 'a\nb.\nc\nd'}]};
   const rows = (block: Node | undefined) => (block?.children ?? []).filter(child => child.tag !== '#text' || child.textContent !== '\n').map(child => [child.className, child.textContent]);
   const collapsed = node(presentToolPreview(source('edit', append)));
-  assert.deepEqual(rows(collapsed), [['', 'Earlier context omitted.'], ['', '  b.'], ['diff-add', '+ c'], ['diff-add', '+ d']]);
+  assert.deepEqual(rows(collapsed), [['', 'Earlier context omitted.'], ['diff-row', '  b.\n'], ['diff-row diff-add', '+ c\n'], ['diff-row diff-add', '+ d\n']]);
   const expanded = node(presentTool(source('edit', append), context)).children.find(child => child.tag === 'pre');
-  assert.deepEqual(rows(expanded), [['', 'Earlier context omitted.'], ['', '  b.'], ['diff-add', '+ c'], ['diff-add', '+ d']]);
+  assert.deepEqual(rows(expanded), [['', 'Earlier context omitted.'], ['diff-row', '  b.\n'], ['diff-row diff-add', '+ c\n'], ['diff-row diff-add', '+ d\n']]);
   const insertion = node(presentToolPreview(source('edit', {oldText: 'x\ny\nz', newText: 'x\nI\ny\nz'})));
-  assert.deepEqual(rows(insertion), [['', '  x'], ['diff-add', '+ I'], ['', '  y'], ['', 'Later context omitted.']]);
+  assert.deepEqual(rows(insertion), [['diff-row', '  x\n'], ['diff-row diff-add', '+ I\n'], ['diff-row', '  y\n'], ['', 'Later context omitted.']]);
   const deletion = node(presentToolPreview(source('edit', {oldText: 'x\ny\nz', newText: 'x\nz'})));
-  assert.deepEqual(rows(deletion), [['', '  x'], ['diff-del', '- y'], ['', '  z']]);
+  assert.deepEqual(rows(deletion), [['diff-row', '  x\n'], ['diff-row diff-del', '- y\n'], ['diff-row', '  z\n']]);
 });

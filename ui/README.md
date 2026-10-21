@@ -72,10 +72,14 @@ Override tokens by role:
 | Diff | `--add-bg` and `--del-bg` row tints, with `--success` and `--error` for text |
 | Type | `--sans`, `--mono`; `--fs-label`, `--fs-meta`, `--fs-ui`, `--fs-body`, `--fs-code`, `--fs-title`; Markdown heading sizes `--fs-h1` to `--fs-h4` |
 | Space and layout | `--s1` to `--s7`, `--gutter`, `--read-width` |
+| Shape | `--r-sm` small controls and inline code, `--r-md` tool and code blocks, menus and popovers, `--r-lg` dialogs, composer and input turns |
+| Tool hover | `--run-hover` visible tool hover with the same text contrast tiers |
 
 Transcript prose and composer text use 16px type with 1.65 line height. Metadata uses 13px, controls and rows use 15px, and code and identities use 14px. Uppercase section labels use 12px semibold type. Markdown headings have distinct sizes, and tables use row rules without cell boxes or header fills.
 
-Conversation content and the composer share a centered 760px column. Narrow panes retain their gutters and use the available width. The sidebar starts open at 280px; an explicitly saved width stays in use. **Hide sidebar**, **Show sidebar**, and the narrow-screen drawer remain available. Tool blocks retain their native details and bounded output.
+Conversation content and the composer share a centered 760px column. Narrow panes retain their gutters and use the available width. The sidebar starts open at 280px; an explicitly saved width stays in use. **Hide sidebar**, **Show sidebar**, and the narrow-screen drawer remain available. Tool blocks retain their native details and bounded output. Their full-column soft surfaces use `--run-bg`, without enclosing borders. A small icon slot leads each title, with visible state words at the right. Successful calls keep the slot and state word empty. Expanded output uses a separate `--code` surface. Consecutive tool blocks have an 8px gap, with 16px between response text and its first tool block. Diff rows fill the code area and keep their signs in a two-character gutter. Markdown code actions appear at the top right on hover or keyboard focus; touch pointers keep them visible.
+
+Surface corners use 6px, 10px and 16px tokens. Semantic side rules stay, including user, Thinking and blockquote markers. Focus uses a 2px accent outline with a 2px offset and no glow. Floating dialogs and menus share one soft shadow; only Light mode adds their quiet outline. Forced colors retain the operating system's control edges.
 
 ## Ownership and terminal return
 
