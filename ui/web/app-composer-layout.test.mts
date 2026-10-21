@@ -37,6 +37,11 @@ function ancestors(node: HostNode): HostNode[] {
   for (let parent = node.parentNode; parent; parent = parent.parentNode) result.push(parent);
   return result;
 }
+function layoutPlaceholderPattern(state: string): RegExp {
+  if (state === 'running') return /^Write a change or follow-up…$/;
+  if (state === 'incompatible') return /^Draft for .*…$/;
+  return /^Message .*…$/;
+}
 
 test('conversation state and split width changes retain editor ancestry, draft images, caret and manual size', async t => {
   const original = globalThis.fetch, computed = globalThis.getComputedStyle;
@@ -99,7 +104,7 @@ test('conversation state and split width changes retain editor ancestry, draft i
       assert.equal((editor.style as {height?: string}).height, height);
       assert.equal(root.classList.contains('agent-empty'), next !== 'populated');
       assert.equal(agentControl('queue').hidden, next !== 'running'); assert.equal(agentControl('stop').hidden, next !== 'running');
-      assert.match(editor.placeholder, next === 'running' ? /^Write a change or follow-up…$/ : next === 'incompatible' ? /^Draft for .*…$/ : /^Message .*…$/); assert.match(editor.getAttribute('aria-label') ?? '', /^(?:Message |Draft for )/);
+      assert.match(editor.placeholder, layoutPlaceholderPattern(next)); assert.match(editor.getAttribute('aria-label') ?? '', /^(?:Message |Draft for )/);
     }
   }
 });

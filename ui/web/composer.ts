@@ -797,11 +797,14 @@ export class Composer {
     this.describeSend(reason, run ? run.name : undefined, working);
     queue.setAttribute('aria-description', reason);
     queue.title = reason || 'Add a follow-up message.';
+    this.paintControlState(!!run);
+  }
+  private paintControlState(hasCommand: boolean): void {
     const state = this.elements.state, view = this.combinedState(this.stateView);
     if (state) {
       this.paintStateText(state, view);
-      state.classList.toggle('composer-delivery-guidance', !!view && !this.stateView && !this.settingsState && !run);
-      for (const control of [this.elements.start, send, queue]) {
+      state.classList.toggle('composer-delivery-guidance', !!view && !this.stateView && !this.settingsState && !hasCommand);
+      for (const control of [this.elements.start, this.elements.send, this.elements.queue]) {
         if (view) control?.setAttribute('aria-describedby', `${state.id}-line`); else control?.removeAttribute('aria-describedby');
       }
     }
@@ -809,11 +812,14 @@ export class Composer {
   /** The action names what the key will do: run a host command, steer running work, or send. */
   private describeSend(reason: string, command: string | undefined, working: boolean): void {
     const send = this.elements.send, steer = working && command === undefined;
-    paintAction(send, command !== undefined ? 'commands' : steer ? 'steer' : 'send', command !== undefined ? 'Run command' : steer ? 'Steer' : 'Send', steer || command !== undefined);
+    this.paintSendAction(command, steer);
     send.classList.toggle('send-named', steer || command !== undefined);
     send.setAttribute('aria-label', command !== undefined ? `Run command /${command}` : steer ? 'Steer message' : 'Send message');
     send.setAttribute('aria-description', reason);
     send.title = reason || (command !== undefined ? `Run /${command} on this agent. It sends no message` : steer ? 'Steer: send now; the agent reads it at its next step' : 'Send');
+  }
+  private paintSendAction(command: string | undefined, steer: boolean): void {
+    paintAction(this.elements.send, command !== undefined ? 'commands' : steer ? 'steer' : 'send', command !== undefined ? 'Run command' : steer ? 'Steer' : 'Send', steer || command !== undefined);
   }
   /** An agent draft that is one of the live host's commands runs that command instead of sending a message. */
   private commandDraft(buffer: Buffer): {name: string; args: string} | undefined {
