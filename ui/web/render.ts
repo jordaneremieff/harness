@@ -21,7 +21,7 @@ import type { TranscriptGroups } from './transcript-groups.ts';
 import {TranscriptRows, type StepRun, type TranscriptRow} from './transcript-rows.ts';
 import {toolSentence,toolLabelParts,quietTextResult, type NamedDestination, type ToolLabelPart} from './tool-sentences.ts';
 import {ConversationTasks, type ConversationTask, type TaskReference} from './conversation-tasks.ts';
-import { loadedReference, type ReferenceQuery, type ReferenceResolver } from './references.ts';
+import { loadedReference, type FileReferenceDestination, type ReferenceQuery, type ReferenceResolver } from './references.ts';
 import type { JoinedTool } from './transcript-tools.ts';
 import { outputPages } from './transcript-output.ts';
 import { awaitedAnswers, awaitedFieldsFromParts, awaitedFromParts, awaitedToolState, stillWaitingSentence } from './awaited-answers.ts';
@@ -44,7 +44,7 @@ function thinkingSpans(summary: Element): {label: HTMLElement; preview: HTMLElem
   summary.replaceChildren(made.label, made.preview); return made;
 }
 const previewSuffix = (line: string): string => line ? ` · ${line}` : '';
-export type ViewHooks = {unread?: () => void; primaryDraft?:TranscriptDraftActions;owner?:string;sourceOrder?:boolean;senderCaption?: (sender:CommunicationSender)=>string; senderSummary?: (identity:string)=>SenderSummary|undefined; thread?: (id:string,title?:string)=>void; earlier?: () => void; operatorInput?: boolean; readTaskResult?: (reference:TaskReference,signal:AbortSignal)=>Promise<ResultInspection>; activity?: (text:string)=>void; cwd?: () => string | undefined; subject?: (value: string) => ToolSubjectCaption | undefined; result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView, thinking?: ThinkingChoice) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; preview?: (part: ImageView, url: string, invoker: HTMLElement) => () => void; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
+export type ViewHooks = {openFile?:(destination:FileReferenceDestination)=>void;unread?: () => void; primaryDraft?:TranscriptDraftActions;owner?:string;sourceOrder?:boolean;senderCaption?: (sender:CommunicationSender)=>string; senderSummary?: (identity:string)=>SenderSummary|undefined; thread?: (id:string,title?:string)=>void; earlier?: () => void; operatorInput?: boolean; readTaskResult?: (reference:TaskReference,signal:AbortSignal)=>Promise<ResultInspection>; activity?: (text:string)=>void; cwd?: () => string | undefined; subject?: (value: string) => ToolSubjectCaption | undefined; result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView, thinking?: ThinkingChoice) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; preview?: (part: ImageView, url: string, invoker: HTMLElement) => () => void; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
 const RAW_LIMIT = 65536;
 /** Scrolling up within this many pixels of the first loaded row reads the next older page. */
 const EARLIER_ZONE_PX = 240;
@@ -213,7 +213,7 @@ type FailedStep = {entryId:string;rowId:string;callId?:string};
 type ReceivedResult = {entryId:string;messageId:string;rowId:string;entryAt:number;messageAt:number};
 type EntryNode = {node: HTMLElement; messages: Map<string, MessageNode>; dayDivider?: HTMLTimeElement; turnActions?: TurnActions; source?: EntryView; custom?: HTMLElement; session?: SessionNode; groupHeader?: HTMLElement};
 type ToolPathCopy = {path:string;run:()=>void};
-type ToolNode = {pathCopySource?: JoinedTool; previewMore?: HTMLButtonElement; previewSource?: JoinedTool; previewSubjectRevision?: number; answerText?: string; subject?: ToolSubjectCaption; card: HTMLElement; node: HTMLDetailsElement; copy: HTMLButtonElement; title: HTMLElement; target: HTMLElement; glyph: HTMLElement; stateWord: HTMLElement; meta: HTMLElement; preview: HTMLElement; qualification: HTMLElement; expanded: HTMLElement; resultArea: HTMLElement; technical: HTMLDetailsElement; actions: HTMLElement; info: HTMLElement; source?: JoinedTool; inspectionSources?: Map<HTMLDetailsElement, JoinedTool>; presentation?: HTMLElement; argumentsDocument?: HTMLElement; argumentsSource?: JoinedTool; output?: HTMLElement; contentSource?: JoinedTool; viewport?: HTMLElement; pageViewports?: Set<HTMLElement>; resultDocument?: HTMLElement; documentSource?: JoinedTool; previewBudget?: PreviewBudget; outputNotice?: {node: HTMLElement; source: JoinedTool}; inspections?: {arguments: HTMLDetailsElement; output: HTMLDetailsElement; details: HTMLDetailsElement}};
+type ToolNode = {filePath?:string;filePathSource?:JoinedTool;pathCopySource?: JoinedTool; previewMore?: HTMLButtonElement; previewSource?: JoinedTool; previewSubjectRevision?: number; answerText?: string; subject?: ToolSubjectCaption; card: HTMLElement; node: HTMLDetailsElement; copy: HTMLButtonElement; title: HTMLElement; target: HTMLElement; glyph: HTMLElement; stateWord: HTMLElement; meta: HTMLElement; preview: HTMLElement; qualification: HTMLElement; expanded: HTMLElement; resultArea: HTMLElement; technical: HTMLDetailsElement; actions: HTMLElement; info: HTMLElement; source?: JoinedTool; inspectionSources?: Map<HTMLDetailsElement, JoinedTool>; presentation?: HTMLElement; argumentsDocument?: HTMLElement; argumentsSource?: JoinedTool; output?: HTMLElement; contentSource?: JoinedTool; viewport?: HTMLElement; pageViewports?: Set<HTMLElement>; resultDocument?: HTMLElement; documentSource?: JoinedTool; previewBudget?: PreviewBudget; outputNotice?: {node: HTMLElement; source: JoinedTool}; inspections?: {arguments: HTMLDetailsElement; output: HTMLDetailsElement; details: HTMLDetailsElement}};
 export type TranscriptGeometry = {generation: number; followTail: boolean; anchor: {id: string; offsetPx: number} | null; scrollTop: number};
 export type FindStatus = {total: number; position: number; moved: boolean; end: 'none' | 'first' | 'last' | 'unavailable' | null};
 export type FindSession = {next: (query: string) => FindStatus; previous: (query: string) => FindStatus; reset: () => void; close: () => void};
@@ -471,7 +471,7 @@ export class Transcript {
     const source = tool?.source ?? message?.source ?? entry?.source;
     if (message && entry) { this.messageMenu(entry, message.source.id, origin, {x: event.clientX, y: event.clientY}); event.preventDefault(); event.stopPropagation(); return; }
     const text = menuText(tool, message, entry);
-    const items: ContextItem[] = [...selectionCopy(origin), {label: 'Copy', run: () => { void copy(text, origin); }}, ...this.toolPathItems(tool), ...this.primaryAskItems(tool?.source ? this.toolDraftSource(tool,tool.source) : undefined)];
+    const items: ContextItem[] = [...selectionCopy(origin), {label: 'Copy', run: () => { void copy(text, origin); }}, ...this.toolPathItems(tool), ...this.primaryAskItems(tool?.source ? this.toolDraftSource(tool,tool.source) : undefined),...this.toolFileItems(tool)];
     const disclosure = target?.closest<HTMLDetailsElement>('details') ?? origin.querySelector<HTMLDetailsElement>('details');
     if (disclosure && origin.contains(disclosure)) items.push({label: disclosure.open ? 'Collapse details' : 'Expand details', run: () => { disclosure.open = !disclosure.open; }});
     origin.tabIndex = -1;
@@ -1976,6 +1976,26 @@ export class Transcript {
     this.trackDisclosure(node, `tool:${source.callId}`);
     node.addEventListener('toggle', () => this.toolExpansion(tool)); this.registerContent(card); return tool;
   }
+  private toolFileDestination(tool:ToolNode,source:JoinedTool):FileReferenceDestination|undefined {
+    if(!this.hooks.openFile||!source.args||source.args.truncated||tool.filePathSource!==source)return;
+    return tool.filePath?this.hooks.references?.fileDestination(tool.filePath,this.hooks.cwd?.()):undefined;
+  }
+  private openToolFile(tool:ToolNode,expected?:FileReferenceDestination):void {
+    const source=tool.source;if(!source||!this.currentToolSource(tool,source,this.generation))return;
+    const destination=this.toolFileDestination(tool,source);if(!destination)return;
+    if(expected&&(destination.rootId!==expected.rootId||destination.path!==expected.path))return;
+    this.hooks.openFile?.(destination);
+  }
+  private toolFileItems(tool:ToolNode|undefined):ContextItem[] {
+    if(!tool?.source)return [];const destination=this.toolFileDestination(tool,tool.source);if(!destination)return [];
+    return [{label:'Open beside',run:()=>this.openToolFile(tool,destination)}];
+  }
+  private toolFileAction(tool:ToolNode,source:JoinedTool):void {
+    const destination=this.toolFileDestination(tool,source);let action=tool.actions.querySelector<HTMLButtonElement>('.tool-open-beside');
+    if(!destination){if(action)action.hidden=true;return;}
+    if(!action){action=button('Open beside',()=>this.openToolFile(tool),'tool-open-beside');action.addEventListener('pointerdown',event=>{if(event.button===0)event.preventDefault();});action.addEventListener('click',event=>event.stopPropagation());tool.actions.append(action);}
+    action.hidden=false;action.title=`Open ${destination.path} read-only beside Primary`;
+  }
   private toolState(tool: ToolNode, source: JoinedTool): void {
     const awaited = source.name === 'agent_await' ? awaitedToolState(source) : undefined;
     const status = awaited?.status ?? source.status;
@@ -1989,7 +2009,7 @@ export class Transcript {
   private updateTool(source: JoinedTool): HTMLElement {
     const tool = this.tools.get(source.callId) ?? this.createTool(source);
     const previous = tool.source; tool.source = source;
-    this.toolHeading(tool, source);this.toolAnswer(tool,source);
+    this.toolHeading(tool, source);this.toolAnswer(tool,source);this.toolFileAction(tool,source);
     const staleSubjects = !tool.node.open && tool.previewSubjectRevision !== this.subjectRevision;
     if (previous === source) {
       if (tool.previewSource !== source || staleSubjects) this.toolContent(tool);
@@ -2117,6 +2137,7 @@ export class Transcript {
   }
   private toolTitle(tool: ToolNode, source: JoinedTool): void {
     const parts=toolLabelParts(source,{subject:this.hooks.subject,cwd:this.hooks.cwd?.(),nestedCount:this.rows.nestedCounts.get(source.callId)}),pathCopy=this.toolPathCopy(tool,source,parts);
+    tool.filePath=parts.find(part=>part.role==='file')?.title;tool.filePathSource=source;
     tool.title.title=[parts.map(part=>part.text).join(''),...parts.flatMap(part=>part.title?[part.title]:[])].join('\n');
     const control=tool.title.querySelector<HTMLButtonElement>(':scope > .tool-path-copy');
     const children=[...tool.title.children].flatMap(node=>node===control?[...node.children]:[node]);

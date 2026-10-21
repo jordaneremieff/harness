@@ -19,6 +19,7 @@ import {FilesTree, type FileTreeAction} from './files-tree.ts';
 import {FileWatch} from './file-watch.ts';
 import {markdownPath, movedWorkspaceFiles, type FileMove} from './file-identity.ts';
 import {FilesViews} from './files-views.ts';
+import {ToolFileReader} from './tool-file-reader.ts';
 import {FileRootChoice} from './file-root.ts';
 import {chooseWorkingFile} from './working-file-chooser.ts';
 import { activeTab, ConversationCaptions, conversationIdentityText, type CaptionRow, closeTab, duplicateTabTails, FileBrowseState, layoutTarget, openTab, switchTab, tabForTarget, tabKey, workspaceLayout } from './tabs.ts';
@@ -112,6 +113,7 @@ export function focusPane(pane: Pane): void {
   else if (target) {const controller=conversationController(target);if(controller.inspection?.active)controller.inspection.scroller.focus({preventScroll:true});else controller.composer.focus();}
 }
 function updatePaneFocus(pane: Pane, event?: Event): void {
+  if(toolFilePane){toolFilePane.focus=pane;focusedPane=pane;markFocusedPane();return;}
   if (focusedPane === pane) return;
   if(sessionReadPane){sessionReadPane.focus=pane;focusedPane=pane;markFocusedPane();return;}
   if (event?.type === 'pointerdown') workbenchStatus.holdGeometry(event as PointerEvent);
@@ -315,7 +317,7 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
     ...(target.kind === 'primary' ? {commands: () => actions.commandOptions(), moreCommands: (captured: Target) => actions.continueCommands(captured)} : {}),
     ...agentCommandHooks(controller),
     retained: (workspace, captured) => { if (workspace !== state.workspace?.id) return; if (captured.kind === 'agent') renderMessageResume(captured.identity); tabStrip.render(); }});
-  controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {unread: () => tabStrip.render(), primaryDraft:transcriptDraftActions(controller),...transcriptSource(target),earlier: () => loadEarlierRows(controller), references, subject: toolSubjectCaption, senderSummary: identity => state.roster.get(identity) ?? identityNames.get(identity), senderCaption:currentSenderCaption, thread: (id,title) => openThread({id,...(title ? {title} : {})}, controller), readTaskResult:async(reference,signal)=>{const value=await request<AgentInspectionView>(`/api/agents/${encodeURIComponent(reference.sessionId)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',{view:'result',submissionId:reference.submissionId,...(reference.requestId?{requestId:reference.requestId}:{})},undefined,AbortSignal.any([signal,controller.abort.signal,AbortSignal.timeout(15_000)]));if(value.view!=='result')throw new Error('The task result view changed.');return value;}, activity:()=>{if (footerController === controller) renderWorkbenchStatus();}, cwd: () => target.kind === 'primary' ? state.primaries.get(target.key)?.cwd : state.roster.get(target.identity)?.cwd, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
+  controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {unread: () => tabStrip.render(), openFile:destination=>{try{openToolFile(destination);}catch(error){showError(error);}}, primaryDraft:transcriptDraftActions(controller),...transcriptSource(target),earlier: () => loadEarlierRows(controller), references, subject: toolSubjectCaption, senderSummary: identity => state.roster.get(identity) ?? identityNames.get(identity), senderCaption:currentSenderCaption, thread: (id,title) => openThread({id,...(title ? {title} : {})}, controller), readTaskResult:async(reference,signal)=>{const value=await request<AgentInspectionView>(`/api/agents/${encodeURIComponent(reference.sessionId)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',{view:'result',submissionId:reference.submissionId,...(reference.requestId?{requestId:reference.requestId}:{})},undefined,AbortSignal.any([signal,controller.abort.signal,AbortSignal.timeout(15_000)]));if(value.view!=='result')throw new Error('The task result view changed.');return value;}, activity:()=>{if (footerController === controller) renderWorkbenchStatus();}, cwd: () => target.kind === 'primary' ? state.primaries.get(target.key)?.cwd : state.roster.get(target.identity)?.cwd, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
     presentation: (expanded, thinking, view, choice) => { controller.showThinking = thinking; void savePresentation(controllerCapture(controller), expanded, thinking, view, choice); },
     reading: reading => { void saveReading(controllerCapture(controller), reading); },
     ...(target.kind === 'primary' ? {fork: (message: import('../shared/api.ts').MessageView, entry: string) => { if (sameTarget(target, primaryTarget())) actions.fork(entry, rawText(message.parts)); }, output: (more: import('../shared/api.ts').OutputContinuation) => loadControllerOutput(controller, more)} : {}),
@@ -467,7 +469,8 @@ function watchFiles(force = false):Promise<void> {
   const rootId = filesTree.rootId();if (rootId) {const root = roots.get(rootId) ?? {rootId,files:[],directories:[]};root.directories = filesTree.disclosed();roots.set(rootId,root);}
   return fileWatch.scope(workspace.id,[...roots.values()].sort((a,b)=>a.rootId.localeCompare(b.rootId)),force);
 }
-export const filesViews = new FilesViews(stableViews,(workspace,tab,signal)=>request<FileText>(`/api/files/roots/${encodeURIComponent(tab.rootId)}/text?path=${encodeURIComponent(tab.path)}&workspace=${encodeURIComponent(workspace)}`,'GET',undefined,undefined,signal),()=>state.workspace,
+function readWorkspaceFile(workspace:string,tab:FileTab,signal:AbortSignal):Promise<FileText> {return request<FileText>(`/api/files/roots/${encodeURIComponent(tab.rootId)}/text?path=${encodeURIComponent(tab.path)}&workspace=${encodeURIComponent(workspace)}`,'GET',undefined,undefined,signal);}
+export const filesViews = new FilesViews(stableViews,readWorkspaceFile,()=>state.workspace,
   (workspace,key,position)=> {if (state.workspace?.id === workspace) void selection({filePositions:{[key]:position}}).catch(showError);},()=> {if (state.workspace) for (const pane of paneLeaves(currentLayout().root)) for (const tab of pane.tabs) if (tab.kind === 'file' && filesViews.owner(state.workspace.id,tab)?.modified) fileBrowse.keep(tabKey(tab));tabStrip.render();renderWorkbenchStatus();}, {
     draft:(workspace,tab,signal)=>request<FileDraftState>(fileDocumentRoute(workspace,tab,'draft'),'GET',undefined,undefined,signal),
     put:(workspace,tab,expectedRevision,base,text,encoding)=>request<FileDraft>(fileDocumentRoute(workspace,tab,'draft'),'PUT',{expectedRevision,base,text,encoding}),
@@ -478,7 +481,36 @@ export const filesTree = new FilesTree(byId('files-tree'),{
   choose:()=>picker.openProject(byId('project-button')),
   page:(rootId,path,cursor)=> {const workspace = state.workspace?.id;if (!workspace) return Promise.reject(new Error('No workspace is selected.'));return request<FileDirectoryPage>(`/api/files/roots/${encodeURIComponent(rootId)}/directory?path=${encodeURIComponent(path)}&workspace=${encodeURIComponent(workspace)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);},
   select:chooseFile,keep:(rootId,path)=>fileBrowse.keep(tabKey({kind:'file',rootId,path})),addToMessage:addFileToMessage,escape:focusEditor,scope:()=>{renderSectionCounts();return watchFiles();},status:message=> {fileActionStatus = message;renderWorkbenchStatus();},operation:fileTreeOperation});
-export const fileRoot = new FileRootChoice({get:workspace=>request<FileRootSelection>(`/api/workspaces/${encodeURIComponent(workspace)}/files/root`),put:(workspace,path,revision)=>request<FileRootSelection>(`/api/workspaces/${encodeURIComponent(workspace)}/files/root`,'PUT',{path,expectedRevision:revision})},()=> {renderFiles();renderIdentity();for (const controller of controllers.values()) controller.transcript.refreshReferences();});
+export const fileRoot = new FileRootChoice({get:workspace=>request<FileRootSelection>(`/api/workspaces/${encodeURIComponent(workspace)}/files/root`),put:(workspace,path,revision)=>request<FileRootSelection>(`/api/workspaces/${encodeURIComponent(workspace)}/files/root`,'PUT',{path,expectedRevision:revision})},()=> {if(toolFilePane&&!toolFileCurrent(toolFilePane))closeToolFile();renderFiles();renderIdentity();for (const controller of controllers.values()) controller.transcript.refreshReferences();});
+type ToolFilePane = {context:string;rootId:string;stamp:string;id:string;focus:string;layout:ConversationLayout};
+let toolFilePane:ToolFilePane|undefined;
+const toolFileReader=new ToolFileReader(readWorkspaceFile,()=>closeToolFile());
+toolFileReader.node.addEventListener('pointerdown',event=>{if(toolFilePane)updatePaneFocus(toolFilePane.id,event);});
+toolFileReader.node.addEventListener('focusin',()=>{if(toolFilePane)updatePaneFocus(toolFilePane.id);});
+function toolFileCurrent(captured:ToolFilePane):boolean {return toolFilePane===captured&&captured.context===deskContext()&&!fileRoot.loading&&fileRoot.selection?.root?.id===captured.rootId&&JSON.stringify(sessionReadLayout().root)===captured.stamp;}
+function closeToolFile(render=true):void {if(!toolFilePane)return;toolFilePane=undefined;toolFileReader.close();if(render)renderNavigation();}
+function toolFileLayout():ConversationLayout {
+  const captured=toolFilePane;if(!captured)return sessionReadLayout();
+  if(!toolFileCurrent(captured)){closeToolFile(false);return sessionReadLayout();}
+  return {...captured.layout,focusedPane:captured.focus};
+}
+function toolFileCompanion(layout:ConversationLayout):{id:string;layout:ConversationLayout;overPrimary?:boolean} {
+  const leaves=paneLeaves(layout.root),anchor=leaves.find(pane=>pane.tabs.some(tab=>tab.kind==='primary'));
+  if(!anchor)throw new Error('Open beside needs an existing Primary pane.');
+  const companion=leaves.find(pane=>pane.id!==anchor.id);if(companion)return {id:companion.id,layout};
+  const width=paneRegions.get(anchor.id)?.node.getBoundingClientRect().width??0;
+  if(width<724)return {id:anchor.id,layout,overPrimary:true};
+  const ids=new Set(leaves.map(pane=>pane.id));let number=1;while(ids.has(`tool-file-${number}`))number++;
+  const id=`tool-file-${number}`;
+  return {id,layout:{root:{kind:'split',id:`tool-file-split-${number}`,axis:'x',ratio:50,first:layout.root,second:{kind:'pane',id,tabs:[],active:null}},focusedPane:layout.focusedPane}};
+}
+function openToolFile(destination:FileReferenceDestination):void {
+  const workspace=state.workspace;if(!workspace||fileRoot.loading||fileRoot.selection?.root?.id!==destination.rootId)return;
+  const base=sessionReadLayout(),companion=toolFileCompanion(base);
+  if(deskPane?.id===companion.id)endDeskReview();
+  closeToolFile(false);const captured:ToolFilePane={context:deskContext(),rootId:destination.rootId,stamp:JSON.stringify(base.root),id:companion.id,focus:companion.id,layout:companion.layout};
+  toolFilePane=captured;toolFileReader.closeLabel(companion.overPrimary?'Back to Primary':'Close');toolFileReader.open(workspace.id,destination,()=>toolFileCurrent(captured));renderNavigation();
+}
 export function chooseFile(rootId:string,path:string,focus = true):void {
   if (!state.workspace) return;
   try {applyLayout(fileBrowse.choose(currentLayout(),{kind:'file',rootId,path},key=> {const tab = paneLeaves(currentLayout().root).flatMap(pane=>pane.tabs).find(tab=>tabKey(tab) === key);if (tab?.kind !== 'file') return false;const owner = filesViews.owner(state.workspace?.id ?? '',tab);return !!owner && (owner.loading || owner.modified || owner.unsaved);}));if (focus) focusEditor();} catch (error) {showError(error);}
@@ -710,7 +742,7 @@ function threadOpeningPane(preferred?: ConversationController): PaneLeaf | undef
   return source ?? paneById(layout, layout.focusedPane);
 }
 function openThread(item: ThreadEntry, preferred?: ConversationController): void {
-  dismissSessionRead();
+  closeToolFile(false);dismissSessionRead();
   const workspace = state.workspace; if (!workspace) return;
   const leaf = threadOpeningPane(preferred); if (!leaf) return;
   if (threadPane && threadPane.paneId !== leaf.id) closeThread(false);
@@ -1102,7 +1134,7 @@ function sessionReadLayout():ConversationLayout {
 export function splitActive(): boolean { return paneLeaves(currentLayout().root).length > 1; }
 function hasConversation(): boolean { return !!primary() || paneLeaves(currentLayout().root).some(pane => !!pane.active); }
 export function applyLayout(layout: ConversationLayout): void {
-  dismissSessionRead();
+  closeToolFile(false);dismissSessionRead();
   const old = currentLayout();if (paneLeaves(old.root).length !== paneLeaves(layout.root).length) fileBrowse.hold();
   const workspace = state.workspace?.id, remaining = new Set(paneLeaves(layout.root).flatMap(pane => pane.tabs.map(tabKey)));
   // A close acknowledgment must not release a newer Message intent or a reopened tab.
@@ -1202,6 +1234,12 @@ function mountPaneNode(node: import('../shared/api.ts').PaneNode, layout: Conver
   if (split.handle.nextSibling !== second) placeRetained(second, split.node, split.handle.nextSibling);
   return split.node;
 }
+function mountToolFilePane(id:string,node:HTMLElement,active:boolean):void {
+  if(threadPane?.paneId===id)threadReader.node.hidden=active;
+  if(!active)return;
+  if(toolFileReader.node.parentElement!==node)node.append(toolFileReader.node);
+  if(desk.node.parentElement===node)desk.node.hidden=true;toolFileReader.mounted();
+}
 function mountPaneLeaf(leaf: PaneLeaf, layout: ConversationLayout): HTMLElement {
   let pane = paneRegions.get(leaf.id);
   if (!pane) {
@@ -1228,11 +1266,12 @@ function mountPaneLeaf(leaf: PaneLeaf, layout: ConversationLayout): HTMLElement 
   pane.previous.dataset.unreachable = String(pane.previous.disabled); pane.next.dataset.unreachable = String(pane.next.disabled);
   pane.previous.hidden = pane.next.hidden = leaf.tabs.length <= 1;
   pane.plus.disabled = !state.workspace; pane.menu.disabled = !leaf.tabs.length;
-  const reading=sessionReadPane?.id===leaf.id;
-  pane.content.hidden = reading || threadPane?.paneId === leaf.id || deskCompanion(leaf.id)&&deskPane?.list===true; pane.content.inert = pane.content.hidden;
+  const reading=sessionReadPane?.id===leaf.id,fileReading=toolFilePane?.id===leaf.id;
+  pane.content.hidden = fileReading || reading || threadPane?.paneId === leaf.id || deskCompanion(leaf.id)&&deskPane?.list===true; pane.content.inert = pane.content.hidden;
   mountDeskCompanion(leaf.id,pane.node);
-  const bar=pane.node.querySelector<HTMLElement>(':scope > .tab-bar');if(bar)bar.hidden=reading;
-  if(reading){if(sessionReader.node.parentElement!==pane.node)pane.node.append(sessionReader.node);const deskNode=pane.node.querySelector<HTMLElement>(':scope > .desk');if(deskNode)deskNode.hidden=true;}
+  const bar=pane.node.querySelector<HTMLElement>(':scope > .tab-bar');if(bar)bar.hidden=reading||fileReading;
+  if(reading){sessionReader.node.hidden=!!fileReading;if(sessionReader.node.parentElement!==pane.node)pane.node.append(sessionReader.node);const deskNode=pane.node.querySelector<HTMLElement>(':scope > .desk');if(deskNode)deskNode.hidden=true;}
+  mountToolFilePane(leaf.id,pane.node,!!fileReading);
   const activeTab = leaf.tabs[activeIndex]; pane.actions.hidden = !activeTab || activeTab.kind === 'file' || activeTab.kind === 'session'; pane.actions.disabled = pane.actions.hidden || !state.workspace;
   pane.node.dataset.focused = String(leaf.id === layout.focusedPane);
   return pane.node;
@@ -1276,6 +1315,7 @@ function resumeTabSource(source:SessionReadSource):void {
   else if(view.word==='closed'&&view.project&&view.path)picker.resume(view.project,view.path,showError,()=>{renderNavigation();focusEditor();});
 }
 function placePaneContent(leaf:PaneLeaf):void {
+  if(toolFilePane?.id===leaf.id)return;
   if(sessionReadPane?.id===leaf.id)return;
   if(deskCompanion(leaf.id)&&deskPane?.list)return;
   const pane = paneRegions.get(leaf.id);if(!pane)throw new Error(`Missing pane region for ${leaf.id}.`);
@@ -1328,7 +1368,7 @@ function restorePaneGeometry(): void {
 }
 function refreshTreeGeometry(): void {
   refreshLabelFades();
-  const layout = sessionReadLayout(), root = byId('conversation-panes'), box = root.getBoundingClientRect(), minimum = minimumPaneSize(layout.root);
+  const layout = toolFileLayout(), root = byId('conversation-panes'), box = root.getBoundingClientRect(), minimum = minimumPaneSize(layout.root);
   const focusOnly = matchMedia('(max-width: 599px)').matches || box.width < minimum.width || box.height < minimum.height; root.dataset.focusOnly = String(focusOnly);
   for (const [id, pane] of paneRegions) {pane.node.hidden = focusOnly && id !== layout.focusedPane; pane.node.inert = pane.node.hidden;}
   if (!focusOnly) refreshPaneSplit(layout.root);
@@ -1351,6 +1391,7 @@ function refreshPaneSplit(node: import('../shared/api.ts').PaneNode): void {
   refreshPaneSplit(node.first); refreshPaneSplit(node.second);
 }
 function resizeDisplayedPane(id:string,ratio:number):void {
+  if(toolFilePane){toolFilePane.layout=resizePaneSplit(toolFileLayout(),id,ratio);renderNavigation();return;}
   if(sessionReadPane){sessionReadPane.provisional=resizePaneSplit(sessionReadLayout(),id,ratio);renderNavigation();return;}
   applyLayout(resizePaneSplit(currentLayout(),id,ratio));
 }
@@ -1699,7 +1740,7 @@ export function renderNavigation(): void {
   byId('sidebar-show').setAttribute('aria-expanded', String(visible));
   if (drawerClosed && !visible && byId('sidebar').contains(document.activeElement)) byId('sidebar-show').focus({preventScroll: true});
   placeWorkbenchControls(visible);
-  const layout = sessionReadLayout(); const tab = activeTab(layout);
+  const layout = toolFileLayout(); const tab = activeTab(layout);
   renderPaneTree(layout); renderSessionEntry(!!tab); byId('conversation-panes').hidden = !hasConversation() && !threadPane && !sessionReadPane;
   tabStrip.render();if(sessionReadPane)sessionReader.refreshState();for(const reader of sessionTabReaders.values())reader.refreshState(); renderIdentity();
   byId('primary-row').hidden = !primary() || paneLeaves(layout.root).some(pane => pane.tabs.some(tab => tab.kind === 'primary'));
@@ -2741,7 +2782,7 @@ function ensureDeskPane():boolean {
   const id=`desk-pane-${index}`,root={kind:'split' as const,id:`desk-split-${index}`,axis:'x' as const,ratio:50,first:layout.root,second:{kind:'pane' as const,id,tabs:[],active:null}};
   deskPane={workspace,context:deskContext(),id,list:true,provisional:{root,focusedPane:layout.focusedPane}};return true;
 }
-function openDesk():void {endDeskReview();dismissSessionRead();modal.close(false);if(!ensureDeskPane()||!deskPane)return;deskPane.list=true;extensionDialogs.inline(undefined,true);renderNavigation();renderDesk();}
+function openDesk():void {closeToolFile(false);endDeskReview();dismissSessionRead();modal.close(false);if(!ensureDeskPane()||!deskPane)return;deskPane.list=true;extensionDialogs.inline(undefined,true);renderNavigation();renderDesk();}
 async function openDeskNotice(notice:CommunicationNotice):Promise<void> {
   if(communicationNotices.items.get(notice.key)!==notice)return;
   deskOpeningNotice=notice.key;
@@ -2750,7 +2791,7 @@ async function openDeskNotice(notice:CommunicationNotice):Promise<void> {
   await loadDeskNotice(notice);if(deskPane?.list)desk.refreshNotice(deskNoticeRow(notice));
 }
 async function openDeskConversation(row:DeskRow):Promise<void> {
-  endDeskReview();const target=deskReplyTarget(row);if(!target){openDeskSession(row);return;}
+  closeToolFile(false);endDeskReview();const target=deskReplyTarget(row);if(!target){openDeskSession(row);return;}
   await openDeskAgentConversation(target);
 }
 async function openDeskAgentConversation(target:Extract<Target,{kind:'agent'}>,current:()=>boolean=()=>true){
@@ -2788,6 +2829,7 @@ function sessionTabFor(source:SessionReadSource):SessionTab|undefined {
   return validSessionTab(tab)?tab:undefined;
 }
 function openSessionRead(source:SessionReadSource):void {
+  closeToolFile(false);
   const tab=state.workspace?sessionTabFor(source):undefined;
   if(tab){modal.close(false);try{applyLayout(openTab(currentLayout(),tab));}catch(error){showError(error);}return;}
   modal.close(false);const layout=deskLayout(),leaves=paneLeaves(layout.root),anchor=leaves.find(pane=>pane.tabs.some(tab=>tab.kind==='primary'))??leaves[0];if(!anchor)return;

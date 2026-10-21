@@ -316,6 +316,13 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .file-tree-status { padding: var(--s1) var(--s3); color: var(--muted); font-size: var(--fs-meta); }
 .file-tree-more { margin: var(--s1) var(--s2); }
 .file-view { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 0 var(--gutter); }
+.tool-file-reader { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+.tool-file-header { display: flex; align-items: center; flex: none; gap: var(--s3); min-height: 40px; padding: var(--s2) var(--gutter); }
+.tool-file-path { flex: 1; min-width: 0; }
+.tool-file-header > time, .tool-file-header > button { flex: none; font-size: var(--fs-meta); }
+.tool-file-reader > .file-state { margin: 0; padding-inline: var(--gutter); }
+.tool-file-body { display: flex; flex: 1; min-width: 0; min-height: 0; }
+.tool-file-body > .file-view { flex: 1; }
 .file-editor-host { flex: 1; position: relative; display: flex; min-width: 0; min-height: 0; overflow: hidden; }
 .file-line-band { position: absolute; inset-inline: 0; background: var(--raised); pointer-events: none; }
 .file-editor { position: relative; flex: 1; width: 100%; min-width: 0; min-height: 0; resize: none; border: 0; padding: var(--s3) 0; background: transparent; color: var(--fg); caret-color: var(--fg); font: var(--fs-code)/1.55 var(--mono); tab-size: 4; white-space: pre; overflow: auto; }

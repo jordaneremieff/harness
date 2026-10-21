@@ -117,6 +117,12 @@ export class ReferenceResolver {
       placeholder.replaceWith(link);
     }
   }
+  fileDestination(text:string,cwd?:string):FileReferenceDestination|undefined {
+    const root=this.files?.root();if(!root)return;
+    if(!text.startsWith('/')&&!cwd?.startsWith('/'))return;
+    const destination=fileReference(text.startsWith('/')?text:`${cwd?.replace(/\/$/,'')}/${text}`,root);
+    return destination?.line===undefined?destination:undefined;
+  }
   renderFile(text: string, active: (node: HTMLElement) => boolean, line?: number): HTMLElement | undefined {
     const root = this.files?.root(); const destination = root && fileReference(text, root); if (!destination) return;
     if (line !== undefined) destination.line = line;
