@@ -10,13 +10,12 @@ export type TabRegions = {panes: () => TabRegion[]; conversations: HTMLElement};
 export type TabHooks = {layout: () => PaneLayout; activate: (pane: string, key: string) => void; close: (key: string) => void;
   move: (key: string, pane: string, index: number) => void; label: (tab: ConversationTab) => string;
   identity?: (tab: ConversationTab) => string | undefined;unnamed?:(tab:ConversationTab)=>boolean;
-  status: (tab: ConversationTab) => {label: string; glyph: string; tone?: PresentationTone; attention?: Attention}; keep?: (key:string)=>void; overflow?: (overflow: boolean, pane: string) => void};
+  status: (tab: ConversationTab) => {label: string; rowLabel?: string; glyph: string; tone?: PresentationTone; attention?: Attention}; section?: {collapsed(): boolean; toggle(): void}; keep?: (key:string)=>void; overflow?: (overflow: boolean, pane: string) => void};
 /** Keyed tab and sidebar nodes follow real pane ownership, independent of target kind. */
 export class TabStrip {
   private nodes = new Map<string, HTMLElement>();
-  private rows = new Map<string, HTMLButtonElement>();
+  private rows = new Map<string, HTMLElement>();
   private groups = new Map<string, HTMLElement>();
-  private unnamedGroups=new Map<string,{details:HTMLDetailsElement;summary:HTMLElement;list:HTMLElement}>();
   private hosts = new Map<HTMLElement, () => void>();
   private widths = new Map<HTMLElement, number>();
   private dragging?: string;
@@ -26,13 +25,25 @@ export class TabStrip {
   private captions = new ConversationCaptions();
   private observer: ResizeObserver;
   private heading: HTMLElement;
+  private sectionBody: HTMLElement;
+  private sectionToggle: HTMLButtonElement;
+  private count: HTMLElement;
+  private attention: HTMLElement;
   private destroyed = false;
   private hooks: TabHooks;
   private regions: TabRegions;
   constructor(hooks: TabHooks, regions: TabRegions) {
     this.hooks = hooks; this.regions = regions;
-    const doc = regions.conversations.ownerDocument; this.heading = doc.createElement('h2'); this.heading.className = 'conversation-heading'; this.heading.textContent = 'OPEN';
-    regions.conversations.setAttribute('aria-label', 'Open conversations and files'); regions.conversations.append(this.heading);
+    const doc = regions.conversations.ownerDocument;
+    this.heading = doc.createElement('div'); this.heading.className = 'nav-heading-row';
+    const label = doc.createElement('h2'); label.className = 'nav-heading';
+    this.sectionToggle = doc.createElement('button'); this.sectionToggle.id = 'tabs-heading'; this.sectionToggle.className = 'section-toggle'; this.sectionToggle.type = 'button'; this.sectionToggle.textContent = 'TABS';
+    this.sectionToggle.setAttribute('aria-label', 'Open tabs'); this.sectionToggle.setAttribute('aria-controls', 'tabs-section-body'); this.sectionToggle.setAttribute('aria-expanded', 'true');
+    this.count = doc.createElement('span'); this.count.className = 'count'; this.count.hidden = true;
+    this.attention = doc.createElement('span'); this.attention.className = 'tabs-attention'; this.attention.hidden = true;
+    this.sectionToggle.append(this.count, this.attention); this.sectionToggle.addEventListener('click', () => this.hooks.section?.toggle()); label.append(this.sectionToggle); this.heading.append(label);
+    this.sectionBody = doc.createElement('div'); this.sectionBody.id = 'tabs-section-body'; this.sectionBody.className = 'section-body';
+    regions.conversations.setAttribute('aria-label', 'Open tabs'); regions.conversations.append(this.heading, this.sectionBody);
     this.observer = new ResizeObserver(() => {
       if (this.destroyed) return;
       this.fitStatuses();
@@ -72,7 +83,7 @@ export class TabStrip {
     panes.forEach((pane, paneIndex) => {
       const region = regions.find(region => region.id === pane.id); if (!region) throw new Error(`Missing tab region for pane ${pane.id}.`);
       const host = region.tabs; const group = this.group(pane.id); const title = group.querySelector<HTMLElement>('.conversation-group-title'); if (title) {title.textContent = `Pane ${paneIndex + 1}`; title.hidden = panes.length === 1;}
-      if (this.regions.conversations.children[paneIndex + 1] !== group) this.regions.conversations.insertBefore(group, this.regions.conversations.children[paneIndex + 1] ?? null);
+      if (this.sectionBody.children[paneIndex] !== group) this.sectionBody.insertBefore(group, this.sectionBody.children[paneIndex] ?? null);
       const list = group.querySelector<HTMLElement>('.conversation-list'); if (!list) return;
       pane.tabs.forEach((tab, index) => {
         const key = tabKey(tab); let node = this.nodes.get(key); if (!node) {node = this.create(key); this.nodes.set(key, node); this.observer.observe(node);}
@@ -84,14 +95,23 @@ export class TabStrip {
       host.dataset.sole = String(pane.tabs.length === 1);
       host.tabIndex = pane.tabs.length ? -1 : 0; host.dataset.focused = String(layout.focusedPane === pane.id);
     });
-    this.heading.hidden = !tabs.length;
+    this.renderSection(tabs);
     for (const pane of panes) {const group = this.groups.get(pane.id); if (group) group.hidden = !pane.tabs.length;}
     this.fitStatuses(); if (reveal) this.revealActive();
     if (hadFocus) { if (focused && [...regions.map(region => region.tabs), this.regions.conversations].some(host => host.contains(focused))) focused.focus({preventScroll: true}); else this.focusActive(); }
   }
+  private renderSection(tabs: readonly ConversationTab[]): void {
+    const collapsed = this.hooks.section?.collapsed() === true;
+    this.sectionBody.hidden = collapsed; this.sectionToggle.setAttribute('aria-expanded', String(!collapsed));
+    this.regions.conversations.dataset.collapsed = String(collapsed);
+    this.count.textContent = String(tabs.length); this.count.hidden = !collapsed;
+    const needs = tabs.flatMap(tab => {const attention = this.hooks.status(tab).attention; return attention ? [attention] : [];});
+    this.attention.textContent = needs.length ? ` · ${needs.length} ${needs.length === 1 ? 'needs' : 'need'} you` : '';
+    this.attention.hidden = !collapsed || !needs.length; this.attention.dataset.tone = needs.some(item => item.tone === 'error') ? 'error' : 'warning';
+  }
   private pruneNodes(keys: Set<string>, paneIds: Set<string>): void {
     for (const [key, node] of this.nodes) if (!keys.has(key)) {this.observer.unobserve(node); node.remove(); this.nodes.delete(key); this.rows.get(key)?.remove(); this.rows.delete(key); if (this.dragging === key) this.clearDrag();}
-    for (const [id, group] of this.groups) if (!paneIds.has(id)) {group.remove(); this.groups.delete(id);this.unnamedGroups.delete(id);}
+    for (const [id, group] of this.groups) if (!paneIds.has(id)) {group.remove(); this.groups.delete(id);}
   }
   private syncHosts(regions: TabRegion[]): void {
     for (const [host, cleanup] of this.hosts) if (!regions.some(region => region.tabs === host)) {cleanup(); this.observer.unobserve(host); this.hosts.delete(host); this.widths.delete(host);}
@@ -167,42 +187,43 @@ export class TabStrip {
     const doc = this.regions.conversations.ownerDocument; group = doc.createElement('div'); group.className = 'conversation-group'; group.dataset.paneId = id;
     const heading = doc.createElement('h3'); heading.className = 'conversation-group-title'; const list = doc.createElement('div'); list.className = 'conversation-list'; group.append(heading, list); this.groups.set(id, group); return group;
   }
-  private unnamedGroup(id:string):{details:HTMLDetailsElement;summary:HTMLElement;list:HTMLElement}{
-    let group=this.unnamedGroups.get(id);if(group)return group;
-    const doc=this.regions.conversations.ownerDocument,details=doc.createElement('details'),summary=doc.createElement('summary'),list=doc.createElement('div');
-    details.className='unnamed-conversations';list.className='conversation-list';details.append(summary,list);group={details,summary,list};this.unnamedGroups.set(id,group);return group;
-  }
   private sidebarRows(list:HTMLElement,pane:string,tabs:readonly ConversationTab[],active:string|null,focused:boolean,controls:string):void{
-    const visible:HTMLElement[]=[],unnamed:HTMLElement[]=[],group=this.unnamedGroup(pane);
-    for(const tab of tabs){const key=tabKey(tab),row=this.conversationRow(tab,controls);row.dataset.paneId=pane;row.setAttribute('aria-current',String(key===active&&focused));
-      if(key!==active&&this.hooks.unnamed?.(tab))unnamed.push(row);else visible.push(row);
-    }
-    group.summary.textContent=`${unnamed.length} unnamed ${unnamed.length===1?'conversation':'conversations'}`;
-    if(unnamed.length)visible.push(group.details);
-    this.placeSidebarRows(list,visible);this.placeSidebarRows(group.list,unnamed);
+    const rows = tabs.map(tab => {const key=tabKey(tab),row=this.conversationRow(tab,controls);row.dataset.paneId=pane;row.setAttribute('aria-current',String(key===active&&focused)); return row;});
+    this.placeSidebarRows(list,rows);
   }
   private placeSidebarRows(parent:HTMLElement,nodes:readonly HTMLElement[]):void{
     nodes.forEach((node,at)=>{if(parent.children[at]!==node)parent.insertBefore(node,parent.children[at]??null);});
     const wanted=new Set<Element>(nodes);for(const node of [...parent.children])if(!wanted.has(node))node.remove();
   }
-  private conversationRow(tab: ConversationTab, controls: string): HTMLButtonElement {
+  private conversationRow(tab: ConversationTab, controls: string): HTMLElement {
     const key = tabKey(tab); let row = this.rows.get(key);
-    if (!row) {const doc = this.regions.conversations.ownerDocument; row = doc.createElement('button'); row.type = 'button'; row.className = 'conversation-row'; row.dataset.tabKey = key;
-      for (const name of ['name', 'identity', 'state']) {const span = doc.createElement('span'); span.className = `conversation-${name}`; row.append(span);}
-      row.addEventListener('click', () => this.activate(key)); this.rows.set(key, row);}
-    const status = this.hooks.status(tab); const label = this.hooks.label(tab); const tail = this.tail(tab);
-    row.title = [label, tab.kind === 'file' ? tab.path : tab.kind === 'agent' ? tab.identity : '', status.label].filter(Boolean).join(' · '); row.setAttribute('aria-label', [label, tail, status.label].filter(Boolean).join(', ')); row.setAttribute('aria-controls', controls);
-    const state = row.querySelector<HTMLElement>('.conversation-state'); if (state) {state.textContent = status.attention?.label ?? this.conversationDot(status.glyph,status.tone); state.hidden = !state.textContent; state.title = status.label; state.dataset.tone = status.attention?.tone ?? status.tone ?? 'secondary'; state.setAttribute('aria-hidden', 'true');}
+    if (!row) {row = this.createConversationRow(key); this.rows.set(key, row);}
+    const status = this.hooks.status(tab); const label = this.hooks.label(tab); const tail = this.tail(tab), word = status.rowLabel ?? status.label;
+    row.title = [label, word, tab.kind === 'file' ? tab.path : tab.kind === 'agent' ? tab.identity : ''].filter(Boolean).join('\n'); row.setAttribute('aria-label', [label, tail, word].filter(Boolean).join(', ')); row.setAttribute('aria-controls', controls);
+    const state = row.querySelector<HTMLElement>('.conversation-state'); if (state) {state.textContent = word; state.hidden = !word; state.title = word; state.dataset.tone = status.attention?.tone ?? status.tone ?? 'secondary'; state.setAttribute('aria-hidden', 'true');}
     const caption = row.querySelector<HTMLElement>('.conversation-name'); if (caption) caption.textContent = label;
     const identity = row.querySelector<HTMLElement>('.conversation-identity'); if (identity) {identity.textContent = tail ?? ''; identity.hidden = !tail; identity.title = tab.kind === 'agent' ? `Agent ID: ${tab.identity}` : '';}
+    const close = row.querySelector<HTMLElement>('.conversation-row-close'); if (close) {close.setAttribute('aria-label', `Close ${label} tab`); close.title = `Close ${label} tab`;}
     return row;
   }
-  private conversationDot(glyph?:string,tone?:string):string{return glyph==='•'||tone==='info'||tone==='error'?'•':'';}
+  private createConversationRow(key: string): HTMLElement {
+    const doc = this.regions.conversations.ownerDocument, row = doc.createElement('div'); row.className = 'conversation-row'; row.dataset.tabKey = key; row.tabIndex = 0; row.setAttribute('role', 'button');
+    for (const name of ['name', 'identity', 'state']) {const span = doc.createElement('span'); span.className = `conversation-${name}`; row.append(span);}
+    const close = doc.createElement('button'); close.type = 'button'; close.className = 'conversation-row-close'; close.append(cardIcon('close', doc));
+    const remove = () => {if (this.owner(key)) this.hooks.close(key);};
+    close.addEventListener('click', event => {event.stopPropagation(); remove();}); row.append(close);
+    row.addEventListener('click', () => this.activate(key));
+    row.addEventListener('keydown', event => {
+      if (event.target === close || event.ctrlKey || event.metaKey || event.isComposing) return;
+      if (event.key === 'Delete' || event.key === 'Backspace') {event.preventDefault(); remove(); this.focusActive();}
+      else if (event.key === 'Enter' || event.key === ' ') {event.preventDefault(); if (!event.repeat) this.activate(key);}
+    }); return row;
+  }
   private clearDrag(): void {this.dragging = undefined; for (const node of this.nodes.values()) node.classList.remove('tab-dragging', 'tab-drop-target');}
   destroy(): void {
     if (this.destroyed) return; this.destroyed = true; this.observer.disconnect();
-    for (const cleanup of this.hosts.values()) cleanup(); for (const node of this.nodes.values()) node.remove(); for (const group of this.groups.values()) group.remove(); this.heading.remove();
-    this.hosts.clear(); this.nodes.clear(); this.rows.clear(); this.groups.clear();this.unnamedGroups.clear(); this.widths.clear(); this.dragging = undefined;
+    for (const cleanup of this.hosts.values()) cleanup(); for (const node of this.nodes.values()) node.remove(); for (const group of this.groups.values()) group.remove(); this.heading.remove(); this.sectionBody.remove();
+    this.hosts.clear(); this.nodes.clear(); this.rows.clear(); this.groups.clear(); this.widths.clear(); this.dragging = undefined;
   }
 }
 /** Reveal only the local strip; do not scroll ancestors or change editor focus. */

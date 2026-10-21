@@ -1169,14 +1169,14 @@ test('the operator session labels its own user turns You and no visible text nam
 test('a sender without a public name shows the loaded conversation caption, never a raw identity', () => {
   setup(); const view = new Transcript('primary', {presentation: () => {}, reading: () => {}, subject: () => ({text: 'Web UI lead · task 96', open: () => {}}), operatorInput: true});
   view.set([communicationEntry('ready', 'Body', '')]); flush(); const heading = node('primary-transcript').querySelector('.communication-sender'); assert.ok(heading);
-  assert.equal(heading.textContent, 'Web UI lead · task 96'); assert.equal(heading.title, '10000000-0000-4000-8000-000000000001'); view.reset();
+  assert.equal(heading.textContent, 'Report · Web UI lead · task 96'); assert.equal(heading.title, '10000000-0000-4000-8000-000000000001'); view.reset();
   const unnamed = new Transcript('primary', {presentation: () => {}, reading: () => {}, subject: () => ({text: 'Unnamed conversation', open: () => {}})});
-  unnamed.set([communicationEntry('ready', 'Body', '')]); flush(); assert.equal(node('primary-transcript').querySelector('.communication-sender')?.textContent, 'Conversation 10000000'); unnamed.reset();
+  unnamed.set([communicationEntry('ready', 'Body', '')]); flush(); assert.equal(node('primary-transcript').querySelector('.communication-sender')?.textContent, 'Report · Conversation 10000000'); unnamed.reset();
 });
 test('a derived child caption labels a sender without a name and keeps the identity in the title', () => {
   setup(); const view = new Transcript('primary', {presentation: () => {}, reading: () => {}, subject: identity => ({text: 'Web UI manager · 22260', derived: true, title: identity})});
   view.set([communicationEntry('ready', 'Body', '')]); flush(); const heading = node('primary-transcript').querySelector('.communication-sender'); assert.ok(heading);
-  assert.equal(heading.textContent, 'Web UI manager · 22260'); assert.equal(heading.title, '10000000-0000-4000-8000-000000000001'); view.reset();
+  assert.equal(heading.textContent, 'Report · Web UI manager · 22260'); assert.equal(heading.title, '10000000-0000-4000-8000-000000000001'); view.reset();
 });
 test('response stop states remain visible without a supplied error message', () => {
   setup(); const view = transcript();
@@ -2550,8 +2550,8 @@ test('a check-in or thread notice is one row that discloses the full card and ke
   const card = node('primary-transcript').querySelector('.communication-card'); assert.ok(card);
   const toggle = card.querySelector('.communication-toggle'); const body = card.querySelector('.communication-body'); const header = card.querySelector('.communication-header'); assert.ok(toggle); assert.ok(body); assert.ok(header);
   assert.equal(toggle.tagName, 'button'); assert.equal(toggle.type, 'button'); assert.equal(card.classList.contains('communication-line'), true);
-  assert.equal(toggle.querySelector('.communication-sender')?.textContent, 'Peer'); assert.equal(toggle.querySelector('.communication-line-kind')?.textContent, 'check-in'); assert.equal(toggle.querySelector('.communication-line-preview')?.textContent, 'Awaiting \u00b7 run 2734');
-  assert.equal(toggle.attributes['aria-label'], 'Peer, check-in, Awaiting \u00b7 run 2734'); assert.equal(toggle.attributes['aria-expanded'], 'false'); assert.equal(body.hidden, true);
+  assert.equal(toggle.querySelector('.communication-sender-name')?.textContent, 'Peer'); assert.equal(toggle.querySelector('.communication-line-kind')?.textContent, 'still working · 0s'); assert.equal(toggle.querySelector('.communication-line-preview')?.textContent, 'Awaiting \u00b7 run 2734');
+  assert.equal(toggle.attributes['aria-label'], 'Peer, still working · 0s, Awaiting \u00b7 run 2734'); assert.equal(toggle.attributes['aria-expanded'], 'false'); assert.equal(body.hidden, true);
   assert.equal(toggle.parentNode, header); assert.equal(header.querySelector('.message-actions')?.querySelector('.message-menu')?.attributes['aria-label'], 'Message actions');
   toggle.focus(); toggle.click(); flush();
   assert.equal(body.hidden, false); assert.equal(toggle.attributes['aria-expanded'], 'true'); assert.equal(fakeDocument.activeElement, toggle);
@@ -2601,11 +2601,12 @@ test('communication keeps sender and text at rest and opens one hidden Source fr
   setup(); const view = transcript(); const source = communicationEntry(); const message = source.messages?.[0]; assert.ok(message); message.error = 'Synthetic message error'; view.set([source]); flush();
   const card = node('primary-transcript').querySelector('.communication-card'); assert.ok(card);
   const region = card.querySelector('.message-source'); const menu = card.querySelector('.message-menu'); assert.ok(region); assert.ok(menu);
-  assert.equal(card.querySelector('.communication-sender')?.textContent, 'Peer'); assert.equal(card.querySelector('.communication-text')?.textContent, 'Actual contribution');
+  assert.equal(card.querySelector('.communication-sender')?.textContent, 'Report · Peer'); assert.equal(card.querySelector('.communication-text')?.textContent, 'Actual contribution');
   assert.equal(card.querySelector('.response-error-summary')?.textContent, 'The response failed.');
   assert.equal(card.querySelector('.message-error')?.querySelector('details')?.open, false);
   assert.equal(card.querySelector('.message-error')?.querySelector('pre')?.textContent, 'Synthetic message error');
-  for (const selector of ['.communication-kind', '.communication-time', '.communication-trust', '.communication-copy', '.timestamp']) assert.equal(card.querySelector(selector), null);
+  assert.equal(card.querySelector('.communication-kind')?.textContent, 'Report');
+  for (const selector of ['.communication-time', '.communication-trust', '.communication-copy', '.timestamp']) assert.equal(card.querySelector(selector), null);
   assert.equal(region.tagName, 'section'); assert.equal(region.attributes.role, 'region'); assert.equal(region.attributes['aria-label'], 'Source'); assert.equal(region.hidden, true); assert.equal(Reflect.get(region, 'inert'), true); assert.equal(region.querySelector('summary'), null); assert.equal(region.querySelector('pre'), null);
   assert.equal(menu.textContent, 'Message actions'); assert.equal(menu.attributes['aria-label'], 'Message actions');
   messageAction(card, 'Source').run?.(); assert.equal(region.hidden, false); assert.equal(Reflect.get(region, 'inert'), false); assert.match(region.textContent, /Original transport paragraph/);
@@ -2630,9 +2631,9 @@ test('communication headers use supplied identities rather than missing-name pro
   setup(); const view = transcript(); const source = communicationEntry('ready', 'Body', ''); view.set([source]); flush();
   const card = node('primary-transcript').querySelector('.communication-card'); assert.ok(card);
   const heading = card.querySelector('.communication-sender'); assert.ok(heading);
-  assert.equal(heading.textContent, 'Conversation 10000000'); assert.equal(heading.title, '10000000-0000-4000-8000-000000000001');
+  assert.equal(heading.textContent, 'Report · Conversation 10000000'); assert.equal(heading.title, '10000000-0000-4000-8000-000000000001');
   assert.doesNotMatch(heading.textContent, /unavailable/);
-  view.set([communicationEntry()]); flush(); assert.equal(card.querySelector('.communication-sender'), heading); assert.equal(heading.textContent, 'Peer');
+  view.set([communicationEntry()]); flush(); assert.equal(card.querySelector('.communication-sender'), heading); assert.equal(heading.textContent, 'Report · Peer');
   assert.equal(heading.title, '10000000-0000-4000-8000-000000000001'); view.reset();
 });
 test('unverified marker opens Source without inventing a sender and Copy keeps literal retained bytes', async () => {
@@ -2666,8 +2667,8 @@ test('communication presents the message with one lazy retained Source disclosur
   setup(); const view = transcript(); view.set([communicationEntry()]); flush();
   const article = node('primary-transcript').querySelector('.communication-card'); assert.ok(article);
   const header = article.querySelector('.communication-header'); const actions = article.querySelector('.message-actions'); const text = article.querySelector('.communication-text'); const source = article.querySelector('.message-source'); assert.ok(header); assert.ok(actions); assert.ok(text); assert.ok(source);
-  assert.equal(article.querySelector('.communication-sender')?.textContent, 'Peer'); assert.equal(text.textContent, 'Actual contribution');
-  assert.equal(article.querySelector('.communication-kind'), null); assert.equal(article.querySelector('.communication-trust'), null); assert.equal(header.querySelector('time'), null); assert.equal(actions.querySelector('.communication-copy'), null);
+  assert.equal(article.querySelector('.communication-sender')?.textContent, 'Report · Peer'); assert.equal(text.textContent, 'Actual contribution');
+  assert.equal(article.querySelector('.communication-kind')?.textContent, 'Report'); assert.equal(article.querySelector('.communication-trust'), null); assert.equal(header.querySelector('time'), null); assert.equal(actions.querySelector('.communication-copy'), null);
   assert.equal(actions.querySelector('.message-menu')?.attributes['aria-label'], 'Message actions');
   assert.equal(source.hidden, true); assert.equal(Reflect.get(source, 'inert'), true); assert.equal(article.querySelectorAll('.message-source').length, 1); assert.equal(source.querySelector('summary'), null); assert.equal(source.querySelector('pre'), null); assert.doesNotMatch(text.textContent, /Completeness|Communication|Original transport/);
   messageAction(article, 'Source').run?.(); flush(); assert.equal(source.hidden, false); assert.equal(Reflect.get(source, 'inert'), false); assert.match(source.textContent, /Message kindreport/); assert.match(source.textContent, /Ordinary custom message/); assert.match(source.textContent, /2023-11-14T22:13:20.000Z/); assert.match(source.textContent, /Completeness not reported/); assert.match(source.textContent, /Original transport paragraph/); assert.match(source.textContent, /Structured source details/);
@@ -2683,11 +2684,11 @@ test('native communication kinds and trust exceptions use only supplied facts', 
     {format: 'agent.communication/1', sender: {identity: '10000000-0000-4000-8000-000000000001'}, body: {text: 'Message', complete: true, redacted: false}, recordedAt: 0, kind: 'result', metadata: {status: 'unanswered', references: [], omittedReferences: 0, reason: 'No retained answer'}},
     {format: 'agent.communication/1', sender: {identity: '10000000-0000-4000-8000-000000000001'}, body: {text: 'Message', complete: true, redacted: false}, recordedAt: 0, kind: 'check-in', metadata: {sourceId: 'source', producerRequestId: 'request', elapsedMs: 0, origin: 'model'}}
   ];
-  const kinds = ['notice', 'report', 'result', 'result', 'check-in']; let original: FakeNode | undefined;
+  const kinds = ['notice', 'report', 'result', 'result', 'check-in']; const labels = ['Thread notice', 'Report', 'Result', 'No answer', 'Still working']; let original: FakeNode | undefined;
   for (const [index, value] of variants.entries()) {
     const source = communicationEntry(); const message = source.messages?.[0]; assert.ok(message); message.timestamp = 1700000000000;
     message.communication = {state: 'ready', value, origin: {kind: 'native', recordEntryId: '42', target: {mode: 'input', storageId: '20000000-0000-4000-8000-000000000001', conversationId: 7, entryId: '41', submissionId: 1, requestId: 'receiving-request'}}};
-    view.set([source]); flush(); const card = node('primary-transcript').querySelector('.communication-card'); assert.ok(card); original ??= card; assert.equal(card, original); assert.equal(card.querySelector('.communication-kind'), null); assert.equal(card.querySelector('.tool-card'), null);
+    view.set([source]); flush(); const card = node('primary-transcript').querySelector('.communication-card'); assert.ok(card); original ??= card; assert.equal(card, original); assert.equal(card.querySelector('.communication-kind')?.textContent, labels[index]); assert.equal(card.querySelector('.tool-card'), null);
     assert.equal(card.querySelector('.communication-trust'), null); assert.equal(card.querySelector('.communication-unverified')?.hidden, true);
     if (index === 1) assert.match(messageAction(card, 'Copy').description ?? '', /incomplete text/);
     assert.equal(card.querySelectorAll('time').length, 0); assert.equal(card.querySelector('.message-actions')?.querySelector('.timestamp'), null);
@@ -2712,10 +2713,10 @@ test('Source restores one target-local disclosure and preserves transport loss w
 });
 test('non-ready associations show literal previews without promoting sender or kind claims', () => {
   setup(); const view = transcript(); view.set([communicationEntry('ready', '', '')]); flush(); const article = node('primary-transcript').querySelector('.communication-card'); assert.ok(article);
-  assert.equal(article.querySelector('.communication-sender')?.textContent, 'Conversation 10000000'); assert.equal(messageAction(article, 'Copy').enabled, false);
+  assert.equal(article.querySelector('.communication-sender')?.textContent, 'Report · Conversation 10000000'); assert.equal(messageAction(article, 'Copy').enabled, false);
   const actions = article.querySelector('.message-actions');
   for (const state of ['unresolved', 'unavailable'] as const) {
-    view.set([communicationEntry(state)]); flush(); assert.equal(article.dataset.state, state); assert.equal(article.querySelector('.communication-sender')?.textContent, ''); assert.equal(article.querySelector('.communication-sender')?.hidden, true); assert.equal(article.querySelector('.communication-unverified')?.attributes['aria-label'], 'Source unverified'); assert.equal(article.querySelector('.communication-unverified')?.hidden, false); assert.equal(article.querySelector('.communication-kind'), null); assert.equal(article.querySelector('.communication-copy'), null); assert.match(messageAction(article, 'Copy').description ?? '', /source unverified/); assert.equal(article.querySelector('.message-actions'), actions);
+    view.set([communicationEntry(state)]); flush(); assert.equal(article.dataset.state, state); assert.equal(article.querySelector('.communication-sender')?.textContent, ''); assert.equal(article.querySelector('.communication-sender')?.hidden, true); assert.equal(article.querySelector('.communication-unverified')?.attributes['aria-label'], 'Source unverified'); assert.equal(article.querySelector('.communication-unverified')?.hidden, false); assert.equal(article.querySelector('.communication-kind')?.textContent, ''); assert.equal(article.querySelector('.communication-copy'), null); assert.match(messageAction(article, 'Copy').description ?? '', /source unverified/); assert.equal(article.querySelector('.message-actions'), actions);
     assert.equal(article.querySelector('.communication-text')?.textContent, 'Original transport paragraph'); assert.equal(article.querySelector('.communication-text')?.classList.contains('communication-quoted'), true);
   }
   const unavailable = communicationEntry('unavailable'); const message = unavailable.messages?.[0]; assert.ok(message); message.communication = {state: 'unavailable', reason: 'limit'}; message.timestamp = 0; message.parts = [{type: 'text', text: '<b>literal</b>\n'.repeat(100)}]; view.set([unavailable]); flush();

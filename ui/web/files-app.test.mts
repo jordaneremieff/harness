@@ -182,7 +182,7 @@ test('explicit session completion selects its exact Primary while ordinary refre
   byId('modal').showModal();const completed = app.capturePrimarySelection();
   for (const name of ['scroll','select']) for (const handler of documentHandlers.get(name) ?? []) handler({isTrusted:true,target:primaryControl('editor')});
   await completed('returned');assert.equal(app.state.workspace?.primaryKey,'returned');assert.equal(activeTab(currentLayout())?.kind,'primary');byId('modal').close();
-  assert.equal(hostDocument.activeElement?.getAttribute('aria-label'),'Message Primary');
+  assert.equal(hostDocument.activeElement?.getAttribute('aria-label'),'Message Pi');
 });
 for (const change of ['selection','workspace','cancel','input'] as const) test(`session completion preserves a later ${change}`,async context=> {
   fileTransport(context);const target = {kind:'primary' as const,key:'p',epoch:912},tab:FileTab = {kind:'file',rootId:'root',path:'retained.md'};

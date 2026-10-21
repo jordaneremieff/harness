@@ -44,7 +44,7 @@ function fixture(tabs: ConversationTab[] = [{kind:'primary'}, {kind:'agent',iden
   strip.render(); const root = (id='pane-1') => {const host=hosts.get(id); assert.ok(host); return host;};
   const set = (next:PaneLayout) => {layout=next; strip.render();};
   const split = (id='pane-1',axis:'x'|'y'='x',key?:string) => set(splitPane(layout,id,axis,{width:1400,height:1000,divider:4},key));
-  const rows = () => conversations.children.filter(node=>node.className==='conversation-group').flatMap(group=>group.querySelector('.conversation-list')?.children ?? []);
+  const rows = () => (conversations.querySelector('.section-body')?.children ?? []).filter(node=>node.className==='conversation-group').flatMap(group=>group.querySelector('.conversation-list')?.children ?? []);
   return {doc,strip,root,hosts,conversations,overflow,calls,moves,rows,layout:()=>layout,set,split};
 }
 test('retained tabs preserve identity, accessible target controls and selected state through repaint', () => {
@@ -69,7 +69,7 @@ test('sidebar rows retain nodes and exact routing when tabs cross groups', () =>
   const f=fixture(); const original=f.rows(); const b=original[2]; f.split('pane-1','x','agent:b'); assert.ok(b);
   assert.ok(f.rows().includes(b)); assert.equal(b.dataset.paneId,'pane-2'); assert.equal(b.attributes.get('aria-controls'),'content-pane-2');
   f.set(movePaneTab(f.layout(),'agent:b','pane-1',0)); assert.ok(f.rows().includes(b)); assert.equal(b.dataset.paneId,'pane-1');
-  event(b,'click'); assert.deepEqual(f.calls.at(-1),'pane-1:agent:b'); assert.equal(f.conversations.children.filter(node=>node.className==='conversation-group').length,1);
+  event(b,'click'); assert.deepEqual(f.calls.at(-1),'pane-1:agent:b'); assert.equal(f.conversations.querySelector('.section-body')?.children.filter(node=>node.className==='conversation-group').length,1);
 });
 test('close-button and sidebar focus survive a move of their retained nodes', () => {
   const f=fixture(); const node=f.root().children[2]; const close=node?.querySelector('.tab-close'); assert.ok(node); assert.ok(close); close.focus();
@@ -105,24 +105,24 @@ test('toolbar steps address only the requested pane and stop at its tab boundari
 test('sidebar text status keeps authored labels and retained nodes through repaint', () => {
   let status: ReturnType<TabHooks['status']> = {label: 'Ready', glyph: '✓', tone:'success'}; const f = fixture(undefined, {status: () => status});
   const row = f.rows()[0]; const state = row?.querySelector('.conversation-state'); assert.ok(row); assert.ok(state);
-  assert.equal(state.hidden, true); assert.equal(state.children.length, 0);
+  assert.equal(state.hidden, false); assert.equal(state.textContent, 'Ready'); assert.equal(state.children.length, 0);
   f.strip.render(); assert.equal(row.querySelector('.conversation-state'), state);
   status = {label: 'Working · Read', glyph: '●', tone:'info'}; f.strip.render();
-  assert.equal(f.rows()[0], row); assert.equal(state.children.length, 0); assert.equal(state.textContent, '•'); assert.equal(state.hidden, false);
+  assert.equal(f.rows()[0], row); assert.equal(state.children.length, 0); assert.equal(state.textContent, 'Working · Read'); assert.equal(state.hidden, false);
   assert.equal(state.title, 'Working · Read'); assert.match(row.attributes.get('aria-label') ?? '', /Working · Read/);
   assert.equal(f.root().children[0]?.querySelector('.tab-dot')?.dataset.tone, 'info');
 });
 test('tabs and sidebar marks carry explicit semantic tones without interpreting glyphs or words',()=> {
   for(const tone of ['info','success','warning','error','secondary'] as const) {const f=fixture([{kind:'agent',identity:'exact'}],{label:()=> 'Agent',status:()=>({label:'Same words',glyph:'?',tone})});assert.equal(f.root().children[0]?.querySelector('.tab-dot')?.dataset.tone,tone);assert.equal(f.rows()[0]?.querySelector('.conversation-state')?.dataset.tone,tone);assert.equal(f.root().children[0]?.querySelector('.tab-identity')?.textContent,'');event(f.rows()[0],'click');assert.equal(f.calls.at(-1),'pane-1:agent:exact');f.strip.destroy();}
 });
-test('attention words and tones replace marks without changing tab or OPEN order',()=>{
+test('attention words and tones replace marks without changing tab or Tabs order',()=>{
   let attention = true;
   const labels = ['Question','Blocked','Failed','Not reachable'] as const;
   const tabs: ConversationTab[] = [{kind:'primary'},...['a','b','c'].map(identity=>({kind:'agent' as const,identity}))];
   const f = fixture(tabs,{status:tab=>{const at=tabs.findIndex(value=>tabKey(value)===tabKey(tab)),label=labels[at] ?? 'Question';return {label,glyph:'?',tone:'secondary',...(attention?{attention:{label,tone:label==='Failed'?'error':'warning'}}:{})};}});
   for(const enabled of [true,false,true]){
     attention=enabled;f.strip.render();assert.deepEqual(f.rows().map(row=>row.dataset.tabKey),tabs.map(tabKey));assert.deepEqual(f.root().children.map(node=>node.dataset.tabKey),tabs.map(tabKey));
-    labels.forEach((label,at)=>{const mark=f.root().children[at]?.querySelector('.tab-dot'),state=f.rows()[at]?.querySelector('.conversation-state');assert.equal(mark?.textContent,enabled?label:'');assert.equal(state?.textContent,enabled?label:'');assert.equal(mark?.dataset.tone,enabled?(label==='Failed'?'error':'warning'):'secondary');});
+    labels.forEach((label,at)=>{const mark=f.root().children[at]?.querySelector('.tab-dot'),state=f.rows()[at]?.querySelector('.conversation-state');assert.equal(mark?.textContent,enabled?label:'');assert.equal(state?.textContent,label);assert.equal(mark?.dataset.tone,enabled?(label==='Failed'?'error':'warning'):'secondary');});
   }
   f.strip.destroy();
 });
@@ -165,11 +165,12 @@ test('destroy releases observer and strip drop handlers exactly once and never c
   assert.equal(event(root,'dragover').defaultPrevented,false); observer.resize(); f.strip.render(); assert.equal(root.children.length,0);
 });
 test('Tabs stays separate from catalogs and empty pane groups have no visible heading', () => {
-  const f = fixture([]), heading = f.conversations.querySelector('.conversation-heading'); assert.ok(heading);
-  assert.equal(heading.textContent, 'OPEN'); assert.equal(heading.hidden, true);
-  assert.ok(f.conversations.children.filter(node => node.className === 'conversation-group').every(node => node.hidden));
+  const f = fixture([]), heading = f.conversations.querySelector('.nav-heading-row'), body = f.conversations.querySelector('.section-body'); assert.ok(heading); assert.ok(body);
+  const toggle = heading.querySelector('.nav-heading')?.querySelector('.section-toggle'); assert.ok(toggle);
+  assert.equal(toggle.textContent, 'TABS'); assert.equal(toggle.attributes.get('aria-label'), 'Open tabs'); assert.equal(heading.hidden, false);
+  assert.ok(body.children.filter(node => node.className === 'conversation-group').every(node => node.hidden));
   f.set(createPaneLayout([{kind: 'primary'}])); assert.equal(heading.hidden, false); assert.equal(f.rows().length, 1);
-  assert.equal(f.conversations.attributes.get('aria-label'), 'Open conversations and files');
+  assert.equal(f.conversations.attributes.get('aria-label'), 'Open tabs');
 });
 test('strip reveal uses only the nearest hidden edge', () => {
   assert.equal(revealTabScroll(0,200,0,1500),0); assert.equal(revealTabScroll(300,200,0,1500),0);

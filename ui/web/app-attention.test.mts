@@ -23,11 +23,11 @@ test('Question clears on answered, cancelled and expired facts and ignores anoth
   for(const reason of ['answered','cancelled','timeout'] as const){
     const primary=primaryFixture({epoch:9200,activity:'idle',pendingDialogs:[{id:reason,method:'confirm',title:'Continue?'}]}),target={kind:'primary' as const,key:primary.key,epoch:primary.epoch};
     await arrive({workspace:{id:`question-${reason}`,revision:1,primaryKey:primary.key,conversationLayout:singlePane()},primaries:[primary],roster:[],targets:[targetFixture(`question-${reason}`,target)]});
-    assert.equal(tab('primary').querySelector('.tab-dot')?.textContent,'Question');f.event('extension.expired',{id:reason,reason},target);await settle();assert.equal(tab('primary').querySelector('.tab-dot')?.textContent,'');assert.equal(openRow('primary').querySelector('.conversation-state')?.textContent,'');
+    assert.equal(tab('primary').querySelector('.tab-dot')?.textContent,'Question');f.event('extension.expired',{id:reason,reason},target);await settle();assert.equal(tab('primary').querySelector('.tab-dot')?.textContent,'');assert.equal(openRow('primary').querySelector('.conversation-state')?.textContent,'Ready');
   }
   const primary=primaryFixture({epoch:9201,activity:'idle'}),other=primaryFixture({key:'other',epoch:9202,activity:'idle',pendingDialogs:[{id:'other-question',method:'confirm',title:'Other Primary'}]});
   await arrive({workspace:{id:'question-other',revision:1,primaryKey:primary.key,conversationLayout:singlePane()},primaries:[primary,other],roster:[],targets:[targetFixture('question-current',{kind:'primary',key:primary.key,epoch:primary.epoch})]});
-  assert.equal(tab('primary').querySelector('.tab-dot')?.textContent,'');assert.equal(openRow('primary').querySelector('.conversation-state')?.textContent,'');
+  assert.equal(tab('primary').querySelector('.tab-dot')?.textContent,'');assert.equal(openRow('primary').querySelector('.conversation-state')?.textContent,'Ready');
 });
 test('partial Primary messages do not repaint tab status; the final message updates attention',async()=>{
   const primary=primaryFixture({epoch:9203,activity:'idle'}),target={kind:'primary' as const,key:primary.key,epoch:primary.epoch};
@@ -58,7 +58,7 @@ test('connected attention sorts before work, catalog facts never invent attentio
   const state=agentControl('composer').querySelector('.composer-state');assert.ok(state);let scrolled=false;state.scrollIntoView=()=>{scrolled=true;};
   openRow(`agent:${identity}`).click();await settle();assert.equal(scrolled,true);
   const current=app.state.agentEpochs.get(identity);assert.ok(current);f.event('agent.frame',{identity,connectionEpoch:current,frame:{...frame({busy:true}),revision:2}});await settle();
-  assert.equal(openRow(`agent:${identity}`).querySelector('.conversation-state')?.textContent,'•');assert.equal(f.byId('agents-count').textContent,'2 working');
+  assert.equal(openRow(`agent:${identity}`).querySelector('.conversation-state')?.textContent,'Working');assert.equal(f.byId('agents-count').textContent,'2 working');
 });
 
 test('an agent connection error uses Not reachable rather than catalog prose',async t=>{

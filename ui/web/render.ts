@@ -13,7 +13,7 @@ import { entryVisible, initialSettings, inputDelivery, messageAriaLabel, present
 import { cardPreviewLimits, readRange, presentResultPreview, presentToolPreview, resultPreview } from './cards.ts';
 import { thinkingExpanded } from './transcript-presentation.ts';
 import { TranscriptIndex, ToolElapsedClock, toolTime, thinkingLabel, thinkingPreview, slot, communicationDisclosureKeys } from './transcript-tools.ts';
-import { CommunicationCard, messageCopyText, messageCopyDescription } from './communication.ts';
+import { CommunicationCard, messageCopyText, messageCopyDescription, type SenderSummary } from './communication.ts';
 import type { TranscriptGroups } from './transcript-groups.ts';
 import {TranscriptRows, type StepRun} from './transcript-rows.ts';
 import {toolSentence,toolLabel,quietTextResult, type NamedDestination} from './tool-sentences.ts';
@@ -40,7 +40,7 @@ function thinkingSpans(summary: Element): {label: HTMLElement; preview: HTMLElem
   summary.replaceChildren(made.label, made.preview); return made;
 }
 const previewSuffix = (line: string): string => line ? ` · ${line}` : '';
-export type ViewHooks = {earlier?: () => void; operatorInput?: boolean; readTaskResult?: (reference:TaskReference,signal:AbortSignal)=>Promise<ResultInspection>; activity?: (text:string)=>void; cwd?: () => string | undefined; subject?: (value: string) => ToolSubjectCaption | undefined; result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView, thinking?: ThinkingChoice) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; preview?: (part: ImageView, url: string, invoker: HTMLElement) => () => void; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
+export type ViewHooks = {senderSummary?: (identity:string)=>SenderSummary|undefined; thread?: (id:string,title?:string)=>void; earlier?: () => void; operatorInput?: boolean; readTaskResult?: (reference:TaskReference,signal:AbortSignal)=>Promise<ResultInspection>; activity?: (text:string)=>void; cwd?: () => string | undefined; subject?: (value: string) => ToolSubjectCaption | undefined; result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView, thinking?: ThinkingChoice) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; preview?: (part: ImageView, url: string, invoker: HTMLElement) => () => void; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
 const RAW_LIMIT = 65536;
 /** Scrolling up within this many pixels of the first loaded row reads the next older page. */
 const EARLIER_ZONE_PX = 240;
@@ -887,7 +887,7 @@ export class Transcript {
   private updateCommunication(cached: MessageNode, message: MessageView, entryId: string): void {
     if (!cached.communication) {
       const generation = this.generation;
-      cached.communication = new CommunicationCard(cached, {inputContent:(message,root)=>this.communicationInput(cached,message,root,entryId),subject:this.hooks.subject, operatorInput:this.hooks.operatorInput, structured:display=>presentResult(display,this.presentationContext()), reply:message=>{const task=this.tasks.replies.get(message);return task?.tool?{text:this.sentence(task.tool),open:()=>this.openTaskAnswer(task)}:undefined;}, active: () => !this.deferred && generation === this.generation && cached.node.isConnected && !this.hidden() && this.index.entries.get(entryId)?.messages?.includes(cached.source) === true, current: () => cached.source, result:this.hooks.result, protected: node => this.protectedNode(node), raw: source => partText(source.parts), expanded: key => this.expanded.has(key), disclosure: (key, open) => this.sourcePreference(key, open), layout: () => this.sourceLayout(entryId), reference: this.hooks.references ? (text, active) => this.hooks.references?.render(text, active) ?? element('span', undefined, typeof text === 'string' ? text : text.text) : undefined}, communicationDisclosureKeys(entryId, message.id));
+      cached.communication = new CommunicationCard(cached, {inputContent:(message,root)=>this.communicationInput(cached,message,root,entryId),subject:this.hooks.subject,senderSummary:this.hooks.senderSummary,thread:this.hooks.thread, operatorInput:this.hooks.operatorInput, structured:display=>presentResult(display,this.presentationContext()), reply:message=>{const task=this.tasks.replies.get(message);return task?.tool?{text:this.sentence(task.tool),open:()=>this.openTaskAnswer(task)}:undefined;}, active: () => !this.deferred && generation === this.generation && cached.node.isConnected && !this.hidden() && this.index.entries.get(entryId)?.messages?.includes(cached.source) === true, current: () => cached.source, result:this.hooks.result, protected: node => this.protectedNode(node), raw: source => partText(source.parts), expanded: key => this.expanded.has(key), disclosure: (key, open) => this.sourcePreference(key, open), layout: () => this.sourceLayout(entryId), reference: this.hooks.references ? (text, active) => this.hooks.references?.render(text, active) ?? element('span', undefined, typeof text === 'string' ? text : text.text) : undefined}, communicationDisclosureKeys(entryId, message.id));
     }
     if (cached.communication.sync(message)) {
       this.messageError(cached, message);
@@ -1217,8 +1217,10 @@ export class Transcript {
     const cached = entry.messages.get(message.id) ?? this.createMessage(entry, message);
     const error = this.messageError(cached, message);
     if (this.communicationMessage(cached, message, entryId)) return cached;
-    const label = presentMessage(message, this.hooks.operatorInput).label;
+    const label = presentMessage(message, this.hooks.operatorInput, retained.head).label;
     setText(cached.heading, bounded(label, 4096)); cached.heading.hidden = !label;
+    cached.node.classList.toggle('extension-notice', message.role === 'custom');
+    cached.node.setAttribute('aria-label', bounded(messageAriaLabel(message, this.hooks.operatorInput, retained.head), 4096));
     const delivery = inputDelivery(retained);
     setText(cached.delivery, delivery ? `· ${delivery}` : ''); cached.delivery.hidden = !delivery;
     const children = this.messagePartNodes(cached, message, entryId, selected);

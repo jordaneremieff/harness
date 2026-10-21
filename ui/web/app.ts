@@ -202,7 +202,7 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
     ...(target.kind === 'primary' ? {commands: () => actions.commandOptions(), moreCommands: (captured: Target) => actions.continueCommands(captured)} : {}),
     ...agentCommandHooks(controller),
     retained: (workspace, captured) => { if (workspace === state.workspace?.id && captured.kind === 'agent') renderMessageResume(captured.identity); }});
-  controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {earlier: () => loadEarlierRows(controller), operatorInput: target.kind === 'primary', references, subject: toolSubjectCaption, readTaskResult:async(reference,signal)=>{const value=await request<AgentInspectionView>(`/api/agents/${encodeURIComponent(reference.sessionId)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',{view:'result',submissionId:reference.submissionId,...(reference.requestId?{requestId:reference.requestId}:{})},undefined,AbortSignal.any([signal,controller.abort.signal,AbortSignal.timeout(15_000)]));if(value.view!=='result')throw new Error('The task result view changed.');return value;}, activity:()=>{if (footerController === controller) renderWorkbenchStatus();}, cwd: () => target.kind === 'primary' ? state.primaries.get(target.key)?.cwd : state.roster.get(target.identity)?.cwd, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
+  controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {earlier: () => loadEarlierRows(controller), operatorInput: target.kind === 'primary', references, subject: toolSubjectCaption, senderSummary: identity => state.roster.get(identity) ?? identityNames.get(identity), thread: (id,title) => openThread({id,...(title ? {title} : {})}, controller), readTaskResult:async(reference,signal)=>{const value=await request<AgentInspectionView>(`/api/agents/${encodeURIComponent(reference.sessionId)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',{view:'result',submissionId:reference.submissionId,...(reference.requestId?{requestId:reference.requestId}:{})},undefined,AbortSignal.any([signal,controller.abort.signal,AbortSignal.timeout(15_000)]));if(value.view!=='result')throw new Error('The task result view changed.');return value;}, activity:()=>{if (footerController === controller) renderWorkbenchStatus();}, cwd: () => target.kind === 'primary' ? state.primaries.get(target.key)?.cwd : state.roster.get(target.identity)?.cwd, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
     presentation: (expanded, thinking, view, choice) => { controller.showThinking = thinking; void savePresentation(controllerCapture(controller), expanded, thinking, view, choice); },
     reading: reading => { void saveReading(controllerCapture(controller), reading); },
     ...(target.kind === 'primary' ? {fork: (message: import('../shared/api.ts').MessageView, entry: string) => { if (sameTarget(target, primaryTarget())) actions.fork(entry, rawText(message.parts)); }, output: (more: import('../shared/api.ts').OutputContinuation) => loadControllerOutput(controller, more)} : {}),
@@ -325,7 +325,8 @@ const paneSplits = new Map<string, {node: HTMLElement; handle: HTMLElement; resi
 const tabStrip = new TabStrip({layout: currentLayout, activate: activateConversationTab, close: key => applyLayout(closeTab(currentLayout(), key)),
   move: (key, pane, index) => {fileBrowse.keep(key);applyLayout(movePaneTab(currentLayout(), key, pane, index));}, label: tabLabel,unnamed:unnamedTab,keep:key=>fileBrowse.keep(key),
   identity: tab => tab.kind !== 'file' ? tabPresentation(tab).identityTail ?? '' : undefined,
-  status: tab => { if (tab.kind === 'file') {const owner = state.workspace && filesViews.owner(state.workspace.id,tab);return {label:owner?.modified ? 'Modified' : '',glyph:owner?.modified ? '•' : '',tone:owner?.modified ? 'warning' : 'secondary'};}const view = tabPresentation(tab), attention = attentionFor(controllerTarget(tab)); return {label: [attention?.label, view.activity, view.tool?.name].filter(Boolean).join(' · '), glyph: presentationGlyph(view), tone:view.tone, attention}; },
+  section: {collapsed: () => sidebarSections.tabs, toggle: () => setSidebarSection('tabs', !sidebarSections.tabs)},
+  status: tab => { if (tab.kind === 'file') {const owner = state.workspace && filesViews.owner(state.workspace.id,tab);return {label:owner?.modified ? 'Modified' : '',glyph:owner?.modified ? '•' : '',tone:owner?.modified ? 'warning' : 'secondary'};}const view = tabPresentation(tab), attention = attentionFor(controllerTarget(tab)); return {label: [attention?.label, view.activity, view.tool?.name].filter(Boolean).join(' · '), rowLabel: attention?.label ?? view.activity, glyph: presentationGlyph(view), tone:view.tone, attention}; },
   overflow: (overflow, pane) => { const region = paneRegions.get(pane); if (region) region.menu.dataset.overflow = String(overflow); }},
   {panes: () => [...paneRegions].map(([id, pane]) => ({id, tabs: pane.tabs, controls: [...controllers.values()].find(owner => stableViews().slot(owner.root) === pane.content)?.root.id ?? pane.content.id})), conversations: byId('sidebar-conversations')});
 let fileActionStatus = '';
@@ -690,16 +691,17 @@ function refreshPaneSizes(): void {
 }
 
 let sidebarSectionWorkspace = '';
-const sidebarSections = {agents: true,files:false};
-function sidebarSectionKey(section: 'agents' | 'files'): string { return `ui:sections:${state.workspace?.id ?? ''}:${section}`; }
+const sidebarSections = {tabs:false,agents: true,files:false};
+function sidebarSectionKey(section: 'tabs' | 'agents' | 'files'): string { return `ui:sections:${state.workspace?.id ?? ''}:${section}`; }
 export function renderSidebarSections(): void {
   const workspace = state.workspace?.id ?? '';
   if (sidebarSectionWorkspace !== workspace) {
     sidebarSectionWorkspace = workspace;
-    for (const section of ['agents','files'] as const) { try {const saved = sessionStorage.getItem(sidebarSectionKey(section));sidebarSections[section] = saved === null ? section === 'agents' : saved !== 'false';} catch {sidebarSections[section] = section === 'agents';} }
+    for (const section of ['tabs','agents','files'] as const) { try {const saved = sessionStorage.getItem(sidebarSectionKey(section));sidebarSections[section] = saved === null ? section === 'agents' : saved !== 'false';} catch {sidebarSections[section] = section === 'agents';} }
   }
-  for (const section of ['agents','files'] as const) {
-    byId(section === 'agents' ? 'roster-section' : 'files-section').dataset.collapsed = String(sidebarSections[section]);
+  for (const section of ['tabs','agents','files'] as const) {
+    const roots = {tabs:'sidebar-conversations', agents:'roster-section', files:'files-section'};
+    byId(roots[section]).dataset.collapsed = String(sidebarSections[section]);
     byId(`${section}-heading`).setAttribute('aria-expanded', String(!sidebarSections[section]));
     byId(`${section}-section-body`).hidden = sidebarSections[section];
   }
@@ -716,10 +718,10 @@ export function renderSectionCounts(): void {
     const count = byId(`${section}-count`); setText(count, labels[section]); count.hidden = !labels[section] || section === 'files' && !sidebarSections.files;
   }
 }
-export function setSidebarSection(section: 'agents' | 'files', collapsed: boolean): void {
+export function setSidebarSection(section: 'tabs' | 'agents' | 'files', collapsed: boolean): void {
   renderSidebarSections(); sidebarSections[section] = collapsed;
   try { sessionStorage.setItem(sidebarSectionKey(section), String(collapsed)); } catch { /* The current tab retains its in-memory section state. */ }
-  renderSidebarSections(); roster.schedule();
+  renderSidebarSections(); tabStrip.render(); roster.schedule();
 }
 export function focusAgentSearch(): void {
   setSidebarSection('agents', false); if (byId('sidebar').hidden) toggleSidebar(true); roster.focusSearch();
@@ -778,7 +780,7 @@ let captionReferenceKey = '', paintedCaptionReferenceKey = '';
 function captionReferences(): string {
   if (captionReferenceRoster !== state.roster || captionReferencePrimaries !== state.primaries) {
     captionReferenceRoster = state.roster; captionReferencePrimaries = state.primaries;
-    captionReferenceKey = JSON.stringify([[...state.roster.keys()].sort().map(identity => [identity, state.roster.get(identity)?.handle ?? null]), [...state.primaries.values()].map(value => [value.key, value.epoch, value.sessionId, presentationName(presentation({kind:'primary',key:value.key,epoch:value.epoch}))]).sort((a,b)=>String(a[0]).localeCompare(String(b[0])))]);
+    captionReferenceKey = JSON.stringify([[...state.roster.keys()].sort().map(identity => [identity, state.roster.get(identity)?.handle ?? null, state.roster.get(identity)?.model ?? null, state.roster.get(identity)?.thinkingLevel ?? null]), [...state.primaries.values()].map(value => [value.key, value.epoch, value.sessionId, presentationName(presentation({kind:'primary',key:value.key,epoch:value.epoch}))]).sort((a,b)=>String(a[0]).localeCompare(String(b[0])))]);
   }
   return captionReferenceKey;
 }

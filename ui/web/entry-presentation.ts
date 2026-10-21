@@ -8,16 +8,27 @@ function meaningfulPart(part: PartView): boolean {
   if (part.type === 'text' || part.type === 'thinking') return !!part.text.trim() || part.redacted === true || !!part.more;
   return true;
 }
+export function customNoticeLabel(head?: string): string {
+  const words = head?.replace(/[_-]+/g, ' ').trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : 'Notice';
+}
+function roleLabel(role: string, operatorInput: boolean, head?: string): string {
+  if (role === 'user') return operatorInput ? 'You' : '';
+  if (role === 'assistant') return '';
+  if (role === 'toolResult') return 'Tool output';
+  if (role === 'custom') return customNoticeLabel(head);
+  return role === 'system' ? 'Notice' : role;
+}
 /** Assistant output and incoming user-role text carry no role label; user-role text reads "You" only where the viewer is the operator's own session. */
-export function presentMessage(message: MessageView, operatorInput = false): {label: string; visible: boolean} {
-  const label = message.role === 'user' ? operatorInput ? 'You' : '' : message.role === 'assistant' ? '' : message.role === 'toolResult' ? 'Tool output' : ['custom', 'system'].includes(message.role) ? 'Notice' : message.role;
+export function presentMessage(message: MessageView, operatorInput = false, head?: string): {label: string; visible: boolean} {
+  const label = roleLabel(message.role, operatorInput, head);
   const omitted = message.coverage.truncated || message.coverage.omitted > 0 || message.coverage.complete === false;
   return {label, visible: !!message.communication || !!message.error || omitted || message.parts.some(meaningfulPart) || message.stopReason === 'error' || message.stopReason === 'aborted'};
 }
 /** The accessible name of a message article, which stays meaningful where the visible role label is empty. */
-export function messageAriaLabel(message: MessageView, operatorInput = false): string {
+export function messageAriaLabel(message: MessageView, operatorInput = false, head?: string): string {
   if (message.role === 'user') return operatorInput ? 'Your message' : 'Incoming message';
-  return message.role === 'assistant' ? 'Agent response' : `${presentMessage(message).label} message`;
+  return message.role === 'assistant' ? 'Agent response' : `${presentMessage(message, operatorInput, head).label} message`;
 }
 /** Initial settings remain available to raw inspection and Find, without a duplicate transcript line. */
 export function initialSettings(entries: readonly EntryView[], historyBeginning = true): Set<string> {

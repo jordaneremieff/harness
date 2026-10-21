@@ -72,11 +72,11 @@ test('conversation state and split width changes retain editor ancestry, draft i
     assert.deepEqual(intake.children,[attach,sources,picker]);
     // Utility rows precede the surface; the native editor and shelf retain their ancestry.
     assert.equal(intake.parentNode, line);
-    assert.equal(latest.parentNode, form.querySelector('.composer-utilities')); assert.deepEqual(meta.children, [control('state'), control('settings'), control('state-details')]);
+    assert.equal(latest.parentNode, form.querySelector('.composer-utilities')); assert.deepEqual(meta.children, [control('state'), control('state-details')]);
     assert.ok(latest.querySelector('.card-icon-latest')); assert.equal(latest.querySelector('.latest-text')?.textContent, 'Latest'); assert.equal(latest.getAttribute('aria-label'), 'Latest message');
     const utilities = form.querySelector('.composer-utilities'), recallLine = form.querySelector('.composer-recall'); assert.ok(utilities); assert.ok(recallLine);
     assert.deepEqual(utilities.children, [recallLine, latest]); assert.equal(utilities.parentNode, form);
-    assert.deepEqual(line.children, [intake, control('stop'), bar]); assert.equal(line.parentNode, surface);
+    assert.deepEqual(line.children, [intake, control('stop'), control('settings'), bar]); assert.equal(line.parentNode, surface);
     assert.equal(surface.contains(meta), false); assert.equal(surface.contains(recallLine), false);
     assert.ok(form.children.indexOf(meta) > form.children.indexOf(surface));
     assert.ok(control('model').querySelector('.card-icon-chevron')); assert.ok(control('thinking').querySelector('.card-icon-chevron'));

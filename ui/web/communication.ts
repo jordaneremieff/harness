@@ -1,4 +1,4 @@
-import type { Communication, CommunicationPresentation, JsonDisplay, MessageView } from '../shared/api.ts';
+import type { AgentRow, Communication, CommunicationPresentation, JsonDisplay, MessageView } from '../shared/api.ts';
 import type {ResultSelector} from '../shared/inspection.ts';
 import { button, copy, element, rawText, setText } from './dom.ts';
 import { cardAction, cardActionLabel } from './card-icons.ts';
@@ -10,7 +10,8 @@ import type {NamedDestination} from './tool-sentences.ts';
 import {conversationIdentityText} from './tabs.ts';
 
 type Shell = {node: HTMLElement; header: HTMLElement; heading: HTMLElement; actions: HTMLElement; body: HTMLElement};
-type Hooks = {operatorInput?: boolean; structured?: (display: JsonDisplay) => HTMLElement | undefined; inputContent?: (message:MessageView, root:HTMLElement)=>boolean; reply?: (message:MessageView)=>{text:string;open():void}|undefined; subject?: (identity:string)=>NamedDestination|undefined; result?: (identity:string,selector:ResultSelector)=>void; reference?: (query: ReferenceQuery, active: (node: HTMLElement) => boolean) => HTMLElement; active(): boolean; current(): MessageView; protected(node: HTMLElement): boolean; raw(message: MessageView): string; expanded(key: string): boolean; disclosure(key: string, open: boolean): void; layout(): void};
+export type SenderSummary = Pick<AgentRow, 'handle' | 'model' | 'thinkingLevel'>;
+type Hooks = {senderSummary?: (identity:string)=>SenderSummary|undefined; thread?: (id:string,title?:string)=>void; operatorInput?: boolean; structured?: (display: JsonDisplay) => HTMLElement | undefined; inputContent?: (message:MessageView, root:HTMLElement)=>boolean; reply?: (message:MessageView)=>{text:string;open():void}|undefined; subject?: (identity:string)=>NamedDestination|undefined; result?: (identity:string,selector:ResultSelector)=>void; reference?: (query: ReferenceQuery, active: (node: HTMLElement) => boolean) => HTMLElement; active(): boolean; current(): MessageView; protected(node: HTMLElement): boolean; raw(message: MessageView): string; expanded(key: string): boolean; disclosure(key: string, open: boolean): void; layout(): void};
 type Ready = Extract<CommunicationPresentation, {state: 'ready'}>;
 type Row = [string, string, QualifiedReference?];
 function qualified(label: string, text: string, owner: string, field: ReferenceField): Row { return [label, text, {text, owner, field}]; }
@@ -24,7 +25,20 @@ function statusLine(value: CommunicationPresentation): {kind: string; preview: s
   if (kind !== 'check-in' && kind !== 'notice') return undefined;
   const title = value.value.kind === 'notice' ? value.value.metadata.title?.trim() : undefined;
   const first = body.text.slice(0, 2048).split('\n').map(line => line.trim()).find(line => line) ?? '';
-  return {kind: kind === 'check-in' ? 'check-in' : title ? `thread notice · ${bounded(title, 80)}` : 'thread notice', preview: bounded(first, 240)};
+  return {kind: value.value.kind === 'check-in' ? `still working · ${checkInElapsed(value.value.metadata.elapsedMs)}` : title ? `thread notice · ${bounded(title, 80)}` : 'thread notice', preview: bounded(first, 240)};
+}
+export function checkInElapsed(milliseconds: number): string {
+  const seconds = Math.floor(milliseconds / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} min`;
+  return `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2, '0')} min`;
+}
+function communicationKind(value: CommunicationPresentation): string {
+  if (value.state !== 'ready') return 'Notice';
+  const item = value.value;
+  if (item.kind === 'result') return item.metadata.status === 'unanswered' ? 'No answer' : 'Result';
+  return {report:'Report', 'check-in':'Still working', notice:'Thread notice'}[item.kind];
 }
 export function messageCopyText(message: MessageView, raw: (message: MessageView) => string): string {
   return message.communication?.state === 'ready' ? message.communication.value.body.text : raw(message);
@@ -110,6 +124,12 @@ export class CommunicationCard {
   private lineMode = false;
   private lineOpen = false;
   private readonly text = element('div', 'communication-text');
+  private readonly headingKind = element('span', 'communication-kind');
+  private readonly headingSeparator = element('span', 'communication-kind-separator', ' · ');
+  private readonly headingName = element('span', 'communication-sender-name');
+  private readonly metadata = element('p', 'communication-meta');
+  private readonly noAnswer = element('p', 'warning communication-no-answer');
+  private readonly threadAction = button('Open thread', () => this.openThread(), 'communication-open-thread');
   private readonly reply = element('p','communication-reply');
   private readonly resultActions=element('div','communication-results');
   private resultSignature='';
@@ -136,8 +156,9 @@ export class CommunicationCard {
     this.shell = shell; this.hooks = hooks; this.key = keys[0]; this.lineKey = keys[1];
     this.toggle.type = 'button'; this.toggle.addEventListener('click', () => { if (this.lineMode && hooks.active()) this.setLineOpen(!this.lineOpen, true); });
     this.toggle.append(this.kindLabel, this.preview);
-    shell.node.classList.add('communication-card'); for (const name of ['user', 'tool-only', 'thinking-only']) shell.node.classList.remove(name);
+    shell.node.classList.add('communication-card'); for (const name of ['user', 'tool-only', 'thinking-only', 'extension-notice']) shell.node.classList.remove(name);
     shell.header.classList.add('communication-header'); shell.heading.classList.add('communication-sender'); shell.body.classList.add('communication-body');
+    shell.heading.replaceChildren(this.headingKind, this.headingSeparator, this.headingName);
     this.unverified = cardAction('unknown', 'Source unverified', () => this.openSource(this.unverified), 'communication-unverified');
     this.unverified.setAttribute('aria-label', 'Source unverified'); this.unverified.title = 'Source unverified';
     this.unverified.querySelector('.card-action-label')?.classList.remove('sr-only'); shell.heading.after(this.unverified);
@@ -147,7 +168,8 @@ export class CommunicationCard {
     this.inspection.append(heading); this.inspection.dataset.disclosure = this.key;
     this.inspection.setAttribute('role', 'region'); this.inspection.setAttribute('aria-label', 'Source');
     this.rawPre.append(this.rawFrame); this.detailsPre.append(this.detailsFrame);
-    this.configureSource(hooks.expanded(this.key)); shell.body.replaceChildren(this.reply, this.text, this.resultActions, this.inspection);
+    this.resultActions.hidden = true;
+    this.configureSource(hooks.expanded(this.key)); shell.body.replaceChildren(this.metadata, this.noAnswer, this.reply, this.text, this.resultActions, this.threadAction, this.inspection);
   }
   sync(message: MessageView): boolean {
     if (this.source !== message && this.hooks.protected(this.shell.node)) return false;
@@ -160,7 +182,7 @@ export class CommunicationCard {
   }
   refreshSender():void{
     const message=this.current(),value=message?.communication;
-    if(value&&message&&!this.hooks.protected(this.shell.heading))this.header(value,message);
+    if(value&&message&&!this.hooks.protected(this.shell.heading)&&!this.hooks.protected(this.metadata))this.header(value,message);
   }
   private results(value:CommunicationPresentation):void {
     const result=value.state==='ready'&&value.value.kind==='result'?value.value:undefined;
@@ -196,19 +218,45 @@ export class CommunicationCard {
     const sender=value.state==='ready'?value.value.sender:undefined;
     const input=unassociatedInput(message); this.shell.node.classList.toggle('user',input);
     const heading=sender?this.senderLabel(sender):input?presentMessage(message,this.hooks.operatorInput).label:'';
-    setText(this.shell.heading,heading);
+    setText(this.headingKind, sender ? communicationKind(value) : ''); setText(this.headingName,heading);
+    this.paintMetadata(sender?.identity);
+    this.paintStatus(value);
     this.arrangeLine(value, heading);
+    if (input) {this.headingKind.hidden = true; this.headingSeparator.hidden = true;}
     this.shell.heading.hidden = !sender && !(input && heading); this.shell.heading.title = sender?.identity ?? '';
     this.unverified.hidden = value.state === 'ready' || input;
-    this.shell.node.setAttribute('aria-label', heading || (input ? messageAriaLabel(message, this.hooks.operatorInput) : 'Message with unverified source'));
+    const accessible = heading || (input ? messageAriaLabel(message, this.hooks.operatorInput) : 'Message with unverified source');
+    this.shell.node.setAttribute('aria-label', input ? accessible : `${communicationKind(value)} · ${accessible}`);
+  }
+  private paintStatus(value: CommunicationPresentation): void {
+    const unanswered = value.state === 'ready' && value.value.kind === 'result' && value.value.metadata.status === 'unanswered' ? value.value.metadata : undefined;
+    this.noAnswer.hidden = !unanswered;
+    const reason = unanswered?.reason?.replace(/[_-]+/g, ' ');
+    setText(this.noAnswer, unanswered ? `No answer${reason ? `: ${reason}` : ''}` : '');
+    this.threadAction.hidden = !(value.state === 'ready' && value.value.kind === 'notice' && this.hooks.thread);
+  }
+  private paintMetadata(identity?: string): void {
+    const summary = identity ? this.hooks.senderSummary?.(identity) : undefined;
+    const model = summary?.model;
+    const line = [summary?.handle, model ? `${model.provider}/${model.modelId}` : undefined, model?.thinkingLevel ?? summary?.thinkingLevel].filter(Boolean).join(' · ');
+    setText(this.metadata, line); this.metadata.hidden = !line;
+  }
+  private openThread(): void {
+    const value = this.current()?.communication;
+    if (value?.state === 'ready' && value.value.kind === 'notice') this.hooks.thread?.(value.value.metadata.threadId, value.value.metadata.title);
+  }
+  private paintHeading(full: boolean): void {
+    setText(this.headingSeparator, this.headingKind.textContent && this.headingName.textContent ? ' · ' : '');
+    this.headingKind.hidden = !full; this.headingSeparator.hidden = !full || !this.headingName.textContent;
+    this.kindLabel.hidden = full; this.preview.hidden = full;
   }
   /** A check-in or thread notice takes one row whose button discloses the full card; other kinds keep the card as is. */
   private arrangeLine(value: CommunicationPresentation, heading: string): void {
     const line = statusLine(value), node = this.shell.node;
     if (!line) {
-      if (!this.lineMode) return;
+      if (!this.lineMode) {this.paintHeading(true); return;}
       this.lineMode = false; this.unverified.before(this.shell.heading); this.toggle.remove();
-      node.classList.remove('communication-line'); delete node.dataset.open; this.shell.body.hidden = false; return;
+      node.classList.remove('communication-line'); delete node.dataset.open; this.shell.body.hidden = false; this.paintHeading(true); return;
     }
     if (!this.lineMode) {
       this.lineMode = true; this.unverified.before(this.toggle); this.toggle.prepend(this.shell.heading);
@@ -219,7 +267,7 @@ export class CommunicationCard {
     this.paintLine(this.hooks.expanded(this.lineKey));
   }
   private paintLine(open: boolean): void {
-    this.lineOpen = open; this.toggle.setAttribute('aria-expanded', String(open)); this.shell.node.dataset.open = String(open); this.shell.body.hidden = !open;
+    this.lineOpen = open; this.paintHeading(open); this.toggle.setAttribute('aria-expanded', String(open)); this.shell.node.dataset.open = String(open); this.shell.body.hidden = !open;
   }
   private setLineOpen(open: boolean, notify: boolean): void {
     this.hooks.layout(); this.paintLine(open);
@@ -228,6 +276,8 @@ export class CommunicationCard {
   private content(value: CommunicationPresentation, message: MessageView): void {
     const ready = value.state === 'ready'; const original = ready ? value.value.body.text : this.hooks.raw(message);
     const formatted = ready || unassociatedInput(message);
+    this.text.hidden = ready && value.value.kind === 'result' && !original.trim();
+    this.shell.node.classList.toggle('communication-input', unassociatedInput(message));
     this.text.classList.toggle('communication-quoted', !formatted);
     if (unassociatedInput(message) && this.hooks.inputContent?.(message, this.text)) {
       this.bodyValue = original; this.bodyFormatted = formatted; this.bodyAttachments = true; this.text.removeAttribute('aria-label'); return;
@@ -307,7 +357,7 @@ export class CommunicationCard {
   }
   dispose(): void {
     if (this.lineMode) { this.lineMode = false; this.unverified.before(this.shell.heading); this.toggle.remove(); this.shell.node.classList.remove('communication-line'); delete this.shell.node.dataset.open; this.shell.body.hidden = false; }
-    this.unverified.remove(); this.inspection.remove(); this.shell.node.classList.remove('communication-card'); delete this.shell.node.dataset.state; delete this.shell.node.dataset.reason;
+    this.unverified.remove(); this.inspection.remove(); this.shell.node.classList.remove('communication-card', 'communication-input'); delete this.shell.node.dataset.state; delete this.shell.node.dataset.reason;
     this.shell.header.classList.remove('communication-header'); this.shell.heading.classList.remove('communication-sender'); this.shell.body.classList.remove('communication-body');
     this.shell.node.setAttribute('aria-label', messageAriaLabel(this.hooks.current(), this.hooks.operatorInput)); this.shell.heading.title = ''; this.shell.heading.hidden = false;
     this.shell.body.replaceChildren(); this.source = undefined;

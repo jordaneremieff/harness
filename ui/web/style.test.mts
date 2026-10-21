@@ -87,7 +87,7 @@ test('sidebar headings are text controls with counts and the finder is the first
   assert.match(rule('.nav-heading'), /display: flex; flex: 1; min-width: 0/);
   assert.match(rule('.section-toggle'), /display: flex; flex: 1; align-items: center; gap: var\(--s1\); width: 100%/);
   assert.match(rule('#sessions-heading'), /padding-left: calc\(var\(--s3\) \+ var\(--s1\)\)/);
-  assert.match(rule('.conversation-heading'), /padding-left: calc\(var\(--s3\) \+ var\(--s3\) \+ var\(--s1\)\)/);
+  assert.match(rule('.nav-heading-row'), /padding: 0 var\(--s2\) 0 var\(--s3\)/);
   assert.doesNotMatch(css, /\.section-toggle::before/);
   assert.match(rule('.section-toggle:hover'), /color: var\(--fg\)/); assert.match(rule('.section-toggle .count'), /margin-left: var\(--s2\)/);
   assert.match(rule('.threads-footer'), /padding-right: var\(--s3\); padding-left: var\(--s3\)/);
@@ -226,7 +226,7 @@ test('turns, paragraphs and tool runs retain distinct spacing tiers', () => {
   assert.match(rule('.message-body > .tool-shell + .tool-shell'), /margin-top: var\(--s2\);/);
 });
 test('section labels use readable uppercase type and primary names retain their weight', () => {
-  for (const selector of ['.nav-heading', '.section-toggle', '.conversation-heading, .conversation-group-title']) {
+  for (const selector of ['.nav-heading', '.section-toggle', '.conversation-group-title']) {
     const body = rule(selector);
     assert.match(body, /font-size: var\(--fs-label\)/, selector);
     assert.match(body, /font-weight: 600/, selector);
@@ -501,7 +501,8 @@ test('ordinary role and actions share a stable header and compact actions retain
   assert.match(rule('.communication-card'), /padding: 0; border: 0; background: transparent; font-family: var\(--sans\)/);
   assert.match(rule('.communication-header > .communication-sender'), /min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap/);
   assert.match(rule('.communication-card > .communication-body'), /font-size: var\(--fs-body\); line-height: 1\.65; font-weight: 400; font-style: normal/);
-  assert.doesNotMatch(css, /\.communication-(?:kind|time|trust|copy)\b[^{}]*\{/);
+  assert.match(rule('.communication-kind, .extension-notice > .message-header > .message-role'), /color: var\(--peer-label\)/);
+  assert.doesNotMatch(css, /\.communication-(?:time|trust|copy)\b[^{}]*\{/);
   assert.match(rule('.message-header + .message-body'), /margin-top: var\(--s1\)/);
   assert.match(rule('.message-actions'), /display: flex; flex: none;[^}]*min-height: 24px; margin-top: 0/);
   assert.doesNotMatch(rule('.message-actions'), /display: none|visibility: hidden/);
@@ -1187,7 +1188,7 @@ test('phone drawer sections keep usable content inside one outer scroll owner', 
   assert.match(phone,/\.app\.drawer-open \.roster \{ flex: none; min-height: 44px; max-height: 50dvh/);
   const sectionEnd = html.indexOf('</div>\n<section id="agent-message-panel"');
   assert.ok(html.indexOf('<div class="sidebar-scroll">') < html.indexOf('id="sidebar-conversations"'));
-  assert.match(rule('.conversation-heading'), /min-height: 28px/);
+  assert.match(rule('.nav-heading-row'), /height: 28px/);
   assert.ok(sectionEnd > html.indexOf('id="roster-section"'));
   assert.ok(sectionEnd < html.indexOf('class="sidebar-footer"'));
 });
@@ -1283,7 +1284,7 @@ test('an unreachable tab arrow keeps its space and leaves the tab order', () => 
   assert.match(rule('.pane-tab-nav[data-unreachable=true]'), /visibility: hidden/);
 });
 test('sidebar heading rails keep the shared edge and plain labels reserve chevron space', () => {
-  assert.match(rule('.nav-heading-row'), /padding: 0 var\(--s2\) 0 var\(--s3\)/); assert.match(rule('.conversation-heading, .conversation-group-title'), /padding: 0 var\(--s3\)/);
+  assert.match(rule('.nav-heading-row'), /padding: 0 var\(--s2\) 0 var\(--s3\)/); assert.match(rule('.conversation-group-title'), /padding: 0 var\(--s3\)/);
   assert.match(rule('.nav-row, .row-select'), /padding: 0 calc\(var\(--s6\) \* 2\) 0 var\(--s3\)/); assert.match(rule('.conversation-row'), /padding: 0 var\(--s3\);/);
   assert.match(rule('.file-row'), /padding: 0 var\(--s3\) 0 calc\(var\(--s3\) \+ var\(--file-depth,0\) \* var\(--fs-code\)\)/);
   assert.match(rule('.agent-row .row-select'), /padding: 0 var\(--s2\) 0 var\(--s3\)/); assert.match(rule('.nav-search'), /margin: 0 var\(--s3\)/);
