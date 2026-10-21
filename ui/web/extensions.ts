@@ -9,6 +9,11 @@ import { localDateTime } from './format.ts';
 
 export class ExtensionDialogs {
   private shown?: string;
+  private inlineHost?: HTMLElement;
+  private inlineKey?: string;
+  private inlineHeld=false;
+  /** The same dialog action is presented in the on-demand Desk instead of a modal. */
+  inline(host?:HTMLElement,hold=false):void {this.inlineHost=host;this.inlineHeld=hold||!!host;if(!host)this.inlineKey=undefined;this.update();}
   private shownToken = 0;
   private answering = new Set<string>();
   private modal: Modal;
@@ -30,9 +35,23 @@ export class ExtensionDialogs {
     const primary = this.primary(); if (!primary) return;
     const target: Extract<Target, {kind: 'primary'}> = {kind: 'primary', key: primary.key, epoch: primary.epoch};
     const item = activeDialog(this.get().dialogs, target);
-    if (!item) { if (this.shown) { this.shown = undefined; if (this.modal.owns(this.shownToken)) this.modal.close(); } return; }
+    if (!item) {this.inlineHost?.replaceChildren();this.inlineKey=undefined; if (this.shown) { this.shown = undefined; if (this.modal.owns(this.shownToken)) this.modal.close(); } return; }
+    if(this.inlineHost){this.showInline(item,primary,this.inlineHost);return;}
+    if(this.inlineHeld)return;
     if (this.shown === this.key(item) && this.modal.owns(this.shownToken)) return;
     this.show(item, primary);
+  }
+  private showInline(item:QueuedDialog,primary:PrimaryView,body:HTMLElement):void {
+    if(this.shown&&this.modal.owns(this.shownToken)){this.shown=undefined;this.modal.close(false);}
+    if(this.inlineKey===this.key(item)&&body.childNodes.length)return;
+    this.inlineKey=this.key(item);body.replaceChildren(element('p','target-label',`To ${this.caption(primary)}`));
+    if(item.dialog.message)body.append(element('p',undefined,stripControls(item.dialog.message)));
+    if(item.dialog.deadline)body.append(element('p','secondary',`Respond before ${localDateTime(item.dialog.deadline)}.`));
+    const submit=(value:DialogValue)=>{void this.answer(item,value);};
+    if(item.dialog.method==='select')this.options(item.dialog,body,submit);
+    else if(item.dialog.method==='confirm')body.append(button('No',()=>submit({confirmed:false})),button('Yes',()=>submit({confirmed:true})));
+    else {const field=input(item.dialog.placeholder??'Answer',item.dialog.prefill??'',item.dialog.method==='editor');body.append(field.label,field.field,button('Respond',()=>submit({value:field.field.value})));}
+    body.append(button('Cancel',()=>submit({cancelled:true})));
   }
   private show(item: QueuedDialog, primary: PrimaryView): void {
     const dialog = item.dialog; this.shown = this.key(item);
@@ -85,7 +104,8 @@ export class ExtensionDialogs {
   private async answer(item: QueuedDialog, value: DialogValue): Promise<void> {
     const key = this.key(item); const token = this.modal.token;
     if (this.answering.has(key) || !respondDialog(this.get().dialogs, item.target, item.dialog.id, value).command) return;
-    this.answering.add(key); this.buttons(true);
+    const inline=this.inlineKey===key?this.inlineHost:undefined;
+    this.answering.add(key);this.answerButtons(true,inline);
     let id: string | undefined;
     try {
       id = await reserve('primary.dialog', item.target);
@@ -95,8 +115,17 @@ export class ExtensionDialogs {
       if (this.modal.owns(token)) this.modal.body.append(element('p', 'secondary', 'Sending response…'));
       await operation('primary.dialog', `/api/primaries/${encodeURIComponent(item.target.key)}/dialogs/${encodeURIComponent(item.dialog.id)}`, result.command.response, item.target, id);
       if (this.shown === key) { this.shown = undefined; if (this.modal.owns(token)) this.modal.close(); } this.update();
-    } catch (error) { if (this.modal.owns(token)) this.responseError(error, id); }
-    finally { this.answering.delete(key); if (!id && this.modal.owns(token)) this.buttons(false); }
+    } catch (error) {this.answerError(error,id,token,inline);}
+    finally {this.answering.delete(key);if(!id)this.answerButtons(false,inline,token);}
+  }
+  private answerButtons(disabled:boolean,inline?:HTMLElement,token=this.modal.token):void {
+    if(inline){for(const node of inline.querySelectorAll<HTMLButtonElement>('button'))node.disabled=disabled;}
+    else if(this.modal.owns(token))this.buttons(disabled);
+  }
+  private answerError(error:unknown,id:string|undefined,token:number,inline?:HTMLElement):void {
+    if(!inline){if(this.modal.owns(token))this.responseError(error,id);return;}
+    inline.append(element('p','error',id?'Response not confirmed. Check before another response.':'The response was not sent.'));
+    if(id)inline.append(button('Check response',()=>{void request(`/api/operations/${encodeURIComponent(id)}/reconcile`,'POST',{}).then(result=>inline.append(details('Response details',JSON.stringify(result,null,2)))).catch(()=>inline.append(element('p','error','Response check failed.')));}));
   }
   private buttons(disabled: boolean): void { for (const node of this.modal.body.querySelectorAll<HTMLButtonElement>('button')) node.disabled = disabled; }
   private responseError(error: unknown, id?: string): void {

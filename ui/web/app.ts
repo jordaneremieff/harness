@@ -1,6 +1,7 @@
 import type { AgentHistoryPage, AgentRow, Bootstrap, EventData, HistoryPage, OperationView, PrimaryView, ProjectedFrame, Snapshot, Target, TargetState, ThreadOverview, ThreadPageView, Workspace } from '../shared/api.ts';
 import { draftHasContent, draftImageFingerprint, LIMITS, resolveAppearance } from '../shared/api.ts';
 import { Actions } from './actions.ts';
+import {Desk, type DeskRow} from './desk.ts';
 import { AgentCommandInventory } from './agent-commands.ts';
 import {InputEchoes} from './input-echoes.ts';
 import {recallItems} from './message-recall.ts';
@@ -249,6 +250,7 @@ function renderInspection(controller:ConversationController):void {
   else inspection.observe(undefined,connected);
   const region=controllerNode(controller,'transcript-region');
   const covered=inspection.active||threadHost===controller;
+  if(renderDeskComposerLabel(controller))return;
   if(covered&&!region.hidden)controller.readingGeometry=controller.transcript.captureGeometry();
   region.hidden=covered;
   if(!covered&&controller.readingGeometry){const geometry=controller.readingGeometry;controller.readingGeometry=undefined;controller.transcript.applyGeometry(geometry);}
@@ -256,6 +258,12 @@ function renderInspection(controller:ConversationController):void {
   if(controller.target.kind==='agent')controllerNode(controller,'history-note').hidden=covered||!controllerNode(controller,'history-note-line').textContent;
   inspection.visibility(inspection.active&&!controller.root.hidden&&!controller.root.inert&&controller.workspaceId===state.workspace?.id);
   controller.root.classList.toggle('inspection-active',inspection.active);
+}
+function renderDeskComposerLabel(controller:ConversationController):boolean {
+  if(!controller.elements.root.dataset.deskPanel)return false;
+  controller.elements.root.hidden=!composerShown(controller);
+  if(controller.target.kind==='agent')setText(controller.elements.recipient,`To ${deskCaption(controller.target.identity)}`);
+  return true;
 }
 function bindControllerInput(controller:ConversationController):void {
   for(const name of ['pointerdown','keydown','beforeinput'])controller.elements.root.addEventListener(name,()=> {if(controller.passive) {controller.passive = false;renderController(controller);}}, {capture:true});
@@ -320,7 +328,7 @@ const references = new ReferenceResolver(resolveReference, destination => { void
   root: () => fileRoot.loading ? undefined : fileRoot.selection?.root ?? undefined,
   navigate: destination => { void navigateFileReference(destination).catch(showError); },
 });
-const actions: Actions = new Actions({handover: () => handover.open(), snapshot: currentSnapshot, primary, modelChanged: renderAvailability, namingPrimary: () => { const selected = primary(); return selected?.lifecycle === 'ready' ? selected : [...state.primaries.values()].find(item => item.lifecycle === 'ready'); }, modelNamesChanged: renderAllComposerSettings, get composer() { return primaryComposer(); }, commandsChanged: () => {const target = primaryTarget(); if (target && state.workspace) controllers.get(controllerKey(state.workspace.id, target))?.composer.commandsChanged();}, modal, selection, reload: reloadSelection, result: showOperation, rosterRefresh: refreshRoster, filesRefresh: refreshFiles, hasTranscript: () => !!focusedTranscript(), find: () => captureFind(), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, sidebarShown: () => !byId('sidebar').hidden, view: (tools, expand) => focusedTranscript()?.expandLoaded(tools, expand), selectPrimary, agentCaption: identity => {return presentationCaptions().get(identity);}, agentStatus: row => presentation({kind: 'agent', identity: row.identity}).activity, agentPresentation:row=>presentation({kind:'agent',identity:row.identity}), conversationFacts: identity => agentFacts(agentRow(identity), state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame), copyAgent: () => { void copy(selectedAgent() ?? '', agentNode('view-notice')); }, inspectAgent,resultLookup:()=>{const target=layoutTarget(currentLayout(),primaryTarget());if(target)conversationController(target).inspection?.open('result');},
+const actions: Actions = new Actions({desk:()=>openDesk(),nextUnread:openNextUnread,hasUnread:()=>!!nextUnreadNotice(),handover: () => handover.open(), snapshot: currentSnapshot, primary, modelChanged: renderAvailability, namingPrimary: () => { const selected = primary(); return selected?.lifecycle === 'ready' ? selected : [...state.primaries.values()].find(item => item.lifecycle === 'ready'); }, modelNamesChanged: renderAllComposerSettings, get composer() { return primaryComposer(); }, commandsChanged: () => {const target = primaryTarget(); if (target && state.workspace) controllers.get(controllerKey(state.workspace.id, target))?.composer.commandsChanged();}, modal, selection, reload: reloadSelection, result: showOperation, rosterRefresh: refreshRoster, filesRefresh: refreshFiles, hasTranscript: () => !!focusedTranscript(), find: () => captureFind(), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, sidebarShown: () => !byId('sidebar').hidden, view: (tools, expand) => focusedTranscript()?.expandLoaded(tools, expand), selectPrimary, agentCaption: identity => {return presentationCaptions().get(identity);}, agentStatus: row => presentation({kind: 'agent', identity: row.identity}).activity, agentPresentation:row=>presentation({kind:'agent',identity:row.identity}), conversationFacts: identity => agentFacts(agentRow(identity), state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame), copyAgent: () => { void copy(selectedAgent() ?? '', agentNode('view-notice')); }, inspectAgent,resultLookup:()=>{const target=layoutTarget(currentLayout(),primaryTarget());if(target)conversationController(target).inspection?.open('result');},
   tabs: {close: () => { const tab = activeTab(currentLayout()); if (tab) applyLayout(closeTab(currentLayout(), tabKey(tab))); }, switch: direction => applyLayout(switchTab(currentLayout(), direction)), layout: currentLayout},
 });
 const fileBrowse = new FileBrowseState();
@@ -954,6 +962,7 @@ function targetState(target?: Target): TargetState | undefined {
 }
 function sameTarget(a?: Target, b?: Target): boolean { return !!a && !!b && targetIdentity(a) === targetIdentity(b); }
 function currentLayout(): ConversationLayout { return workspaceEntry.layout(state.workspace,primaryTarget()); }
+function deskLayout():ConversationLayout {return deskPane&&deskPane.workspace===state.workspace?.id&&deskPane.provisional?deskPane.provisional:currentLayout();}
 export function splitActive(): boolean { return paneLeaves(currentLayout().root).length > 1; }
 function hasConversation(): boolean { return !!primary() || paneLeaves(currentLayout().root).some(pane => !!pane.active); }
 export function applyLayout(layout: ConversationLayout): void {
@@ -1047,12 +1056,14 @@ function mountPaneLeaf(leaf: PaneLeaf, layout: ConversationLayout): HTMLElement 
   pane.previous.dataset.unreachable = String(pane.previous.disabled); pane.next.dataset.unreachable = String(pane.next.disabled);
   pane.previous.hidden = pane.next.hidden = leaf.tabs.length <= 1;
   pane.plus.disabled = !state.workspace; pane.menu.disabled = !leaf.tabs.length;
-  pane.content.hidden = threadPane?.paneId === leaf.id; pane.content.inert = pane.content.hidden;
+  pane.content.hidden = threadPane?.paneId === leaf.id || deskCompanion(leaf.id)&&deskPane?.list===true; pane.content.inert = pane.content.hidden;
+  mountDeskCompanion(leaf.id,pane.node);
   const activeTab = leaf.tabs[activeIndex]; pane.actions.hidden = !activeTab || activeTab.kind === 'file'; pane.actions.disabled = pane.actions.hidden || !state.workspace;
   pane.node.dataset.focused = String(leaf.id === layout.focusedPane);
   return pane.node;
 }
 function placePaneContent(leaf:PaneLeaf):void {
+  if(deskCompanion(leaf.id)&&deskPane?.list)return;
   const pane = paneRegions.get(leaf.id);if(!pane)throw new Error(`Missing pane region for ${leaf.id}.`);
   const tab = leaf.tabs.find(tab => tabKey(tab) === leaf.active), target = tab ? controllerTarget(tab) : undefined;
   if (tab?.kind === 'file' && state.workspace) {const view = filesViews.view(state.workspace,tab);view.root.dataset.paneId = leaf.id;stableViews().place(view.root,pane.content);}
@@ -1073,8 +1084,9 @@ function renderPaneTree(layout: ConversationLayout): void {
   hideInactiveControllers(layout);
   for (const [id, pane] of paneRegions) if (!visited.has(id)) {pane.node.remove(); paneRegions.delete(id);}
   for (const [id, split] of paneSplits) if (!visited.has(id)) {split.resizer?.destroy(); split.node.remove(); paneSplits.delete(id);}
-  for (const controller of controllers.values()) if (controller.root.hidden && !controller.historyAbort.signal.aborted) controller.historyAbort.abort();
+  for (const controller of controllers.values()) if (controller.root.hidden && !controller.elements.root.dataset.deskPanel && !controller.historyAbort.signal.aborted) controller.historyAbort.abort();
   refreshTreeGeometry();
+  scheduleDesk();
   if (changed) restorePaneGeometry();
   markFocusedPane(); collectControllers();void watchFiles();
 }
@@ -1083,6 +1095,7 @@ function hideInactiveControllers(layout:ConversationLayout):void {
   for (const [key,controller] of controllers) if (!shown.has(key))hideController(controller);
 }
 function hideController(controller:ConversationController):void {
+  if(controller.elements.root.dataset.deskPanel&&deskPane?.list&&deskPane.workspace===state.workspace?.id){return;}
   const projected = controller.workspaceId === state.workspace?.id && messageTarget.current?.identity === (controller.target.kind === 'agent' ? controller.target.identity : undefined) && !!controller.elements.root.dataset.messagePanel;
   stableViews().place(controller.root,projected ? byId('agent-message-panel') : undefined);delete controller.root.dataset.paneId;
   if(projected)controller.root.dataset.messageOnly = 'true';
@@ -1098,7 +1111,7 @@ function restorePaneGeometry(): void {
   for (const controller of controllers.values()) if (controller.geometry) controller.transcript.applyGeometry(controller.geometry);
 }
 function refreshTreeGeometry(): void {
-  const layout = currentLayout(), root = byId('conversation-panes'), box = root.getBoundingClientRect(), minimum = minimumPaneSize(layout.root);
+  const layout = deskLayout(), root = byId('conversation-panes'), box = root.getBoundingClientRect(), minimum = minimumPaneSize(layout.root);
   const focusOnly = matchMedia('(max-width: 599px)').matches || box.width < minimum.width || box.height < minimum.height; root.dataset.focusOnly = String(focusOnly);
   for (const [id, pane] of paneRegions) {pane.node.hidden = focusOnly && id !== layout.focusedPane; pane.node.inert = pane.node.hidden;}
   if (!focusOnly) refreshPaneSplit(layout.root);
@@ -1282,6 +1295,7 @@ function visibleAgentViews(): string[] {
     const tab=pane.tabs.find(tab=>tabKey(tab) === pane.active);if(tab?.kind === 'agent')identities.add(tab.identity);
   }
   if(messageTarget.current && messageTarget.valid(messageTarget.current))identities.add(messageTarget.current.identity);
+  if(deskPane?.list&&deskPane.workspace===state.workspace?.id&&deskComposer?.target.kind==='agent')identities.add(deskComposer.target.identity);
   return [...identities];
 }
 let agentViewSignature='';
@@ -1394,6 +1408,7 @@ function applyShellEvent(event:ReceivedEvent):void {
   }
 }
 function renderPrimaryEvent(event: ReceivedEvent): void {
+  scheduleDesk();
   const target = event.envelope.target; const controller = target && state.workspace ? controllers.get(controllerKey(state.workspace.id, target)) : undefined;
   if (controller) controller.transcript.defer(() => renderController(controller), event.receivedAt);
   if (event.name === 'primary.tool' || event.name === 'primary.message' && (event.envelope.data as EventData['primary.message']).message.state === 'final') { tabStrip.render(); renderIdentity(); }
@@ -1411,7 +1426,7 @@ function renderRosterEvent(event: ReceivedEvent): void {
     }
     messageTarget.availabilityChanged(data);
   }
-  renderRoster(); renderAgent(); renderMessagePanel();
+  renderRoster(); renderAgent(); renderMessagePanel();scheduleDesk();
 }
 function renderObservedAgent(data: EventData['agent.frame'], receivedAt?: number): void {
   const target = {kind: 'agent' as const, identity: data.identity}; const controller = state.workspace ? controllers.get(controllerKey(state.workspace.id, target)) : undefined;
@@ -1428,7 +1443,7 @@ function syncAwaitingAnswer(): void {
 }
 function applyExtension(event: ReceivedEvent): void {
   const data = event.envelope.data as EventData['extension.request'];
-  if ('id' in data) { extensionDialogs.update(); tabStrip.render(); return; }
+  if ('id' in data) { extensionDialogs.update(); tabStrip.render();scheduleDesk(); return; }
   if (data.method === 'notify') noticesBadge();
   else if (data.method === 'set_editor_text' && sameTarget(event.envelope.target, primaryTarget())) primaryComposer().suggest(data.text);
   else if (sameTarget(event.envelope.target, primaryTarget())) renderPrimaryExtensions();
@@ -1457,7 +1472,7 @@ export function renderNavigation(): void {
   byId('sidebar-show').setAttribute('aria-expanded', String(visible));
   if (drawerClosed && !visible && byId('sidebar').contains(document.activeElement)) byId('sidebar-show').focus({preventScroll: true});
   placeWorkbenchControls(visible);
-  const layout = currentLayout(); const tab = activeTab(layout);
+  const layout = deskLayout(); const tab = activeTab(layout);
   renderPaneTree(layout); renderSessionEntry(!!tab); byId('conversation-panes').hidden = !hasConversation() && !threadPane;
   tabStrip.render(); renderIdentity();
   byId('primary-row').hidden = !primary() || paneLeaves(layout.root).some(pane => pane.tabs.some(tab => tab.kind === 'primary'));
@@ -1731,6 +1746,7 @@ export function renderPrimaryQueue(queue?: EventData['primary.queue']): void {
   list.replaceChildren(...rows); list.hidden = !rows.length;
 }
 function renderRoster(): void {
+  scheduleDesk();
   tabStrip.render(); renderIdentity();
   renderSectionCounts();
   const focused = layoutTarget(currentLayout(), primaryTarget());
@@ -2215,6 +2231,117 @@ function showOperation(result: OperationView, workspaceId = state.workspace?.id)
   for (const controller of controllers.values()) controller.composer.receipts(state.operations.values()); collectControllers();
   if (result.state !== 'reserved' && result.state !== 'dispatched') announce(operationLabel(result));
 }
+let deskPane:{workspace:string;context:string;id:string;list:boolean;provisional?:ConversationLayout}|undefined;
+let deskOpeningNotice:string|undefined;
+function deskContext():string{return JSON.stringify([state.bootId,state.workspace?.id,primaryTarget()]);}
+let deskFrame=0;
+const deskNoticeReads=new Set<string>();
+let deskComposer:ConversationController|undefined;
+const deskBack=button('Back to Desk',()=>{if(deskPane){deskPane.list=true;renderNavigation();scheduleDesk();}},'desk-back');
+const desk=new Desk({select:selectDeskComposer,open:row=>{void openDeskConversation(row).catch(showError);},dialog:(_row,slot)=>{clearDeskComposer();extensionDialogs.inline(slot);},close:closeDesk,caption:row=>row.handle?`@${row.handle}`:row.name??toolSubjectCaption(row.identity)?.text??row.identity,changed:()=>{if(deskComposer&&stableViews().slot(deskComposer.elements.root)?.closest('[hidden]'))clearDeskComposer();stableViews().request();}});
+function deskCaption(identity:string):string {const row=agentRow(identity);return row?.handle?`@${row.handle}`:row?.name??toolSubjectCaption(identity)?.text??identity;}
+function nextUnreadNotice():CommunicationNotice|undefined {return (deskPane?.list?desk.nextUnread():undefined)??[...communicationNotices.items.values()].filter(item=>!item.read&&item.kind!=='check-in').sort((a,b)=>(b.timestamp??0)-(a.timestamp??0))[0];}
+function openNextUnread():void {const notice=nextUnreadNotice();if(notice)void openDeskNotice(notice).catch(showError);}
+function scheduleDesk():void {if(deskFrame||!deskPane)return;deskFrame=requestAnimationFrame(()=>{deskFrame=0;renderDesk();});}
+function deskTasks():ConversationTask[]{const target=primaryTarget();if(!target||!state.workspace)return [];return [...(controllers.get(controllerKey(state.workspace.id,target))?.transcript.taskRows()??[])].filter(task=>!task.asked&&!!task.reference);}
+function deskNoticeRow(notice:CommunicationNotice,tasks=deskTasks()):DeskRow {
+  const conversation=state.conversations.get(targetIdentity(notice.target));
+  const message=conversation&&conversationBlocks(conversation).flatMap(entry=>entry.messages??[]).find(message=>message.id===notice.messageId);
+  const carrier=message?.communication,value=carrier?.state==='ready'?carrier.value:undefined;
+  const task=value?.kind==='result'?tasks.find(task=>task.reference?.sessionId===value.sender.identity&&value.metadata.references.some(reference=>reference.submissionId===task.reference?.submissionId&&!(reference.requestId&&task.reference?.requestId&&reference.requestId!==task.reference.requestId))):undefined;
+  return {key:notice.key,target:{kind:'agent',identity:notice.sender.identity},caption:deskCaption(notice.sender.identity),fact:notice.firstLine,reason:`Unread ${notice.kind} from ${deskCaption(notice.sender.identity)}`,kind:'notice',notice,task,ask:task?.input,answer:value?.body};
+}
+function deskCompanion(id:string):boolean{return !!deskPane&&deskPane.workspace===state.workspace?.id&&deskPane.id===id;}
+function mountDeskCompanion(id:string,node:HTMLElement):void {
+  if(!deskCompanion(id)||!deskPane)return;
+  if(desk.node.parentElement!==node)node.append(desk.node);
+  desk.node.hidden=!deskPane.list;const bar=node.querySelector<HTMLElement>('.tab-bar');if(bar)placeRetained(deskBack,bar);deskBack.hidden=deskPane.list;
+}
+function deskDialogRows():DeskRow[]{
+  const target=primaryTarget();if(target?.kind!=='primary')return [];
+  const item=activeDialog(state.dialogs,target);if(!item)return [];
+  const caption=presentationName(presentation(target));return [{key:`dialog:${targetIdentity(target)}:${item.dialog.id}`,target,caption,fact:item.dialog.title,reason:`Question from ${caption}`,kind:'dialog',dialog:item.dialog}];
+}
+function deskAgentFact(agent:AgentRow):string {
+  const attention=agent.attention;
+  if(attention?.kind==='provider-blocked')return 'Provider blocked';
+  if(attention?.kind==='failed-turn')return 'Turn failed';
+  if(attention?.kind==='task-blocked')return `Task blocked${attention.reason?`: ${attention.reason.replaceAll('_',' ')}`:''}`;
+  return agent.currentTool?[agent.currentTool.name,agent.currentTool.argument].filter(Boolean).join(' · '):'Working';
+}
+function deskAgentRows(agents:AgentRow[],tasks:ConversationTask[]):DeskRow[]{
+  const rows:DeskRow[]=[];
+  for(const agent of agents){
+    if(!agent.attention&&agent.state!=='working')continue;
+    const kind=agent.attention?'blocked':'working',fact=deskAgentFact(agent),task=tasks.find(task=>task.reference?.sessionId===agent.identity);
+    rows.push({key:`${kind}:${agent.identity}`,target:{kind:'agent',identity:agent.identity},caption:deskCaption(agent.identity),fact,reason:fact,kind,task,ask:task?.input,answer:task?.answer});
+  }
+  return rows.sort((a,b)=>Number(b.kind==='blocked')-Number(a.kind==='blocked'));
+}
+function deskTaskRows(tasks:ConversationTask[],rows:DeskRow[]):DeskRow[]{
+  return tasks.flatMap(task=>{const identity=task.reference?.sessionId;if(!identity||rows.some(row=>row.task?.key===task.key))return [];
+    return [{key:`task:${task.key}`,target:{kind:'agent' as const,identity},caption:deskCaption(identity),fact:task.subject,reason:task.state,kind:'task' as const,task,ask:task.input,answer:task.answer}];});
+}
+function renderDesk():void {
+  if(!deskPane)return;
+  if(deskPane.context!==deskContext()||!paneById(deskLayout(),deskPane.id)){closeDesk();return;}
+  if(!deskPane.list){clearDeskComposer();extensionDialogs.inline();return;}
+  const tasks=deskTasks(),agents=state.rosterOrder.flatMap(identity=>{const row=agentRow(identity);return row?[row]:[];});
+  const notices=[...communicationNotices.items.values()].filter(item=>!item.read&&item.kind!=='check-in').sort((a,b)=>(b.timestamp??0)-(a.timestamp??0));
+  const rows=[...deskDialogRows(),...notices.map(notice=>deskNoticeRow(notice,tasks)),...deskAgentRows(agents,tasks)];rows.push(...deskTaskRows(tasks,rows));
+  const target=primaryTarget(),controller=target&&state.workspace?controllers.get(controllerKey(state.workspace.id,target)):undefined;
+  desk.update({rows,agents,tasks,complete:controller?.historyComplete===true&&controller.cursor===null});
+}
+function clearDeskComposer(keep?:ConversationController):void {
+  for(const controller of controllers.values())if(controller!==keep&&controller.elements.root.dataset.deskPanel){delete controller.elements.root.dataset.deskPanel;controller.elements.recipient.classList.add('sr-only');stableViews().project(controller.elements.root);controller.composer.placement(false);hideController(controller);}
+  if(deskComposer!==keep)deskComposer=keep;
+}
+function selectDeskComposer(row:DeskRow,slot:HTMLElement):void {
+  if(row.target.kind!=='agent'||deskOpeningNotice&&row.notice?.key!==deskOpeningNotice)return;
+  extensionDialogs.inline(undefined,true);
+  if(row.notice&&!row.notice.read&&!deskNoticeReads.has(row.notice.key)){const notice=row.notice;deskNoticeReads.add(notice.key);void loadDeskNotice(notice).then(()=>{if(deskPane?.list)desk.refreshNotice(deskNoticeRow(notice));}).catch(showError).finally(()=>deskNoticeReads.delete(notice.key));}
+  const controller=conversationController(row.target);clearDeskComposer(controller);controller.messageRetention??={};controller.passive=false;
+  let editor=slot.querySelector<HTMLElement>('.message-editor-slot');if(!editor){editor=element('div','message-editor-slot');editor.id=`${slot.id}-editor`;slot.append(editor);}
+  controller.elements.root.dataset.deskPanel='true';
+  const pane=viewPane(controller.root);if(!pane||pane.closest('[hidden],[inert]')){stableViews().place(controller.root,slot);controller.root.dataset.messageOnly='true';}
+  stableViews().project(controller.elements.root,editor);controller.composer.placement(true);renderController(controller);
+  controller.elements.recipient.classList.remove('sr-only');setText(controller.elements.recipient,`To ${row.caption}`);controller.elements.recipient.title=row.target.identity;deskComposer=controller;syncAgentViews();stableViews().request();
+}
+function ensureDeskPane():boolean {
+  const workspace=state.workspace?.id;if(!workspace)return false;
+  if(deskPane?.context===deskContext()&&paneById(deskLayout(),deskPane.id))return true;
+  clearDeskComposer();
+  desk.reset();const layout=currentLayout(),leaves=paneLeaves(layout.root),primaryPane=leaves.find(pane=>pane.tabs.some(tab=>tab.kind==='primary'));
+  const companion=leaves.find(pane=>pane.id!==primaryPane?.id);
+  if(companion&&leaves.length>1){deskPane={workspace,context:deskContext(),id:companion.id,list:true};return true;}
+  const source=primaryPane??leaves[0];if(!source)return false;
+  const box=paneRegions.get(source.id)?.node.getBoundingClientRect();if(!box||box.width<644||box.height<240){announce('Desk needs space beside Primary. Widen this window.');return false;}
+  const ids=new Set(leaves.map(pane=>pane.id));let index=1;while(ids.has(`desk-pane-${index}`))index++;
+  const id=`desk-pane-${index}`,root={kind:'split' as const,id:`desk-split-${index}`,axis:'x' as const,ratio:50,first:layout.root,second:{kind:'pane' as const,id,tabs:[],active:null}};
+  deskPane={workspace,context:deskContext(),id,list:true,provisional:{root,focusedPane:layout.focusedPane}};return true;
+}
+function openDesk():void {modal.close(false);if(!ensureDeskPane()||!deskPane)return;deskPane.list=true;extensionDialogs.inline(undefined,true);renderNavigation();renderDesk();}
+async function openDeskNotice(notice:CommunicationNotice):Promise<void> {
+  if(communicationNotices.items.get(notice.key)!==notice)return;
+  deskOpeningNotice=notice.key;
+  try{openDesk();if(!deskPane)return;desk.showNotice(deskNoticeRow(notice));}
+  finally{deskOpeningNotice=undefined;}
+  await loadDeskNotice(notice);if(deskPane?.list)desk.refreshNotice(deskNoticeRow(notice));
+}
+async function openDeskConversation(row:DeskRow):Promise<void> {
+  if(row.target.kind!=='agent'||!ensureDeskPane()||!deskPane)return;const captured=deskPane;
+  clearDeskComposer();extensionDialogs.inline();captured.list=false;
+  let layout=deskLayout(),key=`agent:${row.target.identity}`,existing=paneLeaves(layout.root).find(pane=>pane.tabs.some(tab=>tabKey(tab)===key));
+  if(existing&&existing.id!==captured.id){
+    if(existing.tabs.some(tab=>tab.kind==='primary'))layout=movePaneTab(layout,key,captured.id);
+    else captured.id=existing.id;
+  }
+  layout=openTab({...layout,focusedPane:captured.id},{kind:'agent',identity:row.target.identity});captured.provisional=undefined;
+  await selection({conversationLayout:layout,selectedTarget:row.target,panelVisible:true});
+  if(deskPane!==captured||state.workspace?.id!==captured.workspace)return;
+  const controller=conversationController(row.target);controller.passive=false;controller.inspection?.conversation();renderNavigation();renderController(controller);await loadControllerHistory(controller);
+}
+function closeDesk():void {clearDeskComposer();deskPane=undefined;desk.node.remove();deskBack.remove();extensionDialogs.inline();desk.reset();if(state.workspace)renderNavigation();}
 const communicationNotices = new CommunicationNoticeShelf();
 const recentSidebar = new RecentSidebar(notice=>senderName(notice.sender,toolSubjectCaption(notice.sender.identity)),notice=>{void openCommunicationNotice(notice).catch(showError);},notices);
 const sessionSidebar = new SessionSidebar({primaries:()=>[...state.primaries.values()],selected:()=>{const target=layoutTarget(currentLayout(),primaryTarget());return target?.kind==='primary'?target.key:undefined;},
@@ -2233,6 +2360,7 @@ function watchedConversationTargets(): Target[] {
     const tab = pane.tabs.find(tab=>tabKey(tab)===pane.active), target = tab ? controllerTarget(tab) : undefined;
     if (target?.kind === 'agent') targets.push(target);
   }
+  if(deskPane?.list&&deskPane.workspace===state.workspace?.id&&deskComposer?.target.kind==='agent')targets.push(deskComposer.target);
   return targets;
 }
 function inactiveAgentTabCount(): number {
@@ -2260,6 +2388,7 @@ function noticesBadge(): void {
   const unread = unreadNotices(state) + communicationNotices.unread(); setText(byId('notices-count'), String(unread)); byId('notices-count').hidden = !unread;
   const label = notificationsLabel(); byId('notifications-button').setAttribute('aria-label', label); byId('notifications-button').title = label;
   setText(byId('notices-label'),`Notices ${unread}`);recentSidebar.render([...communicationNotices.items.values()]);
+  scheduleDesk();
 }
 function notices(): void {
   state = markReadNotices(state); noticesBadge();
@@ -2286,21 +2415,21 @@ function renderCommunicationNotice(notice: CommunicationNotice): void {
 }
 async function openCommunicationNotice(notice: CommunicationNotice): Promise<void> {
   if (communicationNotices.items.get(notice.key) !== notice) return;
-  const context = JSON.stringify([state.bootId,state.workspace?.id]); modal.close(false);
-  await navigateReference({target:notice.target,entryId:notice.entryId},true);
-  const workspace = state.workspace?.id; if (!workspace || context !== JSON.stringify([state.bootId,workspace])) return;
-  const controller = controllers.get(controllerKey(workspace,notice.target)); if (!controller) return;
-  controller.inspection?.conversation();
-  if (threadPane?.paneId === threadOpeningPane(controller)?.id) closeThread(false);
-  let entry: string | undefined;
-  for (let page = 0; page <= EARLIER_FILL.pages; page++) {
-    await new Promise<void>(resolve=>requestAnimationFrame(()=>resolve()));
-    if (context !== JSON.stringify([state.bootId,state.workspace?.id]) || !sameTarget(notice.target,layoutTarget(currentLayout(),primaryTarget()) ?? undefined)) return;
-    entry = controller.transcript.entryForMessage(notice.messageId); if (entry || page === EARLIER_FILL.pages || !hasEarlierHistory(controller)) break;
+  await openDeskNotice(notice);
+  return;
+}
+async function loadDeskNotice(notice:CommunicationNotice):Promise<void>{
+  const context=JSON.stringify([state.bootId,state.workspace?.id]),controller=conversationController(notice.target);
+  const loaded=()=>state.conversations.get(targetIdentity(notice.target));
+  const exact=()=>{const conversation=loaded();return conversation&&conversationBlocks(conversation).some(entry=>entry.messages?.some(message=>message.id===notice.messageId));};
+  if(!exact())await loadControllerHistory(controller);
+  for(let page=0;!exact()&&page<EARLIER_FILL.pages&&hasEarlierHistory(controller);page++){
+    if(context!==JSON.stringify([state.bootId,state.workspace?.id])||!deskPane?.list)return;
     await loadControllerHistory(controller,true);
   }
-  if (!entry) {announce('That message is not in the loaded conversation.'); return;}
-  controller.transcript.revealEntry(entry); notice.read = true; noticesBadge();
+  if(context!==JSON.stringify([state.bootId,state.workspace?.id])||!deskPane?.list||!desk.isNoticeSelected(notice.key))return;
+  if(!exact()){announce('That message is not in the loaded conversation.');return;}
+  notice.read=true;noticesBadge();
 }
 /** A notice names its conversation as the tab does. A Primary of another epoch is not named. */
 function noticeConversationName(target: Target): string | undefined {
@@ -2584,8 +2713,13 @@ function paletteModeForKey(event: KeyboardEvent): 'commands' | 'goto' | undefine
   if (key === 'k' && !event.shiftKey) return 'commands';
   return undefined;
 }
+function deskShortcut(event:KeyboardEvent):boolean {
+  if(modal.openNow||!event.metaKey||!event.shiftKey||event.altKey||event.ctrlKey||event.key.toLowerCase()!=='u')return false;
+  if(nextUnreadNotice()){event.preventDefault();if(!event.repeat)openNextUnread();}return true;
+}
 export function appKey(event: KeyboardEvent): void {
   if (event.isComposing || event.keyCode === 229 || event.defaultPrevented || contextMenu.openNow) return;
+  if(deskShortcut(event))return;
   if (event.key === 'Escape' && messageTarget.current && !modal.openNow) { event.preventDefault(); closeMessagePanel(); return; }
   if (event.key === 'Escape' && drawerOpen && !modal.openNow) { event.preventDefault(); toggleSidebar(false); return; }
   if (!modal.openNow && event.altKey && !event.ctrlKey && !event.metaKey && (event.key === 'PageUp' || event.key === 'PageDown')) {

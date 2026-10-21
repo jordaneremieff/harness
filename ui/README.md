@@ -196,6 +196,16 @@ Rollback switches to the retained last-good identity through the same path. Forw
 
 A backend switch does not replace the running owner or its code. A candidate with a different owner protocol refuses. An owner without the resynchronize capability keeps its healthy operations, switch and rollback support under a compatible backend, but cannot gain protocol-loss recovery or the delivery-drain notice; the backend does not send the optional action to it. Replacing the owner, including changes to its supervisor closure, requires a deliberate whole-stop with confirmed primary exit and a fresh sealed launch. The control CLI has no stopped-owner selection action: stop followed by the checkout launcher still uses the retained selection. A different owner protocol therefore lacks a complete upgrade command in this CLI. That replacement boundary does not preserve a live Pi process or its pending work. Owner death is not a same-process recovery path. The owner claim refuses an existing claim; this release CLI has no automatic stale-claim takeover. Do not remove a live or uncertain claim.
 
+## Desk
+
+**Commands → Open Desk** opens an on-demand list in a companion pane, beside the retained Primary. An existing second pane hosts the list. A single-pane window gets a page-local split only after this command, when there is room for both panes. Desk does not change the Primary draft, native editor, or reading position. Close restores the covered pane. **Open** selects the exact agent conversation in the companion; **Back to Desk** returns to the retained list.
+
+The list orders the pending Primary dialog, unread reports/results, blocked agents, and working agents. It has no idle filler. **This conversation** uses only the selected Primary's structured sent-task references, with supplied asks and task states. Partial history reads **Loaded tasks**. With no sent tasks, Desk defaults to **All agents**. With no pending work, working rows lead to **All agents**; with no working agents either, Desk shows the agent list.
+
+The top dialog or notice expands in place. Exact task matches supply the ask beside the answer; partial and redacted flags stay visible. An agent answer uses that exact sender's existing composer and saved draft, labeled **To**. A dialog uses the existing Primary dialog action, not a model message. Desk adds no execution path or queue.
+
+Desk and RECENT consume the same browser-local communication feed. New arrivals wait behind **N new · Show**, without replacing the open answer or reordering retained notice rows. Read rows stay in the open Desk. **Next review** names the actual dialog or unread-message reason. **Open next unread result** (`⇧⌘U`) and RECENT open the exact supplied message in Desk and mark only that message read once its exact body is loaded. With no unread report or result, the command is absent and the shortcut has no catalog fallback. No recipient, ownership, completion, or message association comes from prose, names, or folders.
+
 ## Agent presentation control
 
 An ordinary or Durable agent uses the standalone command from a local shell. It is not a Pi extension:

@@ -107,7 +107,7 @@ function findStatusText(result: FindStatus | undefined, query: string): string {
 }
 export type SettingsSelection = {target: Target; model?: {provider: string; modelId: string}; thinking?: string; levels?: string[]; primary?: PrimaryView; closed?: () => void; guard: () => string | undefined};
 export type SelectionChange = Partial<Omit<Workspace, 'selectedTarget'>> & {selectedTarget?: Target | null};
-export type ActionContext = {handover?: () => void; agentPresentation: ConstructorParameters<typeof ProjectPicker>[0]['agentPresentation']; snapshot: () => Snapshot | undefined; primary: () => PrimaryView | undefined; /** The Primary whose model list names models: the selected Primary when it is ready, else any ready Primary. */ namingPrimary?: () => PrimaryView | undefined; composer: Composer; commandsChanged: () => void; modelChanged?: () => void; modelNamesChanged?: () => void; modal: Modal;
+export type ActionContext = {desk?:()=>void; nextUnread?:()=>void; hasUnread?:()=>boolean; handover?: () => void; agentPresentation: ConstructorParameters<typeof ProjectPicker>[0]['agentPresentation']; snapshot: () => Snapshot | undefined; primary: () => PrimaryView | undefined; /** The Primary whose model list names models: the selected Primary when it is ready, else any ready Primary. */ namingPrimary?: () => PrimaryView | undefined; composer: Composer; commandsChanged: () => void; modelChanged?: () => void; modelNamesChanged?: () => void; modal: Modal;
   selection: (change: SelectionChange) => Promise<void>; reload: () => Promise<void>; result: (result: OperationView) => void; rosterRefresh: () => void; filesRefresh: () => void; hasTranscript: () => boolean; find: () => FindSession | undefined; recovery: () => void; primaryEntries: () => EntryView[]; agents: () => AgentRow[]; selectedAgent: () => Pick<AgentRow, 'identity' | 'capabilities'> | undefined; selectAgent: (row: AgentRow) => void; selectPrimary: () => void; notices: () => void; sidebar: (visible: boolean) => void; sidebarShown: () => boolean; view: (tools: boolean, expand: boolean) => void; copyAgent: () => void; inspectAgent: () => void; resultLookup?: () => void; agentCaption?: (identity: string) => ConversationCaption; agentStatus: (row: AgentRow) => string; conversationFacts?: (identity: string) => readonly ReportedFact[]; tabs?: {close: () => void; switch: (direction: number) => void; layout: () => ConversationLayout}};
 export class Actions {
   private captions = new ConversationCaptions();
@@ -457,6 +457,7 @@ export class Actions {
       entry('Show thinking', 'Show loaded thinking text', () => this.ctx.view(false, true), transcript, undefined, 'Requires a conversation transcript'),
       entry('Hide thinking', 'Hide loaded thinking text', () => this.ctx.view(false, false), transcript, undefined, 'Requires a conversation transcript'),
       entry('Find text', 'Find text in this session', () => this.find(), transcript, undefined, 'Requires a conversation transcript'),
+      ...this.deskEntries(),
       entry('Notifications', 'Read and dismiss notices', () => this.ctx.notices()),
       entry('Refresh agents', 'Refresh the agent list', () => this.ctx.rosterRefresh()),
       entry('Refresh files', 'Refresh the file listing', () => this.ctx.filesRefresh()),
@@ -499,6 +500,12 @@ export class Actions {
       }
       return {...item, priority};
     }), ...this.agentEntries()];
+  }
+  private deskEntries():PaletteEntry[]{
+    const entries:PaletteEntry[]=[];
+    if(this.ctx.desk)entries.push({name:'Open Desk',description:'Review agent work beside Primary',source:'app',enabled:true,run:this.ctx.desk});
+    if(this.ctx.nextUnread&&this.ctx.hasUnread?.())entries.push({name:'Open next unread result',description:'Open the exact unread message beside Primary',source:'app',enabled:true,run:this.ctx.nextUnread,shortcut:{text:'⇧⌘U',keys:'Meta+Shift+U'}});
+    return entries;
   }
   private agentEntries(chooseTarget?: (target: Target) => void): PaletteEntry[] {
     const now = Date.now(); const agents = this.ctx.agents().filter(row => !chooseTarget || !!row.identity);
