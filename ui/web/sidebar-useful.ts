@@ -46,7 +46,7 @@ export class RecentSidebar {
   }
 }
 type SessionRow={key:string;name:string;at:number;state:string;title:string;primary?:PrimaryView;saved?:SavedSession};
-type SessionHooks={primaries:()=>readonly PrimaryView[];selected:()=>string|undefined;openPrimary:(primary:PrimaryView,saved?:SavedSession)=>void;openSaved:(saved:SavedSession)=>void;create:()=>void};
+type SessionHooks={updated?:()=>void;primaries:()=>readonly PrimaryView[];selected:()=>string|undefined;openPrimary:(primary:PrimaryView,saved?:SavedSession)=>void;openSaved:(saved:SavedSession)=>void;create:()=>void};
 type Catalog={pages:SavedSessionPage[];notes:string[];published:Set<string>};
 function primarySession(primary:PrimaryView,saved:SavedSession|undefined):SessionRow {
   const at=saved?Date.parse(saved.modifiedAt):0,name=primary.sessionName?.trim()||(saved?sessionLabel(saved):`${primary.cwd.split('/').filter(Boolean).at(-1)||primary.cwd} · ${(primary.sessionId??primary.key).slice(-4)}`);
@@ -88,7 +88,7 @@ export class SessionSidebar {
     }
     if(controller.signal.aborted)return;
     const saved=new Map<string,SavedSession>();for(const page of catalog.pages)for(const item of page.items)saved.set(item.path,item);
-    this.saved=[...saved.values()];this.published=catalog.published;this.notes=catalog.notes;
+    this.saved=[...saved.values()];this.published=catalog.published;this.notes=catalog.notes;this.hooks.updated?.();
     byId('session-open').title=['Find session',...catalog.notes].join('\n');
   }
   registered(identity:string):SavedSession|undefined{return this.saved.find(item=>item.id===identity&&this.published.has(item.path));}

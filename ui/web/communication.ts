@@ -1,16 +1,16 @@
-import type { AgentRow, Communication, CommunicationPresentation, JsonDisplay, MessageView, TaskSender } from '../shared/api.ts';
+import type { AgentRow, Communication, CommunicationPresentation, CommunicationSender, JsonDisplay, MessageView, TaskSender } from '../shared/api.ts';
 import type {ResultSelector} from '../shared/inspection.ts';
 import { button, copy, element, rawText, setText } from './dom.ts';
 import { cardAction, cardActionLabel } from './card-icons.ts';
 import { markdownDom, sourceWrap } from './safe-markdown.ts';
-import { isValidTimestamp, previewText } from './format.ts';
+import { compactAge, isValidTimestamp, previewText, timestampDetails } from './format.ts';
 import { messageAriaLabel, presentMessage, senderName, taskSenderHeading } from './entry-presentation.ts';
 import type { QualifiedReference, ReferenceField, ReferenceQuery } from './references.ts';
 import type {NamedDestination} from './tool-sentences.ts';
 
 type Shell = {node: HTMLElement; header: HTMLElement; heading: HTMLElement; actions: HTMLElement; body: HTMLElement};
 export type SenderSummary = Pick<AgentRow, 'handle' | 'model' | 'thinkingLevel'>;
-type Hooks = {taskSender?: ()=>TaskSender|undefined; senderSummary?: (identity:string)=>SenderSummary|undefined; thread?: (id:string,title?:string)=>void; operatorInput?: boolean; structured?: (display: JsonDisplay) => HTMLElement | undefined; inputContent?: (message:MessageView, root:HTMLElement)=>boolean; reply?: (message:MessageView)=>{text:string;open():void}|undefined; subject?: (identity:string)=>NamedDestination|undefined; result?: (identity:string,selector:ResultSelector)=>void; reference?: (query: ReferenceQuery, active: (node: HTMLElement) => boolean) => HTMLElement; active(): boolean; current(): MessageView; protected(node: HTMLElement): boolean; raw(message: MessageView): string; expanded(key: string): boolean; disclosure(key: string, open: boolean): void; layout(): void};
+type Hooks = {senderCaption?:(sender:CommunicationSender)=>string; taskSender?: ()=>TaskSender|undefined; senderSummary?: (identity:string)=>SenderSummary|undefined; thread?: (id:string,title?:string)=>void; operatorInput?: boolean; structured?: (display: JsonDisplay) => HTMLElement | undefined; inputContent?: (message:MessageView, root:HTMLElement)=>boolean; reply?: (message:MessageView)=>{text:string;open():void}|undefined; subject?: (identity:string)=>NamedDestination|undefined; result?: (identity:string,selector:ResultSelector)=>void; reference?: (query: ReferenceQuery, active: (node: HTMLElement) => boolean) => HTMLElement; active(): boolean; current(): MessageView; protected(node: HTMLElement): boolean; raw(message: MessageView): string; expanded(key: string): boolean; disclosure(key: string, open: boolean): void; layout(): void};
 type Ready = Extract<CommunicationPresentation, {state: 'ready'}>;
 type Row = [string, string, QualifiedReference?];
 function qualified(label: string, text: string, owner: string, field: ReferenceField): Row { return [label, text, {text, owner, field}]; }
@@ -23,8 +23,8 @@ function statusLine(value: CommunicationPresentation): {kind: string; preview: s
   const {kind, body} = value.value;
   if (kind !== 'check-in' && kind !== 'notice') return undefined;
   const title = value.value.kind === 'notice' ? value.value.metadata.title?.trim() : undefined;
-  const first = body.text.slice(0, 2048).split('\n').map(line => line.trim()).find(line => line) ?? '';
-  return {kind: value.value.kind === 'check-in' ? `still working · ${checkInElapsed(value.value.metadata.elapsedMs)}` : title ? `thread notice · ${bounded(title, 80)}` : 'thread notice', preview: bounded(first, 240)};
+  const first = body.text.split('\n').map(line => line.trim()).find(line => line) ?? '';
+  return {kind: value.value.kind === 'check-in' ? `still working · ${checkInElapsed(value.value.metadata.elapsedMs)}` : title ? `thread notice · ${title}` : 'thread notice', preview:first};
 }
 export function checkInElapsed(milliseconds: number): string {
   const seconds = Math.floor(milliseconds / 1000);
@@ -123,6 +123,8 @@ export class CommunicationCard {
   private taskName?: string;
   private lineMode = false;
   private lineOpen = false;
+  private noticeRow?: {hideSender:boolean;at?:number};
+  private readonly age=element('span','communication-line-age');
   private readonly text = element('div', 'communication-text');
   private readonly headingKind = element('span', 'communication-kind');
   private readonly headingSeparator = element('span', 'communication-kind-separator', ' · ');
@@ -155,7 +157,7 @@ export class CommunicationCard {
   constructor(shell: Shell, hooks: Hooks, keys: readonly [string, string]) {
     this.shell = shell; this.hooks = hooks; this.key = keys[0]; this.lineKey = keys[1];
     this.toggle.type = 'button'; this.toggle.addEventListener('click', () => { if (this.lineMode && hooks.active()) this.setLineOpen(!this.lineOpen, true); });
-    this.toggle.append(this.kindLabel, this.preview);
+    this.toggle.append(this.kindLabel, this.preview, this.age);this.age.hidden=true;
     shell.node.classList.add('communication-card'); for (const name of ['user', 'tool-only', 'thinking-only', 'extension-notice']) shell.node.classList.remove(name);
     shell.header.classList.add('communication-header'); shell.heading.classList.add('communication-sender'); shell.body.classList.add('communication-body');
     shell.heading.replaceChildren(this.headingKind, this.headingSeparator, this.headingName);
@@ -179,6 +181,14 @@ export class CommunicationCard {
     if(reply){const link=button(reply.text,()=>{if(this.current())this.hooks.reply?.(this.hooks.current())?.open();});this.reply.replaceChildren(document.createTextNode('Reply to: '),link);}else this.reply.replaceChildren();
     if (!this.inspection.hidden) this.renderSource();
     return true;
+  }
+  groupRow(value: {hideSender:boolean;at?:number}|undefined):void {
+    if(this.hooks.protected(this.shell.node) || !value && !this.noticeRow)return;
+    this.noticeRow=value;this.shell.node.classList.toggle('communication-group-row',!!value);
+    if(value)this.shell.body.append(this.shell.actions);else this.shell.header.append(this.shell.actions);
+    const at=value?.at;setText(this.age,at === undefined ? '' : compactAge(at,Date.now()));this.age.hidden=at === undefined;
+    this.age.title=at === undefined ? '' : timestampDetails(at).display;
+    const source=this.source;if(source?.communication)this.header(source.communication,source);
   }
   refreshSender():void{
     const message=this.current(),value=message?.communication;
@@ -212,7 +222,7 @@ export class CommunicationCard {
       this.taskName = taskSenderHeading(this.headingName, task, () => this.hooks.subject?.(task.identity), () => !!this.current() && this.hooks.taskSender?.()?.identity === task.identity);
       return `From ${this.taskName}`;
     }
-    const heading = sender ? senderName(sender, this.hooks.subject?.(sender.identity)) : input ? presentMessage(message, this.hooks.operatorInput).label : '';
+    const heading = sender ? this.hooks.senderCaption?.(sender) ?? senderName(sender, this.hooks.subject?.(sender.identity)) : input ? presentMessage(message, this.hooks.operatorInput).label : '';
     if (this.headingName.querySelector('.task-sender')) this.headingName.replaceChildren();
     setText(this.headingName, heading); this.headingName.title = '';
     return heading;
@@ -227,7 +237,7 @@ export class CommunicationCard {
     this.paintStatus(value);
     this.arrangeLine(value, heading);
     if (input) {this.headingKind.hidden = true; this.headingSeparator.hidden = true;}
-    this.shell.heading.hidden = !sender && !this.taskName && !(input && heading); this.shell.heading.title = sender?.identity ?? '';
+    this.shell.heading.hidden = this.noticeRow?.hideSender === true || !sender && !this.taskName && !(input && heading); this.shell.heading.title = sender ? `${heading}\n${sender.identity}` : '';
     this.unverified.hidden = value.state === 'ready' || input;
     const accessible = this.taskName ? `Message from ${this.taskName}` : heading || (input ? messageAriaLabel(message, this.hooks.operatorInput) : 'Message with unverified source');
     this.shell.node.setAttribute('aria-label', input || this.taskName ? accessible : `${communicationKind(value)} · ${accessible}`);
@@ -238,6 +248,7 @@ export class CommunicationCard {
     const reason = unanswered?.reason?.replace(/[_-]+/g, ' ');
     setText(this.noAnswer, unanswered ? `No answer${reason ? `: ${reason}` : ''}` : '');
     this.threadAction.hidden = !(value.state === 'ready' && value.value.kind === 'notice' && this.hooks.thread);
+    setText(this.threadAction,this.noticeRow ? 'Open in thread' : 'Open thread');
   }
   private paintMetadata(identity?: string): void {
     const summary = identity ? this.hooks.senderSummary?.(identity) : undefined;
@@ -250,6 +261,7 @@ export class CommunicationCard {
     if (value?.state === 'ready' && value.value.kind === 'notice') this.hooks.thread?.(value.value.metadata.threadId, value.value.metadata.title);
   }
   private paintHeading(full: boolean): void {
+    if(this.noticeRow){this.headingKind.hidden=true;this.headingSeparator.hidden=true;this.kindLabel.hidden=true;this.preview.hidden=false;this.shell.heading.hidden=this.noticeRow.hideSender;return;}
     setText(this.headingSeparator, this.headingKind.textContent && this.headingName.textContent ? ' · ' : '');
     this.headingKind.hidden = !full; this.headingSeparator.hidden = !full || !this.headingName.textContent;
     this.kindLabel.hidden = full; this.preview.hidden = full;
@@ -266,8 +278,8 @@ export class CommunicationCard {
       this.lineMode = true; this.unverified.before(this.toggle); this.toggle.prepend(this.shell.heading);
       node.classList.add('communication-line');
     }
-    setText(this.kindLabel, line.kind); setText(this.preview, line.preview);
-    this.toggle.setAttribute('aria-label', [heading, line.kind, line.preview].filter(Boolean).join(', '));
+    setText(this.kindLabel, line.kind); setText(this.preview, line.preview);this.preview.title=line.preview;
+    this.toggle.setAttribute('aria-label', [heading, this.noticeRow ? '' : line.kind, line.preview].filter(Boolean).join(', '));
     this.paintLine(this.hooks.expanded(this.lineKey));
   }
   private paintLine(open: boolean): void {
@@ -360,6 +372,7 @@ export class CommunicationCard {
     if (structured.length > 8192) warnings.push('Structured source display shortened.');
   }
   dispose(): void {
+    this.noticeRow=undefined;this.shell.header.append(this.shell.actions);this.shell.node.classList.remove('communication-group-row');
     if (this.lineMode) { this.lineMode = false; this.unverified.before(this.shell.heading); this.toggle.remove(); this.shell.node.classList.remove('communication-line'); delete this.shell.node.dataset.open; this.shell.body.hidden = false; }
     this.unverified.remove(); this.inspection.remove(); this.shell.node.classList.remove('communication-card', 'communication-input'); delete this.shell.node.dataset.state; delete this.shell.node.dataset.reason;
     this.shell.header.classList.remove('communication-header'); this.shell.heading.classList.remove('communication-sender'); this.shell.body.classList.remove('communication-body');

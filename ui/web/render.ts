@@ -1,4 +1,4 @@
-import type { EntryView, ImageView, JsonDisplay, MessageView, PartView, PresentationView, ReadingView, ThinkingChoice, TranscriptView } from '../shared/api.ts';
+import type { EntryView, ImageView, JsonDisplay, MessageView, PartView, PresentationView, ReadingView, ThinkingChoice, TranscriptView, CommunicationSender } from '../shared/api.ts';
 import type {ResultInspection, ResultSelector} from '../shared/inspection.ts';
 import { announce, button, copy, details, element, rawText, setText } from './dom.ts';
 import { ArrivalCounter, latestLabel } from './arrivals.ts';
@@ -15,6 +15,8 @@ import { cardPreviewLimits, readRange, presentResultPreview, presentToolPreview,
 import { thinkingExpanded } from './transcript-presentation.ts';
 import { TranscriptIndex, ToolElapsedClock, toolTime, thinkingLabel, thinkingPreview, slot, communicationDisclosureKeys } from './transcript-tools.ts';
 import { CommunicationCard, messageCopyText, messageCopyDescription, type SenderSummary } from './communication.ts';
+import {NoticeBlocks, type NoticeChild} from './notice-blocks.ts';
+import {ResponseFailure} from './response-failure.ts';
 import type { TranscriptGroups } from './transcript-groups.ts';
 import {TranscriptRows, type StepRun, type TranscriptRow} from './transcript-rows.ts';
 import {toolSentence,toolLabelParts,quietTextResult, type NamedDestination, type ToolLabelPart} from './tool-sentences.ts';
@@ -41,7 +43,7 @@ function thinkingSpans(summary: Element): {label: HTMLElement; preview: HTMLElem
   summary.replaceChildren(made.label, made.preview); return made;
 }
 const previewSuffix = (line: string): string => line ? ` · ${line}` : '';
-export type ViewHooks = {senderSummary?: (identity:string)=>SenderSummary|undefined; thread?: (id:string,title?:string)=>void; earlier?: () => void; operatorInput?: boolean; readTaskResult?: (reference:TaskReference,signal:AbortSignal)=>Promise<ResultInspection>; activity?: (text:string)=>void; cwd?: () => string | undefined; subject?: (value: string) => ToolSubjectCaption | undefined; result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView, thinking?: ThinkingChoice) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; preview?: (part: ImageView, url: string, invoker: HTMLElement) => () => void; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
+export type ViewHooks = {senderCaption?: (sender:CommunicationSender)=>string; senderSummary?: (identity:string)=>SenderSummary|undefined; thread?: (id:string,title?:string)=>void; earlier?: () => void; operatorInput?: boolean; readTaskResult?: (reference:TaskReference,signal:AbortSignal)=>Promise<ResultInspection>; activity?: (text:string)=>void; cwd?: () => string | undefined; subject?: (value: string) => ToolSubjectCaption | undefined; result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView, thinking?: ThinkingChoice) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; preview?: (part: ImageView, url: string, invoker: HTMLElement) => () => void; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
 const RAW_LIMIT = 65536;
 /** Scrolling up within this many pixels of the first loaded row reads the next older page. */
 const EARLIER_ZONE_PX = 240;
@@ -196,7 +198,7 @@ function setEntryRhythm(node: HTMLElement, children: readonly HTMLElement[], ses
 }
 type PartNode = {node: HTMLElement; source: PartView; partial: boolean};
 type OperatorFold = {content: HTMLElement; viewport: HTMLElement; toggle: HTMLButtonElement; key: string};
-type MessageNode = {inputFold?: OperatorFold; inputTime?: HTMLElement; communication?: CommunicationCard; node: HTMLElement; header: HTMLElement; heading: HTMLElement; delivery: HTMLElement; actions: HTMLElement; body: HTMLElement; error: HTMLElement; parts: Map<string, PartNode>; source: MessageView; menu: HTMLButtonElement; forkRevision: number; inspection?: HTMLElement; inspectionSource?: MessageView; sourceOpener?: HTMLElement; thinkingGroups?: Map<string, {node: HTMLDetailsElement; body: HTMLElement}>};
+type MessageNode = {inputFold?: OperatorFold; inputTime?: HTMLElement; communication?: CommunicationCard; node: HTMLElement; header: HTMLElement; heading: HTMLElement; delivery: HTMLElement; actions: HTMLElement; body: HTMLElement; error: HTMLElement; failure?:ResponseFailure; parts: Map<string, PartNode>; source: MessageView; menu: HTMLButtonElement; forkRevision: number; inspection?: HTMLElement; inspectionSource?: MessageView; sourceOpener?: HTMLElement; thinkingGroups?: Map<string, {node: HTMLDetailsElement; body: HTMLElement}>};
 type EventPage = {node: HTMLElement; rows: HTMLElement; page: number; previous: HTMLButtonElement; next: HTMLButtonElement; cache: Map<string, {source: EntryView; node: HTMLElement}>};
 type SessionNode = {source?: SessionGroup; details: HTMLDetailsElement; events: EventPage; notices: EventPage};
 type TurnMessage = {entry: EntryView; message: MessageView};
@@ -212,6 +214,7 @@ export class Transcript {
   private displayed: EntryView[] = [];
   private chronological: EntryView[] = [];
   private rows = new TranscriptRows();
+  private noticeBlocks:NoticeBlocks;
   private tasks = new ConversationTasks();
   private turnRows = new Map<string,AssistantTurn>();
   private latestTurn?: string;
@@ -290,6 +293,8 @@ export class Transcript {
   constructor(elements: TranscriptElements, hooks: ViewHooks) {
     this.hooks = {...hooks, presentation: (expanded, showThinking) => hooks.presentation(expanded, showThinking, this.view, this.thinkingChoice)};
     this.node = elements.transcript; this.latest = elements.latest;
+    this.noticeBlocks=new NoticeBlocks({subject:hooks.subject,senderCaption:hooks.senderCaption,thread:hooks.thread,source:id=>this.cache.get(id)?.messages.values().next().value?.communication,
+      protected:id=>{const node=this.cache.get(id)?.node;return !!node&&this.protectedNode(node);},reconcile:reconcileChildren});
     this.node.dataset.view = this.view;
     const visibilityChange = () => {
       if (this.destroyed) return;
@@ -462,7 +467,7 @@ export class Transcript {
     this.resize?.disconnect(); if (!this.destroyed) this.resize?.observe(this.node); this.sizes = new WeakMap(); this.scrolling = new WeakSet(); this.reflowAnchor = undefined; this.writtenScrollTop = undefined;
     this.clearFind(false); this.findRevision++;
     this.initialSettings.clear(); this.toolStates = new Map(); this.indexedFindId = undefined;
-    this.generation++; this.entries = []; this.displayed = []; this.turnRows.clear(); this.latestTurn = undefined; this.hoveredTurn = undefined; this.cache.clear(); this.tools.clear(); this.liveThinking.clear(); this.thinkingTimes = new Map(); this.index = new TranscriptIndex(); this.joined = this.index.joined; this.rows = new TranscriptRows(); this.tasks = new ConversationTasks(); this.visible.clear(); this.dirtyLayout = true; this.pins.clear(); this.heights.clear(); this.gaps.clear();
+    this.generation++; this.entries = []; this.displayed = []; this.turnRows.clear(); this.latestTurn = undefined; this.hoveredTurn = undefined; this.cache.clear(); this.tools.clear(); this.liveThinking.clear(); this.thinkingTimes = new Map(); this.index = new TranscriptIndex(); this.joined = this.index.joined; this.rows = new TranscriptRows(); this.noticeBlocks.clear(); this.tasks = new ConversationTasks(); this.visible.clear(); this.dirtyLayout = true; this.pins.clear(); this.heights.clear(); this.gaps.clear();
     this.expanded.clear(); this.streamedThinking.clear(); this.showThinking = false; this.thinkingChoice = undefined; this.follow = true; this.readingRevision = 0;
     this.layout = layoutItems([], this.heights, 140); this.restoring = undefined; this.node.replaceChildren(...(this.lead ? [this.lead] : [])); this.scrollTo(0); this.hold = undefined; this.arrivals.reset(); this.referenceNamesPending = false; this.syncLatest();
   }
@@ -514,6 +519,7 @@ export class Transcript {
     const ordered = this.view === 'grouped' ? this.groups.rows(visible) : visible;
     const retained = new Set([...this.cache].filter(([id, cached]) => cached.messages.size > 0 && (this.rows.byId.get(id)?.actionsOnly || this.protectedNode(cached.node))).map(([id]) => id));
     const displayed = this.rows.derive(ordered, this.joined, this.index.sessionOwners, this.showThinking,this.index.sessions,retained);
+    this.noticeBlocks.rebuild(displayed,this.rows.byId);
     this.migrateStepRows(previous);
     for (const [id, run] of this.rows.runs) this.index.disclosures.set(run.key,id);
     if (displayed.length !== this.displayed.length || displayed.some((entry, at) => entry.id !== this.displayed[at]?.id)) this.dirtyLayout = true;
@@ -943,6 +949,7 @@ export class Transcript {
   /** Rows the reader can scroll through, for judging how much a page added. */
   rowCount(): number { return this.displayed.length; }
   private refreshMountedCommunications(): void {
+    this.noticeBlocks.refresh();
     for (const entry of this.cache.values()) for (const message of entry.messages.values()) {
       if (this.protectedNode(message.node)) continue;
       if (message.source.communication) this.updateCommunication(message, message.source, entry.source?.id ?? '');
@@ -952,7 +959,7 @@ export class Transcript {
   private updateCommunication(cached: MessageNode, message: MessageView, entryId: string): void {
     if (!cached.communication) {
       const generation = this.generation;
-      cached.communication = new CommunicationCard(cached, {taskSender:()=>this.index.entries.get(entryId)?.sender,inputContent:(message,root)=>this.communicationInput(cached,message,root,entryId),subject:this.hooks.subject,senderSummary:this.hooks.senderSummary,thread:this.hooks.thread, operatorInput:this.hooks.operatorInput, structured:display=>presentResult(display,this.presentationContext()), reply:message=>{const task=this.tasks.replies.get(message);return task?.tool?{text:this.sentence(task.tool),open:()=>this.openTaskAnswer(task)}:undefined;}, active: () => !this.deferred && generation === this.generation && cached.node.isConnected && !this.hidden() && this.index.entries.get(entryId)?.messages?.includes(cached.source) === true, current: () => cached.source, result:this.hooks.result, protected: node => this.protectedNode(node), raw: source => partText(source.parts), expanded: key => this.expanded.has(key), disclosure: (key, open) => this.sourcePreference(key, open), layout: () => this.sourceLayout(entryId), reference: this.hooks.references ? (text, active) => this.hooks.references?.render(text, active) ?? element('span', undefined, typeof text === 'string' ? text : text.text) : undefined}, communicationDisclosureKeys(entryId, message.id));
+      cached.communication = new CommunicationCard(cached, {taskSender:()=>this.index.entries.get(entryId)?.sender,inputContent:(message,root)=>this.communicationInput(cached,message,root,entryId),subject:this.hooks.subject,senderCaption:this.hooks.senderCaption,senderSummary:this.hooks.senderSummary,thread:this.hooks.thread, operatorInput:this.hooks.operatorInput, structured:display=>presentResult(display,this.presentationContext()), reply:message=>{const task=this.tasks.replies.get(message);return task?.tool?{text:this.sentence(task.tool),open:()=>this.openTaskAnswer(task)}:undefined;}, active: () => !this.deferred && generation === this.generation && cached.node.isConnected && !this.hidden() && this.index.entries.get(entryId)?.messages?.includes(cached.source) === true, current: () => cached.source, result:this.hooks.result, protected: node => this.protectedNode(node), raw: source => partText(source.parts), expanded: key => this.expanded.has(key), disclosure: (key, open) => this.sourcePreference(key, open), layout: () => this.sourceLayout(entryId), reference: this.hooks.references ? (text, active) => this.hooks.references?.render(text, active) ?? element('span', undefined, typeof text === 'string' ? text : text.text) : undefined}, communicationDisclosureKeys(entryId, message.id));
     }
     if (cached.communication.sync(message)) {
       this.messageError(cached, message);
@@ -1032,15 +1039,17 @@ export class Transcript {
     node.style.height = `${height}px`; return node;
   }
   private children(items: LayoutItem[]): HTMLElement[] {
-    const children: HTMLElement[] = this.lead ? [this.lead] : []; let offset = 0;
-    for (const item of items) {
-      if (item.top > offset) children.push(this.gap(item.id, item.top - offset));
-      const entry = this.displayed[item.index]; if (!entry) continue;
-      children.push(this.updateEntry(entry,item.index)); offset = item.bottom;
+    const children:NoticeChild[]=this.lead ? [{node:this.lead}] : [];let offset=0;
+    for(const item of items) {
+      if(item.top > offset)children.push({node:this.gap(item.id,item.top-offset)});
+      const entry=this.displayed[item.index];if(!entry)continue;
+      const node=this.updateEntry(entry,item.index);
+      for(const message of this.cache.get(entry.id)?.messages.values() ?? [])this.noticeBlocks.decorate(entry.id,message.communication);
+      children.push({node,id:entry.id});offset=item.bottom;
     }
-    if (offset < this.layout.totalHeight) children.push(this.gap('tail', this.layout.totalHeight - offset));
-    const keep = new Set(children); for (const [key, node] of this.gaps) if (!keep.has(node)) this.gaps.delete(key);
-    return children;
+    if(offset < this.layout.totalHeight)children.push({node:this.gap('tail',this.layout.totalHeight-offset)});
+    const keep=new Set(children.map(child=>child.node));for(const [key,node]of this.gaps)if(!keep.has(node))this.gaps.delete(key);
+    return this.noticeBlocks.wrap(children);
   }
   private refreshGaps(items: LayoutItem[]): void {
     let offset = 0;
@@ -1054,7 +1063,8 @@ export class Transcript {
   private measure(items: LayoutItem[]): void {
     const measurements = new Map<string, number>();
     for (const item of items) {
-      const height = this.cache.get(item.id)?.node.offsetHeight;
+      const measured=this.cache.get(item.id)?.node.offsetHeight;
+      const height=measured ? measured+this.noticeBlocks.overhead(item.id) : undefined;
       if (height && height > 0 && this.heights.get(item.id) !== height) { this.heights.set(item.id, height); measurements.set(item.id, height); }
     }
     updateHeights(this.layout, measurements);
@@ -1148,7 +1158,11 @@ export class Transcript {
   }
   private entryTail(cached: EntryNode): HTMLElement[] {
     const children: HTMLElement[] = [];
-    if (cached.turnActions && !cached.turnActions.node.hidden) children.push(cached.turnActions.node);
+    if (cached.turnActions && !cached.turnActions.node.hidden) {
+      const failed=[...cached.messages.values()].findLast(message=>message.failure);
+      if(failed?.failure){cached.turnActions.copy.hidden=cached.turnActions.copy.disabled;cardActionLabel(cached.turnActions.copy,'Copy response text');failed.failure.actions.append(cached.turnActions.node);}
+      else {cached.turnActions.copy.hidden=false;cardActionLabel(cached.turnActions.copy,'Copy');children.push(cached.turnActions.node);}
+    }
     if (cached.dayDivider) children.push(cached.dayDivider);
     return children;
   }
@@ -1226,6 +1240,10 @@ export class Transcript {
   private messageError(cached: MessageNode, message: MessageView): string {
     const shown = errorPresentation(message);
     cached.error.className = `${shown.warning ? 'warning' : 'error'} message-error`; cached.error.hidden = !shown.summary;
+    const failed=message.role === 'assistant' && !!shown.summary && !shown.warning;
+    cached.node.classList.toggle('response-failure-message',failed);
+    if(failed)return this.responseFailure(cached,message,shown.diagnostic);
+    if(cached.failure){cached.header.append(cached.actions);cached.failure.node.remove();cached.failure=undefined;}
     if (!shown.summary) return '';
     let summary = cached.error.querySelector<HTMLElement>('.response-error-summary');
     if (!summary) { summary = element('span', 'response-error-summary'); cached.error.append(summary); }
@@ -1236,6 +1254,12 @@ export class Transcript {
       const body = diagnostic.querySelector('pre'); if (body) setText(body, bounded(shown.diagnostic));
     } else diagnostic?.remove();
     return shown.summary;
+  }
+  private responseFailure(cached:MessageNode,message:MessageView,diagnostic?:string):string {
+    if(this.protectedNode(cached.error))return 'Response failed';
+    if(!cached.failure){const generation=this.generation;cached.failure=new ResponseFailure(()=>generation === this.generation && !this.deferred && this.node.contains(cached.node),()=>this.sourceLayout(cached.node.closest<HTMLElement>('.entry')?.dataset.entryId ?? ''));cached.error.replaceChildren(cached.failure.node);}
+    cached.failure.update(diagnostic ?? (message.stopReason ? `Stop reason: ${message.stopReason}` : ''));
+    cached.failure.actions.append(cached.actions);return 'Response failed';
   }
   private joinedMessage(entryId: string, message: MessageView): boolean {
     if (message.error || !message.parts.length) return false;

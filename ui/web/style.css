@@ -913,6 +913,40 @@ pre.tool-document { font-family: var(--mono); font-size: var(--fs-code); line-he
 .spacer { pointer-events: none; }
 .copy-fallback { user-select: all; white-space: pre-wrap; }
 
+.notice-block { width: 100%; max-width: var(--read-width); margin-inline: auto; overflow: hidden; border: 0; border-radius: 8px; background: var(--raised); }
+.notice-block[data-start=true] { margin-top: 12px; }
+.notice-block[data-end=true] { margin-bottom: 12px; }
+.notice-block[data-start=false] { border-top-left-radius: 0; border-top-right-radius: 0; }
+.notice-block[data-end=false] { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.notice-block-header { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 12px; height: 32px; padding-inline: 12px; }
+.notice-block-header[hidden] { display: none; }
+.notice-block-title { min-width: 0; padding: 0; overflow: hidden; border: 0; color: var(--fg); font-size: var(--fs-ui); font-weight: 500; text-align: left; white-space: nowrap; text-overflow: clip; mask-image: linear-gradient(to right,#000 calc(100% - 24px),transparent); }
+.notice-block-title:is(:hover,:focus-visible) { color: var(--fg); background: transparent; }
+.notice-block-count, .communication-line-age { color: var(--muted); font-size: var(--fs-meta); white-space: nowrap; }
+.notice-block .notice-block-entry { width: 100%; max-width: none; padding: 0; }
+.notice-block .communication-group-row.communication-card { padding: 0; border-radius: 0; background: transparent; }
+.communication-group-row > .communication-header { min-height: 32px; }
+.communication-group-row .communication-toggle { display: grid; grid-template-columns: 160px minmax(0,1fr) auto; gap: 12px; width: 100%; height: 32px; padding: 0 12px; }
+.communication-group-row .communication-toggle:hover { background: color-mix(in srgb,var(--fg) 5%,var(--raised)); }
+.communication-group-row .communication-toggle > .communication-sender { min-width: 0; max-width: none; overflow: hidden; white-space: nowrap; text-overflow: clip; mask-image: linear-gradient(to right,#000 calc(100% - 24px),transparent); }
+.communication-group-row .communication-toggle:has(> .communication-sender[hidden]) { grid-template-columns: minmax(0,1fr) auto; }
+.communication-group-row .communication-toggle:has(> .communication-line-age[hidden]) { grid-template-columns: 160px minmax(0,1fr); }
+.communication-group-row .communication-toggle:has(> .communication-sender[hidden]):has(> .communication-line-age[hidden]) { grid-template-columns: minmax(0,1fr); }
+.communication-group-row .communication-line-kind { display: none; }
+.communication-group-row .communication-line-preview { color: var(--fg); text-overflow: clip; mask-image: linear-gradient(to right,#000 calc(100% - 24px),transparent); }
+.communication-group-row .communication-line-preview::before { content: none; }
+.communication-group-row > .communication-body { margin-top: 0; padding: 12px; }
+.communication-group-row > .communication-body > .message-actions { justify-content: flex-end; margin-top: 8px; }
+.response-failure { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 0 12px; min-height: 32px; margin-block: 12px; padding-inline: 12px; border: 0; border-radius: 8px; background: var(--raised); font-size: var(--fs-meta); }
+.response-failure-label { color: var(--error); white-space: nowrap; }
+.response-failure-preview { min-width: 0; overflow: hidden; color: var(--muted); white-space: nowrap; text-overflow: clip; mask-image: linear-gradient(to right,#000 calc(100% - 24px),transparent); }
+.response-failure-toggle { min-height: 32px; padding: 0; color: var(--fg); font-size: inherit; }
+.response-failure-body { grid-column: 1 / -1; min-width: 0; padding-block: 12px; color: var(--fg); }
+.response-failure-body[hidden] { display: none; }
+.response-failure-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--s2); }
+.response-failure-actions > .assistant-turn-actions { margin: 0; min-height: 24px; opacity: 1; pointer-events: auto; }
+.response-failure-message > .message-header { display: none; }
+.entry:has(> .response-failure-message) { padding-bottom: 0; }
 .communication-card { min-width: 0; max-width: 100%; padding: 0; border: 0; background: transparent; font-family: var(--sans); }
 .communication-card:not(.communication-input), .extension-notice { width: 100%; box-sizing: border-box; padding: var(--s3) var(--s4); border: 0; border-radius: var(--r-md); background: var(--peer-bg); box-shadow: none; }
 .communication-card.communication-line[data-open=false] { padding: 0; background: transparent; border-radius: 0; }
