@@ -192,6 +192,12 @@ export class ThreadReader {
   private readonly backButton: HTMLButtonElement;
   private readonly expandedPosts = new Set<string>();
   private highlightTimer?: ReturnType<typeof setTimeout>;
+  private postCursor?: {event: ThreadEventView; top: number};
+  private postMarker?: HTMLElement;
+  private postTimer?: ReturnType<typeof setTimeout>;
+  /** The queued scroll from a loaded-post jump must not request an older page. */
+  private postNavigationScroll = false;
+  private destroyed = false;
   private readonly earlier: HTMLButtonElement;
   private readonly earlierRow = element('div', 'thread-earlier-row');
   private readonly earlierNote = element('p', 'thread-note', 'Older events not loaded.');
@@ -248,9 +254,11 @@ export class ThreadReader {
     this.node.append(header, meta, this.scroller);
     if (typeof ResizeObserver === 'function') { this.resize = new ResizeObserver(() => {this.measurePosts(); this.settle();}); this.resize.observe(this.exchange); }
     this.scroller.addEventListener('scroll', () => {
+      const navigation = this.postNavigationScroll; this.postNavigationScroll = false;
+      if (this.postCursor && this.postCursor.top !== this.scroller.scrollTop) this.clearPostNavigation();
       this.rememberScroll(); this.reading = this.anchorRow();
       const top = this.scroller.scrollTop, up = top < this.lastTop; this.lastTop = top;
-      if (up && top <= EARLIER_EDGE && !this.failure) void this.loadEarlier();
+      if (up && top <= EARLIER_EDGE && !this.failure && !navigation && this.active) void this.loadEarlier();
     }, {passive: true});
     this.node.addEventListener('keydown', event => {
       if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return;
@@ -267,8 +275,51 @@ export class ThreadReader {
     this.participantsOpen=value.participants;this.participants.open=value.participants;setText(this.backButton,value.back);
     if(value.entry){this.entry=value.entry;this.cache.set(value.entry.item.id,value.entry);this.rows.clear();this.framed='';this.node.hidden=false;this.paint();this.restoreScroll();this.reading=this.anchorRow();this.lastTop=this.scroller.scrollTop;this.restorePending=false;}
   }
-  get active(): ThreadEntry | undefined { return this.node.hidden ? undefined : this.entry?.item; }
+  get active(): ThreadEntry | undefined { return this.destroyed || this.node.hidden ? undefined : this.entry?.item; }
   get scrollNode(): HTMLElement { return this.scroller; }
+  private postRows(): {event: ThreadEventView; node: HTMLElement; at: number}[] {
+    const events = new Map<HTMLElement, ThreadEventView>();
+    for (const event of this.entry?.events ?? []) {
+      const node = this.rows.get(event.sequence)?.node;
+      if (node && (event.kind === 'contribution' || event.kind === 'carried-authority')) events.set(node, event);
+    }
+    return Array.from(this.exchange.children).flatMap((node, at) => {
+      const event = events.get(node as HTMLElement);
+      return event ? [{event, node: node as HTMLElement, at}] : [];
+    });
+  }
+  private postPosition(): number {
+    if (this.scroller.scrollHeight - this.scroller.scrollTop - this.scroller.clientHeight <= 24) return this.exchange.children.length;
+    const anchor = this.anchorRow();
+    if (!anchor || anchor.top >= this.scroller.getBoundingClientRect().bottom) return -1;
+    return Array.from(this.exchange.children).findIndex(row => (row as HTMLElement).dataset.sequence === anchor.sequence);
+  }
+  post(direction: -1 | 1): ThreadEventView | undefined {
+    if (!this.active || !this.node.isConnected || this.node.closest('[hidden],[inert]')) return;
+    const rows = this.postRows(), cursor = this.postCursor;
+    const current = cursor?.top === this.scroller.scrollTop ? rows.findIndex(row => row.event === cursor.event) : -1;
+    if (current >= 0) return rows[current + direction]?.event;
+    const at = this.postPosition();
+    return (direction < 0 ? rows.findLast(row => row.at < at) : rows.find(row => row.at > at))?.event;
+  }
+  jumpPost(event: ThreadEventView): boolean {
+    if (!this.active || !this.node.isConnected || this.node.closest('[hidden],[inert]')) return false;
+    const row = this.postRows().find(row => row.event === event); if (!row) return false;
+    this.clearPostNavigation();
+    const top = this.scroller.scrollTop;
+    this.reveal(event.sequence, false);
+    this.postNavigationScroll ||= this.scroller.scrollTop !== top;
+    this.postCursor = {event, top: this.scroller.scrollTop}; this.rememberScroll(); this.reading = this.anchorRow();
+    this.postMarker = row.node; row.node.classList.add('own-message-focus');
+    this.postTimer = setTimeout(() => this.clearPostMarker(), 1500);
+    return true;
+  }
+  private clearPostMarker(): void {
+    if (this.postTimer !== undefined) clearTimeout(this.postTimer);
+    this.postTimer = undefined; this.postMarker?.classList.remove('own-message-focus'); this.postMarker = undefined;
+  }
+  private clearPostNavigation(): void { this.clearPostMarker(); this.postCursor = undefined; }
+  destroy(): void { this.destroyed = true; this.cancel(); this.resize?.disconnect(); }
   /** Shows a thread. A thread read earlier in this page appears at once at its old position, then refreshes. */
   open(item: ThreadEntry): void {
     this.rememberScroll(); this.cancel(); this.failure = undefined;
@@ -287,13 +338,14 @@ export class ThreadReader {
     this.node.hidden = true; this.paintControls();
   }
   private cancel(): void {
+    this.clearPostNavigation(); this.postNavigationScroll = false;
     this.controller?.abort(); this.earlierController?.abort(); this.serial++; this.earlierSerial++;
     this.controller = undefined; this.earlierController = undefined; this.loading = false; this.loadingEarlier = false;
   }
   /** Brings an open thread up to date after the page was hidden, at most once per interval. */
   refreshIfStale(now = Date.now()): void { if (this.active && !this.loading && now - this.loadedAt >= REFRESH_AFTER_MS) void this.refresh(); }
   /** Names can arrive after the thread does. */
-  refreshNames(): void { if (this.active && this.nameSignature() !== this.lastNames) { this.rows.clear(); this.framed = ''; this.paint(); } }
+  refreshNames(): void { if (this.active && this.nameSignature() !== this.lastNames) { this.clearPostNavigation(); this.rows.clear(); this.framed = ''; this.paint(); } }
   focus(): void { this.scroller.focus({preventScroll: true}); }
   private nameSignature(): string {
     const entry = this.entry; if (!entry) return '';
@@ -378,6 +430,7 @@ export class ThreadReader {
   }
   private take(entry: Cached, page: ThreadPageView, older: boolean): void {
     if (page.thread.id !== entry.item.id) throw new Error('The host answered for a different thread.');
+    this.clearPostNavigation();
     entry.thread = page.thread; entry.observedAt = page.observedAt; entry.source = page.source;
     entry.item = {...entry.item, title: page.thread.title}; this.hooks.changed?.();
     entry.events = (older ? prependEvents(pageEvents(page), entry.events) : mergeEvents(entry.events, pageEvents(page))).filter(event => event.sequence <= page.thread.sequence);
@@ -563,11 +616,14 @@ export class ThreadReader {
       prose.dataset.long = String(long); whole.hidden = !long;
     }
   }
-  private reveal(sequence: number): void {
+  private reveal(sequence: number, focus = true): void {
     const row = this.exchange.querySelector<HTMLElement>(`#thread-post-${sequence}`); if (!row) return;
-    const disclosure = row.closest('details'); if (disclosure) disclosure.open = true;
+    if (focus) this.clearPostNavigation();
+    const disclosure = row.closest('details'); if (focus && disclosure) disclosure.open = true;
     const group = row.closest<HTMLElement>('.thread-event-group'); const target = group ?? row;
-    target.scrollIntoView({block: 'center'}); row.focus({preventScroll: true});
+    target.scrollIntoView({block: 'center'});
+    if (!focus) return;
+    row.focus({preventScroll: true});
     for (const previous of this.exchange.querySelectorAll('.thread-highlight')) previous.classList.remove('thread-highlight');
     row.classList.add('thread-highlight'); if (this.highlightTimer) clearTimeout(this.highlightTimer);
     this.highlightTimer = setTimeout(() => row.classList.remove('thread-highlight'), 2000);

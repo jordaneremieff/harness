@@ -244,6 +244,21 @@ function receivedResultActions():{previous?:()=>void;next?:()=>void}{
   const action=(direction:-1|1)=>transcript.receivedResult(direction)?()=>{if(focusedTranscript()===transcript)transcript.jumpReceivedResult(direction);}:undefined;
   return {previous:action(-1),next:action(1)};
 }
+function focusedThreadReader(): ThreadReader | undefined {
+  const pane = threadPane, layout = currentLayout(), leaf = pane ? paneById(layout, pane.paneId) : undefined;
+  return pane && pane.workspaceId === state.workspace?.id && pane.paneId === layout.focusedPane && leaf &&
+    (leaf.active ?? undefined) === pane.active && threadReader.active && threadReader.node.isConnected &&
+    !threadReader.node.closest('[hidden],[inert]') ? threadReader : undefined;
+}
+function threadPostActions(): {previous?: () => void; next?: () => void} {
+  const pane = threadPane, reader = focusedThreadReader(), thread = reader?.active;
+  if (!pane || !reader || !thread) return {};
+  const action = (direction: -1 | 1) => {
+    const post = reader.post(direction);
+    return post ? () => {if (threadPane === pane && focusedThreadReader() === reader && reader.active === thread) reader.jumpPost(post);} : undefined;
+  };
+  return {previous: action(-1), next: action(1)};
+}
 function captureFind(controller?: ConversationController): ReturnType<Transcript['find']> | undefined {
   const target = layoutTarget(currentLayout(), primaryTarget());
   const captured = controller ?? (target && state.workspace ? controllers.get(controllerKey(state.workspace.id, target)) : undefined);
@@ -416,7 +431,7 @@ const references = new ReferenceResolver(resolveReference, destination => { void
   root: () => fileRoot.loading ? undefined : fileRoot.selection?.root ?? undefined,
   navigate: destination => { void navigateFileReference(destination).catch(showError); },
 },loadedDraftReference);
-const actions: Actions = new Actions({copyLastAnswer:copyLastAnswerAction,receivedResults:receivedResultActions,failedSteps:failedStepActions,ownMessages:ownMessageActions,readSession:saved=>openSessionRead({saved}),hasConvertibleSession:()=>!!sessionReader.saved,convertSession:()=>{const item=sessionReader.saved;if(item)picker.convertSaved(item);},desk:()=>openDesk(),nextUnread:openNextUnread,hasUnread:()=>!!nextUnreadNotice(),handover: () => handover.open(), snapshot: currentSnapshot, primary, modelChanged: renderAvailability, namingPrimary: () => { const selected = primary(); return selected?.lifecycle === 'ready' ? selected : [...state.primaries.values()].find(item => item.lifecycle === 'ready'); }, modelNamesChanged: renderAllComposerSettings, get composer() { return primaryComposer(); }, commandsChanged: () => {const target = primaryTarget(); if (target && state.workspace) controllers.get(controllerKey(state.workspace.id, target))?.composer.commandsChanged();}, modal, selection, reload: reloadSelection, result: showOperation, rosterRefresh: refreshRoster, filesRefresh: refreshFiles, hasTranscript: () => !!focusedTranscript(), find: () => captureFind(), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, sidebarShown: () => !byId('sidebar').hidden, view: (tools, expand) => focusedTranscript()?.expandLoaded(tools, expand), selectPrimary, agentCaption: identity => {return presentationCaptions().get(identity);}, agentStatus: row => presentation({kind: 'agent', identity: row.identity}).activity, agentPresentation:row=>presentation({kind:'agent',identity:row.identity}), conversationFacts: identity => agentFacts(agentRow(identity), state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame), copyAgent: () => { void copy(selectedAgent() ?? '', agentNode('view-notice')); }, inspectAgent,resultLookup:()=>{const target=layoutTarget(currentLayout(),primaryTarget());if(target)conversationController(target).inspection?.open('result');},
+const actions: Actions = new Actions({threadPosts:threadPostActions,copyLastAnswer:copyLastAnswerAction,receivedResults:receivedResultActions,failedSteps:failedStepActions,ownMessages:ownMessageActions,readSession:saved=>openSessionRead({saved}),hasConvertibleSession:()=>!!sessionReader.saved,convertSession:()=>{const item=sessionReader.saved;if(item)picker.convertSaved(item);},desk:()=>openDesk(),nextUnread:openNextUnread,hasUnread:()=>!!nextUnreadNotice(),handover: () => handover.open(), snapshot: currentSnapshot, primary, modelChanged: renderAvailability, namingPrimary: () => { const selected = primary(); return selected?.lifecycle === 'ready' ? selected : [...state.primaries.values()].find(item => item.lifecycle === 'ready'); }, modelNamesChanged: renderAllComposerSettings, get composer() { return primaryComposer(); }, commandsChanged: () => {const target = primaryTarget(); if (target && state.workspace) controllers.get(controllerKey(state.workspace.id, target))?.composer.commandsChanged();}, modal, selection, reload: reloadSelection, result: showOperation, rosterRefresh: refreshRoster, filesRefresh: refreshFiles, hasTranscript: () => !!focusedTranscript(), find: () => captureFind(), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, sidebarShown: () => !byId('sidebar').hidden, view: (tools, expand) => focusedTranscript()?.expandLoaded(tools, expand), selectPrimary, agentCaption: identity => {return presentationCaptions().get(identity);}, agentStatus: row => presentation({kind: 'agent', identity: row.identity}).activity, agentPresentation:row=>presentation({kind:'agent',identity:row.identity}), conversationFacts: identity => agentFacts(agentRow(identity), state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame), copyAgent: () => { void copy(selectedAgent() ?? '', agentNode('view-notice')); }, inspectAgent,resultLookup:()=>{const target=layoutTarget(currentLayout(),primaryTarget());if(target)conversationController(target).inspection?.open('result');},
   tabs: {close: () => { const tab = activeTab(currentLayout()); if (tab) applyLayout(closeTab(currentLayout(), tabKey(tab))); }, switch: direction => applyLayout(switchTab(currentLayout(), direction)), layout: currentLayout},
 });
 const fileBrowse = new FileBrowseState();
@@ -2914,6 +2929,14 @@ function deskShortcut(event:KeyboardEvent):boolean {
   if(modal.openNow||!event.metaKey||!event.shiftKey||event.altKey||event.ctrlKey||event.key.toLowerCase()!=='u')return false;
   if(nextUnreadNotice()){event.preventDefault();if(!event.repeat)openNextUnread();}return true;
 }
+function threadPostShortcut(event: KeyboardEvent): boolean {
+  if (modal.openNow || !event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || nativeEditingTarget(event.target)) return false;
+  if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return false;
+  const reader = focusedThreadReader(); if (!reader) return false;
+  event.preventDefault();
+  const post = reader.post(event.key === 'ArrowUp' ? -1 : 1); if (post) reader.jumpPost(post);
+  return true;
+}
 function ownMessageShortcut(event:KeyboardEvent):boolean{
   if(modal.openNow||!event.altKey||event.ctrlKey||event.metaKey||event.shiftKey||nativeEditingTarget(event.target))return false;
   if(event.key!=='ArrowUp'&&event.key!=='ArrowDown')return false;
@@ -2933,7 +2956,7 @@ function receivedResultShortcut(event:KeyboardEvent):boolean{
   event.preventDefault();transcript.jumpReceivedResult(event.code==='BracketLeft'?-1:1);return true;
 }
 export function appKey(event: KeyboardEvent): void {
-  if (event.isComposing || event.keyCode === 229 || event.defaultPrevented || contextMenu.openNow || ownMessageShortcut(event) || failedStepShortcut(event) || receivedResultShortcut(event)) return;
+  if (event.isComposing || event.keyCode === 229 || event.defaultPrevented || contextMenu.openNow || threadPostShortcut(event) || ownMessageShortcut(event) || failedStepShortcut(event) || receivedResultShortcut(event)) return;
   if(deskShortcut(event))return;
   if (event.key === 'Escape' && messageTarget.current && !modal.openNow) { event.preventDefault(); closeMessagePanel(); return; }
   if (event.key === 'Escape' && drawerOpen && !modal.openNow) { event.preventDefault(); toggleSidebar(false); return; }
@@ -2961,7 +2984,7 @@ function bind(): void {
     devInteractionRevision++;if (name !== 'select' && name !== 'scroll') selectionIntentRevision++;
     devRestoreWake?.();
   }, {capture: true, passive: true});
-  window.addEventListener('pagehide', event => {releaseNotice.readiness(false); if (!event.persisted) releaseNotice.destroy(); if (!event.persisted && !devNavigating) devReload?.destroy();});
+  window.addEventListener('pagehide', event => {releaseNotice.readiness(false); if (!event.persisted) {releaseNotice.destroy(); threadReader.destroy();} if (!event.persisted && !devNavigating) devReload?.destroy();});
   window.addEventListener('pageshow', () => {devNavigating=false;releaseNotice.readiness(connected && !releasePage);});
   setRequestTiming((start, end) => {diagnostics.measure('control-roundtrip', start, end);});
   diagnostics.setHidden(document.hidden);

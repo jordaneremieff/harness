@@ -172,7 +172,7 @@ pre, code, kbd, samp { font-family: var(--mono); font-size: var(--fs-code); line
 body { margin: 0; height: 100dvh; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); overflow: hidden; background: var(--canvas); color: var(--fg); -webkit-font-smoothing: antialiased; }
 button { margin: 0; padding: 0; border: 0; border-radius: var(--r-sm); background: transparent; cursor: pointer; text-align: inherit; }
 button:disabled { cursor: default; color: var(--dim); }
-:focus-visible, .entry.own-message-focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+:focus-visible, .entry.own-message-focus, .thread-message.own-message-focus { outline: 2px solid var(--accent); outline-offset: 2px; }
 input, select { max-width: 100%; margin: 0; padding: var(--s1) var(--s2); border: 1px solid var(--rule); border-radius: var(--r-sm); background: var(--canvas); }
 input:focus-visible, select:focus-visible { border-color: var(--edge); outline: 2px solid var(--accent); outline-offset: 2px; }
 input::placeholder, textarea::placeholder { color: var(--dim); }

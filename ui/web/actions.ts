@@ -109,6 +109,7 @@ export type SettingsSelection = {target: Target; model?: {provider: string; mode
 export type SelectionChange = Partial<Omit<Workspace, 'selectedTarget'>> & {selectedTarget?: Target | null};
 export type ActionContext = {
   copyLastAnswer?:()=>((()=>void)|undefined);
+  threadPosts?:()=>{previous?:()=>void;next?:()=>void};
   ownMessages?:()=>{previous?:()=>void;next?:()=>void};
   failedSteps?:()=>{previous?:()=>void;next?:()=>void};
   receivedResults?:()=>{previous?:()=>void;next?:()=>void};
@@ -471,6 +472,7 @@ export class Actions {
       ...this.ownMessageEntries(),
       ...this.failedStepEntries(),
       ...this.receivedResultEntries(),
+      ...this.threadPostEntries(),
       ...this.deskEntries(),
       entry('Notifications', 'Read and dismiss notices', () => this.ctx.notices()),
       entry('Refresh agents', 'Refresh the agent list', () => this.ctx.rosterRefresh()),
@@ -502,7 +504,7 @@ export class Actions {
         entries.push({...command, name: `Insert /${command.name}`, search: [`/${command.name}`], enabled: true, run: () => this.prepareText(`/${command.name}`)});
       }
     }
-    const conversation = new Set(['Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Previous own message', 'Next own message', 'Previous result', 'Next result', 'Copy agent ID', 'Sent and received tasks', 'Close conversation tab']);
+    const conversation = new Set(['Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Previous own message', 'Next own message', 'Previous result', 'Next result', 'Previous post', 'Next post', 'Copy agent ID', 'Sent and received tasks', 'Close conversation tab']);
     const primaryActions = new Set(['Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Model', 'Thinking', 'Review message', 'Insert /agent new']);
     const workspace = new Set(['New session', 'Sessions', 'Continue a handover', 'Saved drafts and messages', 'Appearance', 'Message input', 'Agent presentation control', 'Help', 'Notifications', 'Refresh agents', 'Refresh files', 'Hide sidebar', 'Show sidebar', 'Projects', 'Next conversation tab', 'Previous conversation tab']);
     const preferences = new Set(['Appearance','Message input','Agent presentation control','Hide sidebar','Show sidebar']);
@@ -531,6 +533,12 @@ export class Actions {
     const actions=this.ctx.receivedResults?.(),entries:PaletteEntry[]=[];
     if(actions?.previous)entries.push({name:'Previous result',description:'Jump to the previous loaded received report or result',source:'app',enabled:true,run:actions.previous,shortcut:{text:'⌥[',keys:'Alt+['}});
     if(actions?.next)entries.push({name:'Next result',description:'Jump to the next loaded received report or result',source:'app',enabled:true,run:actions.next,shortcut:{text:'⌥]',keys:'Alt+]'}});
+    return entries;
+  }
+  private threadPostEntries(): PaletteEntry[] {
+    const actions = this.ctx.threadPosts?.(), entries: PaletteEntry[] = [];
+    if (actions?.previous) entries.push({name: 'Previous post', description: 'Jump to the previous loaded thread post', source: 'app', enabled: true, run: actions.previous, shortcut: {text: '⌥↑', keys: 'Alt+ArrowUp'}});
+    if (actions?.next) entries.push({name: 'Next post', description: 'Jump to the next loaded thread post', source: 'app', enabled: true, run: actions.next, shortcut: {text: '⌥↓', keys: 'Alt+ArrowDown'}});
     return entries;
   }
   private deskEntries():PaletteEntry[]{
