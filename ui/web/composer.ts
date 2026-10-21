@@ -399,17 +399,31 @@ export class Composer {
   appendReason(workspace: string, targetKey: string): string {
     const buffer = this.primaryBuffer(workspace,targetKey);
     if (!buffer) return 'The Primary draft is not loaded.';
-    if (this.admissionBlocked || this.editor.disabled) return 'The Primary draft is not ready to save.';
-    if (this.composing || this.editor.value !== buffer.data.text) return 'The Primary draft has an unfinished edit.';
-    if (buffer.review || buffer.data.conflict || buffer.saveError || buffer.submitting) return 'The Primary draft needs attention.';
+    return this.ownedAppendReason(buffer,'Primary');
+  }
+  private ownedAppendReason(buffer:Buffer,label:string):string {
+    if (this.admissionBlocked || this.editor.disabled) return `The ${label} draft is not ready to save.`;
+    if (this.composing || this.editor.value !== buffer.data.text) return `The ${label} draft has an unfinished edit.`;
+    if (buffer.review || buffer.data.conflict || buffer.saveError || buffer.submitting) return `The ${label} draft needs attention.`;
     return '';
+  }
+  appendAgentText(workspace:string,targetKey:string,identity:string,addition:string):string {
+    const buffer=this.current;
+    if(this.destroyed||!buffer||buffer.workspace!==workspace||buffer.state.targetKey!==targetKey||buffer.state.target.kind!=='agent'||buffer.state.target.identity!==identity)return 'The agent draft changed.';
+    if(!this.elements.root.isConnected||this.elements.root.closest('[hidden],[inert]'))return 'The agent draft is not open.';
+    if(!this.connected||!this.ready)return 'The agent draft is not ready to save.';
+    const reason=this.ownedAppendReason(buffer,'agent');
+    return reason||this.appendOwnedText(buffer,addition,'agent');
   }
   /** One synchronous edit reads the latest owned buffer; its existing save queue keeps concurrent typing. */
   appendText(workspace: string, targetKey: string, addition: string): string {
     const reason = this.appendReason(workspace, targetKey), buffer = this.current;
     if (reason || !buffer) return reason || 'The Primary draft is not loaded.';
+    return this.appendOwnedText(buffer,addition,'Primary');
+  }
+  private appendOwnedText(buffer:Buffer,addition:string,label:string):string {
     const previous = buffer.data, text = `${previous.text}${previous.text ? '\n\n' : ''}${addition}`;
-    if (new TextEncoder().encode(text).length > LIMITS.textBytes) return 'The complete addition exceeds the Primary draft limit.';
+    if (new TextEncoder().encode(text).length > LIMITS.textBytes) return `The complete addition exceeds the ${label} draft limit.`;
     const native = {start:this.editor.selectionStart,end:this.editor.selectionEnd,direction:this.editor.selectionDirection,scrollTop:this.editor.scrollTop,scrollLeft:this.editor.scrollLeft};
     const saved = buffer.selection;
     const range = this.elements.root.closest('[hidden],[inert]') && saved?.text === previous.text && saved.edit === previous.edit ? saved : native;

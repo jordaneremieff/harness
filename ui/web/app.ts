@@ -145,7 +145,7 @@ let preparedReloadState:{key:string;revision:number;workspace:string}|undefined;
 const devCheckpointKey = 'ui:dev-checkpoint';
 type ConversationController = {workspaceId: string; target: Target; instanceId: string; root: HTMLElement; nodes: Map<string, HTMLElement>;
   elements: import('./composer.ts').ComposerElements; composer: Composer; transcript: Transcript; liveStrip?: AgentLiveStrip; inspection?: AgentInspection; readingGeometry?: ReturnType<Transcript['captureGeometry']>; saved?: TargetState; geometry?: ReturnType<Transcript['captureGeometry']>; messageRetention?: object;
-  abort: AbortController; historyAbort: AbortController; cursor: string | null; before: number | null; loading: boolean; preparing: boolean; passive?: boolean; historyReading?: TargetState['reading']; historyReady: boolean; historyBoundaryLoaded: boolean; historyComplete?: boolean; historyError?: {code?: string; message: string}; hasEntries?: boolean; initialized: boolean; showThinking: boolean; historyWork?: Promise<void>; connectionError?: string; connection?: Pick<import('../shared/api.ts').TargetPreparation, 'availability' | 'capabilities' | 'reason'> & {stale?: true}; refreshing?: boolean; resizer?: Resizer; fillingEarlier?: boolean};
+  abort: AbortController; historyAbort: AbortController; cursor: string | null; before: number | null; loading: boolean; preparing: boolean; passive?: boolean; historyReading?: TargetState['reading']; historyReady: boolean; historyBoundaryLoaded: boolean; historyComplete?: boolean; historyError?: {code?: string; message: string}; hasEntries?: boolean; initialized: boolean; showThinking: boolean; historyWork?: Promise<void>; preparationWork?:Promise<void>; connectionError?: string; connection?: Pick<import('../shared/api.ts').TargetPreparation, 'availability' | 'capabilities' | 'reason'> & {stale?: true}; refreshing?: boolean; resizer?: Resizer; fillingEarlier?: boolean};
 const controllers = new Map<string, ConversationController>();
 let primaryDraftSelection: PrimaryDraftSelection|undefined;
 const primaryDraftActions: PrimaryDraftActions = {reason: primaryDraftReason, append: (source, text) => {void appendPrimarySource(source,text).catch(error=>announce(errorMessage(error)));}};
@@ -1733,11 +1733,12 @@ function renderControllerEmpty(controller: ConversationController): void {
   const emptyView = prerequisite ? undefined : primaryEmpty(state.primaries.get(controller.target.key), !!controller.hasEntries, controller.historyReady);
   controllerNode(controller, 'empty').hidden = !emptyView; setText(controllerNode(controller, 'empty-heading'), emptyView?.heading ?? ''); setText(controllerNode(controller, 'empty-caption'), emptyView?.caption ?? '');
 }
-function prepareController(controller: ConversationController): void {
+function prepareController(controller: ConversationController): Promise<void>|undefined {
   if (controller.passive) {controller.composer.attachRetained(controller.workspaceId, controller.target); return;}
-  if (controller.preparing || controller.abort.signal.aborted) return; controller.preparing = true;
+  if (controller.preparing || controller.abort.signal.aborted) return controller.preparationWork; controller.preparing = true;
   const connection = source;
-  void request<import('../shared/api.ts').TargetPreparation>(`/api/workspaces/${encodeURIComponent(controller.workspaceId)}/targets`, 'POST', {target: controller.target}, undefined, controller.abort.signal).then(prepared => applyPreparation(controller, prepared, connection)).catch(error => {if (preparationCurrent(connection) && !controller.abort.signal.aborted) controllerPreparationFailed(controller, error);}).finally(() => {controller.preparing = false; if (!controller.historyReady && !controller.root.hidden) void loadControllerHistory(controller);});
+  const work=request<import('../shared/api.ts').TargetPreparation>(`/api/workspaces/${encodeURIComponent(controller.workspaceId)}/targets`, 'POST', {target: controller.target}, undefined, controller.abort.signal).then(prepared => applyPreparation(controller, prepared, connection)).catch(error => {if (preparationCurrent(connection) && !controller.abort.signal.aborted) controllerPreparationFailed(controller, error);}).finally(() => {controller.preparing = false;controller.preparationWork=undefined; if (!controller.historyReady && !controller.root.hidden) void loadControllerHistory(controller);});
+  controller.preparationWork=work;return work;
 }
 function applyPreparation(controller: ConversationController, prepared: import('../shared/api.ts').TargetPreparation, connection: EventSource | undefined): void {
   if (controller.workspaceId !== state.workspace?.id || controller.abort.signal.aborted || !sameTarget(prepared.targetState.target, controller.target)) return;
@@ -2405,7 +2406,7 @@ function reviewSource(row:DeskRow):{controller:ConversationController;task:Conve
 }
 type DeskReviewSession={context:string;row:DeskRow;source:NonNullable<ReturnType<typeof reviewSource>>;recipient:ConversationController;abort:AbortController;data:ReviewData;sinceLoading?:boolean};
 let deskReview:DeskReviewSession|undefined;
-const review=new Review(backToDesk,openReviewStep,()=>{void loadReviewEarlier();},{subject:toolSubjectCaption,senderCaption:currentSenderCaption,senderSummary:identity=>state.roster.get(identity)??identityNames.get(identity),image:part=>{const session=deskReview;return session&&reviewCurrent(session)?imageUrl(part,session.recipient.target,session.recipient.workspaceId):undefined;}});
+const review=new Review(backToDesk,openReviewStep,()=>{void loadReviewEarlier();},()=>{void continueDeskReview();},{subject:toolSubjectCaption,senderCaption:currentSenderCaption,senderSummary:identity=>state.roster.get(identity)??identityNames.get(identity),image:part=>{const session=deskReview;return session&&reviewCurrent(session)?imageUrl(part,session.recipient.target,session.recipient.workspaceId):undefined;}});
 function endDeskReview():void {deskReview?.abort.abort();deskReview=undefined;review.visibility(false);}
 function backToDesk():void {endDeskReview();if(deskPane){deskPane.list=true;renderNavigation();renderDesk();}}
 function reviewCurrent(session:DeskReviewSession):boolean {
@@ -2433,7 +2434,7 @@ function deskReviewData(session:DeskReviewSession,result:ResultInspection):Revie
   const resolve=(id:number|undefined,field:'entryId'|'answerEntryId')=>id===undefined?undefined:loadedReference(entries,{text:String(id),owner:identity,field},undefined,identity);
   const changes=reviewChanges(entries,conversation?.tools??new Map(),resolve(result.entryId,'entryId'),resolve(result.answerEntryId,'answerEntryId'));
   const answer=result.answer?{text:result.answer.text,complete:!result.answer.shortened,redacted:result.answer.protected}:session.data.answer;
-  return {...session.data,answer,changes:changes.changes,turnLoaded:changes.loaded,loading:false,error:result.reason?.text??session.recipient.historyError?.message,since:deskReviewSince(session)};
+  return {...session.data,answer,changes:changes.changes,turnLoaded:changes.loaded,loading:false,error:result.reason?.text??session.recipient.historyError?.message,since:deskReviewSince(session),answerEntryId:result.answer&&result.answerEntryId!==undefined?String(result.answerEntryId):undefined};
 }
 function reviewBrowserInputs(session:DeskReviewSession,entries:readonly EntryView[]):ReadonlySet<string> {
   const recipient=session.recipient,identity=session.source.reference.sessionId,owned=new Set<string>();
@@ -2476,6 +2477,49 @@ async function loadDeskReview(session:DeskReviewSession):Promise<void> {
     if(!reviewCurrent(session))return;
     session.data=deskReviewData(session,result);review.update(session.data);
   }catch(error){if(reviewCurrent(session)){session.data={...session.data,loading:false,error:errorMessage(error),since:deskReviewSince(session)};review.update(session.data);}}
+}
+function reviewContinuationSourceCurrent(session:DeskReviewSession):boolean {
+  const source=reviewSource(session.row),recipient=session.recipient;
+  return session.context===deskContext()&&!session.source.controller.abort.signal.aborted&&source?.controller===session.source.controller&&source.generation===session.source.generation&&!recipient.abort.signal.aborted&&recipient.workspaceId===state.workspace?.id&&recipient.target.kind==='agent'&&recipient.target.identity===session.source.reference.sessionId&&controllers.get(controllerKey(recipient.workspaceId,recipient.target))===recipient;
+}
+function reviewDestinationCurrent(opened:NonNullable<Awaited<ReturnType<typeof openDeskAgentConversation>>>,target:Extract<Target,{kind:'agent'}>):boolean {
+  if(deskReview||deskPane!==opened.pane||deskPane.list||deskPane.id!==opened.paneId||paneSelectionRevision!==opened.revision)return false;
+  const controller=opened.controller,pane=paneById(deskLayout(),opened.paneId),region=paneRegions.get(opened.paneId)?.node;
+  return pane?.active===`agent:${target.identity}`&&sameTarget(controller.target,target)&&!controller.abort.signal.aborted&&controller.root.isConnected&&!controller.root.closest('[hidden],[inert]')&&region?.contains(controller.root)===true&&region.contains(controller.elements.root);
+}
+function captureReviewContinuation(session:DeskReviewSession){
+  if(!reviewCurrent(session)||!reviewContinuationSourceCurrent(session))throw new Error('The Review source changed. Open the current Review again.');
+  const answer=review.continueSource(),generation=session.recipient.transcript.captureGeometry().generation,message=messageTarget.current;
+  if(answer.text&&(answer.body!==session.data.answer||answer.entryId!==session.data.answerEntryId))throw new Error('The answer source changed. Clear the selection and select the current answer.');
+  const current=()=>reviewContinuationSourceCurrent(session)&&answer.current()&&!deskReview&&messageTarget.current===message&&session.recipient.transcript.captureGeometry().generation===generation;
+  return {answer,current};
+}
+function appendReviewContinuation(controller:ConversationController,target:Extract<Target,{kind:'agent'}>,answer:ReturnType<Review['continueSource']>,current:()=>boolean):void {
+  if(!answer.text)return;
+  const saved=controller.composer.state;
+  if(!current()||!saved||!sameTarget(saved.target,target))throw new Error('The agent draft is not ready. Your draft is unchanged.');
+  const source:PrimaryDraftSource={caption:()=>`Review · ${deskCaption(target.identity)}`,current,href:()=>answer.entryId?`#reference=${encodeURIComponent(JSON.stringify({target,entryId:answer.entryId}))}`:undefined};
+  const failure=controller.composer.appendAgentText(controller.workspaceId,saved.targetKey,target.identity,primaryDraftText(source,answer.text));
+  if(failure)throw new Error(failure);
+  announce(`Added to ${deskCaption(target.identity)} draft.`);
+}
+async function continueDeskReview():Promise<void> {
+  const session=deskReview;if(!session)return;
+  const target={kind:'agent' as const,identity:session.source.reference.sessionId};
+  let opened:Awaited<ReturnType<typeof openDeskAgentConversation>>;
+  try {
+    const {answer,current}=captureReviewContinuation(session);
+    review.feedback('');endDeskReview();opened=await openDeskAgentConversation(target,current);
+    if(!opened||opened.controller!==session.recipient||!current()||!reviewDestinationCurrent(opened,target))throw new Error('Continue stopped because the conversation changed. Your drafts are unchanged.');
+    const controller=opened.controller;
+    if(!controller.composer.state&&controller.preparationWork)await controller.preparationWork;
+    if(!current()||!reviewDestinationCurrent(opened,target))throw new Error('Continue stopped because the conversation changed. Your drafts are unchanged.');
+    appendReviewContinuation(controller,target,answer,current);
+  }catch(error){
+    const message=errorMessage(error);announce(message);
+    if(reviewCurrent(session))review.feedback(message);
+    else if(opened&&reviewDestinationCurrent(opened,target))modal.open('Continue stopped').append(element('p',undefined,message));
+  }
 }
 function openReviewStep():void {
   const session=deskReview;if(!session||!reviewCurrent(session))return;
@@ -2607,7 +2651,10 @@ async function openDeskNotice(notice:CommunicationNotice):Promise<void> {
 }
 async function openDeskConversation(row:DeskRow):Promise<void> {
   endDeskReview();const target=deskReplyTarget(row);if(!target){openDeskSession(row);return;}
-  if(!ensureDeskPane()||!deskPane)return;const captured=deskPane;
+  await openDeskAgentConversation(target);
+}
+async function openDeskAgentConversation(target:Extract<Target,{kind:'agent'}>,current:()=>boolean=()=>true){
+  if(!current()||!ensureDeskPane()||!deskPane)return;const captured=deskPane;
   clearDeskComposer();extensionDialogs.inline();captured.list=false;
   let layout=deskLayout(),key=`agent:${target.identity}`,existing=paneLeaves(layout.root).find(pane=>pane.tabs.some(tab=>tabKey(tab)===key));
   if(existing&&existing.id!==captured.id){
@@ -2615,9 +2662,12 @@ async function openDeskConversation(row:DeskRow):Promise<void> {
     else captured.id=existing.id;
   }
   layout=openTab({...layout,focusedPane:captured.id},{kind:'agent',identity:target.identity});captured.provisional=undefined;
-  await selection({conversationLayout:layout,selectedTarget:target,panelVisible:true});
-  if(deskPane!==captured||state.workspace?.id!==captured.workspace)return;
+  const navigation=selection({conversationLayout:layout,selectedTarget:target,panelVisible:true}),revision=paneSelectionRevision;
+  await navigation;
+  if(!current()||paneSelectionRevision!==revision||deskPane!==captured||state.workspace?.id!==captured.workspace)return;
   const controller=conversationController(target);controller.passive=false;controller.inspection?.conversation();renderNavigation();renderController(controller);await loadControllerHistory(controller);
+  if(!current()||paneSelectionRevision!==revision||deskPane!==captured)return;
+  return {controller,pane:captured,paneId:captured.id,revision};
 }
 function closeDesk():void {endDeskReview();clearDeskComposer();deskPane=undefined;desk.node.remove();review.node.remove();deskBack.remove();extensionDialogs.inline();desk.reset();if(state.workspace)renderNavigation();}
 let sessionReadPane:{context:string;id:string;focus:string;returnKey:string;provisional?:ConversationLayout}|undefined;

@@ -4,9 +4,10 @@ import {TranscriptIndex, type JoinedTool} from './transcript-tools.ts';
 import type {ThinkingTime, ToolState} from './state.ts';
 import {Transcript, type ViewHooks} from './render.ts';
 import {suppliedDifference, differenceNotice} from './supplied-difference.ts';
+import {selectionWithin} from './primary-draft-actions.ts';
 
 export type ReviewSince = {entries:EntryView[];tools:ReadonlyMap<string,ToolState>;thinking:ReadonlyMap<string,ThinkingTime>;yours:boolean;earlier:boolean;loading:boolean;error?:string};
-export type ReviewData = {caption:string;outcome:string;ask?:CommunicationBody;answer?:CommunicationBody;changes:JoinedTool[];turnLoaded:boolean;loading:boolean;error?:string;since?:ReviewSince};
+export type ReviewData = {caption:string;outcome:string;ask?:CommunicationBody;answer?:CommunicationBody;changes:JoinedTool[];turnLoaded:boolean;loading:boolean;error?:string;since?:ReviewSince;answerEntryId?:string};
 function record(value:unknown):Record<string,unknown>{return value&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:{};}
 const text=(value:unknown):string|undefined=>typeof value==='string'?value:undefined;
 function requestEntry(entry:EntryView):boolean {
@@ -80,13 +81,19 @@ export class Review {
   private sinceView:Transcript;
   private sinceBoundary?:string;
   private step:HTMLButtonElement;
+  private continueButton:HTMLButtonElement;
+  private continueError=element('p','error');
+  private renderedAnswer?:CommunicationBody;
+  private renderedAnswerEntry?:string;
+  private answerVersion=0;
+  private pressedVersion?:number;
   private observed=new ResizeObserver(()=>this.measureAsk());
   private signature='';
   private askSignature='';
   private answerSignature='';
   private askWidth?:number;
   private askLines?:number;
-  constructor(back:()=>void,step:()=>void,load:()=>void,hooks:Pick<ViewHooks,'subject'|'senderCaption'|'senderSummary'|'image'>){
+  constructor(back:()=>void,step:()=>void,load:()=>void,proceed:()=>void,hooks:Pick<ViewHooks,'subject'|'senderCaption'|'senderSummary'|'image'>){
     this.node.hidden=true;this.node.setAttribute('aria-label','Review');
     const header=element('div','review-header');header.append(this.title,button('Back to Desk',back));
     const transcript=element('div','transcript review-since-transcript'),latest=element('button','latest','Latest');
@@ -95,15 +102,20 @@ export class Review {
     this.sinceLoad=button('Load',load);this.sinceEarlier.append(document.createTextNode('Earlier entries not loaded · '),this.sinceLoad);
     this.sinceBody.append(transcript,latest);this.since.append(this.sinceTitle,this.sinceEarlier,this.sinceError,this.sinceBody);this.since.hidden=true;
     this.step=button('Open the step that sent it',step);this.content.append(this.changes,this.asked,this.answer,this.since);
-    this.node.append(header,this.outcome,this.status,this.content,this.step);this.observed.observe(this.asked);
+    this.continueButton=button('Continue',proceed);
+    this.continueButton.addEventListener('pointerdown',event=>{this.pressedVersion=this.answerVersion;event.preventDefault();});
+    this.continueButton.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' ')this.pressedVersion=this.answerVersion;});
+    this.continueError.hidden=true;this.continueError.setAttribute('role','status');
+    this.node.append(header,this.outcome,this.status,this.content,this.step,this.continueButton,this.continueError);this.observed.observe(this.asked);
   }
-  reset():void {this.signature='';this.askSignature='';this.answerSignature='';this.content.scrollTop=0;this.changes.replaceChildren();this.asked.replaceChildren();this.answer.replaceChildren();this.clearSince();}
+  reset():void {this.answerVersion++;this.renderedAnswer=undefined;this.renderedAnswerEntry=undefined;this.continueError.hidden=true;this.signature='';this.askSignature='';this.answerSignature='';this.content.scrollTop=0;this.changes.replaceChildren();this.asked.replaceChildren();this.answer.replaceChildren();this.clearSince();}
   update(data:ReviewData):void {
     setText(this.title,`Review · ${data.caption}`);setText(this.outcome,data.outcome);setText(this.status,data.error??(data.loading?'Reading exact task result':''));this.status.hidden=!this.status.textContent;
+    setText(this.continueButton,`Continue with ${data.caption}`);
     const signature=JSON.stringify([data.ask,data.answer,data.changes,data.turnLoaded]);
     const selection=document.getSelection();
     if(selection&&!selection.isCollapsed&&this.content.contains(selection.anchorNode))return;
-    this.paintSince(data.since);
+    this.paintSince(data.since);this.paintAnswer(data.answer,data.answerEntryId);
     if(signature===this.signature)return;
     this.signature=signature;this.changes.replaceChildren(element('h3',undefined,'Changes'));
     if(data.changes.length)this.changes.append(...data.changes.map(changeView));
@@ -113,9 +125,23 @@ export class Review {
       this.askSignature=askSignature;this.asked.replaceChildren();
       if(data.ask)this.askBody(data.ask);else this.asked.append(element('h3',undefined,'Asked'),element('p','secondary','Ask text is not supplied.'));
     }
-    this.paintAnswer(data.answer);this.measureAsk();
+    this.measureAsk();
   }
-  private paintAnswer(body:CommunicationBody|undefined):void {
+  continueSource():{body?:CommunicationBody;entryId?:string;text?:string;current:()=>boolean} {
+    const pressed=this.pressedVersion;this.pressedVersion=undefined;
+    if(!this.continueButton.isConnected||this.continueButton.closest('[hidden],[inert]')||this.continueButton.disabled||pressed!==undefined&&pressed!==this.answerVersion)throw new Error('The Review action changed. Open the current Review again.');
+    const version=this.answerVersion;
+    return {body:this.renderedAnswer,entryId:this.renderedAnswerEntry,text:this.answerSelection(),current:()=>this.answerVersion===version};
+  }
+  private answerSelection():string|undefined {
+    const selection=document.getSelection(),body=this.answer.querySelector<HTMLElement>('pre.review-supplied');
+    if(!selection||selection.isCollapsed||!body||!selectionWithin(selection,body))return;
+    for(let index=0;index<selection.rangeCount;index++){const range=selection.getRangeAt(index);if(!body.contains(range.startContainer)||!body.contains(range.endContainer))return;}
+    return selection.toString()||undefined;
+  }
+  feedback(message:string):void {setText(this.continueError,message);this.continueError.hidden=!message;}
+  private paintAnswer(body:CommunicationBody|undefined,entryId:string|undefined):void {
+    if(this.renderedAnswer!==body||this.renderedAnswerEntry!==entryId){this.answerVersion++;this.renderedAnswer=body;this.renderedAnswerEntry=entryId;}
     const signature=JSON.stringify(body)??'';if(this.answerSignature===signature&&this.answer.children.length)return;
     this.answerSignature=signature;this.answer.replaceChildren(element('h3',undefined,'Answer'));
     if(body){this.answer.append(element('pre','review-supplied',body.text),button('Copy answer',()=>{void copy(body.text,this.answer);}));coverage(this.answer,body);}
@@ -138,7 +164,7 @@ export class Review {
   }
   refreshNames():void {this.sinceView.refreshSubjects();}
   visibility(visible:boolean):void {this.node.hidden=!visible;if(visible)this.measureAsk();this.sinceView.visibilityChanged();}
-  destroy():void {this.observed.disconnect();this.sinceView.destroy();}
+  destroy():void {this.answerVersion++;this.observed.disconnect();this.sinceView.destroy();}
   private askBody(body:CommunicationBody):void {
     this.askWidth=undefined;this.askLines=undefined;
     const viewport=element('div','operator-message-viewport'),content=element('pre','review-ask-text',body.text);viewport.append(content);
