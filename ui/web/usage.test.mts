@@ -13,15 +13,16 @@ test('absent usage preserves Primary unavailable explanations without invented z
   assert.match(result.facts.find(fact => fact.key === 'cost')?.detail ?? '', /Missing cost is not zero/);
   assert.doesNotMatch(result.facts.map(fact => fact.text).join(' '), /\$0|elapsed|branch/);
 });
-test('context tokens and window survive an unavailable percentage', () => {
+test('context tokens and window survive an unavailable percentage as detail-only facts', () => {
   const result = usageFacts({...primary, contextUsage: {tokens: 1234, percent: null, contextWindow: 100_000}});
-  assert.deepEqual(result.facts.filter(fact => fact.summary).map(({key, text}) => ({key, text})), [{key: 'context', text: 'Context unknown'}, {key: 'contextTokens', text: '1.2k/100k'}]);
+  assert.deepEqual(result.facts.filter(fact => fact.summary).map(({key, text}) => ({key, text})), [{key: 'context', text: 'Context unknown'}]);
+  assert.equal(result.facts.find(fact => fact.key === 'contextTokens')?.text, '1.2k/100k'); assert.equal(result.facts.find(fact => fact.key === 'contextTokens')?.summary, false);
   assert.equal(result.contextFraction, null); assert.match(result.facts[1]?.detail ?? '', /1,234.*100,000/);
-  assert.equal(usageSummary({...primary, contextUsage: {tokens: 0, percent: null, contextWindow: 100_000}}), 'Context unknown │ 0/100k');
+  assert.equal(usageSummary({...primary, contextUsage: {tokens: 0, percent: null, contextWindow: 100_000}}), 'Context unknown');
 });
 test('reported percentage, current window tokens, and session totals stay separate', () => {
   const result = usageFacts({...primary, contextUsage: {tokens: 100, percent: 10.123, contextWindow: 1000}, usage});
-  assert.deepEqual(result.facts.map(fact => [fact.key, fact.text]), [['context', 'Context 10.1%'], ['contextTokens', '100/1.0k'], ['cost', 'Session ~$0.01']]);
+  assert.deepEqual(result.facts.map(fact => [fact.key, fact.text]), [['context', 'Context 10.1%'], ['contextTokens', '100/1.0k'], ['cost', '$0.01']]);
   assert.equal(result.contextFraction, 0.10122999999999999);
   assert.match(result.facts.find(fact => fact.key === 'cost')?.detail ?? '', /0.012340 USD/);
   assert.match(result.facts.find(fact => fact.key === 'cost')?.detail ?? '', /input 9, output 7, cache read 8, cache write 0/);
@@ -31,8 +32,8 @@ test('reported percentage, current window tokens, and session totals stay separa
 test('unknown context displays question marks while the bar stays absent', () => {
   const result = usageFacts({...primary, contextUsage: {tokens: null, percent: null, contextWindow: 200_000}});
   assert.equal(result.contextFraction, null);
-  assert.deepEqual(result.facts.filter(fact => fact.summary).map(fact => fact.text), ['Context unknown', '?/200k']);
-  assert.match(result.facts[1]?.detail ?? '', /200,000/);
+  assert.deepEqual(result.facts.filter(fact => fact.summary).map(fact => fact.text), ['Context unknown']);
+  assert.equal(result.facts[1]?.text, '?/200k'); assert.match(result.facts[1]?.detail ?? '', /200,000/);
 });
 test('compact token units match the TUI and titles preserve exact totals', () => {
   for (const [tokens, text] of [[999, '999'], [9500, '9.5k'], [42_000, '42k'], [1_200_000, '1.2M'], [12_000_000, '12M']] as const) {
@@ -52,7 +53,7 @@ test('cache share uses loaded prompt tokens including writes, never RPC session 
   const empty = usageFacts(supplied, [entry('zero', {input: 0, cacheRead: 0, cacheWrite: 0})]);
   assert.equal(empty.facts.find(fact => fact.key === 'cacheHitShare')?.summary, false);
   assert.match(empty.facts.find(fact => fact.key === 'cacheHitShare')?.detail ?? '', /input 0, cache read 0, cache write 0.*No positive prompt-token denominator/);
-  assert.equal(empty.facts.find(fact => fact.key === 'cost')?.text, 'Session ~$0.00');
+  assert.equal(empty.facts.find(fact => fact.key === 'cost')?.text, '$0.00');
 });
 test('loaded assistant cache share excludes tool and compaction usage and never claims complete-session scope', () => {
   const rows = [entry('hit', {input: 10, cacheRead: 30, cacheWrite: 20}), entry('tool', {input: 1000, cacheRead: 9000, cacheWrite: 0}, 'toolResult'),
@@ -88,7 +89,7 @@ test('context bar fraction is bounded without rewriting the reported percentage'
   const result = usageFacts({...primary, contextUsage: {tokens: null, percent: 120, contextWindow: 1000}});
   assert.equal(result.contextFraction, 1); assert.equal(result.facts[0]?.text, 'Context 120%');
   assert.equal(usageFacts({...primary, contextUsage: {tokens: 50, percent: null, contextWindow: 0}}).contextFraction, null);
-  assert.equal(usageSummary({...primary, contextUsage: {tokens: 50, percent: null, contextWindow: 0}}), 'Context unknown │ 50');
+  assert.equal(usageSummary({...primary, contextUsage: {tokens: 50, percent: null, contextWindow: 0}}), 'Context unknown');
 });
 test('recipient changes do not transfer Primary context or cost into agent facts', () => {
   const rows = [entry('agent', {input: 1, cacheRead: 3, cacheWrite: 0})];
