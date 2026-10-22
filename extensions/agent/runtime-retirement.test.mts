@@ -9,6 +9,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, EntryId, SubmissionId } from "@earendil-works/pi-durable";
 import { AgentCatalog } from "./catalog.ts";
 import { AgentDeliveryDoc, AgentMetaDoc } from "./durable-controls.ts";
+import type { TimerTask } from "./durable-timers.ts";
 import type { ConversationFrame, TasksFrame } from "./live-frames.ts";
 import { DurableHost } from "./durable-host.ts";
 import { createDurableRuntime } from "./durable-runtime.ts";
@@ -40,7 +41,8 @@ async function fixture(t: TestContext) {
 	}
 	const open = DurableHost.open.bind(DurableHost);
 	let native!: DurableHost;
-	t.mock.method(DurableHost, "open", async (...args: Parameters<typeof open>) => { native = await open(...args); return native; });
+	let registry!: Parameters<typeof open>[0]["registry"];
+	t.mock.method(DurableHost, "open", async (...args: Parameters<typeof open>) => { registry = args[0].registry; native = await open(...args); return native; });
 	const ownerId = randomUUID();
 	const metadata = { ...f.metadata, ownerId };
 	const catalog = new AgentCatalog(f.root);
@@ -48,7 +50,7 @@ async function fixture(t: TestContext) {
 	writeFileSync(catalog.path(metadata.storageId), JSON.stringify({ ...record, ownerId }), { mode: 0o600 });
 	runtime = await createDurableRuntime(metadata);
 	assert.equal(typeof runtime.tryRetire, "function");
-	return { ...f, metadata, ownerId, runtime, native, catalog };
+	return { ...f, metadata, ownerId, runtime, native, registry, catalog };
 }
 
 async function eligible(runtime: Awaited<ReturnType<typeof createDurableRuntime>>): Promise<boolean> {
@@ -364,18 +366,81 @@ for (const scope of ["conversation", "tasks"] as const) it(`preserves a newer ${
 	await f.runtime.request("observe-close", { token: "gated" }, "gated-close");
 });
 
+async function waitForSleepingTimer(host: DurableHost, timerId: number): Promise<void> {
+	const graph = await host.harness.watchTaskGraph(BACKGROUND_CONTEXT);
+	const sleeping = (value: typeof graph.value) => value.tasks[String(timerId)]?.state.status === "sleeping";
+	try {
+		if (sleeping(graph.value)) return;
+		const updates = eventLog<boolean>();
+		graph.start(async (value) => { updates.push(sleeping(value)); });
+		await updates.waitFor((rows) => rows.includes(true), 10000);
+	} finally { await graph.stop(); }
+}
+
+it("advances the task frame on a native timer sleep publication without a status read", { timeout: 15000 }, async (t) => {
+	const f = await fixture(t);
+	const entered = deferred();
+	const release = deferred();
+	t.after(release.resolve);
+	const timerTask = f.registry.snapshot().task("agent.timer");
+	assert.ok(timerTask);
+	const phases = timerTask.definition.phases as typeof TimerTask.definition.phases;
+	const wait = phases.wait;
+	t.mock.method(phases, "wait", async (...args: Parameters<typeof wait>) => {
+		entered.resolve();
+		await release.promise;
+		return wait(...args);
+	});
+	let stop = () => {};
+	try {
+		const deadline = Date.now() + 3600000;
+		const timer = await f.runtime.request("timer-schedule", { message: "later", deliverAt: deadline, origin: "operator", ownerId: f.ownerId }, "sleep-timer") as { timerId: number };
+		await entered.promise;
+		const first = (await f.runtime.request("observe-open", { token: "sleep", scope: "tasks" }, "sleep-open") as { frame: TasksFrame }).frame;
+		assert.equal(first.tasks.find((task) => task.id === timer.timerId)?.status, "running");
+		const transitions: string[] = [];
+		stop = f.native.harness.subscribeCommits((publication) => {
+			for (const change of publication.changes) if (change.type === "task" && change.value.id === timer.timerId) transitions.push(change.value.state.status);
+		});
+		release.resolve();
+		await waitForSleepingTimer(f.native, timer.timerId);
+		const second = await f.runtime.request("observe-frame", { token: "sleep" }, "sleep-frame") as TasksFrame;
+		assert.deepEqual(transitions, ["sleeping"], "the native sleep commits one real task transition");
+		assert.ok(second.revision > first.revision, "a background state change invalidates the task frame without a read");
+		const asleep = second.tasks.find((task) => task.id === timer.timerId);
+		assert.equal(asleep?.status, "sleeping");
+		assert.equal(asleep?.until, deadline);
+		const cancelled = await f.runtime.request("timer-cancel", { timerId: timer.timerId }, "sleep-cancel") as { status: string };
+		assert.equal(cancelled.status, "cancelled");
+		const final = await f.runtime.request("observe-frame", { token: "sleep" }, "cancelled-frame") as TasksFrame;
+		assert.ok(final.revision > second.revision, "cancellation also invalidates the task frame");
+		assert.equal(final.tasks.some((task) => task.id === timer.timerId), false);
+	} finally {
+		stop();
+		release.resolve();
+		await f.runtime.request("observe-close", { token: "sleep" }, "sleep-close");
+	}
+});
+
 for (const scope of ["conversation", "tasks"] as const) it(`invalidates ${scope} metadata on real changes but not status reads`, { timeout: 15000 }, async (t) => {
 	const f = await fixture(t);
 	const timer = scope === "tasks" ? await f.runtime.request("timer-schedule", { message: "later", deliverAt: Date.now() + 3600000, origin: "operator", ownerId: f.ownerId }, "label-timer") as { timerId: number } : undefined;
+	// The timer's independent sleep commit precedes the read-only assertion.
+	if (timer) await waitForSleepingTimer(f.native, timer.timerId);
 	const first = (await f.runtime.request("observe-open", { token: "metadata", scope }, "meta-open") as { frame: ConversationFrame | TasksFrame }).frame;
 	await f.native.harness.commit(async (tx) => { const state = await tx.doc(AgentMetaDoc, 1 as ConversationId); state.name = "metadata only"; }, BACKGROUND_CONTEXT);
 	const second = await f.runtime.request("observe-frame", { token: "metadata" }, "meta-frame") as ConversationFrame | TasksFrame;
 	assert.ok(second.revision > first.revision);
 	if (second.scope === "conversation") assert.equal(second.status.name, "metadata only");
 	else assert.equal(second.labels.find((label) => label.conversationId === 1)?.name, "metadata only");
-	await f.runtime.request("status", undefined, "empty-read");
-	const unchanged = await f.runtime.request("observe-frame", { token: "metadata" }, "unchanged-frame") as ConversationFrame | TasksFrame;
-	assert.equal(unchanged.revision, second.revision, "an empty read publication does not invalidate the cache");
+	const writes: string[] = [];
+	const stop = f.native.harness.subscribeCommits((publication) => { writes.push(...publication.changes.map((change) => change.type)); });
+	try {
+		await f.runtime.request("status", undefined, "empty-read");
+		const unchanged = await f.runtime.request("observe-frame", { token: "metadata" }, "unchanged-frame") as ConversationFrame | TasksFrame;
+		assert.deepEqual(writes, [], "status and frame reads commit no state changes");
+		assert.equal(unchanged.revision, second.revision, "an empty read publication does not invalidate the cache");
+	} finally { stop(); }
 	await f.runtime.request("observe-close", { token: "metadata" }, "meta-close");
 	if (timer) await f.runtime.request("timer-cancel", { timerId: timer.timerId }, "label-cancel");
 });
