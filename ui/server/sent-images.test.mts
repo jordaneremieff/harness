@@ -202,7 +202,7 @@ test('accepted file-reference admission re-enriches an earlier cached frame with
   const draft = await registry.store.putDraft(workspace, key, {expectedRevision: 0, text: 'caption', images: [image], mode: 'followUp'});
   const current = await registry.store.workspace(workspace);
   await registry.store.updateSelection(workspace, {expectedRevision: current.revision, conversationLayout: {root: {kind: 'pane', id: 'agent', tabs: [{kind: 'agent', identity: STORAGE}], active: `agent:${STORAGE}`}, focusedPane: 'agent'}});
-  t.mock.method(registry.journal, 'workspaceClients', () => 1); await registry.observe(workspace);
+  t.mock.method(registry.journal, 'workspaceClients', () => 1); t.mock.method(registry.journal, 'agentViews', () => [STORAGE]); await registry.observe(workspace);
   const operation = await registry.operations.reserve(workspace, 'agent.input', target);
   const result = registry.dispatch(context(workspace, `/api/agents/${STORAGE}/inputs`, {message: draft.text, mode: draft.mode, images: [image], draftRevision: draft.revision}, operation.id)) as Promise<OperationView>;
   await host.waitForCall(call => call.member === 'task-submit');

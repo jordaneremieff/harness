@@ -50,10 +50,10 @@ test('a long multi-line catalog error becomes a one-line reason within the bound
   await new Promise<void>(resolve=>setImmediate(resolve));
   const {status,body}=await run.snapshot();assert.equal(status,200);
   const reason=readHealthSnapshot(body.data).services.find(service=>service.name==='agents')?.reason??'';
-  assert(reason.length>0&&reason.length<=HEALTH_REASON_CHARACTERS);assert.equal(/[\u0000-\u001f\u007f]/.test(reason),false);assert(reason.endsWith('…'));assert(reason.startsWith('Catalog scan failed: cause line one'));
+  assert(reason.length>0&&reason.length<=HEALTH_REASON_CHARACTERS);assert.equal(/[\u0000-\u001f\u007f]/.test(reason),false);assert.equal(reason.endsWith('…'),false);assert(reason.startsWith('Catalog scan failed: cause line one'));
 });
 test('the health reason helper collapses whitespace, falls back when empty and never splits a surrogate pair',()=>{
   assert.equal(healthReason(' a\t\tb \n c ','x'),'a b c');assert.equal(healthReason('\n\u0000 ','fallback'),'fallback');assert.equal(healthReason(undefined,'fallback'),'fallback');
   assert.equal(healthReason('y'.repeat(HEALTH_REASON_CHARACTERS),'x').length,HEALTH_REASON_CHARACTERS);
-  const astral=healthReason(`${'y'.repeat(HEALTH_REASON_CHARACTERS-2)}😀tail`,'x');assert(astral.length<=HEALTH_REASON_CHARACTERS);assert.equal(/[\ud800-\udbff]…$/.test(astral),false);assert(astral.endsWith('…'));
+  const astral=healthReason(`${'y'.repeat(HEALTH_REASON_CHARACTERS-2)}😀tail`,'x');assert(astral.length<=HEALTH_REASON_CHARACTERS);assert.equal(/[\ud800-\udbff]$/.test(astral),false);assert.equal(astral.endsWith('…'),false);
 });

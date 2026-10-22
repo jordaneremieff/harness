@@ -44,7 +44,7 @@ test('pure concurrent layout admits the conversation bound and bounded split rat
   }
 });
 test('pure concurrent malformed closed trees reject before state or observation changes',async()=> {
-  const f=fixture();const one=layout();const invalid:unknown[]=[null,[],{}, {...one,unknown:true},{...one,focusedPane:'missing'},
+  const f=fixture();const one=layout();const invalid:unknown[]=[null,[],{},{...one,focusedPane:'missing'},
     {...one,root:{...one.root,active:'missing'}},{...one,root:{kind:'pane',id:'pane',tabs:[],active:'primary'}},
     {...one,root:{kind:'pane',id:'pane',tabs:[{kind:'primary'},{kind:'primary'}],active:'primary'}},
     {...one,root:{kind:'pane',id:'pane',tabs:[{kind:'agent',identity:'bad\nidentity'}],active:'agent:bad\nidentity'}},

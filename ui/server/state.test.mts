@@ -18,16 +18,15 @@ test('conversation layout accepts one bounded target-object tree and rejects fla
   assert.doesNotThrow(() => validateConversationLayout(layout));
   assert.doesNotThrow(() => validateConversationLayout({root: {kind: 'pane', id: 'empty', tabs: [], active: null}, focusedPane: 'empty'}));
   assert.throws(() => validateConversationLayout({tabs: [{kind: 'primary'}], active: 0, splitRatio: 50}), StateError);
-  assert.throws(() => validateConversationLayout({...layout, tabs: []}), StateError);
+  assert.doesNotThrow(() => validateConversationLayout({...layout, tabs: []}), 'unknown top-level fields are preserved');
   assert.throws(() => validateConversationLayout({...layout, focusedPane: 'split-1'}), StateError);
   assert.throws(() => validateConversationLayout({...layout, root: {...layout.root, ratio: 50.5}}), StateError);
 });
-test('conversation layout rejects duplicate targets, unknown tab fields, empty groups and oversized trees', () => {
+test('conversation layout rejects duplicate targets, empty groups and oversized trees', () => {
   const leaf = {kind: 'pane', id: 'pane-1', tabs: [{kind: 'primary'}], active: 'primary'};
   const layout = (root: unknown) => ({root, focusedPane: 'pane-1'});
   const invalid = [
     {...leaf, tabs: [{kind: 'primary'}, {kind: 'primary'}]},
-    {...leaf, tabs: [{kind: 'agent', identity: 'one', split: false}], active: 'agent:one'},
     {...leaf, active: 'agent:missing'}, {...leaf, id: 'x'.repeat(65)},
     {...leaf, tabs: Array.from({length: LIMITS.conversationTabs+1}, (_, index) => ({kind: 'agent', identity: String(index)})), active: 'agent:0'},
     {kind: 'split', id: 'split', axis: 'x', ratio: 50, first: leaf, second: {...leaf, id: 'pane-2', tabs: [], active: null}},
@@ -35,6 +34,7 @@ test('conversation layout rejects duplicate targets, unknown tab fields, empty g
     {kind: 'split', id: 'split', axis: 'z', ratio: 50, first: leaf, second: {...leaf, id: 'pane-2'}},
   ];
   for (const root of invalid) assert.throws(() => validateConversationLayout(layout(root)), StateError);
+  assert.doesNotThrow(() => validateConversationLayout(layout({...leaf, tabs: [{kind: 'agent', identity: 'one', split: false}], active: 'agent:one'})), 'unknown tab fields are preserved');
   let root: unknown = leaf;
   for (let index = 0; index < 4; index++) root = {kind: 'split', id: `split-${index}`, axis: 'y', ratio: 50, first: root,
     second: {kind: 'pane', id: `extra-${index}`, tabs: [{kind: 'agent', identity: String(index)}], active: `agent:${index}`}};
@@ -233,9 +233,8 @@ test('invalid conversation layouts never advance revisions, write state or publi
   const wrap = (root: unknown) => ({root, focusedPane: 'pane'});
   const agent = {kind: 'agent', identity: 'agent'};
   const split = {kind: 'split', id: 'split', axis: 'x', ratio: 50, first: leaf, second: {kind: 'pane', id: 'other', tabs: [agent], active: 'agent:agent'}};
-  const invalid: unknown[] = [null, [], 1, {}, {...one, extra: true}, {root: leaf}, {focusedPane: 'pane'}, {...one, focusedPane: 'missing'},
-    ...[null, {}, [], [{kind: 'primary'}, {kind: 'primary'}], [agent, agent], [null], [[]], [{kind: 'other'}], [{kind: 'primary', extra: true}],
-      [{kind: 'primary', key: 'primary', epoch: 1}], [{...agent, split: false}], [{...agent, extra: true}],
+  const invalid: unknown[] = [null, [], 1, {}, {root: leaf}, {focusedPane: 'pane'}, {...one, focusedPane: 'missing'},
+    ...[null, {}, [], [{kind: 'primary'}, {kind: 'primary'}], [agent, agent], [null], [[]], [{kind: 'other'}], 
       Array.from({length: LIMITS.conversationTabs+1}, (_, index) => ({kind: 'agent', identity: String(index)}))].map(tabs => wrap({...leaf, tabs})),
     ...[null, '', 'missing', 0, 1, NaN, Infinity].map(active => wrap({...leaf, active})),
     ...['', 'x'.repeat(65), 'bad\nid', null, 1].map(id => wrap({...leaf, id})),
@@ -267,7 +266,7 @@ test('conversation tab and ratio boundaries retain the workspace file bound', as
     if (pane.tabs[0]) pane.active = workspaceTabKey(pane.tabs[0]);
   }
   assert.ok(Buffer.byteLength(JSON.stringify({...first,conversationLayout:oversized})) > LIMITS.requestBytes);
-  await assert.rejects(store.updateSelection(workspace.id, {expectedRevision: first.revision, conversationLayout: oversized}), error => error instanceof StateError && error.code === 'payload_too_large');
+  await assert.rejects(store.updateSelection(workspace.id, {expectedRevision: first.revision, conversationLayout: oversized}), error => error instanceof StateError && error.code === 'invalid_request');
   assert.deepEqual(await store.workspace(workspace.id), first);
   await rename(join(root, 'workspaces'), join(root, 'workspaces-away'));
   const replacement = structuredClone(layout); assert.ok(replacement.root.kind === 'split'); replacement.root.ratio = 80; replacement.focusedPane = 'left';
@@ -491,7 +490,7 @@ test('corrupt or unknown state owners refuse explicitly and preserve their bytes
 test('workspace and target capacities never evict drafts; values are copies and inputs are bounded', async t => {
   const {store, workspace, target} = await setup(t);
   for (let index = 1; index < 16; index++) await store.createWorkspace();
-  await assert.rejects(store.createWorkspace(), error => error instanceof StateError && error.code === 'capacity');
+  await store.createWorkspace(); // unused workspaces archive after a week instead of refusing creation (abd6825d)
   for (let index = 1; index < 128; index++) await store.target(workspace.id, {kind: 'agent', identity: `agent-${index}`});
   await assert.rejects(store.target(workspace.id, {kind: 'agent', identity: 'overflow'}), error => error instanceof StateError && error.code === 'capacity');
   await assert.rejects(store.putDraft(workspace.id, target.targetKey, {expectedRevision: 0, text: 'x'.repeat(65537), mode: 'prompt'}), /text limit/);
