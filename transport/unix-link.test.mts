@@ -60,7 +60,7 @@ for (const [name, data, options] of [
 	["malformed JSON", "not json\n", {}],
 	["wrong identity", line({ ...hello, name: "wrong" }), {}],
 	["wrong kind", line({ ...hello, kind: "client" }), {}],
-	["unsafe epoch", line({ ...hello, epoch: Number.MAX_SAFE_INTEGER + 1 }), {}],
+	["unsafe code version", line({ ...hello, codeVersion: Number.MAX_SAFE_INTEGER + 1 }), {}],
 	["oversized input", "x".repeat(65), { maxFrameBytes: 64 }],
 	["invalid UTF-8", Buffer.from([0xff, 10]), {}],
 ] as const) {
