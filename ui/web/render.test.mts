@@ -184,11 +184,11 @@ const fakeDocument = {
 };
 function setup(): void {
   roots = []; frames = []; ids.clear(); documentHandlers.clear(); selection = null; fakeDocument.activeElement = null;
-  for (const id of ['primary-transcript', 'primary-latest', 'agent-transcript', 'agent-latest', 'roster', 'agent-search', 'agent-filter-box', 'roster-footer', 'announcements', 'primary-editor']) {
+  for (const id of ['primary-transcript', 'primary-latest', 'agent-transcript', 'agent-latest', 'roster', 'agent-search', 'agent-filter-box', 'roster-footer', 'announcements', 'primary-editor', 'agent-refresh']) {
     const node = new FakeNode('div'); ids.set(id, node); roots.push(node);
   }
   Reflect.deleteProperty(fakeDocument, 'caretPositionFromPoint'); Reflect.deleteProperty(fakeDocument, 'createRange');
-  Object.assign(globalThis, {document: fakeDocument, HTMLElement: FakeNode, requestAnimationFrame: (callback: FrameRequestCallback) => { frames.push(callback); return frames.length; }});
+  Object.assign(globalThis, {document: fakeDocument, HTMLElement: FakeNode, getComputedStyle: () => ({maxHeight: 'none', lineHeight: '20px', borderTopWidth: '0px', borderBottomWidth: '0px', paddingTop: '0px', paddingBottom: '0px'}), requestAnimationFrame: (callback: FrameRequestCallback) => { frames.push(callback); return frames.length; }});
 }
 function flush(): void { const pending = frames; frames = []; for (const frame of pending) frame(0); }
 function node(id: string): FakeNode { const value = ids.get(id); assert.ok(value); return value; }
@@ -444,7 +444,7 @@ test('callId joins call and results across entries with one bounded disclosure a
   const result = {type: 'toolResult' as const, callId: 'call-1', name: 'read', isError: false, parts: [{type: 'text' as const, text: 'x'.repeat(5000)}]};
   const entries = [{id: 'call', kind: 'message', messages: [{...message('m-call', ''), parts: [call]}]}, {id: 'result', kind: 'message', messages: [{...message('m-result', ''), parts: [result]}]}];
   view.set(entries); flush(); const cards = node('primary-transcript').querySelectorAll('.tool-card'); assert.equal(cards.length, 1);
-  const card = cards[0]; assert.ok(card); assert.equal(card.querySelector('.tool-name')?.textContent, 'Read …/full/path (lines 1–10)'); assert.equal(card.querySelector('.tool-target')?.title, '/full/path');
+  const card = cards[0]; assert.ok(card); assert.equal(card.querySelector('.tool-name')?.textContent, 'Read path  /full (lines 1–10)'); assert.equal(card.querySelector('.tool-target')?.title, '/full/path');
   assert.equal(card.querySelector('.tool-target')?.hidden, true);
   assert.equal(card.querySelector('.tool-secondary')?.textContent, 'lines 1–10');
   assert.equal(card.parentNode?.dataset.status, 'success'); assert.equal(card.querySelector('.tool-tier')?.children[0], card.querySelector('.tool-status'));
@@ -1086,10 +1086,10 @@ test('read headers keep the recorded tool name and supplied path across disclosu
   const path = '/skills/audit/SKILL.md';
   const entries = [{id: 'read', kind: 'message', messages: [{...message('read', ''), parts: [{type: 'toolCall' as const, callId: 'read', name: 'read', arguments: {value: {path, offset: 7, limit: 4}, truncated: false}}]}]}];
   view.set(entries); flush(); const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card);
-  assert.equal(card.querySelector('.tool-name')?.textContent, 'Read …/audit/SKILL.md (lines 7–10)'); assert.equal(card.querySelector('.tool-target')?.hidden, true);
+  assert.equal(card.querySelector('.tool-name')?.textContent, 'Read SKILL.md  /skills/audit (lines 7–10)'); assert.equal(card.querySelector('.tool-target')?.hidden, true);
   assert.equal(card.querySelector('.tool-target')?.title, path); assert.equal(card.querySelector('.tool-secondary')?.textContent, 'lines 7–10');
   card.open = true; card.dispatch('toggle'); flush();
-  assert.equal(card.querySelector('.tool-name')?.textContent, 'Read …/audit/SKILL.md (lines 7–10)'); assert.equal(card.querySelector('.tool-target')?.title, path);
+  assert.equal(card.querySelector('.tool-name')?.textContent, 'Read SKILL.md  /skills/audit (lines 7–10)'); assert.equal(card.querySelector('.tool-target')?.title, path);
   const args = card.querySelector('.tool-arguments'); assert.ok(args); args.open = true; args.dispatch('toggle'); assert.equal(JSON.parse(args.querySelector('pre')?.textContent ?? '{}').path, path);
   card.open = false; card.dispatch('toggle'); flush(); assert.equal(card.querySelector('.tool-target')?.title, path);
 });
@@ -1172,14 +1172,14 @@ test('the operator session labels its own user turns You and no visible text nam
 test('a sender without a public name shows the loaded conversation caption, never a raw identity', () => {
   setup(); const view = new Transcript('primary', {presentation: () => {}, reading: () => {}, subject: () => ({text: 'Web UI lead · task 96', open: () => {}}), operatorInput: true});
   view.set([communicationEntry('ready', 'Body', '')]); flush(); const heading = node('primary-transcript').querySelector('.communication-sender'); assert.ok(heading);
-  assert.equal(heading.textContent, 'Report · Web UI lead · task 96'); assert.equal(heading.title, '10000000-0000-4000-8000-000000000001'); view.reset();
+  assert.equal(heading.textContent, 'Report · Web UI lead · task 96'); assert.equal(heading.title, 'Web UI lead · task 96\n10000000-0000-4000-8000-000000000001'); view.reset();
   const unnamed = new Transcript('primary', {presentation: () => {}, reading: () => {}, subject: () => ({text: 'Unnamed conversation', open: () => {}})});
-  unnamed.set([communicationEntry('ready', 'Body', '')]); flush(); assert.equal(node('primary-transcript').querySelector('.communication-sender')?.textContent, 'Report · Conversation 10000000'); unnamed.reset();
+  unnamed.set([communicationEntry('ready', 'Body', '')]); flush(); assert.equal(node('primary-transcript').querySelector('.communication-sender')?.textContent, 'Report · Unnamed conversation · 00000001'); unnamed.reset();
 });
 test('a derived child caption labels a sender without a name and keeps the identity in the title', () => {
   setup(); const view = new Transcript('primary', {presentation: () => {}, reading: () => {}, subject: identity => ({text: 'Web UI manager · 22260', derived: true, title: identity})});
   view.set([communicationEntry('ready', 'Body', '')]); flush(); const heading = node('primary-transcript').querySelector('.communication-sender'); assert.ok(heading);
-  assert.equal(heading.textContent, 'Report · Web UI manager · 22260'); assert.equal(heading.title, '10000000-0000-4000-8000-000000000001'); view.reset();
+  assert.equal(heading.textContent, 'Report · Web UI manager · 22260'); assert.equal(heading.title, 'Web UI manager · 22260\n10000000-0000-4000-8000-000000000001'); view.reset();
 });
 test('response stop states remain visible without a supplied error message', () => {
   setup(); const view = transcript();
@@ -1651,7 +1651,7 @@ test('separate tool and thinking rows omit empty parts without losing source, ev
   assert.equal(root.querySelector('.session-events')?.querySelector('summary')?.textContent, '1 extension record');
   const thought = root.querySelector('.thinking-only'); assert.ok(thought);
   assert.equal(thought.querySelector('.message-body')?.children.length, 1);
-  assert.equal(thought.querySelector('.message-actions')?.hidden, false);
+  assert.equal(thought.querySelector('.message-actions')?.hidden, true);
   const detail = thought.querySelector('.thinking'); assert.ok(detail); detail.open = true; detail.dispatch('toggle');
   assert.match(detail.textContent, /Retained thought/);
   const next = {...source, messages: [{...sourceMessage, parts: [...sourceMessage.parts, {type: 'text' as const, text: 'Visible prose'}]}]};
@@ -1675,7 +1675,7 @@ test('adjacent thinking chunks share one disclosure and preserve retained inspec
   const group = root.querySelector('.thinking-group'); assert.ok(group); assert.equal(group.open, false);
   assert.equal(root.querySelector('.message-body')?.children.length, 2);
   assert.equal(root.querySelector('.message-coverage')?.textContent, 'Exact omitted-part label');
-  assert.ok(root.querySelector('.thinking-only')); assert.equal(root.querySelector('.message-actions')?.hidden, false);
+  assert.ok(root.querySelector('.thinking-only')); assert.equal(root.querySelector('.message-actions')?.hidden, true);
   const parts = group.children[1]?.children ?? []; assert.equal(parts.length, 3);
   const ids = parts.map(part => part.dataset.disclosure); assert.equal(new Set(ids).size, 3);
   assert.ok(parts.every(part => part.querySelector('summary')?.hidden));
@@ -1770,7 +1770,7 @@ test('coverage metadata keeps thinking and tool rows separate without hiding ret
   const thoughtEntry = root.children.find(child => child.dataset.entryId === 'covered-thought'); assert.ok(thoughtEntry);
   const toolEntry = root.children.find(child => child.dataset.entryId === 'covered-tool'); assert.ok(toolEntry);
   for (const row of [thoughtEntry, toolEntry]) assert.equal(row.classList.contains('compact-entry'), true);
-  assert.equal(thoughtEntry.querySelector('.message-actions')?.hidden, false);
+  assert.equal(thoughtEntry.querySelector('.message-actions')?.hidden, true);
   assert.ok(thoughtEntry.querySelector('.thinking-only')); assert.ok(toolEntry.querySelector('.tool-card'));
   assert.equal(thoughtEntry.querySelector('.message-coverage')?.textContent, 'Exact coverage reason');
   const toolNotice = root.children.find(row => row.querySelector('.message-coverage')?.textContent === 'Exact tool coverage'); assert.ok(toolNotice);
@@ -1786,7 +1786,7 @@ test('compact message updates keep a focused Copy action visible until focus lea
   view.set([{...source, messages: [{...msg, parts: [...msg.parts, {type: 'text', text: 'Visible prose'}]}]}]); flush();
   const root = node('primary-transcript'); const card = root.querySelector('.message'); assert.ok(card); const action = card.querySelector('.message-menu'); assert.ok(action); assert.equal(messageAction(card, 'Copy').enabled, true);
   action.focus(); view.set([source]); flush();
-  assert.equal(fakeDocument.activeElement, action); assert.equal(root.querySelector('.message-actions')?.hidden, false);
+  assert.equal(fakeDocument.activeElement, action); assert.equal(root.querySelector('.message-actions')?.hidden, true);
   assert.equal(card.querySelector('.message-menu'), action); assert.equal(messageAction(card, 'Copy').enabled, true);
   fakeDocument.activeElement = null; view.schedule(); flush(); assert.equal(root.querySelector('.message-actions')?.hidden, false); assert.equal(card.querySelector('.message-menu'), action);
 });
@@ -1886,7 +1886,7 @@ test('expanded image output keeps supplied part order before actions and quieter
   const result = source.messages[0]?.parts.find(part => part.type === 'toolResult'); assert.ok(result); result.name = 'read';
   result.parts = [{type: 'text', text: 'Supplied introduction'}, {type: 'image', mimeType: 'image/png', digest: 'a'.repeat(64), width: 512, height: 256, bytes: 1024, alt: 'Retained image description'}, {type: 'text', text: 'Supplied conclusion'}];
   view.set([source]); flush(); const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card); card.open = true; card.dispatch('toggle'); flush();
-  assert.equal(card.querySelector('.tool-name')?.textContent, 'Read image · PNG');
+  assert.equal(card.querySelector('.tool-name')?.textContent, 'Read image · PNG digest.bin  /opaque/store');
   const expanded = card.querySelector('.tool-expanded'), area = card.querySelector('.tool-result'), actions = card.querySelector('.tool-output-actions'), technical = card.querySelector('.tool-details');
   assert.ok(expanded); assert.ok(area); assert.ok(actions); assert.ok(technical); assert.deepEqual(expanded.children, [area, actions, technical]);
   const parts = area.querySelector('.tool-result-parts'); assert.ok(parts); assert.equal(parts.children.length, 3);
@@ -2309,7 +2309,7 @@ test('mixed thinking and tool turns keep separate rows and source actions in bot
     assert.equal(turn.querySelector('.message-body')?.children.length, 1);
     assert.ok(turn.querySelector('.thinking')); assert.ok(root.querySelector('.tool-card')); assert.equal(turn.querySelector('.tool-card'), null);
     assert.deepEqual(root.children.filter(row => row.dataset.entryId).map(row => !!row.querySelector('.tool-card')), firstThinking ? [false, true] : [true, false]);
-    assert.equal(turn.querySelector('.message-actions')?.hidden, false);
+    assert.equal(turn.querySelector('.message-actions')?.hidden, true);
     assert.ok(turn.closest('.compact-entry'));
     const copy = messageAction(turn, 'Copy'); assert.equal(copy.enabled, true); copy.run(); await Promise.resolve();
     assert.equal(copied.at(-1), firstThinking ? 'Retained thought\n\nretained output' : '\nretained output\nRetained thought'); assert.equal(turn.querySelector('.message-menu')?.attributes['aria-label'], 'Message actions');
@@ -2554,7 +2554,7 @@ test('a check-in or thread notice is one row that discloses the full card and ke
   const toggle = card.querySelector('.communication-toggle'); const body = card.querySelector('.communication-body'); const header = card.querySelector('.communication-header'); assert.ok(toggle); assert.ok(body); assert.ok(header);
   assert.equal(toggle.tagName, 'button'); assert.equal(toggle.type, 'button'); assert.equal(card.classList.contains('communication-line'), true);
   assert.equal(toggle.querySelector('.communication-sender-name')?.textContent, 'Peer'); assert.equal(toggle.querySelector('.communication-line-kind')?.textContent, 'still working · 0s'); assert.equal(toggle.querySelector('.communication-line-preview')?.textContent, 'Awaiting \u00b7 run 2734');
-  assert.equal(toggle.attributes['aria-label'], 'Peer, still working · 0s, Awaiting \u00b7 run 2734'); assert.equal(toggle.attributes['aria-expanded'], 'false'); assert.equal(body.hidden, true);
+  assert.equal(toggle.attributes['aria-label'], 'Peer, Awaiting \u00b7 run 2734'); assert.equal(toggle.attributes['aria-expanded'], 'false'); assert.equal(body.hidden, true);
   assert.equal(toggle.parentNode, header); assert.equal(header.querySelector('.message-actions')?.querySelector('.message-menu')?.attributes['aria-label'], 'Message actions');
   toggle.focus(); toggle.click(); flush();
   assert.equal(body.hidden, false); assert.equal(toggle.attributes['aria-expanded'], 'true'); assert.equal(fakeDocument.activeElement, toggle);
@@ -2566,7 +2566,7 @@ test('a check-in or thread notice is one row that discloses the full card and ke
 test('a thread notice names its thread and Source opens the row it belongs to', () => {
   setup(); const view = transcript(); view.set([statusEntry('notice', 'Frame revised', 'Release plan')]); flush();
   const card = node('primary-transcript').querySelector('.communication-card'); assert.ok(card);
-  assert.equal(card.querySelector('.communication-line-kind')?.textContent, 'thread notice \u00b7 Release plan'); assert.equal(card.querySelector('.communication-toggle')?.attributes['aria-label'], 'Peer, thread notice \u00b7 Release plan, Frame revised');
+  assert.equal(card.querySelector('.communication-line-kind')?.textContent, 'thread notice \u00b7 Release plan'); assert.equal(card.querySelector('.communication-toggle')?.attributes['aria-label'], 'Peer, Frame revised');
   assert.equal(card.querySelector('.communication-body')?.hidden, true); messageAction(card, 'Source').run?.(); flush();
   assert.equal(card.querySelector('.communication-body')?.hidden, false); assert.equal(card.querySelector('.message-source')?.hidden, false); assert.equal(card.querySelector('.communication-toggle')?.attributes['aria-expanded'], 'true');
   node('primary-editor').focus(); view.set([statusEntry('notice', 'Frame revised')]); flush(); assert.equal(card.querySelector('.communication-line-kind')?.textContent, 'thread notice'); view.reset();
@@ -2596,8 +2596,15 @@ test('scoped transcripts isolate matching entry IDs and retain the same root acr
 function messageAction(card: FakeNode, label: string): import('./context-menu.ts').ContextItem {
   const previous = contextMenu.open; let items: import('./context-menu.ts').ContextItem[] = [];
   contextMenu.open = (_origin, _point, _title, values) => { items = values; };
-  try { const menu = card.querySelector('.message-menu'); assert.ok(menu); menu.click(); }
-  finally { contextMenu.open = previous; }
+  try {
+    /* Assistant actions live in the turn row: Copy is its first button and More opens the menu. */
+    const turn = card.dataset.role === 'assistant' ? card.closest('.entry')?.querySelector('.assistant-turn-actions') : undefined;
+    if (turn) {
+      const copy = turn.children[0], more = turn.children[3]; assert.ok(copy); assert.ok(more);
+      if (label === 'Copy') return {label, enabled: copy.disabled !== true, run: () => { copy.click(); }};
+      more.click();
+    } else { const menu = card.querySelector('.message-menu'); assert.ok(menu); menu.click(); }
+  } finally { contextMenu.open = previous; }
   const item = items.find(value => value.label === label); assert.ok(item); return item;
 }
 test('communication keeps sender and text at rest and opens one hidden Source from shared actions', () => {
@@ -2634,7 +2641,7 @@ test('communication headers use supplied identities rather than missing-name pro
   setup(); const view = transcript(); const source = communicationEntry('ready', 'Body', ''); view.set([source]); flush();
   const card = node('primary-transcript').querySelector('.communication-card'); assert.ok(card);
   const heading = card.querySelector('.communication-sender'); assert.ok(heading);
-  assert.equal(heading.textContent, 'Report · Conversation 10000000'); assert.equal(heading.title, '10000000-0000-4000-8000-000000000001');
+  assert.equal(heading.textContent, 'Report · Unnamed conversation · 00000001'); assert.equal(heading.title, 'Unnamed conversation · 00000001\n10000000-0000-4000-8000-000000000001');
   assert.doesNotMatch(heading.textContent, /unavailable/);
   view.set([communicationEntry()]); flush(); assert.equal(card.querySelector('.communication-sender'), heading); assert.equal(heading.textContent, 'Report · Peer');
   assert.equal(heading.title, '10000000-0000-4000-8000-000000000001'); view.reset();
@@ -2716,7 +2723,7 @@ test('Source restores one target-local disclosure and preserves transport loss w
 });
 test('non-ready associations show literal previews without promoting sender or kind claims', () => {
   setup(); const view = transcript(); view.set([communicationEntry('ready', '', '')]); flush(); const article = node('primary-transcript').querySelector('.communication-card'); assert.ok(article);
-  assert.equal(article.querySelector('.communication-sender')?.textContent, 'Report · Conversation 10000000'); assert.equal(messageAction(article, 'Copy').enabled, false);
+  assert.equal(article.querySelector('.communication-sender')?.textContent, 'Report · Unnamed conversation · 00000001'); assert.equal(messageAction(article, 'Copy').enabled, false);
   const actions = article.querySelector('.message-actions');
   for (const state of ['unresolved', 'unavailable'] as const) {
     view.set([communicationEntry(state)]); flush(); assert.equal(article.dataset.state, state); assert.equal(article.querySelector('.communication-sender')?.textContent, ''); assert.equal(article.querySelector('.communication-sender')?.hidden, true); assert.equal(article.querySelector('.communication-unverified')?.attributes['aria-label'], 'Source unverified'); assert.equal(article.querySelector('.communication-unverified')?.hidden, false); assert.equal(article.querySelector('.communication-kind')?.textContent, ''); assert.equal(article.querySelector('.communication-copy'), null); assert.match(messageAction(article, 'Copy').description ?? '', /source unverified/); assert.equal(article.querySelector('.message-actions'), actions);
@@ -3405,13 +3412,13 @@ test('the Latest control counts what arrives while the reader is away, announces
   assert.equal(latest.hidden, true);
   scroll.to(2000); flush(); assert.equal(latest.hidden, false); assert.equal(latest.textContent, 'Latest');
   view.set([...all, entry('e60')]); flush();
-  assert.equal(latest.textContent, '1 new \u00b7 Latest'); assert.equal(latest.attributes['aria-label'], 'Latest message, 1 new'); assert.equal(node('announcements').textContent, 'New messages below');
+  assert.equal(latest.textContent, 'Latest \u00b7 1 new'); assert.equal(latest.attributes['aria-label'], 'Latest message, 1 new'); assert.equal(node('announcements').textContent, 'New messages below');
   node('announcements').textContent = '';
   view.set([...all, entry('e60'), entry('e61')]); flush();
-  assert.equal(latest.textContent, '2 new \u00b7 Latest'); assert.equal(node('announcements').textContent, '', 'later arrivals stay silent');
+  assert.equal(latest.textContent, 'Latest \u00b7 2 new'); assert.equal(node('announcements').textContent, '', 'later arrivals stay silent');
   latest.dispatch('click'); flush(); assert.equal(latest.hidden, true); assert.equal(latest.textContent, 'Latest'); assert.equal(latest.attributes['aria-label'], 'Latest message');
   scroll.to(1500); flush(); view.set([...all, entry('e60'), entry('e61'), entry('e62')]); flush();
-  assert.equal(latest.textContent, '1 new \u00b7 Latest', 'the count restarted after the return');
+  assert.equal(latest.textContent, 'Latest \u00b7 1 new', 'the count restarted after the return');
 });
 test('older pages, growth of a known message, and arrivals while following do not raise the count', () => {
   setup(); const view = transcript(); const container = node('primary-transcript'); const latest = node('primary-latest'); const scroll = scrollable(container);
@@ -3425,7 +3432,7 @@ test('in a Primary conversation the operator\'s own message does not count', () 
   setup(); const view = new Transcript('primary', {presentation: () => {}, reading: () => {}, operatorInput: true}); const container = node('primary-transcript'); const latest = node('primary-latest'); const scroll = scrollable(container);
   const all = Array.from({length: 60}, (_, index) => entry(`e${index}`)); view.set(all); flush(); scroll.to(2000); flush();
   view.set([...all, {id: 'mine', kind: 'message', messages: [{...message('m-mine', 'my question'), role: 'user'}]}]); flush(); assert.equal(latest.textContent, 'Latest');
-  view.set([...all, {id: 'mine', kind: 'message', messages: [{...message('m-mine', 'my question'), role: 'user'}]}, entry('reply')]); flush(); assert.equal(latest.textContent, '1 new \u00b7 Latest');
+  view.set([...all, {id: 'mine', kind: 'message', messages: [{...message('m-mine', 'my question'), role: 'user'}]}, entry('reply')]); flush(); assert.equal(latest.textContent, 'Latest \u00b7 1 new');
 });
 const settleFrames = (): void => { for (let pass = 0; frames.length && pass < 6; pass++) flush(); };
 function olderPageFixture(lastPage: boolean) {
