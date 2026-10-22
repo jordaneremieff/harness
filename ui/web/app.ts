@@ -2897,7 +2897,7 @@ function noticesBadge(): void {
   seedPrimaryCommunications();
   const unread = unreadNotices(state) + communicationNotices.unread(); setText(byId('notices-count'), String(unread)); byId('notices-count').hidden = !unread;
   const label = notificationsLabel(); byId('notifications-button').setAttribute('aria-label', label); byId('notifications-button').title = label;
-  setText(byId('notices-label'),`Notices ${unread}`);recentSidebar.render([...communicationNotices.items.values()]);
+  setText(byId('notices-label'),unread?`Notices ${unread}`:'Notices');recentSidebar.render([...communicationNotices.items.values()]);
   scheduleDesk();
 }
 function notices(): void {
