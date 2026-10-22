@@ -59,8 +59,9 @@ test("burstiness is not measured below the sentence minimum", () => {
 	assert.equal(report.score.components.geometry.metrics.sentenceLengthCv, null);
 });
 
-test("the calibration block is always present and marked uncalibrated", () => {
+test("the calibration block is always present and names its cohort", () => {
 	const report = run(filler(60));
-	assert.equal(report.calibration.status, "uncalibrated");
-	assert.equal(report.calibration.cohort, null);
+	assert.equal(report.calibration.status, "calibrated-on-model-written-benchmark");
+	assert.match(report.calibration.cohort ?? "", /model-written benchmark/);
+	assert.equal(report.calibration.date, "2026-10-22");
 });

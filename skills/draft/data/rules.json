@@ -17,8 +17,8 @@
     "geometryDensityDivisor": 5,
     "geometryDensityShare": 0.65,
     "burstiness": {
-      "kneeCv": 0.5,
-      "spanCv": 0.3,
+      "kneeCv": 0.25,
+      "spanCv": 0.15,
       "minSentences": 5
     },
     "epistemic": {
@@ -33,10 +33,10 @@
       "maxNeighbours": 4
     },
     "calibration": {
-      "cohort": null,
-      "n": 0,
-      "date": null,
-      "status": "uncalibrated"
+      "cohort": "paired human, model-written, laundered and repaired variants across ten document types from an external model-written benchmark, plus a small set of operator-flagged agent replies for checking",
+      "n": 98,
+      "date": "2026-10-22",
+      "status": "calibrated-on-model-written-benchmark"
     }
   },
   "rules": [

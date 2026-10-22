@@ -1,7 +1,7 @@
 // Library module for the draft prose meter. The command line entry is meter.mts (run it with --help).
 import { buildDoc, DEFAULT_OPTIONS, type Doc, detect, type Hit, type Options, restrictToLines } from "./detect.mts";
 import { columnOf, extract, type Kind, lineOf, normalizeText } from "./extract.mts";
-import { type CompiledRule, compileRules, type RuleSet, type Severity } from "./rules.mts";
+import { type CalibrationStatus, type CompiledRule, compileRules, type RuleSet, type Severity } from "./rules.mts";
 import { type Band, computeScore, countAnchors, type PlacedHit, placeHits, type ScoreReport } from "./score.mts";
 
 export const METER_VERSION = "1.0.0";
@@ -25,7 +25,7 @@ export interface Report {
 	hard: Finding[];
 	scored: Finding[];
 	score: ScoreReport & { threshold: number };
-	calibration: { cohort: string | null; n: number; date: string | null; status: "uncalibrated" | "calibrated" };
+	calibration: { cohort: string | null; n: number; date: string | null; status: CalibrationStatus };
 	omitted: { hard: number; scored: number; perRuleCap: number; byRule: Record<string, number>; skippedFiles: string[] };
 }
 

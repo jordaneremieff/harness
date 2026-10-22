@@ -73,7 +73,7 @@ function validateScore(value: unknown): void {
 
 function validateTail(report: Json): void {
 	const calibration = keysOf(report.calibration, SHAPE.calibration ?? [], "calibration");
-	assert.ok(["uncalibrated", "calibrated"].includes(calibration.status as string));
+	assert.ok(["uncalibrated", "calibrated-on-model-written-benchmark"].includes(calibration.status as string));
 	const omitted = keysOf(report.omitted, SHAPE.omitted ?? [], "omitted");
 	isNumber(omitted.hard, "omitted.hard");
 	isNumber(omitted.scored, "omitted.scored");

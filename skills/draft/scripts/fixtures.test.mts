@@ -59,7 +59,7 @@ const SUPERSEDED: Record<string, string> = {
 	"en-dash-year-range": "A digit-to-digit range is exempt from the en dash rule by decision.",
 };
 
-const fixtures = JSON.parse(readFileSync(fileURLToPath(new URL("./fixtures.json", import.meta.url)), "utf8")) as Fixture[];
+const fixtures = JSON.parse(readFileSync(fileURLToPath(new URL("../data/fixtures.json", import.meta.url)), "utf8")) as Fixture[];
 const analyzer = analyzerFor({ spelling: "au", times: "off", strictSemicolons: false });
 
 function reported(fixture: Fixture): string[] {

@@ -74,6 +74,8 @@ export interface Rule {
 	exampleKind?: string;
 }
 
+export type CalibrationStatus = "uncalibrated" | "calibrated-on-model-written-benchmark";
+
 export interface Scoring {
 	componentWeights: Record<ScoredComponent, number>;
 	bands: { green: number; amber: number };
@@ -86,7 +88,7 @@ export interface Scoring {
 	epistemic: { ratioDivisor: number; densityDivisor: number };
 	launderingDivisor: number;
 	cluster: { windowWords: number; isolatedShare: number; stepShare: number; maxNeighbours: number };
-	calibration: { cohort: string | null; n: number; date: string | null; status: "uncalibrated" | "calibrated" };
+	calibration: { cohort: string | null; n: number; date: string | null; status: CalibrationStatus };
 }
 
 export interface RuleSet {
@@ -194,8 +196,8 @@ function parseBands(value: Record<string, unknown>): Scoring["bands"] {
 
 function parseCalibration(value: Record<string, unknown>): Scoring["calibration"] {
 	const calibration = section(value, "calibration", ["cohort", "n", "date", "status"]);
-	if (calibration.status !== "uncalibrated" && calibration.status !== "calibrated")
-		fail('scoring.calibration.status must be "uncalibrated" or "calibrated"');
+	if (calibration.status !== "uncalibrated" && calibration.status !== "calibrated-on-model-written-benchmark")
+		fail('scoring.calibration.status must be "uncalibrated" or "calibrated-on-model-written-benchmark"');
 	for (const key of ["cohort", "date"] as const) {
 		const entry = calibration[key];
 		if (entry !== null && typeof entry !== "string") fail(`scoring.calibration.${key} must be a string or null`);

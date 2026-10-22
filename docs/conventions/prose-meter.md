@@ -98,7 +98,7 @@ interface MeterReport {
     cohort: string | null;
     n: number;
     date: string | null;
-    status: "uncalibrated" | "calibrated";
+    status: "uncalibrated" | "calibrated-on-model-written-benchmark";
   };
   omitted: {
     /** Findings counted but not listed because of the per-rule cap. */
