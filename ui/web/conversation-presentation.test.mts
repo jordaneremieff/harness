@@ -27,7 +27,7 @@ test('Primary captions prefer current names and qualify only exact ready prompt 
   const primary={key:'p',epoch:1,sessionId:'session',sessionFile:'/sessions/session.jsonl',lifecycle:'ready',activity:'idle'} as PrimaryView;
   const savedSession:SavedSession={id:'session',path:primary.sessionFile as string,project:'/project',revision:'r',modifiedAt:'2026-01-01T00:00:00Z',size:20,title:'A supplied first message '.repeat(8),titleSource:'prompt',titleState:'ready'};
   const source={target:{kind:'primary' as const,key:'p',epoch:1},primary,savedSession,connected:true};
-  const prompt=conversationPresentation(source);assert.equal(prompt.name,`${savedSession.title.slice(0,64).trimEnd()}…`);assert.equal(prompt.nameDetail,`Title from first message, not a supplied name\n${savedSession.title}`);assert.equal(prompt.input,true);
+  const prompt=conversationPresentation(source);assert.equal(prompt.name,savedSession.title.trimEnd());assert.equal(prompt.nameDetail,`Title from first message, not a supplied name\n${savedSession.title}`);assert.equal(prompt.input,true);
   assert.equal(conversationPresentation({...source,primary:{...primary,sessionName:'Current name'}}).name,'Current name');
   assert.equal(conversationPresentation({...source,primary:{...primary,sessionName:'Current name',extension:{title:'Current extension title',statuses:{},widgets:{}}}}).name,'Current extension title');
   for(const changed of [{titleState:'pending' as const},{titleState:'unavailable' as const},{id:'different'},{path:'/other'},{titleSource:'name' as const,title:'Old saved name'},{title:'   '}]){const view=conversationPresentation({...source,savedSession:{...savedSession,...changed}});assert.equal(view.name,'Primary');assert.equal(view.nameDetail,undefined);}

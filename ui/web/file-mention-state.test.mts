@@ -17,9 +17,9 @@ test('addresses, selections, and carets outside the word are not mentions', () =
   assert.equal(mentionToken('a @b c', 6, 6), undefined, 'after the space that ends the word');
   assert.equal(mentionToken('', 0, 0), undefined);
 });
-test('a long directory keeps its distinguishing tail', () => {
+test('a long directory is kept whole', () => {
   assert.equal(shortDirectory('ui/web'), 'ui/web'); assert.equal(shortDirectory(''), '');
   const long = 'very/long/directory/name/that/keeps/going/web/ui';
-  const short = shortDirectory(long); assert.ok(short.startsWith('…/')); assert.ok(short.endsWith('web/ui')); assert.ok(short.length <= 28);
+  const short = shortDirectory(long); assert.equal(short, long);
   assert.equal(directoryOf('a/b/c.txt'), 'a/b'); assert.equal(directoryOf('c.txt'), '');
 });

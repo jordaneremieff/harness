@@ -52,13 +52,13 @@ test('connected attention sorts before work, catalog facts never invent attentio
   await arrive({workspace:{id:'attention-blocked',revision:1,primaryKey:primary.key,selectedTarget:target,conversationLayout:singlePane([{kind:'primary'},target],`agent:${identity}`)},primaries:[primary],roster:rows,targets:[targetFixture('blocked-primary',{kind:'primary',key:primary.key,epoch:primary.epoch}),targetFixture('blocked-agent',target)],observations:[{...observed,availability:{identity,connectionEpoch:observed.connectionEpoch,state:'live',capabilities}}]});
   app.setSidebarSection('agents',false);await settle();
   const rendered=hostDocument.querySelectorAll('.agent-row');assert.deepEqual(rendered.map(node=>node.dataset.identity),[identity,'working','catalog-failed','catalog-idle']);assert.equal(rendered[0]?.querySelector('.row-summary')?.children[0]?.textContent,'Blocked');assert.equal(rendered[0]?.querySelector('.row-state')?.dataset.tone,'warning');
-  assert.equal(f.byId('agents-count').textContent,'1 need you · 1 working');assert.equal(f.byId('agents-count').hidden,false);
-  app.setSidebarSection('agents',true);await settle();assert.equal(f.byId('agents-count').textContent,'1 need you · 1 working');assert.equal(f.byId('agents-count').hidden,false);
+  assert.equal(f.byId('agents-count').textContent,'4');assert.equal(f.byId('agents-count').hidden,false);
+  app.setSidebarSection('agents',true);await settle();assert.equal(f.byId('agents-count').textContent,'4');assert.equal(f.byId('agents-count').hidden,false);
   assert.equal(openRow(`agent:${identity}`).querySelector('.conversation-state')?.textContent,'Blocked');
   const state=agentControl('composer').querySelector('.composer-state');assert.ok(state);let scrolled=false;state.scrollIntoView=()=>{scrolled=true;};
   openRow(`agent:${identity}`).click();await settle();assert.equal(scrolled,true);
   const current=app.state.agentEpochs.get(identity);assert.ok(current);f.event('agent.frame',{identity,connectionEpoch:current,frame:{...frame({busy:true}),revision:2}});await settle();
-  assert.equal(openRow(`agent:${identity}`).querySelector('.conversation-state')?.textContent,'Working');assert.equal(f.byId('agents-count').textContent,'2 working');
+  assert.equal(openRow(`agent:${identity}`).querySelector('.conversation-state')?.textContent,'Working');assert.equal(f.byId('agents-count').textContent,'4');
 });
 
 test('an agent connection error uses Not reachable rather than catalog prose',async t=>{

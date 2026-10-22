@@ -121,7 +121,7 @@ test('one long Unicode status keeps its full text accessible without inventing a
   const root = statusFixture(); const value = `\x1b[31m${'😀'.repeat(70)}\x1b[0m`;
   extensionStatus({...primary, extension: {statuses: {key: value, empty: ''}, widgets: {}}});
   const disclosure = root.children[0]; assert.ok(disclosure); const summary = disclosure.children[0]; assert.ok(summary);
-  assert.equal(summary.textContent, `${'😀'.repeat(55)}…`); assert.doesNotMatch(summary.textContent, /\ufffd|\+1/);
+  assert.equal(summary.textContent, '😀'.repeat(70)); assert.doesNotMatch(summary.textContent, /\ufffd|\+1/);
   disclosure.open = true; disclosure.dispatchEvent(new Event('toggle'));
   assert.deepEqual(disclosure.children[1]?.children.map(node => node.textContent), ['key', '😀'.repeat(70)]);
   extensionStatus(primary); assert.equal(root.children.length, 0);

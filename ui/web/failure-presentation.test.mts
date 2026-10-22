@@ -37,8 +37,9 @@ test('a terminal model error keeps input and partial content but uses collapsed 
   await primary('terminal-failure', {responseOutcome: 'failed'}, 'Unsent draft');
   assert.equal(f.byId('workbench-activity').textContent, 'Response failed');
   assert.equal(f.primaryControl('editor').disabled, false); assert.equal(f.primaryControl('editor').value, 'Unsent draft');
-  const diagnostic = f.primaryControl('root').querySelectorAll('.message-error').find(node => !node.hidden)?.querySelector('details'); assert.ok(diagnostic);
-  assert.equal(diagnostic.open, false); assert.equal(diagnostic.querySelector('pre')?.textContent, 'Opaque provider diagnostic');
+  const failure = f.primaryControl('root').querySelectorAll('.response-failure').find(node => !node.closest('[hidden]')); assert.ok(failure);
+  const toggle = failure.querySelector('.response-failure-toggle'), body = failure.querySelector('.response-failure-body'); assert.ok(toggle); assert.ok(body);
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false'); assert.equal(body.hidden, true); assert.equal(body.querySelector('pre')?.textContent, 'Opaque provider diagnostic');
   assert.equal(f.primaryControl('activity').textContent, 'Review message');
 });
 test('native retry and block facts cross the worker boundary into separate quiet states', async () => {

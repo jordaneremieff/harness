@@ -529,8 +529,13 @@ function audit(input: string): Audit {
 	const themes = themeValues(rules);
 	for (const [theme, palette] of Object.entries(themes)) {
 		const measure: Measure = (kind, source, fg, bg, threshold) => {
-			const foreground = palette[`--${fg}`] ?? fg;
-			const background = palette[`--${bg}`] ?? bg;
+			// A theme token may alias another theme token (64f7540f).
+			const resolve = (name: string): string => {
+				const value = palette[`--${name}`] ?? name, alias = token(value);
+				return alias && palette[`--${alias}`] ? (palette[`--${alias}`] as string) : value;
+			};
+			const foreground = resolve(fg);
+			const background = resolve(bg);
 			measurements.push({
 				theme,
 				kind,

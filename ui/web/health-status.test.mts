@@ -101,7 +101,7 @@ test('started, uptime and assets read in plain units with exact values in titles
   const field=(name:string)=>{const list=h.body.children.flatMap(node=>node.children).flatMap(node=>node.children);const index=list.findIndex(node=>node.textContent===name);assert.ok(index>=0);const value=list[index+1];assert.ok(value);return value;};
   assert.equal(field('Started').textContent,localDateTime(started));assert.equal(field('Started').title,started);
   assert.equal(field('Uptime').textContent,'4 min 34 s');
-  assert.equal(field('Assets').textContent,`${digest.slice(0,12)}…`);assert.equal(field('Assets').title,digest);
+  assert.equal(field('Assets').textContent,digest);assert.equal(field('Assets').title,digest);
   const labels=[...h.body.children.flatMap(node=>node.children).flatMap(node=>node.children)].filter(node=>node.textContent&&['Process','Started','Uptime','Supervisor restarts','UI','Commit','Assets','User stylesheet'].includes(node.textContent)).map(node=>node.textContent);
   assert.deepEqual(labels,['Process','Started','Uptime','Supervisor restarts','UI','Commit','Assets','User stylesheet']);
   const actions=h.body.children.find(node=>node.className==='dialog-actions');assert.ok(actions);assert.deepEqual(actions.children.map(node=>node.textContent),['Copy version','Refresh health']);

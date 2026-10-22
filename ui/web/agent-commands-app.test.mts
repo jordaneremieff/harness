@@ -28,7 +28,7 @@ test('an agent composer reads its host commands once on the first slash, shows t
   await arrive({workspace: {id: 'agent-commands', revision: 1, primaryKey: 'p', selectedTarget: target}, primaries: [primaryFixture({epoch: 12100})], roster: [row], targets: [targetFixture('agent-commands-draft', target, {draft: {revision: 1, text: '', mode: 'followUp', images: [], persisted: true}})]});
   await settle();
   const editor = agentControl('editor') as HostNode & {placeholder: string};
-  assert.equal(editor.placeholder, 'Draft for Unnamed conversation…');
+  assert.equal(editor.placeholder, 'Message');
   assert.equal(editor.getAttribute('aria-label'), 'Draft for Unnamed conversation');
   assert.equal(reads.length, 0, 'nothing is read before a slash');
   editor.focus(); editor.value = 'hello'; editor.setSelectionRange(5, 5); editor.dispatch('input'); await settle(); assert.equal(reads.length, 0);

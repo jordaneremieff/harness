@@ -57,9 +57,9 @@ test('returning to the end clears the count, and known messages stay known', () 
 });
 test('the control reads Latest, or the count with a cap', () => {
   assert.deepEqual(latestLabel(0), {text: 'Latest', accessible: 'Latest message'});
-  assert.deepEqual(latestLabel(1), {text: '1 new \u00b7 Latest', accessible: 'Latest message, 1 new'});
-  assert.deepEqual(latestLabel(ARRIVAL_CAP), {text: '99 new \u00b7 Latest', accessible: 'Latest message, 99 new'});
-  assert.deepEqual(latestLabel(ARRIVAL_CAP + 1), {text: '99+ new \u00b7 Latest', accessible: 'Latest message, more than 99 new'});
+  assert.deepEqual(latestLabel(1), {text: 'Latest \u00b7 1 new', accessible: 'Latest message, 1 new'});
+  assert.deepEqual(latestLabel(ARRIVAL_CAP), {text: 'Latest \u00b7 99 new', accessible: 'Latest message, 99 new'});
+  assert.deepEqual(latestLabel(ARRIVAL_CAP + 1), {text: 'Latest \u00b7 99+ new', accessible: 'Latest message, more than 99 new'});
 });
 const stamped = (id: string, entry: string, text: string, timestamp: number, state: 'partial' | 'final' = 'final'): EntryView =>
   ({id: entry, kind: 'message', messages: [{...message(id, [{type: 'text', text}]), state, timestamp}]});

@@ -337,8 +337,9 @@ test('capture rejects extra text and getters before storage or navigation', asyn
 });
 test('checkpoint validation is closed, bounded and rejects duplicate or missing recipients', () => {
   assert.deepEqual(validateDevReloadCheckpoint(checkpoint(), B, NOW), checkpoint());
+  assert.deepEqual(validateDevReloadCheckpoint({...checkpoint(), text: 'synthetic-body'}, B, NOW), {...checkpoint(), text: 'synthetic-body'}, 'unknown top-level fields are preserved exactly');
   const bad: unknown[] = [
-    {...checkpoint(), text: 'synthetic-body'}, {...checkpoint(), version: 2}, {...checkpoint(), generation: C}, {...checkpoint(), oldClient: 'bad'},
+    {...checkpoint(), version: 2}, {...checkpoint(), generation: C}, {...checkpoint(), oldClient: 'bad'},
     {...checkpoint(), capturedAt: NOW + 1}, {...checkpoint(), capturedAt: NOW - 900001}, {...checkpoint(), interactionRevision: NaN},
     {...checkpoint(), workspaceId: 'x'.repeat(129)}, {...checkpoint(), messageRecipient: 'missing'},
     {...checkpoint(), focusedControl: {kind: 'message', targetKey: 'primary:p'}}, Object.assign(Object.create({nodeType: 1}), checkpoint()),
