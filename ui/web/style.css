@@ -1764,9 +1764,13 @@ pre[data-wrap=true] { white-space: pre-wrap; overflow-wrap: anywhere; }
 .diff-row { grid-template-columns: 2ch max-content; }
 .communication-card:not(.communication-input,.communication-group-row), .extension-notice { padding: 0 12px 12px; }
 .communication-card > .communication-header, .extension-notice > .message-header { min-height: 32px; }
+/* One frame: the title row keeps the 12px grid, and the content area spans the frame edge to edge on a darker surface with the same 12px side padding, so title and text share one left edge. */
 .communication-card:not(.communication-input,.communication-group-row) > .communication-body,
-.extension-notice > .message-body { margin-top: 8px; padding: 8px 0; border: 0; border-radius: 6px; background: var(--canvas); }
-.communication-group-row > .communication-body { margin: 8px 12px 12px; padding: 8px 0; border: 0; border-radius: 6px; background: var(--canvas); }
+.extension-notice > .message-body { margin: 0 -12px -12px; padding: 8px 12px; border: 0; border-radius: 0 0 var(--r-md) var(--r-md); background: var(--canvas); }
+.communication-group-row > .communication-body { margin: 0; padding: 8px 12px; border: 0; border-radius: 0; background: var(--canvas); }
+.communication-body > :is(.communication-meta, .communication-no-answer, .communication-reply, .communication-results):empty { display: none; }
+.communication-body .communication-text > :first-child { margin-top: 0; }
+.communication-body .communication-text > :last-child { margin-bottom: 0; }
 .response-failure-body { margin-top: 8px; padding-block: 8px; border-radius: 6px; background: var(--canvas); }
 .thinking, .system-note, .custom-entry { padding-inline: 12px; border-radius: 6px; background: var(--run-bg); }
 .thinking > summary, .system-note > details > summary, .custom-entry > details > summary { min-height: 32px; padding-block: 6px; }
