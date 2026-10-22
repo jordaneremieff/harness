@@ -1073,7 +1073,7 @@ function renderAgentLiveStrip(controller: ConversationController, view: Conversa
   controller.liveStrip.update(row,view,attentionFor(controller.target),!!conversation?.frame);
   controller.liveStrip.updateContext({identity,entries:conversation?conversationBlocks(conversation):[],frame:conversation?.frame,
     beginning:controller.historyReady&&controller.historyComplete===true&&controller.before===null,earlier:controller.before!==null,
-    coverage:controller.historyError?.message??conversation?.frame?.coverage.reason??(controller.historyComplete===true?undefined:controller.historyReady?'Available history is incomplete.':'History has not loaded.'),
+    coverage:controller.historyError?undefined:conversation?.frame?.coverage.reason??(controller.historyComplete===true?undefined:controller.historyReady?'Available history is incomplete.':'History has not loaded.'),
     caption:currentSenderCaption,resolve:(id,answer)=>controller.transcript.loadedReference({text:id,owner:identity,field:answer?'answerEntryId':'entryId'},identity),
     reveal:id=>controller.transcript.revealEntry(id),load:()=>loadEarlierRows(controller),expanded:key=>controller.transcript.isExpanded(key),
     disclosure:(key,open)=>controller.transcript.disclosure(key,open),layout:change=>{const geometry=controller.transcript.captureGeometry();change();controller.transcript.applyGeometry(geometry);},
