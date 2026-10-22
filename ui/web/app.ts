@@ -1595,7 +1595,8 @@ function disconnected(error: unknown = new Error('The event stream closed.')): v
 }
 function connectionDetails(): void {
   const body = modal.open('Connection details');
-  if (connectionError) body.append(element('p', 'error', errorMessage(connectionError)));
+  body.append(element('p', undefined, 'This page lost its connection to the UI server. Reconnect tries again; your drafts stay in this tab.'));
+  if (connectionError) body.append(details('Technical details', errorMessage(connectionError)));
 }
 export function renderConnection(): void {
   const {visible} = connectionSurfaceFor(connectionPhase);
