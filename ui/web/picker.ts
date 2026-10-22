@@ -338,7 +338,7 @@ export class ProjectPicker {
         if (version !== render || !this.owns(token)) return;
         const fragment = document.createDocumentFragment();
         const latest = new Map(folderItems.map(item => [item.path, item]));
-        const rows = matches.slice(offset, offset + 20).map(item => this.row(latest.get(item.path) ?? item, tails.get(item.id)));
+        const rows = matches.slice(offset, offset + 20).map(item => this.row(latest.get(item.path) ?? item, tails.get(item.id), false));
         fragment.append(...dayGrouped(matches.slice(offset, offset + 20), rows, days)); list.append(fragment); offset += 20; updateCoverage();
         if (focusedPath) rows.find(row => row.querySelector<HTMLButtonElement>('.picker-select')?.dataset.sessionPath === focusedPath)?.querySelector<HTMLButtonElement>('.picker-select')?.focus();
         if (offset < matches.length) requestAnimationFrame(batch);
@@ -478,7 +478,7 @@ export class ProjectPicker {
       }
     }
   }
-  private row(item: SavedSession, tail?: string): HTMLElement {
+  private row(item: SavedSession, tail?: string, folder = true): HTMLElement {
     const row = element('div', 'picker-session');
     const opened = sessionOwner(this.ctx.snapshot()?.primaries ?? [], item.path);
     const writer = !opened && item.writer === 'live', ended = !opened && !writer && this.ended.has(item.path);
@@ -487,7 +487,7 @@ export class ProjectPicker {
     const heading = element('span', 'picker-session-heading'); const identity = element('span', 'picker-session-tail', tail ?? ''); identity.hidden = !tail;
     heading.append(element('strong', 'picker-session-title', sessionDisplayTitle(item)), identity);
     const metadata = element('span', 'picker-session-meta');
-    metadata.append(element('span', 'picker-session-folder', this.projectName(item.project)));
+    if (folder) metadata.append(element('span', 'picker-session-folder', this.projectName(item.project)));
     if (opened) metadata.append(element('span', 'info', 'In this window'));
     else if (writer) metadata.append(element('span', 'info', 'live in terminal'));
     else if (ended) metadata.append(element('span', 'info picker-ended', WRITER_ENDED));

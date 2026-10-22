@@ -524,7 +524,7 @@ test('saved conversations keep title and duplicate tail first with searchable id
   const nodes = descendants(setup.body); const rows = nodes.filter(node => node.className === 'picker-select'); assert.equal(rows.length, 2);
   const first = rows[0]; assert.ok(first); assert.equal(first.children[0]?.className, 'picker-session-heading'); assert.equal(first.children[0]?.children[0]?.textContent, page.items[0]?.title);
   assert.equal(first.children[0]?.children[1]?.textContent, '0033'); assert.equal(rows[1]?.children[0]?.children[1]?.textContent, '0034');
-  assert.equal(first.children[1]?.className, 'picker-session-meta'); assert.equal(first.children[1]?.textContent, 'projectIn this window');
+  assert.equal(first.children[1]?.className, 'picker-session-meta'); assert.equal(first.children[1]?.textContent, 'In this window');
   const metadata = nodes.find(node => node.className === 'picker-session-details'); assert.ok(metadata);
   assert.match(metadata.textContent, /fixture0033.*10 B/);
   assert.equal(first.textContent.includes('fixture0033'), false);
@@ -714,7 +714,7 @@ test('prompt excerpts retain full supplied details and the Resume caution stays 
   assert.equal(rows[0]?.querySelector('.picker-session-title')?.textContent, title.trim());
   assert.ok(rows[0]?.querySelector('.picker-select')?.title.startsWith(title.trim())); assert.equal(rows[0]?.querySelector('.picker-session-full-title')?.textContent, title.trim());
   assert.equal(rows[1]?.querySelector('.picker-session-title')?.textContent, title.trim());
-  assert.equal(rows[0]?.querySelector('.picker-session-folder')?.textContent, 'project'); assert.ok(rows[0]?.querySelector('.picker-age'));
+  assert.equal(rows[0]?.querySelector('.picker-session-folder'), undefined); assert.ok(rows[0]?.querySelector('.picker-age'));
   const file = descendants(setup.body).find(node => node.className === 'picker-file'); assert.ok(file); file.open = true; file.dispatch('toggle');
   const durable=setup.body.querySelector('.picker-durable'),registered=setup.body.querySelector('.picker-ordinary'),ordinary=setup.body.querySelector('.picker-folder-ordinary');assert.ok(durable&&registered&&ordinary);assert.equal(durable.querySelector('.picker-safety'),null);assert.equal(registered.querySelector('.picker-safety'),null);assert.equal(ordinary.children.some(node=>node.classList.contains('picker-safety')),false);assert.equal(setup.body.children.some(node=>node.classList.contains('picker-safety')),false);const fileSafety=file.querySelector('.picker-safety');assert.ok(fileSafety);assert.equal(fileSafety.hidden,false);assert.match(fileSafety.textContent,/^Stop a terminal session before you resume it here\./);assert.equal(setup.calls.some(call=>call.path==='/api/primaries'||call.path==='/api/agents/convert'),false);
 });
