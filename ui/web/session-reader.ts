@@ -6,6 +6,8 @@ import {readSessionState, SessionStateBar, type SessionState} from './session-st
 import {Transcript} from './render.ts';
 import {request} from './transport.ts';
 import type {PrimaryDraftActions, PrimaryDraftSource} from './primary-draft-actions.ts';
+/** Entries held in memory by one session reader. */
+const ENTRY_WINDOW=500;
 
 export type SessionReadSource={saved:SavedSession}|{primary:PrimaryView;saved?:SavedSession};
 export type SessionReaderReload={source:SessionReadSource;entries:EntryView[];leaf:string|null;before:string|null;primaryCursor:string|null;loaded:boolean;asOf:string;status:string;reading:ReadingView;presentation:PresentationView;scrollLeft:number;focused:boolean};
@@ -43,6 +45,7 @@ export class SessionReader {
   private entries:EntryView[]=[];
   private leaf:string|null=null;
   private before:string|null=null;
+  private windowTrimmed=false;
   private primaryCursor:string|null=null;
   private reading=false;
   private loaded=false;
@@ -70,7 +73,7 @@ export class SessionReader {
     this.transcript=new Transcript({transcript:this.scroller,latest:this.latest,earlier:this.earlier},{primaryDraft:hooks.primaryDraft&&{...hooks.primaryDraft,caption:()=>this.heading.textContent??'Session',current:()=>this.loaded&&!!this.source&&!this.node.closest('[hidden],[inert]')},operatorInput:true,cwd:()=>this.source?.saved?.project??(this.source&&'primary' in this.source?this.source.primary.cwd:undefined),presentation:(expanded,showThinking,transcriptView,thinking)=>{this.reloadPresentation={...this.reloadPresentation,revision:this.reloadPresentation.revision+1,expanded:[...expanded],showThinking,...(transcriptView?{transcriptView}:{}),...(thinking?{thinking}:{})};},reading:()=>{},earlier:()=>{void this.read(true);}});
   }
   open(source:SessionReadSource):void {
-    this.controller?.abort();this.source=source;this.entries=[];this.before=null;this.primaryCursor=null;this.leaf=null;this.reading=false;this.loaded=false;setText(this.time,'');
+    this.controller?.abort();this.source=source;this.entries=[];this.before=null;this.primaryCursor=null;this.windowTrimmed=false;this.leaf=null;this.reading=false;this.loaded=false;setText(this.time,'');
     this.transcript.reset();this.reloadPresentation={revision:0,expanded:[],showThinking:false};this.node.hidden=false;this.paintHeader();void this.read(false);
   }
   /** Opens a saved session tab and returns to its stored reading position once the snapshot loads. */
@@ -109,8 +112,7 @@ export class SessionReader {
     return structuredClone({source:this.source,entries:this.entries,leaf:this.leaf,before:this.before,primaryCursor:this.primaryCursor,loaded:this.loaded,asOf:this.time.textContent??'',status:this.status.textContent??'',presentation:this.reloadPresentation,scrollLeft:this.scroller.scrollLeft,focused:this.node.contains(document.activeElement),reading:{revision:0,anchorId:geometry.anchor?.id??null,offsetPx:geometry.anchor?.offsetPx??0,followTail:geometry.followTail}});
   }
   restoreReload(value:SessionReaderReload):void {
-    if(value.entries.length>500)throw new Error('The retained session snapshot exceeds its view bound.');
-    this.controller?.abort();this.controller=undefined;this.source=structuredClone(value.source);this.entries=structuredClone(value.entries);
+    this.controller?.abort();this.controller=undefined;this.source=structuredClone(value.source);this.entries=structuredClone(value.entries.slice(0,ENTRY_WINDOW));
     this.leaf=value.leaf;this.before=value.before;this.primaryCursor=value.primaryCursor;this.loaded=value.loaded;this.reading=false;
     this.refresh.disabled=false;this.earlier.disabled=false;this.node.hidden=false;this.transcript.reset();this.reloadPresentation=structuredClone(value.presentation);
     this.transcript.configure(this.reloadPresentation,value.reading);this.transcript.set(this.entries,undefined,undefined,!this.before&&!this.primaryCursor);this.transcript.historyAvailable(!!this.before||!!this.primaryCursor);
@@ -195,10 +197,14 @@ export class SessionReader {
   }
   private merge(entries:EntryView[],earlier:boolean):void {
     const known=new Set(entries.map(entry=>entry.id));this.entries=earlier?[...entries,...this.entries.filter(entry=>!known.has(entry.id))]:entries;
-    if(this.entries.length>500){this.entries=this.entries.slice(-500);this.before=null;this.primaryCursor=null;}
+    this.windowTrimmed=false;
+    if(this.entries.length<=ENTRY_WINDOW)return;
+    // Older pages keep the oldest entries in view and unload the newest, so the paging cursors stay valid and scrolling up never ends early.
+    if(earlier){this.entries=this.entries.slice(0,ENTRY_WINDOW);this.windowTrimmed=true;}
+    else this.entries=this.entries.slice(-ENTRY_WINDOW);
   }
   private coverage(coverage:HistoryPage['coverage']):void {
     const shortened=coverage.truncated||this.entries.some(entry=>entry.data?.truncated||entry.messages?.some(message=>message.coverage.truncated));
-    setText(this.status,[`${this.entries.length} retained entries loaded`,coverage.complete&&!shortened?'Complete retained ancestry':'Bounded retained ancestry',coverage.reason,shortened?'Content is shortened or incomplete.':'',this.entries.length>=500?'This view reached its entry bound; Refresh reads the latest snapshot.':''].filter(Boolean).join(' · '));
+    setText(this.status,[`${this.entries.length} retained entries loaded`,coverage.complete&&!shortened?'Complete retained ancestry':'Bounded retained ancestry',coverage.reason,shortened?'Content is shortened or incomplete.':'',this.windowTrimmed?'Newer entries are unloaded to keep this view bounded; Refresh returns to the latest.':''].filter(Boolean).join(' · '));
   }
 }
