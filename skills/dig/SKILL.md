@@ -79,9 +79,11 @@ when the task or the operator requires it, checked against the live model
 registry. Do not freeze model names in this method and do not silently inherit
 the parent's model. If a selected model fails, keep the observed error and
 select a permitted alternative for that lane only; report the substitution.
-If delegation is unavailable, say so and narrow the claims to what the parent
-can verify within its limits; do not replace workers with an unbounded parent
-read.
+If delegation is unavailable, report an exact blocker for any investigation
+that needs it: name the missing control and what it prevented. Do not
+substitute new broad parent reads or a reduced-backend investigation. The
+only permitted answer is one built from evidence already available in the
+conversation, labeled as such.
 
 Give each worker a self-contained contract:
 
@@ -162,16 +164,18 @@ Before synthesis, write down three lists from the returned evidence:
 - **Alternatives not excluded:** for troubleshooting, each hypothesis with the
   evidence that eliminated it or the reason it stays open. Name a cause only
   when a discriminating observation supports it, not only a story that fits.
-  Diagnosis does not authorize repair; propose the fix unless the operator
-  asked for it.
+  Investigation proposes a repair; only a task that explicitly authorizes
+  the repair implements it.
 
 **Complete when:** each contradiction and gap is resolved, scheduled for a
 follow-up, or marked as a stated limit.
 
 ## 5. Follow up within bounds
 
-Run at most two follow-up rounds. Start one only when a named contradiction
-or gap could change the answer. Prefer steering the worker that holds the
+Default to at most two follow-up rounds, unless the operator's depth or cost
+limits allow more or require fewer. Start a round only when a named
+contradiction or gap could change the answer; each extra round needs that
+same test and stays inside the operator's limits. Prefer steering the worker that holds the
 context, and verify that the correction changed its work before accepting the
 dependent result. Start a new worker only for a new facet or an independent
 check. Do not widen into a fresh survey.
@@ -205,8 +209,9 @@ Deliver a bounded answer in chat, not a transcript:
 - **Exact blocker (instead of an answer when applicable):** the boundary hit,
   what was tried, what evidence exists so far, and the specific access,
   decision, or input that would unblock it.
-- **Next step** only when the evidence shows a clear one; propose changes to
-  the system under investigation rather than making them.
+- **Next step** only when the evidence shows a clear one. Propose the repair
+  or change to the system under investigation; implement it only when the
+  operator explicitly authorized a repair task.
 
 Large artifacts stay in the scratch directory; name the path. Do not claim
 more than the checks in section 3 support.
