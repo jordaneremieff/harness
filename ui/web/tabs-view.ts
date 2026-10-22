@@ -7,7 +7,7 @@ import { paneById, paneForTab, paneLeaves, type PaneLayout } from './pane-layout
 
 export type TabRegion = {id: string; tabs: HTMLElement; controls: string};
 export type TabRegions = {panes: () => TabRegion[]; conversations: HTMLElement};
-export type TabHooks = {layout: () => PaneLayout; reopen?: () => {count: number; drafts?: number; run: () => void} | undefined; activate: (pane: string, key: string) => void; close: (key: string) => void;
+export type TabHooks = {layout: () => PaneLayout; draft?: (tab: ConversationTab) => boolean; reopen?: () => {count: number; drafts?: number; run: () => void} | undefined; activate: (pane: string, key: string) => void; close: (key: string) => void;
   move: (key: string, pane: string, index: number) => void; label: (tab: ConversationTab) => string;
   identity?: (tab: ConversationTab) => string | undefined;unnamed?:(tab:ConversationTab)=>boolean;
   fallback?:()=>HTMLElement|undefined;
@@ -156,7 +156,9 @@ export class TabStrip {
   }
   private paintTab(node: HTMLElement, tab: ConversationTab, selected: boolean): void {
     const label = this.hooks.label(tab); const tail = this.tail(tab); const accessible = tail ? `${label}, ${tail}` : label; const status = this.hooks.status(tab);
-    const statusLabel=this.paintSessionState(node,status.word,status.label);
+    const held=this.hooks.draft?.(tab)===true;node.dataset.draft=String(held);
+    const statusLabel=[this.paintSessionState(node,status.word,status.label),held?'unsent draft':''].filter(Boolean).join(' · ');
+    const mark=node.querySelector<HTMLElement>('.tab-draft');if(mark)mark.hidden=!held;
     node.title = [label, tab.kind === 'file' ? tab.path : tab.kind === 'agent' ? tab.identity : '', statusLabel].filter(Boolean).join(' · ');
     node.setAttribute('aria-label', `${accessible}${statusLabel ? `, ${statusLabel}` : ''}`); node.setAttribute('aria-selected', String(selected)); node.tabIndex = selected ? 0 : -1;
     const compact=!selected&&this.hooks.unnamed?.(tab)===true;node.dataset.unnamed=String(compact);
@@ -205,7 +207,8 @@ export class TabStrip {
     node.addEventListener('dragleave', () => node.classList.remove('tab-drop-target'));
     node.addEventListener('drop', event => {const pane = paneForTab(this.hooks.layout(), key); if (!pane || !this.dragging || !this.owner(this.dragging)) return; event.preventDefault(); event.stopPropagation(); this.hooks.move(this.dragging, pane.id, pane.tabs.findIndex(tab => tabKey(tab) === key)); this.clearDrag();});
     const word=doc.createElement('span');word.className='tab-session-state';word.setAttribute('aria-hidden','true');word.hidden=true;
-    node.addEventListener('dragend', () => this.clearDrag()); node.append(label, identity, word, dot, close); return node;
+    const draft=doc.createElement('span');draft.className='tab-draft';draft.textContent='Draft';draft.setAttribute('aria-hidden','true');draft.hidden=true;
+    node.addEventListener('dragend', () => this.clearDrag()); node.append(label, identity, word, draft, dot, close); return node;
   }
   private group(id: string): HTMLElement {
     let group = this.groups.get(id); if (group) return group;

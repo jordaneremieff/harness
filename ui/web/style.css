@@ -1671,6 +1671,8 @@ button.thread-person:hover, button.thread-sender:hover { background: var(--raise
 .session-reader-transcript { flex: 1; min-height: 0; }
 .tab-session-state { flex: none; color: var(--muted); font-size: var(--fs-meta); white-space: nowrap; }
 .tab-session-state[hidden], .session-state-bar[hidden] { display: none; }
+.tab-draft { flex: none; color: var(--dim); font-size: var(--fs-meta); white-space: nowrap; }
+.tab-draft[hidden] { display: none; }
 .session-state-bar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); min-width: 0; padding: var(--s3) var(--s4); border-top: 1px solid var(--rule); font-size: var(--fs-ui); }
 .session-state-actions { display: flex; flex: none; align-items: center; white-space: pre; }
 .session-state-label { color: var(--muted); }
