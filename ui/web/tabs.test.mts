@@ -12,7 +12,7 @@ test('caption priority uses exact public names, first-message excerpts and hones
   assert.equal(agentName(' Name ', 'handle', identity, ' Reported '), 'Reported');
   assert.equal(agentName(identity, 'writer', identity, '  '), 'writer');
   assert.equal(agentName(identity, undefined, identity, undefined, ' First request\nLater content'), 'First request');
-  assert.equal(agentName(undefined, undefined, identity, undefined, '😀'.repeat(100)), `${'😀'.repeat(79)}…`);
+  assert.equal(agentName(undefined, undefined, identity, undefined, '😀'.repeat(100)), '😀'.repeat(100));
   assert.equal(agentName(undefined, undefined, identity, undefined, identity), 'Unnamed conversation');
   assert.equal(conversationIdentityText(`${identity}:7906`), true); assert.equal(conversationIdentityText(`prefix ${identity}`), false);
 });

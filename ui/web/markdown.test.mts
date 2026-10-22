@@ -240,11 +240,11 @@ test('source controls reserve a header and toggles and Copy keep exact highlight
   const block = dom.children[0]; const header = block.children[0]; const pre = block.children[1];
   const original = pre.children[0];
   assert.equal(header.className, 'source-header'); assert.equal(header.children[0].textContent, 'ts');
-  assert.equal(pre.textContent, source); assert.equal(pre.dataset.wrap, 'true');
+  assert.equal(pre.textContent, source); assert.equal(pre.dataset.wrap, 'false');
   const wrap = header.children[2]; const copy = header.children[1];
-  wrap.dispatchEvent(new Event('click')); assert.equal(pre.dataset.wrap, 'false');
-  assert.equal(wrap.attributes['aria-pressed'], 'false'); assert.equal(pre.textContent, source);
-  copy.dispatchEvent(new Event('click')); await Promise.resolve(); assert.equal(copied, source);
   wrap.dispatchEvent(new Event('click')); assert.equal(pre.dataset.wrap, 'true');
+  assert.equal(wrap.attributes['aria-pressed'], 'true'); assert.equal(pre.textContent, source);
+  copy.dispatchEvent(new Event('click')); await Promise.resolve(); assert.equal(copied, source);
+  wrap.dispatchEvent(new Event('click')); assert.equal(pre.dataset.wrap, 'false');
   assert.equal(pre.children[0], original); assert.equal(pre.textContent, source);
 });

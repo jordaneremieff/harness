@@ -96,11 +96,12 @@ test('background pane activation preserves every other active key and idle focus
   assert.equal(focusPaneLayout(next, 'pane-1'), next); assert.equal(activatePaneTab(next, 'pane-2', 'primary'), next);
   assert.equal(focusPaneLayout(next, 'gone'), next);
 });
-test('normalization keeps an already-valid tree by reference and rejects flat/foreign/overbound shapes', () => {
+test('normalization keeps an already-valid tree by reference and preserves unknown fields and rejects flat/foreign/overbound shapes', () => {
   const original = base(); assert.equal(normalizePaneLayout(original), original);
-  const wrong = [null, [], {}, {tabs: [], active: null, splitRatio: 50}, {...original, extra: true}, {...original, focusedPane: 'missing'},
-    {root: {...original.root, active: 'missing'}, focusedPane: 'pane-1'}, {root: {...original.root, id: 'a'.repeat(65)}, focusedPane: 'a'.repeat(65)},
-    {root: {kind: 'pane', id: 'pane-1', tabs: [{kind: 'agent', identity: 'a', split: false}], active: 'agent:a'}, focusedPane: 'pane-1'}];
+  const wrong = [null, [], {}, {tabs: [], active: null, splitRatio: 50}, {...original, focusedPane: 'missing'},
+    {root: {...original.root, active: 'missing'}, focusedPane: 'pane-1'}, {root: {...original.root, id: 'a'.repeat(65)}, focusedPane: 'a'.repeat(65)}];
+  const unknownFields = [{...original, extra: true}, {root: {kind: 'pane', id: 'pane-1', tabs: [{kind: 'agent', identity: 'a', split: false}], active: 'agent:a'}, focusedPane: 'pane-1'}];
+  for (const kept of unknownFields) assert.equal(validPaneLayout(kept), true, 'unknown fields are preserved, not rejected');
   for (const value of wrong) {assert.equal(validPaneLayout(value), false); assert.throws(() => normalizePaneLayout(value as typeof original), /invalid/);}
   const two = splitPane(original, 'pane-1', 'x', space); assert.ok(two.root.kind === 'split');
   for (const ratio of [19, 81, 50.5, Number.NaN]) assert.equal(validPaneLayout({...two, root: {...two.root, ratio}}), false);

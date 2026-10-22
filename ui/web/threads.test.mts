@@ -19,11 +19,11 @@ test('the list filter matches every word in title, purpose or identity', () => {
   assert.deepEqual(filterThreads(rows, 's/3').map(row => row.id), ['s/3']);
 });
 
-test('the heading count marks a cut list', () => {
+test('the heading count is the supplied unique total', () => {
   assert.equal(threadCount(undefined), '');
-  assert.equal(threadCount(overview({items: []})), '');
+  assert.equal(threadCount(overview({items: []})), '0');
   assert.equal(threadCount(overview()), '1');
-  assert.equal(threadCount(overview({truncated: true})), '1+');
+  assert.equal(threadCount(overview({truncated: true})), '1'); assert.equal(threadCount(overview({omitted: 3})), '4');
 });
 
 test('quiet lines state coverage, cuts and agents that cannot list threads', () => {

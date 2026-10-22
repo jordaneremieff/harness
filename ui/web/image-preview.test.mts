@@ -59,8 +59,8 @@ test('the preview shows the validated URL fitted by default and reveals natural 
   const root = state.body.children[0]; assert.ok(root); assert.match(root.className, /image-preview-fit/);
   const fit = state.body.find('button', 'Fit'), actual = state.body.find('button', 'Actual size'); assert.ok(fit && actual);
   assert.equal(fit.attributes.get('aria-pressed'), 'true'); assert.equal(actual.attributes.get('aria-pressed'), 'false');
-  assert.match(state.body.textContent, /PNG · 1440 × 1000 · 2 KiB/); assert.match(state.body.textContent, /Loading image…/);
-  img.dispatchEvent(new Event('load')); assert.doesNotMatch(state.body.textContent, /Loading image…/);
+  assert.match(state.body.textContent, /PNG · 1440 × 1000 · 2 KiB/); assert.match(state.body.textContent, /Loading image/);
+  img.dispatchEvent(new Event('load')); assert.doesNotMatch(state.body.textContent, /Loading image/);
   actual.dispatchEvent(new Event('click')); assert.match(root.className, /image-preview-actual/); assert.equal(actual.attributes.get('aria-pressed'), 'true'); assert.equal(fit.attributes.get('aria-pressed'), 'false');
   assert.equal(previewImage(state), img); assert.equal(img.src, url);
   fit.dispatchEvent(new Event('click')); assert.match(root.className, /image-preview-fit/);

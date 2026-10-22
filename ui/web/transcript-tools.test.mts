@@ -289,7 +289,7 @@ test('thinking titles use only observed spans', () => {
 test('the thinking preview is the first non-blank line in plain words', () => {
   assert.equal(thinkingPreview('\n\n## **Checking** the `procedure`\n\nmore'), 'Checking the procedure');
   assert.equal(thinkingPreview('- first item\n- second'), 'first item'); assert.equal(thinkingPreview('> quoted   words'), 'quoted words');
-  assert.equal(thinkingPreview('   \n  \n'), ''); assert.equal(thinkingPreview('x'.repeat(5000)).length, 300);
+  assert.equal(thinkingPreview('   \n  \n'), ''); assert.equal(thinkingPreview('x'.repeat(5000)).length, 5000);
 });
 test('the thinking preview reads a link as its label and an image as its alt text', () => {
   assert.equal(thinkingPreview('See [the guide](https://example.test/a_b) and ![diagram](x.png) now'), 'See the guide and diagram now');

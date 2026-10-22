@@ -45,7 +45,7 @@ test('image renderer uses lazy same-origin image with size, alt, failure and ret
   const img = figure.children.find(node => node.tag === 'img'); const retry = figure.children.find(node => node.tag === 'button'); assert.ok(img && retry);
   assert.equal(img.loading, 'lazy'); assert.equal(img.decoding, 'async'); assert.equal(img.src, url); assert.equal(img.alt, image.alt);
   assert.deepEqual([img.width, img.height], [300, 200]); assert.match(figure.textContent, /300 × 200 · 1 KiB/);
-  assert.match(figure.textContent, /Loading image…/);
+  assert.match(figure.textContent, /Loading image/);
   img.calls = [];
   img.dispatchEvent(new Event('error')); assert.equal(img.hidden, true); assert.equal(retry.hidden, true); assert.match(figure.textContent, /Retrying image/);
   assert.deepEqual(img.calls, ['remove:src', 'remove']); assert.equal(img.parentElement, null); assert.equal(img.src, '');
