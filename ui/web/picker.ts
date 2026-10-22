@@ -5,7 +5,7 @@ import { cardAction, cardDisclosure, controlIcon } from './card-icons.ts';
 import { projectIdentity, projectLabels, presentationName, type ConversationPresentation } from './conversation-presentation.ts';
 import { contextMenu, type ContextItem } from './context-menu.ts';
 import { duplicateIdentityTails } from './tabs.ts';
-import { absoluteTime, relativeTime } from './format.ts';
+import { absoluteTime, dayLabel, relativeTime } from './format.ts';
 import type { Modal } from './modal.ts';
 import { filterSessions, loadedPrimarySession, mergeSessions, mergeSessionTitles, savedPathValid, sessionCoverage, sessionEmptyMessage, sessionOwner, sessionSize, sessionLabel, type SessionList } from './picker-state.ts';
 import { operation, request, reserve } from './transport.ts';
@@ -21,6 +21,16 @@ function partialSessions(page: SavedSessionPage): boolean {
 function savedListDetails(page: SavedSessionPage, registered = false): string {
   const count = registered ? `${page.items.length} of ${page.total} sessions loaded${page.omitted ? ` · ${page.omitted} discovery records are unavailable or outside the bound.` : ''}` : sessionCoverage(page);
   return [count, page.nextCursor ? 'More records are available.' : '', page.items.some(item => item.titleState !== 'ready') ? 'Some loaded titles are pending or unavailable.' : '', `Saved list · ${relativeTime(page.observedAt, Date.now())}`].filter(Boolean).join('\n');
+}
+/** Inserts a day heading before the first row of each local day; `days.last` carries the day across batches. */
+function dayGrouped(items: readonly SavedSession[], rows: HTMLElement[], days: {last: string}): HTMLElement[] {
+  const out: HTMLElement[] = [];
+  rows.forEach((row, index) => {
+    const label = dayLabel(Date.parse(items[index]?.modifiedAt ?? ''), Date.now());
+    if (label && label !== days.last) { days.last = label; out.push(element('h3', 'picker-day', label)); }
+    out.push(row);
+  });
+  return out;
 }
 function groupHeading(name: string, qualifier?: string, partialChanged?: (partial: boolean) => void) {
   const node = element('div', 'picker-group-heading'), disclosure = element('details', 'picker-list-details');
@@ -323,13 +333,13 @@ export class ProjectPicker {
       const tails = duplicateIdentityTails(folderItems.map(item => ({name: sessionLabel(item), identity: item.id})));
       if (focusedPath && !matches.some(item => item.path === focusedPath)) { search.field.focus(); error.textContent = 'The selected session is no longer in this loaded list.'; }
       more.hidden = !data.nextCursor;
-      let offset = 0;
+      let offset = 0; const days = {last: ''};
       const batch = () => {
         if (version !== render || !this.owns(token)) return;
         const fragment = document.createDocumentFragment();
         const latest = new Map(folderItems.map(item => [item.path, item]));
         const rows = matches.slice(offset, offset + 20).map(item => this.row(latest.get(item.path) ?? item, tails.get(item.id)));
-        fragment.append(...rows); list.append(fragment); offset += 20; updateCoverage();
+        fragment.append(...dayGrouped(matches.slice(offset, offset + 20), rows, days)); list.append(fragment); offset += 20; updateCoverage();
         if (focusedPath) rows.find(row => row.querySelector<HTMLButtonElement>('.picker-select')?.dataset.sessionPath === focusedPath)?.querySelector<HTMLButtonElement>('.picker-select')?.focus();
         if (offset < matches.length) requestAnimationFrame(batch);
       };

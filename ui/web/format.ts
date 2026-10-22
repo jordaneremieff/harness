@@ -76,3 +76,13 @@ export function previewText(text: string, maxLines = 6, maxChars = 2000): { text
   const preview = shown.join('\n');
   return { text: preview, truncated: preview.length < safe.length };
 }
+
+/** Today, Yesterday, then the date (with the year when it is not the current one), in the local zone. */
+export function dayLabel(value: number, now: number, timeZone?: string): string {
+  if (!Number.isFinite(value)) return '';
+  const key = (stamp: number): string => formatDate(stamp, {year: 'numeric', month: '2-digit', day: '2-digit'}, timeZone);
+  if (key(value) === key(now)) return 'Today';
+  if (key(value) === key(now - 86_400_000)) return 'Yesterday';
+  const sameYear = formatDate(value, {year: 'numeric'}, timeZone) === formatDate(now, {year: 'numeric'}, timeZone);
+  return formatDate(value, sameYear ? {weekday: 'short', month: 'short', day: 'numeric'} : {month: 'short', day: 'numeric', year: 'numeric'}, timeZone);
+}
