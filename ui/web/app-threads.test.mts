@@ -37,53 +37,50 @@ const regions = () => hostDocument.querySelectorAll('.transcript-region');
 const text = (node: {textContent: string}) => node.textContent;
 
 await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'agent', identity: BUILDER}, conversationLayout: twoPanes(BUILDER, 'agent-pane')},
-  primaries: [primaryFixture()], roster: [agentFixture(BUILDER, {name: 'Builder'}), agentFixture(DESIGNER, {name: 'Designer'}), agentFixture(STORAGE, {name: 'Web UI manager'})]});
+  primaries: [primaryFixture()], roster: [agentFixture(BUILDER, {state: 'working', name: 'Builder'}), agentFixture(DESIGNER, {name: 'Designer'}), agentFixture(STORAGE, {name: 'Web UI manager'})]});
+app.focusPane('agent-pane'); await settle();
 
-test('the section reads nothing until it is opened and lists open threads before closed ones', async () => {
+test('the section reads when the sidebar opens and lists threads with two or more members, newest first', async () => {
   fixtureControl.threadHandler = () => overview;
-  await settle();
-  assert.deepEqual(threadCalls(), []);
-  assert.equal(byId('threads-refresh').disabled, true);
-  assert.equal(byId('threads-count').hidden, true);
+  byId('threads-refresh').click(); await settle();
   const heading = byId('threads-heading'), chevron = heading.querySelector('.card-icon-chevron');
   assert.ok(chevron); assert.equal(heading.firstChild, chevron); assert.equal(heading.querySelectorAll('svg').length, 1);
-  byId('threads-refresh').click(); await settle();
-  assert.deepEqual(threadCalls(), []);
-  assert.equal(byId('threads-heading').getAttribute('aria-expanded'), 'false');
-  assert.equal(byId('threads-section-body').hidden, true);
-  byId('threads-heading').click(); await settle();
-  assert.deepEqual(threadCalls().map(call => call.method), ['GET']);
-  assert.match(threadCalls()[0].path, /^\/api\/threads(\?|$)/);
+  assert.equal(heading.getAttribute('aria-expanded'), 'true');
   assert.equal(byId('threads-section-body').hidden, false);
+  assert.match(threadCalls()[0].path, /^\/api\/threads(\?|$)/);
   const rows = byId('threads-list').querySelectorAll('button');
   assert.deepEqual(rows.map(row => text(row.querySelector('.row-title') ?? row)), ['Release plan', 'Long thread', 'Unavailable thread', 'Lost thread', 'Old audit']);
-  assert.match(text(rows[4]), /Closed · 2 members · 3d ago$/); assert.match(text(rows[0]), /3 members · 1m ago$/);
+  assert.match(text(rows[4].querySelector('.row-meta') as never), /^2 · 3d$/); assert.match(text(rows[0].querySelector('.row-meta') as never), /^3 · 1m$/);
+  assert.match(rows[4].title, /Closed · 2 members · 3d ago/);
   assert.equal(rows[4].classList.contains('closed'), true);
   assert.equal(byId('threads-refresh').disabled, false);
+  assert.match(byId('threads-refresh').title, /2 stopped agents use saved storage reads\./);
   assert.doesNotMatch(text(byId('threads-footer')), /Listed by/);
-  assert.match(text(byId('threads-footer')), /2 stopped agents use saved storage reads\./);
   assert.equal(byId('threads-filter-box').hidden, true);
   const count = byId('threads-count'); assert.equal(count.textContent, '5'); assert.equal(count.hidden, false);
-  assert.equal(heading.firstChild, chevron); assert.equal(heading.contains(byId('threads-refresh')), false);
-  byId('threads-refresh').click(); await settle(); assert.equal(heading.getAttribute('aria-expanded'), 'true');
+  assert.equal(heading.contains(byId('threads-refresh')), false);
   const reads = threadCalls().length;
-  heading.dispatch('click', {clientX: heading.clientWidth - 1, clientY: 12}); await settle();
-  assert.equal(heading.getAttribute('aria-expanded'), 'false'); assert.equal(heading.firstChild, chevron); assert.equal(count.hidden, false); assert.equal(count.textContent, '5');
+  heading.click(); await settle();
+  assert.equal(heading.getAttribute('aria-expanded'), 'false'); assert.equal(byId('threads-section-body').hidden, true);
+  assert.equal(byId('threads-refresh').disabled, true); assert.equal(heading.firstChild, chevron); assert.equal(count.textContent, '5');
   heading.click(); await settle(); assert.equal(heading.getAttribute('aria-expanded'), 'true'); assert.equal(count.hidden, false);
   assert.equal(threadCalls().length, reads);
 });
 
-test('thread filters share the eight-row threshold and preserve a query or focused field', async () => {
+test('All threads opens the full catalog with a filter that keeps a query, and Escape returns to the compact list', async () => {
   const loaded = Array.from({length: 9}, (_, index) => ({...items[0], id: id(String(index)), title: `Filter thread ${index}`}));
-  fixtureControl.threadHandler = () => ({...overview, items: loaded.slice(0, 8)});
-  byId('threads-refresh').click(); await settle(); assert.equal(byId('threads-filter-box').hidden, true);
   fixtureControl.threadHandler = () => ({...overview, items: loaded});
-  byId('threads-refresh').click(); await settle(); assert.equal(byId('threads-filter-box').hidden, false);
-  const filter = byId('threads-filter'); filter.focus();
-  fixtureControl.threadHandler = () => ({...overview, items: loaded.slice(0, 8)});
-  byId('threads-refresh').click(); await settle(); assert.equal(byId('threads-filter-box').hidden, false);
-  filter.value = 'Filter'; filter.dispatch('input'); filter.blur(); assert.equal(byId('threads-filter-box').hidden, false);
-  filter.value = ''; filter.dispatch('input'); assert.equal(byId('threads-filter-box').hidden, true);
+  byId('threads-refresh').click(); await settle();
+  assert.equal(byId('threads-filter-box').hidden, true);
+  assert.equal(byId('threads-list').querySelectorAll('button').length, 9);
+  const all = byId('threads-footer').querySelectorAll('button').find(item => text(item) === 'All threads (9)'); assert.ok(all);
+  all.click(); await settle();
+  assert.equal(byId('threads-filter-box').hidden, false);
+  const filter = byId('threads-filter');
+  filter.value = 'thread 3'; filter.dispatch('input');
+  assert.deepEqual(byId('threads-list').querySelectorAll('button').map(row => text(row.querySelector('.row-title') as never)), ['Filter thread 3']);
+  filter.dispatch('keydown', {key: 'Escape'}); await settle();
+  assert.equal(filter.value, ''); assert.equal(byId('threads-section').dataset.catalog, 'false');
   fixtureControl.threadHandler = () => overview; byId('threads-refresh').click(); await settle();
 });
 test('a thread opens in the focused pane only, reads without writing, and Escape returns to the row', async context => {
@@ -191,17 +188,16 @@ test('a host without thread operations and a failed read stay separate messages'
 test('a list failure and a host that cannot list are reported without hiding the rest', async () => {
   fixtureControl.threadHandler = () => ({error: {code: 'host_error', message: 'Registry offline', retry: 'user'}});
   byId('threads-refresh').click(); await settle();
-  assert.match(text(byId('threads-footer')), /Threads could not be listed\./);
-  assert.match(text(byId('threads-footer')), /Registry offline/);
+  assert.match(byId('threads-refresh').title, /Registry offline/);
   assert.equal(byId('threads-list').querySelectorAll('button').length, 5);
   fixtureControl.threadHandler = () => ({...overview, hosts: {total: 3, answered: 1, unavailable: 1, failed: 1, notRunning: 0}, truncated: true, omitted: 4, rosterComplete: false,
     storages: [{storageId: STORAGE, state: 'answered', threads: 2, truncated: false}, {storageId: BUILDER, state: 'unavailable', threads: 0, truncated: false, code: 'threads_unavailable', message: 'old'},
       {storageId: DESIGNER, state: 'failed', threads: 0, truncated: false, code: 'timeout', message: 'The host did not answer in time.'}]});
   byId('threads-refresh').click(); await settle();
-  const footer = text(byId('threads-footer'));
-  assert.doesNotMatch(footer, /Threads could not be listed/);
+  const footer = byId('threads-refresh').title;
+  assert.doesNotMatch(footer, /Registry offline/);
   assert.doesNotMatch(footer, /Listed by/);
-  assert.match(footer, /^Showing the newest 5 threads; 4 more not shown · Agent list incomplete/);
+  assert.match(footer, /Showing the newest 5 threads; 4 more not shown · Agent list incomplete/);
   assert.match(footer, /1 agent does not offer threads/); assert.match(footer, /1 agent did not answer/);
   assert.match(footer, /Builder: does not offer threads/); assert.match(footer, /Designer: did not answer \(The host did not answer in time\.\)/);
 });
@@ -225,7 +221,7 @@ test('a thread reopens at its scroll position after another thread and after mov
   rowButton('Release plan').click(); await settle();
   assert.equal(scrollerOf().scrollTop, 500);
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'agent', identity: BUILDER}, conversationLayout: twoPanes(BUILDER, 'primary-pane')},
-    primaries: [primaryFixture()], roster: [agentFixture(BUILDER, {name: 'Builder'}), agentFixture(DESIGNER, {name: 'Designer'}), agentFixture(STORAGE, {name: 'Web UI manager'})]});
+    primaries: [primaryFixture()], roster: [agentFixture(BUILDER, {state: 'working', name: 'Builder'}), agentFixture(DESIGNER, {name: 'Designer'}), agentFixture(STORAGE, {name: 'Web UI manager'})]});
   rowButton('Long thread').click(); await settle();
   scrollerOf().scrollTop = 0; reader()?.querySelector('.thread-scroll')?.dispatch('scroll');
   rowButton('Release plan').click(); await settle();
@@ -254,11 +250,11 @@ test('opening from a focused file pane covers that file pane', async () => {
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'agent', identity: BUILDER}, conversationLayout: {root: {kind: 'split', id: 'split-file', axis: 'x', ratio: 50,
     first: {kind: 'pane', id: 'conversation-pane', tabs: [{kind: 'agent', identity: BUILDER}], active: `agent:${BUILDER}`},
     second: {kind: 'pane', id: 'file-pane', tabs: [file], active: `file:${JSON.stringify([file.rootId, file.path])}`}}, focusedPane: 'conversation-pane'}},
-    primaries: [primaryFixture()], roster: [agentFixture(BUILDER, {name: 'Builder'}), agentFixture(STORAGE, {name: 'Web UI manager'})]});
+    primaries: [primaryFixture()], roster: [agentFixture(BUILDER, {state: 'working', name: 'Builder'}), agentFixture(STORAGE, {name: 'Web UI manager'})]});
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'agent', identity: BUILDER}, conversationLayout: {root: {kind: 'split', id: 'split-file', axis: 'x', ratio: 50,
     first: {kind: 'pane', id: 'conversation-pane', tabs: [{kind: 'agent', identity: BUILDER}], active: `agent:${BUILDER}`},
     second: {kind: 'pane', id: 'file-pane', tabs: [file], active: `file:${JSON.stringify([file.rootId, file.path])}`}}, focusedPane: 'file-pane'}},
-    primaries: [primaryFixture()], roster: [agentFixture(BUILDER, {name: 'Builder'}), agentFixture(STORAGE, {name: 'Web UI manager'})]}, true);
+    primaries: [primaryFixture()], roster: [agentFixture(BUILDER, {state: 'working', name: 'Builder'}), agentFixture(STORAGE, {name: 'Web UI manager'})]}, true);
   byId('threads-refresh').click(); await settle();
   rowButton('Release plan').click(); await settle();
   assert.ok(reader());
@@ -312,9 +308,10 @@ for (const [name, letter, removesRow] of [['while older events remain', 'x', fal
     rowButton(`Anchor ${letter}`).click(); await settle();
     const node = reader(); assert.ok(node);
     const scroller = node.querySelector('.thread-scroll') as unknown as {scrollTop: number; getBoundingClientRect(): {top: number}} | null; assert.ok(scroller);
-    scroller.scrollTop = 500;
-    const anchor = node.querySelector('.thread-exchange')?.children[0]; assert.ok(anchor);
-    const viewportTop = () => anchor.getBoundingClientRect().top - scroller.scrollTop;
+    scroller.scrollTop = 100;
+    const edge = scroller.getBoundingClientRect().top;
+    const anchor = node.querySelector('.thread-exchange')?.children.find(row => row.getBoundingClientRect().bottom > edge); assert.ok(anchor);
+    const viewportTop = () => anchor.getBoundingClientRect().top;
     const before = viewportTop();
     const button = node.querySelector('.thread-earlier'); assert.ok(button); button.click(); await settle();
     assert.equal(node.querySelector('.thread-earlier-row')?.hidden, removesRow);
@@ -331,14 +328,10 @@ test('rows that grow after they are placed leave the first visible event where i
   const older = page(all.slice(0, 4), {id: LATE, sequence: 12});
   const grown = new Map<string, number>();
   const prototype = HostNode.prototype as Record<string, unknown>;
-  const height = Object.getOwnPropertyDescriptor(prototype, 'offsetHeight') as PropertyDescriptor, rect = prototype.getBoundingClientRect as (this: unknown) => {top: number; bottom: number};
+  const height = Object.getOwnPropertyDescriptor(prototype, 'offsetHeight') as PropertyDescriptor;
   type Layout = {classList: {contains(name: string): boolean}; dataset: Record<string, string>; closest(selector: string): {scrollTop: number} | null};
   const eventRow = (node: Layout) => node.classList.contains('thread-event');
   Object.defineProperty(prototype, 'offsetHeight', {configurable: true, get(this: Layout) { return eventRow(this) ? 100 + (grown.get(this.dataset.sequence ?? '') ?? 0) : height.get?.call(this); }});
-  prototype.getBoundingClientRect = function (this: Layout) {
-    const base = rect.call(this), scroll = eventRow(this) ? this.closest('.thread-scroll')?.scrollTop ?? 0 : 0;
-    return {...base, top: base.top - scroll, bottom: base.bottom - scroll};
-  };
   try {
     fixtureControl.threadHandler = url => url.pathname !== '/api/threads/read' ? {...overview, items: [...overview.items, {id: LATE, storageId: STORAGE, title: 'Late growth', purpose: '', updatedAt: Date.now(), closed: false, members: 2}]} : url.searchParams.get('before') ? older : newest;
     byId('threads-refresh').click(); await settle();
@@ -362,7 +355,7 @@ test('rows that grow after they are placed leave the first visible event where i
     assert.ok(Math.abs(top(first) - before) <= 1, `after a refresh the event moved by ${top(first) - before}px`);
     assert.ok(Math.abs(scroller.scrollTop - position) <= 1);
   } finally {
-    Object.defineProperty(prototype, 'offsetHeight', height); prototype.getBoundingClientRect = rect;
+    Object.defineProperty(prototype, 'offsetHeight', height);
     await closeReader();
   }
 });
@@ -372,7 +365,7 @@ test('the forum shows participants, replies, notify names, decisions, and whole-
     ...Array.from({length: 12}, (_, index) => event(index + 5, 'contribution', index === 2 ? DESIGNER : BUILDER, {message: index === 0 ? long : `Post ${index}`, replyTo: index === 3 || index === 4 ? 5 : null, notify: index === 1 ? [DESIGNER] : []})),
     event(17, 'carried-authority', STORAGE, {message: 'Proceed with the plan', source: 'Decision source'})];
   await arrive({workspace: {id: 'forum', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'agent', identity: BUILDER}, conversationLayout: twoPanes(BUILDER, 'agent-pane')}, primaries: [primaryFixture()],
-    roster: [agentFixture(BUILDER, {name: 'Builder', handle: '@builder', role: 'Build the list', model: {provider: 'sample', modelId: 'model', thinkingLevel: 'high'}}), agentFixture(DESIGNER, {name: 'Designer'}), agentFixture(STORAGE, {name: 'Manager'})]});
+    roster: [agentFixture(BUILDER, {state: 'working', name: 'Builder', handle: '@builder', role: 'Build the list', model: {provider: 'sample', modelId: 'model', thinkingLevel: 'high'}}), agentFixture(DESIGNER, {name: 'Designer'}), agentFixture(STORAGE, {name: 'Manager'})]});
   fixtureControl.threadHandler = url => url.pathname === '/api/threads/read' ? {...page(forumEvents, {members: [{identity: BUILDER, contribution: 'The list', joinedAt: 1}, {identity: STORAGE, contribution: 'Integration', joinedAt: 1}]}), source: 'retained'} : overview;
   byId('threads-refresh').click(); await settle(); rowButton('Release plan').click(); await settle();
   const node = reader(); assert.ok(node);
@@ -427,13 +420,13 @@ test('the open session picker re-reads its rows when the window regains focus an
   });
   context.after(() => byId('modal-close').click());
   byId('session-open').click(); await settle();
-  const row = () => hostDocument.querySelectorAll('.picker-select').find(node => node.textContent.includes('Terminal session'));
-  assert.ok(row()); assert.equal(row()?.disabled, true); assert.match(row()?.textContent ?? '', /Open in a terminal/);
+  const row = () => hostDocument.querySelectorAll('.picker-select')[0];
+  assert.ok(row()); assert.equal(row()?.disabled, false); assert.match(row()?.textContent ?? '', /live in terminal/);
   const before = reads; writer = undefined;
   dispatchWindow('focus'); await settle();
   assert.ok(reads > before, 'focus re-reads the saved rows');
-  assert.equal(row()?.disabled, false); assert.match(row()?.textContent ?? '', /The terminal session ended\. Resume here\./);
+  assert.match(row()?.textContent ?? '', /Terminal ended/); assert.doesNotMatch(row()?.textContent ?? '', /live in terminal/);
   writer = 'live'; const afterFocus = reads;
   emitEvent('sessions.writers', {released: ['terminal-session']}); await settle();
-  assert.ok(reads > afterFocus, 'a release event re-reads the saved rows'); assert.equal(row()?.disabled, true);
+  assert.ok(reads > afterFocus, 'a release event re-reads the saved rows'); assert.match(row()?.textContent ?? '', /live in terminal/);
 });
