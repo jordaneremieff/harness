@@ -31,8 +31,7 @@ function projectedText(value: string, maxBytes: number): string {
   const clean = safeText(value, Number.MAX_SAFE_INTEGER);
   const cap = Math.max(0, Math.floor(maxBytes));
   if (Buffer.byteLength(clean) <= cap) return clean;
-  if (cap < 3) return '';
-  const bytes = Buffer.from(clean); let end = cap - 3;
+  const bytes = Buffer.from(clean); let end = cap;
   while (end > 0 && ((bytes[end] ?? 0) & 0xc0) === 0x80) end--;
   return bytes.subarray(0, end).toString('utf8');
 }

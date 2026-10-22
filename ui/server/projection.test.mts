@@ -206,23 +206,37 @@ test('safe text preserves ordinary prose, strips terminal escapes, redacts crede
   const text = safeText('😀'.repeat(100_000), 1024); assert.ok(Buffer.byteLength(text) <= 1024); assert.doesNotMatch(text, /\ufffd/); assert.match(text, /truncated/);
 });
 
-test('structured string and key cuts stay within budget without a generated suffix or marking complete host strings or changing raw pages', () => {
+test('structured string and key cuts retain clean prefixes with coverage without changing raw pages', () => {
   const body = '😀 useful prose '.repeat(2000); const source = {body};
   for (const cap of [512, 2048]) {
     const display = projectJson(source, cap); const shown = (display.value as {body: string}).body;
-    assert.equal(display.truncated, true); assert.equal(shown.endsWith('…'), false); assert.ok(shown.length > 0); assert.equal(Buffer.from(shown).toString('utf8'), shown);
+    assert.equal(display.truncated, true); assert.ok(body.startsWith(shown)); assert.ok(shown.length < body.length);
+    assert.equal(Buffer.from(shown).toString('utf8'), shown); assert.doesNotMatch(shown, /\ufffd/);
     assert.ok(bytes(display.value) <= cap); assert.equal(source.body, body);
   }
   const key = 'longSegment'.repeat(40); const keyed = projectJson({[key]: 'value'});
-  const shownKey = Object.keys(keyed.value as object)[0]; assert.ok(shownKey && shownKey.length > 0 && !shownKey.endsWith('…'));
+  const shownKey = Object.keys(keyed.value as object)[0]; assert.ok(key.startsWith(shownKey)); assert.ok(shownKey.length < key.length);
   assert.ok(Buffer.byteLength(shownKey) <= 256); assert.equal(keyed.truncated, true);
   const complete = 'A complete host string'; const protectedValue = projectJson({body: complete, password: 'private-value'});
   assert.equal(protectedValue.truncated, true); assert.equal((protectedValue.value as {body: string}).body, complete);
   const marker = 'A literal host marker\n[truncated]'; assert.equal((projectJson({body: marker}).value as {body: string}).body, marker);
   const raw = JSON.stringify({body}); const part = resultText(projectSavedEntry(retainedResult(raw)).messages?.[0]);
-  assert.ok(part.structured); assert.equal((part.structured.value as {body: string}).body.endsWith('…'), false);
+  assert.ok(part.structured); assert.equal(part.structured.truncated, true);
+  assert.ok(body.startsWith((part.structured.value as {body: string}).body));
   assert.equal(part.text, protectedTextPage(raw, 0).text); assert.equal(raw, JSON.stringify(source));
   assert.ok(bytes(part.structured) <= 16 * 1024);
+});
+
+test('structured prefixes use the full byte allowance without splitting multibyte characters or adding a suffix', () => {
+  for (const cap of [32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43]) {
+    const display = projectJson('😀'.repeat(40), cap); const shown = String(display.value);
+    assert.equal(display.truncated, true); assert.equal(shown, '😀'.repeat(Math.floor((cap - 32) / 4)));
+    assert.doesNotMatch(shown, /\ufffd/); assert.ok(bytes(display.value) <= cap);
+  }
+  const display = projectJson({['😀'.repeat(128)]: 'value'});
+  const key = Object.keys(display.value as object)[0];
+  assert.equal(display.truncated, true); assert.equal(key, '😀'.repeat(64));
+  assert.equal(Buffer.byteLength(key), 256);
 });
 
 test('JSON projection bounds depth, nodes and bytes, omits secrets/signatures/images, and does not throw on malformed values', () => {
