@@ -42,7 +42,7 @@ export type InputProvenance = { conversationId: number; requestId: string; class
 export type AwaitDelivery = { requestId: string; results: ResultReference[]; complete: boolean };
 type RetryVisibility = { conversationId: number; input: number; result: ResultReference; runId: number; attempt: number; nextRetryAt: number; revision: string };
 export type AwaitState = { declarations: AwaitDeclaration[]; provenance: InputProvenance[]; retryVisibility?: RetryVisibility[]; communicationDiagnostic?: "invalid" | "unavailable" };
-export const AwaitDoc = defineDoc<AwaitState>({ kind: "agent.awaited-results", version: 1, scope: "session", initial: () => ({ declarations: [], provenance: [] }) });
+export const AwaitDoc = defineDoc<AwaitState>({ kind: "agent.awaited-results", version: 1, scope: "session", checkpointWhen: () => false, initial: () => ({ declarations: [], provenance: [] }) });
 export const AWAIT_DECLARATION_LIMIT = 64;
 /** Collection watermark; pending native inputs do not impose an admission cap. */
 export const AWAIT_PROVENANCE_LIMIT = 128;

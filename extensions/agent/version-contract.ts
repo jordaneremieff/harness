@@ -62,8 +62,8 @@ export const HOST_CONTRACT: RuntimeContract = Object.freeze({
 	format: "pi.agent.contract/1",
 	release: "1.0.0",
 	upstream: Object.freeze({ codingAgent: CODING_AGENT_VERSION, durable: durableVersion }),
-	// Tool-argument validation and the current native transport require the 1.3 APIs.
-	requires: Object.freeze({ codingAgent: "1.3.0", durable: "1.3.0" }),
+	// Native deadline tasks require durable sleeps; ordinary services retain their existing API floor.
+	requires: Object.freeze({ codingAgent: "1.3.0", durable: "1.4.0" }),
 	operations: Object.freeze(Object.fromEntries(Object.entries(operations).map(([name, contract]) => [name, Object.freeze(contract)]))),
 });
 

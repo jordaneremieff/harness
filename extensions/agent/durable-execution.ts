@@ -10,7 +10,7 @@ import type { JsonValue } from "@earendil-works/chord";
 import type { Context } from "@earendil-works/chord";
 import type { CodemodeJsonSchema } from "@earendil-works/pi-codemode";
 import { CodemodeSandbox, parseCodemodeSource } from "@earendil-works/pi-codemode";
-import { createCodemodeExtension, type CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
+import { createCodemodeExtension, createCodemodeTool, type CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
 import { createToolSearchExtension } from "@earendil-works/pi-durable/tool-search";
 import type { AuthProvider, CallToolResult, ContentBlock, ListResourcesResult, ReadResourceResult, Resource, ResourceTemplate, Tool as McpTool } from "@earendil-works/pi-mcp";
 import { JSON_RPC_ERROR_CODES, McpClient, McpError, StdioTransport, StreamableHttpTransport, toLlmContent } from "@earendil-works/pi-mcp";
@@ -21,6 +21,7 @@ import { VERSION } from "@earendil-works/pi-coding-agent";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { TSchema } from "typebox";
+import { QueuedCodemodeSandbox } from "./codemode-admission.ts";
 
 // ─── Public contract ────────────────────────────────────────────────────────
 
@@ -66,8 +67,7 @@ const LIST_MCP_RESOURCES_TOOL = "list_mcp_resources";
 const LIST_MCP_RESOURCE_TEMPLATES_TOOL = "list_mcp_resource_templates";
 const READ_MCP_RESOURCE_TOOL = "read_mcp_resource";
 const CODEMODE_MEMORY_LIMIT_BYTES = 256 * 1024 * 1024;
-const CODEMODE_WORKER_LIMIT = 2;
-let liveCodemodeWorkers = 0;
+const CODEMODE_WORKER_WAIT_MS = 60_000;
 const DEFAULT_READY_TIMEOUT_MS = 10_000;
 const MCP_OUTPUT_MAX_BYTES = 20 * 1024;
 const SERVER_NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
@@ -284,7 +284,7 @@ function readConfigFile(path: string, scope: "global" | "project", state: McpCon
 	if (!existsSync(path)) return;
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(readFileSync(path, "utf8"));
+		parsed = JSON.parse(readFileSync(path, "utf8").replace(/^\uFEFF/u, ""));
 	} catch (error) {
 		state.errors.push(`${path}: ${error instanceof Error ? error.message : String(error)}`);
 		return;
@@ -957,7 +957,8 @@ class DurableExecutionRuntime implements DurableExecution {
 	private readonly namespaces: CodemodeNamespace[] = [];
 	private readonly resourceTools: NestedTool[];
 	private readonly servers: McpServerConnection[] = [];
-	private readonly sandbox = new CodemodeSandbox({ memoryLimitBytes: CODEMODE_MEMORY_LIMIT_BYTES, acquireWorker:()=>this.acquireWorker() });
+	private readonly sandbox = new CodemodeSandbox({ acquireWorker: () => { throw new Error("Codemode calls require queued worker admission."); } });
+	private readonly queuedSandboxes = new Set<QueuedCodemodeSandbox>();
 	private readonly readyTimeoutMs: number;
 	private readonly closeOnHostAbort = () => void this.close();
 	private closed = false;
@@ -990,12 +991,33 @@ class DurableExecutionRuntime implements DurableExecution {
 	private buildExtensions(activation: Activation): readonly Durable.Extension[] {
 		const result: Durable.Extension[] = [];
 		if (activation.codemode) {
+			const Admission = this.host.durable.defineDoc<{ deadline?: number; admitted: boolean }>({
+				kind: "agent.codemode-admission", version: 1, scope: "task", initial: () => ({ admitted: false }), checkpointWhen: () => false,
+			});
 			const native = createCodemodeExtension({ sandbox: this.sandbox, namespaces: this.namespaces });
 			const tools = (native.tools ?? []).map((tool) => tool.name !== CODEMODE_TOOL_NAME ? tool : {
 				...tool,
 				execute: async (args: { code: string }, api: Durable.ToolExecutionApi, context: Context) => {
 					await this.waitForScriptServers(parseCodemodeSource(args.code).code, context);
-					return tool.execute(args, this.catalogApi(api), context);
+					const sandbox = new QueuedCodemodeSandbox({
+						deadline: () => api.commit(async (tx) => {
+							const state = await tx.doc(Admission, api.taskId);
+							if (state.deadline === undefined || state.admitted) {
+								state.deadline = api.now() + CODEMODE_WORKER_WAIT_MS;
+								state.admitted = false;
+							}
+							return state.deadline;
+						}, context).then((deadline) => Date.now() + Math.max(0, deadline - api.now())),
+						admitted: () => api.commit(async (tx) => { (await tx.doc(Admission, api.taskId)).admitted = true; }, context),
+					}, undefined, { memoryLimitBytes: CODEMODE_MEMORY_LIMIT_BYTES });
+					this.queuedSandboxes.add(sandbox);
+					if (this.closed) await sandbox.close();
+					try {
+						return await createCodemodeTool({ sandbox, namespaces: this.namespaces }).execute(args, this.catalogApi(api), context);
+					} finally {
+						this.queuedSandboxes.delete(sandbox);
+						await sandbox.close();
+					}
 				},
 			});
 			result.push({ ...native, tools, hooks: [this.host.durable.hook(this.host.durable.GenerationTask, {
@@ -1020,17 +1042,11 @@ class DurableExecutionRuntime implements DurableExecution {
 		return result;
 	}
 
-	private acquireWorker():()=>void {
-		if(this.closed)throw new Error('The native execution runtime is closed.');
-		if(liveCodemodeWorkers>=CODEMODE_WORKER_LIMIT)throw new Error('The native host codemode worker limit is full. Existing workers must exit before another starts.');
-		liveCodemodeWorkers++;
-		return ()=>{liveCodemodeWorkers--;};
-	}
 	async close(): Promise<void> {
 		if (this.closed) return;
 		this.closed = true;
 		this.host.signal.removeEventListener("abort", this.closeOnHostAbort);
-		await Promise.all([this.sandbox.close(), ...this.servers.map((server) => server.close())]);
+		await Promise.all([this.sandbox.close(), ...[...this.queuedSandboxes].map((sandbox) => sandbox.close()), ...this.servers.map((server) => server.close())]);
 	}
 
 	private rebuildMcpTools(): void {
@@ -1076,7 +1092,7 @@ class DurableExecutionRuntime implements DurableExecution {
 	/** A tool phase pins its agent before MCP discovery; the public conversation read resolves the completed catalog. */
 	private catalogApi(api: Durable.ToolExecutionApi): Durable.ToolExecutionApi {
 		if (this.servers.length === 0) return api;
-		return { ...api, agent: async (context) => {
+		return { ...api, get models() { return api.models; }, get env() { return api.env; }, agent: async (context) => {
 			await api.agent(context);
 			const conversation = await this.host.harness.conversation(api.conversationId, context);
 			if (conversation === undefined) throw new Error("The MCP tool's conversation is unavailable");

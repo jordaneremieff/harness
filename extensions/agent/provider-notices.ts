@@ -1,6 +1,6 @@
 /** Native retry observations use the existing report ledger and exact request routes. */
 import { createHash } from "node:crypto";
-import { AgentDoc, LiveDoc, DEFAULT_RETRY_POLICY, defineDoc, type Harness, type ConversationId, type SubmissionId, type TaskId, type Tx, type Cursor, type LiveState, type CommitPublication } from "@earendil-works/pi-durable";
+import { AgentDoc, LiveDoc, DEFAULT_RETRY_POLICY, defineDoc, type Harness, type ConversationId, type SubmissionId, type TaskId, type Tx, type Cursor, type LiveState, type CommitPublication, type HarnessOptions } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Type } from "typebox";
 import { ProducerAwaitFactSchema } from "./await-facts.ts";
@@ -55,7 +55,7 @@ type RetryBurst = {
 type RetryBurstState = { completedThrough: number; active?: RetryBurst };
 
 /** Open retry evidence and recipient routes survive settlement and host reopen. */
-export const ProviderRetryBurstDoc = defineDoc<RetryBurstState>({ kind: "agent.provider-retry-burst", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ completedThrough: 0 }) });
+export const ProviderRetryBurstDoc = defineDoc<RetryBurstState>({ kind: "agent.provider-retry-burst", version: 1, scope: "conversation", history: "latest", fork: "initial", checkpointWhen: () => false, initial: () => ({ completedThrough: 0 }) });
 
 type BurstEnd = "recovered" | "failed" | "aborted" | "interrupted";
 async function burstEnd(tx: Tx, burst: RetryBurst, live: LiveState): Promise<BurstEnd | undefined> {
@@ -165,9 +165,9 @@ export class ProviderRetryNotices {
 	private running?: Promise<void>;
 	private closing = false;
 	private closed = false;
-	constructor(harness: Harness, storageId: string, settings: { retry?: Partial<typeof DEFAULT_RETRY_POLICY> } | undefined, report: (error: unknown) => void, now: () => number = Date.now) {
+	constructor(harness: Harness, storageId: string, settings: HarnessOptions["settings"], report: (error: unknown) => void, now: () => number = Date.now) {
 		this.harness = harness; this.storageId = storageId; this.report = report; this.now = now;
-		this.ceiling = () => { const policy = { ...DEFAULT_RETRY_POLICY, ...settings?.retry }; return policy.enabled ? policy.maxRetries + 1 : 1; };
+		this.ceiling = () => { const policy = { ...DEFAULT_RETRY_POLICY, ...(typeof settings === "function" ? settings() : settings)?.retry }; return policy.enabled ? policy.maxRetries + 1 : 1; };
 		this.unsubscribe = harness.subscribeCommits((publication) => {
 			this.captureRoutes(publication);
 			this.captureLive(publication);

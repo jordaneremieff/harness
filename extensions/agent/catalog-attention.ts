@@ -7,7 +7,7 @@ import { readProviderBlock } from "./provider-block.ts";
 
 const closed = { additionalProperties: false } as const;
 const identity = Type.String({ minLength: 1, maxLength: 512 });
-const taskReason = Type.Union([Type.Literal("missing_task"), Type.Literal("task_too_old"), Type.Literal("migration_failed")]);
+const taskReason = Type.Union([Type.Literal("missing_task"), Type.Literal("task_too_old"), Type.Literal("migration_failed"), Type.Literal("restart_limit")]);
 export const CatalogAttentionHintSchema = Type.Union([
 	Type.Object({ identity, kind: Type.Literal("provider-blocked"), blockId: Type.String({ minLength: 1, maxLength: 128 }) }, closed),
 	Type.Object({ identity, kind: Type.Literal("task-blocked"), taskId: Type.Integer({ minimum: 1 }), reason: taskReason }, closed),

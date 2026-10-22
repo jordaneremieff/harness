@@ -91,6 +91,10 @@ it("does not treat automatic retries, compaction diagnostics or reply prose as i
 	assert.deepEqual(hints, { rows: [], coverage: { complete: true, omitted: 0 } });
 });
 
+it("accepts the native crash-loop guard reason without replacing it with a migration error", () => {
+	assert.equal(Value.Check(CatalogAttentionHintsSchema, { rows: [{ identity: "storage", kind: "task-blocked", taskId: 1, reason: "restart_limit" }], coverage: { complete: true, omitted: 0 } }), true);
+});
+
 it("keeps blocked-task hints within their own conversation", async (t) => {
 	const f = await fixture(t);
 	const child = await f.harness.createConversation({ ownership: { kind: "ownerless" } }, context);

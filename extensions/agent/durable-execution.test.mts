@@ -9,13 +9,13 @@ import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { LiveDoc, UsageDoc, type ToolExecutionResult } from "@earendil-works/pi-durable";
+import { Harness, MemoryStorage, LiveDoc, UsageDoc, type ToolExecutionApi, type ToolExecutionResult } from "@earendil-works/pi-durable";
 import type { CodemodeToolDetails } from "@earendil-works/pi-durable/codemode";
 import type { CreatedAgents } from "./agent-lineage.ts";
 import type { readEffortAwareness } from "./effort-awareness.ts";
 import { StatusOutputSchema, StatusToolOutputSchema } from "./observation-schema.ts";
 import { createDurableExecution, loadMcpConfig } from "./durable-execution.ts";
-import { answerRuntime, CRASH_STORAGE_ID, declaredTool, declaredTools, executionFixture, fixtureModelId, fixtureProvider, fixtureServerPath, httpMcpServer, messageText, resourceListStream, toolResultBody, toolResultText, toolSearchStream, writeExecutionExtension } from "./durable-execution-fixture.mts";
+import { answerRuntime, codemodeStream, CRASH_STORAGE_ID, declaredTool, declaredTools, executionFixture, fixtureModelId, fixtureProvider, fixtureServerPath, httpMcpServer, messageText, resourceListStream, streamRuntime, toolResultBody, toolResultText, toolSearchStream, writeExecutionExtension } from "./durable-execution-fixture.mts";
 import { createDurableServices } from "./durable-services.ts";
 import type { DurableHost } from "./durable-host.ts";
 import { testModel } from "./test-runtime.mts";
@@ -350,6 +350,21 @@ it("preserves native lineage and effort awareness together through codemode", { 
 	assert.deepEqual(calls, [{}, {}, { sessionId: peer }]);
 });
 
+it("preserves live models and environment getters in the MCP catalog adapter", { timeout: 30000 }, async (t) => {
+	const f = await executionFixture(t, { mcpServers: { docs: { command: process.execPath, args: [fixtureServerPath], exposure: "direct" } } });
+	const state: { models: ToolExecutionApi["models"]; env: ToolExecutionApi["env"] } = { models: {} as ToolExecutionApi["models"], env: undefined };
+	const source = { get models() { return state.models; }, get env() { return state.env; } } as ToolExecutionApi;
+	const adapter = (f.execution as unknown as { catalogApi(api: ToolExecutionApi): ToolExecutionApi }).catalogApi(source);
+	assert.equal(adapter.models, state.models);
+	assert.equal(adapter.env, undefined);
+	const models = {} as ToolExecutionApi["models"];
+	const env = {} as NonNullable<ToolExecutionApi["env"]>;
+	state.models = models;
+	state.env = env;
+	assert.equal(adapter.models, models);
+	assert.equal(adapter.env, env);
+});
+
 it("omits model headers from every codemode catalog lookup and retains sampling metadata", { timeout: 30000 }, async (t) => {
 	const provider = "catalog-fixture";
 	const id = "catalog-model";
@@ -681,6 +696,30 @@ function mcpConfigFixture(t: { after(fn: () => void): void }, globalServers: Rec
 	return { agentDir, cwd, source, override };
 }
 
+it("reads a leading BOM in global and trusted project MCP configuration", (t) => {
+	const base = { command: "synthetic-server", exposure: "direct" };
+	const f = mcpConfigFixture(t, { docs: base }, { docs: { enabled: false } });
+	writeFileSync(f.source, `\uFEFF${readFileSync(f.source, "utf8")}`);
+	writeFileSync(f.override, `\uFEFF${readFileSync(f.override, "utf8")}`);
+	const config = loadMcpConfig({ ...f, projectTrusted: true });
+	assert.deepEqual(config.errors, []);
+	assert.deepEqual(config.servers, [{ name: "docs", source: f.source, override: f.override, config: { ...base, enabled: false } }]);
+	assert.deepEqual(loadMcpConfig({ ...f, projectTrusted: false }).servers, [{ name: "docs", source: f.source, config: base }]);
+});
+
+it("reports malformed JSON after a BOM and does not read an untrusted project MCP configuration", (t) => {
+	const f = mcpConfigFixture(t, {}, {});
+	writeFileSync(f.override, "\uFEFF{invalid");
+	assert.deepEqual(loadMcpConfig({ ...f, projectTrusted: false }).errors, []);
+	const config = loadMcpConfig({ ...f, projectTrusted: true });
+	assert.equal(config.errors.length, 1);
+	assert.ok(config.errors[0]?.startsWith(`${f.override}:`));
+	writeFileSync(f.source, "\uFEFF{invalid");
+	const globalError = loadMcpConfig({ ...f, projectTrusted: false });
+	assert.equal(globalError.errors.length, 1);
+	assert.ok(globalError.errors[0]?.startsWith(`${f.source}:`));
+});
+
 it("applies trusted project selection without replacing global transport and auth", (t) => {
 	const base = {
 		url: "https://example.com/mcp",
@@ -920,6 +959,60 @@ it("does not wait for an indirect server that never answers", { timeout: 30000 }
 	assert.ok(f.readyElapsedMs !== undefined && f.readyElapsedMs < 1000, `ready took ${String(f.readyElapsedMs)}ms`);
 	const result = await f.submit("say hi");
 	assert.equal(result.answer, "durable answer");
+});
+
+it("admits native codemode with an injected Harness clock", { timeout: 30000 }, async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "durable-codemode-clock-"));
+	const agentDir = join(root, "agent");
+	mkdirSync(agentDir);
+	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultTools: ["+codemode"], cacheWarming: { mode: "off" }, retry: { enabled: false } }));
+	let services: Awaited<ReturnType<typeof createDurableServices>> | undefined;
+	let harness: Harness | undefined;
+	t.after(async () => {
+		await services?.close();
+		await harness?.close(BACKGROUND_CONTEXT);
+		rmSync(root, { recursive: true, force: true });
+	});
+	const { runtime } = await streamRuntime(codemodeStream('// @options: {"timeout_ms": 2000}\nreturn 42;'));
+	services = await createDurableServices({ cwd: root, agentDir, storageId: "fixture-clock", extensionPaths: [], trusted: true, buildBuiltin: createDurableExecution, modelRuntime: runtime });
+	harness = await Harness.open(new MemoryStorage(), { models: runtime, registry: services.registry, settings: services.settings, env: services.env, now: () => 1000 }, BACKGROUND_CONTEXT);
+	await services.install(harness);
+	harness.resume();
+	const conversation = await harness.root(BACKGROUND_CONTEXT, { agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } });
+	const outcome = await (await conversation.submit({ type: "input", content: "Run the script." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+	assert.equal(outcome.status, "done");
+	const view = await conversation.context(BACKGROUND_CONTEXT);
+	const output = view.messages.find((message) => message.role === "toolResult");
+	assert.ok(output?.role === "toolResult");
+	assert.equal(output.isError, false);
+	assert.match(toolResultBody(output), /42/u);
+});
+
+it("preserves an expired persisted worker wait at the native tool boundary", { timeout: 30000 }, async (t) => {
+	const f = await executionFixture(t, {
+		code: 'await tools.structured({}); return "unexpected";',
+		builtinExtensions: (host) => {
+			const Admission = host.durable.defineDoc<{ deadline?: number; admitted: boolean }>({
+				kind: "agent.codemode-admission", version: 1, scope: "task", initial: () => ({ admitted: false }), checkpointWhen: () => false,
+			});
+			return [host.durable.defineExtension({ name: "fixture.expired-admission", hooks: [host.durable.hook(host.durable.ToolTask, {
+				beforeTool: async (call, api, context) => {
+					if (call.name !== "codemode") return undefined;
+					await host.harness.commit(async (tx) => {
+						const state = await tx.doc(Admission, api.taskId);
+						state.deadline = Date.now() - 1;
+					}, context);
+					return undefined;
+				},
+			})] })];
+		},
+	});
+	const result = await f.submit("Resume the queued script.");
+	const output = result.toolResults.at(-1);
+	assert.ok(output);
+	assert.equal(output.isError, true);
+	assert.match(toolResultBody(output), /worker wait timed out/u);
+	assert.deepEqual((output.details as CodemodeToolDetails).calls, []);
 });
 
 it("aborts an owned nested call with the conversation and reaches idle", { timeout: 30000 }, async (t) => {

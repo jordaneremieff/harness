@@ -44,6 +44,9 @@ export interface TaskGraphRow {
 	readonly abortRequested: boolean;
 	readonly status: TaskGraphNode["state"]["status"];
 	readonly phase: string;
+	/** Absolute deadline on the native Harness clock. */
+	readonly until?: number;
+	readonly blocked?: TaskGraphNode["blocked"];
 	/** Live tasks this one waits for. */
 	readonly waitsOn: readonly number[];
 	readonly policy?: string;
@@ -158,8 +161,14 @@ export function taskGraphRows(graph: TaskGraph): TaskGraphRow[] {
 	for (const key of Object.keys(graph.tasks).sort((left, right) => Number(left) - Number(right))) {
 		const node = graph.tasks[key];
 		if (node === undefined) continue;
-		const state = node.state;
-		rows.push({
+		rows.push(taskGraphRow(node));
+	}
+	return rows;
+}
+
+function taskGraphRow(node: TaskGraphNode): TaskGraphRow {
+	const state = node.state;
+	return {
 			id: node.id,
 			kind: node.kind,
 			conversationId: node.conversationId,
@@ -167,14 +176,14 @@ export function taskGraphRows(graph: TaskGraph): TaskGraphRow[] {
 			background: node.background,
 			abortRequested: node.abortRequested,
 			status: state.status,
+			...(state.status === "sleeping" ? { until: state.until } : {}),
+			...(node.blocked === undefined ? {} : { blocked: node.blocked }),
 			phase: state.status === "completing" ? "completing" : state.phase,
 			waitsOn: state.status === "waiting" ? [...state.on] : [],
 			...(state.status === "waiting" ? { policy: state.policy } : {}),
 			...(state.status === "completing" ? { outcome: state.outcome } : {}),
 			conversations: [...node.conversations],
-		});
-	}
-	return rows;
+	};
 }
 
 /** Minimal structural check for one frame received from the transport. */

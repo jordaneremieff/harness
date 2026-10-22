@@ -14,13 +14,13 @@ import { completed, fixtureRegistry, fixtureRuntime, toolCallMessage } from "./d
 import { DurableHost } from "./durable-host.ts";
 import { initializeProfile, ProfileDoc } from "./profile.ts";
 import { readRequestContexts, recordRequestContext, RequestContextDoc, REQUEST_CONTEXT_LIMIT } from "./request-context.ts";
-import { CheckInTask } from "./durable-checkins.ts";
+import { CheckInTask, CheckInDeadlineTask } from "./durable-checkins.ts";
 import { AgentTimerDoc, scheduleTimer, TimerTask, type TimerResult } from "./durable-timers.ts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 
 async function fixture(t: TestContext, timers = false) {
 	const registry = timers ? createRegistry() : fixtureRegistry();
-	if (timers) registry.install(defineExtension({ name: "request-timers", tasks: [TimerTask, CheckInTask] }));
+	if (timers) registry.install(defineExtension({ name: "request-timers", tasks: [TimerTask, CheckInTask, CheckInDeadlineTask] }));
 	const storageId = randomUUID();
 	const harness = await Harness.open(new MemoryStorage(), { models: await fixtureRuntime("answer"), registry, now: () => 1000, conversationCreated: (tx, record) => initializeProfile(tx, record.id, storageId) }, context);
 	t.after(() => harness.close(context));
@@ -197,7 +197,7 @@ it("resumes an accepted native timer beyond the new explicit-route admission lim
 	const storagePath = join(directory, "agent.sqlite");
 	let resumed: Harness | undefined;
 	const registry = createRegistry();
-	registry.install(defineExtension({ name: "retained-timer", tasks: [TimerTask, CheckInTask] }));
+	registry.install(defineExtension({ name: "retained-timer", tasks: [TimerTask, CheckInTask, CheckInDeadlineTask] }));
 	const models = await fixtureRuntime("answer");
 	const storageId = randomUUID();
 	const first = await Harness.open(await openNodeSqliteStorage(storagePath), { models, registry, now: () => 800 }, context);

@@ -28,8 +28,8 @@ export type ProviderBlockFact = Static<typeof ProviderBlockFactSchema>;
 export type ProviderControlState = { conversationId?: number; epoch: number; block?: ProviderBlockFact; recoveredFrom?: string };
 // Chord documents are proxies; JSON detachment preserves their public JSON values.
 function detached<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T; }
-export const ProviderControlDoc = defineDocFamily<ProviderControlState, null>({ kind: "agent.provider-control", family: true, version: 1, scope: "session", initial: () => ({ epoch: 0 }) });
-export const ProviderInputDoc = defineDocFamily<{ providerBlock?: ProviderBlockFact; recoveryOf?: string }, null>({ kind: "agent.provider-input", family: true, version: 1, scope: "session", initial: () => ({}) });
+export const ProviderControlDoc = defineDocFamily<ProviderControlState, null>({ kind: "agent.provider-control", family: true, version: 1, scope: "session", checkpointWhen: () => false, initial: () => ({ epoch: 0 }) });
+export const ProviderInputDoc = defineDocFamily<{ providerBlock?: ProviderBlockFact; recoveryOf?: string }, null>({ kind: "agent.provider-input", family: true, version: 1, scope: "session", checkpointWhen: () => false, initial: () => ({}) });
 
 /** Positive exhaustion evidence is distinct from transient throttling and context-size rejection. */
 export function isProviderExhaustion(error: string, provider?: string): boolean {
@@ -54,7 +54,7 @@ export async function reconcileProviderControls(harness: Harness, context: Conte
 	} while (cursor !== undefined);
 }
 export type ProviderAttempt = { conversationId: ConversationId; providerSessionId: string; epoch: number; model: ModelRef; inputs: SubmissionId[]; originalResults: ProviderBlockFact["originalResults"]; block?: ProviderBlockFact; stale: boolean };
-export const ProviderDeferredDoc = defineDocFamily<{ attempt?: ProviderAttempt }, null>({ kind: "agent.provider-deferred", family: true, version: 1, scope: "session", initial: () => ({}) });
+export const ProviderDeferredDoc = defineDocFamily<{ attempt?: ProviderAttempt }, null>({ kind: "agent.provider-deferred", family: true, version: 1, scope: "session", checkpointWhen: () => false, initial: () => ({}) });
 function deferredKey(model: ModelRef, handle: DeferredHandle): string { return createHash("sha256").update(JSON.stringify([model.provider, model.modelId, handle.api, handle.id])).digest("hex"); }
 function validateDeferredModel(model: ModelRef, handle: DeferredHandle): void {
 	if (handle.provider !== model.provider || handle.modelId !== model.modelId) throw new Error("The deferred handle does not match its selected provider and model.");
@@ -134,7 +134,7 @@ export async function configureProviderRecovery(tx: Tx, conversationId: Conversa
 	await configure(tx, conversationId, change);
 }
 export async function readInputRecovery(tx: Tx, submissionId: SubmissionId): Promise<string | undefined> { return (await tx.doc(ProviderInputDoc, String(submissionId), null)).recoveryOf; }
-const ProviderRecoveryAdmissionDoc = defineDocFamily<{ initialized: boolean; recoveryOf?: string }, null>({ kind: "agent.provider-recovery-admission", family: true, version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ initialized: false }) });
+const ProviderRecoveryAdmissionDoc = defineDocFamily<{ initialized: boolean; recoveryOf?: string }, null>({ kind: "agent.provider-recovery-admission", family: true, version: 1, scope: "conversation", history: "latest", fork: "initial", checkpointWhen: () => false, initial: () => ({ initialized: false }) });
 
 /** Bind recovery to the original admission intent, never to the epoch of a later request replay. */
 export async function captureProviderRecovery(tx: Tx, conversationId: ConversationId, requestId: string): Promise<string | undefined> {

@@ -19,6 +19,7 @@ export const RequestContextDoc = defineDoc<{ requests: RequestContext[] }>({
 	history: "latest",
 	fork: "initial",
 	initial: () => ({ requests: [] }),
+	checkpointWhen: () => false,
 });
 
 /** New explicit-route admissions refuse at this bound; retained work never does. */

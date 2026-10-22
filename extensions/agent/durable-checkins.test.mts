@@ -3,10 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai";
 import { AgentDeliveryDoc, recordDeliveryIntent, settleDeliveries, type DeliveryReport } from "./durable-controls.ts";
-import { CheckInTask, createCheckIn } from "./durable-checkins.ts";
-import { AssistantEntry, CompactionEntry, LiveDoc, UserEntry, type ConversationId, type SubmissionRecord, type Tx } from "@earendil-works/pi-durable";
+import { CheckInTask, CheckInDeadlineTask, createCheckIn } from "./durable-checkins.ts";
+import { Harness, MemoryStorage, createRegistry, defineExtension, AssistantEntry, CompactionEntry, LiveDoc, UserEntry, type ConversationId, type SubmissionRecord, type Tx } from "@earendil-works/pi-durable";
 import { testModel } from "./test-runtime.mts";
 import { scheduleFixture } from "./durable-schedule-fixture.mts";
 import { checkInMinutes } from "./durable-checkins.ts";
@@ -49,6 +50,47 @@ it("creates a host-owned check-in without a native agent contribution, and ends 
 	await f.host.harness.waitForIdle(BACKGROUND_CONTEXT);
 	assert.equal(await f.host.refreshIdle(), true, "settlement releases the background deadline task");
 	assert.equal((await f.host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT))?.reports.length ?? 0, 0);
+});
+
+it("ends retained deadline work when recovery finds an already settled submission", { timeout: 5000 }, async (t) => {
+	const registry = createRegistry();
+	registry.install(defineExtension({ name: "fixture.check-in", tasks: [CheckInTask, CheckInDeadlineTask] }));
+	const harness = await Harness.open(new MemoryStorage(), { models: createModels(), registry, now: () => 1000 }, BACKGROUND_CONTEXT);
+	t.after(() => harness.close(BACKGROUND_CONTEXT));
+	const root = await harness.root(BACKGROUND_CONTEXT);
+	const input = { conversationId: Number(root.id), requestId: "settled-before-recovery", ownerId: "recipient", senderIdentity: "storage", message: "finished", whenBusy: "followUp" as const, origin: "model" as const, admittedAt: 1000, intervalMs: 1800000 };
+	const ids = await harness.commit(async (tx) => {
+		const submission = await tx.createSubmission({ conversationId: root.id, requestId: input.requestId, type: "input", status: "queued" });
+		tx.settleSubmission(submission.id, { status: "unanswered", reason: "aborted" });
+		const parent = await tx.createTask(CheckInTask, input, { ownership: { kind: "conversation" }, conversationId: root.id, background: true });
+		const child = await tx.createTask(CheckInDeadlineTask, { ...input, next: 1 }, { ownership: { kind: "task", taskId: parent }, conversationId: root.id });
+		return { parent, child };
+	}, BACKGROUND_CONTEXT);
+	harness.resume();
+	await harness.waitForTask(ids.parent, withAbortSignal(AbortSignal.timeout(1000), BACKGROUND_CONTEXT));
+	assert.equal((await harness.getTask(ids.child, BACKGROUND_CONTEXT))?.state.status, "terminal");
+	assert.equal((await harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT))?.reports.length ?? 0, 0);
+});
+
+it("cancels the owned sleeping deadline without cancelling the producer input", { timeout: 60000 }, async (t) => {
+	const f = await scheduleFixture(t, { agentExtension: false, deferAnswers: true });
+	t.after(() => f.releaseAnswer());
+	await f.host.request("submit", { sessionId: f.storageId, message: "held producer", requestId: "cancel-check-in", ownerId: f.ownerId, origin: "model", checkInMinutes: 30 });
+	await f.waitForFirstRequest();
+	const graph = await f.host.harness.watchTaskGraph(BACKGROUND_CONTEXT);
+	const deadline = (value: typeof graph.value) => Object.values(value.tasks).find((node) => node.kind === CheckInDeadlineTask.definition.name && node.state.status === "sleeping");
+	try {
+		if (deadline(graph.value) === undefined) await new Promise<void>((resolve) => graph.start(async (value) => { if (deadline(value) !== undefined) resolve(); }));
+		const child = deadline(graph.value);
+		assert.ok(child?.owner);
+		await f.host.harness.abortTask(child.owner, BACKGROUND_CONTEXT);
+		assert.equal((await f.host.harness.getTask(child.id, BACKGROUND_CONTEXT))?.state.status, "terminal");
+		const watched = await f.host.harness.commit((tx) => tx.submissionByRequest(1 as ConversationId, "cancel-check-in"), BACKGROUND_CONTEXT);
+		assert.equal(watched?.status, "placed");
+		f.releaseAnswer();
+		assert.equal((await f.waitForReceipt("cancel-check-in")).status, "done");
+		assert.equal((await f.host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT))?.reports.length ?? 0, 0);
+	} finally { await graph.stop(); }
 });
 
 for (const origin of ["operator", "model"] as const) for (const spelling of ["root", "root-alias", "sibling"] as const) {
@@ -132,7 +174,15 @@ it("fires at the exact deadline, repeats, and resumes without duplicate or misse
 		assert.deepEqual(rows.map((row) => row.sourceId), [key(1), key(10)], "newer pending notice replaces the older one; overdue boundaries collapse");
 		const task = (await f.host.harness.inspect(BACKGROUND_CONTEXT)).tasks.find((row) => row.record.kind === CheckInTask.definition.name);
 		assert.ok(task);
-		assert.equal((task.record.state as { checkpoint?: { next: number } }).checkpoint?.next, 11, "the next deadline keeps the admission cadence");
+		const graph = await f.host.harness.watchTaskGraph(BACKGROUND_CONTEXT);
+		const asleep = (value: typeof graph.value) => Object.values(value.tasks).some((node) => node.kind === CheckInDeadlineTask.definition.name && node.owner === task.record.id && node.state.status === "sleeping");
+		try {
+			if (!asleep(graph.value)) await new Promise<void>((resolve) => graph.start(async (value) => { if (asleep(value)) resolve(); }));
+		} finally { await graph.stop(); }
+		const deadline = (await f.host.harness.inspect(BACKGROUND_CONTEXT)).tasks.find((row) => row.record.kind === CheckInDeadlineTask.definition.name && row.record.owner === task.record.id);
+		assert.ok(deadline);
+		assert.equal(deadline.state.kind, "sleeping");
+		assert.equal((deadline.record.state as { checkpoint?: { next: number } }).checkpoint?.next, 11, "the next deadline keeps the admission cadence");
 		await f.host.harness.commit(async (tx) => {
 			const state = await tx.doc(AgentDeliveryDoc);
 			state.reports.push({ ...first, sourceId: "other-owner-accepted", ownerId: "another-owner", acknowledged: true,

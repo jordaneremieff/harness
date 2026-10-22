@@ -187,7 +187,7 @@ export const ConversationStatusSchema = object({
 		object({
 			id,
 			kind: string,
-			status: union([literal("running"), literal("ready"), literal("waiting"), literal("completing"), literal("blocked")]),
+			status: union([literal("running"), literal("ready"), literal("waiting"), literal("sleeping"), literal("completing"), literal("blocked")]),
 			background: boolean,
 			owner: Type.Optional(id),
 			abortRequested: boolean,

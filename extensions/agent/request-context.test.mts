@@ -5,7 +5,7 @@ import { CompactionEntry, Harness, LiveDoc, MemoryStorage, UserEntry, createRegi
 import { answerMessage, completed, fixtureRegistry, fixtureRuntime, gateTool, toolCallMessage } from "./durable-host-fixture.mts";
 import { AgentDeliveryDoc, recordDeliveryIntent, settleDeliveries } from "./durable-controls.ts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
-import { CheckInTask } from "./durable-checkins.ts";
+import { CheckInTask, CheckInDeadlineTask } from "./durable-checkins.ts";
 import { cleanupRequestContexts, projectRequestContexts, readRequestContexts, readRequestContextPage, recordRequestContext, requestContextSection, validateRequestContext, RequestContextDoc, REQUEST_CONTEXT_LIMIT, REQUEST_CONTEXT_PROJECTION_LIMIT, type RequestContext } from "./request-context.ts";
 
 const route = (requestId = "task-a"): RequestContext => ({ requestId, requester: "requester-b", replyTo: "recipient-c", origin: "model" });
@@ -203,7 +203,7 @@ it("renders the first provider request before the delivery link exists and resto
 	});
 	const registry = createRegistry();
 	let harness!: Harness;
-	registry.install(defineExtension({ name: "request-fixture", tools: [gateTool(gate, started)], tasks: [CheckInTask], sections: [requestContextSection(() => harness)] }));
+	registry.install(defineExtension({ name: "request-fixture", tools: [gateTool(gate, started)], tasks: [CheckInTask, CheckInDeadlineTask], sections: [requestContextSection(() => harness)] }));
 	harness = await Harness.open(new MemoryStorage(), { models: runtime, registry, settings: { compaction: { keepRecentTokens: 1 } } }, context);
 	t.after(() => harness.close(context));
 	const conversation = await harness.root(context, { agent: { model: { provider: testModel.provider, modelId: testModel.id } } });

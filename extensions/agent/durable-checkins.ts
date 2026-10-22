@@ -1,7 +1,6 @@
 /** Durable owner check-ins for unanswered tool admissions. */
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { readSettings, type Environment } from "./settings.ts";
-import { withAbortSignal } from "@earendil-works/chord/context";
 import { defineTask, LiveDoc, UsageDoc, type ConversationId, type Tx, type UsageState, type ToolSlot, type LiveState, type EntryId, type EntryRecord } from "@earendil-works/pi-durable";
 import { AgentDeliveryDoc, type DeliveryOrigin, type DeliveryMessage } from "./durable-controls.ts";
 import { producerRetryFact, readAwaitFact } from "./await-observation.ts";
@@ -105,32 +104,21 @@ async function digest(tx: Tx, input: CheckInInput, inputEntry: EntryId | undefin
 	return { cost: retainedCost(usage), digest: bounded(lines.join("\n"), 2400) };
 }
 
-export const CheckInTask = defineTask<CheckInInput, CheckInState, null>({
-	name: "agent.check-in",
+export const CheckInDeadlineTask = defineTask<CheckInInput & { next: number }, CheckInState, null>({
+	name: "agent.check-in-deadline",
 	version: 1,
-	initial: () => ({ phase: "watch", next: 1 }),
+	initial: (input) => ({ phase: "watch", next: input.next }),
 	phases: {
 		watch: async (task, runtime, context) => {
 			const input = task.input;
 			const id = input.conversationId as ConversationId;
-			const conversation = await runtime.conversation(id, context);
-			if (conversation === undefined) throw new Error("check-in conversation is absent");
-			// Reacquire the submission through the public, request-deduplicated admission handle.
-			const message = typeof input.message === "string" ? input.message : input.message.map((part) => part.type === "image" ? { type: "image" as const, data: part.data, mimeType: part.mimeType } : { type: "text" as const, text: part.text });
-			const submission = await conversation.submit({ type: "input", content: message, requestId: input.requestId, whenBusy: input.whenBusy }, context);
 			const deadline = input.admittedAt + task.state.checkpoint.next * input.intervalMs;
-			const cancel = new AbortController();
-			const waitContext = withAbortSignal(cancel.signal, context);
-			const settled = submission.wait(waitContext).then(() => "settled" as const);
-			const due = runtime.sleep(deadline, waitContext).then(() => "due" as const);
-			let winner: "settled" | "due";
-			try { winner = await Promise.race([settled, due]); }
-			finally { cancel.abort(); await Promise.allSettled([settled, due]); }
+			if (deadline > runtime.now()) return runtime.sleepUntil(deadline, task.state.checkpoint, context);
 			const now = runtime.now();
 			const maxAttempts = runtime.settings.retry.enabled ? runtime.settings.retry.maxRetries + 1 : 1;
 			await runtime.commit(async (tx) => {
 				const retained = await tx.submissionByRequest(id, input.requestId);
-				if (winner === "settled" || retained?.status === "done" || retained?.status === "unanswered")
+				if (retained?.status === "done" || retained?.status === "unanswered")
 					return { status: "terminal", outcome: { status: "completed", result: null } };
 				// Collapse overdue boundaries into one current notice, then return to the admission's fixed cadence.
 				const k = Math.max(task.state.checkpoint.next, Math.floor((now - input.admittedAt) / input.intervalMs));
@@ -145,8 +133,41 @@ export const CheckInTask = defineTask<CheckInInput, CheckInState, null>({
 					const snapshot = await digest(tx, input, retained?.entry, now, maxAttempts);
 					state.reports.push({ sourceId, requestId: sourceId, ownerId: input.ownerId, senderIdentity: input.senderIdentity, message: snapshot.digest, replyTo: null, acknowledged: false, createdAt: now, checkIn: { origin: input.origin, elapsedMs: Math.max(0, now - input.admittedAt), cost: snapshot.cost, conversationId: input.conversationId, requestId: input.requestId, ...fallbackMarker(fallbackBroadcast) } });
 				}
-				return { status: "running", checkpoint: { phase: "watch", next: k + 1 } };
+				return { status: "sleeping", until: input.admittedAt + (k + 1) * input.intervalMs, checkpoint: { phase: "watch", next: k + 1 } };
 			}, context);
+		},
+	},
+	abort: (_task, runtime, context) => runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
+});
+
+/** The submission wait owns the deadline task, so settlement stops it without waiting for its deadline. */
+export const CheckInTask = defineTask<CheckInInput, CheckInState, null>({
+	name: "agent.check-in",
+	version: 1,
+	initial: () => ({ phase: "watch", next: 1 }),
+	phases: {
+		watch: async (task, runtime, context) => {
+			const input = task.input;
+			const conversation = await runtime.conversation(input.conversationId as ConversationId, context);
+			if (conversation === undefined) throw new Error("check-in conversation is absent");
+			const message = typeof input.message === "string" ? input.message : input.message.map((part) => part.type === "image" ? { type: "image" as const, data: part.data, mimeType: part.mimeType } : { type: "text" as const, text: part.text });
+			const submission = await conversation.submit({ type: "input", content: message, requestId: input.requestId, whenBusy: input.whenBusy }, context);
+			const status = await submission.status(context);
+			const deadlines = (await runtime.ownedTasks(context)).filter((child) => child.kind === CheckInDeadlineTask.definition.name);
+			if (status.status === "done" || status.status === "unanswered") {
+				for (const child of deadlines) await runtime.abortOwned(child.id, context);
+				return runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
+			}
+			const existing = deadlines[0];
+			let deadline = existing?.id;
+			if (deadline === undefined) await runtime.commit(async (tx) => {
+				deadline = await tx.createTask(CheckInDeadlineTask, { ...input, next: task.state.checkpoint.next }, { ownership: { kind: "task", taskId: task.id } });
+				return undefined;
+			}, context);
+			if (deadline === undefined) throw new Error("check-in deadline task is absent");
+			await submission.wait(context);
+			await runtime.abortOwned(deadline, context);
+			await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
 		},
 	},
 	abort: (_task, runtime, context) => runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),

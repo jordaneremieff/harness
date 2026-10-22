@@ -67,6 +67,39 @@ it("fires a killed host's scheduled input once after reopen with the original de
 	} finally { await second.close(); }
 });
 
+it("reattaches one sleeping check-in deadline after process loss and stops it at settlement", { timeout: 60000 }, async (t) => {
+	const f = runtimeFixture(t);
+	const runner = fileURLToPath(new URL("./durable-schedule-fixture.mts", import.meta.url));
+	const first = await acquireHost(f.metadata, { runner, env: { DURABLE_TEST_NOW: "1000", DURABLE_TEST_HOLD_ANSWER: "1" }, retryAttempts: 0 });
+	trackHost(t, first.pid);
+	await first.request("submit", { sessionId: f.metadata.storageId, message: "PROCESS_CHECK_IN", requestId: "process-check-in", ownerId: f.ownerId, origin: "model", checkInMinutes: 1 });
+	await first.request("command", { name: "fixture-resume" });
+	await first.request("command", { name: "fixture-checkin-ready" }, { signal: AbortSignal.timeout(15000) });
+	const closed = new Promise<void>((resolve) => first.onClose(resolve));
+	killHost(first.pid);
+	await closed;
+	await first.close();
+	const second = await acquireHost(f.metadata, { runner, env: { DURABLE_TEST_NOW: "61000", DURABLE_TEST_HOLD_ANSWER: "1" } });
+	trackHost(t, second.pid);
+	try {
+		await second.request("command", { name: "fixture-resume" });
+		await second.request("command", { name: "fixture-checkin-ready" }, { signal: AbortSignal.timeout(15000) });
+		const deliveries = await second.request("receipts", { ownerId: f.ownerId, wait: true }) as { reports: Array<{ sourceId: string; ownerId: string }> };
+		assert.equal(deliveries.reports.length, 1);
+		assert.equal(deliveries.reports[0].ownerId, f.ownerId);
+		assert.match(deliveries.reports[0].sourceId, /:process-check-in:1$/u);
+		const before = await second.request("status", { sessionId: f.metadata.storageId }) as { conversation: { tasks: Array<{ kind: string }> } };
+		assert.equal(before.conversation.tasks.filter((task) => task.kind === "agent.check-in").length, 1);
+		assert.equal(before.conversation.tasks.filter((task) => task.kind === "agent.check-in-deadline").length, 1);
+		await second.request("command", { name: "fixture-release-answer" });
+		assert.equal((await waitForRequestReceipt(second, f.ownerId, "process-check-in")).status, "done");
+		const after = await second.request("status", { sessionId: f.metadata.storageId }) as { conversation: { tasks: Array<{ kind: string }> } };
+		assert.equal(after.conversation.tasks.some((task) => task.kind.startsWith("agent.check-in")), false);
+		const final = await second.request("receipts", { ownerId: f.ownerId }) as { reports: unknown[] };
+		assert.deepEqual(final.reports, []);
+	} finally { await second.close(); }
+});
+
 it("keeps the host process through its idle window while a timer is pending", { timeout: 60000 }, async (t) => {
 	let now = Date.now();
 	const f = await scheduleFixture(t, { agentExtension: true, now: () => now, resume: false });

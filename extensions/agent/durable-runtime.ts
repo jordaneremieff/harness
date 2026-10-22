@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readAgentPreferences, resolveExecutionPreset, effectiveExecutionSelection, parsePreferenceSnapshot, type ExecutionSelection, type ExecutionFields } from "./agent-preferences.ts";
 import { defineDocFamily } from "@earendil-works/pi-durable";
 
-const ExecutionSelectionDoc = defineDocFamily<{ input?: string; selection?: ExecutionSelection }, null>({ kind: "agent.execution-selection", family: true, version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({}) });
+const ExecutionSelectionDoc = defineDocFamily<{ input?: string; selection?: ExecutionSelection }, null>({ kind: "agent.execution-selection", family: true, version: 1, scope: "conversation", history: "latest", fork: "initial", checkpointWhen: () => false, initial: () => ({}) });
 import { launchIndependentCommand } from "./independent-launch.ts";
 
 function controlRequestId(params: Readonly<Record<string, unknown>>): string { return typeof params.requestId === "string" ? params.requestId : randomUUID(); }

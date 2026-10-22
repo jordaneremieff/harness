@@ -243,7 +243,7 @@ export class DurableHost {
 		this.storagePath = storagePath;
 		this.registry = registry;
 		this.retryMaxAttempts = retryMaxAttempts;
-		this.retryCeiling = () => { const retry = { ...DEFAULT_RETRY_POLICY, ...settings?.retry }; return retry.enabled ? retry.maxRetries + 1 : 1; };
+		this.retryCeiling = () => { const retry = { ...DEFAULT_RETRY_POLICY, ...(typeof settings === "function" ? settings() : settings)?.retry }; return retry.enabled ? retry.maxRetries + 1 : 1; };
 		this.now = now;
 		const commandMap = new Map<string, DurableHostCommand>();
 		if (Array.isArray(commands)) for (const command of commands as readonly DurableHostCommand[]) commandMap.set(command.name, command);
@@ -328,6 +328,7 @@ export class DurableHost {
 	static async open(options: DurableHostOptions, context: Context = BACKGROUND_CONTEXT): Promise<DurableHost> {
 		const storage = await openNodeSqliteStorage(options.storagePath);
 		const now = options.now ?? Date.now;
+		const report = (error: unknown): void => options.onReport?.(error, { type: "extension_error", extension: "agent" });
 		let harness: Harness;
 		const providerModels = new ProviderModels(options.models, () => harness, options.storageId, now);
 		try {
@@ -366,16 +367,16 @@ export class DurableHost {
 					await initializeSavedContext(tx, conversationId, options.initialMessages ?? []);
 				},
 			});
-			await reconcileProfiles(harness, options.storageId, context, options.onReport);
+			await reconcileProfiles(harness, options.storageId, context, report);
 			await reconcileProviderControls(harness, context);
 			providerModels.bind();
 			const host = new DurableHost(harness, storage, options.storageId, root, options.commands ?? [], options.contributionHost, options.cwd, options.models, options.storagePath, options.registry, options.retryMaxAttempts, options.settings, now);
 			host.providerModels = providerModels;
-			host.providerNotices = new ProviderRetryNotices(harness, options.storageId, options.settings, (error) => { host.deliveryError = `Provider retry notice failed: ${error instanceof Error ? error.message : String(error)}`; options.onReport?.(error); }, now);
+			host.providerNotices = new ProviderRetryNotices(harness, options.storageId, options.settings, (error) => { host.deliveryError = `Provider retry notice failed: ${error instanceof Error ? error.message : String(error)}`; report(error); }, now);
 			await host.providerNotices.initialize();
 			host.recoveryError = (error) => {
 				host.deliveryError = `Queued-input recovery failed: ${error instanceof Error ? error.message : String(error)}`;
-				options.onReport?.(error);
+				report(error);
 			};
 			if (options.resume !== false) await host.resume(context);
 			// A fresh host has no commit to trigger the subscriber; establish the idle cache now.

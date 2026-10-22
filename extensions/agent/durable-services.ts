@@ -51,7 +51,7 @@ import {
 	type ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
 import { createProjectTrustResolver, type ProjectTrustDecision } from "./trust-support.ts";
-import { CheckInTask } from "./durable-checkins.ts";
+import { CheckInTask, CheckInDeadlineTask } from "./durable-checkins.ts";
 import type { IndependentCommandLaunch } from "./independent-launch.ts";
 
 /** One command invocation as the host dispatches it. */
@@ -376,7 +376,7 @@ function durableReadTool(pi: PiRuntime, cwd: string, hostSignal: AbortSignal) {
 function buildBuiltin(pi: PiRuntime, services: AgentSessionServices, inventory: DurableInventory, signal: AbortSignal): Durable.Extension {
 	return Durable.defineExtension({
 		name: "pi.host",
-		tasks: [CheckInTask],
+		tasks: [CheckInTask, CheckInDeadlineTask],
 		tools: [
 			durableReadTool(pi, services.cwd, signal),
 			{ ...createWriteTool(), replay: "unsafe" },

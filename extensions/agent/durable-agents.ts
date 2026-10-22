@@ -738,6 +738,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		history: "latest",
 		fork: "initial",
 		initial: () => ({ children: [], reporters: {} }),
+		checkpointWhen: () => false,
 	});
 
 	const Anchor = durable.defineTask<null, { phase: "done" }, null>({
@@ -802,7 +803,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		return next(`[agent ${name} answered] ${text === "" ? "(no text)" : text}`);
 	};
 
-	const LocalAdmission = durable.defineDoc<{ armed: boolean }>({ kind: "agent.local-admission", version: 1, scope: "task", initial: () => ({ armed: false }) });
+	const LocalAdmission = durable.defineDoc<{ armed: boolean }>({ kind: "agent.local-admission", version: 1, scope: "task", checkpointWhen: () => false, initial: () => ({ armed: false }) });
 
 	type LocalAdmissionApi = {
 		readonly conversationId: Durable.ConversationId;

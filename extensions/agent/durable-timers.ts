@@ -173,7 +173,7 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 	initial: () => ({ phase: "wait" }),
 	phases: {
 		wait: async (task, runtime, context) => {
-			await runtime.sleep(task.input.deadline, context);
+			if (task.input.deadline > runtime.now()) return runtime.sleepUntil(task.input.deadline, task.state.checkpoint, context);
 			// Record that the deadline was reached before any admission work, so
 			// an abort in the fire window settles the input instead of cancelling it.
 			await runtime.commit(() => ({ status: "running", checkpoint: { phase: "wait", firing: true } as TimerState }), context);

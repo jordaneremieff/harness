@@ -221,6 +221,15 @@ export async function scheduleFixture(t: { after(fn: () => void | Promise<void>)
 	return fixture;
 }
 
+async function waitForSleepingCheckIn(fixture: ScheduleFixture): Promise<{ ready: true }> {
+	const graph = await fixture.host.harness.watchTaskGraph(BACKGROUND_CONTEXT);
+	const ready = (value: typeof graph.value) => Object.values(value.tasks).some((node) => node.kind === "agent.check-in-deadline" && node.state.status === "sleeping");
+	try {
+		if (!ready(graph.value)) await new Promise<void>((resolve) => graph.start(async (value) => { if (ready(value)) resolve(); }));
+		return { ready: true };
+	} finally { await graph.stop(); }
+}
+
 /** A paused native timer host with a caller-controlled clock, for process-loss tests. */
 async function main(): Promise<void> {
 	const raw = process.argv[2];
@@ -228,11 +237,13 @@ async function main(): Promise<void> {
 	const metadata = parseHostMetadata(JSON.parse(raw));
 	const now = Number(process.env.DURABLE_TEST_NOW);
 	if (!Number.isSafeInteger(now) || now <= 0) throw new Error("DURABLE_TEST_NOW must be a positive integer");
-	const fixture = await scheduleFixture({ after() {} }, { agentExtension: true, metadata, now: () => now, resume: false });
+	const fixture = await scheduleFixture({ after() {} }, { agentExtension: true, metadata, now: () => now, resume: false, deferAnswers: process.env.DURABLE_TEST_HOLD_ANSWER === "1" });
 	const host = await runHost(() => ({
 		request: async (method, params) => {
 			const command = method === "command" ? (params as { name?: unknown } | undefined)?.name : undefined;
 			if (command === "fixture-clock") return { now };
+			if (command === "fixture-release-answer") { fixture.releaseAnswer(); return { released: true }; }
+			if (command === "fixture-checkin-ready") return waitForSleepingCheckIn(fixture);
 			if (command === "fixture-resume") { fixture.host.harness.resume(); return { resumed: true }; }
 			return fixture.host.request(method, params as Record<string, unknown> | undefined);
 		},

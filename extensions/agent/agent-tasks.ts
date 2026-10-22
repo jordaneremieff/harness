@@ -64,7 +64,8 @@ function labelText(label: TaskLabel | undefined, id: number): string {
 }
 
 function stateText(row: TaskGraphRow): string {
-	const parts: string[] = [row.status];
+	const parts: string[] = [row.blocked === undefined ? row.status : `blocked: ${row.blocked}`];
+	if (row.status === "sleeping" && row.until !== undefined) parts.push(`until ${new Date(row.until).toISOString()}`);
 	if (row.status === "waiting" && row.waitsOn.length > 0)
 		parts.push(`waiting on ${row.waitsOn.map((id) => `#${id}`).join(", ")}`);
 	else if (row.status === "completing" && row.outcome !== undefined) parts.push(row.outcome);

@@ -33,7 +33,7 @@ import { Type } from "typebox";
 import { type AgentContributionHost, type AgentControlDispatch, createAgentContribution, publishAgentControlDispatch } from "./durable-agents.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import registerAgentExtension from "./index.ts";
-import { CheckInTask, checkInMinutes } from "./durable-checkins.ts";
+import { CheckInTask, CheckInDeadlineTask, checkInMinutes } from "./durable-checkins.ts";
 import { THINKING_LEVELS } from "./configuration.ts";
 import { ProfileDoc, readProfile } from "./profile.ts";
 import { readRequestContexts, recordRequestContext, REQUEST_CONTEXT_LIMIT, requestContextSection, type ActiveRequestContext } from "./request-context.ts";
@@ -80,6 +80,7 @@ const TestChildren = Durable.defineDoc<ChildrenState>({
 	history: "latest",
 	fork: "initial",
 	initial: () => ({ children: [], reporters: {} }),
+	checkpointWhen: () => false,
 });
 
 const CONTROL_TOOLS = [
@@ -388,7 +389,7 @@ const siblingExtension = Durable.defineExtension({
 
 function buildRegistry(dispatch?: AgentControlDispatch, checkIns = true, sourceStorageId = storageId, catalogRoot?: string): { registry: Durable.Registry; extension: Durable.Extension } {
 	const registry = Durable.createRegistry();
-	if (checkIns) registry.install(Durable.defineExtension({ name: "test.host", tasks: [CheckInTask] }));
+	if (checkIns) registry.install(Durable.defineExtension({ name: "test.host", tasks: [CheckInTask, CheckInDeadlineTask] }));
 	const contribution = createAgentContribution({ configureSettings: () => {},
 		source: "/abs/extensions/agent/index.ts",
 		...(dispatch === undefined ? {} : { dispatch }),

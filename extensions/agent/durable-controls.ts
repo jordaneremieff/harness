@@ -71,6 +71,7 @@ export const AgentMetaDoc = defineDoc<AgentMeta>({
 	history: "latest",
 	fork: "initial",
 	initial: () => ({ ...EMPTY_META }),
+	checkpointWhen: () => false,
 });
 
 /** JSON-safe stored form of one user input. */
@@ -177,7 +178,7 @@ export const AgentDeliveryDoc = defineDoc<AgentDeliveryState>({
 });
 
 /** One bounded pending-notice count avoids reading the whole report ledger during observation. */
-export const ThreadDeliveryDoc = defineDocFamily<{ pending: number }, null>({ kind: "agent.thread-delivery", version: 1, scope: "session", family: true, initial: () => ({ pending: 0 }) });
+export const ThreadDeliveryDoc = defineDocFamily<{ pending: number }, null>({ kind: "agent.thread-delivery", version: 1, scope: "session", family: true, checkpointWhen: () => false, initial: () => ({ pending: 0 }) });
 
 /** Session-scoped fork markers: request key to the conversation it created. */
 export type AgentForkState = {
@@ -408,7 +409,7 @@ export async function submitConversation(
 	}
 }
 
-const ProviderNoticeAdmissionDoc = defineDocFamily<{ authorized: boolean }, null>({ kind: "agent.provider-notice-admission", family: true, version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ authorized: false }) });
+const ProviderNoticeAdmissionDoc = defineDocFamily<{ authorized: boolean }, null>({ kind: "agent.provider-notice-admission", family: true, version: 1, scope: "conversation", history: "latest", fork: "initial", checkpointWhen: () => false, initial: () => ({ authorized: false }) });
 
 /** Authorization and visibility claims share a commit; replay completes an authorized native admission. */
 async function authorizeProviderNotice(tx: Tx, conversationId: ConversationId, requestId: string, notice: ProviderRetryNotice): Promise<{ suppressed: boolean; existing?: SubmissionId }> {

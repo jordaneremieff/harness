@@ -72,10 +72,10 @@ type ThreadIndex = { keys: string[] };
 type StoredThread = { thread: CollaborationThread | null };
 type StoredEvent = { event: CollaborationEvent | null };
 type StoredMutation = { digest: string; threadId: string; sequence: number };
-export const CollaborationIndex = defineDoc<ThreadIndex>({ kind: "agent.collaboration.index", version: 1, scope: "session", initial: () => ({ keys: [] }) });
-export const CollaborationThreads = defineDocFamily<StoredThread, null>({ kind: "agent.collaboration.thread", version: 1, scope: "session", family: true, initial: () => ({ thread: null }) });
-export const CollaborationEvents = defineDocFamily<StoredEvent, null>({ kind: "agent.collaboration.event", version: 1, scope: "session", family: true, initial: () => ({ event: null }) });
-const CollaborationMutations = defineDocFamily<StoredMutation, null>({ kind: "agent.collaboration.mutation", version: 1, scope: "session", family: true, initial: () => ({ digest: "", threadId: "", sequence: 0 }) });
+export const CollaborationIndex = defineDoc<ThreadIndex>({ kind: "agent.collaboration.index", version: 1, scope: "session", checkpointWhen: () => false, initial: () => ({ keys: [] }) });
+export const CollaborationThreads = defineDocFamily<StoredThread, null>({ kind: "agent.collaboration.thread", version: 1, scope: "session", family: true, checkpointWhen: () => false, initial: () => ({ thread: null }) });
+export const CollaborationEvents = defineDocFamily<StoredEvent, null>({ kind: "agent.collaboration.event", version: 1, scope: "session", family: true, checkpointWhen: () => false, initial: () => ({ event: null }) });
+const CollaborationMutations = defineDocFamily<StoredMutation, null>({ kind: "agent.collaboration.mutation", version: 1, scope: "session", family: true, checkpointWhen: () => false, initial: () => ({ digest: "", threadId: "", sequence: 0 }) });
 
 function text(input: Record<string, unknown>, key: string, max: number, optional = false): string {
 	const value = input[key];

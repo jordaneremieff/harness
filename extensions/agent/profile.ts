@@ -19,7 +19,7 @@ export type ProfileState = {
 	receipts: { requestId: string; digest: string }[];
 };
 const emptyProfile = (): ProfileState => ({ identity: null, handle: null, role: "", expertise: "", updatedAt: null, updatedBy: null, revision: 0, receipts: [] });
-export const ProfileDoc = defineDoc<ProfileState>({ kind: "agent.profile", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: emptyProfile });
+export const ProfileDoc = defineDoc<ProfileState>({ kind: "agent.profile", version: 1, scope: "conversation", history: "latest", fork: "initial", checkpointWhen: () => false, initial: emptyProfile });
 export type ProfileSeed = { handle: string; role: string };
 
 export function profileText(value: unknown, field: "role" | "expertise"): string {

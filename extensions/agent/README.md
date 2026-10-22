@@ -1765,7 +1765,15 @@ ordinary `AgentSession` behind a Durable transcript.
 
 The package declares Pi Durable, Codemode, MCP, and Chord as runtime dependencies.
 Core coding-agent services come from the primary's selected public Pi package
-entrypoint. No private upstream implementation is imported or copied.
+entrypoint. Native execution requires the Durable 1.4 sleep APIs. Opaque native
+operations still require the exact loaded Durable version. Agent documents declare their checkpoint policies explicitly: ordinary mutations
+remain deltas unless that document declares a base checkpoint. No private
+upstream implementation is imported or copied.
+
+A Durable 1.4 SQLite open upgrades schema 1 to schema 2 before the Harness opens.
+Old binaries do not reopen that schema. Keep retained old consumers on intact
+old source and dependencies until their owner-agreed transition; a source update
+alone does not replace their loaded classes or authorize a store migration.
 
 ## Saved ordinary context conversion
 
@@ -1787,10 +1795,25 @@ An uncertain result retains its candidate identity when available and never
 replays automatically. See [the public process contract](../../docs/agent-host-contract.md#saved-context-creation)
 for source limits, identity matching, exact output and refusal semantics.
 
-Native Codemode admission uses the public `acquireWorker` callback. Process-local
-capacity remains charged through actual worker exit, including termination after
-result settlement. Closing the runtime retains native non-waiting termination;
-it does not wait indefinitely for a built-in operation to exit.
+Native Codemode admits at most two workers per process, with a 256 MiB QuickJS
+heap limit per worker. Its FIFO queue retains at most 64 waiting calls. A full
+queue refuses the next call explicitly without displacing existing waiters.
+Each native tool task persists a wait deadline on the Harness clock. An
+unfinished wait expires after 60 seconds, including interruption; an admitted
+script gets a fresh wait budget if replay needs another worker. The native
+script deadline still includes queue time. No explicit script deadline means
+no added execution deadline.
+
+The queue converts the remaining Harness-clock duration to a live wall-clock
+timer. Cancellation and host close remove waiting calls. The synchronous public
+`acquireWorker` callback fences a late launch after cancellation or asynchronous
+wasm load. Capacity remains charged until actual worker exit or construction
+failure, not result settlement. Close requests worker termination without waiting
+for a non-interruptible operation to exit. The queue covers native hosts in one
+process, not ordinary coding-agent workers or other processes.
+
+Native MCP configuration accepts one leading UTF-8 byte-order mark in global
+and trusted project files. The host does not read untrusted project files.
 
 ## Recovery and delivery
 
@@ -1954,8 +1977,11 @@ the host registry supplies that task. The runtime therefore owns availability.
 A check-in is a native `agent.check-in` background task, armed atomically with
 the delivery intent, or with the local Reporter's retained arming checkpoint.
 The public admission API owns a separate commit. The task reacquires the input
-by submitting its same request ID, then races its settlement wait against a
-Durable deadline. Admission time and interval remain in the task input. The host supplies the
+by submitting its same request ID, then waits for settlement while its owned
+`agent.check-in-deadline` task commits durable sleeps. On recovery, the parent
+reattaches to that owned task instead of creating another deadline. Settlement
+aborts the owned task. The parent's existing task version and checkpoint remain
+unchanged. Admission time and interval remain in the task input. The host supplies the
 same configured Harness clock to intent admission and deadlines; native
 Reporters and timers use their runtime clock. Production defaults to `Date.now`. A
 notice row and the next interval checkpoint commit together. Stable source IDs

@@ -14,6 +14,7 @@ type Child = { name?: string; conversationId?: Durable.ConversationId; foreignSe
 const Children = Durable.defineDoc<{ children: Child[] }>({
 	kind: "agent.children", version: 1, scope: "conversation", history: "latest", fork: "initial",
 	initial: () => ({ children: [] }),
+	checkpointWhen: () => false,
 });
 
 async function fixture(t: { after(fn: () => Promise<void>): void }) {

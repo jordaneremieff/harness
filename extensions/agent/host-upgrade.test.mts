@@ -50,7 +50,7 @@ function discover(root: string, packageDir: string): Source {
 	return { root, packageDir, codingAgent, durable };
 }
 
-it("drains old native tool work before a fresh runtime reopens retained results", { timeout: 120000 }, async (t) => {
+it("drains old native tool work before a fresh runtime migrates retained results to schema 2", { timeout: 120000 }, async (t) => {
 	const oldRoot = process.env.PI_AGENT_TEST_OLD_SOURCE;
 	const oldPackage = process.env.PI_AGENT_TEST_OLD_PACKAGE;
 	if (!oldRoot || !oldPackage) {
@@ -136,12 +136,21 @@ it("drains old native tool work before a fresh runtime reopens retained results"
 		assert.deepEqual(await first.request("close-host"), { pid: first.ready.pid, exited: true, claimReleased: true });
 		first.child.disconnect(); await waitForProcessExit(first.child);
 		const storedBefore = retainedStorage(f.storagePath);
-		assert.deepEqual(storedBefore.version.map((row) => row.version), [1]);
+		assert.deepEqual(storedBefore.version.map((row) => ({ ...row })), [{ singleton: 1, version: 1 }]);
+		assert.ok(storedBefore.tasks.length > 0, "The old writer must retain native task records");
 		assert.ok(storedBefore.tasks.every((row) => row.status === "terminal"), "No live old task reaches the new scheduler");
+		const oldTasks = storedBefore.schema.find((row) => row.type === "table" && row.name === "tasks");
+		assert.ok(oldTasks && typeof oldTasks.sql === "string");
+		assert.doesNotMatch(oldTasks.sql, /'sleeping'/u, "The old writer must create the pre-migration task constraint");
 		const second = await start(next);
 		const storedAfter = retainedStorage(f.storagePath);
-		assert.deepEqual(storedAfter.schema, storedBefore.schema, "Open does not migrate the SQLite format");
-		assert.deepEqual(storedAfter.version, storedBefore.version);
+		assert.deepEqual(storedAfter.version.map((row) => ({ ...row })), [{ singleton: 1, version: 2 }]);
+		const newTasks = storedAfter.schema.find((row) => row.type === "table" && row.name === "tasks");
+		assert.ok(newTasks && typeof newTasks.sql === "string");
+		assert.match(newTasks.sql, /'sleeping'/u, "The new writer must apply the schema 2 task constraint");
+		assert.notEqual(newTasks.sql, oldTasks.sql, "Open must rebuild the task table");
+		const unchangedSchema = (rows: StoredRow[]) => rows.filter((row) => row.type !== "table" || row.name !== "tasks");
+		assert.deepEqual(unchangedSchema(storedAfter.schema), unchangedSchema(storedBefore.schema), "Migration preserves all other schema objects, including task indexes");
 		for (const table of ["entries", "tasks", "submissions", "revisions"] as const) {
 			const key = (row: StoredRow) => table === "revisions" ? `${row.document_id}:${row.seq}` : String(row.id);
 			const retainedKeys = new Set(storedBefore[table].map(key));
@@ -168,7 +177,7 @@ it("drains old native tool work before a fresh runtime reopens retained results"
 			const binding = rows.find((row) => row.kind === "host-binding" && row.pid === client.ready.pid);
 			assert.ok(binding); assert.equal(realpathSync(binding.packageDir), source.packageDir);
 		}
-		t.diagnostic(`Drained transition: Pi/Durable ${old.durable} -> ${next.durable}; old writer exited before new open; unchanged SQLite schema and retained rows; one tool effect, zero aborts`);
+		t.diagnostic(`Drained transition: Pi/Durable ${old.durable} -> ${next.durable}; old writer exited before new open; SQLite schema 1 -> 2; retained rows and exact result preserved; followup succeeded; one tool effect, zero aborts`);
 	} finally {
 		release();
 		for (const client of clients) {

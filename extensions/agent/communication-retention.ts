@@ -18,7 +18,7 @@ export type RetainedCommunicationIntent = {
 };
 export type CommunicationIndex = { target?: CommunicationInputLink; recordEntryId?: string; invalid?: boolean; noEnvelope?: true; taskSenderEntryId?: string };
 /** A point lookup is only a hint; immutable visible records remain the authority. */
-export const CommunicationIndexDoc = defineDocFamily<CommunicationIndex, null>({ kind: "agent.communication-index", version: 1, scope: "session", family: true, initial: () => ({}) });
+export const CommunicationIndexDoc = defineDocFamily<CommunicationIndex, null>({ kind: "agent.communication-index", version: 1, scope: "session", family: true, checkpointWhen: () => false, initial: () => ({}) });
 export function communicationIndexKey(storageId: string, conversationId: number, entryId: string): string {
 	return `${storageId}/${conversationId}/${entryId}`;
 }
