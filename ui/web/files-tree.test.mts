@@ -59,12 +59,12 @@ for(const path of ['', 'folder'])test(`filtered ${path?'nested':'root'} pages pr
   const first={...page(path,[{name:'.DS_Store',path:`${prefix}.DS_Store`,kind:'file'}],false),nextCursor:'next-page'};
   const tree=new FilesTree(host as unknown as HTMLElement,{page:async(_root,requested,cursor)=>{if(path&&!requested)return page('',[{name:'folder',path,kind:'directory'}]);cursors.push(cursor);return cursor?page(path,[{name:'.gitignore',path:`${prefix}.gitignore`,kind:'file'}]):first;},select:()=>{},escape:()=>{}});
   tree.setRoot(root);await settle();if(path){row(host,path).click();await settle();}
-  assert.equal(host.querySelector(`[data-path="${prefix}.DS_Store"]`),null);assert.match(host.textContent,/incomplete/);assert.doesNotMatch(host.textContent,/No (?:visible )?files/);
+  assert.equal(host.querySelector(`[data-path="${prefix}.DS_Store"]`),null);assert.match(tree.diagnostics(),/incomplete/);assert.doesNotMatch(host.textContent,/No (?:visible )?files/);
   const more=host.querySelector('.file-tree-more');assert.ok(more);more.click();await settle();assert.deepEqual(cursors,[undefined,'next-page']);assert.ok(row(host,`${prefix}.gitignore`));assert.equal(first.entries.length,1);assert.equal(first.nextCursor,'next-page');
 });
 test('a complete filtered folder says no visible files and preserves same-named nonfiles',async context=>{
   const host=node();context.after(()=>host.remove());let entries:FileEntry[]=[{name:'.DS_Store',path:'.DS_Store',kind:'file'}];
-  const tree=new FilesTree(host as unknown as HTMLElement,{page:async()=>page('',entries),select:()=>{},escape:()=>{}});tree.setRoot(root);await settle();assert.match(host.textContent,/No visible files in this folder/);assert.doesNotMatch(host.textContent,/No files in this folder/);assert.equal(host.tabIndex,0);
+  const tree=new FilesTree(host as unknown as HTMLElement,{page:async()=>page('',entries),select:()=>{},escape:()=>{}});tree.setRoot(root);await settle();assert.match(host.textContent,/Choose folder/);assert.doesNotMatch(host.textContent,/No (?:visible )?files in this folder/);assert.equal(host.tabIndex,0);
   for(const kind of ['directory','symlink','other'] as const){entries=[{name:'.DS_Store',path:'.DS_Store',kind}];tree.setRoot(root,kind);await settle();assert.ok(row(host,'.DS_Store'));}
 });
 test('Right on an expanded empty folder stays there rather than reaching its sibling',async context=> {
@@ -74,8 +74,8 @@ test('Right on an expanded empty folder stays there rather than reaching its sib
 });
 test('incomplete empty listings and mismatched responses never claim an empty folder',async context=> {
   const host = node();context.after(()=>host.remove());
-  const tree = new FilesTree(host as unknown as HTMLElement,{page:async()=>page('',[],false),select:()=>{},escape:()=>{}});tree.setRoot(root);await settle();assert.match(host.textContent,/incomplete/);assert.doesNotMatch(host.textContent,/No files/);
-  const mismatch = new FilesTree(host as unknown as HTMLElement,{page:async()=>({...page('',[]),rootId:'wrong'}),select:()=>{},escape:()=>{}});mismatch.setRoot(root);await settle();assert.match(host.textContent,/identity/);assert.doesNotMatch(host.textContent,/No files/);
+  const tree = new FilesTree(host as unknown as HTMLElement,{page:async()=>page('',[],false),select:()=>{},escape:()=>{}});tree.setRoot(root);await settle();assert.match(tree.diagnostics(),/incomplete/);assert.doesNotMatch(host.textContent,/No files/);
+  const mismatch = new FilesTree(host as unknown as HTMLElement,{page:async()=>({...page('',[]),rootId:'wrong'}),select:()=>{},escape:()=>{}});mismatch.setRoot(root);await settle();assert.match(mismatch.diagnostics(),/identity/);assert.doesNotMatch(host.textContent,/No files/);
 });
 for (const pending of ['queued', 'loading'] as const) test(`collapse survives a ${pending} directory refresh`,async context=> {
   const host=node();context.after(()=>host.remove());const frames=new Map<number,FrameRequestCallback>();let frame=0;
