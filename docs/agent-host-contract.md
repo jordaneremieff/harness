@@ -497,7 +497,7 @@ A consumer must possess an expected contract for the payload it implements. It m
 
 `D` below is the exact `@earendil-works/pi-durable` release loaded by that process, not a future version pinned by this document. A consumer of opaque native values compares it with the Durable representation it supports. The descriptor's `release` is currently `1.0.0`.
 
-The current descriptor requires `codingAgent: "1.3.0"` and `durable: "1.3.0"` for current tool-argument validation and native transport integration. Chord wire 4 is a separate transport contract. These are minimum required APIs, not dependency pins, a supported-version ceiling, or a substitute for exact operation checks. Read floors from the loaded descriptor, not from the source release label. Source: `extensions/agent/version-contract.ts`; published coding-agent, Durable, AI and Chord 1.3 declarations and defining implementations.
+The current descriptor requires `codingAgent: "1.3.0"` and `durable: "1.4.0"`. Native timer and check-in deadline tasks use `TaskRuntime.sleepUntil()`; the ordinary service API floor remains unchanged. Chord wire 4 is a separate transport contract. These are minimum required APIs, not dependency pins, a supported-version ceiling, or a substitute for exact operation checks. Read floors from the loaded descriptor, not from the source release label. Sources: `extensions/agent/version-contract.ts`, `durable-timers.ts`, `durable-checkins.ts`, and the installed Durable `dist/types.d.ts`.
 
 For every member in the following set, request and response are both `<member>/1.0.0`, with no `durable` field:
 
@@ -541,7 +541,7 @@ Each `H-*` is the lowercase hex SHA-256 of `JSON.stringify` of the owning schema
 
 ```text
 H-inspect       d38d5e5a297d6b3738547ab0154cd494602f01c4a898423a076d2d946e430a6b
-H-status        481a5267ce06c0ed2bb89e85e142e3a5d58c78828fb502c46ff815a3cb889197
+H-status        d1f5f022e262aba18b6de135e891aef526cf9f0f62f114e51f3c132e624eb6cf
 H-list          76e932a0749fd72c9aef6b90635d061e455f84fb57f7f9bd102034cf28887600
 H-dashboard     a89f98f3eb28c78f115c0010581107073600bfb9ec44934ad622aeb5d1cffcd7
 H-profile-read  b78d87440ae527566e0f13603e638dfa057aaa87f2985521e32b9c859baa1889
@@ -555,14 +555,17 @@ Schema owners in table order are `InspectOutputSchema`, `StatusOutputSchema`, `L
 
 The table lists advertised identities, not a claim that all members have the same target or side-effect policy. The consumer operations below define the relevant payloads. `changes` gates a Feed subscription; it is not an ordinary runtime request member.
 
-The current `extensions/agent/observation-schema.ts` permits optional native
-`startedAt` and `endedAt` on conversation task rows. Durable stamps wall-clock
-milliseconds at first running and terminal state; the span includes waits and
-recovery, not only execution. Status selects live tasks, so their terminal
-`endedAt` remains absent. Missing timestamps remain absent. Schema checks against
-Pi/Durable 1.2.0 on 2026-10-13 change inspect, status, and dashboard response
-hashes for nested metadata and compaction failure. List and snapshot/observe
-response identities retain their shapes; exact native operations still bind D.
+The current `extensions/agent/observation-schema.ts` permits conversation task
+statuses `running`, `ready`, `waiting`, `sleeping`, `completing`, and `blocked`.
+`StatusOutputSchema` includes this closed enum; its schema identity therefore
+covers sleeping-state support. `InspectOutputSchema` retains its current shape
+and identity. Exact native operations still bind D independently of schema hashes.
+
+Conversation task rows permit optional native `startedAt` and `endedAt`.
+Durable stamps wall-clock milliseconds at first running and terminal state;
+the span includes waits and recovery, not only execution. Status selects live
+tasks, so their terminal `endedAt` remains absent. Missing timestamps remain
+absent.
 
 ## Native result inspection
 
@@ -636,7 +639,7 @@ Sources: `extensions/agent/profile-schema.ts` `ProfileHintSchema` and
   rows: [
     {identity:string, kind:"provider-blocked", blockId:string}
     | {identity:string, kind:"task-blocked", taskId:positiveInteger,
-       reason:"missing_task"|"task_too_old"|"migration_failed"}
+       reason:"missing_task"|"task_too_old"|"migration_failed"|"restart_limit"}
     | {identity:string, kind:"failed-turn"}
   ],
   coverage: {complete:boolean, omitted:nonnegativeInteger}
@@ -646,8 +649,9 @@ Sources: `extensions/agent/profile-schema.ts` `ProfileHintSchema` and
 Join each hint to the exact conversation row `id`. At most one hint appears per
 row, with provider block before blocked task before failed turn. Provider blocks
 require explicit recovery; blocked tasks require host repair; failed turns need a
-new input. Automatic retry and compaction diagnostics do not establish a need for
-intervention. Absence remains unknown even with complete publication coverage;
+new input. `restart_limit` identifies a task parked by the native restart guard.
+Expected task sleep does not create an attention hint. Automatic retry and
+compaction diagnostics do not establish a need for intervention. Absence remains unknown even with complete publication coverage;
 this section does not detect unanswered human questions. Hints use only space
 left after native rows and profile hints. Coverage counts omitted hints and rows,
 not an inferred number of intervention needs. The base row state enum is unchanged.
@@ -882,7 +886,7 @@ IDs, arguments, progress, and optional terminal summaries. `live.compactionFailu
 contains its task ID, reason, and error, not a fabricated timestamp. The
 presentation health projection therefore keeps `at` optional. Source: `extensions/agent/durable-observation.ts:99-156`; `providerBlock`: `extensions/agent/observation-schema.ts:143-144`.
 
-A tasks frame is `{scope:"tasks",storageId,revision,observedAt,tasks,labels,coverage:{complete,live}}`. Task rows contain `{id,kind,conversationId,owner?,background,abortRequested,status,phase,waitsOn,policy?,outcome?,conversations}`; labels contain `{conversationId,identity,name?,firstMessage?}`. Source: `extensions/agent/live-frames.ts:33-70`.
+A tasks frame is `{scope:"tasks",storageId,revision,observedAt,tasks,labels,coverage:{complete,live}}`. Task rows contain `{id,kind,conversationId,owner?,background,abortRequested,status,phase,until?,blocked?,waitsOn,policy?,outcome?,conversations}`; labels contain `{conversationId,identity,name?,firstMessage?}`. Graph statuses are `pending`, `running`, `waiting`, `sleeping`, and `completing`. A sleeping row supplies `until`, an absolute deadline on the native Harness clock. Optional `blocked` is the native reason `missing_task`, `task_too_old`, `migration_failed`, or `restart_limit`; it is separate from the graph status. Sleeping is expected state, not a failed turn. Sources: `extensions/agent/live-frames.ts` and the installed Durable `dist/harness/task-graph.d.ts`.
 
 Dispose the subscription and close its token when no longer observed. Disconnect cleans connection-owned observations; explicit token cleanup is still the normal path. Observations keep a host alive and block native reload. Disconnect/observation close do not abort admitted work. The host `close` operation is runtime/process shutdown and is not client cleanup. Source: `extensions/agent/host-process.ts:443-456,535-539`; `extensions/agent/host-client.ts:746-767,891-919`; `extensions/agent/durable-runtime.ts:375-411`.
 
@@ -1023,6 +1027,13 @@ Admission and answer delivery are separate. Native result inspection or retained
 Catalog/presence reads, attach-only `connectHost`, and manager observational reads do not launch a host. Without a live host, the manager uses a bounded cold database/WAL capture for observation. This is not a wire operation and is not zero-cost filesystem work. A surviving live claim still subjects manager reads to live connection negotiation; the independent reader below does not use that route. Source: `extensions/agent/manager.ts` (`observationConnection`, `observeDurableStorage`); `extensions/agent/cold-observation.ts` (`openColdObservationSnapshot`); `extensions/agent/snapshot-capture.ts` (`captureSnapshot`).
 
 Acquiring controls resolve the retained record and acquire/start its owner. An explicit attach can resume unfinished work even with no new prompt. Low-level `snapshotHost()` acquires despite its name; do not use it as an attach-only helper. Native wire spawn requires a sender conversation in an already running host; there is no hostless spawn member available from a bare transport client. Fleet/effort composition and ordinary-primary intent publication are manager functions, not host members. Source: `extensions/agent/manager.ts:469-523,762-783,830-851`; `extensions/agent/host-client.ts:910-932`; `extensions/agent/durable-runtime.ts:411-438`.
+
+An upgraded writer follows the [store migration and retained-consumer
+boundary](pi-durable-harness.md#store-format-and-retained-task-versions).
+Existing consumers retain intact source and dependency bytes until their
+owner-agreed transition; a new process must load one complete accepted runtime.
+Cold observation opens SQLite only on a disposable copy, not the retained source store.
+It does not authorize a live writer or a consumer restart.
 
 ## Independent retained reads
 
@@ -1354,13 +1365,13 @@ These examples contain fabricated identities and data. They are valid-shape exam
 ### Fixture: retained-read-descriptor
 
 ```json
-{"version":"retained-read/1.0.0","upstream":{"codingAgent":"1.3.0","durable":"1.3.0"},"operations":{"snapshot":{"request":"snapshot/1.0.0","response":"snapshot/2.0.0","durable":"1.3.0"},"inspect":{"request":"inspect/1.1.0","response":"d38d5e5a297d6b3738547ab0154cd494602f01c4a898423a076d2d946e430a6b","durable":"1.3.0"}}}
+{"version":"retained-read/1.0.0","upstream":{"codingAgent":"1.4.0","durable":"1.4.0"},"operations":{"snapshot":{"request":"snapshot/1.0.0","response":"snapshot/2.0.0","durable":"1.4.0"},"inspect":{"request":"inspect/1.1.0","response":"d38d5e5a297d6b3738547ab0154cd494602f01c4a898423a076d2d946e430a6b","durable":"1.4.0"}}}
 ```
 
 ### Fixture: retained-read-request
 
 ```json
-{"version":"retained-read/1.0.0","id":"retained-example","store":"/example/sessions","sessionId":"00000000-0000-4000-8000-000000000001:2","method":"snapshot","expected":{"request":"snapshot/1.0.0","response":"snapshot/2.0.0","durable":"1.3.0"},"params":{"limit":50,"maxBytes":65536}}
+{"version":"retained-read/1.0.0","id":"retained-example","store":"/example/sessions","sessionId":"00000000-0000-4000-8000-000000000001:2","method":"snapshot","expected":{"request":"snapshot/1.0.0","response":"snapshot/2.0.0","durable":"1.4.0"},"params":{"limit":50,"maxBytes":65536}}
 ```
 
 ### Fixture: retained-read-success

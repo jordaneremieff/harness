@@ -255,6 +255,59 @@ for exposure, namespace, and presence evidence. Use `describeNamespace()` for
 the full namespace instructions. The [checked Pi contract](pi-durable-harness.md#mcp-and-deferred-tool-discovery)
 records the exposure, naming, and waiting rules with their sources.
 
+## Classify images from a script
+
+Classifiers answer typed questions about JSON state and, when their `input`
+includes `"image"`, supplied image blocks. Use
+`models.getAvailableOfType("classifier")` to discover configured choices. Cached
+availability does not establish remote health or authorize a metered request.
+
+Replace `PROVIDER` and `MODEL_ID` below with an available classifier permitted
+for the task. Supply an existing PNG file that the task permits sending to that
+provider. The example checks image support instead of assuming every classifier
+accepts images.
+
+```javascript
+const available = await models.getAvailableOfType("classifier");
+const classifier = available.find(model =>
+  model.provider === "PROVIDER" && model.id === "MODEL_ID" &&
+  model.input.includes("image"),
+);
+if (!classifier) return "No permitted selected classifier with image input is available.";
+const photo = await tools.read({ path: "photo.png" });
+if (!photo || typeof photo !== "object" || photo.type !== "image") {
+  return "The selected file did not return an image block.";
+}
+const result = await models.classify(classifier, {
+  state: { purpose: "Describe the supplied product photo" },
+  images: [photo],
+  questions: {
+    readable: {
+      type: "bool",
+      instructions: "Is the product label readable?",
+      criteria: { true: "The label text is legible", false: "The label text is not legible" },
+    },
+  },
+});
+if (result.stopReason !== "stop") {
+  return { stopReason: result.stopReason, errorMessage: result.errorMessage, usage: result.usage };
+}
+return { answers: result.answers, usage: result.usage };
+```
+
+`classify()` returns provider errors through `stopReason` and `errorMessage`,
+not a rejected promise. Preserve those fields and any reported usage rather
+than interpreting an empty answer as a classification. Local argument or tool
+errors still reject normally.
+
+Image format and count limits depend on the selected service, not only the
+`input` catalog field. This example sends one PNG; do not infer WebP, GIF, or
+multiple-image support from it. Read the installed Pi `docs/models.md` section
+“Use classifier models” for current formats and limits. Custom classifier
+endpoints also need the matching image transport under `compat.imageInput`;
+Pi's `docs/models-configuration.md` owns those fields. Do not build a manual
+provider payload or a second model catalog in the script.
+
 ## Generate images from a script
 
 The `models` API runs image models with the session's credentials. OpenRouter
@@ -302,8 +355,9 @@ calls, so validation, hooks, and permission checks apply. Use a script to run
 independent calls together, to filter or join structured tool output before it
 enters model context, to loop a project command over cases and return only the
 verdicts, or to reduce a few reads to one small structure. `bash` resolves
-inside a script to `{ output, exit_code, ... }` with up to 1 MiB of output, more
-than the model's truncated view.
+inside an ordinary script to `{ output, exit_code, ... }` with up to 1 MiB of
+output, more than the model's truncated view. The Durable host's bash adapter
+uses `exitCode`; preserve the selected tool's declared shape.
 
 Keep a native runtime for application code, project libraries, framework
 shells, tests, binary formats, compression, and long-running or interactive
@@ -313,11 +367,19 @@ another language to feed through a heredoc.
 
 ## Native execution boundaries
 
-Nested calls use Pi's argument validation, `tool_call`, and `tool_result`
-pipeline. Policy therefore intercepts the nested calls rather than only the
-outer script. A successful nested Pillars source read with a draft delivers the
+Ordinary nested calls use Pi's argument validation, `tool_call`, and
+`tool_result` pipeline. Durable nested calls use native tool tasks and hooks.
+Policy therefore intercepts nested calls in the selected host rather than only
+the outer script. A successful nested Pillars source read with a draft delivers the
 assessment task to the normal continuation. It does not prove that the model
 applied the assessment.
+
+Ordinary Codemode queues scripts for a free worker in arrival order, with a
+bounded wait that counts toward the script deadline. Its
+`PI_CODEMODE_MAX_WORKERS` setting belongs to that ordinary wrapper. The native
+sandbox's `acquireWorker` remains synchronous; it does not inherit the ordinary
+queue. The [Agent README](../extensions/agent/README.md#capabilities-and-project-resources)
+owns the Durable host's admission and limits.
 
 Check a tool's presence with `"name" in tools` before an optional call. Reading
 an absent member throws an error that names the close matches, so a `typeof

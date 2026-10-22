@@ -230,6 +230,15 @@ surface. A model answer or an idle root does not prove publication succeeded.
   task or call identity, so a replayed hook applies it once; a hook that needs
   the resolved agent reads `host.harness.conversation(id)` and its `agent()`.
   Never cast `HookApi` to reach undocumented members.
+- Every `defineDoc()` and `defineDocFamily()` definition declares an explicit
+  `checkpointWhen(value, ops, info)` predicate. It selects whether an ordinary
+  change stores a complete base (`true`) or a delta (`false`). Preserve an
+  existing explicit policy. Where omission previously retained deltas, use
+  `() => false`; do not change the stored value version for that declaration
+  alone. A policy that bounds replay needs a concrete base-creation condition;
+  an always-false predicate does not supply that bound. See the
+  [native document contract](../pi-durable-harness.md#documents-and-invocation-context)
+  for the upstream API boundary.
 - Shared external stores, such as the memory corpus, stash store, clipboard
   archive, and policy store, stay external. Do not copy them into documents.
 - Model-facing usage guidance belongs in a prompt section of the contribution.

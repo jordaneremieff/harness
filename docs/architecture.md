@@ -156,7 +156,9 @@ extensions that duplicate these controls:
   value therefore wins over a project-wide fallback. `compaction.enabled`
   controls automatic compaction; manual `/compact` remains available when it
   is false. Preserve the operator's current toggle and token budgets unless
-  a change is requested. See Pi's `docs/settings.md` and `docs/compaction.md`.
+  a change is requested. `reserveTokens` controls when compaction starts, not
+  the summary's output cap; summary requests use the model's output limit.
+  See Pi's `docs/settings.md` and `docs/compaction.md`.
 - **Prompt cache warming:** global `cacheWarming` selects `off`, `streaming`,
   or `idle`. Pi owns the refresh schedule and cost decision. Refresh requests
   incur provider usage; a model needs a known cache lifetime for its selected
@@ -176,7 +178,10 @@ harness does not select their values or authorize an evidence upload.
 Pi publishes editor schemas for settings, models, keybindings, and themes.
 Use the `$schema` URLs documented by the installed Pi release when editing
 those files. An editor schema does not activate a resource, replace Pi's
-runtime validation, or add a repository completion gate.
+runtime validation, or add a repository completion gate. Pi's installed
+`docs/models-configuration.md` is the generated reference for provider, model,
+override, input-limit, and compatibility fields in `models.json`. Use it with
+`docs/models.md` for setup examples instead of a harness-owned field catalog.
 
 ## Extension anatomy
 
