@@ -464,7 +464,7 @@ test('structured content uses readable prose, wrapped fields, compact tables and
   assert.match(rule('.tool-rows'), /max-width: 100%; overflow-x: auto/);
   assert.doesNotMatch(rule('.tool-rows'), /max-height:|overflow-y:|background:/);
   assert.match(rule('.tool-rows th'), /color: var\(--muted\); font-size: var\(--fs-meta\); font-weight: 600/);
-  assert.match(rule('.tool-rows th, .tool-rows td'), /vertical-align: top; white-space: normal; overflow-wrap: anywhere/);
+  assert.match(rule('.tool-rows th, .tool-rows td'), /vertical-align: top; white-space: normal; overflow-wrap: normal/);
   assert.match(rule('.tool-record'), /min-width: 0; padding-left: var\(--s3\)/);
   assert.match(rule('.tool-record > * + *'), /margin-top: var\(--s2\)/);
   assert.match(rule('.tool-result-parts > .tool-result-part + .tool-result-part'), /margin-top: var\(--s2\)/);
@@ -584,7 +584,7 @@ test('prose table cells wrap at words while wide data keeps horizontal scroll an
   assert.doesNotMatch(prose, /white-space: nowrap|overflow: hidden|text-overflow:|line-clamp/);
   assert.match(rule('.markdown-content:is(table)'), /display: block; max-width: 100%; overflow-x: auto/);
   assert.doesNotMatch(rule('.markdown-content:is(table)'), /table-layout: fixed|overflow-x: hidden/);
-  assert.match(rule('.tool-rows th, .tool-rows td'), /white-space: normal; overflow-wrap: anywhere/);
+  assert.match(rule('.tool-rows th, .tool-rows td'), /white-space: normal; overflow-wrap: normal/);
   assert.match(rule('.tool-rows'), /max-width: 100%; overflow-x: auto/);
 });
 test('the writing surface groups Add and the required action below native text', () => {

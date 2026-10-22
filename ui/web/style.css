@@ -912,7 +912,7 @@ pre.tool-document { font-family: var(--mono); font-size: var(--fs-code); line-he
 .tool-shell .kv > dd { overflow-wrap: anywhere; }
 .tool-shell .kv > dt.field-key-wide, .tool-shell .kv > dt.field-key-wide + dd { grid-column: 1 / -1; max-width: none; }
 .tool-rows { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; color: var(--fg); font-family: var(--mono); font-size: var(--fs-code); }
-.tool-rows th, .tool-rows td { max-width: 40ch; padding: var(--s1) var(--s2); vertical-align: top; white-space: normal; overflow-wrap: anywhere; }
+.tool-rows th, .tool-rows td { max-width: 40ch; padding: var(--s1) var(--s2); vertical-align: top; white-space: normal; overflow-wrap: normal; }
 .tool-rows th { border-bottom: 1px solid var(--edge); color: var(--muted); font-size: var(--fs-meta); font-weight: 600; }
 .session-events { margin: 0 0 var(--s2); }
 .entry.session-event-group { margin-block: 0; }
