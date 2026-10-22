@@ -627,12 +627,13 @@ test('Find distinguishes session members that share a virtual representative', (
   const root = node('primary-transcript'); assert.equal(root.querySelector('.find-current')?.dataset.sessionEventId, 's39');
   assert.equal(find.previous('needle').position, 39); assert.equal(root.querySelector('.find-current')?.dataset.sessionEventId, 's38');
 });
+function expandRoster(): void { node('roster').querySelector('.roster-older')?.dispatch('click'); flush(); }
 test('roster preserves order, visible duplicate identities, keyed rows and data-arrival ages', () => {
   const modifiedAt = Date.UTC(2026, 9, 8, 12);
   setup(); const now = Date.now; let clock = modifiedAt + 600000; Date.now = () => clock;
   try {
     const selected: string[] = []; const view = new Roster(row => selected.push(row.identity), () => {}, undefined, undefined, rosterStatus); const one = {...row('one', 'same'), modifiedAt}; const two = row('two', 'same');
-    view.set([one, two]); flush(); const first = node('roster').children[0]; assert.ok(first); const age = first.querySelector('time'); assert.equal(age?.textContent, '10m'); assert.match(first.querySelector('.row-select')?.attributes['aria-label'] ?? '', /one/);
+    view.set([one, two]); flush(); expandRoster(); const first = node('roster').children[0]; assert.ok(first); const age = first.querySelector('time'); assert.equal(age?.textContent, '10m'); assert.match(first.querySelector('.row-select')?.attributes['aria-label'] ?? '', /one/);
     assert.equal(first.querySelector('.row-identity')?.textContent, '1');
     assert.equal(first.querySelector('.row-word'), null); assert.equal(first.querySelector('.row-detail'), null); assert.equal(first.dataset.live, 'true');
     assert.equal(first.querySelector('.row-model'), null); assert.equal(first.querySelector('.row-activity'), null);
@@ -642,60 +643,44 @@ test('roster preserves order, visible duplicate identities, keyed rows and data-
     clock = modifiedAt + 900000; view.set([two, one], undefined, 'two'); flush(); assert.equal(node('roster').children[0], first); assert.equal(age?.textContent, '10m');
     first.querySelector('.row-select')?.dispatch('click'); assert.deepEqual(selected, ['one']);
     view.set([{...one, latestReply: 'new'}, two]); flush(); assert.equal(node('roster').children[0], first); assert.equal(age?.textContent, '15m');
-    assert.equal(first.querySelector('.row-select')?.title, 'Running · new');
+    assert.equal(first.querySelector('.row-select')?.title, 'Running\nLast reply: new');
     first.querySelector('.row-age')?.dispatch('click'); assert.doesNotMatch(age?.textContent ?? '', /ago/);
   } finally { Date.now = now; }
 });
-test('roster older scope and in-place filter keep the keyed row and focus', () => {
+test('roster collapsed catalog opens in place and keeps the keyed row and focus', () => {
   setup(); const view = new Roster(() => {}, () => {}, undefined, undefined, rosterStatus);
   const old = {...row('old', 'Older'), state: 'done', availability: 'stored' as const};
   view.set([row('live', 'Live'), old], {stale: false, scan: {state: 'ready', complete: true, visited: 2, skipped: 0, omitted: 0}}); flush();
-  const container = node('roster'); const older = container.querySelector('.roster-older'); assert.equal(older?.textContent, 'Show 1 older agent');
-  assert.equal(node('roster-footer').hidden, true); assert.equal(node('agent-search').hidden, false);
-  older?.dispatch('click'); assert.equal(older?.textContent, 'Hide older agents');
+  const container = node('roster'); const older = container.querySelector('.roster-older'); assert.equal(older?.textContent, 'All agents (2)');
+  assert.equal(node('roster-footer').hidden, true); assert.equal(older?.attributes['aria-expanded'], 'false');
+  older?.dispatch('click'); flush(); assert.equal(older?.attributes['aria-expanded'], 'true'); assert.equal(node('agent-search').hidden, false);
   const oldSelect = container.children.find(child => child.dataset.identity === 'old')?.querySelector('.row-select'); assert.ok(oldSelect);
-  older?.dispatch('click'); assert.equal(oldSelect.isConnected, false);
   const liveSelect = container.querySelector('.row-select'); assert.ok(liveSelect); liveSelect.focus();
   container.dispatch('keydown', {key: 'O', preventDefault: () => {}});
-  assert.equal(node('agent-search').hidden, false); assert.equal(fakeDocument.activeElement, node('agent-search'));
-  assert.equal(container.querySelector('.row-select'), oldSelect); assert.equal(container.querySelector('.roster-older'), null);
-  node('agent-search').dispatch('keydown', {key: 'Escape', preventDefault: () => {}, stopPropagation: () => {}});
-  assert.equal(node('agent-search').hidden, false); assert.equal(fakeDocument.activeElement, container);
-  assert.equal(container.querySelector('.roster-older'), older);
+  assert.equal(fakeDocument.activeElement, node('agent-search'));
 });
-test('roster empty states distinguish discovery, loading, failure and successful emptiness', () => {
-  setup(); const actions: Array<string | undefined> = []; const view = new Roster(() => {}, action => actions.push(action), undefined, undefined, rosterStatus);
+test('an empty roster offers New agent while its scan states reach the footer', () => {
+  setup(); const created = new FakeNode('button'); let clicks = 0; created.addEventListener('click', () => { clicks++; }); ids.set('agent-new', created);
+  const view = new Roster(() => {}, () => {}, undefined, undefined, rosterStatus);
   const scan = {state: 'not-started' as const, complete: false, visited: 0, skipped: 0, omitted: 0};
-  view.set([], {scan, stale: false}); flush(); assert.equal(node('roster').textContent, 'Agents are not loaded.');
-  const empty = node('roster').children[0]; const refresh = node('roster-footer').querySelector('button'); assert.equal(refresh?.textContent, 'Refresh agents'); refresh?.dispatch('click');
-  assert.doesNotMatch(node('roster-footer').textContent, /0 loaded|more/);
-  view.set([], {scan: {...scan, state: 'running'}, stale: false}); flush(); assert.equal(node('roster').children[0], empty);
-  assert.equal(node('roster').textContent, 'Loading agents…'); assert.equal(node('roster-footer').querySelector('button'), null); assert.equal(node('roster-footer').hidden, false);
-  view.set([], {scan: {...scan, state: 'failed'}, stale: false, error: {code: 'catalog', message: 'Record unreadable', retry: 'read'}}); flush();
-  assert.equal(node('roster').textContent, 'Agents could not be loaded.');
-  assert.equal(node('roster-footer').querySelector('details')?.textContent, 'DetailsRecord unreadable');
-  const retry = node('roster-footer').querySelector('button'); assert.equal(retry?.attributes['aria-label'], 'Refresh agents'); retry?.dispatch('click');
-  view.set([], {scan: {...scan, state: 'ready', complete: true}, stale: false}); flush();
-  assert.equal(node('roster').textContent, 'No agents in this view'); assert.equal(node('roster-footer').querySelector('button'), null);
-  assert.equal(node('roster-footer').hidden, true); assert.equal(node('roster-footer').textContent, '');
-  assert.deepEqual(actions, ['refresh', 'refresh']);
+  view.set([], {scan, stale: false}); flush(); assert.equal(node('roster').textContent, 'New agent');
+  node('roster').querySelector('.roster-older')?.dispatch('click'); assert.equal(clicks, 1);
 });
 test('roster more uses cached page cursors independently from scan completeness', () => {
   setup(); const actions: Array<string | undefined> = []; const view = new Roster(() => {}, action => actions.push(action), undefined, undefined, rosterStatus);
   const scan = {state: 'ready' as const, complete: true, visited: 2, skipped: 0, omitted: 0};
-  view.set([row('one')], {scan, stale: false, nextCursor: 'page-2'}); flush();
-  const more = node('roster').querySelector('.roster-more'); assert.equal(more?.textContent, 'More agents'); assert.equal(node('roster').lastElementChild, more);
-  assert.equal(node('roster-footer').hidden, true); assert.equal(node('roster').querySelector('.roster-older'), null); more?.dispatch('click');
+  view.set([row('one')], {scan, stale: false, nextCursor: 'page-2'}); flush(); expandRoster();
+  const more = node('roster').querySelector('.roster-more'); assert.equal(more?.textContent, 'More agents'); assert.ok(node('roster').children.includes(more));
+  assert.equal(node('roster-footer').hidden, true); assert.equal(node('roster').querySelector('.roster-older')?.attributes['aria-expanded'], 'true'); more?.dispatch('click');
   view.set([], {scan: {...scan, complete: false, scanId: 'scan-2'}, stale: false, nextCursor: null}); flush();
   const continuation = node('roster').querySelector('.roster-more'); assert.equal(continuation, more); assert.equal(continuation?.textContent, 'Load more agents'); continuation?.dispatch('click');
   view.set([], {scan: {...scan, complete: false}, stale: false}); flush(); assert.equal(node('roster-footer').querySelector('button'), null); assert.equal(node('roster').querySelector('.roster-more'), null);
   view.set([row('one')], {scan: {...scan, state: 'failed'}, stale: true, nextCursor: 'page-2'}); flush();
-  const buttons = node('roster-footer').querySelectorAll('button'); assert.deepEqual(buttons.map(button => button.attributes['aria-label']), ['Refresh agents']);
-  node('roster').querySelector('.roster-more')?.dispatch('click'); buttons[0]?.dispatch('click'); assert.deepEqual(actions, ['more', 'more', 'more', 'refresh']);
+  node('roster').querySelector('.roster-more')?.dispatch('click'); assert.deepEqual(actions, ['more', 'more', 'more']);
 });
 test('roster virtual rows retain selected/focused pins, internal gaps and measured heights', () => {
   setup(); const view = new Roster(() => {}, () => {}, undefined, undefined, rosterStatus); const rows = Array.from({length: 220}, (_, i) => row(`full-identity-${i}`));
-  view.set(rows, undefined, 'full-identity-200'); flush(); const container = node('roster'); const pinned = container.children.find(child => child.dataset.identity === 'full-identity-200'); assert.ok(pinned);
+  view.set(rows, undefined, 'full-identity-200'); flush(); expandRoster(); const container = node('roster'); const pinned = container.children.find(child => child.dataset.identity === 'full-identity-200'); assert.ok(pinned);
   pinned.measured = 250; pinned.focus(); view.set(rows, undefined, 'full-identity-0'); flush();
   assert.equal(pinned.isConnected, true); assert.equal(fakeDocument.activeElement, pinned); assert.equal(pinned.offsetHeight, 250);
   const measuredPrefix = container.children.slice(0, container.children.indexOf(pinned)).reduce((sum, child) => sum + child.offsetHeight, 0); assert.equal(pinned.offsetTop, measuredPrefix); assert.ok(container.children.filter(child => child.className === 'spacer').length >= 2);
@@ -1195,7 +1180,7 @@ test('the browser copy of a sent message reads as the operator\'s own with its d
   view.set([echo('a', 'Sending…'), echo('b', 'Sent'), echo('c', 'Message not sent', 'Message not sent'), echo('d', 'Delivery not confirmed', 'Delivery not confirmed')]); flush();
   const root = node('primary-transcript'); assert.doesNotMatch(root.textContent, /Record/);
   assert.deepEqual(root.querySelectorAll('.message-role').map(role => role.textContent), ['You', 'You', 'You', 'You']);
-  assert.deepEqual(root.querySelectorAll('.message-delivery').map(item => [item.textContent, item.hidden]), [['· Sending…', false], ['· Sent', false], ['', true], ['', true]]);
+  assert.deepEqual(root.querySelectorAll('.message-delivery').map(item => [item.textContent, item.hidden]), [['· Sending', false], ['· Sent', false], ['', true], ['', true]]);
   const errors = root.querySelectorAll('.message-error');
   assert.deepEqual(errors.map(item => [item.hidden, item.textContent]), [[true, ''], [true, ''], [false, 'Message not sent'], [false, 'Delivery not confirmed']]);
   assert.equal(errors[2]?.querySelector('details'), null); assert.equal(errors[2]?.className, 'error message-error');
@@ -1657,7 +1642,7 @@ test('separate tool and thinking rows omit empty parts without losing source, ev
   const next = {...source, messages: [{...sourceMessage, parts: [...sourceMessage.parts, {type: 'text' as const, text: 'Visible prose'}]}]};
   view.set([next, thinking]); flush(); assert.equal(root.querySelector('.tool-shell'), compact); assert.match(root.textContent, /Visible prose/);
   const prose = root.querySelectorAll('.message').find(node => node.textContent.includes('Visible prose')); assert.ok(prose);
-  assert.equal(prose.querySelector('.message-actions')?.hidden, false);
+  assert.equal(prose.querySelector('.message-actions')?.hidden, true);
   assert.equal(messageAction(prose, 'Copy').enabled, true); assert.equal(prose.querySelector('.message-menu')?.attributes['aria-label'], 'Message actions');
   messageAction(prose, 'Copy').run(); await Promise.resolve(); assert.equal(copied.at(-1), ' \n \n\nretained output\nVisible prose');
   } finally { if (previous) Object.defineProperty(globalThis, 'navigator', previous); else Reflect.deleteProperty(globalThis, 'navigator'); }
@@ -1774,7 +1759,7 @@ test('coverage metadata keeps thinking and tool rows separate without hiding ret
   assert.ok(thoughtEntry.querySelector('.thinking-only')); assert.ok(toolEntry.querySelector('.tool-card'));
   assert.equal(thoughtEntry.querySelector('.message-coverage')?.textContent, 'Exact coverage reason');
   const toolNotice = root.children.find(row => row.querySelector('.message-coverage')?.textContent === 'Exact tool coverage'); assert.ok(toolNotice);
-  assert.equal(toolNotice.querySelector('.message-actions')?.hidden, false);
+  assert.equal(toolNotice.querySelector('.message-actions')?.hidden, true);
   const disclosure = thoughtEntry.querySelector('.thinking'); assert.ok(disclosure); assert.equal(disclosure.open, false);
   disclosure.open = true; disclosure.dispatch('toggle'); flush(); assert.match(thoughtEntry.textContent, /Retained reasoning/);
   const card = toolEntry.querySelector('.tool-card'); assert.ok(card); card.open = true; card.dispatch('toggle'); flush();
@@ -1897,11 +1882,11 @@ test('expanded image output keeps supplied part order before actions and quieter
   assert.equal(parts.querySelectorAll('.source-header').length, 0); assert.equal(parts.querySelectorAll('.source-wrap').length, 0);
   const texts=parts.querySelectorAll('.tool-result-text'), wraps=actions.querySelectorAll('.tool-result-wrap');
   assert.equal(wraps.length,2);assert.deepEqual(wraps.map(control=>control.attributes['aria-label']),['Wrap text 1','Wrap text 2']);
-  assert.ok(wraps.every(control=>control.attributes['aria-pressed']==='true'));const firstText=texts[0]?.children[0];
-  wraps[0]?.dispatch('click');flush();assert.equal(texts[0]?.dataset.wrap,'false');assert.equal(texts[1]?.dataset.wrap,'true');assert.equal(wraps[0]?.title,'Wrap text 1');
-  wraps[1]?.dispatch('click');flush();assert.equal(texts[1]?.dataset.wrap,'false');assert.equal(wraps[1]?.attributes['aria-pressed'],'false');
-  wraps[0]?.dispatch('click');flush();assert.equal(texts[0]?.dataset.wrap,'true');assert.equal(texts[0]?.children[0],firstText);assert.equal(wraps[0]?.title,'Do not wrap text 1');
-  view.set([source]);flush();assert.deepEqual(actions.querySelectorAll('.tool-result-wrap'),wraps);assert.equal(wraps[1]?.attributes['aria-pressed'],'false');
+  assert.ok(wraps.every(control=>control.attributes['aria-pressed']==='false'));const firstText=texts[0]?.children[0];
+  wraps[0]?.dispatch('click');flush();assert.equal(texts[0]?.dataset.wrap,'true');assert.equal(texts[1]?.dataset.wrap,'false');assert.equal(wraps[0]?.title,'Do not wrap text 1');
+  wraps[1]?.dispatch('click');flush();assert.equal(texts[1]?.dataset.wrap,'true');assert.equal(wraps[1]?.attributes['aria-pressed'],'true');
+  wraps[0]?.dispatch('click');flush();assert.equal(texts[0]?.dataset.wrap,'false');assert.equal(texts[0]?.children[0],firstText);assert.equal(wraps[0]?.title,'Wrap text 1');
+  view.set([source]);flush();assert.deepEqual(actions.querySelectorAll('.tool-result-wrap'),wraps);assert.equal(wraps[1]?.attributes['aria-pressed'],'true');
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator'); let copied = '';
   Object.defineProperty(globalThis, 'navigator', {configurable: true, value: {clipboard: {writeText: async (text: string) => {copied = text;}}}});
   try {actions.querySelector('.tool-copy')?.dispatch('click', {stopPropagation() {}}); await Promise.resolve(); assert.equal(copied, 'Supplied introduction\nRetained image description\nSupplied conclusion');}
@@ -1918,7 +1903,7 @@ test('rich result actions retain focused controls and retire them with their exa
   const wrap=actions.querySelector('.tool-result-wrap'),text=area.querySelector('.tool-result-text');assert.ok(wrap);assert.ok(text);
   assert.equal(wrap.attributes['aria-label'],'Wrap source lines');assert.equal(text.closest('.source-header'),null);assert.equal(area.contains(wrap),false);
   wrap.dispatch('click');flush();wrap.focus();const replacement=source([image],true);view.set([replacement]);flush();
-  assert.equal(actions.querySelector('.tool-result-wrap'),wrap);assert.equal(area.querySelector('.tool-result-text'),text);assert.equal(wrap.attributes['aria-pressed'],'false');
+  assert.equal(actions.querySelector('.tool-result-wrap'),wrap);assert.equal(area.querySelector('.tool-result-text'),text);assert.equal(wrap.attributes['aria-pressed'],'true');
   fakeDocument.activeElement=null;view.set([replacement]);flush();
   assert.equal(actions.querySelectorAll('.tool-result-wrap').length,0);assert.equal(area.querySelectorAll('.tool-result-text').length,0);assert.equal(area.querySelectorAll('.image-part').length,1);
   assert.equal(card.parentNode?.dataset.status,'error');assert.equal(actions.querySelectorAll('.tool-copy').length,1);assert.ok(card.querySelector('.tool-raw-output'));
@@ -2387,7 +2372,7 @@ test('multiline tool targets keep a compact row and complete retained title and 
   card.open = true; card.dispatch('toggle'); flush(); const args = card.querySelector('.tool-arguments'); assert.ok(args); args.open = true; args.dispatch('toggle'); flush();
   assert.match(args.textContent, /printf second/); assert.match(args.textContent, /printf third/);
   const text = 'x'.repeat(70000); const large = contentEntry('multiline-command', {command: text}, 'output'); const largeMessage = large.messages[0]; assert.ok(largeMessage); for (const part of largeMessage.parts) part.name = 'bash';
-  view.set([large]); flush(); assert.ok(target.title.length <= 65536); assert.ok(target.title.endsWith('…')); view.reset();
+  view.set([large]); flush(); assert.ok(target.title.length <= 65536); view.reset();
 });
 test('message coverage notices mark known line cuts and preserve complete reasons', () => {
   setup(); const view = transcript(); const source = entry('coverage-cut', 'Retained prose');
@@ -2395,7 +2380,7 @@ test('message coverage notices mark known line cuts and preserve complete reason
   const msg = source.messages[0]; assert.ok(msg); msg.coverage = {...coverage}; Object.assign(msg.coverage, {complete: false, reason});
   view.set([source]); flush(); const root = node('primary-transcript');
   const notice = root.querySelectorAll('.message-body').flatMap(body => body.querySelectorAll('p')).find(value => value.textContent.startsWith('Reason row')); assert.ok(notice);
-  assert.equal(notice.textContent, `${reason.split('\n').slice(0, 6).join('\n')}…`); assert.match(root.textContent, /Retained prose/);
+  assert.equal(notice.textContent, reason.split('\n').slice(0, 6).join('\n')); assert.match(root.textContent, /Retained prose/);
   view.set([{...source, messages: [{...msg, coverage: {...msg.coverage, reason: 'Complete reason TypeScr'}}]}]); flush();
   assert.ok(root.querySelectorAll('.message-body').flatMap(body => body.querySelectorAll('p')).some(value => value.textContent === 'Complete reason TypeScr'));
 });
@@ -2409,9 +2394,9 @@ test('source wrap reconciles entry heights under focused controls and keeps the 
   const text = pre.textContent; const retained = pre.children[0];
   const anchor = pre.closest('.entry'); assert.ok(anchor); const top = anchor.offsetTop - root.scrollTop;
   wrap.focus(); anchor.measured = 350; wrap.dispatch('click'); flush();
-  assert.equal(pre.dataset.wrap, 'false'); assert.equal(pre.textContent, text); assert.equal(pre.children[0], retained);
+  assert.equal(pre.dataset.wrap, 'true'); assert.equal(pre.textContent, text); assert.equal(pre.children[0], retained);
   assert.equal(anchor.offsetTop - root.scrollTop, top); assert.equal(fakeDocument.activeElement, wrap);
-  wrap.dispatch('click'); flush(); assert.equal(pre.dataset.wrap, 'true'); assert.equal(pre.textContent, text);
+  wrap.dispatch('click'); flush(); assert.equal(pre.dataset.wrap, 'false'); assert.equal(pre.textContent, text);
   view.reset();
 });
 
@@ -2458,18 +2443,18 @@ test('expanded tool captions share the wrap row and native source disclosures ke
   assert.equal(summary.contains(control), false); assert.equal(control.previousElementSibling, summary);
   assert.equal(disclosure.querySelectorAll('.source-header').length, 1);
   const retained = pre.children[0]; const text = pre.textContent; control.dispatch('click'); flush();
-  assert.equal(disclosure.open, true); assert.equal(pre.dataset.wrap, 'false'); assert.equal(pre.textContent, text); assert.equal(pre.children[0], retained);
-  control.dispatch('click'); flush(); assert.equal(pre.dataset.wrap, 'true');
+  assert.equal(disclosure.open, true); assert.equal(pre.dataset.wrap, 'true'); assert.equal(pre.textContent, text); assert.equal(pre.children[0], retained);
+  control.dispatch('click'); flush(); assert.equal(pre.dataset.wrap, 'false');
   const output = card.querySelector('.tool-output-text'); assert.ok(output);
   const header = card.querySelector('.tool-output-actions'); assert.ok(header); assert.equal(header.children.length, 2);
   assert.ok(header.querySelector('.tool-copy')); const area = output.closest('.tool-result'); assert.ok(area);
   assert.equal(header.parentNode?.children.indexOf(area), 0); assert.equal(header.parentNode?.children.indexOf(header), 1);
   const outputControl = header.querySelector('.source-wrap'); assert.ok(outputControl);
   assert.equal(outputControl.attributes['aria-label'], 'Wrap source lines');
-  assert.equal(outputControl.attributes['aria-pressed'], 'true'); assert.equal(outputControl.title, 'Do not wrap source lines');
+  assert.equal(outputControl.attributes['aria-pressed'], 'false'); assert.equal(outputControl.title, 'Wrap source lines');
   const outputText = output.textContent; outputControl.dispatch('click'); flush(); assert.equal(output.textContent, outputText);
-  assert.equal(output.dataset.wrap, 'false'); assert.equal(output.contains(header), false);
-  assert.equal(outputControl.attributes['aria-label'], 'Wrap source lines'); assert.equal(outputControl.attributes['aria-pressed'], 'false'); assert.equal(outputControl.title, 'Wrap source lines');
+  assert.equal(output.dataset.wrap, 'true'); assert.equal(output.contains(header), false);
+  assert.equal(outputControl.attributes['aria-label'], 'Wrap source lines'); assert.equal(outputControl.attributes['aria-pressed'], 'true'); assert.equal(outputControl.title, 'Do not wrap source lines');
   view.set([source]); flush(); assert.equal(disclosure.querySelectorAll('.source-wrap').length, 1); view.reset();
 });
 
@@ -2502,7 +2487,7 @@ test('owned argument and raw inspections retain nodes, focus, source Copy, Wrap 
   for (const detail of [argumentsNode, raw]) { detail.open = true; detail.dispatch('toggle'); } flush();
   const pre = raw.querySelector('pre'); const frame = pre?.children[0]; const rawCopy = card.parentNode?.querySelector('.tool-copy'); assert.ok(pre); assert.ok(rawCopy); assert.equal(raw.querySelector('.copy'), null);
   assert.equal(raw.querySelectorAll('.source-wrap').length, 1); const wrap = raw.querySelector('.source-wrap'); assert.ok(wrap);
-  wrap.dispatch('click'); assert.equal(pre.dataset.wrap, 'false'); assert.equal(pre.children[0], frame);
+  wrap.dispatch('click'); assert.equal(pre.dataset.wrap, 'true'); assert.equal(pre.children[0], frame);
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator'); const writes: string[] = [];
   Object.defineProperty(globalThis, 'navigator', {configurable: true, value: {clipboard: {writeText: async (text: string) => { writes.push(text); }}}});
   try {
@@ -2512,7 +2497,7 @@ test('owned argument and raw inspections retain nodes, focus, source Copy, Wrap 
     assert.equal(fakeDocument.activeElement, rawCopy); assert.equal(selection.anchorNode, pre); assert.equal(pre.textContent, 'first raw');
     rawCopy.dispatch('click', {stopPropagation() {}}); await Promise.resolve(); assert.deepEqual(writes, []);
     selection = null; fakeDocument.activeElement = null; view.schedule(); flush();
-    assert.equal(pre.textContent, 'second raw'); assert.equal(pre.children[0], frame); assert.equal(pre.dataset.wrap, 'false');
+    assert.equal(pre.textContent, 'second raw'); assert.equal(pre.children[0], frame); assert.equal(pre.dataset.wrap, 'true');
     rawCopy.dispatch('click', {stopPropagation() {}}); await Promise.resolve(); assert.deepEqual(writes, ['second raw']);
     const argumentCopy = card.querySelector('.tool-source-actions')?.children.find(button => button.textContent === 'Copy arguments'); assert.ok(argumentCopy); argumentCopy.dispatch('click'); await Promise.resolve();
     assert.deepEqual(JSON.parse(writes[1] ?? ''), args);
@@ -2644,7 +2629,7 @@ test('communication headers use supplied identities rather than missing-name pro
   assert.equal(heading.textContent, 'Report · Unnamed conversation · 00000001'); assert.equal(heading.title, 'Unnamed conversation · 00000001\n10000000-0000-4000-8000-000000000001');
   assert.doesNotMatch(heading.textContent, /unavailable/);
   view.set([communicationEntry()]); flush(); assert.equal(card.querySelector('.communication-sender'), heading); assert.equal(heading.textContent, 'Report · Peer');
-  assert.equal(heading.title, '10000000-0000-4000-8000-000000000001'); view.reset();
+  assert.equal(heading.title, 'Peer\n10000000-0000-4000-8000-000000000001'); view.reset();
 });
 test('unverified marker opens Source without inventing a sender and Copy keeps literal retained bytes', async () => {
   setup(); const view = transcript(); const writes: string[] = []; const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
