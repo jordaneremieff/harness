@@ -94,7 +94,10 @@ test('elapsed formatting uses only observed starts and retains supplied complete
   assert.equal(toolTime({...base, observedStart: 1000}, 60999), '59s elapsed');
   assert.equal(toolTime({...base, observedStart: 1000}, 62000), '1m 1s elapsed');
   assert.equal(toolTime({...base, observedStart: 1000}, 0), '0s elapsed');
-  assert.equal(toolTime({...base, observedStart: 1000, status: 'success', duration: 123}, 90000), '123 ms');
+  assert.equal(toolTime({...base, observedStart: 1000, status: 'success', duration: 123}, 90000), '');
+  assert.equal(toolTime({...base, observedStart: 1000, status: 'success', duration: 2400}, 90000), '2.4s');
+  assert.equal(toolTime({...base, observedStart: 1000, status: 'success', duration: 14000}, 90000), '14s');
+  assert.equal(toolTime({...base, observedStart: 1000, status: 'success', duration: 185000}, 90000), '3m 05s');
   assert.equal(toolTime({...base, observedStart: 1000, status: 'error'}, 90000), '');
 });
 test('one elapsed clock starts only with visible timed work and stops on hide, completion, unmount and reset', t => {

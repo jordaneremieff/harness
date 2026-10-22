@@ -4,9 +4,17 @@ import { plainPreviewWords } from './format.ts';
 import { TranscriptGroups } from './transcript-groups.ts';
 
 export type JoinedTool = {callId: string; name: string; owner: string; slot: string; args?: JsonDisplay; completeArguments?: JsonDisplay; result?: PartView[]; output?: ToolOutputInfo; status: string; duration?: number; observedStart?: number; argumentText?: string; argumentsError?: string; parentCallId?: string; taskId?: number; parentTaskId?: number};
+/** A finished call shows whole seconds or minutes; under one second shows nothing. */
+export function finishedTime(ms: number): string {
+  if (!(ms >= 1000)) return '';
+  const tenths = Math.round(ms / 100) / 10;
+  if (tenths < 10) return `${tenths.toFixed(1)}s`;
+  const total = Math.round(ms / 1000);
+  return total < 60 ? `${total}s` : `${Math.floor(total / 60)}m ${String(total % 60).padStart(2, '0')}s`;
+}
 /** Elapsed time starts at receipt of a tool start, not at a history timestamp. */
 export function toolTime(tool: JoinedTool, now = Date.now()): string {
-  if (tool.status !== 'working') return tool.duration === undefined ? '' : `${tool.duration} ms`;
+  if (tool.status !== 'working') return tool.duration === undefined ? '' : finishedTime(tool.duration);
   if (tool.observedStart === undefined) return '';
   const seconds = Math.floor(Math.max(0, now - tool.observedStart) / 1000);
   return seconds < 60 ? `${seconds}s elapsed` : `${Math.floor(seconds / 60)}m ${seconds % 60}s elapsed`;

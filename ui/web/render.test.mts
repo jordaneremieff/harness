@@ -372,7 +372,7 @@ test('native nested tool cards retain parent context without fabricated messages
   assert.match(card.textContent, /partial output/); assert.doesNotMatch(card.textContent, /elapsed|ms/);
   view.set([nested({...tool, status: 'done', isError: true, durationMs: 7})]); flush();
   assert.equal(root.querySelector('.tool-card'), card); assert.equal(card.querySelector('.tool-state-word')?.textContent, 'Failed');
-  assert.equal(card.querySelector('.tool-secondary')?.textContent, 'Within parent · 7 ms');
+  assert.equal(card.querySelector('.tool-secondary')?.textContent, 'Within parent');
   view.set([]); flush(); assert.equal(root.querySelector('.tool-card'), null);
 });
 for (const status of ['pending', 'done'] as const) test(`empty native ${status} cards do not invent successful completion`, () => {
@@ -474,7 +474,7 @@ test('collapsed cards prefer supplied structured summaries and keep exact raw co
   view.set([source], new Map([[call.callId, {callId: call.callId, name: 'read', phase: 'end', durationMs: 37}]])); flush();
   const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card);
   assert.equal(card.querySelector('.tool-preview')?.textContent, 'count: 2 · valid: true');
-  assert.equal(card.querySelector('.tool-secondary')?.textContent, 'lines 40–47 · 37 ms');
+  assert.equal(card.querySelector('.tool-secondary')?.textContent, 'lines 40–47');
   assert.equal(card.querySelector('summary')?.querySelectorAll('.card-icon-disclosure').length, 0);
   const action = card.parentNode?.querySelector('.tool-copy'); assert.ok(action); assert.equal(action.textContent, 'Copy output');
   let copied = ''; const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
@@ -2425,7 +2425,7 @@ test('visible working tools share one clock and stop on pane hide, document hide
     const detachedWrites = meta.writes; context.mock.timers.tick(2000); assert.equal(meta.writes, detachedWrites);
     paint(); assert.equal(intervals.mock.callCount(), 4);
     view.set([source], new Map([[state.callId, {...state, phase: 'end', durationMs: 37}]])); flush();
-    assert.match(meta.textContent, /^37 ms/); const finalWrites = meta.writes;
+    assert.equal(meta.textContent, ''); const finalWrites = meta.writes;
     context.mock.timers.tick(2000); assert.equal(meta.writes, finalWrites);
     paint(); assert.equal(intervals.mock.callCount(), 5); view.reset(); context.mock.timers.tick(2000); assert.equal(meta.writes, finalWrites + 1);
   } finally { view.reset(); Reflect.set(fakeDocument, 'hidden', false); }
