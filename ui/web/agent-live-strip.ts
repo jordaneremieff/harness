@@ -6,7 +6,7 @@ import {messageCopyText} from './communication.ts';
 import type {Attention} from './attention.ts';
 import type {ConversationPresentation} from './conversation-presentation.ts';
 import {button, copy, element, rawText, setText} from './dom.ts';
-import {absoluteTime, compactAge, isValidTimestamp} from './format.ts';
+import {absoluteTime, compactAge, isValidTimestamp, toolArgumentText} from './format.ts';
 
 function blockedFact(row: AgentRow | undefined, view: ConversationPresentation, attention?: Attention): string {
   if(attention?.label === 'Failed')return 'Turn failed';
@@ -27,7 +27,7 @@ function stateWord(row: AgentRow | undefined, view: ConversationPresentation, ha
 function toolFact(row: AgentRow | undefined, view: ConversationPresentation, attention?: Attention): string {
   if(attention)return blockedFact(row,view,attention);
   const current=view.tool ?? (view.hideVisibleState && row?.state === 'working' ? row.currentTool : undefined);
-  return current ? [current.name,current.argument].filter(Boolean).join(' ') : '';
+  return current ? [current.name,toolArgumentText(current.argument)].filter(Boolean).join(' ') : '';
 }
 export function createAgentLiveStrip(kind: Target['kind'], root: HTMLElement): AgentLiveStrip | undefined {
   if(kind !== 'agent')return;

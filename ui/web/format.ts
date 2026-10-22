@@ -86,3 +86,19 @@ export function dayLabel(value: number, now: number, timeZone?: string): string 
   const sameYear = formatDate(value, {year: 'numeric'}, timeZone) === formatDate(now, {year: 'numeric'}, timeZone);
   return formatDate(value, sameYear ? {weekday: 'short', month: 'short', day: 'numeric'} : {month: 'short', day: 'numeric', year: 'numeric'}, timeZone);
 }
+
+const ARGUMENT_KEYS = ['command', 'path', 'file_path', 'filePath', 'pattern', 'query', 'url', 'message', 'prompt', 'description'];
+/** A reported tool argument is often raw (possibly cut-off) JSON; this returns the first meaningful value as plain text. Other text is returned unchanged. */
+export function toolArgumentText(argument: string | undefined): string {
+  const text = (argument ?? '').trim();
+  if (!text.startsWith('{')) return text;
+  try {
+    const value = JSON.parse(text) as Record<string, unknown>;
+    for (const key of ARGUMENT_KEYS) if (typeof value[key] === 'string' && value[key]) return String(value[key]).split('\n')[0] ?? '';
+  } catch { /* cut-off JSON falls through to the field scan */ }
+  for (const key of ARGUMENT_KEYS) {
+    const match = new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)`).exec(text);
+    if (match?.[1]) return match[1].replace(/\\n.*$/s, '').replace(/\\(["\\/])/g, '$1');
+  }
+  return '';
+}

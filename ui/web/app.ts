@@ -1,4 +1,5 @@
 import type { AgentHistoryPage, AgentRow, Bootstrap, EntryView, EventData, HistoryPage, OperationView, PrimaryView, PresentationView, ProjectedFrame, SavedSession, SessionTab, Snapshot, Target, TargetState, ThreadOverview, ThreadPageView, Workspace, WorkspacePage } from '../shared/api.ts';
+import { toolArgumentText } from './format.ts';
 import { draftHasContent, draftImageFingerprint, LIMITS, resolveAppearance, validSessionTab } from '../shared/api.ts';
 import { Actions } from './actions.ts';
 import {Desk, type DeskRow} from './desk.ts';
@@ -2291,7 +2292,7 @@ function agentFacts(row?: AgentRow, frame?: ProjectedFrame): {key: string; label
   if (frame?.status.submissions) facts.push({key: 'submissions', label: 'Reported submissions', text: rawText(frame.status.submissions.value)});
   if (frame?.status.compactions) facts.push({key: 'compactions', label: 'Context compaction', text: rawText(frame.status.compactions.value)});
   if (frame?.status.compactionFailure) facts.push({key: 'compaction-failure', label: 'Last compaction error', text: rawText(frame.status.compactionFailure.value)});
-  if (row?.currentTool) facts.push({key: 'tool', label: 'Last reported tool', text: `${row.currentTool.name} · ${row.currentTool.argument}`});
+  if (row?.currentTool) facts.push({key: 'tool', label: 'Last reported tool', text: [row.currentTool.name, toolArgumentText(row.currentTool.argument)].filter(Boolean).join(' · ')});
   facts.push({key: 'context', label: 'Context', text: 'Context not reported'});
   return facts;
 }
@@ -2730,7 +2731,7 @@ function deskAgentFact(agent:AgentRow):string {
   if(attention?.kind==='provider-blocked')return 'Provider blocked';
   if(attention?.kind==='failed-turn')return 'Turn failed';
   if(attention?.kind==='task-blocked')return `Task blocked${attention.reason?`: ${attention.reason.replaceAll('_',' ')}`:''}`;
-  return agent.currentTool?[agent.currentTool.name,agent.currentTool.argument].filter(Boolean).join(' · '):'Working';
+  return agent.currentTool?[agent.currentTool.name,toolArgumentText(agent.currentTool.argument)].filter(Boolean).join(' · '):'Working';
 }
 function deskAgentRows(agents:AgentRow[],tasks:ConversationTask[]):DeskRow[]{
   const rows:DeskRow[]=[];
