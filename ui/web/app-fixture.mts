@@ -52,11 +52,12 @@ export class HostNode {
   get ownerDocument() { return hostDocument; }
   get nodeType(): number { return this.tagName === '#text' ? 3 : this.tagName === '#fragment' ? 11 : 1; }
   get parentElement(): HostNode | null { return this.parentNode; }
+  get clientTop(): number { return 0; }
   get clientHeight(): number { return 300; }
   get clientWidth(): number { return 600; }
   get offsetLeft(): number { return 0; }
   get offsetWidth(): number { return this.clientWidth; }
-  get offsetHeight(): number { if (this.hidden) return 0; if (this.classList.contains('spacer')) return Number.parseFloat((this.style as {height?: string}).height ?? '0') || 0; return this.classList.contains('entry') ? Number.parseFloat((this.style as {height?: string}).height ?? '140') : 20; }
+  get offsetHeight(): number { if (this.hidden) return 0; if (this.classList.contains('spacer')) return Number.parseFloat((this.style as {height?: string}).height ?? '0') || 0; return this.classList.contains('entry') ? Number.parseFloat((this.style as {height?: string}).height ?? '140') || 140 : 20; }
   get offsetTop(): number { const peers = this.parentNode?.children ?? []; return (this.parentNode?.offsetTop ?? 0) + peers.slice(0, peers.indexOf(this)).reduce((sum, node) => sum + node.offsetHeight, 0); }
   get scrollHeight(): number { return this.children.reduce((sum, child) => sum + child.offsetHeight, 0); }
   get firstChild(): HostNode | null { return this.children[0] ?? null; }
@@ -125,7 +126,7 @@ export class HostNode {
     return found;
   }
   getBoundingClientRect(): {top: number; bottom: number; left: number; right: number; width: number; height: number} {
-    const width = rectWidth(this); const top = this.offsetTop;
+    const width = rectWidth(this); let top = this.offsetTop; for (let parent = this.parentNode; parent; parent = parent.parentNode) top -= parent.scrollTop;
     const height = this.id === 'conversation-panes' || this.classList.contains('pane-leaf') || this.classList.contains('pane-split') ? 640 : this.offsetHeight;
     return {top, bottom: top + height, left: 0, right: width, width, height};
   }
@@ -256,7 +257,7 @@ function primaryFixture(overrides: Partial<PrimaryView> = {}): PrimaryView {
     pendingDialogs: [], capabilities: {}, ...overrides};
 }
 function agentFixture(identity: string, overrides: Partial<AgentRow> = {}): AgentRow {
-  return {identity, storageId: `storage:${identity}`, cwd: '/fixture/project', modifiedAt: 0, state: 'idle', owner: 'here',
+  return {identity, storageId: `storage:${identity}`, cwd: '/fixture/project', modifiedAt: 0, state: 'idle', handle: identity, owner: 'here',
     availability: 'live', partial: false, capabilities: {history: true, observe: true, input: true, abort: true, configure: true}, ...overrides};
 }
 function targetFixture(targetKey: string, target: TargetState['target'], overrides: Partial<TargetState> = {}): TargetState {

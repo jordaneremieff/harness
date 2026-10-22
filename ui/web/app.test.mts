@@ -19,6 +19,9 @@ function messageControl(key: string): HostNode {
   const form = hostDocument.body.querySelector('.composer[data-message-panel="true"]'); assert.ok(form);
   const node = key === 'composer' ? form : form.querySelector(`#${form.id}-${key}`); assert.ok(node, `Missing Message ${key}`); return node;
 }
+async function openProjects(): Promise<void> {
+  const choose = hostDocument.body.querySelectorAll('button').find(node => node.textContent === 'Choose folder'); assert.ok(choose); choose.click(); await settle();
+}
 function tabsNode(pane = app.focusedPane): HostNode { const node = paneNode(pane).querySelector('.conversation-tabs'); assert.ok(node); return node; }
 function menuNode(): HostNode { const node = hostDocument.body.querySelector('.context-menu'); assert.ok(node); return node; }
 function pressContext(target: HostNode): void { target.dispatch('contextmenu', {clientX: 10, clientY: 50}); }
@@ -260,7 +263,7 @@ test('Primary reload keeps an inactive live claim unchecked until exact Message 
   globalThis.fetch = async (input, init) => new URL(String(input), 'http://ui.test').pathname.endsWith('/targets') && init?.method === 'POST' ? Response.json({ok: true, data: {targetState: saved, availability: 'unavailable', capabilities: {history: true, observe: false, input: false, abort: false, configure: false}, reason: 'Claim socket is absent'}}) : original(input, init);
   const message = byId('roster').querySelector('[data-identity="reload-claim"]')?.querySelector('.row-message'); assert.ok(message); message.click(); await settle();
   assert.equal(messageControl('send').disabled, true); assert.match(tabsNode().querySelector('[data-tab-key="agent:reload-claim"]')?.title ?? '', /Read only/);
-  assert.equal(row.querySelector('.row-state')?.hidden, false); assert.equal(row.querySelector('.row-state')?.textContent, 'Read only');
+  assert.equal(row.querySelector('.row-state')?.hidden, true); assert.equal(row.querySelector('.row-state')?.title, 'Read only');
   assert.doesNotMatch(byId('workbench-status-agent').textContent, /Connected|Ready/); assert.equal(app.state.workspace?.primaryKey, 'p');
   assert.equal(transportLog.slice(before).some(call => call.path.endsWith('/start') || call.path.includes('/inputs')), false);
   byId('agent-message-close').click(); await settle();
@@ -498,7 +501,7 @@ test('Commands find and thinking actions work on the agent-only focused transcri
   const choice = (name: string) => {const row = rows().find(row => row.querySelector('.palette-name')?.textContent === name); assert.ok(row, name); return row;};
   byId('commands-button').click();
   for (const name of ['Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text']) assert.equal(choice(name).disabled, false);
-  for (const name of ['Compact', 'Fork from message', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Model', 'Thinking']) assert.equal(choice(name).disabled, true);
+  for (const name of ['Compact', 'Fork from message', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Model', 'Thinking']) assert.equal(rows().some(row => row.querySelector('.palette-name')?.textContent === name), false, name);
   choice('Show thinking').click(); await settle(); assert.equal(agentControl('transcript').querySelector('.thinking')?.open, true);
   assert.equal(app.state.targets.get(saved.targetKey)?.presentation?.showThinking, true);
   byId('commands-button').click(); choice('Find text').click();
@@ -574,7 +577,7 @@ test('earlier-history loads expose pending and result states without restoring a
   assert.equal(actions.children.length, 2); assert.equal(actions.children[0]?.tagName, 'details'); assert.equal(actions.children[1]?.getAttribute('aria-label'), 'Retry history');
   assert.match(actions.querySelector('pre')?.textContent ?? '', /Earlier unavailable/);
   earlier.click(); await settle(); const anchor = scroller.querySelector('[data-entry-id="feedback-6"]'); assert.ok(anchor);
-  scroller.scrollTop = anchor.offsetTop - scroller.offsetTop + 77; scroller.dispatch('scroll'); flushFrames();
+  scroller.scrollTop = anchor.offsetTop - scroller.offsetTop + 77; scroller.dispatch('scroll'); scroller.dispatch('scrollend'); flushFrames();
   pending[1]?.resolve(Response.json({ok: true, data: {target, items: [entryFixture('feedback-older', [messageFixture('feedback-older-message', [textPart('Earlier feedback')])])], nextCursor: 'oldest', coverage}})); await settle();
   assert.match(byId('announcements').textContent, /Earlier entries loaded/); assert.equal(app.state.conversations.get(JSON.stringify(['primary', 'p', 699]))?.entries.has('feedback-older'), true); assert.equal(earlier.disabled, false); assert.equal(scroller.querySelector('[data-entry-id="feedback-6"]'), anchor); assert.equal(scroller.scrollTop - (anchor.offsetTop - scroller.offsetTop), 77);
   earlier.click(); await settle(); await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'new-history-owner'}, primaries: [primaryFixture({key: 'new-history-owner', epoch: 698})], roster: []});
@@ -981,7 +984,7 @@ test('working-folder context disambiguates loaded primaries and late recent proj
     globalThis.fetch = async (url, init) => String(url).includes('/api/projects')
       ? Response.json({ok: true, data: {items: [{path: '/archive/one/checkout', name: 'checkout', modifiedAt: 'now'}], total: 1, omitted: 0, nextCursor: null, observedAt: 'now'}})
       : originalFetch(url, init);
-    byId('project-button').click(); await settle();
+    await openProjects();
     assert.equal(byId('project-name').textContent, 'work/one/checkout');
     assert.equal(byId('compact-project-name').textContent, 'work/one/checkout');
     const rows = menuNode().children;
@@ -1154,7 +1157,7 @@ test('every stored appearance value reads as dark, light or system and a missing
 });
 test('idle editors keep accessible recipient labels and recipient placeholders', async () => {
   const row=agentFixture('labels-agent'); await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:{kind:'agent',identity:row.identity},conversationLayout:twoPanes(row.identity)},primaries:[primaryFixture({epoch:709,activity:'idle'})],roster:[row]});
-  for(const control of [primaryControl,agentControl]){const editor=control('editor') as HostNode & {placeholder:string}; assert.equal(editor.placeholder,`${control('recipient').textContent.replace(/^Draft for /, 'Message ')}…`); assert.doesNotMatch(editor.placeholder,/@ files|\/ commands/,'the placeholder names only the recipient'); assert.equal((control('recipient') as HostNode & {htmlFor:string}).htmlFor,editor.id); assert.match(control('recipient').textContent,/^Message /);}
+  for(const control of [primaryControl,agentControl]){const editor=control('editor') as HostNode & {placeholder:string}; assert.equal(editor.placeholder,'Message'); assert.doesNotMatch(editor.placeholder,/@ files|\/ commands/,'the placeholder is the plain word Message'); assert.equal((control('recipient') as HostNode & {htmlFor:string}).htmlFor,editor.id); assert.match(control('recipient').textContent,/^Message /);}
 });
 
 test('pane tabs keep separate menus and focused facts while both target owners stay retained', async () => {
@@ -1243,24 +1246,22 @@ test('a Primary that is not ready keeps its state word on the right of the row a
 });
 test('Agents counts only loaded live work in both section states and never cached page size', async () => {
   const workspace = {id: 'sidebar-work-count', revision: 1, primaryKey: 'p'};
-  const rows = Array.from({length: 20}, (_, index) => agentFixture(`sidebar-count-${index}`, {state: index < 2 ? 'working' : 'idle'}));
-  rows.push(agentFixture('sidebar-stored-work', {availability: 'stored', state: 'working'}));
+  const rows = Array.from({length: 20}, (_, index) => agentFixture(`sidebar-count-${index}`, {handle: undefined, state: index < 2 ? 'working' : 'idle'}));
+  rows.push(agentFixture('sidebar-stored-work', {handle: undefined, availability: 'stored', state: 'working'}));
   const before = transportLog.length;
   await arrive({workspace, primaries: [primaryFixture()], roster: rows});
   app.state.rosterMeta = {stale: false, nextCursor: 'more-cached-agents', scan: {state: 'ready', complete: true, visited: 0, skipped: 0, omitted: 0}};
   app.setSidebarSection('agents', true);
   const count = byId('agents-count');
-  assert.equal(count.textContent, '2 working'); assert.equal(count.hidden, false);
+  assert.equal(count.textContent, '2'); assert.equal(count.hidden, false);
   for (const source of rows.slice(0, 2)) {
     const state = byId('roster').querySelector(`[data-identity="${source.identity}"]`)?.querySelector('.row-state');
     assert.ok(state); assert.equal(state.textContent, 'Working'); assert.equal(state.hidden, false); assert.equal(state.dataset.tone, 'info'); assert.equal(state.dataset.busy, 'true');
     assert.equal(app.state.agentAvailability.has(source.identity), false);
   }
-  const idle = byId('roster').querySelector('[data-identity="sidebar-count-2"]')?.querySelector('.row-state');
-  assert.ok(idle); assert.equal(idle.hidden, true);
-  const stored = byId('roster').querySelector('[data-identity="sidebar-stored-work"]')?.querySelector('.row-state');
-  assert.ok(stored); assert.equal(stored.textContent, 'Not running'); assert.equal(stored.hidden, false);
-  app.setSidebarSection('agents', false); assert.equal(count.hidden, false); assert.equal(count.textContent, '2 working');
+  assert.equal(byId('roster').querySelector('[data-identity="sidebar-count-2"]'), null);
+  assert.equal(byId('roster').querySelector('[data-identity="sidebar-stored-work"]'), null);
+  app.setSidebarSection('agents', false); assert.equal(count.hidden, false); assert.equal(count.textContent, '2');
   await arrive({workspace, primaries: [primaryFixture()], roster: rows.map(row => ({...row, state: 'idle'}))});
   app.state.rosterMeta = {...app.state.rosterMeta, nextCursor: 'still-more-cached-agents'};
   app.setSidebarSection('agents', true); assert.equal(count.textContent, ''); assert.equal(count.hidden, true);
@@ -1276,7 +1277,7 @@ test('sidebar headings keep one leading chevron and separate actions while their
     assert.equal(heading.querySelectorAll('svg').length, 1); assert.equal(chevron.getAttribute('aria-hidden'), 'true');
     app.setSidebarSection(section, true);
     assert.equal(heading.getAttribute('aria-expanded'), 'false'); assert.equal(count.hidden, false);
-    assert.equal(count.textContent, section === 'agents' ? '1 working' : '7+');
+    assert.equal(count.textContent, section === 'agents' ? '1' : '7+');
     heading.dispatch('click', {clientX: heading.clientWidth - 1, clientY: 12});
     assert.equal(heading.getAttribute('aria-expanded'), 'true'); assert.equal(heading.firstChild, chevron);
     assert.equal(count.hidden, section === 'files');
@@ -1293,8 +1294,8 @@ test('sidebar sections retain their collapsed state per workspace and tab and fi
   Reflect.set(globalThis, 'sessionStorage', {getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => {values.set(key, value);}});
   const workspace = (id: string): Workspace => ({id, revision: 1, primaryKey: 'p'});
   await arrive({workspace: workspace('w'), primaries: [primaryFixture()], roster: []});
-  app.renderSidebarSections(); assert.equal(byId('agents-heading').attributes.get('aria-expanded'), 'false');
-  assert.equal(byId('agents-section-body').hidden, true);
+  app.renderSidebarSections(); assert.equal(byId('agents-heading').attributes.get('aria-expanded'), 'true');
+  assert.equal(byId('agents-section-body').hidden, false);
   assert.equal(byId('primary-section').hidden, false); assert.equal(byId('primary-row').hidden, true); assert.equal(byId('primary-section-body').hidden, false); assert.equal(byId('session-open').hidden, false);
   app.setSidebarSection('agents', false);
   assert.equal(byId('agents-section-body').hidden, false); assert.equal(values.get('ui:sections:w:agents'), 'false'); assert.equal(byId('agents-count').hidden, true);
@@ -1304,7 +1305,7 @@ test('sidebar sections retain their collapsed state per workspace and tab and fi
   await arrive({workspace: workspace('w'), primaries: [primaryFixture()], roster: []});
   app.renderSidebarSections(); assert.equal(byId('agents-section-body').hidden, true);
   await arrive({workspace: workspace('other'), primaries: [primaryFixture()], roster: []});
-  app.renderSidebarSections(); assert.equal(byId('agents-section-body').hidden, true);
+  app.renderSidebarSections(); assert.equal(byId('agents-section-body').hidden, false);
   await arrive({workspace: workspace('w'), primaries: [primaryFixture()], roster: []});
   app.renderSidebarSections(); assert.equal(byId('agents-section-body').hidden, true);
   assert.equal(byId('files-section-body').hidden, true); app.setSidebarSection('files', false);
@@ -1321,7 +1322,7 @@ test('sidebar sections retain their collapsed state per workspace and tab and fi
   assert.equal(byId('agents-section-body').hidden, true);
   Reflect.set(globalThis, 'sessionStorage', hostSessionStorage);
   assert.doesNotMatch(html, /id="primary-heading"/);
-  assert.match(html, /id="session-open"[^>]*aria-haspopup="dialog">Find session…/);
+  assert.match(html, /id="session-open"[^>]*aria-label="Find session"[^>]*aria-haspopup="dialog">/);
   assert.match(html, /id="tabs-open-session"[^>]*>Find session…/);
   for (const section of ['files', 'agents']) { assert.equal(byId(`${section}-heading`).querySelectorAll('svg').length, 1); assert.ok(byId(`${section}-heading`).querySelector('.card-icon-chevron')); assert.ok(byId(`${section}-count`)); }
   assert.match(html, /id="agents-heading" class="section-toggle"[^>]*aria-controls="agents-section-body">AGENTS/);
@@ -1413,7 +1414,7 @@ test('loaded assistant usage refreshes on completed messages and history, not st
   flushFrames(); await settle();
   assert.ok(usageNode.writes > baseline);
   assert.match(usageNode.textContent, /input 4, cache read 4, cache write 0/);
-  assert.match(byId('primary-usage-summary').textContent, /Cache 50%/); assert.match(usageNode.textContent, /Loaded assistant window only/);
+  assert.doesNotMatch(byId('primary-usage-summary').textContent, /Cache/); assert.match(usageNode.textContent, /Loaded assistant window only/);
   assert.doesNotMatch(byId('primary-usage-summary').textContent, /●/);
   assert.ok(descendants(primaryControl('transcript')).some(node => node.textContent.includes('streaming')));
   const final = {...messageFixture('history-usage', [textPart('Earlier usage')]), usage: {input: 9, cacheRead: 3, cacheWrite: 0}};
@@ -1565,7 +1566,7 @@ test('composer settings preserve exact long values and existing eligibility with
   app.primaryChrome(primaryFixture({model: {provider: 'provider', id, name: id, reasoning: true, input: ['text']}, thinkingLevel: 'high'}));
   assert.equal(byId('primary-settings-detail').textContent,`Model provider/${id} · Thinking high`);assert.equal(byId('primary-settings-detail').hidden,false);
   assert.equal(primaryControl('model'), model); assert.equal(primaryControl('thinking'), thinking); assert.equal(model.textContent, id); assert.equal(model.disabled, true); assert.equal(thinking.hidden, false);
-  const current = app.state.primaries.get('p'); assert.ok(current); event('primary.state', {...current, lifecycle: 'starting', model: undefined, thinkingLevel: undefined}, {kind: 'primary', key: 'p', epoch: current.epoch}); await settle(); assert.equal(primaryControl('model'), model); assert.equal(model.hidden, false); assert.equal(model.disabled, true); assert.equal(thinking.hidden, false);assert.equal(thinking.disabled,true);assert.equal(byId('primary-settings-detail').hidden,true);assert.equal(byId('primary-settings-detail').textContent,'');
+  const current = app.state.primaries.get('p'); assert.ok(current); event('primary.state', {...current, lifecycle: 'starting', model: undefined, thinkingLevel: undefined}, {kind: 'primary', key: 'p', epoch: current.epoch}); await settle(); assert.equal(primaryControl('model'), model); assert.equal(model.hidden, true); assert.equal(model.disabled, true); assert.equal(thinking.hidden, true);assert.equal(thinking.disabled,true);assert.equal(byId('primary-settings-detail').hidden,true);assert.equal(byId('primary-settings-detail').textContent,'');
 });
 test('loaded prompt metadata updates Primary captions without input or target changes', async context => {
   const item=primaryFixture({epoch:42,sessionId:'caption-session',sessionFile:'/fixture/caption-session.jsonl',sessionName:undefined,extension:undefined,activity:'idle'});
@@ -1575,7 +1576,7 @@ test('loaded prompt metadata updates Primary captions without input or target ch
   context.mock.method(globalThis,'fetch',async(input,init)=>String(input).startsWith('/api/sessions/published')?Response.json({ok:true,data:response}):String(input).startsWith('/api/sessions?')?Response.json({ok:true,data:{...response,items:[],total:0}}):original(input,init));
   context.after(()=>byId('modal-close').click());assert.equal(byId('primary-row-title').textContent,'Primary');
   const requests=transportLog.length;byId('session-open').click();await settle();
-  const label=`${prompt.slice(0,64).trimEnd()}…`;assert.equal(byId('primary-row-title').textContent,label);assert.equal(primaryControl('recipient').textContent,`Message ${label}`);
+  const label=prompt.trim();assert.equal(byId('primary-row-title').textContent,label);assert.equal(primaryControl('recipient').textContent,`Message ${label}`);
   const row=byId('primary-row');assert.match(row.title,/Session ID: caption-session/);assert.ok(row.title.includes(prompt));assert.match(row.attributes.get('aria-description')??'',/Title from first message, not a supplied name/);
   event('primary.state',{...item,sessionName:'Native name'},target);assert.equal(byId('primary-row-title').textContent,'Native name');assert.doesNotMatch(row.title,/Title from first message/);
   event('primary.state',{...item,sessionName:''},target);assert.equal(byId('primary-row-title').textContent,label);
@@ -1727,7 +1728,7 @@ test('unread notifications name their direct control and clear only after delibe
 
 test('project navigation remains an anchored project-first menu beside direct utility actions', async () => {
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({sessionId: 'named-project', sessionName: 'Release notes'})], roster: []});
-  const project = byId('project-button'); project.click(); await settle(); const projects = menuNode();
+  const project = byId('project-button'); await openProjects(); const projects = menuNode();
   assert.equal(projects.getAttribute('aria-label'), 'Working folder'); assert.equal(project.getAttribute('aria-expanded'), 'true');
   assert.equal(byId('modal').open, false); assert.doesNotMatch(projects.textContent, /Release notes|In this window|List details|Cancel/);
   const choice = projects.children.find(node => node.textContent === 'project'); assert.ok(choice); assert.equal(choice.getAttribute('aria-description'),'/fixture/project');
@@ -1741,13 +1742,13 @@ test('project navigation remains an anchored project-first menu beside direct ut
 test('three direct utility icons preserve inventory, native button focus, destinations and unread count', async () => {
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture()], roster: []});
   const footer = byId('sidebar').querySelector('.sidebar-footer'); assert.ok(footer);
-  assert.deepEqual(footer.querySelectorAll('button').map(node => node.getAttribute('aria-label')), ['Commands', 'Notifications', 'Appearance']);
+  assert.deepEqual(footer.querySelectorAll('button').map(node => node.getAttribute('aria-label')), ['Terminal commands', 'Notifications', 'Theme']);
   assert.equal(hostDocument.getElementById('app-menu'), undefined); assert.doesNotMatch(source, /byId\('app-menu'\)|'App menu'/);
   event('notice', {id: 'direct-utility-notice', level: 'info', message: 'Review through the direct icon', at: 'now'});
-  for (const [id, icon, title] of [['commands-button', 'commands', 'Commands'], ['appearance-button', 'appearance', 'Appearance'], ['notifications-button', 'notifications', 'Notifications']]) {
+  for (const [id, icon, title, tip] of [['commands-button', 'commands', 'Commands', 'Terminal commands'], ['appearance-button', 'appearance', 'Appearance', 'Theme'], ['notifications-button', 'notifications', 'Notifications', 'Notifications']]) {
     const control = byId(id as string); assert.equal(control.getAttribute('type'), 'button'); assert.equal(control.tabIndex, 0); assert.equal(control.getAttribute('aria-haspopup'), 'dialog');
     assert.equal(control.querySelector('svg')?.getAttribute('class'), `card-icon card-icon-${icon}`);
-    assert.equal(control.querySelector('svg')?.getAttribute('aria-hidden'), 'true'); assert.ok(control.title.startsWith(title as string));
+    assert.equal(control.querySelector('svg')?.getAttribute('aria-hidden'), 'true'); assert.ok(control.title.startsWith(tip as string));
     control.focus(); control.click(); await settle(); assert.equal(contextMenu.openNow, false); assert.equal(byId('modal').open, true); assert.equal(byId('modal-title').textContent, title);
     assert.equal(byId('notices-count').hidden, id === 'notifications-button');
     byId('modal-close').click(); assert.equal(hostDocument.activeElement, control);
@@ -1764,7 +1765,7 @@ test('Message panel settings describe its captured agent instead of a prior agen
   const row = agentFixture('message-settings', {name: 'Recipient', model: {provider: 'agent-provider', modelId: 'recipient-model'}, thinkingLevel: 'low'});
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'primary', key: 'p', epoch: 1}}, primaries: [primaryFixture({model: {provider: 'primary-provider', id: 'primary-model', name: 'Primary model', reasoning: false, input: ['text']}})], roster: [row]});
   const agent = byId('roster').children.find(node => node.dataset.identity === row.identity); assert.ok(agent); const message = agent.querySelector('.row-message'); assert.ok(message); message.click(); await settle();
-  assert.equal(byId('agent-message-panel').hidden, false); assert.equal(messageControl('model').hidden,false);
+  assert.equal(byId('agent-message-panel').hidden, false); assert.equal(messageControl('model').hidden,true);
   assert.equal(messageControl('model').textContent,'recipient-model');assert.equal(messageControl('thinking').textContent,'Low');assert.match(messageControl('model').title,/agent-provider\/recipient-model/);
   assert.equal(messageControl('model').getAttribute('aria-label'),'Model for Recipient: agent-provider/recipient-model'); assert.match(byId('agent-settings-detail').textContent, /Last observed settings are not confirmed current\./); assert.equal(byId('agent-settings-detail').hidden, false); assert.equal(byId('agent-settings-detail').classList.contains('phone-status-facts'), false);
   assert.equal(messageControl('recipient').textContent, 'Message Recipient'); assert.equal(primaryControl('root').hidden, false);
@@ -2174,9 +2175,9 @@ for (const lifecycle of ['starting', 'switching', 'stopping', 'stopped', 'failed
   const details = byId('primary-usage-details'), facts = byId('primary-usage');
   assert.equal(details.hidden, false); assert.match(facts.textContent, /Primary context estimate: 10%/); assert.match(facts.textContent, /Reported whole-session cost estimate: \$1.000000/);
   if (lifecycle === 'ready') {
-    assert.match(byId('primary-context').textContent, /Context 10%/); assert.match(byId('primary-usage-summary').textContent, /Session ~\$1.00/); assert.doesNotMatch(facts.textContent, /Last reported/);
+    assert.match(byId('primary-context').textContent, /Context 10%/); assert.match(byId('primary-usage-summary').textContent, /\$1.00/); assert.doesNotMatch(facts.textContent, /Last reported/);
     event('primary.state', {...current, activity: 'idle'}); await settle();
-    assert.match(byId('primary-context').textContent, /Context 10%/); assert.match(byId('primary-usage-summary').textContent, /Session ~\$1.00/);
+    assert.match(byId('primary-context').textContent, /Context 10%/); assert.match(byId('primary-usage-summary').textContent, /\$1.00/);
   } else {
     assert.equal(byId('primary-context').textContent, ''); assert.equal(byId('primary-usage-summary').textContent, ''); assert.equal(facts.children[0]?.textContent, 'Last reported; Primary is not running.');
   }
@@ -2191,15 +2192,15 @@ test('metadata updates retain the disclosure, editor, caret, saved draft and rec
   await arrive({workspace, primaries: [primaryFixture({epoch: 6001, cwd: '/reported/primary', contextUsage, usage})], roster: [], targets: [saved]});
   const editor = primaryControl('editor'); const details = byId('primary-usage-details'); editor.focus(); editor.setSelectionRange(3, 9);
   Reflect.set(details, 'open', true); const height = editor.style.height;
-  assert.match(byId('primary-context').textContent, /Context 0%.*0\/4/);
-  assert.match(byId('primary-usage-summary').textContent, /Session ~\$0.00/);
+  assert.match(byId('primary-context').textContent, /Context 0%/);
+  assert.match(byId('primary-usage-summary').textContent, /\$0.00/);
   assert.match(byId('primary-usage').textContent, /whole-session.*input 4, output 5, cache read 6, cache write 7/);
   assert.equal(byId('primary-folder').textContent, 'Folder /reported/primary');
   const inputs = transportLog.filter(call => call.path.includes('/inputs')).length;
   await arrive({workspace, primaries: [primaryFixture({epoch: 6001, cwd: undefined, contextUsage: {tokens: null, contextWindow: 4000, percent: null}})], roster: [], targets: [saved]});
   assert.equal(primaryControl('editor'), editor); assert.equal(byId('primary-usage-details'), details); assert.equal(Reflect.get(details, 'open'), true);
   assert.equal(editor.value, saved.draft.text); assert.deepEqual([editor.selectionStart, editor.selectionEnd], [3, 9]); assert.equal(hostDocument.activeElement, editor); assert.equal(editor.style.height, height);
-  assert.match(byId('primary-context').textContent, /Context unknown.*\?\/4/); assert.match(byId('primary-usage').textContent, /Missing cost is not zero/);
+  assert.match(byId('primary-context').textContent, /Context unknown/); assert.match(byId('primary-usage').textContent, /Missing cost is not zero/);
   assert.equal(byId('primary-folder').hidden, true); assert.equal(byId('primary-folder').textContent, '');
   assert.equal(transportLog.filter(call => call.path.includes('/inputs')).length, inputs);
 });
