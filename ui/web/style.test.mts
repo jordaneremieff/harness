@@ -826,7 +826,7 @@ test('exceptional tab state remains readable while names use bounded tab widths'
   assert.doesNotMatch(rule('.tab-dot'), /max-width:|overflow: hidden/);
   assert.doesNotMatch(rule('.conversation-state'), /max-width:|overflow: hidden/);
   assert.doesNotMatch(css, /\.tab-state\s*\{/);
-  assert.match(rule('.conversation-tabs[data-sole=true] > .conversation-tab'), /flex: 0 1 320px/);
+  assert.match(rule('.conversation-tabs[data-sole=true] > .conversation-tab'), /flex: 0 1 400px/);
   assert.match(rule('.conversation-tabs'), /min-width: 0; overflow-x: auto/);
   assert.match(rule('.tab-label'), /flex: 1 1 auto/);
   assert.match(rule('.conversation-tab'), /overflow: hidden/);
@@ -867,7 +867,7 @@ test('neutral tabs and split panes retain 320px tracks with divider-aware equal-
 test('long tab names ellipsize without crowding their status and close action', () => {
   const tab = rule('.conversation-tab');
   assert.match(tab, /flex: 0 1 auto/);
-  assert.match(tab, /min-width: 120px; max-width: 320px/);
+  assert.match(tab, /min-width: 120px; max-width: 400px/);
   assert.match(rule('.tab-label'), /flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: clip/);
   assert.match(rule('.tab-dot'), /flex: none;[^}]*white-space: nowrap/);
   assert.match(media('@media (pointer:coarse)'), /\.conversation-tab \{ --tab-chrome: 90px; \}/);

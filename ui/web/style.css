@@ -447,7 +447,7 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .tab-bar { display: flex; flex: none; align-items: stretch; min-width: 0; min-height: 32px; border-bottom: 1px solid var(--rule); background: var(--side); }
 .conversation-tabs { display: flex; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: thin; scrollbar-color: transparent transparent; }
 .conversation-tabs:hover, .conversation-tabs:focus-within { scrollbar-color: var(--edge) transparent; }
-.conversation-tab { position: relative; display: flex; flex: 0 1 auto; align-items: center; gap: var(--s2); min-width: 120px; max-width: 320px; padding: 0 var(--s3); overflow: hidden; border: 0; background: transparent; color: var(--muted); font-size: var(--fs-ui); cursor: pointer; }
+.conversation-tab { position: relative; display: flex; flex: 0 1 auto; align-items: center; gap: var(--s2); min-width: 120px; max-width: 400px; padding: 0 var(--s3); overflow: hidden; border: 0; background: transparent; color: var(--muted); font-size: var(--fs-ui); cursor: pointer; }
 .conversation-tab[data-unnamed=true] { min-width: 120px; max-width: 152px; }
 .conversation-tab:hover { background: var(--raised); color: var(--fg); }
 .conversation-tab[aria-selected=true] { background: transparent; color: var(--fg); font-weight: 500; box-shadow: inset 0 -2px var(--edge); }
@@ -460,7 +460,7 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 :is(.tab-dot, .conversation-state, .row-state)[data-tone=secondary] { color: var(--muted); }
 .tab-identity { flex: 0 1 auto; min-width: 0; max-width: 40%; overflow: hidden; text-overflow: clip; mask-image: linear-gradient(to right,#000 calc(100% - 24px),transparent); white-space: nowrap; color: var(--muted); font-family: var(--mono); font-size: var(--fs-code); }
 .conversation-tab.tab-dragging { background: var(--raised); border-top-color: var(--edge); }
-.conversation-tabs[data-sole=true] > .conversation-tab { flex: 0 1 320px; }
+.conversation-tabs[data-sole=true] > .conversation-tab { flex: 0 1 400px; }
 .tab-close { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 28px; height: 28px; padding: 0; color: var(--muted); opacity: 0; }
 .conversation-tab[aria-selected=true] .tab-close, .conversation-tab:hover .tab-close, .conversation-tab:focus-within .tab-close { opacity: 1; }
 .tab-close:hover { background: var(--raised); color: var(--fg); }
