@@ -2,13 +2,14 @@ import type {EntryView, HistoryPage, PresentationView, PrimaryView, ReadingView,
 import {button, element, setText} from './dom.ts';
 import {absoluteTime} from './format.ts';
 import {sessionLabel} from './picker-state.ts';
+import {readSessionState, SessionStateBar, type SessionState} from './session-state.ts';
 import {Transcript} from './render.ts';
 import {request} from './transport.ts';
 import type {PrimaryDraftActions, PrimaryDraftSource} from './primary-draft-actions.ts';
 
 export type SessionReadSource={saved:SavedSession}|{primary:PrimaryView;saved?:SavedSession};
 export type SessionReaderReload={source:SessionReadSource;entries:EntryView[];leaf:string|null;before:string|null;primaryCursor:string|null;loaded:boolean;asOf:string;status:string;reading:ReadingView;presentation:PresentationView;scrollLeft:number;focused:boolean};
-type Hooks={primaryDraft?:PrimaryDraftActions;focus:()=>void;close:()=>void;resume:(source:SessionReadSource)=>void};
+type Hooks={primaryDraft?:PrimaryDraftActions;primaries?:()=>readonly PrimaryView[]|undefined;focus:()=>void;close:()=>void;resume:(source:SessionReadSource)=>void};
 /** A page-local read-only view has no conversation target, writer, composer, or saved layout entry. */
 export class SessionReader {
   readonly node=element('section','session-reader');
@@ -19,7 +20,9 @@ export class SessionReader {
   private latest=element('button','latest','Latest');
   private earlier=button('Earlier retained entries',()=>{void this.read(true);},'quiet');
   private refresh=button('Refresh',()=>{void this.read(false);},'quiet');
-  private resume=button('Resume here',()=>{if(this.source)this.hooks.resume(this.source);},'quiet');
+  private resume=button('Resume here',()=>this.resumeCurrent(),'quiet');
+  private sessionBar=new SessionStateBar();
+  private barSource?:SessionReadSource;
   private transcript:Transcript;
   private source?:SessionReadSource;
   private controller?:AbortController;
@@ -41,7 +44,7 @@ export class SessionReader {
     const tabs=element('div','session-reader-tabs');tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','Read-only session');
     this.heading.setAttribute('role','tab');this.heading.setAttribute('aria-selected','true');tabs.append(this.heading);
     header.append(tabs,actions,this.status);this.scroller.tabIndex=0;
-    this.node.append(header,this.scroller,this.latest);this.node.hidden=true;
+    this.node.append(header,this.scroller,this.latest,this.sessionBar.node);this.node.hidden=true;
     this.node.addEventListener('focusin',hooks.focus);
     this.node.addEventListener('keydown',event=>{if(event.key==='Escape'&&!event.defaultPrevented){event.preventDefault();hooks.close();}});
     this.node.addEventListener('contextmenu',event=>{if(!(event.target instanceof Element)||!event.target.closest('.transcript'))event.stopPropagation();});
@@ -74,14 +77,28 @@ export class SessionReader {
   }
   close():void {this.controller?.abort();this.source=undefined;this.reading=false;this.node.hidden=true;this.node.remove();}
   focus():void {this.scroller.focus({preventScroll:true});}
+  refreshState():void {this.paintHeader();}
+  private bindSessionBar(source:SessionReadSource):void {
+    if(this.barSource===source)return;
+    this.sessionBar.node.remove();this.sessionBar=new SessionStateBar();this.barSource=source;this.node.append(this.sessionBar.node);
+  }
+  private viewState():SessionState {return readSessionState(this.source&&'primary' in this.source?this.source.primary:undefined,this.source?.saved,this.hooks.primaries?.());}
+  private resumeCurrent():void {
+    const source=this.source,view=this.viewState();
+    if(!source||!this.loaded||this.reading||view.terminal||this.node.closest('[hidden],[inert]'))return;
+    if(view.word==='closed'||view.primary?.lifecycle==='ready')this.hooks.resume(source);
+  }
   private paintHeader():void {
     if(!this.source)return;
     const saved=this.source.saved,primary='primary' in this.source?this.source.primary:undefined;
     const title=primary?.sessionName?.trim()||(saved?sessionLabel(saved):`${primary?.cwd.split('/').filter(Boolean).at(-1)||'Session'} · ${(primary?.sessionId??primary?.key??'').slice(-4)}`);
-    const folder=saved?.project??primary?.cwd??'',live=saved?.writer==='live',folderName=folder.split('/').filter(Boolean).at(-1)||folder;
-    setText(this.heading,[title,live?'live in terminal':'',folderName].filter(Boolean).join(' · '));
+    const source=this.source,view=this.viewState(),folder=saved?.project??primary?.cwd??'',folderName=folder.split('/').filter(Boolean).at(-1)||folder;
+    this.bindSessionBar(source);
+    setText(this.heading,[title,view.word??'',folderName].filter(Boolean).join(' · '));
     this.heading.title=[saved?.id??primary?.sessionId,primary?`Primary ${primary.key}`:'',saved?.path??primary?.sessionFile,folder].filter(Boolean).join('\n');
-    this.resume.hidden=!this.loaded||live||!saved&&primary?.lifecycle!=='ready'&&!primary?.sessionFile;this.resume.disabled=this.reading;
+    this.resume.hidden=!this.loaded||!!view.terminal||view.primary?.lifecycle!=='ready';this.resume.disabled=this.reading;
+    const current=()=>{const next=this.viewState();return this.source===source&&this.loaded&&!this.reading&&next.word===view.word&&next.terminal===view.terminal&&next.path===view.path&&next.project===view.project&&next.primary?.key===view.primary?.key&&next.primary?.epoch===view.primary?.epoch;};
+    this.sessionBar.update(this.loaded||view.terminal?view:{},current,()=>this.resumeCurrent(),!this.reading);
   }
   private async read(earlier:boolean):Promise<void>{
     const source=this.source;if(!source||this.reading)return;

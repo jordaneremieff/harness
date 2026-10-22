@@ -518,13 +518,14 @@ export class ProjectPicker {
     session.field.addEventListener('keydown', event => { if (event instanceof KeyboardEvent && event.key === 'Enter') { event.preventDefault(); resume(); } });
     return disclosure;
   }
-  resume(project: string, path: string, failed?: (cause: unknown) => void): void {
-    void this.run(() => {
+  resume(project: string, path: string, failed?: (cause: unknown) => void, resumed?: () => void): void {
+    void this.run(async () => {
       if (!savedPathValid(path)) throw new Error('Enter a saved session path that starts with /.');
       const current = sessionOwner(this.ctx.snapshot()?.primaries ?? [], path);
-      return current
+      await (current
         ? this.select({primaryKey: current.key, selectedTarget: {kind: 'primary', key: current.key, epoch: current.epoch}})
-        : this.start(project, path).catch(cause => { if (writerRefused(cause)) this.writersChanged(); throw cause; });
+        : this.start(project, path).catch(cause => { if (writerRefused(cause)) this.writersChanged(); throw cause; }));
+      resumed?.();
     }, failed);
   }
   private async select(change: SelectionChange): Promise<void> {

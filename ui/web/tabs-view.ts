@@ -11,7 +11,7 @@ export type TabHooks = {layout: () => PaneLayout; reopen?: () => {count: number;
   move: (key: string, pane: string, index: number) => void; label: (tab: ConversationTab) => string;
   identity?: (tab: ConversationTab) => string | undefined;unnamed?:(tab:ConversationTab)=>boolean;
   fallback?:()=>HTMLElement|undefined;
-  status: (tab: ConversationTab) => {label: string; rowLabel?: string; glyph: string; tone?: PresentationTone; attention?: Attention}; section?: {collapsed(): boolean; toggle(): void}; keep?: (key:string)=>void; overflow?: (overflow: boolean, pane: string) => void};
+  status: (tab: ConversationTab) => {label: string; rowLabel?: string; glyph: string; tone?: PresentationTone; attention?: Attention; word?: string}; section?: {collapsed(): boolean; toggle(): void}; keep?: (key:string)=>void; overflow?: (overflow: boolean, pane: string) => void};
 /** Keyed tab and sidebar nodes follow real pane ownership, independent of target kind. */
 export class TabStrip {
   private nodes = new Map<string, HTMLElement>();
@@ -156,13 +156,18 @@ export class TabStrip {
   }
   private paintTab(node: HTMLElement, tab: ConversationTab, selected: boolean): void {
     const label = this.hooks.label(tab); const tail = this.tail(tab); const accessible = tail ? `${label}, ${tail}` : label; const status = this.hooks.status(tab);
-    node.title = [label, tab.kind === 'file' ? tab.path : tab.kind === 'agent' ? tab.identity : '', status.label].filter(Boolean).join(' · ');
-    node.setAttribute('aria-label', `${accessible}${status.label ? `, ${status.label}` : ''}`); node.setAttribute('aria-selected', String(selected)); node.tabIndex = selected ? 0 : -1;
+    const statusLabel=this.paintSessionState(node,status.word,status.label);
+    node.title = [label, tab.kind === 'file' ? tab.path : tab.kind === 'agent' ? tab.identity : '', statusLabel].filter(Boolean).join(' · ');
+    node.setAttribute('aria-label', `${accessible}${statusLabel ? `, ${statusLabel}` : ''}`); node.setAttribute('aria-selected', String(selected)); node.tabIndex = selected ? 0 : -1;
     const compact=!selected&&this.hooks.unnamed?.(tab)===true;node.dataset.unnamed=String(compact);
     const caption = node.querySelector('.tab-label'); if (caption) caption.textContent = this.tabCaption(label,tail,compact);
     this.paintDot(node, status.glyph, status.label, status.attention?.tone ?? status.tone, status.attention);
     const identity = node.querySelector<HTMLElement>('.tab-identity'); if (identity) {identity.textContent = tail ?? ''; identity.hidden = compact||!tail;}
     const close = node.querySelector<HTMLElement>('.tab-close'); if (close) {close.setAttribute('aria-label', `Close ${accessible} tab`); close.title = `Close ${accessible} tab`;}
+  }
+  private paintSessionState(node:HTMLElement,word:string|undefined,label:string):string {
+    const state=node.querySelector<HTMLElement>('.tab-session-state');if(state){state.textContent=word??'';state.hidden=!word;}
+    return word&&word!==label.toLowerCase()?[word,label].filter(Boolean).join(' · '):label;
   }
   private tabCaption(label:string,tail:string|undefined,compact:boolean):string{
     if(!compact)return label;return `Unnamed${tail?` · ${tail}`:''}`;
@@ -199,7 +204,8 @@ export class TabStrip {
     node.addEventListener('dragover', event => {if (!this.dragging || !this.owner(this.dragging)) return; event.preventDefault(); event.stopPropagation(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'; node.classList.add('tab-drop-target');});
     node.addEventListener('dragleave', () => node.classList.remove('tab-drop-target'));
     node.addEventListener('drop', event => {const pane = paneForTab(this.hooks.layout(), key); if (!pane || !this.dragging || !this.owner(this.dragging)) return; event.preventDefault(); event.stopPropagation(); this.hooks.move(this.dragging, pane.id, pane.tabs.findIndex(tab => tabKey(tab) === key)); this.clearDrag();});
-    node.addEventListener('dragend', () => this.clearDrag()); node.append(label, identity, dot, close); return node;
+    const word=doc.createElement('span');word.className='tab-session-state';word.setAttribute('aria-hidden','true');word.hidden=true;
+    node.addEventListener('dragend', () => this.clearDrag()); node.append(label, identity, word, dot, close); return node;
   }
   private group(id: string): HTMLElement {
     let group = this.groups.get(id); if (group) return group;

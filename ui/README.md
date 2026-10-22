@@ -382,6 +382,26 @@ route, so this reader has no terminal composer. Managed Primary input and Durabl
 agent input do not establish that capability. Resume and conversion retain their
 existing current-writer and exact-source guards.
 
+A stopped Primary keeps its retained transcript and draft owner. A **Closed ·
+Resume** bar replaces the visible composer without clearing its buffer. The
+read-only reader uses the same bar for a stopped Primary or a released saved
+session. It displays the exact supplied path as a shell-quoted `pi --session`
+command with **Copy**. **Resume** calls the existing guarded resume route only on
+an explicit click; a refused open leaves the reader in place. A supplied live
+terminal writer displays **Live in terminal** with no Resume. Missing terminal
+writer evidence establishes release only when no current backend Primary owns
+the file. Failed, transitional, conflicting or unavailable ownership evidence
+does not establish closure.
+
+The Primary tab and reader heading show `live`, `idle` or `closed` only from
+supplied process state. A ready Primary is `idle` for idle activity and `live` for
+running, compacting or retrying activity; stopped is `closed`. Unknown activity
+and other lifecycle states have no word. The contracts supply no state-change
+time, so these words have no age. Reader labels update without reopening the
+view or resetting its history. The reader still retains at most 500 loaded
+entries with explicit coverage and refresh controls. This page-local reader is
+not a saved session tab. Primary entry preparation remains unchanged.
+
 ## Provider failures
 
 Provider response failures stay separate from browser and host connections. The bottom status line shows current retry state, a stopped response, a failed response, or a supplied provider block without disabling an otherwise ready composer. Failed messages keep partial response content and a short summary; collapsed **Details** retains the bounded protected diagnostic. Current native retry and provider-block diagnostics also appear in the existing status **Details**, including when no failed message is loaded. No message promises that tool effects did not occur or that all work survived.

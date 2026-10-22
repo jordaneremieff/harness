@@ -55,6 +55,7 @@ import {activeDialog} from './dialog-state.ts';
 import {HandoverDialog} from './handover-view.ts';
 import { ThreadExplorer, ThreadReader, type ThreadEntry } from './threads-view.ts';
 import {SessionReader,type SessionReadSource,type SessionReaderReload} from './session-reader.ts';
+import {primarySessionState, readSessionState, SessionStateBar} from './session-state.ts';
 import { THREAD_PAGE_EVENTS } from './threads.ts';
 import {noticeGroups, noticeGroupText, noticeTarget, unreadReviewNotice, CommunicationNoticeShelf, type CommunicationNotice, type NoticeGroup} from './notice-presentation.ts';
 import { Recovery } from './recovery.ts';
@@ -144,7 +145,7 @@ let reloadStateKey:string|undefined;
 let preparedReloadState:{key:string;revision:number;workspace:string}|undefined;
 const devCheckpointKey = 'ui:dev-checkpoint';
 type ConversationController = {workspaceId: string; target: Target; instanceId: string; root: HTMLElement; nodes: Map<string, HTMLElement>;
-  elements: import('./composer.ts').ComposerElements; composer: Composer; transcript: Transcript; liveStrip?: AgentLiveStrip; inspection?: AgentInspection; readingGeometry?: ReturnType<Transcript['captureGeometry']>; saved?: TargetState; geometry?: ReturnType<Transcript['captureGeometry']>; messageRetention?: object;
+  elements: import('./composer.ts').ComposerElements; composer: Composer; transcript: Transcript; sessionBar?: SessionStateBar; liveStrip?: AgentLiveStrip; inspection?: AgentInspection; readingGeometry?: ReturnType<Transcript['captureGeometry']>; saved?: TargetState; geometry?: ReturnType<Transcript['captureGeometry']>; messageRetention?: object;
   abort: AbortController; historyAbort: AbortController; cursor: string | null; before: number | null; loading: boolean; preparing: boolean; passive?: boolean; historyReading?: TargetState['reading']; historyReady: boolean; historyBoundaryLoaded: boolean; historyComplete?: boolean; historyError?: {code?: string; message: string}; hasEntries?: boolean; initialized: boolean; showThinking: boolean; historyWork?: Promise<void>; preparationWork?:Promise<void>; connectionError?: string; connection?: Pick<import('../shared/api.ts').TargetPreparation, 'availability' | 'capabilities' | 'reason'> & {stale?: true}; refreshing?: boolean; resizer?: Resizer; fillingEarlier?: boolean};
 const controllers = new Map<string, ConversationController>();
 let primaryDraftSelection: PrimaryDraftSelection|undefined;
@@ -304,9 +305,10 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
   const resize = elements.root.querySelector<HTMLElement>('.resizer'); if (resize) nodes.set('composer-resizer', resize);
   const activity = add('activity', 'p', 'exception'); activity.setAttribute('role', 'status'); const queued = element('ul', 'queued-list'); queued.hidden = true; queued.setAttribute('aria-label', 'Queued messages'); nodes.set('queued', queued); elements.root.prepend(activity, queued);
   root.append(observed, notice, region, above, elements.root, below); stableViews().mount(root);
+  const sessionBar=createPrimarySessionBar(target,root,elements.root);
   const liveStrip=createAgentLiveStrip(target.kind,root);
   if (target.kind === 'agent') root.insertBefore(createHistoryNote(add), region);
-  const controller = {workspaceId, target: {...target}, instanceId, root, nodes, elements, liveStrip, abort: new AbortController(), historyAbort: new AbortController(), cursor: null, before: null, loading: false, preparing: false, passive: true, historyReady: false, historyBoundaryLoaded: false, initialized: false, showThinking: false} as ConversationController;
+  const controller = {workspaceId, target: {...target}, instanceId, root, nodes, elements, sessionBar, liveStrip, abort: new AbortController(), historyAbort: new AbortController(), cursor: null, before: null, loading: false, preparing: false, passive: true, historyReady: false, historyBoundaryLoaded: false, initialized: false, showThinking: false} as ConversationController;
   wireSettingPickers(controller);
   controller.composer = new Composer(elements, {workingFile:stage=>composerWorkingFile(controller,stage),recallItems:()=>recallItems(inputEchoes.entries(controller.workspaceId,controller.target,(()=>{const conversation=state.conversations.get(targetIdentity(controller.target));return conversation?conversationBlocks(conversation):[];})())),fileSearch:(query,signal)=>searchWorkingFiles(controller,query,signal),fileStage:(path,signal,present,stage)=>stageMentionedFile(controller,path,signal,present,stage),changed:()=>{devInteractionRevision++;},draftStatusChanged:()=>releaseNotice.refresh(),captured: submission=>{const conversation=state.conversations.get(targetIdentity(controller.target));inputEchoes.capture(workspaceId,submission,conversation?conversationBlocks(conversation):[]);renderController(controller);},failed:(id,uncertain)=>{inputEchoes.failed(id,uncertain);renderController(controller);},prepareInput: () => !controller.passive, imageState: refreshComposerImages, imageInput: captured => composerImageInput(controller, captured), recovery: () => recovery.open(), layoutHeight: () => stableViews().height(elements.root), enterSends: () => state.workspace?.enterSendsMessages === true, timing: (start, end) => {if (controller.workspaceId === state.workspace?.id && !elements.root.closest('[hidden],[inert]')) diagnostics.measure('editor-echo', start, end);}, submitted: result => {inputEchoes.settle(result);showOperation(result, workspaceId);renderController(controller);}, unknownCommand: (text, literal) => target.kind === 'primary' && sameTarget(primaryTarget(), target) ? actions.unknown(text, literal) : false,
     ...(target.kind === 'primary' ? {commands: () => actions.commandOptions(), moreCommands: (captured: Target) => actions.continueCommands(captured)} : {}),
@@ -325,6 +327,10 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
   bindControllerInput(controller);
   controllers.set(key, controller);
   attachInspection(controller,region);return controller;
+}
+function createPrimarySessionBar(target:Target,root:HTMLElement,composer:HTMLElement):SessionStateBar|undefined {
+  if(target.kind!=='primary')return;
+  const bar=new SessionStateBar();root.insertBefore(bar.node,composer);return bar;
 }
 function attachInspection(controller:ConversationController,region:HTMLElement):void {
   const {target,workspaceId,root}=controller;
@@ -445,7 +451,7 @@ const tabStrip = new TabStrip({layout: currentLayout, reopen: () => workspaceEnt
   move: (key, pane, index) => {fileBrowse.keep(key);applyLayout(movePaneTab(currentLayout(), key, pane, index));}, label: tabLabel,unnamed:unnamedTab,keep:key=>fileBrowse.keep(key),
   identity: tab => tab.kind !== 'file' ? tabPresentation(tab).identityTail ?? '' : undefined,
   section: {collapsed: () => sidebarSections.tabs, toggle: () => setSidebarSection('tabs', !sidebarSections.tabs)},
-  status: tab => { if (tab.kind === 'file') {const owner = state.workspace && filesViews.owner(state.workspace.id,tab);return {label:owner?.modified ? 'Modified' : '',glyph:owner?.modified ? '•' : '',tone:owner?.modified ? 'warning' : 'secondary'};}const view = tabPresentation(tab), attention = attentionFor(controllerTarget(tab)); return {label: [attention?.label, view.activity, view.tool?.name].filter(Boolean).join(' · '), rowLabel: attention?.label ?? view.activity, glyph: presentationGlyph(view), tone:view.tone, attention}; },
+  status: tab => { if (tab.kind === 'file') {const owner = state.workspace && filesViews.owner(state.workspace.id,tab);return {label:owner?.modified ? 'Modified' : '',glyph:owner?.modified ? '•' : '',tone:owner?.modified ? 'warning' : 'secondary'};}const view = tabPresentation(tab), attention = attentionFor(controllerTarget(tab)); return {label: [attention?.label, view.activity, view.tool?.name].filter(Boolean).join(' · '), rowLabel: attention?.label ?? view.activity, glyph: presentationGlyph(view), tone:view.tone, attention, word:tab.kind==='primary'?primarySessionState(primary()).word:undefined}; },
   overflow: (overflow, pane) => { const region = paneRegions.get(pane); if (region) region.menu.dataset.overflow = String(overflow); }},
   {panes: () => [...paneRegions].map(([id, pane]) => ({id, tabs: pane.tabs, controls: [...controllers.values()].find(owner => stableViews().slot(owner.root) === pane.content)?.root.id ?? pane.content.id})), conversations: byId('sidebar-conversations')});
 let fileActionStatus = '';
@@ -1615,7 +1621,7 @@ export function renderNavigation(): void {
   placeWorkbenchControls(visible);
   const layout = sessionReadLayout(); const tab = activeTab(layout);
   renderPaneTree(layout); renderSessionEntry(!!tab); byId('conversation-panes').hidden = !hasConversation() && !threadPane && !sessionReadPane;
-  tabStrip.render(); renderIdentity();
+  tabStrip.render();if(sessionReadPane)sessionReader.refreshState(); renderIdentity();
   byId('primary-row').hidden = !primary() || paneLeaves(layout.root).some(pane => pane.tabs.some(tab => tab.kind === 'primary'));
   byId('primary-section').hidden = false; byId('primary-section-body').hidden = false;
   byId('primary-row').setAttribute('aria-label', 'Return to Primary'); byId('primary-row').setAttribute('aria-current', agentSelected ? 'false' : 'page');
@@ -1693,7 +1699,7 @@ function renderController(controller: ConversationController, deferred = false, 
   controller.composer.availability(connected, !!saved && (controller.target.kind === 'agent' || view.input), view.busy, selecting, view.input);
   controller.composer.awaitingAnswer(awaitingAnswer(controller.target));
   if (firstDraft && !controller.passive && !controller.root.hidden && sameTarget(layoutTarget(currentLayout(), primaryTarget()) ?? undefined, controller.target) && document.activeElement === document.body) controller.composer.focus();
-  controller.elements.root.hidden = !composerShown(controller);renderInspection(controller); renderObserved(controller, controller.target.kind === 'agent' || connected || !view.activity);
+  renderComposerVisibility(controller);renderInspection(controller); renderObserved(controller, controller.target.kind === 'agent' || connected || !view.activity);
   controllerNode(controller, 'stop').hidden = !canStopController(controller);
   if (controller.root.hidden) return;
   refreshStaleConnection(controller);
@@ -1711,6 +1717,20 @@ function renderController(controller: ConversationController, deferred = false, 
     }
   };
   if (deferred) controller.transcript.defer(()=>{paint();renderInspection(controller);}, receivedAt); else {paint();renderInspection(controller);}
+}
+function renderComposerVisibility(controller:ConversationController):void {
+  controller.elements.root.hidden=renderPrimarySessionBar(controller)||!composerShown(controller);
+}
+function renderPrimarySessionBar(controller:ConversationController):boolean {
+  const {target,sessionBar}=controller;if(target.kind!=='primary'||!sessionBar)return false;
+  const item=state.primaries.get(target.key),captured=item?.epoch===target.epoch?item:undefined;
+  const view=primarySessionState(captured),workspace=controller.workspaceId,boot=state.bootId;
+  const current=()=>{const next=state.primaries.get(target.key);return state.bootId===boot&&state.workspace?.id===workspace&&!controller.abort.signal.aborted&&!!captured&&next?.epoch===captured.epoch&&next.sessionFile===captured.sessionFile&&next.sessionId===captured.sessionId&&next.cwd===captured.cwd&&next.lifecycle==='stopped';};
+  sessionBar.update(view,current,()=>{if(connected&&!selecting&&view.project&&view.path)picker.resume(view.project,view.path,showError);},connected&&!selecting);
+  const latest=controllerNode(controller,'latest'),closed=view.word==='closed';
+  if(closed&&latest.parentElement&&!sessionBar.node.contains(latest))sessionBar.node.append(latest);
+  else if(!closed&&sessionBar.node.contains(latest))controller.elements.sources?.after(latest);
+  return closed;
 }
 function initializeController(controller:ConversationController,saved:TargetState):void {
   controller.initialized=true;
@@ -2671,10 +2691,15 @@ async function openDeskAgentConversation(target:Extract<Target,{kind:'agent'}>,c
 }
 function closeDesk():void {endDeskReview();clearDeskComposer();deskPane=undefined;desk.node.remove();review.node.remove();deskBack.remove();extensionDialogs.inline();desk.reset();if(state.workspace)renderNavigation();}
 let sessionReadPane:{context:string;id:string;focus:string;returnKey:string;provisional?:ConversationLayout}|undefined;
-const sessionReader=new SessionReader({primaryDraft:primaryDraftActions,focus:()=>{if(sessionReadPane){sessionReadPane.focus=sessionReadPane.id;focusedPane=sessionReadPane.id;markFocusedPane();}},close:()=>closeSessionRead(),resume:source=>{
-  closeSessionRead();if(source.saved)picker.resume(source.saved.project,source.saved.path);
-  else if('primary' in source&&source.primary.lifecycle==='ready')void capturePrimarySelection()(source.primary.key).catch(showError);
-}});
+const sessionReader=new SessionReader({primaryDraft:primaryDraftActions,primaries:()=>currentSnapshot()?.primaries,focus:()=>{if(sessionReadPane){sessionReadPane.focus=sessionReadPane.id;focusedPane=sessionReadPane.id;markFocusedPane();}},close:()=>closeSessionRead(),resume:resumeReadSource});
+function resumeReadSource(source:SessionReadSource):void {
+  const captured=sessionReadPane;if(!captured||captured.context!==deskContext()||!connected||selecting)return;
+  const view=readSessionState('primary' in source?source.primary:undefined,source.saved,currentSnapshot()?.primaries);
+  if(view.terminal)return;
+  const completed=()=>{if(sessionReadPane!==captured)return;dismissSessionRead();renderNavigation();focusEditor();};
+  if(view.primary?.lifecycle==='ready')void capturePrimarySelection()(view.primary.key).then(completed).catch(showError);
+  else if(view.word==='closed'&&view.project&&view.path)picker.resume(view.project,view.path,showError,completed);
+}
 function openSessionRead(source:SessionReadSource):void {
   modal.close(false);const layout=deskLayout(),leaves=paneLeaves(layout.root),anchor=leaves.find(pane=>pane.tabs.some(tab=>tab.kind==='primary'))??leaves[0];if(!anchor)return;
   const companion=leaves.find(pane=>pane.id!==anchor.id),width=paneRegions.get(anchor.id)?.node.getBoundingClientRect().width??0;
