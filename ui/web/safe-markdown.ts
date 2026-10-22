@@ -89,15 +89,24 @@ function codeBlock(node: Extract<MarkdownBlock, {type: 'code'}>): HTMLElement {
   if (knownSyntax(node.language)) code.dataset.syntax = 'known';
   pre.append(code); wrap.append(sourceHeader(pre, node.language, () => node.text), pre); return wrap;
 }
+const NUMBER_CELL = /^[+\-\u2212]?\$?\d[\d,]*(?:\.\d+)?(?:%|ms|s|m|h|KB|MB|GB)?$/;
+/** A column aligns right when it has body rows and every body cell is plain text holding only a number. */
+function numericColumns(node: Extract<MarkdownBlock, {type: 'table'}>): boolean[] {
+  return node.header.map((_, index) => node.rows.length > 0 && node.rows.every(cells => {
+    const cell = cells[index];
+    return !!cell && cell.every(part => part.type === 'text') && NUMBER_CELL.test(cell.map(part => (part as {text: string}).text).join('').trim());
+  }));
+}
 function tableBlock(node: Extract<MarkdownBlock, {type: 'table'}>): HTMLElement {
-  const table = element('table'); const head = element('thead'); const row = element('tr');
+  const table = element('table'); const head = element('thead'); const row = element('tr'); const numeric = numericColumns(node);
+  const alignment = (index: number): string => node.align[index] ?? (numeric[index] ? 'right' : '');
   node.header.forEach((cell, index) => {
-    const th = element('th'); th.scope = 'col'; th.style.textAlign = node.align[index] ?? ''; th.append(inline(cell)); row.append(th);
+    const th = element('th'); th.scope = 'col'; th.style.textAlign = alignment(index); th.append(inline(cell)); row.append(th);
   });
   head.append(row); table.append(head); const body = element('tbody');
   for (const cells of node.rows) {
     const tr = element('tr'); cells.forEach((cell, index) => {
-      const td = element('td'); td.style.textAlign = node.align[index] ?? ''; td.append(inline(cell)); tr.append(td);
+      const td = element('td'); td.style.textAlign = alignment(index); td.append(inline(cell)); tr.append(td);
     }); body.append(tr);
   }
   table.append(body); return table;
