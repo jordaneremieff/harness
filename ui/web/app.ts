@@ -488,7 +488,7 @@ const toolFileReader=new ToolFileReader(readWorkspaceFile,()=>closeToolFile());
 toolFileReader.node.addEventListener('pointerdown',event=>{if(toolFilePane)updatePaneFocus(toolFilePane.id,event);});
 toolFileReader.node.addEventListener('focusin',()=>{if(toolFilePane)updatePaneFocus(toolFilePane.id);});
 function toolFileCurrent(captured:ToolFilePane):boolean {return toolFilePane===captured&&captured.context===deskContext()&&!fileRoot.loading&&fileRoot.selection?.root?.id===captured.rootId&&JSON.stringify(sessionReadLayout().root)===captured.stamp;}
-function closeToolFile(render=true):void {if(!toolFilePane)return;toolFilePane=undefined;toolFileReader.close();if(render)renderNavigation();}
+function closeToolFile(render=true):void {if(!toolFilePane)return;const held=toolFileReader.node.contains(document.activeElement);toolFilePane=undefined;toolFileReader.close();if(render){renderNavigation();if(held)focusEditor();}}
 function toolFileLayout():ConversationLayout {
   const captured=toolFilePane;if(!captured)return sessionReadLayout();
   if(!toolFileCurrent(captured)){closeToolFile(false);return sessionReadLayout();}
@@ -2814,7 +2814,7 @@ async function openDeskAgentConversation(target:Extract<Target,{kind:'agent'}>,c
   if(!current()||paneSelectionRevision!==revision||deskPane!==captured)return;
   return {controller,pane:captured,paneId:captured.id,revision};
 }
-function closeDesk():void {endDeskReview();clearDeskComposer();deskPane=undefined;desk.node.remove();review.node.remove();deskBack.remove();extensionDialogs.inline();desk.reset();if(state.workspace)renderNavigation();}
+function closeDesk():void {const held=desk.node.contains(document.activeElement)||review.node.contains(document.activeElement);endDeskReview();clearDeskComposer();deskPane=undefined;desk.node.remove();review.node.remove();deskBack.remove();extensionDialogs.inline();desk.reset();if(state.workspace){renderNavigation();if(held)focusEditor();}}
 let sessionReadPane:{context:string;id:string;focus:string;returnKey:string;provisional?:ConversationLayout}|undefined;
 const sessionReader=new SessionReader({primaryDraft:primaryDraftActions,primaries:()=>currentSnapshot()?.primaries,focus:()=>{if(sessionReadPane){sessionReadPane.focus=sessionReadPane.id;focusedPane=sessionReadPane.id;markFocusedPane();}},close:()=>closeSessionRead(),resume:resumeReadSource});
 function resumeReadSource(source:SessionReadSource):void {
