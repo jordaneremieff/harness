@@ -577,7 +577,7 @@ export class Transcript {
   acceptTaskResult(value:ResultInspection):void {let changed=false;for(const row of this.tasks.sent)if(row.tool&&this.tasks.recordResult(row.tool.callId,value))changed=true;if(changed)this.schedule();}
   activitySentence(): string {
     const active=[...this.joined.values()].findLast(tool=>tool.status==='working');
-    return active?[this.sentence(active),toolTime(active).replace(/ elapsed$/,'')].filter(Boolean).join(' · '):'';
+    return active?[`Using ${active.name.replace(/[_-]+/g,' ')}`,toolTime(active).replace(/ elapsed$/,'')].filter(Boolean).join(' · '):'';
   }
   private openTaskAnswer(task: ConversationTask): void {
     if(!task.tool)return;this.expanded.add(`tool:${task.tool.callId}`);

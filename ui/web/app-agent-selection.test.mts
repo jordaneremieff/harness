@@ -113,7 +113,7 @@ test('whole agent views retain messages independently of running, idle and incom
       assertAgentComposition(); assert.match(visibleText(agentControl('root')), /Exact retained conversation text/); assert.equal(app.agentComposer().state?.draft.text, 'Exact editable draft');
       assert.equal(agentControl('editor').disabled, false); assert.equal(agentControl('start').hidden, availability !== 'stored'); assert.equal(agentControl('start').disabled, false);
       assert.equal(agentControl('state').hidden, false);
-      assert.equal(agentControl('state-line').textContent, {live: 'Working · Steer at the next step; Queue adds a follow-up.', stored: 'Not running. Start it to send a message.', incompatible: 'This agent cannot run here. Messages are read only.'}[availability]);
+      assert.equal(agentControl('state-line').textContent, {live: 'Steer at the next step; Queue adds a follow-up.', stored: 'Not running. Start it to send a message.', incompatible: 'This agent cannot run here. Messages are read only.'}[availability]);
       assert.equal(agentControl('model').disabled, true); assert.equal(agentControl('thinking').disabled, true);
       assert.equal(agentControl('send').hidden, availability !== 'live'); assert.equal(agentControl('send').disabled, availability !== 'live');
       assert.equal(agentControl('history-note').hidden, true);

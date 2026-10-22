@@ -14,7 +14,7 @@ test('working delivery guidance yields to lifecycle and settings feedback withou
   const editor = agentControl('editor') as HostNode & {placeholder: string}, line = agentControl('state');
   const chain = ancestors(editor); editor.focus();
   assert.equal(editor.placeholder, 'Message'); assert.match(editor.getAttribute('aria-label') ?? '', /^Message /);
-  assert.equal(line.querySelector('.composer-state-label')?.textContent, 'Working · Steer at the next step; Queue adds a follow-up.');
+  assert.equal(line.querySelector('.composer-state-label')?.textContent, 'Steer at the next step; Queue adds a follow-up.');
   assert.equal(line.classList.contains('composer-delivery-guidance'), true);
   for (const key of ['send', 'queue']) {assert.equal(agentControl(key).hidden, false); assert.equal(agentControl(key).disabled, true);}
   assert.equal(agentControl('stop').querySelector('.action-label')?.textContent, 'Stop');

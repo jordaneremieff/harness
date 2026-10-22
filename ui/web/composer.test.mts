@@ -1265,7 +1265,7 @@ test('recognized working commands replace delivery guidance until an ordinary me
   assert.equal(label?.textContent, 'Working'); assert.equal(elements.queue.hidden, true); assert.equal(elements.send.getAttribute('aria-label'), 'Run command /status');
   assert.equal(elements.send.title, 'Run /status on this agent. It sends no message');
   composer.setText('Continue with this change');
-  assert.equal(label?.textContent, 'Working · Steer at the next step; Queue adds a follow-up.'); assert.equal(elements.queue.hidden, false); assert.equal(elements.send.getAttribute('aria-label'), 'Steer message');
+  assert.equal(label?.textContent, 'Steer at the next step; Queue adds a follow-up.'); assert.equal(elements.queue.hidden, false); assert.equal(elements.send.getAttribute('aria-label'), 'Steer message');
   composer.setText('/status'); assert.equal(label?.textContent, 'Working'); assert.equal(elements.queue.hidden, true);
   assert.equal(host.calls.some(call => call.path.endsWith('/inputs') || call.path.endsWith('/command')), false); composer.destroy();
 });

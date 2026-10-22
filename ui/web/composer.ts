@@ -232,7 +232,7 @@ export class Composer {
   private combinedState(view?:ComposerStateView):ComposerStateView|undefined {
     const settings=this.settingsState;
     if(!settings&&!view&&this.working&&!this.gated){
-      const line=this.current&&this.commandDraft(this.current)?'Working':'Working · Steer at the next step; Queue adds a follow-up.';
+      const line=this.current&&this.commandDraft(this.current)?'Working':'Steer at the next step; Queue adds a follow-up.';
       return {line,label:line};
     }
     if(!settings)return view;if(!view)return settings;
