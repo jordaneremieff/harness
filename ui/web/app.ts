@@ -722,7 +722,9 @@ function threadName(identity: string): string {
   const caption = toolSubjectCaption(identity);
   if (caption?.name) return caption.name;
   if (caption && !/^(Unresolved|Unnamed)\b/.test(caption.text)) return caption.text;
-  return picker.sessionTitle(identity) ?? `Unnamed conversation · ${identity.slice(0, 8)}`;
+  const titled = picker.sessionTitle(identity); if (titled) return titled;
+  const known = identityFallback(identity);
+  return known.startsWith('Unnamed conversation') ? `Unnamed conversation · ${identity.slice(0, 8)}` : known;
 }
 function identityFallback(identity: string): string { return currentSenderCaption({identity}); }
 const threadReader = new ThreadReader({
