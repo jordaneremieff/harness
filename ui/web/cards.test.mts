@@ -5,7 +5,8 @@ import type { PartView } from '../shared/api.ts';
 import type { PresentationContext, ToolPresentationSource } from './transcript-presentation.ts';
 
 class Node extends EventTarget {
-  children: Node[] = []; private text = ''; className = ''; open = false;
+  children: Node[] = []; private text = ''; className = ''; open = false; title = '';
+  readonly classList = {add: (name: string): void => { this.className = [...new Set([...this.className.split(' ').filter(Boolean), name])].join(' '); }};
   get textContent(): string { return this.text + this.children.map(child => child.textContent).join(''); }
   set textContent(value: string) { this.text = value; this.children = []; }
   append(...nodes: Node[]): void { for (const node of nodes) this.children.push(...(node.tag === '#fragment' ? node.children : [node])); }
@@ -182,7 +183,7 @@ test('source read colors exclude errors, redaction, unknown paths, other tools a
 });
 test('collapsed supplied comparisons reveal later changes with bounded context and remaining counts', () => {
   setup();
-  for (const prefix of ['same\n'.repeat(2000), '😀'.repeat(5000)]) {
+  for (const prefix of ['same\n'.repeat(2000)]) {
     const call = source('edit', {edits: [{oldText: `${prefix}OLD\n${'tail\n'.repeat(20)}`, newText: `${prefix}NEW\n${'tail\n'.repeat(20)}`}, {oldText: 'x', newText: 'y'}]});
     assert.ok(call.args); call.args = {...call.args, truncated: true}; const retained = JSON.stringify(call);
     const preview = node(presentToolPreview(call));
@@ -192,6 +193,9 @@ test('collapsed supplied comparisons reveal later changes with bounded context a
     assert.ok(preview.textContent.length <= 1200); assert.ok(preview.textContent.trimEnd().split('\n').length <= 6);
     assert.equal(preview.textContent.isWellFormed(), true); assert.equal(JSON.stringify(call), retained);
   }
+  const oversized = source('edit', {oldText: `${'😀'.repeat(5000)}OLD\n${'tail\n'.repeat(20)}`, newText: `${'😀'.repeat(5000)}NEW\n${'tail\n'.repeat(20)}`});
+  const omitted = node(presentToolPreview(oversized));
+  assert.doesNotMatch(omitted.textContent, /OLD|NEW/); assert.match(omitted.textContent, /Later context omitted/); assert.equal(omitted.textContent.isWellFormed(), true);
   const exhausted = node(presentToolPreview(source('edit', {oldText: `${'x'.repeat(65536)}old`, newText: `${'x'.repeat(65536)}new`})));
   assert.match(exhausted.textContent, /First difference not located within scan limit/); assert.doesNotMatch(exhausted.textContent, /No differing text/);
 });
@@ -235,7 +239,7 @@ test('text made of prose and JSON lines previews each element in order, never as
   // A JSON object then a prose line: the object's readable text, then the prose line, with no brace and no identifier.
   const object = {requestId: id, ownerId: id, message: 'The composer round is released.\n\nReleased:\n- the first change', senderIdentity: id};
   const reported = resultPreview(parts(`${JSON.stringify(object)}\nIf the recipient is busy, this report waits.`, [object, 'If the recipient is busy, this report waits.']));
-  assert.equal(reported, 'The composer round is released.\nReleased:…\nIf the recipient is busy, this report waits.'); assert.doesNotMatch(reported, /[{}]|requestId|[0-9a-f]{8}-[0-9a-f]{4}/);
+  assert.equal(reported, 'The composer round is released.\nReleased:\nIf the recipient is busy, this report waits.'); assert.doesNotMatch(reported, /[{}]|requestId|[0-9a-f]{8}-[0-9a-f]{4}/);
   // Prose then an object: the prose line, then the object's readable facts; identifiers and digests are left out.
   const facts = {iteration: '1.10', commit, assetDigest: digest}, fatal = 'fatal: Needed a single revision';
   const built = resultPreview(parts(`${fatal}\n${JSON.stringify(facts)}`, [fatal, facts])); assert.equal(built, `${fatal}\niteration: 1.10`);
@@ -360,13 +364,13 @@ test('a structured summary is plain prose text and is never parsed as Markdown',
   assert.equal(presentResultPreview({callId: 'tool', name: 'custom', status: 'error', result}), undefined);
   assert.equal(presentResultPreview({callId: 'tool', name: 'custom', status: 'success', result: [{type: 'text', text: '[protected text]', redacted: true, structured: {value: {hidden: 'never'}, truncated: false}}]}), undefined);
 });
-test('prose previews keep the shortened-text mark and bound their own nodes', () => {
+test('prose previews omit an oversized first line without a mark and bound their own nodes', () => {
   setup();
   const long = node(presentResultPreview(readSource('a.md', `# Heading\n\n${'word '.repeat(400)}`)));
-  assert.match(long.textContent, /…$/);
+  assert.equal(long.textContent, 'Heading');
   const dense = `${'*a* '.repeat(200)}`.trim();
-  const bounded = node(presentResultPreview(readSource('a.md', dense)));
-  assert.ok(walk(bounded).length < 400); assert.match(bounded.textContent, /…$/);
+  const faded = node(presentResultPreview(readSource('a.md', dense)));
+  assert.doesNotMatch(faded.textContent, /…/); assert.ok(walk(faded).length < 400);
   const table = node(presentResultPreview(readSource('a.md', '| A | B |\n| --- | --- |\n| 1 | `two` |')));
   assert.equal(table.textContent, 'A · B 1 · two');
   const quote = node(presentResultPreview(readSource('a.md', '> quoted **text**\n\n1. one\n2. two')));
@@ -418,7 +422,7 @@ test('a wait card line names the responder and quotes the first line of the answ
   setup();
   assert.equal(awaitedText(awaitedSource([answered(KNOWN, 'I reverted the change.\nSecond line.')])), 'Round 12 builder K4: “I reverted the change.”');
   const long = 'word '.repeat(30).trim(), line = awaitedText(awaitedSource([answered(KNOWN, long)])) ?? '';
-  assert.equal(line, `Round 12 builder K4: “${long.slice(0, 80).trimEnd()}…”`);
+  assert.equal(line, `Round 12 builder K4: “${long}”`);
   assert.doesNotMatch(line, /decision|queuedInputCount|settled/);
 });
 test('a wait card line uses plain words and keeps the full answer source', () => {
@@ -433,15 +437,15 @@ test('a wait card line uses plain words and keeps the full answer source', () =>
     assert.equal(raw?.type === 'text' && raw.text, JSON.stringify({results: [answered(KNOWN, answer)], unresolved: [], originalInputs: [1953], decision: 'settled', queuedInputCount: 19}));
   }
 });
-test('a wait card line keeps its 80-character cut after mark removal and skips blank lines', () => {
+test('a wait card line quotes the whole first line after mark removal and skips blank lines', () => {
   setup();
   const line = (answer: string) => awaitedText(awaitedSource([answered(KNOWN, answer)]));
   assert.equal(line(`**${'a'.repeat(80)}**`), `Round 12 builder K4: “${'a'.repeat(80)}”`);
-  assert.equal(line(`**${'a'.repeat(81)}**`), `Round 12 builder K4: “${'a'.repeat(80)}…”`);
+  assert.equal(line(`**${'a'.repeat(81)}**`), `Round 12 builder K4: “${'a'.repeat(81)}”`);
   assert.equal(line(' \r\n\t\r## Result\nNext text'), 'Round 12 builder K4: “Result”');
   assert.equal(line(' \t\n'), 'Round 12 builder K4: answer unavailable');
   assert.equal(line(`\`${'😀'.repeat(40)}\``), `Round 12 builder K4: “${'😀'.repeat(40)}”`);
-  assert.equal(line(`\`${'😀'.repeat(41)}\``), `Round 12 builder K4: “${'😀'.repeat(40)}…”`);
+  assert.equal(line(`\`${'😀'.repeat(41)}\``), `Round 12 builder K4: “${'😀'.repeat(41)}”`);
 });
 test('a wait card line counts further answers and results still waiting, and marks missing answers', () => {
   setup();
