@@ -155,15 +155,19 @@ export class TabStrip {
     const tail = identity && !identity.hidden ? identity.offsetWidth + Number.parseFloat(getComputedStyle(node).columnGap) : 0;
     node.style.setProperty('--tab-identity-width', `${tail}px`);
   }
+  /** Paints the draft, new-message and idle-age marks and returns their accessible phrases. */
+  private paintMarks(node: HTMLElement, tab: ConversationTab): string[] {
+    const idleAt = this.hooks.idleSince?.(tab), age = idleAt === undefined ? '' : compactAge(idleAt, Date.now());
+    const held = this.hooks.draft?.(tab) === true, fresh = this.hooks.unread?.(tab) ?? 0;
+    node.dataset.draft = String(held); node.dataset.unread = String(fresh > 0);
+    const ageNode = node.querySelector<HTMLElement>('.tab-age'); if (ageNode) {ageNode.hidden = !age; ageNode.textContent = age;}
+    const mark = node.querySelector<HTMLElement>('.tab-draft'); if (mark) mark.hidden = !held;
+    const news = node.querySelector<HTMLElement>('.tab-new'); if (news) {news.hidden = fresh <= 0; news.textContent = fresh > 99 ? '99+' : String(fresh);}
+    return [fresh > 0 ? `${fresh} new ${fresh === 1 ? 'message' : 'messages'}` : '', held ? 'unsent draft' : '', age ? `idle ${age}` : ''];
+  }
   private paintTab(node: HTMLElement, tab: ConversationTab, selected: boolean): void {
     const label = this.hooks.label(tab); const tail = this.tail(tab); const accessible = tail ? `${label}, ${tail}` : label; const status = this.hooks.status(tab);
-    const idleAt=this.hooks.idleSince?.(tab),age=idleAt===undefined?'':compactAge(idleAt,Date.now());
-    const held=this.hooks.draft?.(tab)===true;node.dataset.draft=String(held);
-    const fresh=this.hooks.unread?.(tab)??0;node.dataset.unread=String(fresh>0);
-    const statusLabel=[this.paintSessionState(node,status.word,status.label),fresh>0?`${fresh} new ${fresh===1?'message':'messages'}`:'',held?'unsent draft':'',age?`idle ${age}`:''].filter(Boolean).join(' · ');
-    const ageNode=node.querySelector<HTMLElement>('.tab-age');if(ageNode){ageNode.hidden=!age;ageNode.textContent=age;}
-    const mark=node.querySelector<HTMLElement>('.tab-draft');if(mark)mark.hidden=!held;
-    const news=node.querySelector<HTMLElement>('.tab-new');if(news){news.hidden=fresh<=0;news.textContent=fresh>99?'99+':String(fresh);}
+    const statusLabel=[this.paintSessionState(node,status.word,status.label),...this.paintMarks(node,tab)].filter(Boolean).join(' · ');
     node.title = [label, tab.kind === 'file' ? tab.path : tab.kind === 'agent' ? tab.identity : '', statusLabel].filter(Boolean).join(' · ');
     node.setAttribute('aria-label', `${accessible}${statusLabel ? `, ${statusLabel}` : ''}`); node.setAttribute('aria-selected', String(selected)); node.tabIndex = selected ? 0 : -1;
     const compact=!selected&&this.hooks.unnamed?.(tab)===true;node.dataset.unnamed=String(compact);

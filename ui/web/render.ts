@@ -561,13 +561,17 @@ export class Transcript {
     }
     this.chronological = entries;
     this.tasks.update(entries,this.joined);
+    this.noteArrivals(entries);
+    this.deriveRows(); this.prune(); this.schedule();
+  }
+  /** Records activity time, counts new messages while the transcript is shown elsewhere, and announces those below the view. */
+  private noteArrivals(entries: EntryView[]): void {
     const tail = entries.at(-1), signature = tail ? `${tail.id}:${(tail.messages ?? []).map(message => message.parts.length).join(',')}` : '';
     if (this.activitySignature !== undefined && signature !== this.activitySignature) this.activityAt = Date.now();
     this.activitySignature = signature;
     const away = this.hidden(), arrived = this.arrivals.observe(entries, !this.follow || away, this.hooks.operatorInput === true);
     if (arrived > 0 && away) { this.unreadCount += arrived; if (this.follow) this.arrivals.clear(); this.hooks.unread?.(); }
     else if (arrived > 0) { this.syncLatest(); if (this.arrivals.count === arrived) announce('New messages below'); }
-    this.deriveRows(); this.prune(); this.schedule();
   }
   taskRows(): readonly ConversationTask[] {return [...this.tasks.sent,...this.tasks.asked];}
   acceptTaskResult(value:ResultInspection):void {let changed=false;for(const row of this.tasks.sent)if(row.tool&&this.tasks.recordResult(row.tool.callId,value))changed=true;if(changed)this.schedule();}
