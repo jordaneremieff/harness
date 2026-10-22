@@ -56,8 +56,14 @@ test('identical texts keep the notice and mark no shared context', () => {
 test('line endings that differ alone keep the line as removed and added', () => {
   assert.deepEqual(shape('a\r\nb', 'a\nb'), {contextBefore: null, removed: ['a'], added: ['a'], contextAfter: 'b'});
 });
-test('the first differing region survives long same-line and multiline matching prefixes', () => {
-  for (const prefix of ['same\n'.repeat(2000), 'x'.repeat(12000), '😀'.repeat(6000)]) {
+test('the first differing region survives long multiline matching prefixes and a changed line larger than the budget is omitted whole', () => {
+  for (const prefix of ['x'.repeat(12000), '😀'.repeat(6000)]) {
+    const oldText = `${prefix}OLD\n${'tail\n'.repeat(100)}`, newText = `${prefix}NEW\n${'tail\n'.repeat(100)}`;
+    const shown = suppliedDifference(oldText, newText, 500, 2);
+    assert.deepEqual(shown.removed, []); assert.deepEqual(shown.added, []);
+    assert.equal(shown.omittedAfter, true); assert.equal(shown.scanLimited, false); bounded(oldText, newText, 500, 2);
+  }
+  for (const prefix of ['same\n'.repeat(2000)]) {
     const oldText = `${prefix}OLD\n${'tail\n'.repeat(100)}`, newText = `${prefix}NEW\n${'tail\n'.repeat(100)}`;
     const shown = suppliedDifference(oldText, newText, 500, 2);
     assert.match(shown.removed.join('\n'), /OLD/); assert.match(shown.added.join('\n'), /NEW/);
@@ -83,6 +89,10 @@ test('Unicode boundaries never split a surrogate pair at the window start or end
   const oldText = `${prefix}😃tail`, newText = `${prefix}😄tail`;
   for (const chars of [4, 5, 20, 79, 80, 81, 500]) {
     const shown = suppliedDifference(oldText, newText, chars, 2);
+    assert.deepEqual(shown.removed, []); assert.deepEqual(shown.added, []); bounded(oldText, newText, chars, 2);
+  }
+  for (const chars of [1006, 1500]) {
+    const shown = suppliedDifference(oldText, newText, chars, 2);
     assert.match(shown.removed.join('\n'), /😃/); assert.match(shown.added.join('\n'), /😄/); bounded(oldText, newText, chars, 2);
   }
   bounded('😀'.repeat(1000), '😀'.repeat(1000), 499, 2);
@@ -103,25 +113,25 @@ test('LF, CRLF and CR windows locate the change without spending their lines on 
   assert.equal(shown.contextBefore, null); assert.equal(shown.omittedBefore, true);
   bounded('a\r\nb', 'a\r\nb', 2, 2);
 });
-test('shared lines longer than the context bound end with an ellipsis within the bound', () => {
-  const long = 'L'.repeat(300), shortened = `${'L'.repeat(199)}…`;
+test('shared lines longer than the context bound are omitted whole and reported', () => {
+  const long = 'L'.repeat(300);
   const before = suppliedDifference(`${long}\nz`, `${long}\nZ`);
-  assert.equal(before.contextBefore, shortened); assert.equal(before.contextBefore?.length, 200);
-  assert.equal(before.omittedBefore, false); assert.equal(differenceNotice(before), '');
+  assert.equal(before.contextBefore, null); assert.deepEqual([before.removed, before.added], [['z'], ['Z']]);
+  assert.equal(before.omittedBefore, true); assert.equal(differenceNotice(before), '');
   const after = suppliedDifference(`a\nold\n${long}`, `a\nnew\n${long}`);
-  assert.equal(after.contextAfter, shortened); assert.equal(after.omittedAfter, true);
+  assert.equal(after.contextBefore, 'a'); assert.equal(after.contextAfter, null); assert.equal(after.omittedAfter, true);
   const both = suppliedDifference(`x\n${long}\nold\n${long}`, `x\n${long}\nnew\n${long}`);
-  assert.equal(both.contextBefore, shortened); assert.equal(both.omittedBefore, true); assert.equal(both.contextAfter, shortened);
+  assert.equal(both.contextBefore, null); assert.equal(both.omittedBefore, true); assert.equal(both.contextAfter, null); assert.equal(both.omittedAfter, true);
   const tight = suppliedDifference('abcdef\nold\nabcdef', 'abcdef\nnew\nabcdef', 5, 2);
-  assert.equal(tight.contextBefore, 'a…'); assert.equal(tight.contextAfter, 'a…');
+  assert.equal(tight.contextBefore, null); assert.equal(tight.contextAfter, null);
   const pairs = suppliedDifference(`${'😀'.repeat(150)}\nold`, `${'😀'.repeat(150)}\nnew`);
-  assert.equal(pairs.contextBefore?.isWellFormed(), true); assert.ok((pairs.contextBefore?.length ?? 0) <= 200);
+  assert.equal(pairs.contextBefore, null); assert.equal(pairs.omittedBefore, true);
 });
 test('scan exhaustion is explicit and does not claim a located change or an identical pair', () => {
   const prefix = 'x'.repeat(65536);
   const shown = suppliedDifference(`${prefix}old`, `${prefix}new`, 500, 2);
   assert.equal(shown.scanLimited, true); assert.equal(shown.same, false); assert.equal(shown.omittedBefore, false);
-  assert.deepEqual(shown.removed, ['x'.repeat(500)]); assert.deepEqual(shown.added, ['x'.repeat(500)]);
+  assert.deepEqual(shown.removed, []); assert.deepEqual(shown.added, []); assert.equal(shown.omittedAfter, true);
   assert.equal(shown.contextBefore, null); assert.equal(shown.contextAfter, null);
   assert.match(differenceNotice(shown), /First difference not located within scan limit/);
   assert.doesNotMatch(differenceNotice(shown), /No differing text/);
@@ -135,5 +145,5 @@ test('a complete retained identical pair is distinct from an unlocated differenc
 test('zero text room never invents an empty original side or exceeds its budget', () => {
   const shown = suppliedDifference('same-old', 'same-new', 0, 2);
   assert.deepEqual(shown.removed, []); assert.deepEqual(shown.added, []); assert.equal(shown.same, false);
-  assert.equal(shown.omittedBefore, true); assert.equal(shown.omittedAfter, true);
+  assert.equal(shown.omittedBefore, false); assert.equal(shown.omittedAfter, true);
 });

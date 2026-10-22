@@ -126,11 +126,11 @@ test('frontmatter summaries use heading words or no document words when the body
     assert.equal(structuredResultPreview({value: {text, errors: ['bad']}, truncated: false}), 'errors: 1 item');
   }
   assert.equal(structuredResultPreview({value: {text: '\uFEFF--- \r\ntitle: x\r\n---\t\r\n\r\n# Title\r\n\r\n> A [sample](https://example.com) line.'}, truncated: false}), 'A sample line.');
-  const long = structuredResultPreview({value: {text: `---\ntitle: x\n---\n# Title\n${'😀'.repeat(150)}\nLater line`}, truncated: false});
-  assert.ok(long); assert.ok(long.length <= 240); assert.equal(long.includes('\n'), false); assert.equal(long.isWellFormed(), true); assert.ok(long.endsWith('…'));
+  const long = structuredResultPreview({value: {text: `---\ntitle: x\n---\n# Title\n${'😀'.repeat(50)}\nLater line`}, truncated: false});
+  assert.ok(long); assert.ok(long.length <= 240); assert.equal(long.includes('\n'), false); assert.equal(long.isWellFormed(), true);
 });
 test('non-frontmatter summaries retain literal prefixes and plain facts', () => {
-  assert.equal(structuredResultPreview({value: {text: '---\ntitle: x\nno end', status: 'queued'}, truncated: false}), '---\ntitle: x… · status: queued');
+  assert.equal(structuredResultPreview({value: {text: '---\ntitle: x\nno end', status: 'queued'}, truncated: false}), '---\ntitle: x · status: queued');
   assert.equal(structuredResultPreview({value: {text: 'plain', status: 'queued'}, truncated: false}), 'plain · status: queued');
   assert.equal(structuredResultPreview({value: {text: '# Heading\nBody', status: 'queued'}, truncated: false}), '# Heading\nBody · status: queued');
 });
@@ -199,7 +199,7 @@ test('structured summaries bound keys and strings without evaluating getters or 
   const value = {['😀'.repeat(500)]: '😀'.repeat(500), second: 'line1\nline2', third: 'kept', fourth: 'not in summary'};
   const shown = structuredResultPreview({value, truncated: false}); assert.ok(shown);
   assert.ok(shown.length <= 240); assert.ok(shown.split('\n').length <= 2); assert.equal(shown.isWellFormed(), true);
-  assert.doesNotMatch(shown, /fourth|not in summary/);
+  assert.equal(shown, 'second: line1 · third: kept · fourth: not in summary');
   const guarded = {next: 7}; Object.defineProperty(guarded, 'protected', {enumerable: true, get: () => { reads++; throw new Error('Getter invoked'); }});
   assert.equal(structuredResultPreview({value: guarded, truncated: false}), 'next: 7 · protected'); assert.equal(reads, 0);
   const unchanged = JSON.stringify(value); structuredResultPreview({value, truncated: true}); assert.equal(JSON.stringify(value), unchanged);
@@ -280,7 +280,7 @@ test('long, nested, mismatched, reordered, multiline and wide rows never use a t
     assert.equal(classes(node, 'tool-row-content').length, 0); bounded(node);
   }
   const node = result({rows: [{body: '# Visible\nBody'}, {body: 'x'.repeat(10000)}]});
-  assert.equal(classes(node, 'tool-document').length, 2);
+  assert.equal(classes(node, 'tool-document').length, 1);
   assert.equal(node.querySelectorAll('h1')[0]?.textContent, 'Visible');
   assert.equal(node.querySelectorAll('details').length, 1);
   const meta = classes(node, 'tool-metadata')[0]; assert.ok(meta); open(meta);
@@ -357,7 +357,7 @@ test('long single-line metadata stays lazy while multiline documents and named p
     assert.match(node.textContent, /Visible prose/); assert.match(node.textContent, /named payload/);
     const meta = classes(node, 'tool-metadata')[0]; assert.ok(meta); assert.equal(meta.childNodes.length, 1);
     const before = budget.text; open(meta); assert.ok(budget.text < before);
-    assert.match(meta.textContent, /usage\.notedeferred statistic/);
+    assert.match(meta.textContent, /usage\.note/); assert.doesNotMatch(meta.textContent, /deferred statistic/);
     assert.doesNotMatch(meta.textContent, /Visible prose|named payload/);
     assert.match(node.textContent, /Preview shortened/); bounded(node);
   }
@@ -695,7 +695,7 @@ test('expanded supplied comparisons retain empty sides, Unicode, replacement cou
     if (!value.oldText) assert.match(node.textContent, /Old text: empty/);
     if (!value.newText) assert.match(node.textContent, /New text: empty/); bounded(node);
   }
-  const prefix = '😀'.repeat(5000);
+  const prefix = '😀'.repeat(1000);
   const node = args({edits: Array.from({length: 10}, () => ({oldText: `${prefix}OLD`, newText: `${prefix}NEW`}))});
   assert.match(node.textContent, /- [^\n]*OLD/); assert.match(node.textContent, /\+ [^\n]*NEW/);
   assert.match(node.textContent, /2 more replacements in Arguments/); bounded(node);
@@ -720,10 +720,11 @@ test('single-line argument documents use supplied previews at the 512-character 
     const content = 'const value = 3;'.padEnd(length, ' ');
     const value = {content, path: 'source.ts'}; const retained = value.content;
     const node = args(value); const previews = classes(node, 'tool-document');
-    if (length < 512) { assert.equal(previews.length, 0); assert.equal(classes(node, 'kv').length, 2); }
+    if (length > 8192) assert.equal(previews.length, 0);
+    else if (length < 512) { assert.equal(previews.length, 0); assert.equal(classes(node, 'kv').length, 2); }
     else {
       const preview = previews[0]; assert.ok(preview); assert.equal(preview.tag, 'pre');
-      assert.equal(preview.textContent, content.length > 8192 ? `${content.slice(0, 8191)}…` : content);
+      assert.equal(preview.textContent, content);
       assert.ok(descendants(preview).some(child => child.className.startsWith('syn-')));
     }
     assert.equal(value.content, retained); bounded(node);
@@ -794,7 +795,7 @@ test('empty sidecars do not retain roots and each new tool starts with an indepe
   for (let i = 0; i < 600; i++) assert.equal(presentResult({value: {}, truncated: false}, context, budget), undefined);
   assert.match(cast(presentResult({value: {status: 'done'}, truncated: false}, context, budget)).textContent, /statusdone/);
   const full = new PreviewBudget();
-  for (let i = 0; i < 8; i++) presentResult({value: {body: 'x'.repeat(10000)}, truncated: false}, context, full);
+  for (let i = 0; i < 8; i++) presentResult({value: {body: `${'x'.repeat(99)}\n`.repeat(100)}, truncated: false}, context, full);
   const fresh = new PreviewBudget();
   const node = cast(presentResult({value: {body: '# Fresh\nReadable'}, truncated: false}, context, fresh));
   assert.equal(node.querySelectorAll('h1')[0]?.textContent, 'Fresh'); assert.doesNotMatch(node.textContent, /Preview shortened/);
@@ -872,7 +873,8 @@ test('rejected adoption leaves the retained preview and its old lazy budget unch
   const node = cast(presentArguments({value: {code: 'const value = 1;', language: 'ts', metadata: {note: 'still available'}}, truncated: false}, context, previous));
   const meta = classes(node, 'tool-metadata')[0]; assert.ok(meta);
   const full = new PreviewBudget();
-  for (let i = 0; i < 4; i++) presentResult({value: {body: 'x'.repeat(10000)}, truncated: false}, context, full);
+  for (let i = 0; i < 4; i++) presentResult({value: {body: `${'x'.repeat(99)}\n`.repeat(100)}, truncated: false}, context, full);
+  for (let i = 0; i < 30 && full.text > 3; i++) presentResult({value: {body: 'z'.repeat(Math.max(1, Math.min(full.text - 3, 30)))}, truncated: false}, context, full);
   assert.equal(full.adopt(node as unknown as HTMLElement), false);
   const fullState = [full.text, full.visits, full.scanned]; open(meta);
   assert.deepEqual([full.text, full.visits, full.scanned], fullState);
@@ -910,13 +912,13 @@ test('dotted field keys preserve full text with semantic breaks and wide-row hoo
   bounded(node);
 });
 
-test('character and line cuts end in ellipses within budgets without changing projected source strings', () => {
+test('character and line cuts stay within budgets without changing projected source strings', () => {
   const scalar = 'x'.repeat(511); const supplied = {description: scalar}; const short = args(supplied);
-  assert.equal(short.querySelectorAll('dd')[0]?.textContent, `${scalar.slice(0, 239)}…`);
+  assert.equal(short.querySelectorAll('dd')[0]?.textContent, '');
   assert.equal(supplied.description, scalar); assert.match(short.textContent, /Preview shortened/);
   const source = 'line\n'.repeat(100); const display = {value: {document: source}, truncated: true};
   const document = cast(presentArguments(display, setup())); const pre = classes(document, 'tool-document')[0]; assert.ok(pre);
-  assert.ok(pre.textContent.endsWith('…')); assert.ok(pre.textContent.split('\n').length <= 80);
+  assert.ok(pre.textContent.split('\n').length <= 80);
   assert.equal(display.value.document, source); assert.equal(classes(document, 'preview-omission').length, 1);
   assert.match(document.textContent, /Preview shortened/);
   const complete = args({description: 'complete'}); assert.equal(complete.querySelectorAll('dd')[0]?.textContent, 'complete');

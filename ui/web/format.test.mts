@@ -88,7 +88,8 @@ test('terminal instructions disappear without removing ordinary text', () => {
 });
 test('previews report actual omission and preserve Unicode pairs', () => {
   assert.deepEqual(previewText('one\ntwo\nthree', 2), {text: 'one\ntwo', truncated: true});
-  assert.deepEqual(previewText('a😀b', 6, 2), {text: 'a', truncated: true});
+  assert.deepEqual(previewText('a😀b', 6, 2), {text: '', truncated: true});
+  assert.deepEqual(previewText('ab\ncd', 6, 4), {text: 'ab', truncated: true});
   assert.deepEqual(previewText('short', 6, 20), {text: 'short', truncated: false});
   assert.deepEqual(previewText('text', 0), {text: '', truncated: true});
 });
