@@ -1150,6 +1150,8 @@ pre.tool-document { font-family: var(--mono); font-size: var(--fs-code); line-he
 .statusline > :empty, .statusline > [hidden] { display: none; }
 .statusline:not(:has(> :not(:empty):not([hidden]))) { display: none; }
 .usage-fact { flex: none; white-space: nowrap; }
+.markdown-content li.task-item { list-style: none; }
+.markdown-content li.task-item > .task-box, .markdown-content li.task-item > p > .task-box { margin: 0 var(--s2) 0 calc(-1 * var(--s5)); vertical-align: middle; }
 .usage-group[data-pressure=high] { color: var(--warning); }
 .usage-group[data-pressure=critical] { color: var(--error); }
 .statusline > .draft-state { flex: none; color: var(--warning); }

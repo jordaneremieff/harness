@@ -43,10 +43,21 @@ function inline(nodes: MarkdownInline[], before = '', after = ''): DocumentFragm
   });
   return fragment;
 }
+/** A list item that starts with [ ] or [x] shows a read-only checkbox in place of the brackets; the source text keeps them. */
+function taskItem(li: HTMLElement): void {
+  const holder = li.firstElementChild?.tagName === 'P' ? li.firstElementChild : li;
+  const lead = holder.firstChild;
+  const match = lead && lead.nodeType === 3 ? /^\[([ xX])\] /.exec((lead as Text).data) : null;
+  if (!lead || !match) return;
+  (lead as Text).data = (lead as Text).data.slice(match[0].length);
+  const box = element('input', 'task-box'); box.type = 'checkbox'; box.disabled = true; box.checked = match[1] !== ' ';
+  box.setAttribute('aria-label', box.checked ? 'Done' : 'Not done');
+  holder.insertBefore(box, lead); li.classList.add('task-item');
+}
 function listBlock(node: Extract<MarkdownBlock, {type: 'list'}>): HTMLElement {
   const list = node.ordered ? element('ol') : element('ul');
   if (node.ordered) list.setAttribute('start', String(node.start));
-  for (const item of node.items) { const li = element('li'); li.append(...item.map(block)); list.append(li); }
+  for (const item of node.items) { const li = element('li'); li.append(...item.map(block)); taskItem(li); list.append(li); }
   return list;
 }
 /** Wrap changes only the scrollport's whitespace mode, not its text nodes. */
