@@ -374,7 +374,7 @@ test('first-use folder selection retains the inline session chooser after the ro
   const setup=directPicker(t);const root=new Node('main');let folder:string|undefined;
   const picker=new ProjectPicker({readSession: () => {}, agentPresentation:catalogPresentation,modal:setup.modal as unknown as Modal,snapshot:()=>setup.state,primary:()=>undefined,project:()=>folder,selection:async()=>{},reload:async()=>{},workingFolder:async path=> {folder=path;}});
   picker.mount(root as unknown as HTMLElement);await settle();picker.openProject();await settle();
-  const other=descendants(root).find(node=>node.tag==='button'&&node.textContent==='Other folder…');assert.ok(other);other.click();
+  const other=descendants(root).find(node=>node.tag==='button'&&node.textContent==='Other folder');assert.ok(other);other.click();
   const field=descendants(root).find(node=>node.id==='picker-project');assert.ok(field);field.value='/another-project';
   const use=descendants(root).find(node=>node.tag==='button'&&node.textContent==='Use folder');assert.ok(use);use.click();await settle();await settle();
   assert.equal(folder,'/another-project');assert.ok(descendants(root).find(node=>node.id==='picker-search'));
@@ -433,11 +433,11 @@ test('an unavailable launch project leaves a truthful error and explicit Project
   const setup = directPicker(t); setup.failList(); setup.picker.open(); await settle();
   assert.match(setup.error, /project directory does not exist/); assert.equal(setup.closed, false);
   assert.equal(setup.calls.some(call => call.path === '/api/primaries'), false);
-  setup.click('Change working folder'); setup.click('Other folder…'); assert.ok(descendants(setup.body).find(node => node.id === 'picker-project'));
+  setup.click('Change working folder'); setup.click('Other folder'); assert.ok(descendants(setup.body).find(node => node.id === 'picker-project'));
   assert.ok(descendants(setup.body).find(node => node.textContent === 'Use folder'));
 });
 test('without a primary or launch project the picker retains explicit project selection', async t => {
-  const setup = directPicker(t); setup.state.launchCwd = undefined; setup.picker.open(); await settle(); setup.click('Other folder…');
+  const setup = directPicker(t); setup.state.launchCwd = undefined; setup.picker.open(); await settle(); setup.click('Other folder');
   assert.ok(descendants(setup.body).find(node => node.id === 'picker-project'));
   assert.equal(setup.calls.some(call => call.path.includes('/api/sessions')), false);
 });
@@ -458,7 +458,7 @@ test('a row whose owner changed opens the saved path and a known conflict retain
 });
 test('Projects remains deliberate and exact paths validate before direct open or owner reuse', async t => {
   const setup = directPicker(t, {...active, sessionFile: saved.items[0].path}); setup.picker.open(); await settle();
-  setup.click('Change working folder'); setup.click('Other folder…'); assert.ok(descendants(setup.body).find(node => node.id === 'picker-project'));
+  setup.click('Change working folder'); setup.click('Other folder'); assert.ok(descendants(setup.body).find(node => node.id === 'picker-project'));
   setup.click('Use folder'); await settle(); const path = descendants(setup.body).find(node => node.id === 'picker-session-path'); assert.ok(path);
   path.value = 'relative.jsonl'; setup.click('Resume session'); await settle();
   assert.match(setup.error, /saved session path that starts with \//);
@@ -503,26 +503,26 @@ test('project loading retains its menu surface and folder autofocus exposes the 
   page.nextCursor = 'more'; page.total = 2; page.omitted = 1;
   globalThis.fetch = async () => Response.json({ok: true, data: page}); refresh.click(); await settle();
   assert.match(host.textContent, /1 of 2 projects shown · 1 entry is not listed/); assert.match(host.textContent, /More recent projects/);
-  setup.click('Other folder…'); const field = descendants(host).find(node => node.id === 'picker-project'); assert.ok(field);
+  setup.click('Other folder'); const field = descendants(host).find(node => node.id === 'picker-project'); assert.ok(field);
   assert.equal(field.value, path); assert.equal(field.focused, true); assert.equal(field.selectionStart, 0); assert.equal(field.selectionEnd, 0); assert.equal(field.scrollLeft, 0);
 });
 test('a late project reply retains action identity when new project rows precede the focused action', async t => {
   const setup = directPicker(t, active); let release: (response: Response) => void = () => {throw Error('Request not started');};
   globalThis.fetch = async () => new Promise<Response>(resolve => {release = resolve;});
   setup.picker.openProject();
-  const folder = descendants(setup.body).find(node => node.textContent === 'Other folder…'); assert.ok(folder);
+  const folder = descendants(setup.body).find(node => node.textContent === 'Other folder'); assert.ok(folder);
   assert.equal(folder.dataset.itemKey, 'folder');
   release(Response.json({ok: true, data: {items: [{path: '/new/project', name: 'project'}], total: 1, omitted: 0, nextCursor: null, observedAt: saved.observedAt}}));
   await settle();
   const rows = descendants(setup.body);
-  assert.equal(rows.find(node => node.textContent === 'Other folder…')?.dataset.itemKey, folder.dataset.itemKey);
+  assert.equal(rows.find(node => node.textContent === 'Other folder')?.dataset.itemKey, folder.dataset.itemKey);
   assert.deepEqual(rows.filter(node => node.dataset.itemKey?.startsWith('primary:') || node.dataset.itemKey?.startsWith('project:')).map(node => [node.textContent, node.dataset.itemKey]), [['/project', 'primary:current'], ['new/project', 'project:/new/project']]);
   assert.ok(rows.findIndex(node => node.dataset.itemKey === 'project:/new/project') < rows.findIndex(node => node.dataset.itemKey === 'folder'));
 });
 test('a late project reply never reopens a dismissed popup or replaces the folder dialog', async t => {
   const setup = directPicker(t); let release: (response: Response) => void = () => {throw Error('Request not started');};
   globalThis.fetch = async () => new Promise<Response>(resolve => {release = resolve;});
-  setup.picker.openProject(); setup.click('Other folder…');
+  setup.picker.openProject(); setup.click('Other folder');
   const field = descendants(setup.body).find(node => node.id === 'picker-project'); assert.ok(field);
   release(Response.json({ok: true, data: {items: [{path: '/late', name: 'Late project'}], total: 1, omitted: 0, nextCursor: null, observedAt: saved.observedAt}}));
   await settle(); assert.equal(descendants(setup.body).find(node => node.id === 'picker-project'), field);
@@ -655,9 +655,9 @@ test('chooser controls stay with their title, search and list disclosure while r
   const listDetails = folder.querySelector('.picker-list-details'); assert.ok(listDetails);
   const results = nodes.find(node => node.className === 'picker-results'); assert.ok(results); assert.equal(descendants(results).includes(footer), false); assert.ok(nodes.find(node => node.children.includes(results) && node.children.includes(footer)));
   assert.equal(results.children[0], folder); assert.ok(folder.children.includes(folder.querySelector('#picker-more') as Node));
-  assert.equal(listDetails.children.some(node => node.textContent === 'Session file…'), false);
+  assert.equal(listDetails.children.some(node => node.textContent === 'Session file'), false);
   const file = nodes.find(node => node.className === 'picker-file'); assert.ok(file);
-  assert.equal(file.children[0]?.textContent, 'Session file…');
+  assert.equal(file.children[0]?.textContent, 'Session file');
   const row = nodes.find(node => node.className === 'picker-session'); assert.ok(row);
   assert.equal(row.children[0]?.className, 'picker-select'); assert.equal(row.children[1]?.className, 'picker-age quiet');
   const resume=row.children[2];assert.ok(resume);assert.equal(resume.tag,'button');assert.equal(resume.textContent,'Resume');assert.equal(resume.disabled,false);const convert=row.children[3];assert.ok(convert);assert.equal(convert.tag,'button');assert.equal(convert.textContent,'Convert to Durable');assert.equal(convert.title,'Creates a new Durable conversation from saved context. Leaves the ordinary session unchanged.');assert.equal(convert.attributes['aria-description'],convert.title);const facts=row.querySelector('.picker-session-details');assert.ok(facts);assert.equal(row.children[4],facts);assert.equal(facts.tag,'details');assert.equal(facts.children[0]?.attributes['aria-label'],'Details for Saved title');assert.equal(setup.calls.some(call=>call.path==='/api/primaries'||call.path==='/api/agents/convert'),false);
@@ -677,14 +677,14 @@ test('first-use project selection keeps one inline host and recent rows directly
   assert.equal(setup.modal.token, 0); assert.match(root.textContent, /^Working folder/);
   const body = root.children.find(node => node.className === 'session-picker-body'); assert.ok(body);
   const recent = body.children.find(node => node.textContent === 'other'); assert.ok(recent);
-  const folder = body.children.find(node => node.textContent === 'Other folder…'); assert.ok(folder);
+  const folder = body.children.find(node => node.textContent === 'Other folder'); assert.ok(folder);
   assert.ok(body.children.indexOf(recent) < body.children.indexOf(folder)); recent.click(); await settle();
   assert.equal(setup.modal.token, 0); assert.match(root.textContent, /^Sessions in other/);
   assert.equal(setup.calls.filter(call => call.path === '/api/sessions?project=%2Fother').length, 1);
   assert.equal(setup.calls.some(call => call.path === '/api/primaries'), false);
 });
 test('Use this project immediately shows its sessions and folder validation stays beside its field', async t => {
-  const setup = directPicker(t); setup.picker.openProject(); await settle(); setup.click('Other folder…');
+  const setup = directPicker(t); setup.picker.openProject(); await settle(); setup.click('Other folder');
   const field = descendants(setup.body).find(node => node.id === 'picker-project'); assert.ok(field);
   field.value = 'relative'; const before = setup.calls.length; setup.click('Use folder');
   assert.equal(setup.calls.length, before); assert.match(setup.body.textContent, /working folder path that starts with/);
@@ -791,7 +791,7 @@ test('picker SVG actions retain names and options reveal exact-file input withou
   }
   const file = nodes.find(node => node.className === 'picker-file'); assert.ok(file); assert.equal(file.hidden, true);
   const options = nodes.find(node => node.attributes['aria-label'] === 'Saved session options'); assert.ok(options);
-  assert.equal(options.attributes['aria-haspopup'], 'menu'); options.click(); setup.click('Session file…');
+  assert.equal(options.attributes['aria-haspopup'], 'menu'); options.click(); setup.click('Session file');
   assert.equal(file.hidden, false); assert.equal(file.open, true);
   assert.equal(descendants(root).find(node => node.id === 'picker-session-path')?.focused, true);
   assert.equal(descendants(root).find(node => node.className === 'picker-sessions'), list); assert.deepEqual(list.children, rows);

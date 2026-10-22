@@ -163,7 +163,7 @@ test('an already-current CSS generation never hides its pending acknowledgment f
   const notice=f.notices.at(-1);assert.ok(notice);assert.equal(notice.state,'idle');assert.equal(devReloadPresentation(notice).text,'');assert.equal(f.styles.length,1);dev.destroy();
 });
 test('update footer words and actions distinguish retry, automatic recovery and stopped updates',()=> {
-  const labels = {idle:'',applied:'',ready:'Updating…',building:'Updating…',navigating:'Updating…','restart-required':'Restart required',reconnecting:'Reconnecting updates…',offline:'Reconnecting updates…'} as const;
+  const labels = {idle:'',applied:'',ready:'Updating',building:'Updating',navigating:'Updating','restart-required':'Restart required',reconnecting:'Reconnecting updates',offline:'Reconnecting updates'} as const;
   for(const [state,text] of Object.entries(labels)) {
     const view=devReloadPresentation({state:state as DevReloadNotice['state'],code:'none',retryable:true});
     assert.equal(view.text,text);assert.equal(view.action,null);assert.equal(view.detail,`${state} (none)`);

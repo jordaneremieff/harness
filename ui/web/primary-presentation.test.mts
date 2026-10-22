@@ -7,7 +7,7 @@ test('ready empty primary omits start text and retains its loading state', () =>
   const ready = primary('ready', 'idle');
   assert.equal(primaryEmpty(ready, false, true), undefined);
   assert.equal(primaryEmpty(ready, true, true), undefined);
-  assert.deepEqual(primaryEmpty(ready, false, false), {heading: 'Loading messages…', caption: ''});
+  assert.deepEqual(primaryEmpty(ready, false, false), {heading: 'Loading messages', caption: ''});
   assert.equal(primaryEmpty(primary('ready', 'running'), false, true), undefined);
   assert.equal(primaryEmpty(primary('failed', 'idle'), false, true), undefined);
   assert.equal(primaryEmpty(undefined, false, false)?.heading, 'Sessions');

@@ -52,7 +52,7 @@ test('routine dirty, fast in-flight, and acknowledged states stay empty', () => 
   assert.equal(draftPresentation({...pending, unsaved: false, outstandingSince: undefined}, 5000), '');
 });
 test('only an actual outstanding request reaches the slow-save threshold', () => {
-  assert.equal(draftPresentation(pending, 50 + SLOW_SAVE_MS), 'Saving draft…');
+  assert.equal(draftPresentation(pending, 50 + SLOW_SAVE_MS), 'Saving draft');
   assert.equal(draftPresentation({...pending, outstandingSince: undefined}, 5000), '');
   assert.equal(draftPresentation({...pending, outstandingSince: 5000}, 5001), '');
 });

@@ -74,7 +74,7 @@ test('recovery discovers all indexed copies and reads full tuples before disposi
   assert.equal(rows[3].all(node => node.textContent === 'Admission receipt').length, 0); assert.match(rows[3].textContent, /Message not sent/);
   rows[1].all(node => node.textContent === 'Restore to this draft')[0].dispatchEvent(new Event('click')); await drain();
   assert.deepEqual(calls.at(-1), {path: '/api/workspaces/w/unconfirmed/copy-1/restore', method: 'POST', body: {expectedDraftRevision: 4}}); assert.match(rows[1].textContent, /No message was sent/);
-  rows[0].all(node => node.textContent === 'Retry original message…')[0].dispatchEvent(new Event('click')); assert.ok(confirm); await confirm(); await drain();
+  rows[0].all(node => node.textContent === 'Retry original message')[0].dispatchEvent(new Event('click')); assert.ok(confirm); await confirm(); await drain();
   assert.ok(calls.some(call => call.path === '/api/operations/copy-0/reconcile' && JSON.stringify(call.body) === '{"retry":true}')); assert.equal(calls.some(call => call.path.includes('/inputs')), false);
 });
 test('saved draft rows use exact conversation names without borrowing a newer epoch', () => {

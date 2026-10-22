@@ -207,7 +207,7 @@ test('handoff return explicitly opens the captured file once without a picker or
   receipt.cwd = '/other-project'; receipt.sessionFile = '/other-project/other.jsonl';
   assert.equal(calls.length, 0); assert.equal(setup.modal.token, 1);
   assert.match(textOf(setup.body), /Exit Pi in the terminal before you resume here\. The browser does not detect other writers\./);
-  assert.equal(setup.find('Resume here').className, 'main-action'); setup.find('Open session…');
+  assert.equal(setup.find('Resume here').className, 'main-action'); setup.find('Open session');
   selected = {...primary, cwd: '/other-project', sessionFile: '/other-project/other.jsonl'};
   const resume = setup.find('Resume here'); resume.dispatchEvent(new Event('click')); resume.dispatchEvent(new Event('click')); await admitted.promise;
   assert.equal(resume.disabled, true); assert.equal(setup.modal.token, 1);
@@ -227,7 +227,7 @@ for (const state of ['rejected', 'uncertain'] as const) test(`handoff return ret
   assert.deepEqual(calls, ['/api/operations', '/api/primaries']); assert.equal(reloads, 0);
   assert.equal(setup.modal.openNow, true); assert.equal(setup.modal.token, 1); assert.equal(resume.disabled, false);
   assert.equal(setup.body.children[0]?.textContent, handoff.command); assert.match(textOf(setup.nodes.get('modal-error') as FakeNode), /No confirmed return/);
-  setup.find('Open session…');
+  setup.find('Open session');
 });
 test('handoff results with invalid receipt paths retain the command and discovery without direct resume or effect', t => {
   const setup = handoffSetup(t); let calls = 0; globalThis.fetch = async () => {calls++; throw Error('No request expected');};
@@ -236,7 +236,7 @@ test('handoff results with invalid receipt paths retain the command and discover
     const result = {...setup.result, id: `handoff-${index}`, receipt: {kind: 'rpc' as const, result: {value, truncated: false}}};
     setup.actions.handoffResult(result);
     assert.equal(setup.modal.token, index + 1); assert.equal(setup.modal.openNow, true);
-    assert.equal(setup.body.children[0]?.textContent, handoff.command); setup.find('Open session…');
+    assert.equal(setup.body.children[0]?.textContent, handoff.command); setup.find('Open session');
     const buttons = setup.body.querySelectorAll('button');
     assert.ok(buttons.some(node => node.attributes.get('aria-label') === 'Copy command'));
     assert.equal(buttons.some(node => node.textContent === 'Resume here'), false); assert.equal(calls, 0);
@@ -520,7 +520,7 @@ test('Message input opens the workspace preference without mutation and the nati
     const selections: unknown[] = [], workspace = {enterSendsMessages: enabled};
     const f = paletteFixture({snapshot: () => ({workspace} as Snapshot), selection: async value => {selections.push(value); workspace.enterSendsMessages = value.enterSendsMessages;}});
     try {
-      const entries = f.actions.paletteEntries(), item = entries.find(row => row.name === 'Message input…'); assert.ok(item);
+      const entries = f.actions.paletteEntries(), item = entries.find(row => row.name === 'Message input'); assert.ok(item);
       assert.equal(entries.some(row => row.name === 'Enter sends messages'), false);
       assert.equal(rankPalette(entries, 'Enter sends messages')[0]?.item, item);
       for (const alias of ['newline', 'Shift+Enter', 'Ctrl+Enter', 'Command+Enter']) assert.equal(rankPalette(entries, alias)[0]?.item, item);
@@ -566,10 +566,10 @@ test('the palette lists the one sidebar action that applies and still finds it b
 test('palette covers every displaced control and session availability follows the menu', () => {
   const actions = new Actions(context());
   const names = actions.paletteEntries().filter(item => item.source === 'app').map(item => item.name);
-  assert.deepEqual(names, ['New session', 'Sessions', 'Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Saved drafts and messages', 'Appearance', 'Message input…', 'Agent presentation control', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Notifications', 'Refresh agents', 'Refresh files', 'Insert /agent new', 'Hide sidebar', 'Projects', 'Model', 'Thinking', 'Sent and received tasks…']);
+  assert.deepEqual(names, ['New session', 'Sessions', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Conversation details', 'Saved drafts and messages', 'Appearance', 'Message input', 'Agent presentation control', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Notifications', 'Refresh agents', 'Refresh files', 'Insert /agent new', 'Hide sidebar', 'Projects', 'Model', 'Thinking', 'Sent and received tasks']);
   const absent = new Actions(context({primary: () => undefined})).paletteEntries();
   const disabled = absent.filter(item => !item.enabled).map(item => item.name);
-  assert.deepEqual(disabled, ['Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Model', 'Thinking', 'Sent and received tasks…']);
+  assert.deepEqual(disabled, ['Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Model', 'Thinking', 'Sent and received tasks']);
   const starting = new Actions(context({primary: () => ({...primary, lifecycle: 'starting'})})).paletteEntries();
   assert.equal(starting.find(item => item.name === 'New session')?.enabled, true);
   assert.equal(starting.find(item => item.name === 'Model')?.enabled, false);
@@ -592,19 +592,19 @@ test('transcript actions follow the focused view without enabling Primary execut
   const names = ['Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text'];
   for (const name of names) {const item = actions.paletteEntries().find(item => item.name === name); assert.ok(item); assert.equal(item.enabled, true); item.run();}
   assert.deepEqual(calls, ['tools:true', 'tools:false', 'thinking:true', 'thinking:false', 'find']);
-  for (const name of ['Fork from message…', 'Compact…', 'Automatic retry…', 'Automatic compaction…', 'Continue in terminal…', 'Model', 'Thinking']) assert.equal(actions.paletteEntries().find(item => item.name === name)?.enabled, false);
+  for (const name of ['Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Model', 'Thinking']) assert.equal(actions.paletteEntries().find(item => item.name === name)?.enabled, false);
   available = false; for (const name of names) assert.equal(actions.paletteEntries().find(item => item.name === name)?.enabled, false);
   const unrelatedPrimary = new Actions(context({hasTranscript: () => false}));
   for (const name of names) assert.equal(unrelatedPrimary.paletteEntries().find(item => item.name === name)?.enabled, false);
-  assert.equal(unrelatedPrimary.paletteEntries().find(item => item.name === 'Compact…')?.enabled, true);
+  assert.equal(unrelatedPrimary.paletteEntries().find(item => item.name === 'Compact')?.enabled, true);
 });
 test('retry requires failure evidence while retained tasks stay reachable without live capability', () => {
   const actions = new Actions(context({primary: () => ({...primary, lastError: {code: 'failed', message: 'Failure', retry: 'manual'}}), selectedAgent: () => ({identity: 'agent-id'})}));
   assert.equal(actions.paletteEntries().some(item => item.name === 'Review message'), true);
   assert.equal(actions.paletteEntries().some(item => item.name === 'Copy agent ID'), true);
-  assert.equal(actions.paletteEntries().some(item => item.name === 'Sent and received tasks…'), true);
+  assert.equal(actions.paletteEntries().some(item => item.name === 'Sent and received tasks'), true);
   const inspect = new Actions(context({selectedAgent: () => ({identity: 'agent-id', capabilities: {history: true, observe: true, input: false, abort: false, configure: false, inspect: true}})}));
-  assert.equal(inspect.paletteEntries().some(item => item.name === 'Sent and received tasks…'), true);
+  assert.equal(inspect.paletteEntries().some(item => item.name === 'Sent and received tasks'), true);
   assert.equal(new Actions(context()).paletteEntries().some(item => /Copy agent|Inspect agent|Review retry/.test(item.name)), false);
 });
 test('palette uses ranked rows, marked names and input-owned keyboard selection', async () => {
@@ -644,11 +644,11 @@ test('agent-selected palette keeps ready Primary actions available but puts thei
   globalThis.fetch = async () => commandResponse(['imported'], null);
   let compactions = 0; const actions = new Actions(context({selectedAgent: () => ({identity: 'selected'}), hasTranscript: () => true}));
   actions.compact = () => {compactions++;}; await actions.load('commands'); const entries = actions.paletteEntries();
-  for (const name of ['Compact…', 'Fork from message…', 'Model', 'Thinking']) {const item = entries.find(entry => entry.name === name); assert.ok(item); assert.equal(item.enabled, true); assert.equal(item.priority, 2);}
+  for (const name of ['Compact', 'Fork from message', 'Model', 'Thinking']) {const item = entries.find(entry => entry.name === name); assert.ok(item); assert.equal(item.enabled, true); assert.equal(item.priority, 2);}
   const imported = entries.find(item => item.name === 'Insert /imported'); assert.ok(imported); assert.equal(imported.priority, 2);
-  assert.equal(entries.find(item => item.name === 'Message input…')?.priority, 1); assert.equal(entries.find(item => item.name === 'Sent and received tasks…')?.priority, 0);
-  const ranked = rankPalette(entries, '').map(match => match.item.name); assert.ok(ranked.indexOf('Sent and received tasks…') < ranked.indexOf('Compact…'));
-  entries.find(item => item.name === 'Compact…')?.run(); assert.equal(compactions, 1);
+  assert.equal(entries.find(item => item.name === 'Message input')?.priority, 1); assert.equal(entries.find(item => item.name === 'Sent and received tasks')?.priority, 0);
+  const ranked = rankPalette(entries, '').map(match => match.item.name); assert.ok(ranked.indexOf('Sent and received tasks') < ranked.indexOf('Compact'));
+  entries.find(item => item.name === 'Compact')?.run(); assert.equal(compactions, 1);
 });
 test('palette omits App badges while preserving unavailable reasons and meaningful sources', async () => {
   const f = paletteFixture(); try {
@@ -797,7 +797,7 @@ test('hidden agent aliases reuse command ranking without false marks on the disp
 test('the palette keeps canonical browser actions and their slash aliases without duplicate rows', async () => {
   globalThis.fetch = async () => Response.json({ok: true, data: {items: [{name: 'fixture', description: 'Public command', source: 'extension'}], nextCursor: null, revision: '1'}});
   const actions = new Actions(context()); await actions.load('commands'); const inventory = actions.commandOptions();
-  const rows = actions.paletteEntries(); const aliases = [['new', 'New session'], ['resume', 'Sessions'], ['fork', 'Fork from message…'], ['compact', 'Compact…'], ['model', 'Model'], ['thinking', 'Thinking']] as const;
+  const rows = actions.paletteEntries(); const aliases = [['new', 'New session'], ['resume', 'Sessions'], ['fork', 'Fork from message'], ['compact', 'Compact'], ['model', 'Model'], ['thinking', 'Thinking']] as const;
   for (const [alias, name] of aliases) {
     assert.equal(rows.filter(row => row.name === name).length, 1);
     assert.equal(rows.some(row => row.name === `/${alias}` && row.source === 'app'), false);
@@ -910,11 +910,11 @@ test('session menus reuse palette availability and preserve primary-only actions
   assert.equal(actions.sessionMenuEntries().some(item => item.name === 'Copy agent ID'), false);
   const selected = new Actions(context({selectedAgent: () => ({identity: 'selected-agent'})}));
   assert.equal(selected.sessionMenuEntries(true).some(item => item.name === 'Copy agent ID'), true);
-  assert.equal(selected.sessionMenuEntries(true).some(item => item.name === 'Sent and received tasks…'), true);
+  assert.equal(selected.sessionMenuEntries(true).some(item => item.name === 'Sent and received tasks'), true);
   assert.equal(selected.sessionMenuEntries(true).some(item => item.name === 'New session'), false);
   const capable = new Actions(context({selectedAgent: () => ({identity: 'selected-agent', capabilities: {history: true, observe: true, input: true, abort: true, configure: false, inspect: true}})}));
 
-  assert.equal(capable.sessionMenuEntries(true).some(item => item.name === 'Sent and received tasks…'), true);
+  assert.equal(capable.sessionMenuEntries(true).some(item => item.name === 'Sent and received tasks'), true);
 });
 test('session menu clicks dispatch named actions and disabled rows reject dispatch', () => {
   const f = paletteFixture(); try {
@@ -922,11 +922,11 @@ test('session menu clicks dispatch named actions and disabled rows reject dispat
     f.actions.sessionMenu(); const list = f.body.children[0]; assert.ok(list);
     assert.equal(list.className, 'options session-menu');
     list.children.find(row => row.textContent === 'New session')?.dispatchEvent(new Event('click')); assert.equal(sessions, 1);
-    list.children.find(row => row.textContent === 'Commands…')?.dispatchEvent(new Event('click')); assert.equal(palettes, 1);
+    list.children.find(row => row.textContent === 'Commands')?.dispatchEvent(new Event('click')); assert.equal(palettes, 1);
   } finally {f.restore();}
   const unavailable = paletteFixture({primary: () => undefined}); try {
     let sessions = 0; unavailable.actions.newSession = () => {sessions++;}; unavailable.actions.sessionMenu();
-    const row = unavailable.body.children[0]?.children.find(row => row.textContent === 'Compact…'); assert.ok(row);
+    const row = unavailable.body.children[0]?.children.find(row => row.textContent === 'Compact'); assert.ok(row);
     assert.equal(row.disabled, true); row.dispatchEvent(new Event('click')); assert.equal(sessions, 0);
   } finally {unavailable.restore();}
 });
@@ -937,7 +937,7 @@ test('session menu keyboard navigation skips disabled rows and reaches the full 
     assert.equal(focused?.textContent, 'New session');
     assert.equal(key(list, 'ArrowDown').defaultPrevented, true); assert.equal(focused?.textContent, 'Sessions');
     key(list, 'ArrowDown'); assert.equal(focused?.textContent, 'Saved drafts and messages');
-    key(list, 'End'); assert.equal(focused?.textContent, 'Commands…');
+    key(list, 'End'); assert.equal(focused?.textContent, 'Commands');
     key(list, 'Home'); assert.equal(focused?.textContent, 'New session');
   } finally {f.restore();}
 });

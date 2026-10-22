@@ -19,8 +19,8 @@ test('working delivery guidance yields to lifecycle and settings feedback withou
   for (const key of ['send', 'queue']) {assert.equal(agentControl(key).hidden, false); assert.equal(agentControl(key).disabled, true);}
   assert.equal(agentControl('stop').querySelector('.action-label')?.textContent, 'Stop');
   const composer = app.agentComposer();
-  composer.setSettingsState({line: 'Updating settings…', label: 'Updating settings…'});
-  assert.equal(line.querySelector('.composer-state-label')?.textContent, 'Updating settings…'); assert.equal(line.classList.contains('composer-delivery-guidance'), false);
+  composer.setSettingsState({line: 'Updating settings', label: 'Updating settings'});
+  assert.equal(line.querySelector('.composer-state-label')?.textContent, 'Updating settings'); assert.equal(line.classList.contains('composer-delivery-guidance'), false);
   composer.setSettingsState({line: 'Settings update not confirmed.', label: 'Settings update not confirmed.', detail: 'Exact native reason', tone: 'warning'});
   assert.doesNotMatch(line.textContent, /Steer at the next step/); assert.equal(agentControl('state-details').textContent, 'Exact native reason');
   composer.setSettingsState();

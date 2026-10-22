@@ -88,7 +88,7 @@ test('new sentence templates preserve active, action and separate outcome words'
     ['preparing', 'Preparing call: Search'], ['error', 'Failed: Search'], ['pending', 'Queued: Search'],
     ['ended', 'Ended without a result: Search'], ['available', 'Result available: Search'], ['missing', 'No result recorded: Search'],
   ] as const) assert.equal(toolSentence({...call, status}), `${expected} this conversation for “sample_query”`);
-  assert.equal(toolLabel({...call, status: 'working', args: undefined, argumentText: '{'}), 'Preparing…');
+  assert.equal(toolLabel({...call, status: 'working', args: undefined, argumentText: '{'}), 'Preparing');
 });
 
 test('new agent sentences use public captions and keep unknown destinations unnamed', () => {

@@ -67,7 +67,7 @@ test('a modal-owned menu stays in the dialog and escapes transformed clipping th
   const controller = new ContextMenu(); const runs: string[] = [];
   controller.open(origin as unknown as HTMLElement, {x: 315, y: 235}, 'Saved session options', [
     {key: 'details', label: 'List details', run: () => runs.push('details')},
-    {key: 'file', label: 'Session file…', run: () => runs.push('file')},
+    {key: 'file', label: 'Session file', run: () => runs.push('file')},
   ]);
   const menu = dialog.children.at(-1); assert.ok(menu); assert.equal(menu.parent, dialog);
   assert.equal(doc.body.children.length, 1); assert.equal(menu.popover, 'manual'); assert.equal(menu.popoverShown, true);
@@ -87,14 +87,14 @@ test('same-trigger repaint retains a focused action key across insertion and des
   const origin = f.origin as unknown as HTMLElement; const point = {x: 10, y: 10};
   f.controller.open(origin, point, 'Projects', [
     {key: 'project:/one', label: 'Same name', run() {}},
-    {key: 'folder', label: 'Other folder…', run: () => f.runs.push('folder')},
+    {key: 'folder', label: 'Other folder', run: () => f.runs.push('folder')},
     {key: 'refresh', label: 'Refresh recent projects', run() {}},
   ]);
   f.doc.body.children.at(-1)?.fire('keydown', {key: 'ArrowDown'});
   f.controller.open(origin, point, 'Projects', [
     {key: 'project:/one', label: 'Same name', run() {}},
     {key: 'project:/two', label: 'Same name', run() {}},
-    {key: 'folder', label: 'Other folder…', run: () => f.runs.push('folder')},
+    {key: 'folder', label: 'Other folder', run: () => f.runs.push('folder')},
     {key: 'refresh', label: 'Refresh recent projects', description: 'Saved list · now', run() {}},
   ]);
   const menu = f.doc.body.children.at(-1); assert.ok(menu);
@@ -181,8 +181,8 @@ test('plus and right-click use one action vocabulary, checked state, eligibility
   const f = paneFixture(); const target = {paneId:'pane-1',tabKey:'agent:b'};
   const plus = paneMenuItems(target,f.hooks); const right = paneMenuItems(target,f.hooks);
   const signature = (items:typeof plus) => items.map(({label,enabled,checked})=>({label,enabled,checked})); assert.deepEqual(signature(plus),signature(right));
-  assert.deepEqual(plus.slice(0,3).map(item=>item.label),['New tab…','Split right','Split down']);
-  assert.equal(plus.some(item=>item.label.startsWith('View:')),false); plus.find(item=>item.label==='Split down')?.run(); plus.find(item=>item.label==='Conversation actions…')?.run();
+  assert.deepEqual(plus.slice(0,3).map(item=>item.label),['New tab','Split right','Split down']);
+  assert.equal(plus.some(item=>item.label.startsWith('View:')),false); plus.find(item=>item.label==='Split down')?.run(); plus.find(item=>item.label==='Conversation actions')?.run();
   assert.deepEqual(f.calls,['split:pane-1:y:agent:b','conversation:pane-1:agent:b']);
   assert.deepEqual(paneMenuItems({paneId:'missing'},f.hooks),[]); assert.deepEqual(paneMenuItems({paneId:'pane-1',tabKey:'missing'},f.hooks),[]);
 });
@@ -212,16 +212,16 @@ test('captured pane actions and session actions refuse stale root or recipient r
   for (const cause of ['root','recipient']) {
     const f=paneFixture(); const items=paneMenuItems({paneId:'pane-1'}, f.hooks);
     if (cause==='root') f.set(splitPane(f.layout(),'pane-1','x',{width:1400,height:1000,divider:4})); else f.invalidate();
-    items[0]?.run(); items.find(item=>item.label==='Close tab')?.run(); items.find(item=>item.label==='Conversation actions…')?.run(); assert.deepEqual(f.calls,[]); assert.match(doc.announcements.textContent,/This item changed/);
+    items[0]?.run(); items.find(item=>item.label==='Close tab')?.run(); items.find(item=>item.label==='Conversation actions')?.run(); assert.deepEqual(f.calls,[]); assert.match(doc.announcements.textContent,/This item changed/);
   }
 });
 
 test('the small plus contains only new conversation and split actions', () => {
   const f = paneFixture(); const items = paneMenuItems({paneId:'pane-1'}, {...f.hooks, purpose:'add', overflow:true});
-  assert.deepEqual(items.map(item => item.label), ['New tab…', 'Split right', 'Split down']);
+  assert.deepEqual(items.map(item => item.label), ['New tab', 'Split right', 'Split down']);
   items[0]?.run(); items[2]?.run(); assert.deepEqual(f.calls,['new:pane-1','split:pane-1:y:primary']);
   const context = paneMenuItems({paneId:'pane-1'}, {...f.hooks, purpose:'context'});
-  for (const label of ['Close tab','Close pane','Conversation actions…']) assert.ok(context.some(item => item.label === label));
+  for (const label of ['Close tab','Close pane','Conversation actions']) assert.ok(context.some(item => item.label === label));
   assert.equal(context.some(item => /^(View:|Compact|Model|Thinking)/.test(item.label)), false);
 });
 test('the composer intake header and separator never take row focus or activation', () => {

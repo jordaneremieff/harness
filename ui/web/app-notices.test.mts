@@ -122,7 +122,7 @@ test('local conversation menus never select another recipient and target its Vie
   const selected = app.state.workspace?.selectedTarget, start = transportLog.length;
   app.openTabActions('agent-pane'); const short = globalThis.document.querySelector('.context-menu'); assert.ok(short);
   assert.equal([...short.querySelectorAll('button')].some(node => node.textContent === 'Show thinking'), false);
-  const more = [...short.querySelectorAll('button')].find(node => node.textContent === 'Conversation actions…'); assert.ok(more); more.click();
+  const more = [...short.querySelectorAll('button')].find(node => node.textContent === 'Conversation actions'); assert.ok(more); more.click();
   const menu = globalThis.document.querySelector('.context-menu'); assert.ok(menu); assert.equal(menu.getAttribute('aria-label'), 'Conversation actions');
   assert.deepEqual(app.state.workspace?.selectedTarget, selected); assert.deepEqual(forbidden(start), []);
   const thinking = [...menu.querySelectorAll('button')].find(node => node.textContent === 'Show thinking'); assert.ok(thinking); thinking.click(); await settle();

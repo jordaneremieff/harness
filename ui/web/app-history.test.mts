@@ -378,7 +378,7 @@ test('a tab whose page-load read was aborted by a tab switch reads again when it
     return held.promise;
   };
   await arrive({workspace: {id: 'reselect', revision: 1, selectedTarget: A, conversationLayout: fixtureHost.singlePane([A, B])}, primaries: [], roster: [agentFixture(A.identity, {availability: 'stored', capabilities: {input: false}}), agentFixture(B.identity, {availability: 'stored', capabilities: {input: false}})], targets: [targetFixture('reselect-ta', A), targetFixture('reselect-tb', B)]});
-  await settle(); assert.equal(agentControl('history-note-line').textContent, 'Reading saved messages…'); assert.equal(agentControl('history-reload').hidden, true); assert.equal(reads, 1);
+  await settle(); assert.equal(agentControl('history-note-line').textContent, 'Reading saved messages'); assert.equal(agentControl('history-reload').hidden, true); assert.equal(reads, 1);
   const tab = async (identity: string) => {const node = fixtureHost.paneNode(app.focusedPane).querySelector('.conversation-tabs')?.querySelector(`[data-tab-key="agent:${identity}"]`); assert.ok(node); node.click(); await settle();};
   await tab(B.identity); held.reject(new DOMException('aborted', 'AbortError')); await settle(); await tab(A.identity);
   assert.equal(reads, 2); assert.equal(agentControl('history-note-line').textContent, ''); assert.match(agentControl('transcript').textContent, /answer/);
@@ -396,9 +396,9 @@ test('a tab switch whose selection save fails still reads the activated tab and 
     return held.promise;
   };
   await arrive({workspace: {id: 'refused', revision: 1, selectedTarget: A, conversationLayout: fixtureHost.singlePane([A, B])}, primaries: [], roster: [agentFixture(A.identity, {availability: 'stored', capabilities: {input: false}}), agentFixture(B.identity, {availability: 'stored', capabilities: {input: false}})], targets: [targetFixture('refused-ta', A), targetFixture('refused-tb', B)]});
-  await settle(); assert.equal(agentControl('history-note-line').textContent, 'Reading saved messages…');
+  await settle(); assert.equal(agentControl('history-note-line').textContent, 'Reading saved messages');
   failing = true;
   const tab = async (identity: string) => {const node = fixtureHost.paneNode(app.focusedPane).querySelector('.conversation-tabs')?.querySelector(`[data-tab-key="agent:${identity}"]`); assert.ok(node); node.click(); await settle();};
   await tab(B.identity); held.reject(new DOMException('aborted', 'AbortError')); await settle(); await tab(A.identity);
-  assert.ok(reads >= 2); assert.notEqual(agentControl('history-note-line').textContent, 'Reading saved messages…'); assert.equal(agentControl('history-note').hidden, true); assert.match(agentControl('transcript').textContent, /answer/);
+  assert.ok(reads >= 2); assert.notEqual(agentControl('history-note-line').textContent, 'Reading saved messages'); assert.equal(agentControl('history-note').hidden, true); assert.match(agentControl('transcript').textContent, /answer/);
 });

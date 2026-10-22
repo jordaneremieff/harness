@@ -328,24 +328,24 @@ test('handled image admission keeps the draft without a cleanup save', async () 
 });
 test('queue recovery uncertainty is not overridden by different-message consent', async () => {
   const f = fixture(), a = state('a', {...draft(5, 'queue text'), recoverySendGuard: {state: 'unavailable', imageCopies: 1}}); f.connect(a);
-  await f.composer.send(); assert.equal(f.calls.length, 0); assert.match(f.node('receipt').textContent, /unavailable/); assert.equal(f.node('receipt').find('Send a different message…'), undefined);
+  await f.composer.send(); assert.equal(f.calls.length, 0); assert.match(f.node('receipt').textContent, /unavailable/); assert.equal(f.node('receipt').find('Send a different message'), undefined);
 });
 test('known queue recovery consent applies to one exact attempt and preserves provenance', async () => {
   const f = fixture(), origin = {clearOperationId: 'clear', recoveryOperationId: 'copy'}, a = state('a', {...draft(5, 'different text'), recoveryOrigin: origin, recoverySendGuard: {state: 'blocked', imageCopies: 1}}); f.connect(a);
-  await f.composer.send(); assert.equal(f.calls.length, 0); f.click('Send a different message…'); const confirm = f.node('receipt').find('Confirm different message'); assert.ok(confirm);
+  await f.composer.send(); assert.equal(f.calls.length, 0); f.click('Send a different message'); const confirm = f.node('receipt').find('Confirm different message'); assert.ok(confirm);
   confirm.fire('click'); await turn(); assert.equal(f.pick('POST', '/inputs').body.differentMessage, true); f.admit(a, 'rejected'); await turn();
   confirm.fire('click'); await turn(); assert.equal(f.calls.length, 0);
   f.composer.setText('new text'); assert.equal(f.pick('PUT', '/draft').body.recoverySource, origin.recoveryOperationId); f.saved('new text', 6); await turn();
 });
 test('a save acknowledgment preserves one different-message consent for the unchanged tuple', async () => {
   const f = fixture(), guard = {state: 'blocked' as const, imageCopies: 1},a=f.connect(state('a', {...draft(5, 'different text'), recoverySendGuard: guard}));
-  f.click('Send a different message…'); f.click('Confirm different message');
+  f.click('Send a different message'); f.click('Confirm different message');
   f.composer.updateDraft({...draft(6, 'different text'), recoverySendGuard: guard}); await turn();
   const request=f.pick('POST','/inputs');assert.deepEqual(request.body,{epoch:7,message:'different text',mode:'prompt',draftRevision:6,images:[],literal:false,differentMessage:true});assert.equal(f.calls.filter(call=>call.path.endsWith('/inputs')).length,1);f.admit(a,'rejected');await turn();assert.equal(f.composer.editor.value,'different text');
 });
 test('duplicate-send consent retains the original uncertain operation and cannot be reused', async () => {
   const f = fixture(), a = f.connect(state('a', draft(2, 'original'))), first = f.composer.send(); await turn(); const original = f.admit(a, 'uncertain'); await first;
-  f.click('Send again…'); const confirm = f.node('receipt').find('Send again'); assert.ok(confirm); confirm.fire('click'); await turn();
+  f.click('Send again'); const confirm = f.node('receipt').find('Send again'); assert.ok(confirm); confirm.fire('click'); await turn();
   assert.equal(f.pick('POST', '/inputs').id, 'op-2'); f.admit(a, 'rejected'); await turn(); assert.match(f.node('receipt').textContent, /op-1/);
   confirm.fire('click'); await turn(); assert.equal(f.calls.length, 0); assert.equal(f.composer.updateOperation({...original, state: 'accepted'}), true); await turn();
   f.ok(f.pick('GET', '/a'), state('a', draft(3))); await turn(); assert.equal(f.composer.editor.value, '');
@@ -379,7 +379,7 @@ test('attachment rows retain image identity and expose capability uncertainty th
 test('attachment preparation keeps short states, full errors and explicit text actions outside Details', async () => {
   const f = fixture('agent'); f.connect(); const editor = f.composer.editor;
   f.composer.addFiles([new File(['exact text'], 'notes.txt', {type: 'text/plain'})]);
-  assert.ok(f.node('attachments').find('Preparing…')); await new Promise(resolve => setImmediate(resolve));
+  assert.ok(f.node('attachments').find('Preparing')); await new Promise(resolve => setImmediate(resolve));
   const textRow = f.node('attachments').children[0]; assert.ok(textRow?.find('Text not included')); assert.ok(textRow.find('text/plain · 10 B'));
   const include = textRow.find('Include text from notes.txt'); assert.ok(include); assert.equal(include.textContent, 'Include text');
   assert.equal(textRow.querySelector('.attachment-details')?.contains(include), false);
@@ -675,14 +675,14 @@ test('network loss after dispatch retains original key, copy, restore, receipt c
   assert.match(f.node('receipt').textContent, /op-1/); assert.match(f.node('receipt').textContent, / exact\n /); await f.composer.send(); assert.equal(f.calls.length, 0);
   f.click('Copy original text only'); await turn(); assert.deepEqual(f.copied, [' exact\n ']); f.click('Restore to draft'); await turn(); assert.deepEqual(f.pick('POST', '/restore').body, {expectedDraftRevision: 4}); f.fail(f.pick('POST', '/restore'), 'host_unavailable'); await turn(); assert.equal(f.composer.editor.value, ' exact\n ');
   f.click('Check delivery'); assert.equal(f.pick('POST', '/reconcile').path, '/api/operations/op-1/reconcile'); f.fail(f.pick('POST', '/reconcile'), 'unknown_operation'); await turn();
-  assert.match(f.node('receipt').textContent, /admission remains unknown/); f.click('Send again…'); assert.equal(f.calls.length, 0);
+  assert.match(f.node('receipt').textContent, /admission remains unknown/); f.click('Send again'); assert.equal(f.calls.length, 0);
   f.click('Send again'); await turn(); assert.equal(f.pick('POST', '/inputs').id, 'op-2'); f.admit(a, 'rejected'); await turn();
 });
 test('a confirmed send again keeps the follow-up delivery of the uncertain Queue send', async () => {
   const f = fixture(); const a = f.connect(state('a', draft(4, 'later'))); f.composer.availability(true, true, true);
   f.node('queue').fire('click'); await turn();
   const input = f.pick('POST', '/inputs'); assert.equal(input.body.mode, 'followUp'); f.calls.splice(f.calls.indexOf(input), 1); input.reject(new Error('connection lost')); await turn();
-  f.click('Send again…'); f.click('Send again'); await turn();
+  f.click('Send again'); f.click('Send again'); await turn();
   assert.equal(f.pick('POST', '/inputs').body.mode, 'followUp'); f.admit(a, 'rejected'); await turn();
 });
 test('an uncertain send result shows one warning and retains explicit recovery controls', async () => {
@@ -690,7 +690,7 @@ test('an uncertain send result shows one warning and retains explicit recovery c
   const sending = f.composer.send(); await turn(); f.admit(a, 'uncertain'); await sending;
   const receipt = f.node('receipt'); assert.equal(receipt.textContent.split('Send not confirmed. Check before you send again.').length - 1, 1);
   assert.doesNotMatch(receipt.textContent, /Check the receipt before another submission/);
-  for (const label of ['Check delivery', 'Copy original text only', 'Restore to draft', 'Send again…']) assert.ok(receipt.find(label));
+  for (const label of ['Check delivery', 'Copy original text only', 'Restore to draft', 'Send again']) assert.ok(receipt.find(label));
   assert.equal(f.composer.editor.value, 'original'); assert.equal(f.calls.length, 0);
 });
 test('an unconfirmed send shows one Details that starts with the reason, and a refused send keeps its own', async () => {
@@ -908,7 +908,7 @@ test('a state that holds the composer without a draft shows it with a disabled e
   const label = () => (elements.state?.querySelector('.composer-state-label') as unknown as NodeFake), detail = () => (elements.state?.querySelector('.composer-state-detail') as unknown as HTMLButtonElement);
   composer.attach('w'); assert.equal(root.hidden, true, 'no state, no draft');
   composer.setState({line: 'Not running. Start it to send a message.', label: 'Not running', action: {label: 'Start', run() {}}}); assert.equal(root.hidden, true, 'a state without the marker stays hidden');
-  composer.setState({line: 'Checking the agent…', label: 'Checking the agent…', blocksSend: true}); assert.equal(root.hidden, true);
+  composer.setState({line: 'Checking the agent', label: 'Checking the agent', blocksSend: true}); assert.equal(root.hidden, true);
   let checks = 0;
   composer.setState({line: 'Could not reach the agent.', label: 'Could not reach the agent', tone: 'warning', withoutDraft: true, detail: 'socket closed', action: {label: 'Check again', recovery: true, run: () => { checks++; }}});
   assert.equal(root.hidden, false); assert.equal(editor.disabled, true); assert.equal(sources.disabled, true); assert.equal(send.hidden, true);
@@ -920,8 +920,8 @@ test('a state that holds the composer without a draft shows it with a disabled e
   (detail().onclick as () => void)(); assert.equal(elements.stateDetails?.hidden, true); assert.equal(detail().getAttribute('aria-expanded'), 'false');
   composer.setState({line: 'Could not reach the agent.', label: 'Could not reach the agent', withoutDraft: true, detail: 'new exact error', action: {label: 'Check again', recovery: true, run: () => { checks++; }}}); assert.equal(elements.stateDetails?.hidden, true);
   (start.onclick as unknown as () => void)(); assert.equal(checks, 1);
-  composer.setState({line: 'Checking the agent…', label: 'Checking the agent…', withoutDraft: true, blocksSend: true, action: {label: 'Checking…', pending: true, disabled: true, run() {}}});
-  assert.equal(root.hidden, false); assert.equal(start.disabled, true); assert.equal(start.getAttribute('aria-busy'), 'true'); assert.equal(start.getAttribute('aria-label'), 'Checking…'); assert.match(start.querySelector('svg')?.getAttribute('class') ?? '', /card-icon-working/);
+  composer.setState({line: 'Checking the agent', label: 'Checking the agent', withoutDraft: true, blocksSend: true, action: {label: 'Checking', pending: true, disabled: true, run() {}}});
+  assert.equal(root.hidden, false); assert.equal(start.disabled, true); assert.equal(start.getAttribute('aria-busy'), 'true'); assert.equal(start.getAttribute('aria-label'), 'Checking'); assert.match(start.querySelector('svg')?.getAttribute('class') ?? '', /card-icon-working/);
   composer.attach('w', state('m', draft(1, 'kept'), true)); composer.setState({line: 'Not running. Start it to send a message.', label: 'Not running', action: {label: 'Start', run() {}}});
   assert.equal(root.hidden, false); assert.equal(editor.disabled, false); assert.equal(sources.disabled, false); assert.equal(composer.showsWithoutDraft, false);
   composer.attach('w'); assert.equal(root.hidden, true, 'without a draft the same state hides the composer again'); void f; composer.destroy();
@@ -968,7 +968,7 @@ test('editor height grows locally, caps long drafts, shrinks, and keeps an expli
 test('fast serialized saves remain silent and only one outstanding request reaches the slow threshold', async context => {
   const f = fixture(); f.connect(); f.composer.setText('one');
   context.mock.timers.tick(999); assert.equal(f.node('save').textContent, '');
-  context.mock.timers.tick(1); assert.equal(f.node('save').textContent, 'Saving draft…');
+  context.mock.timers.tick(1); assert.equal(f.node('save').textContent, 'Saving draft');
   f.composer.setText('two'); f.saved('one'); await turn(); assert.equal(f.node('save').textContent, '');
   context.mock.timers.tick(999); assert.equal(f.node('save').textContent, '');
   f.saved('two', 2); await turn(); context.mock.timers.tick(2000); assert.equal(f.node('save').textContent, '');
@@ -977,7 +977,7 @@ test('fast serialized saves remain silent and only one outstanding request reach
 test('a slow-save timer never paints another target and a late settle clears its own presentation', async context => {
   const f = fixture(); f.connect(); f.composer.setText('one'); f.composer.attach('w', state('b'));
   context.mock.timers.tick(1000); assert.equal(f.node('save').textContent, '');
-  f.composer.attach('w', state()); assert.equal(f.node('save').textContent, 'Saving draft…');
+  f.composer.attach('w', state()); assert.equal(f.node('save').textContent, 'Saving draft');
   f.saved('one'); await turn(); assert.equal(f.node('save').textContent, '');
 });
 test('a clean acknowledged draft stays quiet offline while unsaved text gets the offline exception', async () => {
@@ -1426,7 +1426,7 @@ test('a draft that edits during the run keeps the newer text', async () => {
 });
 test('a slash draft waits while the list loads, and a command cannot carry attachments', async () => {
   let inventory = hostCommands('loading'); const f = fixture('agent', () => inventory, true); f.connect(state('run', draft(0, '', 'followUp'), true));
-  f.composer.setText('/ping'); assert.equal(f.node('send').disabled, true); assert.equal(f.node('send').title, 'Loading commands…');
+  f.composer.setText('/ping'); assert.equal(f.node('send').disabled, true); assert.equal(f.node('send').title, 'Loading commands');
   await f.composer.send(); assert.equal(f.calls.some(item => item.path.endsWith('/inputs') || item.path.endsWith('/command')), false);
   inventory = hostCommands(); f.composer.commandsChanged(); assert.equal(f.node('send').disabled, false); assert.equal(actionText(f.node('send')), 'Run command');
   const withImage = state('run', {...draft(0, '/ping', 'followUp'), images: [image()]}, true); f.composer.attach('w', {...withImage, targetKey: 'run-image'}); f.composer.commandsChanged();

@@ -82,7 +82,7 @@ test('exact-name Enter accepts and a subsequent Enter returns to normal composer
 });
 test('loading and empty states are not options and consume Enter without edits', () => {
   const f = fixture(); f.inventory({state: 'loading', items: []}); f.text('/');
-  assert.equal(f.menu.children[1]?.textContent, 'Loading commands…'); assert.equal(f.menu.children[1]?.attrs.has('role'), false);
+  assert.equal(f.menu.children[1]?.textContent, 'Loading commands'); assert.equal(f.menu.children[1]?.attrs.has('role'), false);
   assert.equal(f.key('Enter').handled, true); assert.equal(f.changed.length, 0);
   f.inventory({state: 'ready', items: []}); f.text('/nothing');
   assert.equal(f.menu.children[1]?.textContent, 'No commands match /nothing'); assert.equal(f.key('Enter').event.defaultPrevented, true);

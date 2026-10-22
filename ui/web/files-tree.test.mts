@@ -33,8 +33,8 @@ test('quiet tooling rows preserve root and nested order, selection and context a
     assert.equal(host.querySelector(`[data-path="${prefix}.DS_Store"]`),null);
     const path=`${prefix}.gitignore`,file=row(host,path);file.click();assert.equal(file.getAttribute('aria-selected'),'true');assert.equal(file.classList.contains('file-row-quiet'),true);
     file.dispatch('contextmenu',{clientX:10,clientY:10});const menu=hostDocument.body.querySelector('.context-menu');assert.ok(menu);
-    assert.deepEqual(menu.children.map(item=>item.textContent),['New file','New folder','Add to message…','Rename','Move','Move to Trash']);
-    menu.children.find(item=>item.textContent==='Add to message…')?.click();
+    assert.deepEqual(menu.children.map(item=>item.textContent),['New file','New folder','Add to message','Rename','Move','Move to Trash']);
+    menu.children.find(item=>item.textContent==='Add to message')?.click();
   }
   assert.deepEqual(selected,['.gitignore','docs/.gitignore']);assert.deepEqual(added,selected);
 });

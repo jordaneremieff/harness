@@ -110,21 +110,21 @@ test('history notes report only the read and keep exact diagnostics in detail', 
   assert.equal(agentHistoryNote({...source, ready: true, complete: true}).text, 'No messages yet.');
   assert.equal(agentHistoryNote({...source, hasEntries: true, connected: false}).text, '');
   assert.equal(agentHistoryNote({...source, loading: true, hasEntries: true}).text, '');
-  assert.equal(agentHistoryNote({...source, loading: true}).text, 'Loading messages…');
+  assert.equal(agentHistoryNote({...source, loading: true}).text, 'Loading messages');
   for (const text of [agentHistoryNote(source).text, agentHistoryNote({...source, loading: true}).text, agentHistoryNote({...source, ready: true, complete: true}).text]) assert.doesNotMatch(text, /connected/i);
 });
 test('only an active history read reports loading for a cold retained agent', () => {
   const source = {hasEntries: false, connected: true, loading: false, ready: false};
   assert.equal(agentHistoryNote(source).text, 'Messages not loaded.');
   assert.equal(agentHistoryNote({...source, complete: true}).text, 'Messages not loaded.');
-  assert.equal(agentHistoryNote({...source, loading: true}).text, 'Loading messages…');
+  assert.equal(agentHistoryNote({...source, loading: true}).text, 'Loading messages');
   assert.equal(agentHistoryNote({...source, loading: true, hasEntries: true}).text, '');
   assert.equal(agentHistoryNote({...source, ready: true, complete: true}).text, 'No messages yet.');
 });
 test('the first read of a stored or unavailable agent says it reads saved messages, and saved messages with entries show no note', () => {
   const source = {hasEntries: false, connected: true, loading: false, ready: false, availability: 'stored' as const};
-  assert.deepEqual(agentHistoryNote({...source, loading: true}), {text: 'Reading saved messages…', detail: '', reload: false, label: 'Load messages'});
-  for (const availability of ['unavailable', 'incompatible'] as const) assert.equal(agentHistoryNote({...source, availability, loading: true}).text, 'Reading saved messages…');
+  assert.deepEqual(agentHistoryNote({...source, loading: true}), {text: 'Reading saved messages', detail: '', reload: false, label: 'Load messages'});
+  for (const availability of ['unavailable', 'incompatible'] as const) assert.equal(agentHistoryNote({...source, availability, loading: true}).text, 'Reading saved messages');
   for (const extra of [{}, {loading: true}, {ready: true, complete: true}, {ready: true, complete: false}]) assert.deepEqual(agentHistoryNote({...source, hasEntries: true, ...extra}), {text: '', detail: '', reload: false, label: 'Load messages'});
   assert.deepEqual(agentHistoryNote({...source, ready: true, complete: true}), {text: 'No messages yet.', detail: '', reload: false, label: 'Load messages'});
   assert.deepEqual(agentHistoryNote(source), {text: 'Messages not loaded.', detail: '', reload: true, label: 'Load messages'});
@@ -136,9 +136,9 @@ test('the first read of a stored or unavailable agent says it reads saved messag
 });
 test('live agents and a disconnected browser keep the ordinary read wording', () => {
   const source = {hasEntries: false, connected: true, loading: false, ready: false};
-  for (const availability of [undefined, 'live' as const]) assert.equal(agentHistoryNote({...source, availability, loading: true}).text, 'Loading messages…');
+  for (const availability of [undefined, 'live' as const]) assert.equal(agentHistoryNote({...source, availability, loading: true}).text, 'Loading messages');
   const offline = {...source, availability: 'stored' as const, connected: false};
-  assert.equal(agentHistoryNote({...offline, loading: true}).text, 'Loading messages…');
+  assert.equal(agentHistoryNote({...offline, loading: true}).text, 'Loading messages');
   assert.deepEqual(agentHistoryNote(offline), {text: 'Messages are unavailable while the browser is disconnected.', detail: '', reload: false, label: 'Load messages'});
 });
 test('unreadable saved messages use plain text, offer a reload, and retain the exact diagnostic', () => {
@@ -157,7 +157,7 @@ test('the composer state names what the draft needs before it can be sent', () =
   assert.deepEqual(agentComposerState({...source, availability: 'stored'}), {kind: 'start', line: 'Not running. Start it to send a message.', label: 'Not running', action: {label: 'Start'}, detail: ''});
   assert.equal(agentComposerState({connected: false, availability: 'stored'}), undefined);
   const starting = agentComposerState({...source, availability: 'stored', startAttempt: {pending: true}});
-  assert.equal(starting?.kind, 'starting'); assert.equal(starting?.line, 'Starting the agent…'); assert.equal(starting?.label, 'Starting the agent'); assert.equal(starting?.action?.pending, true); assert.equal(starting?.action?.disabled, true);
+  assert.equal(starting?.kind, 'starting'); assert.equal(starting?.line, 'Starting the agent'); assert.equal(starting?.label, 'Starting the agent'); assert.equal(starting?.action?.pending, true); assert.equal(starting?.action?.disabled, true);
   const failed = agentComposerState({...source, availability: 'stored', startAttempt: {pending: false, reason: 'Readiness timed out.'}});
   assert.equal(failed?.kind, 'failed'); assert.equal(failed?.line, 'Start did not complete.'); assert.equal(failed?.label, 'Start did not complete'); assert.equal(failed?.action?.label, 'Try again'); assert.equal(failed?.detail, 'Readiness timed out.');
   for (const availability of ['incompatible', 'unavailable'] as const) {
@@ -167,7 +167,7 @@ test('the composer state names what the draft needs before it can be sent', () =
   const noInput = agentComposerState({...source, availability: 'live', checked: true, input: false, reason}); assert.equal(noInput?.line, 'Messages are read only.'); assert.equal(noInput?.label, 'Read only');
   const connectionError = `task-submit/1.2.0 host unavailable: ${'diagnostic '.repeat(40)}`;
   const failedCheck = agentComposerState({...source, availability: 'stored', connectionError}); assert.equal(failedCheck?.kind, 'unreachable'); assert.equal(failedCheck?.line, 'Could not reach the agent.'); assert.equal(failedCheck?.label, 'Could not reach the agent'); assert.equal(failedCheck?.action?.label, 'Check again'); assert.equal(failedCheck?.detail, connectionError);
-  const checking = agentComposerState({...source, availability: 'live', checked: true, input: true, checking: true}); assert.equal(checking?.kind, 'checking'); assert.equal(checking?.line, 'Checking the agent…'); assert.equal(checking?.label, 'Checking the agent…'); assert.equal(checking?.action, undefined);
+  const checking = agentComposerState({...source, availability: 'live', checked: true, input: true, checking: true}); assert.equal(checking?.kind, 'checking'); assert.equal(checking?.line, 'Checking the agent'); assert.equal(checking?.label, 'Checking the agent'); assert.equal(checking?.action, undefined);
   const blocked = agentComposerState({...source, availability: 'live', checked: true, input: true, blocked: 'Quota reached.'});
   assert.deepEqual(blocked, {kind: 'notice', line: 'Provider blocked. Configure this agent through Primary.', label: 'Provider blocked', detail: 'Quota reached.'});
 });
@@ -196,7 +196,7 @@ test('only accepted live tool calls supply current tools and completed calls dis
 
 test('native compaction and nested tasks describe only the accepted current frame', () => {
   const current = frame(true); current.status.compactions = {value: [{taskId: 4, reason: 'manual', blocking: true, attempt: 0}], truncated: false};
-  assert.equal(conversationPresentation({target, row, negotiated, frame: current, connected: true}).activity, 'Compacting…');
+  assert.equal(conversationPresentation({target, row, negotiated, frame: current, connected: true}).activity, 'Compacting');
   current.live = [{id: 'live:tool:parent/child', kind: 'pi.tool-result', tool: {callId: 'parent/child', name: 'read', taskId: 3, parentTaskId: 2, parentCallId: 'parent',
     status: 'running', arguments: {value: {path: 'notes.md'}, truncated: false}, coverage: current.coverage}}];
   assert.deepEqual(conversationPresentation({target, row, negotiated, frame: current, connected: true}).tool, {name: 'read', argument: '{"path":"notes.md"}'});
@@ -287,7 +287,7 @@ test('a live catalog claim without exact negotiated evidence is unchecked and ad
 test('stored agents report their own start attempt in the activity word', () => {
   const stored = {target, row, availability: {identity: row.identity, state: 'stored' as const, capabilities: row.capabilities}, connected: true};
   assert.equal(conversationPresentation(stored).activity, 'Not running');
-  assert.equal(conversationPresentation({...stored, start: {pending: true}}).activity, 'Starting…');
+  assert.equal(conversationPresentation({...stored, start: {pending: true}}).activity, 'Starting');
   const failed = conversationPresentation({...stored, start: {pending: false, reason: 'Timed out.'}});
   assert.equal(failed.activity, 'Start failed'); assert.equal(failed.tone, 'warning'); assert.equal(presentationGlyph(failed), '!');
 });
