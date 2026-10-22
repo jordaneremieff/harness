@@ -8,7 +8,7 @@ import { paneById, paneForTab, paneLeaves, type PaneLayout } from './pane-layout
 
 export type TabRegion = {id: string; tabs: HTMLElement; controls: string};
 export type TabRegions = {panes: () => TabRegion[]; conversations: HTMLElement};
-export type TabHooks = {layout: () => PaneLayout; draft?: (tab: ConversationTab) => boolean; unread?: (tab: ConversationTab) => number; idleSince?: (tab: ConversationTab) => number | undefined; reopen?: () => {count: number; drafts?: number; run: () => void} | undefined; activate: (pane: string, key: string) => void; close: (key: string) => void;
+export type TabHooks = {layout: () => PaneLayout; draft?: (tab: ConversationTab) => boolean; unread?: (tab: ConversationTab) => number; idleSince?: (tab: ConversationTab) => number | undefined; closed?: () => {key: string; label: string}[]; reopenKey?: (key: string) => void; reopen?: () => {count: number; drafts?: number; run: () => void} | undefined; activate: (pane: string, key: string) => void; close: (key: string) => void;
   move: (key: string, pane: string, index: number) => void; label: (tab: ConversationTab) => string;
   identity?: (tab: ConversationTab) => string | undefined;unnamed?:(tab:ConversationTab)=>boolean;
   fallback?:()=>HTMLElement|undefined;
@@ -33,6 +33,7 @@ export class TabStrip {
   private count: HTMLElement;
   private attention: HTMLElement;
   private reopenRow?: HTMLButtonElement;
+  private closedBox?: HTMLElement;
   private destroyed = false;
   private hooks: TabHooks;
   private regions: TabRegions;
@@ -100,7 +101,7 @@ export class TabStrip {
       host.dataset.sole = String(pane.tabs.length === 1);
       host.tabIndex = pane.tabs.length ? -1 : 0; host.dataset.focused = String(layout.focusedPane === pane.id);
     });
-    this.renderSection(tabs,this.paintFallback());this.renderReopen();
+    this.renderSection(tabs,this.paintFallback());this.renderReopen();this.renderClosed();
     for (const pane of panes) {const group = this.groups.get(pane.id); if (group) group.hidden = !pane.tabs.length;}
     this.fitStatuses(); if (reveal) this.revealActive();
     if (hadFocus) { if (focused && [...regions.map(region => region.tabs), this.regions.conversations].some(host => host.contains(focused))) focused.focus({preventScroll: true}); else this.focusActive(); }
@@ -119,6 +120,19 @@ export class TabStrip {
       row.addEventListener('click',()=>this.hooks.reopen?.()?.run());this.reopenRow=row;
     }
     this.reopenRow.textContent=`Reopen ${action.count} older tabs${action.drafts ? ` · ${action.drafts} with drafts` : ''}`;this.reopenRow.hidden=false;this.sectionBody.append(this.reopenRow);
+  }
+  /** Up to three tabs closed on this page return in one step, below the open tabs. */
+  private renderClosed(): void {
+    const choices = (this.hooks.closed?.() ?? []).slice(0, 3);
+    if (!choices.length) {if (this.closedBox) this.closedBox.hidden = true; return;}
+    const doc = this.regions.conversations.ownerDocument;
+    if (!this.closedBox) {this.closedBox = doc.createElement('div'); this.closedBox.className = 'conversation-closed';}
+    const title = doc.createElement('div'); title.className = 'conversation-group-title'; title.textContent = 'Recently closed';
+    const rows = choices.map(choice => {
+      const row = doc.createElement('button'); row.type = 'button'; row.className = 'conversation-row conversation-reopen'; row.textContent = choice.label; row.title = `Reopen ${choice.label}`;
+      row.addEventListener('click', () => this.hooks.reopenKey?.(choice.key)); return row;
+    });
+    this.closedBox.replaceChildren(title, ...rows); this.closedBox.hidden = false; this.sectionBody.append(this.closedBox);
   }
   private renderSection(tabs: readonly ConversationTab[], fallback=false): void {
     const collapsed = this.hooks.section?.collapsed() === true;
