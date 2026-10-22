@@ -1805,10 +1805,13 @@ script deadline still includes queue time. No explicit script deadline means
 no added execution deadline.
 
 The queue converts the remaining Harness-clock duration to a live wall-clock
-timer. Cancellation and host close remove waiting calls. The synchronous public
-`acquireWorker` callback fences a late launch after cancellation or asynchronous
-wasm load. Capacity remains charged until actual worker exit or construction
-failure, not result settlement. Close requests worker termination without waiting
+timer. It rechecks the native script budget after admission and immediately
+before worker creation, including after asynchronous wasm loading. The worker
+timeout uses the smaller Harness-clock and wall-clock remainder. Replay retains
+the original native script deadline. Cancellation and host close remove waiting
+calls. The synchronous public `acquireWorker` callback fences a late launch after
+cancellation or asynchronous wasm load. Capacity remains charged until actual
+worker exit or construction failure, not result settlement. Close requests worker termination without waiting
 for a non-interruptible operation to exit. The queue covers native hosts in one
 process, not ordinary coding-agent workers or other processes.
 

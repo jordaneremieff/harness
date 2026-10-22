@@ -11,7 +11,7 @@ function deferred<T>() {
 }
 
 const runOptions = () => ({ startedAt: Date.now(), seed: 1, onCall: () => {} });
-const admission = (deadline = Date.now() + 60_000) => ({ deadline: async () => deadline, admitted: async () => {} });
+const admission = (deadline = Date.now() + 60_000) => ({ deadline: async () => deadline, admitted: async () => {}, now: Date.now });
 const workerUrl = new URL(`data:text/javascript,${encodeURIComponent(`import { parentPort } from "node:worker_threads";
 parentPort.on("message", () => {});
 parentPort.postMessage({type: "done", ok: true, value: '"ok"', writes: "[]"});`)}`);
@@ -118,7 +118,7 @@ it("fences late wasm launch after cancellation and returns the unclaimed reserva
 	const wasm = deferred<object>();
 	const admitted = deferred<void>();
 	let launched = false;
-	const sandbox = new QueuedCodemodeSandbox({ deadline: async () => Date.now() + 5000, admitted: async () => { admitted.resolve(); } }, queue, { wasm: wasm.promise, workerUrl, onWorkerStarted: () => { launched = true; } });
+	const sandbox = new QueuedCodemodeSandbox({ deadline: async () => Date.now() + 5000, admitted: async () => { admitted.resolve(); }, now: Date.now }, queue, { wasm: wasm.promise, workerUrl, onWorkerStarted: () => { launched = true; } });
 	const controller = new AbortController();
 	const run = sandbox.start("return 'never';", { ...runOptions(), signal: controller.signal });
 	await admitted.promise;
@@ -140,7 +140,7 @@ it("fences late wasm launch after the host closes", { timeout: 5000 }, async () 
 	const wasm = deferred<object>();
 	const admitted = deferred<void>();
 	let launched = false;
-	const sandbox = new QueuedCodemodeSandbox({ deadline: async () => Date.now() + 5000, admitted: async () => { admitted.resolve(); } }, queue, { wasm: wasm.promise, workerUrl, onWorkerStarted: () => { launched = true; } });
+	const sandbox = new QueuedCodemodeSandbox({ deadline: async () => Date.now() + 5000, admitted: async () => { admitted.resolve(); }, now: Date.now }, queue, { wasm: wasm.promise, workerUrl, onWorkerStarted: () => { launched = true; } });
 	const run = sandbox.start("return 'never';", runOptions());
 	await admitted.promise;
 	await nextTurn();
@@ -155,9 +155,33 @@ it("fences late wasm launch after the host closes", { timeout: 5000 }, async () 
 	release();
 });
 
+it("fences late wasm launch after the persisted script clock expires", { timeout: 5000 }, async () => {
+	const queue = new CodemodeWorkerQueue(1);
+	const wasm = deferred<object>();
+	const admitted = deferred<void>();
+	let clock = 1000;
+	let launched = false;
+	const sandbox = new QueuedCodemodeSandbox({
+		deadline: async () => Date.now() + 5000,
+		admitted: async () => { admitted.resolve(); },
+		now: () => clock,
+	}, queue, { wasm: wasm.promise, workerUrl, onWorkerStarted: () => { launched = true; } });
+	const run = sandbox.start("return 'never';", { ...runOptions(), startedAt: 1000, timeoutMs: 2000 });
+	await admitted.promise;
+	await nextTurn();
+	clock = 3001;
+	wasm.resolve({});
+	const result = await run.result;
+	assert.equal(result.ok, false);
+	assert.equal(launched, false);
+	const release = await queue.reserve(new AbortController().signal, Date.now() + 1000);
+	release();
+	await sandbox.close();
+});
+
 it("propagates admission storage failures and releases reserved capacity", async () => {
 	const queue = new CodemodeWorkerQueue(1);
-	const sandbox = new QueuedCodemodeSandbox({ deadline: async () => Date.now() + 5000, admitted: async () => { throw new Error("storage failed"); } }, queue);
+	const sandbox = new QueuedCodemodeSandbox({ deadline: async () => Date.now() + 5000, admitted: async () => { throw new Error("storage failed"); }, now: Date.now }, queue);
 	await assert.rejects(sandbox.start("return 'never';", runOptions()).result, /storage failed/u);
 	const release = await queue.reserve(new AbortController().signal, Date.now() + 1000);
 	release();

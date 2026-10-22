@@ -64,16 +64,23 @@ export class CodemodeWorkerQueue {
 
 const workers = new CodemodeWorkerQueue();
 
+type CodemodeAdmission = {
+	deadline(): Promise<number>;
+	admitted(): Promise<void>;
+	/** The clock that supplied the native run's remaining timeout budget. */
+	now(): number;
+};
+
 /** Queue at the native start boundary, after Durable records its replay data and deadline. */
 export class QueuedCodemodeSandbox extends CodemodeSandbox {
 	private readonly shutdown = new AbortController();
 	private readonly sandboxes = new Set<CodemodeSandbox>();
 
-	private readonly admission: { deadline(): Promise<number>; admitted(): Promise<void> };
+	private readonly admission: CodemodeAdmission;
 	private readonly queue: CodemodeWorkerQueue;
 	private readonly options: CodemodeSandboxOptions;
 	constructor(
-		admission: { deadline(): Promise<number>; admitted(): Promise<void> },
+		admission: CodemodeAdmission,
 		queue = workers,
 		options: CodemodeSandboxOptions = {},
 	) { super(); this.admission = admission; this.queue = queue; this.options = options; }
@@ -82,6 +89,9 @@ export class QueuedCodemodeSandbox extends CodemodeSandbox {
 		const signal = AbortSignal.any([this.shutdown.signal, ...(options.signal ? [options.signal] : [])]);
 		const started = Date.now();
 		const scriptDeadline = options.timeoutMs === undefined ? Infinity : started + options.timeoutMs;
+		const nativeStarted = this.admission.now();
+		const nativeDeadline = options.timeoutMs === undefined ? Infinity : nativeStarted + options.timeoutMs;
+		const remainingScriptMs = () => Math.min(scriptDeadline - Date.now(), nativeDeadline - this.admission.now());
 		let finished = false;
 		let run: CodemodeRun | undefined;
 		const result = (async (): Promise<CodemodeResult> => {
@@ -93,15 +103,16 @@ export class QueuedCodemodeSandbox extends CodemodeSandbox {
 				release = await this.queue.reserve(signal, deadline);
 				await this.admission.admitted();
 				signal.throwIfAborted();
-				if (Date.now() >= scriptDeadline) throw new WorkerWaitError("The codemode script timed out before worker launch.");
+				const remaining = remainingScriptMs();
+				if (remaining <= 0) throw new WorkerWaitError("The codemode script timed out before worker launch.");
 				sandbox = new CodemodeSandbox({ ...this.options, acquireWorker: () => {
 					// wasm loading is asynchronous and can finish after the result or close().
-					if (finished || signal.aborted || Date.now() >= scriptDeadline) throw new Error("The codemode worker launch was cancelled.");
+					if (finished || signal.aborted || remainingScriptMs() <= 0) throw new Error("The codemode worker launch was cancelled.");
 					claimed = true;
 					return () => release?.();
 				} });
 				this.sandboxes.add(sandbox);
-				run = sandbox.start(code, { ...options, signal, ...(Number.isFinite(scriptDeadline) ? { timeoutMs: Math.max(1, scriptDeadline - Date.now()) } : {}) });
+				run = sandbox.start(code, { ...options, signal, ...(Number.isFinite(remaining) ? { timeoutMs: remaining } : {}) });
 				return await run.result;
 			} catch (error) {
 				return waitFailure(error, signal);

@@ -4,13 +4,15 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { it } from "node:test";
+import { it, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { Harness, MemoryStorage, LiveDoc, UsageDoc, type ToolExecutionApi, type ToolExecutionResult } from "@earendil-works/pi-durable";
 import type { CodemodeToolDetails } from "@earendil-works/pi-durable/codemode";
+import { CodemodeSandbox, type CodemodeRunOptions, type CodemodeSandboxOptions } from "@earendil-works/pi-codemode";
+import { CodemodeWorkerQueue, QueuedCodemodeSandbox } from "./codemode-admission.ts";
 import type { CreatedAgents } from "./agent-lineage.ts";
 import type { readEffortAwareness } from "./effort-awareness.ts";
 import { StatusOutputSchema, StatusToolOutputSchema } from "./observation-schema.ts";
@@ -961,24 +963,149 @@ it("does not wait for an indirect server that never answers", { timeout: 30000 }
 	assert.equal(result.answer, "durable answer");
 });
 
-it("admits native codemode with an injected Harness clock", { timeout: 30000 }, async (t) => {
+async function nativeClockFixture(t: TestContext, now: () => number, code = '// @options: {"timeout_ms": 2000}\nreturn 42;') {
 	const root = mkdtempSync(join(tmpdir(), "durable-codemode-clock-"));
 	const agentDir = join(root, "agent");
 	mkdirSync(agentDir);
 	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultTools: ["+codemode"], cacheWarming: { mode: "off" }, retry: { enabled: false } }));
 	let services: Awaited<ReturnType<typeof createDurableServices>> | undefined;
 	let harness: Harness | undefined;
+	const storage = new MemoryStorage();
+	const closeStorage = storage.close.bind(storage);
+	// The fixture owns the in-memory storage across Harness close/reopen.
+	t.mock.method(storage, "close", async () => {});
 	t.after(async () => {
 		await services?.close();
 		await harness?.close(BACKGROUND_CONTEXT);
+		await closeStorage(BACKGROUND_CONTEXT);
 		rmSync(root, { recursive: true, force: true });
 	});
-	const { runtime } = await streamRuntime(codemodeStream('// @options: {"timeout_ms": 2000}\nreturn 42;'));
-	services = await createDurableServices({ cwd: root, agentDir, storageId: "fixture-clock", extensionPaths: [], trusted: true, buildBuiltin: createDurableExecution, modelRuntime: runtime });
-	harness = await Harness.open(new MemoryStorage(), { models: runtime, registry: services.registry, settings: services.settings, env: services.env, now: () => 1000 }, BACKGROUND_CONTEXT);
-	await services.install(harness);
-	harness.resume();
-	const conversation = await harness.root(BACKGROUND_CONTEXT, { agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } });
+	const { runtime } = await streamRuntime(codemodeStream(code));
+	const open = async () => {
+		services = await createDurableServices({ cwd: root, agentDir, storageId: "fixture-clock", extensionPaths: [], trusted: true, buildBuiltin: createDurableExecution, modelRuntime: runtime });
+		harness = await Harness.open(storage, { models: runtime, registry: services.registry, settings: services.settings, env: services.env, now }, BACKGROUND_CONTEXT);
+		await services.install(harness);
+		harness.resume();
+		const conversation = await harness.root(BACKGROUND_CONTEXT, { agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } });
+		return { services, harness, conversation };
+	};
+	return { ...await open(), reopen: async () => {
+		await services?.close();
+		await harness?.close(BACKGROUND_CONTEXT);
+		return open();
+	} };
+}
+
+function observeQueuedWorkers(t: TestContext, queue: CodemodeWorkerQueue) {
+	const queued = deferred();
+	const observed = { queued: queued.promise, onQueued: () => {}, workers: 0, timeouts: [] as (number | undefined)[], attempts: [] as { startedAt: number; timeoutMs: number | undefined }[] };
+	const reserve = queue.reserve.bind(queue);
+	t.mock.method(queue, "reserve", (signal: AbortSignal, deadline: number) => {
+		const pending = reserve(signal, deadline);
+		queued.resolve();
+		observed.onQueued();
+		return pending;
+	});
+	const start = QueuedCodemodeSandbox.prototype.start;
+	t.mock.method(QueuedCodemodeSandbox.prototype, "start", function(this: QueuedCodemodeSandbox, code: string, options: CodemodeRunOptions) {
+		observed.attempts.push({ startedAt: options.startedAt, timeoutMs: options.timeoutMs });
+		const fields = this as unknown as { queue: CodemodeWorkerQueue; options: CodemodeSandboxOptions };
+		fields.queue = queue;
+		fields.options = { ...fields.options, onWorkerStarted: () => { observed.workers++; } };
+		return start.call(this, code, options);
+	});
+	const nativeStart = CodemodeSandbox.prototype.start;
+	t.mock.method(CodemodeSandbox.prototype, "start", function(this: CodemodeSandbox, code: string, options: CodemodeRunOptions) {
+		observed.timeouts.push(options.timeoutMs);
+		return nativeStart.call(this, code, options);
+	});
+	return observed;
+}
+
+it("refuses a queued native launch after the committed Harness script deadline passes", { timeout: 30000 }, async (t) => {
+	const queue = new CodemodeWorkerQueue(1);
+	const release = await queue.reserve(new AbortController().signal, Date.now() + 10000);
+	t.after(release);
+	const observed = observeQueuedWorkers(t, queue);
+	let clock = 1000;
+	const { harness, conversation } = await nativeClockFixture(t, () => clock);
+	let persisted: { startedAt: number; deadline: number } | undefined;
+	harness.subscribeCommits((publication) => {
+		for (const change of publication.changes) {
+			if (change.type === "document" && change.record.kind === "pi.codemode.run" && change.value?.start !== undefined) {
+				const start = change.value.start as unknown as { startedAt: number; deadline: number };
+				persisted = { startedAt: start.startedAt, deadline: start.deadline };
+			}
+		}
+	});
+	const submission = await conversation.submit({ type: "input", content: "Run the script." }, BACKGROUND_CONTEXT);
+	await observed.queued;
+	assert.deepEqual(persisted, { startedAt: 1000, deadline: 3000 });
+	clock = 3001;
+	release();
+	assert.equal((await submission.wait(BACKGROUND_CONTEXT)).status, "done");
+	assert.equal(observed.workers, 0, "an expired native deadline must prevent actual worker launch");
+	const view = await conversation.context(BACKGROUND_CONTEXT);
+	const output = view.messages.find((message) => message.role === "toolResult");
+	assert.ok(output?.role === "toolResult");
+	assert.equal(output.isError, true);
+	assert.match(toolResultBody(output), /timed out/u);
+});
+
+it("debits a partial Harness clock advance from the queued native worker budget", { timeout: 30000 }, async (t) => {
+	const queue = new CodemodeWorkerQueue(1);
+	const release = await queue.reserve(new AbortController().signal, Date.now() + 10000);
+	t.after(release);
+	const observed = observeQueuedWorkers(t, queue);
+	let clock = 1000;
+	const { conversation } = await nativeClockFixture(t, () => clock);
+	const submission = await conversation.submit({ type: "input", content: "Run the script." }, BACKGROUND_CONTEXT);
+	await observed.queued;
+	clock = 1500;
+	release();
+	assert.equal((await submission.wait(BACKGROUND_CONTEXT)).status, "done");
+	assert.equal(observed.workers, 1);
+	assert.equal(observed.timeouts.length, 1);
+	assert.ok(observed.timeouts[0] !== undefined && observed.timeouts[0] > 0 && observed.timeouts[0] <= 1500);
+	const view = await conversation.context(BACKGROUND_CONTEXT);
+	const output = view.messages.find((message) => message.role === "toolResult");
+	assert.ok(output?.role === "toolResult");
+	assert.equal(output.isError, false);
+	assert.match(toolResultBody(output), /42/u);
+});
+
+it("keeps the original native deadline and replay remainder across a queued Harness reopen", { timeout: 30000 }, async (t) => {
+	const queue = new CodemodeWorkerQueue(1);
+	const release = await queue.reserve(new AbortController().signal, Date.now() + 10000);
+	t.after(release);
+	const observed = observeQueuedWorkers(t, queue);
+	let clock = 1000;
+	const f = await nativeClockFixture(t, () => clock);
+	const submission = await f.conversation.submit({ type: "input", content: "Run the script." }, BACKGROUND_CONTEXT);
+	await observed.queued;
+	const queuedAgain = deferred();
+	observed.onQueued = () => queuedAgain.resolve();
+	clock = 1600;
+	const reopened = await f.reopen();
+	await queuedAgain.promise;
+	assert.deepEqual(observed.attempts, [{ startedAt: 1000, timeoutMs: 2000 }, { startedAt: 1000, timeoutMs: 1400 }]);
+	clock = 2500;
+	release();
+	const restored = await reopened.harness.submission(submission.id, BACKGROUND_CONTEXT);
+	assert.ok(restored);
+	assert.equal((await restored.wait(BACKGROUND_CONTEXT)).status, "done");
+	assert.equal(observed.workers, 1);
+	assert.equal(observed.timeouts.length, 1);
+	assert.ok(observed.timeouts[0] !== undefined && observed.timeouts[0] > 0 && observed.timeouts[0] <= 500);
+	const view = await reopened.conversation.context(BACKGROUND_CONTEXT);
+	const output = view.messages.find((message) => message.role === "toolResult");
+	assert.ok(output?.role === "toolResult");
+	assert.equal(output.isError, false);
+	assert.match(toolResultBody(output), /42/u);
+});
+
+it("admits native codemode with an injected Harness clock", { timeout: 30000 }, async (t) => {
+	const { conversation } = await nativeClockFixture(t, () => 1000);
 	const outcome = await (await conversation.submit({ type: "input", content: "Run the script." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
 	assert.equal(outcome.status, "done");
 	const view = await conversation.context(BACKGROUND_CONTEXT);

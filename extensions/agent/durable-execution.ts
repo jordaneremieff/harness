@@ -1009,6 +1009,7 @@ class DurableExecutionRuntime implements DurableExecution {
 							return state.deadline;
 						}, context).then((deadline) => Date.now() + Math.max(0, deadline - api.now())),
 						admitted: () => api.commit(async (tx) => { (await tx.doc(Admission, api.taskId)).admitted = true; }, context),
+						now: () => api.now(),
 					}, undefined, { memoryLimitBytes: CODEMODE_MEMORY_LIMIT_BYTES });
 					this.queuedSandboxes.add(sandbox);
 					if (this.closed) await sandbox.close();
