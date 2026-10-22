@@ -29,21 +29,22 @@ function fixture(t: TestContext, identity: ReleaseIdentity | null = loaded) {
   t.after(() => {if (previous) Object.defineProperty(globalThis, 'document', previous); else Reflect.deleteProperty(globalThis, 'document');});
   const footer = new Node(), version = new Node(); footer.append(version);
   const requests: {signal: AbortSignal; resolve(value: unknown): void; reject(error: Error): void}[] = [];
-  const timers = new Map<number, () => void>(); let serial = 0, state: ReleaseReloadState = 'ready', reloads = 0, details = 0, failures = 0;
-  const visibility: boolean[] = [], reloadSignals: AbortSignal[] = [];
+  const timers = new Map<number, {callback: () => void; delay: number}>(); let serial = 0, state: ReleaseReloadState = 'ready', now = 10_000;
+  const reloads: ReleaseIdentity[] = [], stylesheets: ReleaseIdentity[] = [], reloadSignals: AbortSignal[] = []; let failures = 0;
   let reload: (signal: AbortSignal) => Promise<void> = async () => {};
   const notice = new ReleaseNotice(identity ?? undefined, {before: version as unknown as HTMLElement,
     read: signal => new Promise((resolve, reject) => requests.push({signal, resolve, reject})),
-    reload: signal => {reloads++; reloadSignals.push(signal); return reload(signal);}, details: () => {details++;},
-    reloadState: () => state, changed: visible => {version.hidden = visible; visibility.push(visible);}, failure: () => {failures++;},
-    clock: {set: (callback, delay) => {assert.equal(delay, RELEASE_CHECK_MS); timers.set(++serial, callback); return serial;}, clear: timer => {timers.delete(timer);}}});
+    reload: (signal, release) => {reloads.push(release); reloadSignals.push(signal); return reload(signal);},
+    stylesheet: async release => {stylesheets.push(release);}, reloadState: () => state, failure: () => {failures++;},
+    clock: {now: () => now, set: (callback, delay) => {timers.set(++serial, {callback, delay}); return serial;}, clear: timer => {timers.delete(timer);}}});
   t.after(() => notice.destroy());
-  const node = notice.node as unknown as Node, reloadButton = notice.reloadButton as unknown as Node, detailsButton = notice.detailsButton as unknown as Node;
-  return {notice, node, footer, version, requests, timers, visibility, reloadSignals, reloadButton, detailsButton,
-    state: (value: ReleaseReloadState) => {state = value; notice.refresh();}, reload: (value: typeof reload) => {reload = value;},
-    tick: () => {const entry = timers.entries().next().value; assert.ok(entry); timers.delete(entry[0]); entry[1]();},
-    get reloads() {return reloads;}, get details() {return details;}, get failures() {return failures;}};
+  const node = notice.node as unknown as Node;
+  const fire = (delay: number) => {const entry = [...timers.entries()].find(([, value]) => value.delay === delay); assert.ok(entry, `timer ${delay}`); timers.delete(entry[0]); entry[1].callback();};
+  return {notice, node, version, requests, timers, reloads, stylesheets, reloadSignals, fire,
+    state: (value: ReleaseReloadState) => {state = value;}, advance: (ms: number) => {now += ms;}, reload: (value: typeof reload) => {reload = value;},
+    get failures() {return failures;}};
 }
+const newer = {...loaded, commit: commit('d'), generation: generation('e'), release: generation('f')};
 
 test('loaded identity uses page generation only, and served identity uses the checked health fields without aliases', () => {
   const identity: UiIdentity = {iteration: '1.10', release: loaded.release, git: {commit: loaded.commit, shortCommit: 'aaaaaaaa', branch: 'main', modified: false, committedAt: '2026-10-21T00:00:00Z'}, assets: {digest: generation('f')}};
@@ -57,60 +58,58 @@ test('loaded identity uses page generation only, and served identity uses the ch
   for (const changed of [{...loaded, commit: commit('d')}, {...loaded, generation: generation('e')}, {...loaded, release: generation('f')}]) assert.equal(differentRelease(loaded, changed), true);
 });
 
-test('a changed served release replaces version with exact facts and real named actions, with no automatic reload', async t => {
-  const f = fixture(t); assert.equal(f.requests.length, 0); f.notice.readiness(true);
-  f.requests[0]?.resolve(snapshot({...loaded, commit: commit('d'), generation: generation('e'), release: generation('f')})); await settle();
-  assert.equal(f.node.hidden, false); assert.equal(f.version.hidden, true); assert.deepEqual(f.visibility, [true]);
-  assert.equal(f.notice.facts.textContent, 'Release dddddddd live · this tab aaaaaaaa');
-  assert.equal(f.reloadButton.type, 'button'); assert.equal(f.reloadButton.textContent, 'Reload'); assert.equal(f.reloadButton.disabled, false);
-  assert.equal(f.reloadButton.attributes.get('aria-label'), 'Reload to release dddddddd');
-  assert.equal(f.detailsButton.attributes.get('aria-label'), 'Release details');
-  assert.doesNotMatch(f.node.textContent, /update available|refresh|!/i); assert.equal(f.reloads, 0);
-  f.detailsButton.click(); assert.equal(f.details, 1); assert.equal(f.reloads, 0);
-  const disclosure = f.node.children.find(node => node.className.includes('workbench-release-disclosure')); assert.ok(disclosure);
-  const narrowDetails = disclosure.children[1]?.children[0]; assert.equal(narrowDetails?.attributes.get('aria-label'), 'Release details'); narrowDetails?.click(); assert.equal(f.details, 2);
-  f.reloadButton.click(); assert.equal(f.reloads, 1); assert.equal(f.reloadButton.disabled, true); await settle();
+test('a changed served release is adopted automatically once the page is quiet, with no manual controls', async t => {
+  const f = fixture(t); f.advance(5000); f.notice.readiness(true);
+  assert.equal(f.requests.length, 1); f.requests[0]?.resolve(snapshot(newer)); await settle();
+  assert.deepEqual(f.reloads, [newer]); assert.equal(f.node.children.length, 0); assert.doesNotMatch(f.node.textContent, /Reload|Details|update available/i);
 });
 
-test('equal identities show no notice and a later match restores version', async t => {
+test('equal identities start no adoption and a later match cancels a waiting one', async t => {
   const f = fixture(t); f.notice.readiness(true); f.requests[0]?.resolve(snapshot()); await settle();
-  assert.equal(f.node.hidden, true); assert.equal(f.version.hidden, false); assert.deepEqual(f.visibility, []);
-  f.tick(); f.requests[1]?.resolve(snapshot({...loaded, generation: generation('d')})); await settle(); assert.equal(f.node.hidden, false);
-  assert.equal(f.notice.facts.textContent, 'Release dddddddd live · this tab bbbbbbbb');
-  assert.equal(f.reloadButton.attributes.get('aria-label'), 'Reload to release dddddddd');
-  f.tick(); f.requests[2]?.resolve(snapshot()); await settle(); assert.equal(f.node.hidden, true); assert.equal(f.version.hidden, false); assert.deepEqual(f.visibility, [true, false]);
+  assert.equal(f.node.hidden, true); assert.deepEqual(f.reloads, []);
+  f.notice.key(); f.fire(RELEASE_CHECK_MS); f.requests[1]?.resolve(snapshot({...loaded, generation: generation('d')})); await settle();
+  assert.deepEqual(f.reloads, []); assert.equal([...f.timers.values()].some(timer => timer.delay === 250), true);
+  f.fire(RELEASE_CHECK_MS); f.requests[2]?.resolve(snapshot()); await settle();
+  assert.equal([...f.timers.values()].some(timer => timer.delay === 250), false); assert.deepEqual(f.reloads, []);
 });
 
-test('pending saves disable Reload until acknowledgement; failed saves never gain a competing retry action', async t => {
-  const f = fixture(t); f.state('pending'); f.notice.readiness(true); f.requests[0]?.resolve(snapshot({...loaded, commit: commit('d')})); await settle();
-  assert.equal(f.reloadButton.textContent, 'Reload after draft save'); assert.equal(f.reloadButton.disabled, true); f.reloadButton.click(); assert.equal(f.reloads, 0);
-  f.state('failed'); assert.equal(f.reloadButton.disabled, true); assert.equal(f.reloadButton.textContent, 'Reload'); assert.doesNotMatch(f.node.textContent, /Try again|Draft not saved/);
-  f.state('blocked'); assert.equal(f.reloadButton.disabled, true);
-  f.state('ready'); assert.equal(f.reloadButton.disabled, false); f.reloadButton.click(); await settle(); assert.equal(f.reloads, 1);
+test('typing or an unsaved draft delays adoption, and long typing shows Update waiting', async t => {
+  const f = fixture(t); f.notice.readiness(true); f.notice.key(); f.requests[0]?.resolve(snapshot(newer)); await settle();
+  assert.deepEqual(f.reloads, []); assert.equal(f.node.textContent, '');
+  f.advance(60_000); f.notice.key(); f.notice.refresh(); assert.equal(f.node.textContent, 'Update waiting'); assert.equal(f.node.hidden, false);
+  f.advance(3000); f.state('pending'); f.notice.refresh(); assert.deepEqual(f.reloads, []);
+  f.state('ready'); f.notice.refresh(); await settle(); assert.deepEqual(f.reloads, [newer]);
 });
 
-test('the stable polite region announces once per observed identity, not on save state or repeated reads', async t => {
-  const f = fixture(t); f.notice.readiness(true); const current = {...loaded, commit: commit('d')}; f.requests[0]?.resolve(snapshot(current)); await settle();
-  const region = f.node.children.find(node => node.attributes.get('aria-live') === 'polite'); assert.ok(region);
-  assert.equal(region.attributes.get('role'), 'status'); assert.equal(region.attributes.get('aria-atomic'), 'true'); const writes = region.writes;
-  f.state('pending'); f.state('ready'); f.tick(); f.requests[1]?.resolve(snapshot(current)); await settle(); assert.equal(region.writes, writes);
-  f.tick(); f.requests[2]?.resolve(snapshot({...current, commit: commit('e')})); await settle(); assert.equal(region.writes, writes + 1);
+test('a release with the same module family replaces only the stylesheet and announces the update', async t => {
+  const family = generation('9'), f = fixture(t, {...loaded, moduleFamily: family}); f.advance(5000); f.notice.readiness(true);
+  f.requests[0]?.resolve({...snapshot(newer), identity: {...snapshot(newer).identity, moduleFamily: family}}); await settle();
+  assert.deepEqual(f.reloads, []); assert.equal(f.stylesheets.length, 1);
+  assert.equal(f.node.textContent, 'Updated to ffffffff'); assert.equal(f.node.hidden, false);
+  f.fire(6000); assert.equal(f.node.textContent, ''); assert.equal(f.node.hidden, true);
 });
 
-test('disconnect aborts health and explicit reload, removes timers, and ignores late results; reconnect reads once', async t => {
-  const f = fixture(t); f.notice.readiness(true); f.notice.readiness(true); assert.equal(f.requests.length, 1);
-  f.notice.readiness(false); assert.equal(f.requests[0]?.signal.aborted, true); f.requests[0]?.resolve(snapshot({...loaded, commit: commit('d')})); await settle();
-  assert.equal(f.node.hidden, true); assert.equal(f.timers.size, 0);
-  f.notice.readiness(true); f.requests[1]?.resolve(snapshot({...loaded, commit: commit('d')})); await settle(); assert.equal(f.timers.size, 1);
-  let finish!: () => void; f.reload(() => new Promise<void>(resolve => {finish = resolve;})); f.reloadButton.click(); assert.equal(f.reloads, 1); f.reloadButton.click(); assert.equal(f.reloads, 1);
-  f.notice.readiness(false); assert.equal(f.reloadSignals[0]?.aborted, true); assert.equal(f.timers.size, 0); finish(); await settle(); assert.equal(f.failures, 0);
+test('a failed adoption reports once and retries only after the check interval', async t => {
+  const f = fixture(t); f.advance(5000); f.reload(async () => {throw new Error('refused');}); f.notice.readiness(true);
+  f.requests[0]?.resolve(snapshot(newer)); await settle();
+  assert.equal(f.reloads.length, 1); assert.equal(f.failures, 1);
+  f.notice.refresh(); assert.equal(f.reloads.length, 1);
+  f.advance(RELEASE_CHECK_MS); f.notice.refresh(); await settle(); assert.equal(f.reloads.length, 2);
+});
+
+test('disconnect aborts health and adoption, removes timers, and ignores late results; reconnect reads once', async t => {
+  const f = fixture(t); f.advance(5000); f.notice.readiness(true); f.notice.readiness(true); assert.equal(f.requests.length, 1);
+  f.notice.readiness(false); assert.equal(f.requests[0]?.signal.aborted, true); f.requests[0]?.resolve(snapshot(newer)); await settle();
+  assert.deepEqual(f.reloads, []); assert.equal(f.timers.size, 0);
+  f.notice.readiness(true); assert.equal(f.requests.length, 2);
+  let finish!: () => void; f.reload(() => new Promise<void>(resolve => {finish = resolve;})); f.requests[1]?.resolve(snapshot(newer)); await settle();
+  assert.equal(f.reloads.length, 1); f.notice.readiness(false); assert.equal(f.reloadSignals[0]?.aborted, true); assert.equal(f.timers.size, 0); finish(); await settle(); assert.equal(f.failures, 0);
   f.notice.readiness(true); assert.equal(f.requests.length, 3); f.notice.destroy(); assert.equal(f.requests[2]?.signal.aborted, true);
-  f.requests[2]?.reject(new Error('late')); await settle(); assert.equal(f.timers.size, 0); f.notice.destroy(); f.notice.readiness(true); assert.equal(f.requests.length, 3);
+  f.requests[2]?.reject(new Error('late')); await settle(); assert.equal(f.timers.size, 0); f.notice.readiness(true); assert.equal(f.requests.length, 3);
 });
 
 test('failed or missing identity reads keep the last observation, and unavailable page identity starts no polling', async t => {
-  const f = fixture(t); f.notice.readiness(true); f.requests[0]?.resolve(snapshot({...loaded, commit: commit('d')})); await settle(); const text = f.notice.facts.textContent;
-  f.tick(); f.requests[1]?.reject(new Error('unavailable')); await settle(); assert.equal(f.notice.facts.textContent, text);
-  f.tick(); f.requests[2]?.resolve({...snapshot(), identity: {iteration: '1.10'}}); await settle(); assert.equal(f.notice.facts.textContent, text);
+  const f = fixture(t); f.notice.key(); f.notice.readiness(true); f.requests[0]?.resolve(snapshot(newer)); await settle();
+  f.fire(250); f.fire(RELEASE_CHECK_MS); f.requests[1]?.reject(new Error('unavailable')); await settle(); assert.deepEqual(f.reloads, []);
   const absent = fixture(t, null); absent.notice.readiness(true); assert.equal(absent.requests.length, 0); assert.equal(absent.node.hidden, true);
 });
