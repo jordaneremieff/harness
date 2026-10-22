@@ -44,6 +44,7 @@ type RetryVisibility = { conversationId: number; input: number; result: ResultRe
 export type AwaitState = { declarations: AwaitDeclaration[]; provenance: InputProvenance[]; retryVisibility?: RetryVisibility[]; communicationDiagnostic?: "invalid" | "unavailable" };
 export const AwaitDoc = defineDoc<AwaitState>({ kind: "agent.awaited-results", version: 1, scope: "session", initial: () => ({ declarations: [], provenance: [] }) });
 export const AWAIT_DECLARATION_LIMIT = 64;
+/** Collection watermark; pending native inputs do not impose an admission cap. */
 export const AWAIT_PROVENANCE_LIMIT = 128;
 
 export function boundedAwaitAnswer(result: ResultReference, answer: string, answerEntryId: number | undefined, excerpt = false): Pick<AwaitOutcome, "answer" | "truncated" | "excerpt" | "continuation"> {
@@ -307,7 +308,6 @@ export async function recordInputProvenance(tx: Tx, provenance: InputProvenance)
 		return;
 	}
 	if (state.provenance.length >= AWAIT_PROVENANCE_LIMIT) await pruneInputProvenance(tx, state);
-	if (state.provenance.length >= AWAIT_PROVENANCE_LIMIT) throw new Error("Input provenance bound is full");
 	const live = await tx.doc(LiveDoc, provenance.conversationId as ConversationId);
 	state.provenance.push({ ...provenance, ...(live.run === undefined ? {} : { runId: live.run.taskId }) });
 }

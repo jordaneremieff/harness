@@ -191,6 +191,60 @@ it("retains queued and live unadmitted classifications through pruning and crash
 	assert.equal(f.inbox.get(1)?.items[0].mode, "steer");
 });
 
+for (const classification of ["explicit", "report"] as const) it(`admits releasing ${classification} input after queued provenance exceeds its collection watermark`, async () => {
+	const f = fixture(); const owner = f.owner(1); const result = f.result(2);
+	await declareAwait(f.tx, "store", owner, [result]);
+	const queue: { items: { id: number; mode: string }[] } = { items: [] };
+	f.inbox.set(1, queue);
+	for (let index = 0; index < AWAIT_PROVENANCE_LIMIT * 2; index++) {
+		const requestId = `deferred-${index}`, id = index + 10_000;
+		const kind = index % 2 === 0 ? "report" : "automatic", sender = kind === "automatic" ? result.sessionId : "unrelated";
+		assert.deepEqual(await classifyAwaitInput(f.tx, { conversationId: 1, requestId, classification: kind, sender, automaticKind: "timer" }), { suppress: false, defer: kind === "automatic", release: false });
+		f.inputs.set(`1/${requestId}`, { id, type: "input", status: "queued", requestId });
+		queue.items.push({ id, mode: "followUp" });
+		await reconcileInputRelease(f.tx, owner.conversationId, requestId);
+	}
+	assert.equal(f.state.provenance.length, AWAIT_PROVENANCE_LIMIT * 2);
+	assert.equal(f.state.declarations[0].decision, "awaiting");
+	assert.ok(queue.items.every((item) => item.mode === "followUp"));
+	const incoming = { conversationId: 1, requestId: "releasing-control", classification, sender: classification === "report" ? result.sessionId : "unrelated" };
+	assert.deepEqual(await classifyAwaitInput(f.tx, incoming), { suppress: false, defer: false, release: true });
+	f.inputs.set("1/releasing-control", { id: 99, type: "input", status: "queued", requestId: incoming.requestId });
+	queue.items.push({ id: 99, mode: "followUp" });
+	await reconcileInputRelease(f.tx, owner.conversationId, incoming.requestId);
+	assert.equal(f.state.declarations[0].decision, "released");
+	assert.equal(queue.items.find((item) => item.id === 99)?.mode, "steer");
+	assert.ok(queue.items.filter((item) => item.id !== 99).every((item) => item.mode === "followUp"));
+	assert.equal(queue.items.length, AWAIT_PROVENANCE_LIMIT * 2 + 1);
+	assert.deepEqual(f.state.declarations[0].results, [result]);
+	assert.deepEqual(f.state.declarations[0].inputs, [1000]);
+});
+
+it("retains queued classifications across collection and replay for a later await declaration", async () => {
+	const f = fixture(); const owner = f.owner(1); const result = f.result(2);
+	const queue: { items: { id: number; mode: string }[] } = { items: [] };
+	f.inbox.set(1, queue);
+	for (let index = 0; index < AWAIT_PROVENANCE_LIMIT * 2; index++) {
+		const requestId = `before-await-${index}`, id = index + 10_000;
+		const classification = index % 2 === 0 ? "report" : "automatic", sender = index === 0 || classification === "automatic" ? result.sessionId : "unrelated";
+		assert.deepEqual(await classifyAwaitInput(f.tx, { conversationId: 1, requestId, classification, sender, automaticKind: "timer" }), { suppress: false, defer: false, release: false });
+		f.inputs.set(`1/${requestId}`, { id, type: "input", status: "queued", requestId });
+		queue.items.push({ id, mode: "followUp" });
+	}
+	const recovered = JSON.parse(JSON.stringify(f.state)) as AwaitState;
+	assert.equal(recovered.provenance.length, AWAIT_PROVENANCE_LIMIT * 2);
+	f.state.provenance = recovered.provenance;
+	f.state.declarations = recovered.declarations;
+	const declaration = await declareAwait(f.tx, "store", owner, [result]);
+	assert.equal(declaration.decision, "released");
+	assert.equal(queue.items[0].mode, "steer");
+	assert.ok(queue.items.slice(1).every((item) => item.mode === "followUp"));
+	assert.equal(queue.items.length, AWAIT_PROVENANCE_LIMIT * 2);
+	assert.equal(f.state.provenance[0].classification, "report");
+	assert.equal(f.state.provenance[0].sender, result.sessionId);
+	await assert.rejects(classifyAwaitInput(f.tx, { conversationId: 1, requestId: "before-await-2", classification: "explicit", sender: "unrelated" }), /different release provenance/u);
+});
+
 it("accepts default retry release and an explicit positive attempt threshold", () => {
 	const results = [{ sessionId: "producer", submissionId: 1 }];
 	assert.equal(Value.Check(AwaitParams, { results }), true);

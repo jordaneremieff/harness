@@ -7,7 +7,7 @@ import { it, type TestContext } from "node:test";
 import type { Models } from "@earendil-works/pi-ai";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { LiveDoc, type ConversationId, type SubmissionId, type Tx } from "@earendil-works/pi-durable";
+import { LiveDoc, InboxDoc, type ConversationId, type SubmissionId, type Tx } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
 import { DurableHost } from "./durable-host.ts";
 import { answerMessage, completed, pending, fixtureModelId, fixtureProvider, fixtureRegistry, fixtureRuntime } from "./durable-host-fixture.mts";
@@ -26,8 +26,8 @@ const ROOT = 1 as ConversationId;
 const sender = "7f7f7f7f-1111-4222-8333-444444444444";
 const communication: Communication = { format: "agent.communication/1", kind: "report", sender: { identity: sender, name: "Peer" }, body: { text: "Source body", complete: false, redacted: false }, recordedAt: 0, metadata: { sourceId: "report:source", requestId: "source" } };
 
-function openFixtureHost(root: string, storageId: string, supplied?: Models): Promise<DurableHost> {
-	return (supplied === undefined ? fixtureRuntime("answer") : Promise.resolve(supplied)).then((models) => DurableHost.open({ storagePath: join(root, "storage.sqlite"), storageId, cwd: root, models, registry: fixtureRegistry(), agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } }, resume: true, now: () => 17 }));
+function openFixtureHost(root: string, storageId: string, supplied?: Models, resume = true): Promise<DurableHost> {
+	return (supplied === undefined ? fixtureRuntime("answer") : Promise.resolve(supplied)).then((models) => DurableHost.open({ storagePath: join(root, "storage.sqlite"), storageId, cwd: root, models, registry: fixtureRegistry(), agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } }, resume, now: () => 17 }));
 }
 
 /** Supplied models and registry prevent generic resource discovery. */
@@ -589,6 +589,62 @@ it("materializes exact distinct terminal companions while every candidate remain
 		assert.ok(state.provenance.length <= AWAIT_PROVENANCE_LIMIT);
 		await assertCompanions(host, storageId, inputs);
 	});
+});
+
+it("retains queued report classifications and communication beyond collection across reopen and placement", { timeout: 60_000 }, async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "queued-communication-")), storageId = randomUUID();
+	const initial = await controlledRuntime(1), resumed = await controlledRuntime(1);
+	let host = await openFixtureHost(root, storageId, initial.models), initialReleased = false, resumedReleased = false;
+	t.after(async () => { if (!initialReleased) initial.release(); if (!resumedReleased) resumed.release(); await host.close(); rmSync(root, { recursive: true, force: true }); });
+	await host.request("submit", { requestId: "pending-owner", message: "Pending owner" });
+	await initial.held;
+	const requests: { requestId: string; submissionId: number; message: string }[] = [];
+	for (let index = 0; index <= AWAIT_PROVENANCE_LIMIT; index++) {
+		const requestId = `queued-report-${index}`, message = `Original report ${index}`;
+		const admitted = await host.request("submit", { requestId, message, whenBusy: "followUp", provenance: { classification: "report", sender }, communication: { ...communication, body: { ...communication.body, text: message }, metadata: { sourceId: `report:${requestId}`, requestId } } }) as { submissionId: number };
+		requests.push({ requestId, submissionId: admitted.submissionId, message });
+	}
+	const assertQueued = async () => {
+		const state = await host.harness.snapshot(AwaitDoc, BACKGROUND_CONTEXT);
+		const inbox = await host.harness.snapshot(InboxDoc, ROOT, BACKGROUND_CONTEXT);
+		assert.ok(state && inbox);
+		assert.deepEqual(inbox.items.filter((item) => item.mode !== "write").map((item) => item.id), requests.map((request) => request.submissionId));
+		for (const request of requests) {
+			const row = state.provenance.find((item) => item.requestId === request.requestId);
+			assert.equal(row?.classification, "report"); assert.equal(row?.sender, sender);
+			assert.equal(row?.communicationIntent?.value?.body.text, request.message);
+			assert.equal(row?.communicationIntent?.linkedEntryId, undefined);
+			const submission = await host.harness.commit((tx) => tx.submissionByRequest(ROOT, request.requestId), BACKGROUND_CONTEXT);
+			assert.equal(submission?.id, request.submissionId); assert.equal(submission?.status, "queued"); assert.equal(submission?.entry, undefined);
+		}
+		return state.provenance;
+	};
+	const before = await assertQueued();
+	await host.close();
+	initial.release(); initialReleased = true;
+	host = await openFixtureHost(root, storageId, resumed.models, false);
+	assert.deepEqual(await assertQueued(), before);
+	const replay = await host.request("submit", { requestId: requests[0].requestId, message: requests[0].message, whenBusy: "followUp", provenance: { classification: "report", sender }, communication: { ...communication, body: { ...communication.body, text: requests[0].message }, metadata: { sourceId: `report:${requests[0].requestId}`, requestId: requests[0].requestId } } }) as { submissionId: number };
+	assert.equal(replay.submissionId, requests[0].submissionId);
+	await resumed.held;
+	await assertQueued();
+	resumed.release(); resumedReleased = true;
+	await host.resume();
+	const last = requests.at(-1); assert.ok(last);
+	await readOutcome(host.harness, last.submissionId as SubmissionId, BACKGROUND_CONTEXT);
+	await reconcileInputCommunications(host.harness, storageId, BACKGROUND_CONTEXT);
+	const first = await host.harness.commit((tx) => tx.submissionByRequest(ROOT, requests[0].requestId), BACKGROUND_CONTEXT);
+	assert.ok(first?.entry);
+	const page = await readConversationSnapshotPage(host.harness, ROOT, { before: (first.entry + 1) as NonNullable<Parameters<typeof readConversationSnapshotPage>[2]["before"]> }, BACKGROUND_CONTEXT, storageId);
+	const view = parseCommunicationView(page.entries.find((entry) => entry.id === String(first.entry))?.communication);
+	assert.equal(view?.state, "ready");
+	if (view?.state !== "ready") throw new Error("Queued communication did not bind after placement");
+	assert.equal(view.value.body.text, requests[0].message); assert.equal(view.value.sender.identity, sender); assert.equal(view.target.requestId, requests[0].requestId);
+	assert.equal(page.entries.find((entry) => entry.id === String(first.entry))?.model?.[0]?.content, requests[0].message);
+	const next = await host.request("submit", { requestId: "after-drain", message: "After drain" }) as { submissionId: number };
+	await readOutcome(host.harness, next.submissionId as SubmissionId, BACKGROUND_CONTEXT);
+	const after = await host.harness.snapshot(AwaitDoc, BACKGROUND_CONTEXT);
+	assert.equal(after?.provenance.some((row) => requests.some((request) => request.requestId === row.requestId)), false);
 });
 
 it("retains the same verified association across close and reopen", async () => {

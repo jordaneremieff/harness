@@ -782,8 +782,11 @@ dedupe observations do not permit later backfill. This session-scoped family
 retains lookup hints, not authoritative communication records. Each observation
 verifies the immutable native target and companion before publishing their join. The
 plain view stays unresolved without a companion or invalid marker.
-The retained input bound stays 128. Pruning retains queued inputs and live-run
-classifications whose native input is not yet admitted. Placed inputs leave the
+The retained input collection watermark stays 128; it is not an admission cap.
+Queued native inputs and live-run classifications whose native input is not yet
+admitted retain their exact provenance and communication intent. This pending
+backlog does not prevent explicit input or awaited-producer report admission.
+Unrelated reports and automatic inputs still do not release an await. Placed inputs leave the
 native inbox and no longer need await-release provenance, even while their run
 continues. Pruning prepares all native reads before companion writes and
 materializes unlinked metadata or no-envelope decisions before row eviction in
