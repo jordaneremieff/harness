@@ -441,7 +441,7 @@ const references = new ReferenceResolver(resolveReference, destination => { void
   navigate: destination => { void navigateFileReference(destination).catch(showError); },
 },loadedDraftReference);
 const actions: Actions = new Actions({threadPosts:threadPostActions,copyLastAnswer:copyLastAnswerAction,receivedResults:receivedResultActions,failedSteps:failedStepActions,ownMessages:ownMessageActions,readSession:saved=>openSessionRead({saved}),hasConvertibleSession:()=>!!(sessionReader.saved??activeSessionReader()?.saved),convertSession:()=>{const item=sessionReader.saved??activeSessionReader()?.saved;if(item)picker.convertSaved(item);},desk:()=>openDesk(),nextUnread:openNextUnread,hasUnread:()=>!!nextUnreadNotice(),handover: () => handover.open(), snapshot: currentSnapshot, primary, modelChanged: renderAvailability, namingPrimary: () => { const selected = primary(); return selected?.lifecycle === 'ready' ? selected : [...state.primaries.values()].find(item => item.lifecycle === 'ready'); }, modelNamesChanged: renderAllComposerSettings, get composer() { return primaryComposer(); }, commandsChanged: () => {const target = primaryTarget(); if (target && state.workspace) controllers.get(controllerKey(state.workspace.id, target))?.composer.commandsChanged();}, modal, selection, reload: reloadSelection, result: showOperation, rosterRefresh: refreshRoster, filesRefresh: refreshFiles, hasTranscript: () => !!focusedTranscript(), find: () => captureFind(), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, sidebarShown: () => !byId('sidebar').hidden, view: (tools, expand) => focusedTranscript()?.expandLoaded(tools, expand), selectPrimary, agentCaption: identity => {return presentationCaptions().get(identity);}, agentStatus: row => presentation({kind: 'agent', identity: row.identity}).activity, agentPresentation:row=>presentation({kind:'agent',identity:row.identity}), conversationFacts: identity => agentFacts(agentRow(identity), state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame), copyAgent: () => { void copy(selectedAgent() ?? '', agentNode('view-notice')); }, inspectAgent,resultLookup:()=>{const target=layoutTarget(currentLayout(),primaryTarget());if(target)conversationController(target).inspection?.open('result');},
-  tabs: {close: () => { const tab = activeTab(currentLayout()); if (tab) closeConversationTab(tabKey(tab)); }, switch: direction => applyLayout(switchTab(currentLayout(), direction)), layout: currentLayout, reopen: {available: () => closedTabs.some(item => item.workspace === state.workspace?.id), run: reopenClosedTab}},
+  tabs: {close: () => { const tab = activeTab(currentLayout()); if (tab) closeConversationTab(tabKey(tab)); }, switch: direction => applyLayout(switchTab(currentLayout(), direction)), layout: currentLayout, reopen: {available: () => closedTabs.some(item => item.workspace === state.workspace?.id), run: () => reopenClosedTab(), choices: closedTabChoices, runKey: reopenClosedTab}},
 });
 const fileBrowse = new FileBrowseState();
 const paneRegions = new Map<string, {node: HTMLElement; tabs: HTMLElement; content: HTMLElement; plus: HTMLButtonElement; menu: HTMLButtonElement; actions: HTMLButtonElement; previous: HTMLButtonElement; next: HTMLButtonElement}>();
@@ -1131,16 +1131,22 @@ function rememberClosedTab(layout: ConversationLayout, key: string): void {
   }
 }
 function closeConversationTab(key: string): void {const layout = currentLayout();rememberClosedTab(layout, key);applyLayout(closeTab(layout, key));}
-function reopenableClosedTab(layout: ConversationLayout, workspace: string): (typeof closedTabs)[number] | undefined {
+function staleClosedTab(tab: ConversationTab): boolean { return tab.kind === 'agent' ? !state.roster.has(tab.identity) : tab.kind === 'primary' && !primary(); }
+/** Recently closed tabs of this workspace that can still open, newest first. */
+function closedTabChoices(): {key: string; label: string}[] {
+  const workspace = state.workspace?.id, layout = currentLayout(); if (!workspace) return [];
+  return closedTabs.filter(item => item.workspace === workspace && !staleClosedTab(item.tab) && !paneForTab(layout, tabKey(item.tab))).reverse().slice(0, 8).map(item => ({key: tabKey(item.tab), label: tabLabel(item.tab)}));
+}
+function reopenableClosedTab(layout: ConversationLayout, workspace: string, only?: string): (typeof closedTabs)[number] | undefined {
   while (closedTabs.length) {
-    const at = closedTabs.findLastIndex(item => item.workspace === workspace); if (at < 0) return;
+    const at = closedTabs.findLastIndex(item => item.workspace === workspace && (only === undefined || tabKey(item.tab) === only)); if (at < 0) return;
     const [saved] = closedTabs.splice(at, 1); if (!saved) return;
     const stale = saved.tab.kind === 'agent' ? !state.roster.has(saved.tab.identity) : saved.tab.kind === 'primary' && !primary();
     if (!stale && !paneForTab(layout, tabKey(saved.tab))) return saved;
   }
 }
-function reopenClosedTab(): void {
-  const workspace = state.workspace?.id, layout = currentLayout(), saved = workspace ? reopenableClosedTab(layout, workspace) : undefined; if (!saved) return;
+function reopenClosedTab(only?: string): void {
+  const workspace = state.workspace?.id, layout = currentLayout(), saved = workspace ? reopenableClosedTab(layout, workspace, only) : undefined; if (!saved) return;
   try {
     const pane = paneById(layout, saved.pane) ?? paneById(layout, layout.focusedPane); if (!pane) return;
     const key = tabKey(saved.tab), opened = openPaneTab(layout, pane.id, structuredClone(saved.tab));
