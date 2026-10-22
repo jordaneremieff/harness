@@ -45,10 +45,13 @@ readings.
   current external facts.
 
 Orient cheaply and inline: the conversation, a bounded memory lookup, and
-narrow capability or source discovery. Do not read large code, documents,
-logs, or transcripts into the parent. A source that is small, local, and
-already named may be read inline as a defining excerpt; state the reason in
-one line.
+narrow capability or source discovery. Orientation locates sources (names,
+listings, sizes); it does not read them to answer. Do not open the content
+files that workers will read, and do not read large code, documents, logs, or
+transcripts into the parent. One small named source may be read inline as a
+defining excerpt; state the reason in one line.
+An answer that the parent has already read in full needs no workers; say so
+instead of delegating the same reading again.
 
 **Complete when:** the question, criteria, and authority fit in a short
 paragraph that each worker contract can copy.
@@ -107,9 +110,16 @@ Give each worker a self-contained contract:
 Inspect the current tool definitions for dispatch fields, result delivery, and
 waiting; this skill does not restate them. Dispatch the wave in one step and
 retain each task's exact result reference. A creation receipt, report, or
-thread post is not a result reference. If the invoking session cannot wait
-natively on result references, route the fan-out through one worker lead that
-can wait natively, and that dispatches, waits, and returns one composed answer; the invoker still owns the
+thread post is not a result reference.
+
+Before dispatch, decide whether this session can wait natively on result
+references. It cannot if it is an ordinary (non-Durable) session, or if its
+wait tool refuses with a native-Durable requirement. In that case do not
+dispatch facet workers yourself: dispatch exactly one lead worker with the
+whole contract (question, criteria, authority, facets, return format, scratch
+directory) and permission to delegate. The lead dispatches, waits natively,
+and returns one composed answer. Then end your turn or do independent work
+and receive the result through automatic delivery. The invoker still owns the
 framing, evidence checks, and final answer.
 
 **Complete when:** each facet has an owner, a contract, and a result
@@ -121,8 +131,9 @@ Receive results through the host's native result delivery. Where the host
 offers a native wait on exact result references, use it; if input releases the
 wait early, apply the input and wait again on the unresolved references. A
 check-in notice is not an answer. Do not poll status, use timed delays, or
-repeat inspections as a wait loop. While workers run, synthesize what has
-arrived and prepare the checks below.
+repeat inspections as a wait loop. Do not stop a live worker to answer in its
+place; a worker stopped without a terminal result is a gap, not evidence.
+While workers run, synthesize what has arrived and prepare the checks below.
 
 For each claim that the answer will rely on:
 
@@ -205,7 +216,9 @@ Deliver a bounded answer in chat, not a transcript:
 - **Evidence:** the few load-bearing claims, each with its actual source
   pointer and kind. Cite the source, not the worker.
 - **Contradictions and limits:** unresolved conflicts, gaps, searched scopes,
-  and anything not tried and why.
+  anything not tried and why, and the stop condition from section 5 that
+  ended the work (name it; for a no-worker answer, say why no delegation was
+  needed).
 - **Exact blocker (instead of an answer when applicable):** the boundary hit,
   what was tried, what evidence exists so far, and the specific access,
   decision, or input that would unblock it.
