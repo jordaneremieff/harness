@@ -54,6 +54,8 @@ Every rule has an id, a severity, a plain-words meaning and one repair direction
 - `references/findings.md`: every rule id, what it means and how to repair it. Read it when a finding's meaning or repair is not obvious.
 - `references/lexicon.md`: every flagged word and phrase, with the legitimate technical sense that exempts it. Read it before you dismiss a lexical finding or defend a word.
 - `references/repair.md`: the repair procedure, claim diff and laundering families. Read it before you repair a flagged draft.
+- `references/judgement.md`: failures the meter cannot detect. Each item names the procedure step that handles it. Read it before you declare a draft done.
+- `references/calibration.md`: the cohort the score was tuned on, the method and the limits. Read it before you quote or rely on a score.
 
 Both generated files come from `data/rules.json`, the single rule source the meter also reads. To change a rule, edit the data and regenerate with `node skills/draft/scripts/render-references.mts`.
 
