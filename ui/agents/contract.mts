@@ -181,7 +181,7 @@ export const supportedOperations: Readonly<Record<OperationName, OperationContra
 	"task-submit": contract("task-submit", "1.0.0", "task-submit/1.2.0"), abort: contract("abort"),
 	configure: contract("configure", "1.3.0"),
 	"collaboration-list": contract("collaboration-list"), "collaboration-read": contract("collaboration-read"),
-	status: contract("status", "1.0.0", "481a5267ce06c0ed2bb89e85e142e3a5d58c78828fb502c46ff815a3cb889197", true),
+	status: contract("status", "1.0.0", "d1f5f022e262aba18b6de135e891aef526cf9f0f62f114e51f3c132e624eb6cf", true),
 	command: contract("command", "1.1.0", "command/1.0.0", true),
 });
 function operation(value: JsonValue): OperationContract {

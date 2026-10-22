@@ -72,7 +72,7 @@ test("a link negotiates status and command and runs a command once through the e
 	const result = await link.request("command", { sessionId: STORAGE, name: "ping", args: "", invocationId: "ui:op-1" }, { identity: STORAGE }) as { text: string };
 	assert.equal(result.text, "pong");
 	assert.deepEqual(host.calls.map(call => call.member), ["status", "command"]);
-	assert.deepEqual(host.calls[0].expected, { request: "status/1.0.0", response: "481a5267ce06c0ed2bb89e85e142e3a5d58c78828fb502c46ff815a3cb889197", durable: (await descriptor() as { upstream: { durable: string } }).upstream.durable });
+	assert.deepEqual(host.calls[0].expected, { request: "status/1.0.0", response: "d1f5f022e262aba18b6de135e891aef526cf9f0f62f114e51f3c132e624eb6cf", durable: (await descriptor() as { upstream: { durable: string } }).upstream.durable });
 	assert.equal((host.calls[1].expected as { request: string; response: string }).request, "command/1.1.0");
 	assert.equal((host.calls[1].expected as { request: string; response: string }).response, "command/1.0.0");
 	assert.equal(host.calls[1].params?.invocationId, "ui:op-1");
