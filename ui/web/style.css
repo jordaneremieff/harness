@@ -1152,6 +1152,7 @@ pre.tool-document { font-family: var(--mono); font-size: var(--fs-code); line-he
 .usage-fact { flex: none; white-space: nowrap; }
 .markdown-content li.task-item { list-style: none; }
 .markdown-content li.task-item > .task-box, .markdown-content li.task-item > p > .task-box { margin: 0 var(--s2) 0 calc(-1 * var(--s5)); vertical-align: middle; }
+.card-icon-stop { fill: currentColor; }
 .picker-day { margin: var(--s3) 0 var(--s1); color: var(--dim); font-size: var(--fs-label); font-weight: 600; }
 .usage-group[data-pressure=high] { color: var(--warning); }
 .usage-group[data-pressure=critical] { color: var(--error); }
