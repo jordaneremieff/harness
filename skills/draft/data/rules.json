@@ -618,22 +618,44 @@
       "severity": "scored",
       "weight": 2,
       "component": "epistemic",
-      "pattern": "\\bit\\s+is\\s+(?:widely|generally|commonly)\\s+(?:understood|accepted|known|believed)\\b|\\bit\\s+is\\s+well\\s+known\\b|\\b(?:many|most|some)\\s+experts\\s+(?:say|agree|believe|note)\\b|\\b(?:studies|research)\\s+(?:show|shows|suggest|suggests)\\b|\\bindustry\\s+observers\\b|\\bprominent\\s+(?:blogs|voices)\\b|\\bexperts\\s+agree\\b",
+      "pattern": "\\bit\\s+is\\s+(?:widely|generally|commonly)\\s+(?:understood|accepted|known|believed)\\b|\\bit\\s+is\\s+well\\s+known\\b|\\b(?:many|most|some)\\s+experts\\s+(?:say|agree|believe|note)\\b|\\bindustry\\s+observers\\b|\\bprominent\\s+(?:blogs|voices)\\b|\\bexperts\\s+agree\\b",
       "flags": "i",
-      "context": [
-        "\\d+\\s*%|\\[\\d+\\]|\\(\\p{L}+,?\\s+\\d{4}\\)"
-      ],
-      "twinFlags": "iu",
       "message": "Authority claimed without a source.",
       "repair": "Name the source and what it found, or drop the claim.",
       "rationale": "Anonymous authority hands the author's claim to nobody.",
       "source": "catalog:epistemic",
       "examples": {
         "hit": [
-          "It is widely understood that retries help."
+          "It is widely understood that retries help.",
+          "Many experts agree that retries help."
         ],
         "clean": [
           "The 2024 load test showed retries cut errors by 12%."
+        ]
+      }
+    },
+    {
+      "id": "epistemic.vague-authority-study",
+      "group": "epistemic",
+      "severity": "scored",
+      "weight": 2,
+      "component": "epistemic",
+      "pattern": "\\b(?:studies|research)\\s+(?:show|shows|suggest|suggests)\\b",
+      "flags": "i",
+      "context": [
+        "\\d+\\s*%|\\[\\d+\\]|\\(\\p{L}+,?\\s+\\d{4}\\)"
+      ],
+      "twinFlags": "iu",
+      "message": "Study cited without a source.",
+      "repair": "Name the study and what it found, or drop the claim.",
+      "rationale": "A study with no name or figure nearby hands the claim to nobody. A figure or citation in the same sentence exempts it.",
+      "source": "catalog:epistemic",
+      "examples": {
+        "hit": [
+          "Studies show that retries help."
+        ],
+        "clean": [
+          "Studies show a 12% drop in errors."
         ]
       }
     },
@@ -659,6 +681,34 @@
         ],
         "clean": [
           "The `cmp` run found no difference between the two files."
+        ]
+      }
+    },
+    {
+      "id": "epistemic.performed-precision-swap",
+      "group": "epistemic",
+      "severity": "scored",
+      "weight": 1.5,
+      "component": "epistemic",
+      "scope": "literal",
+      "pattern": "\\bverbatim\\b|\\bword[- ]for[- ]word\\b|\\bcharacter[- ]for[- ]character\\b|\\bprecisely\\s+the\\s+same\\b|\\bexactly\\s+the\\s+same\\b",
+      "flags": "i",
+      "context": [
+        "\\b(?:cmp|diff|sha\\d*|shasum|md5|checksum|hash|digest)\\b",
+        "\\b(?:quote|quoted|quoting|copy|copied|paste|pasted|transcribe\\w*|reproduce\\w*|cite|cited|repeat)\\b"
+      ],
+      "message": "Exactness asserted without naming the check.",
+      "repair": "Name the check you ran and its result, or say how the texts differ.",
+      "rationale": "A neighbour of the byte-for-byte claim. A named check tool, or an instruction to quote or copy, exempts the hit.",
+      "source": "catalog:precision",
+      "examples": {
+        "hit": [
+          "The new file is verbatim what you approved.",
+          "The two outputs are precisely the same."
+        ],
+        "clean": [
+          "Quote the error verbatim in the ticket.",
+          "A `diff` run shows the output is precisely the same."
         ]
       }
     },
@@ -841,7 +891,7 @@
       "severity": "scored",
       "weight": 1.5,
       "component": "epistemic",
-      "pattern": "(?<=^|[.!?]\\s+)(?:overall|in\\s+short|all\\s+in\\s+all|to\\s+sum\\s+up|ultimately),",
+      "pattern": "(?<=^|[.!?]\\s+)(?:overall|in\\s+short|all\\s+in\\s+all|to\\s+sum\\s+up|ultimately|as\\s+a\\s+reminder|to\\s+recap|quick\\s+recap|just\\s+to\\s+recap|for\\s+context),",
       "flags": "i",
       "message": "Recap opener that repeats instead of adding a fact.",
       "repair": "End on the last substantive fact.",
@@ -849,7 +899,8 @@
       "source": "catalog:frames",
       "examples": {
         "hit": [
-          "Overall, the migration went well."
+          "Overall, the migration went well.",
+          "As a reminder, this session began with a request to fix the build."
         ],
         "clean": [
           "The migration finished in 14 minutes."
@@ -1418,10 +1469,30 @@
       "component": "lexical",
       "terms": [
         "load-bearing",
-        "seam",
-        "seams",
-        "spine",
-        "substrate",
+        {
+          "term": "seam",
+          "context": [
+            "\\bseam\\s+(?:carving|allowance)\\b|\\bsewing\\b"
+          ]
+        },
+        {
+          "term": "seams",
+          "context": [
+            "\\bseam\\s+(?:carving|allowance)\\b|\\bsewing\\b"
+          ]
+        },
+        {
+          "term": "spine",
+          "context": [
+            "\\b(?:spinal|surgeon|surgery|vertebra\\w*|injury|disc)\\b"
+          ]
+        },
+        {
+          "term": "substrate",
+          "context": [
+            "\\b(?:wafer|silicon|enzyme|semiconductor)\\b"
+          ]
+        },
         "wedged",
         "belt-and-suspenders",
         "blast radius",
@@ -1433,11 +1504,6 @@
         "that's not nothing",
         "that\u2019s not nothing"
       ],
-      "context": [
-        "\\bseam\\s+(?:carving|allowance)\\b|\\bsewing\\b|\\bseamless\\b",
-        "\\b(?:spin(?:al|e)\\b.*\\b(?:injury|surgeon|surgery|vertebra\\w*)|surgeon|surgery|vertebra\\w*|injury)\\b",
-        "\\b(?:wafer|silicon|enzyme|semiconductor)\\b"
-      ],
       "message": "Stock agent vocabulary.",
       "repair": "Use the plain word: part, join, base, stuck, depends on.",
       "rationale": "Density of stock vocabulary is the signal. A single hit counts little.",
@@ -1447,6 +1513,8 @@
           "The seam is load-bearing and the work is wedged."
         ],
         "clean": [
+          "The surgeon repaired the spine.",
+          "The tailor cut a seam allowance.",
           "The surgeon repaired the spine."
         ]
       }
@@ -1539,7 +1607,7 @@
       "pattern": "\\b[a-z]+(?:-[a-z]+){2,}\\b|\\b[a-z]{3,}-(?:structure|position|shape|frame|framing|stance|posture)\\b",
       "flags": "i",
       "twin": [
-        "\\b(?:state-of-the-art|end-to-end|off-by-one|up-to-date|out-of-date|time-to-live|one-to-one|one-to-many|many-to-many|first-in-first-out|last-in-first-out|read-after-write|peer-to-peer|point-to-point|day-to-day|top-to-bottom|all-in-one|man-in-the-middle|run-to-completion|read-only|write-only|built-in|well-known|open-source|real-time|long-running|check-in|set-up|follow-up|trade-off|so-called|take-home|stand-alone|rate-limit\\w*|time-out|opt-in|opt-out|plug-in|(?:data|file|tree|graph|call|memory|control|code|source|project|directory|index|block|org|cost|fee|price|pricing|bit|cursor|scroll|line|start|end|key|home|node|stack|heap|thread)-(?:structure|position|shape|frame))\\b"
+        "\\b(?:belt-and-suspenders|state-of-the-art|end-to-end|off-by-one|up-to-date|out-of-date|time-to-live|one-to-one|one-to-many|many-to-many|first-in-first-out|last-in-first-out|read-after-write|peer-to-peer|point-to-point|day-to-day|top-to-bottom|all-in-one|man-in-the-middle|run-to-completion|read-only|write-only|built-in|well-known|open-source|real-time|long-running|check-in|set-up|follow-up|trade-off|so-called|take-home|stand-alone|rate-limit\\w*|time-out|opt-in|opt-out|plug-in|(?:data|file|tree|graph|call|memory|control|code|source|project|directory|index|block|org|cost|fee|price|pricing|bit|cursor|scroll|line|start|end|key|home|node|stack|heap|thread)-(?:structure|position|shape|frame))\\b"
       ],
       "message": "Coined hyphen chain or abstract label.",
       "repair": "Say it in ordinary words, or define the label where it first appears.",
@@ -1550,7 +1618,8 @@
           "The filled-from-no-position handling added a performed-structure layer."
         ],
         "clean": [
-          "The end-to-end test uses a state-of-the-art parser and a data-structure walk."
+          "The end-to-end test uses a state-of-the-art parser and a data-structure walk.",
+          "A belt-and-suspenders check runs twice."
         ]
       }
     },
@@ -1613,10 +1682,12 @@
         "late to the party",
         "two decisions for you",
         "it is worth noting that",
-        "bandwidth"
-      ],
-      "context": [
-        "\\b(?:network|memory|disk|bus|link|spectrum|mbps|gbps|kbps|throughput|latency)\\b"
+        {
+          "term": "bandwidth",
+          "context": [
+            "\\b(?:network|memory|disk|bus|link|spectrum|mbps|gbps|kbps|throughput|latency)\\b"
+          ]
+        }
       ],
       "message": "Business buzz phrase.",
       "repair": "Say the concrete thing: the task, the number, the date.",
@@ -1657,12 +1728,12 @@
       "severity": "scored",
       "weight": 2.5,
       "component": "geometry",
-      "pattern": "\\bnot\\s+(?:only|merely|just|simply)\\b[^.!?\\n]{1,120}?\\b(?:but(?:\\s+also)?|and\\s+also)\\b|\\b(?:it|this|that)(?:['\\u2019]s|\\s+is|\\s+isn['\\u2019]t|\\s+is\\s+not)\\s+not\\s+(?:just\\s+|only\\s+|merely\\s+)?(?:an?\\s+|the\\s+|about\\s+)?[^.,;!?\\n]{1,60}[,;]\\s*(?:it['\\u2019]s|it\\s+is|but)\\b|\\b(?:it|this|that)\\s+isn['\\u2019]t\\s+(?:just|only|merely|about)\\s+[^.,;!?\\n]{1,60}[,;]\\s*(?:it['\\u2019]s|it\\s+is|but)\\b|\\bno\\s+\\w+,\\s+no\\s+\\w+,\\s+(?:just|only)\\b|\\bnot\\s+[^.,;!?\\n]{1,40},\\s+but\\s+rather\\b|\\b(?:is|are|was|were)\\s+not\\s+(?:an?\\s+|the\\s+|just\\s+)?[^.,;!?\\n]{1,60}[,;]\\s*(?:it\\s+is|it['\\u2019]s|they\\s+are|they['\\u2019]re|this\\s+is|but\\s+rather)\\b",
+      "pattern": "\\bnot\\s+(?:only|merely|just|simply)\\b[^.!?\\n]{1,120}?\\b(?:but(?:\\s+also)?|and\\s+also)\\b|\\bno\\s+\\w+,\\s+no\\s+\\w+,\\s+(?:just|only)\\b|\\bnot\\s+[^.,;!?\\n]{1,40},\\s+but\\s+rather\\b|\\b(?:built|designed|made|meant|written)\\s+for\\s+[^.,;!?\\n]{1,40}?\\s+rather\\s+than\\s+for\\b|\\brather\\s+than\\s+[^.,;!?\\n]{1,50},\\s+(?:it|this|they|the\\s+\\w+)\\s+(?:is|are|was|were|offers?|gives?|does|do|provides?|delivers?)\\b",
       "flags": "i",
-      "scope": "literal",
+      "scope": "prose",
       "context": [
         "\\b(?:you|they|he|she|we|someone|the\\s+docs?|the\\s+spec)\\s+(?:said|wrote|asked|claimed|thought|assumed|expected|stated|says|writes)\\b",
-        "[\\w-]+\\.(?:mts|ts|js|json|md|py|yml|yaml)\\b|\\b\\w+_\\w+\\b|\\w+\\(\\)|(?:^|\\s)\\.?\\/?[\\w-]+\\/[\\w./-]+"
+        "\\b(?:chose|choose|chosen|picked|prefer(?:red|s)?|decided|opted|went\\s+with|trade-?off)\\b"
       ],
       "message": "Negative parallelism: a view nobody held, knocked down.",
       "repair": "State the positive claim directly.",
@@ -1671,11 +1742,42 @@
       "examples": {
         "hit": [
           "It is not only fast, but also safe.",
-          "The cache is not a cache, it is a lookup table."
+          "The tool is built for speed rather than for safety.",
+          "Rather than a simple queue, it offers a full scheduler."
         ],
         "clean": [
           "The tool is fast and safe.",
-          "The failure is not in parse_input, it is in the caller."
+          "We chose a queue rather than a lock.",
+          "Rather than wait, we ran the job again, later."
+        ]
+      }
+    },
+    {
+      "id": "geometry.negative-contrast",
+      "group": "geometry",
+      "severity": "scored",
+      "weight": 2,
+      "component": "geometry",
+      "pattern": "\\b(?:it|this|that)(?:['\\u2019]s|\\s+is|\\s+isn['\\u2019]t|\\s+is\\s+not)\\s+not\\s+(?:just\\s+|only\\s+|merely\\s+)?(?:an?\\s+|the\\s+|about\\s+)?[^.,;!?\\n]{1,60}[,;]\\s*(?:it['\\u2019]s|it\\s+is|but)\\b|\\b(?:it|this|that)\\s+isn['\\u2019]t\\s+(?:just|only|merely|about)\\s+[^.,;!?\\n]{1,60}[,;]\\s*(?:it['\\u2019]s|it\\s+is|but)\\b|\\b(?:is|are|was|were)\\s+not\\s+(?:an?\\s+|the\\s+|just\\s+)?[^.,;!?\\n]{1,60}[,;]\\s*(?:it\\s+is|it['\\u2019]s|they\\s+are|they['\\u2019]re|this\\s+is|but\\s+rather)\\b",
+      "flags": "i",
+      "scope": "literal",
+      "context": [
+        "\\b(?:you|they|he|she|we|someone|the\\s+docs?|the\\s+spec)\\s+(?:said|wrote|asked|claimed|thought|assumed|expected|stated|says|writes)\\b",
+        "[\\w-]+\\.(?:mts|ts|js|json|md|py|yml|yaml)\\b|\\b\\w+_\\w+\\b|\\w+\\(\\)|(?:^|\\s)\\.?\\/?[\\w-]+\\/[\\w./-]+"
+      ],
+      "message": "Negative contrast: X is not Y, it is Z.",
+      "repair": "State what it is. Drop the denial.",
+      "rationale": "The figure knocks down a view nobody held. Correcting a voiced belief and a concrete diagnosis that names a file or code token are exempt.",
+      "source": "catalog:figures",
+      "examples": {
+        "hit": [
+          "The cache is not a cache, it is a lookup table.",
+          "The cache is not the issue, it is the dependency graph."
+        ],
+        "clean": [
+          "The failure is not in `parse_input`, it is in the caller.",
+          "The bug is not in src/parse.mts, it is in the loader.",
+          "The cache is not stale. It is empty."
         ]
       }
     },
@@ -1744,10 +1846,13 @@
       "source": "catalog:figures",
       "examples": {
         "hit": [
-          "The cache was rebuilt after the failure last night by hand. Nothing worked."
+          "The cache was rebuilt after the failure last night by hand. Nothing worked.",
+          "You do not. That is the point."
         ],
         "clean": [
-          "Is it ready? Yes."
+          "Is it ready? Yes.",
+          "Run it. Check the log.",
+          "It works. That is fine."
         ]
       }
     },
@@ -1885,6 +1990,28 @@
         ],
         "clean": [
           "## Cache expiry\n\nText here."
+        ]
+      }
+    },
+    {
+      "id": "structure.failure-framed-heading",
+      "group": "structure",
+      "severity": "scored",
+      "weight": 1.5,
+      "component": "geometry",
+      "pattern": "^(?:What\\s+(?:can|could|might|may)\\s+go\\s+wrong|What\\s+goes\\s+wrong|Where\\s+it\\s+(?:breaks|fails))\\s*[?:]?\\s*$",
+      "flags": "i",
+      "message": "Heading that frames expected behaviour as failure.",
+      "repair": "Name the topic. Describe a designed state as expected behaviour. Keep 'Risks' and 'Failure modes' for real hazards.",
+      "rationale": "A designed state described as something going wrong misleads the reader about what is intended.",
+      "source": "catalog:framing",
+      "examples": {
+        "hit": [
+          "## What can go wrong\n\nThe queue drops the oldest job at capacity."
+        ],
+        "clean": [
+          "## Risks\n\nThe queue drops the oldest job at capacity.",
+          "## Failure modes\n\nThe disk fills."
         ]
       }
     },
@@ -2187,6 +2314,400 @@
           "This change removes the duplicate parser."
         ]
       }
+    }
+  ],
+  "judgement": [
+    {
+      "id": "essay-shape",
+      "title": "Essay shape",
+      "description": "A short answer built like an essay: categories, a thesis and a closing state, when the reader asked for one fact or decision.",
+      "repair": "Lead with the answer. Cut the framing and the closing state.",
+      "handledBy": "Procedure step 1: write the position first."
+    },
+    {
+      "id": "false-paragraph-breaks",
+      "title": "Paragraph breaks without a change of thought",
+      "description": "Paragraph breaks that mark rhythm or emphasis instead of a real change of thought.",
+      "repair": "Merge paragraphs that make one point. Break only where the point changes.",
+      "handledBy": "Procedure step 4: repair above the form."
+    },
+    {
+      "id": "returned-wording",
+      "title": "The reader's words returned with polish",
+      "description": "The reply restates the reader's own request in smoother words and asserts nothing new.",
+      "repair": "State what you found, decided or need. Drop the restatement.",
+      "handledBy": "Procedure step 1: write the position first."
+    },
+    {
+      "id": "uncheckable-units",
+      "title": "Units that assert nothing checkable",
+      "description": "Sentences that nothing could contradict, and true facts that supply no judgement.",
+      "repair": "Add the claim, the number or the check. Cut the sentence if it has none.",
+      "handledBy": "Procedure step 1: write the position first."
+    },
+    {
+      "id": "evidence-dumps",
+      "title": "Evidence without a conclusion",
+      "description": "Lists of facts, outputs or findings with no statement of what they mean or what to do.",
+      "repair": "Put the conclusion first, then keep only the evidence that supports it.",
+      "handledBy": "Procedure step 1: write the position first."
+    },
+    {
+      "id": "self-review-checklist",
+      "title": "Self-review that clears a token checklist",
+      "description": "A review that checks banned words off a list and passes a draft whose structure and claims are unchanged.",
+      "repair": "Re-anchor on structure and claims. A token-free draft can still carry the move.",
+      "handledBy": "Procedure step 4: repair above the form, and references/repair.md."
+    },
+    {
+      "id": "clipped-rewrite",
+      "title": "Clipped rewrite without a tighter argument",
+      "description": "A rewrite that is shorter and choppier but makes the same loose argument.",
+      "repair": "Rebuild from the claim and the evidence. Shorter is not tighter.",
+      "handledBy": "Procedure step 4: repair above the form."
+    },
+    {
+      "id": "claim-drift",
+      "title": "Claims drifting weaker or ownerless",
+      "description": "A style repair that dilutes a definite claim, adds hedges or moves ownership to a passive or an unnamed source.",
+      "repair": "Run the claim diff. A weaker claim needs a stated reason.",
+      "handledBy": "Procedure step 5 and the claim diff table in references/repair.md."
+    },
+    {
+      "id": "self-review-exemption",
+      "title": "Self-review treated as exempt",
+      "description": "A review section that is written to a lower standard than the text it reviews.",
+      "repair": "Hold the review to the same standard as the deliverable.",
+      "handledBy": "Procedure step 4: repair above the form."
+    },
+    {
+      "id": "recognition-in-repeat",
+      "title": "Recognising a failure inside a message that repeats it",
+      "description": "A message that names its own fault and commits the same fault in the same breath.",
+      "repair": "Fix the failure in the text. Do not describe it.",
+      "handledBy": "Procedure step 4: repair above the form."
+    },
+    {
+      "id": "blank-reader-replay",
+      "title": "Writing for a blank reader and replaying the session",
+      "description": "Either assumes the reader saw everything, or replays the whole session to a reader who needs only the result.",
+      "repair": "Write for a reader who arrives cold and give only what changes their next move.",
+      "handledBy": "Procedure step 2: draft for a reader who arrives cold."
+    },
+    {
+      "id": "framed-menus",
+      "title": "Menus built on context the reader lacks",
+      "description": "Options and decisions that use names and states the reader never saw.",
+      "repair": "Recommend one option, say why, and give the missing context in two or three sentences.",
+      "handledBy": "Procedure step 2: draft for a reader who arrives cold."
+    },
+    {
+      "id": "indiscriminate-context",
+      "title": "Restoring context indiscriminately",
+      "description": "Adding all background to fix a missing-context flag, so the reply grows without helping.",
+      "repair": "Add only the context the next decision needs.",
+      "handledBy": "Procedure step 2: draft for a reader who arrives cold."
+    },
+    {
+      "id": "scroll-length",
+      "title": "Length that forces scrolling",
+      "description": "A reply longer than the reader's task needs, in one pass on the screen.",
+      "repair": "Cut units the reader is not owed. Prefer deleting whole paragraphs.",
+      "handledBy": "Procedure step 2: draft for a reader who arrives cold."
+    },
+    {
+      "id": "dropped-requirement",
+      "title": "A local edit that drops a settled requirement",
+      "description": "A fix to one passage that silently removes a requirement agreed earlier.",
+      "repair": "Diff the requirements and claims against the earlier draft after each edit.",
+      "handledBy": "Procedure step 5: diff your claims."
+    },
+    {
+      "id": "assumption-patch",
+      "title": "A corrected assumption treated as a wording patch",
+      "description": "An assumption is fixed in one sentence while it still holds up other parts of the text.",
+      "repair": "Search the whole text for what depends on the assumption and revise each part.",
+      "handledBy": "Procedure step 5: diff your claims."
+    },
+    {
+      "id": "project-terms",
+      "title": "Project terms defined at first use",
+      "description": "A project or invented term used without a definition. The meter flags only unexplained code-like tokens.",
+      "repair": "Define the term in ordinary words at first use, or use an ordinary word.",
+      "handledBy": "Procedure step 2: draft for a reader who arrives cold."
+    }
+  ],
+  "catalog": [
+    {
+      "family": "invented-vocabulary",
+      "rules": [
+        "lexical.coined-compound",
+        "lexical.coined-chain",
+        "lexical.coined-curated"
+      ]
+    },
+    {
+      "family": "coded-references",
+      "rules": [
+        "epistemic.unexplained-code"
+      ]
+    },
+    {
+      "family": "buzzword-stacking",
+      "rules": [
+        "lexical.business-buzz",
+        "lexical.tier-one",
+        "lexical.tier-two",
+        "lexical.tier-three"
+      ]
+    },
+    {
+      "family": "stock-agent-speak",
+      "rules": [
+        "lexical.agent-speak",
+        "lexical.agent-speak-mild"
+      ]
+    },
+    {
+      "family": "emphasis-swaps",
+      "rules": [
+        "lexical.emphasis-swap",
+        "lexical.pivotal"
+      ]
+    },
+    {
+      "family": "performed-precision",
+      "rules": [
+        "epistemic.performed-precision",
+        "epistemic.performed-precision-swap"
+      ]
+    },
+    {
+      "family": "negative-parallelism",
+      "rules": [
+        "geometry.negative-parallelism",
+        "geometry.negative-contrast"
+      ]
+    },
+    {
+      "family": "padded-triplets",
+      "rules": [
+        "geometry.triad"
+      ]
+    },
+    {
+      "family": "individually-collectively",
+      "rules": [
+        "geometry.individually-collectively"
+      ]
+    },
+    {
+      "family": "punch-fragments",
+      "rules": [
+        "geometry.punch-fragment"
+      ]
+    },
+    {
+      "family": "copula-avoidance",
+      "rules": [
+        "geometry.copula-avoidance"
+      ]
+    },
+    {
+      "family": "hollow-emphasis",
+      "rules": [
+        "epistemic.hollow-emphasis"
+      ]
+    },
+    {
+      "family": "dash-connectors",
+      "rules": [
+        "punctuation.em-dash",
+        "punctuation.en-dash",
+        "punctuation.spaced-hyphen",
+        "punctuation.double-hyphen"
+      ]
+    },
+    {
+      "family": "semicolon-chains",
+      "rules": [
+        "punctuation.semicolon"
+      ]
+    },
+    {
+      "family": "colon-labels",
+      "rules": [
+        "punctuation.colon-label"
+      ]
+    },
+    {
+      "family": "filler-parentheticals",
+      "rules": [
+        "punctuation.parenthetical-aside",
+        "punctuation.quoted-name-parenthetical"
+      ]
+    },
+    {
+      "family": "signposts",
+      "rules": [
+        "epistemic.signpost",
+        "epistemic.scaffold-frame"
+      ]
+    },
+    {
+      "family": "bold-label-taxonomies",
+      "rules": [
+        "structure.bold-label",
+        "structure.bold-lead"
+      ]
+    },
+    {
+      "family": "root-cause-reveals",
+      "rules": [
+        "epistemic.root-cause-reveal"
+      ]
+    },
+    {
+      "family": "conspicuous-formatting",
+      "rules": [
+        "geometry.bold-density",
+        "geometry.heading-density",
+        "structure.code-chip-soup",
+        "structure.bot-heading"
+      ]
+    },
+    {
+      "family": "pendulum-compression",
+      "rules": [
+        "geometry.pendulum-block"
+      ]
+    },
+    {
+      "family": "vague-authority",
+      "rules": [
+        "epistemic.vague-authority",
+        "epistemic.vague-authority-study"
+      ]
+    },
+    {
+      "family": "unearned-hedging",
+      "rules": [
+        "epistemic.hedge-stack",
+        "epistemic.hedge-sibling"
+      ]
+    },
+    {
+      "family": "symbol-swap-laundering",
+      "rules": [
+        "laundering.substitution",
+        "punctuation.spaced-hyphen",
+        "punctuation.semicolon"
+      ]
+    },
+    {
+      "family": "compliance-performance",
+      "rules": [
+        "laundering.compliance-narration"
+      ]
+    },
+    {
+      "family": "presumed-context-questions",
+      "rules": [
+        "epistemic.presumed-context",
+        "epistemic.closing-menu"
+      ]
+    },
+    {
+      "family": "candour-frames",
+      "rules": [
+        "epistemic.candour-frame"
+      ]
+    },
+    {
+      "family": "developer-term",
+      "rules": [
+        "lexical.developer-term"
+      ]
+    },
+    {
+      "family": "designed-state-as-failure",
+      "rules": [
+        "structure.failure-framed-heading"
+      ]
+    },
+    {
+      "family": "recap-openers",
+      "rules": [
+        "epistemic.recap-opener"
+      ]
+    },
+    {
+      "family": "essay-shape",
+      "judgement": "essay-shape"
+    },
+    {
+      "family": "false-paragraph-breaks",
+      "judgement": "false-paragraph-breaks"
+    },
+    {
+      "family": "returned-wording",
+      "judgement": "returned-wording"
+    },
+    {
+      "family": "uncheckable-units",
+      "judgement": "uncheckable-units"
+    },
+    {
+      "family": "evidence-dumps",
+      "judgement": "evidence-dumps"
+    },
+    {
+      "family": "self-review-checklist",
+      "judgement": "self-review-checklist"
+    },
+    {
+      "family": "clipped-rewrite",
+      "judgement": "clipped-rewrite"
+    },
+    {
+      "family": "claim-drift",
+      "judgement": "claim-drift"
+    },
+    {
+      "family": "self-review-exemption",
+      "judgement": "self-review-exemption"
+    },
+    {
+      "family": "recognition-in-repeat",
+      "judgement": "recognition-in-repeat"
+    },
+    {
+      "family": "blank-reader-replay",
+      "judgement": "blank-reader-replay"
+    },
+    {
+      "family": "framed-menus",
+      "judgement": "framed-menus"
+    },
+    {
+      "family": "indiscriminate-context",
+      "judgement": "indiscriminate-context"
+    },
+    {
+      "family": "scroll-length",
+      "judgement": "scroll-length"
+    },
+    {
+      "family": "dropped-requirement",
+      "judgement": "dropped-requirement"
+    },
+    {
+      "family": "assumption-patch",
+      "judgement": "assumption-patch"
+    },
+    {
+      "family": "project-terms",
+      "judgement": "project-terms"
     }
   ]
 }

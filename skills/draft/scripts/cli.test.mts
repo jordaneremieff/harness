@@ -101,7 +101,7 @@ test("a bad rules file fails the schema with exit 4", () => {
 	writeFileSync(rules, JSON.stringify({ version: 1, scoring: {}, rules: [] }));
 	const { code, err } = invoke(["--rules", rules], "text");
 	assert.equal(code, 4);
-	assert.match(err, /rules must be/);
+	assert.match(err, /rule data/);
 });
 
 test("a terminal with nothing piped is an error, not a wait", () => {

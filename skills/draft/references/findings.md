@@ -53,6 +53,7 @@ Every rule the meter can report, with its severity, what it means and one direct
 |---|---|---|---|
 | `geometry.triad` | scored, geometry, weight 2 | Three-item list of single words with a closing 'and' or 'or'. | List the true count, or keep only the item that matters. |
 | `geometry.negative-parallelism` | scored, geometry, weight 2.5 | Negative parallelism: a view nobody held, knocked down. | State the positive claim directly. |
+| `geometry.negative-contrast` | scored, geometry, weight 2 | Negative contrast: X is not Y, it is Z. | State what it is. Drop the denial. |
 | `geometry.copula-avoidance` | scored, geometry, weight 2 | Verb that avoids 'is'. | Write 'is' or the exact verb. |
 | `geometry.individually-collectively` | scored, geometry, weight 2 | Individually/collectively two-step. | Say the one claim the two halves support. |
 | `geometry.punch-fragment` | scored, geometry, weight 1 | Short fragment after a long sentence. | Merge the fragment into the sentence it belongs to. |
@@ -73,7 +74,9 @@ Every rule the meter can report, with its severity, what it means and one direct
 | `epistemic.closing-offer` | scored, epistemic, weight 2 | Closing offer that adds no fact. | End on the last substantive fact or the one decision you need. |
 | `epistemic.closing-menu` | scored, epistemic, weight 1.5 | Closing menu built on context the reader may not have. | Recommend one option and say why. Ask only for a decision you cannot make. |
 | `epistemic.vague-authority` | scored, epistemic, weight 2 | Authority claimed without a source. | Name the source and what it found, or drop the claim. |
+| `epistemic.vague-authority-study` | scored, epistemic, weight 2 | Study cited without a source. | Name the study and what it found, or drop the claim. |
 | `epistemic.performed-precision` | scored, epistemic, weight 3 | Precision asserted without naming the check. | Name the check you ran and its result. |
+| `epistemic.performed-precision-swap` | scored, epistemic, weight 1.5 | Exactness asserted without naming the check. | Name the check you ran and its result, or say how the texts differ. |
 | `epistemic.hollow-emphasis` | scored, epistemic, weight 1 | Emphasis word with nothing behind it. | Give the evidence or the number that shows it matters. |
 | `epistemic.hedge-stack` | scored, epistemic, weight 1.5 | Stacked or unearned hedge. | State the claim at the strength the evidence supports, once. |
 | `epistemic.false-balance` | scored, epistemic, weight 1.5 | Balance staged where the evidence is settled. | State the fact and the constraint. |
@@ -120,6 +123,7 @@ Every rule the meter can report, with its severity, what it means and one direct
 | `structure.code-chip-soup` | scored, geometry, weight 1.5 | Line packed with code spans, a colon and a pipe. | Write a sentence. Keep one code span for the thing the reader must copy. |
 | `structure.bold-lead` | scored, geometry, weight 1.5 | Paragraph that opens with a bold label. | Open with the sentence. Drop the label. |
 | `structure.bot-heading` | scored, geometry, weight 2 | Template heading with no content of its own. | Use a heading that names the topic, or none. |
+| `structure.failure-framed-heading` | scored, geometry, weight 1.5 | Heading that frames expected behaviour as failure. | Name the topic. Describe a designed state as expected behaviour. Keep 'Risks' and 'Failure modes' for real hazards. |
 
 ## Links
 

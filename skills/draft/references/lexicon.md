@@ -147,7 +147,6 @@ Portable emphasis word that stands in for a reason. Severity: scored, lexical, w
 Stock agent vocabulary. Severity: scored, lexical, weight 1.
 
 - Terms: `load-bearing`, `seam`, `seams`, `spine`, `substrate`, `wedged`, `belt-and-suspenders`, `blast radius`, `gated on`, `plumb through`, `plumbed through`, `freeze the binding`, `durable path forward`, `that's not nothing`, `that’s not nothing`
-- Exempt when this appears nearby: `\bseam\s+(?:carving|allowance)\b|\bsewing\b|\bseamless\b`, `\b(?:spin(?:al|e)\b.*\b(?:injury|surgeon|surgery|vertebra\w*)|surgeon|surgery|vertebra\w*|injury)\b`, `\b(?:wafer|silicon|enzyme|semiconductor)\b`
 
 ### lexical.agent-speak-mild
 
@@ -174,7 +173,7 @@ Coined hyphenated compound. Severity: scored, lexical, weight 1.5.
 Coined hyphen chain or abstract label. Severity: scored, lexical, weight 1.5.
 
 - Pattern: `\b[a-z]+(?:-[a-z]+){2,}\b|\b[a-z]{3,}-(?:structure|position|shape|frame|framing|stance|posture)\b`
-- Exempt when the hit overlaps: `\b(?:state-of-the-art|end-to-end|off-by-one|up-to-date|out-of-date|time-to-live|one-to-one|one-to-many|many-to-many|first-in-first-out|last-in-first-out|read-after-write|peer-to-peer|point-to-point|day-to-day|top-to-bottom|all-in-one|man-in-the-middle|run-to-completion|read-only|write-only|built-in|well-known|open-source|real-time|long-running|check-in|set-up|follow-up|trade-off|so-called|take-home|stand-alone|rate-limit\w*|time-out|opt-in|opt-out|plug-in|(?:data|file|tree|graph|call|memory|control|code|source|project|directory|index|block|org|cost|fee|price|pricing|bit|cursor|scroll|line|start|end|key|home|node|stack|heap|thread)-(?:structure|position|shape|frame))\b`
+- Exempt when the hit overlaps: `\b(?:belt-and-suspenders|state-of-the-art|end-to-end|off-by-one|up-to-date|out-of-date|time-to-live|one-to-one|one-to-many|many-to-many|first-in-first-out|last-in-first-out|read-after-write|peer-to-peer|point-to-point|day-to-day|top-to-bottom|all-in-one|man-in-the-middle|run-to-completion|read-only|write-only|built-in|well-known|open-source|real-time|long-running|check-in|set-up|follow-up|trade-off|so-called|take-home|stand-alone|rate-limit\w*|time-out|opt-in|opt-out|plug-in|(?:data|file|tree|graph|call|memory|control|code|source|project|directory|index|block|org|cost|fee|price|pricing|bit|cursor|scroll|line|start|end|key|home|node|stack|heap|thread)-(?:structure|position|shape|frame))\b`
 
 ### lexical.coined-curated
 
@@ -187,7 +186,6 @@ Known coined phrase. Severity: scored, lexical, weight 2.
 Business buzz phrase. Severity: scored, lexical, weight 2.
 
 - Terms: `move the needle`, `low-hanging fruit`, `circle back`, `double-click on`, `north star`, `touch base`, `paradigm shift`, `throw-over-the-wall`, `0-to-1`, `scalability plays`, `late to the party`, `two decisions for you`, `it is worth noting that`, `bandwidth`
-- Exempt when this appears nearby: `\b(?:network|memory|disk|bus|link|spectrum|mbps|gbps|kbps|throughput|latency)\b`
 
 ## Geometry
 
@@ -195,7 +193,14 @@ Business buzz phrase. Severity: scored, lexical, weight 2.
 
 Negative parallelism: a view nobody held, knocked down. Severity: scored, geometry, weight 2.5.
 
-- Pattern: `\bnot\s+(?:only|merely|just|simply)\b[^.!?\n]{1,120}?\b(?:but(?:\s+also)?|and\s+also)\b|\b(?:it|this|that)(?:['\u2019]s|\s+is|\s+isn['\u2019]t|\s+is\s+not)\s+not\s+(?:just\s+|only\s+|merely\s+)?(?:an?\s+|the\s+|about\s+)?[^.,;!?\n]{1,60}[,;]\s*(?:it['\u2019]s|it\s+is|but)\b|\b(?:it|this|that)\s+isn['\u2019]t\s+(?:just|only|merely|about)\s+[^.,;!?\n]{1,60}[,;]\s*(?:it['\u2019]s|it\s+is|but)\b|\bno\s+\w+,\s+no\s+\w+,\s+(?:just|only)\b|\bnot\s+[^.,;!?\n]{1,40},\s+but\s+rather\b|\b(?:is|are|was|were)\s+not\s+(?:an?\s+|the\s+|just\s+)?[^.,;!?\n]{1,60}[,;]\s*(?:it\s+is|it['\u2019]s|they\s+are|they['\u2019]re|this\s+is|but\s+rather)\b`
+- Pattern: `\bnot\s+(?:only|merely|just|simply)\b[^.!?\n]{1,120}?\b(?:but(?:\s+also)?|and\s+also)\b|\bno\s+\w+,\s+no\s+\w+,\s+(?:just|only)\b|\bnot\s+[^.,;!?\n]{1,40},\s+but\s+rather\b|\b(?:built|designed|made|meant|written)\s+for\s+[^.,;!?\n]{1,40}?\s+rather\s+than\s+for\b|\brather\s+than\s+[^.,;!?\n]{1,50},\s+(?:it|this|they|the\s+\w+)\s+(?:is|are|was|were|offers?|gives?|does|do|provides?|delivers?)\b`
+- Exempt when this appears nearby: `\b(?:you|they|he|she|we|someone|the\s+docs?|the\s+spec)\s+(?:said|wrote|asked|claimed|thought|assumed|expected|stated|says|writes)\b`, `\b(?:chose|choose|chosen|picked|prefer(?:red|s)?|decided|opted|went\s+with|trade-?off)\b`
+
+### geometry.negative-contrast
+
+Negative contrast: X is not Y, it is Z. Severity: scored, geometry, weight 2.
+
+- Pattern: `\b(?:it|this|that)(?:['\u2019]s|\s+is|\s+isn['\u2019]t|\s+is\s+not)\s+not\s+(?:just\s+|only\s+|merely\s+)?(?:an?\s+|the\s+|about\s+)?[^.,;!?\n]{1,60}[,;]\s*(?:it['\u2019]s|it\s+is|but)\b|\b(?:it|this|that)\s+isn['\u2019]t\s+(?:just|only|merely|about)\s+[^.,;!?\n]{1,60}[,;]\s*(?:it['\u2019]s|it\s+is|but)\b|\b(?:is|are|was|were)\s+not\s+(?:an?\s+|the\s+|just\s+)?[^.,;!?\n]{1,60}[,;]\s*(?:it\s+is|it['\u2019]s|they\s+are|they['\u2019]re|this\s+is|but\s+rather)\b`
 - Exempt when this appears nearby: `\b(?:you|they|he|she|we|someone|the\s+docs?|the\s+spec)\s+(?:said|wrote|asked|claimed|thought|assumed|expected|stated|says|writes)\b`, `[\w-]+\.(?:mts|ts|js|json|md|py|yml|yaml)\b|\b\w+_\w+\b|\w+\(\)|(?:^|\s)\.?\/?[\w-]+\/[\w./-]+`
 
 ### geometry.copula-avoidance
@@ -267,7 +272,13 @@ Closing menu built on context the reader may not have. Severity: scored, epistem
 
 Authority claimed without a source. Severity: scored, epistemic, weight 2.
 
-- Pattern: `\bit\s+is\s+(?:widely|generally|commonly)\s+(?:understood|accepted|known|believed)\b|\bit\s+is\s+well\s+known\b|\b(?:many|most|some)\s+experts\s+(?:say|agree|believe|note)\b|\b(?:studies|research)\s+(?:show|shows|suggest|suggests)\b|\bindustry\s+observers\b|\bprominent\s+(?:blogs|voices)\b|\bexperts\s+agree\b`
+- Pattern: `\bit\s+is\s+(?:widely|generally|commonly)\s+(?:understood|accepted|known|believed)\b|\bit\s+is\s+well\s+known\b|\b(?:many|most|some)\s+experts\s+(?:say|agree|believe|note)\b|\bindustry\s+observers\b|\bprominent\s+(?:blogs|voices)\b|\bexperts\s+agree\b`
+
+### epistemic.vague-authority-study
+
+Study cited without a source. Severity: scored, epistemic, weight 2.
+
+- Pattern: `\b(?:studies|research)\s+(?:show|shows|suggest|suggests)\b`
 - Exempt when this appears nearby: `\d+\s*%|\[\d+\]|\(\p{L}+,?\s+\d{4}\)`
 
 ### epistemic.performed-precision
@@ -276,6 +287,13 @@ Precision asserted without naming the check. Severity: scored, epistemic, weight
 
 - Pattern: `\bbyte[- ]for[- ]byte\b|\bbyte-identical\b|\bbit[- ]for[- ]bit\b|\bexactly\s+identical\b|\bpixel[- ]perfect\b`
 - Exempt when this appears nearby: `\b(?:cmp|diff|sha\d*|shasum|md5|checksum|hash|digest)\b`
+
+### epistemic.performed-precision-swap
+
+Exactness asserted without naming the check. Severity: scored, epistemic, weight 1.5.
+
+- Pattern: `\bverbatim\b|\bword[- ]for[- ]word\b|\bcharacter[- ]for[- ]character\b|\bprecisely\s+the\s+same\b|\bexactly\s+the\s+same\b`
+- Exempt when this appears nearby: `\b(?:cmp|diff|sha\d*|shasum|md5|checksum|hash|digest)\b`, `\b(?:quote|quoted|quoting|copy|copied|paste|pasted|transcribe\w*|reproduce\w*|cite|cited|repeat)\b`
 
 ### epistemic.hollow-emphasis
 
@@ -327,7 +345,7 @@ Wording that assumes the reader saw earlier work. Severity: scored, epistemic, w
 
 Recap opener that repeats instead of adding a fact. Severity: scored, epistemic, weight 1.5.
 
-- Pattern: `(?<=^|[.!?]\s+)(?:overall|in\s+short|all\s+in\s+all|to\s+sum\s+up|ultimately),`
+- Pattern: `(?<=^|[.!?]\s+)(?:overall|in\s+short|all\s+in\s+all|to\s+sum\s+up|ultimately|as\s+a\s+reminder|to\s+recap|quick\s+recap|just\s+to\s+recap|for\s+context),`
 
 ### epistemic.hedge-sibling
 
@@ -457,6 +475,12 @@ Paragraph that opens with a bold label. Severity: scored, geometry, weight 1.5.
 Template heading with no content of its own. Severity: scored, geometry, weight 2.
 
 - Pattern: `^(?:Walkthrough|Changes at a Glance|Why This Matters|What Changed)[ \t]*:?[ \t]*$`
+
+### structure.failure-framed-heading
+
+Heading that frames expected behaviour as failure. Severity: scored, geometry, weight 1.5.
+
+- Pattern: `^(?:What\s+(?:can|could|might|may)\s+go\s+wrong|What\s+goes\s+wrong|Where\s+it\s+(?:breaks|fails))\s*[?:]?\s*$`
 
 ## Spelling
 

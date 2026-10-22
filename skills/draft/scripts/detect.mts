@@ -95,20 +95,48 @@ export function restrictToLines(ex: Extracted, keep: ReadonlySet<number>): Extra
 	};
 }
 
-function twinned(c: CompiledRule, view: string, start: number, end: number): boolean {
+/** Smallest region around a hit that exemptions may read: its unit, or its line when it lies outside every unit. */
+function regionAround(ex: Extracted, start: number, end: number): { lo: number; hi: number } {
+	let low = 0;
+	let high = ex.units.length - 1;
+	while (low <= high) {
+		const mid = (low + high) >> 1;
+		const unit = ex.units[mid];
+		if (unit === undefined) break;
+		if (end <= unit.start) high = mid - 1;
+		else if (start >= unit.end) low = mid + 1;
+		else return { lo: unit.start, hi: unit.end };
+	}
+	const line = lineOf(ex.lineStarts, start);
+	const nextStart = ex.lineStarts[line];
+	return { lo: ex.lineStarts[line - 1] ?? 0, hi: nextStart === undefined ? ex.text.length : nextStart - 1 };
+}
+
+const SENTENCE_BREAK = /[.!?]["')\]]*\s+/g;
+
+/** The hit's own sentence, clipped to its region and to a fixed number of characters either side. */
+function exemptionWindow(view: string, region: { lo: number; hi: number }, start: number, end: number): { text: string; from: number } {
+	let from = Math.max(region.lo, start - 80);
+	let to = Math.min(region.hi, end + 80, view.length);
+	let breakEnd = from;
+	for (const match of view.slice(from, start).matchAll(SENTENCE_BREAK)) breakEnd = from + match.index + match[0].length;
+	from = breakEnd;
+	const tail = /[.!?](?=\s|$)/.exec(view.slice(end, to));
+	if (tail !== null) to = end + tail.index + 1;
+	return { text: view.slice(from, to), from };
+}
+
+function twinned(c: CompiledRule, ex: Extracted, view: string, start: number, end: number): boolean {
 	if (c.twins.length === 0 && c.contexts.length === 0) return false;
-	const from = Math.max(0, start - 80);
-	const to = Math.min(view.length, end + 80);
-	const window = view.slice(from, to);
+	const { text, from } = exemptionWindow(view, regionAround(ex, start, end), start, end);
 	const s = start - from;
 	const e = end - from;
-	for (const context of c.contexts) if (window.search(context) !== -1) return true;
+	for (const context of c.contexts) if (text.search(context) !== -1) return true;
 	for (const twin of c.twins) {
-		for (const match of window.matchAll(twin)) {
+		for (const match of text.matchAll(twin)) {
 			const ms = match.index;
 			const me = ms + match[0].length;
-			if (me === ms) continue;
-			if (ms < e && me > s) return true;
+			if (me !== ms && ms < e && me > s) return true;
 		}
 	}
 	return false;
@@ -177,6 +205,18 @@ function triadHits(ex: Extracted): Range[] {
 	return out;
 }
 
+const PUNCH_TAG =
+	/^(?:that|this|which|it)\s+(?:is|was|['\u2019]s)\s+(?:the\s+)?(?:whole\s+|entire\s+)?(?:point|idea|trick|catch|difference|problem|reason|thing)[.!]["')\]]*$/i;
+
+/** A short sentence after a long one, or a one-line tag such as "That is the point." after any sentence. */
+function isFragment(text: string, previousWords: number, maxWords: number, minPrevious: number): boolean {
+	const count = countWords(text);
+	if (count < 1 || !/[.!]["')\]]*$/.test(text)) return false;
+	if (PUNCH_TAG.test(text.trim())) return true;
+	if (count > maxWords || previousWords < minPrevious) return false;
+	return !(count === 1 && FRAGMENT_EXEMPT.has(text.replace(/[^\p{L}]/gu, "").toLowerCase()));
+}
+
 function fragmentsIn(unit: Unit, maxWords: number, minPrevious: number): Range[] {
 	const out: Range[] = [];
 	const spans = splitSentences(unit.text);
@@ -185,10 +225,8 @@ function fragmentsIn(unit: Unit, maxWords: number, minPrevious: number): Range[]
 		const previous = spans[i - 1];
 		if (span === undefined || previous === undefined) continue;
 		const text = unit.text.slice(span.start, span.end);
-		const count = countWords(text);
-		if (count < 1 || count > maxWords || !/[.!]["')\]]*$/.test(text)) continue;
-		if (count === 1 && FRAGMENT_EXEMPT.has(text.replace(/[^\p{L}]/gu, "").toLowerCase())) continue;
-		if (countWords(unit.text.slice(previous.start, previous.end)) < minPrevious) continue;
+		const previousWords = countWords(unit.text.slice(previous.start, previous.end));
+		if (!isFragment(text, previousWords, maxWords, minPrevious)) continue;
 		if (unit.literal.slice(span.start, span.end) !== text) continue;
 		out.push({ start: unit.start + span.start, end: unit.start + span.end });
 	}
@@ -397,7 +435,7 @@ function hitsForRule(c: CompiledRule, doc: Doc, options: Options): Hit[] {
 	const seen = new Set<string>();
 	const hits: Hit[] = [];
 	for (const range of ranges) {
-		if (twinned(c, view, range.start, range.end)) continue;
+		if (twinned(c, ex, view, range.start, range.end)) continue;
 		const text = ex.text.slice(range.start, range.end);
 		const key = text.toLowerCase();
 		if (rule.firstOnly === true && seen.has(key)) continue;

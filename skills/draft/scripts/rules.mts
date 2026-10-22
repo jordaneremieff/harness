@@ -47,6 +47,27 @@ export interface RuleExamples {
 	clean: string[];
 }
 
+/** A term with exemptions that guard only that term. */
+export interface TermSpec {
+	term: string;
+	context?: string[];
+	twin?: string[];
+}
+
+export interface JudgementItem {
+	id: string;
+	title: string;
+	description: string;
+	repair: string;
+	handledBy: string;
+}
+
+export interface CatalogEntry {
+	family: string;
+	rules?: string[];
+	judgement?: string;
+}
+
 export interface Rule {
 	id: string;
 	group: Group;
@@ -55,7 +76,7 @@ export interface Rule {
 	component?: Component;
 	pattern?: string;
 	flags?: string;
-	terms?: string[];
+	terms?: Array<string | TermSpec>;
 	detector?: DetectorName;
 	params?: Record<string, number | string | boolean>;
 	scope?: Scope;
@@ -95,6 +116,8 @@ export interface RuleSet {
 	version: number;
 	scoring: Scoring;
 	rules: Rule[];
+	judgement: JudgementItem[];
+	catalog: CatalogEntry[];
 }
 
 export interface CompiledRule {
@@ -288,9 +311,21 @@ export function compileTerms(terms: string[]): string {
 	return `(?<![\\w./@#$-])(?:${alternatives.join("|")})(?![\\w@#$-]|[./]\\w)`;
 }
 
+export function plainTerms(rule: Rule): string[] {
+	return (rule.terms ?? []).filter((entry): entry is string => typeof entry === "string");
+}
+
+export function specTerms(rule: Rule): TermSpec[] {
+	return (rule.terms ?? []).filter((entry): entry is TermSpec => typeof entry !== "string");
+}
+
+export function termText(entry: string | TermSpec): string {
+	return typeof entry === "string" ? entry : entry.term;
+}
+
 export function ruleSource(rule: Rule): string | undefined {
 	if (rule.pattern !== undefined) return rule.pattern;
-	if (rule.terms !== undefined) return compileTerms(rule.terms);
+	if (rule.terms !== undefined) return compileTerms(rule.terms.map(termText));
 	return undefined;
 }
 
@@ -327,6 +362,21 @@ function parseBase(value: Record<string, unknown>, where: string): Rule {
 	};
 }
 
+function parseTermSpec(entry: unknown, where: string): string | TermSpec {
+	if (typeof entry === "string") return expectString(entry, where);
+	if (!isRecord(entry)) return fail(`${where} must be a string or an object`);
+	for (const key of Object.keys(entry)) if (!["term", "context", "twin"].includes(key)) fail(`${where} has unknown key "${key}"`);
+	const spec: TermSpec = { term: expectString(entry.term, `${where}.term`) };
+	if ("context" in entry) spec.context = expectStringArray(entry.context, `${where}.context`);
+	if ("twin" in entry) spec.twin = expectStringArray(entry.twin, `${where}.twin`);
+	return spec;
+}
+
+function parseTerms(value: unknown, here: string): Array<string | TermSpec> {
+	if (!Array.isArray(value) || value.length === 0) return fail(`${here}.terms must be a non-empty array`);
+	return value.map((entry, index) => parseTermSpec(entry, `${here}.terms[${index}]`));
+}
+
 function parseParams(value: unknown, here: string): Record<string, number | string | boolean> {
 	if (!isRecord(value)) return fail(`${here}.params must be an object`);
 	const params: Record<string, number | string | boolean> = {};
@@ -343,7 +393,7 @@ function parseMatchSource(value: Record<string, unknown>, rule: Rule): void {
 	const sources = ["pattern", "terms", "detector"].filter((key) => key in value);
 	if (sources.length !== 1) fail(`${here}: exactly one of pattern, terms, detector is required`);
 	if ("pattern" in value) rule.pattern = expectString(value.pattern, `${here}.pattern`);
-	if ("terms" in value) rule.terms = expectStringArray(value.terms, `${here}.terms`);
+	if ("terms" in value) rule.terms = parseTerms(value.terms, here);
 	if ("detector" in value) {
 		const detector = value.detector;
 		if (typeof detector !== "string" || !(DETECTORS as readonly string[]).includes(detector))
@@ -422,14 +472,23 @@ function parseWeighting(value: Record<string, unknown>, rule: Rule): void {
 	rule.weight = expectNumber(value.weight, `${here}.weight`, 0.01);
 }
 
+function checkAll(sources: string[] | undefined, flags: string, where: string): void {
+	for (const [index, source] of (sources ?? []).entries()) checkRegexSource(source, flags, `${where}[${index}]`);
+}
+
 function validateRegexes(rule: Rule): void {
 	const here = `rule ${rule.id}`;
+	if (rule.context !== undefined && (rule.terms?.length ?? 0) > 1)
+		fail(`${here}: a terms rule with several terms cannot carry rule-level context; give each guarded term its own context`);
+	const flags = `g${rule.twinFlags ?? "i"}`;
+	for (const spec of specTerms(rule)) {
+		checkAll(spec.context, flags, `${here} term "${spec.term}" context`);
+		checkAll(spec.twin, flags, `${here} term "${spec.term}" twin`);
+	}
 	const source = ruleSource(rule);
 	if (source !== undefined) checkRegexSource(source, ruleFlags(rule), `${here} pattern`);
-	const flags = `g${rule.twinFlags ?? "i"}`;
-	for (const [index, twin] of (rule.twin ?? []).entries()) checkRegexSource(twin, flags, `${here}.twin[${index}]`);
-	for (const [index, context] of (rule.context ?? []).entries())
-		checkRegexSource(context, flags, `${here}.context[${index}]`);
+	checkAll(rule.twin, flags, `${here}.twin`);
+	checkAll(rule.context, flags, `${here}.context`);
 }
 
 function parseRule(value: unknown, index: number): Rule {
@@ -445,9 +504,52 @@ function parseRule(value: unknown, index: number): Rule {
 	return rule;
 }
 
+function parseJudgementItem(entry: unknown, index: number): JudgementItem {
+	const where = `judgement[${index}]`;
+	if (!isRecord(entry)) return fail(`${where} must be an object`);
+	exactKeys(entry, ["id", "title", "description", "repair", "handledBy"], where);
+	return {
+		id: expectString(entry.id, `${where}.id`),
+		title: expectString(entry.title, `${where}.title`),
+		description: expectString(entry.description, `${where}.description`),
+		repair: expectString(entry.repair, `${where}.repair`),
+		handledBy: expectString(entry.handledBy, `${where}.handledBy`),
+	};
+}
+
+function parseJudgement(value: unknown): JudgementItem[] {
+	if (!Array.isArray(value) || value.length === 0) return fail("judgement must be a non-empty array");
+	const items = value.map((entry, index) => parseJudgementItem(entry, index));
+	if (new Set(items.map((item) => item.id)).size !== items.length) fail("duplicate judgement id");
+	return items;
+}
+
+function parseCatalogEntry(entry: unknown, index: number, ruleIds: Set<string>, judgementIds: Set<string>): CatalogEntry {
+	const where = `catalog[${index}]`;
+	if (!isRecord(entry)) return fail(`${where} must be an object`);
+	for (const key of Object.keys(entry)) if (!["family", "rules", "judgement"].includes(key)) fail(`${where} has unknown key "${key}"`);
+	if (("rules" in entry) === ("judgement" in entry)) fail(`${where} needs exactly one of rules and judgement`);
+	const parsed: CatalogEntry = { family: expectString(entry.family, `${where}.family`) };
+	if ("rules" in entry) {
+		parsed.rules = expectStringArray(entry.rules, `${where}.rules`);
+		for (const id of parsed.rules) if (!ruleIds.has(id)) fail(`${where} names unknown rule "${id}"`);
+		return parsed;
+	}
+	parsed.judgement = expectString(entry.judgement, `${where}.judgement`);
+	if (!judgementIds.has(parsed.judgement)) fail(`${where} names unknown judgement "${parsed.judgement}"`);
+	return parsed;
+}
+
+function parseCatalog(value: unknown, ruleIds: Set<string>, judgementIds: Set<string>): CatalogEntry[] {
+	if (!Array.isArray(value) || value.length === 0) return fail("catalog must be a non-empty array");
+	const entries = value.map((entry, index) => parseCatalogEntry(entry, index, ruleIds, judgementIds));
+	if (new Set(entries.map((entry) => entry.family)).size !== entries.length) fail("duplicate catalog family");
+	return entries;
+}
+
 export function parseRules(json: unknown): RuleSet {
 	if (!isRecord(json)) return fail("rule data must be an object");
-	exactKeys(json, ["version", "scoring", "rules"], "rule data");
+	exactKeys(json, ["version", "scoring", "rules", "judgement", "catalog"], "rule data");
 	if (json.version !== 1) fail("rule data version must be 1");
 	if (!Array.isArray(json.rules) || json.rules.length === 0) fail("rules must be a non-empty array");
 	const rules = json.rules.map((entry, index) => parseRule(entry, index));
@@ -456,7 +558,9 @@ export function parseRules(json: unknown): RuleSet {
 		if (seen.has(rule.id)) fail(`duplicate rule id "${rule.id}"`);
 		seen.add(rule.id);
 	}
-	return { version: 1, scoring: parseScoring(json.scoring), rules };
+	const judgement = parseJudgement(json.judgement);
+	const catalog = parseCatalog(json.catalog, seen, new Set(judgement.map((item) => item.id)));
+	return { version: 1, scoring: parseScoring(json.scoring), rules, judgement, catalog };
 }
 
 export function defaultRulesUrl(): URL {
@@ -480,15 +584,39 @@ export function loadRules(path?: string): RuleSet {
 	return parseRules(json);
 }
 
+function compileAlternative(rule: Rule, source: string, twin: string[], context: string[]): CompiledRule {
+	const flags = `g${rule.twinFlags ?? "i"}`;
+	return {
+		rule,
+		regex: new RegExp(source, ruleFlags(rule)),
+		twins: twin.map((entry) => new RegExp(entry, flags)),
+		contexts: context.map((entry) => new RegExp(entry, flags)),
+	};
+}
+
+function compilePlain(rule: Rule): CompiledRule {
+	const flags = `g${rule.twinFlags ?? "i"}`;
+	const compiled: CompiledRule = {
+		rule,
+		twins: (rule.twin ?? []).map((entry) => new RegExp(entry, flags)),
+		contexts: (rule.context ?? []).map((entry) => new RegExp(entry, flags)),
+	};
+	const source = ruleSource(rule);
+	if (source !== undefined) compiled.regex = new RegExp(source, ruleFlags(rule));
+	return compiled;
+}
+
+function compileTermRule(rule: Rule): CompiledRule[] {
+	const plain = plainTerms(rule);
+	const out = plain.length > 0 ? [compileAlternative(rule, compileTerms(plain), rule.twin ?? [], rule.context ?? [])] : [];
+	for (const spec of specTerms(rule)) {
+		const twin = [...(rule.twin ?? []), ...(spec.twin ?? [])];
+		out.push(compileAlternative(rule, compileTerms([spec.term]), twin, spec.context ?? []));
+	}
+	return out;
+}
+
+/** Compile each rule. Terms with their own exemptions become separate alternatives, so an exemption guards only its term. */
 export function compileRules(set: RuleSet): CompiledRule[] {
-	return set.rules.map((rule) => {
-		const source = ruleSource(rule);
-		const compiled: CompiledRule = {
-			rule,
-			twins: (rule.twin ?? []).map((twin) => new RegExp(twin, `g${rule.twinFlags ?? "i"}`)),
-			contexts: (rule.context ?? []).map((context) => new RegExp(context, `g${rule.twinFlags ?? "i"}`)),
-		};
-		if (source !== undefined) compiled.regex = new RegExp(source, ruleFlags(rule));
-		return compiled;
-	});
+	return set.rules.flatMap((rule) => (rule.terms === undefined ? [compilePlain(rule)] : compileTermRule(rule)));
 }

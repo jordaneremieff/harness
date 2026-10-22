@@ -252,12 +252,16 @@ test("the developer term is advisory only", () => {
 	assert.equal(report.score.components.lexical.metrics.hits, 0);
 });
 
+function figure(report: ReturnType<typeof run>): number {
+	return count(report, "geometry.negative-parallelism") + count(report, "geometry.negative-contrast");
+}
+
 test("negative parallelism covers noun-phrase subjects and exempts concrete diagnoses", () => {
-	assert.equal(count(run("The cache is not a cache, it is a lookup table."), "geometry.negative-parallelism"), 1);
-	assert.equal(count(run("The cache is not the issue, it is the dependency graph."), "geometry.negative-parallelism"), 1);
-	assert.equal(count(run("The failure is not in `parse_input`, it is in the caller."), "geometry.negative-parallelism"), 0);
-	assert.equal(count(run("The bug is not in src/parse.mts, it is in the loader."), "geometry.negative-parallelism"), 0);
-	assert.equal(count(run("The cache is not stale. It is empty."), "geometry.negative-parallelism"), 0);
+	assert.equal(figure(run("The cache is not a cache, it is a lookup table.")), 1);
+	assert.equal(figure(run("The cache is not the issue, it is the dependency graph.")), 1);
+	assert.equal(figure(run("The failure is not in `parse_input`, it is in the caller.")), 0);
+	assert.equal(figure(run("The bug is not in src/parse.mts, it is in the loader.")), 0);
+	assert.equal(figure(run("The cache is not stale. It is empty.")), 0);
 });
 
 test("each-small then together is the individually/collectively figure", () => {

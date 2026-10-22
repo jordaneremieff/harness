@@ -4,11 +4,11 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { GROUPS, loadRules, type Rule, type RuleSet } from "./rules.mts";
+import { GROUPS, loadRules, type Rule, type RuleSet, termText } from "./rules.mts";
 
 const HELP = `Usage: node skills/draft/scripts/render-references.mts [--check] [--help]
 
-Write references/lexicon.md and references/findings.md from data/rules.json.
+Write references/lexicon.md, references/findings.md and references/judgement.md from data/rules.json.
   --check   Write nothing. Exit 1 when a generated file differs from the data.
   --help    Show this text.
 `;
@@ -84,7 +84,7 @@ export function renderFindings(set: RuleSet): string {
 }
 
 function matchSummary(rule: Rule): string[] {
-	if (rule.terms !== undefined) return [`Terms: ${rule.terms.map((term) => code(term)).join(", ")}`];
+	if (rule.terms !== undefined) return [`Terms: ${rule.terms.map((term) => code(termText(term))).join(", ")}`];
 	if (rule.pattern !== undefined) return [`Pattern: ${code(rule.pattern)}`];
 	return [`Built-in detector: ${code(rule.detector ?? "")}`];
 }
@@ -125,7 +125,26 @@ export function renderLexicon(set: RuleSet): string {
 	return `${lines.join("\n")}\n`;
 }
 
+export function renderJudgement(set: RuleSet): string {
+	const lines: string[] = [
+		"# Judgement",
+		"",
+		BANNER,
+		"",
+		"What the meter cannot detect. These failures need a reader's judgement. A clean meter result says nothing about them. Each item names the procedure step in SKILL.md, or the reference, that handles it.",
+		"",
+		"## Contents",
+		"",
+		set.judgement.map((item) => `- [${item.title}](#${anchor(item.title)})`).join("\n"),
+	];
+	for (const item of set.judgement) {
+		lines.push("", `## ${item.title}`, "", item.description, "", `Repair direction: ${item.repair}`, "", `Handled by: ${item.handledBy}`);
+	}
+	return `${lines.join("\n")}\n`;
+}
+
 const TARGETS = [
+	{ name: "judgement.md", render: renderJudgement },
 	{ name: "findings.md", render: renderFindings },
 	{ name: "lexicon.md", render: renderLexicon },
 ];

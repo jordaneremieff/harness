@@ -33,7 +33,7 @@ const FAMILIES: Record<string, string[]> = {
 	"root-cause-reveal": ["epistemic.root-cause-reveal"],
 	"two-step": ["geometry.individually-collectively"],
 	"performed-precision": ["epistemic.performed-precision"],
-	"negative-parallelism": ["geometry.negative-parallelism"],
+	"negative-parallelism": ["geometry.negative-parallelism", "geometry.negative-contrast"],
 	triplet: ["geometry.triad"],
 	"copula-avoidance": ["geometry.copula-avoidance"],
 	"hollow-emphasis": ["epistemic.hollow-emphasis"],
