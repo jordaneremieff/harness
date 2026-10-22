@@ -303,6 +303,10 @@ export class Transcript {
   private lastScrollTop = 0;
   private readonly arrivals = new ArrivalCounter();
   private unreadCount = 0;
+  private activitySignature: string | undefined;
+  private activityAt: number | undefined;
+  /** When this page last saw the conversation change; unknown until a change is seen after the first load. */
+  get lastActivityAt(): number | undefined { return this.activityAt; }
   /** Messages that arrived while this transcript was not shown; cleared when it is shown again. */
   get unread(): number { return this.unreadCount; }
   constructor(elements: TranscriptElements, hooks: ViewHooks) {
@@ -528,7 +532,7 @@ export class Transcript {
     this.initialSettings.clear(); this.toolStates = new Map(); this.indexedFindId = undefined;
     this.generation++; this.entries = []; this.displayed = []; this.turnRows.clear(); this.cache.clear(); this.tools.clear(); this.liveThinking.clear(); this.thinkingTimes = new Map(); this.index = new TranscriptIndex(); this.joined = this.index.joined; this.rows = new TranscriptRows(); this.noticeBlocks.clear(); this.tasks = new ConversationTasks(); this.visible.clear(); this.dirtyLayout = true; this.pins.clear(); this.heights.clear(); this.gaps.clear(); this.timeGaps.clear();
     this.expanded.clear(); this.streamedThinking.clear(); this.showThinking = false; this.thinkingChoice = undefined; this.follow = true; this.readingRevision = 0;
-    this.layout = layoutItems([], this.heights, 140); this.restoring = undefined; this.node.replaceChildren(...(this.lead ? [this.lead] : [])); this.scrollTo(0); this.hold = undefined; this.arrivals.reset(); this.unreadCount = 0; this.referenceNamesPending = false; this.syncLatest();
+    this.layout = layoutItems([], this.heights, 140); this.restoring = undefined; this.node.replaceChildren(...(this.lead ? [this.lead] : [])); this.scrollTo(0); this.hold = undefined; this.arrivals.reset(); this.unreadCount = 0; this.activitySignature = undefined; this.activityAt = undefined; this.referenceNamesPending = false; this.syncLatest();
   }
   defer(refresh: () => void, receivedAt?: number): void {
     if (this.destroyed) return;
@@ -556,6 +560,9 @@ export class Transcript {
     }
     this.chronological = entries;
     this.tasks.update(entries,this.joined);
+    const tail = entries.at(-1), signature = tail ? `${tail.id}:${(tail.messages ?? []).map(message => message.parts.length).join(',')}` : '';
+    if (this.activitySignature !== undefined && signature !== this.activitySignature) this.activityAt = Date.now();
+    this.activitySignature = signature;
     const away = this.hidden(), arrived = this.arrivals.observe(entries, !this.follow || away, this.hooks.operatorInput === true);
     if (arrived > 0 && away) { this.unreadCount += arrived; if (this.follow) this.arrivals.clear(); this.hooks.unread?.(); }
     else if (arrived > 0) { this.syncLatest(); if (this.arrivals.count === arrived) announce('New messages below'); }

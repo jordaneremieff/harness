@@ -1,4 +1,5 @@
 import {cardIcon} from './card-icons.ts';
+import {compactAge} from './format.ts';
 import type {PresentationTone} from './conversation-presentation.ts';
 import type {Attention} from './attention.ts';
 import type { WorkspaceTab as ConversationTab } from '../shared/api.ts';
@@ -7,7 +8,7 @@ import { paneById, paneForTab, paneLeaves, type PaneLayout } from './pane-layout
 
 export type TabRegion = {id: string; tabs: HTMLElement; controls: string};
 export type TabRegions = {panes: () => TabRegion[]; conversations: HTMLElement};
-export type TabHooks = {layout: () => PaneLayout; draft?: (tab: ConversationTab) => boolean; unread?: (tab: ConversationTab) => number; reopen?: () => {count: number; drafts?: number; run: () => void} | undefined; activate: (pane: string, key: string) => void; close: (key: string) => void;
+export type TabHooks = {layout: () => PaneLayout; draft?: (tab: ConversationTab) => boolean; unread?: (tab: ConversationTab) => number; idleSince?: (tab: ConversationTab) => number | undefined; reopen?: () => {count: number; drafts?: number; run: () => void} | undefined; activate: (pane: string, key: string) => void; close: (key: string) => void;
   move: (key: string, pane: string, index: number) => void; label: (tab: ConversationTab) => string;
   identity?: (tab: ConversationTab) => string | undefined;unnamed?:(tab:ConversationTab)=>boolean;
   fallback?:()=>HTMLElement|undefined;
@@ -156,9 +157,11 @@ export class TabStrip {
   }
   private paintTab(node: HTMLElement, tab: ConversationTab, selected: boolean): void {
     const label = this.hooks.label(tab); const tail = this.tail(tab); const accessible = tail ? `${label}, ${tail}` : label; const status = this.hooks.status(tab);
+    const idleAt=this.hooks.idleSince?.(tab),age=idleAt===undefined?'':compactAge(idleAt,Date.now());
     const held=this.hooks.draft?.(tab)===true;node.dataset.draft=String(held);
     const fresh=this.hooks.unread?.(tab)??0;node.dataset.unread=String(fresh>0);
-    const statusLabel=[this.paintSessionState(node,status.word,status.label),fresh>0?`${fresh} new ${fresh===1?'message':'messages'}`:'',held?'unsent draft':''].filter(Boolean).join(' · ');
+    const statusLabel=[this.paintSessionState(node,status.word,status.label),fresh>0?`${fresh} new ${fresh===1?'message':'messages'}`:'',held?'unsent draft':'',age?`idle ${age}`:''].filter(Boolean).join(' · ');
+    const ageNode=node.querySelector<HTMLElement>('.tab-age');if(ageNode){ageNode.hidden=!age;ageNode.textContent=age;}
     const mark=node.querySelector<HTMLElement>('.tab-draft');if(mark)mark.hidden=!held;
     const news=node.querySelector<HTMLElement>('.tab-new');if(news){news.hidden=fresh<=0;news.textContent=fresh>99?'99+':String(fresh);}
     node.title = [label, tab.kind === 'file' ? tab.path : tab.kind === 'agent' ? tab.identity : '', statusLabel].filter(Boolean).join(' · ');
@@ -211,7 +214,8 @@ export class TabStrip {
     const word=doc.createElement('span');word.className='tab-session-state';word.setAttribute('aria-hidden','true');word.hidden=true;
     const draft=doc.createElement('span');draft.className='tab-draft';draft.textContent='Draft';draft.setAttribute('aria-hidden','true');draft.hidden=true;
     node.addEventListener('dragend', () => this.clearDrag()); const news=doc.createElement('span');news.className='tab-new';news.setAttribute('aria-hidden','true');news.hidden=true;
-    node.append(label, identity, word, draft, news, dot, close); return node;
+    const age=doc.createElement('span');age.className='tab-age';age.setAttribute('aria-hidden','true');age.hidden=true;
+    node.append(label, identity, word, age, draft, news, dot, close); return node;
   }
   private group(id: string): HTMLElement {
     let group = this.groups.get(id); if (group) return group;
