@@ -52,7 +52,7 @@
   7. Conditions before commands: "If the gate fails, stop the release."
   8. Maximum three nouns in a cluster. Use prepositions for longer names.
   9. Lists for two or more steps, options, or findings. Vertical layout.
-  10. American spelling (Merriam-Webster): "color", "analyze".
+  10. Australian spelling (Macquarie Dictionary): "colour", "analyse".
   11. First sentence: the result, the state, or the question.
   12. Plainest common word: "use" not "utilize", "start" not "commence".
 
