@@ -232,6 +232,13 @@ function copyLastAnswerAction():(()=>void)|undefined {
   const action=transcript.lastAnswerCopy();if(!action)return;
   return ()=>{if(focusedTranscript()===transcript&&transcript.node.isConnected&&!transcript.node.closest('[hidden],[inert]'))action();};
 }
+function emptyComposerTarget(target:EventTarget|null):boolean {
+  if(!(target instanceof HTMLTextAreaElement)||target.value!=='')return false;
+  const selected=layoutTarget(currentLayout(),primaryTarget());
+  const controller=selected&&state.workspace?controllers.get(controllerKey(state.workspace.id,selected)):undefined;
+  return !!controller&&controller.elements.editor===target;
+}
+function jumpTargetBlocked(target:EventTarget|null):boolean {return nativeEditingTarget(target)&&!emptyComposerTarget(target);}
 function ownMessageTranscript():Transcript|undefined{
   const transcript=focusedTranscript();
   return transcript?.node.isConnected&&!transcript.node.closest('[hidden],[inert]')?transcript:undefined;
@@ -3269,19 +3276,19 @@ function threadPostShortcut(event: KeyboardEvent): boolean {
   return true;
 }
 function ownMessageShortcut(event:KeyboardEvent):boolean{
-  if(modal.openNow||!event.altKey||event.ctrlKey||event.metaKey||event.shiftKey||nativeEditingTarget(event.target))return false;
+  if(modal.openNow||!event.altKey||event.ctrlKey||event.metaKey||event.shiftKey||jumpTargetBlocked(event.target))return false;
   if(event.key!=='ArrowUp'&&event.key!=='ArrowDown')return false;
   const transcript=ownMessageTranscript();if(!transcript)return false;
   event.preventDefault();transcript.jumpOwnMessage(event.key==='ArrowUp'?-1:1);return true;
 }
 function failedStepShortcut(event:KeyboardEvent):boolean{
-  if(modal.openNow||!event.altKey||!event.shiftKey||event.ctrlKey||event.metaKey||nativeEditingTarget(event.target))return false;
+  if(modal.openNow||!event.altKey||!event.shiftKey||event.ctrlKey||event.metaKey||jumpTargetBlocked(event.target))return false;
   if(event.key!=='ArrowUp'&&event.key!=='ArrowDown')return false;
   const transcript=focusedTranscript();if(!transcript?.node.isConnected||transcript.node.closest('[hidden],[inert]'))return false;
   event.preventDefault();transcript.jumpFailedStep(event.key==='ArrowUp'?-1:1);return true;
 }
 function receivedResultShortcut(event:KeyboardEvent):boolean{
-  if(modal.openNow||!event.altKey||event.shiftKey||event.ctrlKey||event.metaKey||nativeEditingTarget(event.target))return false;
+  if(modal.openNow||!event.altKey||event.shiftKey||event.ctrlKey||event.metaKey||jumpTargetBlocked(event.target))return false;
   if(event.code!=='BracketLeft'&&event.code!=='BracketRight')return false;
   const transcript=focusedTranscript();if(!transcript?.node.isConnected||transcript.node.closest('[hidden],[inert]'))return false;
   event.preventDefault();transcript.jumpReceivedResult(event.code==='BracketLeft'?-1:1);return true;

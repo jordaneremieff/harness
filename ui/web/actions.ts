@@ -521,20 +521,20 @@ export class Actions {
   }
   private ownMessageEntries():PaletteEntry[]{
     const actions=this.ctx.ownMessages?.(),entries:PaletteEntry[]=[];
-    if(actions?.previous)entries.push({name:'Previous own message',description:'Jump to your previous loaded message',source:'app',enabled:true,run:actions.previous,shortcut:{text:'⌥↑',keys:'Alt+ArrowUp'}});
-    if(actions?.next)entries.push({name:'Next own message',description:'Jump to your next loaded message',source:'app',enabled:true,run:actions.next,shortcut:{text:'⌥↓',keys:'Alt+ArrowDown'}});
+    if(actions?.previous)entries.push({name:'Previous own message',description:'Jump to your previous loaded message (from an empty message box or while reading)',source:'app',enabled:true,run:actions.previous,shortcut:{text:'⌥↑',keys:'Alt+ArrowUp'}});
+    if(actions?.next)entries.push({name:'Next own message',description:'Jump to your next loaded message (from an empty message box or while reading)',source:'app',enabled:true,run:actions.next,shortcut:{text:'⌥↓',keys:'Alt+ArrowDown'}});
     return entries;
   }
   private failedStepEntries():PaletteEntry[]{
     const actions=this.ctx.failedSteps?.(),entries:PaletteEntry[]=[];
-    if(actions?.previous)entries.push({name:'Previous failed step',description:'Jump to the previous loaded failed step',source:'app',enabled:true,run:actions.previous,shortcut:{text:'⌥⇧↑',keys:'Alt+Shift+ArrowUp'}});
-    if(actions?.next)entries.push({name:'Next failed step',description:'Jump to the next loaded failed step',source:'app',enabled:true,run:actions.next,shortcut:{text:'⌥⇧↓',keys:'Alt+Shift+ArrowDown'}});
+    if(actions?.previous)entries.push({name:'Previous failed step',description:'Jump to the previous loaded failed step (from an empty message box or while reading)',source:'app',enabled:true,run:actions.previous,shortcut:{text:'⌥⇧↑',keys:'Alt+Shift+ArrowUp'}});
+    if(actions?.next)entries.push({name:'Next failed step',description:'Jump to the next loaded failed step (from an empty message box or while reading)',source:'app',enabled:true,run:actions.next,shortcut:{text:'⌥⇧↓',keys:'Alt+Shift+ArrowDown'}});
     return entries;
   }
   private receivedResultEntries():PaletteEntry[]{
     const actions=this.ctx.receivedResults?.(),entries:PaletteEntry[]=[];
-    if(actions?.previous)entries.push({name:'Previous result',description:'Jump to the previous loaded received report or result',source:'app',enabled:true,run:actions.previous,shortcut:{text:'⌥[',keys:'Alt+['}});
-    if(actions?.next)entries.push({name:'Next result',description:'Jump to the next loaded received report or result',source:'app',enabled:true,run:actions.next,shortcut:{text:'⌥]',keys:'Alt+]'}});
+    if(actions?.previous)entries.push({name:'Previous result',description:'Jump to the previous loaded received report or result (from an empty message box or while reading)',source:'app',enabled:true,run:actions.previous,shortcut:{text:'⌥[',keys:'Alt+['}});
+    if(actions?.next)entries.push({name:'Next result',description:'Jump to the next loaded received report or result (from an empty message box or while reading)',source:'app',enabled:true,run:actions.next,shortcut:{text:'⌥]',keys:'Alt+]'}});
     return entries;
   }
   private threadPostEntries(): PaletteEntry[] {
