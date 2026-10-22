@@ -32,6 +32,7 @@ export const DETECTORS = [
 	"triad",
 	"punch-fragment",
 	"bold-density",
+	"code-chip-soup",
 	"heading-density",
 	"dense-block",
 	"commit-subject-length",

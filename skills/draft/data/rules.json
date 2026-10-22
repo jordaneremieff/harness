@@ -63,16 +63,19 @@
       "group": "punctuation",
       "severity": "hard",
       "pattern": "[\\u2012\\u2013]",
+      "twin": [
+        "\\d[\\u2012\\u2013]\\d"
+      ],
       "message": "En dash or figure dash in prose.",
-      "repair": "Write ranges with the word to (2020 to 2024), and split clauses into sentences.",
-      "rationale": "The rule flags every en dash outside code, including numeric ranges. Relax it in the rule data if ranges are acceptable.",
+      "repair": "Split clauses into sentences. A digit-to-digit range such as 2020\u20132024 is exempt.",
+      "rationale": "The rule flags every en dash outside code except a range between two digits, which the twin exempts.",
       "source": "catalog:punctuation",
       "examples": {
         "hit": [
-          "The release covers 2020\u20132024 builds."
+          "The release covers builds \u2013 old ones too."
         ],
         "clean": [
-          "The release covers 2020 to 2024 builds."
+          "The release covers 2020\u20132024 builds."
         ]
       }
     },
@@ -665,18 +668,23 @@
       "severity": "scored",
       "weight": 1,
       "component": "epistemic",
-      "pattern": "\\bthe\\s+\\w+\\s+itself\\s+(?:is|was|becomes|has)\\b|\\bsimply\\s+(?:put|stated|said)\\b|\\b(?:really|truly|genuinely|fundamentally)\\s+(?:matters?|important|crucial|critical|essential)\\b|\\bat\\s+the\\s+end\\s+of\\s+the\\s+day\\b",
+      "pattern": "\\bthe\\s+\\w+\\s+itself\\s+(?:is|was|becomes|has)\\b|\\bsimply\\s+(?:put|stated|said)\\b|\\b(?:really|truly|genuinely|fundamentally)\\s+(?:matters?|important|crucial|critical|essential)\\b|\\bat\\s+the\\s+end\\s+of\\s+the\\s+day\\b|\\b(?:simply\\s+just|just\\s+simply)\\b|\\b\\w+\\s+(?:itself|themselves)\\b",
       "flags": "i",
+      "twin": [
+        "\\b(?:by|in|of|to|for|from|with|on|among|between|about)\\s+(?:itself|themselves)\\b"
+      ],
       "message": "Emphasis word with nothing behind it.",
       "repair": "Give the evidence or the number that shows it matters.",
       "rationale": "Hollow intensifiers claim weight they do not carry.",
       "source": "catalog:figures",
       "examples": {
         "hit": [
-          "This really matters for the release."
+          "This really matters for the release.",
+          "The change simply just did the thing itself."
         ],
         "clean": [
-          "This blocks the release because the tests fail."
+          "This blocks the release because the tests fail.",
+          "The loop runs by itself, and that is a case in itself."
         ]
       }
     },
@@ -1303,7 +1311,8 @@
         "robust*"
       ],
       "twin": [
-        "\\brobust\\s+(?:standard\\s+errors?|regression|statistic\\w*|estimator|to\\s+outliers)\\b|\\bhuber\\b"
+        "\\brobust\\s+(?:standard\\s+errors?|regression|statistic\\w*|estimator|to\\s+outliers)\\b|\\bhuber\\b",
+        "\\brobust(?:ly)?\\s+(?:against|to|under|in\\s+the\\s+face\\s+of)\\s+(?:\\w+\\s+){0,2}(?:nulls?|nil|undefined|empty|missing|invalid|malformed|bad|partial|duplicate|concurrent|noisy|outliers?|failures?|errors?|timeouts?|retries|crash(?:es)?|inputs?|load|races?|restarts?|changes?|data|values?)\\b"
       ],
       "message": "Stock vocabulary that adds tone but no fact.",
       "repair": "Name the specific thing, or cut the word.",
@@ -1314,7 +1323,9 @@
           "A robust solution awaits."
         ],
         "clean": [
-          "Use robust standard errors for the fit."
+          "Use robust standard errors for the fit.",
+          "The fix should be robust against null input.",
+          "The parser stays robust to malformed headers."
         ]
       }
     },
@@ -1328,7 +1339,7 @@
         "dynamic*"
       ],
       "twin": [
-        "\\bdynamic(?:ally)?\\s+(?:dispatch|programming|typed|typing|linked|linking|import|array|range|language|memory|allocat\\w*|sql|dns|port|content|table|routing|require|binding|scope|proxy|ip|host|library|loading|analysis|generated)\\b"
+        "\\bdynamic(?:ally)?\\s+(?:dispatch|programming|typed|typing|type|linked|linking|import|array|range|language|memory|allocat\\w*|sql|dns|port|content|table|routing|route|require|binding|scope|proxy|ip|host|library|loading|analysis|generated|config\\w*|schema|key|value|rendering|reload\\w*)\\b"
       ],
       "message": "Stock vocabulary that adds tone but no fact.",
       "repair": "Name the specific thing, or cut the word.",
@@ -1353,7 +1364,7 @@
         "align*"
       ],
       "twin": [
-        "\\b(?:memory|byte|cache|data|struct|word|page)\\s+align\\w*|\\balign\\w*\\s+(?:allocation|access|padding|requirement|to\\s+\\d+)|\\balign\\s+(?:the\\s+)?(?:columns|text|center|left|right|items)\\b|\\bvertical\\s+align\\w*"
+        "\\b(?:memory|byte|cache|data|struct|word|page)\\s+align\\w*|\\balign\\w*\\s+(?:allocation|access|padding|requirement|to\\s+\\d+)|\\balign\\s+(?:the\\s+)?(?:columns|text|center|left|right|items)\\b|\\bvertical\\s+align\\w*|\\b(?:text|horizontal)\\s+alignment\\b|\\balign(?:ed|ing)?\\s+(?:to|on)\\s+(?:a\\s+)?(?:\\d+|byte|word|page|cache|boundar\\w+)|\\balignment\\s+(?:of|in)\\s+(?:the\\s+)?(?:struct|buffer|memory|columns?|text|table|cells?)\\b|\\baligned\\s+(?:left|right|center|centre)\\b"
       ],
       "message": "Stock vocabulary that adds tone but no fact.",
       "repair": "Name the specific thing, or cut the word.",
@@ -1520,6 +1531,30 @@
       }
     },
     {
+      "id": "lexical.coined-chain",
+      "group": "lexical",
+      "severity": "scored",
+      "weight": 1.5,
+      "component": "lexical",
+      "pattern": "\\b[a-z]+(?:-[a-z]+){2,}\\b|\\b[a-z]{3,}-(?:structure|position|shape|frame|framing|stance|posture)\\b",
+      "flags": "i",
+      "twin": [
+        "\\b(?:state-of-the-art|end-to-end|off-by-one|up-to-date|out-of-date|time-to-live|one-to-one|one-to-many|many-to-many|first-in-first-out|last-in-first-out|read-after-write|peer-to-peer|point-to-point|day-to-day|top-to-bottom|all-in-one|man-in-the-middle|run-to-completion|read-only|write-only|built-in|well-known|open-source|real-time|long-running|check-in|set-up|follow-up|trade-off|so-called|take-home|stand-alone|rate-limit\\w*|time-out|opt-in|opt-out|plug-in|(?:data|file|tree|graph|call|memory|control|code|source|project|directory|index|block|org|cost|fee|price|pricing|bit|cursor|scroll|line|start|end|key|home|node|stack|heap|thread)-(?:structure|position|shape|frame))\\b"
+      ],
+      "message": "Coined hyphen chain or abstract label.",
+      "repair": "Say it in ordinary words, or define the label where it first appears.",
+      "rationale": "Chains of three or more words, and compounds ending in an abstract noun, are usually coined labels. Ordinary technical compounds are exempt through the twin list.",
+      "source": "lexicon:coinage",
+      "examples": {
+        "hit": [
+          "The filled-from-no-position handling added a performed-structure layer."
+        ],
+        "clean": [
+          "The end-to-end test uses a state-of-the-art parser and a data-structure walk."
+        ]
+      }
+    },
+    {
       "id": "lexical.coined-curated",
       "group": "lexical",
       "severity": "scored",
@@ -1622,10 +1657,12 @@
       "severity": "scored",
       "weight": 2.5,
       "component": "geometry",
-      "pattern": "\\bnot\\s+(?:only|merely|just|simply)\\b[^.!?\\n]{1,120}?\\b(?:but(?:\\s+also)?|and\\s+also)\\b|\\b(?:it|this|that)(?:['\\u2019]s|\\s+is|\\s+isn['\\u2019]t|\\s+is\\s+not)\\s+not\\s+(?:just\\s+|only\\s+|merely\\s+)?(?:an?\\s+|the\\s+|about\\s+)?[^.,;!?\\n]{1,60}[,;]\\s*(?:it['\\u2019]s|it\\s+is|but)\\b|\\b(?:it|this|that)\\s+isn['\\u2019]t\\s+(?:just|only|merely|about)\\s+[^.,;!?\\n]{1,60}[,;]\\s*(?:it['\\u2019]s|it\\s+is|but)\\b|\\bno\\s+\\w+,\\s+no\\s+\\w+,\\s+(?:just|only)\\b|\\bnot\\s+[^.,;!?\\n]{1,40},\\s+but\\s+rather\\b",
+      "pattern": "\\bnot\\s+(?:only|merely|just|simply)\\b[^.!?\\n]{1,120}?\\b(?:but(?:\\s+also)?|and\\s+also)\\b|\\b(?:it|this|that)(?:['\\u2019]s|\\s+is|\\s+isn['\\u2019]t|\\s+is\\s+not)\\s+not\\s+(?:just\\s+|only\\s+|merely\\s+)?(?:an?\\s+|the\\s+|about\\s+)?[^.,;!?\\n]{1,60}[,;]\\s*(?:it['\\u2019]s|it\\s+is|but)\\b|\\b(?:it|this|that)\\s+isn['\\u2019]t\\s+(?:just|only|merely|about)\\s+[^.,;!?\\n]{1,60}[,;]\\s*(?:it['\\u2019]s|it\\s+is|but)\\b|\\bno\\s+\\w+,\\s+no\\s+\\w+,\\s+(?:just|only)\\b|\\bnot\\s+[^.,;!?\\n]{1,40},\\s+but\\s+rather\\b|\\b(?:is|are|was|were)\\s+not\\s+(?:an?\\s+|the\\s+|just\\s+)?[^.,;!?\\n]{1,60}[,;]\\s*(?:it\\s+is|it['\\u2019]s|they\\s+are|they['\\u2019]re|this\\s+is|but\\s+rather)\\b",
       "flags": "i",
+      "scope": "literal",
       "context": [
-        "\\b(?:you|they|he|she|we|someone|the\\s+docs?|the\\s+spec)\\s+(?:said|wrote|asked|claimed|thought|assumed|expected|stated|says|writes)\\b"
+        "\\b(?:you|they|he|she|we|someone|the\\s+docs?|the\\s+spec)\\s+(?:said|wrote|asked|claimed|thought|assumed|expected|stated|says|writes)\\b",
+        "[\\w-]+\\.(?:mts|ts|js|json|md|py|yml|yaml)\\b|\\b\\w+_\\w+\\b|\\w+\\(\\)|(?:^|\\s)\\.?\\/?[\\w-]+\\/[\\w./-]+"
       ],
       "message": "Negative parallelism: a view nobody held, knocked down.",
       "repair": "State the positive claim directly.",
@@ -1633,10 +1670,12 @@
       "source": "catalog:figures",
       "examples": {
         "hit": [
-          "It is not only fast, but also safe."
+          "It is not only fast, but also safe.",
+          "The cache is not a cache, it is a lookup table."
         ],
         "clean": [
-          "The tool is fast and safe."
+          "The tool is fast and safe.",
+          "The failure is not in parse_input, it is in the caller."
         ]
       }
     },
@@ -1671,7 +1710,7 @@
       "severity": "scored",
       "weight": 2,
       "component": "geometry",
-      "pattern": "\\bindividually\\b[^.!?\\n]{0,120}\\bcollectively\\b|\\bcollectively\\b[^.!?\\n]{0,120}\\bindividually\\b",
+      "pattern": "\\bindividually\\b[^.!?\\n]{0,120}\\bcollectively\\b|\\bcollectively\\b[^.!?\\n]{0,120}\\bindividually\\b|\\b(?:each|every)\\s+[^.!?\\n]{1,60}?\\b(?:is|are)\\s+(?:small|minor|simple|harmless|modest|tiny)\\b[^.!?\\n]*[.!?]\\s+(?:together|collectively|combined)\\b",
       "flags": "i",
       "message": "Individually/collectively two-step.",
       "repair": "Say the one claim the two halves support.",
@@ -1679,10 +1718,12 @@
       "source": "catalog:figures",
       "examples": {
         "hit": [
-          "Individually they are small, but collectively they matter."
+          "Individually they are small, but collectively they matter.",
+          "Each package is small. Together they form a large surface."
         ],
         "clean": [
-          "The six checks cover the module."
+          "The six checks cover the module.",
+          "Each package is small. The build uses four of them."
         ]
       }
     },
@@ -1778,6 +1819,30 @@
         ],
         "clean": [
           "# One\n\nA sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. A sentence of body text goes here. "
+        ]
+      }
+    },
+    {
+      "id": "structure.code-chip-soup",
+      "group": "structure",
+      "severity": "scored",
+      "weight": 1.5,
+      "component": "geometry",
+      "detector": "code-chip-soup",
+      "params": {
+        "minChips": 3
+      },
+      "message": "Line packed with code spans, a colon and a pipe.",
+      "repair": "Write a sentence. Keep one code span for the thing the reader must copy.",
+      "rationale": "Several code chips plus a colon and a pipe on one line read as a data dump, not an explanation.",
+      "source": "catalog:structure",
+      "examples": {
+        "hit": [
+          "* Run `npm run build`: set `NODE_ENV`, pass `--retry`, wire `queue.name` | ok."
+        ],
+        "clean": [
+          "Run `npm run build` before the release.",
+          "- Set `A` and `B` and `C` here."
         ]
       }
     },

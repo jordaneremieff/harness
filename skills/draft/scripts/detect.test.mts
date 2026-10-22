@@ -251,3 +251,56 @@ test("the developer term is advisory only", () => {
 	assert.equal(count(report, "lexical.developer-term"), 1);
 	assert.equal(report.score.components.lexical.metrics.hits, 0);
 });
+
+test("negative parallelism covers noun-phrase subjects and exempts concrete diagnoses", () => {
+	assert.equal(count(run("The cache is not a cache, it is a lookup table."), "geometry.negative-parallelism"), 1);
+	assert.equal(count(run("The cache is not the issue, it is the dependency graph."), "geometry.negative-parallelism"), 1);
+	assert.equal(count(run("The failure is not in `parse_input`, it is in the caller."), "geometry.negative-parallelism"), 0);
+	assert.equal(count(run("The bug is not in src/parse.mts, it is in the loader."), "geometry.negative-parallelism"), 0);
+	assert.equal(count(run("The cache is not stale. It is empty."), "geometry.negative-parallelism"), 0);
+});
+
+test("each-small then together is the individually/collectively figure", () => {
+	assert.equal(count(run("Each one is small. Together they add up to a full outage."), "geometry.individually-collectively"), 1);
+	assert.equal(count(run("Every package is minor. Collectively, they form a large surface."), "geometry.individually-collectively"), 1);
+	assert.equal(count(run("Each package is small. The build uses four of them."), "geometry.individually-collectively"), 0);
+});
+
+test("hollow emphasis covers doubled adverbs and reflexives, not by/in itself", () => {
+	assert.equal(count(run("The change simply just did the thing itself."), "epistemic.hollow-emphasis"), 2);
+	assert.equal(count(run("It works just simply fine."), "epistemic.hollow-emphasis"), 1);
+	assert.equal(count(run("The loop runs by itself, and that is a case in itself."), "epistemic.hollow-emphasis"), 0);
+});
+
+test("hyphen chains and abstract-label compounds are coined, standard ones are not", () => {
+	assert.equal(count(run("The filled-from-no-position handling added a performed-structure layer."), "lexical.coined-chain"), 2);
+	assert.equal(count(run("The end-to-end test uses a state-of-the-art parser and an off-by-one guard."), "lexical.coined-chain"), 0);
+	assert.equal(count(run("The data-structure walk checks the cursor-position."), "lexical.coined-chain"), 0);
+});
+
+test("technical senses of robust, dynamic and align stay quiet", () => {
+	for (const clean of [
+		"The fix should be robust against null input before we ship it.",
+		"The parser stays robust to malformed headers.",
+		"The loader reads dynamic config at start.",
+		"Align to a page boundary before mapping.",
+		"The text alignment of the table cells is fixed.",
+	]) {
+		assert.deepEqual(
+			run(clean).scored.filter((finding) => finding.rule.startsWith("lexical.")),
+			[],
+			clean,
+		);
+	}
+	assert.equal(count(run("A robust approach wins."), "lexical.robust"), 1);
+});
+
+test("en dash: a digit range is exempt, other en dashes stay hard", () => {
+	assert.equal(count(run("Builds from 2020\u20132024 ship."), "punctuation.en-dash"), 0);
+	assert.equal(count(run("The plan \u2013 mostly works."), "punctuation.en-dash"), 1);
+});
+
+test("code chip soup needs three spans, a colon and a pipe on one line", () => {
+	assert.equal(count(run("* Run `a`: set `B`, pass `--c`, wire `d.e` | ok."), "structure.code-chip-soup"), 1);
+	assert.equal(count(run("* Run `a` and set `B` and wire `d.e` here."), "structure.code-chip-soup"), 0);
+});

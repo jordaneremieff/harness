@@ -43,6 +43,7 @@ Every rule the meter can report, with its severity, what it means and one direct
 | `lexical.agent-speak-mild` | scored, lexical, weight 0.5 | Overused agent vocabulary. | Use the plain word: how often, origin, official, based on, stop. |
 | `lexical.developer-term` | advisory | Use 'operator' for the person who runs the harness. | Say operator, user or maintainer, whichever is true. |
 | `lexical.coined-compound` | scored, lexical, weight 1.5 | Coined hyphenated compound. | Say it in ordinary words, or define the compound where it first appears. |
+| `lexical.coined-chain` | scored, lexical, weight 1.5 | Coined hyphen chain or abstract label. | Say it in ordinary words, or define the label where it first appears. |
 | `lexical.coined-curated` | scored, lexical, weight 2 | Known coined phrase. | Say it in ordinary words. |
 | `lexical.business-buzz` | scored, lexical, weight 2 | Business buzz phrase. | Say the concrete thing: the task, the number, the date. |
 
@@ -98,7 +99,7 @@ Every rule the meter can report, with its severity, what it means and one direct
 | Rule | Severity | Meaning | Repair direction |
 |---|---|---|---|
 | `punctuation.em-dash` | hard | Em dash or horizontal bar used as a clause connector. | Split into two sentences, or pick the real relation (because, so, but) and say it in words. |
-| `punctuation.en-dash` | hard | En dash or figure dash in prose. | Write ranges with the word to (2020 to 2024), and split clauses into sentences. |
+| `punctuation.en-dash` | hard | En dash or figure dash in prose. | Split clauses into sentences. A digit-to-digit range such as 2020–2024 is exempt. |
 | `punctuation.middle-dot` | hard | Middle dot used as a separator. | Use a comma, a new sentence, or a list. |
 | `punctuation.zero-width` | hard | Zero-width character in text. | Delete the character. |
 | `punctuation.quoted-name-parenthetical` | hard | Parenthetical that holds a quoted entity name. | Name the entity in the sentence, or define it once in its own sentence. |
@@ -116,6 +117,7 @@ Every rule the meter can report, with its severity, what it means and one direct
 | `structure.see-also-top` | hard | 'See Also' heading near the top of the document. | Put related links at the end under a plain heading, or weave them into the text. |
 | `structure.truncated-hex-id` | hard | Truncated identifier ending in an ellipsis. | Give the full identifier, or a name the reader can look up. |
 | `structure.meta-opener` | hard | Opener that describes the text instead of starting it. | Start with the first fact or the decision. |
+| `structure.code-chip-soup` | scored, geometry, weight 1.5 | Line packed with code spans, a colon and a pipe. | Write a sentence. Keep one code span for the thing the reader must copy. |
 | `structure.bold-lead` | scored, geometry, weight 1.5 | Paragraph that opens with a bold label. | Open with the sentence. Drop the label. |
 | `structure.bot-heading` | scored, geometry, weight 2 | Template heading with no content of its own. | Use a heading that names the topic, or none. |
 

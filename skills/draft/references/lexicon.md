@@ -119,21 +119,21 @@ Stock vocabulary that adds tone but no fact. Severity: scored, lexical, weight 1
 Stock vocabulary that adds tone but no fact. Severity: scored, lexical, weight 1.
 
 - Terms: `robust*`
-- Exempt when the hit overlaps: `\brobust\s+(?:standard\s+errors?|regression|statistic\w*|estimator|to\s+outliers)\b|\bhuber\b`
+- Exempt when the hit overlaps: `\brobust\s+(?:standard\s+errors?|regression|statistic\w*|estimator|to\s+outliers)\b|\bhuber\b`, `\brobust(?:ly)?\s+(?:against|to|under|in\s+the\s+face\s+of)\s+(?:\w+\s+){0,2}(?:nulls?|nil|undefined|empty|missing|invalid|malformed|bad|partial|duplicate|concurrent|noisy|outliers?|failures?|errors?|timeouts?|retries|crash(?:es)?|inputs?|load|races?|restarts?|changes?|data|values?)\b`
 
 ### lexical.dynamic
 
 Stock vocabulary that adds tone but no fact. Severity: scored, lexical, weight 1.
 
 - Terms: `dynamic*`
-- Exempt when the hit overlaps: `\bdynamic(?:ally)?\s+(?:dispatch|programming|typed|typing|linked|linking|import|array|range|language|memory|allocat\w*|sql|dns|port|content|table|routing|require|binding|scope|proxy|ip|host|library|loading|analysis|generated)\b`
+- Exempt when the hit overlaps: `\bdynamic(?:ally)?\s+(?:dispatch|programming|typed|typing|type|linked|linking|import|array|range|language|memory|allocat\w*|sql|dns|port|content|table|routing|route|require|binding|scope|proxy|ip|host|library|loading|analysis|generated|config\w*|schema|key|value|rendering|reload\w*)\b`
 
 ### lexical.align
 
 Stock vocabulary that adds tone but no fact. Severity: scored, lexical, weight 1.
 
 - Terms: `align*`
-- Exempt when the hit overlaps: `\b(?:memory|byte|cache|data|struct|word|page)\s+align\w*|\balign\w*\s+(?:allocation|access|padding|requirement|to\s+\d+)|\balign\s+(?:the\s+)?(?:columns|text|center|left|right|items)\b|\bvertical\s+align\w*`
+- Exempt when the hit overlaps: `\b(?:memory|byte|cache|data|struct|word|page)\s+align\w*|\balign\w*\s+(?:allocation|access|padding|requirement|to\s+\d+)|\balign\s+(?:the\s+)?(?:columns|text|center|left|right|items)\b|\bvertical\s+align\w*|\b(?:text|horizontal)\s+alignment\b|\balign(?:ed|ing)?\s+(?:to|on)\s+(?:a\s+)?(?:\d+|byte|word|page|cache|boundar\w+)|\balignment\s+(?:of|in)\s+(?:the\s+)?(?:struct|buffer|memory|columns?|text|table|cells?)\b|\baligned\s+(?:left|right|center|centre)\b`
 
 ### lexical.emphasis-swap
 
@@ -169,6 +169,13 @@ Coined hyphenated compound. Severity: scored, lexical, weight 1.5.
 - Pattern: `\b[a-z]{2,}-(?:side|level|gated|backed|first|safe|matched|layer|surface|path|boundary|facing|shaped|bound|scoped)\b`
 - Exempt when the hit overlaps: `\b(?:client|server|user|kernel|file|line|block|row|top|low|high|mid|app|board|ring|region|account|org|package|module|function|statement|data|thread|memory|type|null|exception|panic|source|mobile|offline|local|api|cloud|test|spec|hash|read|write|control|critical|code|text|word|page|cache|disk|network|host|side|account)-(?:side|level|first|safe|facing|bound|scoped|layer|path|shaped|surface)\b|\bread-after-write\b|\bfirst-class\b`
 
+### lexical.coined-chain
+
+Coined hyphen chain or abstract label. Severity: scored, lexical, weight 1.5.
+
+- Pattern: `\b[a-z]+(?:-[a-z]+){2,}\b|\b[a-z]{3,}-(?:structure|position|shape|frame|framing|stance|posture)\b`
+- Exempt when the hit overlaps: `\b(?:state-of-the-art|end-to-end|off-by-one|up-to-date|out-of-date|time-to-live|one-to-one|one-to-many|many-to-many|first-in-first-out|last-in-first-out|read-after-write|peer-to-peer|point-to-point|day-to-day|top-to-bottom|all-in-one|man-in-the-middle|run-to-completion|read-only|write-only|built-in|well-known|open-source|real-time|long-running|check-in|set-up|follow-up|trade-off|so-called|take-home|stand-alone|rate-limit\w*|time-out|opt-in|opt-out|plug-in|(?:data|file|tree|graph|call|memory|control|code|source|project|directory|index|block|org|cost|fee|price|pricing|bit|cursor|scroll|line|start|end|key|home|node|stack|heap|thread)-(?:structure|position|shape|frame))\b`
+
 ### lexical.coined-curated
 
 Known coined phrase. Severity: scored, lexical, weight 2.
@@ -188,8 +195,8 @@ Business buzz phrase. Severity: scored, lexical, weight 2.
 
 Negative parallelism: a view nobody held, knocked down. Severity: scored, geometry, weight 2.5.
 
-- Pattern: `\bnot\s+(?:only|merely|just|simply)\b[^.!?\n]{1,120}?\b(?:but(?:\s+also)?|and\s+also)\b|\b(?:it|this|that)(?:['\u2019]s|\s+is|\s+isn['\u2019]t|\s+is\s+not)\s+not\s+(?:just\s+|only\s+|merely\s+)?(?:an?\s+|the\s+|about\s+)?[^.,;!?\n]{1,60}[,;]\s*(?:it['\u2019]s|it\s+is|but)\b|\b(?:it|this|that)\s+isn['\u2019]t\s+(?:just|only|merely|about)\s+[^.,;!?\n]{1,60}[,;]\s*(?:it['\u2019]s|it\s+is|but)\b|\bno\s+\w+,\s+no\s+\w+,\s+(?:just|only)\b|\bnot\s+[^.,;!?\n]{1,40},\s+but\s+rather\b`
-- Exempt when this appears nearby: `\b(?:you|they|he|she|we|someone|the\s+docs?|the\s+spec)\s+(?:said|wrote|asked|claimed|thought|assumed|expected|stated|says|writes)\b`
+- Pattern: `\bnot\s+(?:only|merely|just|simply)\b[^.!?\n]{1,120}?\b(?:but(?:\s+also)?|and\s+also)\b|\b(?:it|this|that)(?:['\u2019]s|\s+is|\s+isn['\u2019]t|\s+is\s+not)\s+not\s+(?:just\s+|only\s+|merely\s+)?(?:an?\s+|the\s+|about\s+)?[^.,;!?\n]{1,60}[,;]\s*(?:it['\u2019]s|it\s+is|but)\b|\b(?:it|this|that)\s+isn['\u2019]t\s+(?:just|only|merely|about)\s+[^.,;!?\n]{1,60}[,;]\s*(?:it['\u2019]s|it\s+is|but)\b|\bno\s+\w+,\s+no\s+\w+,\s+(?:just|only)\b|\bnot\s+[^.,;!?\n]{1,40},\s+but\s+rather\b|\b(?:is|are|was|were)\s+not\s+(?:an?\s+|the\s+|just\s+)?[^.,;!?\n]{1,60}[,;]\s*(?:it\s+is|it['\u2019]s|they\s+are|they['\u2019]re|this\s+is|but\s+rather)\b`
+- Exempt when this appears nearby: `\b(?:you|they|he|she|we|someone|the\s+docs?|the\s+spec)\s+(?:said|wrote|asked|claimed|thought|assumed|expected|stated|says|writes)\b`, `[\w-]+\.(?:mts|ts|js|json|md|py|yml|yaml)\b|\b\w+_\w+\b|\w+\(\)|(?:^|\s)\.?\/?[\w-]+\/[\w./-]+`
 
 ### geometry.copula-avoidance
 
@@ -202,7 +209,7 @@ Verb that avoids 'is'. Severity: scored, geometry, weight 2.
 
 Individually/collectively two-step. Severity: scored, geometry, weight 2.
 
-- Pattern: `\bindividually\b[^.!?\n]{0,120}\bcollectively\b|\bcollectively\b[^.!?\n]{0,120}\bindividually\b`
+- Pattern: `\bindividually\b[^.!?\n]{0,120}\bcollectively\b|\bcollectively\b[^.!?\n]{0,120}\bindividually\b|\b(?:each|every)\s+[^.!?\n]{1,60}?\b(?:is|are)\s+(?:small|minor|simple|harmless|modest|tiny)\b[^.!?\n]*[.!?]\s+(?:together|collectively|combined)\b`
 
 ## Epistemic
 
@@ -274,7 +281,8 @@ Precision asserted without naming the check. Severity: scored, epistemic, weight
 
 Emphasis word with nothing behind it. Severity: scored, epistemic, weight 1.
 
-- Pattern: `\bthe\s+\w+\s+itself\s+(?:is|was|becomes|has)\b|\bsimply\s+(?:put|stated|said)\b|\b(?:really|truly|genuinely|fundamentally)\s+(?:matters?|important|crucial|critical|essential)\b|\bat\s+the\s+end\s+of\s+the\s+day\b`
+- Pattern: `\bthe\s+\w+\s+itself\s+(?:is|was|becomes|has)\b|\bsimply\s+(?:put|stated|said)\b|\b(?:really|truly|genuinely|fundamentally)\s+(?:matters?|important|crucial|critical|essential)\b|\bat\s+the\s+end\s+of\s+the\s+day\b|\b(?:simply\s+just|just\s+simply)\b|\b\w+\s+(?:itself|themselves)\b`
+- Exempt when the hit overlaps: `\b(?:by|in|of|to|for|from|with|on|among|between|about)\s+(?:itself|themselves)\b`
 
 ### epistemic.hedge-stack
 
@@ -372,6 +380,7 @@ Em dash or horizontal bar used as a clause connector. Severity: hard.
 En dash or figure dash in prose. Severity: hard.
 
 - Pattern: `[\u2012\u2013]`
+- Exempt when the hit overlaps: `\d[\u2012\u2013]\d`
 
 ### punctuation.middle-dot
 

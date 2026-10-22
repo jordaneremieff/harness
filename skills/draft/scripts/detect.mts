@@ -228,6 +228,19 @@ function headingDensityHits(doc: Doc, rule: Rule): Range[] {
 	return (headings.length * 100) / doc.words > numberParam(rule, "maxPer100", 3) ? [{ start: first.start, end: first.end }] : [];
 }
 
+function codeChipSoupHits(ex: Extracted, rule: Rule): Range[] {
+	const out: Range[] = [];
+	const minChips = numberParam(rule, "minChips", 3);
+	for (const line of ex.lines) {
+		if (SKIPPED_LINES.has(line.kind)) continue;
+		const text = ex.text.slice(line.start, line.end);
+		const chips = text.match(/`[^`\n]+`/g)?.length ?? 0;
+		const bare = text.replace(/`[^`\n]+`/g, "");
+		if (chips >= minChips && bare.includes(":") && text.includes("|")) out.push({ start: line.start, end: line.end });
+	}
+	return out;
+}
+
 function denseBlockHits(ex: Extracted, rule: Rule): Range[] {
 	const out: Range[] = [];
 	const maxWords = numberParam(rule, "maxWords", 160);
@@ -290,6 +303,8 @@ function detectorRanges(c: CompiledRule, doc: Doc): Range[] {
 			return punchFragmentHits(ex, c.rule);
 		case "bold-density":
 			return boldDensityHits(doc, c.rule);
+		case "code-chip-soup":
+			return codeChipSoupHits(ex, c.rule);
 		case "heading-density":
 			return headingDensityHits(doc, c.rule);
 		case "dense-block":
