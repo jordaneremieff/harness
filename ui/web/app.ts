@@ -1994,13 +1994,17 @@ function renderPrimaryUsage(item?: PrimaryView): void {
   renderComposerFolder('primary-folder', composerFolder({cwd: item?.cwd}, false));
 }
 /** Summary groups keep numeric scope together; details expose exact reported text. */
+/** The footer context group turns warning from 80 percent full and error from 95 percent. */
+function markContextPressure(group: HTMLElement, fraction: number | null): void {
+  if (fraction !== null && fraction >= 0.8) group.dataset.pressure = fraction >= 0.95 ? 'critical' : 'high';
+}
 export function usageNodes(usage: ReturnType<typeof usageFacts>, summary: boolean): HTMLElement[] {
   if (!summary) return usage.facts.map(fact => { const node = element('p', 'usage-detail', fact.detail); node.dataset.key = fact.key; return node; });
   const groups = new Map<string, HTMLElement>();
   for (const fact of usage.facts) {
     if (!fact.summary) continue;
     const key = fact.key === 'context' || fact.key === 'contextTokens' ? 'context' : fact.key.startsWith('cache') ? 'cache' : fact.key;
-    let group = groups.get(key); if (!group) { group = element('span', 'usage-group'); group.dataset.group = key; groups.set(key, group); }
+    let group = groups.get(key); if (!group) { group = element('span', 'usage-group'); group.dataset.group = key; groups.set(key, group); if (key === 'context') markContextPressure(group, usage.contextFraction); }
     const node = element('span', 'usage-fact', fact.text); node.dataset.key = fact.key; node.title = fact.title; node.setAttribute('aria-label', fact.title); group.append(node);
   }
   return [...groups.values()];
