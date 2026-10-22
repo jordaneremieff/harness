@@ -124,9 +124,19 @@ export class ThreadExplorer {
     const items = filterThreads(this.catalog || query ? overview?.items ?? [] : selected,query);
     const focused = this.list.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.threadId : undefined;
     const now = Date.now();
-    this.list.replaceChildren(...items.map(item => this.row(item, now)));
+    const status = this.emptyStatus(items.length, selected.length, !!query);
+    this.list.replaceChildren(...items.map(item => this.row(item, now)), ...(status ? [element('p', 'secondary thread-empty', status)] : []));
     this.paintFooter(focused);
     } catch (error) {try {window.reportClientError?.('Threads',error);} catch {} throw error;}
+  }
+  /** One true line where the list would otherwise be a heading with nothing under it. */
+  private emptyStatus(shown: number, shared: number, filtered: boolean): string {
+    if (shown) return '';
+    if (!this.overview) return this.loading ? 'Reading threads…' : '';
+    if (filtered || this.catalog) return 'No matching threads';
+    if (this.failedEmpty()) return '';
+    const total = Number(threadCount(this.overview));
+    return shared === 0 && total > 0 ? `No shared threads · ${total} in All threads` : 'No threads yet';
   }
   private paintFooter(focused:string|undefined):void {
     const total=threadCount(this.overview);
