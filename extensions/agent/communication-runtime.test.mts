@@ -317,10 +317,17 @@ function signal() {
 async function controlledRuntime(pendingAt: number) {
 	const runtime = await createTestRuntime(), held = signal();
 	let calls = 0, release = () => {};
-	const streamSimple = () => {
+	const streamSimple: Parameters<typeof runtime.registerNativeProvider>[0]["streamSimple"] = (_model, _context, options) => {
 		if (++calls !== pendingAt) return completed(answerMessage());
 		const message = answerMessage(), stream = pending(message);
-		release = () => { stream.push({ type: "done", reason: "stop", message }); stream.end(message); };
+		const finish = () => {
+			options?.signal?.removeEventListener("abort", finish);
+			release = () => {};
+			stream.push({ type: "done", reason: "stop", message }); stream.end(message);
+		};
+		release = finish;
+		if (options?.signal?.aborted) finish();
+		else options?.signal?.addEventListener("abort", finish, { once: true });
 		held.resolve();
 		return stream;
 	};
@@ -626,10 +633,10 @@ it("retains queued report classifications and communication beyond collection ac
 	assert.deepEqual(await assertQueued(), before);
 	const replay = await host.request("submit", { requestId: requests[0].requestId, message: requests[0].message, whenBusy: "followUp", provenance: { classification: "report", sender }, communication: { ...communication, body: { ...communication.body, text: requests[0].message }, metadata: { sourceId: `report:${requests[0].requestId}`, requestId: requests[0].requestId } } }) as { submissionId: number };
 	assert.equal(replay.submissionId, requests[0].submissionId);
+	await host.resume();
 	await resumed.held;
 	await assertQueued();
 	resumed.release(); resumedReleased = true;
-	await host.resume();
 	const last = requests.at(-1); assert.ok(last);
 	await readOutcome(host.harness, last.submissionId as SubmissionId, BACKGROUND_CONTEXT);
 	await reconcileInputCommunications(host.harness, storageId, BACKGROUND_CONTEXT);
