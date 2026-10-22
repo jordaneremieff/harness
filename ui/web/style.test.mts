@@ -34,11 +34,11 @@ test('roster rows have one 30px heading line and one optional 20px summary line'
   assert.match(rule('.agent-row .row-heading'), /grid-column: 1; grid-row: 1; display: flex/);
   assert.match(rule('.agent-row .row-heading'), /height: 30px; min-width: 0; overflow: hidden/);
   assert.match(rule('.agent-row .row-name'), /flex: 1; font-size: var\(--fs-ui\); line-height: 30px; white-space: nowrap/);
-  assert.match(rule('.row-title, .row-name'), /overflow: hidden; color: var\(--fg\); font-weight: 500; text-overflow: ellipsis/);
+  assert.match(rule('.row-title, .row-name'), /overflow: hidden; color: var\(--fg\); font-weight: 500; text-overflow: clip/);
   const summary = rule('.agent-row .row-summary');
   assert.match(summary, /grid-column: 1 \/ -1; grid-row: 2/);
   assert.match(summary, /height: 20px; color: var\(--muted\); font-size: var\(--fs-meta\); line-height: 20px/);
-  assert.match(summary, /white-space: nowrap; overflow: hidden; text-overflow: ellipsis/);
+  assert.match(summary, /white-space: nowrap; overflow: hidden; text-overflow: clip/);
   assert.doesNotMatch(rule('.agent-row .row-state'), /grid-row|grid-column/);
   assert.match(rule('.row-age, .row-message'), /position: static; grid-row: 1; z-index: 1; margin-top: 0/);
   assert.match(rule('.agent-row > .row-age'), /grid-column: 2; width: auto; height: 30px/);
@@ -66,7 +66,7 @@ test('result references are plain inline text with zero horizontal inset and ver
   assert.match(action, /white-space: normal; overflow-wrap: normal; word-break: normal/);
   assert.doesNotMatch(action, /(?:^|;)\s*(?:gap|position|overflow|text-overflow):|line-clamp/);
   assert.equal(rule('.communication-results > .communication-result-link:is(:hover, :focus-visible)').trim(), 'text-decoration: underline;');
-  assert.match(rule(':focus-visible'), /outline: 2px solid var\(--accent\); outline-offset: 2px/);
+  assert.match(rule(':focus-visible, .entry.own-message-focus, .thread-message.own-message-focus'), /outline: 2px solid var\(--accent\); outline-offset: 2px/);
   assert.match(media('@media (pointer:coarse)'), /\.communication-results > \.communication-result-link \{ min-height: 44px; padding-block: calc\(var\(--s3\) \+ var\(--s1\) \/ 2\); \}/);
   assert.doesNotMatch(css, /\.communication-results > \.card-action/);
 });
@@ -105,7 +105,7 @@ test('content hues share scoped Markdown rules and leave metadata and identity t
   assert.match(rule('.tool-status.working'),/color: var\(--info\)/);assert.match(rule('.tool-status.missing'),/color: var\(--warning\)/);
   assert.match(rule('.markdown-content:is(h1, h2, h3, h4, h5, h6)'),/color: var\(--fg\)/);assert.match(rule('.markdown-content .markdown-inline-code'),/color: var\(--md-code\)/);
   assert.doesNotMatch(css,/\.file-content th, \.file-content td|\.file-content blockquote/);
-  assert.match(rule('.row-identity'),/max-width: 40%; overflow: hidden; text-overflow: ellipsis/);
+  assert.match(rule('.row-identity'),/max-width: 40%; overflow: hidden; text-overflow: clip/);
   assert.match(rule('.conversation-identity'),/white-space: nowrap/);
 });
 test('shared Markdown adjacency never overrides heading or post-heading margins', () => {
@@ -306,7 +306,7 @@ test('blue marks focus while selected rows and tabs use neutral rules and surfac
   }
   assert.match(rule('.context-menu-item > .choice-check'), /color: var\(--muted\)/);
   assert.match(rule('.context-menu-item[aria-checked=false] > .choice-check'), /visibility: hidden/);
-  assert.match(rule(':focus-visible'), /outline: 2px solid var\(--accent\)/);
+  assert.match(rule(':focus-visible, .entry.own-message-focus, .thread-message.own-message-focus'), /outline: 2px solid var\(--accent\)/);
   assert.match(rule('.nav-row[aria-current=page], .row-select[aria-current=page]'), /background: var\(--raised\)/);
   assert.match(rule('.palette-row[aria-selected=true]'), /background: var\(--canvas\)/);
   assert.match(rule('.command-option:hover, .command-option[aria-selected=true]'), /background: var\(--menu-hover\)/);
@@ -318,7 +318,7 @@ test('blue marks focus while selected rows and tabs use neutral rules and surfac
   assert.match(rule('.pane-split > .pane-divider:focus-visible'), /outline: 2px solid var\(--accent\); outline-offset: 2px/);
 });
 test('pane statusline focus uses the shared offset without removing its indicator', () => {
-  assert.match(rule(':focus-visible'), /outline: 2px solid var\(--accent\)/);
+  assert.match(rule(':focus-visible, .entry.own-message-focus, .thread-message.own-message-focus'), /outline: 2px solid var\(--accent\)/);
   assert.match(rule('.navigation-access :focus-visible'), /outline-offset: 2px/);
   assert.doesNotMatch(rule('.navigation-access :focus-visible'), /outline:\s*(?:none|0)|outline-width:\s*0/);
   assert.match(media('@media (forced-colors:active)'), /:focus-visible \{ outline: 2px solid Highlight; \}/);
@@ -406,7 +406,7 @@ test('desktop status reserves controls and identity while only long text slots s
   assert.match(desktop,/\.workbench-activity:has\(> \.workbench-activity-text\) \{ flex: 1 1 0; min-width: 10ch;/);
   // The name fills free space up to its text width and shortens with an ellipsis only when the row is full; the version never wraps. Both rules apply at every width.
   assert.doesNotMatch(desktop,/#workbench-scope \{/);assert.doesNotMatch(desktop,/\.workbench-version \{/);
-  assert.match(rule('#workbench-scope'),/flex: 1 1 0;[^}]*min-width: 8ch;[^}]*max-width: max-content;[^}]*overflow: hidden; text-overflow: ellipsis; white-space: nowrap;/);
+  assert.match(rule('#workbench-scope'),/flex: 1 1 0;[^}]*min-width: 8ch;[^}]*max-width: max-content;[^}]*overflow: hidden; text-overflow: clip;[^}]*white-space: nowrap;/);
   assert.doesNotMatch(rule('#workbench-scope'),/18ch|flex: none/);
   assert.match(rule('.workbench-version'),/flex: none;[^}]*max-width: none;[^}]*white-space: nowrap;/);
   assert.doesNotMatch(rule('.workbench-version'),/font-family/);
@@ -414,7 +414,7 @@ test('desktop status reserves controls and identity while only long text slots s
   assert.match(desktop,/\.workbench-update \{ flex: 0 1 auto; flex-wrap: wrap; white-space: normal; \}/);assert.match(desktop,/\.workbench-status \.composer-details \{ flex: none; max-width: none; \}/);
   assert.match(rule('.workbench-update'),/display: inline-flex; align-items: center; gap: var\(--s2\)/);
   assert.match(rule('.inspection-content button, .agent-inspection > button'),/padding: var\(--s1\) 0/);
-  assert.match(desktop,/\.workbench-activity-state \{ flex: none;/);assert.match(desktop,/\.workbench-activity-text \{[^}]*text-overflow: ellipsis;/);
+  assert.match(desktop,/\.workbench-activity-state \{ flex: none;/);assert.match(desktop,/\.workbench-activity-text \{[^}]*text-overflow: clip;/);
   assert.match(desktop,/\.workbench-status:has\([^}]*workbench-draft-state[^}]*file-retained-drafts[^}]*control-attribution[^}]*\{ flex-wrap: wrap;/);
   assert.match(desktop,/\.workbench-activity\[data-notice=true\] \{[^}]*white-space: normal;/);
   assert.match(desktop,/\.workbench-status\[data-pane=file\] \{ flex-wrap: wrap;/);assert.match(desktop,/\.workbench-status\[data-pane=file\] > \.workbench-activity \{[^}]*white-space: normal;/);
@@ -499,7 +499,7 @@ test('ordinary role and actions share a stable header and compact actions retain
   assert.doesNotMatch(rule('.message-header'), /grid-template-columns:|background:|border:/);
   assert.match(rule('.message-role'), /flex: 0 1 auto; min-width: 0/);
   assert.match(rule('.communication-card'), /padding: 0; border: 0; background: transparent; font-family: var\(--sans\)/);
-  assert.match(rule('.communication-header > .communication-sender'), /min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap/);
+  assert.match(rule('.communication-header > .communication-sender'), /min-width: 0; max-width: 100%; overflow: hidden; text-overflow: clip;[^}]*white-space: nowrap/);
   assert.match(rule('.communication-card > .communication-body'), /font-size: var\(--fs-body\); line-height: 1\.65; font-weight: 400; font-style: normal/);
   assert.match(rule('.communication-kind, .extension-notice > .message-header > .message-role'), /color: var\(--peer-label\)/);
   assert.doesNotMatch(css, /\.communication-(?:time|trust|copy)\b[^{}]*\{/);
@@ -609,7 +609,7 @@ test('narrow composer controls wrap only as needed and retain right alignment wi
   assert.match(rule('.queue'), /flex: none;[^}]*white-space: nowrap/);
   assert.doesNotMatch(css, /\.queue[^{}]*\{[^}]*flex-wrap: wrap/);
   assert.match(rule('.send, .stop'), /flex: none;[^}]*width: 36px/);
-  assert.match(rule(':focus-visible'), /outline: 2px solid var\(--accent\)/);
+  assert.match(rule(':focus-visible, .entry.own-message-focus, .thread-message.own-message-focus'), /outline: 2px solid var\(--accent\)/);
   assert.match(media('@media (pointer:coarse)'), /button, summary,[^{}]*\{ min-height: 44px; min-width: 44px; \}/);
   assert.doesNotMatch(narrow, /\.send[^{}]*\{[^}]*(?:display: none|overflow: hidden|min-width: 0)/);
 });
@@ -822,11 +822,11 @@ test('exceptional tab state remains readable while names use bounded tab widths'
   assert.doesNotMatch(rule('.tab-dot'), /max-width:|overflow: hidden/);
   assert.doesNotMatch(rule('.conversation-state'), /max-width:|overflow: hidden/);
   assert.doesNotMatch(css, /\.tab-state\s*\{/);
-  assert.match(rule('.conversation-tabs[data-sole=true] > .conversation-tab'), /flex: 0 1 240px/);
+  assert.match(rule('.conversation-tabs[data-sole=true] > .conversation-tab'), /flex: 0 1 220px/);
   assert.match(rule('.conversation-tabs'), /min-width: 0; overflow-x: auto/);
   assert.match(rule('.tab-label'), /flex: 1 1 auto/);
   assert.match(rule('.conversation-tab'), /overflow: hidden/);
-  assert.match(rule('.tab-label'), /text-overflow: ellipsis; white-space: nowrap/);
+  assert.match(rule('.tab-label'), /text-overflow: clip;[^}]*white-space: nowrap/);
   assert.match(rule('.tab-close'), /flex: none; width: 28px/);
 });
 test('neutral tabs and split panes retain 320px tracks with divider-aware equal-width defaults', async () => {
@@ -834,7 +834,7 @@ test('neutral tabs and split panes retain 320px tracks with divider-aware equal-
   assert.match(layout, /export const MIN_PANE_WIDTH = 320;/); assert.match(layout, /export const MIN_PANE_HEIGHT = 240;/); assert.match(layout, /export const PANE_DIVIDER = 4;/);
   assert.match(layout, /if \(node\.kind === 'pane'\) return \{width: MIN_PANE_WIDTH, height: MIN_PANE_HEIGHT\}/);
   assert.match(rule('.conversation-tabs'), /min-width: 0; overflow-x: auto/);
-  assert.match(rule('.tab-label'), /min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap/);
+  assert.match(rule('.tab-label'), /min-width: 0; overflow: hidden; text-overflow: clip;[^}]*white-space: nowrap/);
   assert.match(rule('.tab-dot'), /color: var\(--muted\)/);
   assert.doesNotMatch(rule('.tab-dot'), /background:|border:|border-radius:/);
   assert.match(rule('.conversation-tab[aria-selected=true]'), /background: transparent;[^}]*box-shadow: inset 0 -2px var\(--edge\)/);
@@ -863,8 +863,8 @@ test('neutral tabs and split panes retain 320px tracks with divider-aware equal-
 test('long tab names ellipsize without crowding their status and close action', () => {
   const tab = rule('.conversation-tab');
   assert.match(tab, /flex: 0 0 auto/);
-  assert.match(tab, /min-width: 140px; max-width: 240px/);
-  assert.match(rule('.tab-label'), /flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis/);
+  assert.match(tab, /min-width: 120px; max-width: 220px/);
+  assert.match(rule('.tab-label'), /flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: clip/);
   assert.match(rule('.tab-dot'), /flex: none;[^}]*white-space: nowrap/);
   assert.match(media('@media (pointer:coarse)'), /\.conversation-tab \{ --tab-chrome: 90px; \}/);
   assert.match(rule('.conversation-tabs'), /scrollbar-color: transparent transparent/);
@@ -942,7 +942,7 @@ test('supplied roles stay inline metadata and expanded thinking separates from p
 
 test('focus marks the actual editor and its local split identity without changing placement', () => {
   assert.match(rule('.composer textarea:focus-visible'), /outline: none/);
-  assert.match(rule('.composer-input:has(textarea:focus-visible)'), /border-color: var\(--edge\); outline: 2px solid var\(--accent\); outline-offset: 2px/);
+  assert.match(rule('.composer-input:has(textarea:focus-visible)'), /border-color: var\(--border-strong\); outline: none; box-shadow: none/);
   assert.match(rule('.composer-input'), /border: 1px solid var\(--rule\)/);
   assert.doesNotMatch(rule('.composer-input:has(textarea:focus-visible)'), /box-shadow/);
   assert.match(rule('.pane-leaf[data-focused=true] > .tab-bar .conversation-tab[aria-selected=true]'), /box-shadow: inset 0 -2px var\(--accent\)/);
@@ -1020,7 +1020,7 @@ test('navigation identities stay separate from ellipsis and overflow controls re
   assert.doesNotMatch(rule('.pane-actions'), /overflow: hidden|text-overflow:|display: none/);
   assert.doesNotMatch(css, /\.tab-overflow\s*\{/);
   assert.match(rule('.conversation-tab.tab-dragging'), /background: var\(--raised\); border-top-color: var\(--edge\)/);
-  assert.match(rule('.palette-title'), /overflow: hidden; text-overflow: ellipsis/);
+  assert.match(rule('.palette-title'), /overflow: hidden; text-overflow: clip/);
   assert.match(rule('.palette-identity'), /flex: none/);
   assert.match(rule('.palette-row[data-kind=conversation]'), /grid-template-columns: minmax\(0,1fr\) auto/);
   assert.match(rule('.picker-select'), /flex-direction: column/);
@@ -1053,7 +1053,7 @@ test('drawer and overflow controls share accessible inline stroke icons', async 
 test('the composer uses shared SVG selectors and visible effort at narrow widths', () => {
   assert.doesNotMatch(css, /\.composer-state::before|\.composer-model:not\(:disabled\)::after/);
   assert.match(rule('.composer-model, .composer-thinking'), /display: inline-flex; align-items: center/);
-  assert.match(rule('.composer-setting-label'), /overflow: hidden; text-overflow: ellipsis/);
+  assert.match(rule('.composer-setting-label'), /overflow: hidden; text-overflow: clip/);
   assert.match(rule('.composer-settings .card-icon-chevron'), /width: 12px; height: 12px/);
   assert.match(rule('.composer-settings'), /gap: var\(--s2\)/);
   assert.doesNotMatch(css, /\.composer-settings-text[^{}]*::after|\.composer-settings-effort[^{}]*::after/);
@@ -1101,7 +1101,7 @@ test('Message connection recovery shares flat state actions and retains native f
   const action = rule('.history-note > button, #agent-message-retry');
   assert.match(action, /padding: var\(--s1\) 0; border: 0; border-radius: 0/);
   assert.doesNotMatch(action, /outline|box-shadow|background/);
-  assert.match(rule(':focus-visible'), /outline: 2px solid var\(--accent\)/);
+  assert.match(rule(':focus-visible, .entry.own-message-focus, .thread-message.own-message-focus'), /outline: 2px solid var\(--accent\)/);
   assert.match(html, /id="agent-message-retry" type="button"/);
 });
 
@@ -1132,7 +1132,7 @@ test('dialog word-button chrome never changes shared SVG action geometry', () =>
   assert.doesNotMatch(css, /(?:#modal-body|\.dialog-actions|\.picker-project-actions) > button(?:\s*,[^{}]+)?\s*\{[^}]*border:/);
   assert.match(rule('.card-action'), /padding: 0; border: 0/);
   assert.match(rule('.icon-button'), /min-width: 24px; height: 24px; padding: 0 var\(--s1\)/);
-  assert.match(rule(':focus-visible'), /outline: 2px solid var\(--accent\)/);
+  assert.match(rule(':focus-visible, .entry.own-message-focus, .thread-message.own-message-focus'), /outline: 2px solid var\(--accent\)/);
 });
 test('primary history details and retry share a flat wrapping action row', () => {
   assert.match(rule('.history-actions'), /display: flex; flex-wrap: wrap; align-items: flex-start; gap: var\(--s1\) var\(--s3\)/);
@@ -1145,7 +1145,7 @@ test('coarse roster timestamps and Message actions own disjoint columns at every
   assert.match(coarse, /\.agent-row > \.row-age \{ min-height: 44px/);
   assert.match(coarse, /\.agent-row > \.row-message \{ width: 44px; height: 44px/);
   assert.doesNotMatch(coarse, /\.agent-row > \.row-select|padding-right: var\(--s2\)/);
-  assert.match(rule('.row-age time'), /overflow: hidden; text-overflow: ellipsis; white-space: nowrap/);
+  assert.match(rule('.row-age time'), /overflow: hidden; text-overflow: clip;[^}]*white-space: nowrap/);
   assert.doesNotMatch(coarse, /visibility: hidden/);
 });
 test('source disclosure controls occupy the caption row without entering its click target', () => {
@@ -1199,7 +1199,7 @@ test('phone footer keeps direct settings and identity while full facts stay in t
   assert.doesNotMatch(css, /\.composer-thinking, \.composer-settings-effort \{ display: none; \}/);
   assert.match(phone,/\.composer-details > summary > span:not\(\.composer-details-label\) \{ display: none/);
   assert.match(phone,/\.composer-details-label \{[^}]*min-width: 44px; min-height: 44px/);
-  assert.match(phone,/\.workbench-status \.workbench-version \{ max-width: 14ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap/);
+  assert.match(phone,/\.workbench-status \.workbench-version \{ max-width: 14ch; overflow: hidden; text-overflow: clip;[^}]*white-space: nowrap/);
   assert.match(phone,/\.workbench-activity\[data-notice=true\] \{ display: block/);
   for(const id of ['primary-status-summary','agent-status-summary','agent-settings-detail']) assert.match(html,new RegExp(`<p id="${id}"></p>`));
   assert.doesNotMatch(css, /\.phone-status-facts/);
@@ -1322,7 +1322,7 @@ test('a status row holds sender, kind and first line on one 28px line without fi
   assert.doesNotMatch(rule('.communication-toggle'), /background:|border:|box-shadow:/);
   assert.match(rule('.communication-line > .communication-header'), /min-height: 28px/);
   assert.match(rule('.communication-line-preview'), /flex: 1 1 0/);
-  assert.match(rule('.communication-line-kind, .communication-line-preview'), /min-width: 0; overflow: hidden;[^}]*text-overflow: ellipsis/);
+  assert.match(rule('.communication-line-kind, .communication-line-preview'), /min-width: 0; overflow: hidden;[^}]*text-overflow: clip/);
   assert.match(rule('.communication-toggle > .communication-sender'), /font-weight: 500/);
 });
 
@@ -1340,7 +1340,7 @@ test('the compact Add menu draws 32px rows with a 20px icon column and the trigg
   assert.match(rule('.context-menu-compact'), /width: 272px/);
   assert.match(rule('.context-menu-compact > .context-menu-item'), /display: grid; grid-template-columns: 20px minmax\(0, 1fr\) auto/);
   assert.match(rule('.context-menu-compact > .context-menu-item'), /min-height: 32px/);
-  assert.match(rule('.context-menu-compact .context-menu-label'), /overflow: hidden; text-overflow: ellipsis/);
+  assert.match(rule('.context-menu-compact .context-menu-label'), /overflow: hidden; text-overflow: clip/);
   assert.match(rule('.composer-bar'), /flex: none;[^}]*margin-left: auto/);
 });
 
@@ -1390,12 +1390,12 @@ test('soft tools keep full-width output, distinct inner code and the text-to-run
   assert.equal(rule('.tool-status > .card-icon').trim(), 'width: 14px; height: 14px;');
   assert.doesNotMatch(css, /\.tool-status:empty\s*\{/);
   assert.match(rule('.tool-state-word'), /flex: none; max-width: 50%; margin-left: auto;/);
-  assert.match(rule('.tool-state-word'), /font-size: var\(--fs-meta\); text-overflow: ellipsis; white-space: nowrap/);
+  assert.match(rule('.tool-state-word'), /font-size: var\(--fs-meta\); text-overflow: clip;[^}]*white-space: nowrap/);
   assert.match(rule('.tool-state-word:empty'), /display: none/);
   for (const [state, tone] of [['error', 'error'], ['working', 'info'], ['missing', 'warning']]) assert.ok(rule(`.tool-state-word.${state}`).includes(`color: var(--${tone});`));
   assert.match(rule('.tool-status > .card-icon-working'), /animation: work-pulse 900ms linear infinite/);
   assert.match(css, /@media \(prefers-reduced-motion:reduce\) \{ \.tool-status > \.card-icon-working \{ animation: none; \} \}/);
-  assert.match(rule('.tool-name'), /font-weight: 500;[^}]*text-overflow: ellipsis; white-space: nowrap/);
+  assert.match(rule('.tool-name'), /font-weight: 500;[^}]*text-overflow: clip;[^}]*white-space: nowrap/);
   assert.match(rule('.entry:has(.message[data-role=assistant]):not(.compact-entry):has(+ .entry.compact-entry .tool-shell)'), /padding-bottom: var\(--s3\)/);
   assert.match(rule('.entry.compact-entry'), /padding-block: var\(--s1\)/);
   assert.match(rule('.message-body > :not(.tool-shell) + .tool-shell'), /margin-top: var\(--s4\)/);
@@ -1408,7 +1408,7 @@ test('Markdown code actions stay quiet until hover or focus and touch keeps them
   assert.match(media('@media (pointer:coarse)'), /\.code-block > \.source-header \{ position: static; opacity: 1/);
 });
 test('focus uses an offset accent outline without a blur and floating surfaces share one shadow', () => {
-  assert.match(rule(':focus-visible'), /outline: 2px solid var\(--accent\); outline-offset: 2px/);
+  assert.match(rule(':focus-visible, .entry.own-message-focus, .thread-message.own-message-focus'), /outline: 2px solid var\(--accent\); outline-offset: 2px/);
   assert.match(rule('.composer[data-file-drop=true] .composer-input'), /outline: 2px solid var\(--accent\); outline-offset: 2px/);
   assert.match(media('@media (forced-colors:active)'), /\.composer button:focus-visible, \.composer-input:has\(textarea:focus-visible\), \.composer\[data-file-drop=true\] \.composer-input \{ outline: 2px solid Highlight; \}/);
   assert.match(media('@media (forced-colors:active)'), /:root\[data-appearance\] :is\(dialog:not\(\[data-variant=find\]\),[^{}]+\{ border: 1px solid ButtonText;/);
