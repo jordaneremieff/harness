@@ -13,7 +13,7 @@ test('working delivery guidance yields to lifecycle and settings feedback withou
   event('agent.availability', {identity, connectionEpoch: epoch, state: 'live', capabilities: agentFixture(identity).capabilities}); await settle();
   const editor = agentControl('editor') as HostNode & {placeholder: string}, line = agentControl('state');
   const chain = ancestors(editor); editor.focus();
-  assert.equal(editor.placeholder, 'Write a change or follow-up…'); assert.match(editor.getAttribute('aria-label') ?? '', /^Message /);
+  assert.equal(editor.placeholder, 'Message'); assert.match(editor.getAttribute('aria-label') ?? '', /^Message /);
   assert.equal(line.querySelector('.composer-state-label')?.textContent, 'Working · Steer at the next step; Queue adds a follow-up.');
   assert.equal(line.classList.contains('composer-delivery-guidance'), true);
   for (const key of ['send', 'queue']) {assert.equal(agentControl(key).hidden, false); assert.equal(agentControl(key).disabled, true);}
@@ -26,7 +26,7 @@ test('working delivery guidance yields to lifecycle and settings feedback withou
   composer.setSettingsState();
   for (const availability of ['stored', 'unavailable', 'incompatible'] as const) {
     event('agent.availability', {identity, connectionEpoch: epoch, state: availability, capabilities: agentFixture(identity).capabilities}); await settle();
-    assert.match(editor.placeholder, /^Draft for /); assert.doesNotMatch(line.textContent, /Steer at the next step/); assert.equal(agentControl('queue').hidden, true);
+    assert.equal(editor.placeholder, 'Message'); assert.doesNotMatch(line.textContent, /Steer at the next step/); assert.equal(agentControl('queue').hidden, true);
     if (availability === 'stored') {assert.equal(agentControl('start').hidden, false); assert.equal(agentControl('start').querySelector('.action-label')?.textContent, 'Start');}
     assert.equal(app.agentComposer().editor, editor); assert.deepEqual(ancestors(editor), chain); assert.equal(editor.value, '');
   }
@@ -37,10 +37,8 @@ function ancestors(node: HostNode): HostNode[] {
   for (let parent = node.parentNode; parent; parent = parent.parentNode) result.push(parent);
   return result;
 }
-function layoutPlaceholderPattern(state: string): RegExp {
-  if (state === 'running') return /^Write a change or follow-up…$/;
-  if (state === 'incompatible') return /^Draft for .*…$/;
-  return /^Message .*…$/;
+function layoutPlaceholderPattern(_state: string): RegExp {
+  return /^Message$/;
 }
 
 test('conversation state and split width changes retain editor ancestry, draft images, caret and manual size', async t => {
@@ -69,13 +67,13 @@ test('conversation state and split width changes retain editor ancestry, draft i
     assert.ok(surface); assert.ok(line); assert.ok(meta); const bar = line.querySelector('.composer-bar'); assert.ok(bar);
     const intake = surface.querySelector('.composer-intake'), sources = intake?.querySelector('.attachment-sources'), attach = intake?.querySelector('.attach'), picker = intake?.querySelector('input'); assert.ok(intake); assert.ok(sources); assert.ok(attach); assert.ok(picker);
     assert.equal(sources.getAttribute('aria-label'),'Add to message');assert.equal(sources.getAttribute('aria-haspopup'),'menu'); assert.equal(attach.hidden, true);
-    assert.deepEqual(intake.children,[attach,sources,picker]);
+    assert.deepEqual(intake.children,[attach,sources,latest,picker]);
     // Utility rows precede the surface; the native editor and shelf retain their ancestry.
     assert.equal(intake.parentNode, line);
-    assert.equal(latest.parentNode, form.querySelector('.composer-utilities')); assert.deepEqual(meta.children, [control('state'), control('state-details')]);
+    assert.equal(latest.parentNode, intake); assert.deepEqual(meta.children, [control('state'), control('state-details')]);
     assert.ok(latest.querySelector('.card-icon-latest')); assert.equal(latest.querySelector('.latest-text')?.textContent, 'Latest'); assert.equal(latest.getAttribute('aria-label'), 'Latest message');
     const utilities = form.querySelector('.composer-utilities'), recallLine = form.querySelector('.composer-recall'); assert.ok(utilities); assert.ok(recallLine);
-    assert.deepEqual(utilities.children, [recallLine, form.querySelector('.composer-handover'), latest]); assert.equal(utilities.parentNode, form);
+    assert.deepEqual(utilities.children, [recallLine, form.querySelector('.composer-handover')]); assert.equal(utilities.parentNode, form);
     assert.deepEqual(line.children, [intake, control('stop'), control('settings'), bar]); assert.equal(line.parentNode, surface);
     assert.equal(surface.contains(meta), false); assert.equal(surface.contains(recallLine), false);
     assert.ok(form.children.indexOf(meta) > form.children.indexOf(surface));
@@ -116,7 +114,7 @@ test('a working recipient refreshes its placeholder across disconnect and reconn
   await arrive({workspace: {id: identity, revision: 1, primaryKey: null, selectedTarget: target}, primaries: [], roster: [agentFixture(identity)], targets: [saved], observations: [observation(identity, frame)]});
   event('agent.availability', {identity, connectionEpoch: app.state.agentEpochs.get(identity), state: 'live', capabilities: agentFixture(identity).capabilities}); await settle();
   const editor = agentControl('editor') as HostNode & {placeholder: string}; editor.focus(); editor.setSelectionRange(2, 7, 'backward'); editor.dispatch('select');
-  assert.equal(agentControl('queue').hidden, false); assert.equal(editor.placeholder, 'Write a change or follow-up…');
+  assert.equal(agentControl('queue').hidden, false); assert.equal(editor.placeholder, 'Message');
   const now = Date.now(); t.mock.method(Date, 'now', () => now);
   let recover: (() => void) | undefined; const timeout = window.setTimeout.bind(window);
   t.mock.method(window, 'setTimeout', (callback, delay, ...args) => {
@@ -124,10 +122,10 @@ test('a working recipient refreshes its placeholder across disconnect and reconn
     return timeout(callback, delay, ...args);
   });
   const previous = streamSources.at(-1); assert.ok(previous); previous.onerror?.(); await settle();
-  assert.match(editor.placeholder, /^Draft for /); assert.doesNotMatch(agentControl('state').textContent, /Steer at the next step/); assert.equal(agentControl('queue').hidden, true);
+  assert.equal(editor.placeholder, 'Message'); assert.doesNotMatch(agentControl('state').textContent, /Steer at the next step/); assert.equal(agentControl('queue').hidden, true);
   assert.ok(recover); recover(); await settle(); const fresh = streamSources.at(-1); assert.ok(fresh); assert.notEqual(fresh, previous);
   fresh.emit('ready', {bootId: 'boot', connectionId: 'restored-guidance-stream'}); await settle();
-  assert.equal(editor.placeholder, 'Write a change or follow-up…'); assert.equal(agentControl('queue').hidden, false);
+  assert.equal(editor.placeholder, 'Message'); assert.equal(agentControl('queue').hidden, false);
   assert.equal(app.agentComposer().editor, editor); assert.equal(editor.value, saved.draft.text);
   assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [2, 7, 'backward']);
 });

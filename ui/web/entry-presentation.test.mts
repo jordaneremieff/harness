@@ -8,7 +8,7 @@ import type { PresentationContext } from './transcript-presentation.ts';
 const coverage = {complete: true, truncated: false, omitted: 0};
 test('a browser-owned input copy states its delivery word beside the role label', () => {
   const echo = (delivery: unknown): EntryView => ({id: 'ui-input:1', kind: 'ui.input', data: {value: {delivery}, truncated: false}});
-  assert.equal(inputDelivery(echo('Sending…')), 'Sending…');
+  assert.equal(inputDelivery(echo('Sending…')), 'Sending');
   assert.equal(inputDelivery(echo('Sent')), 'Sent');
   assert.equal(inputDelivery(echo('Message not sent')), undefined, 'a failure shows once, in the error line');
   assert.equal(inputDelivery(echo('Delivery not confirmed')), undefined);
@@ -65,7 +65,7 @@ test('entry headings use public head text and session changes keep collapsed ins
     assert.equal(omitted.textContent, 'message · valuesSome output is not available. · 42 bytes');
     assert.equal(sources.at(-1)?.(), JSON.stringify({values: ['<script>']}));
     const fields = presentEntry({...entry, head: undefined, data: {value: {a: 1, b: 2, c: 3, d: 4, e: 5}, truncated: false}}, context);
-    assert.equal(fields.textContent, 'custom · a, b, c, d, …');
+    assert.equal(fields.textContent, 'custom · a, b, c, d, e');
     const multiline = presentEntry({...entry, head: undefined, data: {value: 'first line\n  second', truncated: false}}, context);
     assert.equal(multiline.textContent, 'custom · first line second');
   } finally { if (old) Object.defineProperty(globalThis, 'document', old); else Reflect.deleteProperty(globalThis, 'document'); }
