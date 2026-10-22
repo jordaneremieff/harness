@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
-import type { Models } from "@earendil-works/pi-ai";
+import type { Models, StreamOptions } from "@earendil-works/pi-ai";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { LiveDoc, InboxDoc, type ConversationId, type SubmissionId, type Tx } from "@earendil-works/pi-durable";
@@ -317,7 +317,7 @@ function signal() {
 async function controlledRuntime(pendingAt: number) {
 	const runtime = await createTestRuntime(), held = signal();
 	let calls = 0, release = () => {};
-	const streamSimple: Parameters<typeof runtime.registerNativeProvider>[0]["streamSimple"] = (_model, _context, options) => {
+	const streamSimple = (_model: unknown, _context: unknown, options?: StreamOptions) => {
 		if (++calls !== pendingAt) return completed(answerMessage());
 		const message = answerMessage(), stream = pending(message);
 		const finish = () => {
@@ -617,7 +617,7 @@ it("retains queued report classifications and communication beyond collection ac
 		assert.ok(state && inbox);
 		assert.deepEqual(inbox.items.filter((item) => item.mode !== "write").map((item) => item.id), requests.map((request) => request.submissionId));
 		for (const request of requests) {
-			const row = state.provenance.find((item) => item.requestId === request.requestId);
+			const row: AwaitState["provenance"][number] | undefined = state.provenance.find((item) => item.requestId === request.requestId);
 			assert.equal(row?.classification, "report"); assert.equal(row?.sender, sender);
 			assert.equal(row?.communicationIntent?.value?.body.text, request.message);
 			assert.equal(row?.communicationIntent?.linkedEntryId, undefined);
