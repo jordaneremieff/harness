@@ -114,7 +114,7 @@ export type ActionContext = {
   failedSteps?:()=>{previous?:()=>void;next?:()=>void};
   receivedResults?:()=>{previous?:()=>void;next?:()=>void};
   readSession:ConstructorParameters<typeof ProjectPicker>[0]['readSession'];convertSession?:()=>void;hasConvertibleSession?:()=>boolean;desk?:()=>void; nextUnread?:()=>void; hasUnread?:()=>boolean; handover?: () => void; agentPresentation: ConstructorParameters<typeof ProjectPicker>[0]['agentPresentation']; snapshot: () => Snapshot | undefined; primary: () => PrimaryView | undefined; /** The Primary whose model list names models: the selected Primary when it is ready, else any ready Primary. */ namingPrimary?: () => PrimaryView | undefined; composer: Composer; commandsChanged: () => void; modelChanged?: () => void; modelNamesChanged?: () => void; modal: Modal;
-  selection: (change: SelectionChange) => Promise<void>; reload: () => Promise<void>; result: (result: OperationView) => void; rosterRefresh: () => void; filesRefresh: () => void; hasTranscript: () => boolean; find: () => FindSession | undefined; recovery: () => void; primaryEntries: () => EntryView[]; agents: () => AgentRow[]; selectedAgent: () => Pick<AgentRow, 'identity' | 'capabilities'> | undefined; selectAgent: (row: AgentRow) => void; selectPrimary: () => void; notices: () => void; sidebar: (visible: boolean) => void; sidebarShown: () => boolean; view: (tools: boolean, expand: boolean) => void; copyAgent: () => void; inspectAgent: () => void; resultLookup?: () => void; agentCaption?: (identity: string) => ConversationCaption; agentStatus: (row: AgentRow) => string; conversationFacts?: (identity: string) => readonly ReportedFact[]; tabs?: {close: () => void; switch: (direction: number) => void; layout: () => ConversationLayout}};
+  selection: (change: SelectionChange) => Promise<void>; reload: () => Promise<void>; result: (result: OperationView) => void; rosterRefresh: () => void; filesRefresh: () => void; hasTranscript: () => boolean; find: () => FindSession | undefined; recovery: () => void; primaryEntries: () => EntryView[]; agents: () => AgentRow[]; selectedAgent: () => Pick<AgentRow, 'identity' | 'capabilities'> | undefined; selectAgent: (row: AgentRow) => void; selectPrimary: () => void; notices: () => void; sidebar: (visible: boolean) => void; sidebarShown: () => boolean; view: (tools: boolean, expand: boolean) => void; copyAgent: () => void; inspectAgent: () => void; resultLookup?: () => void; agentCaption?: (identity: string) => ConversationCaption; agentStatus: (row: AgentRow) => string; conversationFacts?: (identity: string) => readonly ReportedFact[]; tabs?: {close: () => void; switch: (direction: number) => void; layout: () => ConversationLayout; reopen?: {available: () => boolean; run: () => void}}};
 export class Actions {
   private captions = new ConversationCaptions();
   private resources = new Map<string, Promise<ResourcePage>>();
@@ -439,6 +439,13 @@ export class Actions {
     const run=this.ctx.convertSession;
     return run&&this.ctx.hasConvertibleSession?.()?[{name:'Convert to Durable',description:'Create a Durable conversation from the selected saved snapshot',source:'app',enabled:true,run}]:[];
   }
+  private tabEntries(entry: (name: string, description: string, run: () => void, enabled?: boolean, alias?: string, disabledReason?: string) => PaletteEntry): PaletteEntry[] {
+    const tabs = this.ctx.tabs; if (!tabs) return [];
+    return [entry('Close conversation tab', 'Keep its session and draft', tabs.close),
+      ...tabs.reopen ? [{...entry('Reopen closed tab', 'Reopen the last tab closed in this window', tabs.reopen.run, tabs.reopen.available(), undefined, 'No closed tab to reopen'), shortcut: {text: '⌥⇧T', keys: 'Alt+Shift+T'}}] : [],
+      {...entry('Next conversation tab', 'Select the next conversation', () => tabs.switch(1)), shortcut: {text: '⌥⇟', keys: 'Alt+PageDown'}},
+      {...entry('Previous conversation tab', 'Select the previous conversation', () => tabs.switch(-1)), shortcut: {text: '⌥⇞', keys: 'Alt+PageUp'}}];
+  }
   paletteEntries(): PaletteEntry[] {
     const primary = this.ctx.primary(); const agent = this.ctx.selectedAgent(); const transcript = this.ctx.hasTranscript(); const sidebarShown = this.ctx.sidebarShown();
     const ready = !!this.readyPrimary(primary), workspaceReady = !!this.ctx.snapshot()?.workspace, copyLastAnswer=this.ctx.copyLastAnswer?.();
@@ -487,12 +494,7 @@ export class Actions {
       entry('Model', 'Choose Primary model', () => this.modelPicker(), primary?.lifecycle === 'ready', 'model', 'Requires a ready Primary'),
       entry('Thinking', 'Choose the thinking level for Primary', () => this.thinkingPicker(), primary?.lifecycle === 'ready', 'thinking', 'Requires a ready Primary'),
     ];
-    if (this.ctx.tabs) {
-      const tabs = this.ctx.tabs;
-      entries.push(entry('Close conversation tab', 'Keep its session and draft', tabs.close),
-        {...entry('Next conversation tab', 'Select the next conversation', () => tabs.switch(1)), shortcut: {text: '⌥⇟', keys: 'Alt+PageDown'}},
-        {...entry('Previous conversation tab', 'Select the previous conversation', () => tabs.switch(-1)), shortcut: {text: '⌥⇞', keys: 'Alt+PageUp'}});
-    }
+    entries.push(...this.tabEntries(entry));
     if (primary?.lifecycle === 'ready' && (primary.lastError || primary.responseOutcome === 'failed' || responseOutcome(this.ctx.primaryEntries()) === 'failed')) entries.push(entry('Review message', 'Restore the last loaded Primary user prompt for review', () => this.retryOutput()));
     if (agent) {
       entries.push(entry('Copy agent ID', agent.identity, () => this.ctx.copyAgent()));
@@ -506,7 +508,7 @@ export class Actions {
     }
     const conversation = new Set(['Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Previous own message', 'Next own message', 'Previous result', 'Next result', 'Previous post', 'Next post', 'Copy agent ID', 'Sent and received tasks', 'Close conversation tab']);
     const primaryActions = new Set(['Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Model', 'Thinking', 'Review message', 'Insert /agent new']);
-    const workspace = new Set(['New session', 'Sessions', 'Continue a handover', 'Saved drafts and messages', 'Appearance', 'Message input', 'Agent presentation control', 'Help', 'Notifications', 'Refresh agents', 'Refresh files', 'Hide sidebar', 'Show sidebar', 'Projects', 'Next conversation tab', 'Previous conversation tab']);
+    const workspace = new Set(['New session', 'Sessions', 'Continue a handover', 'Saved drafts and messages', 'Appearance', 'Message input', 'Agent presentation control', 'Help', 'Notifications', 'Refresh agents', 'Refresh files', 'Hide sidebar', 'Show sidebar', 'Projects', 'Next conversation tab', 'Previous conversation tab', 'Reopen closed tab']);
     const preferences = new Set(['Appearance','Message input','Agent presentation control','Hide sidebar','Show sidebar']);
     return [...entries.filter(item => item.enabled && (workspaceReady || !preferences.has(item.name))).map(item => {
       let priority = 2;

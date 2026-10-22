@@ -22,7 +22,7 @@ import {FilesViews} from './files-views.ts';
 import {FileRootChoice} from './file-root.ts';
 import {chooseWorkingFile} from './working-file-chooser.ts';
 import { activeTab, ConversationCaptions, conversationIdentityText, type CaptionRow, closeTab, duplicateTabTails, FileBrowseState, layoutTarget, openTab, switchTab, tabForTarget, tabKey, workspaceLayout } from './tabs.ts';
-import { paneLeaves, paneById, activatePaneTab, movePaneTab, resizePaneSplit, minimumPaneSize, paneSplitGeometry, splitPane, normalizePaneLayout, samePaneLayout, validPaneLayout, type PaneLeaf } from './pane-layout.ts';
+import { paneLeaves, paneById, paneForTab, openPaneTab, activatePaneTab, movePaneTab, resizePaneSplit, minimumPaneSize, paneSplitGeometry, splitPane, normalizePaneLayout, samePaneLayout, validPaneLayout, type PaneLeaf } from './pane-layout.ts';
 import { TabStrip } from './tabs-view.ts';
 import { cardAction, cardIcon, controlIcon, type CardIcon } from './card-icons.ts';
 import { thinkingExpanded } from './transcript-presentation.ts';
@@ -441,13 +441,13 @@ const references = new ReferenceResolver(resolveReference, destination => { void
   navigate: destination => { void navigateFileReference(destination).catch(showError); },
 },loadedDraftReference);
 const actions: Actions = new Actions({threadPosts:threadPostActions,copyLastAnswer:copyLastAnswerAction,receivedResults:receivedResultActions,failedSteps:failedStepActions,ownMessages:ownMessageActions,readSession:saved=>openSessionRead({saved}),hasConvertibleSession:()=>!!(sessionReader.saved??activeSessionReader()?.saved),convertSession:()=>{const item=sessionReader.saved??activeSessionReader()?.saved;if(item)picker.convertSaved(item);},desk:()=>openDesk(),nextUnread:openNextUnread,hasUnread:()=>!!nextUnreadNotice(),handover: () => handover.open(), snapshot: currentSnapshot, primary, modelChanged: renderAvailability, namingPrimary: () => { const selected = primary(); return selected?.lifecycle === 'ready' ? selected : [...state.primaries.values()].find(item => item.lifecycle === 'ready'); }, modelNamesChanged: renderAllComposerSettings, get composer() { return primaryComposer(); }, commandsChanged: () => {const target = primaryTarget(); if (target && state.workspace) controllers.get(controllerKey(state.workspace.id, target))?.composer.commandsChanged();}, modal, selection, reload: reloadSelection, result: showOperation, rosterRefresh: refreshRoster, filesRefresh: refreshFiles, hasTranscript: () => !!focusedTranscript(), find: () => captureFind(), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, sidebarShown: () => !byId('sidebar').hidden, view: (tools, expand) => focusedTranscript()?.expandLoaded(tools, expand), selectPrimary, agentCaption: identity => {return presentationCaptions().get(identity);}, agentStatus: row => presentation({kind: 'agent', identity: row.identity}).activity, agentPresentation:row=>presentation({kind:'agent',identity:row.identity}), conversationFacts: identity => agentFacts(agentRow(identity), state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame), copyAgent: () => { void copy(selectedAgent() ?? '', agentNode('view-notice')); }, inspectAgent,resultLookup:()=>{const target=layoutTarget(currentLayout(),primaryTarget());if(target)conversationController(target).inspection?.open('result');},
-  tabs: {close: () => { const tab = activeTab(currentLayout()); if (tab) applyLayout(closeTab(currentLayout(), tabKey(tab))); }, switch: direction => applyLayout(switchTab(currentLayout(), direction)), layout: currentLayout},
+  tabs: {close: () => { const tab = activeTab(currentLayout()); if (tab) closeConversationTab(tabKey(tab)); }, switch: direction => applyLayout(switchTab(currentLayout(), direction)), layout: currentLayout, reopen: {available: () => closedTabs.some(item => item.workspace === state.workspace?.id), run: reopenClosedTab}},
 });
 const fileBrowse = new FileBrowseState();
 const paneRegions = new Map<string, {node: HTMLElement; tabs: HTMLElement; content: HTMLElement; plus: HTMLButtonElement; menu: HTMLButtonElement; actions: HTMLButtonElement; previous: HTMLButtonElement; next: HTMLButtonElement}>();
 const paneSplits = new Map<string, {node: HTMLElement; handle: HTMLElement; resizer?: Resizer; extent?: number}>();
 const primaryCreationRow=button('New session',()=>picker.newSession(projectPath()),'nav-row sidebar-action');
-const tabStrip = new TabStrip({layout: currentLayout, reopen: () => workspaceEntry.count && state.workspace ? {count:workspaceEntry.count,drafts:new Set([...state.targetIndex.values()].flatMap(item=>item.hasDraft&&item.target.kind==='agent'&&workspaceEntry.hiddenAgent(item.target.identity)?[item.target.identity]:[])).size,run:()=>{if(state.workspace)applyLayout(workspaceEntry.reopen(state.workspace,primaryTarget()));}} : undefined, activate: activateConversationTab, close: key => applyLayout(closeTab(currentLayout(), key)),
+const tabStrip = new TabStrip({layout: currentLayout, reopen: () => workspaceEntry.count && state.workspace ? {count:workspaceEntry.count,drafts:new Set([...state.targetIndex.values()].flatMap(item=>item.hasDraft&&item.target.kind==='agent'&&workspaceEntry.hiddenAgent(item.target.identity)?[item.target.identity]:[])).size,run:()=>{if(state.workspace)applyLayout(workspaceEntry.reopen(state.workspace,primaryTarget()));}} : undefined, activate: activateConversationTab, close: closeConversationTab,
   fallback:()=>{if(paneLeaves(currentLayout().root).some(pane=>pane.tabs.some(tab=>tab.kind==='primary')))return;const row=byId('primary-row');if(primary()){row.hidden=false;return row;}return primaryCreationRow;},
   move: (key, pane, index) => {fileBrowse.keep(key);applyLayout(movePaneTab(currentLayout(), key, pane, index));}, label: tabLabel,unnamed:unnamedTab,keep:key=>fileBrowse.keep(key),
   identity: tab => tab.kind !== 'file' && tab.kind !== 'session' ? tabPresentation(tab).identityTail ?? '' : undefined,
@@ -1115,6 +1115,35 @@ export function applyLayout(layout: ConversationLayout): void {
     for (const {key, controller, retention} of closed) if (!open.has(key) && controller.messageRetention === retention) delete controller.messageRetention;
     collectControllers(); renderRoster();
   }).catch(showError);
+}
+/** The last closed tabs of this page return in reverse order with their pane, position and stored state. */
+const closedTabs: {workspace: string; tab: ConversationTab; pane: string; index: number}[] = [];
+function rememberClosedTab(layout: ConversationLayout, key: string): void {
+  const workspace = state.workspace?.id; if (!workspace) return;
+  for (const pane of paneLeaves(layout.root)) {
+    const index = pane.tabs.findIndex(tab => tabKey(tab) === key), tab = pane.tabs[index]; if (!tab) continue;
+    const at = closedTabs.findIndex(item => item.workspace === workspace && tabKey(item.tab) === key); if (at >= 0) closedTabs.splice(at, 1);
+    closedTabs.push({workspace, tab: structuredClone(tab), pane: pane.id, index});
+    if (closedTabs.length > 20) closedTabs.splice(0, closedTabs.length - 20);
+    return;
+  }
+}
+function closeConversationTab(key: string): void {const layout = currentLayout();rememberClosedTab(layout, key);applyLayout(closeTab(layout, key));}
+function reopenableClosedTab(layout: ConversationLayout, workspace: string): (typeof closedTabs)[number] | undefined {
+  while (closedTabs.length) {
+    const at = closedTabs.findLastIndex(item => item.workspace === workspace); if (at < 0) return;
+    const [saved] = closedTabs.splice(at, 1); if (!saved) return;
+    const stale = saved.tab.kind === 'agent' ? !state.roster.has(saved.tab.identity) : saved.tab.kind === 'primary' && !primary();
+    if (!stale && !paneForTab(layout, tabKey(saved.tab))) return saved;
+  }
+}
+function reopenClosedTab(): void {
+  const workspace = state.workspace?.id, layout = currentLayout(), saved = workspace ? reopenableClosedTab(layout, workspace) : undefined; if (!saved) return;
+  try {
+    const pane = paneById(layout, saved.pane) ?? paneById(layout, layout.focusedPane); if (!pane) return;
+    const key = tabKey(saved.tab), opened = openPaneTab(layout, pane.id, structuredClone(saved.tab));
+    applyLayout(movePaneTab(opened, key, pane.id, Math.min(saved.index, Math.max(0, (paneById(opened, pane.id)?.tabs.length ?? 1) - 1)))); focusEditor();
+  } catch (error) { showError(error); }
 }
 function activateConversationTab(pane: string, key: string): void {
   const layout = activatePaneTab(currentLayout(), pane, key); if (paneById(layout, pane)?.active !== key) return;
@@ -3075,7 +3104,7 @@ function openPaneMenu(paneId: string, event?: MouseEvent, key?: string, purpose:
     newTab: pane => choosePaneTarget(pane), split: (pane, axis, key) => {
       const current = paneById(currentLayout(), pane); if (!current) return;
       if (key && current.tabs.length > 1) applyLayout(splitPane(currentLayout(), pane, axis, paneSpace(pane), key)); else choosePaneTarget(pane, axis);
-    }, closeTab: key => applyLayout(closeTab(currentLayout(), key)), activate: activateConversationTab,
+    }, closeTab: closeConversationTab, activate: activateConversationTab,
     conversation: openConversationActions,
     overflow: purpose === 'context' && region.menu.dataset.overflow === 'true'});
   if (tab?.kind === 'file') items.push(...fileMenuItems(workspace,tab,valid));
@@ -3096,7 +3125,7 @@ function switchMarkdownView(tab:FileTab):void {
   fileBrowse.keep(tabKey(tab));applyLayout(openTab(currentLayout(),{kind:'file',rootId:tab.rootId,path:tab.path,...(tab.view === 'preview' ? {} : {view:'preview'})}));focusEditor();
 }
 function closeViewMenuItems(leaf:PaneLeaf,key:string|null,valid:()=>boolean):ContextItem[] {
-  const close = (keep:string|null):void=> {if (!valid()) return;let next = currentLayout();for (const tab of leaf.tabs) if (tabKey(tab) !== keep) next = closeTab(next,tabKey(tab));applyLayout(next);};
+  const close = (keep:string|null):void=> {if (!valid()) return;let next = currentLayout();for (const tab of leaf.tabs) if (tabKey(tab) !== keep) {rememberClosedTab(next,tabKey(tab));next = closeTab(next,tabKey(tab));}applyLayout(next);};
   return [{label:'Close others',enabled:leaf.tabs.length > 1,run:()=>close(key)},{label:'Close all',run:()=>close(null)}];
 }
 function choosePaneTarget(pane: string, axis?: 'x' | 'y'): void {
@@ -3186,14 +3215,18 @@ function receivedResultShortcut(event:KeyboardEvent):boolean{
   const transcript=focusedTranscript();if(!transcript?.node.isConnected||transcript.node.closest('[hidden],[inert]'))return false;
   event.preventDefault();transcript.jumpReceivedResult(event.code==='BracketLeft'?-1:1);return true;
 }
+function tabShortcut(event: KeyboardEvent): boolean {
+  if (modal.openNow || !event.altKey || event.ctrlKey || event.metaKey) return false;
+  if (event.shiftKey && event.code === 'KeyT') {event.preventDefault(); reopenClosedTab(); return true;}
+  if (event.key !== 'PageUp' && event.key !== 'PageDown') return false;
+  event.preventDefault(); applyLayout(switchTab(currentLayout(), event.key === 'PageDown' ? 1 : -1)); tabStrip.focusActive(); return true;
+}
 export function appKey(event: KeyboardEvent): void {
   if (event.isComposing || event.keyCode === 229 || event.defaultPrevented || contextMenu.openNow || threadPostShortcut(event) || ownMessageShortcut(event) || failedStepShortcut(event) || receivedResultShortcut(event)) return;
   if(deskShortcut(event))return;
   if (event.key === 'Escape' && messageTarget.current && !modal.openNow) { event.preventDefault(); closeMessagePanel(); return; }
   if (event.key === 'Escape' && drawerOpen && !modal.openNow) { event.preventDefault(); toggleSidebar(false); return; }
-  if (!modal.openNow && event.altKey && !event.ctrlKey && !event.metaKey && (event.key === 'PageUp' || event.key === 'PageDown')) {
-    event.preventDefault(); applyLayout(switchTab(currentLayout(), event.key === 'PageDown' ? 1 : -1)); tabStrip.focusActive(); return;
-  }
+  if (tabShortcut(event)) return;
   const mode = paletteModeForKey(event); if (!mode) return;
   event.preventDefault(); if (!event.repeat && !modal.openNow) actions.palette(mode);
 }
