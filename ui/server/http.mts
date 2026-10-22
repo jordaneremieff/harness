@@ -3,7 +3,7 @@ import { open, opendir } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
-import { LIMITS, ROUTES, validAgentViews } from '../shared/api.ts';
+import { LIMITS, ROUTES, LAYOUT_VERSION_HEADER, validAgentViews } from '../shared/api.ts';
 import { LocalBoundary, securityHeaders } from './boundary.mts';
 import { ApiError, errorView } from './errors.mts';
 import { IMAGE_BYTES, ImageResponse } from './images.mts';
@@ -25,7 +25,7 @@ import {CLIENT_ERROR_REQUEST_BYTES, clientErrorReport, type ClientErrorLog} from
 export type DevelopmentHttp = {clientErrors?:ClientErrorLog;control?:{service:Control};generations?:AssetGenerations;diagnostics?:DiagnosticSink;identity?:UiIdentity;files?:Files;health?:()=>BackendHealthFacts;userStylesheet?:UserStylesheetSource};
 
 export type RequestContext = {method: string; parts: string[]; url: URL; body: Record<string, unknown>;
-  operationId?: string; workspace?: string; signal?: AbortSignal};
+  operationId?: string; workspace?: string; signal?: AbortSignal; layoutVersion?: number};
 export type ImageUploadContext = Omit<RequestContext, 'body' | 'signal'> & {signal: AbortSignal; checkActive(): void};
 export type ImageUploadHeaders = {mimeType: 'image/png' | 'image/jpeg'; declaredBytes?: number};
 export type HttpBackend = {journal: Journal; dispatch(context: RequestContext): Promise<unknown>;
@@ -154,6 +154,12 @@ function rejectRequest(response: ServerResponse, error: unknown): void {
   response.end(JSON.stringify({ok: false, error: errorView(error)}));
 }
 function requireMethod(method:string,expected:string) {if(method!==expected) throw new ApiError('invalid_request','The route does not accept this method.',405);}
+function layoutWriterVersion(request:IncomingMessage):number|undefined {
+  const value=request.headers[LAYOUT_VERSION_HEADER.toLowerCase()];
+  if(value===undefined)return;
+  if(typeof value!=='string'||!/^[1-9]\d{0,8}$/.test(value))throw new ApiError('invalid_request','The layout writer version is invalid.');
+  return Number(value);
+}
 function operationKey(request: IncomingMessage) {
   const header = request.headers['idempotency-key'];
   if (Array.isArray(header) || (header && header.length > LIMITS.idChars)) throw new ApiError('invalid_request', 'The operation key is invalid.');
@@ -297,6 +303,7 @@ export class LocalHttp {
         process: {pid: process.pid, uptimeMs: Math.floor(process.uptime() * 1000), rssBytes: process.memoryUsage.rss()},
         requests: {active: this.active, limit: 64},
         identity: {iteration: identity?.iteration ?? UI_ITERATION, commit: identity?.git?.commit, assetDigest: identity?.assets?.digest, moduleFamily: this.development.generations?.identity()?.moduleFamily},
+        ...(this.development.generations?{pages:this.development.generations.pageEvidence()}:{}),
         userStylesheet: {state: this.development.userStylesheet ? (await this.development.userStylesheet()).state : 'none'}});
     } catch {throw new ApiError('not_ready', 'Backend health details are unavailable.', 503, 'read');}
   }
@@ -304,7 +311,7 @@ export class LocalHttp {
     return method === expectedMethod && parts.length === length && parts[1] === 'workspaces' && parts[3] === 'targets' && parts[5] === 'images';
   }
   private async dispatchRequest(request:IncomingMessage,response:ServerResponse,url:URL,method:string,parts:string[],body:Record<string,unknown>) {
-    const context={method,parts,url,body,operationId:operationKey(request),workspace:url.searchParams.get('workspace')??undefined};
+    const context={method,parts,url,body,operationId:operationKey(request),workspace:url.searchParams.get('workspace')??undefined,layoutVersion:layoutWriterVersion(request)};
     if(isImageRoute(method,parts) || this.savedImageRoute(method, parts, 'GET', 7)) return this.image(context,response);
     const controller=new AbortController();
     const cancel=()=>{if(!response.writableEnded) controller.abort();};
@@ -449,7 +456,8 @@ export class LocalHttp {
     if(Object.keys(body).length!==allowed.length||!allowed.every(key=>typeof body[key]==='string')) throw new ApiError('invalid_request','The generation acknowledgment is invalid.');
     let release:'released'|'absent'|undefined;
     if(!/^[a-f0-9]{24}$/.test(body.client as string)) throw new ApiError('invalid_request','The page lease identity is invalid.');
-    try {if(url.pathname.endsWith('/ack')) generations.acknowledge(body.client as string,body.generation as string,body.cssGeneration as string);else release=generations.release(body.client as string);}
+    const version=layoutWriterVersion(request);
+    try {if(url.pathname.endsWith('/ack')) generations.acknowledge(body.client as string,body.generation as string,body.cssGeneration as string,version);else release=generations.release(body.client as string);}
     catch(error) {
       if(error instanceof Error&&error.message==='capacity') throw new ApiError('capacity','The page lease capacity is unavailable.',429);
       throw new ApiError('invalid_request','The page generation is unavailable.',409);

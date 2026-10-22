@@ -47,6 +47,7 @@ export class Control {
   private capacity(workspace:string):void {if(this.admitting.has(workspace)||[...this.entries.values()].some(entry=>entry.receipt.state==='pending'&&entry.request.workspaceId===workspace))throw new ApiError('control_busy','A presentation request already uses this workspace.',409);if(this.admitting.size+[...this.entries.values()].filter(entry=>entry.receipt.state==='pending').length>=CONTROL_LIMITS.outstanding)throw new ApiError('capacity','The presentation request capacity is full.',429);}
   private enabled(workspace:Workspace):void {if(this.stopped)throw new ApiError('not_ready','Presentation control is stopped.',503);if(workspace.agentControl===false)throw new ApiError('control_disabled','Agent presentation control is off for this workspace.',403);}
   private async view(workspace:Workspace,view:WorkspaceTab,primary:ControlRequest['primary']):Promise<void> {
+    if(view.kind==='session')throw new ApiError('unsupported','This page preserves session places without execution or file actions.',409);
     if(view.kind==='primary'){if(!primary||primary.key!==workspace.primaryKey)throw new ApiError('stale_epoch','The current primary is unavailable.',409);return;}
     if(view.kind==='agent'){if(!this.registry.agents.rosterRow(view.identity))throw new ApiError('invalid_request','The exact agent identity is not in the current catalog.',404);return;}
     if(view.view==='preview'&&!/\.(md|markdown|mdown)$/i.test(view.path))throw invalid('This file does not support Markdown preview.');

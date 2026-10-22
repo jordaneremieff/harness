@@ -76,7 +76,7 @@ import { conversationPresentation, effortText, modelText, presentationGlyph, pre
 import type { AgentComposerState, ConversationPresentation } from './conversation-presentation.ts';
 import type { ComposerStateView } from './composer.ts';
 import { newerOperation, mergeOperationMap } from './operation-state.ts';
-import { ApiError, connect, errorMessage, operation, request, setRequestTiming } from './transport.ts';
+import { ApiError, acknowledgeLayoutPage, connect, errorMessage, operation, request, setRequestTiming } from './transport.ts';
 import type { ReceivedEvent } from './transport.ts';
 import {CONTROL_LIMITS, CONTROL_ROUTES, type ControlRequest} from '../shared/control.ts';
 import {BrowserControl, ControlRefusal, controlLayout, controlPaneBox, controlProvenance} from './control.ts';
@@ -129,7 +129,7 @@ const diagnostics = new BrowserDiagnostics();
 const versionStatus = new VersionStatus();
 const healthStatus = new HealthStatus(modal, versionStatus.identity, versionStatus.node);
 const releaseNotice = new ReleaseNotice(versionStatus.identity.release ? loadedRelease(versionStatus.identity, document.querySelector('meta[name="ui-generation"]')?.getAttribute('content') ?? null, document.querySelector('meta[name="ui-module-family"]')?.getAttribute('content') ?? null) : undefined, {
-  before: versionStatus.node, read: readReleaseHealth, reload: reloadRelease, stylesheet: swapReleaseStylesheet, reloadState: releaseReloadState,
+  before: versionStatus.node, read: async signal=>{try{await acknowledgeLayoutPage(signal);}catch{/* Lease evidence remains unknown until acknowledgment succeeds. */}return readReleaseHealth(signal);}, reload: reloadRelease, stylesheet: swapReleaseStylesheet, reloadState: releaseReloadState,
   failure: error => {versionStatus.node.dataset.updateError = errorMessage(error);window.reportClientError?.('Client',error);},
   clock: {now: Date.now, set: (callback, delay) => window.setTimeout(callback, delay), clear: timer => window.clearTimeout(timer)},
 });
@@ -216,7 +216,7 @@ function selectedDraftSource(selection:Selection):PrimaryDraftSource|undefined {
 }
 function primaryNode<T extends HTMLElement = HTMLElement>(key: string): T { const target = primaryTarget(); if (!target) throw new Error('No Primary is selected.'); return controllerNode(conversationController(target), key) as T; }
 function agentNode<T extends HTMLElement = HTMLElement>(key: string): T { const identity = selectedAgent(); if (!identity) throw new Error('No agent is selected.'); return controllerNode(conversationController({kind: 'agent', identity}), key) as T; }
-function controllerTarget(tab: ConversationTab): Target | undefined { return tab.kind === 'file' ? undefined : tab.kind === 'agent' ? {kind: 'agent', identity: tab.identity} : primaryTarget(); }
+function controllerTarget(tab: ConversationTab): Target | undefined { return tab.kind === 'file' || tab.kind === 'session' ? undefined : tab.kind === 'agent' ? {kind: 'agent', identity: tab.identity} : primaryTarget(); }
 export function primaryComposer(): Composer { const target = primaryTarget(); if (!target) throw new Error('No Primary is selected.'); return conversationController(target).composer; }
 export function agentComposer(): Composer { const identity = selectedAgent(); if (!identity) throw new Error('No agent is selected.'); return conversationController({kind: 'agent', identity}).composer; }
 function focusedTranscript(): Transcript | undefined {
@@ -449,9 +449,9 @@ const primaryCreationRow=button('New session',()=>picker.newSession(projectPath(
 const tabStrip = new TabStrip({layout: currentLayout, reopen: () => workspaceEntry.count && state.workspace ? {count:workspaceEntry.count,drafts:new Set([...state.targetIndex.values()].flatMap(item=>item.hasDraft&&item.target.kind==='agent'&&workspaceEntry.hiddenAgent(item.target.identity)?[item.target.identity]:[])).size,run:()=>{if(state.workspace)applyLayout(workspaceEntry.reopen(state.workspace,primaryTarget()));}} : undefined, activate: activateConversationTab, close: key => applyLayout(closeTab(currentLayout(), key)),
   fallback:()=>{if(paneLeaves(currentLayout().root).some(pane=>pane.tabs.some(tab=>tab.kind==='primary')))return;const row=byId('primary-row');if(primary()){row.hidden=false;return row;}return primaryCreationRow;},
   move: (key, pane, index) => {fileBrowse.keep(key);applyLayout(movePaneTab(currentLayout(), key, pane, index));}, label: tabLabel,unnamed:unnamedTab,keep:key=>fileBrowse.keep(key),
-  identity: tab => tab.kind !== 'file' ? tabPresentation(tab).identityTail ?? '' : undefined,
+  identity: tab => tab.kind !== 'file' && tab.kind !== 'session' ? tabPresentation(tab).identityTail ?? '' : undefined,
   section: {collapsed: () => sidebarSections.tabs, toggle: () => setSidebarSection('tabs', !sidebarSections.tabs)},
-  status: tab => { if (tab.kind === 'file') {const owner = state.workspace && filesViews.owner(state.workspace.id,tab);return {label:owner?.modified ? 'Modified' : '',glyph:owner?.modified ? '•' : '',tone:owner?.modified ? 'warning' : 'secondary'};}const view = tabPresentation(tab), attention = attentionFor(controllerTarget(tab)); return {label: [attention?.label, view.activity, view.tool?.name].filter(Boolean).join(' · '), rowLabel: attention?.label ?? view.activity, glyph: presentationGlyph(view), tone:view.tone, attention, word:tab.kind==='primary'?primarySessionState(primary()).word:undefined}; },
+  status: tab => { if(tab.kind==='session')return {label:'Preserved read-only session',glyph:'',tone:'secondary'}; if (tab.kind === 'file') {const owner = state.workspace && filesViews.owner(state.workspace.id,tab);return {label:owner?.modified ? 'Modified' : '',glyph:owner?.modified ? '•' : '',tone:owner?.modified ? 'warning' : 'secondary'};}const view = tabPresentation(tab), attention = attentionFor(controllerTarget(tab)); return {label: [attention?.label, view.activity, view.tool?.name].filter(Boolean).join(' · '), rowLabel: attention?.label ?? view.activity, glyph: presentationGlyph(view), tone:view.tone, attention, word:tab.kind==='primary'?primarySessionState(primary()).word:undefined}; },
   overflow: (overflow, pane) => { const region = paneRegions.get(pane); if (region) region.menu.dataset.overflow = String(overflow); }},
   {panes: () => [...paneRegions].map(([id, pane]) => ({id, tabs: pane.tabs, controls: [...controllers.values()].find(owner => stableViews().slot(owner.root) === pane.content)?.root.id ?? pane.content.id})), conversations: byId('sidebar-conversations')});
 let fileActionStatus = '';
@@ -1193,15 +1193,24 @@ function mountPaneLeaf(leaf: PaneLeaf, layout: ConversationLayout): HTMLElement 
   mountDeskCompanion(leaf.id,pane.node);
   const bar=pane.node.querySelector<HTMLElement>(':scope > .tab-bar');if(bar)bar.hidden=reading;
   if(reading){if(sessionReader.node.parentElement!==pane.node)pane.node.append(sessionReader.node);const deskNode=pane.node.querySelector<HTMLElement>(':scope > .desk');if(deskNode)deskNode.hidden=true;}
-  const activeTab = leaf.tabs[activeIndex]; pane.actions.hidden = !activeTab || activeTab.kind === 'file'; pane.actions.disabled = pane.actions.hidden || !state.workspace;
+  const activeTab = leaf.tabs[activeIndex]; pane.actions.hidden = !activeTab || activeTab.kind === 'file' || activeTab.kind === 'session'; pane.actions.disabled = pane.actions.hidden || !state.workspace;
   pane.node.dataset.focused = String(leaf.id === layout.focusedPane);
   return pane.node;
+}
+function placePreservedSession(host:HTMLElement,tab:ConversationTab|undefined):boolean {
+  let retained=host.querySelector<HTMLElement>(':scope > .preserved-session');
+  if(tab?.kind!=='session'){if(retained)retained.hidden=true;return false;}
+  if(!retained){retained=element('section','preserved-session');host.append(retained);}
+  retained.replaceChildren(element('h2',undefined,tabLabel(tab)),element('p','secondary','This saved session is preserved read-only. Its controls require the session-place release.'));retained.hidden=false;
+  for(const child of host.children)if(child!==retained)(child as HTMLElement).hidden=true;
+  return true;
 }
 function placePaneContent(leaf:PaneLeaf):void {
   if(sessionReadPane?.id===leaf.id)return;
   if(deskCompanion(leaf.id)&&deskPane?.list)return;
   const pane = paneRegions.get(leaf.id);if(!pane)throw new Error(`Missing pane region for ${leaf.id}.`);
   const tab = leaf.tabs.find(tab => tabKey(tab) === leaf.active), target = tab ? controllerTarget(tab) : undefined;
+  if(placePreservedSession(pane.content,tab))return;
   if (tab?.kind === 'file' && state.workspace) {const view = filesViews.view(state.workspace,tab);view.root.dataset.paneId = leaf.id;stableViews().place(view.root,pane.content);}
   else if (target) { const owner = conversationController(target); stableViews().place(owner.root, pane.content); owner.root.dataset.paneId = leaf.id; delete owner.root.dataset.messageOnly;
     if (messageTarget.current?.identity !== (target.kind === 'agent' ? target.identity : undefined)) stableViews().project(owner.elements.root);
@@ -3001,8 +3010,8 @@ function paneTabChoices(leaf: PaneLeaf, layout: ConversationLayout): ContextItem
   const tabs = paneLeaves(layout.root).flatMap(pane => pane.tabs);
   const tails = duplicateTabTails(tabs,tabLabel);
   return leaf.tabs.map(tab => {
-    const name = tabLabel(tab), tail = tab.kind === 'file' ? tails.get(tabKey(tab)) : tabPresentation(tab).identityTail;
-    return {label: tail ? `${name} · ${tail}` : name, description: tab.kind === 'file' ? tab.path : tabPresentation(tab).activity, checked: tabKey(tab) === leaf.active, run: () => activateConversationTab(leaf.id, tabKey(tab))};
+    const name = tabLabel(tab), tail = tab.kind === 'file' ? tails.get(tabKey(tab)) : tab.kind === 'session' ? undefined : tabPresentation(tab).identityTail;
+    return {label: tail ? `${name} · ${tail}` : name, description: tab.kind === 'file' || tab.kind === 'session' ? tab.path : tabPresentation(tab).activity, checked: tabKey(tab) === leaf.active, run: () => activateConversationTab(leaf.id, tabKey(tab))};
   });
 }
 function paneSwitchItems(layout:ConversationLayout,valid:()=>boolean):ContextItem[] {
@@ -3067,7 +3076,7 @@ function unnamedTab(tab:ConversationTab):boolean{
   if(tab.kind!=='agent')return false;const captions=presentationCaptions(),caption=captions.get(tab.identity);
   return caption.name==='Unnamed conversation'&&caption.source!=='first-message'&&!captions.knownName(tab.identity);
 }
-function tabLabel(tab: ConversationTab): string { return tab.kind === 'file' ? `${tab.path.split('/').at(-1) ?? tab.path}${tab.view === 'preview' ? ' preview' : ''}` : tabPresentation(tab).name; }
+function tabLabel(tab: ConversationTab): string { if(tab.kind==='session')return typeof tab.name==='string'&&tab.name.trim()?tab.name:`${tab.project.split('/').filter(Boolean).at(-1)||'Session'} · ${tab.id.slice(-4)}`;return tab.kind === 'file' ? `${tab.path.split('/').at(-1) ?? tab.path}${tab.view === 'preview' ? ' preview' : ''}` : tabPresentation(tab).name; }
 let dismissedPointer = false;
 export function dismissDrawerPointer(event: PointerEvent): void {
   dismissedPointer = false;
@@ -3445,6 +3454,12 @@ type ReleasePage = {
   controllers: Array<{workspace:string;target:Target;passive:boolean;geometry:ReturnType<Transcript['captureGeometry']>;presentation?:PresentationView;agentContext?:AgentContextReload;scrollLeft:number;editorTop:number;editorLeft:number}>;
 };
 let releasePage: ReleasePage | undefined;
+const preservedReleaseFields=new Map<string,{page:Record<string,unknown>;checkpoint:Record<string,unknown>}>();
+function opaqueCheckpointFields(value:object,known:string[]):Record<string,unknown>{return Object.fromEntries(Object.entries(value).filter(([key])=>!known.includes(key)));}
+function retainReleaseFields(value:ReleasePage):void {
+  preservedReleaseFields.set(value.workspace.id,{page:opaqueCheckpointFields(value,['release','checkpoint','workspace','entry','drawer','deskPane','desk','thread','session','controllers']),
+    checkpoint:opaqueCheckpointFields(value.checkpoint,['version','generation','oldClient','capturedAt','interactionRevision','workspaceId','focusedPane','targets','focusedControl','messageRecipient','files','inspections','composerStateKey'])});
+}
 let releasePageRead = false;
 let releaseRestore: Promise<void> | undefined;
 let freshEntryRecovery=false;
@@ -3487,10 +3502,20 @@ async function readReleasePage(signal:AbortSignal):Promise<void> {
       if(!value?.checkpoint || !validateDevReloadCheckpoint(value.checkpoint,value.checkpoint.generation,Date.now()) ||
         !value.workspace || value.workspace.id!==value.checkpoint.workspaceId || url.searchParams.get('workspace')!==value.workspace.id || !validPaneLayout(value.workspace.conversationLayout) ||
         !value.entry || value.entry.workspaceId!==value.workspace.id || !Array.isArray(value.entry.hidden) || !Array.isArray(value.controllers) || value.controllers.length>LIMITS.conversationTabs || !value.desk)throw new Error('The exact page checkpoint is missing or invalid.');
-      releasePage=value;reloadStateKey=value.checkpoint.composerStateKey;
+      retainReleaseFields(value);releasePage=value;reloadStateKey=value.checkpoint.composerStateKey;
     }catch(error){if(signal.aborted)throw error;recoverPageCheckpoint(error,value?.checkpoint);}
   }
   releasePageRead=true;
+}
+async function releasePredecessorPage(page:ReleasePage,signal:AbortSignal):Promise<void> {
+  if(!page.release.release)return;
+  if(!await acknowledgeLayoutPage(signal))throw new Error('The restored page has no acknowledged lease. Its checkpoint remains stored.');
+  await request('/api/dev/release','POST',{client:page.checkpoint.oldClient},undefined,signal);
+}
+function hasOpaqueReleaseState(page:ReleasePage):boolean {
+  const fields=preservedReleaseFields.get(page.workspace.id);
+  if(fields&&(Object.keys(fields.page).length>0||Object.keys(fields.checkpoint).length>0))return true;
+  return paneLeaves(page.workspace.conversationLayout?.root??currentLayout().root).some(pane=>pane.tabs.some(tab=>tab.kind==='session'));
 }
 async function restoreReleasePage(page:ReleasePage,current:()=>boolean):Promise<void> {
   if(releaseRestore)return releaseRestore;
@@ -3499,14 +3524,16 @@ async function restoreReleasePage(page:ReleasePage,current:()=>boolean):Promise<
     restoreReleaseCompanions(page);
     if(!await restoreDevCheckpoint(page.checkpoint,signal)||!current())throw new Error('The exact page restore did not finish. Preserved drafts remain in reload storage.');
     restoreReleaseControllers(page);
+    await releasePredecessorPage(page,signal);
     drawerOpen=page.drawer;renderNavigation();
     if(page.session)restoreReleaseSession(page.session);
     const actual=loadedRelease(versionStatus.identity,document.querySelector('meta[name="ui-generation"]')?.getAttribute('content')??null,document.querySelector('meta[name="ui-module-family"]')?.getAttribute('content')??null);
     if(actual)releaseNotice.updated(actual);
     const url=new URL(location.href),key=url.searchParams.get('update');url.searchParams.delete('update');history.replaceState(null,'',url);
     releasePage=undefined;delete versionStatus.node.dataset.updateError;
-    if(key)void deleteReloadState(key).catch(()=>{});
-    if(page.checkpoint.composerStateKey)void deleteReloadState(page.checkpoint.composerStateKey).catch(()=>{});
+    const opaque=hasOpaqueReleaseState(page);
+    if(!opaque&&key)void deleteReloadState(key).catch(()=>{});
+    if(!opaque&&page.checkpoint.composerStateKey)void deleteReloadState(page.checkpoint.composerStateKey).catch(()=>{});
     reloadStateKey=undefined;preparedReloadState=undefined;
   })();
   releaseRestore=work;
@@ -3593,12 +3620,12 @@ export async function reloadRelease(signal: AbortSignal, release: ReleaseIdentit
   const view = captureDevCheckpoint(), key = crypto.randomUUID();
   const preserved=new Set(retained.flatMap(controller=>controller.composer.captureReload().filter(value=>value.workspace===workspace).map(value=>value.targetKey)));
   view.targets=view.targets.map(entry=>entry.target.kind==='agent'&&preserved.has(entry.targetKey)?{...entry,target:{kind:'agent',identity:entry.target.identity,retained:true}}:entry);
-  const checkpoint: DevReloadCheckpoint = {...view, version: 1, generation: release.generation, oldClient: document.querySelector('meta[name="ui-client"]')?.getAttribute('content') ?? '', capturedAt: Date.now(), interactionRevision: revision};
+  const checkpoint: DevReloadCheckpoint = {...preservedReleaseFields.get(workspace)?.checkpoint,...view, version: 1, generation: release.generation, oldClient: document.querySelector('meta[name="ui-client"]')?.getAttribute('content') ?? '', capturedAt: Date.now(), interactionRevision: revision};
   if (!validateDevReloadCheckpoint(checkpoint, release.generation, Date.now())) throw new Error('The exact page checkpoint is unavailable.');
   const reader=sessionReadPane?sessionReader.captureReload():undefined;
   if(sessionReadPane&&!reader)throw new Error('The exact retained session snapshot is unavailable.');
   const session=sessionReadPane&&reader?{pane:structuredClone(sessionReadPane),reader}:undefined;
-  const page: ReleasePage = {release, checkpoint, session, workspace: {...structuredClone(state.workspace as Workspace),conversationLayout:structuredClone(workspaceLayout(state.workspace))}, entry: workspaceEntry.captureReload(state.workspace as Workspace), drawer: drawerOpen,
+  const page: ReleasePage = {...preservedReleaseFields.get(workspace)?.page,release, checkpoint, session, workspace: {...structuredClone(state.workspace as Workspace),conversationLayout:structuredClone(workspaceLayout(state.workspace))}, entry: workspaceEntry.captureReload(state.workspace as Workspace), drawer: drawerOpen,
     deskPane: deskPane && structuredClone(deskPane), desk: desk.captureReload(),
     thread: threadPane && {pane: {...threadPane}, reader: threadReader.captureReload()},
     controllers: retained.map(controller => ({workspace: controller.workspaceId, target: {...controller.target}, passive: controller.passive === true, geometry: controller.transcript.captureGeometry(), ...(controller.target.kind==='agent'?{presentation:controller.transcript.capturePresentation(controller.saved?.presentation?.revision??0),agentContext:controller.liveStrip?.captureReload()}:{}), scrollLeft: controllerNode(controller, 'transcript').scrollLeft, editorTop: controller.composer.editor.scrollTop, editorLeft: controller.composer.editor.scrollLeft}))};

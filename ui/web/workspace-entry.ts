@@ -30,7 +30,8 @@ export class WorkspaceEntry {
   hiddenAgent(identity:string):boolean {return this.hidden.has(tabKey({kind:'agent',identity}));}
   layout(workspace?: Workspace, primary?: Target): ConversationLayout {
     if(!workspace || workspace.id !== this.workspaceId)return workspaceLayout(workspace);
-    const selected=this.primaryFirst && primary ? primary : workspace.selectedTarget;
+    const preserved=activeTab(workspaceLayout(workspace))?.kind==='session';
+    const selected=this.primaryFirst && primary && !preserved ? primary : workspace.selectedTarget;
     const selectedTarget=selected?.kind === 'agent' && this.hidden.has(tabKey({kind:'agent',identity:selected.identity})) ? undefined : selected;
     const layout=workspaceLayout({...structuredClone(workspace),selectedTarget});
     for(const pane of paneLeaves(layout.root)) {

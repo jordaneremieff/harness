@@ -1,4 +1,4 @@
-import {LIMITS, validFileTab, workspaceTabKey, type FileTab, type FilePosition, type DevLeaseIdentity} from '../shared/api.ts';
+import {LIMITS, LAYOUT_VERSION, LAYOUT_VERSION_HEADER, validLayoutData, validWorkspaceTab, workspaceTabKey, type FileTab, type FilePosition, type DevLeaseIdentity} from '../shared/api.ts';
 import {validInspectionCheckpoint, type InspectionCheckpoint} from '../shared/inspection.ts';
 export type DevFileCheckpoint = {tab:FileTab;position:FilePosition;digest:string;focused:boolean;selection?:NonNullable<DevCheckpointEntry['selection']>};
 export type DevBuild = {
@@ -88,6 +88,7 @@ const TTL = 15 * 60_000;
 const HOLDS: readonly string[] = ['input', 'ime', 'selection', 'resize', 'modal', 'offline', 'conflict', 'uncertain'];
 function integer(value: unknown): value is number {return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;}
 function id(value: unknown): value is string {return typeof value === 'string' && ID.test(value);}
+function ownKeys(value:unknown):string[]{return value&&typeof value==='object'?Object.keys(value):[];}
 function record(value: unknown, required: string[], optional: string[] = []): value is Record<string, unknown> {
   if (!value || typeof value !== 'object' || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return false;
   const descriptors = Object.getOwnPropertyDescriptors(value);
@@ -120,7 +121,7 @@ function fileList(value:unknown):value is DevFileCheckpoint[] {
   return Array.from({length:value.length},(_,index)=>descriptors[String(index)]).every(descriptor=> {
     if (!descriptor || !Object.hasOwn(descriptor,'value')) return false;
     const file:unknown = descriptor.value;
-    return record(file,['tab','position','digest','focused'],['selection']) && record(file.tab,['kind','rootId','path'],['view']) && validFileTab(file.tab) && filePosition(file.position) && typeof file.digest === 'string' && GENERATION.test(file.digest) && typeof file.focused === 'boolean' && (file.tab.view === 'preview' ? file.selection === undefined : selection(file.selection,LIMITS.fileTextBytes));
+    return record(file,['tab','position','digest','focused'],['selection']) && record(file.tab,['kind','rootId','path'],ownKeys(file.tab)) && validWorkspaceTab(file.tab) && file.tab.kind==='file' && filePosition(file.position) && typeof file.digest === 'string' && GENERATION.test(file.digest) && typeof file.focused === 'boolean' && (file.tab.view === 'preview' ? file.selection === undefined : selection(file.selection,LIMITS.fileTextBytes));
   });
 }
 function targetList(value: unknown): value is DevCheckpointEntry[] {
@@ -148,9 +149,12 @@ function fileCheckpointState(files:unknown,focusedControl:unknown):boolean {
   if (new Set(files.map(file=>workspaceTabKey(file.tab))).size !== files.length || files.filter(file=>file.focused).length > 1) return false;
   return !files.some(file=>file.focused) || focusedControl === undefined;
 }
+function checkpointRecord(value:unknown):value is Record<string,unknown> {
+  return validLayoutData(value)&&record(value,['version','generation','oldClient','capturedAt','interactionRevision','workspaceId','focusedPane','targets'],ownKeys(value));
+}
 /** Structural validation does not replace the host's checks against freshly hydrated state. */
 export function validateDevReloadCheckpoint(value: unknown, generation: string, now: number): DevReloadCheckpoint | null {
-  if (!record(value, ['version', 'generation', 'oldClient', 'capturedAt', 'interactionRevision', 'workspaceId', 'focusedPane', 'targets'], ['focusedControl', 'messageRecipient', 'files', 'inspections', 'composerStateKey'])) return null;
+  if (!checkpointRecord(value)) return null;
   if (value.version !== 1 || value.generation !== generation || !GENERATION.test(generation) || typeof value.oldClient !== 'string' || !CLIENT.test(value.oldClient)) return null;
   if (!integer(now) || !integer(value.capturedAt) || value.capturedAt > now || now - value.capturedAt > TTL || !integer(value.interactionRevision)) return null;
   if (!id(value.workspaceId) || value.workspaceId.length > 128 || !id(value.focusedPane) || value.focusedPane.length > 128 || !targetList(value.targets)) return null;
@@ -283,7 +287,7 @@ export class DevReload {
   private async post(path: '/api/dev/ack' | '/api/dev/release', body: object, signal: AbortSignal): Promise<void> {
     const code = path === '/api/dev/ack' ? 'ack' : 'release';
     try {
-    const response = await this.bounded(this.env.fetch(path, {method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body), signal}), signal);
+    const response = await this.bounded(this.env.fetch(path, {method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json', [LAYOUT_VERSION_HEADER]:String(LAYOUT_VERSION)}, body: JSON.stringify(body), signal}), signal);
     if (!response.ok) throw new ReloadFailure(response.status === 429 ? 'capacity' : code, response.status);
     if (this.stopped || signal.aborted) return;
     const result: unknown = await this.bounded(response.json(), signal);

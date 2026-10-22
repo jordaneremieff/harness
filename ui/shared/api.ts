@@ -119,7 +119,53 @@ export function resolveAppearance(value: unknown): Appearance {
 /** Primary tabs follow the workspace primary; closing a tab never stops its conversation. */
 export type ConversationTab = {kind: 'primary'} | {kind: 'agent'; identity: string};
 export type FileTab = {kind: 'file'; rootId: string; path: string; view?: 'preview'};
-export type WorkspaceTab = ConversationTab | FileTab;
+/** This reader preserves session places but does not create or execute them. */
+export type SessionTab = {kind: 'session'; id: string; path: string; project: string; [field: string]: unknown};
+export type WorkspaceTab = ConversationTab | FileTab | SessionTab;
+export const LAYOUT_VERSION = 1;
+export const LAYOUT_VERSION_HEADER = 'X-UI-Layout-Version';
+function layoutScalar(value:unknown):boolean {return value===null||typeof value==='boolean'||typeof value==='string'||typeof value==='number'&&Number.isFinite(value);}
+function layoutContainer(value:object):boolean {
+  const prototype=Object.getPrototypeOf(value);
+  return Array.isArray(value)?prototype===Array.prototype:prototype===Object.prototype||prototype===null;
+}
+function layoutKeysBound(value:object,keys:PropertyKey[],remaining:number):boolean {
+  return keys.length<=remaining&&(!Array.isArray(value)||keys.length===value.length+1);
+}
+/** Opaque view metadata must remain bounded plain JSON, never executable properties. */
+export function validLayoutData(value: unknown): boolean {
+  let nodes = 0;
+  const active = new Set<object>();
+  const visit = (item: unknown, depth: number): boolean => {
+    if (++nodes > LIMITS.jsonNodes || depth > LIMITS.jsonDepth) return false;
+    if(item===null||typeof item!=='object')return layoutScalar(item);
+    if(active.has(item)||!layoutContainer(item))return false;
+    const descriptors = Object.getOwnPropertyDescriptors(item), keys = Reflect.ownKeys(item);
+    if(!layoutKeysBound(item,keys,LIMITS.jsonNodes-nodes+1))return false;
+    active.add(item);
+    const valid = keys.every(key => {
+      if (Array.isArray(item) && key === 'length') return true;
+      const descriptor = typeof key === 'string' ? descriptors[key] : undefined;
+      return typeof key === 'string' && !!descriptor?.enumerable && Object.hasOwn(descriptor,'value') && visit(descriptor.value,depth+1);
+    });
+    active.delete(item);return valid;
+  };
+  return visit(value,0) && new TextEncoder().encode(JSON.stringify(value)).length <= LIMITS.requestBytes;
+}
+export function validSessionTab(value: unknown): value is SessionTab {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const tab = value as Record<string,unknown>;
+  return tab.kind === 'session' && ['id','path','project'].every(key => typeof tab[key] === 'string' && !!tab[key] && (tab[key] as string).length <= (key === 'id' ? LIMITS.idChars : LIMITS.pathChars) && !/[\u0000-\u001f\u007f]/.test(tab[key] as string)) && (tab.path as string).startsWith('/') && (tab.project as string).startsWith('/') && validLayoutData(tab);
+}
+/** Known routing fields remain strict; additional inert fields round-trip unchanged. */
+export function validWorkspaceTab(value: unknown): value is WorkspaceTab {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || !validLayoutData(value)) return false;
+  const tab = value as Record<string,unknown>;
+  if (tab.kind === 'session') return validSessionTab(tab);
+  if (tab.kind === 'primary') return true;
+  if (tab.kind === 'agent') return typeof tab.identity === 'string' && !!tab.identity && tab.identity.length <= LIMITS.idChars && !/[\u0000-\u001f\u007f]/.test(tab.identity);
+  return tab.kind === 'file' && validFileTab({kind:'file',rootId:tab.rootId,path:tab.path,...(tab.view === undefined ? {} : {view:tab.view})});
+}
 export function validFileTab(value: unknown): value is FileTab {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const tab = value as FileTab;
@@ -128,14 +174,14 @@ export function validFileTab(value: unknown): value is FileTab {
   return parts.length <= 128 && parts.every(part=>!!part && part !== '.' && part !== '..' && !['.git','.hg','.svn','.bzr'].includes(part));
 }
 export function workspaceTabKey(tab: WorkspaceTab): string {
-  return tab.kind === 'file' ? `${tab.view === 'preview' ? 'preview' : 'file'}:${JSON.stringify([tab.rootId, tab.path])}` : tab.kind === 'primary' ? 'primary' : `agent:${tab.identity}`;
+  return tab.kind === 'session' ? `session:${JSON.stringify([tab.id,tab.path,tab.project])}` : tab.kind === 'file' ? `${tab.view === 'preview' ? 'preview' : 'file'}:${JSON.stringify([tab.rootId, tab.path])}` : tab.kind === 'primary' ? 'primary' : `agent:${tab.identity}`;
 }
 export type FilePosition = {scrollTop: number; scrollLeft: number};
 export type PaneNode = {kind: 'pane'; id: string; tabs: WorkspaceTab[]; active: string | null} |
   {kind: 'split'; id: string; axis: 'x' | 'y'; ratio: number; first: PaneNode; second: PaneNode};
 export type ConversationLayout = {root: PaneNode; focusedPane: string};
 /** Shared tabs use compare-and-set revisions for view state. */
-export type Workspace = {id: string; revision: number; primaryKey?: string; selectedTarget?: Target;
+export type Workspace = {id: string; revision: number; layoutVersion?: number; primaryKey?: string; selectedTarget?: Target;
   panelVisible?: boolean; sidebarVisible?: boolean; sidebarWidth?: number; appearance?: Appearance; enterSendsMessages?: boolean; agentControl?: boolean;
   conversationLayout?: ConversationLayout; filePositions?: Record<string, FilePosition>};
 export function validAgentViews(value: unknown): value is string[] {

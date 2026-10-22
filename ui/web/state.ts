@@ -225,7 +225,7 @@ export function primaryBlocks(state: UiState, key: string): EntryView[] {
 export function visibleTargets(workspace: Workspace, primary?: Target): Target[] {
   return paneLeaves(workspaceLayout(workspace).root).flatMap(pane => {
     const tab = pane.tabs.find(tab => tabKey(tab) === pane.active);
-    return !tab ? [] : tab.kind === 'agent' ? [{kind: 'agent' as const, identity: tab.identity}] : primary ? [primary] : [];
+    return !tab ? [] : tab.kind === 'agent' ? [{kind: 'agent' as const, identity: tab.identity}] : tab.kind !== 'session' && primary ? [primary] : [];
   });
 }
 export function agentBlocks(state: UiState, identity: string): EntryView[] {

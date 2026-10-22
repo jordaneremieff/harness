@@ -100,7 +100,7 @@ function pinHtml(html:string,id:string,assets:ReadonlyMap<string,Asset>) {
   return html;
 }
 
-type Lease={generation:string;cssGeneration:string;predecessor?:DevLeaseIdentity&{adopted?:boolean}};
+type Lease={generation:string;cssGeneration:string;layoutVersion?:number;predecessor?:DevLeaseIdentity&{adopted?:boolean}};
 type LeaseResult={lease:'present'|'missing';build:BuildStatus}|{lease:'replaced';client:string;build:BuildStatus};
 /** Two full snapshots and one candidate; live JS aliases share their immutable families. */
 export class AssetGenerations {
@@ -114,6 +114,9 @@ export class AssetGenerations {
   private state:BuildStatus;
   private observer?: (status:BuildStatus)=>void;
   constructor(initial:AssetGeneration, previous?:AssetGeneration) {this.active=initial;this.previous=previous;this.state={revision:0,generation:initial.id,previous:previous?.id??null,change:previous?.sameExceptCss(initial)?'css':'reload',status:'ready',code:'none'};}
+  pageEvidence() {
+    return {scope:'registered-backend-pages' as const,complete:false as const,pages:[...this.leases].map(([client,lease])=>({client,generation:lease.generation,cssGeneration:lease.cssGeneration,...(this.jsFamily(lease.generation)?{family:this.jsFamily(lease.generation)?.id}:{}),...(lease.layoutVersion===undefined?{}:{layoutVersion:lease.layoutVersion})}))};
+  }
   transitionReady(): boolean {return [...this.leases.values()].every(lease => this.jsFamily(lease.generation)?.id === this.active.family.id && lease.cssGeneration === this.active.id);}
   status():BuildStatus {return {...this.state};}
   private pageStatus(client:string):BuildStatus {
@@ -146,10 +149,10 @@ export class AssetGenerations {
     this.adopt(client);this.subscribers.set(client,{notify});try {notify(this.pageStatus(client));} catch(error) {this.subscribers.delete(client);throw error;}
     return ()=>this.subscribers.delete(client);
   }
-  acknowledge(client:string,generation:string,cssGeneration:string) {
+  acknowledge(client:string,generation:string,cssGeneration:string,layoutVersion?:number) {
     this.bind(client);const js=this.jsFamily(generation);const css=this.find(cssGeneration);
     if(!js||!css||js.id!==css.family.id) throw new Error('invalid-assets');
-    this.leases.set(client,{...this.leases.get(client),generation,cssGeneration});this.adopt(client);this.publish();
+    this.leases.set(client,{...this.leases.get(client),generation,cssGeneration,...(layoutVersion===undefined?{}:{layoutVersion})});this.adopt(client);this.publish();
   }
   /** Only an absent identity can rotate. Known identities never bypass byte checks. */
   checkLease(client:string,generation:string,cssGeneration:string,family:string):LeaseResult {

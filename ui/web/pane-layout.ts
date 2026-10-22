@@ -1,4 +1,4 @@
-import {validFileTab, type ConversationLayout, type WorkspaceTab as ConversationTab, type PaneNode} from '../shared/api.ts';
+import {validLayoutData, validWorkspaceTab, type ConversationLayout, type WorkspaceTab as ConversationTab, type PaneNode} from '../shared/api.ts';
 import { MAX_TABS, tabKey } from './tabs.ts';
 
 export type { PaneNode } from '../shared/api.ts';
@@ -47,7 +47,7 @@ function prune(node: PaneNode, ids: Set<string>): PaneNode | undefined {
 }
 function withRoot(layout: PaneLayout, root: PaneNode, focusedPane = layout.focusedPane): PaneLayout {
   const panes = paneLeaves(root); const next = panes.some(pane => pane.id === focusedPane) ? focusedPane : panes[0]?.id ?? focusedPane;
-  return root === layout.root && next === layout.focusedPane ? layout : {root, focusedPane: next};
+  return root === layout.root && next === layout.focusedPane ? layout : {...layout, root, focusedPane: next};
 }
 function withoutTab(pane: PaneLeaf, key: string): PaneLeaf {
   const index = pane.tabs.findIndex(tab => tabKey(tab) === key); if (index < 0) return pane;
@@ -102,7 +102,7 @@ export function movePaneTab(layout: PaneLayout, key: string, destination: string
   return withRoot(layout, root, source.id === destination ? layout.focusedPane : destination);
 }
 export function closePaneTab(layout: PaneLayout, key: string): PaneLayout {
-  const source = paneForTab(layout, key); if (!source) return layout;
+  const source = paneForTab(layout, key); if (!source || source.tabs.some(tab=>tabKey(tab)===key&&tab.kind==='session')) return layout;
   let root = mapPanes(layout.root, pane => withoutTab(pane, key));
   if (source.tabs.length === 1 && paneLeaves(root).length > 1) root = prune(root, new Set([source.id])) ?? root;
   return withRoot(layout, root);
@@ -134,11 +134,10 @@ function record(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 function validTab(value: unknown): value is ConversationTab {
-  const tab = record(value); if (!tab) return false;
-  return tab.kind === 'file' ? validFileTab(tab) : tab.kind === 'primary' ? Object.keys(tab).length === 1 : tab.kind === 'agent' && Object.keys(tab).length === 2 && typeof tab.identity === 'string' && !!tab.identity;
+  return validWorkspaceTab(value);
 }
 function validateLeaf(node: Record<string, unknown>, state: Validation): boolean {
-  if (Object.keys(node).length !== 4 || !Array.isArray(node.tabs) || !('active' in node)) return false;
+  if (!['kind','id','tabs','active'].every(key=>Object.hasOwn(node,key)) || !Array.isArray(node.tabs) || !('active' in node)) return false;
   for (const tab of node.tabs) {
     if (!validTab(tab)) return false; const key = tabKey(tab); if (state.tabs.has(key)) return false; state.tabs.add(key);if (tab.kind !== 'file') state.conversations++;
   }
@@ -148,7 +147,7 @@ function validateLeaf(node: Record<string, unknown>, state: Validation): boolean
   return state.leaves.size <= MAX_PANES;
 }
 function splitShape(node: Record<string, unknown>): boolean {
-  return node.kind === 'split' && Object.keys(node).length === 6 && (node.axis === 'x' || node.axis === 'y') && typeof node.ratio === 'number' && Number.isInteger(node.ratio) && node.ratio >= 20 && node.ratio <= 80;
+  return node.kind === 'split' && ['kind','id','axis','ratio','first','second'].every(key=>Object.hasOwn(node,key)) && (node.axis === 'x' || node.axis === 'y') && typeof node.ratio === 'number' && Number.isInteger(node.ratio) && node.ratio >= 20 && node.ratio <= 80;
 }
 function validateNode(value: unknown, depth: number, state: Validation): boolean {
   if (++state.nodes > MAX_PANES * 2 - 1 || depth > MAX_PANES - 1) return false;
@@ -159,7 +158,7 @@ function validateNode(value: unknown, depth: number, state: Validation): boolean
   return splitShape(node) && validateNode(node.first, depth + 1, state) && validateNode(node.second, depth + 1, state);
 }
 function validate(value: unknown, provisional: boolean): value is PaneLayout {
-  const object = record(value); if (!object || Object.keys(object).length !== 2 || !('root' in object) || typeof object.focusedPane !== 'string') return false;
+  const object = record(value); if (!object || !validLayoutData(value) || !('root' in object) || typeof object.focusedPane !== 'string') return false;
   const state: Validation = {ids: new Set(), tabs: new Set(), leaves: new Set(), conversations: 0, nodes: 0, empty: 0};
   return validateNode(object.root, 0, state) && state.leaves.has(object.focusedPane) && (provisional || state.empty === 0 || state.leaves.size === 1);
 }

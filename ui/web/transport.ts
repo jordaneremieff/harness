@@ -1,4 +1,4 @@
-import { LIMITS } from '../shared/api.ts';
+import { LIMITS, LAYOUT_VERSION, LAYOUT_VERSION_HEADER } from '../shared/api.ts';
 import type { ApiResult, DraftImage, ImageUploadView, ErrorView, EventEnvelope, EventName, OperationKind, OperationView, Target } from '../shared/api.ts';
 
 export class ApiError extends Error {
@@ -9,6 +9,7 @@ let requestTiming: ((start: number, end: number) => void) | undefined;
 export function setRequestTiming(timing?: (start: number, end: number) => void): void {requestTiming = timing;}
 export async function request<T>(path: string, method = 'GET', body?: unknown, operationId?: string, signal?: AbortSignal): Promise<T> {
   const headers: Record<string, string> = {};
+  if (method === 'PUT' && /^\/api\/workspaces\/[^/?]+\/selection(?:\?|$)/.test(path) || path === '/api/dev/ack') headers[LAYOUT_VERSION_HEADER] = String(LAYOUT_VERSION);
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (operationId) headers['Idempotency-Key'] = operationId;
   const startedAt = performance.now(), timing = requestTiming;
@@ -16,6 +17,22 @@ export async function request<T>(path: string, method = 'GET', body?: unknown, o
   const result = await response.json() as ApiResult<T>;
   try {timing?.(startedAt, performance.now());} catch { /* Diagnostics do not change the API result. */ }
   return responseValue(result);
+}
+/** Existing lease routes bind this loaded module family to its layout capability. */
+export async function acknowledgeLayoutPage(signal:AbortSignal):Promise<boolean> {
+  const meta=(name:string)=>document.querySelector<HTMLMetaElement>(`meta[name="${name}"]`);
+  const client=meta('ui-client'),generation=meta('ui-generation')?.content,family=meta('ui-module-family')?.content;
+  const css=[...document.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]')].map(link=>/^\/_ui\/([a-f0-9]{64})\/style\.css$/.exec(new URL(link.href).pathname)?.[1]).find(Boolean);
+  if(!client||!/^[a-f0-9]{24}$/.test(client.content)||!generation||!family||!css)return false;
+  const prior=client.content;
+  const lease=await request<{lease:'present'|'missing'|'replaced';client?:string}>('/api/dev/lease','POST',{client:prior,generation,cssGeneration:css,family},undefined,signal);
+  if(client.content!==prior||signal.aborted||!['present','replaced'].includes(lease.lease))return false;
+  if(lease.lease==='replaced'){
+    if(!lease.client||!/^[a-f0-9]{24}$/.test(lease.client))throw new Error('The page lease identity is invalid.');
+    client.content=lease.client;
+  }
+  await request('/api/dev/ack','POST',{client:client.content,generation,cssGeneration:css},undefined,signal);
+  return true;
 }
 function responseValue<T>(result: ApiResult<T>): T {
   if (!result.ok) {

@@ -14,7 +14,7 @@ export function workspaceLayout(workspace?: Workspace): ConversationLayout {
   let layout = workspace?.conversationLayout ?? createPaneLayout(workspace?.primaryKey ? [{kind: 'primary'}] : []);
   if (!workspace?.primaryKey) layout = closePaneTab(layout, 'primary');
   const target = workspace?.selectedTarget;
-  if (!target || activeTab(layout)?.kind === 'file' || target.kind === 'primary' && !workspace?.primaryKey) return layout;
+  if (!target || ['file','session'].includes(activeTab(layout)?.kind ?? '') || target.kind === 'primary' && !workspace?.primaryKey) return layout;
   const tab = tabForTarget(target); const key = tabKey(tab); const owner = paneForTab(layout, key);
   return owner ? activatePaneTab(layout, owner.id, key) : openTab(layout, tab);
 }
@@ -26,7 +26,7 @@ export function switchTab(layout: ConversationLayout, direction: number): Conver
 }
 export function layoutTarget(layout: ConversationLayout, primary?: Target): Target | null {
   const tab = activeTab(layout);
-  return !tab || tab.kind === 'file' ? null : tab.kind === 'primary' ? primary ?? null : {kind: 'agent', identity: tab.identity};
+  return !tab || tab.kind === 'file' || tab.kind === 'session' ? null : tab.kind === 'primary' ? primary ?? null : {kind: 'agent', identity: tab.identity};
 }
 
 /** Plain browse replacement is local and never inferred from restored tabs. */

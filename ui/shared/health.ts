@@ -10,7 +10,10 @@ export type BackendHealthFacts = {
 /** Fixed words only: none means no stylesheet is configured; the others say whether the configured file is applied or why not. */
 export const USER_STYLESHEET_STATES = ['none', 'applied', 'missing', 'too-large', 'unreadable', 'invalid'] as const;
 export type UserStylesheetState = typeof USER_STYLESHEET_STATES[number];
+export type PageEvidence = {scope:'registered-backend-pages';complete:false;pages:{client:string;generation:string;cssGeneration:string;family?:string;layoutVersion?:number}[]};
 export type HealthSnapshot = BackendHealthFacts & {
+  /** Registered leases only; disconnected or pre-switch pages are not an exhaustive inventory. */
+  pages?: PageEvidence;
   userStylesheet: {state: UserStylesheetState};
   process: {pid: number; uptimeMs: number; rssBytes: number};
   requests: {active: number; limit: number};
@@ -58,6 +61,18 @@ export function readBackendHealth(value: unknown): BackendHealthFacts {
   if(facts.backend!==undefined)result.backend=backendHealth(facts.backend);
   return result;
 }
+function readPageEvidence(value:unknown):PageEvidence {
+  const facts=record(value);
+  if(facts.scope!=='registered-backend-pages'||facts.complete!==false||!Array.isArray(facts.pages)||facts.pages.length>64)throw failure();
+  const pages=facts.pages.map(value=>{
+    const page=record(value);
+    if(typeof page.client!=='string'||!/^[a-f0-9]{24}$/.test(page.client)||!['generation','cssGeneration'].every(key=>typeof page[key]==='string'&&/^[a-f0-9]{64}$/.test(page[key] as string))||page.family!==undefined&&(typeof page.family!=='string'||!/^[a-f0-9]{64}$/.test(page.family)))throw failure();
+    const layoutVersion=page.layoutVersion===undefined?undefined:integer(page.layoutVersion,999999999);if(layoutVersion===0)throw failure();
+    return {client:page.client,generation:page.generation as string,cssGeneration:page.cssGeneration as string,...(typeof page.family==='string'?{family:page.family}:{}),...(layoutVersion===undefined?{}:{layoutVersion})};
+  });
+  if(new Set(pages.map(page=>page.client)).size!==pages.length)throw failure();
+  return {scope:'registered-backend-pages',complete:false,pages};
+}
 export function readHealthSnapshot(value: unknown): HealthSnapshot {
   const snapshot = record(value), process = record(snapshot.process), requests = record(snapshot.requests), identity = record(snapshot.identity);
   if (typeof identity.iteration !== 'string' || !/^\d{1,4}\.\d{1,4}(?:\.\d{1,4})?$/.test(identity.iteration)) throw failure();
@@ -77,6 +92,6 @@ export function readHealthSnapshot(value: unknown): HealthSnapshot {
   const stylesheet = record(snapshot.userStylesheet);
   const limit = integer(requests.limit, 64), active = integer(requests.active, limit);
   return {...readBackendHealth(snapshot), process: {pid: integer(process.pid), uptimeMs: integer(process.uptimeMs), rssBytes: integer(process.rssBytes)},
-    requests: {active, limit}, identity: safeIdentity,
+    requests: {active, limit}, identity: safeIdentity,...(snapshot.pages===undefined?{}:{pages:readPageEvidence(snapshot.pages)}),
     userStylesheet: {state: choice(stylesheet.state, USER_STYLESHEET_STATES)}};
 }

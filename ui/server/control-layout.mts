@@ -13,7 +13,7 @@ export function controlLayout(workspace:Workspace):ConversationLayout {
 }
 function selectedLayout(workspace:Workspace,stored:ConversationLayout):ConversationLayout {
   const target=workspace.selectedTarget;if(!target||target.kind==='primary'&&!workspace.primaryKey)return stored;
-  const focused=leaves(stored).find(leaf=>leaf.id===stored.focusedPane),front=focused?.tabs.find(tab=>workspaceTabKey(tab)===focused.active);if(front?.kind==='file')return stored;
+  const focused=leaves(stored).find(leaf=>leaf.id===stored.focusedPane),front=focused?.tabs.find(tab=>workspaceTabKey(tab)===focused.active);if(front?.kind==='file'||front?.kind==='session')return stored;
   const tab:WorkspaceTab=target.kind==='agent'?{kind:'agent',identity:target.identity}:{kind:'primary'},key=workspaceTabKey(tab),layout=structuredClone(stored);
   const pane=leaves(layout).find(leaf=>leaf.tabs.some(tab=>workspaceTabKey(tab)===key))??leaves(layout).find(leaf=>leaf.id===layout.focusedPane);if(!pane)return stored;
   if(!pane.tabs.some(tab=>workspaceTabKey(tab)===key))pane.tabs.push(tab);pane.active=key;layout.focusedPane=pane.id;return layout;
@@ -64,7 +64,7 @@ function selectionTarget(workspace:Workspace,request:ControlRequest,after:Conver
     let expected:Target|null=workspace.selectedTarget??null;
     if(active?.kind==='agent')expected={kind:'agent',identity:active.identity};
     else if(active?.kind==='primary')expected=request.primary??null;
-    else if(!active)expected=null;
+    else if(!active||active.kind==='session')expected=null;
     if(!isDeepStrictEqual(body.selectedTarget,expected))fail();
   }
   if(body.panelVisible!==undefined&&body.panelVisible!==(active?.kind==='agent'))fail();

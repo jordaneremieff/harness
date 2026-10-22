@@ -3,7 +3,8 @@ import { chmod, link, lstat, mkdir, open, opendir, rename, unlink, type FileHand
 import { hostname } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { APPEARANCES, LIMITS, sameDraftTuple, draftHasContent, validFileTab, workspaceTabKey, type FilePosition } from '../shared/api.ts';
+import {isDeepStrictEqual} from 'node:util';
+import { APPEARANCES, LIMITS, LAYOUT_VERSION, sameDraftTuple, draftHasContent, validLayoutData, validWorkspaceTab, workspaceTabKey, type FilePosition } from '../shared/api.ts';
 import type {DraftImage, DraftPut, StoredDraft, RecoveryInput, RetainedInput, RetainedAdmission, InputCopy, RecoveryOrigin, RecoverySendGuard, QueueRecovery, ImageUploadView} from '../shared/api.ts';
 import {normalizeDraftImages, imageName} from './validate.mts';
 import {DraftImages, sameImageContent} from './draft-images.mts';
@@ -54,18 +55,12 @@ export function validateTarget(target: Target): void {
 function layoutObject(value: unknown, keys: string[], name: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new StateError('invalid_request', `Invalid ${name}`);
   const record = value as Record<string, unknown>;
-  if (Object.keys(record).length !== keys.length || keys.some(key => !Object.hasOwn(record, key))) throw new StateError('invalid_request', `Invalid ${name} fields`);
+  if (keys.some(key => !Object.hasOwn(record, key))) throw new StateError('invalid_request', `Invalid ${name} fields`);
   return record;
 }
 function conversationTabKey(value: unknown): string {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new StateError('invalid_request', 'Invalid conversation tab');
-  const tab = value as Record<string, unknown>;
-  if (tab.kind === 'primary') { layoutObject(tab, ['kind'], 'primary tab'); return 'primary'; }
-  if (tab.kind === 'file') {if (!validFileTab(tab)) throw new StateError('invalid_request','Invalid file tab'); return workspaceTabKey(tab);}
-  if (tab.kind !== 'agent') throw new StateError('invalid_request', 'Invalid conversation tab kind');
-  layoutObject(tab, ['kind', 'identity'], 'agent tab');
-  validateTarget({kind: 'agent', identity: tab.identity as string});
-  return `agent:${tab.identity}`;
+  if (!validWorkspaceTab(value)) throw new StateError('invalid_request', 'Invalid conversation tab');
+  return workspaceTabKey(value);
 }
 type LayoutValidation = {ids: Set<string>; leaves: Set<string>; keys: Set<string>; conversations: number; nodes: number; empty: number};
 function layoutPaneId(value: unknown, state: LayoutValidation): string {
@@ -99,6 +94,7 @@ function visitLayout(value: unknown, depth: number, state: LayoutValidation): vo
 }
 /** One bounded tree owns tabs, active targets and pane focus. */
 export function validateConversationLayout(value: unknown): asserts value is ConversationLayout {
+  if (!validLayoutData(value)) throw new StateError('invalid_request','Invalid or oversized layout metadata');
   const layout = layoutObject(value, ['root', 'focusedPane'], 'conversation layout');
   const state: LayoutValidation = {ids: new Set(), leaves: new Set(), keys: new Set(), conversations: 0, nodes: 0, empty: 0};
   visitLayout(layout.root, 0, state);
@@ -158,8 +154,40 @@ function validateSelection(input: SelectionInput): void {
       const allowed = ['expectedRevision', 'primaryKey', 'selectedTarget', 'panelVisible', 'sidebarVisible', 'sidebarWidth', 'appearance', 'enterSendsMessages', 'agentControl', 'conversationLayout', 'filePositions'];
       if (Object.keys(input).some(key => !allowed.includes(key))) throw new StateError('invalid_request', 'Unknown workspace field');
 }
-function selectedWorkspace(current: Workspace, input: SelectionInput): Workspace {
+function knownTabFields(tab:import('../shared/api.ts').WorkspaceTab):string[] {
+  if(tab.kind==='primary')return ['kind'];
+  if(tab.kind==='agent')return ['kind','identity'];
+  return ['kind','rootId','path','view'];
+}
+function validateSavedLayoutVersion(version:unknown):void {
+  if(version!==undefined&&(!Number.isSafeInteger(version)||typeof version!=='number'||version<1))throw new StateError('not_ready','Invalid saved layout version',503);
+}
+function opaqueLayoutFields(layout?:ConversationLayout):Map<string,unknown> {
+  const result=new Map<string,unknown>();if(!layout)return result;
+  const extras=(key:string,value:object,known:string[])=>{const fields=Object.fromEntries(Object.entries(value).filter(([field])=>!known.includes(field)));if(Object.keys(fields).length)result.set(key,fields);};
+  extras('layout',layout,['root','focusedPane']);
+  const visit=(node:ConversationLayout['root']):void=>{
+    extras(`pane:${node.id}`,node,node.kind==='pane'?['kind','id','tabs','active']:['kind','id','axis','ratio','first','second']);
+    if(node.kind==='split'){visit(node.first);visit(node.second);return;}
+    for(const tab of node.tabs){const key=`tab:${workspaceTabKey(tab)}`;if(tab.kind==='session')result.set(key,tab);else extras(key,tab,knownTabFields(tab));}
+  };visit(layout.root);return result;
+}
+function validateLayoutWrite(current:Workspace,input:SelectionInput,version?:number):void {
+  if(version!==undefined&&version!==LAYOUT_VERSION)throw new StateError('layout_version','This backend does not support that layout writer version.',409);
+  if(input.conversationLayout===undefined&&input.filePositions===undefined)return;
+  if((current.layoutVersion??0)>LAYOUT_VERSION)throw new StateError('layout_version','The saved layout requires a newer page. No view state changed.',409);
+  if(!input.conversationLayout)return;
+  validateOpaqueLayoutWrite(current.conversationLayout,input.conversationLayout,version);
+}
+function validateOpaqueLayoutWrite(current:ConversationLayout|undefined,incoming:ConversationLayout,version?:number):void {
+  const before=opaqueLayoutFields(current),after=opaqueLayoutFields(incoming);
+  if(version===undefined&&before.size&&!isDeepStrictEqual(current,incoming))throw new StateError('layout_version','Reload this page before changing the retained layout. No view state changed.',409);
+  for(const [key,value] of before)if(!isDeepStrictEqual(value,after.get(key)))throw new StateError('layout_version','This page cannot replace retained view metadata. No view state changed.',409);
+  for(const key of after.keys())if(key.startsWith('tab:session:')&&!before.has(key))throw new StateError('layout_version','This page only preserves existing session places. No view state changed.',409);
+}
+function selectedWorkspace(current: Workspace, input: SelectionInput, layoutVersion?:number): Workspace {
       const value: Workspace = {...current, revision: current.revision + 1};
+      if(layoutVersion!==undefined&&(input.conversationLayout!==undefined||input.filePositions!==undefined))value.layoutVersion=layoutVersion;
       if (input.primaryKey !== undefined) value.primaryKey = input.primaryKey;
       if (input.panelVisible !== undefined) value.panelVisible = input.panelVisible;
       if (input.sidebarVisible !== undefined) value.sidebarVisible = input.sidebarVisible;
@@ -291,6 +319,7 @@ export class StateStore {
       await this.load('workspaces', LIMITS.workspaces, LIMITS.requestBytes, (value, modifiedAt) => {
         const record = value as Workspace;
         if (!UUID.test(record.id) || !Number.isSafeInteger(record.revision)) throw new StateError('not_ready', 'Invalid saved workspace', 503);
+        validateSavedLayoutVersion(record.layoutVersion);
         if(record.agentControl!==undefined&&typeof record.agentControl!=='boolean')throw new StateError('not_ready','Invalid saved agent control setting',503);
         if (record.enterSendsMessages !== undefined && typeof record.enterSendsMessages !== 'boolean') throw new StateError('not_ready', 'Invalid saved Enter preference', 503);
         if (record.conversationLayout !== undefined) validateConversationLayout(record.conversationLayout);
@@ -535,13 +564,13 @@ export class StateStore {
     return changed;
   }
   async workspaceList(includeArchived = false):Promise<Workspace[]> {await this.queue;return structuredClone([...this.workspaces.values()].filter(workspace=>includeArchived || this.workspaceActivity.get(workspace.id)?.archivedAt === undefined));}
-  updateSelection(id: string, input: SelectionInput,guard?:(current:Workspace)=>void): Promise<Workspace> {
+  updateSelection(id: string, input: SelectionInput,guard?:(current:Workspace)=>void,layoutVersion?:number): Promise<Workspace> {
     return this.transaction(async () => {
       if (this.fileIdentity === 'uncertain' || input.conversationLayout !== undefined || input.filePositions !== undefined) this.requireFileIdentity();
       const current = this.requireWorkspace(id); revision(current.revision, input.expectedRevision, current);
       guard?.(structuredClone(current));
-      validateSelection(input);
-      const value = selectedWorkspace(current, input);
+      validateSelection(input);validateLayoutWrite(current,input,layoutVersion);
+      const value = selectedWorkspace(current, input,layoutVersion);
       await this.atomic(`workspaces/${id}.json`, value, LIMITS.requestBytes); this.workspaces.set(id, value);
       this.changed('workspace.changed', value, id); return structuredClone(value);
     });

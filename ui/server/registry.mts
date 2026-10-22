@@ -61,6 +61,8 @@ export class Registry {
   }
   private workspaceNeedsProtection(workspace: import('../shared/api.ts').Workspace, primaries: readonly PrimaryView[]): boolean {
     if(this.journal.workspaceClients(workspace.id))return true;
+    const sessionPlace=(node:import('../shared/api.ts').PaneNode):boolean=>node.kind==='pane'?node.tabs.some(tab=>tab.kind==='session'):sessionPlace(node.first)||sessionPlace(node.second);
+    if(workspace.conversationLayout&&sessionPlace(workspace.conversationLayout.root))return true;
     const primary=primaries.find(item=>item.key === workspace.primaryKey);
     if(primary && (['starting','switching','stopping'].includes(primary.lifecycle) || ['running','compacting','retrying'].includes(primary.activity) || primary.pendingDialogs.length > 0))return true;
     return this.workspaceAgentIds(workspace).some(identity=> {

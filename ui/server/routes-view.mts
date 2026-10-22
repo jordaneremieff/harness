@@ -100,7 +100,7 @@ async function selection(registry:Registry,workspace:string,context:RequestConte
     if(!view || selectedTarget.epoch!==view.epoch) throw new ApiError('stale_epoch','The primary conversation changed.',409,'read');
   }
   const input=selectionFields(body,primaryKey,selectedTarget);
-  const result=body.control===undefined?await registry.store.updateSelection(workspace,input):await controlSelection(registry,workspace,context,input);
+  const result=body.control===undefined?await registry.store.updateSelection(workspace,input,undefined,context.layoutVersion):await controlSelection(registry,workspace,context,input);
   await registry.control?.workspaceChanged(result);
   if(result.selectedTarget) await registry.store.target(workspace,result.selectedTarget);
   void registry.observe(workspace).catch(() => undefined);
@@ -109,7 +109,7 @@ async function selection(registry:Registry,workspace:string,context:RequestConte
 async function controlSelection(registry:Registry,workspace:string,context:RequestContext,input:ReturnType<typeof selectionFields>) {
   const broker=registry.control;if(!broker)throw new ApiError('not_ready','Presentation control is unavailable.',503);
   const {control,...change}=context.body;
-  return broker.selection(workspace,control,change,guard=>registry.store.updateSelection(workspace,input,guard));
+  return broker.selection(workspace,control,change,guard=>registry.store.updateSelection(workspace,input,guard,context.layoutVersion));
 }
 function selectionFields(body:Record<string,unknown>,primaryKey:string|undefined,selectedTarget:ReturnType<typeof v.target>|null|undefined) {
   const conversationLayout=body.conversationLayout;
