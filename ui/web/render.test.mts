@@ -3090,7 +3090,7 @@ test('retained Transcript disposal removes listeners and cancels queued work wit
     assert.equal(f.rafs.size, 3);
     const queuedFrames = [...f.rafs.values()], queuedTimers = [...f.timeouts.values(), ...f.intervals.values()];
     const targets = [root, latest, f.fonts, ...f.media]; const queuedListeners = [...targets.flatMap(f.listeners), ...[...documentHandlers.values()].flat()];
-    assert.equal(queuedListeners.length, 14); const observations = resize.observations;
+    assert.equal(queuedListeners.length, 16); const observations = resize.observations;
     view.destroy(); const disconnected = [resize.disconnects, ...f.mutations.map(observer => observer.disconnects)];
     const counts = [root.moves, root.writes, latest.writes, readings.length, presentations.length, region.textContent, original.textContent];
     view.destroy(); assert.deepEqual([resize.disconnects, ...f.mutations.map(observer => observer.disconnects)], disconnected);
@@ -3119,9 +3119,9 @@ test('two independent scoped Transcript roots keep Source, reading and shared si
     assert.equal(left.presentations.length, 0); assert.equal(right.presentations.length, 1); f.drain();
     left.root.dispatch('scrollend'); assert.equal(left.readings.length, 1); assert.equal(right.readings.length, 0);
     left.view.destroy(); const rightResize = f.resizes[1]; assert.ok(rightResize); assert.equal(rightResize.disconnects, 0); assert.equal(rightResize.targets.has(right.root as unknown as Element), true);
-    assert.equal(f.listeners(left.root).length, 0); assert.equal(f.listeners(right.root).length, 6); assert.equal([...documentHandlers.values()].flat().length, 3);
+    assert.equal(f.listeners(left.root).length, 0); assert.equal(f.listeners(right.root).length, 8); assert.equal([...documentHandlers.values()].flat().length, 3);
     assert.equal(f.listeners(f.fonts).length, 2); assert.equal(f.media.every(target => f.listeners(target).length === 1), true);
-    assert.equal(f.mutations.filter(observer => observer.disconnects === 0).length, 2);
+    assert.equal(f.mutations.filter(observer => observer.disconnects === 0).length, 4);
     const leftCounts = [left.root.moves, left.root.writes, left.latest.writes, left.readings.length, left.presentations.length];
     f.fonts.dispatch('loadingdone'); for (const target of f.media) target.dispatch('change'); fakeDocument.dispatch('selectionchange'); fakeDocument.dispatch('visibilitychange');
     right.root.dispatch('source-wrap'); f.drain(); for (const callback of [...f.timeouts.values()]) callback();

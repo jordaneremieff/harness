@@ -1,4 +1,5 @@
 import type { EntryView, ImageView, JsonDisplay, MessageView, PartView, PresentationView, ReadingView, ThinkingChoice, TranscriptView, CommunicationSender } from '../shared/api.ts';
+import { EntryFocus } from './entry-focus.ts';
 import type {ResultInspection, ResultSelector} from '../shared/inspection.ts';
 import { announce, button, copy, details, element, rawText, setText } from './dom.ts';
 import { ArrivalCounter, latestLabel } from './arrivals.ts';
@@ -338,6 +339,10 @@ export class Transcript {
       const pane = this.node.closest('.conversation');
       if (pane) visibility.observe(pane, {attributes: true, attributeFilter: ['hidden', 'inert']});
       this.observers.push(visibility);
+    }
+    if (typeof MutationObserver === 'function' && typeof HTMLElement === 'function') {
+      const focus = new EntryFocus(this.node);
+      this.listenerCleanup.push(() => focus.destroy());
     }
     this.listen(this.node, 'contextmenu', event => this.itemMenu(event as MouseEvent));
     this.listen(this.node, 'source-wrap', () => {
