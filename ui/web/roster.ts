@@ -295,9 +295,20 @@ export class Roster {
     const age = element('time', 'timestamp');
     const ageButton = button('', () => { cached.absolute = !cached.absolute; this.updateAge(cached, true); this.schedule(); }, 'row-age'); ageButton.append(age);
     const message = cardAction('message', 'Message', () => this.message?.(row.identity), 'row-message');
+    ageButton.tabIndex = -1; message.tabIndex = -1;
+    node.addEventListener('keydown', event => this.actionKey(event, [select, ageButton, message]));
     select.append(heading, summary); node.append(select, ageButton, message);
     const cached = {node, select, state, name, summary, separator, preview, identity, ageButton, message, age, source: row, absolute: false}; this.cache.set(row.identity, cached);
     return cached;
+  }
+  /** A row is one Tab stop; its age and message actions are reached with the horizontal arrow keys. */
+  private actionKey(event: KeyboardEvent, controls: HTMLButtonElement[]): void {
+    if (event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    const available = controls.filter(control => !control.hidden && !control.disabled);
+    const index = available.indexOf(event.target as HTMLButtonElement); if (index < 0) return;
+    const next = available[index + (event.key === 'ArrowRight' ? 1 : -1)]; if (!next) return;
+    event.preventDefault(); next.focus();
   }
   private updatePreview(cached: RowNode, source?: string): void {
     if (cached.previewSource !== source) {cached.previewSource = source; setText(cached.preview, rosterPreview((source ?? '').split(/\r?\n/, 1)[0] ?? '')); cached.preview.title = source ?? '';}
@@ -340,7 +351,7 @@ export class Roster {
     const state = this.rowStatus(row);
     const valid = !state.attention && !rosterWorking(row,state) && row.modifiedAt > 0 && isValidTimestamp(row.modifiedAt) && !!label;
     cached.ageButton.dataset.absolute = String(cached.absolute);
-    cached.ageButton.hidden = !valid; cached.ageButton.disabled = !valid; cached.ageButton.tabIndex = valid ? 0 : -1;
+    cached.ageButton.hidden = !valid; cached.ageButton.disabled = !valid; cached.ageButton.tabIndex = -1;
     setText(cached.age, valid ? cached.absolute ? label : compactAge(row.modifiedAt, now) : '');
     const details = valid ? timestampDetails(row.modifiedAt) : {exact: '', display: ''}; cached.age.dateTime = details.exact;
     cached.ageButton.title = valid ? `${details.exact} · ${details.display}` : '';

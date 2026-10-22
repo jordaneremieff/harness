@@ -218,7 +218,7 @@ test('roster has sibling native actions and plain retained, idle and working sta
   for (const removed of ['row-word', 'row-detail', 'row-model', 'row-activity']) assert.throws(() => stored.query(removed));
   assert.equal(idle.query('row-select').title, 'idle'); assert.equal(working.query('row-select').title, 'Working');
   assert.equal(select.title, 'stored'); assert.equal(select.attributes['aria-description'], select.title);
-  assert.equal(age.tabIndex, 0); assert.equal(age.query('timestamp').textContent, '10m');
+  assert.equal(age.tabIndex, -1); assert.equal(age.query('timestamp').textContent, '10m');
   assert.equal(age.query('timestamp').dateTime, new Date(modifiedAt).toISOString());
   assert.equal(age.attributes['aria-description'], timestampDetails(modifiedAt).display); assert.match(age.title, /2026-10-08T12:00:00.000Z/);
   assert.equal(age.dataset.absolute, 'false');
@@ -384,7 +384,7 @@ test('absent and invalid activity times clear metadata and recover without node 
   }
   roster.set([row('one', {modifiedAt, state: 'idle'})]); fixture.flush();
   assert.equal(rowsOf(fixture.node)[0], wrapper); assert.equal(wrapper.query('row-age'), age);
-  assert.equal(age.hidden, false); assert.equal(age.disabled, false); assert.equal(age.tabIndex, 0);
+  assert.equal(age.hidden, false); assert.equal(age.disabled, false); assert.equal(age.tabIndex, -1);
   assert.equal(age.textContent, '10m'); assert.equal(age.query('timestamp').dateTime, new Date(modifiedAt).toISOString());
   assert.equal(age.attributes['aria-label'], `Timestamp for Agent · ${relativeTime(modifiedAt, now)}`);
   age.click(); assert.equal(age.textContent, absoluteTime(modifiedAt));
