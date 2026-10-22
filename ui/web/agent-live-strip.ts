@@ -63,6 +63,8 @@ export class AgentLiveStrip {
   private pendingRestore?:AgentContextReload;
   private previewText?:{message:MessageView;text:string};
   private titleSignature='';
+  /** Resolves a catalog model to its display name; the raw id stays in the tooltip. */
+  modelLabel?: (provider: string, id: string) => string | undefined;
   constructor() {
     this.node.hidden=true;this.node.setAttribute('role','group');this.node.setAttribute('aria-label','Agent context');
     this.facts.append(this.state,this.tool,this.model);const profile=element('div','agent-context-profile');profile.append(this.identity,this.facts);
@@ -177,7 +179,7 @@ export class AgentLiveStrip {
     this.state.setAttribute('aria-label',idle ? this.state.title : state);
     const tool=toolFact(row,view,attention);
     setText(this.tool,tool);this.tool.hidden=!tool;this.tool.title=tool;
-    const model=row?.model;setText(this.model,model?.modelId ?? '');this.model.hidden=!model;
+    const model=row?.model;setText(this.model,model ? this.modelLabel?.(model.provider,model.modelId) ?? model.modelId : '');this.model.hidden=!model;
     this.model.title=model ? `Catalog model: ${model.provider}/${model.modelId}` : '';
     this.node.hidden=!this.context && !state && !tool && !model;
   }

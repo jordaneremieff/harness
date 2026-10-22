@@ -1106,7 +1106,7 @@ function renderAgentLiveStrip(controller: ConversationController, view: Conversa
   if(controller.target.kind !== 'agent' || !controller.liveStrip)return;
   const conversation=state.conversations.get(targetIdentity(controller.target));
   const row=agentRow(controller.target.identity),identity=controller.target.identity;
-  controller.liveStrip.update(row,view,attentionFor(controller.target),!!conversation?.frame);
+  controller.liveStrip.modelLabel = (provider, id) => actions.modelName(provider, id); controller.liveStrip.update(row,view,attentionFor(controller.target),!!conversation?.frame);
   controller.liveStrip.updateContext({identity,entries:conversation?conversationBlocks(conversation):[],frame:conversation?.frame,
     beginning:controller.historyReady&&controller.historyComplete===true&&controller.before===null,earlier:controller.before!==null,
     coverage:controller.historyError?undefined:conversation?.frame?.coverage.reason??(controller.historyComplete===true?undefined:controller.historyReady?'Available history is incomplete.':'History has not loaded.'),

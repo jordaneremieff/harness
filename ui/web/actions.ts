@@ -497,7 +497,7 @@ export class Actions {
     entries.push(...this.tabEntries(entry));
     if (primary?.lifecycle === 'ready' && (primary.lastError || primary.responseOutcome === 'failed' || responseOutcome(this.ctx.primaryEntries()) === 'failed')) entries.push(entry('Review message', 'Restore the last loaded Primary user prompt for review', () => this.retryOutput()));
     if (agent) {
-      entries.push(entry('Copy agent ID', agent.identity, () => this.ctx.copyAgent()));
+      entries.push(entry('Copy agent ID', 'Copy the full agent ID to the clipboard', () => this.ctx.copyAgent()));
 
     }
     entries.push(entry('Sent and received tasks','Recorded asks and available answers',this.ctx.resultLookup??(()=>this.ctx.inspectAgent()),!!(agent||primary), undefined, 'Requires a selected conversation'));
