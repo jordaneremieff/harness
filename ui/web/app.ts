@@ -1067,7 +1067,7 @@ function renderWorkbenchStatus(): void {
   const selected = layoutTarget(currentLayout(), primaryTarget()) ?? undefined;
   const target = editingMessage ? footerController?.target : selected;
   const controller = target ? conversationController(target) : undefined; footerController = controller;
-  const skip = byId<HTMLAnchorElement>('skip-composer'); skip.href = controller ? `#${controller.composer.editor.id}` : '#session-new';
+  setSkipLink(skipKind(controller),controller ? `#${controller.composer.editor.id}` : '#session-new');
   const view = presentation(target); updateConversationStatus(target, view, notice);
   const slot = byId('focused-composer-status'), nodes = controller ? [controller.elements.save, controller.elements.receiptDetails] : [];
   if (slot.children.length !== nodes.length || nodes.some((node, index) => slot.children[index] !== node)) slot.replaceChildren(...nodes);
@@ -1084,12 +1084,21 @@ function reviewRetainedDrafts():void {
   }
   modal.actions(button('Close',()=>modal.close()));first?.focus();first?.setSelectionRange(0,first.value.length);
 }
+function skipKind(controller:ConversationController|undefined):'message'|'actions' {return !controller||(controller.target.kind==='primary'&&controller.elements.root.hidden)?'actions':'message';}
+const skipLabels={message:'Skip to message box',actions:'Skip to session actions',files:'Skip to files'} as const;
+function setSkipLink(kind:keyof typeof skipLabels,href:string):void {const skip=byId<HTMLAnchorElement>('skip-composer');skip.href=href;skip.dataset.skip=kind;skip.textContent=skipLabels[kind];}
+function skipToSurface():void {
+  const kind=byId('skip-composer').dataset.skip;
+  if(kind==='files'){const stop=document.querySelector<HTMLElement>('#files-tree [tabindex="0"], #files-tree button');if(stop){stop.focus();return;}}
+  else if(skipKind(footerController)==='actions'){const first=footerController?.sessionBar?.node.querySelector<HTMLElement>('button:not([disabled]), a[href], [tabindex="0"]');if(first){first.focus();return;}byId('session-new').focus();return;}
+  focusEditor();
+}
 function renderFileWorkbenchStatus(tab:FileTab):void {
   footerController = undefined;byId('workbench-activity').dataset.busy = 'false';const owner = state.workspace && filesViews.owner(state.workspace.id,tab);workbenchStatus.update('file',tab.path,fileActionStatus || owner?.status || fileWatch.status,tab.path);
   if (fileWatch.detail && !fileActionStatus && !owner?.status) {const activity = byId('workbench-activity');activity.title = `${activity.title}\n${fileWatch.detail}`;}
   const slot = byId('focused-composer-status');slot.replaceChildren();
   if (owner?.conflict) {const controls = element('span','file-status-actions');controls.append(button('Re-read file',()=> {void owner.reread();}),button('Keep editing',()=>focusEditor()));slot.append(controls);}
-  byId<HTMLAnchorElement>('skip-composer').href = '#files-tree';
+  setSkipLink('files','#files-tree');
 }
 function renderIdentity(): void {
   renderWorkbenchStatus();
@@ -3341,7 +3350,7 @@ function bind(): void {
 
   document.addEventListener('pointerdown', dismissDrawerPointer, true);
   document.addEventListener('click', consumeDrawerClick, true);
-  byId('skip-composer').addEventListener('click', event => { event.preventDefault(); focusEditor(); });
+  byId('skip-composer').addEventListener('click', event => { event.preventDefault(); skipToSurface(); });
 
   document.addEventListener('keydown', appKey);
   document.addEventListener('click',savedReferenceClick);
