@@ -323,7 +323,7 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .file-editor-color { position: absolute; inset: 0; overflow: hidden; pointer-events: none; color: var(--fg); }
 .file-editor[data-decorated=true] { color: transparent; }
 @media (forced-colors: none) {
-  :is(.transcript, .transcript *, pre, pre *, code, code *, .file-editor)::selection { background: color-mix(in srgb, var(--accent) 35%, transparent); color: currentColor; }
+  :is(.transcript, .transcript *, pre, pre *, code, code *, .file-editor)::selection { background: color-mix(in srgb, var(--accent) 20%, transparent); color: currentColor; }
 }
 .file-view-actions { display: flex; justify-content: flex-end; gap: var(--s3); padding-block: var(--s1); }
 .file-view-actions[hidden] { display: none; }
@@ -1730,7 +1730,7 @@ button.thread-person:hover, button.thread-sender:hover { background: var(--raise
   .composer .stop { background: ButtonFace; color: ButtonText; }
   .composer .send:disabled { background: ButtonFace; opacity: 1; color: GrayText; }
   .composer button:focus-visible, .composer[data-file-drop=true] .composer-input { outline: 2px solid Highlight; }
-  .composer-input:has(textarea:focus-visible) { border-color: Highlight; outline: none; }
+  .composer-input:has(textarea:focus-visible) { border-color: Highlight; outline: 2px solid Highlight; outline-offset: 1px; }
 }
 
 /* Titles and retained content share the same inner edge across block families. */

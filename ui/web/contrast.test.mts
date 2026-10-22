@@ -70,7 +70,26 @@ const decorativeHairlines = new Set([
   "dialog[open][data-variant=find]|border-top",
 	".notification|border-bottom",
 	".palette-input-row|border-bottom",
+	// Each entry below is a hairline between regions whose content is identified by its own text.
+	".primary-draft-selection|border", // outlines a floating action bar whose buttons carry text labels
+	".transcript-day-divider::before, .transcript-day-divider::after|border-top", // rules beside the day label, which names the day
+	".session-state-bar|border-top", // separates the state bar from the transcript; the bar text names the state
+	".desk-row|border-bottom", // separates rows, each titled by its own text
+	".review-change|border-bottom", // separates change entries, each headed by its own text
 ]);
+// Fade overlays end on the exact surface beneath them and hold no text. Content under the fade is the preview tail,
+// and a visible "more" control reveals the whole text, so the fade never hides the only copy.
+const decorativeGradients = new Map([
+	['.preview-fade::after, .operator-message-viewport[data-folded=true]::after|linear-gradient(to bottom,transparent,var(--canvas))', 'canvas'],
+	['.operator-message-viewport[data-folded=true]::after|linear-gradient(to bottom,transparent,var(--side))', 'side'],
+]);
+const selectionRule = ':is(.transcript, .transcript *, pre, pre *, code, code *, .file-editor)::selection';
+// Selected text is a transient state with ink unchanged; it meets the 4.5:1 AA floor, not the resting tiers.
+const selectionFloor = 4.5;
+const selectionWeight = 20;
+const selectionMix = `color-mix(in srgb, var(--accent) ${selectionWeight}%, transparent)`;
+const hoverMixRule = '.communication-group-row .communication-toggle:hover';
+const hoverMix = 'color-mix(in srgb,var(--fg) 5%,var(--raised))';
 // A tinted edge names its exact mix. The control it frames is identified by its text and icon, so the tint is decoration.
 const decorativeTintedEdges = new Set([".stop|border-color|color-mix(in srgb, var(--error) 55%, transparent)", ".composer-input|border|1px solid color-mix(in srgb, var(--edge) 28%, transparent)",
   '.command-menu, .composer-intake-menu|border|1px solid color-mix(in srgb, var(--rule) 60%, transparent)',
@@ -84,6 +103,8 @@ const graphicForegrounds = new Map([
   ...['info','success','warning','error','secondary'].map((tone):[string,string]=>[`:is(.tab-dot, .conversation-state, .row-state)[data-tone=${tone}]`, tone==='secondary'?'muted':tone]),
 ]);
 const graphicBackgrounds = new Map([
+  // The unread dot is the only unread signal on its row, so it meets the non-text threshold.
+  [".sidebar-content-row[data-unread=true] > .row-title::before", "accent"],
   [".pane-split > .pane-divider:hover::after", "edge"],
   [".pane-split > .pane-divider:focus-visible::after", "accent"],
 
@@ -408,6 +429,26 @@ function diffBackground(context: Context, name: string): boolean {
   else context.measure('diff-background', `${context.source} --${diff.foreground} / --${name}`, diff.foreground, name, 6.5);
   return true;
 }
+// Mixed fills resolve to opaque colors, then every text tier that can sit on them is measured.
+function mixedBackground(context: Context, value: string): boolean {
+  const {rule, palette, source, measure, theme} = context;
+  const fg = (name: string) => palette[`--${name}`] as string;
+  if (rule.selector === selectionRule && rule.contexts.join('|') === '@media (forced-colors: none)' && value === selectionMix) {
+    for (const bg of surfaces) {
+      const fill = blend(fg('accent'), fg(bg), selectionWeight / 100);
+      for (const name of foregrounds) measure('selection-text', `${source} --${name} / selection over --${bg}`, name, fill, selectionFloor);
+    }
+    return true;
+  }
+  if (rule.selector === hoverMixRule && !rule.contexts.length && value === hoverMix) {
+    const fill = blend(fg('fg'), fg('raised'), .05);
+    for (const name of ['fg', 'muted', 'dim', 'peer-label']) measure('hover-mix-text', `${source} --${name} / mixed row`, name, fill, textThreshold(name, theme));
+    return true;
+  }
+  const surface = decorativeGradients.get(`${rule.selector}|${value}`);
+  if (surface) { context.exclusions.push(`${theme}: decorative fade to --${surface} ${source}`); return true; }
+  return false;
+}
 function backgroundDeclaration(context: Context, value: string) {
   const {theme, source, exclusions, issues, rule, palette, measure} = context;
   if (["transparent", "none", "inherit"].includes(value)) {
@@ -416,7 +457,7 @@ function backgroundDeclaration(context: Context, value: string) {
   if (decorativeBackgrounds.has(`${rule.selector}|${value}`)) {
     exclusions.push(`${theme}: non-content paint ${source}: ${value}`); return;
   }
-  if (composerBackground(context, value) || menuBackground(context, value) || runBackground(context, value)) return;
+  if (mixedBackground(context, value) || composerBackground(context, value) || menuBackground(context, value) || runBackground(context, value)) return;
 	const name = token(value);
 	if (!name || !palette[`--${name}`]) {
 		issues.push(`${theme}: unmodeled background ${source}: ${value}`);
@@ -816,4 +857,14 @@ test("system light overrides match explicit light exactly", () => {
 		() => audit(`${css}\n@media (prefers-color-scheme: light) { :where(:root[data-appearance=system]) { --dim: #000000; } }`),
 		/System light override differs/,
 	);
+});
+test('new declaration kinds are modeled, and an unclassified fade, mix or removed focus indicator is rejected', () => {
+  for (const kind of ['selection-text', 'hover-mix-text'])
+    for (const theme of ['dark', 'light']) assert.ok(result.measurements.some(row => row.theme === theme && row.kind === kind), `${theme}: ${kind}`);
+  assert.ok(result.measurements.filter(row => row.kind === 'selection-text').every(row => row.threshold === selectionFloor && row.ratio >= row.threshold));
+  const dot = result.measurements.filter(row => row.kind === 'graphic-paint' && row.source.startsWith('.sidebar-content-row[data-unread=true]'));
+  assert.equal(dot.length, surfaces.length * 2); assert.ok(dot.every(row => row.threshold === 3 && row.ratio >= 3));
+  assert.ok(audit(css.replace('var(--accent) 20%, transparent', 'var(--accent) 50%, transparent')).issues.some(issue => issue.includes('unmodeled background')));
+  assert.ok(audit(`${css}\n.preview-fade::after { background: linear-gradient(to bottom,transparent,var(--raised)); }`).issues.some(issue => issue.includes('unmodeled background')));
+  assert.ok(audit(css.replace('outline: 2px solid Highlight; outline-offset: 1px;', 'outline: none;')).issues.some(issue => issue.includes('Unexpected forced-colors declaration')));
 });

@@ -1413,7 +1413,7 @@ test('Markdown code actions stay quiet until hover or focus and touch keeps them
 test('focus uses an offset accent outline without a blur and floating surfaces share one shadow', () => {
   assert.match(rule(':focus-visible, .entry.own-message-focus, .thread-message.own-message-focus'), /outline: 2px solid var\(--accent\); outline-offset: 2px/);
   assert.match(rule('.composer[data-file-drop=true] .composer-input'), /outline: 2px solid var\(--accent\); outline-offset: 2px/);
-  assert.match(media('@media (forced-colors:active)'), /\.composer button:focus-visible, \.composer\[data-file-drop=true\] \.composer-input \{ outline: 2px solid Highlight; \}/); assert.match(media('@media (forced-colors:active)'), /\.composer-input:has\(textarea:focus-visible\) \{ border-color: Highlight; outline: none; \}/);
+  assert.match(media('@media (forced-colors:active)'), /\.composer button:focus-visible, \.composer\[data-file-drop=true\] \.composer-input \{ outline: 2px solid Highlight; \}/); assert.match(media('@media (forced-colors:active)'), /\.composer-input:has\(textarea:focus-visible\) \{ border-color: Highlight; outline: 2px solid Highlight; outline-offset: 1px; \}/);
   assert.match(media('@media (forced-colors:active)'), /:root\[data-appearance\] :is\(dialog:not\(\[data-variant=find\]\),[^{}]+\{ border: 1px solid ButtonText;/);
   for (const [, selector, body] of css.matchAll(/([^{}]*:focus[^{}]*)\{([^{}]*)\}/g)) {
     assert.doesNotMatch(body, /box-shadow:(?!\s*none)/, selector);
