@@ -31,7 +31,7 @@ test('agent selectors keep exact recipient, confirmed labels, draft and caret th
   assert.equal(captured('model').disabled,true);assert.equal(captured('thinking').disabled,true);
   assert.match(captured('state').textContent,/Working · Steer at the next step; Queue adds a follow-up\./);assert.doesNotMatch(captured('state').textContent,/locked|Wait while/);
   for(const key of ['model','thinking']){const node=captured(key);assert.equal(node.getAttribute('aria-description'),'Model and thinking are locked while this agent works.');assert.match(node.title,/Model and thinking are locked while this agent works\./);assert.equal(node.getAttribute('aria-describedby'),null);}
-  assert.equal((editor as HostNode & {placeholder:string}).placeholder,'Write a change or follow-up…');
+  assert.equal((editor as HostNode & {placeholder:string}).placeholder,'Message');
 });
 
 test('uncertain configuration unlocks only after newer authoritative readback, without replay',async t=> {
@@ -53,7 +53,7 @@ test('busy Primary retains its existing model and thinking controls',async t=> {
   const primary=primaryFixture({epoch:8130,activity:'running',model:{provider:'fixture',id:'primary-busy',name:'Busy Primary model',reasoning:true,input:['text']},thinkingLevel:'high'});
   await arrive({workspace:{id:'primary-busy',revision:1,primaryKey:primary.key,selectedTarget:{kind:'primary',key:primary.key,epoch:primary.epoch}},primaries:[primary],roster:[],targets:[targetFixture('primary-busy-draft',{kind:'primary',key:primary.key,epoch:primary.epoch})]});event('ready',{bootId:'boot'});await settle();
   assert.equal(primaryControl('model').disabled,false);assert.equal(primaryControl('thinking').disabled,false);assert.doesNotMatch(primaryControl('model').title,/locked|Wait while/);assert.equal(primaryControl('thinking').textContent,'High');
-  assert.equal((primaryControl('editor') as HostNode & {placeholder:string}).placeholder,'Write a change or follow-up…');assert.match(primaryControl('state').textContent,/Working · Steer at the next step; Queue adds a follow-up\./);
+  assert.equal((primaryControl('editor') as HostNode & {placeholder:string}).placeholder,'Message');assert.match(primaryControl('state').textContent,/Working · Steer at the next step; Queue adds a follow-up\./);
   for(const key of ['send','queue']){assert.equal(primaryControl(key).hidden,false);assert.equal(primaryControl(key).disabled,true);}
 });
 
@@ -62,15 +62,15 @@ test('unknown capability and uncertain configure remain visible without fabricat
   const row=agentFixture(identity,{model:{provider:'unlisted',modelId:'unknown'},thinkingLevel:'high'});
   const uncertain:OperationView={id:'uncertain-settings',kind:'agent.configure',target,state:'uncertain',createdAt:'2026-10-20T01:00:00.000Z',updatedAt:'2026-10-20T01:00:01.000Z',error:{code:'configuration_uncertain',message:'Native write was not confirmed.',retry:'none'}};
   await arrive({workspace:{id:'unknown',revision:1,primaryKey:null,selectedTarget:target},primaries:[],roster:[row],pendingOperations:[uncertain],observations:[observation(identity,{revision:1,observedAt:'2026-01-01T00:00:00.000Z',entries:[],live:[],nextBefore:null,status:{busy:false},coverage})]});await settle();
-  assert.equal(agentControl('model').hidden,false);assert.equal(agentControl('thinking').hidden,false);assert.equal(agentControl('model').disabled,true);assert.equal(agentControl('thinking').disabled,true);assert.match(agentControl('state').textContent,/not confirmed/);assert.equal(agentControl('state-details').textContent,'Native write was not confirmed.');
+  assert.equal(agentControl('model').hidden,true);assert.equal(agentControl('thinking').hidden,true);assert.equal(agentControl('model').disabled,true);assert.equal(agentControl('thinking').disabled,true);assert.match(agentControl('state').textContent,/not confirmed/);assert.equal(agentControl('state-details').textContent,'Native write was not confirmed.');
 });
 
-test('missing settings keep disabled selectors visible without an unrelated composer notice',async()=> {
+test('missing settings hide disabled selectors without an unrelated composer notice',async()=> {
   const identity='missing-settings',target={kind:'agent' as const,identity},row=agentFixture(identity);
   await arrive({workspace:{id:'missing-settings',revision:1,primaryKey:null,selectedTarget:target},primaries:[],roster:[row],observations:[observation(identity,{revision:1,observedAt:'now',entries:[],live:[],nextBefore:null,status:{busy:false},coverage})]});
   event('agent.availability',{identity,connectionEpoch:app.state.agentEpochs.get(identity),state:'live',capabilities:row.capabilities});await settle();
   assert.equal(agentControl('state').hidden,true);
   for(const [key,label,reason]of [['model','Model unavailable','The model catalog is unavailable.'],['thinking','Thinking unavailable','Thinking capabilities are unavailable for this exact model.']] as const){
-    const control=agentControl(key);assert.equal(control.hidden,false);assert.equal(control.disabled,true);assert.equal(control.querySelector('.composer-setting-label')?.textContent,label);assert.equal(control.getAttribute('aria-description'),reason);assert.ok(control.title.includes(reason));
+    const control=agentControl(key);assert.equal(control.hidden,true);assert.equal(control.disabled,true);assert.equal(control.querySelector('.composer-setting-label')?.textContent,label);assert.equal(control.getAttribute('aria-description'),reason);assert.ok(control.title.includes(reason));
   }
 });
