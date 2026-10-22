@@ -44,7 +44,7 @@ function thinkingSpans(summary: Element): {label: HTMLElement; preview: HTMLElem
   summary.replaceChildren(made.label, made.preview); return made;
 }
 const previewSuffix = (line: string): string => line ? ` · ${line}` : '';
-export type ViewHooks = {primaryDraft?:TranscriptDraftActions;owner?:string;sourceOrder?:boolean;senderCaption?: (sender:CommunicationSender)=>string; senderSummary?: (identity:string)=>SenderSummary|undefined; thread?: (id:string,title?:string)=>void; earlier?: () => void; operatorInput?: boolean; readTaskResult?: (reference:TaskReference,signal:AbortSignal)=>Promise<ResultInspection>; activity?: (text:string)=>void; cwd?: () => string | undefined; subject?: (value: string) => ToolSubjectCaption | undefined; result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView, thinking?: ThinkingChoice) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; preview?: (part: ImageView, url: string, invoker: HTMLElement) => () => void; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
+export type ViewHooks = {unread?: () => void; primaryDraft?:TranscriptDraftActions;owner?:string;sourceOrder?:boolean;senderCaption?: (sender:CommunicationSender)=>string; senderSummary?: (identity:string)=>SenderSummary|undefined; thread?: (id:string,title?:string)=>void; earlier?: () => void; operatorInput?: boolean; readTaskResult?: (reference:TaskReference,signal:AbortSignal)=>Promise<ResultInspection>; activity?: (text:string)=>void; cwd?: () => string | undefined; subject?: (value: string) => ToolSubjectCaption | undefined; result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView, thinking?: ThinkingChoice) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; preview?: (part: ImageView, url: string, invoker: HTMLElement) => () => void; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
 const RAW_LIMIT = 65536;
 /** Scrolling up within this many pixels of the first loaded row reads the next older page. */
 const EARLIER_ZONE_PX = 240;
@@ -302,6 +302,9 @@ export class Transcript {
   private hold?: {anchor: {id: string; offsetPx: number}; until: number; queued: boolean};
   private lastScrollTop = 0;
   private readonly arrivals = new ArrivalCounter();
+  private unreadCount = 0;
+  /** Messages that arrived while this transcript was not shown; cleared when it is shown again. */
+  get unread(): number { return this.unreadCount; }
   constructor(elements: TranscriptElements, hooks: ViewHooks) {
     this.hooks = {...hooks, presentation: (expanded, showThinking) => hooks.presentation(expanded, showThinking, this.view, this.thinkingChoice)};
     this.node = elements.transcript; this.latest = elements.latest;
@@ -414,6 +417,7 @@ export class Transcript {
     if (this.destroyed) return;
     if (this.hidden() || document.hidden) this.clearTiming();
     this.elapsed.sync(); if (!this.hidden()) this.schedule();
+    if (!this.hidden() && this.unreadCount) { this.unreadCount = 0; this.hooks.unread?.(); }
   }
   private clearTiming(): void { this.scheduledAt = undefined; this.receivedAt = undefined; }
   selectionSource(selection: Selection): PrimaryDraftSource|undefined {
@@ -524,7 +528,7 @@ export class Transcript {
     this.initialSettings.clear(); this.toolStates = new Map(); this.indexedFindId = undefined;
     this.generation++; this.entries = []; this.displayed = []; this.turnRows.clear(); this.cache.clear(); this.tools.clear(); this.liveThinking.clear(); this.thinkingTimes = new Map(); this.index = new TranscriptIndex(); this.joined = this.index.joined; this.rows = new TranscriptRows(); this.noticeBlocks.clear(); this.tasks = new ConversationTasks(); this.visible.clear(); this.dirtyLayout = true; this.pins.clear(); this.heights.clear(); this.gaps.clear(); this.timeGaps.clear();
     this.expanded.clear(); this.streamedThinking.clear(); this.showThinking = false; this.thinkingChoice = undefined; this.follow = true; this.readingRevision = 0;
-    this.layout = layoutItems([], this.heights, 140); this.restoring = undefined; this.node.replaceChildren(...(this.lead ? [this.lead] : [])); this.scrollTo(0); this.hold = undefined; this.arrivals.reset(); this.referenceNamesPending = false; this.syncLatest();
+    this.layout = layoutItems([], this.heights, 140); this.restoring = undefined; this.node.replaceChildren(...(this.lead ? [this.lead] : [])); this.scrollTo(0); this.hold = undefined; this.arrivals.reset(); this.unreadCount = 0; this.referenceNamesPending = false; this.syncLatest();
   }
   defer(refresh: () => void, receivedAt?: number): void {
     if (this.destroyed) return;
@@ -552,8 +556,9 @@ export class Transcript {
     }
     this.chronological = entries;
     this.tasks.update(entries,this.joined);
-    const arrived = this.arrivals.observe(entries, !this.follow, this.hooks.operatorInput === true);
-    if (arrived > 0) { this.syncLatest(); if (this.arrivals.count === arrived) announce('New messages below'); }
+    const away = this.hidden(), arrived = this.arrivals.observe(entries, !this.follow || away, this.hooks.operatorInput === true);
+    if (arrived > 0 && away) { this.unreadCount += arrived; if (this.follow) this.arrivals.clear(); this.hooks.unread?.(); }
+    else if (arrived > 0) { this.syncLatest(); if (this.arrivals.count === arrived) announce('New messages below'); }
     this.deriveRows(); this.prune(); this.schedule();
   }
   taskRows(): readonly ConversationTask[] {return [...this.tasks.sent,...this.tasks.asked];}
