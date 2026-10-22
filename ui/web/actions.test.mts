@@ -21,9 +21,11 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
   if (originalResizeObserver) Object.defineProperty(globalThis, 'ResizeObserver', originalResizeObserver); else Reflect.deleteProperty(globalThis, 'ResizeObserver');
 });
-const primary: PrimaryView = {key: 'p', epoch: 1, cwd: '/project', lifecycle: 'ready', activity: 'idle', pendingDialogs: [], pendingOperationIds: [], capabilities: {control: true}};
+const primary: PrimaryView = {key: 'p', epoch: 1, cwd: '/project', lifecycle: 'ready', activity: 'idle', pendingDialogs: [], pendingOperationIds: [], capabilities: {control: true, handoff: true}};
 const handoff: HandoffView = {cwd: '/handed-project', sessionFile: '/handed-project/session.jsonl', executable: 'pi', argv: ['--session', '/handed-project/session.jsonl'], command: 'pi --session /handed-project/session.jsonl'};
 const operation: OperationView = {id: 'op', kind: 'primary.control', state: 'completed', target: {kind: 'primary', key: 'p', epoch: 1}, createdAt: '2026-10-08T12:00:00Z', updatedAt: '2026-10-08T12:00:00Z'};
+const ready = {snapshot: () => ({primaries: [primary]}) as unknown as ReturnType<ActionContext['snapshot']>};
+const workspaceReady = {snapshot: () => ({primaries: [primary], workspace: {}}) as unknown as ReturnType<ActionContext['snapshot']>};
 function context(overrides: Partial<ActionContext> = {}): ActionContext {
   return {agentPresentation: row => ({name: row.name ?? 'Unnamed conversation', activity: 'Running', tone: 'secondary', cwd: row.cwd}), snapshot: () => undefined, primary: () => primary, composer: {commandsChanged: () => {}} as ActionContext['composer'], commandsChanged: () => {overrides.composer?.commandsChanged?.();}, modal: {} as ActionContext['modal'], selection: async () => undefined, reload: async () => undefined, result: () => undefined, rosterRefresh: () => undefined, filesRefresh: () => undefined, hasTranscript: () => !!(overrides.primary ?? (() => primary))(), find: () => undefined, recovery: () => undefined, primaryEntries: () => [], agents: () => [], selectedAgent: () => undefined, agentStatus: row => row.availability === 'live' ? row.state : row.availability, selectAgent: () => {}, selectPrimary: () => {}, notices: () => {}, sidebar: () => {}, sidebarShown: () => true, view: () => {}, copyAgent: () => {}, inspectAgent: () => {}, readSession: () => {}, ...overrides};
 }
@@ -43,7 +45,7 @@ test('model holds start before reservation and release only their own authoritat
     if (count === 1) throw new Error('response lost');
     return Response.json({ok: true, data: {...operation, id: 'new', state: 'rejected'}});
   };
-  const actions = new Actions(context({modelChanged: () => {changed++;}})), target = operation.target; assert.ok(target);
+  const actions = new Actions(context({...ready, modelChanged: () => {changed++;}})), target = operation.target; assert.ok(target);
   const first = actions.control({action: 'model', provider: 'fixture', modelId: 'model'} as PrimaryControl);
   assert.equal(actions.modelChanging(target), true); reserved.resolve(Response.json({ok: true, data: {operationId: 'old'}})); await assert.rejects(first, /response lost/);
   await actions.control({action: 'model', provider: 'fixture', modelId: 'other'} as PrimaryControl);
@@ -53,7 +55,7 @@ test('model holds start before reservation and release only their own authoritat
 });
 test('failed model reservation has no control effect and releases the local hold', async () => {
   let calls = 0; globalThis.fetch = async () => {calls++; throw new Error('reservation lost');};
-  const actions = new Actions(context()); await assert.rejects(actions.control({action: 'model'} as PrimaryControl), /reservation lost/);
+  const actions = new Actions(context(ready)); await assert.rejects(actions.control({action: 'model'} as PrimaryControl), /reservation lost/);
   assert.equal(actions.modelChanging(operation.target as Target), false); assert.equal(calls, 1);
 });
 test('resource invalidation notifies the existing command owner without acquiring a Primary composer', () => {
@@ -94,7 +96,7 @@ test('model and thinking choices bind the displayed primary rather than a later 
     assert.deepEqual(JSON.parse(String(init?.body)), {action: 'thinking', level: 'high', epoch: 1});
     return Response.json({ok: true, data: operation});
   };
-  const actions = new Actions(context({primary: () => ({...primary, key: 'later', epoch: 4}), result: value => emitted.push(value)}));
+  const actions = new Actions(context({...ready, primary: () => ({...primary, key: 'later', epoch: 4}), result: value => emitted.push(value)}));
   await actions.control({action: 'thinking', level: 'high'} as PrimaryControl, primary);
   assert.deepEqual(seen, ['/api/operations', '/api/primaries/p/control']); assert.deepEqual(emitted, [operation]);
 });
@@ -102,7 +104,7 @@ test('a refused control retains its typed outcome and raises its actual error', 
   const refused = {...operation, state: 'rejected' as const, error: {code: 'not_ready', message: 'Primary is busy', retry: 'manual' as const}};
   let emitted: OperationView | undefined;
   globalThis.fetch = async path => Response.json({ok: true, data: String(path) === '/api/operations' ? {operationId: 'op'} : refused});
-  await assert.rejects(new Actions(context({result: value => {emitted = value;}})).control({action: 'compact'} as PrimaryControl), /Primary is busy/);
+  await assert.rejects(new Actions(context({...ready, result: value => {emitted = value;}})).control({action: 'compact'} as PrimaryControl), /Primary is busy/);
   assert.equal(emitted?.state, 'rejected');
 });
 class FakeNode extends EventTarget {
@@ -508,7 +510,7 @@ function paletteFixture(overrides: Partial<ActionContext> = {}) {
   let open = true; let token = 0; let closed: (() => void) | undefined;
   const modal = {node, body, get token() {return token;}, open: (_title: string, _cancel?: () => void, close?: () => void) => {open = true; token++; closed = close; body.replaceChildren(); return body;}, owns: (value: number) => open && value === token, close: () => {open = false; closed?.(); closed = undefined;}, run: async (action: () => Promise<unknown>) => {await action(); open = false; closed?.(); closed = undefined;}, error: () => {}} as unknown as ActionContext['modal'];
   globalThis.fetch = async () => commandResponse([], null);
-  return {actions: new Actions(context({modal, ...overrides})), body, node, error, modal, view: document.defaultView, isOpen: () => open, restore: () => {
+  return {actions: new Actions(context({modal, ...workspaceReady, ...overrides})), body, node, error, modal, view: document.defaultView, isOpen: () => open, restore: () => {
     if (oldDocument) Object.defineProperty(globalThis, 'document', oldDocument); else Reflect.deleteProperty(globalThis, 'document');
   }};
 }
@@ -518,7 +520,7 @@ function key(node: FakeNode, name: string, options: Record<string, unknown> = {}
 test('Message input opens the workspace preference without mutation and the native checkbox saves its value', async () => {
   for (const enabled of [undefined, false, true]) {
     const selections: unknown[] = [], workspace = {enterSendsMessages: enabled};
-    const f = paletteFixture({snapshot: () => ({workspace} as Snapshot), selection: async value => {selections.push(value); workspace.enterSendsMessages = value.enterSendsMessages;}});
+    const f = paletteFixture({snapshot: () => ({primaries: [primary], workspace} as unknown as Snapshot), selection: async value => {selections.push(value); workspace.enterSendsMessages = value.enterSendsMessages;}});
     try {
       const entries = f.actions.paletteEntries(), item = entries.find(row => row.name === 'Message input'); assert.ok(item);
       assert.equal(entries.some(row => row.name === 'Enter sends messages'), false);
@@ -534,8 +536,8 @@ test('Message input opens the workspace preference without mutation and the nati
   }
 });
 test('Message input retains the checkbox and reports a failed preference without a second mutation', async () => {
-  let writes = 0; const failure = new Error('Preference unavailable'), errors: unknown[] = [];
-  const f = paletteFixture({snapshot: () => ({workspace: {enterSendsMessages: false}} as Snapshot), selection: async () => {if (++writes === 1) throw failure;}});
+  let writes = 0; const workspace = {enterSendsMessages: false}; const failure = new Error('Preference unavailable'), errors: unknown[] = [];
+  const f = paletteFixture({snapshot: () => ({primaries: [primary], workspace} as unknown as Snapshot), selection: async value => {if (++writes === 1) throw failure; workspace.enterSendsMessages = value.enterSendsMessages === true;}});
   f.modal.error = error => {errors.push(error); const note = new FakeNode(); note.textContent = 'The preference was not saved.'; f.error.append(note);};
   try {
     f.actions.messageInput(); const field = f.body.children.find(node => node.className === 'message-input-setting')?.children[0]; assert.ok(field);
@@ -549,31 +551,31 @@ test('Message input retains the checkbox and reports a failed preference without
 test('agent presentation control defaults on and the quiet Commands choice saves its inverse',()=> {
   for(const value of [undefined,true,false]) {
     const selections:unknown[]=[];
-    const actions=new Actions(context({snapshot:()=>({workspace:{agentControl:value}} as Snapshot),selection:async change=> {selections.push(change);}}));
+    const actions=new Actions(context({snapshot:()=>({primaries: [primary], workspace: {agentControl:value}} as unknown as Snapshot),selection:async change=> {selections.push(change);}}));
     const choice=actions.paletteEntries().find(item=>item.name==='Agent presentation control');assert.ok(choice);assert.equal(choice.checked,value !== false);
     choice.run();assert.deepEqual(selections,[{agentControl:value === false}]);
   }
 });
 test('the palette lists the one sidebar action that applies and still finds it by either name', () => {
-  const sidebarNames = (shown: boolean) => new Actions(context({sidebarShown: () => shown})).paletteEntries().filter(item => /sidebar$/.test(item.name)).map(item => item.name);
+  const sidebarNames = (shown: boolean) => new Actions(context({...workspaceReady, sidebarShown: () => shown})).paletteEntries().filter(item => /sidebar$/.test(item.name)).map(item => item.name);
   assert.deepEqual(sidebarNames(true), ['Hide sidebar']); assert.deepEqual(sidebarNames(false), ['Show sidebar']);
   for (const [shown, name] of [[true, 'Hide sidebar'], [false, 'Show sidebar']] as const) {
-    const sidebarCalls: boolean[] = []; const entries = new Actions(context({sidebarShown: () => shown, sidebar: visible => {sidebarCalls.push(visible);}})).paletteEntries();
+    const sidebarCalls: boolean[] = []; const entries = new Actions(context({...workspaceReady, sidebarShown: () => shown, sidebar: visible => {sidebarCalls.push(visible);}})).paletteEntries();
     for (const query of ['show sidebar', 'hide sidebar', 'sidebar', 'hide', 'show']) assert.ok(rankPalette(entries, query).some(match => match.item.name === name), query);
     entries.find(item => item.name === name)?.run(); assert.deepEqual(sidebarCalls, [!shown]);
   }
 });
 test('palette covers every displaced control and session availability follows the menu', () => {
-  const actions = new Actions(context());
+  const actions = new Actions(context(workspaceReady));
   const names = actions.paletteEntries().filter(item => item.source === 'app').map(item => item.name);
-  assert.deepEqual(names, ['New session', 'Sessions', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Conversation details', 'Saved drafts and messages', 'Appearance', 'Message input', 'Agent presentation control', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Notifications', 'Refresh agents', 'Refresh files', 'Insert /agent new', 'Hide sidebar', 'Projects', 'Model', 'Thinking', 'Sent and received tasks']);
-  const absent = new Actions(context({primary: () => undefined})).paletteEntries();
-  const disabled = absent.filter(item => !item.enabled).map(item => item.name);
-  assert.deepEqual(disabled, ['Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Model', 'Thinking', 'Sent and received tasks']);
-  const starting = new Actions(context({primary: () => ({...primary, lifecycle: 'starting'})})).paletteEntries();
+  assert.deepEqual(names, ['New session', 'Sessions', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Conversation details', 'Saved drafts and messages', 'Appearance', 'Message input', 'Agent presentation control', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Notifications', 'Refresh agents', 'Refresh files', 'Insert /agent new', 'Hide sidebar', 'Projects', 'Workspaces', 'Archived workspaces', 'Model', 'Thinking', 'Sent and received tasks']);
+  const absent = new Actions(context({...workspaceReady, primary: () => undefined})).paletteEntries();
+  assert.deepEqual(absent.filter(item => !item.enabled), []);
+  for (const name of ['Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Model', 'Thinking', 'Sent and received tasks']) assert.equal(absent.some(item => item.name === name), false, name);
+  const startingPrimary = {...primary, lifecycle: 'starting' as const};
+  const starting = new Actions(context({primary: () => startingPrimary, snapshot: () => ({primaries: [startingPrimary], workspace: {}}) as unknown as ReturnType<ActionContext['snapshot']>})).paletteEntries();
   assert.equal(starting.find(item => item.name === 'New session')?.enabled, true);
-  assert.equal(starting.find(item => item.name === 'Model')?.enabled, false);
-  assert.equal(starting.find(item => item.name === 'Thinking')?.enabled, false);
+  for (const name of ['Model', 'Thinking']) assert.equal(starting.some(item => item.name === name), false, name);
 });
 test('Refresh files stays enabled without a ready conversation and invokes its workspace action', () => {
   let refreshes = 0;
@@ -592,10 +594,10 @@ test('transcript actions follow the focused view without enabling Primary execut
   const names = ['Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text'];
   for (const name of names) {const item = actions.paletteEntries().find(item => item.name === name); assert.ok(item); assert.equal(item.enabled, true); item.run();}
   assert.deepEqual(calls, ['tools:true', 'tools:false', 'thinking:true', 'thinking:false', 'find']);
-  for (const name of ['Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Model', 'Thinking']) assert.equal(actions.paletteEntries().find(item => item.name === name)?.enabled, false);
-  available = false; for (const name of names) assert.equal(actions.paletteEntries().find(item => item.name === name)?.enabled, false);
-  const unrelatedPrimary = new Actions(context({hasTranscript: () => false}));
-  for (const name of names) assert.equal(unrelatedPrimary.paletteEntries().find(item => item.name === name)?.enabled, false);
+  for (const name of ['Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Model', 'Thinking']) assert.equal(actions.paletteEntries().find(item => item.name === name), undefined);
+  available = false; for (const name of names) assert.equal(actions.paletteEntries().find(item => item.name === name), undefined);
+  const unrelatedPrimary = new Actions(context({...workspaceReady, hasTranscript: () => false}));
+  for (const name of names) assert.equal(unrelatedPrimary.paletteEntries().find(item => item.name === name), undefined);
   assert.equal(unrelatedPrimary.paletteEntries().find(item => item.name === 'Compact')?.enabled, true);
 });
 test('retry requires failure evidence while retained tasks stay reachable without live capability', () => {
@@ -642,7 +644,7 @@ test('palette relevance orders empty queries but never outranks exact disabled s
 });
 test('agent-selected palette keeps ready Primary actions available but puts their priority after current actions', async () => {
   globalThis.fetch = async () => commandResponse(['imported'], null);
-  let compactions = 0; const actions = new Actions(context({selectedAgent: () => ({identity: 'selected'}), hasTranscript: () => true}));
+  let compactions = 0; const actions = new Actions(context({...workspaceReady, selectedAgent: () => ({identity: 'selected'}), hasTranscript: () => true}));
   actions.compact = () => {compactions++;}; await actions.load('commands'); const entries = actions.paletteEntries();
   for (const name of ['Compact', 'Fork from message', 'Model', 'Thinking']) {const item = entries.find(entry => entry.name === name); assert.ok(item); assert.equal(item.enabled, true); assert.equal(item.priority, 2);}
   const imported = entries.find(item => item.name === 'Insert /imported'); assert.ok(imported); assert.equal(imported.priority, 2);
@@ -796,7 +798,7 @@ test('hidden agent aliases reuse command ranking without false marks on the disp
 
 test('the palette keeps canonical browser actions and their slash aliases without duplicate rows', async () => {
   globalThis.fetch = async () => Response.json({ok: true, data: {items: [{name: 'fixture', description: 'Public command', source: 'extension'}], nextCursor: null, revision: '1'}});
-  const actions = new Actions(context()); await actions.load('commands'); const inventory = actions.commandOptions();
+  const actions = new Actions(context(workspaceReady)); await actions.load('commands'); const inventory = actions.commandOptions();
   const rows = actions.paletteEntries(); const aliases = [['new', 'New session'], ['resume', 'Sessions'], ['fork', 'Fork from message'], ['compact', 'Compact'], ['model', 'Model'], ['thinking', 'Thinking']] as const;
   for (const [alias, name] of aliases) {
     assert.equal(rows.filter(row => row.name === name).length, 1);
@@ -926,8 +928,8 @@ test('session menu clicks dispatch named actions and disabled rows reject dispat
   } finally {f.restore();}
   const unavailable = paletteFixture({primary: () => undefined}); try {
     let sessions = 0; unavailable.actions.newSession = () => {sessions++;}; unavailable.actions.sessionMenu();
-    const row = unavailable.body.children[0]?.children.find(row => row.textContent === 'Compact'); assert.ok(row);
-    assert.equal(row.disabled, true); row.dispatchEvent(new Event('click')); assert.equal(sessions, 0);
+    assert.equal(unavailable.body.children[0]?.children.some(row => row.textContent === 'Compact'), false); const row = unavailable.body.children[0]?.children.find(row => row.textContent === 'New session'); assert.ok(row);
+    row.dispatchEvent(new Event('click')); assert.equal(sessions, 1);
   } finally {unavailable.restore();}
 });
 
@@ -946,7 +948,7 @@ const themes: [Appearance, string][] = [['system', 'System'], ['dark', 'Dark'], 
 test('Appearance lists System, Dark and Light in order and checks the current workspace choice, reading retired values as the mode they looked like', () => {
   const read: Record<string, Appearance> = {dark: 'dark', light: 'light', system: 'system', latte: 'light', frappe: 'dark', macchiato: 'dark', mocha: 'dark'};
   for (const current of [...Object.keys(read), undefined]) {
-    const f = paletteFixture({snapshot: () => current ? {workspace: {appearance: current}} as unknown as Snapshot : undefined}); try {
+    const f = paletteFixture({snapshot: () => ({primaries: [primary], workspace: {appearance: current}}) as unknown as Snapshot}); try {
       f.actions.appearance(); const rows = f.body.children[0]; assert.ok(rows);
       assert.equal(rows.attributes.get('role'), 'menu'); assert.equal(rows.attributes.get('aria-label'), 'Appearance');
       assert.deepEqual(rows.children.map(row => textOf(row)), themes.map(([, label]) => label));
@@ -960,7 +962,7 @@ test('Appearance lists System, Dark and Light in order and checks the current wo
 });
 test('Appearance saves each exact theme value through the existing selection path', async () => {
   let current: Appearance = 'system'; const selected: Appearance[] = [];
-  const f = paletteFixture({snapshot: () => ({workspace: {appearance: current}} as Snapshot), selection: async change => {assert.ok(change.appearance); selected.push(change.appearance); current = change.appearance;}}); try {
+  const f = paletteFixture({snapshot: () => ({primaries: [primary], workspace: {appearance: current}} as unknown as Snapshot), selection: async change => {assert.ok(change.appearance); selected.push(change.appearance); current = change.appearance;}}); try {
     for (const [index, [value]] of themes.entries()) {
       f.actions.appearance(); f.body.children[0]?.children[index]?.dispatchEvent(new Event('click')); await Promise.resolve();
       assert.equal(current, value); assert.equal(f.isOpen(), false);
@@ -970,7 +972,7 @@ test('Appearance saves each exact theme value through the existing selection pat
   } finally {f.restore();}
 });
 test('Appearance keyboard navigation reaches the other choices without changing the choice', () => {
-  const f = paletteFixture({snapshot: () => ({workspace: {appearance: 'dark'}} as Snapshot)}); try {
+  const f = paletteFixture({snapshot: () => ({primaries: [primary], workspace: {appearance: 'dark'}} as unknown as Snapshot)}); try {
     f.actions.appearance(); const rows = f.body.children[0]; assert.ok(rows);
     key(rows, 'ArrowDown'); assert.equal(focused && textOf(focused), 'Light');
     key(rows, 'End'); assert.equal(focused && textOf(focused), 'Light');
@@ -989,7 +991,7 @@ test('Appearance states from the page link whether the user stylesheet is applie
   }
 });
 test('theme names discover the single Appearance palette action', () => {
-  const actions = new Actions(context()); const entries = actions.paletteEntries();
+  const actions = new Actions(context(workspaceReady)); const entries = actions.paletteEntries();
   const appearance = entries.find(item => item.name === 'Appearance'); assert.ok(appearance);
   assert.equal(appearance.description, 'Choose a theme'); assert.equal(appearance.enabled, true);
   assert.equal(entries.filter(item => item.name === 'Appearance').length, 1); assert.equal(entries.some(item => item.name.startsWith('Theme:')), false);
