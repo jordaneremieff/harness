@@ -119,6 +119,7 @@ class FakeNode {
   insertBefore(node: FakeNode, anchor: FakeNode | null): FakeNode { this.insert(node, anchor ? this.children.indexOf(anchor) : this.children.length); return node; }
   before(node: FakeNode): void { this.parentNode?.insert(node, this.parentNode.children.indexOf(this)); }
   dispatchEvent(event: Event): boolean { this.dispatch(event.type); if (event.bubbles) this.parentNode?.dispatchEvent(event); return true; }
+  replaceWith(node: FakeNode): void { this.before(node); this.remove(); }
   after(node: FakeNode): void { this.parentNode?.insert(node, this.parentNode.children.indexOf(this) + 1); }
   private insert(node: FakeNode, index: number): void {
     if (node.tagName === '#fragment') { for (const child of [...node.children]) this.insert(child, index++); return; }
@@ -131,11 +132,13 @@ class FakeNode {
   }
   replaceChildren(...nodes: FakeNode[]): void { for (const child of [...this.children]) child.remove(); this.text = ''; this.append(...nodes); }
   setAttribute(key: string, value: string): void { this.attributes[key] = value; if (key === 'class') this.className = value; }
+  getAttribute(key: string): string | null { return this.attributes[key] ?? null; }
   removeAttribute(key: string): void { delete this.attributes[key]; }
   hasAttribute(key: string): boolean { return Object.hasOwn(this.attributes, key); }
   addEventListener(name: string, handler: Handler): void { this.handlers.set(name, [...this.handlers.get(name) ?? [], handler]); }
   removeEventListener(name: string, handler: Handler): void { this.handlers.set(name, (this.handlers.get(name) ?? []).filter(item => item !== handler)); }
   dispatch(name: string, event: Record<string, unknown> = {}): void { for (const handler of this.handlers.get(name) ?? []) handler({target: this, ...event}); }
+  matches(selector: string): boolean { return matches(this, selector); }
   closest(selector: string): FakeNode | null { return matches(this, selector) ? this : this.parentNode?.closest(selector) ?? null; }
   querySelector(selector: string): FakeNode | null { return this.querySelectorAll(selector)[0] ?? null; }
   querySelectorAll(selector: string): FakeNode[] {

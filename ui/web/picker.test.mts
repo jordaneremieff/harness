@@ -50,7 +50,7 @@ for (const [name, page] of [
   globalThis.fetch = async url => {const path=String(url);const data=path.includes('/api/projects')?{items:[],total:0,omitted:0,nextCursor:null,observedAt:saved.observedAt}:path==='/api/sessions/published'?{...saved,items:[],total:0}:page;return Response.json({ok:true,data});};
   const modal = {node: {dataset: {} as Record<string, string>}, token: 1, open: () => { body.replaceChildren(); return body; }, owns: (token: number) => token === 1, actions: (...buttons: Node[]) => body.append(...buttons), error: (error: unknown) => { throw error; }};
   try {
-    const picker = new ProjectPicker({agentPresentation: catalogPresentation, modal: modal as unknown as Modal, snapshot: () => ({launchCwd: '/project', primaries: []}) as unknown as Bootstrap, primary: () => undefined, selection: async () => {}, reload: async () => {}});
+    const picker = new ProjectPicker({readSession: () => {}, agentPresentation: catalogPresentation, modal: modal as unknown as Modal, snapshot: () => ({launchCwd: '/project', primaries: []}) as unknown as Bootstrap, primary: () => undefined, selection: async () => {}, reload: async () => {}});
     picker.open(); assert.equal(modal.node.dataset.variant, 'picker', 'pickers open as the top-anchored panel');
     assert.equal(descendants(body).some(node => node.textContent === 'Open project'), false);
     await new Promise<void>(resolve => setImmediate(resolve));
@@ -134,7 +134,7 @@ function directPicker(t: TestContext, active?: PrimaryView, page: SavedSessionPa
     else if (path.includes('/api/projects')) data = {items: [], total: 0, omitted: 0, nextCursor: null, observedAt: saved.observedAt};
     return new Response(JSON.stringify({ok: true, data}), {status: 200, headers: {'content-type': 'application/json'}});
   };
-  const picker = new ProjectPicker({agentPresentation: catalog?.presentation ?? catalogPresentation, modal: modal as unknown as Modal, snapshot: () => state, primary: () => active,selectOpened,titlesChanged:()=>{titleChanges++;},
+  const picker = new ProjectPicker({readSession: () => {}, agentPresentation: catalog?.presentation ?? catalogPresentation, modal: modal as unknown as Modal, snapshot: () => state, primary: () => active,selectOpened,titlesChanged:()=>{titleChanges++;},
     selection: async change => { steps.push('selection'); selections.push(change); }, reload: async () => { steps.push('reload'); reloads++; }});
   const click = (label: string) => { const node = descendants(body).find(node => node.tag === 'button' && node.textContent === label); assert.ok(node, label); node.click(); };
   return {picker, modal, body, calls, state, selections, steps, click, fail: () => { failure = true; }, failList: () => { listFailure = true; }, get reloads() { return reloads; }, get titleChanges() { return titleChanges; }, get closed() { return closed; }, get error() { return error || descendants(body).find(node => node.id === 'picker-file-error')?.textContent || descendants(body).find(node => node.className === 'picker-error')?.textContent || ''; }};
@@ -372,7 +372,7 @@ for (const changed of ['closed','replaced'] as const) test(`late Resume completi
 });
 test('first-use folder selection retains the inline session chooser after the root save',async t=> {
   const setup=directPicker(t);const root=new Node('main');let folder:string|undefined;
-  const picker=new ProjectPicker({agentPresentation:catalogPresentation,modal:setup.modal as unknown as Modal,snapshot:()=>setup.state,primary:()=>undefined,project:()=>folder,selection:async()=>{},reload:async()=>{},workingFolder:async path=> {folder=path;}});
+  const picker=new ProjectPicker({readSession: () => {}, agentPresentation:catalogPresentation,modal:setup.modal as unknown as Modal,snapshot:()=>setup.state,primary:()=>undefined,project:()=>folder,selection:async()=>{},reload:async()=>{},workingFolder:async path=> {folder=path;}});
   picker.mount(root as unknown as HTMLElement);await settle();picker.openProject();await settle();
   const other=descendants(root).find(node=>node.tag==='button'&&node.textContent==='Other folder…');assert.ok(other);other.click();
   const field=descendants(root).find(node=>node.id==='picker-project');assert.ok(field);field.value='/another-project';

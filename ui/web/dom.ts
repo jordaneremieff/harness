@@ -2,9 +2,9 @@
 const fadeLabels='.row-title,.row-name,.row-preview,.tab-label,.tab-identity,.tool-name,.tool-name-directory,.tool-state-word,.conversation-name,.conversation-identity,.project-context,.file-name,.source-language,.extension-status-preview,.composer-state-label,.composer-setting-label,.communication-line-preview,.communication-line-kind,.communication-sender,.message-role,.desk-row-title,.desk-agent,.thread-purpose,.thread-line-note,.thread-reply,.notice-block-title,.response-failure-preview,.thinking-preview,.command-name,.command-desc,#workbench-scope,.workbench-activity-text,.agent-live-state,.agent-live-tool,.agent-live-model';
 const pendingLabels=new Set<HTMLElement>(),labelTitles=new WeakMap<HTMLElement,string>();
 let labelFrame:number|undefined;
-/** Measure painted labels together; full text and explicit source tooltips stay unchanged. */
+/** Measure painted labels together; full text and explicit source tooltips stay unchanged. Hosts whose nodes cannot match selectors have no painted labels to measure. */
 function queueLabel(node:HTMLElement,text?:string):void {
-  if(!node.matches(fadeLabels))return;
+  if(typeof node.matches!=='function'||!node.matches(fadeLabels))return;
   if(text!==undefined&&(!node.title||node.title===labelTitles.get(node))){node.title=text;labelTitles.set(node,text);}
   pendingLabels.add(node);
   if(labelFrame!==undefined)return;
@@ -36,11 +36,12 @@ export function button(text: string, action: () => void, className?: string): HT
   node.addEventListener('click', action);
   return node;
 }
+/** Callers outside a browser document, such as nodes without a DOM host, have no HTMLElement global and skip the label fade. */
 export function setText(node: Node, text: string): void {
   if (node.textContent !== text) {
     node.textContent = text;
   }
-  if(node instanceof HTMLElement)queueLabel(node,text);
+  if(typeof HTMLElement!=='undefined'&&node instanceof HTMLElement)queueLabel(node,text);
 }
 export function announce(text: string): void { setText(byId('announcements'), text); }
 export async function copy(text: string, into?: HTMLElement | (() => HTMLElement)): Promise<boolean> {

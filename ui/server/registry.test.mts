@@ -334,7 +334,7 @@ async function memoryRegistry(context: TestContext) {
     if(!value) {value={targetKey:target.kind==='agent'?target.identity:'primary',target,draft:{revision:0,text:'',mode:'steer',images:[],persisted:true},reading:{revision:0,anchorId:null,offsetPx:0,followTail:false},unconfirmed:[],retainedInputs:[],imageAvailability:[]};values.push(value);states.set(workspace,values);} return value;
   };
   const store={instanceId:'synthetic',workspace:async(id='w')=>{const value=workspaces.get(id);assert.ok(value);return structuredClone(value);},target:state,
-    readPrimaries:async()=>[],savePrimaries:async()=>{},close:async()=>{},transaction:async<T,>(job:()=>Promise<T>)=>job(),operationViews:()=>[],enrichSentImages:()=>{},
+    readPrimaries:async()=>[],savePrimaries:async()=>{},keepWorkspace:async()=>{},workspaceList:async()=>[...workspaces.values()].map(value=>structuredClone(value)),close:async()=>{},transaction:async<T,>(job:()=>Promise<T>)=>job(),operationViews:()=>[],enrichSentImages:()=>{},
     snapshot:(id:string)=>({workspace:structuredClone(workspaces.get(id)),targets:states.get(id) ?? [],targetIndex:[]})} as unknown as StateStore;
   context.mock.method(StateStore,'open',async()=>store);
   const registry=await Registry.open({cwd:'/project',stateDir:'synthetic',agentStore:'synthetic',executable:'not-used',agents:options=> {
@@ -346,6 +346,7 @@ async function memoryRegistry(context: TestContext) {
       disconnectWorkspace:async workspace=>{calls.push(['disconnect',workspace]);epochs.delete(workspace);await disconnectGate?.();}};
   }});
   context.mock.method(registry.journal,'workspaceClients',(id:string)=>clients.get(id) ?? 0);
+  context.mock.method(registry.journal,'agentViews',(id:string,inherited:readonly string[])=>(clients.get(id) ?? 0)>0?[...inherited]:[]);
   context.after(()=>registry.close());
   return {registry,workspaces,clients,calls,epochs,callbacks,set selectGate(value:typeof selectGate){selectGate=value;},set disconnectGate(value:typeof disconnectGate){disconnectGate=value;}};
 }
@@ -568,7 +569,7 @@ test('start receipts deduplicate exact work and separate workspaces without inpu
   const f=await startFixture(t);const target={kind:'agent' as const,identity:STORAGE};const agent=await f.registry.store.target(f.workspace.id,target);const primary=await f.registry.store.target(f.workspace.id,{kind:'primary',key:'retained-primary',epoch:1});
   await f.registry.store.putDraft(f.workspace.id,agent.targetKey,{expectedRevision:0,text:'Agent retained 🦉',mode:'steer'});await f.registry.store.putDraft(f.workspace.id,primary.targetKey,{expectedRevision:0,text:'Primary retained 🦉',mode:'prompt'});
   const saved=await Promise.all([f.registry.store.target(f.workspace.id,target),f.registry.store.target(f.workspace.id,primary.target)]);const bytes=saved.map(state=>Buffer.from(JSON.stringify(state.draft)));
-  t.mock.method(f.registry.journal,'workspaceClients',(id:string)=>id===f.workspace.id?1:0);
+  t.mock.method(f.registry.journal,'workspaceClients',(id:string)=>id===f.workspace.id?1:0);t.mock.method(f.registry.journal,'agentViews',(id:string,inherited:readonly string[])=>id===f.workspace.id?[...inherited]:[]);
   await f.registry.store.updateSelection(f.workspace.id,{expectedRevision:f.workspace.revision,selectedTarget:target,conversationLayout:agentLayout([STORAGE])});
   const first=f.registry.startAgent(f.workspace.id,STORAGE,'same-key');assert.equal(f.registry.startAgent(f.workspace.id,STORAGE,'same-key'),first);
   const result=await first;assert.equal(result.availability,'live');assert.equal(result.capabilities.input,true);assert.equal(f.counts.launches,1);assert.deepEqual(f.prepares,[STORAGE]);assert.deepEqual(f.selects,[{workspace:f.workspace.id,identity:STORAGE}]);
@@ -605,7 +606,7 @@ test('selection changes before readiness do not observe the old recipient',{time
   for(const replaceSelection of [false,true]) {
     const f=await startFixture(t);f.control.announce=false;
     const target={kind:'agent' as const,identity:STORAGE},initialLayout=agentLayout([STORAGE]);
-    t.mock.method(f.registry.journal,'workspaceClients',(id:string)=>id===f.workspace.id?1:0);
+    t.mock.method(f.registry.journal,'workspaceClients',(id:string)=>id===f.workspace.id?1:0);t.mock.method(f.registry.journal,'agentViews',(id:string,inherited:readonly string[])=>id===f.workspace.id?[...inherited]:[]);
     await f.registry.store.updateSelection(f.workspace.id,{expectedRevision:f.workspace.revision,selectedTarget:target,conversationLayout:initialLayout});
     const initial=await f.registry.snapshot(f.workspace.id);
     assert.equal(f.registry.journal.workspaceClients(f.workspace.id),1);assert.ok(initial.observations);

@@ -73,6 +73,7 @@ export class HostNode {
   append(...nodes: HostNode[]): void { for (const node of nodes) this.insert(node, this.children.length); }
   prepend(...nodes: HostNode[]): void { nodes.slice().reverse().forEach(node => { this.insert(node, 0); }); }
   after(node: HostNode): void { this.parentNode?.insert(node, this.parentNode.children.indexOf(this) + 1); }
+  replaceWith(node: HostNode): void { this.parentNode?.insert(node, this.parentNode.children.indexOf(this)); this.remove(); }
   insertBefore(node: HostNode, anchor: HostNode | null): HostNode { this.insert(node, anchor ? this.children.indexOf(anchor) : this.children.length); return node; }
   private insert(node: HostNode, index: number): void {
     if (node.tagName === '#fragment') { for (const child of [...node.children]) this.insert(child, index++); return; }
@@ -115,6 +116,7 @@ export class HostNode {
     if (application) return;
     const property = Reflect.get(this, `on${name}`); if (typeof property === 'function') property.call(this, value);
   }
+  matches(selector: string): boolean { return matchesHost(this, selector); }
   closest(selector: string): HostNode | null { return matchesHost(this, selector) ? this : this.parentNode?.closest(selector) ?? null; }
   querySelector(selector: string): HostNode | null { return this.querySelectorAll(selector)[0] ?? null; }
   querySelectorAll(selector: string): HostNode[] {
@@ -326,6 +328,7 @@ function fixtureCatalogRead(path:string):unknown {
   if (/^\/api\/agents\/[^/]+\/history$/.test(path)) return {target: {kind: 'agent', identity: path.split('/')[3] ?? ''}, entries: [], nextBefore: null, coverage, revision: 'r'};
   if (path === '/api/operations') return {operationId: `op-${++operationSerial}`};
   if (path === '/api/agents/refresh') return {};
+  if (path === '/api/workspaces') return {items: [{id: fixture.workspace.id, name: 'Workspace', tabCount: 1}], nextCursor: null, total: 1};
   if (path === '/api/agents') return snapshotOf(fixture, cursorSequence).roster;
   if (path.includes('/resources/')) return {items: [], nextCursor: null, revision: 'r'};
 }
@@ -384,7 +387,7 @@ class HostResizeObserver {
 }
 function installHost(): void {
   Object.assign(globalThis, {
-    document: hostDocument, HTMLElement: HostNode, window: view, location: {href: 'http://ui.test/app?workspace=w', hash: ''},
+    document: hostDocument, HTMLElement: HostNode, Node: {ELEMENT_NODE: 1, TEXT_NODE: 3, DOCUMENT_FRAGMENT_NODE: 11}, window: view, location: {href: 'http://ui.test/app?workspace=w', hash: ''},
     history: {replaceState() {}}, sessionStorage: hostSessionStorage, indexedDB:new ReloadStorageFactory(), matchMedia: (query: string) => ({matches: query === '(min-width: 900px)' && host.viewport >= 900 || query === '(max-width: 599px)' && host.viewport < 600, addEventListener() {}, removeEventListener() {}}),
     getComputedStyle: view.getComputedStyle, requestAnimationFrame: hostRequestAnimationFrame, cancelAnimationFrame: hostCancelAnimationFrame,
     ResizeObserver: HostResizeObserver,
