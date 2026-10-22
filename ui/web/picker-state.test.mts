@@ -82,13 +82,13 @@ test('session ownership comes from the current exact file and epoch, not a captu
   assert.equal(sessionOwner([{...primary, lifecycle: 'stopped'}], '/a.jsonl'), undefined);
   assert.equal(sessionOwner([{...primary, lifecycle: 'failed'}], '/a.jsonl'), undefined);
 });
-test('only prompt-derived titles shorten while full supplied names and searchable text remain intact', () => {
-  const title = 'Supplied prompt text '.repeat(10), prompt = {...item('prompt', title), titleSource: 'prompt' as const};
-  assert.equal(sessionLabel(prompt), `${title.slice(0, 64).trimEnd()}…`);
+test('named and prompt-derived titles display in full while searchable text stays intact', () => {
+  const title = 'Supplied prompt text '.repeat(10), prompt = {...item('prompt', title), titleSource: 'prompt' as const, titleState: 'ready' as const};
+  assert.equal(sessionLabel(prompt), title.trim());
   assert.equal(prompt.title, title); assert.deepEqual(filterSessions([prompt], 'Supplied prompt text Supplied'), [prompt]);
-  assert.equal(sessionLabel({...prompt, titleSource: 'name'}), title);
-  assert.equal(sessionLabel({...prompt, titleSource: undefined}), title);
-  assert.equal(sessionLabel({...prompt, titleState: 'pending'}), 'Loading title…');
+  assert.equal(sessionLabel({...prompt, titleSource: 'name'}), title.trim());
+  assert.equal(sessionLabel({...prompt, titleSource: undefined}), 'project · ompt');
+  assert.equal(sessionLabel({...prompt, titleState: 'pending'}), 'project · ompt');
   const list = mergeSessions(undefined, page([{...prompt, titleState: 'pending'}]));
   const filled = mergeSessionTitles(list, page([{...prompt, titleState: 'ready'}]));
   const ready = filled.items[0]; assert.ok(ready); assert.equal(ready.titleSource, 'prompt'); assert.equal(sessionLabel(ready), sessionLabel(prompt));

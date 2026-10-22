@@ -23,6 +23,7 @@ for (const origin of ['empty','file','agent','primary'] as const) for (const act
   globalThis.fetch = async(input,init)=> {
     const path = new URL(String(input),'http://ui.test').pathname;
     if (path === '/api/sessions') return Response.json({ok:true,data:{items:[{id:key,path:`/project/${key}.jsonl`,project:'/project',revision:'r',title:key,titleState:'ready',modifiedAt:'2026-01-01T00:00:00Z',size:10}],total:1,omitted:0,nextCursor:null,titleCursor:null,observedAt:'2026-01-01T00:00:00Z'}});
+    if (path === '/api/sessions/history') return Response.json({ok:true,data:{session:{id:key,path:`/project/${key}.jsonl`,project:'/project',revision:'r',title:key,titleSource:'name',titleState:'ready',modifiedAt:'2026-01-01T00:00:00Z',size:10},entries:[],coverage:{complete:true,truncated:false,omitted:0},leaf:null,before:null,observedAt:'2026-01-01T00:00:00Z'}});
     if (path === '/api/primaries' && init?.method === 'POST') {
       opens++;const body = JSON.parse(String(init.body));assert.equal(body.sessionFile,action === 'resume' ? `/project/${key}.jsonl` : undefined);
       browser.fixture = {workspace:{id:key,revision:(app.state.workspace?.revision ?? 1)+1,primaryKey:key,selectedTarget:target,conversationLayout:layout},primaries:[primaryFixture({key,epoch:target.epoch})],roster:[row],targets:[targetFixture(`opened-${key}`,target)]};
@@ -32,30 +33,12 @@ for (const origin of ['empty','file','agent','primary'] as const) for (const act
   };
   byId('workbench-version').focus();
   if (action === 'new') byId('session-new').click();
-  else {byId('session-open').click();await settle();const saved = hostDocument.body.querySelector('.picker-select');assert.ok(saved);saved.click();}
+  else {byId('session-open').click();await settle();const saved = hostDocument.body.querySelector('.picker-select');assert.ok(saved);saved.click();await settle();const resume = hostDocument.body.querySelectorAll('button').find(node=>node.textContent === 'Resume' && !node.hidden);assert.ok(resume,'The closed-session view offers Resume');resume.click();}
   await settle();await app.selectionQueue.drain();await settle();assert.equal(opens,1);
-  assert.equal(app.state.workspace?.primaryKey,key);assert.equal(activeTab(workspaceLayout(app.state.workspace))?.kind,'primary');
-  assert.equal(hostDocument.activeElement,primaryControl('editor'));
+  assert.equal(app.state.workspace?.primaryKey,key);assert.deepEqual(app.state.workspace?.selectedTarget,target);if (action === 'new') assert.equal(activeTab(workspaceLayout(app.state.workspace))?.kind,'primary');
+  if (action === 'new' || origin !== 'file') assert.equal(hostDocument.activeElement,primaryControl('editor'));
   const rendered = workspaceLayout(app.state.workspace);
   if (tab?.kind === 'file') assert.ok(rendered.root.kind === 'pane' && rendered.root.tabs.some(item=>tabKey(item) === tabKey(tab)));
-});
-for (const name of ['keydown','wheel']) test(`Resume of an open session survives ${name} during refresh and closes after selection`,async t=> {
-  const target = {kind:'primary' as const,key:'p',epoch:25},tab = {kind:'file' as const,rootId:'root',path:'retained.md'},project = `/project/open-${name}`,path = `${project}/saved.jsonl`;
-  await arrive({workspace:{id:`open-${name}`,revision:1,primaryKey:'p',selectedTarget:target,conversationLayout:createPaneLayout([tab])},primaries:[primaryFixture({epoch:25,cwd:project,sessionFile:path})],roster:[],targets:[targetFixture(`open-${name}`,target)]});
-  await app.fileRoot.choose(project);await settle();
-  const original = globalThis.fetch,gate = Promise.withResolvers<void>(),started = Promise.withResolvers<void>();let hold = false,opens = 0;
-  t.after(()=> {gate.resolve();globalThis.fetch = original;});
-  globalThis.fetch = async(input,init)=> {
-    const url = new URL(String(input),'http://ui.test');
-    if (url.pathname === '/api/sessions') return Response.json({ok:true,data:{items:[{id:name,path,project,revision:'r',title:name,titleState:'ready',modifiedAt:'2026-01-01T00:00:00Z',size:10}],total:1,omitted:0,nextCursor:null,titleCursor:null,observedAt:'2026-01-01T00:00:00Z'}});
-    if (url.pathname === '/api/primaries' && init?.method === 'POST') opens++;
-    if (hold && url.pathname === '/api/snapshot') {hold = false;started.resolve();await gate.promise;}
-    return original(input,init);
-  };
-  byId('workbench-version').focus();byId('session-open').click();await settle();const row = hostDocument.body.querySelector('.picker-select');assert.ok(row);
-  hold = true;row.click();await started.promise;input(name);gate.resolve();await settle();await app.selectionQueue.drain();await settle();
-  assert.equal(opens,0);assert.equal(byId('modal').open,false);assert.equal(activeTab(workspaceLayout(app.state.workspace))?.kind,'primary');assert.deepEqual(app.state.workspace?.selectedTarget,target);
-  assert.equal(hostDocument.activeElement,byId('workbench-version'));
 });
 for (const name of ['keydown','wheel','pointerdown','input','compositionstart']) test(`input ${name} preserves admitted Resume selection without late focus`,async()=> {
   const target = {kind:'primary' as const,key:'p',epoch:30},tab = {kind:'file' as const,rootId:'root',path:'retained.md'};

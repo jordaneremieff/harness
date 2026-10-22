@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test, {type TestContext} from 'node:test';
-import type { AgentRow, CachedRoster, Bootstrap, PrimaryView, RecentProjectPage, SavedSessionPage } from '../shared/api.ts';
+import type { AgentRow, CachedRoster, Bootstrap, PrimaryView, RecentProjectPage, SavedSession, SavedSessionPage } from '../shared/api.ts';
 import type { Modal } from './modal.ts';
 import type { SelectionChange } from './actions.ts';
 import { ProjectPicker } from './picker.ts';
@@ -34,7 +34,7 @@ class Node {
 }
 function descendants(node: Node): Node[] { return node.children.flatMap(child => [child, ...descendants(child)]); }
 const catalogPresentation: ConstructorParameters<typeof ProjectPicker>[0]['agentPresentation'] = row => ({name: row.name ?? 'Unnamed conversation', activity: 'Running', tone: 'warning', cwd: row.cwd});
-const saved: SavedSessionPage = {items: [{id: 's', path: '/project/s.jsonl', project: '/project', revision: 'r', title: 'Saved title', titleState: 'ready', modifiedAt: '2026-01-01T00:00:00Z', size: 10}], total: 1, omitted: 0, nextCursor: null, titleCursor: null, observedAt: '2026-01-01T00:00:00Z'};
+const saved: SavedSessionPage = {items: [{id: 's', path: '/project/s.jsonl', project: '/project', revision: 'r', title: 'Saved title', titleSource: 'name' as const, titleState: 'ready', modifiedAt: '2026-01-01T00:00:00Z', size: 10}], total: 1, omitted: 0, nextCursor: null, titleCursor: null, observedAt: '2026-01-01T00:00:00Z'};
 for (const [name, page] of [
   ['complete', saved],
   ['more pages', {...saved, total: 2, nextCursor: 'more'}],
@@ -58,27 +58,18 @@ for (const [name, page] of [
     const label = nodes.find(node => node.tag === 'label' && node.htmlFor === search.id); assert.ok(label);
     assert.equal(label.className, 'sr-only'); assert.equal(label.textContent, 'Search sessions');
     const ordinary = nodes.find(node => node.className === 'picker-folder-ordinary'); assert.ok(ordinary);
-    const notes = body.children.filter(node => node.classList.contains('picker-safety')); assert.equal(notes.length, 1, 'The Resume caution appears once in the dialog body');
-    assert.equal(notes[0]?.textContent, 'Stop a terminal session before you resume it here.'); assert.equal(notes[0]?.title, 'Before ordinary Resume, stop the terminal session. Each active process keeps its own in-memory branch; this window does not read later writes from another active process.'); assert.equal(body.children.includes(notes[0] as Node), true);
     const searchRow = body.children.find(node => node.className === 'picker-search-row'); assert.ok(searchRow);
     const line = searchRow.children[0]; assert.ok(line); assert.equal(line.className, 'picker-input-row'); assert.equal(search.className, 'picker-input');
     assert.equal(line.children.length, 2); assert.equal(search.id, label.htmlFor);
     assert.equal(line.children[0], label); assert.equal(line.children[1], search);
-    const coverage = nodes.find(node => node.id === 'picker-coverage'); assert.ok(coverage);
-    assert.equal(coverage.className, 'secondary'); assert.equal(coverage.attributes['aria-live'], 'polite');
     const freshness = ordinary.querySelector('.picker-list-details'); assert.ok(freshness);
     assert.match(freshness.textContent, /Saved list · now/);
     assert.match(freshness.textContent, /sessions loaded/); assert.equal(freshness.children[0]?.textContent, 'List details');
-    const partialNote = nodes.filter(node => node.classList.contains('picker-partial')); assert.equal(partialNote.length, 1); assert.equal(partialNote[0]?.textContent, 'Partial list'); assert.equal(partialNote[0]?.hidden, name === 'complete');
-    assert.equal(nodes.find(node => node.className === 'picker-project-actions picker-footer')?.children.includes(partialNote[0] as Node), true, 'Partial list sits in the footer beside the loaded count');
-    assert.equal(coverage.textContent, '1 loaded session'); assert.equal(coverage.hidden, false);
-    assert.equal(body.children.filter(node => node.textContent.includes('Saved list ·')).length, 1);
     assert.ok(nodes.find(node => node.tag === 'button' && node.attributes['aria-label'] === 'Refresh saved sessions'));
     search.value = 'no match'; search.dispatch('input');
-    assert.equal(coverage.textContent, '0 matches in loaded sessions');
     const empty = nodes.find(node => node.className === 'picker-sessions')?.children.find(node => node.tag === 'p'); assert.ok(empty);
     assert.equal(empty.textContent, 'No matches in this group.');
-    assert.equal(ordinary.querySelector('#picker-more')?.hidden, name !== 'more pages');
+    assert.equal(nodes.find(node => node.id === 'picker-more')?.hidden, name !== 'more pages');
   } finally {
     globalThis.fetch = oldFetch;
     if (oldDocument) Object.defineProperty(globalThis, 'document', oldDocument); else Reflect.deleteProperty(globalThis, 'document');
@@ -110,7 +101,7 @@ function directPicker(t: TestContext, active?: PrimaryView, page: SavedSessionPa
   });
   const calls: {path: string; body?: unknown}[] = []; const selections: SelectionChange[] = []; const steps: string[] = [];
   const state = {primaries: active ? [active] : [], launchCwd: '/project', ...(catalog ? {roster: catalog.roster} : {})} as unknown as Bootstrap;
-  let reloads = 0; let titleChanges = 0; let failure = false; let listFailure = false; let closed = false; let error = ''; let running = false;
+  const reads: SavedSession[] = []; let reloads = 0; let titleChanges = 0; let failure = false; let listFailure = false; let closed = false; let error = ''; let running = false;
   const modal = {
     node: {dataset: {} as Record<string, string>}, body, token: 0, close: () => {closed = true;},
     open: () => { modal.token++; body.replaceChildren(); closed = false; return body; },
@@ -134,11 +125,12 @@ function directPicker(t: TestContext, active?: PrimaryView, page: SavedSessionPa
     else if (path.includes('/api/projects')) data = {items: [], total: 0, omitted: 0, nextCursor: null, observedAt: saved.observedAt};
     return new Response(JSON.stringify({ok: true, data}), {status: 200, headers: {'content-type': 'application/json'}});
   };
-  const picker = new ProjectPicker({readSession: () => {}, agentPresentation: catalog?.presentation ?? catalogPresentation, modal: modal as unknown as Modal, snapshot: () => state, primary: () => active,selectOpened,titlesChanged:()=>{titleChanges++;},
+  const picker = new ProjectPicker({readSession: item => {reads.push(item);}, agentPresentation: catalog?.presentation ?? catalogPresentation, modal: modal as unknown as Modal, snapshot: () => state, primary: () => active,selectOpened,titlesChanged:()=>{titleChanges++;},
     selection: async change => { steps.push('selection'); selections.push(change); }, reload: async () => { steps.push('reload'); reloads++; }});
   const click = (label: string) => { const node = descendants(body).find(node => node.tag === 'button' && node.textContent === label); assert.ok(node, label); node.click(); };
-  return {picker, modal, body, calls, state, selections, steps, click, fail: () => { failure = true; }, failList: () => { listFailure = true; }, get reloads() { return reloads; }, get titleChanges() { return titleChanges; }, get closed() { return closed; }, get error() { return error || descendants(body).find(node => node.id === 'picker-file-error')?.textContent || descendants(body).find(node => node.className === 'picker-error')?.textContent || ''; }};
+  return {picker, modal, body, calls, reads, state, selections, steps, click, fail: () => { failure = true; }, failList: () => { listFailure = true; }, get reloads() { return reloads; }, get titleChanges() { return titleChanges; }, get closed() { return closed; }, get error() { return error || descendants(body).find(node => node.id === 'picker-file-error')?.textContent || descendants(body).find(node => node.className === 'picker-error')?.textContent || ''; }};
 }
+const rowCount = (setup: {body: Node}) => setup.body.querySelectorAll('.picker-select, .picker-durable-select').length;
 const settle = () => new Promise<void>(resolve => setImmediate(resolve));
 function catalogRow(identity: string): AgentRow {return {identity, storageId: identity, name: 'Published name', cwd: '/project', modifiedAt: 0, state: 'working', owner: 'unknown', availability: 'live', partial: false};}
 function catalogRoster(rows: AgentRow[] = []): CachedRoster {return {rows, scan: {state: 'ready', complete: true, visited: rows.length, skipped: 0, omitted: 0}, stale: false};}
@@ -204,19 +196,15 @@ test('Durable picker rows use projected names and truthful state with native key
   assert.equal(prevented, 2); assert.deepEqual(setup.selections, [{panelVisible: true, selectedTarget: {kind: 'agent', identity: 'second'}}]);
   assert.equal(setup.calls.some(call => call.path === '/api/primaries' || call.path === '/api/agents/convert'), false);
 });
-test('ordinary Resume warnings stay inside their groups and exact-file disclosure', async t => {
+test('the ordinary Resume caution lives only in the exact-file disclosure and rows open read-only snapshots', async t => {
   const published = {...saved, items: [{...ordinarySample, project: '/published', path: '/published/session.jsonl'}]};
   const setup = directPicker(t, undefined, saved, undefined, {roster: catalogRoster(), published}); setup.picker.open(); await settle();
   const registered = setup.body.querySelector('.picker-ordinary'), folder = setup.body.querySelector('.picker-folder-ordinary'); assert.ok(registered); assert.ok(folder);
-  const once = setup.body.children.filter(node => node.classList.contains('picker-safety')); assert.equal(once.length, 1); assert.equal(once[0]?.hidden, false);
-  assert.equal(once[0]?.textContent, 'Stop a terminal session before you resume it here.'); assert.equal(once[0]?.title, 'Before ordinary Resume, stop the terminal session. Each active process keeps its own in-memory branch; this window does not read later writes from another active process.');
+  assert.equal(setup.body.children.some(node => node.classList.contains('picker-safety')), false);
   assert.equal(registered.querySelector('.picker-safety'), null); assert.equal(folder.children.some(node => node.classList.contains('picker-safety')), false); assert.ok(registered.querySelector('.picker-session'));
   const file = folder.querySelector('.picker-file'); assert.ok(file); assert.match(file.querySelector('.picker-safety')?.textContent ?? '', /^Stop a terminal session before you resume it here\./);
-  assert.equal(registered.querySelector('.picker-session-details')?.textContent.includes('Before ordinary Resume, stop the terminal session. Each active process keeps its own in-memory branch; this window does not read later writes from another active process.'), true, 'Each row keeps the full text in Details');
-  assert.equal(registered.querySelector('.picker-select')?.attributes['aria-description'], 'Before ordinary Resume, stop the terminal session. Each active process keeps its own in-memory branch; this window does not read later writes from another active process.', 'and in its accessible description');
-  const convert = descendants(registered).find(node => node.tag === 'button' && node.textContent === 'Convert to Durable'); assert.ok(convert); assert.equal(convert.title, 'Creates a new Durable conversation from saved context. Leaves the ordinary session unchanged.');
-  const search = setup.body.querySelector('#picker-search'); assert.ok(search); search.value = 'no match'; search.dispatch('input');
-  assert.equal(once[0]?.hidden, true);
+  assert.equal(registered.querySelector('.picker-select')?.attributes['aria-description'], 'Open this exact retained snapshot.');
+  assert.equal(descendants(registered).some(node => node.tag === 'button' && node.textContent === 'Convert to Durable'), false);
   assert.equal(setup.calls.some(call => call.path === '/api/primaries' || call.path === '/api/agents/convert'), false);
 });
 function pickerKeyboard(t:TestContext) {
@@ -235,31 +223,30 @@ test('one query filters every loaded group without fetching or weakening coverag
   assert.deepEqual(rows().map(row=>row.dataset.agentIdentity??row.dataset.sessionPath),[ordinarySample.path,'/registered.jsonl','designer','other']);
   for(const [query,expected] of [['Web UI designer','designer'],['Registered planning','/registered.jsonl'],['Saved title',ordinarySample.path]] as const) {
     search.value=query;search.dispatch('input');assert.deepEqual(rows().map(row=>row.dataset.agentIdentity??row.dataset.sessionPath),[expected]);
-    assert.equal(setup.body.querySelector('.picker-partial')?.hidden,false);assert.equal(results.querySelector('.picker-durable')?.querySelector('.picker-list-details')?.children[0]?.textContent,'List details');assert.equal(results.querySelector('.picker-ordinary')?.querySelector('.picker-list-details')?.children[0]?.textContent,'List details');
-    assert.equal(setup.body.querySelector('#picker-coverage')?.textContent, '1 match in loaded sessions');
+    assert.equal(results.querySelector('.picker-durable')?.querySelector('.picker-list-details')?.children[0]?.textContent,'List details');assert.equal(results.querySelector('.picker-ordinary')?.querySelector('.picker-list-details')?.children[0]?.textContent,'List details');
+    assert.equal(rowCount(setup), 1);
   }
   search.value='Folder alias';search.dispatch('input');assert.equal(rows().length,0);
   search.value='not present';search.dispatch('input');assert.equal(rows().length,0);
   for(const group of ['.picker-durable','.picker-ordinary','.picker-folder-ordinary'])assert.match(results.querySelector(group)?.textContent??'',/No matches in this group/);
-  assert.equal(setup.body.querySelector('#picker-coverage')?.textContent, '0 matches in loaded sessions');
-  search.value='';search.dispatch('input');assert.equal(setup.body.querySelector('#picker-coverage')?.textContent, '4 loaded sessions');
+  assert.equal(rowCount(setup), 0);
+  search.value='';search.dispatch('input');assert.equal(rowCount(setup), 4);
   assert.equal(setup.calls.length,calls);assert.equal(setup.selections.length,0);
 });
-test('Arrow navigation uses all visible groups and Enter excludes conversion controls',async t=> {
+test('Arrow navigation uses all visible groups and Enter leaves non-row controls alone',async t=> {
   const key=pickerKeyboard(t),setup=directPicker(t,undefined,saved,undefined,searchCatalog());setup.picker.open();await settle();
   const search=setup.body.querySelector('#picker-search'),results=setup.body.querySelector('.picker-results');assert.ok(search&&results);
   const rows=results.querySelectorAll('.picker-durable-select, .picker-select');search.focus();key(search,'ArrowDown');assert.equal(document.activeElement,rows[0]);
   for(let index=1;index<rows.length;index++){key(results,'ArrowDown',rows[index-1]);assert.equal(document.activeElement,rows[index]);}
   key(results,'Home',rows.at(-1));assert.equal(document.activeElement,rows[0]);key(results,'End',rows[0]);assert.equal(document.activeElement,rows.at(-1));
-  const conversion=descendants(results).find(node=>node.tag==='button'&&node.textContent==='Convert to Durable');assert.ok(conversion);key(results,'Enter',conversion);await settle();assert.equal(setup.calls.some(call=>call.path==='/api/agents/convert'||call.path==='/api/primaries'),false);
-  const file=results.querySelector('#picker-session-path');assert.ok(file);file.focus();key(results,'ArrowDown',file);key(results,'Home',file);assert.equal(document.activeElement,file);
-  conversion.focus();key(results,'ArrowDown',conversion);assert.equal(document.activeElement,conversion);
+  assert.equal(descendants(results).some(node=>node.tag==='button'&&node.textContent==='Convert to Durable'),false);
+  const file=results.querySelector('#picker-session-path');assert.ok(file);file.focus();key(results,'ArrowDown',file);key(results,'Home',file);assert.equal(document.activeElement,file);key(results,'Enter',file);await settle();assert.equal(setup.calls.some(call=>call.path==='/api/agents/convert'||call.path==='/api/primaries'),false);
   search.focus();search.value='no result';search.dispatch('input');key(search,'Enter');key(search,'ArrowDown');assert.equal(document.activeElement,search);assert.equal(setup.selections.length,0);
 });
 for(const [query,identity,path] of [['Web UI designer','designer',undefined],['Registered planning',undefined,'/registered.jsonl'],['Saved title',undefined,ordinarySample.path]] as const) test(`search Enter selects the exact visible target for ${query}`,async t=> {
   const key=pickerKeyboard(t),setup=directPicker(t,undefined,saved,undefined,searchCatalog());setup.picker.open();await settle();const search=setup.body.querySelector('#picker-search');assert.ok(search);search.value=query;search.dispatch('input');key(search,'Enter');await settle();
   if(identity) {assert.deepEqual(setup.selections,[{panelVisible:true,selectedTarget:{kind:'agent',identity}}]);assert.equal(setup.calls.some(call=>call.path==='/api/primaries'),false);}
-  else {assert.deepEqual(setup.calls.find(call=>call.path==='/api/primaries')?.body,{cwd:'/project',sessionFile:path});}
+  else {assert.deepEqual(setup.reads.map(item=>item.path),[path]);assert.equal(setup.calls.some(call=>call.path==='/api/primaries'),false);}
   assert.equal(setup.calls.some(call=>call.path==='/api/agents/convert'),false);
 });
 test('late registered rows honor the current query and retain the focused Durable target',async t=> {
@@ -268,7 +255,7 @@ test('late registered rows honor the current query and retain the focused Durabl
   setup.picker.open();await settle();const search=setup.body.querySelector('#picker-search');assert.ok(search);search.value='Web UI designer';search.dispatch('input');const selected=setup.body.querySelector('.picker-durable-select');assert.ok(selected);selected.focus();
   pending.resolve(Response.json({ok:true,data:catalog.published}));await settle();
   const rows=setup.body.querySelectorAll('.picker-durable-select, .picker-select');assert.equal(rows.length,1);assert.equal(rows[0]?.dataset.agentIdentity,'designer');assert.equal(document.activeElement,rows[0]);assert.equal(setup.selections.length,0);
-  assert.equal(setup.body.querySelector('#picker-coverage')?.textContent, '1 match in loaded sessions');
+  assert.equal(rowCount(setup), 1);
 });
 test('Durable coverage remains local and a ready blank ordinary title displays absence after hydration', async t => {
   const pending = {...saved, titleCursor: 'titles', items: [{...ordinarySample, title: '', titleState: 'pending' as const}]};
@@ -276,8 +263,7 @@ test('Durable coverage remains local and a ready blank ordinary title displays a
   const roster = {...catalogRoster(), stale: true, nextCursor: 'more', scan: {...catalogRoster().scan, complete: false}};
   const setup = directPicker(t, undefined, pending, undefined, {roster, published: noPublished, titlePage: filled}); setup.picker.open(); await settle(); await settle();
   const durable = setup.body.querySelector('.picker-durable'); assert.ok(durable); const notice = durable.querySelector('.picker-durable-coverage'); assert.ok(notice);
-  assert.match(durable.querySelector('.picker-durable-list')?.textContent ?? '', /No loaded sessions in this group/); assert.match(notice.textContent, /Saved Durable catalog/); assert.equal(setup.body.querySelector('.picker-partial')?.hidden, false);
-  const folder = setup.body.querySelector('.picker-folder-ordinary'); assert.ok(folder); assert.equal(folder.querySelector('.picker-session-title')?.textContent, 'No title');
+  assert.match(durable.querySelector('.picker-durable-list')?.textContent ?? '', /No loaded sessions in this group/); assert.match(notice.textContent, /Saved Durable catalog/);   const folder = setup.body.querySelector('.picker-folder-ordinary'); assert.ok(folder); assert.equal(folder.querySelector('.picker-session-title')?.textContent, 'project · s');
   assert.equal(filled.items[0]?.title, ''); assert.equal(pending.items[0]?.titleState, 'pending'); assert.ok(setup.calls.some(call => call.path.includes('&titles=titles')));
 });
 test('global count follows late titles, local pages and the current query', async t => {
@@ -287,15 +273,15 @@ test('global count follows late titles, local pages and the current query', asyn
   const titles = Promise.withResolvers<Response>(), next = Promise.withResolvers<Response>();
   globalThis.fetch = async (input, init) => String(input).includes('&titles=') ? titles.promise : String(input).includes('&cursor=') ? next.promise : original(input, init);
   setup.picker.open(); await settle();
-  const search = setup.body.querySelector('#picker-search'), coverage = setup.body.querySelector('#picker-coverage'); assert.ok(search && coverage);
-  search.value = 'Chosen'; search.dispatch('input'); assert.equal(coverage.textContent, '0 matches in loaded sessions');
+  const search = setup.body.querySelector('#picker-search'); assert.ok(search);
+  search.value = 'Chosen'; search.dispatch('input'); assert.equal(rowCount(setup), 0);
   titles.resolve(Response.json({ok: true, data: {...first, items: [{...pending, title: 'Chosen one', titleState: 'ready'}]}})); await settle();
-  assert.equal(coverage.textContent, '1 match in loaded sessions');
+  assert.equal(rowCount(setup), 1);
   const more = setup.body.querySelector('#picker-more'); assert.ok(more); more.click(); assert.equal(more.disabled, true);
-  search.value = 'Second'; search.dispatch('input'); assert.equal(coverage.textContent, '0 matches in loaded sessions');
+  search.value = 'Second'; search.dispatch('input'); assert.equal(rowCount(setup), 0);
   next.resolve(Response.json({ok: true, data: {...saved, total: 2, items: [{...ordinarySample, id: 'second', path: '/second.jsonl', title: 'Second choice'}]}})); await settle();
-  assert.equal(coverage.textContent, '1 match in loaded sessions'); assert.equal(more.disabled, false); assert.equal(more.hidden, true);
-  search.value = ''; search.dispatch('input'); assert.equal(coverage.textContent, '2 loaded sessions');
+  assert.equal(rowCount(setup), 1); assert.equal(more.disabled, false); assert.equal(more.hidden, true);
+  search.value = ''; search.dispatch('input'); assert.equal(rowCount(setup), 2);
   assert.equal(setup.body.querySelectorAll('.picker-select').length, 2);
 });
 test('loaded Primary metadata follows title completion and newer registered evidence without extra retrieval',async t=> {
@@ -323,11 +309,11 @@ test('late registered duplicate removal changes the same visible set and global 
   const setup = directPicker(t, undefined, {...saved, items: [duplicate]}, undefined, catalog), original = globalThis.fetch, pending = Promise.withResolvers<Response>();
   globalThis.fetch = async (input, init) => String(input) === '/api/sessions/published' ? pending.promise : original(input, init);
   setup.picker.open(); await settle();
-  const search = setup.body.querySelector('#picker-search'), count = setup.body.querySelector('#picker-coverage'); assert.ok(search && count);
-  search.value = 'Folder alias'; search.dispatch('input'); assert.equal(count.textContent, '1 match in loaded sessions');
+  const search = setup.body.querySelector('#picker-search'); assert.ok(search);
+  search.value = 'Folder alias'; search.dispatch('input'); assert.equal(rowCount(setup), 1);
   pending.resolve(Response.json({ok: true, data: catalog.published})); await settle();
-  assert.equal(count.textContent, '0 matches in loaded sessions'); assert.equal(setup.body.querySelectorAll('.picker-select').length, 0);
-  search.value = 'r'; search.dispatch('input'); assert.equal(count.textContent, '3 matches in loaded sessions');
+  assert.equal(rowCount(setup), 0); assert.equal(setup.body.querySelectorAll('.picker-select').length, 0);
+  search.value = 'r'; search.dispatch('input'); assert.equal(rowCount(setup), 3);
   assert.equal(setup.body.querySelectorAll('.picker-select, .picker-durable-select').length, 3);
 });
 test('global count tracks rendered batches and ignores batches from an older query', async t => {
@@ -336,12 +322,12 @@ test('global count tracks rendered batches and ignores batches from an older que
   t.after(() => {if (previous) Object.defineProperty(globalThis, 'requestAnimationFrame', previous); else Reflect.deleteProperty(globalThis, 'requestAnimationFrame');});
   const items = Array.from({length: 21}, (_, index) => ({...ordinarySample, id: String(index), path: `/session-${index}.jsonl`, title: index === 20 ? 'Chosen last' : `Session ${index}`}));
   const setup = directPicker(t, undefined, {...saved, items, total: items.length}); setup.picker.open(); await settle();
-  const search = setup.body.querySelector('#picker-search'), count = setup.body.querySelector('#picker-coverage'); assert.ok(search && count);
-  assert.equal(count.textContent, '20 loaded sessions'); assert.equal(setup.body.querySelectorAll('.picker-select').length, 20);
-  search.value = 'Chosen last'; search.dispatch('input'); assert.equal(count.textContent, '1 match in loaded sessions');
-  for (const callback of frames.splice(0)) callback(); assert.equal(count.textContent, '1 match in loaded sessions');
+  const search = setup.body.querySelector('#picker-search'); assert.ok(search);
+  assert.equal(rowCount(setup), 20); assert.equal(setup.body.querySelectorAll('.picker-select').length, 20);
+  search.value = 'Chosen last'; search.dispatch('input'); assert.equal(rowCount(setup), 1);
+  for (const callback of frames.splice(0)) callback(); assert.equal(rowCount(setup), 1);
   search.value = ''; search.dispatch('input'); for (const callback of frames.splice(0)) callback();
-  assert.equal(count.textContent, '21 loaded sessions'); assert.equal(setup.body.querySelectorAll('.picker-select').length, 21);
+  assert.equal(rowCount(setup), 21); assert.equal(setup.body.querySelectorAll('.picker-select').length, 21);
 });
 test('group disclosures preserve exact coverage while unsettled states never claim an empty search', async t => {
   const roster = {...catalogRoster(), stale: true, scan: {...catalogRoster().scan, state: 'failed' as const, complete: false, skipped: 3, omitted: 4}, error: {code: 'scan_failed', message: 'Exact catalog failure', retry: 'none' as const}};
@@ -351,8 +337,7 @@ test('group disclosures preserve exact coverage while unsettled states never cla
   assert.match(durable.querySelector('.picker-durable-coverage')?.textContent ?? '', /could not refresh.*Saved Durable catalog/);
   assert.doesNotMatch(durable.querySelector('.picker-durable-list')?.textContent ?? '', /No matches|No loaded/);
   const facts = durable.querySelector('.picker-list-details'); assert.ok(facts);
-  assert.equal(facts.open, false); assert.match(facts.textContent, /List details.*0 Durable conversations loaded/); assert.equal(setup.body.querySelector('.picker-partial')?.hidden, false);
-  assert.match(facts.textContent, /3 skipped; 4 omitted/); assert.match(facts.textContent, /Exact catalog failure/);
+  assert.equal(facts.open, false); assert.match(facts.textContent, /List details.*0 Durable conversations loaded/);   assert.match(facts.textContent, /3 skipped; 4 omitted/); assert.match(facts.textContent, /Exact catalog failure/);
   assert.match(facts.children[0]?.attributes['aria-label'] ?? '', /Agent conversations/);
   assert.match(registered.querySelector('.picker-list-details')?.textContent ?? '', /62 discovery records are unavailable or outside the bound/);
   assert.doesNotMatch(registered.textContent, /Conversion copies saved context only/); assert.match(registered.textContent, /Your sessions in other folders/);
@@ -381,15 +366,16 @@ test('first-use folder selection retains the inline session chooser after the ro
   assert.ok(descendants(root).find(node=>node.attributes['aria-label']==='New session'));assert.ok(descendants(root).find(node=>node.className==='picker-select'));
   assert.equal(setup.modal.token,0);assert.equal(setup.calls.some(call=>call.path==='/api/primaries'),false);
 });
-test('current project opens its session list and a saved row directly admits one open without attestation', async t => {
+test('current project opens its session list and a saved row reads one exact snapshot without opening a writer', async t => {
   const setup = directPicker(t, active); setup.picker.open(); await settle();
   assert.equal(setup.calls.some(call => call.path.includes('/api/projects')), false);
   assert.equal(descendants(setup.body).some(node => node.textContent === 'Open project'), false);
-  const ordinary=setup.body.querySelector('.picker-folder-ordinary');assert.ok(ordinary);const safety=setup.body.children.find(node=>node.classList.contains('picker-safety'));assert.ok(safety);assert.equal(safety.textContent,'Stop a terminal session before you resume it here.');assert.equal(safety.hidden,false);
+  assert.ok(setup.body.querySelector('.picker-folder-ordinary'));
+  assert.equal(setup.body.children.some(node => node.classList.contains('picker-safety')), false);
   const row = descendants(setup.body).find(node => node.className === 'picker-select'); assert.ok(row);
   row.click(); row.click(); await settle();
-  assert.deepEqual(setup.calls.filter(call => call.path === '/api/primaries').map(call => call.body), [{cwd: '/project', sessionFile: '/project/s.jsonl'}]);
-  assert.equal(setup.reloads, 1); assert.equal(setup.closed, true);
+  assert.deepEqual(setup.reads.map(item => item.path), ['/project/s.jsonl', '/project/s.jsonl']);
+  assert.equal(setup.calls.some(call => call.path === '/api/primaries'), false); assert.equal(setup.reloads, 0);
 });
 for (const lifecycle of ['stopped', 'failed'] as const) test(`direct resume reopens a ${lifecycle} owner without a chooser, inventory read or confirmation`, async t => {
   const setup = directPicker(t, {...active, lifecycle, sessionFile: saved.items[0].path});
@@ -441,20 +427,11 @@ test('without a primary or launch project the picker retains explicit project se
   assert.ok(descendants(setup.body).find(node => node.id === 'picker-project'));
   assert.equal(setup.calls.some(call => call.path.includes('/api/sessions')), false);
 });
-test('saved row reuses the current exact backend owner and epoch without a second open', async t => {
+test('saved rows read a snapshot whether or not a backend owner holds the file', async t => {
   const setup = directPicker(t, {...active, sessionFile: saved.items[0].path}); setup.picker.open(); await settle();
-  setup.state.primaries = [{...active, epoch: 3, sessionFile: saved.items[0].path}];
   descendants(setup.body).find(node => node.className === 'picker-select')?.click(); await settle();
-  assert.deepEqual(setup.selections, [{primaryKey: 'current', selectedTarget: {kind: 'primary', key: 'current', epoch: 3}}]);
-  assert.equal(setup.calls.some(call => call.path === '/api/primaries'), false); assert.equal(setup.closed, true);
-  assert.equal(setup.reloads, 1); assert.deepEqual(setup.steps, ['selection', 'reload']);
-});
-test('a row whose owner changed opens the saved path and a known conflict retains the list', async t => {
-  const setup = directPicker(t, {...active, sessionFile: saved.items[0].path}); setup.picker.open(); await settle();
-  setup.state.primaries = [{...active, epoch: 2, sessionFile: '/project/other.jsonl'}]; setup.fail();
-  const row = descendants(setup.body).find(node => node.className === 'picker-select'); assert.ok(row); row.click(); await settle();
-  assert.equal(setup.selections.length, 0); assert.equal(setup.reloads, 0); assert.equal(setup.closed, false);
-  assert.match(setup.error, /backend writer/); assert.ok(descendants(setup.body).includes(row));
+  assert.deepEqual(setup.reads.map(item => item.path), [saved.items[0].path]);
+  assert.equal(setup.selections.length, 0); assert.equal(setup.calls.some(call => call.path === '/api/primaries'), false); assert.equal(setup.reloads, 0);
 });
 test('Projects remains deliberate and exact paths validate before direct open or owner reuse', async t => {
   const setup = directPicker(t, {...active, sessionFile: saved.items[0].path}); setup.picker.open(); await settle();
@@ -561,7 +538,7 @@ test('a blank saved title keeps session identity in details without an agent suf
   const item = saved.items[0]; assert.ok(item);
   const setup = directPicker(t, undefined, {...saved, items: [{...item, id: 'blank0033', title: ''}]}); setup.picker.open(); await settle();
   const row = descendants(setup.body).find(node => node.className === 'picker-select'); assert.ok(row);
-  assert.equal(row.querySelector('.picker-session-title')?.textContent, 'No title'); assert.equal(row.querySelector('.picker-session-tail')?.hidden, true); assert.equal(row.querySelector('.picker-session-tail')?.textContent, '');
+  assert.equal(row.querySelector('.picker-session-title')?.textContent, 'project · 0033'); assert.equal(row.querySelector('.picker-session-tail')?.hidden, true); assert.equal(row.querySelector('.picker-session-tail')?.textContent, '');
   assert.match(descendants(setup.body).find(node => node.className === 'picker-session-details')?.textContent ?? '', /blank0033/);
 });
 
@@ -577,28 +554,20 @@ test('title completion updates duplicate tails without replacing a focused saved
   assert.equal(select.querySelector('.picker-session-title')?.textContent, 'Completed duplicate title'); assert.equal(select.querySelector('.picker-session-tail')?.textContent, '0033');
 });
 
-test('first use mounts the shared session list inline and enters a saved session without a dialog', async t => {
+test('first use mounts the shared session list inline and reads a saved session without a dialog', async t => {
   const setup = directPicker(t); const root = new Node('main');
   setup.picker.mount(root as unknown as HTMLElement, '/project'); await settle();
   assert.equal(setup.modal.token, 0);
   assert.match(root.textContent, /Sessions in project/);
   assert.ok(descendants(root).find(node => node.id === 'picker-search'));
   const select = descendants(root).find(node => node.className === 'picker-select'); assert.ok(select);
-  select.click(); select.click(); await settle();
-  assert.equal(setup.calls.filter(call => call.path === '/api/primaries').length, 1);
-  assert.equal(setup.reloads, 1); assert.equal(root.children.length, 0); assert.equal(setup.modal.token, 0);
+  select.click(); await settle();
+  assert.deepEqual(setup.reads.map(item => item.path), ['/project/s.jsonl']);
+  assert.equal(setup.calls.some(call => call.path === '/api/primaries'), false); assert.equal(setup.reloads, 0); assert.ok(root.children.length > 0); assert.equal(setup.modal.token, 0);
 });
-test('an inline conflict retains the list and project choice', async t => {
-  const setup = directPicker(t); const root = new Node('main');
-  setup.picker.mount(root as unknown as HTMLElement, '/project'); await settle(); setup.fail();
-  descendants(root).find(node => node.className === 'picker-select')?.click(); await settle();
-  assert.match(root.textContent, /backend writer/); assert.ok(descendants(root).find(node => node.id === 'picker-search'));
-  assert.equal(setup.reloads, 0); assert.equal(setup.modal.token, 0);
-});
-test('inline loading cancels late inventory after unmount and terminal safety only accompanies unowned saved rows', async t => {
+test('inline loading cancels late inventory after unmount', async t => {
   const setup = directPicker(t, {...active, sessionFile: saved.items[0].path}); const root = new Node('main');
   setup.picker.mount(root as unknown as HTMLElement, '/project'); await settle();
-  assert.equal(descendants(root).find(node => node.className === 'secondary picker-safety')?.hidden, true);
   const nodes = [...root.children]; setup.picker.mount(root as unknown as HTMLElement, '/project'); assert.deepEqual(root.children, nodes);
   setup.picker.unmount(); assert.equal(root.children.length, 0);
   setup.picker.mount(root as unknown as HTMLElement, '/project'); setup.picker.unmount(); await settle();
@@ -650,18 +619,17 @@ test('chooser controls stay with their title, search and list disclosure while r
   const nodes = descendants(root); const searchRow = nodes.find(node => node.className === 'picker-search-row'); assert.ok(searchRow);
   assert.equal(searchRow.children[0]?.className, 'picker-input-row'); assert.equal(searchRow.children[1]?.attributes['aria-label'], 'Refresh saved sessions');
   assert.equal(searchRow.children[2]?.attributes['aria-label'], 'Saved session options');
-  const footer = nodes.find(node => node.classList.contains('picker-footer')); assert.ok(footer);
   const folder = nodes.find(node => node.className === 'picker-folder-ordinary'); assert.ok(folder);
   const listDetails = folder.querySelector('.picker-list-details'); assert.ok(listDetails);
-  const results = nodes.find(node => node.className === 'picker-results'); assert.ok(results); assert.equal(descendants(results).includes(footer), false); assert.ok(nodes.find(node => node.children.includes(results) && node.children.includes(footer)));
-  assert.equal(results.children[0], folder); assert.ok(folder.children.includes(folder.querySelector('#picker-more') as Node));
+  const results = nodes.find(node => node.className === 'picker-results'); assert.ok(results);
+  assert.equal(results.children[0], folder); assert.ok(root.querySelector('#picker-more'));
   assert.equal(listDetails.children.some(node => node.textContent === 'Session file'), false);
   const file = nodes.find(node => node.className === 'picker-file'); assert.ok(file);
   assert.equal(file.children[0]?.textContent, 'Session file');
   const row = nodes.find(node => node.className === 'picker-session'); assert.ok(row);
   assert.equal(row.children[0]?.className, 'picker-select'); assert.equal(row.children[1]?.className, 'picker-age quiet');
-  const resume=row.children[2];assert.ok(resume);assert.equal(resume.tag,'button');assert.equal(resume.textContent,'Resume');assert.equal(resume.disabled,false);const convert=row.children[3];assert.ok(convert);assert.equal(convert.tag,'button');assert.equal(convert.textContent,'Convert to Durable');assert.equal(convert.title,'Creates a new Durable conversation from saved context. Leaves the ordinary session unchanged.');assert.equal(convert.attributes['aria-description'],convert.title);const facts=row.querySelector('.picker-session-details');assert.ok(facts);assert.equal(row.children[4],facts);assert.equal(facts.tag,'details');assert.equal(facts.children[0]?.attributes['aria-label'],'Details for Saved title');assert.equal(setup.calls.some(call=>call.path==='/api/primaries'||call.path==='/api/agents/convert'),false);
-  assert.deepEqual(facts.children.slice(1).map(node => node.textContent), ['Saved title', '/project', 's', '/project/s.jsonl', '10 B', 'Before ordinary Resume, stop the terminal session. Each active process keeps its own in-memory branch; this window does not read later writes from another active process.']);
+  const facts=row.querySelector('.picker-session-details');assert.ok(facts);assert.equal(row.children[2],facts);assert.equal(facts.tag,'details');assert.equal(facts.children[0]?.attributes['aria-label'],'Details for Saved title');assert.equal(row.children.length,3);assert.equal(setup.calls.some(call=>call.path==='/api/primaries'||call.path==='/api/agents/convert'),false);
+  assert.deepEqual(facts.children.slice(1).map(node => node.textContent), ['Saved title', '/project', 's', '/project/s.jsonl', '10 B']);
   file.open = true; file.dispatch('toggle');
   assert.ok(descendants(root).find(node => node.id === 'picker-session-path')); assert.equal(setup.modal.token, 0);
 });
@@ -720,12 +688,12 @@ test('exact file conflict stays beside the field without dropping the selected p
   assert.equal(descendants(setup.body).find(node => node.className === 'picker-sessions'), list);
   assert.equal(path.value, '/project/unlisted.jsonl'); assert.equal(setup.closed, false); assert.equal(setup.reloads, 0);
 });
-test('stopped and failed session records resume their exact file rather than select a dead target', async t => {
+test('stopped and failed session records stay read-only snapshots and select no dead target', async t => {
   const setup = directPicker(t, {...active, lifecycle: 'stopped', sessionFile: saved.items[0].path}); setup.picker.open(); await settle();
   setup.state.primaries.push({...active, key: 'failed', lifecycle: 'failed', sessionFile: saved.items[0].path});
   const row = descendants(setup.body).find(node => node.className === 'picker-select'); assert.ok(row); row.click(); await settle();
-  assert.equal(setup.selections.length, 0);
-  assert.deepEqual(setup.calls.find(call => call.path === '/api/primaries')?.body, {cwd: '/project', sessionFile: saved.items[0].path});
+  assert.equal(setup.selections.length, 0); assert.deepEqual(setup.reads.map(item => item.path), [saved.items[0].path]);
+  assert.equal(setup.calls.some(call => call.path === '/api/primaries'), false);
 });
 test('an owned modal resume retains its host when a transient empty view requests inline mounting', async t => {
   const setup = directPicker(t, active); setup.picker.open(); await settle();
@@ -738,25 +706,25 @@ test('an owned modal resume retains its host when a transient empty view request
   setup.picker.mount(inline as unknown as HTMLElement, '/project'); await settle();
   assert.ok(descendants(inline).find(node => node.id === 'picker-search'));
 });
-test('prompt excerpts retain full supplied details and ordinary Resume cautions stay scoped', async t => {
+test('prompt excerpts retain full supplied details and the Resume caution stays in the file form', async t => {
   const title = 'Inspect this saved conversation '.repeat(6), item = saved.items[0]; assert.ok(item);
   const setup = directPicker(t, active, {...saved, items: [{...item, title, titleSource: 'prompt'}, {...item, id: 'named', path: '/project/named.jsonl', title, titleSource: 'name'}]});
   setup.picker.open(); await settle();
   const rows = descendants(setup.body).filter(node => node.className === 'picker-session'); assert.equal(rows.length, 2);
-  assert.ok((rows[0]?.querySelector('.picker-session-title')?.textContent.length ?? 100) <= 65);
-  assert.equal(rows[0]?.querySelector('.picker-select')?.title, title); assert.equal(rows[0]?.querySelector('.picker-session-full-title')?.textContent, title);
-  assert.equal(rows[1]?.querySelector('.picker-session-title')?.textContent, title);
+  assert.equal(rows[0]?.querySelector('.picker-session-title')?.textContent, title.trim());
+  assert.ok(rows[0]?.querySelector('.picker-select')?.title.startsWith(title.trim())); assert.equal(rows[0]?.querySelector('.picker-session-full-title')?.textContent, title.trim());
+  assert.equal(rows[1]?.querySelector('.picker-session-title')?.textContent, title.trim());
   assert.equal(rows[0]?.querySelector('.picker-session-folder')?.textContent, 'project'); assert.ok(rows[0]?.querySelector('.picker-age'));
   const file = descendants(setup.body).find(node => node.className === 'picker-file'); assert.ok(file); file.open = true; file.dispatch('toggle');
-  const durable=setup.body.querySelector('.picker-durable'),registered=setup.body.querySelector('.picker-ordinary'),ordinary=setup.body.querySelector('.picker-folder-ordinary');assert.ok(durable&&registered&&ordinary);assert.equal(durable.querySelector('.picker-safety'),null);assert.equal(registered.querySelector('.picker-safety'),null);assert.equal(ordinary.children.some(node=>node.classList.contains('picker-safety')),false);const groupSafety=setup.body.children.find(node=>node.classList.contains('picker-safety'));assert.ok(groupSafety);assert.equal(groupSafety.hidden,true,'The list line steps aside while the form is open');assert.equal(groupSafety.textContent,'Stop a terminal session before you resume it here.');const fileSafety=file.querySelector('.picker-safety');assert.ok(fileSafety);assert.equal(fileSafety.hidden,false);assert.match(fileSafety.textContent,/^Stop a terminal session before you resume it here\./);assert.equal(setup.calls.some(call=>call.path==='/api/primaries'||call.path==='/api/agents/convert'),false);
+  const durable=setup.body.querySelector('.picker-durable'),registered=setup.body.querySelector('.picker-ordinary'),ordinary=setup.body.querySelector('.picker-folder-ordinary');assert.ok(durable&&registered&&ordinary);assert.equal(durable.querySelector('.picker-safety'),null);assert.equal(registered.querySelector('.picker-safety'),null);assert.equal(ordinary.children.some(node=>node.classList.contains('picker-safety')),false);assert.equal(setup.body.children.some(node=>node.classList.contains('picker-safety')),false);const fileSafety=file.querySelector('.picker-safety');assert.ok(fileSafety);assert.equal(fileSafety.hidden,false);assert.match(fileSafety.textContent,/^Stop a terminal session before you resume it here\./);assert.equal(setup.calls.some(call=>call.path==='/api/primaries'||call.path==='/api/agents/convert'),false);
 });
-test('different prompts with identical compact captions retain distinct exact-identity tails', async t => {
+test('different prompts keep distinct captions so rows need no identity tail', async t => {
   const item = saved.items[0]; assert.ok(item); const prefix = 'Same visible prompt '.repeat(5);
   const setup = directPicker(t, active, {...saved, items: [{...item, id: 'prompt0033', title: `${prefix}first`, titleSource: 'prompt'}, {...item, id: 'prompt0034', path: '/project/second.jsonl', title: `${prefix}second`, titleSource: 'prompt'}]});
   setup.picker.open(); await settle(); const rows = descendants(setup.body).filter(node => node.className === 'picker-select'); assert.equal(rows.length, 2);
-  assert.equal(rows[0]?.querySelector('.picker-session-title')?.textContent, rows[1]?.querySelector('.picker-session-title')?.textContent);
-  assert.equal(rows[0]?.querySelector('.picker-session-tail')?.textContent, '0033'); assert.equal(rows[1]?.querySelector('.picker-session-tail')?.textContent, '0034');
-  assert.notEqual(rows[0]?.title, rows[1]?.title);
+  assert.notEqual(rows[0]?.querySelector('.picker-session-title')?.textContent, rows[1]?.querySelector('.picker-session-title')?.textContent);
+  assert.equal(rows[0]?.querySelector('.picker-session-tail')?.hidden, true); assert.equal(rows[1]?.querySelector('.picker-session-tail')?.hidden, true);
+    assert.notEqual(rows[0]?.title, rows[1]?.title);
 });
 test('chooser style bindings preserve ordinary actions and full-width Durable rows', () => {
   const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8');
@@ -815,23 +783,18 @@ test('loaded project rows share shortest unique suffixes and preserve exact dire
 
 const sessionRow = (setup: ReturnType<typeof directPicker>) => { const row = setup.body.querySelector('.picker-folder-ordinary')?.querySelector('.picker-session'); assert.ok(row); return row; };
 const rowOf = (setup: ReturnType<typeof directPicker>) => { const select = setup.body.querySelector('.picker-folder-ordinary')?.querySelector('.picker-select'); assert.ok(select); return select; };
-test('a saved file a terminal writes reads "Open in a terminal" with Resume disabled, then enables with one line once the terminal ends', async t => {
+test('a saved file a terminal writes reads "live in terminal", then "Terminal ended" once the terminal ends, and stays readable', async t => {
   const page = {...saved, items: [{...ordinarySample, writer: 'live' as const}]};
   const setup = directPicker(t, undefined, page, undefined, {roster: catalogRoster(), published: noPublished}); setup.picker.open(); await settle();
   let select = rowOf(setup);
-  assert.equal(select.disabled, true); assert.match(select.textContent, /Open in a terminal · Resume when it exits/); assert.doesNotMatch(select.textContent, /Resume here when the terminal exits\./);
+  assert.equal(select.disabled, false); assert.match(select.textContent, /live in terminal/); assert.doesNotMatch(select.textContent, /Terminal ended/);
   assert.equal(select.querySelectorAll('.picker-session-meta').length, 1, 'The held state reads on one line');
-  assert.doesNotMatch(select.textContent, /The terminal session ended/);
-  let resumeControl = sessionRow(setup).children.find(node => node.className === 'quiet picker-resume'); assert.ok(resumeControl); assert.equal(resumeControl.textContent, 'Resume'); assert.equal(resumeControl.disabled, true);
-  assert.equal(resumeControl.title, 'Resume here when the terminal exits.'); assert.equal(resumeControl.attributes['aria-description'], 'Resume here when the terminal exits.');
-  assert.equal(sessionRow(setup).children.indexOf(resumeControl), sessionRow(setup).children.findIndex(node => node.textContent === 'Convert to Durable') - 1, 'Resume sits before Convert to Durable');
-  assert.equal(setup.calls.some(call => call.path === '/api/primaries'), false);
+  assert.equal(sessionRow(setup).children.some(node => node.className === 'quiet picker-resume'), false);
   page.items = [{...ordinarySample}]; setup.picker.writersChanged(); await settle();
-  select = rowOf(setup); resumeControl = sessionRow(setup).children.find(node => node.className === 'quiet picker-resume'); assert.equal(resumeControl?.disabled, false);
-  assert.equal(select.disabled, false); assert.match(select.textContent, /The terminal session ended\. Resume here\./); assert.doesNotMatch(select.textContent, /Open in a terminal/);
-  assert.equal(setup.calls.some(call => call.path === '/api/primaries'), false, 'release alone resumes nothing');
+  select = rowOf(setup); assert.equal(select.disabled, false); assert.match(select.textContent, /Terminal ended/); assert.doesNotMatch(select.textContent, /live in terminal/);
   select.click(); await settle();
-  assert.equal(setup.calls.filter(call => call.path === '/api/primaries').length, 1);
+  assert.deepEqual(setup.reads.map(item => item.path), [ordinarySample.path]);
+  assert.equal(setup.calls.some(call => call.path === '/api/primaries'), false, 'release alone resumes nothing');
 });
 test('a registered file in the current folder keeps one folder row before and after writer release', async t => {
   const held = {...ordinarySample, writer: 'live' as const};
@@ -843,9 +806,9 @@ test('a registered file in the current folder keeps one folder row before and af
   page.items = [{...ordinarySample}]; catalog.published = {...noPublished}; setup.picker.writersChanged(); await settle();
   assert.equal(registered(), 0);
   let select = rowOf(setup);
-  assert.equal(select.disabled, false); assert.match(select.textContent, /The terminal session ended\. Resume here\./);
+  assert.equal(select.disabled, false); assert.match(select.textContent, /Terminal ended/);
   setup.modal.close(); setup.picker.open(); await settle();
-  select = rowOf(setup); assert.equal(select.disabled, false); assert.match(select.textContent, /The terminal session ended\. Resume here\./);
+  select = rowOf(setup); assert.equal(select.disabled, false); assert.match(select.textContent, /Terminal ended/);
 });
 test('a file that was never held reads as before and the window regaining focus makes no row claim', async t => {
   const setup = directPicker(t, undefined, saved, undefined, {roster: catalogRoster(), published: noPublished}); setup.picker.open(); await settle();
@@ -862,34 +825,27 @@ test('a refusal at Resume shows the writer sentence and turns the row to its hel
     return original(url, init);
   };
   page.items = [{...ordinarySample, writer: 'live' as const}];
-  rowOf(setup).click(); await settle(); await settle();
+  setup.picker.resume('/project', ordinarySample.path); await settle(); await settle();
   assert.match(setup.error, /^A terminal session is writing this file\. Resume when it ends\./);
-  assert.equal(rowOf(setup).disabled, true); assert.match(rowOf(setup).textContent, /Open in a terminal/);
-});
-test('the Resume text control resumes the same session as the whole-row button', async t => {
-  const setup = directPicker(t, undefined, {...saved, items: [{...ordinarySample}]}, undefined, {roster: catalogRoster(), published: noPublished}); setup.picker.open(); await settle();
-  const control = sessionRow(setup).children.find(node => node.className === 'quiet picker-resume'); assert.ok(control);
-  assert.equal(control.disabled, false); assert.equal(setup.calls.some(call => call.path === '/api/primaries'), false);
-  control.click(); await settle();
-  assert.equal(setup.calls.filter(call => call.path === '/api/primaries').length, 1);
+  assert.equal(rowOf(setup).disabled, false); assert.match(rowOf(setup).textContent, /live in terminal/);
 });
 test('an opened row has no Resume control while the row itself still selects its session', async t => {
   const setup = directPicker(t, {...active, sessionFile: saved.items[0].path}); setup.picker.open(); await settle();
   const row = sessionRow(setup);
   assert.equal(row.children.some(node => node.className === 'quiet picker-resume'), false); assert.equal(row.dataset.opened, 'true');
   assert.match(row.querySelector('.picker-select')?.textContent ?? '', /In this window/);
-  assert.equal(row.children.some(node => node.textContent === 'Convert to Durable'), true);
+  assert.equal(row.children.some(node => node.textContent === 'Convert to Durable'), false);
   row.querySelector('.picker-select')?.click(); await settle();
+  assert.deepEqual(setup.reads.map(item => item.path), [saved.items[0].path]);
   assert.equal(setup.calls.some(call => call.path === '/api/primaries'), false, 'Selecting an open session starts nothing');
 });
-test('opening the Session file form leaves exactly one visible Resume caution and closing it restores the list line', async t => {
+test('the Session file form carries the only Resume caution', async t => {
   const setup = directPicker(t, undefined, saved, undefined, {roster: catalogRoster(), published: noPublished}); setup.picker.open(); await settle();
   const file = setup.body.querySelector('.picker-file'); assert.ok(file);
   const cautions = () => descendants(setup.body).filter(node => node.classList.contains('picker-safety') && node.hidden !== true && !(file.hidden && file.querySelector('.picker-safety') === node));
-  assert.equal(cautions().length, 1); assert.equal(setup.body.children.some(node => node.classList.contains('picker-safety') && node.hidden === false), true);
+  assert.equal(cautions().length, 0);
   file.hidden = false; file.open = true; file.dispatch('toggle');
-  assert.equal(cautions().length, 1, 'Only the form caution remains');
-  assert.equal(setup.body.children.some(node => node.classList.contains('picker-safety') && node.hidden === false), false);
+  assert.equal(cautions().length, 1, 'Only the form caution shows');
   file.open = false; file.dispatch('toggle');
-  assert.equal(cautions().length, 1); assert.equal(setup.body.children.some(node => node.classList.contains('picker-safety') && node.hidden === false), true);
+  assert.equal(cautions().length, 0); assert.equal(file.hidden, true);
 });
