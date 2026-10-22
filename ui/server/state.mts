@@ -182,8 +182,7 @@ function validateLayoutWrite(current:Workspace,input:SelectionInput,version?:num
 function validateOpaqueLayoutWrite(current:ConversationLayout|undefined,incoming:ConversationLayout,version?:number):void {
   const before=opaqueLayoutFields(current),after=opaqueLayoutFields(incoming);
   if(version===undefined&&before.size&&!isDeepStrictEqual(current,incoming))throw new StateError('layout_version','Reload this page before changing the retained layout. No view state changed.',409);
-  for(const [key,value] of before)if(!isDeepStrictEqual(value,after.get(key)))throw new StateError('layout_version','This page cannot replace retained view metadata. No view state changed.',409);
-  for(const key of after.keys())if(key.startsWith('tab:session:')&&!before.has(key))throw new StateError('layout_version','This page only preserves existing session places. No view state changed.',409);
+  for(const [key,value] of before)if(!key.startsWith('tab:session:')&&!isDeepStrictEqual(value,after.get(key)))throw new StateError('layout_version','This page cannot replace retained view metadata. No view state changed.',409);
 }
 function selectedWorkspace(current: Workspace, input: SelectionInput, layoutVersion?:number): Workspace {
       const value: Workspace = {...current, revision: current.revision + 1};

@@ -102,7 +102,7 @@ export function movePaneTab(layout: PaneLayout, key: string, destination: string
   return withRoot(layout, root, source.id === destination ? layout.focusedPane : destination);
 }
 export function closePaneTab(layout: PaneLayout, key: string): PaneLayout {
-  const source = paneForTab(layout, key); if (!source || source.tabs.some(tab=>tabKey(tab)===key&&tab.kind==='session')) return layout;
+  const source = paneForTab(layout, key); if (!source) return layout;
   let root = mapPanes(layout.root, pane => withoutTab(pane, key));
   if (source.tabs.length === 1 && paneLeaves(root).length > 1) root = prune(root, new Set([source.id])) ?? root;
   return withRoot(layout, root);

@@ -163,7 +163,7 @@ export class TabStrip {
     const caption = node.querySelector('.tab-label'); if (caption) caption.textContent = this.tabCaption(label,tail,compact);
     this.paintDot(node, status.glyph, status.label, status.attention?.tone ?? status.tone, status.attention);
     const identity = node.querySelector<HTMLElement>('.tab-identity'); if (identity) {identity.textContent = tail ?? ''; identity.hidden = compact||!tail;}
-    const close = node.querySelector<HTMLElement>('.tab-close'); if (close) {close.hidden=tab.kind==='session';close.setAttribute('aria-label', `Close ${accessible} tab`); close.title = `Close ${accessible} tab`;}
+    const close = node.querySelector<HTMLElement>('.tab-close'); if (close) {close.setAttribute('aria-label', `Close ${accessible} tab`); close.title = `Close ${accessible} tab`;}
   }
   private paintSessionState(node:HTMLElement,word:string|undefined,label:string):string {
     const state=node.querySelector<HTMLElement>('.tab-session-state');if(state){state.textContent=word??'';state.hidden=!word;}
@@ -229,7 +229,7 @@ export class TabStrip {
     const state = row.querySelector<HTMLElement>('.conversation-state'); if (state) {state.textContent = word; state.hidden = !word; state.title = status.attention?.title ?? word; state.dataset.tone = status.attention?.tone ?? status.tone ?? 'secondary'; state.setAttribute('aria-hidden', 'true');}
     const caption = row.querySelector<HTMLElement>('.conversation-name'); if (caption) caption.textContent = label;
     const identity = row.querySelector<HTMLElement>('.conversation-identity'); if (identity) {identity.textContent = tail ?? ''; identity.hidden = !tail; identity.title = tab.kind === 'agent' ? `Agent ID: ${tab.identity}` : '';}
-    const close = row.querySelector<HTMLElement>('.conversation-row-close'); if (close) {close.hidden=tab.kind==='session';close.setAttribute('aria-label', `Close ${label} tab`); close.title = `Close ${label} tab`;}
+    const close = row.querySelector<HTMLElement>('.conversation-row-close'); if (close) {close.setAttribute('aria-label', `Close ${label} tab`); close.title = `Close ${label} tab`;}
     return row;
   }
   private createConversationRow(key: string): HTMLElement {

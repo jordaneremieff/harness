@@ -119,7 +119,7 @@ export function resolveAppearance(value: unknown): Appearance {
 /** Primary tabs follow the workspace primary; closing a tab never stops its conversation. */
 export type ConversationTab = {kind: 'primary'} | {kind: 'agent'; identity: string};
 export type FileTab = {kind: 'file'; rootId: string; path: string; view?: 'preview'};
-/** This reader preserves session places but does not create or execute them. */
+/** A saved session place: a read-only view of one session file. Extra fields, such as the stored reading position, round-trip unchanged. */
 export type SessionTab = {kind: 'session'; id: string; path: string; project: string; [field: string]: unknown};
 export type WorkspaceTab = ConversationTab | FileTab | SessionTab;
 export const LAYOUT_VERSION = 1;

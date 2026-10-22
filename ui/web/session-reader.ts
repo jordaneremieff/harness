@@ -9,8 +9,22 @@ import type {PrimaryDraftActions, PrimaryDraftSource} from './primary-draft-acti
 
 export type SessionReadSource={saved:SavedSession}|{primary:PrimaryView;saved?:SavedSession};
 export type SessionReaderReload={source:SessionReadSource;entries:EntryView[];leaf:string|null;before:string|null;primaryCursor:string|null;loaded:boolean;asOf:string;status:string;reading:ReadingView;presentation:PresentationView;scrollLeft:number;focused:boolean};
-type Hooks={primaryDraft?:PrimaryDraftActions;primaries?:()=>readonly PrimaryView[]|undefined;focus:()=>void;close:()=>void;resume:(source:SessionReadSource)=>void};
-/** A page-local read-only view has no conversation target, writer, composer, or saved layout entry. */
+/** Where a saved reader stopped: an entry anchor with its pixel offset, or the tail. */
+export type SessionView={anchorId:string|null;offsetPx:number;followTail:boolean;scrollLeft:number};
+export function readSessionView(value:unknown):SessionView|undefined {
+  if(!value||typeof value!=='object'||Array.isArray(value))return;
+  const view=value as Record<string,unknown>,anchor=view.anchorId;
+  if(!(anchor===null||typeof anchor==='string'&&anchor.length>0&&anchor.length<=256)||typeof view.followTail!=='boolean')return;
+  if(typeof view.offsetPx!=='number'||!Number.isFinite(view.offsetPx)||typeof view.scrollLeft!=='number'||!Number.isFinite(view.scrollLeft))return;
+  return {anchorId:anchor,offsetPx:view.offsetPx,followTail:view.followTail,scrollLeft:view.scrollLeft};
+}
+export function sameSessionView(a:SessionView|undefined,b:SessionView|undefined):boolean {
+  return !!a&&!!b&&a.anchorId===b.anchorId&&a.followTail===b.followTail&&Math.abs(a.offsetPx-b.offsetPx)<16&&Math.abs(a.scrollLeft-b.scrollLeft)<16;
+}
+type Hooks={primaryDraft?:PrimaryDraftActions;primaries?:()=>readonly PrimaryView[]|undefined;focus:()=>void;close:()=>void;resume:(source:SessionReadSource)=>void;
+  /** A saved session tab supplies its own title and close control, and reports its reading position. */
+  embedded?:boolean;view?:(view:SessionView)=>void};
+/** A read-only view has no conversation target, writer or composer. A saved session tab keeps only its reading position in the layout. */
 export class SessionReader {
   readonly node=element('section','session-reader');
   private heading=button('',()=>this.focus(),'session-reader-title');
@@ -33,6 +47,9 @@ export class SessionReader {
   private reading=false;
   private loaded=false;
   private reloadPresentation:PresentationView={revision:0,expanded:[],showThinking:false};
+  private pendingView?:SessionView;
+  private lastView?:SessionView;
+  private viewTimer?:ReturnType<typeof setTimeout>;
   get reloadReady():boolean{return !this.source||!this.reading;}
   get saved():SavedSession|undefined{return this.loaded?this.source?.saved:undefined;}
   private hooks:Hooks;
@@ -40,19 +57,50 @@ export class SessionReader {
   constructor(hooks:Hooks){
     this.hooks=hooks;
     const header=element('header','session-reader-header'),actions=element('div','session-reader-actions');
-    actions.append(this.time,this.refresh,this.resume,button('Close',hooks.close,'quiet'));
-    const tabs=element('div','session-reader-tabs');tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','Read-only session');
+    const close=button('Close',hooks.close,'quiet');close.hidden=!!hooks.embedded;
+    actions.append(this.time,this.refresh,this.resume,close);
+    const tabs=element('div','session-reader-tabs');tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','Read-only session');tabs.hidden=!!hooks.embedded;
     this.heading.setAttribute('role','tab');this.heading.setAttribute('aria-selected','true');tabs.append(this.heading);
     header.append(tabs,actions,this.status);this.scroller.tabIndex=0;
     this.node.append(header,this.scroller,this.latest,this.sessionBar.node);this.node.hidden=true;
     this.node.addEventListener('focusin',hooks.focus);
-    this.node.addEventListener('keydown',event=>{if(event.key==='Escape'&&!event.defaultPrevented){event.preventDefault();hooks.close();}});
+    if(hooks.embedded)this.scroller.addEventListener('scroll',()=>this.scheduleView(),{passive:true});
+    else this.node.addEventListener('keydown',event=>{if(event.key==='Escape'&&!event.defaultPrevented){event.preventDefault();hooks.close();}});
     this.node.addEventListener('contextmenu',event=>{if(!(event.target instanceof Element)||!event.target.closest('.transcript'))event.stopPropagation();});
     this.transcript=new Transcript({transcript:this.scroller,latest:this.latest,earlier:this.earlier},{primaryDraft:hooks.primaryDraft&&{...hooks.primaryDraft,caption:()=>this.heading.textContent??'Session',current:()=>this.loaded&&!!this.source&&!this.node.closest('[hidden],[inert]')},operatorInput:true,cwd:()=>this.source?.saved?.project??(this.source&&'primary' in this.source?this.source.primary.cwd:undefined),presentation:(expanded,showThinking,transcriptView,thinking)=>{this.reloadPresentation={...this.reloadPresentation,revision:this.reloadPresentation.revision+1,expanded:[...expanded],showThinking,...(transcriptView?{transcriptView}:{}),...(thinking?{thinking}:{})};},reading:()=>{},earlier:()=>{void this.read(true);}});
   }
   open(source:SessionReadSource):void {
     this.controller?.abort();this.source=source;this.entries=[];this.before=null;this.primaryCursor=null;this.leaf=null;this.reading=false;this.loaded=false;setText(this.time,'');
     this.transcript.reset();this.reloadPresentation={revision:0,expanded:[],showThinking:false};this.node.hidden=false;this.paintHeader();void this.read(false);
+  }
+  /** Opens a saved session tab and returns to its stored reading position once the snapshot loads. */
+  openTab(source:SessionReadSource,view?:SessionView):void {this.pendingView=view;this.lastView=view;this.open(source);}
+  captureView():SessionView|undefined {
+    if(!this.source||!this.loaded)return this.pendingView;
+    if(this.node.closest('[hidden],[inert]')||!this.node.isConnected)return this.lastView;
+    const geometry=this.transcript.captureGeometry();
+    return {anchorId:geometry.followTail?null:geometry.anchor?.id??null,offsetPx:geometry.followTail?0:Math.round(geometry.anchor?.offsetPx??0),followTail:geometry.followTail,scrollLeft:Math.round(this.scroller.scrollLeft)};
+  }
+  /** Keeps the position before a hidden tab loses its scroll offset. */
+  hide():void {
+    if(this.node.hidden)return;
+    const view=this.captureView();if(view)this.lastView=view;
+    this.node.hidden=true;
+  }
+  show():void {
+    if(!this.node.hidden)return;
+    this.node.hidden=false;this.transcript.visibilityChanged();
+    const view=this.lastView;if(!view||!this.loaded)return;
+    this.transcript.restore({revision:0,anchorId:view.anchorId,offsetPx:view.offsetPx,followTail:view.followTail});
+    requestAnimationFrame(()=>{if(!this.node.hidden)this.scroller.scrollLeft=view.scrollLeft;});
+  }
+  private scheduleView():void {
+    if(!this.loaded||!this.hooks.view||this.node.closest('[hidden],[inert]'))return;
+    if(this.viewTimer!==undefined)clearTimeout(this.viewTimer);
+    this.viewTimer=setTimeout(()=>{
+      this.viewTimer=undefined;const view=this.captureView();
+      if(view&&this.source){this.lastView=view;this.hooks.view?.(view);}
+    },800);
   }
   captureReload():SessionReaderReload|undefined {
     if(!this.source)return;
@@ -75,7 +123,10 @@ export class SessionReader {
   applyGeometry(value:ReturnType<SessionReader['captureGeometry']>):void {
     if(value&&this.source===value.source){this.transcript.applyGeometry(value.geometry);this.scroller.scrollLeft=value.scrollLeft;}
   }
-  close():void {this.controller?.abort();this.source=undefined;this.reading=false;this.node.hidden=true;this.node.remove();}
+  close():void {
+    this.controller?.abort();this.source=undefined;this.reading=false;this.node.hidden=true;this.node.remove();
+    if(this.viewTimer!==undefined){clearTimeout(this.viewTimer);this.viewTimer=undefined;}
+  }
   focus():void {this.scroller.focus({preventScroll:true});}
   refreshState():void {this.paintHeader();}
   private bindSessionBar(source:SessionReadSource):void {
@@ -114,6 +165,11 @@ export class SessionReader {
   private presentSnapshot(source:SessionReadSource,controller:AbortController):void {
     if(controller.signal.aborted||this.source!==source)return;
     this.loaded=true;this.transcript.set(this.entries,undefined,undefined,!this.before&&!this.primaryCursor);this.transcript.historyAvailable(!!this.before||!!this.primaryCursor);
+    const view=this.pendingView;this.pendingView=undefined;
+    if(view){
+      this.transcript.restore({revision:0,anchorId:view.anchorId,offsetPx:view.offsetPx,followTail:view.followTail});
+      requestAnimationFrame(()=>{if(this.source===source)this.scroller.scrollLeft=view.scrollLeft;});
+    }
   }
   private async fetchSnapshot(source:SessionReadSource,earlier:boolean,signal:AbortSignal):Promise<void>{
     if('primary' in source&&source.primary.lifecycle==='ready')return this.primaryPage(source.primary,earlier,signal);
