@@ -69,6 +69,7 @@ export function createProofDurableExtension(host: ProofDurableHost): Durable.Ext
 	const stateDoc = host.durable.defineDoc<ProofState>({
 		kind: "proof.state",
 		version: 1,
+		checkpointWhen: () => false,
 		scope: "conversation",
 		history: "latest",
 		fork: "initial",
