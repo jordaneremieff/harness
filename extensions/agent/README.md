@@ -1386,6 +1386,10 @@ revision with the current frame. The integrator is revisable, not a compulsory
 role in a fixed plan. Participants can split work into another thread, leave,
 or `close` with a retained conclusion. Closing ends mutations, not history.
 
+Recovery from a full or closed thread reads its frame before creating another
+thread with all required fields. Because joining grants no permission to revise,
+a nonmember without that permission joins and posts a proposal instead.
+
 Creating or joining opts into passive notices for later events. Each notice
 contains a bounded excerpt and a thread/event reference. A native write places
 it at an existing conversation boundary without starting a model turn. An idle

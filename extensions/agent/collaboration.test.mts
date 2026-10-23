@@ -246,7 +246,7 @@ it("retains a shared frame and deduplicates the same mutation without any model 
 	assert.equal(page.thread.integrator, actor);
 });
 
-it("names recovery calls for participation, full threads, closed threads, titles, and integrators", async (t) => {
+it("names recovery calls for participation, titles, and integrators", async (t) => {
 	const f = await fixture(t);
 	for (const [index, title] of [undefined, " ", "x".repeat(161)].entries()) {
 		const message = index === 2
@@ -257,7 +257,7 @@ it("names recovery calls for participation, full threads, closed threads, titles
 	assert.throws(() => collaborationIdentity("name", "integrator"), /Call agent_list and copy the discovered identity into integrator; omit integrator to use the caller/u);
 	const created = await mutateCollaboration(f.host.harness, f.storageId, mutation("create", "create", frame), context);
 	const threadId = created.threadId;
-	for (const action of ["post", "leave", "revise", "close"]) {
+	for (const action of ["post", "leave", "close"]) {
 		await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, mutation(action, `not-joined-${action}`, { ...frame, threadId, senderIdentity: peer, message: "Proposal" }), context), {
 			message: `Join the thread before changing it; call agent_collaborate with action: join and threadId: ${threadId}, then repeat action: ${action}`,
 		});
@@ -266,18 +266,72 @@ it("names recovery calls for participation, full threads, closed threads, titles
 	await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, mutation("revise", "not-integrator", { ...frame, threadId, senderIdentity: peer }), context), {
 		message: `Only the creator, integrator or operator revises the governing frame; call agent_collaborate with action: post, threadId: ${threadId}, and message containing your proposal`,
 	});
+});
+
+it("recovers from full and closed threads by reading their frame and creating another thread", async (t) => {
+	const f = await fixture(t);
+	const created = await mutateCollaboration(f.host.harness, f.storageId, mutation("create", "create", frame), context);
+	const threadId = created.threadId;
 	await f.host.harness.commit(async (tx) => {
 		const stored = await tx.doc(CollaborationThreads, threadId, null);
 		assert.ok(stored.thread);
 		stored.thread.members = Array.from({ length: 64 }, (_, index) => ({ identity: index === 0 ? actor : `${actor}:${index + 1}`, contribution: "", joinedAt: 1 }));
 	}, context);
-	await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, mutation("join", "full", { threadId, senderIdentity: peer }), context), {
-		message: "The thread reached its participant bound; call agent_collaborate with action: create and sessionId set to a discovered Durable agent to start another thread",
+	for (const closed of [false, true]) {
+		if (closed) await f.host.request("collaboration-mutate", mutation("close", "close", { threadId, message: "Done" }), context);
+		const message = closed
+			? `This thread is closed; call agent_collaborate with action: read and threadId: ${threadId}, then action: create with sessionId: ${f.storageId} and title, purpose, authority, source, restrictions, and acceptance copied from the returned thread`
+			: `The thread reached its participant bound; call agent_collaborate with action: read and threadId: ${threadId}, then action: create with sessionId set to a discovered Durable agent and title, purpose, authority, source, restrictions, and acceptance copied from the returned thread`;
+		await assert.rejects(f.host.request("collaboration-mutate", mutation("join", `refused-${closed}`, { threadId, senderIdentity: peer }), context), { message });
+		const original = await f.host.request("collaboration-read", { threadId }, context) as CollaborationPage;
+		const { title, purpose, authority, source, restrictions, acceptance } = original.thread;
+		const recovered = await f.host.request("collaboration-mutate", mutation("create", `recover-${closed}`, {
+			senderIdentity: peer, sessionId: f.storageId, title, purpose, authority, source, restrictions, acceptance,
+		}), context) as { threadId: string };
+		const page = await f.host.request("collaboration-read", { threadId: recovered.threadId }, context) as CollaborationPage;
+		assert.notEqual(page.thread.id, threadId);
+		assert.deepEqual({ title: page.thread.title, purpose: page.thread.purpose, authority: page.thread.authority, source: page.thread.source, restrictions: page.thread.restrictions, acceptance: page.thread.acceptance }, frame);
+		assert.equal(page.thread.integrator, peer);
+		assert.equal(page.thread.closed, false);
+		assert.deepEqual(page.thread.members.map((member) => member.identity), [peer]);
+		assert.deepEqual(await f.host.request("collaboration-read", { threadId }, context), original);
+	}
+});
+
+it("recovers an unauthorised nonmember revise by joining and posting a proposal", async (t) => {
+	const f = await fixture(t);
+	const { threadId } = await mutateCollaboration(f.host.harness, f.storageId, mutation("create", "create", frame), context);
+	const revise = { ...frame, threadId, senderIdentity: peer, purpose: "Proposed purpose" };
+	await assert.rejects(f.host.request("collaboration-mutate", mutation("revise", "refused", revise), context), {
+		message: `Join the thread before proposing a frame change; call agent_collaborate with action: join and threadId: ${threadId}, then action: post with the same threadId and message containing your proposal`,
 	});
-	await mutateCollaboration(f.host.harness, f.storageId, mutation("close", "close", { threadId, message: "Done" }), context);
-	await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, mutation("join", "closed", { threadId, senderIdentity: peer }), context), {
-		message: `This thread is closed; call agent_collaborate with action: read and threadId: ${threadId} to read it, or action: create and sessionId: ${f.storageId} to start another thread`,
+	await f.host.request("collaboration-mutate", mutation("join", "recover-join", { threadId, senderIdentity: peer }), context);
+	await f.host.request("collaboration-mutate", mutation("post", "recover-proposal", { threadId, senderIdentity: peer, message: "Proposed purpose" }), context);
+	const page = await f.host.request("collaboration-read", { threadId }, context) as CollaborationPage;
+	assert.equal(page.thread.revision, 1);
+	assert.equal(page.thread.purpose, frame.purpose);
+	assert.deepEqual(page.events.map((event) => event.kind), ["create", "join", "contribution"]);
+	assert.equal(page.events.at(-1)?.message, "Proposed purpose");
+	assert.equal(page.events.at(-1)?.sender, peer);
+	await assert.rejects(f.host.request("collaboration-mutate", mutation("revise", "still-refused", revise), context), /Only the creator, integrator or operator revises/u);
+});
+
+for (const role of ["creator", "integrator"] as const) it(`recovers a nonmember ${role} revise by joining and repeating the revision`, async (t) => {
+	const f = await fixture(t);
+	const { threadId } = await mutateCollaboration(f.host.harness, f.storageId, mutation("create", "create", { ...frame, integrator: peer }), context);
+	const senderIdentity = role === "creator" ? actor : peer;
+	if (role === "creator") await f.host.request("collaboration-mutate", mutation("leave", "leave", { threadId }), context);
+	const revise = { ...frame, integrator: peer, threadId, senderIdentity, purpose: "Revised purpose" };
+	await assert.rejects(f.host.request("collaboration-mutate", mutation("revise", "refused", revise), context), {
+		message: `Join the thread before changing it; call agent_collaborate with action: join and threadId: ${threadId}, then repeat action: revise`,
 	});
+	await f.host.request("collaboration-mutate", mutation("join", "recover-join", { threadId, senderIdentity }), context);
+	await f.host.request("collaboration-mutate", mutation("revise", "recover-revise", revise), context);
+	const page = await f.host.request("collaboration-read", { threadId }, context) as CollaborationPage;
+	assert.equal(page.thread.revision, 2);
+	assert.equal(page.thread.purpose, "Revised purpose");
+	assert.equal(page.events.at(-1)?.kind, "revise");
+	assert.equal(page.events.at(-1)?.sender, senderIdentity);
 });
 
 it("keeps request IDs distinct across peer storages and permits self-chosen contribution changes", async (t) => {

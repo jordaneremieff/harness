@@ -141,7 +141,7 @@ function joinThread(thread: CollaborationThread, input: Record<string, unknown>,
 	const member = thread.members.find((item) => item.identity === actor);
 	if (member) member.contribution = contribution;
 	else {
-		if (thread.members.length >= MAX_MEMBERS) throw new Error("The thread reached its participant bound; call agent_collaborate with action: create and sessionId set to a discovered Durable agent to start another thread");
+		if (thread.members.length >= MAX_MEMBERS) throw new Error(`The thread reached its participant bound; call agent_collaborate with action: read and threadId: ${thread.id}, then action: create with sessionId set to a discovered Durable agent and title, purpose, authority, source, restrictions, and acceptance copied from the returned thread`);
 		thread.members.push({ identity: actor, contribution, joinedAt: now });
 	}
 	return text(input, "message", 8000, true) || contribution || "Joined the thread.";
@@ -170,7 +170,9 @@ function applyThreadAction(thread: CollaborationThread, input: Record<string, un
 }
 function requireParticipation(thread: CollaborationThread, action: string, actor: string, origin: string): void {
 	if (["create", "join"].includes(action) || origin === "operator") return;
-	if (!thread.members.some((item) => item.identity === actor)) throw new Error(`Join the thread before changing it; call agent_collaborate with action: join and threadId: ${thread.id}, then repeat action: ${action}`);
+	if (thread.members.some((item) => item.identity === actor)) return;
+	if (action === "revise" && actor !== thread.creator && actor !== thread.integrator) throw new Error(`Join the thread before proposing a frame change; call agent_collaborate with action: join and threadId: ${thread.id}, then action: post with the same threadId and message containing your proposal`);
+	throw new Error(`Join the thread before changing it; call agent_collaborate with action: join and threadId: ${thread.id}, then repeat action: ${action}`);
 }
 function replyReference(input: Record<string, unknown>, sequence: number): number | null {
 	const replyTo = input.replyTo ?? null;
@@ -204,7 +206,7 @@ export async function mutateCollaboration(harness: Harness, storageId: string, i
 		}
 		const thread = stored.thread;
 		if (thread === null) throw new Error("Thread not found; repeat discovery or check threadId");
-		if (thread.closed) throw new Error(`This thread is closed; call agent_collaborate with action: read and threadId: ${id} to read it, or action: create and sessionId: ${storageId} to start another thread`);
+		if (thread.closed) throw new Error(`This thread is closed; call agent_collaborate with action: read and threadId: ${id}, then action: create with sessionId: ${storageId} and title, purpose, authority, source, restrictions, and acceptance copied from the returned thread`);
 		requireParticipation(thread, action, actor, origin);
 		const content = applyThreadAction(thread, input, action, actor, origin, now);
 		const replyTo = replyReference(input, thread.sequence);
