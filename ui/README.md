@@ -29,7 +29,7 @@ The backend uses native Node TypeScript stripping; runtime files contain only er
 
 ## Optional private phone access
 
-Private access is off by default. The desktop URL remains an unauthenticated `127.0.0.1` TCP listener. Private access uses a separate HTTP Unix socket at `<stateDir>/private/http.sock`, not the desktop port. Both listeners use the same routes, limits, release fence and shutdown.
+Private access is off by default. The desktop URL remains an unauthenticated TCP listener at `127.0.0.1:4318`. Private access uses a separate authenticated HTTP listener at `127.0.0.1:4319` by default, never a LAN or tailnet address. Both listeners use the same routes, limits, release fence and shutdown. The listener callback selects the entrypoint; headers never select it.
 
 Set both fields in the `ui` section of `<agentDir>/harness.json`:
 
@@ -47,8 +47,9 @@ Set both fields in the `ui` section of `<agentDir>/harness.json`:
 |---|---|---|---|
 | `privateOrigin` | `PI_UI_PRIVATE_ORIGIN` | unset | Exact lowercase HTTPS hostname below `ts.net`; default HTTPS port only, without an explicit port, credentials, trailing slash, path, query, fragment or wildcard. |
 | `privateOwnerLogin` | `PI_UI_PRIVATE_OWNER_LOGIN` | unset | Exact case-sensitive ASCII login, one to 254 printable non-space characters, without commas, semicolons or backslashes. No trimming, case folding, domain matching or encoded-identity decoding. |
+| `privatePort` | `PI_UI_PRIVATE_PORT` | `4319` | Integer from 1 to 65535, different from the actual desktop port. The document value is a number; the environment value contains decimal digits only. |
 
-A present environment value overrides its corresponding document field, including an empty value that is invalid. Both absent means disabled. Partial or invalid private configuration, or an unreadable or malformed configuration document, refuses backend startup rather than silently disabling access. Stylesheet validity remains independent: an invalid stylesheet does not disable valid private settings, and a valid stylesheet does not excuse invalid private settings.
+A present environment value overrides its corresponding document field, including an empty value that is invalid. All private fields absent means disabled. The origin and owner login enable access together; the port is optional. A port alone is invalid, not identity-free access. Partial or invalid private configuration, or an unreadable or malformed configuration document, refuses backend startup rather than silently disabling access. Stylesheet validity remains independent: an invalid stylesheet does not disable valid private settings, and a valid stylesheet does not excuse invalid private settings.
 
 The backend reads private settings once at startup. For an already running sealed UI, set the document fields and switch to a **different** sealed release that contains this support, or let the next normal UI release activate it. Switching to the current release is a no-op and does not reload settings. Do not stop the raw owner merely to apply these settings. Environment overrides in this initial-launch example do not change a running supervisor's environment:
 
@@ -61,27 +62,27 @@ npm run ui:start -- --state-dir '<absolute-state-dir>'
 After a supporting backend starts with valid settings, a separately authorised Tailscale setup uses this command shape:
 
 ```sh
-tailscale serve --bg --https=443 'unix:<absolute-state-dir>/private/http.sock'
+tailscale serve --bg --https=443 http://127.0.0.1:4319
 tailscale serve status --json
 ```
 
-Do not target port `4318`, use a TCP forwarder, enable Funnel or expose this socket through another proxy. [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve) supplies private HTTPS and replaces its user identity headers. This backend requires the exact owner login; another user, a shared-device visitor with another login, a tagged device without user identity, or any Funnel marker is refused.
+Target only the configured private port. Never target the desktop port `4318`, enable Funnel or expose the private listener through another proxy. [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve) supplies private HTTPS and replaces its user identity headers. This backend requires the exact owner login; another user, a shared-device visitor with another login, a tagged device without user identity, or any Funnel marker is refused.
 
-The private socket requires exactly one `Host: localhost`, the configured hostname in `X-Forwarded-Host`, `X-Forwarded-Proto: https`, and the exact `Tailscale-User-Login`. Duplicate or malformed security headers are refused. Every unsafe method requires the exact external HTTPS Origin. Reads reject a supplied different Origin. Fetch Metadata permits only `same-origin`, `none` or absence. Authentication precedes assets, stylesheet reads, health, bodies, files, control actions and streams. The TCP listener rejects proxy identity and forwarding headers even when private access is disabled. Neither listener enables CORS.
+Every private request requires exactly one configured hostname in both `Host` and `X-Forwarded-Host`, `X-Forwarded-Proto: https`, and the exact `Tailscale-User-Login`. Duplicate or malformed security headers are refused. Every unsafe method requires the exact external HTTPS Origin. Reads reject a supplied different Origin. Fetch Metadata permits only `same-origin`, `none` or absence. Authentication precedes assets, stylesheet reads, health, bodies, files, control actions and streams. The desktop listener rejects proxy identity and forwarding headers even when private access is disabled. Neither listener enables CORS.
 
-The backend creates an owned `0700` directory and a `0600` socket. It refuses symlinks, unsafe ownership or permissions, unexplained existing entries and unsupported socket path lengths. It does not take over a stale socket. Release prewarm validates settings without binding; activation binds only after the old backend closes. Close removes only the instance's socket and closes streams on both listeners.
+Release prewarm validates settings without binding; activation binds only after the old backend closes. Both listeners refuse admission until both binds succeed. A collision with the actual desktop port, including an automatically assigned desktop port, fails startup. Either bind failure closes both listeners. Close ends streams on both listeners.
 
-This is a proxy-only ingress, not cryptographic proof that a Unix caller is tailscaled. The UI account and root remain trusted: both already control the unauthenticated desktop UI and can forge a local Unix request. The socket excludes other OS accounts and arbitrary TCP callers, not those trusted principals.
+All local processes with loopback access are trusted. They already control the unauthenticated desktop UI and can impersonate the proxy on the private port. TCP does not provide filesystem isolation between OS accounts or cryptographic proof that the caller is tailscaled. Remote requests still require Serve identity enforcement and the backend's exact owner checks.
 
-Before network activation is accepted, verify the installed Serve process against the socket: the owner's request succeeds, another login fails, and Host, forwarded host, protocol and login match the contract above. Upstream source and CLI help do not establish an installed process's proxy behaviour. If its semantics differ, the route fails closed; do not add a loopback fallback. Server tests do not establish phone or Serve acceptance.
+Before network activation is accepted, verify the installed Serve process against the private TCP listener: an actual HTTPS health request from the owner, without synthetic identity headers, returns the active release. Confirm that Serve targets only the private port and Funnel remains off. Confirm that another login fails and the host, protocol and login match the contract above. [Tailscale 1.98.9 proxy source](https://raw.githubusercontent.com/tailscale/tailscale/v1.98.9/ipn/ipnlocal/serve.go) preserves the incoming Host for TCP targets and replaces client identity headers. Source does not establish an installed process's proxy behaviour. If its semantics differ, the route fails closed; no desktop fallback exists. Server tests do not establish phone or Serve acceptance.
 
 To disable this route, remove only this Serve mapping with the same flags used to create it:
 
 ```sh
-tailscale serve --bg --https=443 'unix:<absolute-state-dir>/private/http.sock' off
+tailscale serve --bg --https=443 http://127.0.0.1:4319 off
 ```
 
-Then remove both private fields and any private environment overrides before a different supporting backend activates. Until replacement, the current backend retains its startup settings. [Serve CLI documentation](https://tailscale.com/docs/reference/tailscale-cli/serve) describes the `off` form. Do not reset unrelated Serve configuration.
+Then remove all private fields and any private environment overrides before a different supporting backend activates. Until replacement, the current backend retains its startup settings. [Serve CLI documentation](https://tailscale.com/docs/reference/tailscale-cli/serve) describes the `off` form. Do not reset unrelated Serve configuration.
 
 ## Dates and times
 

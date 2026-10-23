@@ -7,7 +7,6 @@ import { join } from 'node:path';
 import { LIMITS, ROUTES, LAYOUT_VERSION_HEADER, validAgentViews } from '../shared/api.ts';
 import { LocalBoundary, securityHeaders, type Entrypoint } from './boundary.mts';
 import type {PrivateRoute} from './settings.mts';
-import {listenPrivateSocket} from './private-socket.mts';
 import { ApiError, errorView } from './errors.mts';
 import { IMAGE_BYTES, ImageResponse } from './images.mts';
 import { isImageRoute } from './image-request.mts';
@@ -173,8 +172,7 @@ export class LocalHttp {
   readonly server: Server;
   readonly boundary: LocalBoundary;
   readonly privateServer?: Server;
-  private privateAccess?: {config: PrivateRoute; stateDir: string};
-  private privateSocket?: Awaited<ReturnType<typeof listenPrivateSocket>>;
+  private privateAccess?: PrivateRoute;
   private stopped = false;
   private active = 0;
   private imageReads = 0;
@@ -188,10 +186,10 @@ export class LocalHttp {
   private buildStreams=new Set<ServerResponse>();
   private closeWork?: Promise<void>;
   private drainWaiters = new Set<() => void>();
-  constructor(backend: HttpBackend, assets: Map<string, Asset>, sessions: Pick<SessionStore, 'sessions' | 'projects' | 'titles'> = new SessionStore(), development:DevelopmentHttp = {}, privateAccess?: {config: PrivateRoute | undefined; stateDir: string}) {
+  constructor(backend: HttpBackend, assets: Map<string, Asset>, sessions: Pick<SessionStore, 'sessions' | 'projects' | 'titles'> = new SessionStore(), development:DevelopmentHttp = {}, privateAccess?: PrivateRoute) {
     this.backend = backend; this.assets = assets; this.sessions = sessions;this.development=development;
-    this.privateAccess = privateAccess?.config ? {config: Object.freeze({...privateAccess.config}), stateDir: privateAccess.stateDir} : undefined;
-    this.boundary = new LocalBoundary(this.privateAccess?.config);
+    this.privateAccess = privateAccess ? Object.freeze({...privateAccess}) : undefined;
+    this.boundary = new LocalBoundary(this.privateAccess);
     this.server = this.createListener('local');
     if (this.privateAccess) this.privateServer = this.createListener('private');
   }
@@ -203,10 +201,14 @@ export class LocalHttp {
   async listen(port = 4318) {
     this.stopped = true;
     try {
-      if (this.privateServer && this.privateAccess) this.privateSocket = await listenPrivateSocket(this.privateServer, this.privateAccess.stateDir);
       await new Promise<void>((resolve, reject) => { this.server.once('error', reject); this.server.listen(port, '127.0.0.1', () => {this.server.off('error', reject); resolve();}); });
       const address = this.server.address();
       if (!address || typeof address === 'string') throw new Error('Missing loopback address');
+      if (this.privateServer && this.privateAccess) {
+        if (this.privateAccess.port === address.port) throw new Error('The private UI port must differ from the desktop port.');
+        const server = this.privateServer, privatePort = this.privateAccess.port;
+        await new Promise<void>((resolve, reject) => {server.once('error', reject); server.listen(privatePort, '127.0.0.1', () => {server.off('error', reject); resolve();});});
+      }
       this.boundary.setPort(address.port); this.stopped = false; return `${this.boundary.origin}/`;
     } catch (error) {await this.close(); throw error;}
   }
@@ -231,7 +233,6 @@ export class LocalHttp {
     for(const response of this.buildStreams) response.end();
     try {
       const results = await Promise.allSettled([this.server, this.privateServer].map(server => server ? this.closeListener(server) : Promise.resolve()));
-      await this.privateSocket?.cleanup();
       const failed = results.find(result => result.status === 'rejected'); if (failed?.status === 'rejected') throw failed.reason;
     } finally {await this.sessionRead.close();}
   }

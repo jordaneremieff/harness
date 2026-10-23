@@ -62,7 +62,7 @@ test('private access is disabled by absence and complete configuration is immuta
   await writeFile(join(dir, 'harness.json'), JSON.stringify({version: 1, ui: {privateOrigin, privateOwnerLogin, userStylesheet: 5}}));
   const snapshot = readSettings({agentDir: dir, env: {}});
   assert.equal(snapshot.status, 'invalid'); assert.equal(snapshot.privateStatus, 'valid');
-  assert.deepEqual(snapshot.privateRoute, {origin: privateOrigin, host: 'desktop.example.ts.net', ownerLogin: privateOwnerLogin});
+  assert.deepEqual(snapshot.privateRoute, {origin: privateOrigin, host: 'desktop.example.ts.net', ownerLogin: privateOwnerLogin, port: 4319});
   assert.ok(Object.isFrozen(snapshot.privateRoute));
   await writeFile(join(dir, 'harness.json'), JSON.stringify({version: 1, ui: {privateOrigin, userStylesheet: 'valid.css'}}));
   const partial = readSettings({agentDir: dir, env: {}});
@@ -71,9 +71,9 @@ test('private access is disabled by absence and complete configuration is immuta
 });
 test('private environment overrides select each field without fallback for an invalid present value', async context => {
   const dir = await agentDir(context, {version: 1, ui: {privateOrigin, privateOwnerLogin}});
-  const env = {PI_UI_PRIVATE_ORIGIN: 'https://other.example.ts.net', PI_UI_PRIVATE_OWNER_LOGIN: 'other@example.com'};
-  assert.deepEqual(readPrivateRoute({agentDir: dir, env}), {origin: env.PI_UI_PRIVATE_ORIGIN, host: 'other.example.ts.net', ownerLogin: env.PI_UI_PRIVATE_OWNER_LOGIN});
-  for (const invalid of [{PI_UI_PRIVATE_ORIGIN: ''}, {PI_UI_PRIVATE_OWNER_LOGIN: ''}]) assert.throws(() => readPrivateRoute({agentDir: dir, env: invalid}), /invalid or incomplete/);
+  const env = {PI_UI_PRIVATE_ORIGIN: 'https://other.example.ts.net', PI_UI_PRIVATE_OWNER_LOGIN: 'other@example.com', PI_UI_PRIVATE_PORT: '4320'};
+  assert.deepEqual(readPrivateRoute({agentDir: dir, env}), {origin: env.PI_UI_PRIVATE_ORIGIN, host: 'other.example.ts.net', ownerLogin: env.PI_UI_PRIVATE_OWNER_LOGIN, port: 4320});
+  for (const invalid of [{PI_UI_PRIVATE_ORIGIN: ''}, {PI_UI_PRIVATE_OWNER_LOGIN: ''}, {PI_UI_PRIVATE_PORT: ''}]) assert.throws(() => readPrivateRoute({agentDir: dir, env: invalid}), /invalid or incomplete/);
 });
 test('private origins reject every alternate authority and non-origin shape; logins remain bounded exact ASCII', async context => {
   const dir = await agentDir(context);
@@ -90,7 +90,7 @@ test('private origins reject every alternate authority and non-origin shape; log
     await writeFile(join(dir, 'harness.json'), JSON.stringify({version: 1, ui: {privateOrigin, privateOwnerLogin: login}}));
     assert.throws(() => readPrivateRoute({agentDir: dir, env: {}}), /invalid or incomplete/);
   }
-  for (const partial of [{privateOrigin}, {privateOwnerLogin}]) {
+  for (const partial of [{privateOrigin}, {privateOwnerLogin}, {privatePort: 4319}, {privateOrigin, privatePort: 4319}, {privateOwnerLogin, privatePort: 4319}]) {
     await writeFile(join(dir, 'harness.json'), JSON.stringify({version: 1, ui: partial}));
     assert.throws(() => readPrivateRoute({agentDir: dir, env: {}}), /invalid or incomplete/);
   }
@@ -102,4 +102,25 @@ test('an unreadable or malformed private configuration document fails closed, no
     await writeFile(join(dir, 'harness.json'), JSON.stringify(document));
     assert.throws(() => readPrivateRoute({agentDir: dir, env: {}}), /invalid or incomplete/);
   }
+});
+
+test('private ports accept only bounded integer document values or decimal environment values', async context => {
+  const dir = await agentDir(context);
+  for (const privatePort of [1, 4319, 65535]) {
+    await writeFile(join(dir, 'harness.json'), JSON.stringify({version: 1, ui: {privateOrigin, privateOwnerLogin, privatePort}}));
+    assert.equal(readPrivateRoute({agentDir: dir, env: {}})?.port, privatePort);
+  }
+  for (const privatePort of [0, -1, 65536, 1.5, null, true, '4319', '', {}, []]) {
+    await writeFile(join(dir, 'harness.json'), JSON.stringify({version: 1, ui: {privateOrigin, privateOwnerLogin, privatePort}}));
+    assert.throws(() => readPrivateRoute({agentDir: dir, env: {}}), /invalid or incomplete/, JSON.stringify(privatePort));
+  }
+  await writeFile(join(dir, 'harness.json'), JSON.stringify({version: 1, ui: {privateOrigin, privateOwnerLogin, privatePort: 4320}}));
+  for (const value of ['1', '4319', '65535']) assert.equal(readPrivateRoute({agentDir: dir, env: {PI_UI_PRIVATE_PORT: value}})?.port, Number(value));
+  for (const value of ['', '0', '-1', '65536', '1.5', '4319 ', ' 4319', '0x10', '1e3', 'NaN', 'Infinity']) {
+    assert.throws(() => readPrivateRoute({agentDir: dir, env: {PI_UI_PRIVATE_PORT: value}}), /invalid or incomplete/, value);
+  }
+  await writeFile(join(dir, 'harness.json'), JSON.stringify({version: 1}));
+  assert.throws(() => readPrivateRoute({agentDir: dir, env: {PI_UI_PRIVATE_PORT: '4319'}}), /invalid or incomplete/);
+  assert.equal(settings.fields.privatePort.env, 'PI_UI_PRIVATE_PORT');
+  assert.equal(settings.fields.privatePort.default, 4319);
 });

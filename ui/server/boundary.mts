@@ -39,7 +39,7 @@ export class LocalBoundary {
   }
   private privateOrigin(values: ReadonlyMap<string, string>): string {
     const config = this.privateRoute;
-    if (!config || values.get('host') !== 'localhost' || values.get('x-forwarded-host') !== config.host
+    if (!config || values.get('host') !== config.host || values.get('x-forwarded-host') !== config.host
       || values.get('x-forwarded-proto') !== 'https' || values.get('tailscale-user-login') !== config.ownerLogin) rejected();
     if ([...values.keys()].some(name => name.includes('funnel') || name === 'forwarded')) rejected();
     return config.origin;

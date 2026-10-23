@@ -7,6 +7,7 @@ export const settings = {
   fields: {
     privateOrigin: {type: 'string', env: 'PI_UI_PRIVATE_ORIGIN', description: 'Exact HTTPS ts.net origin for private proxy access.'},
     privateOwnerLogin: {type: 'string', env: 'PI_UI_PRIVATE_OWNER_LOGIN', description: 'Exact ASCII Tailscale owner login for private proxy access.'},
+    privatePort: {type: 'number', env: 'PI_UI_PRIVATE_PORT', default: 4319, description: 'Dedicated loopback TCP port for private proxy access.'},
     userStylesheet: {
       type: 'path',
       env: 'PI_UI_USER_STYLESHEET',
@@ -20,7 +21,7 @@ export type Environment = Readonly<Record<string, string | undefined>>;
 export type ReadOptions = {agentDir: string; env?: Environment};
 export type Origin = 'env' | 'file' | 'default';
 export type Diagnostic = {field: string; source: Origin; code: 'document' | 'unknown' | 'invalid'};
-export type PrivateRoute = Readonly<{origin: string; host: string; ownerLogin: string}>;
+export type PrivateRoute = Readonly<{origin: string; host: string; ownerLogin: string; port: number}>;
 export type Snapshot = {
   privateRoute: PrivateRoute | undefined;
   privateStatus: 'disabled' | 'valid' | 'invalid';
@@ -84,16 +85,19 @@ function checkedPath(value: unknown, agentDir: string): string {
 function privateConfiguration(section: Record<string, unknown>, env: Environment, documentInvalid: boolean): Pick<Snapshot, 'privateRoute' | 'privateStatus'> {
   const origin = env.PI_UI_PRIVATE_ORIGIN !== undefined ? env.PI_UI_PRIVATE_ORIGIN : section.privateOrigin;
   const login = env.PI_UI_PRIVATE_OWNER_LOGIN !== undefined ? env.PI_UI_PRIVATE_OWNER_LOGIN : section.privateOwnerLogin;
+  const selectedPort = env.PI_UI_PRIVATE_PORT !== undefined ? env.PI_UI_PRIVATE_PORT : section.privatePort;
+  const port = env.PI_UI_PRIVATE_PORT !== undefined && /^\d+$/.test(env.PI_UI_PRIVATE_PORT) ? Number(env.PI_UI_PRIVATE_PORT) : selectedPort ?? 4319;
   if (documentInvalid) return {privateRoute: undefined, privateStatus: 'invalid'};
-  if (origin === undefined && login === undefined) return {privateRoute: undefined, privateStatus: 'disabled'};
+  if (origin === undefined && login === undefined && selectedPort === undefined) return {privateRoute: undefined, privateStatus: 'disabled'};
   if (typeof origin !== 'string' || origin.length > 261 || !/^https:\/\/(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+ts\.net$/.test(origin)
-    || typeof login !== 'string' || !/^[\x21-\x7e]{1,254}$/.test(login) || /[,;\\]/.test(login)) return {privateRoute: undefined, privateStatus: 'invalid'};
-  return {privateRoute: Object.freeze({origin, host: origin.slice('https://'.length), ownerLogin: login}), privateStatus: 'valid'};
+    || typeof login !== 'string' || !/^[\x21-\x7e]{1,254}$/.test(login) || /[,;\\]/.test(login)
+    || typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535 || selectedPort === null) return {privateRoute: undefined, privateStatus: 'invalid'};
+  return {privateRoute: Object.freeze({origin, host: origin.slice('https://'.length), ownerLogin: login, port}), privateStatus: 'valid'};
 }
 /** A backend must not convert invalid or incomplete private configuration into local-only success. */
 export function readPrivateRoute(options: ReadOptions): PrivateRoute | undefined {
   const snapshot = readSettings(options);
-  if (snapshot.privateStatus === 'invalid') throw new Error('Private UI settings are invalid or incomplete. Set both ui.privateOrigin and ui.privateOwnerLogin, or remove both.');
+  if (snapshot.privateStatus === 'invalid') throw new Error('Private UI settings are invalid or incomplete. Set ui.privateOrigin and ui.privateOwnerLogin with a valid ui.privatePort, or remove all private settings.');
   return snapshot.privateRoute;
 }
 /** Present environment value > document field > unset. Invalid selected input leaves the stylesheet unset. */

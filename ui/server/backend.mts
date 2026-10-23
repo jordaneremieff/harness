@@ -104,7 +104,7 @@ export async function startBackend(options:Options, injection:Partial<Pick<Regis
       services:serviceHealth(registry,files,stopping),
       build:{state:generations?.status().status??'static'},
       ...(registry.options.owner ? {owner:{pid:process.ppid,incarnation:registry.options.owner.hello.ownerIncarnation,protocol:registry.options.owner.hello.protocol},backend:{pid:process.pid,...(release?{release:release.manifest.id}:{})}} : {})});
-    const http=new LocalHttp(registry,assets,undefined,{clientErrors,generations,diagnostics,identity,files,health,control:{service:control},userStylesheet:userStylesheetSource(injection.userStylesheet)},{config:privateRoute,stateDir});startupHttp=http;
+    const http=new LocalHttp(registry,assets,undefined,{clientErrors,generations,diagnostics,identity,files,health,control:{service:control},userStylesheet:userStylesheetSource(injection.userStylesheet)},privateRoute);startupHttp=http;
     const url=await http.listen(options.port);
     await controlDiscovery.publish(stateDir,http.boundary.origin,registry.journal.bootId);
     development?.generations.observe(status=> {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {fork} from 'node:child_process';
-import {access, lstat, mkdir, mkdtemp, realpath, rm, writeFile} from 'node:fs/promises';
-import {request} from 'node:http';
+import {access, mkdir, mkdtemp, realpath, rm, writeFile} from 'node:fs/promises';
+import {createServer, request} from 'node:http';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test, {type TestContext} from 'node:test';
@@ -16,12 +16,15 @@ const origin = 'https://desktop.example.ts.net', ownerLogin = 'owner@example.com
 async function fixture(context: TestContext) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'uipb-'))), agent = join(root, 'agent'), state = join(root, 'state');
   await mkdir(agent); await mkdir(state, {mode: 0o700});
-  const keys = ['PI_CODING_AGENT_DIR', 'PI_HARNESS_FILE', 'PI_UI_PRIVATE_ORIGIN', 'PI_UI_PRIVATE_OWNER_LOGIN'];
+  const keys = ['PI_CODING_AGENT_DIR', 'PI_HARNESS_FILE', 'PI_UI_PRIVATE_ORIGIN', 'PI_UI_PRIVATE_OWNER_LOGIN', 'PI_UI_PRIVATE_PORT'];
   const previous = keys.map(key => process.env[key]), closers: (() => Promise<void>)[] = [];
-  process.env.PI_CODING_AGENT_DIR = agent; process.env.PI_HARNESS_FILE = 'harness.json'; delete process.env.PI_UI_PRIVATE_ORIGIN; delete process.env.PI_UI_PRIVATE_OWNER_LOGIN;
+  process.env.PI_CODING_AGENT_DIR = agent; process.env.PI_HARNESS_FILE = 'harness.json'; delete process.env.PI_UI_PRIVATE_ORIGIN; delete process.env.PI_UI_PRIVATE_OWNER_LOGIN; delete process.env.PI_UI_PRIVATE_PORT;
+  const reservation = createServer(); await new Promise<void>(resolve => reservation.listen(0, '127.0.0.1', resolve));
+  const privatePort = (reservation.address() as {port: number}).port;
+  await new Promise<void>(resolve => reservation.close(() => resolve()));
   context.after(async () => {for (const close of closers.reverse()) await close(); keys.forEach((key, index) => {const value = previous[index]; if (value === undefined) delete process.env[key]; else process.env[key] = value;}); await rm(root, {recursive: true, force: true});});
-  const configure = (ui: unknown) => writeFile(join(agent, 'harness.json'), JSON.stringify({version: 1, ui}));
-  return {root, agent, state, configure, retain: (close: () => Promise<void>) => closers.push(close)};
+  const configure = (ui: Record<string, unknown>) => writeFile(join(agent, 'harness.json'), JSON.stringify({version: 1, ui: Object.keys(ui).length ? {privatePort, ...ui} : ui}));
+  return {root, agent, state, privatePort, configure, retain: (close: () => Promise<void>) => closers.push(close)};
 }
 function agents(): AgentAdapter {
   const forbidden = async (): Promise<never> => {throw new Error('No native agent work in private backend fixtures.');};
@@ -30,9 +33,9 @@ function agents(): AgentAdapter {
     prepare: forbidden, select: forbidden, reconnect: forbidden, history: forbidden, image: forbidden, inspect: forbidden, inventory: forbidden, command: forbidden, threads: forbidden, thread: forbidden, submit: forbidden, retrySubmit: forbidden, abort: forbidden,
     configure: () => {throw new Error('No native configuration.');}, hide: async () => {}, disconnectWorkspace: async () => {}, close: async () => {}};
 }
-async function privateRead(path: string, login: string): Promise<number> {
+async function privateRead(port: number, login: string): Promise<number> {
   return new Promise((accept, reject) => {
-    const req = request({socketPath: path, path: '/', agent: false, headers: {Host: 'localhost', 'X-Forwarded-Host': 'desktop.example.ts.net', 'X-Forwarded-Proto': 'https', 'Tailscale-User-Login': login}}, response => {response.resume(); response.on('end', () => accept(response.statusCode ?? 0));});
+    const req = request({host: '127.0.0.1', port, path: '/', agent: false, headers: {Host: 'desktop.example.ts.net', 'X-Forwarded-Host': 'desktop.example.ts.net', 'X-Forwarded-Proto': 'https', 'Tailscale-User-Login': login}}, response => {response.resume(); response.on('end', () => accept(response.statusCode ?? 0));});
     req.on('error', reject); req.end();
   });
 }
@@ -40,20 +43,22 @@ test('backend configuration uses the agent directory, freezes until replacement 
   const f = await fixture(context); await f.configure({privateOrigin: origin, privateOwnerLogin: ownerLogin, userStylesheet: 7});
   const injection = {agents, assets: new Map([['/', {type: 'text/html', data: Buffer.from('<html><head></head><body></body></html>')}]]), userStylesheet: async () => ({state: 'invalid' as const})};
   const app = await startBackend({cwd: f.root, stateDir: f.state, port: 0, pi: 'not-executed'}, injection);
-  f.retain(() => app.close()); const path = join(f.state, 'private', 'http.sock');
-  assert.equal(await privateRead(path, ownerLogin), 200);
+  f.retain(() => app.close());
+  assert.equal(await privateRead(f.privatePort, ownerLogin), 200);
   await f.configure({privateOrigin: origin, privateOwnerLogin: 'other@example.com'});
-  assert.equal(await privateRead(path, ownerLogin), 200); assert.equal(await privateRead(path, 'other@example.com'), 403);
+  assert.equal(await privateRead(f.privatePort, ownerLogin), 200); assert.equal(await privateRead(f.privatePort, 'other@example.com'), 403);
   await app.close(); await f.configure({});
   const replacement = await startBackend({cwd: f.root, stateDir: f.state, port: 0, pi: 'not-executed'}, injection); f.retain(() => replacement.close());
-  assert.equal(replacement.http.privateServer, undefined); await assert.rejects(access(path), {code: 'ENOENT'});
+  assert.equal(replacement.http.privateServer, undefined); await assert.rejects(privateRead(f.privatePort, ownerLogin), {code: 'ECONNREFUSED'});
   const response = await fetch(replacement.url); assert.equal(response.status, 200); await response.text();
 });
 test('invalid private configuration aborts startup before state, registry, assets or TCP admission', async context => {
-  const f = await fixture(context); await f.configure({privateOrigin: origin});
-  const unused = join(f.root, 'unopened');
-  await assert.rejects(startBackend({cwd: f.root, stateDir: unused, port: 0, pi: 'not-executed'}, {assets: new Map()}), /invalid or incomplete/);
-  await assert.rejects(access(unused), {code: 'ENOENT'});
+  const f = await fixture(context), unused = join(f.root, 'unopened');
+  for (const settings of [{privateOrigin: origin}, {privatePort: f.privatePort}, {privateOrigin: origin, privateOwnerLogin: ownerLogin, privatePort: 0}]) {
+    await f.configure(settings);
+    await assert.rejects(startBackend({cwd: f.root, stateDir: unused, port: 0, pi: 'not-executed'}, {assets: new Map()}), /invalid or incomplete/);
+    await assert.rejects(access(unused), {code: 'ENOENT'});
+  }
 });
 async function releaseFixture(root: string): Promise<{directory: string; manifest: ReleaseManifest}> {
   const directory = join(root, 'release'); await mkdir(join(directory, 'ui', 'dist', 'web'), {recursive: true}); await mkdir(join(directory, 'ui', 'dist', 'shared'), {recursive: true}); await mkdir(join(directory, 'ui', 'web'));
@@ -77,14 +82,13 @@ async function prewarm(release: Awaited<ReturnType<typeof releaseFixture>>, root
     });
   } finally {clearTimeout(timer); child.kill('SIGTERM'); await exited;}
 }
-test('real backend prewarm validates private settings without binding or replacing the active socket', async context => {
+test('real backend prewarm validates private settings without binding or replacing the active private TCP listener', async context => {
   const f = await fixture(context), release = await releaseFixture(f.root);
   await f.configure({privateOrigin: origin, privateOwnerLogin: ownerLogin});
-  const active = new LocalHttp({journal: new Journal(), dispatch: async () => ({}), workspace: async () => 'fixture', observe: async () => {}, detached: () => {}}, new Map(), undefined, {}, {config: {origin, host: 'desktop.example.ts.net', ownerLogin}, stateDir: f.state});
+  const active = new LocalHttp({journal: new Journal(), dispatch: async () => ({}), workspace: async () => 'fixture', observe: async () => {}, detached: () => {}}, new Map(), undefined, {}, {origin, host: 'desktop.example.ts.net', ownerLogin, port: f.privatePort});
   await active.listen(0); f.retain(() => active.close());
-  const path = join(f.state, 'private', 'http.sock'), before = await lstat(path);
   assert.equal(await prewarm(release, f.state), 'prewarmed');
-  assert.equal((await lstat(path)).ino, before.ino); assert.equal(active.privateServer?.listening, true);
+  assert.equal(active.privateServer?.listening, true); assert.equal(await privateRead(f.privatePort, ownerLogin), 200);
   await f.configure({privateOrigin: origin});
-  assert.equal(await prewarm(release, f.state), 'prewarm-failed'); assert.equal((await lstat(path)).ino, before.ino);
+  assert.equal(await prewarm(release, f.state), 'prewarm-failed'); assert.equal(await privateRead(f.privatePort, ownerLogin), 200);
 });
