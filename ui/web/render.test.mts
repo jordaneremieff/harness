@@ -809,6 +809,49 @@ test('Markdown creates inert HTML text, safe links, code, lists and aligned sema
   assert.equal(fragment.querySelectorAll('th')[1]?.style.textAlign, 'right'); assert.equal(fragment.querySelector('code')?.dataset.language, 'ts');
 });
 
+test('bare addresses become exact safe anchors only in full agent prose', () => {
+  setup(); const view = transcript(); const address = 'HTTPS://Example.test/A_(b)?x=One&y=Two#Part';
+  const text = `See (${address}). \`${address}\` [${address}](https://other.test)`;
+  const source = {id: 'bare-address', kind: 'message', messages: [message('bare-address', text, 'partial')]};
+  view.set([source]); flush(); const root = node('primary-transcript');
+  assert.equal(root.querySelector('.message-text')?.querySelector('a'), null);
+  const final = {...source, messages: [message('bare-address', text)]};
+  view.set([final]); flush(); const prose = root.querySelector('.message-text'); assert.ok(prose);
+  const links = prose.querySelectorAll('a'); assert.equal(links.length, 2);
+  assert.equal(links[0]?.textContent, address); assert.equal(links[0]?.href, 'https://example.test/A_(b)?x=One&y=Two#Part');
+  assert.equal(links[0]?.rel, 'noopener noreferrer'); assert.equal(links[0]?.target, '_blank');
+  assert.equal(links[1]?.textContent, address); assert.equal(links[1]?.querySelector('a'), null);
+  assert.equal(prose.querySelector('code')?.textContent, address); assert.equal(prose.querySelector('code')?.querySelector('a'), null);
+  assert.equal(prose.textContent, `See (${address}). ${address} ${address}`);
+  assert.equal(final.messages[0]?.parts[0]?.text, text);
+  const operator = {...source, id: 'operator-address', messages: [{...message('operator-address', address), role: 'user'}]};
+  view.set([operator]); flush(); assert.equal(root.querySelector('.message-text')?.querySelector('a'), null);
+  const file = markdownDom(address); assert.equal(file.querySelector('a'), null); view.reset();
+});
+test('agent address links do not appear in tool previews, raw output or thinking summaries', () => {
+  setup(); const view = transcript(), address = 'https://example.test/source_(one)?a=1&b=2';
+  const tool = contentEntry('bare-tool', {path: 'docs/links.md'}, `Read ${address}.`);
+  for (const part of tool.messages[0]?.parts ?? []) if (part.type === 'toolCall' || part.type === 'toolResult') part.name = 'read';
+  const thought = {id: 'bare-thought', kind: 'message', messages: [{...message('bare-thought', ''), parts: [{type: 'thinking' as const, text: `Check ${address}.`}]}]};
+  view.set([tool, thought]); flush(); const root = node('primary-transcript'), card = root.querySelector('.tool-card'); assert.ok(card);
+  assert.equal(card.querySelector('.tool-preview')?.querySelector('a'), null);
+  card.open = true; card.dispatch('toggle'); flush();
+  assert.equal(card.querySelector('.tool-result')?.querySelector('a'), null);
+  const raw = card.querySelector('.tool-raw-output'); assert.ok(raw); raw.open = true; raw.dispatch('toggle');
+  assert.equal(raw.querySelector('a'), null); assert.equal(raw.querySelector('pre')?.textContent, `Read ${address}.`);
+  const thinking = root.querySelector('.thinking'); assert.ok(thinking);
+  assert.equal(thinking.querySelector('summary')?.querySelector('a'), null);
+  assert.equal(thinking.querySelector('.thinking-content')?.querySelector('a')?.textContent, address); view.reset();
+});
+test('ready peer prose links exact addresses but transport and compact notice labels stay inert', () => {
+  setup(); const view = transcript(), address = 'https://example.test/report';
+  view.set([communicationEntry('ready', `See ${address}.`)]); flush(); const root = node('primary-transcript');
+  assert.equal(root.querySelector('.communication-text')?.querySelector('a')?.textContent, address);
+  view.set([statusEntry('check-in', `Check ${address}.`)]); flush();
+  const toggle = root.querySelector('.communication-toggle'); assert.ok(toggle); assert.equal(toggle.querySelector('a'), null);
+  view.set([communicationEntry('unavailable', `See ${address}.`)]); flush();
+  assert.equal(root.querySelector('.communication-text')?.querySelector('a'), null); view.reset();
+});
 test('final fences highlight their language and streaming prose stays plain until final', () => {
   setup(); const view = transcript(); const text = '```ts\nconst value: number = 42;\n```';
   view.set([{id: 'code', kind: 'message', messages: [message('code', text, 'partial')]}]); flush();

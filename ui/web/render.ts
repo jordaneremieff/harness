@@ -1910,7 +1910,7 @@ export class Transcript {
     if (previous?.source === part && previous.partial === partial) { if (part.type === 'thinking') this.thinkingTitle(previous.node, message.source, index, partial); return previous.node; }
     const node = previous?.node ?? this.createPart(part, entryId, message.source.id, index);
     const pages = node.querySelector<HTMLElement>('.output-pages'); if (pages) { this.releaseFrames(pages); pages.remove(); }
-    this.partContent(node, part, partial, previous);
+    this.partContent(node, part, partial, message.source.role === 'assistant', previous);
     if (part.type === 'thinking') this.markThinking(node as HTMLDetailsElement, part, message.source, index, partial);
     if ((part.type === 'text' || part.type === 'thinking') && part.more) {
       const source = part; const generation = this.generation;
@@ -1933,9 +1933,9 @@ export class Transcript {
     node.append(summary, element('div', 'thinking-content'));
     this.trackDisclosure(node, id); return node;
   }
-  private partContent(node: HTMLElement, part: PartView, partial: boolean, previous?: PartNode): void {
+  private partContent(node: HTMLElement, part: PartView, partial: boolean, agentProse: boolean, previous?: PartNode): void {
     if (part.type === 'text') {
-      this.textContent(node, part.text, partial, previous);
+      this.textContent(node, part.text, partial, agentProse, previous);
     } else if (part.type === 'thinking') {
       this.thinkingContent(node, part, partial);
     } else if (part.type === 'image') this.imageContent(node, part);
@@ -1955,15 +1955,15 @@ export class Transcript {
     const root = content as HTMLElement, summary = node.querySelector('summary');
     if (summary) setText(thinkingSpans(summary).preview, part.redacted ? '' : previewSuffix(thinkingPreview(part.text)));
     if (part.redacted || partial) { this.releaseFrames(root); setText(root, part.redacted ? 'Thinking not available' : bounded(part.text, 8192)); }
-    else if (part.text.length > 8192) this.replaceContent(root, markdownDom(bounded(part.text, 8192)), this.inspection('More thinking', () => part.text));
-    else this.replaceContent(root, markdownDom(part.text));
+    else if (part.text.length > 8192) this.replaceContent(root, markdownDom(bounded(part.text, 8192), true), this.inspection('More thinking', () => part.text));
+    else this.replaceContent(root, markdownDom(part.text, true));
   }
-  private textContent(node: HTMLElement, text: string, partial: boolean, previous?: PartNode): void {
+  private textContent(node: HTMLElement, text: string, partial: boolean, agentProse: boolean, previous?: PartNode): void {
     if (previous?.source.type === 'text' && previous.source.text === text && previous.partial === partial) return;
     node.className = partial ? 'message-text stream-text' : 'message-text';
     if (partial) { this.releaseFrames(node); setText(node, bounded(text, 8192)); }
-    else if (text.length > 8192) this.replaceContent(node, markdownDom(bounded(text, 8192)), this.inspection('More text', () => text));
-    else this.replaceContent(node, markdownDom(text));
+    else if (text.length > 8192) this.replaceContent(node, markdownDom(bounded(text, 8192), agentProse), this.inspection('More text', () => text));
+    else this.replaceContent(node, markdownDom(text, agentProse));
   }
   private createTool(source: JoinedTool): ToolNode {
     const card = element('div', 'tool-shell'); const node = element('details', 'tool-card'); card.append(node); const summary = element('summary');
@@ -2080,7 +2080,7 @@ export class Transcript {
       if(!answer){answer=element('section','step-answer');tool.card.append(answer);tool.answerText=undefined;}
       const text=task.answer?task.answer.text:task.reason??'';
       if(tool.answerText!==text&&!this.protectedNode(answer)){
-        const exact=task.answer?.text;answer.replaceChildren(markdownDom(text));if(exact!==undefined)answer.append(button('Copy answer',()=>{void copy(exact,answer as HTMLElement);}));tool.answerText=text;
+        const exact=task.answer?.text;answer.replaceChildren(markdownDom(text, !!task.answer));if(exact!==undefined)answer.append(button('Copy answer',()=>{void copy(exact,answer as HTMLElement);}));tool.answerText=text;
       }
       this.taskAnswerCoverage(answer,task);
     }else{answer?.remove();tool.answerText=undefined;}

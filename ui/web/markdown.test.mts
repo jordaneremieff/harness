@@ -198,6 +198,40 @@ test('links require explicit HTTP or HTTPS URLs', () => {
   assert.deepEqual(parseInline('[unsafe](javascript:alert(1))'), [{type: 'text', text: 'unsafe'}]);
   assert.equal(parseInline('[label](https://example.test "Title")')[0].type, 'link');
 });
+test('bare HTTP(S) addresses require opt-in and retain exact labels outside sentence punctuation', () => {
+  const addresses = ['HTTPS://Example.test/A?q=One&x=Two#Part', 'http://localhost:4318/path', 'https://example.test/a_b?q=a*b&next=%2Fpage', 'https://example.test/a_(b_(c))', 'https://example.test/a)b', 'https://[::1]:4318/path'];
+  for (const address of addresses) {
+    assert.deepEqual(parseInline(address), [{type: 'text', text: address}]);
+    for (const [before, after] of [['', ''], ['(', ').'], ['See ', ','], ['"', '"'], ['[', '].'], ['', '!?;:']]) {
+      const source = before + address + after, nodes = parseInline(source, 0, true);
+      const links = nodes.filter(node => node.type === 'link');
+      assert.deepEqual(links, [{type: 'link', href: safeLink(address), children: [{type: 'text', text: address}]}], source);
+      assert.equal(nodes.map(node => 'text' in node ? node.text : node.type === 'link' ? node.children.map(child => 'text' in child ? child.text : '').join('') : '').join(''), source);
+    }
+  }
+});
+test('bare addresses respect adjacent Markdown, code, existing labels and unsafe schemes', () => {
+  const address = 'https://example.test/a_(b)?x=1&y=2';
+  for (const marker of ['*', '**', '_', '__']) {
+    const nodes = parseInline(`${marker}${address}${marker}`, 0, true);
+    assert.equal(nodes[0]?.type, marker.length === 1 ? 'emphasis' : 'strong');
+    assert.equal(nodes[0] && 'children' in nodes[0] && nodes[0].children[0]?.type, 'link');
+  }
+  const nodes = parseInline(`\`${address}\` [${address}](https://other.test) [${address}](javascript:bad) <img src="${address}">`, 0, true);
+  assert.equal(nodes.filter(node => node.type === 'link').length, 1);
+  const link = nodes.find(node => node.type === 'link');
+  assert.deepEqual(link, {type: 'link', href: 'https://other.test/', children: [{type: 'text', text: address}]});
+  for (const source of ['javascript:alert(1)', 'data:text/html,x', 'file:///secret', '//example.test', 'https://', 'https://[bad]', 'prefixhttps://example.test', 'javascript:https://example.test', 'https:\n//example.test']) {
+    assert.equal(parseInline(source, 0, true).some(node => node.type === 'link'), false, source);
+  }
+});
+test('full-prose bare links reach nested Markdown blocks but never fenced code or frontmatter', () => {
+  const source = '---\nurl: https://metadata.test\n---\n\n# https://heading.test\n\n> https://quote.test\n\n- https://list.test\n\n| Address |\n| --- |\n| https://table.test |\n\n```\nhttps://code.test\n```';
+  const serialised = JSON.stringify(parseMarkdown(source, 0, true));
+  for (const host of ['heading', 'quote', 'list', 'table']) assert.match(serialised, new RegExp(`"href":"https://${host}\\.test/"`));
+  assert.doesNotMatch(serialised, /"href":"https:\/\/(?:code|metadata)\.test/);
+  assert.doesNotMatch(JSON.stringify(parseMarkdown(source)), /"type":"link"/);
+});
 test('raw HTML is always text and remote images are omissions', () => {
   assert.deepEqual(parseInline('<img src="https://example.test/a" onerror="run()">'), [{type: 'text', text: '<img src="https://example.test/a" onerror="run()">'}]);
   const ast = parseMarkdown('<script>alert(1)</script>\n\n![photo](https://example.test/a.png) ![other][ref]');

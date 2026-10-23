@@ -191,6 +191,7 @@ const FRONTMATTER = /^\uFEFF?---[ \t]*\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/;
 export function withoutFrontmatter(text: string): string {
   return text.replace(FRONTMATTER, '');
 }
-export function markdownDom(text: string): DocumentFragment {
-  const fragment = document.createDocumentFragment(); fragment.append(...parseMarkdown(text).map(block)); return fragment;
+/** Bare addresses are interactive only when the caller selects full agent prose. */
+export function markdownDom(text: string, bareLinks = false): DocumentFragment {
+  const fragment = document.createDocumentFragment(); fragment.append(...parseMarkdown(text, 0, bareLinks).map(block)); return fragment;
 }

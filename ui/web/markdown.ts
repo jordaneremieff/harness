@@ -94,12 +94,40 @@ function readLink(source: string, i: number, depth: number, pairs: ReadonlyMap<n
   const children = parseInline(link.label, depth + 1);
   return { nodes: link.href ? [{ type: 'link', href: link.href, children }] : children, end: link.end };
 }
+const LINK_CLOSERS: Readonly<Record<string, string>> = {')': '(', ']': '[', '}': '{'};
+function linkBracketBalance(value: string): Record<string, number> {
+  const balance: Record<string, number> = {'(': 0, '[': 0, '{': 0};
+  for (const character of value) {
+    const open = LINK_CLOSERS[character];
+    if (Object.hasOwn(balance, character)) balance[character] = (balance[character] ?? 0) + 1;
+    else if (open) balance[open] = (balance[open] ?? 0) - 1;
+  }
+  return balance;
+}
+function bareLinkEnd(value: string): number {
+  const balance = linkBracketBalance(value);
+  let end = value.length;
+  while (end > 0) {
+    const character = value.charAt(end - 1), open = LINK_CLOSERS[character];
+    if (/[.,;:!?]/.test(character)) end--;
+    else if (open && (balance[open] ?? 0) < 0) { balance[open] = (balance[open] ?? 0) + 1; end--; }
+    else break;
+  }
+  return end;
+}
+function readBareLink(source: string, i: number): InlineRead | null {
+  if (!/[hH]/.test(source.charAt(i)) || /[\p{L}\p{N}_/@:.\\-]/u.test(source.charAt(i - 1))) return null;
+  const candidate = /^https?:\/\/[^\s\x00-\x20\x7f<>"'`]+/i.exec(source.slice(i))?.[0];
+  if (!candidate) return null;
+  const text = candidate.slice(0, bareLinkEnd(candidate)), href = safeLink(text);
+  return href ? {nodes: [{type: 'link', href, children: [{type: 'text', text}]}], end: i + text.length} : null;
+}
 function readHtml(source: string, i: number): InlineRead | null {
   if (source.charAt(i) !== '<') return null;
   const end = source.indexOf('>', i + 1);
   return end < 0 ? null : { nodes: [{ type: 'text', text: source.slice(i, end + 1) }], end: end + 1 };
 }
-function readEmphasis(source: string, i: number, depth: number): InlineRead | null {
+function readEmphasis(source: string, i: number, depth: number, bareLinks: boolean): InlineRead | null {
   const marker = source.charAt(i);
   if (marker !== '*' && marker !== '_') return null;
   if (!source.charAt(i + 1) || /\s/.test(source.charAt(i + 1))) return null;
@@ -107,7 +135,7 @@ function readEmphasis(source: string, i: number, depth: number): InlineRead | nu
   const token = source.charAt(i + 1) === marker ? marker + marker : marker;
   const end = closing(source, token, i + token.length);
   if (end <= i + token.length) return null;
-  return { nodes: [{ type: token.length === 2 ? 'strong' : 'emphasis', children: parseInline(source.slice(i + token.length, end), depth + 1) }], end: end + token.length };
+  return { nodes: [{ type: token.length === 2 ? 'strong' : 'emphasis', children: parseInline(source.slice(i + token.length, end), depth + 1, bareLinks) }], end: end + token.length };
 }
 function appendInline(nodes: MarkdownInline[], additions: MarkdownInline[]): void {
   for (const node of additions) {
@@ -117,13 +145,13 @@ function appendInline(nodes: MarkdownInline[], additions: MarkdownInline[]): voi
   }
 }
 /** The AST contains no HTML node and no executable or relative URL. */
-export function parseInline(source: string, depth = 0): MarkdownInline[] {
+export function parseInline(source: string, depth = 0, bareLinks = false): MarkdownInline[] {
   if (depth >= 16) return [{ type: 'text', text: source }];
   const nodes: MarkdownInline[] = [];
   const pairs = bracketPairs(source); const lastGreater = source.lastIndexOf('>');
   let i = 0;
   while (i < source.length) {
-    const read = readEscape(source, i) ?? readCode(source, i) ?? readLink(source, i, depth, pairs) ?? (i < lastGreater ? readHtml(source, i) : null) ?? readEmphasis(source, i, depth);
+    const read = readEscape(source, i) ?? readCode(source, i) ?? readLink(source, i, depth, pairs) ?? (i < lastGreater ? readHtml(source, i) : null) ?? readEmphasis(source, i, depth, bareLinks) ?? (bareLinks ? readBareLink(source, i) : null);
     appendInline(nodes, read?.nodes ?? [{ type: 'text', text: source.charAt(i) }]);
     i = read?.end ?? i + 1;
   }
@@ -194,18 +222,18 @@ function readFrontmatter(lines: string[]): BlockRead | null {
 function readRule(lines: string[], i: number): BlockRead | null {
   return horizontalRule(lineAt(lines, i)) ? {block: {type: 'rule'}, end: i + 1} : null;
 }
-function readHeading(lines: string[], i: number): BlockRead | null {
+function readHeading(lines: string[], i: number, bareLinks: boolean): BlockRead | null {
   const heading = /^ {0,3}(#{1,6})\s+(.*)$/.exec(lineAt(lines, i));
-  if (heading) return { block: { type: 'heading', level: (heading[1] ?? '#').length, children: parseInline((heading[2] ?? '').replace(/\s+#+\s*$/, '')) }, end: i + 1 };
+  if (heading) return { block: { type: 'heading', level: (heading[1] ?? '#').length, children: parseInline((heading[2] ?? '').replace(/\s+#+\s*$/, ''), 0, bareLinks) }, end: i + 1 };
   const next = lineAt(lines, i + 1);
   if (!next || !/^ {0,3}(?:=+|-+)\s*$/.test(next)) return null;
-  return { block: { type: 'heading', level: next.trim().startsWith('=') ? 1 : 2, children: parseInline(lineAt(lines, i)) }, end: i + 2 };
+  return { block: { type: 'heading', level: next.trim().startsWith('=') ? 1 : 2, children: parseInline(lineAt(lines, i), 0, bareLinks) }, end: i + 2 };
 }
-function readQuote(lines: string[], i: number, depth: number): BlockRead | null {
+function readQuote(lines: string[], i: number, depth: number, bareLinks: boolean): BlockRead | null {
   if (!/^ {0,3}>/.test(lineAt(lines, i))) return null;
   const body: string[] = []; let end = i;
   while (end < lines.length && /^ {0,3}>/.test(lineAt(lines, end))) body.push(lineAt(lines, end++).replace(/^ {0,3}> ?/, ''));
-  return { block: { type: 'quote', children: parseMarkdown(body.join('\n'), depth + 1) }, end };
+  return { block: { type: 'quote', children: parseMarkdown(body.join('\n'), depth + 1, bareLinks) }, end };
 }
 function blankListContinuation(lines: string[], i: number, indent: number): boolean {
   const look = lines[i + 1];
@@ -227,7 +255,7 @@ function listItemBody(lines: string[], i: number, marker: ListMarker): { source:
   }
   return { source: body.join('\n'), end };
 }
-function readList(lines: string[], i: number, depth: number): BlockRead | null {
+function readList(lines: string[], i: number, depth: number, bareLinks: boolean): BlockRead | null {
   const marker = listMarker(lineAt(lines, i));
   if (!marker) return null;
   const items: MarkdownBlock[][] = []; let end = i;
@@ -235,34 +263,34 @@ function readList(lines: string[], i: number, depth: number): BlockRead | null {
     const next = listMarker(lineAt(lines, end));
     if (!next || next.indent !== marker.indent || next.ordered !== marker.ordered) break;
     const body = listItemBody(lines, end, next); end = body.end;
-    items.push(parseMarkdown(body.source, depth + 1));
+    items.push(parseMarkdown(body.source, depth + 1, bareLinks));
     if (!lineAt(lines, end).trim() && listMarker(lineAt(lines, end + 1))?.indent === marker.indent) end++;
   }
   return { block: { type: 'list', ordered: marker.ordered, start: marker.start, items }, end };
 }
-function readTable(lines: string[], i: number): BlockRead | null {
+function readTable(lines: string[], i: number, bareLinks: boolean): BlockRead | null {
   if (!lineAt(lines, i).includes('|')) return null;
   const align = tableAlignment(lineAt(lines, i + 1));
   if (!align) return null;
-  const header = tableCells(lineAt(lines, i)).map(cell => parseInline(cell));
+  const header = tableCells(lineAt(lines, i)).map(cell => parseInline(cell, 0, bareLinks));
   if (header.length !== align.length) return null;
   const rows: MarkdownInline[][][] = []; let end = i + 2;
   while (end < lines.length && lineAt(lines, end).includes('|') && !startsBlock(lineAt(lines, end))) {
     const cells = tableCells(lineAt(lines, end++));
-    rows.push(header.map((_, index) => parseInline(cells[index] ?? '')));
+    rows.push(header.map((_, index) => parseInline(cells[index] ?? '', 0, bareLinks)));
   }
   return { block: { type: 'table', header, rows, align }, end };
 }
-function readParagraph(lines: string[], i: number): BlockRead {
+function readParagraph(lines: string[], i: number, bareLinks: boolean): BlockRead {
   const body = [lineAt(lines, i)]; let end = i + 1;
   while (end < lines.length && !startsBlock(lineAt(lines, end))) {
     if (lineAt(lines, end).includes('|') && tableAlignment(lineAt(lines, end + 1))) break;
     body.push(lineAt(lines, end++));
   }
-  return { block: { type: 'paragraph', children: parseInline(body.join('\n')) }, end };
+  return { block: { type: 'paragraph', children: parseInline(body.join('\n'), 0, bareLinks) }, end };
 }
 /** Parse only the supplied block/page. Unclosed fences remain inert code. */
-export function parseMarkdown(source: string, depth = 0): MarkdownBlock[] {
+export function parseMarkdown(source: string, depth = 0, bareLinks = false): MarkdownBlock[] {
   if (depth >= 16) return [{ type: 'paragraph', children: [{ type: 'text', text: source }] }];
   const lines = source.replace(/\r\n?/g, '\n').split('\n'); const blocks: MarkdownBlock[] = [];
   const frontmatter = depth === 0 ? readFrontmatter(lines) : null;
@@ -270,7 +298,7 @@ export function parseMarkdown(source: string, depth = 0): MarkdownBlock[] {
   if (frontmatter) blocks.push(frontmatter.block);
   while (i < lines.length) {
     if (!lineAt(lines, i).trim()) { i++; continue; }
-    const read = readFence(lines, i) ?? readRule(lines, i) ?? readQuote(lines, i, depth) ?? readList(lines, i, depth) ?? readTable(lines, i) ?? readHeading(lines, i) ?? readParagraph(lines, i);
+    const read = readFence(lines, i) ?? readRule(lines, i) ?? readQuote(lines, i, depth, bareLinks) ?? readList(lines, i, depth, bareLinks) ?? readTable(lines, i, bareLinks) ?? readHeading(lines, i, bareLinks) ?? readParagraph(lines, i, bareLinks);
     blocks.push(read.block); i = read.end;
   }
   return blocks;

@@ -148,6 +148,7 @@ export class CommunicationCard {
   private replyText?: string;
   private bodyValue?: string;
   private bodyFormatted?: boolean;
+  private bodyBareLinks?: boolean;
   private bodyAttachments = false;
   private factsValue = '';
   private referencesValue = '';
@@ -306,8 +307,8 @@ export class CommunicationCard {
     if (unassociatedInput(message) && this.hooks.inputContent?.(message, this.text)) {
       this.bodyValue = original; this.bodyFormatted = formatted; this.bodyAttachments = true; this.text.removeAttribute('aria-label'); return;
     }
-    if (this.bodyAttachments || original !== this.bodyValue || formatted !== this.bodyFormatted) {
-      this.bodyValue = original; this.bodyFormatted = formatted; this.bodyAttachments = false; this.renderText(original, formatted);
+    if (this.bodyAttachments || original !== this.bodyValue || formatted !== this.bodyFormatted || ready !== this.bodyBareLinks) {
+      this.bodyValue = original; this.bodyFormatted = formatted; this.bodyBareLinks = ready; this.bodyAttachments = false; this.renderText(original, formatted, ready);
     }
   }
   /** A body that is one JSON object reads as labeled fields; the exact text stays in Copy and Source. */
@@ -319,11 +320,11 @@ export class CommunicationCard {
       return typeof value === 'object' && value !== null && !Array.isArray(value) ? this.hooks.structured({value, truncated: false}) : undefined;
     } catch { return undefined; }
   }
-  private renderText(original: string, formatted: boolean): void {
+  private renderText(original: string, formatted: boolean, bareLinks: boolean): void {
     const fields = formatted ? this.fields(original) : undefined;
     this.text.classList.toggle('communication-fields', !!fields);
     if (fields) { this.text.replaceChildren(fields); this.text.removeAttribute('aria-label'); return; }
-    if (formatted) { this.text.replaceChildren(...markdownDom(original).childNodes); this.text.removeAttribute('aria-label'); return; }
+    if (formatted) { this.text.replaceChildren(...markdownDom(original, bareLinks).childNodes); this.text.removeAttribute('aria-label'); return; }
     setText(this.text, original || 'No retained text');
     this.text.removeAttribute('aria-label');
   }
