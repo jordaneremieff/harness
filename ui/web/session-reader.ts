@@ -205,6 +205,6 @@ export class SessionReader {
   }
   private coverage(coverage:HistoryPage['coverage']):void {
     const shortened=coverage.truncated||this.entries.some(entry=>entry.data?.truncated||entry.messages?.some(message=>message.coverage.truncated));
-    setText(this.status,[`${this.entries.length} retained entries loaded`,coverage.complete&&!shortened?'Complete retained ancestry':'Bounded retained ancestry',coverage.reason,shortened?'Content is shortened or incomplete.':'',this.windowTrimmed?'Newer entries are unloaded to keep this view bounded; Refresh returns to the latest.':''].filter(Boolean).join(' · '));
+    setText(this.status,[`${this.entries.length} entries loaded`,coverage.complete&&!shortened?'Full history':'Partial history',coverage.reason,shortened?'Some content is shortened.':'',this.windowTrimmed?'Newer entries are unloaded to keep this view bounded; Refresh returns to the latest.':''].filter(Boolean).join(' · '));
   }
 }
