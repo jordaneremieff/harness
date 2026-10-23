@@ -517,6 +517,38 @@ function paletteFixture(overrides: Partial<ActionContext> = {}) {
 function key(node: FakeNode, name: string, options: Record<string, unknown> = {}) {
   const event = new Event('keydown', {cancelable: true}); Object.assign(event, {key: name, ...options}); node.dispatchEvent(event); return event;
 }
+test('Commands hides binding hints and Keyboard shortcuts derives actionable rows from current metadata', async () => {
+  const calls: string[] = []; let previous = true;
+  const f = paletteFixture({ownMessages: () => previous ? {previous: () => calls.push('previous')} : {}, messageBox: () => calls.push('message box')});
+  try {
+    f.actions.palette(); await f.actions.load('commands'); await Promise.resolve();
+    const field = f.body.children[0]?.children[2], commands = f.body.children[1]; assert.ok(field && commands);
+    assert.equal(commands.children.some(row => row.children.some(node => node.tagName === 'kbd') || row.attributes.has('aria-keyshortcuts')), false);
+    const shortcut = f.actions.paletteEntries().find(item => item.name === 'Previous own message')?.shortcut;
+    assert.deepEqual(shortcut, {text: '⌥↑', keys: 'Alt+ArrowUp'});
+    field.value = 'Keyboard shortcuts'; field.dispatchEvent(new Event('input')); key(field, 'Enter');
+    assert.deepEqual(calls, []); assert.equal(f.isOpen(), true);
+    const list = f.body.children[1]; assert.ok(list); assert.equal(list.attributes.get('role'), 'menu');
+    const expected = f.actions.paletteEntries().filter(item => item.shortcut);
+    assert.deepEqual(list.children.map(row => ({name: textOf(row.children[0] as FakeNode), description: row.children[1]?.textContent, hint: row.children[2]?.textContent, keys: row.attributes.get('aria-keyshortcuts')})), expected.map(item => ({name: item.name, description: item.description, hint: item.shortcut?.text, keys: item.shortcut?.keys})));
+    assert.ok(list.children.every(row => row.attributes.get('role') === 'menuitem'));
+    assert.equal(focused, list.children[0]); key(list, 'ArrowDown'); assert.equal(focused, list.children[1]); key(list, 'Home'); assert.equal(focused, list.children[0]);
+    list.children[0]?.dispatchEvent(new Event('click')); assert.deepEqual(calls, ['previous']); assert.equal(f.isOpen(), false);
+    list.children[0]?.dispatchEvent(new Event('click')); assert.deepEqual(calls, ['previous']);
+    previous = false; f.actions.keyboardShortcuts(); assert.doesNotMatch(textOf(f.body), /Previous own message/); assert.match(textOf(f.body), /Go to message box/);
+    const stale = f.body.children[1]?.children[0]; f.modal.open('Another dialog'); stale?.dispatchEvent(new Event('click')); assert.deepEqual(calls, ['previous']);
+  } finally {f.restore();}
+});
+test('Keyboard shortcuts reads new binding metadata without a second roster and handles an empty context', () => {
+  const f = paletteFixture({primary: () => undefined}); let calls = 0;
+  try {
+    f.actions.keyboardShortcuts(); assert.match(textOf(f.body), /No shortcuts are available for this tab/);
+    f.actions.paletteEntries = () => [{name: 'Local action', description: 'Exact current context', source: 'app', enabled: true, shortcut: {text: 'Fixture key', keys: 'Control+X'}, run: () => {calls++;}}];
+    f.actions.keyboardShortcuts(); const row = f.body.children[1]?.children[0]; assert.ok(row);
+    assert.match(textOf(row), /Local action.*Exact current context.*Fixture key/); assert.equal(row.attributes.get('aria-keyshortcuts'), 'Control+X'); assert.equal(calls, 0);
+    row.dispatchEvent(new Event('click')); assert.equal(calls, 1);
+  } finally {f.restore();}
+});
 test('Message input opens the workspace preference without mutation and the native checkbox saves its value', async () => {
   for (const enabled of [undefined, false, true]) {
     const selections: unknown[] = [], workspace = {enterSendsMessages: enabled};
@@ -568,7 +600,7 @@ test('the palette lists the one sidebar action that applies and still finds it b
 test('palette covers every displaced control and session availability follows the menu', () => {
   const actions = new Actions(context(workspaceReady));
   const names = actions.paletteEntries().filter(item => item.source === 'app').map(item => item.name);
-  assert.deepEqual(names, ['New session', 'Sessions', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Conversation details', 'Saved drafts and messages', 'Appearance', 'Message input', 'Agent presentation control', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Notifications', 'Refresh agents', 'Refresh files', 'Insert /agent new', 'Hide sidebar', 'Projects', 'Workspaces', 'Archived workspaces', 'Model', 'Thinking', 'Sent and received tasks']);
+  assert.deepEqual(names, ['New session', 'Sessions', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Conversation details', 'Saved drafts and messages', 'Appearance', 'Message input', 'Agent presentation control', 'Keyboard shortcuts', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Notifications', 'Refresh agents', 'Refresh files', 'Insert /agent new', 'Hide sidebar', 'Projects', 'Workspaces', 'Archived workspaces', 'Model', 'Thinking', 'Sent and received tasks']);
   const absent = new Actions(context({...workspaceReady, primary: () => undefined})).paletteEntries();
   assert.deepEqual(absent.filter(item => !item.enabled), []);
   for (const name of ['Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Model', 'Thinking', 'Sent and received tasks']) assert.equal(absent.some(item => item.name === name), false, name);

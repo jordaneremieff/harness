@@ -63,7 +63,6 @@ function paletteRow(item: PaletteEntry, marks: number[], conversation: boolean, 
   if (conversation) row.dataset.kind = 'conversation';
   row.append(paletteName(item, marks, conversation), element('span', 'palette-desc', paletteDescription(row, item)));
   if (item.source !== 'app') row.append(element('span', 'palette-source', commandSource(item.source)));
-  if (item.shortcut) { row.append(element('kbd', 'palette-shortcut', item.shortcut.text)); row.setAttribute('aria-keyshortcuts', item.shortcut.keys); }
   if (item.checked !== undefined) {
     row.setAttribute('aria-checked', String(item.checked));
     const check = cardIcon('success'); check.classList.add('palette-check'); check.style.visibility = item.checked ? 'visible' : 'hidden'; row.append(check);
@@ -469,6 +468,7 @@ export class Actions {
           this.ctx.modal.open('Agent presentation control');this.ctx.modal.error(error,'The preference was not saved.');
         });
       }),checked:this.ctx.snapshot()?.workspace.agentControl !== false},
+      {...entry('Keyboard shortcuts', 'Show available shortcuts for this tab', () => this.keyboardShortcuts()), search: ['hotkeys', 'key bindings']},
       entry('Help', 'Browser controls and terminal fallback', () => this.help()),
       entry('Expand loaded tools', 'Expand loaded tool output', () => this.ctx.view(true, true), transcript, undefined, 'Requires a conversation transcript'),
       entry('Collapse loaded tools', 'Collapse loaded tool output', () => this.ctx.view(true, false), transcript, undefined, 'Requires a conversation transcript'),
@@ -508,7 +508,7 @@ export class Actions {
     }
     const conversation = new Set(['Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Previous own message', 'Next own message', 'Previous result', 'Next result', 'Previous post', 'Next post', 'Copy agent ID', 'Sent and received tasks', 'Close conversation tab']);
     const primaryActions = new Set(['Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Model', 'Thinking', 'Review message', 'Insert /agent new']);
-    const workspace = new Set(['New session', 'Sessions', 'Continue a handover', 'Saved drafts and messages', 'Appearance', 'Message input', 'Agent presentation control', 'Help', 'Notifications', 'Refresh agents', 'Refresh files', 'Hide sidebar', 'Show sidebar', 'Projects', 'Next conversation tab', 'Previous conversation tab', 'Reopen closed tab']);
+    const workspace = new Set(['New session', 'Sessions', 'Continue a handover', 'Saved drafts and messages', 'Appearance', 'Message input', 'Agent presentation control', 'Keyboard shortcuts', 'Help', 'Notifications', 'Refresh agents', 'Refresh files', 'Hide sidebar', 'Show sidebar', 'Projects', 'Next conversation tab', 'Previous conversation tab', 'Reopen closed tab']);
     const preferences = new Set(['Appearance','Message input','Agent presentation control','Hide sidebar','Show sidebar']);
     return [...entries.filter(item => item.enabled && (workspaceReady || !preferences.has(item.name))).map(item => {
       let priority = 2;
@@ -745,6 +745,21 @@ export class Actions {
     query.field.addEventListener('keydown', raw => {const event = raw as KeyboardEvent; if (event.key === 'Enter' && !event.isComposing) {event.preventDefault(); step(event.shiftKey);}});
     modal.body.append(query.label, query.field, status, element('p', 'find-coverage secondary', 'Searches loaded messages only.'));
     modal.actions(cardAction('previous', 'Previous', () => step(true)), cardAction('next', 'Next', () => step())); query.field.focus();
+  }
+  keyboardShortcuts(): void {
+    const entries = this.paletteEntries().filter(item => item.enabled && item.shortcut);
+    const modal = this.ctx.modal; modal.open('Keyboard shortcuts'); const token = modal.token;
+    modal.body.append(element('p', 'secondary', 'Available shortcuts for this tab. Text fields and open menus keep their own keys.'));
+    const list = element('div', 'options'); list.setAttribute('role', 'menu'); list.setAttribute('aria-label', 'Keyboard shortcuts');
+    for (const item of entries) {
+      const shortcut = item.shortcut; if (!shortcut) continue;
+      const row = paletteRow(item, [], false, () => {if (modal.owns(token)) {modal.close(); item.run();}});
+      row.setAttribute('role', 'menuitem'); row.setAttribute('aria-keyshortcuts', shortcut.keys);
+      row.append(element('kbd', 'palette-shortcut', shortcut.text)); list.append(row);
+    }
+    list.addEventListener('keydown', event => navigateOptions(event, list));
+    modal.body.append(entries.length ? list : element('p', 'secondary', 'No shortcuts are available for this tab.'));
+    list.querySelector<HTMLButtonElement>('button')?.focus();
   }
   help(): void {
     const modal = this.ctx.modal; modal.open('Help');
