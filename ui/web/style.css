@@ -1526,8 +1526,6 @@ dialog[data-variant=menu]::backdrop { background: transparent; }
   .thread-posts { grid-column: 1; grid-row: 1; }
   .thread-members { grid-column: 2; grid-row: 1; position: sticky; top: 0; align-self: start; }
   .thread-members > summary { pointer-events: none; list-style: none; }
-  .thread-members > .thread-member-list { display: block; }
-  .thread-members::details-content { content-visibility: visible; }
 }
 .thread-earlier-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--s2); margin-top: var(--s2); }
 .thread-earlier-row > .thread-note { margin: 0; }
@@ -1573,6 +1571,13 @@ button.thread-person:hover, button.thread-sender:hover { background: var(--raise
 .thread-decision-head { color: var(--muted); font-size: var(--fs-meta); }
 .thread-decision-text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-size: var(--fs-ui); }
 .thread-event-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--s2); min-width: 0; }
+@container (max-width: 599px) {
+  .thread-message > .thread-event-head { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; }
+  .thread-message > .thread-event-head > .thread-sender { grid-column: 1; grid-row: 1; overflow-wrap: anywhere; }
+  .thread-message > .thread-event-head > .thread-time { grid-column: 2; grid-row: 1; margin-left: 0; }
+  .thread-message > .thread-event-head > .thread-anchor { grid-column: 3; grid-row: 1; }
+  .thread-message > .thread-event-head > :is(.thread-author-profile, .thread-kind) { grid-column: 1 / -1; min-width: 0; overflow-wrap: anywhere; }
+}
 .thread-reply, .thread-source { margin: var(--s1) 0 0; }
 .thread-line { padding-block: var(--s1); }
 .thread-line-text { margin: 0; color: var(--muted); font-size: var(--fs-meta); }

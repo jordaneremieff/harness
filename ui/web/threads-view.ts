@@ -202,7 +202,9 @@ export class ThreadReader {
   private readonly scroller = element('div', 'thread-scroll');
   private readonly frame = element('div', 'thread-frame');
   private readonly participants = element('details', 'thread-members');
-  private participantsOpen = true;
+  /** The narrow disclosure choice is independent of the always-visible wide column. */
+  private participantsOpen = false;
+  private participantsWide = false;
   private readonly backButton: HTMLButtonElement;
   private readonly expandedPosts = new Set<string>();
   private highlightTimer?: ReturnType<typeof setTimeout>;
@@ -261,12 +263,15 @@ export class ThreadReader {
     this.exchange.setAttribute('aria-label', 'Events, oldest first');
     this.earlierRow.append(this.earlierNote, this.earlier);
     const forum = element('div', 'thread-forum'), posts = element('div', 'thread-posts');
-    this.participants.open = this.participantsOpen;
-    this.participants.addEventListener('toggle', () => {this.participantsOpen = this.participants.open;});
+    this.participants.addEventListener('click', event => {
+      if (event.target !== this.participants.querySelector('summary')) return;
+      event.preventDefault();
+      if (!this.participantsWide) {this.participantsOpen = !this.participantsOpen; this.layoutParticipants();}
+    });
     posts.append(this.frame, this.earlierRow, this.exchange, this.notice);
     forum.append(this.participants, posts); this.scroller.append(forum);
     this.node.append(header, meta, this.scroller);
-    if (typeof ResizeObserver === 'function') { this.resize = new ResizeObserver(() => {this.measurePosts(); this.settle();}); this.resize.observe(this.exchange); }
+    if (typeof ResizeObserver === 'function') { this.resize = new ResizeObserver(() => {this.layoutParticipants(); this.measurePosts(); this.settle();}); this.resize.observe(this.node); this.resize.observe(this.exchange); }
     this.scroller.addEventListener('scroll', () => {
       const navigation = this.postNavigationScroll && this.postCursor?.top === this.scroller.scrollTop; this.postNavigationScroll = false;
       if (this.postCursor && this.postCursor.top !== this.scroller.scrollTop) this.clearPostNavigation();
@@ -286,7 +291,7 @@ export class ThreadReader {
   restoreReload(value:ReturnType<ThreadReader['captureReload']>):void {
     this.cancel();this.scrolls.clear();for(const [key,position] of value.scrolls)this.scrolls.set(key,position);
     this.expandedPosts.clear();for(const key of value.expanded)this.expandedPosts.add(key);
-    this.participantsOpen=value.participants;this.participants.open=value.participants;setText(this.backButton,value.back);
+    this.participantsOpen=value.participants;this.layoutParticipants();setText(this.backButton,value.back);
     if(value.entry){this.entry=value.entry;this.cache.set(value.entry.item.id,value.entry);this.rows.clear();this.framed='';this.node.hidden=false;this.paint();this.restoreScroll();this.reading=this.anchorRow();this.lastTop=this.scroller.scrollTop;this.restorePending=false;}
   }
   get active(): ThreadEntry | undefined { return this.destroyed || this.node.hidden ? undefined : this.entry?.item; }
@@ -518,9 +523,15 @@ export class ThreadReader {
     parts.push(this.frameDetails(thread));
     this.frame.replaceChildren(...parts);
   }
+  private layoutParticipants(): void {
+    this.participantsWide = this.scroller.getBoundingClientRect().width >= 1000;
+    this.participants.open = this.participantsWide || this.participantsOpen;
+    const summary = this.participants.querySelector('summary'); if (summary) summary.tabIndex = this.participantsWide ? -1 : 0;
+  }
   private members(thread: ThreadView): HTMLElement {
-    const box = this.participants; box.open = this.participantsOpen;
+    const box = this.participants;
     box.replaceChildren(element('summary', undefined, `Participants · ${thread.members.length}`));
+    this.layoutParticipants();
     const list = element('ul', 'thread-member-list');
     const events = this.entry?.events ?? [], posts = events.filter(event => event.kind === 'contribution' || event.kind === 'carried-authority');
     const latest = (identity: string) => Math.max(0, ...posts.filter(post => post.sender === identity).map(post => post.sequence));

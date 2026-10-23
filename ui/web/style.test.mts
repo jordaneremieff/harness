@@ -12,6 +12,25 @@ function rule(selector: string): string {
 const declarations = (property: string): string[] => [...css.matchAll(new RegExp(`(?:^|[;{\\s])${property}:\\s*([^;}]+)`, 'g'))].map(match => match[1].trim());
 const media = (query: string): string => { const start = css.indexOf(query); assert.ok(start >= 0, `Missing ${query}`); const next = css.indexOf('\n@media', start + 1); return css.slice(start, next < 0 ? undefined : next); };
 
+test('phone thread headers keep sender, time and anchor together with full-width secondary facts', () => {
+  const start = css.indexOf('@container (max-width: 599px) {\n  .thread-message'); assert.ok(start >= 0);
+  const phone = css.slice(start, css.indexOf('\n}', start) + 2);
+  assert.match(phone, /display: grid; grid-template-columns: minmax\(0, 1fr\) auto auto/);
+  assert.match(rule('.thread-message > .thread-event-head > .thread-sender'), /grid-column: 1; grid-row: 1; overflow-wrap: anywhere/);
+  assert.match(rule('.thread-message > .thread-event-head > .thread-time'), /grid-column: 2; grid-row: 1; margin-left: 0/);
+  assert.match(rule('.thread-message > .thread-event-head > .thread-anchor'), /grid-column: 3; grid-row: 1/);
+  assert.match(rule('.thread-message > .thread-event-head > :is(.thread-author-profile, .thread-kind)'), /grid-column: 1 \/ -1; min-width: 0; overflow-wrap: anywhere/);
+  assert.doesNotMatch(phone, /font-size|(?:min-)?height|min-width: (?:[1-3]?\d|4[0-3])px|overflow: hidden|text-overflow/);
+  assert.match(rule('.thread-event-head'), /display: flex; flex-wrap: wrap/);
+  assert.match(media('@media (pointer:coarse)'), /button, summary,.*min-height: 44px; min-width: 44px/);
+});
+test('wide Participants uses the real disclosure state without a CSS-only content override', () => {
+  const start = css.indexOf('@container (min-width: 1000px) {'); assert.ok(start >= 0);
+  const wide = css.slice(start, css.indexOf('\n}', start) + 2);
+  assert.match(wide, /\.thread-members \{ grid-column: 2; grid-row: 1; position: sticky/);
+  assert.match(wide, /\.thread-members > summary \{ pointer-events: none; list-style: none; \}/);
+  assert.doesNotMatch(wide, /details-content|thread-member-list/);
+});
 test('loaded-message choices keep separate excerpt and date rows at phone and desktop widths',()=>{
   assert.match(rule('dialog[data-variant=palette][data-mode=messages] .palette-list'),/--palette-row-size: 56px/);
   assert.match(rule('dialog[data-variant=palette][data-mode=messages] .palette-row'),/grid-template-columns: minmax\(0,1fr\); grid-template-rows: auto auto/);
