@@ -122,6 +122,21 @@ export function suppliedDifference(oldText: string, newText: string, chars = 819
   return {contextBefore: start.contextBefore, removed: removed.lines, added: added.lines, contextAfter: end.contextAfter,
     omittedBefore: start.omittedBefore, omittedAfter: end.omittedAfter || removed.truncated || added.truncated, scanLimited, same};
 }
+export type SuppliedChange = {start: number; removedEnd: number; addedEnd: number};
+/** Only a complete single-line pair has an unambiguous changed middle; offsets preserve whole code points. */
+export function suppliedChange(value: SuppliedDifference): SuppliedChange | undefined {
+  if (value.same || value.scanLimited || value.omittedBefore || value.omittedAfter || value.removed.length !== 1 || value.added.length !== 1) return undefined;
+  const oldText = value.removed[0] ?? '', newText = value.added[0] ?? '';
+  if (oldText.length > COMPARE_CHARS || newText.length > COMPARE_CHARS) return undefined;
+  const oldPoints = Array.from(oldText), newPoints = Array.from(newText);
+  let start = 0;
+  while (start < oldPoints.length && start < newPoints.length && oldPoints[start] === newPoints[start]) start++;
+  let removedEnd = oldPoints.length, addedEnd = newPoints.length;
+  while (removedEnd > start && addedEnd > start && oldPoints[removedEnd - 1] === newPoints[addedEnd - 1]) { removedEnd--; addedEnd--; }
+  if (start === removedEnd && start === addedEnd) return undefined;
+  return {start: oldPoints.slice(0, start).join('').length,
+    removedEnd: oldPoints.slice(0, removedEnd).join('').length, addedEnd: newPoints.slice(0, addedEnd).join('').length};
+}
 export function differenceNotice(value: SuppliedDifference): string {
   return [value.omittedAfter ? 'Later context omitted.' : '', value.scanLimited ? 'First difference not located within scan limit.' : '',
     value.same && (value.removed.length || value.added.length) ? 'No differing text in supplied pair.' : ''].filter(Boolean).join(' ');

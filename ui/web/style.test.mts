@@ -1504,6 +1504,13 @@ test('diff fills span each row and signs own a two-character gutter', () => {
   assert.match(rule('.diff-add'), /background: var\(--add-bg\); color: var\(--success\)/);
 });
 
+test('changed spans retain the row colours and use local weight and underline without extra spacing', () => {
+  const emphasis = rule('.diff-change');
+  assert.match(emphasis, /font-weight: 600/); assert.match(emphasis, /text-decoration: underline/);
+  assert.match(emphasis, /text-decoration-thickness: 2px/); assert.match(emphasis, /text-underline-offset: 2px/);
+  assert.doesNotMatch(emphasis, /(?:color|background|padding|margin|white-space|user-select|content):/);
+});
+
 test('the final coarse-pointer block wins over the density rules and restores 44px touch rows', () => {
   const marker = '@media (pointer:coarse) {\n  .sidebar .nav-row, .sidebar .sidebar-action';
   const start = css.lastIndexOf(marker); assert.ok(start > 0, 'Missing the final coarse-pointer block');

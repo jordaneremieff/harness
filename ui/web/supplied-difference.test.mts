@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {suppliedDifference, differenceNotice} from './supplied-difference.ts';
+import {suppliedDifference, suppliedChange, differenceNotice} from './supplied-difference.ts';
 
 const shape = (oldText: string, newText: string, chars?: number, lines?: number) => {
   const {contextBefore, removed, added, contextAfter} = suppliedDifference(oldText, newText, chars, lines);
@@ -40,6 +40,33 @@ test('a change inside one line keeps that line as one removed and one added line
   assert.deepEqual(shape('old\n', 'new\n'), {contextBefore: null, removed: ['old'], added: ['new'], contextAfter: null});
   assert.equal(differenceNotice(suppliedDifference('old', 'new')), '');
   assert.deepEqual(shape('return a - b;\n', 'return a + b;\n'), {contextBefore: null, removed: ['return a - b;'], added: ['return a + b;'], contextAfter: null});
+});
+test('a complete single-line pair identifies only its differing middle with code-point-safe offsets', () => {
+  for (const [oldText, newText, expectedOld, expectedNew] of [
+    ['return a - b;', 'return a + b;', '-', '+'],
+    ['ab', 'a+b', '', '+'], ['a+b', 'ab', '+', ''],
+    ['\t  a - b;  ', '\t  a + b;  ', '-', '+'],
+    ['a b', 'a\tb', ' ', '\t'],
+    ['😀😃tail', '😀😄tail', '😃', '😄'], ['x😀z', 'x🈀z', '😀', '🈀'],
+    ['é', 'è', '́', '̀'],
+  ]) {
+    const shown = suppliedDifference(oldText ?? '', newText ?? ''); const change = suppliedChange(shown); assert.ok(change);
+    const oldLine = shown.removed[0] ?? '', newLine = shown.added[0] ?? '';
+    assert.equal(oldLine.slice(change.start, change.removedEnd), expectedOld);
+    assert.equal(newLine.slice(change.start, change.addedEnd), expectedNew);
+    assert.equal(oldLine.slice(0, change.start), newLine.slice(0, change.start));
+    assert.equal(oldLine.slice(change.removedEnd), newLine.slice(change.addedEnd));
+    for (const [text, end] of [[oldLine, change.removedEnd], [newLine, change.addedEnd]] as const) {
+      for (const piece of [text.slice(0, change.start), text.slice(change.start, end), text.slice(end)]) assert.equal(piece.isWellFormed(), true);
+    }
+  }
+});
+test('multi-line, omitted, scan-limited, identical and empty-side comparisons have no changed span', () => {
+  for (const [oldText, newText] of [
+    ['old\nlines', 'new\nrows'], ['a\nb\nold', 'a\nb\nnew'], ['old\na\nb', 'new\na\nb'],
+    ['x'.repeat(9000), 'new'], [`${'same\n'.repeat(14000)}old`, `${'same\n'.repeat(14000)}new`],
+    ['a\r\nb', 'a\nb'], ['same', 'same'], ['', 'new'], ['old', ''],
+  ]) assert.equal(suppliedChange(suppliedDifference(oldText ?? '', newText ?? '')), undefined);
 });
 test('a removed empty line is a line; an empty side has none', () => {
   assert.deepEqual(shape('a\n\nb', 'a\nb'), {contextBefore: 'a', removed: [''], added: [], contextAfter: 'b'});

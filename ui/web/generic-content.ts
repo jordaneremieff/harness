@@ -5,7 +5,7 @@ import { highlight, languageFromPath } from './highlight.ts';
 import { plainPreviewWords, previewText } from './format.ts';
 import { markdownDom, withoutFrontmatter } from './safe-markdown.ts';
 import type { PresentationContext } from './transcript-presentation.ts';
-import { suppliedDifference, differenceNotice } from './supplied-difference.ts';
+import { suppliedDifference, suppliedChange, differenceNotice } from './supplied-difference.ts';
 
 const SCAN = 2048;
 const DEPTH = 8;
@@ -580,12 +580,18 @@ class Preview {
       if (!this.append(body, tr)) break;
     }
   }
-  private diffRow(frame: HTMLElement, text: string, className?: string): void {
+  private diffRow(frame: HTMLElement, text: string, className?: string): HTMLElement {
     const row = element('span', `diff-row${className ? ` ${className}` : ''}`);
-    row.append(element('span', 'diff-marker', text.slice(0, 2)), element('span', 'diff-text', text.slice(2)));
-    frame.append(row);
+    const content = element('span', 'diff-text', text.slice(2));
+    row.append(element('span', 'diff-marker', text.slice(0, 2)), content);
+    frame.append(row); return content;
   }
-  private editSide(frame: HTMLElement, lines: string[], sign: string, className: string, empty: boolean): void {
+  private emphasise(content: HTMLElement, start: number, end: number): void {
+    if (end <= start) return;
+    const line = content.textContent ?? ''; content.textContent = '';
+    content.append(document.createTextNode(line.slice(0, start)), element('span', 'diff-change', line.slice(start, end)), document.createTextNode(line.slice(end)));
+  }
+  private editSide(frame: HTMLElement, lines: string[], sign: string, className: string, empty: boolean): HTMLElement | undefined {
     if (!this.budget.text) { this.limit(); return; }
     if (empty) {
       const label = this.take(`${sign === '-' ? 'Old' : 'New'} text: empty`, DOC_CHARS);
@@ -593,11 +599,14 @@ class Preview {
       return;
     }
     if (!lines.length) return;
-    const text = this.take(lines.map(line => `${sign} ${line}`).join('\n'), DOC_CHARS);
+    const source = lines.map(line => `${sign} ${line}`).join('\n');
+    const text = this.take(source, DOC_CHARS);
+    let content: HTMLElement | undefined;
     if (text) {
       const shown = text.split('\n');
-      for (const [index, line] of shown.entries()) this.diffRow(frame, `${line}${index < shown.length - 1 ? '\n' : this.take('\n', 1)}`, className);
+      for (const [index, line] of shown.entries()) content = this.diffRow(frame, `${line}${index < shown.length - 1 ? '\n' : this.take('\n', 1)}`, className);
     }
+    return text === source ? content : undefined;
   }
   private contextLine(frame: HTMLElement, line: string | null): void {
     if (line === null) return;
@@ -609,8 +618,12 @@ class Preview {
     const {pre, frame} = framedPre();
     if (comparison.omittedBefore) frame.append(document.createTextNode(this.take('Earlier context omitted.\n', 32, 2)));
     this.contextLine(frame, comparison.contextBefore);
-    this.editSide(frame, comparison.removed, '-', 'diff-del', old === '');
-    this.editSide(frame, comparison.added, '+', 'diff-add', next === '');
+    const change = this.truncated ? undefined : suppliedChange(comparison);
+    const removed = this.editSide(frame, comparison.removed, '-', 'diff-del', old === '');
+    const added = this.editSide(frame, comparison.added, '+', 'diff-add', next === '');
+    if (change && removed && added) {
+      this.emphasise(removed, change.start, change.removedEnd); this.emphasise(added, change.start, change.addedEnd);
+    }
     this.contextLine(frame, comparison.contextAfter);
     const notice = differenceNotice(comparison); if (notice) frame.append(document.createTextNode(this.take(notice, 160, 1)));
     if (comparison.omittedBefore || comparison.omittedAfter || comparison.scanLimited) this.limit('text');

@@ -649,6 +649,44 @@ test('supplied edits color only changed lines and show shared lines in plain tex
   assert.match(empty.textContent, /Old text: empty\n\+ new/); assert.equal(classes(empty, 'diff-del').length, 0);
 });
 
+test('complete supplied single-line replacements emphasise exact changed text without changing the full lines', () => {
+  const context = setup();
+  for (const [oldText, newText, expected] of [
+    ['return a - b;', 'return a + b;', ['-', '+']],
+    ['ab', 'a+b', ['+']], ['a+b', 'ab', ['+']],
+    ['\t  a b  ', '\t  a\tb  ', [' ', '\t']],
+    ['😀😃tail', '😀😄tail', ['😃', '😄']], ['x😀z', 'x🈀z', ['😀', '🈀']],
+  ] as const) {
+    const value = {oldText, newText}; const retained = JSON.stringify(value);
+    const node = cast(presentArguments({value, truncated: false}, context, undefined, {replacement: true}));
+    const frame = classes(node, 'pre-text-frame')[0]; assert.ok(frame);
+    assert.equal(frame.textContent, `- ${oldText}\n+ ${newText}\n`);
+    assert.deepEqual(classes(frame, 'diff-change').map(span => span.textContent), expected);
+    for (const child of descendants(frame)) assert.equal(child.textContent.isWellFormed(), true);
+    assert.equal(JSON.stringify(value), retained); bounded(node);
+  }
+});
+test('incomplete and bounded supplied replacements retain whole-line presentation without changed-span guesses', () => {
+  const context = setup();
+  for (const [value, truncated] of [
+    [{oldText: 'old', newText: 'new'}, true],
+    [{oldText: 'old\nrows', newText: 'new\nlines'}, false],
+    [{oldText: 'x'.repeat(9000), newText: 'new'}, false],
+    [{oldText: 'a\nb\nold', newText: 'a\nb\nnew'}, false],
+    [{oldText: 'old\na\nb', newText: 'new\na\nb'}, false],
+    [{oldText: `${'same\n'.repeat(14000)}old`, newText: `${'same\n'.repeat(14000)}new`}, false],
+    [{oldText: '', newText: 'new'}, false], [{oldText: 'old', newText: ''}, false],
+  ] as const) {
+    const node = cast(presentArguments({value, truncated}, context, undefined, {replacement: true}));
+    assert.equal(classes(node, 'diff-change').length, 0); bounded(node);
+  }
+  const value = {oldText: 'return a - b;', newText: 'return a + b;'};
+  const cut = cast(presentArguments({value, truncated: false}, {...context, bounded: text => text.slice(0, 4)}, undefined, {replacement: true}));
+  assert.equal(classes(cut, 'diff-change').length, 0); bounded(cut);
+  const oneSideCut = cast(presentArguments({value: {oldText: 'a-b', newText: `a${'x'.repeat(30)}b`}, truncated: false},
+    {...context, bounded: text => text.slice(0, 12)}, undefined, {replacement: true}));
+  assert.equal(classes(oneSideCut, 'diff-change').length, 0); bounded(oneSideCut);
+});
 test('supplied diff rows separate literal markers from exact indented and blank source lines', () => {
   const oldText = '  head\n\told <script>😀\n\n  tail';
   const long = `\tnew ${'wide '.repeat(35)}😀`;

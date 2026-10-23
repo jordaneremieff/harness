@@ -43,6 +43,42 @@ test('structured edit previews every supplied old/new pair without invented file
   assert.doesNotMatch(card.textContent, /@@|successfully replaced/);
   assert.equal(card.children.filter(child => child.tag === 'pre').length, 2);
 });
+test('collapsed and expanded complete single-line edits emphasise only exact changed spans', () => {
+  const {context} = setup();
+  const changes = (root: Node): Node[] => [root, ...root.children.flatMap(changes)].filter(child => child.className === 'diff-change');
+  for (const [oldText, newText, expected] of [
+    ['return a - b;\n', 'return a + b;\n', ['-', '+']],
+    ['ab', 'a+b', ['+']], ['a+b', 'ab', ['+']],
+    ['\t  a b  ', '\t  a\tb  ', [' ', '\t']],
+    ['😀😃tail', '😀😄tail', ['😃', '😄']], ['x😀z', 'x🈀z', ['😀', '🈀']],
+  ] as const) {
+    const value = {oldText, newText}; const call = source('edit', value); const retained = JSON.stringify(call);
+    for (const block of [node(presentToolPreview(call)), node(presentTool(call, context)).children.find(child => child.tag === 'pre')]) {
+      assert.ok(block); assert.equal(block.textContent, `- ${oldText.replace(/\n$/, '')}\n+ ${newText.replace(/\n$/, '')}\n`);
+      assert.deepEqual(changes(block).map(span => span.textContent), expected);
+      assert.equal(changes(block).every(span => span.tag === 'span' && span.textContent.isWellFormed()), true);
+      assert.deepEqual(block.children.map(row => row.children[0]?.textContent), ['- ', '+ ']);
+    }
+    assert.equal(JSON.stringify(call), retained);
+  }
+});
+test('collapsed and expanded incomplete or omitted edit comparisons retain whole-line presentation', () => {
+  const {context} = setup();
+  const changes = (root: Node): Node[] => [root, ...root.children.flatMap(changes)].filter(child => child.className === 'diff-change');
+  for (const [oldText, newText, incomplete] of [
+    ['old', 'new', true], ['old\nrows', 'new\nlines', false], ['x'.repeat(9000), 'new', false],
+    ['a\nb\nold', 'a\nb\nnew', false], ['old\na\nb', 'new\na\nb', false],
+    [`${'same\n'.repeat(14000)}old`, `${'same\n'.repeat(14000)}new`, false],
+    ['', 'new', false], ['old', '', false],
+  ] as const) {
+    const call = source('edit', {oldText, newText}); if (call.args) call.args.truncated = incomplete;
+    for (const block of [node(presentToolPreview(call)), node(presentTool(call, context)).children.find(child => child.tag === 'pre')]) {
+      assert.ok(block); assert.equal(changes(block).length, 0); assert.equal(block.textContent.isWellFormed(), true);
+    }
+  }
+  const call = source('edit', {oldText: 'return a - b;', newText: 'return a + b;'});
+  const cut = node(presentTool(call, {...context, bounded: text => text.slice(0, 12)})); assert.equal(changes(cut).length, 0);
+});
 test('collapsed and expanded diff rows preserve literal markers, indentation, blank lines and newline text', () => {
   const {context} = setup();
   const oldText = '  head\n\told <script>😀\n\n  tail';

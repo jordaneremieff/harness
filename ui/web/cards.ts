@@ -6,7 +6,7 @@ import type { PresentationContext, ToolPresentationSource } from './transcript-p
 import { previewText } from './format.ts';
 import { highlight, isMarkdownPath, languageFromPath } from './highlight.ts';
 import { markdownPreviewDom, withoutFrontmatter } from './safe-markdown.ts';
-import { suppliedDifference, differenceNotice, type SuppliedDifference } from './supplied-difference.ts';
+import { suppliedDifference, suppliedChange, differenceNotice, type SuppliedDifference, type SuppliedChange } from './supplied-difference.ts';
 
 const PREVIEW_CHARS = 8192;
 const TOTAL_CHARS = 16384;
@@ -44,11 +44,11 @@ function comparisonLines(edit: Replacement, comparison: SuppliedDifference): str
     ...(comparison.contextAfter === null ? [] : [`  ${comparison.contextAfter}`]),
   ];
 }
-function replacementPreview(edit: Replacement, budget: number): {text: string; limited: boolean} {
+function replacementPreview(edit: Replacement, budget: number): {text: string; limited: boolean; change?: SuppliedChange} {
   const comparison = suppliedDifference(edit.oldText, edit.newText, Math.max(0, Math.min(PREVIEW_CHARS, Math.floor((budget - 240) / 2) - PREVIEW_LINES * 2)), PREVIEW_LINES);
   const notice = differenceNotice(comparison);
   return {text: [...comparisonLines(edit, comparison), ...(notice ? [notice] : [])].join('\n'),
-    limited: comparison.omittedBefore || comparison.omittedAfter || comparison.scanLimited};
+    limited: comparison.omittedBefore || comparison.omittedAfter || comparison.scanLimited, change: suppliedChange(comparison)};
 }
 function writePreview(source: ToolPresentationSource, text: string, className?: string): HTMLElement {
   const args = record(source.args?.value); const pre = element('pre', className);
@@ -73,20 +73,27 @@ function written(source: ToolPresentationSource, content: string, context: Prese
   }
   return node;
 }
-function replacementBlock(text: string): HTMLElement {
+function replacementRow(line: string, className: string | undefined, change?: SuppliedChange): HTMLElement {
+  const row = element('span', `diff-row${className ? ` ${className}` : ''}`);
+  const content = element('span', 'diff-text'); const source = `${line.slice(2)}\n`;
+  const end = className === 'diff-del' ? change?.removedEnd : className === 'diff-add' ? change?.addedEnd : undefined;
+  if (change && end !== undefined && end > change.start) content.append(document.createTextNode(source.slice(0, change.start)),
+    element('span', 'diff-change', source.slice(change.start, end)), document.createTextNode(source.slice(end)));
+  else content.textContent = source;
+  row.append(element('span', 'diff-marker', line.slice(0, 2)), content);
+  return row;
+}
+function replacementBlock(text: string, change?: SuppliedChange): HTMLElement {
   const block = element('pre');
   if (!text) return block;
   for (const line of text.split('\n')) {
     const className = line.startsWith('- ') ? 'diff-del' : line.startsWith('+ ') ? 'diff-add' : undefined;
-    if (className || line.startsWith('  ')) {
-      const row = element('span', `diff-row${className ? ` ${className}` : ''}`);
-      row.append(element('span', 'diff-marker', line.slice(0, 2)), element('span', 'diff-text', `${line.slice(2)}\n`));
-      block.append(row);
-    } else block.append(document.createTextNode(line), document.createTextNode('\n'));
+    if (className || line.startsWith('  ')) block.append(replacementRow(line, className, change));
+    else block.append(document.createTextNode(line), document.createTextNode('\n'));
   }
   return block;
 }
-function edited(edits: Replacement[], context: PresentationContext, count: number): HTMLElement {
+function edited(edits: Replacement[], context: PresentationContext, count: number, incomplete: boolean): HTMLElement {
   const node = element('section', 'tool-content');
   node.append(element('p', 'secondary tool-caption', 'Supplied replacement'));
   let budget = TOTAL_CHARS;
@@ -94,7 +101,8 @@ function edited(edits: Replacement[], context: PresentationContext, count: numbe
     const text = replacementPreview(edit, Math.max(0, budget / 2));
     const shown = preview(text.text, Math.max(0, budget - 1), Number.MAX_SAFE_INTEGER);
     if (shown.text) budget -= shown.text.length + 1;
-    node.append(replacementBlock(context.bounded(shown.text, TOTAL_CHARS)));
+    const retained = context.bounded(shown.text, TOTAL_CHARS);
+    node.append(replacementBlock(retained, !incomplete && retained === text.text ? text.change : undefined));
     if (text.limited || shown.limited) node.append(element('p', 'secondary', 'Replacement preview shortened.'),
       context.inspection(`Replacement ${index + 1}: old text`, () => edit.oldText),
       context.inspection(`Replacement ${index + 1}: new text`, () => edit.newText));
@@ -223,7 +231,7 @@ function collapsedReplacement(source: ToolPresentationSource, args: Record<strin
   const remaining = supplied.count - 1;
   const notice = [differenceNotice(comparison), remaining ? `${remaining} more ${remaining === 1 ? 'replacement' : 'replacements'} in Arguments.` : '',
     source.args?.truncated ? 'Some arguments are unavailable.' : ''].filter(Boolean).join(' ');
-  const block = replacementBlock([...comparisonLines(edit, comparison), ...(notice ? [notice] : [])].join('\n'));
+  const block = replacementBlock([...comparisonLines(edit, comparison), ...(notice ? [notice] : [])].join('\n'), source.args?.truncated ? undefined : suppliedChange(comparison));
   block.className = 'tool-content-preview'; return block;
 }
 
@@ -249,7 +257,7 @@ export function presentTool(source: ToolPresentationSource, context: Presentatio
   }
   if (source.name === 'write' && typeof args.content === 'string') node = written(source, args.content, context);
   if (source.name === 'edit') {
-    const supplied = replacements(args); if (supplied) node = edited(supplied.edits, context, supplied.count);
+    const supplied = replacements(args); if (supplied) node = edited(supplied.edits, context, supplied.count, !!source.args?.truncated);
   }
   if (node && source.args?.truncated) node.append(element('p', 'warning', 'Some arguments are not available. This preview is not a complete file diff.'));
   return node;

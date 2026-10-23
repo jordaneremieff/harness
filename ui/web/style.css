@@ -934,6 +934,7 @@ pre.tool-document { font-family: var(--mono); font-size: var(--fs-code); line-he
 .diff-del, .diff-add { padding: 0; }
 .diff-del { background: var(--del-bg); color: var(--error); }
 .diff-add { background: var(--add-bg); color: var(--success); }
+.diff-change { font-weight: 600; text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 2px; }
 .syn-keyword { color: var(--syntax-keyword); }
 .syn-string { color: var(--syntax-string); }
 .syn-number { color: var(--syntax-number); }
