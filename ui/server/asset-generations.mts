@@ -100,7 +100,10 @@ function pinHtml(html:string,id:string,assets:ReadonlyMap<string,Asset>) {
   return html;
 }
 
-type Lease={generation:string;cssGeneration:string;layoutVersion?:number;predecessor?:DevLeaseIdentity&{adopted?:boolean}};
+/** A page that dies without its release (killed browser, crash, sleep) leaves a lease with no stream; it expires after this idle time. */
+export const LEASE_IDLE_MS = 2 * 60 * 1000;
+export const LEASE_LIMIT = 64;
+type Lease={idleSince:number;generation:string;cssGeneration:string;layoutVersion?:number;predecessor?:DevLeaseIdentity&{adopted?:boolean}};
 type LeaseResult={lease:'present'|'missing';build:BuildStatus}|{lease:'replaced';client:string;build:BuildStatus};
 /** Two full snapshots and one candidate; live JS aliases share their immutable families. */
 export class AssetGenerations {
@@ -113,11 +116,29 @@ export class AssetGenerations {
   private blocked=false;
   private state:BuildStatus;
   private observer?: (status:BuildStatus)=>void;
-  constructor(initial:AssetGeneration, previous?:AssetGeneration) {this.active=initial;this.previous=previous;this.state={revision:0,generation:initial.id,previous:previous?.id??null,change:previous?.sameExceptCss(initial)?'css':'reload',status:'ready',code:'none'};}
+  private now:()=>number;
+  constructor(initial:AssetGeneration, previous?:AssetGeneration, now:()=>number=Date.now) {this.now=now;this.active=initial;this.previous=previous;this.state={revision:0,generation:initial.id,previous:previous?.id??null,change:previous?.sameExceptCss(initial)?'css':'reload',status:'ready',code:'none'};}
+  /** Drops leases that have had no live event stream for the idle period. A lease with a live stream is never dropped. */
+  private expire():boolean {
+    const cutoff=this.now()-LEASE_IDLE_MS;let removed=false;
+    for(const [client,lease] of this.leases) if(!this.subscribers.has(client)&&lease.idleSince<=cutoff) {this.leases.delete(client);removed=true;}
+    return removed;
+  }
+  private sweep() {if(this.expire()) this.publish();}
+  /** At the cap the oldest idle lease without a live stream makes room; false means every lease has a live stream. */
+  private makeRoom():boolean {
+    this.sweep();
+    if(this.leases.size<LEASE_LIMIT) return true;
+    let oldest:string|undefined;
+    for(const [client,lease] of this.leases) if(!this.subscribers.has(client)&&(oldest===undefined||lease.idleSince<(this.leases.get(oldest)?.idleSince??Infinity))) oldest=client;
+    if(oldest===undefined) return false;
+    this.leases.delete(oldest);this.publish();return true;
+  }
   pageEvidence() {
+    this.sweep();
     return {scope:'registered-backend-pages' as const,complete:false as const,pages:[...this.leases].map(([client,lease])=>({client,generation:lease.generation,cssGeneration:lease.cssGeneration,...(this.jsFamily(lease.generation)?{family:this.jsFamily(lease.generation)?.id}:{}),...(lease.layoutVersion===undefined?{}:{layoutVersion:lease.layoutVersion})}))};
   }
-  transitionReady(): boolean {return [...this.leases.values()].every(lease => this.jsFamily(lease.generation)?.id === this.active.family.id && lease.cssGeneration === this.active.id);}
+  transitionReady(): boolean {this.sweep();return [...this.leases.values()].every(lease => this.jsFamily(lease.generation)?.id === this.active.family.id && lease.cssGeneration === this.active.id);}
   status():BuildStatus {return {...this.state};}
   private pageStatus(client:string):BuildStatus {
     const lease=this.leases.get(client);
@@ -126,6 +147,7 @@ export class AssetGenerations {
   identity(id = this.active.id) {const generation = this.find(id); return generation ? {digest: generation.id, builtAt: generation.builtAt, moduleFamily: generation.family.id} : undefined;}
   observe(observer:(status:BuildStatus)=>void) {this.observer=observer;observer(this.status());}
   counts() {
+    this.sweep();
     const snapshots=[this.active,this.previous,this.candidate].filter((item):item is AssetGeneration=>!!item);
     const families=new Set([...snapshots.map(item=>item.family),...this.jsPins.values()]);
     const bytes=snapshots.reduce((sum,item)=>sum+item.bytes-item.family.bytes,0)+[...families].reduce((sum,item)=>sum+item.bytes,0);
@@ -136,9 +158,9 @@ export class AssetGenerations {
   asset(id:string,route:string) {return validId(id)&&route!=='/'&&route!=='/index.html'?(this.find(id)?.asset(route)??this.jsPins.get(id)?.asset(route)):undefined;}
   document(id=this.active.id) {
     const generation=this.find(id);if(!generation) throw new Error('invalid-assets');
-    if(this.leases.size>=64) throw new Error('capacity');
+    if(!this.makeRoom()) throw new Error('capacity');
     const client=randomBytes(12).toString('hex');const asset=bootstrapAsset(generation,id,client);
-    this.leases.set(client,{generation:id,cssGeneration:id});return {client,generation:id,asset};
+    this.leases.set(client,{idleSince:this.now(),generation:id,cssGeneration:id});return {client,generation:id,asset};
   }
   documentHead(id=this.active.id) {const generation=this.find(id);return generation?bootstrapAsset(generation,id,'0'.repeat(24)):undefined;}
   bind(client:string) {
@@ -146,21 +168,24 @@ export class AssetGenerations {
   }
   subscribe(client:string,notify:(status:BuildStatus)=>void) {
     this.bind(client);if(this.subscribers.has(client)) throw new Error('capacity');
-    this.adopt(client);this.subscribers.set(client,{notify});try {notify(this.pageStatus(client));} catch(error) {this.subscribers.delete(client);throw error;}
-    return ()=>this.subscribers.delete(client);
+    this.adopt(client);const subscription={notify};this.subscribers.set(client,subscription);try {notify(this.pageStatus(client));} catch(error) {this.subscribers.delete(client);throw error;}
+    return ()=> {
+      if(this.subscribers.get(client)!==subscription) return false;
+      this.subscribers.delete(client);const lease=this.leases.get(client);if(lease) lease.idleSince=this.now();return true;
+    };
   }
   acknowledge(client:string,generation:string,cssGeneration:string,layoutVersion?:number) {
     this.bind(client);const js=this.jsFamily(generation);const css=this.find(cssGeneration);
     if(!js||!css||js.id!==css.family.id) throw new Error('invalid-assets');
-    this.leases.set(client,{...this.leases.get(client),generation,cssGeneration,...(layoutVersion===undefined?{}:{layoutVersion})});this.adopt(client);this.publish();
+    this.leases.set(client,{...this.leases.get(client),idleSince:this.now(),generation,cssGeneration,...(layoutVersion===undefined?{}:{layoutVersion})});this.adopt(client);this.publish();
   }
   /** Only an absent identity can rotate. Known identities never bypass byte checks. */
   checkLease(client:string,generation:string,cssGeneration:string,family:string):LeaseResult {
     if(!/^[a-f0-9]{24}$/.test(client)||!validId(generation)||!validId(cssGeneration)||!validId(family)) throw new Error('invalid-assets');
-    const lease=this.leases.get(client);
+    this.sweep();const lease=this.leases.get(client);
     if(lease) {
       if(lease.generation!==generation||lease.cssGeneration!==cssGeneration||this.jsFamily(generation)?.id!==family) throw new Error('invalid-assets');
-      this.bind(client);this.adopt(client);
+      this.bind(client);this.adopt(client);lease.idleSince=this.now();
       return {lease:'present' as const,build:this.pageStatus(client)};
     }
     const identity={client,generation,cssGeneration,family};
@@ -176,14 +201,14 @@ export class AssetGenerations {
     return undefined;
   }
   private rotateLease({client,generation,cssGeneration,family}:DevLeaseIdentity):LeaseResult {
-    if(this.leases.size>=64) throw new Error('capacity');
+    if(!this.makeRoom()) throw new Error('capacity');
     const js=this.jsFamily(generation),css=this.find(cssGeneration);
     if(js&&js.id!==family||css&&css.family.id!==family) throw new Error('invalid-assets');
     if(!css) return {lease:'missing' as const,build:this.status()};
     const replacement=this.replacementIdentity(client);
     // A bootstrap family digest verifies exact module bytes across CSS-only generations.
     if(!js) this.jsPins.set(generation,css.family);
-    this.leases.set(replacement,{generation,cssGeneration,predecessor:{client,generation,cssGeneration,family}});
+    this.leases.set(replacement,{idleSince:this.now(),generation,cssGeneration,predecessor:{client,generation,cssGeneration,family}});
     return {lease:'replaced' as const,client:replacement,build:this.pageStatus(replacement)};
   }
   private replacementIdentity(predecessor:string):string {

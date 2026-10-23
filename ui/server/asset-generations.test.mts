@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
-import { AssetGeneration, AssetGenerations, LatestBuild, GENERATION_TOTAL_BYTES, GENERATION_FILE_BYTES } from './asset-generations.mts';
+import { AssetGeneration, AssetGenerations, LatestBuild, GENERATION_TOTAL_BYTES, GENERATION_FILE_BYTES, LEASE_IDLE_MS } from './asset-generations.mts';
 import type { Asset } from './http.mts';
 
 function generation(revision='one',css='body { color: black; }') {
@@ -104,12 +104,44 @@ test('live JS aliases stay lease-bounded across many CSS pages and release witho
   const generations=new AssetGenerations(build());const pages:{client:string;generation:string}[]=[];
   for(let revision=0;revision<64;revision++) {
     if(revision) {const next=build('one',`body {opacity:${revision/100};}`);assert.equal(generations.offer(next,revision),true);for(const page of pages) generations.acknowledge(page.client,page.generation,next.id);}
-    const document=generations.document();generations.bind(document.client);pages.push(document);
+    const document=generations.document();generations.bind(document.client);generations.subscribe(document.client,()=>{});pages.push(document);
     assert.ok(generations.counts().jsPins<=generations.counts().clients);assert.ok(generations.counts().bytes<=3*GENERATION_TOTAL_BYTES);
     for(const page of pages) assert.ok(generations.asset(page.generation,'/web/child.js'));
   }
   assert.throws(()=>generations.document(),/capacity/);assert.equal(generations.counts().clients,64);assert.equal(generations.counts().jsPins,62);
   for(const page of pages) generations.release(page.client);assert.equal(generations.counts().jsPins,0);assert.equal(generations.counts().clients,0);
+});
+
+test('leaked leases expire after the idle period and never block a new page',()=> {
+  let clock=0;const generations=new AssetGenerations(build(),undefined,()=>clock);
+  for(let index=0;index<64;index++) generations.document();
+  assert.equal(generations.counts().clients,64);
+  clock=LEASE_IDLE_MS-1;assert.equal(generations.counts().clients,64);
+  clock=LEASE_IDLE_MS;assert.equal(generations.counts().clients,0);
+  assert.ok(generations.document().client);assert.equal(generations.counts().clients,1);
+});
+
+test('at the cap the oldest lease without a live stream is evicted and live streams are kept',()=> {
+  let clock=0;const generations=new AssetGenerations(build(),undefined,()=>clock);const pages:{client:string}[]=[];
+  for(let index=0;index<64;index++) {clock=index;pages.push(generations.document());}
+  const live=pages[0],leaked=pages[1];assert.ok(live&&leaked);generations.subscribe(live.client,()=>{});
+  const fresh=generations.document();
+  assert.equal(generations.counts().clients,64);
+  assert.doesNotThrow(()=>generations.bind(live.client));assert.throws(()=>generations.bind(leaked.client));assert.doesNotThrow(()=>generations.bind(fresh.client));
+});
+
+test('a live page keeps its lease past the idle period and the cap holds when every page has a live stream',()=> {
+  let clock=0;const generations=new AssetGenerations(build(),undefined,()=>clock);const pages:{client:string}[]=[];
+  for(let index=0;index<64;index++) {const page=generations.document();generations.subscribe(page.client,()=>{});pages.push(page);}
+  clock=10*LEASE_IDLE_MS;
+  assert.equal(generations.counts().clients,64);assert.throws(()=>generations.document(),/capacity/);
+  const first=pages[0];assert.ok(first);assert.doesNotThrow(()=>generations.bind(first.client));
+});
+
+test('a lease whose stream closed expires only after the idle period from the close',()=> {
+  let clock=0;const generations=new AssetGenerations(build(),undefined,()=>clock);const page=generations.document();
+  const unsubscribe=generations.subscribe(page.client,()=>{});clock=5*LEASE_IDLE_MS;assert.equal(generations.counts().clients,1);
+  unsubscribe();clock+=LEASE_IDLE_MS-1;assert.equal(generations.counts().clients,1);clock+=1;assert.equal(generations.counts().clients,0);
 });
 
 test('CSS still protects an active old stylesheet and incompatible JS family without eviction',()=> {
@@ -158,7 +190,7 @@ test('restart lease checks distinguish proven absence from malformed identity an
   assert.equal(generations.release(page.client),'released');assert.equal(generations.release(page.client),'absent');
 });
 test('missing lease checks respect global fresh-page capacity without admission',()=> {
-  const initial=build(),generations=new AssetGenerations(initial);const pages=Array.from({length:64},()=>generations.document());
+  const initial=build(),generations=new AssetGenerations(initial);const pages=Array.from({length:64},()=>{const page=generations.document();generations.subscribe(page.client,()=>{});return page;});
   const first=pages[0];assert.ok(first);
   assert.throws(()=>generations.checkLease('0'.repeat(24),first.generation,first.generation,initial.family.id),/capacity/);
   assert.equal(generations.counts().clients,pages.length);
@@ -167,7 +199,8 @@ test('fresh rotation retries stay inside live lease capacity and reject changed 
   const initial=build(),generations=new AssetGenerations(initial),old='0'.repeat(24);
   const first=generations.checkLease(old,initial.id,initial.id,initial.family.id);assert.ok('client' in first);
   assert.match(first.client,/^[a-f0-9]{24}$/);assert.notEqual(first.client,old);assert.equal(first.lease,'replaced');
-  for(let index=1;index<64;index++) generations.checkLease(index.toString(16).padStart(24,'0'),initial.id,initial.id,initial.family.id);
+  generations.subscribe(first.client,()=>{});
+  for(let index=1;index<64;index++) {const lease=generations.checkLease(index.toString(16).padStart(24,'0'),initial.id,initial.id,initial.family.id);assert.ok('client' in lease);generations.subscribe(lease.client,()=>{});}
   assert.equal(generations.counts().clients,64);
   assert.deepEqual(generations.checkLease(old,initial.id,initial.id,initial.family.id),first);
   for(const [js,css,family] of [['f'.repeat(64),initial.id,initial.family.id],[initial.id,'f'.repeat(64),initial.family.id],[initial.id,initial.id,'f'.repeat(64)]]) assert.throws(()=>generations.checkLease(old,js??'',css??'',family??''),/invalid-assets/);
@@ -219,9 +252,8 @@ test('stale predecessor release never removes a replacement after a valid reques
 test('unadopted predecessor cleanup restores global rotation capacity',()=> {
   const capacity=64,a=build(),generations=new AssetGenerations(a),identities=Array.from({length:capacity},(_,index)=>({client:index.toString(16).padStart(24,'0')}));
   for(const identity of identities)generations.checkLease(identity.client,a.id,a.id,a.family.id);
-  const fresh='f'.repeat(24);assert.throws(()=>generations.checkLease(fresh,a.id,a.id,a.family.id),/capacity/);
-  const first=identities[0];assert.ok(first);assert.equal(generations.release(first.client),'absent');assert.equal(generations.counts().clients,capacity-1);
-  assert.equal(generations.checkLease(fresh,a.id,a.id,a.family.id).lease,'replaced');assert.equal(generations.counts().clients,capacity);
+  const fresh='f'.repeat(24);assert.equal(generations.checkLease(fresh,a.id,a.id,a.family.id).lease,'replaced');assert.equal(generations.counts().clients,capacity);
+  const second=identities[1];assert.ok(second);assert.equal(generations.release(second.client),'absent');assert.equal(generations.counts().clients,capacity-1);
   for(const identity of identities)generations.release(identity.client);generations.release(fresh);assert.equal(generations.counts().clients,0);
 });
 test('unknown incompatible bytes require the existing missing-lease update path without an alias or replacement',()=> {
@@ -239,7 +271,7 @@ test('bootstrap family metadata reserves its complete byte envelope at the docum
   }
 });
 test('page admission is bounded and never silently removes a prior page lease',()=> {
-  const generations=new AssetGenerations(build());const pages=Array.from({length:64},()=>generations.document());
+  const generations=new AssetGenerations(build());const pages=Array.from({length:64},()=>{const page=generations.document();generations.subscribe(page.client,()=>{});return page;});
   assert.throws(()=>generations.document(),/capacity/);assert.equal(generations.counts().clients,64);
   for(const page of pages) generations.bind(page.client);assert.throws(()=>generations.bind('missing'),/invalid-assets/);
   generations.release(pages[0]?.client??'');assert.equal(generations.counts().clients,63);

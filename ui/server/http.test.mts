@@ -184,7 +184,7 @@ test('development lease recovery preserves page identity capacity and explicit m
   assert.equal((await fixture.invoke('/api/dev/release','POST',{client:'bad'})).statusCode,400);
   assert.equal(JSON.parse((await fixture.invoke('/api/dev/release','POST',{client:missing})).text).data.release,'absent');
   assert.equal(JSON.parse((await fixture.invoke('/api/dev/release','POST',{client})).text).data.release,'released');
-  for(let index=fixture.generations.counts().clients;index<64;index++) fixture.generations.document();
+  for(let index=fixture.generations.counts().clients;index<64;index++) {const page=fixture.generations.document();fixture.generations.subscribe(page.client,()=>{});}
   const capacity=await fixture.invoke('/api/dev/lease','POST',body);assert.equal(capacity.statusCode,429);assert.equal(JSON.parse(capacity.text).error.code,'capacity');
   assert.deepEqual(fixture.counts,{dispatch:0,observe:0,detached:0});
 });
