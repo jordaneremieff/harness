@@ -71,6 +71,9 @@ test('result references are plain inline text with zero horizontal inset and ver
   assert.match(media('@media (pointer:coarse)'), /\.communication-results > \.communication-result-link \{ min-height: 44px; padding-block: calc\(var\(--s3\) \+ var\(--s1\) \/ 2\); \}/);
   assert.doesNotMatch(css, /\.communication-results > \.card-action/);
 });
+test('task inspection hides its composer independently of draft visibility and preserves projected editors', () => {
+  assert.equal(rule('.conversation.inspection-active > .composer:not([data-message-panel]):not([data-desk-panel])').trim(), 'display: none;');
+});
 test('conversation actions live in the pane tab row and keep shared desktop and coarse targets', () => {
   assert.doesNotMatch(css, /inspection-navigation/);
   assert.match(rule('.pane-actions'), /display: inline-flex; flex: none/); assert.doesNotMatch(rule('.pane-actions'), /opacity|visibility|display: none/);

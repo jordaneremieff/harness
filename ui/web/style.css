@@ -408,6 +408,7 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .inspection-back { padding: var(--s1) var(--s2); color: var(--muted); }
 .agent-inspection { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; gap: var(--s2); padding-block: var(--s2); }
 .agent-inspection[hidden] { display: none; }
+.conversation.inspection-active > .composer:not([data-message-panel]):not([data-desk-panel]) { display: none; }
 .inspection-identity { display: flex; flex: none; align-items: baseline; gap: var(--s2); min-width: 0; font-size: var(--fs-meta); }
 .inspection-identity > .identity { min-width: 0; overflow-wrap: anywhere; color: var(--muted); }
 .inspection-identity > button { flex: none; }
