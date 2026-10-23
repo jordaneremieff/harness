@@ -127,3 +127,21 @@ test('control and oversized records never consume a sequence number', () => {
   assert.throws(() => publish(journal, '😀'.repeat(LIMITS.displayBytes / 4)), {code: 'payload_too_large', status: 413});
   assert.equal(journal.cursor, cut); assert.deepEqual(journal.replay(cut, 'a').records, []);
 });
+
+test('an idle event stream receives a keepalive comment and a failed write removes it', context => {
+  context.mock.timers.enable({apis: ['setInterval']});
+  const journal = new Journal(); let closed = 0;
+  class Failing extends Response {
+    fail = false; destroyed = false;
+    override write(wire: string) { if (this.fail) throw new Error('EPIPE'); return super.write(wire); }
+    destroy() { this.destroyed = true; this.emit('close'); }
+  }
+  const live = new Failing(), dead = new Failing();
+  journal.attach(live.http, 'a', journal.cursor, () => closed++, 'live'); journal.attach(dead.http, 'a', journal.cursor, () => closed++, 'dead');
+  const before = live.writes.length;
+  context.mock.timers.tick(30_000);
+  assert.deepEqual(live.writes.slice(before), [': keepalive\n\n']); assert.equal(journal.workspaceClients('a'), 2);
+  dead.fail = true; context.mock.timers.tick(30_000);
+  assert.equal(dead.destroyed, true); assert.equal(closed, 1); assert.equal(journal.workspaceClients('a'), 1);
+  assert.equal(live.writes.at(-1), ': keepalive\n\n');
+});

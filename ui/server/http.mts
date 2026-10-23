@@ -1,4 +1,5 @@
 import { constants } from 'node:fs';
+import { keepStreamAlive } from './stream-keepalive.mts';
 import { open, opendir } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import { fileURLToPath } from 'node:url';
@@ -440,7 +441,7 @@ export class LocalHttp {
       if(!response.headersSent) response.writeHead(200,{'Content-Type':'text/event-stream; charset=utf-8','Cache-Control':'no-store','Connection':'keep-alive'});
       if(response.writableLength>4096||!response.write(`event: build\ndata: ${JSON.stringify(status)}\n\n`)) response.end();
     });} catch {throw new ApiError('capacity','The page already has an update stream.',429);}
-    this.buildStreams.add(response);response.once('close',()=>{unsubscribe?.();this.buildStreams.delete(response);});
+    this.buildStreams.add(response);const stop=keepStreamAlive(response);response.once('close',()=>{stop();unsubscribe?.();this.buildStreams.delete(response);});
   }
   private async developmentLease(generations:AssetGenerations,request:IncomingMessage,response:ServerResponse) {
     const body=await readBody(request,1024);const allowed=['client','generation','cssGeneration','family'];

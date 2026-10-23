@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { keepStreamAlive } from './stream-keepalive.mts';
 import type { ServerResponse } from 'node:http';
 import { LIMITS, type EventData, type EventEnvelope, type EventName, type NoticeView, type Target } from '../shared/api.ts';
 import { ApiError } from './errors.mts';
@@ -103,7 +104,9 @@ export class Journal {
     for (const record of replay.records) this.enqueue(client, record.wire, record.id);
     if (client.closed) return;
     this.enqueue(client, control('ready', {bootId: this.bootId, cursor: this.cursor,connectionId:client.connectionId}));
-    if (!client.closed) this.clients.add(client);
+    if (client.closed) return;
+    this.clients.add(client);
+    keepStreamAlive(response, () => !client.closed && !client.blocked && client.queue.length === 0);
   }
   workspaceClients(workspace: string) { return [...this.clients].filter(client => client.workspace === workspace).length; }
   close() { for (const client of [...this.clients]) { client.response.end(); this.detach(client); } }
