@@ -183,6 +183,34 @@ function commitInput(target: Record<string, unknown>, candidate: Record<string, 
 	return true;
 }
 
+/** Preserve stored guidance and append bounded evidence for both policy runtimes. */
+export function refusalText(plan: InputPlan, snapshot: RuleSnapshot, fallbackIds: readonly string[]): string | undefined {
+	const denials = plan.evaluations.filter((evaluation) => evaluation.deny);
+	const ids = new Set(denials.length ? denials.map((evaluation) => evaluation.id) : fallbackIds);
+	const suggestions = new Set<string>();
+	const lines = [...ids].flatMap((id) => {
+		const record = snapshot.records.get(id);
+		if (!record) return [];
+		const evidence = new Set(
+			denials.filter((entry) => entry.id === id).flatMap((entry) => {
+				const corrected = entry.inputView === "effective" && plan.corrections.length > 0;
+				const segment = corrected ? "[corrected input omitted]" : entry.matchedSegment;
+				if (!corrected) for (const suggestion of entry.commandSuggestions ?? []) suggestions.add(suggestion);
+				return entry.matchedSegment ? [`Matched command: ${segment}`] : [];
+			}),
+		);
+		return [ruleGuidance(record), ...evidence];
+	});
+	let text = guidanceText(lines);
+	if (!text) return undefined;
+	for (const suggestion of suggestions) {
+		const extra = `\nFor this command: ${suggestion}`;
+		if (Buffer.byteLength(text + extra, "utf8") > GUIDANCE_BYTES) break;
+		text += extra;
+	}
+	return text;
+}
+
 export class PolicyRuntime {
 	private readonly state = new ObservationState();
 	private readonly pending = new Map<string, ObservedCall>();
@@ -518,7 +546,7 @@ export class PolicyRuntime {
 		const denied = this.applyInputCorrections(call, event, plan, plan.denied || !plan.valid);
 		if (activeMode === "enforce" && denied) {
 			call.decision =
-				guidanceText(this.refusalNotes(call, plan, snapshot)) ??
+				refusalText(plan, snapshot, call.classes) ??
 				"[policy] The approved input checks refused this call.";
 			this.notice(call, ctx);
 			return { block: true, reason: call.decision };
@@ -556,28 +584,6 @@ export class PolicyRuntime {
 		return true;
 	}
 
-	/** Guidance lines and safe command segments for the rules behind one denied input plan. */
-	private refusalNotes(call: ObservedCall, plan: InputPlan, snapshot: RuleSnapshot): string[] {
-		const denials = plan.evaluations.filter((evaluation) => evaluation.deny);
-		const ids = new Set(denials.length ? denials.map((evaluation) => evaluation.id) : call.classes);
-		return [...ids].flatMap((id) => {
-			const record = snapshot.records.get(id);
-			if (!record) return [];
-			const segments = new Set(
-				denials
-					.filter((entry) => entry.id === id)
-					.flatMap((entry) => {
-						if (!entry.matchedSegment) return [];
-						const segment =
-							entry.inputView === "effective" && plan.corrections.length > 0
-								? "[corrected input omitted]"
-								: entry.matchedSegment;
-						return [`Matched command: ${segment}`];
-					}),
-			);
-			return [ruleGuidance(record), ...segments];
-		});
-	}
 	private resultPlan(call: ObservedCall, result: Result) {
 		const rules = this.currentRules(call);
 		const semantic = evaluatePrograms(rules, "result", this.contextFor(call, result)).filter(

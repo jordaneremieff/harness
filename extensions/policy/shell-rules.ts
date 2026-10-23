@@ -37,10 +37,10 @@ const INLINE_SCRIPT = new Map([
 ]);
 const SCRIPT_LITERAL = /(?:"(?:[^"\\\r\n]|\\.)*"|'(?:[^'\\\r\n]|\\.)*')/.source;
 const READ_ONLY_PYTHON = new RegExp(
-	`^print\\(\\s*open\\(\\s*${SCRIPT_LITERAL}\\s*(?:,\\s*(?:"r"|'r'))?\\s*\\)\\.read\\(\\s*\\)\\s*\\)\\s*;?$`,
+	`^print\\(\\s*open\\(\\s*(${SCRIPT_LITERAL})\\s*(?:,\\s*(?:"r"|'r'))?\\s*\\)\\.read\\(\\s*\\)\\s*\\)\\s*;?$`,
 );
 const READ_ONLY_NODE = new RegExp(
-	`^(?:console\\.log|process\\.stdout\\.write)\\(\\s*require\\(\\s*(?:"(?:node:)?fs"|'(?:node:)?fs')\\s*\\)\\.readFileSync\\(\\s*${SCRIPT_LITERAL}\\s*,\\s*(?:"utf-?8"|'utf-?8')\\s*\\)\\s*\\)\\s*;?$`,
+	`^(?:console\\.log|process\\.stdout\\.write)\\(\\s*require\\(\\s*(?:"(?:node:)?fs"|'(?:node:)?fs')\\s*\\)\\.readFileSync\\(\\s*(${SCRIPT_LITERAL})\\s*,\\s*(?:"utf-?8"|'utf-?8')\\s*\\)\\s*\\)\\s*;?$`,
 );
 const MAX_READ_SCRIPT_BYTES = 200;
 const MAX_READ_SCRIPT_LINES = 2;
@@ -513,6 +513,81 @@ const PREDICATE_RULES: PredicateRule[] = [
 export const RULES: ShellRule[] = PREDICATE_RULES.map((rule) => ({ ...rule, key: rule.id }));
 
 const CODE_MATCHERS = new Map(RULES.map((rule) => [rule.key, rule.matches]));
+
+interface ReadSuggestion {
+	paths: string[];
+	offset?: number;
+	limit?: number;
+}
+
+function sedSuggestion(stage: Stage): ReadSuggestion | undefined {
+	const args = operands(stage, new Set(["e", "f", "expression", "file"]));
+	const script = args.find((arg) => /^\d+(?:\s*,\s*\d+)?\s*p$/.test(arg));
+	if (!script) return undefined;
+	const [start, end = start] = script.replace(/p$/, "").split(",").map(Number);
+	if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start) return undefined;
+	return { paths: args.filter((arg) => arg !== script), offset: start, limit: end - start + 1 };
+}
+
+function inlineReadSuggestion(stage: Stage): ReadSuggestion | undefined {
+	const flag = INLINE_SCRIPT.get(stage.command);
+	if (!flag) return undefined;
+	const script = (stage.args[stage.args.indexOf(flag) + 1] ?? "").trim();
+	const literal = (stage.command === "node" ? READ_ONLY_NODE : READ_ONLY_PYTHON).exec(script)?.[1];
+	// Escaped language literals need a language decoder, not shell-word evidence.
+	if (!literal || literal.includes("\\")) return undefined;
+	return { paths: [literal.slice(1, -1)] };
+}
+
+function headSuggestion(stage: Stage): ReadSuggestion | undefined {
+	const paths = operands(stage, new Set(["n", "c", "lines", "bytes"]));
+	const lines = optionValue(stage, "n", "lines") ?? stage.args.find((arg) => /^-\d+$/.test(arg))?.slice(1);
+	if (lines === undefined) return { paths };
+	const limit = Number(lines);
+	if (!/^\+?\d+$/.test(lines) || !Number.isSafeInteger(limit) || limit < 1) return undefined;
+	return { paths, limit };
+}
+
+function tailSuggestion(stage: Stage): ReadSuggestion | undefined {
+	if (hasFlag(stage, "c", "bytes")) return undefined;
+	const lines = optionValue(stage, "n", "lines") ?? stage.args.find((arg) => /^\+\d+$/.test(arg));
+	if (lines === undefined || !/^\+\d+$/.test(lines)) return undefined;
+	const offset = Number(lines);
+	if (!Number.isSafeInteger(offset) || offset < 1) return undefined;
+	const paths = operands(stage, new Set(["n", "c", "lines", "bytes"])).filter((arg) => arg !== lines);
+	return { paths, offset };
+}
+
+/** Read parameters come only from the already matched stage. */
+function readSuggestion(key: string, stage: Stage): ReadSuggestion | undefined {
+	if (stage.argLiterals?.some((literal) => !literal)) return undefined;
+	switch (key) {
+		case "routing.cat-read":
+			return { paths: operands(stage) };
+		case "routing.sed-slice":
+			return sedSuggestion(stage);
+		case "routing.head-slice":
+			return headSuggestion(stage);
+		case "routing.tail-slice":
+			return tailSuggestion(stage);
+		case "routing.inline-script-read":
+			return inlineReadSuggestion(stage);
+		default:
+			return undefined;
+	}
+}
+
+/** Concrete read calls for an already matched predicate, without shell expansion. */
+export function predicateSuggestions(key: string, stage: Stage): string[] {
+	const suggestion = readSuggestion(key, stage);
+	if (!suggestion) return [];
+	const { paths, offset, limit } = suggestion;
+	return paths.filter((path) => path !== "-").flatMap((path) => {
+		const value = /^[A-Za-z0-9_./+-]+$/.test(path) ? path : JSON.stringify(path);
+		const suggestion = redactShell("bash", `read path=${value}${offset === undefined ? "" : ` offset=${offset}`}${limit === undefined ? "" : ` limit=${limit}`}`);
+		return Buffer.byteLength(suggestion, "utf8") <= 240 ? [suggestion] : [];
+	});
+}
 
 /** Resolve only predicates shipped by this installed package. */
 export function resolveCodeMatcher(key: string): CodeMatcher | undefined {

@@ -532,6 +532,7 @@ export interface EvaluationContext {
 	evidence?: ReadonlyMap<string, Truth> & {
 		readonly reasons?: ReadonlyMap<string, readonly string[]>;
 		readonly segments?: ReadonlyMap<string, string>;
+		readonly suggestions?: ReadonlyMap<string, readonly string[]>;
 	};
 	matched?: ReadonlySet<string>;
 	staleRules?: ReadonlySet<string>;
@@ -549,6 +550,8 @@ export interface ProgramEvaluation {
 	unavailableReasons?: readonly string[];
 	/** Immediate inspection only; metadata projection excludes command text. */
 	matchedSegment?: string;
+	/** Immediate command guidance only; excluded from telemetry metadata. */
+	commandSuggestions?: readonly string[];
 	deny: boolean;
 }
 export interface InputPlan {
@@ -683,6 +686,9 @@ function evaluationResult(
 			: {}),
 		...(truth === true && context.evidence?.segments?.has(rule.id)
 			? { matchedSegment: context.evidence.segments.get(rule.id) }
+			: {}),
+		...(truth === true && context.evidence?.suggestions?.has(rule.id)
+			? { commandSuggestions: context.evidence.suggestions.get(rule.id) }
 			: {}),
 		deny:
 			applicable === true &&

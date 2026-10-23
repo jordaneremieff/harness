@@ -656,6 +656,46 @@ test("an interrupted safe tool reruns and answers after reopen", async () => {
 	}
 });
 
+test("native read redirects preserve rule guidance and append concrete calls", async () => {
+	let executed = 0;
+	const extension = DurableModule.defineExtension({
+		name: "reader-probes",
+		tools: ["bash", "read"].map((name) => DurableModule.defineTool({
+			name,
+			description: "A synthetic reader probe.",
+			parameters: Type.Object({ command: Type.Optional(Type.String()) }),
+			execute: async () => { executed++; return { output: [{ type: "text", text: "unexpected execution" }] }; },
+		})),
+	});
+	const fixture = await openFixture({ mode: "enforce", extension });
+	try {
+		const plan = await fixture.policy.planImport("--all");
+		await fixture.policy.importCatalog("--all", plan.revision, makeRuleAudit({ sessionManager: { getSessionId: () => "reader-test" }, model: null }, "command"));
+		const before = await readFile(join(fixture.storeDir, "rules.jsonl"), "utf8");
+		const cases = [
+			["cat notes.md", "read path=notes.md"],
+			["sed -n '6,11p' notes.md", "read path=notes.md offset=6 limit=6"],
+			["head -n 4 notes.md", "read path=notes.md limit=4"],
+			["tail -n +8 notes.md", "read path=notes.md offset=8"],
+			[`python3 -c "print(open('notes.md').read())"`, "read path=notes.md"],
+		];
+		for (const [command, suggestion] of cases) {
+			await submit(fixture, [
+				fauxAssistantMessage(fauxToolCall("bash", { command }), { stopReason: "toolUse" }),
+				fauxAssistantMessage("stopped"),
+			], "inspect the note");
+			const result = (await toolResults(fixture.root, "bash")).at(-1);
+			assert.equal(result?.isError, true);
+			assert.ok(textOf(result).includes(`\nFor this command: ${suggestion}`), textOf(result));
+			assert.match(textOf(result), /Use the read tool/);
+		}
+		assert.equal(executed, 0);
+		assert.equal(await readFile(join(fixture.storeDir, "rules.jsonl"), "utf8"), before);
+	} finally {
+		await fixture.close();
+	}
+});
+
 test("enforce mode blocks a denied tool call before execution", async () => {
 	const counter = { executed: 0 };
 	const fixture = await openFixture({ mode: "enforce", extension: probeExtension(counter) });

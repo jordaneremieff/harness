@@ -17,6 +17,7 @@ import {
 	codeMatcherStageEligible,
 	redactShell,
 	resolveCodeMatcher,
+	predicateSuggestions,
 } from "./shell-rules.ts";
 
 /** Truth and fixed reason codes share the same captured input snapshot. */
@@ -24,6 +25,7 @@ export class CommandEvidence extends Map<string, Truth> {
 	readonly reasons = new Map<string, string[]>();
 	/** Bounded normalized command segments for immediate inspection, never telemetry. */
 	readonly segments = new Map<string, string>();
+	readonly suggestions = new Map<string, readonly string[]>();
 }
 
 function commandSegment(stage: Stage): string {
@@ -204,7 +206,13 @@ export function evaluateCommandRecords(
 		parsed,
 	);
 	for (const record of candidates) {
-		const onMatch = (stage: Stage) => result.segments.set(record.id, commandSegment(stage));
+		const onMatch = (stage: Stage) => {
+			result.segments.set(record.id, commandSegment(stage));
+			if (record.matcher.kind === "code") {
+				const suggestions = predicateSuggestions(record.matcher.key, stage);
+				if (suggestions.length) result.suggestions.set(record.id, suggestions);
+			}
+		};
 		if (record.matcher.kind === "code") {
 			result.set(record.id, evaluateCodeRecord(record, statements, resolveMatcher, onMatch));
 			continue;

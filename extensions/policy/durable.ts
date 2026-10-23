@@ -86,6 +86,7 @@ import {
 	metadata,
 	publicState,
 	relevantEvaluations,
+	refusalText,
 	samePin,
 } from "./runtime.ts";
 import {
@@ -103,7 +104,6 @@ import {
 	contentRevision,
 	effectiveState,
 	type OperatorRuleAudit,
-	ruleGuidance,
 	type RuleMatchContext,
 } from "./rule.ts";
 import { shellContractCard } from "./shell-card.ts";
@@ -930,27 +930,7 @@ class DurablePolicyRuntime {
 
 	/** Guidance lines and safe command segments for the rules behind one denied input plan. */
 	private refusalText(call: ObservedCall, plan: InputPlan, snapshot: RuleSnapshot): string | undefined {
-		const denials = plan.evaluations.filter((evaluation) => evaluation.deny);
-		const ids = new Set(denials.length ? denials.map((evaluation) => evaluation.id) : call.classes);
-		return guidanceText(
-			[...ids].flatMap((id) => {
-				const record = snapshot.records.get(id);
-				if (!record) return [];
-				const segments = new Set(
-					denials
-						.filter((entry) => entry.id === id)
-						.flatMap((entry) => {
-							if (!entry.matchedSegment) return [];
-							const segment =
-								entry.inputView === "effective" && plan.corrections.length > 0
-									? "[corrected input omitted]"
-									: entry.matchedSegment;
-							return [`Matched command: ${segment}`];
-						}),
-				);
-				return [ruleGuidance(record), ...segments];
-			}),
-		);
+		return refusalText(plan, snapshot, call.classes);
 	}
 
 	/** Eligible guide text; projects every selected rule into the observation state. */

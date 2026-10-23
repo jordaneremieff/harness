@@ -1064,6 +1064,11 @@ substitutions remain separate stages. Each excerpt is terminal-safe, uses
 best-effort credential redaction, and stays within 240 UTF-8 bytes. The complete
 denial keeps the shared guidance bound, so later excerpts can be omitted.
 Denial notes identify denying rules, not unrelated matched guidance rules.
+Read-routing predicates also append `For this command:` with a concrete read
+call from that matched stage. Stored notes and suggestions remain unchanged.
+Explicit line ranges supply offsets and limits; absent counts stay omitted.
+Unexpanded shell words and escaped script literals have no concrete suggestion.
+Both runtimes use the same refusal formatter.
 A segment from a corrected candidate is labeled `[corrected input omitted]`
 in denials to avoid echoing values from approved data that the caller did not
 supply. Unavailable evidence has no matched segment. Evaluation telemetry excludes

@@ -195,8 +195,8 @@ const guide = () =>
 		state: { observe: success, once: "period" },
 	});
 
-function shellRule(effect: "block" | "steer" = "block"): RuleRecord {
-	const row = PACKAGE_CATALOG.find((record) => record.id === "routing.cat-read");
+function shellRule(effect: "block" | "steer" = "block", key = "routing.cat-read"): RuleRecord {
+	const row = PACKAGE_CATALOG.find((record) => record.id === key);
 	assert.ok(row, "routing.cat-read");
 	return {
 		id: row.id,
@@ -214,6 +214,42 @@ function shellRule(effect: "block" | "steer" = "block"): RuleRecord {
 		staleOverride: false,
 	};
 }
+describe("command-specific refusal guidance", () => {
+	const cases: Array<[string, string, string[]]> = [
+		["routing.cat-read", "cat notes.md", ["read path=notes.md"]],
+		["routing.sed-slice", "sed -n '17,23p' notes.md", ["read path=notes.md offset=17 limit=7"]],
+		["routing.sed-slice", "sed -n '9p' notes.md", ["read path=notes.md offset=9 limit=1"]],
+		["routing.head-slice", "head -n 8 notes.md", ["read path=notes.md limit=8"]],
+		["routing.head-slice", "ghead -12 notes.md", ["read path=notes.md limit=12"]],
+		["routing.head-slice", "head notes.md", ["read path=notes.md"]],
+		["routing.head-slice", "head --lines=3 a.md b.md", ["read path=a.md limit=3", "read path=b.md limit=3"]],
+		["routing.tail-slice", "tail -n +45 notes.md", ["read path=notes.md offset=45"]],
+		["routing.tail-slice", "tail +45 notes.md", ["read path=notes.md offset=45"]],
+		["routing.inline-script-read", `python3 -c "print(open('notes.md').read())"`, ["read path=notes.md"]],
+		["routing.inline-script-read", `node -e 'console.log(require("fs").readFileSync("notes.md", "utf8"))'`, ["read path=notes.md"]],
+		["routing.cat-read", 'cat "notes with spaces.md"', ['read path="notes with spaces.md"']],
+		["routing.cat-read", 'cat "$FILE"', []],
+		["routing.cat-pipe", "cat data.json | jq .", []],
+	];
+	for (const [key, command, suggestions] of cases) {
+		it(`preserves stored guidance for ${command}`, async (t) => {
+			const record = shellRule("block", key);
+			record.id = "local.reader";
+			record.definition.note = "Use your selected reader.";
+			record.definition.suggestion = { command: "reader", flags: ["--plain"] };
+			const before = structuredClone(record);
+			const f = fixture([record], "enforce", Type.Object({ command: Type.String() }), false, "/unused", "bash");
+			t.after(() => f.writer.close());
+			const denied = await f.call("read-call", { command });
+			assert.ok(denied);
+			const lines = denied.reason.split("\n");
+			assert.ok(lines[0].startsWith("[policy] Use your selected reader. Suggested form: reader --plain. Matched command:"));
+			assert.deepEqual(lines.filter((line) => line.startsWith("For this command:")), suggestions.map((value) => `For this command: ${value}`));
+			assert.deepEqual(record, before);
+		});
+	}
+});
+
 describe("compact command inspection", () => {
 	it("omits non-matching evaluations and counts rules once across input views", async (t) => {
 		const records = PACKAGE_CATALOG.map(
@@ -614,7 +650,7 @@ describe("effective command checks", () => {
 		assert.equal(decision?.block, true);
 		assert.ok(decision);
 		assert.match(decision.reason, /Matched command: \[corrected input omitted\]/);
-		assert.doesNotMatch(decision.reason, /cat notes\.md/);
+		assert.doesNotMatch(decision.reason, /cat notes\.md|For this command|path=notes\.md/);
 		assert.deepEqual(input, { command: "printf safe" });
 		await f.runtime.toolEnd(
 			{
