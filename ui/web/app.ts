@@ -485,7 +485,7 @@ export const filesViews = new FilesViews(stableViews,readWorkspaceFile,()=>state
     draft:(workspace,tab,signal)=>request<FileDraftState>(fileDocumentRoute(workspace,tab,'draft'),'GET',undefined,undefined,signal),
     put:(workspace,tab,expectedRevision,base,text,encoding)=>request<FileDraft>(fileDocumentRoute(workspace,tab,'draft'),'PUT',{expectedRevision,base,text,encoding}),
     save:(workspace,tab,expectedRevision)=>request<FileSave>(fileDocumentRoute(workspace,tab,'text'),'PUT',{expectedRevision}),
-  },tab=> {if (state.workspace) switchMarkdownView(tab);});
+  },tab=> {if (state.workspace) switchMarkdownView(tab);},primaryDraftActions);
 function fileDocumentRoute(workspace:string,tab:FileTab,kind:'draft'|'text'):string {return `/api/files/roots/${encodeURIComponent(tab.rootId)}/${kind}?path=${encodeURIComponent(tab.path)}&workspace=${encodeURIComponent(workspace)}`;}
 export const filesTree = new FilesTree(byId('files-tree'),{
   choose:()=>picker.openProject(byId('project-button')),

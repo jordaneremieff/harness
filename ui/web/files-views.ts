@@ -4,6 +4,7 @@ import {FileOwner, type FileRead, type FileIO} from './file-owner.ts';
 import {FileView} from './file-view.ts';
 import type {StableViews} from './stable-views.ts';
 import type {DevFileCheckpoint} from './dev-reload.ts';
+import type {PrimaryDraftActions} from './primary-draft-actions.ts';
 import {movedFilePath, movedFileKey, type FileMove} from './file-identity.ts';
 /** Document owners and stable source/preview views have separate identities. */
 export class FilesViews {
@@ -11,9 +12,9 @@ export class FilesViews {
   private owners = new Map<string,FileOwner>();private views = new Map<string,FileView>();
   private refreshQueue = new Set<FileOwner>();private refreshWork?:Promise<void>;
   private saves = new Map<string,{workspace:string;key:string;position:FileView['position'];timer:ReturnType<typeof setTimeout>}>();
-  private host:()=>StableViews;private read:FileRead;private current:()=>Workspace|undefined;private io?:FileIO;private switchView?:(tab:FileTab)=>void;
+  private host:()=>StableViews;private read:FileRead;private current:()=>Workspace|undefined;private io?:FileIO;private switchView?:(tab:FileTab)=>void;private primaryDraft?:PrimaryDraftActions;
   private save:(workspace:string,key:string,position:FileView['position'])=>void;private changed:()=>void;
-  constructor(host:()=>StableViews,read:FileRead,current:()=>Workspace|undefined,save:(workspace:string,key:string,position:FileView['position'])=>void,changed:()=>void,io?:FileIO,switchView?:(tab:FileTab)=>void) {this.switchView = switchView;this.host = host;this.read = read;this.current = current;this.save = save;this.changed = changed;this.io = io;}
+  constructor(host:()=>StableViews,read:FileRead,current:()=>Workspace|undefined,save:(workspace:string,key:string,position:FileView['position'])=>void,changed:()=>void,io?:FileIO,switchView?:(tab:FileTab)=>void,primaryDraft?:PrimaryDraftActions) {this.primaryDraft = primaryDraft;this.switchView = switchView;this.host = host;this.read = read;this.current = current;this.save = save;this.changed = changed;this.io = io;}
   private key(workspace:string,tab:FileTab):string {return JSON.stringify([workspace,workspaceTabKey(tab)]);}
   private ownerKey(workspace:string,tab:FileTab):string {return JSON.stringify([workspace,tab.rootId,tab.path]);}
   owner(workspace:string,tab:FileTab):FileOwner|undefined {return this.owners.get(this.ownerKey(workspace,tab));}
@@ -38,7 +39,7 @@ export class FilesViews {
       const currentTab = {...documentOwner.tab,...(tab.view === 'preview' ? {view:'preview' as const} : {})}, currentKey = this.key(workspace.id,currentTab);
       const old = this.saves.get(currentKey);clearTimeout(old?.timer);
       this.saves.set(currentKey,{workspace:workspace.id,key:workspaceTabKey(currentTab),position,timer:setTimeout(()=>this.flush(currentKey),120)});
-    },tab.view === 'preview',this.switchView && (()=> {this.switchView?.({kind:'file',rootId:documentOwner.tab.rootId,path:documentOwner.tab.path,...(tab.view === 'preview' ? {view:'preview' as const} : {})});}));
+    },tab.view === 'preview',this.switchView && (()=> {this.switchView?.({kind:'file',rootId:documentOwner.tab.rootId,path:documentOwner.tab.path,...(tab.view === 'preview' ? {view:'preview' as const} : {})});}),this.primaryDraft && {...this.primaryDraft,current:()=>this.current()?.id === workspace.id});
     this.views.set(key,view);this.host().mount(view.root);void owner.load(reopening);return view;
   }
   private flush(key:string):void {
@@ -112,7 +113,7 @@ export class FilesViews {
       this.flush(key);void view.owner.drain().catch(()=>{});this.host().forget(view.root);view.destroy();this.views.delete(key);
     }
   }
-  attached():void {for (const view of this.views.values()) view.restore();}
+  attached():void {for (const view of this.views.values()) {view.refreshQuotation();view.restore();}}
   checkpoint(workspace:Workspace):DevFileCheckpoint[] {
     if (this.retained().length) throw new Error('A retained draft needs review before an update.');
     return [...this.views.values()].filter(view=>view.owner.workspace === workspace.id).map(view=> {

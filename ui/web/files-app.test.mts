@@ -12,7 +12,10 @@ function fileTransport(context:test.TestContext):void {
   const previous = globalThis.fetch;context.after(()=> {globalThis.fetch = previous;contextMenu.close();});
   globalThis.fetch = async(input,init)=> {
     const url = new URL(String(input),'http://ui.test');
-    if (url.pathname.endsWith('/draft')) return Response.json({ok:true,data:{revision:0,draft:null}});
+    if (url.pathname.startsWith('/api/files/') && url.pathname.endsWith('/draft')) {
+      if (init?.method === 'PUT') {const {expectedRevision,base,text,encoding} = JSON.parse(String(init.body));return Response.json({ok:true,data:{revision:expectedRevision + 1,base,text,encoding}});}
+      return Response.json({ok:true,data:{revision:0,draft:null}});
+    }
     if (url.pathname.endsWith('/text')) {const text = '# Exact file\n\nRetained source.\n';return Response.json({ok:true,data:{rootId:decodeURIComponent(url.pathname.split('/')[4] ?? ''),path:url.searchParams.get('path'),text,revision:{size:text.length,mtimeMs:1,digest:'a'.repeat(64)}}});}
     return previous(input,init);
   };
@@ -107,6 +110,18 @@ test('file destinations show one qualified name and collapsed exact ordinary or 
   select.value=options[0]?.value??'';app.state.primaries.set('p',primaryFixture({epoch:931,sessionId:'later-native-session'}));select.dispatch('change');assert.match(body.querySelector('.file-message-identity')?.textContent??'',/Session ID: Unavailable/);assert.doesNotMatch(body.textContent,/later-native-session/);
   byId('modal-close').click();assert.equal(editor.value,text);assert.equal(transportLog.length,before);
 });
+for (const modified of [false,true]) test(`source selection appends to the existing Primary draft without delivery: modified=${modified}`,async context=> {
+  const f = await workingFixture(context,`source-quote-${modified}`),primary = f.editor,primaryParent = primary.parentNode;
+  primary.setSelectionRange(2,5,'backward');const tab:FileTab = {kind:'file',rootId:f.root,path:'saved.md'};app.chooseFile(f.root,tab.path);await settle();
+  const workspace = app.state.workspace;assert.ok(workspace);const view = app.filesViews.view(workspace,tab),editor = view.editor as unknown as HostNode,quote = (view.root as unknown as HostNode).querySelector('.file-quote-selection');assert.ok(quote);context.after(()=>view.owner.dispose());
+  if (modified) {editor.value = '# Edited file\n\n  literal `text`\tγ\n';editor.dispatch('input');}
+  const text = editor.value,start = 2,end = text.length,selected = text.slice(start,end),sourceParent = editor.parentNode,moves = editor.moves,before = transportLog.length;
+  editor.setSelectionRange(start,end,'backward');editor.scrollTop = 42;editor.focus();editor.dispatch('select');assert.equal(quote.hidden,false);quote.dispatch('pointerdown');quote.click();await settle();
+  assert.equal(primary.value,`Keep this draft\n\n> ${selected.replaceAll('\n','\n> ')}\n\n— saved.md:1-3 · ${modified ? 'Editor selection \\(modified\\)' : 'Saved file selection'}`);
+  assert.equal(primary.parentNode,primaryParent);assert.deepEqual([primary.selectionStart,primary.selectionEnd,primary.selectionDirection],[2,5,'backward']);assert.equal(editor.parentNode,sourceParent);assert.equal(editor.moves,moves);assert.equal(editor.value,text);assert.deepEqual([editor.selectionStart,editor.selectionEnd,editor.selectionDirection,editor.scrollTop],[start,end,'backward',42]);assert.equal(hostDocument.activeElement,editor);
+  assert.deepEqual(activeTab(currentLayout()),tab);assert.equal(transportLog.slice(before).some(call=>call.path.endsWith('/inputs')||call.path.endsWith('/prepare')||call.path.endsWith('/start')||call.method === 'PUT' && call.path.endsWith('/text')),false);
+  await view.owner.drain();
+});
 test('file-focused Add requires an explicit open destination and never substitutes unsaved file text',async context=> {
   fileTransport(context);const target={kind:'primary' as const,key:'p',epoch:921};
   await arrive({workspace:{id:'file-message-explicit',revision:1,primaryKey:'p',selectedTarget:target},primaries:[primaryFixture({epoch:921})],roster:[],targets:[targetFixture('file-message-explicit-target',target)]});await settle();const composer=app.primaryComposer(),root=app.fileRoot.selection?.root?.id;assert.ok(root);const tab:FileTab={kind:'file',rootId:root,path:'note.md'};app.chooseFile(root,tab.path);await settle();const workspace=app.state.workspace;assert.ok(workspace);const view=app.filesViews.view(workspace,tab);assert.ok(view.editor);view.editor.value='Unsaved editor content must not become the attachment';
@@ -166,7 +181,7 @@ test('a Markdown file offers Preview and Source beside Save and runs the tab-men
   const workspace = app.state.workspace;assert.ok(workspace);
   const control = (view:ReturnType<typeof app.filesViews.view>)=> (view.root as unknown as HostNode).querySelectorAll('button').filter(item=>item.className === 'file-view-switch');
   const sourceView = app.filesViews.view(workspace,source),sourceRoot = sourceView.root as unknown as HostNode,row = sourceRoot.querySelector('.file-view-actions');assert.ok(row);
-  assert.deepEqual(control(sourceView).map(item=>item.textContent),['Preview']);assert.deepEqual(row.children.map(item=>item.textContent),['Preview','Save']);
+  assert.deepEqual(control(sourceView).map(item=>item.textContent),['Preview']);assert.deepEqual(row.children.filter(item=>!item.hidden).map(item=>item.textContent),['Preview','Save']);
   for (const other of [code,data]) assert.equal(control(app.filesViews.view(workspace,other)).length,0);
   app.openTabsList();const menu = hostDocument.body.querySelector('.context-menu');assert.ok(menu);assert.ok(menu.children.some(item=>item.textContent === 'Re-read file'));contextMenu.close();
   control(sourceView)[0]?.dispatch('click');await settle();

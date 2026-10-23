@@ -253,15 +253,17 @@ test('section labels use readable uppercase type and primary names retain their 
   assert.match(rule('.nav-heading-row'), /margin-bottom: var\(--s1\)/);
 });
 test('Save and Version retain quiet desktop hit heights without weakening coarse targets', () => {
-  assert.equal(rule(':where(.file-save, .file-view-switch, .workbench-version)').trim(), 'min-height: 24px;');
+  assert.equal(rule(':where(.file-save, .file-view-switch, .file-quote-selection, .workbench-version)').trim(), 'min-height: 24px;');
   assert.match(media('@media (pointer:coarse)'), /button, summary,[^{}]+\{ min-height: 44px; min-width: 44px/);
-  for (const selector of ['.file-save', '.file-view-switch', '.workbench-version']) {
+  for (const selector of ['.file-save, .file-quote-selection', '.file-view-switch', '.workbench-version']) {
     assert.doesNotMatch(rule(selector), /(?:^|;)\s*(?:height|min-height|max-height):/);
   }
   assert.doesNotMatch(css, /\.workbench-health/);
 });
-test('the file action row separates its zero-padding text controls with a gap', () => {
-  assert.match(rule('.file-view-actions'), /display: flex; justify-content: flex-end; gap: var\(--s3\);/);
+test('the file action row wraps its separated text controls within narrow panes', () => {
+  assert.match(rule('.file-view-actions'), /display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var\(--s3\);/);
+  assert.match(rule('.file-save, .file-quote-selection'), /color: var\(--dim\); font-size: var\(--fs-meta\);/);
+  assert.match(rule('.file-save:hover, .file-quote-selection:hover'), /color: var\(--fg\);/);
 });
 test('draft attachments keep a fixed contained preview and bounded wrapping details and actions', () => {
   assert.match(rule('.attachment-preview'), /width: 48px; height: 48px; min-width: 48px; min-height: 48px/);

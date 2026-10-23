@@ -9,6 +9,7 @@ type HostNode = InstanceType<typeof HostNode>;
 import {createPaneLayout} from './pane-layout.ts';
 import type {FileTab,Workspace} from '../shared/api.ts';
 import {fileSource, type FileText} from '../shared/files.ts';
+import {primaryDraftText, type PrimaryDraftSource} from './primary-draft-actions.ts';
 const tab:FileTab = {kind:'file',rootId:'r',path:'note.txt'};
 function source(text:string,path = tab.path):FileText {return {rootId:'r',path,text,revision:{size:text.length,mtimeMs:1,digest:'a'.repeat(64)}};}
 test('view retains normalized native source, reading position and DOM on an unchanged refresh',async context=> {
@@ -18,6 +19,42 @@ test('view retains normalized native source, reading position and DOM on an unch
   await owner.load();await settle();const editor = view.editor;assert.ok(editor);assert.equal(editor.value,fileSource(owner.source?.text ?? '').text);assert.equal(view.root.querySelector('textarea'),editor);assert.equal(view.root.querySelector('script'),null);
   assert.equal(view.scroller.scrollTop,120);view.scroller.scrollTop = 240;(view.scroller as unknown as HostNode).dispatch('scroll');assert.deepEqual(saved,[{scrollTop:240,scrollLeft:8}]);
   await owner.load(true);assert.equal(view.root.querySelector('textarea'),editor);assert.equal(view.scroller.scrollTop,240);assert.notEqual(owner,view);
+});
+for (const modified of [false,true]) test(`native source quotation preserves the editor and labels its exact range: modified=${modified}`,async context=> {
+  let view:FileView,addition = '',captured:PrimaryDraftSource|undefined;
+  const disk = 'first\nsecond\nthird\n',owner = new FileOwner('quote',tab,async()=>source(disk),()=>view?.paint());
+  view = new FileView(owner,undefined,()=>{},false,undefined,{reason:()=>'',current:()=>true,append:(source,text)=> {captured = source;addition = primaryDraftText(source,text);}});
+  byId('workspace').append(view.root as unknown as HostNode);view.root.hidden = false;view.root.inert = false;context.after(()=> {owner.dispose();view.destroy();});await owner.load();await settle();
+  const editor = view.editor as unknown as HostNode,quote = (view.root as unknown as HostNode).querySelector('.file-quote-selection');assert.ok(quote);assert.equal(quote.hidden,true);
+  if (modified) {editor.value = 'first\nsecond\tγ\nthird\n';editor.dispatch('input');}
+  const text = editor.value,start = text.indexOf('second'),end = text.indexOf('third'),selected = text.slice(start,end),parent = editor.parentNode,moves = editor.moves;
+  editor.setSelectionRange(start,end,'backward');editor.scrollTop = 54;editor.scrollLeft = 12;editor.focus();editor.dispatch('select');assert.equal(quote.hidden,false);
+  let value = editor.value,assignments = 0;Object.defineProperty(editor,'value',{configurable:true,get:()=>value,set:(next:string)=> {assignments++;value = next;}});
+  let prevented = false;quote.dispatch('pointerdown',{preventDefault:()=> {prevented = true;}});quote.click();view.paint();
+  assert.equal(prevented,true);assert.equal(hostDocument.activeElement,editor);assert.equal(editor.parentNode,parent);assert.equal(editor.moves,moves);assert.equal(assignments,0);assert.equal(editor.value,text);
+  assert.deepEqual([editor.selectionStart,editor.selectionEnd,editor.selectionDirection,editor.scrollTop,editor.scrollLeft],[start,end,'backward',54,12]);
+  assert.equal(addition,`> ${selected.replaceAll('\n','\n> ')}\n\n— note.txt:2 · ${modified ? 'Editor selection \\(modified\\)' : 'Saved file selection'}`);assert.equal(captured?.current(),true);
+  editor.setSelectionRange(start,start);editor.dispatch('select');assert.equal(quote.hidden,true);assert.equal(captured?.current(),false);
+});
+for (const change of ['edit','range','workspace','hidden','move','disk'] as const) test(`native source quotation refuses a stale ${change}`,async context=> {
+  let view:FileView,current = true,captured:PrimaryDraftSource|undefined,calls = 0;
+  const owner = new FileOwner('stale-quote',tab,async()=>source('first\nsecond\n'),()=>view?.paint());
+  view = new FileView(owner,undefined,()=>{},false,undefined,{reason:()=>'',current:()=>current,append:source=> {captured = source;calls++;}});
+  byId('workspace').append(view.root as unknown as HostNode);view.root.hidden = false;view.root.inert = false;context.after(()=> {owner.dispose();view.destroy();});await owner.load();await settle();
+  const editor = view.editor as unknown as HostNode,quote = (view.root as unknown as HostNode).querySelector('.file-quote-selection');assert.ok(quote);editor.setSelectionRange(6,12);editor.dispatch('select');quote.click();assert.equal(captured?.current(),true);
+  if (change === 'edit') {editor.value += 'edited';editor.dispatch('input');editor.value = 'first\nsecond\n';editor.dispatch('input');}
+  else if (change === 'range') editor.setSelectionRange(0,5);
+  else if (change === 'workspace') current = false;
+  else if (change === 'hidden') view.root.hidden = true;
+  else if (change === 'move') owner.remap('new.txt');
+  else owner.source = source('first\nsecond\n');
+  assert.equal(captured?.current(),false);quote.click();view.refreshQuotation();assert.equal(calls,1);assert.equal(quote.hidden,true);
+});
+test('source quotation exposes the existing Primary refusal without an append',async context=> {
+  let view:FileView,reason = 'Primary draft is unavailable.',calls = 0;const owner = new FileOwner('refused-quote',tab,async()=>source('text'),()=>view?.paint());
+  view = new FileView(owner,undefined,()=>{},false,undefined,{reason:()=>reason,current:()=>true,append:()=> {calls++;}});byId('workspace').append(view.root as unknown as HostNode);view.root.hidden = false;view.root.inert = false;context.after(()=> {owner.dispose();view.destroy();});await owner.load();await settle();
+  const editor = view.editor as unknown as HostNode,quote = (view.root as unknown as HostNode).querySelector('.file-quote-selection');assert.ok(quote);editor.setSelectionRange(0,4);editor.dispatch('select');assert.equal(quote.disabled,true);assert.equal(quote.title,reason);quote.click();assert.equal(calls,0);
+  reason = '';editor.dispatch('select');view.refreshQuotation();assert.equal(quote.disabled,false);quote.click();assert.equal(calls,1);
 });
 test('Markdown uses the current sanitized DOM renderer and external link policy',async context=> {
   let view:FileView;const text = '# Heading\n\n[external](https://example.com) [relative](note.txt) [fragment](#heading) [script](javascript:alert)\n\n<img src="https://example.com/image">\n\n![image](https://example.com/x.png)';

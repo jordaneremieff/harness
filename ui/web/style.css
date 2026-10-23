@@ -332,10 +332,10 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 @media (forced-colors: none) {
   :is(.transcript, .transcript *, pre, pre *, code, code *, .file-editor)::selection { background: color-mix(in srgb, var(--accent) 20%, transparent); color: currentColor; }
 }
-.file-view-actions { display: flex; justify-content: flex-end; gap: var(--s3); padding-block: var(--s1); }
+.file-view-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--s3); padding-block: var(--s1); }
 .file-view-actions[hidden] { display: none; }
-.file-save { color: var(--dim); font-size: var(--fs-meta); }
-.file-save:hover { color: var(--fg); }
+.file-save, .file-quote-selection { color: var(--dim); font-size: var(--fs-meta); }
+.file-save:hover, .file-quote-selection:hover { color: var(--fg); }
 .file-view-switch { color: var(--dim); font-size: var(--fs-meta); }
 .file-view-switch:hover { color: var(--fg); }
 .file-status-actions { display: inline-flex; gap: var(--s2); }
@@ -564,7 +564,7 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .workbench-status { position: relative; display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s4); min-width: 0; min-height: 26px; padding: 0 var(--s3); border-top: 1px solid var(--rule); background: var(--side); color: var(--muted); font-family: var(--sans); font-size: var(--fs-meta); line-height: 1.5; }
 #workbench-scope { flex: 1 1 0; min-width: 8ch; max-width: max-content; color: var(--fg); overflow: hidden; text-overflow: clip; mask-image: linear-gradient(to right,#000 calc(100% - 24px),transparent); white-space: nowrap; }
 .workbench-version { flex: none; margin-left: auto; min-width: 0; max-width: none; padding: var(--s1) var(--s2); border: 0; background: transparent; color: var(--muted); font-size: var(--fs-meta); text-align: right; white-space: nowrap; }
-:where(.file-save, .file-view-switch, .workbench-version) { min-height: 24px; }
+:where(.file-save, .file-view-switch, .file-quote-selection, .workbench-version) { min-height: 24px; }
 .workbench-release { flex: none; min-width: 0; max-width: 100%; color: var(--muted); font-size: var(--fs-meta); white-space: nowrap; }
 .workbench-release[hidden] { display: none; }
 .health-facts { display: grid; grid-template-columns: minmax(8ch, 1fr) minmax(0, 2fr); gap: var(--s1) var(--s3); }

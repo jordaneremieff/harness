@@ -5,6 +5,7 @@ import type {FileOwner} from './file-owner.ts';
 import {ComposerOverlay} from './composer-overlay.ts';
 import {fileSyntaxRanges} from './file-syntax.ts';
 import {markdownPath} from './file-identity.ts';
+import type {PrimaryDraftActions, PrimaryDraftSource} from './primary-draft-actions.ts';
 /** The requested line clamps to the final native source line; a range never selects text. */
 export function fileLineTarget(text:string,wanted:number):{line:number;start:number} {
   let line = 1,start = 0;
@@ -21,7 +22,9 @@ export class FileView {
   private restored = false;private frame = 0;private restoring = false;private saveButton?:HTMLButtonElement;private actions?:HTMLElement;private switchButton?:HTMLButtonElement;private switchView?:()=>void;
   position:FilePosition;readonly owner:FileOwner;readonly preview:boolean;
   private save:(position:FilePosition)=>void;
-  constructor(owner:FileOwner,position:FilePosition|undefined,save:(position:FilePosition)=>void,preview = false,switchView?:()=>void) {
+  private draft?:PrimaryDraftActions & {current:()=>boolean};private quoteButton?:HTMLButtonElement;private quotation?:{source:PrimaryDraftSource;text:string};private quotationRevision = 0;
+  constructor(owner:FileOwner,position:FilePosition|undefined,save:(position:FilePosition)=>void,preview = false,switchView?:()=>void,draft?:PrimaryDraftActions & {current:()=>boolean}) {
+    this.draft = draft;
     this.owner = owner;this.save = save;this.preview = preview;this.switchView = switchView;this.position = {...position ?? {scrollTop:0,scrollLeft:0}};
     this.root.hidden = true;this.root.inert = true;this.root.dataset.view = preview ? 'preview' : 'source';
     this.status.setAttribute('role','status');
@@ -34,7 +37,14 @@ export class FileView {
       const actions = element('div','file-view-actions'), saveButton = element('button','file-save','Save');saveButton.type = 'button';saveButton.setAttribute('aria-label','Save file');
       saveButton.addEventListener('click',()=> {void owner.save().catch(()=>{});});actions.append(saveButton);this.root.append(actions);this.actions = actions;this.saveButton = saveButton;
       this.overlay = new ComposerOverlay(editor,layer,text=>fileSyntaxRanges(owner.tab.path,text));
-      editor.addEventListener('input',()=> {this.clearLineMark();owner.edit(editor.value);this.overlay?.invalidate();});
+      if (draft) {
+        const quote = element('button','file-quote-selection','Add selection to Primary');quote.type = 'button';quote.hidden = true;
+        quote.addEventListener('pointerdown',event=>event.preventDefault());
+        quote.addEventListener('click',()=> {const quotation = this.quotation;if (quotation?.source.current() && !draft.reason()) draft.append(quotation.source,quotation.text);else this.clearQuotation();});
+        actions.append(quote);this.quoteButton = quote;
+        editor.addEventListener('select',()=>this.selectQuotation());
+      }
+      editor.addEventListener('input',()=> {this.clearQuotation();this.clearLineMark();owner.edit(editor.value);this.overlay?.invalidate();});
       editor.addEventListener('keydown',event=> {if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 's') {event.preventDefault();if (!event.repeat && !event.isComposing) void owner.save().catch(()=>{});}});
     }
     this.scroller.setAttribute('aria-label',owner.tab.path);
@@ -53,7 +63,23 @@ export class FileView {
     if (this.editor) {this.editor.hidden = owner.text === undefined;this.editor.readOnly = owner.loading || owner.moving || owner.retained;}
     if (this.preview && owner.acknowledged !== undefined && this.displayed !== owner.acknowledged) {this.content.replaceChildren(markdownDom(owner.acknowledged));this.displayed = owner.acknowledged;this.restored = false;}
     if (this.saveButton) this.saveButton.disabled = owner.text === undefined || owner.loading || owner.moving || owner.retained || owner.saving || owner.encoding?.writable === false;
-    this.restore();
+    this.refreshQuotation();this.restore();
+  }
+  refreshQuotation():void {
+    if (this.quotation && !this.quotation.source.current()) this.clearQuotation();
+    if (this.quoteButton && this.quotation) {const reason = this.draft?.reason() ?? '';this.quoteButton.disabled = !!reason;this.quoteButton.title = reason || 'Add selection to Primary';}
+  }
+  private clearQuotation():void {this.quotationRevision++;this.quotation = undefined;if (this.quoteButton) this.quoteButton.hidden = true;}
+  private selectQuotation():void {
+    this.clearQuotation();const editor = this.editor,owner = this.owner,draft = this.draft;
+    if (!editor || !draft?.current() || owner.loading || owner.moving || owner.retained || owner.text === undefined) return;
+    const start = editor.selectionStart,end = editor.selectionEnd,value = editor.value,path = owner.tab.path,rootId = owner.tab.rootId,source = owner.source,replacement = owner.replacement,modified = owner.modified,revision = this.quotationRevision;
+    if (start === end || value !== owner.text) return;
+    const first = value.slice(0,start).split('\n').length,last = value.slice(0,end - 1).split('\n').length;
+    const caption = `${path}:${first}${last === first ? '' : `-${last}`} · ${modified ? 'Editor selection (modified)' : 'Saved file selection'}`;
+    this.quotation = {text:value.slice(start,end),source:{caption:()=>caption,
+      current:()=>revision === this.quotationRevision && draft.current() && this.root.isConnected && !this.root.closest('[hidden],[inert]') && !owner.loading && !owner.moving && !owner.retained && owner.source === source && owner.tab.path === path && owner.tab.rootId === rootId && owner.replacement === replacement && owner.modified === modified && owner.text === value && editor.value === value && editor.selectionStart === start && editor.selectionEnd === end}};
+    if (this.quoteButton) this.quoteButton.hidden = false;this.paint();
   }
   private syncSwitch():void {
     const wanted = !!this.switchView && markdownPath(this.owner.tab.path);
