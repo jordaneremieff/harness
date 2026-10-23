@@ -1110,7 +1110,7 @@ test('Message connection recovery shares flat state actions and retains native f
 });
 
 test('the sidebar footer stays at the bottom without a heavy separator', () => {
-  assert.equal([...css.matchAll(/^\.sidebar-footer \{/gm)].length, 2); assert.match(css, /^\.sidebar-footer \{ display: grid; grid-template-columns: repeat\(3,minmax\(0,1fr\)\); gap: var\(--s1\); \}/m);
+  assert.equal([...css.matchAll(/^\.sidebar-footer \{/gm)].length, 2); assert.match(css, /^\.sidebar-footer \{ display: grid; grid-template-columns: repeat\(3,auto\); justify-content: space-between; gap: var\(--s1\); \}/m);
   assert.match(rule('.sidebar-footer'), /align-items: center; gap: var\(--s1\); margin-top: auto; padding: var\(--s1\) var\(--s2\) 0/); assert.doesNotMatch(rule('.sidebar-footer'), /border-top:/);
 });
 
