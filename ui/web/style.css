@@ -1446,6 +1446,7 @@ dialog[data-variant=picker] #modal-body > :not(.picker-results) { flex: none; }
 dialog[data-variant=palette], dialog[data-variant=picker] { inset: 10dvh auto auto 50%; width: min(680px, calc(100vw - 32px)); max-height: 70dvh; margin: 0; transform: translateX(-50%); }
 dialog[data-variant=palette] { padding: var(--s5); }
 dialog[data-variant=palette]::backdrop { background: transparent; }
+dialog[data-variant=palette][data-mode=commands]::backdrop { background: var(--backdrop); }
 dialog[data-variant=palette] .modal-heading { padding-bottom: var(--s2); }
 dialog[data-variant=palette] #modal-close { display: inline-flex; flex: none; align-items: center; justify-content: center; min-height: 44px; min-width: 44px; }
 dialog[data-variant=menu] .modal-heading { position: absolute; width: 1px; height: 1px; margin: calc(var(--s1) * -0.25); padding: 0; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
@@ -1472,6 +1473,7 @@ dialog[data-variant=menu]::backdrop { background: transparent; }
   .sidebar-close { display: inline-flex; }
   .app.drawer-open .workbench > .sidebar { position: absolute; inset: 0 auto 0 0; z-index: 10; display: flex; width: min(320px, calc(100vw - 48px)); box-shadow: var(--shadow); }
   .app.drawer-open #sidebar-scrim { position: absolute; inset: 0; z-index: 9; display: block; width: 100%; height: 100%; border-radius: 0; background: var(--backdrop); cursor: default; }
+  .app.drawer-open:has(> dialog[open][data-variant=palette][data-mode=commands]) > .workbench > :is(.sidebar, #sidebar-scrim) { visibility: hidden; }
   .workspace, .stable-views { --gutter: 16px; }
   .app.drawer-open .stable-views { z-index: auto; }
   /* Only the projected writer crosses the drawer; its native ancestors stay in place. */

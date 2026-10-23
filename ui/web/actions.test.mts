@@ -1107,13 +1107,22 @@ test('the command palette highlights each fuzzy name character and keeps command
   } finally {f.restore();}
 });
 
-test('tab palette actions retain sessions and expose safe browser keyboard paths', () => {
+test('conversation palette actions name views and preserve callbacks, grouping and keyboard paths', () => {
   const calls: string[] = [];
-  const actions = new Actions(context({tabs: {close: () => calls.push('close'), switch: direction => calls.push(String(direction)), layout: () => ({root: {kind: 'pane', id: 'pane-one', tabs: [{kind: 'primary'}], active: 'primary'}, focusedPane: 'pane-one'})}}));
+  const actions = new Actions(context({tabs: {close: () => calls.push('close'), switch: direction => calls.push(String(direction)), layout: () => ({root: {kind: 'pane', id: 'pane-one', tabs: [{kind: 'primary'}], active: 'primary'}, focusedPane: 'pane-one'}), reopen: {available: () => true, run: () => calls.push('reopen'), choices: () => [{key: 'primary:p:1', label: 'Project session'}], runKey: key => calls.push(key)}}}));
   const entries = actions.paletteEntries();
-  for (const label of ['Close conversation tab', 'Next conversation tab', 'Previous conversation tab']) { const entry = entries.find(item => item.name === label); assert.ok(entry); assert.equal(entry.enabled, true); entry.run(); }
+  for (const [label, description, priority, keys] of [
+    ['Close view', 'Close this view and keep its session and draft', 0, undefined],
+    ['Reopen closed view', 'Reopen the last view closed in this window', 1, 'Alt+Shift+T'],
+    ['Next conversation', 'Select the next conversation', 1, 'Alt+PageDown'],
+    ['Previous conversation', 'Select the previous conversation', 1, 'Alt+PageUp'],
+    ['Reopen Project session', 'Reopen this recently closed view', 2, undefined],
+  ] as const) {
+    const entry = entries.find(item => item.name === label); assert.ok(entry); assert.equal(entry.enabled, true);
+    assert.equal(entry.description, description); assert.equal(entry.priority, priority); assert.equal(entry.shortcut?.keys, keys); entry.run();
+  }
   assert.equal(entries.some(item => item.name === 'Toggle split with Primary'), false);
-  assert.deepEqual(calls, ['close', '1', '-1']);
+  assert.deepEqual(calls, ['close', 'reopen', '1', '-1', 'primary:p:1']);
 });
 
 test('target-choice Goto forwards the displayed Primary and exact agent without ordinary selection or command fetch', () => {

@@ -22,6 +22,14 @@ test('Commands keeps its title and Close control visible above the bounded nativ
   assert.match(rule('.palette-list'), /--palette-available-height/);
   assert.match(rule('.palette-list'), /overflow-y: auto/);
 });
+test('only open Commands suppresses the narrow drawer and scrim beneath the standard modal backdrop', () => {
+  assert.equal(rule('dialog::backdrop').trim(), 'background: var(--backdrop);');
+  assert.equal(rule('dialog[data-variant=palette]::backdrop').trim(), 'background: transparent;');
+  assert.equal(rule('dialog[data-variant=palette][data-mode=commands]::backdrop').trim(), 'background: var(--backdrop);');
+  const selector = '.app.drawer-open:has(> dialog[open][data-variant=palette][data-mode=commands]) > .workbench > :is(.sidebar, #sidebar-scrim)';
+  assert.equal(rule(selector).trim(), 'visibility: hidden;');
+  assert.ok(media(`@media (max-width:${PERSISTENT_SIDEBAR_MIN_WIDTH - 1}px)`).includes(`${selector} { visibility: hidden; }`));
+});
 test('Settings separates plain groups and keeps the Agent control explanation beside its visible switch state', () => {
   assert.equal(rule('.settings-group + .settings-group').trim(), 'margin-top: var(--s4);');
   assert.match(rule('.settings-group-title'), /color: var\(--dim\); font-size: var\(--fs-meta\)/);

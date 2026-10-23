@@ -454,10 +454,10 @@ export class Actions {
   }
   private tabEntries(entry: (name: string, description: string, run: () => void, enabled?: boolean, alias?: string, disabledReason?: string) => PaletteEntry): PaletteEntry[] {
     const tabs = this.ctx.tabs; if (!tabs) return [];
-    return [entry('Close conversation tab', 'Keep its session and draft', tabs.close),
-      ...tabs.reopen ? [{...entry('Reopen closed tab', 'Reopen the last tab closed in this window', tabs.reopen.run, tabs.reopen.available(), undefined, 'No closed tab to reopen'), shortcut: {text: '⌥⇧T', keys: 'Alt+Shift+T'}}, ...(tabs.reopen.choices?.() ?? []).slice(0, 8).map(choice => entry(`Reopen ${choice.label}`, 'Reopen this recently closed tab', () => tabs.reopen?.runKey?.(choice.key), true))] : [],
-      {...entry('Next conversation tab', 'Select the next conversation', () => tabs.switch(1)), shortcut: {text: '⌥⇟', keys: 'Alt+PageDown'}},
-      {...entry('Previous conversation tab', 'Select the previous conversation', () => tabs.switch(-1)), shortcut: {text: '⌥⇞', keys: 'Alt+PageUp'}}];
+    return [entry('Close view', 'Close this view and keep its session and draft', tabs.close),
+      ...tabs.reopen ? [{...entry('Reopen closed view', 'Reopen the last view closed in this window', tabs.reopen.run, tabs.reopen.available(), undefined, 'No closed view to reopen'), shortcut: {text: '⌥⇧T', keys: 'Alt+Shift+T'}}, ...(tabs.reopen.choices?.() ?? []).slice(0, 8).map(choice => entry(`Reopen ${choice.label}`, 'Reopen this recently closed view', () => tabs.reopen?.runKey?.(choice.key), true))] : [],
+      {...entry('Next conversation', 'Select the next conversation', () => tabs.switch(1)), shortcut: {text: '⌥⇟', keys: 'Alt+PageDown'}},
+      {...entry('Previous conversation', 'Select the previous conversation', () => tabs.switch(-1)), shortcut: {text: '⌥⇞', keys: 'Alt+PageUp'}}];
   }
   paletteEntries(): PaletteEntry[] {
     const primary = this.ctx.primary(); const agent = this.ctx.selectedAgent(); const transcript = this.ctx.hasTranscript(); const sidebarShown = this.ctx.sidebarShown();
@@ -524,9 +524,9 @@ export class Actions {
         entries.push({...command, name: `Insert /${command.name}`, search: [`/${command.name}`], enabled: true, run: () => this.prepareText(`/${command.name}`)});
       }
     }
-    const conversation = new Set(['Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Jump to message…', 'Previous own message', 'Next own message', 'Previous result', 'Next result', 'Previous post', 'Next post', 'Copy agent ID', 'Sent and received tasks', 'Close conversation tab']);
+    const conversation = new Set(['Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Jump to message…', 'Previous own message', 'Next own message', 'Previous result', 'Next result', 'Previous post', 'Next post', 'Copy agent ID', 'Sent and received tasks', 'Close view']);
     const primaryActions = new Set(['Close session', 'Replace current session', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Model', 'Thinking', 'Review message', 'Insert /agent new']);
-    const workspace = new Set(['New session', 'Sessions', 'Continue a handover', 'Saved drafts and messages', 'Appearance', 'Message input', 'Agent presentation control', 'Keyboard shortcuts', 'Help', 'Notifications', 'Refresh agents', 'Refresh files', 'Go to file…', 'Hide sidebar', 'Show sidebar', 'Projects', 'Next conversation tab', 'Previous conversation tab', 'Reopen closed tab']);
+    const workspace = new Set(['New session', 'Sessions', 'Continue a handover', 'Saved drafts and messages', 'Appearance', 'Message input', 'Agent presentation control', 'Keyboard shortcuts', 'Help', 'Notifications', 'Refresh agents', 'Refresh files', 'Go to file…', 'Hide sidebar', 'Show sidebar', 'Projects', 'Next conversation', 'Previous conversation', 'Reopen closed view']);
     const preferences = new Set(['Appearance','Message input','Agent presentation control','Hide sidebar','Show sidebar']);
     return [...entries.filter(item => item.enabled && (workspaceReady || !preferences.has(item.name))).map(item => {
       let priority = 2;
