@@ -521,7 +521,7 @@ function openToolFile(destination:FileReferenceDestination):void {
   toolFilePane=captured;toolFileReader.closeLabel(companion.overPrimary?'Back to Primary':'Close');toolFileReader.open(workspace.id,destination,()=>toolFileCurrent(captured));renderNavigation();
 }
 export function chooseFile(rootId:string,path:string,focus = true):void {
-  if (!state.workspace) return;
+  if (!state.workspace) return;leaveOverlayDesk();
   try {applyLayout(fileBrowse.choose(currentLayout(),{kind:'file',rootId,path},key=> {const tab = paneLeaves(currentLayout().root).flatMap(pane=>pane.tabs).find(tab=>tabKey(tab) === key);if (tab?.kind !== 'file') return false;const owner = filesViews.owner(state.workspace?.id ?? '',tab);return !!owner && (owner.loading || owner.modified || owner.unsaved);}));if (focus) focusEditor();} catch (error) {showError(error);}
 }
 async function navigateFileReference(destination:FileReferenceDestination):Promise<void> {
@@ -752,8 +752,10 @@ function threadOpeningPane(preferred?: ConversationController): PaneLeaf | undef
   const source = preferred?.workspaceId === state.workspace?.id ? paneLeaves(layout.root).find(pane => pane.tabs.some(tab => tabKey(tab) === pane.active && sameTarget(controllerTarget(tab), preferred?.target))) : undefined;
   return source ?? paneById(layout, layout.focusedPane);
 }
+/** On a narrow screen the Desk list covers its pane, so opening any other destination ends it. */
+function leaveOverlayDesk():void {if(deskPane?.overPrimary&&deskPane.list)closeDesk();}
 function openThread(item: ThreadEntry, preferred?: ConversationController): void {
-  closeToolFile(false);dismissSessionRead();
+  leaveOverlayDesk();closeToolFile(false);dismissSessionRead();
   const workspace = state.workspace; if (!workspace) return;
   const leaf = threadOpeningPane(preferred); if (!leaf) return;
   if (threadPane && threadPane.paneId !== leaf.id) closeThread(false);
@@ -2332,7 +2334,7 @@ function renderAvailability(): void {
   if (messageTarget.current) renderMessagePanel(); renderIdentity(); tabStrip.render(); roster.schedule(); renderSectionCounts();
 }
 export async function selectAgent(row: AgentRow): Promise<void> {
-  conversationController({kind: 'agent', identity: row.identity}).passive = false;
+  leaveOverlayDesk();conversationController({kind: 'agent', identity: row.identity}).passive = false;
   const origin = document.activeElement; drawerOpen = false;
   const applied = selection({panelVisible: true, selectedTarget: {kind: 'agent', identity: row.identity}});
   focusEditor(); await applied;
@@ -2861,7 +2863,7 @@ function sessionTabFor(source:SessionReadSource):SessionTab|undefined {
   return validSessionTab(tab)?tab:undefined;
 }
 function openSessionRead(source:SessionReadSource):void {
-  closeToolFile(false);
+  leaveOverlayDesk();closeToolFile(false);
   const tab=state.workspace?sessionTabFor(source):undefined;
   if(tab){modal.close(false);try{applyLayout(openTab(currentLayout(),tab));}catch(error){showError(error);}return;}
   modal.close(false);const layout=deskLayout(),leaves=paneLeaves(layout.root),anchor=leaves.find(pane=>pane.tabs.some(tab=>tab.kind==='primary'))??leaves[0];if(!anchor)return;
