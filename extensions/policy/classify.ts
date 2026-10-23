@@ -193,6 +193,8 @@ export function evaluateCommandRecords(
 	if (candidates.length === 0) return result;
 	const parsed = parseShellEvidence(captured);
 	const statements = parsed.statements;
+	// Compound commands do not establish the reader's working directory.
+	const suggest = parsed.complete && statements.length === 1 && statements[0].length === 1;
 	const decoded = new Map<Stage, CliEvidence>();
 	decodeStatementOptions(
 		statements,
@@ -208,7 +210,7 @@ export function evaluateCommandRecords(
 	for (const record of candidates) {
 		const onMatch = (stage: Stage) => {
 			result.segments.set(record.id, commandSegment(stage));
-			if (record.matcher.kind === "code") {
+			if (suggest && record.matcher.kind === "code") {
 				const suggestions = predicateSuggestions(record.matcher.key, stage);
 				if (suggestions.length) result.suggestions.set(record.id, suggestions);
 			}

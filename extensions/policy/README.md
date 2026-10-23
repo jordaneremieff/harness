@@ -1066,8 +1066,17 @@ denial keeps the shared guidance bound, so later excerpts can be omitted.
 Denial notes identify denying rules, not unrelated matched guidance rules.
 Read-routing predicates also append `For this command:` with a concrete read
 call from that matched stage. Stored notes and suggestions remain unchanged.
-Explicit line ranges supply offsets and limits; absent counts stay omitted.
-Unexpanded shell words and escaped script literals have no concrete suggestion.
+Suggestions require one complete simple command and a certain target. Compound
+commands and unsupported wrappers have no concrete suggestion because their
+working directory is not established. Leading `~` or `@`, file URLs, Unicode spaces
+that Pi normalises, shell expansion shapes, and escaped script literals also
+suppress suggestions. A suggestion that requires credential redaction is omitted
+rather than rewritten to a different target.
+Slice suggestions accept one explicit leading line count, or one sed range script
+as the first operand or a single `-e` argument. Sed suggestions require exactly one
+input file because numeric addresses count cumulatively across files. An explicit
+`--` separates filenames from options. Repeated counts, mixed modes, implicit counts, and ambiguous forms
+have no concrete suggestion.
 Both runtimes use the same refusal formatter.
 A segment from a corrected candidate is labeled `[corrected input omitted]`
 in denials to avoid echoing values from approved data that the caller did not

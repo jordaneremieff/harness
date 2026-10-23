@@ -227,7 +227,8 @@ function isSedSlice(stage: Stage): boolean {
 	if (stage.command !== "sed" || !hasFlag(stage, "n") || stage.fromPipe || stage.fromRedirect || stage.toRedirect)
 		return false;
 	const script = stage.args.find((arg) => /^\d+\s*,\s*\d+\s*p$/.test(arg) || /^\d+p$/.test(arg));
-	return script !== undefined && operands(stage, new Set(["e", "f", "expression", "file"])).length > 1;
+	return (script !== undefined && operands(stage, new Set(["e", "f", "expression", "file"])).length > 1)
+		|| sedSuggestion(stage) !== undefined;
 }
 
 function isFileSlice(stage: Stage, command: "head" | "tail"): boolean {
@@ -521,55 +522,69 @@ interface ReadSuggestion {
 }
 
 function sedSuggestion(stage: Stage): ReadSuggestion | undefined {
-	const args = operands(stage, new Set(["e", "f", "expression", "file"]));
-	const script = args.find((arg) => /^\d+(?:\s*,\s*\d+)?\s*p$/.test(arg));
-	if (!script) return undefined;
+	const args = stage.args;
+	if (args[0] !== "-n") return undefined;
+	let index = 1;
+	const afterBoundary = args[index] === "--";
+	if (args[index] === "-e" || afterBoundary) index++;
+	const script = args[index++];
+	if (!script || !/^\d+(?:\s*,\s*\d+)?\s*p$/.test(script)) return undefined;
+	const boundary = !afterBoundary && args[index] === "--";
+	const literalPaths = afterBoundary || boundary;
+	if (boundary) index++;
+	const paths = args.slice(index);
+	if (paths.length !== 1 || (!literalPaths && paths[0].startsWith("-"))) return undefined;
 	const [start, end = start] = script.replace(/p$/, "").split(",").map(Number);
 	if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start) return undefined;
-	return { paths: args.filter((arg) => arg !== script), offset: start, limit: end - start + 1 };
+	return { paths, offset: start, limit: end - start + 1 };
 }
 
 function inlineReadSuggestion(stage: Stage): ReadSuggestion | undefined {
 	const flag = INLINE_SCRIPT.get(stage.command);
-	if (!flag) return undefined;
-	const script = (stage.args[stage.args.indexOf(flag) + 1] ?? "").trim();
+	if (!flag || stage.args.length !== 2 || stage.args[0] !== flag) return undefined;
+	const script = stage.args[1].trim();
 	const literal = (stage.command === "node" ? READ_ONLY_NODE : READ_ONLY_PYTHON).exec(script)?.[1];
 	// Escaped language literals need a language decoder, not shell-word evidence.
 	if (!literal || literal.includes("\\")) return undefined;
 	return { paths: [literal.slice(1, -1)] };
 }
 
-function headSuggestion(stage: Stage): ReadSuggestion | undefined {
-	const paths = operands(stage, new Set(["n", "c", "lines", "bytes"]));
-	const lines = optionValue(stage, "n", "lines") ?? stage.args.find((arg) => /^-\d+$/.test(arg))?.slice(1);
-	if (lines === undefined) return { paths };
-	const limit = Number(lines);
-	if (!/^\+?\d+$/.test(lines) || !Number.isSafeInteger(limit) || limit < 1) return undefined;
-	return { paths, limit };
+function leadingLineCount(args: string[], tail: boolean): { count?: string; next: number } {
+	const first = args[0] ?? "";
+	if (first === "-n" || first === "--lines") return { count: args[1], next: 2 };
+	if (first.startsWith("--lines=")) return { count: first.slice(8), next: 1 };
+	if (first.startsWith("-n")) return { count: first.slice(2), next: 1 };
+	const shorthand = tail ? /^\+\d+$/ : /^-\d+$/;
+	return { count: shorthand.test(first) ? (tail ? first : first.slice(1)) : undefined, next: 1 };
 }
 
-function tailSuggestion(stage: Stage): ReadSuggestion | undefined {
-	if (hasFlag(stage, "c", "bytes")) return undefined;
-	const lines = optionValue(stage, "n", "lines") ?? stage.args.find((arg) => /^\+\d+$/.test(arg));
-	if (lines === undefined || !/^\+\d+$/.test(lines)) return undefined;
-	const offset = Number(lines);
-	if (!Number.isSafeInteger(offset) || offset < 1) return undefined;
-	const paths = operands(stage, new Set(["n", "c", "lines", "bytes"])).filter((arg) => arg !== lines);
-	return { paths, offset };
+/** One leading line-count option followed by files, with an optional explicit boundary. */
+function sliceSuggestion(stage: Stage, tail: boolean): ReadSuggestion | undefined {
+	const args = stage.args;
+	const { count, next } = leadingLineCount(args, tail);
+	let index = next;
+	if (count === undefined || !(tail ? /^\+\d+$/ : /^\+?\d+$/).test(count)) return undefined;
+	const value = Number(count);
+	if (!Number.isSafeInteger(value) || value < 1) return undefined;
+	const literalPaths = args[index] === "--";
+	if (literalPaths) index++;
+	const paths = args.slice(index);
+	if (!paths.length || (!literalPaths && paths.some((path) => path.startsWith("-") || /^\+\d+$/.test(path)))) return undefined;
+	return tail ? { paths, offset: value } : { paths, limit: value };
 }
 
 /** Read parameters come only from the already matched stage. */
 function readSuggestion(key: string, stage: Stage): ReadSuggestion | undefined {
-	if (stage.argLiterals?.some((literal) => !literal)) return undefined;
+	if (stage.commandLiteral === false || stage.shellReasons?.length || stage.argLiterals?.some((literal) => !literal)) return undefined;
 	switch (key) {
 		case "routing.cat-read":
 			return { paths: operands(stage) };
 		case "routing.sed-slice":
 			return sedSuggestion(stage);
 		case "routing.head-slice":
-			return headSuggestion(stage);
+			return sliceSuggestion(stage, false);
 		case "routing.tail-slice":
-			return tailSuggestion(stage);
+			return sliceSuggestion(stage, true);
 		case "routing.inline-script-read":
 			return inlineReadSuggestion(stage);
 		default:
@@ -582,9 +597,13 @@ export function predicateSuggestions(key: string, stage: Stage): string[] {
 	const suggestion = readSuggestion(key, stage);
 	if (!suggestion) return [];
 	const { paths, offset, limit } = suggestion;
-	return paths.filter((path) => path !== "-").flatMap((path) => {
+	// Pi expands a leading tilde and strips a leading @, unlike literal shell operands.
+	if (paths.some((path) => !path || path === "-" || /^(?:[~@]|file:\/\/)/.test(path)
+		|| /[\\*?{}[\]\p{Cc}\p{Cf}\u00a0\u2000-\u200a\u202f\u205f\u3000]/u.test(path))) return [];
+	return paths.flatMap((path) => {
 		const value = /^[A-Za-z0-9_./+-]+$/.test(path) ? path : JSON.stringify(path);
-		const suggestion = redactShell("bash", `read path=${value}${offset === undefined ? "" : ` offset=${offset}`}${limit === undefined ? "" : ` limit=${limit}`}`);
+		const suggestion = `read path=${value}${offset === undefined ? "" : ` offset=${offset}`}${limit === undefined ? "" : ` limit=${limit}`}`;
+		if (redactShell("bash", suggestion) !== suggestion) return [];
 		return Buffer.byteLength(suggestion, "utf8") <= 240 ? [suggestion] : [];
 	});
 }

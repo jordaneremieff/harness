@@ -1,9 +1,26 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { classify } from "./classify.ts";
-import { RULES } from "./shell-rules.ts";
+import { RULES, predicateSuggestions } from "./shell-rules.ts";
+import { parseStatements } from "./shell.ts";
 
 const bash = (command: string) => classify("bash", { command });
+
+describe("certain slice suggestions", () => {
+	it("omits mixed modes, repeated counts and uncertain paths", () => {
+		for (const command of [
+			"head -n 2 -c 7 notes.md", "head -n 2 -n 7 notes.md", "head notes.md -n 2",
+			"head -n 2 -- @notes.md", "head -n 2 -- '*.md'", "head -n 2 -- '~/notes.md'",
+		]) {
+			const stage = parseStatements(command)[0][0];
+			assert.deepEqual(predicateSuggestions("routing.head-slice", stage), [], command);
+		}
+	});
+	it("omits repeated sed scripts", () => {
+		const stage = parseStatements("sed -n -e '3p' -e '7p' notes.md")[0][0];
+		assert.deepEqual(predicateSuggestions("routing.sed-slice", stage), []);
+	});
+});
 
 describe("rule set", () => {
 	it("declares unique ids", () => {
