@@ -19,20 +19,12 @@ export function filterThreads(items: readonly ThreadListItem[], query: string): 
   if (!words.length) return [...items];
   return items.filter(item => { const text = `${item.title}\n${item.purpose}\n${item.id}`.toLowerCase(); return words.every(word => text.includes(word)); });
 }
-/** Supplied membership gates eligibility before recency selects the compact destinations. */
-export function sidebarThreads(items: readonly ThreadListItem[], now = Date.now()): ThreadListItem[] {
-  return items.filter(item=>item.members>=2).sort((a,b)=>b.updatedAt-a.updatedAt).filter((item,index)=>index<3 || item.updatedAt>=now-7*24*60*60*1000);
-}
 /** The second line of a list row: state, member count and an age that reads as an age. */
 export function threadMeta(item: ThreadListItem, now: number): string {
   const members = `${item.members} ${item.members === 1 ? 'member' : 'members'}`;
   const age = compactAge(item.updatedAt, now);
   const when = !age ? '' : age === 'now' ? 'just now' : /^\d+[a-z]+$/.test(age) ? `${age} ago` : age;
   return [item.closed ? 'Closed' : '', members, when].filter(Boolean).join(' · ');
-}
-/** The supplied unique total precedes the overview response cut, not the member or search filter. */
-export function threadCount(overview: ThreadOverview | undefined): string {
-  return overview?String(overview.items.length+overview.omitted):'';
 }
 /** Names known stopped agents whose threads use the independent saved-storage reader. */
 function stoppedAgentsLine(count: number): string {

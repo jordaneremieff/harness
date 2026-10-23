@@ -11,7 +11,7 @@ import {withPrimaryOperation} from '../rpc/primary-operation.mts';
 import {join} from 'node:path';
 import {imageMessageDigest, imageReferenceMessage} from './images.mts';
 
-const KINDS: OperationKind[] = ['primary.open', 'primary.input', 'primary.stop', 'primary.session', 'primary.control', 'primary.dialog', 'primary.handoff', 'primary.close', 'agent.input', 'agent.abort', 'agent.configure', 'agent.convert', 'agent.command'];
+const KINDS: OperationKind[] = ['session.metadata', 'primary.open', 'primary.input', 'primary.stop', 'primary.session', 'primary.control', 'primary.dialog', 'primary.handoff', 'primary.close', 'agent.input', 'agent.abort', 'agent.configure', 'agent.convert', 'agent.command'];
 const terminal = (record: {view: {state: string}; input?: unknown; inputResolved?: boolean; retainedInput?: unknown; protected?: boolean}) => ['accepted', 'rejected', 'completed'].includes(record.view.state) && (!record.input || record.inputResolved) && !record.retainedInput && !record.protected;
 export type ExecuteRequest = {workspaceId: string; kind: OperationKind; target?: Target; body: unknown;
   input?: {targetKey: string; text: string; mode: string; draftRevision: number; images?: DraftImage[]; differentMessage?: true}; retryUncertainNative?: boolean};
@@ -65,7 +65,7 @@ export class Operations {
     return this.store.transaction(async () => {
       if (!KINDS.includes(kind)) throw new StateError('invalid_request', 'Unknown operation kind');
       if (target) validateTarget(target);
-      if (kind !== 'primary.open' && kind !== 'agent.convert' && (!target || (kind.startsWith('primary.') ? target.kind !== 'primary' : target.kind !== 'agent'))) throw new StateError('invalid_request', 'Operation requires its exact target');
+      if (kind !== 'session.metadata' && kind !== 'primary.open' && kind !== 'agent.convert' && (!target || (kind.startsWith('primary.') ? target.kind !== 'primary' : target.kind !== 'agent'))) throw new StateError('invalid_request', 'Operation requires its exact target');
       // A workspace lookup uses the already-loaded bounded state, not directory enumeration.
       await this.store.getWorkspaceForOperation(workspaceId);
       await this.prune();

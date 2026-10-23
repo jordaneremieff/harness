@@ -4,8 +4,8 @@ import { hostname } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
-import { APPEARANCES, LIMITS, LAYOUT_VERSION, sameDraftTuple, draftHasContent, validLayoutData, validWorkspaceTab, workspaceTabKey, type FilePosition } from '../shared/api.ts';
-import type {DraftImage, DraftPut, StoredDraft, RecoveryInput, RetainedInput, RetainedAdmission, InputCopy, RecoveryOrigin, RecoverySendGuard, QueueRecovery, ImageUploadView} from '../shared/api.ts';
+import { APPEARANCES, LIMITS, LAYOUT_VERSION, validSessionMetadataTarget, sameDraftTuple, draftHasContent, validLayoutData, validWorkspaceTab, workspaceTabKey, type FilePosition } from '../shared/api.ts';
+import type {SessionMetadataRecord, DraftImage, DraftPut, StoredDraft, RecoveryInput, RetainedInput, RetainedAdmission, InputCopy, RecoveryOrigin, RecoverySendGuard, QueueRecovery, ImageUploadView} from '../shared/api.ts';
 import {normalizeDraftImages, imageName} from './validate.mts';
 import {DraftImages, sameImageContent} from './draft-images.mts';
 import type {BlobIndex, BlobReferenceGraph, BlobReadSpec, BlobIntake, UploadReservation} from './draft-images.mts';
@@ -260,6 +260,7 @@ export class StateStore {
   private readonly operationSizes = new Map<string, number>();
   private readonly inputPreviews = new Map<string, UnconfirmedInput & {targetKey: string; workspaceId: string}>();
   private primaries: PrimaryView[] = [];
+  private sessionMetadata: SessionMetadataRecord[] = [];
   private onChange?: ChangeHook;
   private images!: DraftImages;
   private imageIndex: BlobIndex = {directories: [], entries: [], temps: []};
@@ -296,6 +297,11 @@ export class StateStore {
       await this.recoverDispatchedOperations();
       try { this.primaries = await readJson(join(this.root, 'primaries.json'), 96 * 1024) as PrimaryView[]; }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      try {
+        const rows = await readJson(join(this.root, 'session-metadata.json'), LIMITS.rosterBytes);
+        if (!Array.isArray(rows) || rows.length > LIMITS.rosterRows || rows.some(row => !row || typeof row.key !== 'string' || row.key.length > 16 * 1024 || typeof row.title !== 'string' || row.title.length > 240 || typeof row.archived !== 'boolean' || row.name !== undefined && (typeof row.name !== 'string' || row.name.length > 240) || !validSessionMetadataTarget(row.target)) || new Set(rows.map(row => row.key)).size !== rows.length) throw new StateError('not_ready','Invalid saved session metadata',503);
+        this.sessionMetadata = rows;
+      } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   }
 
   private async recoverDispatchedOperations(): Promise<void> {
@@ -692,6 +698,18 @@ export class StateStore {
       if (record.view.state === 'dispatched') throw new StateError('operation_conflict', 'An active dispatch copy cannot be discarded', 409);
       record.inputResolved = true; delete record.input; delete record.retainedInput; delete record.view.retainedInput;
       await this.writeOperation(record); await this.cleanupImagesForMutation();
+    });
+  }
+  readSessionMetadata(): SessionMetadataRecord[] { return structuredClone(this.sessionMetadata); }
+  getSessionMetadata(key:string):SessionMetadataRecord|undefined { return structuredClone(this.sessionMetadata.find(row=>row.key===key)); }
+  putSessionMetadata(record: SessionMetadataRecord, action:'rename'|'archive'|'restore', guard: () => Promise<void>): Promise<void> {
+    return this.transaction(async () => {
+      await guard();
+      const current=this.sessionMetadata.find(row=>row.key===record.key);
+      const next={...record,...(action!=='rename'&&current?.name?{name:current.name}:{}),archived:action==='rename'?(current?.archived??record.archived):action==='archive'};
+      const rows = this.sessionMetadata.filter(row => row.key !== record.key); rows.push(structuredClone(next));
+      if (rows.length > LIMITS.rosterRows) throw new StateError('capacity','Session metadata capacity reached',429);
+      await this.atomic('session-metadata.json',rows,LIMITS.rosterBytes); this.sessionMetadata = rows;
     });
   }
   async readPrimaries(): Promise<PrimaryView[]> { await this.queue; return structuredClone(this.primaries); }

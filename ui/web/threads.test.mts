@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type {ThreadEventView, ThreadFrameView, ThreadListItem, ThreadOverview} from '../shared/api.ts';
-import {emptyListText, eventTime, exchangeRows, filterThreads, frameChanges, mergeEvents, noteFitsInline, olderBoundary, overviewLines, prependEvents, purposeNeedsExpansion, threadCount, threadMeta} from './threads.ts';
+import {emptyListText, eventTime, exchangeRows, filterThreads, frameChanges, mergeEvents, noteFitsInline, olderBoundary, overviewLines, prependEvents, purposeNeedsExpansion, threadMeta} from './threads.ts';
 
 const frame = (overrides: Partial<ThreadFrameView> = {}): ThreadFrameView => ({title: 'Plan', purpose: 'Ship it', authority: 'Operator', source: '', restrictions: 'None', acceptance: 'Works', integrator: 'root', ...overrides});
 const item = (id: string, title: string, overrides: Partial<ThreadListItem> = {}): ThreadListItem => ({id, storageId: 'root', title, purpose: '', updatedAt: 1000, closed: false, members: 2, ...overrides});
@@ -17,13 +17,6 @@ test('the list filter matches every word in title, purpose or identity', () => {
   assert.deepEqual(filterThreads(rows, 'RELEASE ui').map(row => row.id), ['s/1']);
   assert.deepEqual(filterThreads(rows, '  ').map(row => row.id), ['s/1', 's/2', 's/3']);
   assert.deepEqual(filterThreads(rows, 's/3').map(row => row.id), ['s/3']);
-});
-
-test('the heading count is the supplied unique total', () => {
-  assert.equal(threadCount(undefined), '');
-  assert.equal(threadCount(overview({items: []})), '0');
-  assert.equal(threadCount(overview()), '1');
-  assert.equal(threadCount(overview({truncated: true})), '1'); assert.equal(threadCount(overview({omitted: 3})), '4');
 });
 
 test('quiet lines state coverage, cuts and agents that cannot list threads', () => {

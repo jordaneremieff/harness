@@ -1,4 +1,4 @@
-import type { AgentHistoryPage, AgentRow, Bootstrap, EntryView, EventData, HistoryPage, OperationView, PrimaryView, PresentationView, ProjectedFrame, SavedSession, SessionTab, Snapshot, Target, TargetState, ThreadOverview, ThreadPageView, Workspace, WorkspacePage } from '../shared/api.ts';
+import type { AgentHistoryPage, AgentRow, Bootstrap, EntryView, EventData, HistoryPage, OperationView, PrimaryView, PresentationView, ProjectedFrame, SavedSession, SessionMetadata, SessionMetadataTarget, SessionTab, Snapshot, Target, TargetState, ThreadOverview, ThreadPageView, Workspace, WorkspacePage } from '../shared/api.ts';
 import { persistentSidebarQuery } from './layout-breakpoints.ts';
 import { toolArgumentText } from './format.ts';
 import { draftHasContent, draftImageFingerprint, LIMITS, resolveAppearance, validSessionTab } from '../shared/api.ts';
@@ -33,13 +33,14 @@ import { thinkingExpanded } from './transcript-presentation.ts';
 import { contextMenu, nativeEditingTarget, paneMenuItems, type ContextItem } from './context-menu.ts';
 import { ProjectPicker } from './picker.ts';
 import {senderCaption,sessionCaptionRecord,type SenderCaptionRecord} from './sender-caption.ts';
-import type { SelectionChange } from './actions.ts';
+import type { PaletteEntry, SelectionChange } from './actions.ts';
+import {targetReceipts} from './receipt.ts';
 import { Composer, createComposerElements, validComposerReloadState, type ComposerReloadState } from './composer.ts';
 import { includedText } from './composer-attachments.ts';
 import {writeReloadState,readReloadState,deleteReloadState} from './reload-storage.ts';
 import { WorkbenchStatus } from './workbench-status.ts';
 import { VersionStatus } from './version-status.ts';
-import {SessionSidebar} from './sidebar-useful.ts';
+import {SessionSidebar,humanSessionTitle,type SessionRow} from './sidebar-useful.ts';
 import {NavigationViews, type NavigationView} from './navigation-view.ts';
 import { HealthStatus } from './health-status.ts';
 import { ReleaseNotice, loadedRelease, readReleaseHealth, type ReleaseReloadState, type ReleaseIdentity } from './release-notice.ts';
@@ -54,7 +55,7 @@ import { ReferenceResolver, loadedReference, type ReferenceDestination, type Ref
 import { imageUrl } from './image.ts';
 import { historyBecameReady, pageToReadingAnchor } from './transcript-history.ts';
 import { IdentityLookup } from './identity-lookup.ts';
-import { Roster, rosterWorking, savedRosterLabel, type RosterStatus } from './roster.ts';
+import { Roster, type RosterStatus } from './roster.ts';
 import {conversationAttention, type Attention} from './attention.ts';
 import {activeDialog} from './dialog-state.ts';
 import {HandoverDialog} from './handover-view.ts';
@@ -97,6 +98,7 @@ const composingFields = new Set<EventTarget>();
 let controlStatus = '';
 let controlStatusWorkspace: string | undefined;
 export let drawerOpen = false;
+let drawerReturnFocus:HTMLElement|undefined;
 export const navigationViews = new NavigationViews();
 let connectionPhase: ConnectionPhase = 'healthy';
 let connectionError: unknown;
@@ -152,9 +154,10 @@ let devNavigating = false;
 let reloadStateKey:string|undefined;
 let preparedReloadState:{key:string;revision:number;workspace:string}|undefined;
 const devCheckpointKey = 'ui:dev-checkpoint';
+type ComposerHeight = {min:number;max:number;defaultValue:number;manual:()=>boolean;read:()=>number;write:(value:number)=>void;commit:(value:number)=>void;reset:()=>void};
 type ConversationController = {workspaceId: string; target: Target; instanceId: string; root: HTMLElement; nodes: Map<string, HTMLElement>;
   elements: import('./composer.ts').ComposerElements; composer: Composer; transcript: Transcript; sessionBar?: SessionStateBar; liveStrip?: AgentLiveStrip; inspection?: AgentInspection; readingGeometry?: ReturnType<Transcript['captureGeometry']>; saved?: TargetState; geometry?: ReturnType<Transcript['captureGeometry']>; messageRetention?: object;
-  abort: AbortController; historyAbort: AbortController; cursor: string | null; before: number | null; loading: boolean; preparing: boolean; passive?: boolean; historyReading?: TargetState['reading']; historyReady: boolean; historyBoundaryLoaded: boolean; historyComplete?: boolean; historyError?: {code?: string; message: string}; hasEntries?: boolean; initialized: boolean; showThinking: boolean; historyWork?: Promise<void>; preparationWork?:Promise<void>; connectionError?: string; connection?: Pick<import('../shared/api.ts').TargetPreparation, 'availability' | 'capabilities' | 'reason'> & {stale?: true}; refreshing?: boolean; resizer?: Resizer; fillingEarlier?: boolean};
+  abort: AbortController; historyAbort: AbortController; cursor: string | null; before: number | null; loading: boolean; preparing: boolean; passive?: boolean; historyReading?: TargetState['reading']; historyReady: boolean; historyBoundaryLoaded: boolean; historyComplete?: boolean; historyError?: {code?: string; message: string}; hasEntries?: boolean; initialized: boolean; showThinking: boolean; historyWork?: Promise<void>; preparationWork?:Promise<void>; connectionError?: string; connection?: Pick<import('../shared/api.ts').TargetPreparation, 'availability' | 'capabilities' | 'reason'> & {stale?: true}; refreshing?: boolean; resizer?: Resizer; height?:ComposerHeight; fillingEarlier?: boolean};
 const controllers = new Map<string, ConversationController>();
 let primaryDraftSelection: PrimaryDraftSelection|undefined;
 const primaryDraftActions: PrimaryDraftActions = {reason: primaryDraftReason, append: (source, text) => {void appendPrimarySource(source,text).catch(error=>announce(errorMessage(error)));}};
@@ -482,7 +485,6 @@ const tabStrip = new TabStrip({layout: currentLayout, reopen: () => workspaceEnt
   unread: tab => { const target = controllerTarget(tab), workspace = state.workspace?.id; return target && workspace ? controllers.get(controllerKey(workspace, target))?.transcript.unread ?? 0 : 0; },
   draft: tab => { const target = controllerTarget(tab), workspace = state.workspace?.id; if (!target || !workspace) return false; const index = [...state.targetIndex.values()].find(item => sameTarget(item.target, target)), saved = targetState(target); return controllers.get(controllerKey(workspace, target))?.composer.retained(workspace, target, index) ?? (!!index?.hasDraft || (!!saved && draftHasContent(saved.draft))); },
   identity: tab => tab.kind !== 'file' && tab.kind !== 'session' ? tabPresentation(tab).identityTail ?? '' : undefined,
-  section: {collapsed: () => sidebarSections.tabs, toggle: () => setSidebarSection('tabs', !sidebarSections.tabs)},
   status: tab => { if(tab.kind==='session'){const word=state.workspace?sessionTabReaders.get(`${state.workspace.id}\n${tabKey(tab)}`)?.viewState().word:undefined;return {label:word?`${word.charAt(0).toUpperCase()}${word.slice(1)}`:'',glyph:'',tone:'secondary',word};} if (tab.kind === 'file') {const owner = state.workspace && filesViews.owner(state.workspace.id,tab);return {label:owner?.modified ? 'Modified' : '',glyph:owner?.modified ? '•' : '',tone:owner?.modified ? 'warning' : 'secondary'};}const view = tabPresentation(tab), attention = attentionFor(controllerTarget(tab)); return {label: [attention?.label, view.activity, view.tool?.name].filter(Boolean).join(' · '), rowLabel: attention?.label ?? view.activity, glyph: presentationGlyph(view), tone:view.tone, attention, word:tab.kind==='primary'?primarySessionState(primary()).word:undefined}; },
   overflow: (overflow, pane) => { const region = paneRegions.get(pane); if (region) region.menu.dataset.overflow = String(overflow); }},
   {panes: () => [...paneRegions].map(([id, pane]) => ({id, tabs: pane.tabs, controls: [...controllers.values()].find(owner => stableViews().slot(owner.root) === pane.content)?.root.id ?? pane.content.id})), conversations: byId('sidebar-conversations')});
@@ -505,7 +507,7 @@ function fileDocumentRoute(workspace:string,tab:FileTab,kind:'draft'|'text'):str
 export const filesTree = new FilesTree(byId('files-tree'),{
   choose:()=>picker.openProject(byId('project-button')),
   page:(rootId,path,cursor)=> {const workspace = state.workspace?.id;if (!workspace) return Promise.reject(new Error('No workspace is selected.'));return request<FileDirectoryPage>(`/api/files/roots/${encodeURIComponent(rootId)}/directory?path=${encodeURIComponent(path)}&workspace=${encodeURIComponent(workspace)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);},
-  select:chooseFile,keep:(rootId,path)=>fileBrowse.keep(tabKey({kind:'file',rootId,path})),addToMessage:addFileToMessage,escape:focusEditor,scope:()=>{renderSectionCounts();return watchFiles();},status:message=> {fileActionStatus = message;renderWorkbenchStatus();},operation:fileTreeOperation});
+  select:chooseFile,keep:(rootId,path)=>fileBrowse.keep(tabKey({kind:'file',rootId,path})),addToMessage:addFileToMessage,escape:focusEditor,scope:()=>{renderSidebarMetadata();return watchFiles();},status:message=> {fileActionStatus = message;renderWorkbenchStatus();},operation:fileTreeOperation});
 export const fileRoot = new FileRootChoice({get:workspace=>request<FileRootSelection>(`/api/workspaces/${encodeURIComponent(workspace)}/files/root`),put:(workspace,path,revision)=>request<FileRootSelection>(`/api/workspaces/${encodeURIComponent(workspace)}/files/root`,'PUT',{path,expectedRevision:revision})},()=> {if(toolFilePane&&!toolFileCurrent(toolFilePane))closeToolFile();renderFiles();renderIdentity();for (const controller of controllers.values()) controller.transcript.refreshReferences();});
 type ToolFilePane = {context:string;rootId:string;stamp:string;id:string;focus:string;layout:ConversationLayout};
 let toolFilePane:ToolFilePane|undefined;
@@ -882,14 +884,30 @@ export function tabSize(key: string, min: number, max: number): number | undefin
 export function storeTabSize(key: string, value: number | undefined): void {
   try { if (value === undefined) sessionStorage.removeItem(key); else sessionStorage.setItem(key, String(value)); } catch { /* The current tab retains its in-memory size. */ }
 }
+function composerHeight(controller:ConversationController):ComposerHeight {
+  if(controller.height)return controller.height;
+  const composer=controller.composer,base=`ui:pane:${controller.workspaceId}:${targetIdentity(controller.target)}:composer`,key=`${base}-min`;
+  storeTabSize(base,undefined);const cap=phoneScreen()?Math.max(80,Math.round(window.innerHeight*0.35)):640,stored=tabSize(key,40,640);
+  let preferred=stored===undefined?undefined:Math.min(stored,cap);composer.setManualHeight(preferred);
+  return controller.height={min:40,max:cap,defaultValue:Math.min(144,cap),manual:()=>preferred!==undefined,
+    read:()=>preferred??composer.editor.offsetHeight,write:value=>composer.setManualHeight(value),commit:value=>{preferred=value;storeTabSize(key,value);},
+    reset:()=>{preferred=undefined;storeTabSize(key,undefined);composer.setManualHeight(undefined);}};
+}
 function composerResizer(controller: ConversationController): Resizer {
-  const composer = controller.composer, base = `ui:pane:${controller.workspaceId}:${targetIdentity(controller.target)}:composer`, key = `${base}-min`;
-  // The bare key held heights stored by every plain press on the handle, which show no intent; it is removed unread.
-  storeTabSize(base, undefined); const cap = phoneScreen() ? Math.max(80, Math.round(window.innerHeight * 0.35)) : 640, stored = tabSize(key, 40, 640);
-  let preferred = stored === undefined ? undefined : Math.min(stored, cap); composer.setManualHeight(preferred);
-  return createResizer({handle: controllerNode(controller, 'composer-resizer'), axis: 'y', direction: -1, min: 40, max: cap, defaultValue: Math.min(144, cap), dragThreshold: 4, applyInitial: preferred !== undefined,
-    read: () => preferred ?? composer.editor.offsetHeight, write: value => composer.setManualHeight(value), onCommit: value => {preferred = value; storeTabSize(key, value);},
-    onReset: () => {preferred = undefined; storeTabSize(key, undefined); composer.setManualHeight(undefined);}});
+  const size=composerHeight(controller);
+  return createResizer({handle:controllerNode(controller,'composer-resizer'),axis:'y',direction:-1,min:size.min,max:size.max,defaultValue:size.defaultValue,dragThreshold:4,applyInitial:size.manual(),read:size.read,write:size.write,onCommit:size.commit,onReset:size.reset});
+}
+function composerSizeEditable(controller:ConversationController):boolean {
+  return controller.workspaceId===state.workspace?.id&&!controller.abort.signal.aborted&&!!controller.composer.state&&!controller.composer.editor.disabled&&!controller.composer.editor.readOnly&&!controller.elements.root.hidden;
+}
+function messageBoxSize(controller:ConversationController):void {
+  if(!composerSizeEditable(controller))return;
+  const size=composerHeight(controller),group=element('div','message-box-size'),label=element('label',undefined,'Message box height'),range=element('input','message-box-size-range'),ends=element('div','message-box-size-ends');
+  range.type='range';range.id='message-box-height';range.min=String(size.min);range.max=String(size.max);range.step='1';range.value=String(Math.max(size.min,Math.min(size.max,Math.round(size.read()))));label.htmlFor=range.id;
+  ends.append(element('span',undefined,'Shorter'),element('span',undefined,'Taller'));group.append(label,range,ends);
+  const body=modal.open('Message box size'),token=modal.token,current=()=>modal.owns(token)&&composerSizeEditable(controller);
+  range.addEventListener('input',()=>{if(current()){const value=Number(range.value);size.write(value);size.commit(value);}else range.disabled=true;});
+  body.append(group);modal.actions(button('Automatic height',()=>{if(current()){size.reset();range.value=String(Math.max(size.min,Math.min(size.max,Math.round(size.read()))));}else range.disabled=true;}));range.focus();
 }
 function refreshPaneSizes(): void {
   const workspace = state.workspace; if (!workspace) return;
@@ -900,8 +918,8 @@ function refreshPaneSizes(): void {
     const panelKey = `ui:pane:${workspace.id}:message-panel`;
     let panelHeight = tabSize(panelKey, 160, 640) ?? 320;
     paneResizers = [
-      createResizer({handle: byId('sidebar-resizer'), axis: 'x', min: 200, max: 480, defaultValue: 280,
-        read: () => state.workspace?.sidebarWidth ?? 280,
+      createResizer({handle: byId('sidebar-resizer'), axis: 'x', min: 200, max: 480, defaultValue: 288,
+        read: () => state.workspace?.sidebarWidth ?? 288,
         write: value => app.style.setProperty('--sidebar-width', `${value}px`),
         onCommit: value => {void selectionQueue.select({sidebarWidth: value}).catch(showError);}}),
 
@@ -914,46 +932,9 @@ function refreshPaneSizes(): void {
   paneResizers[0]?.refresh();
 }
 
-let sidebarSectionWorkspace = '';
-const sidebarSections = {tabs:false,agents:false,files:false};
-function sidebarSectionKey(section: 'tabs' | 'agents' | 'files'): string { return `ui:sections:${state.workspace?.id ?? ''}:${section}`; }
-export function renderSidebarSections(): void {
-  const workspace = state.workspace?.id ?? '';
-  if (sidebarSectionWorkspace !== workspace) {
-    sidebarSectionWorkspace = workspace;
-    for (const section of ['tabs','agents','files'] as const) { try {const saved = sessionStorage.getItem(sidebarSectionKey(section));sidebarSections[section] = saved === null ? false : saved !== 'false';} catch {sidebarSections[section] = false;} }
-  }
-  for (const section of ['tabs','agents','files'] as const) {
-    const roots = {tabs:'sidebar-conversations', agents:'roster-section', files:'files-section'};
-    byId(roots[section]).dataset.collapsed = String(sidebarSections[section]);
-    byId(`${section}-heading`).setAttribute('aria-expanded', String(!sidebarSections[section]));
-    byId(`${section}-section-body`).hidden = sidebarSections[section];
-  }
-  renderSectionCounts();
-}
-/** Agent headings count attention before work; file totals appear only above a closed tree. */
-export function renderSectionCounts(): void {
-  const files = filesTree.rootCount(), agents = state.rosterOrder.flatMap(identity => {
-    const row = state.roster.get(identity); if (!row) return [];
-    const status = rosterStatus(row); return status.attention || rosterWorking(row,status) || row.handle ? [row] : [];
-  });
-  byId('agents-heading').title = savedRosterLabel(state.rosterMeta);
-  const labels = {files: files ? `${files.count}${files.more ? '+' : ''}` : '', agents: agents.length ? String(Math.min(8,agents.length)) : ''};
-  const heading = byId('files-heading'), folder = projectPath();
-  const titleNode = [...heading.childNodes].find(node=>node.nodeType===Node.TEXT_NODE);
-  if (titleNode) titleNode.textContent = folder ? `FILES · ${folder.split('/').filter(Boolean).at(-1) ?? folder}` : 'FILES';
-  heading.title = folder ?? 'Files';
+function renderSidebarMetadata(): void {
   byId('files-refresh').title=['Refresh files',filesTree.diagnostics()].filter(Boolean).join('\n');
   renderUsefulSidebar();
-  for (const section of ['files', 'agents'] as const) {
-    const count = byId(`${section}-count`); setText(count, labels[section]); count.hidden = !labels[section] || section === 'files' && !sidebarSections.files;
-  }
-}
-export function setSidebarSection(section: 'tabs' | 'agents' | 'files', collapsed: boolean): void {
-  renderSidebarSections(); const wasCollapsed = sidebarSections[section]; sidebarSections[section] = collapsed;
-  try { sessionStorage.setItem(sidebarSectionKey(section), String(collapsed)); } catch { /* The current tab retains its in-memory section state. */ }
-  renderSidebarSections(); tabStrip.render(); roster.schedule();
-  if (section === 'agents' && wasCollapsed && !collapsed) refreshStaleRoster();
 }
 let refreshedRosterObservation = '';
 function refreshStaleRoster(): void {
@@ -1171,11 +1152,19 @@ function renderFileWorkbenchStatus(tab:FileTab):void {
   if (fileWatch.detail && !fileActionStatus && !owner?.status) {const activity = byId('workbench-activity');activity.title = `${activity.title}\n${fileWatch.detail}`;}
   const slot = byId('focused-composer-status');slot.replaceChildren();
   if (owner?.conflict) {const controls = element('span','file-status-actions');controls.append(button('Re-read file',()=> {void owner.reread();}),button('Keep editing',()=>focusEditor()));slot.append(controls);}
+  if(state.workspace) {
+    const view=filesViews.view(state.workspace,tab);let feedback=view.root.querySelector<HTMLElement>('.file-feedback');
+    if(!feedback){feedback=element('div','exception file-feedback');feedback.setAttribute('role','status');view.root.prepend(feedback);}
+    const problem=[owner&&(owner.error||owner.draftError||owner.conflict||owner.encoding?.writable===false)?owner.status:'',fileActionStatus.startsWith('File action not confirmed.')?fileActionStatus:'',fileWatch.status].filter(Boolean).join(' ');
+    feedback.hidden=!problem;feedback.title=fileWatch.detail;feedback.replaceChildren(...(problem?[element('p',undefined,problem)]:[]));
+    if(fileWatch.status)feedback.append(button('Refresh files',refreshFiles));
+    if(owner?.conflict)feedback.append(button('Re-read file',()=>{void owner.reread();}),button('Keep editing',()=>focusEditor()));
+  }
   setSkipLink('files','#files-tree');
 }
 function renderIdentity(): void {
   renderWorkbenchStatus();
-  const view = activePresentation(); const project = projectIdentity({cwd:projectPath()}, launchCwd, picker.projectPaths());
+  const project = projectIdentity({cwd:projectPath()}, launchCwd, picker.projectPaths());
   for (const prefix of ['']) {
     const name = byId(`${prefix}project-name`), control = byId(`${prefix}project-button`);
     setText(name, project.name); name.title = project.path ?? 'No working folder selected';
@@ -1183,7 +1172,8 @@ function renderIdentity(): void {
     control.setAttribute('aria-label', 'Choose working folder');
     control.setAttribute('aria-description', project.path ?? 'No working folder selected');
   }
-  document.title = view.activity ? `Pi · ${presentationName(view)} · ${view.activity}` : `Pi · ${project.name}`;
+  const tab=activeTab(currentLayout()),activity=activePresentation().activity;
+  document.title=tab?`Pi · ${humanTabTitle(tab)}${activity&&activity!=='Ready'?` · ${activity}`:''}`:'Pi';renderConversationHeader(toolFileLayout());
   for (const controller of controllers.values()) {
     const view=presentation(controller.target);renderObserved(controller,connected || !view.activity);renderAgentLiveStrip(controller,view);
   }
@@ -1747,6 +1737,7 @@ function applyShellEvent(event:ReceivedEvent):void {
       picker.writersChanged();const {released}=event.envelope.data as EventData['sessions.writers'];
       sessionReader.refreshWriter(released);for(const reader of sessionTabReaders.values())reader.refreshWriter(released);break;
     }
+    case 'sessions.metadata': sessionSidebar.applyMetadata(event.envelope.data as EventData['sessions.metadata']);refreshArchivedSessions();break;
     case 'draft.changed': updateDraft(event.envelope.data as EventData['draft.changed']);break;
     case 'operation.changed': showOperation(event.envelope.data as OperationView);break;
     case 'notice': {const notice = event.envelope.data as EventData['notice'];if (notice.code?.startsWith('control_')) {controlStatus = notice.message;controlStatusWorkspace = state.workspace?.id;renderWorkbenchStatus();}noticesBadge();break;}
@@ -1779,7 +1770,7 @@ function renderObservedAgent(data: EventData['agent.frame'], receivedAt?: number
   const target = {kind: 'agent' as const, identity: data.identity}; const controller = state.workspace ? controllers.get(controllerKey(state.workspace.id, target)) : undefined;
   const conversation = state.conversations.get(targetIdentity(target)); if (conversation?.connectionEpoch !== data.connectionEpoch || conversation.frame?.revision !== data.frame.revision || (conversation.frame.attachmentRevision ?? 0) !== (data.frame.attachmentRevision ?? 0)) return;
   if (controller) renderController(controller, true, receivedAt);
-  tabStrip.render(); renderIdentity(); roster.schedule(); renderSectionCounts();
+  tabStrip.render(); renderIdentity(); roster.schedule(); renderSidebarMetadata();
   if (footerController?.target.kind === 'agent' && footerController.target.identity === data.identity) renderAgentSettings(presentation(target), target);
 }
 function awaitingAnswer(target: Target): boolean { return sameTarget(target, primaryTarget()) && extensionDialogs.awaiting(); }
@@ -1817,15 +1808,44 @@ export function renderNavigation(): void {
   byId('sidebar').hidden = !visible;
   byId('sidebar-show').hidden = false; byId('navigation-access').hidden = false;
   renderWorkspaceAccess();
-  byId('sidebar-show').setAttribute('aria-expanded', String(visible));
+  const toggle=byId('sidebar-show');toggle.setAttribute('aria-expanded',String(visible));
+  toggle.setAttribute('aria-label',visible?'Hide sidebar':'Show sidebar');toggle.title=visible?'Hide sidebar':'Show sidebar';
+  const drawer=narrow&&drawerOpen;byId('sidebar-scrim').hidden=!drawer;
+  const sidebar=byId('sidebar');if(drawer){sidebar.setAttribute('role','dialog');sidebar.setAttribute('aria-modal','true');}else{sidebar.removeAttribute('role');sidebar.removeAttribute('aria-modal');}
   if (drawerClosed && !visible && byId('sidebar').contains(document.activeElement)) byId('sidebar-show').focus({preventScroll: true});
   const layout = toolFileLayout(); const tab = activeTab(layout);
   renderPaneTree(layout); renderSessionEntry(!!tab); byId('conversation-panes').hidden = !hasConversation() && !threadPane && !sessionReadPane;
   tabStrip.render();refreshSessionStates(); renderIdentity();
   byId('primary-row').hidden = !primary() || paneLeaves(layout.root).some(pane => pane.tabs.some(tab => tab.kind === 'primary'));
   byId('primary-section-body').hidden = false;
-  byId('primary-row').setAttribute('aria-label', 'Return to Primary'); byId('primary-row').setAttribute('aria-current', agentSelected ? 'false' : 'page');
-  renderSidebarSections();renderFiles(); renderConnection(); navigationViews.render(); renderConversationHeader(layout);
+  byId('primary-row').setAttribute('aria-label',humanTabTitle({kind:'primary'})); byId('primary-row').setAttribute('aria-current', agentSelected ? 'false' : 'page');
+  renderSidebarMetadata();renderFiles(); renderConnection(); navigationViews.render(); renderConversationHeader(layout);
+  byId('navigation-title').title = navigationViews.view === 'files' ? projectPath() ?? 'Files' : navigationViews.view === 'agents' ? roster.diagnostics() : '';
+  if (navigationViews.view === 'settings') renderSettingsChoices();
+  syncDrawerBackground();
+}
+function syncDrawerBackground():void {
+  const drawer=drawerOpen&&!matchMedia(persistentSidebarQuery).matches;
+  for(const node of [...byId('workspace').children] as HTMLElement[])if(node.id!=='conversation-panes')node.inert=drawer;
+  for(const node of byId('conversation-panes').querySelectorAll<HTMLElement>('.tab-bar,.resizer'))node.inert=drawer;
+  if(workspaceViews)for(const root of [...workspaceViews.host.children] as HTMLElement[]) {
+    for(const child of [...root.children] as HTMLElement[]) {
+      const projected=child.matches('.composer[data-message-panel=true]')&&!!workspaceViews.slot(child)?.closest('#sidebar');
+      child.inert=child.hidden||drawer&&!projected;
+    }
+  }
+}
+function drawerOwns(node:HTMLElement):boolean {return byId('sidebar').contains(node)||!!workspaceViews?.slot(node)?.closest('#sidebar');}
+function drawerFocusGuard(event:FocusEvent):void {
+  if(!drawerOpen||matchMedia(persistentSidebarQuery).matches||modal.openNow||contextMenu.openNow)return;
+  const target=event.target as HTMLElement|null;if(target&&!drawerOwns(target))byId('sidebar-close').focus({preventScroll:true});
+}
+function drawerTab(event:KeyboardEvent):boolean {
+  if(event.key!=='Tab'||!drawerOpen||matchMedia(persistentSidebarQuery).matches||modal.openNow||contextMenu.openNow)return false;
+  const selector='button,input,textarea,select,a[href],summary,[tabindex]';
+  const controls=[...byId('sidebar').querySelectorAll<HTMLElement>(selector),...[...controllers.values()].flatMap(owner=>owner.elements.root.dataset.messagePanel==='true'?[...owner.elements.root.querySelectorAll<HTMLElement>(selector)]:[])].filter(node=>node.tabIndex>=0&&!(node as HTMLButtonElement).disabled&&!node.closest('[hidden],[inert]'));
+  const current=controls.indexOf(document.activeElement as HTMLElement),next=event.shiftKey?(current<=0?controls.length-1:current-1):(current+1)%controls.length;
+  event.preventDefault();(controls[next]??byId('sidebar-close')).focus({preventScroll:true});return true;
 }
 function refreshSessionStates():void {if(sessionReadPane)sessionReader.refreshState();for(const reader of sessionTabReaders.values())reader.refreshState();}
 function renderWorkspaceAccess(): void {
@@ -1838,8 +1858,8 @@ function renderWorkspaceAccess(): void {
 function renderConversationHeader(layout: ConversationLayout): void {
   const tab = activeTab(layout);
   const title = threadPane?.paneId === layout.focusedPane ? threadReader.active?.title || 'Thread'
-    : sessionReadPane?.id === layout.focusedPane ? sessionReader.saved?.title || 'Session'
-    : tab ? tabLabel(tab) : 'Pi';
+    : sessionReadPane?.id === layout.focusedPane ? humanSessionTitle([sessionSidebar.metadataFor([`path:${sessionReader.saved?.path??sessionReadPane.returnKey}`,`primary:${sessionReadPane.returnKey}`])?.name,sessionReader.saved?sessionCaptionRecord(sessionReader.saved).name:undefined,state.primaries.get(sessionReadPane.returnKey)?.sessionName],!!state.primaries.get(sessionReadPane.returnKey)&&!state.primaries.get(sessionReadPane.returnKey)?.sessionFile)
+    : tab ? humanTabTitle(tab) : 'Pi';
   setText(byId('conversation-title'), title); byId('conversation-title').title = title;
   byId('workspace').dataset.singleConversation = 'true';
   for (const pane of paneRegions.values()) {const bar=pane.tabs.parentElement;if(bar)bar.hidden=true;}
@@ -1847,11 +1867,12 @@ function renderConversationHeader(layout: ConversationLayout): void {
 }
 export function showNavigationView(view: NavigationView): void {
   navigationViews.show(view);
-  if (view === 'agents') {setSidebarSection('agents', false); refreshStaleRoster();}
-  if (view === 'files') setSidebarSection('files', false);
-  if (view === 'threads') threadExplorer.expand();
+  if (view === 'agents') refreshStaleRoster();
+  if (view === 'threads') threadExplorer.loadIfNeeded();
   if (view === 'settings') renderSettingsChoices();
-  navigationViews.render(); roster.schedule();
+  navigationViews.render();
+  byId('navigation-title').title = view === 'files' ? projectPath() ?? 'Files' : view === 'agents' ? roster.diagnostics() : '';
+  roster.schedule();
 }
 function navigationTools(): void {
   const trigger = byId('tools-button'), box = trigger.getBoundingClientRect();
@@ -1861,11 +1882,69 @@ function navigationTools(): void {
   items.push({label:'Notices', run: notices}, {label:'Commands', run: () => actions.palette()});
   contextMenu.open(trigger, {x:box.left,y:box.top}, 'Tools', items);
 }
+function showInterfaceUpdates():void {
+  const nodes=[releaseNotice.node,...byId('workbench-status').querySelectorAll<HTMLElement>('.workbench-update')];
+  const body=modal.open('Interface updates',undefined,()=>{for(const node of nodes)byId('workbench-status').insertBefore(node,versionStatus.node);});
+  body.append(element('p','secondary','Automatic updates retain your drafts. Available update actions appear here.'),...nodes);
+}
 function renderSettingsChoices(): void {
   const names = new Set(['Appearance','Message input','Keyboard shortcuts','Agent presentation control','Workspaces','Archived workspaces','Saved drafts and messages','Help']);
-  byId('settings-choices').replaceChildren(...actions.paletteEntries().filter(item => item.source === 'app' && names.has(item.name)).map(item => {
-    const node = button(item.name, () => item.run(), 'nav-row'); node.title = item.description; return node;
-  }));
+  const host = byId('settings-choices');
+  const existing = new Map([...host.querySelectorAll<HTMLButtonElement>('button')].map(node => [node.dataset.setting, node]));
+  const entries:PaletteEntry[]=[...actions.paletteEntries().filter(item => item.source === 'app' && names.has(item.name)),
+    {name:'Archived sessions',description:'Open retained archived sessions',source:'app',enabled:true,run:openArchivedSessions},
+    {name:'Version and health',description:'Inspect this interface and its services',source:'app',enabled:true,run:()=>healthStatus.open()},
+    {name:'Interface updates',description:'Inspect automatic updates and their recovery actions',source:'app',enabled:true,run:showInterfaceUpdates},
+    ...(filesViews.retained().length?[{name:'Retained file drafts',description:'Review retained file text',source:'app' as const,enabled:true,run:reviewRetainedDrafts}]:[])];
+  const nodes = entries.map(item => {
+    const node = existing.get(item.name) ?? button('', () => {
+      if(item.name==='Version and health'){healthStatus.open();return;}
+      if(item.name==='Interface updates'){showInterfaceUpdates();return;}
+      if(item.name==='Archived sessions'){openArchivedSessions();return;}
+      if(item.name==='Retained file drafts'){reviewRetainedDrafts();return;}
+      const current = actions.paletteEntries().find(entry => entry.source === 'app' && entry.name === item.name);
+      if (current?.enabled) current.run();
+    }, 'nav-row');
+    node.dataset.setting = item.name;
+    node.title = item.disabledReason ?? item.description; node.disabled = !item.enabled;
+    node.setAttribute('aria-disabled', String(!item.enabled)); node.setAttribute('aria-label', item.name);
+    setText(node, item.name);
+    if (item.checked !== undefined) {
+      node.setAttribute('aria-pressed', String(item.checked));
+      node.append(element('span', 'settings-choice-state', item.checked ? 'On' : 'Off'));
+    } else node.removeAttribute('aria-pressed');
+    return node;
+  });
+  nodes.forEach((node, index) => {if (host.children[index] !== node) host.insertBefore(node, host.children[index] ?? null);});
+  for (const node of [...host.children]) if (!nodes.includes(node as HTMLButtonElement)) node.remove();
+}
+function showConversationDetails(target?:Target):void {
+  const workspace=state.workspace?.id,tab=activeTab(currentLayout());
+  if(target?.kind==='primary')actions.sessionDetails(state.primaries.get(target.key));
+  else if(target?.kind==='agent')actions.conversationDetails(target.identity);
+  else modal.open('Conversation details');
+  const body=modal.body;
+  if(target) {
+    const conversation=state.conversations.get(targetIdentity(target)),item=target.kind==='primary'?state.primaries.get(target.key):undefined;
+    const usage=usageFacts(item,conversation?conversationBlocks(conversation):[]),view=presentation(target);
+    body.append(element('h3',undefined,'Usage'),...usageNodes(usage,false));
+    if(target.kind==='agent')body.append(element('p','secondary','Loaded finalised messages only. Earlier and omitted usage is not included.'));
+    const settings=settingsLabel(view,true);if(settings)body.append(element('p',undefined,settings));
+    const records=targetReceipts(state.operations.values(),target);if(records.length)body.append(details('Delivery details',rawText(records)));
+    const owner=workspace?controllers.get(controllerKey(workspace,target)):undefined;
+    if(owner?.elements.save.textContent)body.append(element('p','secondary',owner.elements.save.textContent));
+    if(item?.sessionFile&&primarySessionState(item).word==='closed')body.append(button('Resume session',()=>{if(workspace===state.workspace?.id&&state.primaries.get(item.key)?.epoch===item.epoch)resumeTabSource({primary:item});}));
+  } else if(tab?.kind==='session') {
+    const saved=activeSessionReader()?.saved??sessionTabSaved(tab);body.append(details('Saved session',rawText(saved)));
+    body.append(button('Resume session',()=>{if(workspace===state.workspace?.id)resumeTabSource({saved});}));
+  } else if(tab?.kind==='file'&&state.workspace) {
+    const owner=filesViews.owner(state.workspace.id,tab);body.append(details('File',rawText(tab)));
+    if(owner?.status)body.append(element('p',undefined,owner.status));
+    if(owner?.conflict)body.append(button('Re-read file',()=>{if(workspace===state.workspace?.id)void owner.reread();}),button('Keep editing',()=>{modal.close();focusEditor();}));
+  }
+  if(controlStatus&&controlStatusWorkspace===workspace)body.append(element('p','secondary',controlStatus));
+  if(filesViews.retained().length)body.append(button('Review retained file drafts',reviewRetainedDrafts));
+  body.append(button('Saved drafts and messages',()=>recovery.open()));
 }
 function mainConversationActions(): void {
   const tab = activeTab(currentLayout()), trigger = byId('conversation-actions');
@@ -1881,7 +1960,10 @@ function renderSessionEntry(hasTab: boolean): void {
 function focusEditor(): void {if(sessionReadPane){sessionReader.focus();return;}if(threadPane?.paneId===currentLayout().focusedPane){threadReader.focus();return;}const savedReader=activeSessionReader();if(savedReader){savedReader.focus();return;}const selected=layoutTarget(currentLayout(),primaryTarget());const owner=selected&&state.workspace?controllers.get(controllerKey(state.workspace.id,selected)):undefined;if(owner&&threadHost===owner){threadReader.focus();return;}if(owner?.inspection?.active){owner.inspection.scroller.focus({preventScroll:true});return;}const tab = activeTab(currentLayout());if (tab?.kind === 'file' && state.workspace) {filesViews.view(state.workspace,tab).focus();return;}const target = layoutTarget(currentLayout(), primaryTarget()); if (target) conversationController(target).composer.focus(); }
 export function toggleSidebar(visible: boolean): void {
   if (!matchMedia(persistentSidebarQuery).matches) {
-    drawerOpen = visible; renderNavigation(); roster.schedule(); byId(visible ? 'sidebar-close' : 'sidebar-show').focus(); return;
+    if(visible&&!drawerOpen){const active=document.activeElement;drawerReturnFocus=active instanceof HTMLElement&&!byId('sidebar').contains(active)?active:byId('sidebar-show');}
+    drawerOpen = visible; renderNavigation(); roster.schedule();
+    const restore=drawerReturnFocus; if(!visible)drawerReturnFocus=undefined;
+    (visible?byId('sidebar-close'):restore?.isConnected&&!restore.closest('[hidden],[inert]')?restore:byId('sidebar-show')).focus({preventScroll:true});return;
   }
   const applied = selection({sidebarVisible: visible});
   byId(visible ? 'sidebar-close' : 'sidebar-show').focus();
@@ -2081,7 +2163,7 @@ function controllerPreparationFailed(controller: ConversationController, error: 
   else if (!targetState(controller.target)) showStatusError(controllerNode(controller, 'view-notice'), 'Conversation could not be prepared.', error, 'preparation-error');
 }
 export function primaryChrome(item?: PrimaryView): void {
-  tabStrip.render();
+  renderUsefulSidebar();tabStrip.render();
   renderIdentity();
   primaryNavigation(item);
   renderTabActions();
@@ -2119,13 +2201,11 @@ function renderComposerFolder(id: 'primary-folder' | 'agent-folder', folder: Ret
 }
 export function renderTabActions(): void { for (const pane of paneRegions.values()) pane.plus.disabled = false; }
 export function openTabActions(pane: Pane = focusedPane): void { openPaneMenu(pane); }
-function primaryState(item: PrimaryView): string { return presentation({kind: 'primary', key: item.key, epoch: item.epoch}).activity; }
 function primaryNavigation(item?: PrimaryView): void {
-  const view = presentation(item ? {kind: 'primary', key: item.key, epoch: item.epoch} : undefined);
-  setText(byId('primary-row-title'), item ? view.name : 'no session');
-  const detail = item ? [view.name, item.sessionId ? `Session ID: ${item.sessionId}` : '', view.nameDetail].filter(Boolean).join('\n') : 'No session';
-  const row = byId('primary-row'); row.title = detail; row.setAttribute('aria-description', detail);
-  setText(byId('primary-row-meta'), item && view.activity !== 'Ready' ? primaryState(item) : '');
+  const name=item?humanTabTitle({kind:'primary'}):'New session';
+  setText(byId('primary-row-title'),name);
+  const row = byId('primary-row'); row.title=name;row.setAttribute('aria-label',name);row.removeAttribute('aria-description');
+  const meta=byId('primary-row-meta');setText(meta,'');meta.hidden=true;
 }
 function primaryActivity(item?: PrimaryView, target?: Target): void {
   const conversation = target ? state.conversations.get(targetIdentity(target)) : undefined;
@@ -2151,7 +2231,7 @@ export function renderPrimaryQueue(queue?: EventData['primary.queue']): void {
 function renderRoster(): void {
   scheduleDesk();
   tabStrip.render(); renderIdentity();
-  renderSectionCounts();
+  renderSidebarMetadata();
   const focused = layoutTarget(currentLayout(), primaryTarget());
   roster.set(state.rosterOrder.flatMap(id => { const row = state.roster.get(id); return row ? [row] : []; }), state.rosterMeta, selectedAgent(), focused?.kind === 'agent' ? focused.identity : undefined);
   for (const identity of state.roster.keys()) renderMessageResume(identity);
@@ -2407,7 +2487,7 @@ function renderAvailability(): void {
     controllerNode(controller, 'stop').hidden = !canStopController(controller); renderControllerEmpty(controller); renderComposerSettings(controller,view);
   }
   if (!connected && messageTarget.current) {messageTarget.current.invalidated = true; messageTarget.current.preparing = false; messageTarget.current.error = 'The browser connection changed. Check the agent connection again.';}
-  if (messageTarget.current) renderMessagePanel(); renderIdentity(); tabStrip.render(); roster.schedule(); renderSectionCounts();
+  if (messageTarget.current) renderMessagePanel(); renderIdentity(); tabStrip.render(); roster.schedule(); renderSidebarMetadata();
 }
 export async function selectAgent(row: AgentRow): Promise<void> {
   leaveOverlayDesk();conversationController({kind: 'agent', identity: row.identity}).passive = false;
@@ -2964,26 +3044,107 @@ function closeSessionRead():void {
   const row=[...byId('recent-sessions').querySelectorAll<HTMLButtonElement>('button')].find(node=>node.dataset.sessionKey===key);(row??byId('session-open')).focus({preventScroll:true});
 }
 const communicationNotices = new CommunicationNoticeShelf();
-const sessionSidebar = new SessionSidebar({older:()=>workspaceEntry.count&&state.workspace?{count:workspaceEntry.count,run:()=>{if(state.workspace)applyLayout(workspaceEntry.reopen(state.workspace,primaryTarget()));}}:undefined,openTabs:recentConversationRows,caption:currentSenderCaption,updated:()=>{paintedCaptionReferenceKey='';refreshCaptionConsumers();},primaries:()=>[...state.primaries.values()],selected:()=>{const target=layoutTarget(currentLayout(),primaryTarget());return target?.kind==='primary'?target.key:undefined;},
+const sessionSidebar = new SessionSidebar({older:()=>workspaceEntry.count&&state.workspace?{count:workspaceEntry.count,run:()=>{if(state.workspace)applyLayout(workspaceEntry.reopen(state.workspace,primaryTarget()));}}:undefined,openTabs:recentConversationRows,menu:openSessionRowMenu,updated:()=>{paintedCaptionReferenceKey='';refreshCaptionConsumers();renderConversationHeader(toolFileLayout());primaryNavigation(primary());},primaries:()=>[...state.primaries.values()],selected:()=>{const target=layoutTarget(currentLayout(),primaryTarget());return target?.kind==='primary'?target.key:undefined;},
   openPrimary:(primary,saved)=>openSessionRead({primary,saved}),
   openSaved:saved=>openSessionRead({saved})});
-healthStatus.setSidebarDiagnostics(()=>[roster.diagnostics(),threadExplorer.diagnostics(),sessionSidebar.diagnostics(),filesTree.diagnostics()]);
+const sessionActionsPending=new Set<string>();
+let archivedPanel:{token:number;workspace:string}|undefined;
+function sessionMetadataTarget(item:SessionRow):SessionMetadataTarget|undefined {
+  return item.target??(item.saved?{kind:'session',id:item.saved.id,path:item.saved.path,project:item.saved.project}:undefined);
+}
+function sessionActionPending(item:SessionMetadata):boolean {return item.aliases.some(alias=>sessionActionsPending.has(alias));}
+async function changeSessionMetadata(item:SessionMetadata,action:'rename'|'archive'|'restore',name?:string,title?:string):Promise<void> {
+  if(sessionActionPending(item))throw new Error('A session action is already in progress.');
+  for(const alias of item.aliases)sessionActionsPending.add(alias);
+  try {
+    const result=await operation('session.metadata','/api/sessions/metadata',{target:item.target,action,...(name!==undefined?{name}:{}),...(title?{title:title.slice(0,240)}:{})});
+    showOperation(result);
+    if(result.state!=='completed'||result.receipt?.kind!=='rpc'||!result.receipt.result?.value)throw new Error(result.error?.message??'The session action did not complete. Read the session state before another action.');
+    sessionSidebar.applyMetadata(result.receipt.result.value as SessionMetadata);refreshArchivedSessions();
+  } finally {for(const alias of item.aliases)sessionActionsPending.delete(alias);}
+}
+function renameSession(item:SessionMetadata,title:string,archived:boolean,current:()=>boolean):void {
+  const body=modal.open('Rename session'),input=element('input'),label=element('label',undefined,'Session name');
+  input.id='session-rename-name';input.type='text';input.maxLength=240;input.value=item.name??title;label.htmlFor=input.id;body.append(label,input);
+  const save=button('Save',()=>{void modal.run(async()=>{if(!current())throw new Error('The session changed. Choose the session again.');await changeSessionMetadata(item,'rename',input.value.trim());if(archived)openArchivedSessions();});});
+  modal.actions(button('Cancel',()=>modal.close()),save);input.focus();input.select();
+}
+function openSessionRowMenu(item:SessionRow,origin:HTMLElement,known?:SessionMetadata):void {
+  const workspace=state.workspace?.id,target=known?.target??sessionMetadataTarget(item);if(!workspace||!target)return;
+  const captured=target.kind==='primary'?state.primaries.get(target.key):undefined;
+  const current=()=>workspace===state.workspace?.id&&(!captured||(()=>{const now=state.primaries.get(captured.key);return now?.epoch===captured.epoch&&now.sessionId===captured.sessionId&&now.sessionFile===captured.sessionFile;})());
+  const box=origin.getBoundingClientRect(),valid=()=>current()&&origin.isConnected;
+  contextMenu.open(origin,{x:box.right,y:box.bottom},`Actions for ${item.name}`,[{label:'Read session state',enabled:false,run:()=>{}}],valid);
+  void sessionSidebar.readMetadata(target).then(metadata=>{
+    if(!valid()||!contextMenu.owns(origin))return;
+    const pending=sessionActionPending(metadata),archived=metadata.archived,title=humanSessionTitle([metadata.name,item.name,metadata.title]);
+    const mutation=captured?.sessionId&&captured.sessionFile?{...metadata,target:{kind:'session' as const,id:captured.sessionId,path:captured.sessionFile,project:captured.cwd}}:metadata;
+    const action=archived?'restore':'archive',label=archived?'Restore':'Archive';
+    contextMenu.open(origin,{x:box.right,y:box.bottom},`Actions for ${title}`,[
+      {label:'Rename',enabled:metadata.canRename&&!pending,disabledReason:pending?'A session action is in progress.':metadata.reason,run:()=>renameSession(mutation,title,!!known,current)},
+      {label,enabled:(archived?metadata.canRestore:metadata.canArchive)&&!pending,disabledReason:pending?'A session action is in progress.':metadata.reason??'Session state unavailable.',run:()=>{
+        const rows=[...byId('recent-sessions').querySelectorAll<HTMLElement>('.sidebar-session-row')],index=rows.findIndex(row=>row.contains(origin));
+        void changeSessionMetadata(mutation,action,undefined,title).then(()=>{
+          if(known){refreshArchivedSessions();return;}
+          const next=byId('recent-sessions').querySelectorAll<HTMLButtonElement>('.sidebar-content-row');(next[Math.min(Math.max(0,index),next.length-1)]??byId('sessions-heading')).focus({preventScroll:true});
+        }).catch(showError);
+      }}],valid);
+  }).catch(error=>{if(valid()&&contextMenu.owns(origin))contextMenu.open(origin,{x:box.right,y:box.bottom},`Actions for ${item.name}`,[{label:'Session state unavailable',enabled:false,disabledReason:errorMessage(error),run:()=>{}}],valid);});
+}
+function openArchivedMetadata(item:SessionMetadata):void {
+  const target=item.target,name=humanSessionTitle([item.name,item.title]);
+  if(target.kind==='session'){openSessionTab({kind:'session',id:target.id,path:target.path,project:target.project,name});return;}
+  if(target.kind==='primary'){const current=state.primaries.get(target.key);if(current?.epoch===target.epoch)openSessionRead({primary:current});else announce('This session is unavailable.');return;}
+  const row=state.roster.get(target.identity);if(row){modal.close(false);void selectAgent(row).catch(showError);}else announce('This session is unavailable.');
+}
+function refreshArchivedSessions():void {
+  const panel=archivedPanel;if(!panel||!modal.owns(panel.token)||panel.workspace!==state.workspace?.id)return;
+  const active=document.activeElement,focused=modal.body.contains(active),index=[...modal.body.children].findIndex(node=>node.contains(active));
+  const items=sessionSidebar.archivedRecords(),nodes=items.map(item=>{
+    const name=humanSessionTitle([item.name,item.title]),row=element('div','sidebar-session-row'),open=button(name,()=>openArchivedMetadata(item),'nav-row sidebar-content-row');
+    const menu=cardAction('menu',`Actions for ${name}`,()=>openSessionRowMenu({key:item.aliases[0]??'',name,at:0,title:name},menu,item),'session-row-menu');menu.setAttribute('aria-haspopup','menu');menu.setAttribute('aria-expanded','false');row.append(open,menu);return row;
+  });
+  modal.body.replaceChildren(...(nodes.length?nodes:[element('p','secondary','No archived sessions.')]));
+  if(focused)(nodes[Math.min(Math.max(0,index),nodes.length-1)]?.querySelector<HTMLButtonElement>('.sidebar-content-row')??byId('modal-close')).focus({preventScroll:true});
+}
+function openArchivedSessions():void {
+  const workspace=state.workspace?.id;if(!workspace)return;
+  modal.open('Archived sessions').append(element('p','secondary','Read archived sessions…'));const token=modal.token;archivedPanel={token,workspace};
+  void sessionSidebar.archived().then(()=>refreshArchivedSessions()).catch(error=>{if(modal.owns(token))modal.error(error,'Archived sessions are unavailable.');});
+}
+healthStatus.setSidebarDiagnostics(()=>[roster.diagnostics(),threadExplorer.diagnostics(),sessionSidebar.diagnostics(),filesTree.diagnostics(),fileWatch.status,fileWatch.detail]);
 function recentTabIdentities(tab:ConversationTab):string[]{
   if(tab.kind==='session')return [`path:${tab.path}`,`id:${tab.id}`];
   if(tab.kind==='agent')return [`agent:${tab.identity}`];
   const item=primary(),identities=[`primary:${item?.key}`];
   if(item?.sessionFile)identities.push(`path:${item.sessionFile}`);if(item?.sessionId)identities.push(`id:${item.sessionId}`);return identities;
 }
-function recentTabState(tab:ConversationTab):string {
-  if(tab.kind==='session')return readSessionState(undefined,sessionTabSaved(tab),currentSnapshot()?.primaries).word??'';
-  const target=controllerTarget(tab),workspace=state.workspace?.id;if(!target||!workspace)return '';
-  const saved=targetState(target),controller=controllers.get(controllerKey(workspace,target)),index=[...state.targetIndex.values()].find(item=>sameTarget(item.target,target));
-  const draft=controller?.composer.retained(workspace,target,index)??(!!index?.hasDraft||!!saved&&draftHasContent(saved.draft)),unread=controller?.transcript.unread??0;
-  return [tabPresentation(tab).activity,draft?'Draft':'',unread?`${unread} new`:''].filter(Boolean).join(' · ');
+function loadedPromptTitle(target:Target):string|undefined {
+  const conversation=state.conversations.get(targetIdentity(target));
+  for(const entry of conversation?conversationBlocks(conversation):[]) {
+    const message=(entry.messages??[]).find(message=>message.role==='user'&&message.communication?.state!=='ready'&&message.communication?.state!=='unavailable'&&message.parts.some(part=>part.type==='text'&&part.text.trim()));
+    if(message)return message.parts.flatMap(part=>part.type==='text'?[part.text]:[]).join('\n');
+  }
+  return undefined;
 }
-function recentTabRow(tab:ConversationTab,pane:PaneLeaf,layout:ConversationLayout):import('./sidebar-useful.ts').SessionRow {
-  const key=tabKey(tab),title=tab.kind==='agent'?tab.identity:tab.kind==='session'?tab.path:primary()?.sessionFile??'';
-  return {key,identities:recentTabIdentities(tab),name:tabLabel(tab),at:0,state:recentTabState(tab),title,selected:pane.id===layout.focusedPane&&key===pane.active,activate:()=>activateConversationTab(pane.id,key)};
+function humanTabTitle(tab:ConversationTab):string {
+  if(tab.kind==='file')return tabLabel(tab);
+  const metadata=sessionSidebar.metadataFor(recentTabIdentities(tab));if(metadata?.name)return humanSessionTitle([metadata.name]);
+  if(tab.kind==='session') {
+    const saved=state.workspace?sessionTabReaders.get(`${state.workspace.id}\n${tabKey(tab)}`)?.saved:undefined;
+    return humanSessionTitle([saved?sessionCaptionRecord(saved).name:undefined,typeof tab.name==='string'?tab.name:undefined]);
+  }
+  const target=controllerTarget(tab);if(!target)return 'Untitled session';
+  if(target.kind==='primary') {
+    const item=state.primaries.get(target.key),saved=item?picker.savedSession(item):undefined;
+    return humanSessionTitle([item?.extension?.title,item?.sessionName,saved?sessionCaptionRecord(saved).name:undefined,loadedPromptTitle(target)],!!item&&!item.sessionFile);
+  }
+  const row=state.roster.get(target.identity)??identityNames.get(target.identity),frame=state.conversations.get(targetIdentity(target))?.frame;
+  return humanSessionTitle([frame?.status.name,row?.name,row?.firstMessage,loadedPromptTitle(target)]);
+}
+function recentTabRow(tab:ConversationTab,pane:PaneLeaf,layout:ConversationLayout):SessionRow {
+  const key=tabKey(tab),name=humanTabTitle(tab),target=controllerTarget(tab);
+  return {key,identities:recentTabIdentities(tab),name,at:0,title:name,...(target?{target}:{}),...(tab.kind==='session'?{saved:sessionTabSaved(tab)}:{}),selected:pane.id===layout.focusedPane&&key===pane.active,activate:()=>activateConversationTab(pane.id,key)};
 }
 function recentConversationRows(): import('./sidebar-useful.ts').SessionRow[] {
   const layout=currentLayout();
@@ -3212,16 +3373,17 @@ export function inspectAgent(identity = selectedAgent(), mode:'result'='result',
 function conversationMenuItems(target: Target): ContextItem[] {
   const controller = conversationController(target), shown = controller.showThinking;
   const local: Record<string, () => void> = {
-    ...(target.kind === 'primary' ? {'Conversation details': () => actions.sessionDetails(state.primaries.get(target.key))} : {}),
+    'Conversation details':()=>showConversationDetails(target),
     'Expand loaded tools': () => controller.transcript.expandLoaded(true, true),
     'Collapse loaded tools': () => controller.transcript.expandLoaded(true, false),
     'Show thinking': () => controller.transcript.expandLoaded(false, !shown),
     'Find text': () => actions.find(() => captureFind(controller)),
     'Jump to message…': () => actions.palette('messages',undefined,loadedMessageActions(controller.transcript)),
   };
-  return actions.sessionMenuEntries(target.kind === 'agent').filter(item => !['Sessions', 'Appearance', 'Help', 'Hide thinking', 'Model', 'Thinking'].includes(item.name))
+  const items:ContextItem[]=actions.sessionMenuEntries(target.kind === 'agent').filter(item => !['Sessions', 'Appearance', 'Help', 'Hide thinking', 'Model', 'Thinking'].includes(item.name))
     .map(item => ({label: item.name, enabled: local[item.name] ? true : item.enabled, run: local[item.name] ?? item.run, description: item.description, disabledReason: item.disabledReason,
       ...(item.name === 'Show thinking' ? {checked: shown, checkbox: true} : {})}));
+  items.push({label:'Message box size',enabled:composerSizeEditable(controller),disabledReason:'This conversation has no editable message box.',run:()=>messageBoxSize(controller)});return items;
 }
 /** A saved-message refresh is offered only where messages cannot update live; it runs the same history read as the note's Load action. */
 function savedMessagesItem(identity: string): ContextItem[] {
@@ -3238,7 +3400,7 @@ function agentMenuItems(identity: string): ContextItem[] {
     ] : []),
     ...savedMessagesItem(identity),
     {label: 'Copy agent ID', run: () => { void copy(identity, agentNode('view-notice')); }},
-    {label: 'Conversation details', run: () => actions.conversationDetails(identity)},
+    {label: 'Conversation details', run: () => showConversationDetails({kind:'agent',identity})},
   ];
   items.push({label: 'Sent and received tasks', run: () => inspectAgent(identity)}, {label: 'Open in Pi terminal', run: () => showAgentCommand(identity)});
   items.push(...conversationMenuItems({kind: 'agent', identity}).filter(item => !items.some(existing => existing.label === item.label)));
@@ -3254,7 +3416,7 @@ export function openConversationActions(paneId: string = focusedPane, key?: stri
   const choices: ContextItem[] = (['chronological', 'grouped'] as const).map(mode => ({label: mode === 'chronological' ? 'Conversation' : 'Grouped', description: mode === 'chronological' ? 'View: Conversation' : 'View: Grouped', checked: view === mode, run: () => owner.transcript.setView(mode)}));
   const entries = (tab.kind === 'agent' ? agentMenuItems(tab.identity) : conversationMenuItems(target)).filter(item => item.label !== 'Show conversation');
   const groups: [string, ContextItem[]][] = [
-    ['View', [...choices, ...['Show thinking', 'Find text', 'Jump to message…', 'Expand loaded tools', 'Collapse loaded tools'].flatMap(name => entries.filter(item => item.label === name))]],
+    ['View', [...choices, ...['Show thinking', 'Find text', 'Jump to message…', 'Expand loaded tools', 'Collapse loaded tools', 'Message box size'].flatMap(name => entries.filter(item => item.label === name))]],
     ['Messages and tasks', ['Message', 'Refresh messages', 'Review message', 'Sent and received tasks', 'Saved drafts and messages', 'Message input'].flatMap(name => entries.filter(item => item.label === name))],
     ['Session', ['New session', 'Replace current session', 'Close session', 'Continue a handover', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Open in Pi terminal'].flatMap(name => entries.filter(item => item.label === name))],
     ['Details', ['Conversation details', 'Copy agent ID'].flatMap(name => entries.filter(item => item.label === name))],
@@ -3312,6 +3474,7 @@ function openPaneMenu(paneId: string, event?: MouseEvent, key?: string, purpose:
     overflow: false}).filter(item=>!['New tab','Conversation actions'].includes(item.label));
   if(comparisonOpen)items.unshift({label:'End comparison',run:endComparison});
   if (tab?.kind === 'file') items.push(...fileMenuItems(workspace,tab,valid));
+  if(tab&&!target)items.push({label:'Conversation details',separatorBefore:true,run:()=>{if(valid())showConversationDetails();}});
   if (leaf) items.push(...closeViewMenuItems(leaf,key ?? leaf.active,valid));
   items.push(...paneSwitchItems(layout,valid));
   if (purpose === 'list' && leaf) {
@@ -3441,7 +3604,7 @@ function tabShortcut(event: KeyboardEvent): boolean {
 }
 export function appKey(event: KeyboardEvent): void {
   if (event.isComposing || event.keyCode === 229 || event.defaultPrevented || contextMenu.openNow || threadPostShortcut(event) || ownMessageShortcut(event) || failedStepShortcut(event) || receivedResultShortcut(event)) return;
-  if(deskShortcut(event))return;
+  if(drawerTab(event)||deskShortcut(event))return;
   if (event.key === 'Escape' && messageTarget.current && !modal.openNow) { event.preventDefault(); closeMessagePanel(); return; }
   if (event.key === 'Escape' && drawerOpen && !modal.openNow) { event.preventDefault(); toggleSidebar(false); return; }
   if (event.key === 'Escape' && deskPane && !modal.openNow && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) { event.preventDefault(); dismissDesk(); return; }
@@ -3455,11 +3618,10 @@ function bind(): void {
   document.addEventListener('compositionend', event=> {if(event.target)composingFields.delete(event.target);},true);
   for (const toggle of document.querySelectorAll<HTMLElement>('.section-toggle')) toggle.prepend(cardIcon('chevron'));
   for (const node of document.querySelectorAll<HTMLElement>('[data-control-icon]')) {
-    const count = node.querySelector<HTMLElement>('#notices-count'),label = node.querySelector<HTMLElement>('.footer-label') ?? node.querySelector<HTMLElement>('.session-create-label');
+    const count = node.querySelector<HTMLElement>('#notices-count'),label = node.querySelector<HTMLElement>('.footer-label') ?? node.querySelector<HTMLElement>('.session-create-label') ?? node.querySelector<HTMLElement>('.nav-control-label');
     controlIcon(node, node.dataset.controlIcon as CardIcon, node.getAttribute('aria-label') ?? node.textContent ?? '');
     if (count) node.append(count);if(label)node.append(label);
   }
-  byId('files-heading').addEventListener('click',()=>setSidebarSection('files',!sidebarSections.files));
   byId('files-refresh').addEventListener('click',refreshFiles);
   byId('files-search').addEventListener('click',openFileNavigation);
   // Programmatic restoration also emits trusted scroll/select events; input intent must still change the revision.
@@ -3495,12 +3657,12 @@ function bind(): void {
   byId('agent-refresh').addEventListener('click', refreshRoster);
   byId('agent-new').addEventListener('click', () => actions.prepareText('/agent new'));
 
-  byId('agents-heading').addEventListener('click', () => setSidebarSection('agents', !sidebarSections.agents));
-
   byId('agent-message-close').addEventListener('click', () => closeMessagePanel());
   byId('primary-row').addEventListener('click', selectPrimary);
   byId('sidebar-show').addEventListener('click', () => toggleSidebar(matchMedia(persistentSidebarQuery).matches ? byId('sidebar').hidden : !drawerOpen));
   byId('sidebar-close').addEventListener('click', () => toggleSidebar(false));
+  byId('sidebar-scrim').addEventListener('click',()=>toggleSidebar(false));
+  document.addEventListener('focusin',drawerFocusGuard,true);
 
   document.addEventListener('pointerdown', dismissDrawerPointer, true);
   document.addEventListener('click', consumeDrawerClick, true);

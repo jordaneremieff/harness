@@ -32,7 +32,6 @@ export type ComposerStateView = {line: string; label?: string; tone?: 'error' | 
 /** An accepted queued input is expected behaviour, so its notice uses the quiet tier, not the warning tier. */
 const queuedAdmissionNotice = (text: string): boolean => text === 'Message queued' || text === 'Steer queued';
 const queueDescription = 'Queue this message for a later step. During a wait for agent results, the message joins the current work.';
-/** Delivery choices and lifecycle controls retain visible labels beside their glyphs. */
 const actionParts = new WeakMap<HTMLElement, {label: HTMLElement; icon?: CardIcon; mark?: SVGSVGElement}>();
 function paintAction(node: HTMLButtonElement, icon: CardIcon, label: string, visible = false): void {
   let parts = actionParts.get(node);
@@ -69,7 +68,7 @@ export function createComposerElements(instanceId: string): ComposerElements {
   // Queue chooses followUp mode; the send key and Steer reach the next step.
   const queue = element('button', 'queue', 'Queue'); queue.id = `${id}-queue`; queue.type = 'button'; queue.hidden = true; queue.setAttribute('aria-label', 'Queue message');
   const queueGuidance = element('span', 'sr-only', queueDescription); queueGuidance.id = `${id}-queue-guidance`;
-  const stop = element('button', 'stop'); stop.id = `${id}-stop`; stop.type = 'button'; stop.hidden = true; paintAction(stop, 'stop', 'Stop', true);
+  const stop = element('button', 'stop'); stop.id = `${id}-stop`; stop.type = 'button'; stop.hidden = true; stop.title = 'Stop response'; paintAction(stop, 'stop', 'Stop');
   const send = element('button', 'send'); send.id = `${id}-send`; send.type = 'submit'; send.disabled = true; paintAction(send, 'send', 'Send');
   send.setAttribute('aria-label', 'Send message'); stop.setAttribute('aria-label', 'Stop response');
   const attach = element('button', 'attach', 'Attach'); attach.type = 'button'; attach.hidden = true; attach.tabIndex = -1; attach.setAttribute('aria-label', 'Upload files');
@@ -78,7 +77,7 @@ export function createComposerElements(instanceId: string): ComposerElements {
   sources.setAttribute('aria-haspopup','menu'); sources.setAttribute('aria-expanded','false');
   const intake = element('span','composer-intake'); intake.append(attach,sources,picker);
   const start = element('button', 'send start'); start.id = `${id}-start`; start.type = 'button'; start.hidden = true; paintAction(start, 'play', 'Start', true);
-  const submit = element('div', 'composer-submit'); submit.append(queue, start, send);
+  const submit = element('div', 'composer-submit'); submit.append(stop, queue, start, send);
   const bar = element('div', 'composer-bar'); bar.append(submit); const line = element('div', 'composer-line');
   const model = element('button', 'composer-model'), thinking = element('button', 'composer-thinking'), settingsText = element('span', 'composer-settings-text');
   model.id = `${id}-model`; thinking.id = `${id}-thinking`; settingsText.id = `${id}-settings-text`; model.type = thinking.type = 'button'; model.hidden = thinking.hidden = settingsText.hidden = true;
@@ -94,7 +93,7 @@ export function createComposerElements(instanceId: string): ComposerElements {
   const meta = element('div', 'composer-meta'); meta.append(state, stateDetails);
   const handoverHint = element('p', 'composer-handover'); handoverHint.hidden = true;
   const utilities = element('div', 'composer-utilities'); utilities.append(recallLine, handoverHint);
-  line.append(intake, stop, settings, bar);
+  line.append(intake, settings, bar);
   // The handle is absolutely placed on the surface's top edge.
   input.append(commandMenu, fileMenu, recipient, surface, attachments, line, resize); root.append(receipt, utilities, input, meta, queueGuidance);
   const save = element('span', 'draft-state'); save.id = `${id}-save`;
@@ -233,7 +232,7 @@ export class Composer {
     const settings=this.settingsState;
     if(!settings&&!view&&this.working&&!this.gated){
       const line=this.current&&this.commandDraft(this.current)?'Working':'Steer at the next step; Queue adds a follow-up.';
-      return {line,label:line};
+      return {line};
     }
     if(!settings)return view;if(!view)return settings;
     return {...view,line:[view.line,settings.line].join(' '),label:[view.label,settings.label].filter(Boolean).join(' · '),detail:[view.detail,settings.detail].filter(Boolean).join('\n')};

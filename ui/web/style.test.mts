@@ -44,7 +44,7 @@ test('file navigation keeps readable parent paths and Files heading controls wit
   assert.match(words, /white-space: normal; overflow-wrap: anywhere/);
   assert.doesNotMatch(words, /text-overflow|max-height|overflow: hidden/);
   const files = html.slice(html.indexOf('<section id="files-section"'), html.indexOf('<section id="agent-message-panel"'));
-  assert.match(files, /id="files-heading" class="section-toggle"/);
+  assert.match(files, /id="files-heading" class="sr-only"/);
   assert.match(files, /id="files-search"[^>]*data-control-icon="search"[^>]*aria-label="Go to file…"/);
   assert.match(files, /id="files-refresh"/);
 });
@@ -136,7 +136,7 @@ test('conversation actions live in the pane tab row and keep shared desktop and 
   assert.match(rule('.card-action'), /width: 24px; height: 24px; min-width: 24px; min-height: 24px/);
   assert.match(media('@media (pointer:coarse)'), /\.card-action, \.section-toggle[^{}]+\{ min-height: 44px; min-width: 44px/);
 });
-test('named views retain their controls and session creation remains separate from Find session', () => {
+test('named views retain their controls and session creation remains separate from search', () => {
   const chevron = rule('.section-toggle > .card-icon-chevron');
   assert.match(chevron, /display: block; flex: none; width: 12px; height: 12px; color: var\(--dim\)/);
   assert.match(chevron, /transform: rotate\(0deg\); transition: transform 120ms/);
@@ -145,15 +145,15 @@ test('named views retain their controls and session creation remains separate fr
   assert.match(css, /@media \(prefers-reduced-motion:reduce\) \{ \.section-toggle > \.card-icon-chevron \{ transition: none; \} \}/);
   assert.match(rule('.nav-heading'), /display: flex; flex: 1; min-width: 0/);
   assert.match(rule('.section-toggle'), /display: flex; flex: 1; align-items: center; gap: var\(--s1\); width: 100%/);
-  assert.match(rule('#sessions-heading'), /padding-left: calc\(var\(--s3\) \+ var\(--s1\)\)/);
+  assert.match(rule('.sidebar[data-view=sessions] .primary-section > h2'), /min-height: 32px; align-items: center; padding-inline: var\(--s3\)/);
   assert.match(rule('.nav-heading-row'), /padding: 0 var\(--s2\) 0 var\(--s3\)/);
   assert.doesNotMatch(css, /\.section-toggle::before/);
   assert.match(rule('.section-toggle:hover'), /color: var\(--fg\)/); assert.match(rule('.section-toggle .count'), /margin-left: var\(--s2\)/);
   assert.match(rule('.threads-footer'), /padding-right: var\(--s3\); padding-left: var\(--s3\)/);
-  assert.match(html, /id="files-count"/); assert.match(html, /id="agents-count"/);
-  assert.match(html, /<h2 id="sessions-heading" class="sr-only">Recent sessions<\/h2>/);
+  assert.match(html, /id="files-heading" class="sr-only"/); assert.match(html, /id="agents-heading" class="sr-only"/);
+  assert.match(html, /<h2 id="sessions-heading" class="nav-heading"[^>]*>Recents<\/h2>/);
   assert.match(rule('.session-catalog'), /color: var\(--muted\)/);
-  assert.match(html, /id="session-open"[^>]*aria-label="Find session"[^>]*>Find session<\/button>/);
+  assert.match(html, /id="session-open"[^>]*data-control-icon="search"[^>]*aria-label="Search sessions"[^>]*><span class="nav-control-label">Search sessions<\/span><\/button>/);
   assert.match(html, /id="session-new"[^>]*data-control-icon="plus"[^>]*aria-label="New session"/);
 });
 
@@ -344,8 +344,10 @@ test('off-pane Message roots pass header pointers through while the original com
   assert.match(rule('.conversation[data-message-only=true] > :not(.composer)'), /display: none/);
 });
 test('the narrow drawer covers transcripts while only its projected Message writer crosses the drawer layer', () => {
-  const narrow = media('@media (max-width:743px)');
-  assert.match(narrow, /\.app\.drawer-open \.workbench > \.sidebar \{[^}]*z-index: 10;/);
+  const narrow = media('@media (max-width:999px)');
+  assert.match(narrow, /\.app\.drawer-open \.workbench > \.sidebar \{[^}]*z-index: 10;[^}]*width: min\(320px, calc\(100vw - 48px\)\)/);
+  assert.match(narrow, /\.app\.drawer-open #sidebar-scrim \{ position: absolute; inset: 0; z-index: 9; display: block/);
+  assert.match(rule('#sidebar-scrim'), /display: none/);
   assert.match(narrow, /\.app\.drawer-open \.stable-views \{ z-index: auto; \}/);
   assert.doesNotMatch(narrow, /\.app\.drawer-open \.stable-views \{[^}]*z-index: \d/);
   const projected = '.app.drawer-open .stable-views > .conversation:has(> .composer[data-message-panel=true])';
@@ -461,7 +463,7 @@ test('file message source and exact destination details wrap within the dialog',
 });
 test('model and thinking use separate readable targets on the composer shelf', () => {
   assert.doesNotMatch(html, /id="(?:model-button|thinking-button|model-value|thinking-value|agent-status)"|workbench-model/);
-  assert.match(rule('.composer-settings'), /display: flex; flex: 1 1 auto; justify-content: flex-end; align-items: center/); assert.match(rule('.composer-model, .composer-thinking'), /min-height: 32px;[^}]*font-size: var\(--fs-meta\); white-space: nowrap/);
+  assert.match(rule('.composer-settings'), /display: flex; flex: 1 1 auto; justify-content: flex-start; align-items: center/); assert.match(rule('.composer-model, .composer-thinking'), /min-height: 32px;[^}]*font-size: var\(--fs-meta\); white-space: nowrap/);
   assert.match(rule('.composer-meta'), /display: grid/);
   assert.doesNotMatch(css, /\.composer-model[^{}]*\{[^}]*min-width: 10ch/);
   assert.match(media('@media (pointer:coarse)'), /\.composer-model, \.composer-thinking, \.icon-button/);
@@ -603,15 +605,15 @@ test('collapsed session event groups add no surrounding margins while turns and 
 });
 test('the sidebar resizes through a persisted width and the column sits beside it at a fixed gutter', () => {
   assert.match(rule(':where(:root)'), /--read-width: 760px;/);
-  assert.match(rule('.workbench'), /grid-template-columns: var\(--sidebar-width,280px\) minmax\(0,1fr\)/);
+  assert.match(rule('.workbench'), /grid-template-columns: var\(--sidebar-width,288px\) minmax\(0,1fr\)/);
   assert.match(rule('.resizer[data-axis=x]'), /cursor: col-resize/);
   assert.match(rule('.resizer[data-axis=y]'), /cursor: row-resize/);
   assert.match(rule('.resizer:hover::after, .resizer[data-dragging=true]::after'), /opacity: 1/);
   assert.match(rule('.resizer:focus-visible::after'), /border-color: var\(--accent\)/);
   assert.match(rule('.agent-message-panel'), /height: var\(--panel-height, auto\)/);
   assert.doesNotMatch(rule('.composer textarea'), /max-height|--composer-height/);
-  assert.match(rule('.conversation'), /--work-gutter: 24px/);
-  assert.match(rule('.session-reader'), /--work-gutter: 24px/);
+  assert.match(rule('.conversation'), /--work-gutter: 16px/);
+  assert.match(rule('.session-reader'), /--work-gutter: 16px/);
   assert.doesNotMatch(rule('.workspace'), /padding-left|margin-left/);
   assert.match(rule('.conversation > :not(.transcript-region)'), /width: calc\(100% - 2 \* var\(--work-gutter\)\); max-width: var\(--read-width\)/);
   assert.match(rule('.transcript > .entry, .transcript > button'), /width: 100%; max-width: var\(--read-width\)/);
@@ -671,16 +673,22 @@ test('the writing surface groups Add and the required action below native text',
   assert.match(rule('.send'), /background: var\(--fg\); color: var\(--canvas\)/);
   assert.match(rule('.send:disabled'), /opacity: 1; background: color-mix\(in srgb, var\(--fg\) 14%, var\(--composer-fill\)\); color: var\(--muted\)/);
   assert.doesNotMatch(css, /\.send\[data-kind=recovery\]/);
-  assert.match(rule('.composer-input'), /padding: var\(--s5\); border: 1px solid var\(--rule\); border-radius: var\(--r-lg\); background: var\(--composer-fill\)/);
+  assert.match(rule('.composer-input'), /padding: var\(--s4\); border: 1px solid var\(--rule\); border-radius: var\(--r-lg\); background: var\(--composer-fill\)/);
   assert.match(rule('.composer'), /--composer-fill: color-mix\(in srgb, var\(--canvas\) 96%, var\(--fg\)\)/);
   assert.match(rule(':root[data-appearance=light] .composer'), /--composer-fill: color-mix\(in srgb, var\(--canvas\) 96%, var\(--fg\)\)/);
   assert.match(rule('.composer-line'), /min-height: 36px; margin-top: var\(--s4\)/);
   assert.match(rule('.start'), /width: auto; min-width: 82px; gap: var\(--s2\); padding: 0 var\(--s3\); font-size: var\(--fs-ui\); font-weight: 500; white-space: nowrap/);
 });
-test('narrow composer controls wrap only as needed and retain right alignment with unbroken control labels', () => {
+test('narrow composers separate configuration from one right-aligned delivery group', () => {
   const narrow = [...css.matchAll(/@container conversation \(max-width: 480px\) \{([\s\S]*?)\n\}/g)].map(match => match[1]).join('\n');
   assert.match(rule('.composer-bar'), /flex-wrap: nowrap;[^}]*justify-content: flex-end/);
-  assert.match(narrow, /\.composer-bar \{ justify-content: flex-end; \}/);
+  const shelfStart = css.indexOf('@container composer (max-width: 600px)');
+  assert.ok(shelfStart >= 0);
+  const shelf = css.slice(shelfStart, css.indexOf('\n}', shelfStart));
+  assert.match(shelf, /\.composer-intake \{ grid-column: 1; grid-row: 1/);
+  assert.match(shelf, /\.composer-settings \{ grid-column: 2; grid-row: 1; flex-wrap: wrap/);
+  assert.match(shelf, /\.composer-bar \{ grid-column: 1 \/ -1; grid-row: 2; justify-self: end/);
+  assert.match(rule('.composer-line'), /display: grid; grid-template-columns: auto minmax\(0,1fr\) auto/);
   assert.doesNotMatch(narrow, /\.composer-bar[^}]*flex-basis: 100%/);
   assert.doesNotMatch(css, /\.composer-bar[^{}]*\{[^}]*justify-content: (?:center|flex-start)/);
   assert.match(rule('.queue'), /flex: none;[^}]*white-space: nowrap/);
@@ -690,23 +698,26 @@ test('narrow composer controls wrap only as needed and retain right alignment wi
   assert.match(media('@media (pointer:coarse)'), /button, summary,[^{}]*\{ min-height: 44px; min-width: 44px; \}/);
   assert.doesNotMatch(narrow, /\.send[^{}]*\{[^}]*(?:display: none|overflow: hidden|min-width: 0)/);
 });
-test('working controls keep a quiet named Stop and visible delivery choices with wrapping guidance', () => {
+test('working controls keep a square Stop and visible named delivery choices', () => {
   assert.doesNotMatch(css, /\.composer\[data-working=empty\][^{]*\.composer-submit/);
-  assert.match(rule('.stop'), /width: auto; height: 32px;[^}]*background: transparent; color: var\(--muted\)/);
-  assert.match(rule('.stop'), /gap: var\(--s2\); padding: 0 var\(--s2\)/);
+  assert.match(rule('.stop'), /width: 36px; height: 36px;[^}]*background: transparent; color: var\(--muted\)/);
+  assert.match(rule('.stop'), /gap: 0; padding: 0/);
   assert.match(rule('.send-named'), /width: auto; gap: var\(--s2\); padding: 0 var\(--s3\); font-size: var\(--fs-ui\)/);
   assert.match(rule('.queue'), /color: var\(--muted\)/);
   assert.match(rule('.composer-delivery-guidance .composer-state-label'), /overflow: visible; text-overflow: clip; white-space: normal/);
   assert.match(css, /@container composer \(max-width: 760px\)/);
   assert.match(rule('.composer-meta:has(.composer-delivery-guidance) > .composer-state'), /grid-column: 1 \/ -1; grid-row: 1/);
-  assert.match(rule('.composer-settings'), /justify-content: flex-end/);
+  assert.match(rule('.composer-settings'), /justify-content: flex-start/);
   assert.doesNotMatch(css, /\.modes\b/);
 });
-test('the drawer footer exposes named Tools and Settings rather than permanent utility icons', () => {
+test('the sidebar has full-width New, Search and Tools rows and one Settings footer row', () => {
   const footer=html.match(/<footer class="sidebar-footer"[\s\S]*?<\/footer>/)?.[0];assert.ok(footer);
-  assert.deepEqual([...footer.matchAll(/<button id="([^"]+)"/g)].map(match=>match[1]),['tools-button','settings-button']);
-  assert.match(footer,/id="tools-button"[^>]*aria-haspopup="menu"[^>]*>Tools<\/button>/);
-  assert.match(footer,/id="settings-button"[^>]*>Settings<\/button>/);
+  assert.deepEqual([...footer.matchAll(/<button id="([^"]+)"/g)].map(match=>match[1]),['settings-button']);
+  assert.match(footer,/id="settings-button"[^>]*aria-label="Settings"/);
+  assert.match(footer,/class="nav-control-label">Settings<\/span>/);
+  assert.match(html,/class="sidebar-tools"><button id="tools-button"[^>]*aria-haspopup="menu"/);
+  assert.match(rule('#session-entry-actions'), /flex-direction: column; align-items: stretch/);
+  assert.match(rule('#session-entry-actions > button, .sidebar-tools > button'), /width: 100%; min-height: 44px/);
   assert.match(rule('.sidebar-footer > button'),/min-height: 44px/);
 });
 test('the status line retains facts and does not duplicate utility launchers', () => {
@@ -750,7 +761,7 @@ test('visible controls carry labels and one icon stroke style', async () => {
   const composer = await readFile(new URL('./composer.ts', import.meta.url), 'utf8');
   const factory = composer.slice(composer.indexOf('export function createComposerElements('), composer.indexOf('\ntype Edit ='));
   assert.match(factory, /const id = `composer-\$\{encodeURIComponent\(instanceId\)\}`/);
-  assert.match(factory, /const stop = element\('button', 'stop'\); stop\.id = `\$\{id\}-stop`; stop\.type = 'button'; stop\.hidden = true; paintAction\(stop, 'stop', 'Stop', true\)/);
+  assert.match(factory, /stop\.title = 'Stop response'; paintAction\(stop, 'stop', 'Stop'\)/);
   assert.match(factory, /const send = element\('button', 'send'\); send\.id = `\$\{id\}-send`; send\.type = 'submit'; send\.disabled = true; paintAction\(send, 'send', 'Send'\)/);
   assert.match(factory, /send\.setAttribute\('aria-label', 'Send message'\)/);
   assert.match(factory, /stop\.setAttribute\('aria-label', 'Stop response'\)/);
@@ -798,18 +809,18 @@ test('expanded output retains bounded native scrollports with fixed gutters', ()
 });
 test('the desktop Message panel stays outside the sidebar section flow and the roster scrolls', () => {
   assert.match(rule('.sidebar > *, .sidebar-scroll > *'), /flex-shrink: 0/);
-  assert.match(rule('.sidebar-scroll'), /display: contents/);
-  assert.match(rule('.sidebar-scroll > :is(.roster-section, .files-section)'), /flex: 1 1 0; min-height: calc\(32px \+ 5 \* 30px\)/);
+  assert.match(rule('.sidebar .sidebar-scroll'), /display: block; flex: 1; min-height: 0; overflow-y: auto/);
+  assert.match(rule('.sidebar[data-view=agents] .roster'), /flex: 1; min-height: 0; overflow-y: auto/);
   assert.match(rule('.roster'), /flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto/);
   assert.match(rule('.roster-body'), /display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0/);
   assert.match(rule('.roster-body > :not(.roster)'), /flex: none/);
   assert.match(rule('.agent-message-panel'), /flex: none;/);
 });
 test('responsive, short, coarse, reduced-motion and forced-color paths remain', () => {
-  for (const width of [743, 599]) assert.ok(css.includes(`${width}px`));
+  for (const width of [999, 599]) assert.ok(css.includes(`${width}px`));
   assert.match(css, /\.app\.drawer-open \.workbench > \.sidebar/);
-  assert.match(media('@media (max-width:743px)'), /\.sidebar > \.resizer \{ display: none; \}/);
-  assert.ok(media('@media (max-height:599px)').includes('.sidebar-scroll > :is(.roster-section, .files-section) { min-height: 28px; }'));
+  assert.match(media('@media (max-width:999px)'), /\.sidebar > \.resizer \{ display: none; \}/);
+  assert.match(media('@media (max-height:599px)'), /\.agent-message-panel \{ min-height: 100px; max-height: 40dvh/);
   const coarse = media('@media (pointer:coarse)');
   assert.match(coarse, /\.icon-button \{ min-height: 44px; min-width: 44px; \}/);
   assert.match(coarse, /\.resizer\[data-axis=x\] \{ right: 0; width: 44px; \}/);
@@ -864,10 +875,9 @@ test('narrow composers reserve a permanent touch-sized Latest icon beside Add', 
   const start = css.indexOf('@container composer (max-width: 420px)');
   const compact = css.slice(start, css.indexOf('\n}', start));
   assert.ok(start >= 0);
-  assert.match(compact, /\.composer-intake:has\(> \.latest\) \{ flex-basis: calc\(88px \+ var\(--s2\)\); \}/);
   assert.match(compact, /\.composer-intake > \.latest \{ width: 44px; min-width: 44px; min-height: 44px; justify-content: center; \}/);
   assert.match(compact, /\.composer-intake > \.latest > \.latest-text \{ display: none; \}/);
-  assert.match(compact, /\.composer-line \{ flex-wrap: wrap; \}/);
+  assert.match(css, /@container composer \(max-width: 600px\) \{\s*\.composer-line \{ grid-template-columns: auto minmax\(0,1fr\); \}/);
   assert.doesNotMatch(compact, /:not\(\[hidden\]\)|:has\([^}]*:not/);
 });
 test('native text flow preserves scroll boundaries without line paint clipping', () => {
@@ -882,7 +892,7 @@ test('editor and transcript share a centered bounded column without moving the n
   assert.match(rule('.transcript'), /padding: var\(--s3\) var\(--work-gutter\)/);
   assert.match(css, /@container conversation \(max-width: 700px\)[\s\S]*?--work-gutter: 16px/);
   assert.match(rule('.transcript-region > .empty-state'), /left: 0; right: 0; width: calc\(100% - 2 \* var\(--work-gutter\)\); max-width: var\(--read-width\); margin-inline: auto/);
-  assert.match(rule('.composer-input'), /padding: var\(--s5\); border: 1px solid/);
+  assert.match(rule('.composer-input'), /padding: var\(--s4\); border: 1px solid/);
   assert.match(rule('.transcript > .entry, .transcript > button'), /max-width: var\(--read-width\); margin-inline: auto/);
   assert.match(rule('.composer textarea'), /padding: 0; border: 0/);
   for (const selector of ['.transcript', '.composer-input', '.composer textarea']) {
@@ -960,10 +970,10 @@ test('one workbench footer owns wrapped facts while settings sit on the composer
   assert.match(factory, /const id = `composer-\$\{encodeURIComponent\(instanceId\)\}`/);
   assert.match(factory, /root\.append\(receipt, utilities, input, meta, queueGuidance\)/);
   assert.match(factory, /const queueGuidance = element\('span', 'sr-only', queueDescription\)/);
-  assert.match(factory, /submit\.append\(queue, start, send\)/);
+  assert.match(factory, /submit\.append\(stop, queue, start, send\)/);
   assert.match(factory, /bar\.append\(submit\)/);
   assert.match(factory, /intake\.append\(attach,sources,picker\)/);
-  assert.match(factory, /line\.append\(intake, stop, settings, bar\)/);
+  assert.match(factory, /line\.append\(intake, settings, bar\)/);
   assert.doesNotMatch(factory, /usage-details|workbench-status-facts|root\.append\([^)]*\b(?:save|receiptDetails)\b/);
   assert.doesNotMatch(html, /<form id="(?:primary|agent)-composer"/);
   const app = await readFile(new URL('./app.ts', import.meta.url), 'utf8');
@@ -1130,7 +1140,7 @@ test('the composer uses shared SVG selectors and visible effort at narrow widths
   assert.doesNotMatch(css, /\.composer-settings-text[^{}]*::after|\.composer-settings-effort[^{}]*::after/);
   assert.match(rule('.composer .attachment-sources'), /color: var\(--fg\)/);
   assert.doesNotMatch(css, /\.composer-thinking, \.composer-settings-effort \{ display: none/);
-  assert.match(css, /@container composer \(max-width: 420px\) \{\s*\.composer-line \{ flex-wrap: wrap; \}/);
+  assert.match(css, /\.composer-settings \{ grid-column: 2; grid-row: 1; flex-wrap: wrap; \}/);
   assert.match(rule('.composer-settings'), /min-width: 0; max-width: 100%/);
 });
 test('empty composer regions collapse and plain intake/settings retain focus and open-state feedback', () => {
@@ -1144,9 +1154,9 @@ test('empty composer regions collapse and plain intake/settings retain focus and
 });
 test('composer utilities share the column edges and keep expanded errors inside the pane', () => {
   assert.match(rule('.composer-utilities'), /display: grid; grid-template-columns: minmax\(0,1fr\) auto;[^}]*padding: 0;/);
-  assert.match(rule('.composer-meta'), /padding: var\(--s2\) var\(--s5\) 0/);
+  assert.match(rule('.composer-meta'), /padding: var\(--s2\) var\(--s4\) 0/);
   assert.match(rule('.composer-meta > .composer-state'), /grid-column: 1; grid-row: 1/);
-  assert.match(rule('.composer-intake:has(> .latest)'), /flex-basis: 180px; max-width: 100%/);
+  assert.match(rule('.composer-line'), /grid-template-columns: auto minmax\(0,1fr\) auto/);
   assert.match(rule('.composer-recall'), /grid-column: 1; grid-row: 1/);
   assert.match(rule('.composer-state-details'), /grid-column: 1 \/ -1/);
   assert.match(rule('.composer-state-details'), /overflow: auto;[^}]*white-space: pre-wrap; overflow-wrap: anywhere/);
@@ -1176,25 +1186,34 @@ test('Message connection recovery shares flat state actions and retains native f
   assert.match(html, /id="agent-message-retry" type="button"/);
 });
 
-test('the sidebar footer stays at the bottom without a heavy separator', () => {
-  assert.equal([...css.matchAll(/^\.sidebar-footer \{/gm)].length, 2); assert.match(css, /^\.sidebar-footer \{ display: grid; grid-template-columns: 1fr 1fr; gap: var\(--s2\); \}/m);
-  assert.match(rule('.sidebar-footer'), /align-items: center; gap: var\(--s1\); margin-top: auto; padding: var\(--s1\) var\(--s2\) 0/); assert.doesNotMatch(rule('.sidebar-footer'), /border-top:/);
+test('the sidebar footer stays at the bottom with one full-width Settings row', () => {
+  assert.equal([...css.matchAll(/^\.sidebar-footer \{/gm)].length, 1);
+  assert.match(rule('.sidebar-footer'), /display: flex; flex: none;[^}]*margin-top: auto; padding: var\(--s2\) var\(--s3\) 0/);
+  assert.match(rule('.sidebar-footer > button'), /width: 100%; min-height: 44px/);
+  assert.doesNotMatch(rule('.sidebar-footer'), /border-top:|grid-template-columns/);
 });
 
-test('coarse sidebar footer icons keep compact margins after later declarations', () => {
-  const margins = [...css.matchAll(/(?:^|\n)\s*\.sidebar-footer > \.icon-button > \.card-icon\s*\{([^}]+)\}/g)]
-    .flatMap(match => [...match[1].matchAll(/(?:^|;)\s*margin-inline:\s*([^;]+)/g)].map(declaration => declaration[1].trim()));
-  assert.ok(margins.length > 0, 'Footer icon margins exist');
-  assert.equal(margins.at(-1), 'var(--s1)', 'The effective coarse margin must retain the compact base value');
-  assert.match(rule(':where(:root)'), /--s1: 4px;/);
-  assert.doesNotMatch(css, /\.status-controls/);
+test('session title and row menu reserve disjoint targets with visible touch actions', () => {
+  assert.match(rule('.sidebar-session-row'), /display: flex; align-items: center; min-width: 0/);
+  assert.match(rule('.sidebar .sidebar-session-row > .sidebar-content-row'), /flex: 1; width: 0; min-width: 0/);
+  assert.match(rule('.session-row-menu'), /flex: none;[^}]*width: 44px; height: 44px; min-width: 44px; min-height: 44px/);
+  assert.match(media('@media (max-width:999px)'), /\.session-row-menu \{ opacity: 1; \}/);
+  assert.match(media('@media (pointer:coarse)'), /\.session-row-menu \{ opacity: 1; \}/);
+  assert.match(rule('.sidebar-session-row:is(:hover,:focus-within) > .session-row-menu, .session-row-menu[aria-expanded=true]'), /opacity: 1/);
+  assert.ok(css.indexOf('.session-row-menu {') < css.indexOf('@media (max-width:999px)'));
+});
+
+test('sidebar actions share readable icon geometry without compact footer overrides', () => {
+  assert.match(rule('#session-entry-actions > button > .card-icon, .sidebar-tools > button > .card-icon, .sidebar-footer > button > .card-icon'), /width: 18px; height: 18px; flex: none/);
+  assert.match(rule('.sidebar-footer > button'), /gap: var\(--s3\)/);
+  assert.doesNotMatch(css, /\.sidebar-footer > \.icon-button|\.status-controls/);
 });
 
 test('the visible sidebar leads with its panel toggle at the same inset and inherits coarse pointer targets', () => {
   assert.match(rule('.sidebar-close'), /display: inline-flex/);
-  assert.match(rule('.nav-top'), /padding: 0 var\(--s2\) 0 var\(--s2\)/); assert.match(rule('.navigation-access'), /min-height: 48px; padding: 0 var\(--s3\)/);
+  assert.match(rule('.nav-top'), /min-height: 56px; padding: 0 var\(--s3\) 0 var\(--s5\)/); assert.match(rule('.navigation-access'), /min-height: 56px; padding: 0 var\(--s3\)/);
   assert.match(html, /id="sidebar-close" class="icon-button sidebar-close"[^>]+aria-label="Hide sidebar"/);
-  assert.match(media('@media (max-width:743px)'), /\.sidebar-close \{ display: inline-flex/);
+  assert.match(media('@media (max-width:999px)'), /\.sidebar-close \{ display: inline-flex/);
   assert.match(rule('.icon-button'), /width: 24px; height: 24px/);
   assert.match(media('@media (pointer:coarse)'), /min-height: 44px; min-width: 44px/);
 });
@@ -1276,14 +1295,13 @@ test('Markdown file previews centre a bounded column without narrowing source ed
 
 test('phone drawer sections keep usable content inside one outer scroll owner', () => {
   const phone = media('@media (max-width:599px)');
-  assert.match(phone,/\.app\.drawer-open \.sidebar-scroll \{ display: block; flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain/);
-  assert.match(phone,/\.app\.drawer-open \.files-section \{ flex: none; max-height: none; min-height: 0/);
-  assert.match(phone,/\.app\.drawer-open #files-section-body \{ overflow: visible/);
-  assert.match(phone,/\.app\.drawer-open \.sidebar-scroll > \.roster-section \{ flex: none/);
-  assert.match(phone,/\.app\.drawer-open \.roster \{ flex: none; min-height: 44px; max-height: none/);
+  assert.match(rule('.sidebar .sidebar-scroll'), /display: block; flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain/);
+  assert.match(rule('.sidebar .sidebar-scroll > .nav-section'), /flex: none; min-height: 0/);
+  assert.match(rule('.sidebar .sidebar-conversations > .section-body, .sidebar #files-section-body'), /max-height: none; overflow: visible/);
+  assert.doesNotMatch(phone, /\.app\.drawer-open \.roster \{/);
   assert.match(rule('.sidebar .roster-body'), /flex: none/);
   assert.match(rule('.sidebar .roster'), /max-height: none; overflow: visible/);
-  assert.match(rule('.sidebar .roster[data-catalog=true]'), /max-height: min\(50dvh,400px\); overflow-y: auto/);
+  assert.match(rule('.sidebar[data-view=agents] .roster'), /flex: 1; min-height: 0; overflow-y: auto/);
   assert.match(html, /id="session-new"[^>]*>[\s\S]*?<span class="session-create-label">New session<\/span>/);
   const sectionEnd = html.indexOf('<div id="agent-message-region"');
   assert.ok(html.indexOf('<div class="sidebar-scroll">') < html.indexOf('id="sidebar-conversations"'));
@@ -1397,7 +1415,7 @@ test('the draft-save failure row wraps, stays visible and offers a quiet text re
 
 test('sidebar section headings keep their own row in normal flow so no heading draws over another', () => {
   const heading = rule('.nav-heading-row'); assert.match(heading, /height: 28px/); assert.doesNotMatch(heading, /position: (?:absolute|fixed)|margin-top: -|transform:/);
-  assert.match(rule('.sidebar-scroll > :is(.roster-section, .files-section)[data-collapsed=true]'), /flex: none; min-height: 0/);
+  assert.match(rule('.nav-top .icon-button'), /min-width: 44px; min-height: 44px/);
   const threads = rule('.threads-section'); assert.match(threads, /display: flex; flex-direction: column;/); assert.match(threads, /min-height: 28px/); assert.match(threads, /overflow: hidden/); assert.doesNotMatch(threads, /position: (?:absolute|fixed)|margin-top: -/);
   assert.match(rule('.threads-section > .nav-heading-row'), /flex: none/); assert.match(rule('.threads-body[hidden]'), /display: none/);
   assert.match(rule('.thread-scroll:focus-visible'), /outline-offset: 2px/); assert.doesNotMatch(css, /data-pointer/);
@@ -1413,7 +1431,7 @@ test('non-session destinations start hidden and one scroll owner holds the selec
   for(const id of ['sidebar-conversations','roster-section','threads-section','files-section'])assert.match(html,new RegExp(`<section id="${id}"[^>]*hidden`));
   assert.doesNotMatch(html,/id="recent-section"/);
   assert.match(rule('.sidebar .sidebar-scroll'),/flex: 1; min-height: 0; overflow-y: auto/);
-  assert.match(html,/id="navigation-back"[^>]*hidden>Back to sessions/);
+  assert.match(html,/id="navigation-back"[^>]*aria-label="Back to sessions"[^>]*hidden/);
   assert.match(html,/id="agent-message-region" hidden/);
 });
 test('a status row holds sender, kind and first line on one 28px line without fill or border', () => {
@@ -1425,10 +1443,15 @@ test('a status row holds sender, kind and first line on one 28px line without fi
   assert.match(rule('.communication-toggle > .communication-sender'), /font-weight: 500/);
 });
 
-test('the message box keeps its centered grip and its state beside the settings group', () => {
+test('fine-pointer resize keeps its grip while touch uses the native size dialog', () => {
   assert.match(rule('.composer-input > .resizer[data-axis=y]'), /top: -5px; right: auto; left: 50%; width: 40px; height: 10px; margin-left: calc\(var\(--s1\) \* -5\)/);
   assert.match(rule('.resizer::after'), /opacity: 0/);
   assert.match(rule('.composer-input:hover > .resizer[data-axis=y]::after'), /opacity: 1/);
+  assert.match(media('@media (pointer:coarse)'), /\.composer-input > \.resizer\[data-axis=y\] \{ display: none; \}/);
+  assert.match(rule('.message-box-size-range'), /width: 100%; height: 44px; min-height: 44px/);
+  assert.match(rule('.message-box-size-range'), /padding: 0; border: 0; background: transparent; accent-color: var\(--accent\)/);
+  assert.doesNotMatch(rule('.message-box-size-range'), /appearance:|position:|opacity:/);
+  assert.match(rule('.message-box-size-ends'), /display: flex; justify-content: space-between/);
   assert.doesNotMatch(rule('.composer-settings'), /margin:.*auto/);
   assert.match(rule('.composer-state'), /margin: 0/);
   assert.match(rule('.composer-state[data-tone=error]'), /color: var\(--error\)/); assert.match(rule('.composer-state[data-tone=warning]'), /color: var\(--warning\)/);
@@ -1461,7 +1484,7 @@ test('surface corners use the shared scale and only small status glyphs stay rou
   for (const [name, size] of [['sm', 6], ['md', 10], ['lg', 16]]) assert.match(rule(':where(:root)'), new RegExp(`--r-${name}: ${size}px;`));
   const blocks = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)];
   for (const [, selectors, body] of blocks) assertCornerScale(selectors, body);
-  assert.doesNotMatch(css, /999px/);
+  for (const radius of declarations('border-radius')) assert.doesNotMatch(radius, /999px/);
   for (const selector of ['.tool-shell', '.message-body pre, .code-block > pre', '.message-source', '.context-menu', '.context-menu-compact']) assert.match(rule(selector), /border-radius: var\(--r-md\)/, selector);
   for (const selector of ['dialog', '.composer-input', '.message.user > .message-body']) assert.match(rule(selector), /border-radius: var\(--r-lg\)/, selector);
 });

@@ -89,8 +89,6 @@ export class Roster {
   private focused?: string;
   private message?: (identity: string) => void;
   private resumes = new Set<string>();
-  private expanded = false;
-  private older = button('', () => { if (!this.rows.length) {byId<HTMLButtonElement>('agent-new').click();return;} this.expanded = true; this.focusSearch(); this.paint(); }, 'nav-row roster-older');
   private paging = cardAction('next', 'More agents', () => { if (this.query() && this.search) void this.searchCached(true); else this.more('more'); }, 'roster-more');
   private pending = false;
   private meta?: Omit<CachedRoster, 'rows'>;
@@ -217,35 +215,30 @@ export class Roster {
   }
   private controls(query: string): HTMLElement[] {
     const controls: HTMLElement[] = [], label = this.pagingLabel();
-    if ((this.expanded || query) && label && !this.searchController) {cardActionLabel(this.paging, query ? 'More agents' : label);controls.push(this.paging);}
-    setText(this.older,this.rows.length ? `All agents (${this.rows.length})` : 'New agent');
-    this.older.setAttribute('aria-expanded',String(this.expanded));controls.push(this.older);return controls;
+    if (label && !this.searchController) {cardActionLabel(this.paging, query ? 'More agents' : label);controls.push(this.paging);}
+    return controls;
   }
   private filterVisibility(query: string): void {
-    this.filterBox.hidden = !this.expanded && !query && document.activeElement !== byId('agent-search');
+    this.filterBox.hidden = this.rows.length <= 8 && !query && document.activeElement !== byId('agent-search');
   }
   private priority(row: AgentRow): number {
     const status = this.rowStatus(row);return status.attention ? 0 : rosterWorking(row,status) ? 1 : row.handle ? 2 : 3;
   }
-  private selectedRows(filtered: AgentRow[], query: string): AgentRow[] {
-    const all = this.expanded || !!query;
-    const rows = (all ? filtered : filtered.filter(row=>this.priority(row)<3)).sort((a,b)=>this.priority(a)-this.priority(b)||b.modifiedAt-a.modifiedAt);
-    if (all) return rows;
-    const selected = rows.slice(0,8),focused = filtered.find(row=>this.cache.get(row.identity)?.node.contains(document.activeElement));
-    if (focused && !selected.includes(focused)) selected.splice(7,1,focused);
-    return selected;
+  private selectedRows(filtered: AgentRow[]): AgentRow[] {
+    return filtered.sort((a,b)=>this.priority(a)-this.priority(b)||b.modifiedAt-a.modifiedAt);
   }
   private paint(): void {
     try {
     const anchor = captureAnchor(this.layout, this.node.scrollTop); const pins = this.pins();
-    const filtered = this.filtered(); const query = this.query(); this.filterVisibility(query);this.node.dataset.catalog=String(this.expanded||!!query);
-    const rows = this.selectedRows(filtered,query);
+    const filtered = this.filtered(); const query = this.query(); this.filterVisibility(query);
+    const rows = this.selectedRows(filtered);
     this.layout = layoutItems(rows.map(row => row.identity), this.heights, ROW_HEIGHT);
     if (anchor) pins.add(anchor.id);
     const selected = rows.length > 100 ? visibleWindow(this.layout, this.node.scrollTop, this.node.clientHeight, {pins}).items : this.layout.items;
     this.captions.update(this.rows);
     this.tails = new Map(this.rows.flatMap(row => {const tail = this.captions.get(row.identity).tail; return tail ? [[row.identity, tail]] : [];}));
     const children = this.children(selected, rows, this.tails);
+    if (!rows.length) children.push(element('p', 'secondary roster-empty', query ? 'No matching agents.' : 'No agents yet.'));
     const controls = this.controls(query);
     children.push(...controls);
     reconcileChildren(this.node, children);

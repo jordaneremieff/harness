@@ -248,7 +248,18 @@ export type ProjectedFrame = {revision: number; attachmentRevision?: number; obs
 export type ConfigurationReceipt = {kind: 'configuration'; identity: string; outcome: 'applied' | 'failed';
   after: {name: string; model: string | null; thinkingLevel: string | null}; afterSource: 'live' | 'retained';
   persistence: 'completed' | 'uncertain' | 'not-attempted'; clamped?: boolean; note?: string};
-export type OperationKind = 'primary.open' | 'primary.input' | 'primary.stop' | 'primary.session' |
+/** UI labels and archive state use logical session identities, not draft recipients. */
+export type SessionMetadataTarget = {kind:'primary';key:string;epoch:number} | {kind:'session';id:string;path:string;project:string} | {kind:'agent';identity:string};
+export function validSessionMetadataTarget(value:unknown):value is SessionMetadataTarget {
+  if(!value||typeof value!=='object'||Array.isArray(value))return false;
+  const row=value as Record<string,unknown>,text=(field:string,max:number)=>typeof row[field]==='string'&&!!row[field]&&(row[field] as string).length<=max&&!/[\u0000-\u001f\u007f]/.test(row[field] as string);
+  if(row.kind==='primary')return Object.keys(row).length===3&&text('key',256)&&Number.isSafeInteger(row.epoch)&&(row.epoch as number)>0;
+  if(row.kind==='agent')return Object.keys(row).length===2&&text('identity',512);
+  return row.kind==='session'&&Object.keys(row).length===4&&text('id',512)&&text('path',4096)&&text('project',4096)&&(row.path as string).startsWith('/')&&(row.project as string).startsWith('/');
+}
+export type SessionMetadata = {target:SessionMetadataTarget;aliases:string[];name?:string;title:string;archived:boolean;canRename:boolean;canArchive:boolean;canRestore:boolean;reason?:string};
+export type SessionMetadataRecord = {key:string;target:SessionMetadataTarget;name?:string;title:string;archived:boolean};
+export type OperationKind = 'session.metadata' | 'primary.open' | 'primary.input' | 'primary.stop' | 'primary.session' |
   'primary.control' | 'primary.dialog' | 'primary.handoff' | 'primary.close' | 'agent.input' | 'agent.abort' | 'agent.configure' | 'agent.convert' | 'agent.command';
 /** Admission is separate from the eventual answer. Completed is a local control response. */
 export type OperationView = {id: string; kind: OperationKind; target?: Target; action?: string;
@@ -309,6 +320,7 @@ export type EventData = {
   'files.changed': FileChanges;
   /** Terminal sessions that had a saved file held no longer do; the picker re-reads its rows. */
   'sessions.writers': {released: string[]};
+  'sessions.metadata': SessionMetadata;
   'workspace.changed': Workspace;
   'draft.changed': {targetKey: string; target: Target; draft: DraftView};
   'reading.changed': {targetKey: string; reading: ReadingView};
@@ -320,6 +332,7 @@ export type EventName = keyof EventData;
 export type EventEnvelope<N extends EventName = EventName> = {at: string; workspaceId?: string; target?: Target; data: EventData[N]};
 /** Closed HTTP route vocabulary. Dynamic segments are encoded single path segments. */
 export const ROUTES = [
+  'GET /api/sessions/metadata', 'POST /api/sessions/metadata/read', 'POST /api/sessions/metadata',
   'POST /api/agents/convert', 'GET /api/sessions/published', 'GET /api/sessions/history',
   'GET /api/control/layout', 'POST /api/control/requests', 'GET /api/control/requests/:id', 'POST /api/control/ack',
   'POST /api/dev/lease',

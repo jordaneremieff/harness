@@ -40,12 +40,12 @@ await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget:
   primaries: [primaryFixture()], roster: [agentFixture(BUILDER, {state: 'working', name: 'Builder'}), agentFixture(DESIGNER, {name: 'Designer'}), agentFixture(STORAGE, {name: 'Web UI manager'})]});
 app.focusPane('agent-pane'); await settle();
 
-test('the section reads when the sidebar opens and lists threads with two or more members, newest first', async () => {
+test('the Threads destination lists all loaded threads with one title and its existing refresh control', async () => {
   fixtureControl.threadHandler = () => overview;
   byId('threads-refresh').click(); await settle();
-  const heading = byId('threads-heading'), chevron = heading.querySelector('.card-icon-chevron');
-  assert.ok(chevron); assert.equal(heading.firstChild, chevron); assert.equal(heading.querySelectorAll('svg').length, 1);
-  assert.equal(heading.getAttribute('aria-expanded'), 'true');
+  const heading = byId('threads-heading');
+  assert.equal(heading.tagName, 'h2'); assert.equal(heading.querySelectorAll('svg').length, 0);
+  assert.equal(heading.getAttribute('aria-expanded'), null);
   assert.equal(byId('threads-section-body').hidden, false);
   assert.match(threadCalls()[0].path, /^\/api\/threads(\?|$)/);
   const rows = byId('threads-list').querySelectorAll('button');
@@ -57,30 +57,24 @@ test('the section reads when the sidebar opens and lists threads with two or mor
   assert.match(byId('threads-refresh').title, /2 stopped agents use saved storage reads\./);
   assert.doesNotMatch(text(byId('threads-footer')), /Listed by/);
   assert.equal(byId('threads-filter-box').hidden, true);
-  const count = byId('threads-count'); assert.equal(count.textContent, '5'); assert.equal(count.hidden, false);
-  assert.equal(heading.contains(byId('threads-refresh')), false);
-  const reads = threadCalls().length;
-  heading.click(); await settle();
-  assert.equal(heading.getAttribute('aria-expanded'), 'false'); assert.equal(byId('threads-section-body').hidden, true);
-  assert.equal(byId('threads-refresh').disabled, true); assert.equal(heading.firstChild, chevron); assert.equal(count.textContent, '5');
-  heading.click(); await settle(); assert.equal(heading.getAttribute('aria-expanded'), 'true'); assert.equal(count.hidden, false);
-  assert.equal(threadCalls().length, reads);
+  assert.equal(byId('threads-footer').querySelectorAll('button').length, 0);
+  assert.equal(byId('threads-refresh').parentNode, byId('threads-view-actions'));
+  const reads = threadCalls().length; app.showNavigationView('threads'); await settle();
+  assert.equal(byId('threads-section-body').hidden, false); assert.equal(threadCalls().length, reads);
 });
 
-test('All threads opens the full catalog with a filter that keeps a query, and Escape returns to the compact list', async () => {
+test('a long loaded thread list exposes its filter directly and Escape clears the query', async () => {
   const loaded = Array.from({length: 9}, (_, index) => ({...items[0], id: id(String(index)), title: `Filter thread ${index}`}));
   fixtureControl.threadHandler = () => ({...overview, items: loaded});
   byId('threads-refresh').click(); await settle();
-  assert.equal(byId('threads-filter-box').hidden, true);
-  assert.equal(byId('threads-list').querySelectorAll('button').length, 9);
-  const all = byId('threads-footer').querySelectorAll('button').find(item => text(item) === 'All threads (9)'); assert.ok(all);
-  all.click(); await settle();
   assert.equal(byId('threads-filter-box').hidden, false);
+  assert.equal(byId('threads-list').querySelectorAll('button').length, 9);
+  assert.equal(byId('threads-footer').querySelectorAll('button').length, 0);
   const filter = byId('threads-filter');
   filter.value = 'thread 3'; filter.dispatch('input');
   assert.deepEqual(byId('threads-list').querySelectorAll('button').map(row => text(row.querySelector('.row-title') as never)), ['Filter thread 3']);
   filter.dispatch('keydown', {key: 'Escape'}); await settle();
-  assert.equal(filter.value, ''); assert.equal(byId('threads-section').dataset.catalog, 'false');
+  assert.equal(filter.value, ''); assert.equal(byId('threads-list').querySelectorAll('button').length, 9);
   fixtureControl.threadHandler = () => overview; byId('threads-refresh').click(); await settle();
 });
 test('a thread opens in the focused pane only, reads without writing, and Escape returns to the row', async context => {

@@ -1257,16 +1257,21 @@ test('working image-only drafts retain both delivery actions and recognized comm
   assert.equal(actionText(f.node('send')), 'Run command'); assert.equal(f.node('send').disabled, false); assert.equal(f.node('queue').hidden, true);
   assert.equal(f.calls.some(call => call.path.endsWith('/inputs') || call.path.endsWith('/command')), false);
 });
-test('recognized working commands replace delivery guidance until an ordinary message returns', () => {
+test('working guidance stays assistive while command actions and genuine problems remain explicit', () => {
   const host = fixture('agent'), elements = {...createComposerElements('working-command'), overlay: undefined};
   const composer = new Composer(elements, {commands: () => ({state: 'ready', items: [{name: 'status', description: 'Read status', source: 'extension'}]}), submitted() {}, unknownCommand() {return false;}});
   composer.attach('w', state('command-guidance', draft(1, '/status', 'followUp'), true)); composer.availability(true, true, true);
-  const label = elements.state?.querySelector('.composer-state-label');
-  assert.equal(label?.textContent, 'Working'); assert.equal(elements.queue.hidden, true); assert.equal(elements.send.getAttribute('aria-label'), 'Run command /status');
+  const label = elements.state?.querySelector('.composer-state-label'), line = elements.state?.querySelector('.composer-state-line');
+  assert.equal(label?.hidden, true); assert.equal(elements.state?.classList.contains('sr-only'), true); assert.equal(line?.textContent, 'Working');
+  assert.equal(elements.queue.hidden, true); assert.equal(elements.send.getAttribute('aria-label'), 'Run command /status');
   assert.equal(elements.send.title, 'Run /status on this agent. It sends no message');
   composer.setText('Continue with this change');
-  assert.equal(label?.textContent, 'Steer at the next step; Queue adds a follow-up.'); assert.equal(elements.queue.hidden, false); assert.equal(elements.send.getAttribute('aria-label'), 'Steer message');
-  composer.setText('/status'); assert.equal(label?.textContent, 'Working'); assert.equal(elements.queue.hidden, true);
+  assert.equal(label?.hidden, true); assert.equal(elements.state?.classList.contains('sr-only'), true);
+  assert.equal(line?.textContent, 'Steer at the next step; Queue adds a follow-up.'); assert.equal(elements.queue.hidden, false); assert.equal(elements.send.getAttribute('aria-label'), 'Steer message');
+  assert.equal(elements.send.getAttribute('aria-describedby'), line?.id);
+  composer.setText('/status'); assert.equal(line?.textContent, 'Working'); assert.equal(elements.queue.hidden, true);
+  composer.setState({line: 'The connection failed. Check the connection before you send.', label: 'Connection failed', tone: 'error'});
+  assert.equal(label?.hidden, false); assert.equal(label?.textContent, 'Connection failed'); assert.equal(elements.state?.classList.contains('sr-only'), false);
   assert.equal(host.calls.some(call => call.path.endsWith('/inputs') || call.path.endsWith('/command')), false); composer.destroy();
 });
 test('empty ready drafts omit Send while text, images and required recovery retain their actions', () => {
@@ -1318,7 +1323,10 @@ test('scoped element factories create distinct editors and exact label/resize/co
   assert.equal(new Set(ids).size, ids.length); assert.notEqual(first.editor, second.editor); assert.equal((first.recipient as HTMLLabelElement).htmlFor, first.editor.id);
   assert.equal(first.root.querySelector('.resizer')?.getAttribute('aria-controls'), first.editor.id); assert.equal(first.root.querySelector('.resizer')?.getAttribute('aria-orientation'), 'horizontal');
   assert.equal(first.root.querySelector('.stop')?.getAttribute('aria-label'), 'Stop response');
-  const stop = first.root.querySelector('.stop'); assert.equal(actionText(stop as NodeFake), 'Stop'); assert.equal(stop?.querySelector('.action-label')?.classList.contains('sr-only'), false);
+  const stop = first.root.querySelector<HTMLButtonElement>('.stop'); assert.equal(actionText(stop as NodeFake), 'Stop'); assert.equal(stop?.querySelector('.action-label')?.classList.contains('sr-only'), true); assert.equal(stop?.title, 'Stop response');
+  const line = first.root.querySelector('.composer-line'), bar = first.root.querySelector('.composer-bar'), submit = first.root.querySelector('.composer-submit');
+  assert.deepEqual(Array.from(line?.children ?? []).map(node => node.className), ['composer-intake', 'composer-settings', 'composer-bar']);
+  assert.ok(submit); assert.equal(bar?.contains(submit), true); assert.deepEqual(Array.from(submit.children), [stop, first.queue, first.start, first.send]);
   assert.equal(first.send.getAttribute('aria-label'), 'Send message'); assert.equal(actionText(first.send), 'Send'); assert.equal(first.send.children.length, 2);
   assert.equal(first.queue.getAttribute('aria-label'), 'Queue message'); assert.equal(first.queue.textContent, 'Queue'); assert.equal(first.queue.hidden, true); assert.equal(first.root.querySelector('select'), undefined); assert.equal(first.send.type, 'submit'); assert.equal(first.send.disabled, true);
   assert.equal(first.root.contains(first.editor), true); assert.equal(first.root.contains(first.save), false); assert.equal(first.root.contains(first.receiptDetails), false);

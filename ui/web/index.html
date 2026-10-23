@@ -15,14 +15,15 @@
 <div id="app" class="app">
 <div id="connection" class="connection-banner" role="status" aria-live="polite" hidden></div>
 <div class="workbench">
+<button id="sidebar-scrim" class="sidebar-scrim" type="button" aria-label="Close navigation" tabindex="-1" hidden></button>
 <nav id="sidebar" class="sidebar" aria-label="Navigation">
-<div class="nav-top"><span id="navigation-title" class="project-context">Sessions</span><button id="sidebar-close" class="icon-button sidebar-close" type="button" data-control-icon="navigation" aria-label="Hide sidebar" title="Hide sidebar"><span class="sr-only">Hide sidebar</span></button></div>
-<button id="navigation-back" class="nav-row" type="button" hidden>Back to sessions</button>
-<div id="session-entry-actions" class="session-entry-actions"><button id="session-new" type="button" data-control-icon="plus" aria-label="New session" title="New session"><span class="session-create-label">New session</span></button><button id="session-open" type="button" aria-label="Find session" title="Find session" aria-haspopup="dialog">Find session</button></div>
+<div class="nav-top"><button id="navigation-back" class="icon-button" type="button" data-control-icon="previous" aria-label="Back to sessions" title="Back to sessions" hidden><span class="sr-only">Back to sessions</span></button><span id="navigation-title" class="project-context">Pi</span><div id="navigation-view-actions"></div><button id="sidebar-close" class="icon-button sidebar-close" type="button" data-control-icon="navigation" aria-label="Hide sidebar" title="Hide sidebar"><span class="sr-only">Hide sidebar</span></button></div>
+<div id="session-entry-actions" class="session-entry-actions"><button id="session-new" type="button" data-control-icon="plus" aria-label="New session" title="New session"><span class="session-create-label">New session</span></button><button id="session-open" type="button" data-control-icon="search" aria-label="Search sessions" title="Search sessions" aria-haspopup="dialog"><span class="nav-control-label">Search sessions</span></button></div>
+<div id="sidebar-tools" class="sidebar-tools"><button id="tools-button" type="button" data-control-icon="menu" aria-label="Tools" aria-haspopup="menu" aria-expanded="false"><span class="nav-control-label">Tools</span></button></div>
 <div class="sidebar-scroll">
 <section id="sidebar-conversations" class="nav-section sidebar-conversations" aria-label="Open tabs" hidden></section>
 <section id="roster-section" class="nav-section roster-section" aria-labelledby="agents-heading" hidden>
-<div class="nav-heading-row"><h2 class="nav-heading"><button id="agents-heading" class="section-toggle" type="button" aria-expanded="true" aria-controls="agents-section-body">AGENTS<span id="agents-count" class="count" hidden></span></button></h2><div class="nav-heading-actions"><button id="agent-refresh" class="icon-button" type="button" data-control-icon="restart" aria-label="Refresh agent roster" title="Refresh agent roster"><span class="sr-only">Refresh agent roster</span></button><button id="agent-new" class="icon-button" type="button" data-control-icon="agent" aria-label="New agent through primary" title="New agent through primary"><span class="sr-only">New agent through primary</span></button></div></div>
+<h2 id="agents-heading" class="sr-only">Agents</h2><div id="agents-view-actions" class="nav-heading-actions"><button id="agent-refresh" class="icon-button" type="button" data-control-icon="restart" aria-label="Refresh agent roster" title="Refresh agent roster"><span class="sr-only">Refresh agent roster</span></button><button id="agent-new" class="icon-button" type="button" data-control-icon="agent" aria-label="New agent through primary" title="New agent through primary"><span class="sr-only">New agent through primary</span></button></div>
 <div id="agents-section-body" class="section-body roster-body">
 <div id="agent-filter-box" class="nav-search" hidden><span class="search-icon" data-control-icon="search" aria-label="Filter agents"></span><label class="sr-only" for="agent-search">Filter agents</label><input id="agent-search" class="nav-filter" type="search" placeholder="Filter agents" autocomplete="off" spellcheck="false"></div>
 <div id="roster" class="roster" role="list" aria-labelledby="agents-heading"></div>
@@ -30,20 +31,20 @@
 </div>
 </section>
 <section id="primary-section" class="nav-section primary-section" aria-labelledby="sessions-heading">
-<h2 id="sessions-heading" class="sr-only">Recent sessions</h2>
+<h2 id="sessions-heading" class="nav-heading" tabindex="-1">Recents</h2>
 <div id="primary-section-body" class="section-body"><div id="recent-sessions"></div><button id="primary-row" class="nav-row primary-row" type="button"><span id="primary-row-title" class="row-title">no session</span><span id="primary-row-meta" class="row-meta"></span></button>
 </div>
 </section>
 <section id="threads-section" class="nav-section threads-section" aria-labelledby="threads-heading" hidden>
-<div class="nav-heading-row"><h2 class="nav-heading"><button id="threads-heading" class="section-toggle" type="button" aria-expanded="false" aria-controls="threads-section-body">THREADS<span id="threads-count" class="count" hidden></span></button></h2><div class="nav-heading-actions"><button id="threads-refresh" class="icon-button" type="button" data-control-icon="restart" aria-label="Refresh threads" title="Refresh threads"><span class="sr-only">Refresh threads</span></button></div></div>
-<div id="threads-section-body" class="section-body threads-body" hidden>
+<h2 id="threads-heading" class="sr-only">Threads</h2><div id="threads-view-actions" class="nav-heading-actions"><button id="threads-refresh" class="icon-button" type="button" data-control-icon="restart" aria-label="Refresh threads" title="Refresh threads"><span class="sr-only">Refresh threads</span></button></div>
+<div id="threads-section-body" class="section-body threads-body">
 <div id="threads-filter-box" class="nav-search" hidden><span class="search-icon" data-control-icon="search" aria-label="Filter threads"></span><label class="sr-only" for="threads-filter">Filter threads</label><input id="threads-filter" class="nav-filter" type="search" placeholder="Filter threads" autocomplete="off" spellcheck="false"></div>
 <ul id="threads-list" class="threads-list" aria-labelledby="threads-heading"></ul>
 <div id="threads-footer" class="roster-footer threads-footer"></div>
 </div>
 </section>
 <section id="files-section" class="nav-section files-section" aria-labelledby="files-heading" hidden>
-<div class="nav-heading-row"><h2 class="nav-heading"><button id="files-heading" class="section-toggle" type="button" aria-expanded="true" aria-controls="files-section-body">FILES<span id="files-count" class="count" hidden></span></button></h2><div class="nav-heading-actions"><button id="files-search" class="icon-button" type="button" data-control-icon="search" aria-label="Go to file…" title="Go to file…" aria-haspopup="dialog"><span class="sr-only">Go to file…</span></button><button id="files-refresh" class="icon-button" type="button" hidden data-control-icon="restart" aria-label="Refresh files" title="Refresh files"><span class="sr-only">Refresh files</span></button></div></div>
+<h2 id="files-heading" class="sr-only">Files</h2><div id="files-view-actions" class="nav-heading-actions"><button id="files-search" class="icon-button" type="button" data-control-icon="search" aria-label="Go to file…" title="Go to file…" aria-haspopup="dialog"><span class="sr-only">Go to file…</span></button><button id="files-refresh" class="icon-button" type="button" hidden data-control-icon="restart" aria-label="Refresh files" title="Refresh files"><span class="sr-only">Refresh files</span></button></div>
 <div id="files-section-body" class="section-body"><div id="files-tree"></div></div>
 </section>
 <section id="settings-section" class="nav-section" aria-label="Settings" hidden><div class="settings-folder"><span id="project-name" class="project-context">Working folder</span><button id="project-button" class="icon-button project-button" type="button" data-control-icon="folder" title="Choose working folder" aria-label="Choose working folder" aria-haspopup="menu" aria-expanded="false"><span class="sr-only">Choose working folder</span></button></div><div id="settings-choices"></div></section>
@@ -57,19 +58,19 @@
 </section>
 
 </div>
-<footer class="sidebar-footer" id="sidebar-footer" aria-label="Workbench controls"><button id="tools-button" type="button" aria-haspopup="menu" aria-expanded="false">Tools</button><button id="settings-button" type="button">Settings</button></footer>
+<footer class="sidebar-footer" id="sidebar-footer"><button id="settings-button" type="button" aria-label="Settings"><svg class="card-icon card-icon-settings" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m6 2 .5-1h3L10 2l1.5 1 1.2-.1 1.5 2.6-.7 1.1v1.8l.7 1.1-1.5 2.6-1.2-.1-1.5 1-.5 1h-3L6 13l-1.5-1-1.2.1-1.5-2.6.7-1.1V6.6l-.7-1.1 1.5-2.6 1.2.1Z"/><circle cx="8" cy="7.5" r="2.25"/></svg><span class="nav-control-label">Settings</span></button></footer>
 <div id="tool-dialog-actions" hidden><button id="commands-button" type="button">Commands</button><button id="notifications-button" type="button"><span id="notices-label">Notices</span><span id="notices-count" hidden></span></button><button id="appearance-button" type="button">Theme</button></div>
 <div id="sidebar-resizer" class="resizer" data-axis="x" tabindex="0" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" aria-controls="sidebar"></div>
 </nav>
 <main id="workspace" class="workspace">
-<header id="navigation-access" class="navigation-access"><button id="sidebar-show" class="navigation-toggle" type="button" aria-controls="sidebar" aria-expanded="false">Sessions</button><h1 id="conversation-title" class="conversation-title">Pi</h1><button id="conversation-actions" class="icon-button" type="button" data-control-icon="more" aria-label="Conversation actions" title="Conversation actions" aria-haspopup="menu" aria-expanded="false"><span class="sr-only">Conversation actions</span></button></header>
+<header id="navigation-access" class="navigation-access"><button id="sidebar-show" class="navigation-toggle icon-button" type="button" data-control-icon="navigation" aria-label="Show sidebar" title="Show sidebar" aria-controls="sidebar" aria-expanded="false"><span class="sr-only">Show sidebar</span></button><h1 id="conversation-title" class="conversation-title">Pi</h1><button id="conversation-actions" class="icon-button" type="button" data-control-icon="more" aria-label="Conversation actions" title="Conversation actions" aria-haspopup="menu" aria-expanded="false"><span class="sr-only">Conversation actions</span></button></header>
 <div id="tabs-empty" class="empty-state" hidden><p>No conversation selected.</p><button id="tabs-open-session" type="button">Find session…</button><button id="tabs-open-primary" type="button">Return to Primary</button></div>
 <section id="session-chooser" class="inline-session-chooser" aria-label="Session chooser" hidden></section>
 <div id="conversation-panes" class="conversation-panes pane-tree" data-focus-only="false"></div>
 </main>
 </div>
 <dialog id="modal" aria-labelledby="modal-title"><div class="modal-heading"><h2 id="modal-title"></h2><button id="modal-close" type="button" data-control-icon="close" aria-label="Close dialog" title="Close dialog"><span class="sr-only">Close dialog</span></button></div><div id="modal-body"></div><div id="modal-error" class="error" role="alert"></div></dialog>
-<footer id="workbench-status" class="workbench-status" aria-label="Focused conversation status">
+<footer id="workbench-status" class="workbench-status" aria-label="Focused conversation details" hidden>
 <span id="workbench-scope" class="workbench-scope"></span><span id="workbench-activity" class="workbench-activity"></span>
 <div id="focused-composer-status" class="workbench-draft-state"></div>
 <button id="file-retained-drafts" type="button" hidden>Review retained draft</button>

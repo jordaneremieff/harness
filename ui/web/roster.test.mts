@@ -24,7 +24,6 @@ type RosterParameters = ConstructorParameters<typeof RosterView>;
 class Roster extends RosterView {
   constructor(select: RosterParameters[0], more: RosterParameters[1], search?: RosterParameters[2], message?: RosterParameters[3], resolved?: RosterParameters[4]) {
     super(select, more, search, message, resolved ?? (row => ({glyph: row.availability !== 'live' ? '○' : ({working: '●', failed: '!', done: '✓'} as Record<string, string>)[row.state] ?? '○', label: row.availability !== 'live' ? row.availability : row.state === 'working' ? 'Working' : row.state, tool: row.state === 'working' ? row.currentTool : undefined})));
-    (this as unknown as {expanded: boolean}).expanded = true;
   }
 }
 function rowsOf(node: FakeNode): FakeNode[] { return node.children.filter(child => child.dataset.identity); }
@@ -113,21 +112,19 @@ test('connected attention precedes Working and remaining catalog order without c
   const rows=[row('catalog-failure',{state:'failed',error:'Not an attention contract'}),row('working'),row('catalog-idle',{state:'idle'}),row('blocked',{availability:'stored',state:'idle',latestReply:'Reply excerpt'})];
   roster.set(rows);f.flush();
   const ids=()=>rowsOf(f.node).filter(node=>node.dataset.identity).map(node=>node.dataset.identity);
-  assert.deepEqual(ids(),['blocked','working']);
+  assert.deepEqual(ids(),['blocked','working','catalog-failure','catalog-idle']);
   const node=rowsOf(f.node)[0];assert.ok(node);assert.equal(node.query('row-summary').children[0]?.textContent,'Blocked');assert.equal(node.query('row-state').dataset.tone,'warning');assert.equal(node.query('row-state').hidden,false);
-  blocked=false;roster.set(rows);f.flush();assert.deepEqual(ids(),['working']);
+  blocked=false;roster.set(rows);f.flush();assert.deepEqual(ids(),['working','catalog-failure','catalog-idle','blocked']);
 });
-function expanded<T extends RosterView>(roster: T): T { (roster as unknown as {expanded: boolean}).expanded = true; return roster; }
-function collapse(roster: RosterView): void { (roster as unknown as {expanded: boolean}).expanded = false; }
-test('agent filter shows only in the catalog view, for a query, or on explicit focus', () => {
+test('agent filter shows for a long loaded list, a query, or explicit focus', () => {
   const f = setup(), roster = new Roster(() => {}, () => {}), rows = Array.from({length: 9}, (_, i) => row(`filter-${i}`));
-  collapse(roster);
-  roster.set(rows); f.flush(); assert.equal(f.filterBox.hidden, true);
+  roster.set(rows); f.flush(); assert.equal(f.filterBox.hidden, false);
+  roster.set(rows.slice(0, 2)); f.flush(); assert.equal(f.filterBox.hidden, true);
   f.search.value = 'filter'; roster.set(rows); f.flush(); assert.equal(f.filterBox.hidden, false);
-  f.search.value = ''; f.search.dispatch('input'); assert.equal(f.filterBox.hidden, true);
+  f.search.value = ''; roster.set(rows.slice(0, 2)); f.flush(); f.search.dispatch('input'); assert.equal(f.filterBox.hidden, true);
   const focus = f.search.focus.bind(f.search); f.search.focus = () => {assert.equal(f.filterBox.hidden, false); focus();};
   roster.focusSearch(); assert.equal(f.document.activeElement, f.search); assert.equal(f.filterBox.hidden, false);
-  roster.set(rows); f.flush(); assert.equal(f.filterBox.hidden, false);
+  roster.set(rows.slice(0, 2)); f.flush(); assert.equal(f.filterBox.hidden, false);
   f.document.activeElement = null; f.search.dispatch('blur'); roster.schedule(); f.flush(); assert.equal(f.filterBox.hidden, true);
 });
 test('roster footer stays hidden and its facts move to the refresh control title', t => {
@@ -145,18 +142,17 @@ test('roster footer stays hidden and its facts move to the refresh control title
     assert.equal(fixture.footer.hidden, true); assert.equal(fixture.footer.textContent, ''); assert.match(refresh.title, expected);
   }
 });
-test('paging appears only in the catalog view, reuses its button and sits before the catalog control', () => {
-  const f = setup(); const actions: Array<string | undefined> = []; const roster = new Roster(() => {}, action => actions.push(action)); collapse(roster);
+test('loaded rows and explicit paging appear directly without a second catalog control', () => {
+  const f = setup(); const actions: Array<string | undefined> = []; const roster = new Roster(() => {}, action => actions.push(action));
   const rows = Array.from({length: 80}, (_, i) => row(`agent-${i}`, i < 30 ? {handle: `a${i}`} : {availability: 'stored', state: 'done'}));
   roster.set(rows, page(rows, 'next')); f.flush();
-  assert.equal(rowsOf(f.node).length, 8);
-  const older = f.node.query('roster-older'); assert.equal(older.textContent, 'All agents (80)'); assert.equal(f.node.children.at(-1), older);
-  assert.equal(f.footer.hidden, true); assert.throws(() => f.node.query('roster-more'));
-  older.click(); const more = f.node.query('roster-more'); assert.equal(rowsOf(f.node).length, 80);
-  assert.equal(more.textContent, 'More agents'); assert.equal(more.type, 'button'); assert.equal(f.node.children.at(-2), more); assert.equal(f.node.children.at(-1), older);
+  assert.equal(rowsOf(f.node).length, 80); assert.throws(() => f.node.query('roster-older'));
+  assert.equal(f.footer.hidden, true);
+  const more = f.node.query('roster-more');
+  assert.equal(more.textContent, 'More agents'); assert.equal(more.type, 'button'); assert.equal(f.node.children.at(-1), more);
   more.click(); assert.deepEqual(actions, ['more']);
   const nextRows = [...rows, row('extra', {availability: 'stored', state: 'done'})];
-  roster.set(nextRows, page(nextRows, 'next-2')); f.flush(); assert.equal(f.node.query('roster-more'), more); assert.equal(older.textContent, 'All agents (81)');
+  roster.set(nextRows, page(nextRows, 'next-2')); f.flush(); assert.equal(f.node.query('roster-more'), more); assert.equal(rowsOf(f.node).length, 81);
   roster.set(nextRows, {...page(nextRows), scan: {...page([]).scan, complete: false, scanId: 'scan'}}); f.flush();
   assert.equal(f.node.query('roster-more'), more); assert.equal(more.textContent, 'Load more agents'); more.click();
   assert.equal(f.footer.hidden, true); assert.deepEqual(actions, ['more', 'more']);
@@ -166,8 +162,8 @@ test('catalog paging works with and without loaded rows and scan continuation re
   const f = setup(); const actions: Array<string | undefined> = []; const roster = new Roster(() => {}, action => actions.push(action));
   for (const rows of [[], [row('one')]]) {
     roster.set(rows, page(rows, 'next')); f.flush();
-    assert.equal(f.node.query('roster-older').textContent, rows.length ? `All agents (${rows.length})` : 'New agent'); assert.equal(f.footer.hidden, true);
-    const more = f.node.query('roster-more'); assert.equal(more.textContent, 'More agents'); assert.equal(f.node.children.at(-2), more); more.click();
+    assert.throws(() => f.node.query('roster-older')); assert.equal(f.footer.hidden, true);
+    const more = f.node.query('roster-more'); assert.equal(more.textContent, 'More agents'); assert.equal(f.node.children.at(-1), more); more.click();
     roster.set(rows, {...page(rows), scan: {...page([]).scan, complete: false, scanId: 'scan'}}); f.flush();
     assert.equal(f.node.query('roster-more'), more); assert.equal(more.textContent, 'Load more agents'); more.click();
     roster.set(rows, {...page(rows), scan: {...page([]).scan, complete: false}}); f.flush(); assert.equal(more.parentNode, null);
@@ -366,10 +362,10 @@ test('identity-shaped names become honest captions without changing routing or s
   f.search.value=ids[0]??'';f.search.dispatch('input');f.flush();assert.equal(rowsOf(f.node)[0]?.query('row-identity').textContent,'1');rowsOf(f.node)[0]?.query('row-select').click();assert.deepEqual(selected,[ids[0]]);
   f.search.value='';roster.set([...rows].reverse());f.flush();assert.equal(rowsOf(f.node).find(child=>child.dataset.identity===ids[0])?.query('row-identity').textContent,'1');
 });
-test('empty roster discovery failure keeps the reason in the refresh title and offers a new agent', () => {
+test('empty roster discovery failure keeps the reason in the refresh title and shows an empty state', () => {
   const fixture = setup(); const roster = new Roster(() => {}, () => {});
   roster.set([], {stale: true, scan: {state: 'failed', complete: false, visited: 0, skipped: 0, omitted: 0}, error: {code: 'unavailable', message: 'Catalog could not be read', retry: 'read'}}); fixture.flush();
-  assert.deepEqual(rowsOf(fixture.node), []); assert.equal(fixture.node.query('roster-older').textContent, 'New agent');
+  assert.deepEqual(rowsOf(fixture.node), []); assert.equal(fixture.node.query('roster-empty').textContent, 'No agents yet.');
   assert.equal(fixture.footer.hidden, true); assert.equal(fixture.footer.textContent, '');
   const refresh = required(fixture.document.getElementById('agent-refresh'));
   assert.match(refresh.title, /Catalog could not be read/); assert.match(refresh.title, /Agent scan: failed/);
@@ -482,34 +478,33 @@ test('focused timestamp pins its wrapper outside the virtual roster window', t =
   roster.set(rows.slice(1)); fixture.flush(); assert.equal(wrapper.parentNode, null);
 });
 
-test('default scope lists attention, working and named rows ahead of the catalog control', t => {
+test('the loaded list orders work and named rows before the remaining rows without a catalog disclosure', t => {
   const now = 3 * 86400000; t.mock.method(Date, 'now', () => now);
-  const f = setup(); const roster = new Roster(() => {}, () => {}); collapse(roster);
+  const f = setup(); const roster = new Roster(() => {}, () => {});
   const catalog = (identity: string, facts: Partial<AgentRow> = {}) => row(identity, {availability: 'stored', state: 'done', ...facts});
   const rows = [catalog('old', {modifiedAt: now - 3}), catalog('plain', {availability: 'live', state: 'idle', modifiedAt: now - 2}), catalog('lead', {handle: 'lead', modifiedAt: now - 5}), catalog('working', {availability: 'live', state: 'working', modifiedAt: now - 10})];
   const ids = () => rowsOf(f.node).map(child => child.dataset.identity);
   roster.set(rows, page(rows)); f.flush();
-  assert.deepEqual(ids(), ['working', 'lead']);
-  const older = f.node.query('roster-older'); assert.equal(older.textContent, 'All agents (4)'); assert.equal(older.type, 'button'); assert.equal(older.attributes['aria-expanded'], 'false'); assert.equal(f.node.children.at(-1), older);
-  older.click(); assert.deepEqual(ids(), ['working', 'lead', 'plain', 'old']); assert.equal(older.attributes['aria-expanded'], 'true');
+  assert.deepEqual(ids(), ['working', 'lead', 'plain', 'old']);
+  assert.throws(() => f.node.query('roster-older'));
   roster.set([...rows].reverse(), page(rows)); f.flush(); assert.deepEqual(ids(), ['working', 'lead', 'plain', 'old']);
-  f.search.value = 'old'; f.search.dispatch('input'); f.flush(); assert.deepEqual(ids(), ['old']); assert.equal(f.node.query('roster-older'), older);
+  f.search.value = 'old'; f.search.dispatch('input'); f.flush(); assert.deepEqual(ids(), ['old']);
 });
-test('the collapsed list keeps a keyboard-focused row within its eight rows', t => {
+test('the loaded list keeps a keyboard-focused row after an order change', t => {
   const now = 3 * 86400000; t.mock.method(Date, 'now', () => now);
-  const f = setup(); const roster = new Roster(() => {}, () => {}); collapse(roster);
+  const f = setup(); const roster = new Roster(() => {}, () => {});
   const rows = Array.from({length: 10}, (_, i) => row(`r${i}`, {handle: `h${i}`, availability: 'stored', state: 'done', modifiedAt: now - i}));
   const ids = () => rowsOf(f.node).map(child => child.dataset.identity);
-  roster.set(rows); f.flush(); assert.deepEqual(ids(), ['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7']);
+  roster.set(rows); f.flush(); assert.deepEqual(ids(), ['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'r8', 'r9']);
   const age = required(rowsOf(f.node)[3]).query('row-age'); age.focus();
   roster.set(rows.map(source => source.identity === 'r3' ? {...source, modifiedAt: 1} : source)); f.flush();
-  assert.deepEqual(ids(), ['r0', 'r1', 'r2', 'r4', 'r5', 'r6', 'r7', 'r3']); assert.equal(f.document.activeElement, age);
+  assert.deepEqual(ids(), ['r0', 'r1', 'r2', 'r4', 'r5', 'r6', 'r7', 'r8', 'r9', 'r3']); assert.equal(f.document.activeElement, age);
   roster.set(rows.map(source => source.identity === 'r3' ? {...source, modifiedAt: 1} : source), undefined, undefined, 'r4'); f.flush();
   assert.equal(required(rowsOf(f.node).find(child => child.dataset.identity === 'r4')).query('row-select').attributes['aria-current'], 'page');
 });
 test('printable roster keys focus the visible filter, search the catalog, and Escape returns to the roster', t => {
   t.mock.method(Date, 'now', () => 3 * 86400000);
-  const f = setup(); const roster = new Roster(() => {}, () => {}); collapse(roster);
+  const f = setup(); const roster = new Roster(() => {}, () => {});
   roster.set([row('live', {name: 'Live', handle: 'lead'}), row('older', {name: 'Needle', availability: 'stored', state: 'done'})], page([])); f.flush();
   assert.equal(f.filterBox.hidden, true);
   const select = required(rowsOf(f.node)[0]).query('row-select'); select.focus();
@@ -517,7 +512,7 @@ test('printable roster keys focus the visible filter, search the catalog, and Es
   for (const extra of [{ctrlKey: true}, {metaKey: true}, {altKey: true}, {isComposing: true}, {defaultPrevented: true}]) key('n', extra);
   key('ArrowDown'); assert.equal(f.filterBox.hidden, true); assert.equal(prevented, 0);
   key('n'); assert.equal(prevented, 1); assert.equal(f.filterBox.hidden, false); assert.equal(f.search.value, 'n'); assert.equal(f.document.activeElement, f.search);
-  assert.equal(rowsOf(f.node)[0]?.dataset.identity, 'older'); assert.equal(f.node.query('roster-older').textContent, 'All agents (2)');
+  assert.equal(rowsOf(f.node)[0]?.dataset.identity, 'older'); assert.throws(() => f.node.query('roster-older'));
   let stopped = false; f.search.dispatch('keydown', {key: 'Escape', preventDefault: () => { prevented++; }, stopPropagation: () => { stopped = true; }}); f.flush();
   assert.equal(stopped, true); assert.equal(f.search.value, ''); assert.equal(f.filterBox.hidden, true); assert.equal(f.document.activeElement, f.node);
   f.search.value = 'Li'; f.search.dispatch('input'); select.focus(); key('v');
@@ -531,14 +526,14 @@ test('quiet filter Escape clears the query, keeps the catalog open and never cha
   const now = 3 * 86400000; t.mock.method(Date, 'now', () => now);
   const f = setup();
   Object.defineProperty(f.search, 'hidden', {get: () => false, set: () => { throw new Error('Roster must not change filter visibility'); }});
-  const roster = new Roster(() => {}, () => {}); collapse(roster);
+  const roster = new Roster(() => {}, () => {});
   roster.set([row('old', {name: 'Old', availability: 'stored', state: 'done'}), row('live', {name: 'Live', availability: 'live', state: 'working'})], page([])); f.flush();
-  assert.equal(rowsOf(f.node).length, 1);
-  f.node.query('roster-older').click(); const old = required(rowsOf(f.node).find(child => child.dataset.identity === 'old')); old.query('row-select').focus();
+  assert.equal(rowsOf(f.node).length, 2);
+  const old = required(rowsOf(f.node).find(child => child.dataset.identity === 'old')); old.query('row-select').focus();
   f.node.dispatch('keydown', {key: 'x', preventDefault: () => {}}); assert.equal(old.parentNode, null);
   f.search.dispatch('keydown', {key: 'Escape', preventDefault: () => {}, stopPropagation: () => {}}); f.flush();
   assert.equal(f.document.activeElement, f.node); assert.equal(f.search.value, ''); assert.equal(f.search.hidden, false);
-  assert.equal(old.parentNode, f.node); assert.equal(f.node.query('roster-older').textContent, 'All agents (2)');
+  assert.equal(old.parentNode, f.node); assert.throws(() => f.node.query('roster-older'));
   f.search.dispatch('blur'); assert.equal(f.search.hidden, false);
 });
 test('the catalog list estimates the minimum row height and preserves selected virtual pins', t => {
@@ -551,14 +546,14 @@ test('the catalog list estimates the minimum row height and preserves selected v
   const pinned = required(rowsOf(f.node).find(child => child.dataset.identity === 'live-200'));
   const beforePin = f.node.children.slice(0, f.node.children.indexOf(pinned)).reduce((height, node) => height + node.offsetHeight, 0);
   assert.equal(beforePin, 200 * 30); assert.ok(Number.parseFloat(gap.style.height ?? '') % 30 === 0);
-  assert.equal(f.node.children.reduce((height, node) => height + node.offsetHeight, 0), 320 * 30 + 40);
-  assert.equal(f.node.query('roster-older').textContent, 'All agents (320)'); assert.ok(rowsOf(f.node).length <= 77);
-  const bottom = 320 * 30 + 40 - f.node.clientHeight;
+  assert.equal(f.node.children.reduce((height, node) => height + node.offsetHeight, 0), 320 * 30 + 20);
+  assert.throws(() => f.node.query('roster-older')); assert.ok(rowsOf(f.node).length <= 77);
+  const bottom = 320 * 30 + 20 - f.node.clientHeight;
   f.node.scrollTop = bottom; f.node.dispatch('scroll'); f.flush(); assert.equal(f.node.scrollTop, bottom);
-  const more = f.node.query('roster-more'); assert.equal(f.node.children.at(-2), more);
+  const more = f.node.query('roster-more'); assert.equal(f.node.children.at(-1), more);
   more.focus(); roster.set([...live, ...older], page([], 'next-2'), 'live-200'); f.flush();
   assert.equal(f.node.query('roster-more'), more); assert.equal(f.document.activeElement, more);
-  f.node.query('roster-older').click(); assert.equal(f.node.scrollTop, bottom);
+  roster.schedule(); f.flush(); assert.equal(f.node.scrollTop, bottom);
 });
 test('plain status words retain their full metadata', () => {
   const f = setup(); const roster = new Roster(() => {}, () => {});
@@ -596,7 +591,7 @@ test('age toggles request row measurement and retain their deliberate clock thro
 });
 test('roster keeps callback truth and its bounded excerpt in distinct heading fields', () => {
   const f = setup(); const label = 'Running; retained history only';
-  const roster = expanded(new RosterView(() => {}, () => {}, undefined, () => {}, () => ({label, glyph: '?', tone: 'warning'})));
+  const roster = new RosterView(() => {}, () => {}, undefined, () => {}, () => ({label, glyph: '?', tone: 'warning'}));
   const source = row('truthful', {name: 'A complete supplied conversation name', availability: 'stored', role: 'Supplied role '.repeat(80)});
   roster.set([source]); f.flush(); const node = required(rowsOf(f.node)[0]), heading = node.query('row-heading'), summary = node.query('row-summary');
   assert.deepEqual(heading.children.map(child => child.className), ['row-name', 'row-identity muted']);
@@ -608,7 +603,7 @@ test('roster keeps callback truth and its bounded excerpt in distinct heading fi
 });
 test('quiet roster state preserves canonical accessibility, full preview and keyed actions', () => {
   const f = setup(); let hidden = true, label = 'Running';
-  const roster = expanded(new RosterView(() => {}, () => {}, undefined, () => {}, () => ({label, glyph: '?', hideVisibleState: hidden})));
+  const roster = new RosterView(() => {}, () => {}, undefined, () => {}, () => ({label, glyph: '?', hideVisibleState: hidden}));
   const source = row('quiet', {state: 'idle', role: `**Long** ${'unbroken'.repeat(30)}`, currentTool: {name: 'read', argument: 'source.ts'}});
   roster.set([source]); f.flush();
   const node = required(rowsOf(f.node)[0]), select = node.query('row-select'), preview = node.query('row-preview'), state = node.query('row-state'), message = node.query('row-message'), age = node.query('row-age');
@@ -626,11 +621,11 @@ test('quiet roster state preserves canonical accessibility, full preview and key
 });
 test('unchecked live work shows published activity without changing readiness or stored status', () => {
   const f = setup();
-  const roster = expanded(new RosterView(() => {}, () => {}, undefined, undefined, source => {
+  const roster = new RosterView(() => {}, () => {}, undefined, undefined, source => {
     const view = conversationPresentation({target: {kind: 'agent', identity: source.identity}, row: source, connected: true});
     assert.equal(view.input, false); assert.equal(view.busy, false); assert.equal(view.tool, undefined);
     return {label: view.activity, glyph: presentationGlyph(view), tone: view.tone, hideVisibleState: view.hideVisibleState};
-  }));
+  });
   const source = row('published-work', {currentTool: {name: 'read', argument: 'source.ts'}});
   roster.set([source]); f.flush();
   const node = required(rowsOf(f.node)[0]), state = node.query('row-state'), select = node.query('row-select');
@@ -645,7 +640,7 @@ test('unchecked live work shows published activity without changing readiness or
 });
 test('resolved status overrides live catalog state and removes a stale tool without replacing the row', () => {
   const f = setup(); let label = 'Working';
-  const roster = expanded(new RosterView(() => {}, () => {}, undefined, undefined, () => ({label, glyph: label === 'Working' ? '●' : '○', tool: label === 'Working' ? {name: 'read', argument: 'file.ts'} : undefined})));
+  const roster = new RosterView(() => {}, () => {}, undefined, undefined, () => ({label, glyph: label === 'Working' ? '●' : '○', tool: label === 'Working' ? {name: 'read', argument: 'file.ts'} : undefined}));
   const source = row('selected', {state: 'unavailable', currentTool: {name: 'read', argument: 'file.ts'}});
   roster.set([source], undefined, source.identity); f.flush();
   const node = required(rowsOf(f.node)[0]); const select = node.query('row-select'); select.focus();

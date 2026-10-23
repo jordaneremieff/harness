@@ -4,10 +4,9 @@ import {absoluteTime, compactAge} from './format.ts';
 import {navigateOptions} from './list-navigation.ts';
 import {markdownDom} from './safe-markdown.ts';
 import {
-  FRAME_LABELS, eventTime, exchangeRows, filterThreads, mergeEvents, noteFitsInline, olderBoundary,
-  overviewLines, pageEvents, prependEvents, purposeNeedsExpansion, sidebarThreads, threadCount, threadMeta, type ExchangeRow, type FrameChange, type ThreadNameFor} from './threads.ts';
+  FRAME_LABELS, THREAD_FILTER_THRESHOLD, eventTime, exchangeRows, filterThreads, mergeEvents, noteFitsInline, olderBoundary,
+  overviewLines, pageEvents, prependEvents, purposeNeedsExpansion, threadMeta, type ExchangeRow, type FrameChange, type ThreadNameFor} from './threads.ts';
 
-const SECTION_KEY = 'ui:sections:threads';
 const OPERATOR = 'You';
 const NOT_OFFERED = 'Threads are not available from this agent host.';
 const REFRESH_AFTER_MS = 10_000;
@@ -30,21 +29,15 @@ export type ExplorerHooks = {
   name: KnownName;
   open(item: ThreadListItem, row: HTMLElement): void;
 };
-/** The THREADS section of the sidebar. It reads nothing until it is opened. */
+/** The Threads destination shows every loaded thread within the overview's existing bounds. */
 export class ThreadExplorer {
   private readonly hooks: ExplorerHooks;
-  private readonly section = byId('threads-section');
-  private readonly heading = byId('threads-heading');
   private readonly body = byId('threads-section-body');
-  private readonly count = byId('threads-count');
   private readonly refreshButton = byId<HTMLButtonElement>('threads-refresh');
   private readonly filterBox = byId('threads-filter-box');
   private readonly filter = byId<HTMLInputElement>('threads-filter');
   private readonly list = byId('threads-list');
   private readonly footer = byId('threads-footer');
-  private collapsed = false;
-  private catalog = false;
-  private readonly all = button('All threads',()=>{this.catalog=true;this.paint();this.filter.focus();},'nav-row sidebar-action');
   private readonly retry = button('Threads did not load · Retry',()=>{void this.load();},'nav-row sidebar-action');
   private overview?: ThreadOverview;
   private failure?: unknown;
@@ -55,26 +48,23 @@ export class ThreadExplorer {
   private lastNames = '';
   constructor(hooks: ExplorerHooks) {
     this.hooks = hooks;
-    try { this.collapsed = sessionStorage.getItem(SECTION_KEY) === 'true'; } catch { this.collapsed = false; }
-    this.heading.addEventListener('click', () => this.toggle(!this.collapsed));
-    this.refreshButton.addEventListener('click', () => { if (!this.collapsed) void this.load(); });
+    this.refreshButton.addEventListener('click', () => { void this.load(); });
     this.filter.addEventListener('input', () => this.paint());
     this.filter.addEventListener('keydown', event => {
       if (event.key !== 'Escape' || !this.filter.value) return;
-      event.preventDefault(); event.stopPropagation(); this.filter.value = ''; this.catalog = false; this.paint();
+      event.preventDefault(); event.stopPropagation(); this.filter.value = ''; this.paint();
     });
     this.list.addEventListener('keydown', event => navigateOptions(event, this.list));
     this.paint();
-    if (!this.collapsed) void this.load();
+    void this.load();
   }
   get items(): readonly ThreadListItem[] { return this.overview?.items ?? []; }
-  get expanded(): boolean { return !this.collapsed; }
-  expand(): void { this.toggle(false); }
+  loadIfNeeded(): void { if (!this.overview && !this.loading) void this.load(); }
   /** Marks the row whose thread the reader shows. */
   setCurrent(id: string | undefined): void { if (this.current !== id) { this.current = id; this.paint(); } }
   focusRow(id: string): boolean {
     const row = this.rowFor(id);
-    if (!row || this.collapsed) return false;
+    if (!row) return false;
     row.focus({preventScroll: false}); return true;
   }
   private rowFor(id: string): HTMLButtonElement | undefined {
@@ -83,13 +73,7 @@ export class ThreadExplorer {
   /** Names can arrive after the list does, so the footer's agent names repaint on change. */
   refreshNames(): void { const names = this.nameSignature(); if (names !== this.lastNames) this.paint(); }
   /** Brings the list up to date after the page was hidden, at most once per interval. */
-  refreshIfStale(now = Date.now()): void { if (!this.collapsed && !this.loading && now - this.loadedAt >= REFRESH_AFTER_MS) void this.load(); }
-  private toggle(collapsed: boolean): void {
-    this.collapsed = collapsed;
-    try { sessionStorage.setItem(SECTION_KEY, String(collapsed)); } catch { /* The current tab keeps the section state in memory. */ }
-    this.paint();
-    if (!collapsed && !this.overview && !this.loading) void this.load();
-  }
+  refreshIfStale(now = Date.now()): void { if (!this.loading && now - this.loadedAt >= REFRESH_AFTER_MS) void this.load(); }
   async load(): Promise<void> {
     this.controller?.abort();
     const controller = new AbortController(); this.controller = controller; this.loading = true; this.paint();
@@ -111,40 +95,32 @@ export class ThreadExplorer {
   private paint(): void {
     try {
     const overview = this.overview;
-    this.section.dataset.collapsed = String(this.collapsed);
-    this.heading.setAttribute('aria-expanded', String(!this.collapsed));
-    this.body.hidden = this.collapsed;
-    const selected = sidebarThreads(overview?.items ?? []);
-    setText(this.count,String(selected.length)); this.count.hidden = !selected.length;
+    this.body.hidden = false;
     this.refreshButton.title = ['Refresh threads',this.diagnostics()].filter(Boolean).join('\n');
-    this.refreshButton.disabled = this.loading || this.collapsed;
-    const query = this.filter.value.trim();this.section.dataset.catalog=String(this.catalog||!!query);
-    this.filterBox.hidden = !this.catalog && !query && document.activeElement !== this.filter;
+    this.refreshButton.disabled = this.loading;
+    const query = this.filter.value.trim();
+    this.filterBox.hidden = (overview?.items.length ?? 0) <= THREAD_FILTER_THRESHOLD && !query && document.activeElement !== this.filter;
     this.lastNames = this.nameSignature();
-    if (this.collapsed) return;
-    const items = filterThreads(this.catalog || query ? overview?.items ?? [] : selected,query);
+    const items = filterThreads(overview?.items ?? [],query);
     const focused = this.list.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.threadId : undefined;
     const now = Date.now();
-    const status = this.emptyStatus(items.length, selected.length, !!query);
+    const status = this.emptyStatus(items.length, !!query);
     this.list.replaceChildren(...items.map(item => this.row(item, now)), ...(status ? [element('p', 'secondary thread-empty', status)] : []));
     this.paintFooter(focused);
     } catch (error) {try {window.reportClientError?.('Threads',error);} catch {} throw error;}
   }
   /** One true line where the list would otherwise be a heading with nothing under it. */
-  private emptyStatus(shown: number, shared: number, filtered: boolean): string {
+  private emptyStatus(shown: number, filtered: boolean): string {
     if (shown) return '';
     if (!this.overview) return this.loading ? 'Reading threads…' : '';
-    if (filtered || this.catalog) return 'No matching threads';
-    if (this.failedEmpty()) return '';
-    const total = Number(threadCount(this.overview));
-    return shared === 0 && total > 0 ? `No shared threads · ${total} in All threads` : 'No threads yet';
+    if (filtered) return 'No matching threads';
+    return this.failedEmpty() ? '' : 'No threads yet';
   }
   private paintFooter(focused:string|undefined):void {
-    const total=threadCount(this.overview);
-    setText(this.all,total ? `All threads (${total})` : 'All threads');
     this.retry.disabled=this.loading;this.retry.title=this.diagnostics();
-    this.footer.replaceChildren(...(this.failedEmpty()?[this.retry,this.all]:[this.all]));
-    if (focused) (this.rowFor(focused)??this.all).focus({preventScroll: true});
+    this.footer.replaceChildren(...(this.failedEmpty()?[this.retry]:[]));
+    this.footer.hidden = !this.failedEmpty();
+    if (focused) (this.rowFor(focused)??this.refreshButton).focus({preventScroll: true});
   }
   private failedEmpty():boolean {
     const overview=this.overview;

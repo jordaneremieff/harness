@@ -643,13 +643,12 @@ test('Find distinguishes session members that share a virtual representative', (
   const root = node('primary-transcript'); assert.equal(root.querySelector('.find-current')?.dataset.sessionEventId, 's39');
   assert.equal(find.previous('needle').position, 39); assert.equal(root.querySelector('.find-current')?.dataset.sessionEventId, 's38');
 });
-function expandRoster(): void { node('roster').querySelector('.roster-older')?.dispatch('click'); flush(); }
 test('roster preserves order, visible duplicate identities, keyed rows and data-arrival ages', () => {
   const modifiedAt = Date.UTC(2026, 9, 8, 12);
   setup(); const now = Date.now; let clock = modifiedAt + 600000; Date.now = () => clock;
   try {
     const selected: string[] = []; const view = new Roster(row => selected.push(row.identity), () => {}, undefined, undefined, rosterStatus); const one = {...row('one', 'same'), modifiedAt}; const two = row('two', 'same');
-    view.set([one, two]); flush(); expandRoster(); const first = node('roster').children[0]; assert.ok(first); const age = first.querySelector('time'); assert.equal(age?.textContent, '10m'); assert.match(first.querySelector('.row-select')?.attributes['aria-label'] ?? '', /one/);
+    view.set([one, two]); flush(); const first = node('roster').children[0]; assert.ok(first); const age = first.querySelector('time'); assert.equal(age?.textContent, '10m'); assert.match(first.querySelector('.row-select')?.attributes['aria-label'] ?? '', /one/);
     assert.equal(first.querySelector('.row-identity')?.textContent, '1');
     assert.equal(first.querySelector('.row-word'), null); assert.equal(first.querySelector('.row-detail'), null); assert.equal(first.dataset.live, 'true');
     const model = first.querySelector('.row-model'); assert.ok(model); assert.equal(model.hidden, true); assert.equal(model.textContent, '');
@@ -664,31 +663,30 @@ test('roster preserves order, visible duplicate identities, keyed rows and data-
     first.querySelector('.row-age')?.dispatch('click'); assert.doesNotMatch(age?.textContent ?? '', /ago/);
   } finally { Date.now = now; }
 });
-test('roster collapsed catalog opens in place and keeps the keyed row and focus', () => {
+test('the loaded roster exposes every row directly and retains keyboard filter access', () => {
   setup(); const view = new Roster(() => {}, () => {}, undefined, undefined, rosterStatus);
   const old = {...row('old', 'Older'), state: 'done', availability: 'stored' as const};
   view.set([row('live', 'Live'), old], {stale: false, scan: {state: 'ready', complete: true, visited: 2, skipped: 0, omitted: 0}}); flush();
-  const container = node('roster'); const older = container.querySelector('.roster-older'); assert.equal(older?.textContent, 'All agents (2)');
-  assert.equal(node('roster-footer').hidden, true); assert.equal(older?.attributes['aria-expanded'], 'false');
-  older?.dispatch('click'); flush(); assert.equal(older?.attributes['aria-expanded'], 'true'); assert.equal(node('agent-search').hidden, false);
+  const container = node('roster'); assert.equal(container.querySelector('.roster-older'), null);
+  assert.equal(node('roster-footer').hidden, true);
   const oldSelect = container.children.find(child => child.dataset.identity === 'old')?.querySelector('.row-select'); assert.ok(oldSelect);
   const liveSelect = container.querySelector('.row-select'); assert.ok(liveSelect); liveSelect.focus();
   container.dispatch('keydown', {key: 'O', preventDefault: () => {}});
   assert.equal(fakeDocument.activeElement, node('agent-search'));
 });
-test('an empty roster offers New agent while its scan states reach the footer', () => {
-  setup(); const created = new FakeNode('button'); let clicks = 0; created.addEventListener('click', () => { clicks++; }); ids.set('agent-new', created);
+test('an empty roster has no second creation control below the list', () => {
+  setup();
   const view = new Roster(() => {}, () => {}, undefined, undefined, rosterStatus);
   const scan = {state: 'not-started' as const, complete: false, visited: 0, skipped: 0, omitted: 0};
-  view.set([], {scan, stale: false}); flush(); assert.equal(node('roster').textContent, 'New agent');
-  node('roster').querySelector('.roster-older')?.dispatch('click'); assert.equal(clicks, 1);
+  view.set([], {scan, stale: false}); flush(); assert.equal(node('roster').textContent, 'No agents yet.');
+  assert.equal(node('roster').querySelector('button'), null);
 });
 test('roster more uses cached page cursors independently from scan completeness', () => {
   setup(); const actions: Array<string | undefined> = []; const view = new Roster(() => {}, action => actions.push(action), undefined, undefined, rosterStatus);
   const scan = {state: 'ready' as const, complete: true, visited: 2, skipped: 0, omitted: 0};
-  view.set([row('one')], {scan, stale: false, nextCursor: 'page-2'}); flush(); expandRoster();
+  view.set([row('one')], {scan, stale: false, nextCursor: 'page-2'}); flush();
   const more = node('roster').querySelector('.roster-more'); assert.equal(more?.textContent, 'More agents'); assert.ok(node('roster').children.includes(more));
-  assert.equal(node('roster-footer').hidden, true); assert.equal(node('roster').querySelector('.roster-older')?.attributes['aria-expanded'], 'true'); more?.dispatch('click');
+  assert.equal(node('roster-footer').hidden, true); assert.equal(node('roster').querySelector('.roster-older'), null); more?.dispatch('click');
   view.set([], {scan: {...scan, complete: false, scanId: 'scan-2'}, stale: false, nextCursor: null}); flush();
   const continuation = node('roster').querySelector('.roster-more'); assert.equal(continuation, more); assert.equal(continuation?.textContent, 'Load more agents'); continuation?.dispatch('click');
   view.set([], {scan: {...scan, complete: false}, stale: false}); flush(); assert.equal(node('roster-footer').querySelector('button'), null); assert.equal(node('roster').querySelector('.roster-more'), null);
@@ -697,7 +695,7 @@ test('roster more uses cached page cursors independently from scan completeness'
 });
 test('roster virtual rows retain selected/focused pins, internal gaps and measured heights', () => {
   setup(); const view = new Roster(() => {}, () => {}, undefined, undefined, rosterStatus); const rows = Array.from({length: 220}, (_, i) => row(`full-identity-${i}`));
-  view.set(rows, undefined, 'full-identity-200'); flush(); expandRoster(); const container = node('roster'); const pinned = container.children.find(child => child.dataset.identity === 'full-identity-200'); assert.ok(pinned);
+  view.set(rows, undefined, 'full-identity-200'); flush(); const container = node('roster'); const pinned = container.children.find(child => child.dataset.identity === 'full-identity-200'); assert.ok(pinned);
   pinned.measured = 250; pinned.focus(); view.set(rows, undefined, 'full-identity-0'); flush();
   assert.equal(pinned.isConnected, true); assert.equal(fakeDocument.activeElement, pinned); assert.equal(pinned.offsetHeight, 250);
   const measuredPrefix = container.children.slice(0, container.children.indexOf(pinned)).reduce((sum, child) => sum + child.offsetHeight, 0); assert.equal(pinned.offsetTop, measuredPrefix); assert.ok(container.children.filter(child => child.className === 'spacer').length >= 2);

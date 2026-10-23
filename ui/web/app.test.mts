@@ -958,11 +958,11 @@ test('visible controls supplement the palette without a header band or title cli
   for(const id of ['session-open','session-new','agent-new','commands-button','notifications-button','appearance-button'])assert.ok(byId(id)); assert.doesNotMatch(html,/window-actions|pane-heading|key-hint|id="notices-button"/); assert.ok(source.includes('focusedTranscript()?.expandLoaded')); assert.ok(source.includes("byId('notices-count').hidden = !unread")); assert.ok(source.includes("const activity = byId('workbench-activity'); if (!notice && view.detail) activity.title +=")); assert.ok(source.includes("!view.busy && view.responseOutcome === 'failed'")); assert.doesNotMatch(source, /Retrying after/); assert.ok(source.includes('if (item?.lastError)')); assert.doesNotMatch(source, /byId\('(?:session-title|agent-name)'\)\.addEventListener\('click'/); for (const binding of ["byId('session-new').addEventListener('click'", "byId('agent-refresh').addEventListener('click', refreshRoster)", "byId('agent-new').addEventListener('click'", "byId('commands-button').addEventListener('click', () => actions.palette())", "byId('notifications-button').addEventListener('click', notices)", "byId('appearance-button').addEventListener('click', () => actions.appearance())"]) assert.ok(source.includes(binding));
 });
 
-test('the sidebar names its destination and the main header has a labelled Sessions control', () => {
+test('the sidebar names its destination and the main header has an explicit sidebar icon', () => {
   const header = byId('sidebar-close').parentNode; assert.ok(header);
-  assert.deepEqual(header.children.map(node => node.id), ['navigation-title', 'sidebar-close']);
+  assert.deepEqual(header.children.map(node => node.id), ['navigation-back','navigation-title','navigation-view-actions','sidebar-close']);
   const toggle = byId('sidebar-close'), show = byId('sidebar-show');
-  assert.match(html,/id="sidebar-show"[^>]*>Sessions<\/button>/);assert.equal(show.parentNode,byId('navigation-access'));
+  assert.match(html,/id="sidebar-show"[^>]*aria-label="Show sidebar"/);assert.ok(show.querySelector('.card-icon-navigation'));assert.equal(show.parentNode,byId('navigation-access'));
   assert.equal(toggle.getAttribute('aria-label'), 'Hide sidebar'); assert.equal(toggle.title, 'Hide sidebar');
   assert.ok(toggle.querySelector('.card-icon-navigation'));
 });
@@ -1042,7 +1042,7 @@ test('Primary and agent name collisions never expose a suffix from the internal 
 test('the Primary row carries no state glyph, so its title starts at the common text edge', async () => {
   await arrive({workspace: {id: 'w', revision: 1}, primaries: [], roster: []});
   assert.equal(byId('primary-row').querySelector('svg'), null); assert.equal(byId('primary-row').querySelector('.state-glyph'), null);
-  assert.equal(byId('primary-row-title').textContent, 'no session');
+  assert.equal(byId('primary-row-title').textContent, 'New session');
   assert.equal(byId('session-chooser').hidden, false); assert.equal(byId('conversation-panes').querySelector('textarea'), null);
 });
 
@@ -1260,99 +1260,61 @@ test('the whole-workbench footer owns facts while composers retain direct delive
 test('a live agent with unavailable catalog metadata keeps title pane and composer coherent without a Primary', async () => {
   const row=agentFixture('a', {state:'unavailable', availability:'live', name:'Worker'});
   await arrive({workspace:{id:'w',revision:1,selectedTarget:{kind:'agent',identity:'a'},panelVisible:true},primaries:[],roster:[row],targets:[targetFixture('agent-a',{kind:'agent',identity:'a'})]});
-  assert.equal(hostDocument.title,'Pi · Worker · Ready'); assert.equal(byId('primary-row').hidden,true); assert.equal(byId('project-name').textContent,'project'); assert.equal(byId('project-button').title, 'Working folder: /fixture/project');
+  assert.equal(hostDocument.title,'Pi · Worker'); assert.equal(byId('primary-row').hidden,true); assert.equal(byId('project-name').textContent,'project'); assert.equal(byId('project-button').title, 'Working folder: /fixture/project');
   const active = tabsNode().children.find(node => node.attributes.get('aria-selected') === 'true'); assert.ok(active); assert.equal(active.querySelector('.tab-state'), null); assert.match(active.getAttribute('aria-label') ?? '', /Ready/); assert.equal(active.querySelector('.tab-dot')?.title, 'Ready');
   assert.equal(agentControl('recipient').textContent,'Message Worker'); assert.equal(agentControl('send').disabled,true); assert.equal(agentControl('editor').disabled,false);
 });
 
-test('a Primary that is not ready keeps its state word on the right of the row and a ready one shows none', async () => {
+test('the Primary row keeps state words out of the human title at every lifecycle', async () => {
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({lifecycle: 'stopped'})], roster: []});
-  assert.notEqual(byId('primary-row-meta').textContent, ''); assert.equal(byId('primary-row').querySelector('svg'), null);
+  assert.equal(byId('primary-row-meta').textContent, '');assert.equal(byId('primary-row-meta').hidden,true); assert.equal(byId('primary-row').querySelector('svg'), null);
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture({activity: 'idle'})], roster: []});
   assert.equal(byId('primary-row-meta').textContent, '');
 });
-test('Agents counts only loaded live work in both section states and never cached page size', async () => {
-  const workspace = {id: 'sidebar-work-count', revision: 1, primaryKey: 'p'};
+test('Agents lists all loaded rows without inferring work from cached metadata', async () => {
   const rows = Array.from({length: 20}, (_, index) => agentFixture(`sidebar-count-${index}`, {handle: undefined, state: index < 2 ? 'working' : 'idle'}));
   rows.push(agentFixture('sidebar-stored-work', {handle: undefined, availability: 'stored', state: 'working'}));
   const before = transportLog.length;
-  await arrive({workspace, primaries: [primaryFixture()], roster: rows});
-  app.state.rosterMeta = {stale: false, nextCursor: 'more-cached-agents', scan: {state: 'ready', complete: true, visited: 0, skipped: 0, omitted: 0}};
-  app.setSidebarSection('agents', true);
-  const count = byId('agents-count');
-  assert.equal(count.textContent, '2'); assert.equal(count.hidden, false);
+  await arrive({workspace: {id: 'sidebar-work-count', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture()], roster: rows});
+  app.showNavigationView('agents'); await settle();
+  assert.equal(byId('roster').querySelectorAll('.agent-row').length, rows.length);
   for (const source of rows.slice(0, 2)) {
     const state = byId('roster').querySelector(`[data-identity="${source.identity}"]`)?.querySelector('.row-state');
-    assert.ok(state); assert.equal(state.textContent, 'Working'); assert.equal(state.hidden, false); assert.equal(state.dataset.tone, 'info'); assert.equal(state.dataset.busy, 'true');
-    assert.equal(app.state.agentAvailability.has(source.identity), false);
+    assert.ok(state); assert.equal(state.textContent, 'Working'); assert.equal(state.hidden, false); assert.equal(state.dataset.busy, 'true');
   }
-  assert.equal(byId('roster').querySelector('[data-identity="sidebar-count-2"]'), null);
-  assert.equal(byId('roster').querySelector('[data-identity="sidebar-stored-work"]'), null);
-  app.setSidebarSection('agents', false); assert.equal(count.hidden, false); assert.equal(count.textContent, '2');
-  await arrive({workspace, primaries: [primaryFixture()], roster: rows.map(row => ({...row, state: 'idle'}))});
-  app.state.rosterMeta = {...app.state.rosterMeta, nextCursor: 'still-more-cached-agents'};
-  app.setSidebarSection('agents', true); assert.equal(count.textContent, ''); assert.equal(count.hidden, true);
+  const stored = byId('roster').querySelector('[data-identity="sidebar-stored-work"]'); assert.ok(stored);
+  assert.equal(stored.querySelector('.row-state')?.hidden, true);
   assert.equal(transportLog.slice(before).some(call => call.path.endsWith('/connect') || call.path.endsWith('/start') || call.path.includes('/inputs')), false);
 });
-test('sidebar headings keep one leading chevron and separate actions while their free button area toggles', async t => {
-  await arrive({workspace: {id: 'heading-targets', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture()], roster: [agentFixture('heading-work', {state: 'working'})]});
-  t.mock.method(app.filesTree, 'rootCount', () => ({count: 7, more: true}));
+test('destination actions share the title row without a second collapse control', async t => {
+  await arrive({workspace: {id: 'heading-targets', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture()], roster: []});
   let refreshes = 0; t.mock.method(app.filesTree, 'refresh', () => {refreshes++;});
-  for (const section of ['agents', 'files'] as const) {
-    const heading = byId(`${section}-heading`), count = byId(`${section}-count`), chevron = heading.querySelector('.card-icon-chevron');
-    assert.ok(chevron); assert.equal(heading.firstChild, chevron); assert.equal(heading.tagName, 'button'); assert.equal(heading.getAttribute('type'), 'button');
-    assert.equal(heading.querySelectorAll('svg').length, 1); assert.equal(chevron.getAttribute('aria-hidden'), 'true');
-    app.setSidebarSection(section, true);
-    assert.equal(heading.getAttribute('aria-expanded'), 'false'); assert.equal(count.hidden, false);
-    assert.equal(count.textContent, section === 'agents' ? '1' : '7+');
-    heading.dispatch('click', {clientX: heading.clientWidth - 1, clientY: 12});
-    assert.equal(heading.getAttribute('aria-expanded'), 'true'); assert.equal(heading.firstChild, chevron);
-    assert.equal(count.hidden, section === 'files');
-    heading.dispatch('click', {clientX: heading.clientWidth - 1, clientY: 12});
-    assert.equal(heading.getAttribute('aria-expanded'), 'false'); assert.equal(heading.firstChild, chevron); assert.equal(count.hidden, false);
-    const action = byId(section === 'agents' ? 'agent-refresh' : 'files-refresh');
-    assert.equal(heading.contains(action), false); assert.equal(action.parentNode?.parentNode, heading.parentNode?.parentNode);
+  for (const view of ['agents', 'files', 'threads'] as const) {
+    app.showNavigationView(view);
+    const actions = byId(`${view}-view-actions`);
+    assert.equal(actions.parentNode, byId('navigation-view-actions')); assert.equal(actions.hidden, false);
+    assert.equal(byId(`${view}-heading`).tagName, 'h2'); assert.equal(byId(`${view}-heading`).getAttribute('aria-expanded'), null);
   }
-  byId('files-refresh').click(); assert.equal(refreshes, 1); assert.equal(byId('files-heading').getAttribute('aria-expanded'), 'false');
-  app.setSidebarSection('files', false); byId('files-refresh').click(); assert.equal(refreshes, 2); assert.equal(byId('files-heading').getAttribute('aria-expanded'), 'true');
+  app.showNavigationView('files'); byId('files-refresh').click(); assert.equal(refreshes, 1);
+  assert.equal(byId('files-section-body').hidden, false);
 });
-test('sidebar sections retain their collapsed state per workspace and tab and filter focus expands agents', async () => {
-  const values = new Map<string, string>();
+test('named destinations ignore former section collapse preferences and Find agent reveals its filter', async () => {
+  const values = new Map([['ui:sections:w:agents', 'true'], ['ui:sections:w:files', 'true']]);
   Reflect.set(globalThis, 'sessionStorage', {getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => {values.set(key, value);}});
-  const workspace = (id: string): Workspace => ({id, revision: 1, primaryKey: 'p'});
-  await arrive({workspace: workspace('w'), primaries: [primaryFixture()], roster: []});
-  app.showNavigationView('sessions');app.renderSidebarSections(); assert.equal(byId('agents-heading').attributes.get('aria-expanded'), 'true');
-  assert.equal(byId('agents-section-body').hidden, false);
-  assert.equal(byId('primary-section').hidden, false); assert.equal(byId('primary-row').hidden, true); assert.equal(byId('primary-section-body').hidden, false); assert.equal(byId('session-open').hidden, false);
-  app.setSidebarSection('agents', false);
-  assert.equal(byId('agents-section-body').hidden, false); assert.equal(values.get('ui:sections:w:agents'), 'false'); assert.equal(byId('agents-count').hidden, true);
-  app.setSidebarSection('agents', true); assert.equal(values.get('ui:sections:w:agents'), 'true');
-  app.setSidebarSection('files', true); assert.equal(values.get('ui:sections:w:files'), 'true');
-  assert.equal(byId('files-heading').getAttribute('aria-expanded'), 'false'); assert.equal(byId('files-section-body').hidden, true);
-  await arrive({workspace: workspace('w'), primaries: [primaryFixture()], roster: []});
-  app.renderSidebarSections(); assert.equal(byId('agents-section-body').hidden, true);
-  await arrive({workspace: workspace('other'), primaries: [primaryFixture()], roster: []});
-  app.renderSidebarSections(); assert.equal(byId('agents-section-body').hidden, false);
-  await arrive({workspace: workspace('w'), primaries: [primaryFixture()], roster: []});
-  app.renderSidebarSections(); assert.equal(byId('agents-section-body').hidden, true);
-  assert.equal(byId('files-section-body').hidden, true); app.setSidebarSection('files', false);
-  assert.equal(byId('files-heading').getAttribute('aria-expanded'), 'true'); assert.equal(byId('files-section-body').hidden, false);
-  assert.equal(byId('agents-section-body').hidden, true);
-  assert.equal(byId('agent-filter-box').hidden, true);
-  byId('sidebar').hidden = true; const before = browser.frameCount; app.focusAgentSearch(); await settle();
-  assert.equal(byId('agent-filter-box').hidden, false);
-  assert.equal(byId('sidebar').hidden, false); assert.equal(byId('agents-section-body').hidden, false);
-  assert.equal(hostDocument.activeElement, byId('agent-search')); assert.ok(browser.frameCount > before);
-  const denied = () => {throw new Error('denied');};
-  Reflect.set(globalThis, 'sessionStorage', {getItem: denied, setItem: denied, removeItem: denied});
-  assert.doesNotThrow(() => app.setSidebarSection('agents', true)); app.renderSidebarSections();
-  assert.equal(byId('agents-section-body').hidden, true);
+  await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture()], roster: []});
+  for (const view of ['agents', 'files'] as const) {
+    app.showNavigationView(view); assert.equal(byId(`${view}-section-body`).hidden, false);
+  }
+  app.showNavigationView('sessions'); byId('sidebar').hidden = true;
+  const before = browser.frameCount; app.focusAgentSearch(); await settle();
+  assert.equal(byId('agent-filter-box').hidden, false); assert.equal(byId('sidebar').hidden, false);
+  assert.equal(byId('agents-section-body').hidden, false); assert.equal(hostDocument.activeElement, byId('agent-search'));
+  assert.ok(browser.frameCount > before);
   Reflect.set(globalThis, 'sessionStorage', hostSessionStorage);
   assert.doesNotMatch(html, /id="primary-heading"/);
-  assert.match(html, /id="session-open"[^>]*aria-label="Find session"[^>]*aria-haspopup="dialog">/);
+  assert.match(html, /id="session-open"[^>]*aria-label="Search sessions"[^>]*aria-haspopup="dialog">/);
   assert.match(html, /id="tabs-open-session"[^>]*>Find session…/);
-  for (const section of ['files', 'agents']) { assert.equal(byId(`${section}-heading`).querySelectorAll('svg').length, 1); assert.ok(byId(`${section}-heading`).querySelector('.card-icon-chevron')); assert.ok(byId(`${section}-count`)); }
-  assert.match(html, /id="agents-heading" class="section-toggle"[^>]*aria-controls="agents-section-body">AGENTS/);
+  assert.doesNotMatch(html, /class="section-toggle"/);
 });
 test('palette key aliases prevent browser defaults and preserve IME, repeat and open-dialog guards', async () => {
   const modalNode = byId('modal');
@@ -1601,14 +1563,14 @@ test('loaded prompt metadata updates Primary captions without input or target ch
   const editor=primaryControl('editor'),text=editor.value,selection=[editor.selectionStart,editor.selectionEnd], original=globalThis.fetch;
   const prompt='Describe the exact current session '.repeat(5), response={items:[{id:item.sessionId,path:item.sessionFile,project:item.cwd,revision:'caption-r1',title:prompt,titleSource:'prompt',titleState:'ready',modifiedAt:'2026-01-01T00:00:00Z',size:10}],total:1,omitted:0,nextCursor:null,titleCursor:null,observedAt:'2026-01-02T00:00:00Z'};
   context.mock.method(globalThis,'fetch',async(input,init)=>String(input).startsWith('/api/sessions/published')?Response.json({ok:true,data:response}):String(input).startsWith('/api/sessions?')?Response.json({ok:true,data:{...response,items:[],total:0}}):original(input,init));
-  context.after(()=>byId('modal-close').click());assert.equal(byId('primary-row-title').textContent,'Primary');
+  context.after(()=>byId('modal-close').click());assert.equal(byId('primary-row-title').textContent,'Untitled session');
   const requests=transportLog.length;byId('session-open').click();await settle();
-  const label=prompt.trim();assert.equal(byId('primary-row-title').textContent,label);assert.equal(primaryControl('recipient').textContent,`Message ${label}`);
-  const row=byId('primary-row');assert.match(row.title,/Session ID: caption-session/);assert.ok(row.title.includes(prompt));assert.match(row.attributes.get('aria-description')??'',/Title from first message, not a supplied name/);
+  const label=prompt.trim().slice(0,120);assert.equal(byId('primary-row-title').textContent,label);assert.equal(primaryControl('recipient').textContent,`Message ${prompt.trim()}`);
+  const row=byId('primary-row');assert.equal(row.title,label);assert.equal(row.attributes.get('aria-description'),undefined);
   event('primary.state',{...item,sessionName:'Native name'},target);assert.equal(byId('primary-row-title').textContent,'Native name');assert.doesNotMatch(row.title,/Title from first message/);
   event('primary.state',{...item,sessionName:''},target);assert.equal(byId('primary-row-title').textContent,label);
-  const newer=response.items[0];assert.ok(newer);response.observedAt='2026-01-03T00:00:00Z';newer.revision='caption-r2';newer.titleState='unavailable';byId('session-open').click();await settle();assert.equal(byId('primary-row-title').textContent,'Primary');assert.doesNotMatch(row.title,/Title from first message/);
-  event('primary.state',{...item,sessionFile:'/fixture/other.jsonl'},target);assert.equal(byId('primary-row-title').textContent,'Primary');
+  const newer=response.items[0];assert.ok(newer);response.observedAt='2026-01-03T00:00:00Z';newer.revision='caption-r2';newer.titleState='unavailable';byId('session-open').click();await settle();assert.equal(byId('primary-row-title').textContent,'Untitled session');assert.doesNotMatch(row.title,/Title from first message/);
+  event('primary.state',{...item,sessionFile:'/fixture/other.jsonl'},target);assert.equal(byId('primary-row-title').textContent,'Untitled session');
   assert.equal(primaryControl('editor'),editor);assert.equal(editor.value,text);assert.deepEqual([editor.selectionStart,editor.selectionEnd],selection);assert.deepEqual(app.state.workspace?.selectedTarget,target);
   assert.equal(transportLog.slice(requests).some(call=>call.method==='POST'),false);
 });
@@ -1625,7 +1587,7 @@ test('navigation uses drawer state while a breakpoint resize still has desktop D
 test('drawer Close, outside pointer and Escape retain drafts and desktop visibility preference', async () => {
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'primary', key: 'p', epoch: 1}, sidebarVisible: true}, primaries: [primaryFixture()], roster: []});
   host.viewport = 700; selectionSaves.length = 0; primaryControl('editor').value = 'Exact retained draft'; primaryControl('editor').dispatch('input'); primaryControl('transcript').scrollTop = 140;
-  app.toggleSidebar(true); assert.equal(app.drawerOpen, true); assert.equal(byId('sidebar-show').hidden, false);
+  byId('sidebar-show').focus();app.toggleSidebar(true); assert.equal(app.drawerOpen, true); assert.equal(byId('sidebar-show').hidden, false);
   byId('sidebar-close').click(); assert.equal(app.drawerOpen, false); assert.equal(hostDocument.activeElement, byId('sidebar-show'));
   app.toggleSidebar(true); let prevented = 0; let stopped = 0;
   app.dismissDrawerPointer({target: primaryControl('send'), preventDefault: () => {prevented++;}, stopImmediatePropagation: () => {stopped++;}} as unknown as PointerEvent);

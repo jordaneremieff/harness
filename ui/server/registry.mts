@@ -19,6 +19,7 @@ import { dispatchPrimary } from './routes-primary.mts';
 import { dispatchAgent } from './routes-agent.mts';
 import { dispatchThreads } from './routes-threads.mts';
 import { dispatchView } from './routes-view.mts';
+import { dispatchSessionMetadata } from './session-metadata.mts';
 import { StoredAgentStarter, startIdentity, type StartOptions } from './agent-start.mts';
 import { savedSessionId, validateSessionProject } from './sessions.mts';
 import type {Control} from './control.mts';
@@ -329,6 +330,14 @@ export class Registry {
   createFiles(rootId:string,path:string,work:()=>Promise<import('../shared/files.ts').FileMutation>) {return this.store.createFiles(rootId,path,work);}
   fileIdentityFailed():void {this.store.fileIdentityFailed();}
   views() { return [...this.saved.values()].map(view=>structuredClone(this.sessions.get(view.key)?.view ?? view)); }
+  metadataPrimaryStopped(key:string):boolean {
+    const session=this.sessions.get(key),view=session?.view??this.saved.get(key);
+    return view?.lifecycle==='stopped' && !this.primaryStarts.has(key) && !this.openingKeys.has(key) && (!session || !needsStorage(session));
+  }
+  async metadataFileHeld(id:string,path:string):Promise<boolean> {
+    if(await this.ownsFile(path))return true;
+    return await writerState(this.options.agentStore,id,path)==='live';
+  }
   primary(key: string, epoch?: number, requireReady = false) {
     const session = this.sessions.get(key);
     if (!session) throw new ApiError('not_ready', 'The primary requires explicit resume.', 503, 'manual');
@@ -624,6 +633,7 @@ export class Registry {
   async dispatch(context: RequestContext): Promise<unknown> {
     if(this.closing) throw new ApiError('not_ready','The backend no longer accepts work.',503);
     const family = context.parts[1];
+    if(family === 'sessions') return dispatchSessionMetadata(this,context);
     if(family === 'primaries') return dispatchPrimary(this,context);
     if(family === 'agents') return dispatchAgent(this,context);
     if(family === 'threads') return dispatchThreads(this,context);
