@@ -1742,10 +1742,10 @@ test('project navigation remains an anchored project-first menu beside direct ut
 test('three direct utility icons preserve inventory, native button focus, destinations and unread count', async () => {
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture()], roster: []});
   const footer = byId('sidebar').querySelector('.sidebar-footer'); assert.ok(footer);
-  assert.deepEqual(footer.querySelectorAll('button').map(node => node.getAttribute('aria-label')), ['Terminal commands', 'Notifications', 'Theme']);
+  assert.deepEqual(footer.querySelectorAll('button').map(node => node.getAttribute('aria-label')), ['Commands', 'Notifications', 'Theme']);
   assert.equal(hostDocument.getElementById('app-menu'), undefined); assert.doesNotMatch(source, /byId\('app-menu'\)|'App menu'/);
   event('notice', {id: 'direct-utility-notice', level: 'info', message: 'Review through the direct icon', at: 'now'});
-  for (const [id, icon, title, tip] of [['commands-button', 'commands', 'Commands', 'Terminal commands'], ['appearance-button', 'appearance', 'Appearance', 'Theme'], ['notifications-button', 'notifications', 'Notifications', 'Notifications']]) {
+  for (const [id, icon, title, tip] of [['commands-button', 'commands', 'Commands', 'Commands'], ['appearance-button', 'appearance', 'Appearance', 'Theme'], ['notifications-button', 'notifications', 'Notifications', 'Notifications']]) {
     const control = byId(id as string); assert.equal(control.getAttribute('type'), 'button'); assert.equal(control.tabIndex, 0); assert.equal(control.getAttribute('aria-haspopup'), 'dialog');
     assert.equal(control.querySelector('svg')?.getAttribute('class'), `card-icon card-icon-${icon}`);
     assert.equal(control.querySelector('svg')?.getAttribute('aria-hidden'), 'true'); assert.ok(control.title.startsWith(tip as string));

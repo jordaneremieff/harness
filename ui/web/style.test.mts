@@ -632,7 +632,7 @@ test('working controls keep a quiet named Stop and visible delivery choices with
 test('three direct utility controls retain named SVG slots and a separate unread badge', () => {
   const footer = html.match(/<footer class="sidebar-footer"[\s\S]*?<\/footer>/)?.[0]; assert.ok(footer);
   assert.equal([...footer.matchAll(/<button /g)].length, 3); assert.doesNotMatch(html, /id="app-menu"/);
-  for (const [id, name, icon, title] of [['commands-button', 'Terminal commands', 'commands', 'Commands'], ['notifications-button', 'Notices', 'notifications', 'Notices'], ['appearance-button', 'Theme', 'appearance', 'Theme']]) {
+  for (const [id, name, icon, title] of [['commands-button', 'Commands', 'commands', 'Commands'], ['notifications-button', 'Notices', 'notifications', 'Notices'], ['appearance-button', 'Theme', 'appearance', 'Theme']]) {
     const trigger = footer.match(new RegExp(`<button id="${id}"[\\s\\S]*?<\\/button>`))?.[0]; assert.ok(trigger);
     assert.match(trigger, new RegExp(`aria-label="${name}"`)); assert.match(trigger, new RegExp(`title="${title}"`));
     assert.match(trigger, /type="button"/); assert.match(trigger, /aria-haspopup="dialog"/); assert.match(trigger, new RegExp(`data-control-icon="${icon}"`));

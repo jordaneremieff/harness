@@ -1811,6 +1811,7 @@ pre[data-wrap=true] { white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (pointer:coarse) and (max-width:599px) {
   .file-editor { white-space: pre-wrap; overflow-wrap: anywhere; }
   .conversation-tab { --tab-chrome: 36px; }
+  .palette-row { align-content: center; row-gap: 2px; }
   .conversation-tab > :is(.tab-session-state, .tab-age, .tab-close) { display: none; }
   .tab-bar > .pane-tab-nav { display: inline-flex; }
   .tab-bar > .pane-tab-nav[data-unreachable=true] { display: none; }
