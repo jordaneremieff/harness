@@ -520,9 +520,11 @@ function openToolFile(destination:FileReferenceDestination):void {
   closeToolFile(false);const captured:ToolFilePane={context:deskContext(),rootId:destination.rootId,stamp:JSON.stringify(base.root),id:companion.id,focus:companion.id,layout:companion.layout};
   toolFilePane=captured;toolFileReader.closeLabel(companion.overPrimary?'Back to Primary':'Close');toolFileReader.open(workspace.id,destination,()=>toolFileCurrent(captured));renderNavigation();
 }
-export function chooseFile(rootId:string,path:string,focus = true):void {
+export /** A narrow touch screen reads files: Markdown opens rendered, and the source tab remains one tap away. */
+function phoneScreen():boolean {return typeof matchMedia==='function'&&matchMedia('(pointer:coarse) and (max-width:599px)').matches;}
+function chooseFile(rootId:string,path:string,focus = true):void {
   if (!state.workspace) return;leaveOverlayDesk();
-  try {applyLayout(fileBrowse.choose(currentLayout(),{kind:'file',rootId,path},key=> {const tab = paneLeaves(currentLayout().root).flatMap(pane=>pane.tabs).find(tab=>tabKey(tab) === key);if (tab?.kind !== 'file') return false;const owner = filesViews.owner(state.workspace?.id ?? '',tab);return !!owner && (owner.loading || owner.modified || owner.unsaved);}));if (focus) focusEditor();} catch (error) {showError(error);}
+  try {applyLayout(fileBrowse.choose(currentLayout(),{kind:'file',rootId,path,...(markdownPath(path)&&phoneScreen()?{view:'preview' as const}:{})},key=> {const tab = paneLeaves(currentLayout().root).flatMap(pane=>pane.tabs).find(tab=>tabKey(tab) === key);if (tab?.kind !== 'file') return false;const owner = filesViews.owner(state.workspace?.id ?? '',tab);return !!owner && (owner.loading || owner.modified || owner.unsaved);}));if (focus) focusEditor();} catch (error) {showError(error);}
 }
 async function navigateFileReference(destination:FileReferenceDestination):Promise<void> {
   const workspace = state.workspace;if (!workspace || fileRoot.selection?.root?.id !== destination.rootId) return;

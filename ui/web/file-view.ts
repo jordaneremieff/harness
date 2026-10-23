@@ -88,6 +88,7 @@ export class FileView {
     const editor = this.editor,band = this.lineBand;if (!editor || !band) return;
     this.clearLineMark();const target = fileLineTarget(editor.value,wanted),style = getComputedStyle(editor);
     const height = Number.parseFloat(style.lineHeight),padding = Number.parseFloat(style.paddingTop) || 0;
+    if (style.whiteSpace !== 'pre') {editor.focus();editor.setSelectionRange(target.start,target.start);this.position = {scrollTop:editor.scrollTop,scrollLeft:editor.scrollLeft};this.save({...this.position});return;}
     editor.focus({preventScroll:true});editor.setSelectionRange(target.start,target.start);
     if (!Number.isFinite(height) || height <= 0) return;
     const top = padding + (target.line - 1) * height;

@@ -1808,6 +1808,9 @@ pre[data-wrap=true] { white-space: pre-wrap; overflow-wrap: anywhere; }
   * { mask-image: none !important; }
 }
 
+@media (pointer:coarse) and (max-width:599px) {
+  .file-editor { white-space: pre-wrap; overflow-wrap: anywhere; }
+}
 @media (pointer:coarse) {
   .sidebar .nav-row, .sidebar .sidebar-action, .sidebar .conversation-row, .sidebar .agent-row, .sidebar .agent-row .row-select { height: auto; min-height: 44px; }
   .sidebar .agent-row .row-select { grid-template-rows: 44px; }
