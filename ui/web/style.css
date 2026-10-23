@@ -1489,6 +1489,7 @@ dialog[data-variant=menu]::backdrop { background: transparent; }
 .thread-row .row-title { flex: none; }
 .thread-row .row-meta { flex: none; min-width: 0; overflow: hidden; text-overflow: clip; mask-image: linear-gradient(to right,#000 calc(100% - 24px),transparent); }
 .thread-row.closed .row-title { color: var(--muted); }
+.thread-empty { padding: var(--s1) var(--s3); }
 .threads-footer { flex-direction: column; gap: var(--s1); padding-right: var(--s3); padding-left: var(--s3); }
 .threads-footer > :is(.threads-note, details, .threads-retry) { margin: 0; }
 .threads-footer .threads-retry { align-self: start; padding: var(--s1) 0; }
