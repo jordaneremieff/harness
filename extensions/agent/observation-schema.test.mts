@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { ConversationId, EntryId, SubmissionId, ToolExecutionResult } from "@earendil-works/pi-durable";
+import { LiveDoc, UsageDoc, type ConversationId, type EntryId, type SubmissionId, type ToolExecutionResult } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { AgentManager } from "./manager.ts";
 import { ActivityOutputSchema, LiveStateSchema, AgentConversationSummarySchema, AssistantMessageSchema, ConversationStatusSchema, DurableEntryRowSchema, InspectOutputSchema, ListRowSchema, StatusOutputSchema, StatusToolOutputSchema, nativeStructuredObservation, structuredObservation } from "./observation-schema.ts";
@@ -115,6 +115,50 @@ it("validates native response duration and optional task lifecycle timestamps", 
 		const projected = structuredObservation(ConversationStatusSchema, { ...status, tasks: [{ ...task, ...timing }] }) as { tasks: unknown[] };
 		assert.deepEqual(projected.tasks, [{ ...task, ...timing }]);
 	}
+});
+
+it("projects provider usage metadata after an incomplete tool response and a rejected next request", async (t) => {
+	const usage = { ...answerMessage().usage, reasoning: 0, cacheWrite1h: 0, cost: { ...answerMessage().usage.cost, totalFromProvider: false } };
+	const incomplete = { ...answerMessage(), content: [{ type: "toolCall" as const, id: "", name: "", arguments: {} }], usage, stopReason: "length" as const };
+	const failure = { ...answerMessage(), content: [], stopReason: "error" as const, errorMessage: "400 Bad Request: context.messages[0].content[0].id must be a non-empty string" };
+	const host = await DurableHost.open(hostOptions(join(fixtureRoot(t), "provider-usage.sqlite"), await scriptedRuntime([incomplete, failure]), fixtureRegistry()), BACKGROUND_CONTEXT);
+	t.after(() => host.close());
+	const first = await host.submit({ message: "Incomplete response", requestId: "incomplete" });
+	const firstOutcome = await host.wait(first.submissionId, BACKGROUND_CONTEXT);
+	assert.equal(firstOutcome.status, "done");
+	const second = await host.submit({ message: "Next request", requestId: "rejected" });
+	assert.equal((await host.wait(second.submissionId, BACKGROUND_CONTEXT)).status, "unanswered");
+	await host.harness.commit(async (tx) => { (await tx.doc(UsageDoc, host.root().id)).tools.fixture = usage; }, BACKGROUND_CONTEXT);
+	const raw = await host.harness.snapshot(UsageDoc, host.root().id, BACKGROUND_CONTEXT);
+	assert.ok(raw);
+	const key = `${incomplete.provider}/${incomplete.model}`;
+	assert.equal((raw.models[key].cost as typeof usage.cost).totalFromProvider, false);
+	for (const withLiveMessage of [false, true]) {
+		if (withLiveMessage) await host.harness.commit(async (tx) => { (await tx.doc(LiveDoc, host.root().id)).generation = JSON.parse(JSON.stringify({ attempt: 1, message: incomplete })); }, BACKGROUND_CONTEXT);
+		const status = await host.request("status", { sessionId: fixtureStorageId }) as { conversation: { usage: typeof raw; live: { generation?: { message?: typeof incomplete } } } };
+		structuredObservation(ConversationStatusSchema, status.conversation);
+		structuredObservation(StatusOutputSchema, status);
+		structuredObservation(StatusToolOutputSchema, status);
+		assert.equal(Object.hasOwn(status.conversation.usage.models[key].cost, "totalFromProvider"), false);
+		assert.equal(status.conversation.usage.models[key].reasoning, 0);
+		assert.equal(status.conversation.usage.models[key].cacheWrite1h, 0);
+		const { totalFromProvider: _metadata, ...cost } = raw.models[key].cost as typeof usage.cost;
+		assert.deepEqual(status.conversation.usage.models[key], { ...raw.models[key], cost });
+		const { totalFromProvider: _toolMetadata, ...toolCost } = usage.cost;
+		assert.deepEqual(status.conversation.usage.tools.fixture, { ...usage, cost: toolCost });
+		if (withLiveMessage) {
+			assert.deepEqual(status.conversation.live.generation?.message?.content, incomplete.content);
+			assert.equal(Object.hasOwn(status.conversation.live.generation?.message?.usage.cost ?? {}, "totalFromProvider"), false);
+		}
+	}
+	const result = await host.request("inspect", { view: "result", submissionId: second.submissionId });
+	structuredObservation(InspectOutputSchema, result);
+	assert.deepEqual(await host.harness.snapshot(UsageDoc, host.root().id, BACKGROUND_CONTEXT), raw);
+	assert.ok(firstOutcome.answerEntryId);
+	const retained = await host.root().entries({ minEntryId: firstOutcome.answerEntryId, maxEntryId: firstOutcome.answerEntryId }, 1, undefined, BACKGROUND_CONTEXT);
+	const retainedMessage = retained.items[0]?.model?.[0];
+	assert.ok(retainedMessage);
+	assert.equal((retainedMessage as typeof incomplete).usage.cost.totalFromProvider, false);
 });
 
 it("validates every inspect view and the empty and missing cases against a real Harness", async (t) => {

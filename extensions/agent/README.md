@@ -860,6 +860,10 @@ Continue incomplete pages even without matches. Provider signatures, image
 payloads, and redacted thinking stay omitted with markers and counts on raw
 reads. Observation and task outcomes grant no control or acceptance authority.
 
+Status, live message projections, and result inspection expose only the public
+usage counters and cost fields. Retained entries and usage documents keep
+provider metadata unchanged.
+
 The manager's stopped-agent reads use a cached public snapshot without services,
 model runtime, extension bootstrap, or Harness resume. The cache tracks database
 and WAL identity plus writer claim state. Changed or unstable source identity

@@ -16,7 +16,7 @@
 import { createHash } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord";
-import type { Message, Models } from "@earendil-works/pi-ai";
+import type { Message, Models, Usage } from "@earendil-works/pi-ai";
 import type { ModelEvidenceCollector } from "./model-evidence.ts";
 import { AssistantEntry, Harness, InboxDoc, LiveDoc, UsageDoc, type Conversation, type ConversationId, type ConversationRecord, type Cursor, type EntryId, type EntryRecord, type HarnessOptions, type HarnessInspection, type LiveState, type Storage, type SubmissionId, type SubmissionRecord, type TaskInspection, type UsageState } from "@earendil-works/pi-durable";
 import { captureSnapshot } from "./snapshot-capture.ts";
@@ -640,11 +640,29 @@ function publicContentPart(part: NonNullable<NonNullable<LiveState["generation"]
 	};
 }
 
+/** Retain public counters without forwarding provider-owned usage metadata. */
+function publicUsage(usage: Usage): Usage {
+	return {
+		input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite,
+		...(usage.cacheWrite1h === undefined ? {} : { cacheWrite1h: usage.cacheWrite1h }),
+		...(usage.reasoning === undefined ? {} : { reasoning: usage.reasoning }),
+		totalTokens: usage.totalTokens,
+		cost: { input: usage.cost.input, output: usage.cost.output, cacheRead: usage.cost.cacheRead, cacheWrite: usage.cost.cacheWrite, total: usage.cost.total },
+	};
+}
+
+function publicUsageState(usage: UsageState): UsageState {
+	return {
+		models: Object.fromEntries(Object.entries(usage.models).map(([key, value]) => [key, publicUsage(value)])),
+		tools: Object.fromEntries(Object.entries(usage.tools).map(([key, value]) => [key, publicUsage(value)])),
+	};
+}
+
 export function publicLiveState(live: LiveState | undefined): LiveState | null {
 	const generation = live?.generation;
 	const message = generation?.message;
 	if (!message || !generation) return live ?? null;
-	return { ...live, generation: { ...generation, message: { ...message, content: message.content.map(publicContentPart) } } };
+	return { ...live, generation: { ...generation, message: { ...message, content: message.content.map(publicContentPart), usage: publicUsage(message.usage) } } };
 }
 
 export async function readConversationStatus(
@@ -680,7 +698,7 @@ export async function readConversationStatus(
 		...(textRoleOf(newest.items[0]) === undefined ? {} : { lastTextRole: textRoleOf(newest.items[0]) }),
 		live: publicLiveState(live),
 		inbox: inbox ?? null,
-		usage,
+		usage: usage === undefined ? undefined : publicUsageState(usage),
 		agent: {
 			...(agent.model === undefined ? {} : { model: { provider: agent.model.provider, modelId: agent.model.modelId } }),
 			thinkingLevel: agent.thinkingLevel,
@@ -696,7 +714,7 @@ export async function readConversationStatus(
 }
 
 export async function readUsage(harness: Harness, context: Context): Promise<UsageState> {
-	return harness.usage(context);
+	return publicUsageState(await harness.usage(context));
 }
 
 /** Bounds of one dashboard snapshot. */
@@ -1937,7 +1955,7 @@ async function resultAnswer(harness: Harness, answerEntryId: EntryId, context: C
 async function readResult(harness: Harness, storageId: string, conversation: Conversation, params: DurableInspectParams, context: Context): Promise<ResultPage> {
 	const target = await resultTarget(harness, conversation, params, context);
 	const record = target.record;
-	const usage = await harness.usage(context);
+	const usage = await readUsage(harness, context);
 	if (record === undefined) return { view: "result", sessionId: durableIdentity(storageId, conversation.id === 1 ? undefined : conversation.id), conversationId: conversation.id, status: "unavailable", reason: target.reason ?? "No native submission matches the result selector in this conversation", ...optionalParam("requestId", params.requestId), ...optionalParam("submissionId", params.submissionId), ...optionalParam("operationId", params.operationId), usage };
 	const recoveryOf = await harness.commit((tx) => readInputRecovery(tx, record.id), context);
 	const base = {
