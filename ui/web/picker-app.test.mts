@@ -7,6 +7,35 @@ import type {ConversationTab,Target} from '../shared/api.ts';
 const browser = await createAppFixture();
 const {app,arrive,settle,byId,hostDocument,primaryFixture,agentFixture,targetFixture,primaryControl,agentControl,documentHandlers,transportLog} = browser;
 function input(name:string):void {for (const handler of documentHandlers.get(name) ?? []) handler({isTrusted:true,target:byId('modal'),key:'ArrowDown'});}
+for (const trigger of ['project-button', 'compact-project-button']) test(`${trigger} opens the file-root chooser and Other folder retains the browse path`, async t => {
+  const target = {kind: 'primary' as const, key: 'folder-primary', epoch: 160}, folder = '/browse/current';
+  await arrive({workspace: {id: `folder-${trigger}`, revision: 1, primaryKey: target.key, selectedTarget: target, conversationLayout: createPaneLayout([{kind: 'primary'}])},
+    primaries: [primaryFixture({...target, cwd: '/sessions/project'}), primaryFixture({key: 'same-directory', epoch: 161, cwd: '/sessions/project'})], roster: [],
+    targets: [targetFixture(`folder-target-${trigger}`, target)]});
+  await app.fileRoot.choose(folder); await settle();
+  const original = globalThis.fetch, calls: {path: string; method: string}[] = [];
+  t.after(() => {globalThis.fetch = original; byId('modal-close').click();});
+  globalThis.fetch = async (input, init) => {
+    const path = new URL(String(input), 'http://ui.test').pathname, method = init?.method ?? 'GET'; calls.push({path, method});
+    assert.equal(method, 'GET', 'Opening the folder chooser must not mutate state.');
+    if (path === '/api/projects') return Response.json({ok: true, data: {items: [{path: folder, name: 'current'}], total: 1, omitted: 0, nextCursor: null, observedAt: '2026-01-01T00:00:00Z'}});
+    return original(input, init);
+  };
+  const workspace = structuredClone(app.state.workspace), root = structuredClone(app.fileRoot.selection), control = byId(trigger);
+  control.focus(); control.click(); await settle();
+  const menu = hostDocument.body.querySelector('.context-menu'); assert.ok(menu);
+  assert.equal(menu.getAttribute('aria-label'), 'Working folder'); assert.equal(control.getAttribute('aria-expanded'), 'true'); assert.equal(byId('modal').open, false);
+  const folders = menu.querySelectorAll('[role="menuitemradio"]');
+  assert.equal(folders.filter(row => row.getAttribute('aria-description') === '/sessions/project').length, 1, 'Sessions in one directory share a folder row.');
+  assert.deepEqual(folders.filter(row => row.getAttribute('aria-checked') === 'true').map(row => row.getAttribute('aria-description')), [folder]);
+  menu.dispatch('keydown', {key: 'Escape', preventDefault() {}, stopPropagation() {}}); assert.equal(hostDocument.activeElement, control);
+  control.click(); await settle();
+  const other = hostDocument.body.querySelector('.context-menu')?.children.find(row => row.textContent === 'Other folder'); assert.ok(other); other.click();
+  assert.equal(byId('modal-title').textContent, 'Working folder'); assert.equal(byId('picker-project').value, folder); assert.equal(hostDocument.activeElement, byId('picker-project'));
+  assert.ok(byId('modal-body').querySelectorAll('button').find(row => row.textContent === 'Use folder'));
+  assert.deepEqual(app.state.workspace, workspace); assert.deepEqual(app.fileRoot.selection, root);
+  assert.ok(calls.some(call => call.path === '/api/projects')); assert.equal(calls.some(call => call.path === '/api/workspaces' || call.path === '/api/sessions' || call.path === '/api/primaries'), false);
+});
 function originTab(origin:string,identity:string):ConversationTab|undefined {
   if (origin === 'file') return {kind:'file',rootId:'root',path:'retained.md'};
   if (origin === 'agent') return {kind:'agent',identity};

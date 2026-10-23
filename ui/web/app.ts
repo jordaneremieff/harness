@@ -3394,7 +3394,7 @@ function bind(): void {
     if (!navigationFrame) navigationFrame = requestAnimationFrame(() => {navigationFrame = 0; renderNavigation();});
   }).observe(byId('conversation-panes'));
   matchMedia('(pointer: coarse)').addEventListener('change', renderNavigation);
-  for (const id of ['project-button', 'compact-project-button']) byId(id).addEventListener('click', () => actions.workspaces());
+  for (const id of ['project-button', 'compact-project-button']) byId(id).addEventListener('click', () => picker.openProject(byId(id)));
   byId('commands-button').addEventListener('click', () => actions.palette());
   byId('notifications-button').addEventListener('click', notices);
   byId('appearance-button').addEventListener('click', () => actions.appearance());
