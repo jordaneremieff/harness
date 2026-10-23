@@ -309,9 +309,12 @@ return {
 		assert.equal(parseFrontmatter(current).frontmatter.verified_date, null);
 		const stale = await invoke("memory_edit", edit);
 		assert.equal(stale.isError, true);
-		assert.match(text(stale), /Memory write incomplete: .*digest changed/);
-		const receipt = JSON.parse(text(stale).slice("Memory write incomplete: ".length));
+		const refusalPrefix = "Memory write stopped; no live files were written: ";
+		assert.ok(text(stale).startsWith(refusalPrefix));
+		assert.match(text(stale), /digest changed/);
+		const receipt = JSON.parse(text(stale).slice(refusalPrefix.length));
 		assert.deepEqual(receipt.written, []);
+		assert.deepEqual(receipt.captured, []);
 		assert.equal(readFileSync(path, "utf8"), current);
 		const staleRead = await invoke("memory_read", { slug: input.slug, digest: firstDigest, offset: 4000 });
 		assert.equal(staleRead.isError, true);

@@ -17,9 +17,11 @@ import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { Value } from "typebox/value";
 import { memorySearchOutputSchema } from "./search-output.ts";
+import { newRevision } from "./history.ts";
 import {
 	MemoryRetrievalError,
 	memoryIndex,
+	historyMemory,
 	NOTE_OPEN_FLAGS,
 	type ReadOptions,
 	type SearchOptions,
@@ -881,6 +883,26 @@ test("query limits explain how to shorten full questions", async () => {
 		"input",
 		/Shorten to a keyword formulation/,
 	);
+});
+
+test("retrieval refusals name unknown options and rejected subjects without writes", async () => {
+	const root = corpus({ "README.md": README, "good.md": ACTIVE });
+	const before = readdirSync(root).sort();
+	for (const operation of [
+		readMemory(root, { slug: "good", unexpected: true } as ReadOptions),
+		searchMemory(root, { unexpected: true } as SearchOptions),
+		historyMemory(root, { slug: "good", unexpected: true } as Parameters<typeof historyMemory>[1]),
+		historyMemory(root, { slug: "good", plan: { capturedBefore: "2026-01-01T00:00:00.000Z", keepNewest: 0, unexpected: true } } as Parameters<typeof historyMemory>[1]),
+	]) await rejects(operation, "input", /^unknown option: "unexpected"$/);
+	await rejects(readMemory(root, { slug: "good.md" }), "input", /^use the note slug without the \.md extension: good\.md$/);
+	await rejects(readMemory(root, { slug: "bad/slug" }), "input", /^invalid note slug: bad\/slug$/);
+	await rejects(historyMemory(root, { slug: "bad/slug" }), "input", /^History requires a lowercase subject slug, not README: bad\/slug$/);
+	await rejects(readMemory(root, { slug: "absent-note" }), "corpus", /^note not found: absent-note\.md\. Use memory_search/);
+	await rejects(readMemory(root, { slug: "absent-note", revision: newRevision("a".repeat(64)) }), "corpus", /^No captured history for subject: absent-note$/);
+	await rejects(searchMemory(root, { "unusual\nkey": true } as SearchOptions), "input", /^unknown option: "unusual\\nkey"$/);
+	assert.deepEqual(readdirSync(root).sort(), before);
+	assert.equal(readFileSync(join(root, "good.md"), "utf8"), ACTIVE);
+	assert.equal(readFileSync(join(root, "README.md"), "utf8"), README);
 });
 
 test("stays read-only for browse, search, source reads, and missing notes", async () => {

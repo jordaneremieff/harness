@@ -105,7 +105,12 @@ export interface WriteReceipt {
 export class MemoryWriteError extends Error {
 	readonly receipt: WriteReceipt;
 	constructor(receipt: WriteReceipt) {
-		super(`Memory write incomplete: ${JSON.stringify(receipt)}`);
+		const outcome = receipt.written.length === 0
+			? "Memory write stopped; no live files were written"
+			: receipt.notWritten.length > 0
+				? "Memory write partially completed"
+				: "Memory write published all live files, but cleanup failed";
+		super(`${outcome}: ${JSON.stringify(receipt)}`);
 		this.receipt = receipt;
 		this.name = "MemoryWriteError";
 	}

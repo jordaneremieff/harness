@@ -91,6 +91,7 @@ test("final cleanup failure reports published notes without false rollback", (t)
 		const error = failure(() => writeMemory(root, note()));
 		assert.deepEqual(error.receipt.written, ["README.md", "editor-choice.md"]);
 		assert.deepEqual(error.receipt.notWritten, []);
+		assert.match(error.message, /^Memory write published all live files, but cleanup failed:/);
 		assert.match(error.message, /lock cleanup failed/);
 		assert.ok(error.receipt.digest);
 	} finally {
@@ -292,6 +293,7 @@ test("a publication failure reports exactly committed and remaining files", (t) 
 			},
 		}),
 	);
+	assert.match(error.message, /^Memory write partially completed:/);
 	assert.deepEqual(error.receipt.written, ["new.md", "old-a.md"]);
 	assert.deepEqual(error.receipt.notWritten, ["old-b.md"]);
 	assert.equal(metadata(root, "old-a").status, "superseded");
@@ -306,16 +308,36 @@ test("a publication failure reports exactly committed and remaining files", (t) 
 	});
 	assert.equal(metadata(root, "old-b").status, "superseded");
 });
+test("body validation refusal reports zero live writes and preserves every source", (t) => {
+	const root = corpus(t);
+	const first = writeMemory(root, note());
+	const before = new Map(readdirSync(root).map((file) => [file, readFileSync(join(root, file), "utf8")]));
+	const error = failure(() => editMemory(root, {
+		slug: "editor-choice", expectedDigest: first.digest as string, verified: true,
+		edits: [{ oldText: "Missing original text", newText: "Changed text" }],
+	}));
+	assert.match(error.message, /^Memory write stopped; no live files were written:/);
+	assert.match(error.message, /oldText does not match the original body/);
+	assert.doesNotMatch(error.message, /incomplete|partially/);
+	assert.deepEqual(error.receipt.written, []);
+	assert.deepEqual(error.receipt.captured, []);
+	assert.deepEqual(readdirSync(root).sort(), [...before.keys()].sort());
+	for (const [file, source] of before) assert.equal(readFileSync(join(root, file), "utf8"), source);
+});
+
 test("failure before destination publication preserves the old inode content", (t) => {
 	const root = corpus(t);
 	const first = writeMemory(root, note());
-	failure(() =>
+	const error = failure(() =>
 		writeMemory(root, { ...note(), summary: "A change", expectedDigest: first.digest }, undefined, {
 			beforePublish() {
 				throw new Error("Disk refusal");
 			},
 		}),
 	);
+	assert.match(error.message, /^Memory write stopped; no live files were written:/);
+	assert.deepEqual(error.receipt.written, []);
+	assert.equal(error.receipt.captured.length, 1);
 	assert.equal(sourceDigest(readFileSync(join(root, "editor-choice.md"))), first.digest);
 });
 test("external changes before publication refuse rather than overwrite", (t) => {

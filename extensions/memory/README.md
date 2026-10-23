@@ -638,6 +638,14 @@ files manually. A PID alone does not prove stale ownership. Malformed or empty l
 also refuse with this recovery instruction; no hidden unrecoverable state exists.
 Search ignores these hidden artifacts. The extension never reclaims locks by age.
 
+Retrieval refusals name unknown option keys and rejected subject slugs. Missing
+note refusals include the note filename and the search recovery step.
+
+Write errors distinguish zero live publications, partial live publication, and
+completed live publication with cleanup failure. The receipt retains exact
+`written` and `notWritten` files. Zero live publications does not imply zero
+history captures; inspect `captured` separately.
+
 Each file is staged and synced before atomic publication. Creation uses an exclusive
 hard link; updates use rename after a digest recheck. All live files are prepared and
 all safe required prior copies are published before live publication starts. A failed later replacement does not undo earlier publications.

@@ -200,8 +200,8 @@ function normalizeQuery(text: string): string {
 
 function normalizeSlug(slug: string): string {
 	if (slug === "README") return slug;
-	if (/\.md$/i.test(slug)) throw new UsageError("use the note slug without the .md extension");
-	if (!SLUG_PATTERN.test(slug) || slug.length > MAX_SLUG_CHARS) throw new UsageError("invalid note slug");
+	if (/\.md$/i.test(slug)) throw new UsageError(`use the note slug without the .md extension: ${slug}`);
+	if (!SLUG_PATTERN.test(slug) || slug.length > MAX_SLUG_CHARS) throw new UsageError(`invalid note slug: ${slug}`);
 	return slug;
 }
 
@@ -1391,7 +1391,7 @@ type NoteRequest = { slug: string; offset: number; digest: string | null; revisi
 function selectedSource(root: string, args: NoteRequest, signal?: AbortSignal) {
 	const identity = args.revision === undefined ? undefined : revisionIdentity(args.revision);
 	const directory = args.revision === undefined ? root : historyDirectory(root, args.slug);
-	if (directory === undefined) throw new CorpusError("No captured history for this subject");
+	if (directory === undefined) throw new CorpusError(`No captured history for subject: ${args.slug}`);
 	const file = args.revision === undefined ? noteFileForSlug(args.slug) : `${args.revision}.md`;
 	const source = readNoteSource(join(directory, file), signal);
 	if (!source.ok) {
@@ -1490,7 +1490,8 @@ function validateOptions(options: object, allowed: string[]): void {
 	if (options === null || typeof options !== "object" || Array.isArray(options)) {
 		throw new UsageError("options must be an object");
 	}
-	if (Object.keys(options).some((key) => !allowed.includes(key))) throw new UsageError("unknown option");
+	const unknown = Object.keys(options).find((key) => !allowed.includes(key));
+	if (unknown !== undefined) throw new UsageError(`unknown option: ${JSON.stringify(unknown)}`);
 }
 
 function safeError(error: unknown): MemoryRetrievalError {
@@ -1583,7 +1584,7 @@ export async function readMemory(
 
 function validateHistorySlug(slug: string): void {
 	if (typeof slug !== "string" || slug.length > MAX_SLUG_CHARS || !SLUG.test(slug) || slug === "readme")
-		throw new UsageError("History requires a lowercase subject slug, not README");
+		throw new UsageError(`History requires a lowercase subject slug, not README: ${slug}`);
 }
 
 function normalizeHistoryPlan(plan: HistoryPlan | undefined): HistoryPlan | undefined {
