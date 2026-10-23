@@ -14,13 +14,16 @@ test('working delivery guidance yields to lifecycle and settings feedback withou
   const editor = agentControl('editor') as HostNode & {placeholder: string}, line = agentControl('state');
   const chain = ancestors(editor); editor.focus();
   assert.equal(editor.placeholder, 'Message'); assert.match(editor.getAttribute('aria-label') ?? '', /^Message /);
-  assert.equal(line.querySelector('.composer-state-label')?.textContent, 'Steer at the next step; Queue adds a follow-up.');
-  assert.equal(line.classList.contains('composer-delivery-guidance'), true);
+  const label=line.querySelector('.composer-state-label'),spoken=line.querySelector('.composer-state-line');assert.ok(label);assert.ok(spoken);
+  assert.equal(label.textContent,'');assert.equal(label.hidden,true);
+  assert.equal(spoken.textContent,'Steer at the next step; Queue adds a follow-up.');assert.equal(line.hidden,false);
+  assert.equal(line.classList.contains('sr-only'),true);assert.equal(line.classList.contains('composer-delivery-guidance'),true);
+  assert.equal(agentControl('send').getAttribute('aria-describedby'),spoken.id);
   for (const key of ['send', 'queue']) {assert.equal(agentControl(key).hidden, false); assert.equal(agentControl(key).disabled, true);}
   assert.equal(agentControl('stop').querySelector('.action-label')?.textContent, 'Stop');
   const composer = app.agentComposer();
   composer.setSettingsState({line: 'Updating settings', label: 'Updating settings'});
-  assert.equal(line.querySelector('.composer-state-label')?.textContent, 'Updating settings'); assert.equal(line.classList.contains('composer-delivery-guidance'), false);
+  assert.equal(line.querySelector('.composer-state-label')?.textContent, 'Updating settings'); assert.equal(line.classList.contains('composer-delivery-guidance'), false);assert.equal(line.classList.contains('sr-only'),false);
   composer.setSettingsState({line: 'Settings update not confirmed.', label: 'Settings update not confirmed.', detail: 'Exact native reason', tone: 'warning'});
   assert.doesNotMatch(line.textContent, /Steer at the next step/); assert.equal(agentControl('state-details').textContent, 'Exact native reason');
   composer.setSettingsState();
