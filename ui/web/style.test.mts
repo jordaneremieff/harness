@@ -1436,3 +1436,25 @@ test('diff fills span each row and signs own a two-character gutter', () => {
   assert.match(rule('.diff-del'), /background: var\(--del-bg\); color: var\(--error\)/);
   assert.match(rule('.diff-add'), /background: var\(--add-bg\); color: var\(--success\)/);
 });
+
+test('the final coarse-pointer block wins over the density rules and restores 44px touch rows', () => {
+  const marker = '@media (pointer:coarse) {\n  .sidebar .nav-row, .sidebar .sidebar-action';
+  const start = css.lastIndexOf(marker); assert.ok(start > 0, 'Missing the final coarse-pointer block');
+  assert.equal(css.indexOf('\n@media', start + 1) , -1, 'The coarse-pointer block must be the last media block');
+  const block = css.slice(start), body = block.slice(block.indexOf('{') + 1);
+  const rules = [...body.matchAll(/\n\s*([^{}\n]+)\{([^}]+)\}/g)].map(match => ({selector: (match[1] ?? '').trim(), text: match[2] ?? ''}));
+  assert.ok(rules.length > 8);
+  const before = css.slice(0, start);
+  for (const {selector, text} of rules) {
+    const height = /(?:^|[;\s])min-height:\s*(\d+)px/.exec(text);
+    if (!height) continue;
+    assert.ok(Number(height[1]) >= 44 || /grid-template-rows/.test(text) , `${selector} must keep a 44px minimum`);
+    for (const part of selector.split(',').map(item => item.trim())) {
+      const escaped = part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const earlier = [...before.matchAll(new RegExp(`(?:^|[\\n,]\\s*)${escaped}\\s*[,{]`, 'g'))];
+      assert.ok(before.length > 0 && earlier.every(match => match.index < start), `${part} density rule must precede the coarse block`);
+    }
+  }
+  for (const needle of ['.sidebar .agent-row > .row-message', '.sidebar .conversation-row', '.sidebar .nav-row']) assert.ok(before.includes(needle), `${needle} density rule exists before the block`);
+  assert.match(rule('.sidebar .nav-row, .sidebar .sidebar-action'), /height: 30px/);
+});
