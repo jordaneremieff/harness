@@ -74,12 +74,12 @@ test('conversation state and split width changes retain editor ancestry, draft i
     assert.ok(latest.querySelector('.card-icon-latest')); assert.equal(latest.querySelector('.latest-text')?.textContent, 'Latest'); assert.equal(latest.getAttribute('aria-label'), 'Latest message');
     const utilities = form.querySelector('.composer-utilities'), recallLine = form.querySelector('.composer-recall'); assert.ok(utilities); assert.ok(recallLine);
     assert.deepEqual(utilities.children, [recallLine, form.querySelector('.composer-handover')]); assert.equal(utilities.parentNode, form);
-    assert.deepEqual(line.children, [intake, control('stop'), control('settings'), bar]); assert.equal(line.parentNode, surface);
+    assert.deepEqual(line.children, [intake, control('settings'), bar]); assert.equal(line.parentNode, surface);
     assert.equal(surface.contains(meta), false); assert.equal(surface.contains(recallLine), false);
     assert.ok(form.children.indexOf(meta) > form.children.indexOf(surface));
     assert.ok(control('model').querySelector('.card-icon-chevron')); assert.ok(control('thinking').querySelector('.card-icon-chevron'));
     const submit = bar.querySelector('.composer-submit'); assert.ok(submit);
-    assert.deepEqual(bar.children, [submit]); assert.deepEqual(submit.children, [control('queue'), control('start'), control('send')]);
+    assert.deepEqual(bar.children, [submit]); assert.deepEqual(submit.children, [control('stop'), control('queue'), control('start'), control('send')]);
     assert.equal(control('editor').rows, 1);
     assert.equal(control('transcript').parentNode?.contains(latest), false);
     assert.equal(control('editor').parentNode?.classList.contains('composer-surface'), true);
