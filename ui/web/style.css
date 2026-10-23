@@ -1810,6 +1810,10 @@ pre[data-wrap=true] { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 @media (pointer:coarse) and (max-width:599px) {
   .file-editor { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .conversation-tab { --tab-chrome: 36px; }
+  .conversation-tab > :is(.tab-session-state, .tab-age, .tab-close) { display: none; }
+  .tab-bar > .pane-tab-nav { display: inline-flex; }
+  .tab-bar > .pane-tab-nav[data-unreachable=true] { display: none; }
 }
 @media (pointer:coarse) {
   .sidebar .nav-row, .sidebar .sidebar-action, .sidebar .conversation-row, .sidebar .agent-row, .sidebar .agent-row .row-select { height: auto; min-height: 44px; }
