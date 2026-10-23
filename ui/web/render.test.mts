@@ -6,6 +6,7 @@ import test from 'node:test';
 import { Transcript as RetainedTranscript, structured } from './render.ts';
 import { createComposerElements } from './composer.ts';
 import { contextMenu } from './context-menu.ts';
+import {CommunicationCard} from './communication.ts';
 import { Roster } from './roster.ts';
 import { conversationPresentation, presentationGlyph } from './conversation-presentation.ts';
 import { markdownDom } from './safe-markdown.ts';
@@ -2555,6 +2556,22 @@ test('a thread notice names its thread and Source opens the row it belongs to', 
   assert.equal(card.querySelector('.communication-body')?.hidden, true); messageAction(card, 'Source').run?.(); flush();
   assert.equal(card.querySelector('.communication-body')?.hidden, false); assert.equal(card.querySelector('.message-source')?.hidden, false); assert.equal(card.querySelector('.communication-toggle')?.attributes['aria-expanded'], 'true');
   node('primary-editor').focus(); view.set([statusEntry('notice', 'Frame revised')]); flush(); assert.equal(card.querySelector('.communication-line-kind')?.textContent, 'thread notice'); view.reset();
+});
+test('result reply links bound their displayed subject and retain the full title and current navigation', () => {
+  setup();let subject='Review the complete recorded task before its answer. '.repeat(40),active=true,opened=0;
+  const entry=communicationEntry('ready','Full recorded answer'),message=entry.messages?.[0];assert.ok(message?.communication?.state==='ready');
+  message.communication.value={...message.communication.value,kind:'result',metadata:{status:'done',references:[],omittedReferences:0}};
+  const shell={node:new FakeNode('article'),header:new FakeNode('header'),heading:new FakeNode('h3'),body:new FakeNode('div'),actions:new FakeNode('div')};
+  roots.push(shell.node);shell.node.append(shell.header,shell.body);shell.header.append(shell.heading,shell.actions);
+  const card=new CommunicationCard(shell as unknown as ConstructorParameters<typeof CommunicationCard>[0],{
+    active:()=>active,current:()=>message,protected:()=>false,raw:()=>'',expanded:()=>false,disclosure:()=>{},layout:()=>{},reply:()=>({text:subject,open:()=>{opened++;}}),
+  },['reply-source','reply-line']);
+  card.sync(message);const link=shell.node.querySelector('.communication-reply')?.querySelector('button');assert.ok(link);
+  assert.equal(link.textContent,subject.slice(0,80));assert.equal(link.title,subject);link.click();assert.equal(opened,1);
+  assert.equal(shell.node.querySelector('.communication-text')?.textContent,'Full recorded answer');
+  subject='Short current task';card.sync(message);const current=shell.node.querySelector('.communication-reply')?.querySelector('button');assert.ok(current);
+  assert.equal(current.textContent,subject);assert.equal(current.title,subject);current.click();assert.equal(opened,2);
+  active=false;current.click();assert.equal(opened,2);card.dispose();
 });
 test('reports and results keep the full card and a card leaves the row form when its kind changes', () => {
   setup(); const view = transcript(); view.set([statusEntry('check-in', 'Awaiting')]); flush();

@@ -182,7 +182,7 @@ export class CommunicationCard {
     this.replyText=reply?.text;
     this.source = message; this.header(value, message); this.content(value, message);this.results(value);
     this.reply.hidden=!reply;
-    if(reply){const link=button(reply.text,()=>{if(this.current())this.hooks.reply?.(this.hooks.current())?.open();});this.reply.replaceChildren(document.createTextNode('Reply to: '),link);}else this.reply.replaceChildren();
+    if(reply){const link=button(reply.text.slice(0,80),()=>{if(this.current())this.hooks.reply?.(this.hooks.current())?.open();});link.title=reply.text;this.reply.replaceChildren(document.createTextNode('Reply to: '),link);}else this.reply.replaceChildren();
     if (!this.inspection.hidden) this.renderSource();
     return true;
   }
