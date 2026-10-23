@@ -1112,7 +1112,7 @@ test('conversation palette actions name views and preserve callbacks, grouping a
   const actions = new Actions(context({tabs: {close: () => calls.push('close'), switch: direction => calls.push(String(direction)), layout: () => ({root: {kind: 'pane', id: 'pane-one', tabs: [{kind: 'primary'}], active: 'primary'}, focusedPane: 'pane-one'}), reopen: {available: () => true, run: () => calls.push('reopen'), choices: () => [{key: 'primary:p:1', label: 'Project session'}], runKey: key => calls.push(key)}}}));
   const entries = actions.paletteEntries();
   for (const [label, description, priority, keys] of [
-    ['Close view', 'Close this view and keep its session and draft', 0, undefined],
+    ['Close view', 'Keep its session and draft', 0, undefined],
     ['Reopen closed view', 'Reopen the last view closed in this window', 1, 'Alt+Shift+T'],
     ['Next conversation', 'Select the next conversation', 1, 'Alt+PageDown'],
     ['Previous conversation', 'Select the previous conversation', 1, 'Alt+PageUp'],

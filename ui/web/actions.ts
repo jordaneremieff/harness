@@ -454,7 +454,7 @@ export class Actions {
   }
   private tabEntries(entry: (name: string, description: string, run: () => void, enabled?: boolean, alias?: string, disabledReason?: string) => PaletteEntry): PaletteEntry[] {
     const tabs = this.ctx.tabs; if (!tabs) return [];
-    return [entry('Close view', 'Close this view and keep its session and draft', tabs.close),
+    return [entry('Close view', 'Keep its session and draft', tabs.close),
       ...tabs.reopen ? [{...entry('Reopen closed view', 'Reopen the last view closed in this window', tabs.reopen.run, tabs.reopen.available(), undefined, 'No closed view to reopen'), shortcut: {text: '⌥⇧T', keys: 'Alt+Shift+T'}}, ...(tabs.reopen.choices?.() ?? []).slice(0, 8).map(choice => entry(`Reopen ${choice.label}`, 'Reopen this recently closed view', () => tabs.reopen?.runKey?.(choice.key), true))] : [],
       {...entry('Next conversation', 'Select the next conversation', () => tabs.switch(1)), shortcut: {text: '⌥⇟', keys: 'Alt+PageDown'}},
       {...entry('Previous conversation', 'Select the previous conversation', () => tabs.switch(-1)), shortcut: {text: '⌥⇞', keys: 'Alt+PageUp'}}];
