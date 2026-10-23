@@ -652,7 +652,8 @@ test('roster preserves order, visible duplicate identities, keyed rows and data-
     view.set([one, two]); flush(); expandRoster(); const first = node('roster').children[0]; assert.ok(first); const age = first.querySelector('time'); assert.equal(age?.textContent, '10m'); assert.match(first.querySelector('.row-select')?.attributes['aria-label'] ?? '', /one/);
     assert.equal(first.querySelector('.row-identity')?.textContent, '1');
     assert.equal(first.querySelector('.row-word'), null); assert.equal(first.querySelector('.row-detail'), null); assert.equal(first.dataset.live, 'true');
-    assert.equal(first.querySelector('.row-model'), null); assert.equal(first.querySelector('.row-activity'), null);
+    const model = first.querySelector('.row-model'); assert.ok(model); assert.equal(model.hidden, true); assert.equal(model.textContent, '');
+    assert.equal(first.querySelector('.row-activity'), null);
     assert.equal(first.querySelector('.row-select')?.title, 'Running');
     assert.equal(first.querySelector('.row-select')?.attributes['aria-description'], 'Running');
     assert.equal(node('roster').children[1]?.querySelector('.row-identity')?.textContent, '2');
