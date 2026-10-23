@@ -3261,8 +3261,11 @@ function openPaneMenu(paneId: string, event?: MouseEvent, key?: string, purpose:
   const trigger = region.menu; const box = trigger.getBoundingClientRect(); contextMenu.open(trigger, event ? {x: event.clientX, y: event.clientY} : {x: box.right, y: box.bottom}, purpose === 'list' ? 'Tabs in this pane' : 'Tab and view actions', items, () => valid() && (!owner || owner.workspaceId === state.workspace?.id));
 }
 function fileMenuItems(workspace:Workspace,tab:FileTab,valid:()=>boolean):ContextItem[] {
+  const path = tab.path,rootId = tab.rootId,root = fileRoot.selection,key = tabKey(tab);
+  const copyCurrent = ()=>valid() && !fileRoot.loading && fileRoot.selection === root && tab.path === path && tab.rootId === rootId && paneLeaves(currentLayout().root).some(pane=>pane.tabs.some(item=>tabKey(item) === key));
   const items:ContextItem[] = [{label:'Keep tab',separatorBefore:true,run:()=> {if (valid()) fileBrowse.keep(tabKey(tab));}},
-    {label:'Re-read file',run:()=> {if (valid()) void filesViews.view(workspace,tab).owner.reread();}}];
+    {label:'Re-read file',run:()=> {if (valid()) void filesViews.view(workspace,tab).owner.reread();}},
+    {label:'Copy relative path',run:()=> {if (copyCurrent()) void copy(path,byId('conversation-panes'));else announce('This item changed. Choose the action again.');}}];
   if (markdownPath(tab.path)) items.push({label:tab.view === 'preview' ? 'File source' : 'Markdown preview',run:()=> {if (valid()) switchMarkdownView(tab);}});return items;
 }
 function switchMarkdownView(tab:FileTab):void {

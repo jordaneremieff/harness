@@ -1,7 +1,7 @@
 import type {FileDirectoryPage, FileEntry, FileRoot} from '../shared/files.ts';
 import {cardAction, cardIcon} from './card-icons.ts';
-import {element, placeRetained, setText} from './dom.ts';
-import {contextMenu, nativeEditingTarget} from './context-menu.ts';
+import {copy, element, placeRetained, setText} from './dom.ts';
+import {contextMenu, nativeEditingTarget, type ContextItem} from './context-menu.ts';
 import {movedFilePath, type FileMove} from './file-identity.ts';
 
 type Directory = {entries: FileEntry[]; nextCursor: string | null; expanded: boolean; loading: boolean; again?:boolean; error?: string; incomplete?: string};
@@ -201,13 +201,15 @@ export class FilesTree {
   }
   private entry(path:string):FileEntry|undefined {return [...this.directories.values()].flatMap(directory=>directory.entries).find(entry=>entry.path === path);}
   private menu(origin:HTMLElement,point:{x:number;y:number}):void {
-    if (!this.root || !this.hooks.operation || this.naming?.busy) return;
-    const root = this.root,entry = this.entry(origin.closest<HTMLElement>('[data-path]')?.dataset.path ?? '');
+    if (!this.root || this.naming?.busy) return;
+    const root = this.root,generation = this.generation,entry = this.entry(origin.closest<HTMLElement>('[data-path]')?.dataset.path ?? '');
     if (entry && entry.kind !== 'file' && entry.kind !== 'directory') return;
-    const items = [{label:'New file',run:()=>this.name('file',entry)},{label:'New folder',run:()=>this.name('directory',entry)}];
+    const path = entry?.path,valid = ()=>this.root === root && this.generation === generation && (!entry || this.entry(path ?? '') === entry && entry.path === path);
+    const items:ContextItem[] = this.hooks.operation ? [{label:'New file',run:()=>this.name('file',entry)},{label:'New folder',run:()=>this.name('directory',entry)}] : [];
     if (entry?.kind === 'file' && this.hooks.addToMessage) items.push({label:'Add to message',run:()=>this.hooks.addToMessage?.(root.id,entry.path)});
-    if (entry) items.push({label:'Rename',run:()=>this.name('rename',entry)},{label:'Move',run:()=>this.name('move',entry)},{label:'Move to Trash',run:()=>this.trash(entry)});
-    contextMenu.open(origin,point,'File actions',items,()=>this.root === root && (!entry || !!this.entry(entry.path)));
+    if (path) items.push({label:'Copy relative path',run:()=> {if (valid()) void copy(path,this.node);}});
+    if (entry && this.hooks.operation) items.push({label:'Rename',run:()=>this.name('rename',entry)},{label:'Move',run:()=>this.name('move',entry)},{label:'Move to Trash',run:()=>this.trash(entry)});
+    contextMenu.open(origin,point,'File actions',items,valid);
   }
   private name(action:Naming['action'],entry?:FileEntry):void {
     if (!this.root || !this.hooks.operation || this.naming?.busy) return;

@@ -33,10 +33,49 @@ test('quiet tooling rows preserve root and nested order, selection and context a
     assert.equal(host.querySelector(`[data-path="${prefix}.DS_Store"]`),null);
     const path=`${prefix}.gitignore`,file=row(host,path);file.click();assert.equal(file.getAttribute('aria-selected'),'true');assert.equal(file.classList.contains('file-row-quiet'),true);
     file.dispatch('contextmenu',{clientX:10,clientY:10});const menu=hostDocument.body.querySelector('.context-menu');assert.ok(menu);
-    assert.deepEqual(menu.children.map(item=>item.textContent),['New file','New folder','Add to message','Rename','Move','Move to Trash']);
+    assert.deepEqual(menu.children.map(item=>item.textContent),['New file','New folder','Add to message','Copy relative path','Rename','Move','Move to Trash']);
     menu.children.find(item=>item.textContent==='Add to message')?.click();
   }
   assert.deepEqual(selected,['.gitignore','docs/.gitignore']);assert.deepEqual(added,selected);
+});
+function copiedPaths(context:test.TestContext):string[] {
+  const copied:string[] = [],navigator = Object.getOwnPropertyDescriptor(globalThis,'navigator');
+  Object.defineProperty(globalThis,'navigator',{configurable:true,value:{clipboard:{writeText:async(value:string)=> {copied.push(value);}}}});
+  context.after(()=> {if (navigator) Object.defineProperty(globalThis,'navigator',navigator);else Reflect.deleteProperty(globalThis,'navigator');});return copied;
+}
+test('read-only tree menus copy exact nested paths without operation or intake hooks and restore keyboard focus',async context=> {
+  const host = node(),copied = copiedPaths(context);context.after(()=> {contextMenu.close();host.remove();});
+  const folder = 'Nested space',path = `${folder}/café 🦘.md`;
+  const tree = new FilesTree(host as unknown as HTMLElement,{page:async(_root,path)=>page(path,path ? [{name:'café 🦘.md',path:`${folder}/café 🦘.md`,kind:'file'}] : [{name:folder,path:folder,kind:'directory'}]),select:()=>{},escape:()=>{}});
+  tree.setRoot(root);await settle();row(host,folder).click();await settle();
+  for (const target of [folder,path]) {
+    const origin = row(host,target);origin.focus();host.dispatch('keydown',{target:origin,key:'ContextMenu'});
+    const menu = hostDocument.body.querySelector('.context-menu');assert.ok(menu);assert.deepEqual(menu.children.map(item=>item.textContent),['Copy relative path']);
+    menu.dispatch('keydown',{key:'Enter'});await settle();assert.equal(hostDocument.activeElement,origin);assert.equal(hostDocument.body.querySelector('.context-menu'),null);assert.equal(byId('announcements').textContent,'Copied');
+  }
+  assert.deepEqual(copied,[folder,path]);
+  host.dispatch('contextmenu',{target:host,clientX:1,clientY:1});assert.equal(contextMenu.openNow,false);
+});
+test('tree copy stays separate from refused mutation access and retains the manual-copy fallback',async context=> {
+  const host = node(),copied = copiedPaths(context);context.after(()=> {contextMenu.close();host.remove();});let mutations = 0;
+  const path = 'nested/my résumé 🦘.md',tree = new FilesTree(host as unknown as HTMLElement,{page:async()=>page('',[{name:'my résumé 🦘.md',path,kind:'file'}]),select:()=>{},escape:()=>{},addToMessage:()=>{},operation:async()=> {mutations++;throw new Error('No mutation access.');}});
+  tree.setRoot(root);await settle();const origin = row(host,path);origin.dispatch('contextmenu',{clientX:1,clientY:1});
+  let choice = hostDocument.body.querySelector('.context-menu')?.children.find(item=>item.textContent === 'Copy relative path');assert.ok(choice);choice.click();await settle();assert.deepEqual(copied,[path]);assert.equal(mutations,0);
+  context.mock.method(navigator.clipboard,'writeText',async()=> {throw new Error('Clipboard denied.');});origin.dispatch('contextmenu',{clientX:1,clientY:1});
+  choice = hostDocument.body.querySelector('.context-menu')?.children.find(item=>item.textContent === 'Copy relative path');assert.ok(choice);choice.click();await settle();
+  const fallback = host.querySelector('.copy-fallback');assert.ok(fallback);assert.equal(fallback.value,path);assert.equal(hostDocument.activeElement,fallback);assert.match(byId('announcements').textContent,/Copy failed/);assert.equal(mutations,0);
+});
+for (const stale of ['rename','replacement','root','workspace'] as const) test(`tree copy refuses a stale ${stale} menu`,async context=> {
+  const host = node(),copied = copiedPaths(context);context.after(()=> {contextMenu.close();host.remove();});
+  let entries:FileEntry[] = [{name:'old.md',path:'old.md',kind:'file'}];
+  const tree = new FilesTree(host as unknown as HTMLElement,{page:async(rootId)=>({...page('',entries),rootId}),select:()=>{},escape:()=>{}});
+  tree.setRoot(root,'workspace-a');await settle();row(host,'old.md').dispatch('contextmenu',{clientX:1,clientY:1});
+  const choice = hostDocument.body.querySelector('.context-menu')?.children.find(item=>item.textContent === 'Copy relative path');assert.ok(choice);
+  if (stale === 'rename') {tree.remap({rootId:'r',from:'old.md',to:'new.md'});entries = [{name:'old.md',path:'old.md',kind:'file'}];}
+  if (stale === 'replacement' || stale === 'rename') {entries = [{name:'old.md',path:'old.md',kind:'file'}];tree.refresh();await settle();}
+  if (stale === 'root') tree.setRoot({...root,id:'other'},'workspace-a');
+  if (stale === 'workspace') {tree.setRoot(root,'workspace-b');await settle();tree.setRoot(root,'workspace-a');}
+  await settle();choice.click();await settle();assert.deepEqual(copied,[]);assert.match(byId('announcements').textContent,/changed/);
 });
 test('retained rows update quiet ink after rename in either direction',async context=> {
   const host=node();context.after(()=>host.remove());

@@ -29,6 +29,33 @@ async function workingFixture(context:test.TestContext,name:string) {
   const add=()=>{byId('modal-body').querySelector('[data-path="saved.md"]')?.click();const button=byId('modal-body').querySelectorAll('button').find(node=>node.textContent==='Add file');assert.ok(button);button.click();};
   return {root,reads,open,add,composer:app.primaryComposer(),editor:primaryControl('editor'),target};
 }
+for (const view of [undefined,'preview'] as const) test(`file tab menus copy exact relative paths without a conversation or mutation: ${view ?? 'source'}`,async context=> {
+  fileTransport(context);const copied:string[] = [],navigator = Object.getOwnPropertyDescriptor(globalThis,'navigator');
+  Object.defineProperty(globalThis,'navigator',{configurable:true,value:{clipboard:{writeText:async(value:string)=> {copied.push(value);}}}});context.after(()=> {if (navigator) Object.defineProperty(globalThis,'navigator',navigator);else Reflect.deleteProperty(globalThis,'navigator');});
+  for (const [index,path] of ['nested/deep/file.md','Nested space/my file.md','café/🦘 résumé.md'].entries()) {
+    const tab:FileTab = {kind:'file',rootId:'root',path,...(view ? {view} : {})},layout:ConversationLayout = {focusedPane:'copy-pane',root:{kind:'pane',id:'copy-pane',tabs:[tab],active:tabKey(tab)}};
+    await arrive({workspace:{id:`copy-tab-${view ?? 'source'}-${index}`,revision:1,conversationLayout:layout},primaries:[],roster:[],targets:[]});await settle();
+    const origin = paneNode('copy-pane').querySelector('.conversation-tab');assert.ok(origin);origin.focus();origin.dispatch('contextmenu',{clientX:10,clientY:10});
+    const menu = hostDocument.body.querySelector('.context-menu'),choice = menu?.children.find(item=>item.textContent === 'Copy relative path');assert.ok(choice);
+    const before = transportLog.length;choice.click();await settle();assert.equal(copied.at(-1),path);assert.equal(contextMenu.openNow,false);assert.equal(byId('announcements').textContent,'Copied');
+    assert.equal(hostDocument.activeElement?.getAttribute('aria-label'),'Tabs in this pane');assert.deepEqual(currentLayout(),layout);assert.equal(transportLog.slice(before).length,0);
+  }
+  assert.deepEqual(copied,['nested/deep/file.md','Nested space/my file.md','café/🦘 résumé.md']);
+});
+for (const stale of ['rename','closed','root','root-loading','workspace','in-place-path'] as const) test(`file tab copy refuses a stale ${stale} menu`,async context=> {
+  fileTransport(context);let copied = false;const navigator = Object.getOwnPropertyDescriptor(globalThis,'navigator');
+  Object.defineProperty(globalThis,'navigator',{configurable:true,value:{clipboard:{writeText:async()=> {copied = true;}}}});context.after(()=> {if (navigator) Object.defineProperty(globalThis,'navigator',navigator);else Reflect.deleteProperty(globalThis,'navigator');app.fileRoot.loading = false;});
+  const tab:FileTab = {kind:'file',rootId:'root',path:'nested/old.md'},layout:ConversationLayout = {focusedPane:'copy-stale-pane',root:{kind:'pane',id:'copy-stale-pane',tabs:[tab],active:tabKey(tab)}};
+  await arrive({workspace:{id:`copy-stale-${stale}`,revision:1,conversationLayout:layout},primaries:[],roster:[],targets:[]});await settle();app.openTabsList();
+  const choice = hostDocument.body.querySelector('.context-menu')?.children.find(item=>item.textContent === 'Copy relative path');assert.ok(choice);
+  if (stale === 'rename') app.applyLayout({...layout,root:{kind:'pane',id:'copy-stale-pane',tabs:[{...tab,path:'nested/new.md'}],active:tabKey({...tab,path:'nested/new.md'})}});
+  if (stale === 'closed') app.applyLayout({...layout,root:{kind:'pane',id:'copy-stale-pane',tabs:[],active:null}});
+  if (stale === 'root') app.fileRoot.selection = {revision:99,root:{id:'other',path:'/other',name:'other'}};
+  if (stale === 'root-loading') app.fileRoot.loading = true;
+  if (stale === 'workspace') await arrive({workspace:{id:'copy-replaced',revision:1,conversationLayout:layout},primaries:[],roster:[],targets:[]});
+  if (stale === 'in-place-path') {const current = paneLeaves(currentLayout().root)[0]?.tabs[0];assert.ok(current?.kind === 'file');current.path = 'nested/new.md';}
+  choice.click();await settle();assert.equal(copied,false);assert.match(byId('announcements').textContent,/changed/);
+});
 test('Escape closes the Add menu and returns focus to the add button',async context=>{
   const f=await workingFixture(context,'escape');f.composer.attach('working-escape',undefined);
   const sources=primaryControl('composer').querySelector('.attachment-sources');assert.ok(sources);sources.focus();sources.click();
