@@ -58,6 +58,13 @@ test('file navigation uses the picker flex allocation without a separate height 
   assert.match(rule('dialog'), /max-height: min\(85dvh, calc\(var\(--app-height, 100dvh\) - 24px\)\)/);
   assert.match(rule('dialog[data-variant=palette], dialog[data-variant=picker]'), /max-height: 70dvh/);
 });
+test('session state controls have natural height and empty copy fallback reserves no gap', () => {
+  assert.doesNotMatch(rule('.session-state-bar'), /(?:^|;)\s*(?:height|min-height|max-height):/);
+  assert.match(rule('.session-state-actions'), /display: flex; flex: none; align-items: center/);
+  assert.equal(rule('.session-state-copy:empty').trim(), 'display: none;');
+  assert.match(rule('.session-state-copy:not(:empty)'), /flex-basis: 100%; min-width: 0/);
+  assert.match(rule('.session-resume-command'), /min-width: 0; overflow-wrap: anywhere; user-select: text/);
+});
 test('quiet file rows use the existing muted ink without other presentation overrides', () => {
   assert.equal(rule('.file-row-quiet').trim(), 'color: var(--muted);');
 });
@@ -833,6 +840,19 @@ test('responsive, short, coarse, reduced-motion and forced-color paths remain', 
   assert.match(coarse, /\.message-actions, \.tool-copy, \.row-message \{ opacity: 1; pointer-events: auto; \}/);
   assert.match(css, /@media \(prefers-reduced-motion:reduce\)/);
   assert.match(media('@media (forced-colors:active)'), /:focus-visible \{ outline: 2px solid Highlight; \}/);
+});
+test('standard dialog headers cover the full scroll edge without moving title or Close controls', () => {
+  const heading=rule('.modal-heading'),selector='dialog:not([data-variant]) > .modal-heading';
+  assert.match(heading,/position: sticky; top: 0; z-index: 2/);
+  assert.match(heading,/background: var\(--raised\)/);
+  assert.match(rule('dialog'),/padding: var\(--s5\)/);
+  assert.equal(rule(selector).trim(),'top: calc(var(--s5) * -1); margin: calc(var(--s5) * -1) calc(var(--s5) * -1) 0; padding: var(--s5) var(--s5) var(--s4);');
+  const phone=media('@media (max-width:599px)');
+  assert.match(phone,/dialog \{ padding: var\(--s4\); \}/);
+  assert.ok(phone.includes(`${selector} { top: calc(var(--s4) * -1); margin: calc(var(--s4) * -1) calc(var(--s4) * -1) 0; padding: var(--s4); }`));
+  assert.match(html,/<div class="modal-heading"><h2 id="modal-title"><\/h2><button id="modal-close"/);
+  assert.match(rule('dialog[data-variant=find] .modal-heading'),/position: static/);
+  assert.match(rule('dialog[data-variant=palette] .modal-heading, dialog[data-variant=menu] .modal-heading'),/position: absolute/);
 });
 test('Find occupies app flow above status with visible coverage and compact controls', () => {
   assert.match(html, /<dialog id="modal"[\s\S]*?<\/dialog>\s*<footer[^>]*class="workbench-status/);

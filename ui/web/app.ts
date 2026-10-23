@@ -358,7 +358,7 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
 }
 function createPrimarySessionBar(target:Target,root:HTMLElement,composer:HTMLElement):SessionStateBar|undefined {
   if(target.kind!=='primary')return;
-  const bar=new SessionStateBar();root.insertBefore(bar.node,composer);return bar;
+  const bar=new SessionStateBar('summary');root.insertBefore(bar.node,composer);return bar;
 }
 function attachInspection(controller:ConversationController,region:HTMLElement):void {
   const {target,workspaceId,root}=controller;
@@ -1948,10 +1948,12 @@ function appendTargetDetails(body:HTMLElement,target:Target,workspace:string|und
   const records=targetReceipts(state.operations.values(),target);if(records.length)body.append(details('Delivery details',rawText(records)));
   const owner=workspace?controllers.get(controllerKey(workspace,target)):undefined;
   if(owner?.elements.save.textContent)body.append(element('p','secondary',owner.elements.save.textContent));
-  appendResumeSession(body,item,workspace);
+  if(target.kind==='primary'&&item?.epoch===target.epoch)appendPrimarySessionDetails(body,item,workspace);
 }
-function appendResumeSession(body:HTMLElement,item:PrimaryView|undefined,workspace:string|undefined):void {
-  if(item?.sessionFile&&primarySessionState(item).word==='closed')body.append(button('Resume session',()=>{if(workspace===state.workspace?.id&&state.primaries.get(item.key)?.epoch===item.epoch)resumeTabSource({primary:item});}));
+function appendPrimarySessionDetails(body:HTMLElement,item:PrimaryView,workspace:string|undefined):void {
+  const bar=new SessionStateBar('details'),boot=state.bootId,token=modal.token;
+  const current=()=>{const next=state.primaries.get(item.key);return modal.owns(token)&&state.bootId===boot&&workspace===state.workspace?.id&&next?.epoch===item.epoch&&next.sessionFile===item.sessionFile&&next.sessionId===item.sessionId&&next.cwd===item.cwd&&next.lifecycle==='stopped';};
+  body.append(bar.node);bar.update(primarySessionState(item),current,()=>resumeTabSource({primary:item}),connected&&!selecting);
 }
 function appendSessionDetails(body:HTMLElement,reader:SessionReader|undefined,tab:ConversationTab|undefined):(()=>void)|undefined {
   const saved=reader?.saved??(tab?.kind==='session'?sessionTabSaved(tab):undefined);if(saved)body.append(details('Saved session',rawText(saved)));
@@ -1965,7 +1967,18 @@ function appendFileDetails(body:HTMLElement,tab:FileTab,current:Workspace,worksp
 function mainConversationActions(): void {
   const tab = activeTab(currentLayout()), trigger = byId('conversation-actions');
   if (tab && controllerTarget(tab)) openConversationActions(focusedPane, undefined, trigger);
+  else if (tab?.kind==='session') openSavedConversationActions(focusedPane,trigger);
   else if (tab) openPaneMenu(focusedPane, undefined, undefined, 'context', trigger);
+}
+function openSavedConversationActions(paneId:string,trigger:HTMLElement):void {
+  const workspace=state.workspace,layout=currentLayout(),leaf=paneById(layout,paneId),tab=leaf?.tabs.find(item=>tabKey(item)===leaf.active);
+  if(!workspace||tab?.kind!=='session')return;
+  const key=tabKey(tab),revision=workspace.revision,valid=()=>state.workspace?.id===workspace.id&&state.workspace.revision===revision&&samePaneLayout(currentLayout(),layout);
+  contextMenu.open(trigger,paneMenuPoint(trigger),'Conversation actions',[
+    {label:'Conversation details',run:()=>showConversationDetails()},
+    {label:'Arrange view…',run:()=>openPaneMenu(paneId,undefined,key,'context',trigger)},
+    {label:'Close view',separatorBefore:true,run:()=>closeConversationTab(key)},
+  ],valid);
 }
 function renderSessionEntry(hasTab: boolean): void {
   const firstUse = !hasConversation() && !threadPane && !sessionReadPane;

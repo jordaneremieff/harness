@@ -41,11 +41,16 @@ export class SessionStateBar {
   private copy = button('Copy',()=>{},'quiet');
   private fallback = element('div','session-state-copy');
   private identity = '';
-  constructor() {
+  private presentation: 'summary' | 'details';
+  constructor(presentation: 'summary' | 'details') {
+    this.presentation = presentation;
     const actions = element('div','session-state-actions');
     actions.append(this.label,this.separator,this.resume);
+    this.node.dataset.presentation = presentation;
     this.copy.setAttribute('aria-label','Copy resume command');
-    this.node.append(actions,this.command,this.copy,this.fallback);this.node.hidden = true;
+    this.node.append(actions);
+    if (presentation === 'details') this.node.append(this.command,this.copy,this.fallback);
+    this.node.hidden = true;
   }
   update(state: SessionState, current: ()=>boolean, resume: ()=>void, enabled = true): void {
     this.node.hidden = state.word !== 'closed' && !state.terminal;
@@ -55,9 +60,10 @@ export class SessionStateBar {
     const valid = () => this.identity === identity && this.node.isConnected && !this.node.hidden && !this.node.closest('[hidden],[inert]') && current();
     setText(this.label,state.terminal ? 'Live in terminal' : 'Closed');
     this.resume.hidden = this.separator.hidden = !command || state.word !== 'closed';this.resume.disabled = !enabled;
-    this.command.hidden = this.copy.hidden = !command;setText(this.command,command ?? '');
+    const detailedCommand = this.presentation === 'details' ? command : undefined;
+    this.command.hidden = this.copy.hidden = !detailedCommand;setText(this.command,detailedCommand ?? '');
     this.resume.onclick = () => {if (!this.resume.disabled && valid()) resume();};
     const fallback = this.fallback;
-    this.copy.onclick = () => {if (command && valid()) void copy(command,fallback);};
+    this.copy.onclick = () => {if (detailedCommand && valid()) void copy(detailedCommand,fallback);};
   }
 }

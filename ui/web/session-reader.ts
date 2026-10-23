@@ -37,7 +37,7 @@ export class SessionReader {
   private earlier=button('Earlier retained entries',()=>{void this.read(true);},'quiet');
   private refresh=button('Refresh',()=>{void this.read(false);},'quiet');
   private resume=button('Resume here',()=>this.resumeCurrent(),'quiet');
-  private sessionBar=new SessionStateBar();
+  private sessionBar=new SessionStateBar('details');
   private detailsNode=element('div','session-reader-details');
   private problem=element('p','session-reader-status secondary');
   private barSource?:SessionReadSource;
@@ -144,7 +144,7 @@ export class SessionReader {
   }
   private bindSessionBar(source:SessionReadSource):void {
     if(this.barSource===source)return;
-    this.sessionBar.node.remove();this.sessionBar=new SessionStateBar();this.barSource=source;this.detailsNode.append(this.sessionBar.node);
+    this.sessionBar.node.remove();this.sessionBar=new SessionStateBar('details');this.barSource=source;this.detailsNode.append(this.sessionBar.node);
   }
   viewState():SessionState {return this.loaded?readSessionState(this.source&&'primary' in this.source?this.source.primary:undefined,this.source?.saved,this.hooks.primaries?.()):{};}
   private resumeCurrent():void {

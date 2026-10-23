@@ -121,6 +121,45 @@ test('Recents selects only the exact saved row when no Primary is selected',asyn
   assert.equal(rows.length,2);assert.deepEqual(selected.map(node=>node.textContent),[first.title]);
 });
 
+test('saved header actions keep pane controls behind Arrange view and close only the captured view',async t=>{
+  t.after(()=>{byId('modal-close').click();});
+  const saved={id:'saved-menu',path:'/fixture/saved-menu.jsonl',project:'/fixture',revision:'r',title:'Saved conversation',titleSource:'name' as const,titleState:'ready' as const,modifiedAt:'2026-01-01T00:00:00Z',size:10},fetch=globalThis.fetch;
+  t.mock.method(globalThis,'fetch',async(input:RequestInfo|URL,init?:RequestInit)=>{
+    if(new URL(String(input),'http://ui.test').pathname==='/api/sessions/history')return Response.json({ok:true,data:{session:saved,entries:[],coverage:browser.coverage,leaf:null,before:null,observedAt:''}});
+    return fetch(input,init);
+  });
+  await arrive({workspace:{id:'saved-header-menu',revision:1,conversationLayout:createPaneLayout([{kind:'session',id:saved.id,path:saved.path,project:saved.project,name:saved.title}])},primaries:[],roster:[]});await settle();
+  const trigger=byId('conversation-actions'),menu=()=>hostDocument.body.querySelector('.context-menu');
+  trigger.focus();trigger.click();assert.deepEqual(menu()?.querySelectorAll('button').map(node=>node.textContent),['Conversation details','Arrange view…','Close view']);
+  assert.equal(menu()?.querySelectorAll('[role="separator"]').length,1);
+  chooseMenu('Conversation details');assert.equal(byId('modal-title').textContent,'Conversation details');byId('modal-close').click();assert.equal(hostDocument.activeElement,trigger);
+  trigger.click();chooseMenu('Arrange view…');
+  const labels=menu()?.querySelectorAll('button').map(node=>node.textContent)??[];
+  for(const label of ['Split right','Split down','Move tab to pane','Close tab','Close pane','Close others','Close all'])assert.ok(labels.some(text=>text.startsWith(label)),label);
+  menu()?.dispatch('keydown',{key:'Escape'});assert.equal(hostDocument.activeElement,trigger);
+  trigger.click();const stale=menu()?.querySelectorAll('button').find(node=>node.textContent==='Close view');assert.ok(stale);
+  const workspace=app.state.workspace;assert.ok(workspace);workspace.revision++;const before=structuredClone(workspace.conversationLayout);stale.click();await settle();assert.deepEqual(app.state.workspace?.conversationLayout,before);workspace.revision--;
+  const start=browser.transportLog.length;trigger.click();chooseMenu('Close view');await settle();
+  assert.equal(byId('conversation-actions').disabled,true);assert.equal(hostDocument.activeElement,trigger);
+  assert.equal(browser.transportLog.slice(start).some(call=>call.path==='/api/operations'||call.path.startsWith('/api/sessions/metadata')),false);
+});
+
+test('stopped Primary keeps terminal command and Copy in details instead of the conversation summary',async t=>{
+  t.after(()=>byId('modal-close').click());
+  const primary=primaryFixture({epoch:24000,lifecycle:'stopped',activity:'idle',sessionId:'stopped-details',sessionFile:"/fixture/project/quoted's session.jsonl"}),target={kind:'primary' as const,key:primary.key,epoch:primary.epoch};
+  await arrive({workspace:{id:'stopped-details',revision:1,primaryKey:primary.key},primaries:[primary],roster:[],targets:[targetFixture('stopped-details-draft',target)]});await settle();
+  const summary=primaryControl('root').querySelector('.session-state-bar');assert.ok(summary);
+  assert.equal(summary.querySelector('.session-state-label')?.textContent,'Closed');assert.equal(summary.querySelector('.session-resume-command'),null);
+  assert.equal(summary.querySelectorAll('button').find(node=>node.getAttribute('aria-label')==='Copy resume command'),undefined);
+  byId('conversation-actions').click();chooseMenu('Conversation details');
+  const detail=byId('modal-body').querySelector('.session-state-bar');assert.ok(detail);
+  assert.equal(detail.querySelector('.session-resume-command')?.hidden,false);assert.equal(detail.querySelector('.session-resume-command')?.textContent,"pi --session '/fixture/project/quoted'\\''s session.jsonl'");
+  const resume=detail.querySelectorAll('button').find(node=>node.textContent==='Resume');assert.ok(resume);assert.equal(resume.hidden,false);
+  const copy=detail.querySelectorAll('button').find(node=>node.getAttribute('aria-label')==='Copy resume command');assert.ok(copy);assert.equal(copy.hidden,false);
+  const start=browser.transportLog.length;browser.event('primary.state',{...primary,sessionId:'replacement',sessionFile:'/fixture/project/replacement.jsonl'});await settle();resume.click();await settle();
+  assert.equal(browser.transportLog.slice(start).some(call=>call.path==='/api/operations'),false,'Old details never resume the replacement session.');
+});
+
 test('recent rows merge exact known identities without merging equal names',()=>{
   const row=(key:string,identities:string[]):SessionRow=>({key,identities,name:'Same name',at:0,title:''});
   const first=row('open-primary',['primary:p','path:/project/a.jsonl','id:a']);

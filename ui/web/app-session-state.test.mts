@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type {ConversationTab, EntryView, SavedSession, SessionTab} from '../shared/api.ts';
-import {createAppFixture} from './app-fixture.mts';
+import {createAppFixture, type HostNode} from './app-fixture.mts';
 import {createPaneLayout} from './pane-layout.ts';
 import {SessionReader} from './session-reader.ts';
+import {SessionStateBar} from './session-state.ts';
 import {tabKey} from './tabs.ts';
 
 const browser=await createAppFixture();
@@ -18,6 +19,33 @@ function stateWords():[string|undefined,string|undefined] {
 }
 function readerNode(){const node=hostDocument.querySelector('.session-reader');assert.ok(node);return node;}
 function openReaderDetails():void {byId('conversation-actions').click();const item=hostDocument.body.querySelector('.context-menu')?.querySelectorAll('button').find(node=>node.textContent==='Conversation details');assert.ok(item);item.click();}
+
+test('stopped summary keeps only Closed and Resume while details retain exact command and guarded copy fallback',async t=>{
+  const summary=new SessionStateBar('summary'),details=new SessionStateBar('details');
+  const clipboard=Object.getOwnPropertyDescriptor(navigator,'clipboard'),copies:string[]=[];
+  let current=true,failCopy=false,resumed=0;
+  Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async(text:string)=>{if(failCopy)throw new Error('Clipboard unavailable');copies.push(text);}}});
+  t.after(()=>{summary.node.remove();details.node.remove();if(clipboard)Object.defineProperty(navigator,'clipboard',clipboard);else Reflect.deleteProperty(navigator,'clipboard');});
+  const summaryNode=summary.node as unknown as HostNode,detailsNode=details.node as unknown as HostNode;
+  hostDocument.body.append(summaryNode,detailsNode);
+  const path="/fixture/retained session's.jsonl",state={word:'closed' as const,project:'/fixture',path};
+  const command="pi --session '/fixture/retained session'\\''s.jsonl'";
+  const update=(enabled=true)=>{for(const bar of [summary,details])bar.update(state,()=>current,()=>{resumed++;},enabled);};
+  update();
+  assert.equal(summary.node.dataset.presentation,'summary');assert.equal(summary.node.textContent,'Closed · Resume');
+  assert.deepEqual(summaryNode.querySelectorAll('button').map(node=>node.textContent),['Resume']);
+  assert.equal(summary.node.querySelector('.session-resume-command'),null);assert.equal(summary.node.querySelector('.session-state-copy'),null);
+  assert.equal(summary.node.children.length,1);
+  assert.equal(details.node.dataset.presentation,'details');assert.equal(details.node.querySelector('.session-resume-command')?.textContent,command);
+  const resume=summaryNode.querySelector('button'),copy=detailsNode.querySelectorAll('button').find(node=>node.textContent==='Copy');assert.ok(resume);assert.ok(copy);
+  resume.dispatch('click');copy.dispatch('click');await settle();assert.equal(resumed,1);assert.deepEqual(copies,[command]);
+  failCopy=true;copy.dispatch('click');await settle();assert.equal(detailsNode.querySelector('.copy-fallback')?.value,command);
+  current=false;resume.dispatch('click');copy.dispatch('click');await settle();assert.equal(resumed,1);assert.equal(detailsNode.querySelectorAll('.copy-fallback').length,1);
+  current=true;update(false);assert.equal(resume.disabled,true);resume.dispatch('click');assert.equal(resumed,1);
+  summary.update({word:'live',terminal:true},()=>true,()=>{assert.fail('A terminal writer never resumes');});
+  assert.equal(summary.node.hidden,false);assert.equal(summary.node.querySelector('.session-state-label')?.textContent,'Live in terminal');assert.equal(resume.hidden,true);
+  details.node.remove();copy.dispatch('click');await settle();assert.equal(detailsNode.querySelectorAll('.copy-fallback').length,1);
+});
 
 test('saved tab, Tabs row and reader share checked metadata and current exact ownership',async t=>{
   const original=globalThis.fetch,gate=Promise.withResolvers<void>();let writer:'live'|undefined='live';
