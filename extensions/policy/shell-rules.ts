@@ -523,20 +523,12 @@ interface ReadSuggestion {
 
 function sedSuggestion(stage: Stage): ReadSuggestion | undefined {
 	const args = stage.args;
-	if (args[0] !== "-n") return undefined;
-	let index = 1;
-	const afterBoundary = args[index] === "--";
-	if (args[index] === "-e" || afterBoundary) index++;
-	const script = args[index++];
-	if (!script || !/^\d+(?:\s*,\s*\d+)?\s*p$/.test(script)) return undefined;
-	const boundary = !afterBoundary && args[index] === "--";
-	const literalPaths = afterBoundary || boundary;
-	if (boundary) index++;
-	const paths = args.slice(index);
-	if (paths.length !== 1 || (!literalPaths && paths[0].startsWith("-"))) return undefined;
-	const [start, end = start] = script.replace(/p$/, "").split(",").map(Number);
+	if (args.length !== 3 || args[0] !== "-n" || args[2].startsWith("-")) return undefined;
+	const script = args[1];
+	if (!/^\d+(?:,\d+)?p$/.test(script)) return undefined;
+	const [start, end = start] = script.slice(0, -1).split(",").map(Number);
 	if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start) return undefined;
-	return { paths, offset: start, limit: end - start + 1 };
+	return { paths: [args[2]], offset: start, limit: end - start + 1 };
 }
 
 function inlineReadSuggestion(stage: Stage): ReadSuggestion | undefined {

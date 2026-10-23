@@ -1072,11 +1072,12 @@ working directory is not established. Leading `~` or `@`, file URLs, Unicode spa
 that Pi normalises, shell expansion shapes, and escaped script literals also
 suppress suggestions. A suggestion that requires credential redaction is omitted
 rather than rewritten to a different target.
-Slice suggestions accept one explicit leading line count, or one sed range script
-as the first operand or a single `-e` argument. Sed suggestions require exactly one
-input file because numeric addresses count cumulatively across files. An explicit
-`--` separates filenames from options. Repeated counts, mixed modes, implicit counts, and ambiguous forms
-have no concrete suggestion.
+Head and tail suggestions accept one explicit leading line count, with an optional
+`--` before filenames. Repeated counts, mixed modes, and implicit counts have no
+concrete suggestion. Sed suggestions accept exactly three arguments: `-n`, a literal
+`Np` or `A,Bp` script, and one file operand. Sed forms with `-e`, `--`, other options,
+or extra operands have no suggestion. Numeric sed addresses count cumulatively
+across input files, so a suggestion never splits them into separate reads.
 Both runtimes use the same refusal formatter.
 A segment from a corrected candidate is labeled `[corrected input omitted]`
 in denials to avoid echoing values from approved data that the caller did not

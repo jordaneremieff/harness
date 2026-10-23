@@ -16,9 +16,17 @@ describe("certain slice suggestions", () => {
 			assert.deepEqual(predicateSuggestions("routing.head-slice", stage), [], command);
 		}
 	});
-	it("omits repeated sed scripts", () => {
-		const stage = parseStatements("sed -n -e '3p' -e '7p' notes.md")[0][0];
-		assert.deepEqual(predicateSuggestions("routing.sed-slice", stage), []);
+	it("omits every sed form outside one plain script and one file", () => {
+		for (const command of [
+			"sed -n '3p' -- notes.md", "sed -n '3p' --", "sed -n -- '3p' notes.md",
+			"sed -n -- '3p' -notes.md", "sed -n -e '3p' notes.md", "sed -n -e '3p' 1,2p",
+			"sed -n -e '3p' -- -notes.md", "sed -n -e '3p' -e '7p' notes.md",
+			"sed -n '3p' a.md b.md", "sed -n -n '3p' notes.md", "sed -n '3p' -e '7p' notes.md",
+			"sed -n '3, 7p' notes.md", "sed -n '3p' -notes.md",
+		]) {
+			const stage = parseStatements(command)[0][0];
+			assert.deepEqual(predicateSuggestions("routing.sed-slice", stage), [], command);
+		}
 	});
 });
 
