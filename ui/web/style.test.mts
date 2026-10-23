@@ -12,6 +12,40 @@ function rule(selector: string): string {
 const declarations = (property: string): string[] => [...css.matchAll(new RegExp(`(?:^|[;{\\s])${property}:\\s*([^;}]+)`, 'g'))].map(match => match[1].trim());
 const media = (query: string): string => { const start = css.indexOf(query); assert.ok(start >= 0, `Missing ${query}`); const next = css.indexOf('\n@media', start + 1); return css.slice(start, next < 0 ? undefined : next); };
 
+test('Commands keeps its title and Close control visible above the bounded native list at every width', () => {
+  assert.match(rule('.modal-heading'), /position: sticky; top: 0; z-index: 2; display: flex/);
+  assert.equal(rule('dialog[data-variant=palette] .modal-heading').trim(), 'padding-bottom: var(--s2);');
+  assert.match(rule('dialog[data-variant=palette] #modal-close'), /display: inline-flex; flex: none/);
+  assert.match(rule('dialog[data-variant=palette] #modal-close'), /min-height: 44px; min-width: 44px/);
+  assert.doesNotMatch(css, /dialog\[data-variant=palette\][^{}]*(?:\.modal-heading|#modal-close)[^{}]*\{[^}]*(?:display: none|position: absolute|clip: rect)/);
+  assert.match(rule('dialog[data-variant=palette], dialog[data-variant=picker]'), /max-height: 70dvh/);
+  assert.match(rule('.palette-list'), /--palette-available-height/);
+  assert.match(rule('.palette-list'), /overflow-y: auto/);
+});
+test('Settings separates plain groups and keeps the Agent control explanation beside its visible switch state', () => {
+  assert.equal(rule('.settings-group + .settings-group').trim(), 'margin-top: var(--s4);');
+  assert.match(rule('.settings-group-title'), /color: var\(--dim\); font-size: var\(--fs-meta\)/);
+  assert.match(rule('.sidebar .settings-group > button'), /min-height: 44px; height: auto; white-space: normal; line-height: 1.4/);
+  assert.match(rule('.sidebar .settings-control'), /display: grid; grid-template-columns: minmax\(0,1fr\) auto/);
+  assert.match(rule('.settings-control-label'), /grid-column: 1; grid-row: 1/);
+  const explanation = rule('.settings-control-description');
+  assert.match(explanation, /grid-column: 1; grid-row: 2/);
+  assert.match(explanation, /overflow-wrap: anywhere/);
+  assert.doesNotMatch(explanation, /display: none|overflow: hidden|line-clamp|mask-image/);
+  assert.match(rule('.settings-control-switch'), /grid-column: 2; grid-row: 1 \/ 3; align-self: center/);
+  assert.match(rule('.settings-control[aria-checked=true] .settings-control-switch'), /border-color: var\(--fg\); color: var\(--fg\)/);
+});
+test('Notices show three subject lines before separate metadata without a fade or a floated whole-row button', () => {
+  const button = rule('.notification .communication-notice-open');
+  assert.match(button, /display: block; float: none; width: 100%/);
+  assert.match(button, /margin: 0;.*color: var\(--fg\); text-align: left; white-space: normal/);
+  const subject = rule('.communication-notice-subject');
+  assert.match(subject, /display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3/);
+  assert.match(subject, /white-space: pre-wrap; overflow-wrap: anywhere/);
+  for (const declaration of [button, subject]) assert.doesNotMatch(declaration, /mask-image|white-space: nowrap/);
+  assert.match(rule('.communication-notice-meta'), /display: block; margin-top: var\(--s1\); color: var\(--muted\); font-size: var\(--fs-meta\); font-weight: 400/);
+  assert.equal(rule('.notification-unread > .communication-notice-open').trim(), 'font-weight: 600;');
+});
 test('phone thread headers keep sender, time and anchor together with full-width secondary facts', () => {
   const start = css.indexOf('@container (max-width: 599px) {\n  .thread-message'); assert.ok(start >= 0);
   const phone = css.slice(start, css.indexOf('\n}', start) + 2);
@@ -76,32 +110,30 @@ test('raised-menu hover and keyboard selection use visible mode-aware surfaces',
   }
   assert.equal(declarations('background').filter(value => value === 'var(--menu-hover)').length, 4);
 });
-test('roster rows place a wrapping model line between the heading and optional summary', () => {
+test('roster rows place bounded work or role previews below the heading without a model row', () => {
   assert.match(rule('.agent-row'), /grid-template-columns: minmax\(0,1fr\) max-content/);
   assert.match(rule('.agent-row:is([data-action=message],[data-action=resume])'), /max-content 24px/);
   const select = rule('.agent-row .row-select');
   assert.match(select, /grid-column: 1 \/ -1; grid-row: 1;/);
-  assert.match(select, /grid-template-columns: subgrid; grid-template-rows: 30px auto auto; row-gap: 0/);
+  assert.match(select, /grid-template-columns: subgrid; grid-template-rows: 30px auto; row-gap: 0/);
   assert.match(select, /height: auto; min-height: 30px; padding: 0 var\(--s2\) 0 var\(--s3\)/);
-  assert.match(media('@media (pointer:coarse)'), /\.agent-row \.row-select \{ grid-template-rows: 44px auto auto; min-height: 44px; \}/);
+  assert.match(media('@media (pointer:coarse)'), /\.agent-row \.row-select \{ grid-template-rows: 44px auto; min-height: 44px; \}/);
   assert.match(media('@media (pointer:coarse)'), /\.agent-row \.row-heading \{ height: 44px; \}/);
   assert.match(rule('.agent-row .row-heading'), /grid-column: 1; grid-row: 1; display: flex/);
   assert.match(rule('.agent-row .row-heading'), /height: 30px; min-width: 0; overflow: hidden/);
   assert.match(rule('.agent-row .row-name'), /flex: 1; font-size: var\(--fs-ui\); line-height: 30px; white-space: nowrap/);
   assert.match(rule('.row-title, .row-name'), /overflow: hidden; color: var\(--fg\); font-weight: 500; text-overflow: clip/);
-  const model = rule('.agent-row .row-model');
-  assert.match(model, /grid-column: 1 \/ -1; grid-row: 2; min-width: 0/);
-  assert.match(model, /color: var\(--muted\); font-size: var\(--fs-meta\); line-height: 18px/);
-  assert.match(model, /white-space: normal; overflow-wrap: anywhere/);
-  assert.doesNotMatch(model, /(?:^|;)\s*(?:height|max-height|overflow|text-overflow):/);
+  assert.doesNotMatch(css, /\.agent-row \.row-model/);
   assert.match(rule('.sidebar .agent-row'), /height: auto/);
-  assert.match(rule('.sidebar .agent-row .row-select'), /grid-template-rows: 30px auto auto; min-height: 30px; height: auto/);
-  assert.match(rule('.sidebar .agent-row .row-preview'), /grid-row: 3/);
-  assert.match(css.slice(css.lastIndexOf('@media (pointer:coarse)')), /\.sidebar \.agent-row \.row-select \{ grid-template-rows: 44px auto auto;/);
-  const summary = rule('.agent-row .row-summary');
-  assert.match(summary, /grid-column: 1 \/ -1; grid-row: 3/);
-  assert.match(summary, /height: 20px; color: var\(--muted\); font-size: var\(--fs-meta\); line-height: 20px/);
-  assert.match(summary, /white-space: nowrap; overflow: hidden; text-overflow: clip/);
+  assert.match(rule('.sidebar .agent-row .row-select'), /grid-template-rows: 30px auto; min-height: 30px; height: auto/);
+  assert.match(css.slice(css.lastIndexOf('@media (pointer:coarse)')), /\.sidebar \.agent-row \.row-select \{ grid-template-rows: 44px auto;/);
+  assert.equal(rule('.agent-row .row-summary').trim(), 'display: contents;');
+  const preview = rule('.agent-row .row-preview');
+  assert.match(preview, /display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1/);
+  assert.match(preview, /grid-column: 1 \/ -1; grid-row: 2/);
+  assert.match(preview, /max-height: 18px; line-height: 18px; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere/);
+  assert.doesNotMatch(preview, /mask-image|white-space: nowrap/);
+  assert.equal(rule('.agent-row:is([data-preview-kind=work],[data-preview-kind=failure]) .row-preview').trim(), '-webkit-line-clamp: 2; max-height: 36px;');
   assert.doesNotMatch(rule('.agent-row .row-state'), /grid-row|grid-column/);
   assert.match(rule('.row-age, .row-message'), /position: static; grid-row: 1; z-index: 1; margin-top: 0/);
   assert.match(rule('.agent-row > .row-age'), /grid-column: 2; width: auto; height: 30px/);
@@ -852,7 +884,7 @@ test('standard dialog headers cover the full scroll edge without moving title or
   assert.ok(phone.includes(`${selector} { top: calc(var(--s4) * -1); margin: calc(var(--s4) * -1) calc(var(--s4) * -1) 0; padding: var(--s4); }`));
   assert.match(html,/<div class="modal-heading"><h2 id="modal-title"><\/h2><button id="modal-close"/);
   assert.match(rule('dialog[data-variant=find] .modal-heading'),/position: static/);
-  assert.match(rule('dialog[data-variant=palette] .modal-heading, dialog[data-variant=menu] .modal-heading'),/position: absolute/);
+  assert.match(rule('dialog[data-variant=menu] .modal-heading'),/position: absolute/);
 });
 test('Find occupies app flow above status with visible coverage and compact controls', () => {
   assert.match(html, /<dialog id="modal"[\s\S]*?<\/dialog>\s*<footer[^>]*class="workbench-status/);

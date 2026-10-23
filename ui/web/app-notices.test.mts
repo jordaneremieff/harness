@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type {Target} from '../shared/api.ts';
+import type {MessageView,Target} from '../shared/api.ts';
 import {contextMenu} from './context-menu.ts';
 import {createAppFixture} from './app-fixture.mts';
-const {app, arrive, settle, comparePanes, event, byId, primaryControl, paneNode, primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, twoPanes, observation, coverage, transportLog} = await createAppFixture();
+const {app, arrive, settle, comparePanes, event, byId, hostDocument, primaryControl, paneNode, primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, twoPanes, observation, coverage, transportLog} = await createAppFixture();
 
 const forbidden = (start: number) => transportLog.slice(start).filter(call => call.method === 'POST' && (call.path.endsWith('/targets') || call.path.endsWith('/start') || call.path.includes('/inputs') || call.path === '/api/operations'));
 function notice(target: Target, code = 'observation_unavailable'): void {
@@ -113,6 +113,33 @@ test('repeated connection notices for one named conversation share one row that 
   const dismiss = merged.querySelector('button'); assert.ok(dismiss); dismiss.click();
   for (const id of ids) assert.equal(app.state.dismissedNotices.has(id), true);
   assert.deepEqual(app.state.notices.map(item => item.target), [other]); byId('modal-close').click();
+});
+
+test('communication notices retain subject-first rows through sender updates and open their exact unread message',async()=>{
+  const identity='notice-subject-sender',primary=primaryFixture({epoch:127}),target:Target={kind:'primary',key:primary.key,epoch:primary.epoch};
+  const report=(id:string,text:string):MessageView=>({...messageFixture(id,[textPart('Original transport text')]),role:'custom',communication:{state:'ready',origin:{kind:'ordinary-custom',customType:'agent.peer',renderEntryId:id},value:{format:'agent.communication/1',sender:{identity},body:{text,complete:true,redacted:false},recordedAt:1700000000000,kind:'report',metadata:{sourceId:id,requestId:`request-${id}`}}}});
+  await arrive({workspace:{id:'notice-subject',revision:1,primaryKey:primary.key},primaries:[primary],roster:[agentFixture(identity,{name:'Original sender',handle:undefined})],targets:[targetFixture('notice-subject-primary',target,{draft:{revision:1,text:'Keep this draft',mode:'prompt',images:[],persisted:true}})],history:[entryFixture('empty-report-entry',[report('empty-report','')])]});
+  const editor=primaryControl('editor'),parents=editor.parentNode;editor.setSelectionRange(2,6,'backward');
+  const subject='The actual message starts with the result, not the sender or type.';
+  event('primary.message',{message:report('subject-report',`${subject}\nA later body line stays in the message.`)},target);await settle();
+  byId('notifications-button').click();
+  const rows=byId('modal-body').querySelectorAll('.communication-notification'),row=rows.find(node=>node.dataset.unread==='true');assert.ok(row);
+  const open=row.querySelector('.communication-notice-open');assert.ok(open);
+  const subjectNode=open.querySelector('.communication-notice-subject'),meta=open.querySelector('.communication-notice-meta');assert.ok(subjectNode);assert.ok(meta);
+  assert.equal(open.children[0],subjectNode);assert.equal(subjectNode.textContent,subject);assert.equal(meta.textContent,'Original sender · Report');
+  assert.equal(open.getAttribute('aria-label'),`${subject} · Original sender · Report`);
+  const empty=rows.find(node=>node.dataset.unread==='false')?.querySelector('.communication-notice-open');assert.ok(empty);
+  assert.equal(empty.querySelector('.communication-notice-subject')?.textContent,'Original sender');assert.equal(empty.querySelector('.communication-notice-meta')?.textContent,'Report');
+  open.focus();byId('modal-body').scrollTop=91;
+  event('agent.roster',{revision:app.state.rosterRevision+1,changed:[agentFixture(identity,{name:'Renamed sender',handle:undefined})],removed:[],scan:{},stale:false});await settle();
+  assert.equal(row.querySelector('.communication-notice-open'),open);assert.equal(open.querySelector('.communication-notice-subject'),subjectNode);assert.equal(open.querySelector('.communication-notice-meta'),meta);
+  assert.equal(subjectNode.textContent,subject);assert.equal(meta.textContent,'Renamed sender · Report');assert.equal(hostDocument.activeElement,open);assert.equal(byId('modal-body').scrollTop,91);assert.equal(row.dataset.unread,'true');
+  assert.equal(empty.querySelector('.communication-notice-subject')?.textContent,'Renamed sender');
+  const start=transportLog.length;open.click();await settle();assert.deepEqual(forbidden(start),[]);
+  assert.equal(primaryControl('editor'),editor);assert.equal(editor.parentNode,parents);assert.equal(editor.value,'Keep this draft');assert.deepEqual([editor.selectionStart,editor.selectionEnd,editor.selectionDirection],[2,6,'backward']);
+  const selected=hostDocument.body.querySelectorAll('.desk-row').find(node=>node.querySelector('.desk-row-title')?.getAttribute('aria-expanded')==='true');assert.ok(selected);
+  assert.equal(selected.querySelector('.desk-body')?.textContent,`${subject}\nA later body line stays in the message.`);
+  byId('notifications-button').click();assert.equal(byId('modal-body').querySelectorAll('.communication-notification').some(node=>node.dataset.unread==='true'),false);byId('modal-close').click();
 });
 
 test('local conversation menus never select another recipient and target its View and thinking controls exactly', async () => {

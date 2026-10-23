@@ -1893,15 +1893,23 @@ function showInterfaceUpdates():void {
   body.append(element('p','secondary','Automatic updates retain your drafts. Available update actions appear here.'),...nodes);
 }
 function renderSettingsChoices(): void {
-  const names = new Set(['Appearance','Message input','Keyboard shortcuts','Agent presentation control','Workspaces','Archived workspaces','Saved drafts and messages','Help']);
+  const groups = [
+    {id:'settings-preferences', names:['Appearance','Message input','Agent presentation control','Keyboard shortcuts']},
+    {id:'settings-workspace', names:['Workspaces','Archived workspaces','Archived sessions','Saved drafts and messages','Retained file drafts']},
+    {id:'settings-help', names:['Help','Version and health','Interface updates']},
+  ];
+  const names = new Set(groups.flatMap(group => group.names));
   const host = byId('settings-choices');
-  const existing = new Map([...host.querySelectorAll<HTMLButtonElement>('button')].map(node => [node.dataset.setting, node]));
+  const existing = new Map([...host.querySelectorAll<HTMLButtonElement>('button')].filter(node => node.dataset.setting).map(node => [node.dataset.setting, node]));
   const entries:PaletteEntry[]=[...actions.paletteEntries().filter(item => item.source === 'app' && names.has(item.name)),
     {name:'Archived sessions',description:'Open retained archived sessions',source:'app',enabled:true,run:openArchivedSessions},
     {name:'Version and health',description:'Inspect this interface and its services',source:'app',enabled:true,run:()=>healthStatus.open()},
     {name:'Interface updates',description:'Inspect automatic updates and their recovery actions',source:'app',enabled:true,run:showInterfaceUpdates},
     ...(filesViews.retained().length?[{name:'Retained file drafts',description:'Review retained file text',source:'app' as const,enabled:true,run:reviewRetainedDrafts}]:[])];
-  const nodes = entries.map(item => {
+  const available = new Map(entries.map(item => [item.name,item]));
+  const nodes: HTMLButtonElement[] = [];
+  for (const group of groups) for (const name of group.names) {
+    const item = available.get(name); if (!item) continue;
     const node = existing.get(item.name) ?? button('', () => {
       if(item.name==='Version and health'){healthStatus.open();return;}
       if(item.name==='Interface updates'){showInterfaceUpdates();return;}
@@ -1912,16 +1920,23 @@ function renderSettingsChoices(): void {
     }, 'nav-row');
     node.dataset.setting = item.name;
     node.title = item.disabledReason ?? item.description; node.disabled = !item.enabled;
-    node.setAttribute('aria-disabled', String(!item.enabled)); node.setAttribute('aria-label', item.name);
-    setText(node, item.name);
-    if (item.checked !== undefined) {
-      node.setAttribute('aria-pressed', String(item.checked));
-      node.append(element('span', 'settings-choice-state', item.checked ? 'On' : 'Off'));
-    } else node.removeAttribute('aria-pressed');
-    return node;
-  });
-  nodes.forEach((node, index) => {if (host.children[index] !== node) host.insertBefore(node, host.children[index] ?? null);});
-  for (const node of [...host.children]) if (!nodes.includes(node as HTMLButtonElement)) node.remove();
+    node.setAttribute('aria-disabled', String(!item.enabled));
+    if (item.name === 'Agent presentation control') {
+      node.classList.add('settings-control'); node.setAttribute('role','switch');
+      node.setAttribute('aria-label','Agent control'); node.setAttribute('aria-checked',String(item.checked));
+      node.setAttribute('aria-describedby','settings-agent-control-description');
+      if (!node.querySelector('.settings-control-label')) {
+        const description=element('span','settings-control-description','Allow agents to arrange this workspace and show notices.');
+        description.id='settings-agent-control-description';
+        const state=element('span','settings-control-switch'); state.setAttribute('aria-hidden','true');
+        node.append(element('span','settings-control-label','Agent control'),description,state);
+      }
+      setText(node.querySelector('.settings-control-switch')!,item.checked ? 'On' : 'Off');
+    } else {node.setAttribute('aria-label',item.name);setText(node,item.name);}
+    const parent=byId(group.id); if(node.parentElement!==parent)parent.append(node);
+    nodes.push(node);
+  }
+  for (const node of existing.values()) if (!nodes.includes(node)) node.remove();
 }
 function showConversationDetails(target?:Target):void {
   const workspace=state.workspace?.id,tab=activeTab(currentLayout());
@@ -3244,9 +3259,12 @@ function notices(): void {
   for (const group of noticeGroups(state.notices, noticeConversationName)) renderNoticeGroup(group);
   const inactive = inactiveAgentTabCount(); if (inactive) modal.body.append(element('p','secondary',`Not watched: ${inactive} inactive agent tabs. Their messages appear when you open them.`));
 }
-function communicationNoticeText(notice: CommunicationNotice): string {
+function renderCommunicationNoticeText(control: HTMLButtonElement, notice: CommunicationNotice): void {
   const kind = {report:'Report',result:'Result','check-in':'Still working'}[notice.kind], sender = currentSenderCaption(notice.sender);
-  return [kind,sender,notice.firstLine].filter(Boolean).join(' · ');
+  let subject=control.querySelector<HTMLElement>('.communication-notice-subject'),meta=control.querySelector<HTMLElement>('.communication-notice-meta');
+  if(!subject||!meta){subject=element('span','communication-notice-subject');meta=element('span','communication-notice-meta');control.append(subject,meta);}
+  setText(subject,notice.firstLine||sender); setText(meta,notice.firstLine ? `${sender} · ${kind}` : kind);
+  control.setAttribute('aria-label',[notice.firstLine,sender,kind].filter(Boolean).join(' · '));
 }
 export function currentSenderCaption(sender:{identity:string;name?:string},registered?:SenderCaptionRecord):string {
   const saved=registered ? undefined : sessionSidebar.registered(sender.identity);
@@ -3255,12 +3273,13 @@ export function currentSenderCaption(sender:{identity:string;name?:string},regis
 function refreshCommunicationCaptions(): void {
   scheduleDesk();sessionSidebar.refreshNames();renderConversationHeader(toolFileLayout());
   for (const control of modal.body.querySelectorAll<HTMLButtonElement>('.communication-notice-open')) {
-    const notice = communicationNotices.items.get(control.dataset.noticeKey ?? ''); if (notice) setText(control,communicationNoticeText(notice));
+    const notice = communicationNotices.items.get(control.dataset.noticeKey ?? ''); if (notice) renderCommunicationNoticeText(control,notice);
   }
 }
 function renderCommunicationNotice(notice: CommunicationNotice): void {
   const row = element('div',`notification communication-notification${notice.read ? '' : ' notification-unread'}`); row.dataset.unread = String(!notice.read);
-  const open = button(communicationNoticeText(notice),()=>{void openCommunicationNotice(notice).catch(showError);},'communication-notice-open'); open.dataset.noticeKey = notice.key;
+  const open = button('',()=>{void openCommunicationNotice(notice).catch(showError);},'communication-notice-open'); open.dataset.noticeKey = notice.key;
+  renderCommunicationNoticeText(open,notice);
   row.append(open); modal.body.append(row);
 }
 async function openCommunicationNotice(notice: CommunicationNotice): Promise<void> {

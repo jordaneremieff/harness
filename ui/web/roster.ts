@@ -18,7 +18,7 @@ export function savedRosterLabel(meta: Omit<CachedRoster,'rows'> | undefined, no
 }
 const SEARCH_PAGE_LIMIT = 20;
 const ROW_HEIGHT = 30;
-type RowNode = {node: HTMLElement; select: HTMLButtonElement; state: HTMLElement; name: HTMLElement; model: HTMLElement; summary: HTMLElement; separator: HTMLElement; preview: HTMLElement; identity: HTMLElement; ageButton: HTMLButtonElement; message: HTMLButtonElement; age: HTMLTimeElement; source: AgentRow; absolute: boolean; previewSource?: string};
+type RowNode = {node: HTMLElement; select: HTMLButtonElement; state: HTMLElement; name: HTMLElement; summary: HTMLElement; separator: HTMLElement; preview: HTMLElement; identity: HTMLElement; ageButton: HTMLButtonElement; message: HTMLButtonElement; age: HTMLTimeElement; source: AgentRow; absolute: boolean; previewSource?: string};
 function inlinePreview(nodes: MarkdownInline[]): string {
   return nodes.map(node => node.type === 'text' || node.type === 'code' ? node.text : 'children' in node ? inlinePreview(node.children) : '').join('');
 }
@@ -35,7 +35,7 @@ function blockPreview(block: MarkdownBlock): string {
 export function rosterPreview(source: string): string {
   return parseMarkdown(source).map(blockPreview).join(' ').replace(/\s+/g, ' ');
 }
-function rowName(row: AgentRow): string {return row.handle ? `@${row.handle.replace(/^@/,'')}` : agentName(row.name, row.handle, row.identity, undefined, row.firstMessage);}
+function rowName(row: AgentRow): string {return agentName(row.name, row.handle, row.identity, undefined, row.firstMessage);}
 export type RosterStatus = {attention?: Attention; hideVisibleState?: boolean; glyph: string; label: string; tone?: PresentationTone; name?: string; tail?: string; tool?: AgentRow['currentTool']};
 export function rosterWorking(row: AgentRow, status: RosterStatus): boolean {
   return status.label === 'Working' || status.hideVisibleState === true && row.availability === 'live' && row.state === 'working';
@@ -84,7 +84,7 @@ export class Roster {
   private rows: AgentRow[] = [];
   private tails = new Map<string, string>();
   private captions = new ConversationCaptions();
-  private displayName(row: AgentRow): string {const status = this.resolvedStatus(row), name = row.handle ? rowName(row) : status.name ?? rowName(row), tail = status.name !== undefined ? status.tail : this.tails.get(row.identity); return tail ? `${name} · ${tail}` : name;}
+  private displayName(row: AgentRow): string {const status = this.resolvedStatus(row), name = status.name ?? rowName(row), tail = status.name !== undefined ? status.tail : this.tails.get(row.identity); return tail ? `${name} · ${tail}` : name;}
   private selected?: string;
   private focused?: string;
   private message?: (identity: string) => void;
@@ -284,15 +284,14 @@ export class Roster {
     node.dataset.identity = row.identity;
     const heading = element('span', 'row-heading'); const state = element('span', 'row-state'); state.setAttribute('aria-hidden', 'true');
     const name = element('span', 'row-name'); const identity = element('code', 'row-identity muted'), preview=element('span','row-preview'); heading.append(name, identity);
-    const model = element('span', 'row-model');
     const summary = element('span', 'row-summary'), separator = element('span', 'row-separator', ' · '); separator.setAttribute('aria-hidden', 'true'); summary.append(state, separator, preview);
     const age = element('time', 'timestamp');
     const ageButton = button('', () => { cached.absolute = !cached.absolute; this.updateAge(cached, true); this.schedule(); }, 'row-age'); ageButton.append(age);
     const message = cardAction('message', 'Message', () => this.message?.(row.identity), 'row-message');
     ageButton.tabIndex = -1; message.tabIndex = -1;
     node.addEventListener('keydown', event => this.actionKey(event, [select, ageButton, message]));
-    select.append(heading, model, summary); node.append(select, ageButton, message);
-    const cached = {node, select, state, name, model, summary, separator, preview, identity, ageButton, message, age, source: row, absolute: false}; this.cache.set(row.identity, cached);
+    select.append(heading, summary); node.append(select, ageButton, message);
+    const cached = {node, select, state, name, summary, separator, preview, identity, ageButton, message, age, source: row, absolute: false}; this.cache.set(row.identity, cached);
     return cached;
   }
   /** A row is one Tab stop; its age and message actions are reached with the horizontal arrow keys. */
@@ -305,7 +304,7 @@ export class Roster {
     event.preventDefault(); next.focus();
   }
   private updatePreview(cached: RowNode, source?: string): void {
-    if (cached.previewSource !== source) {cached.previewSource = source; setText(cached.preview, rosterPreview((source ?? '').split(/\r?\n/, 1)[0] ?? '')); cached.preview.title = source ?? '';}
+    if (cached.previewSource !== source) {cached.previewSource = source; setText(cached.preview, rosterPreview(source ?? '')); cached.preview.title = source ?? '';}
     cached.preview.hidden = !cached.preview.textContent;
     cached.separator.hidden = cached.state.hidden || cached.preview.hidden;
     cached.summary.hidden = cached.state.hidden && cached.preview.hidden;
@@ -320,9 +319,9 @@ export class Roster {
     const cached = this.cache.get(row.identity) ?? this.createRow(row);
     const state = this.rowStatus(row);
     const working = rosterWorking(row,state);
-    setText(cached.state, state.attention ? 'Blocked' : working ? 'Working' : ''); cached.state.hidden = !cached.state.textContent; cached.state.title = state.attention?.title ?? state.label; cached.state.dataset.tone = state.tone ?? 'secondary'; cached.state.dataset.busy = String(working); setText(cached.name, row.handle ? rowName(row) : state.name ?? rowName(row));
+    setText(cached.state, state.attention ? 'Blocked' : working ? 'Working' : ''); cached.state.hidden = !cached.state.textContent; cached.state.title = state.attention?.title ?? state.label; cached.state.dataset.tone = state.tone ?? 'secondary'; cached.state.dataset.busy = String(working); setText(cached.name, state.name ?? rowName(row));
     const caption=this.captions.get(row.identity);cached.name.title=`${cached.name.textContent}\n${caption.source==='first-message'?'Title from first message, not a supplied name':'Conversation name'}`;
-    setText(cached.model, modelText(row)); cached.model.hidden = !cached.model.textContent;
+    cached.node.dataset.previewKind = state.attention ? 'failure' : working ? 'work' : 'role';
     const fact = servedFact(row,state);
     this.updatePreview(cached, fact); cached.node.dataset.detail = String(!cached.preview.hidden);
     identity = state.name !== undefined ? state.tail ?? '' : identity; setText(cached.identity, identity); cached.identity.hidden = !identity; cached.identity.title = `Agent ID: ${row.identity}`;
