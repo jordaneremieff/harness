@@ -1812,6 +1812,8 @@ pre[data-wrap=true] { white-space: pre-wrap; overflow-wrap: anywhere; }
   .file-editor { white-space: pre-wrap; overflow-wrap: anywhere; }
   .conversation-tab { --tab-chrome: 36px; }
   .palette-row { align-content: center; row-gap: 2px; }
+  .composer-input > .resizer[data-axis=y] { top: -24px; height: 24px; }
+  .composer-input > .resizer[data-axis=y]::after { top: 14px; }
   .conversation-tab > :is(.tab-session-state, .tab-age, .tab-close) { display: none; }
   .tab-bar > .pane-tab-nav { display: inline-flex; }
   .tab-bar > .pane-tab-nav[data-unreachable=true] { display: none; }

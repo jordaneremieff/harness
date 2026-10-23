@@ -843,8 +843,9 @@ export function storeTabSize(key: string, value: number | undefined): void {
 function composerResizer(controller: ConversationController): Resizer {
   const composer = controller.composer, base = `ui:pane:${controller.workspaceId}:${targetIdentity(controller.target)}:composer`, key = `${base}-min`;
   // The bare key held heights stored by every plain press on the handle, which show no intent; it is removed unread.
-  storeTabSize(base, undefined); let preferred = tabSize(key, 40, 640); composer.setManualHeight(preferred);
-  return createResizer({handle: controllerNode(controller, 'composer-resizer'), axis: 'y', direction: -1, min: 40, max: 640, defaultValue: 144, dragThreshold: 4, applyInitial: preferred !== undefined,
+  storeTabSize(base, undefined); const cap = phoneScreen() ? Math.max(80, Math.round(window.innerHeight * 0.35)) : 640, stored = tabSize(key, 40, 640);
+  let preferred = stored === undefined ? undefined : Math.min(stored, cap); composer.setManualHeight(preferred);
+  return createResizer({handle: controllerNode(controller, 'composer-resizer'), axis: 'y', direction: -1, min: 40, max: cap, defaultValue: Math.min(144, cap), dragThreshold: 4, applyInitial: preferred !== undefined,
     read: () => preferred ?? composer.editor.offsetHeight, write: value => composer.setManualHeight(value), onCommit: value => {preferred = value; storeTabSize(key, value);},
     onReset: () => {preferred = undefined; storeTabSize(key, undefined); composer.setManualHeight(undefined);}});
 }
