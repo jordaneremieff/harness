@@ -721,7 +721,7 @@ test('a late action rejection stays under its captured owner after navigation', 
 });
 test('page visibility retains the shell stream and observation', async t => {
   assert.ok(source.includes('connectionSurfaceFor(connectionPhase)'));
-  assert.doesNotMatch(source,/access-view|accessRequired|setUnauthorizedHandler/); assert.doesNotMatch(source, /setInterval/);
+  assert.doesNotMatch(source,/access-view|accessRequired|setUnauthorizedHandler/); assert.equal(source.match(/setInterval/g)?.length, 1); assert.match(source, /const tabAgeTimer = setInterval/);
   const identity = 'visibility-owner'; await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'agent', identity}, conversationLayout: twoPanes(identity)}, primaries: [primaryFixture({epoch: 9536})], roster: [agentFixture(identity)], observations: [observation(identity)]});
   const editor = agentControl('editor'), stream = streamSources.at(-1); assert.ok(stream); editor.value = 'Hidden tab draft'; editor.dispatch('input'); editor.setSelectionRange(2, 7); editor.dispatch('select');
   const tree = app.state.workspace?.conversationLayout, selected = app.state.workspace?.selectedTarget, saves = selectionSaves.length;
@@ -1698,7 +1698,7 @@ test('drawer dismissal excludes its own controls, dialogs, command lists and con
 test('the conversation list reuses exact tab activation without a new navigation lane', async () => {
   const layout = singlePane([{kind: 'primary'}, {kind: 'agent', identity: 'list-a'}, {kind: 'agent', identity: 'list-b'}]);
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', conversationLayout: layout}, primaries: [primaryFixture({epoch: 715})], roster: [agentFixture('list-a', {name: 'Review'}), agentFixture('list-b', {name: 'Review'})]});
-  const rows = byId('sidebar-conversations').querySelectorAll('.conversation-row'); assert.equal(rows.length, 3); assert.notEqual(rows[1]?.textContent, rows[2]?.textContent); assert.notEqual(rows[1]?.getAttribute('aria-label'), rows[2]?.getAttribute('aria-label'));
+  const rows = [...byId('sidebar-conversations').querySelectorAll('.conversation-row')].filter(row => !row.classList.contains('conversation-reopen')); assert.equal(rows.length, 3); assert.notEqual(rows[1]?.textContent, rows[2]?.textContent); assert.notEqual(rows[1]?.getAttribute('aria-label'), rows[2]?.getAttribute('aria-label'));
   for (const [index, row] of rows.entries()) {const status = row.querySelector('.conversation-state'); assert.ok(status); assert.equal(status.getAttribute('aria-hidden'), 'true'); assert.equal(status.querySelector('svg'), null); assert.equal(status.textContent, index === 0 ? 'Working' : 'Running'); assert.equal(status.title, index === 0 ? 'Working' : 'Running'); assert.match(row.getAttribute('aria-label') ?? '', index === 0 ? /Working/ : /Running/);}
   rows[2]?.click(); await settle(); assert.deepEqual(app.state.workspace?.selectedTarget, {kind: 'agent', identity: 'list-b'}); assert.equal(hostDocument.activeElement, agentControl('editor')); assert.equal(rows[2]?.getAttribute('aria-current'), 'true');
 });
