@@ -48,6 +48,16 @@ test('file navigation keeps readable parent paths and Files heading controls wit
   assert.match(files, /id="files-search"[^>]*data-control-icon="search"[^>]*aria-label="Go to file…"/);
   assert.match(files, /id="files-refresh"/);
 });
+test('file navigation uses the picker flex allocation without a separate height bound or empty status gap', () => {
+  assert.equal(rule('.file-navigation-list').trim(), 'margin-top: var(--s2);');
+  assert.match(rule('.picker-results'), /flex: 1; min-height: 0; overflow-y: auto/);
+  assert.match(rule('dialog[data-variant=picker] #modal-body'), /display: flex; flex-direction: column; min-height: 0; overflow: auto/);
+  assert.equal(rule('dialog[data-variant=picker] #modal-body > :not(.picker-results)').trim(), 'flex: none;');
+  assert.equal(rule('.file-navigation-status:empty').trim(), 'display: none;');
+  assert.match(rule('.file-navigation-status'), /white-space: pre-wrap/);
+  assert.match(rule('dialog'), /max-height: 85dvh/);
+  assert.match(rule('dialog[data-variant=palette], dialog[data-variant=picker]'), /max-height: 70dvh/);
+});
 test('quiet file rows use the existing muted ink without other presentation overrides', () => {
   assert.equal(rule('.file-row-quiet').trim(), 'color: var(--muted);');
 });

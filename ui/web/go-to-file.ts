@@ -30,9 +30,9 @@ export function goToFile(modal:Modal,root:FileRoot,navigation:Navigation):void {
   const control=input('File name or folder',''),field=control.field as HTMLInputElement;
   field.id='go-to-file-query';control.label.htmlFor=field.id;control.label.className='sr-only';
   field.type='search';field.className='picker-input';field.placeholder='File name or folder';field.autocomplete='off';field.spellcheck=false;field.maxLength=200;
-  const list=element('div','file-navigation-list'),status=element('p','secondary file-navigation-status');
+  const list=element('div','file-navigation-list picker-results'),status=element('p','secondary file-navigation-status');
   list.id='go-to-file-results';list.setAttribute('aria-label','Matching files and folders');field.setAttribute('aria-controls',list.id);status.setAttribute('role','status');
-  body.append(element('p','secondary file-navigation-scope',`Working folder: ${root.path}`),control.label,field,list,status);
+  body.append(element('p','secondary file-navigation-scope',`Working folder: ${root.path}`),control.label,field,status,list);
   modal.actions(button('Cancel',()=>modal.close()));
   const current=():boolean=> {
     if(!modal.owns(token))return false;

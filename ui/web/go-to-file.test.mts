@@ -50,6 +50,19 @@ test('duplicate filenames keep full parent paths and folders refine the same que
   assert.equal(f.searches().at(-1)?.url.searchParams.get('q'),'docs/');assert.equal(byId('modal-title').textContent,'Go to file…');assert.equal(byId('modal-body').querySelectorAll('.file-navigation-scope').length,1);
   byId('modal').dispatch('cancel');assert.equal(byId('modal').open,false);assert.equal(hostDocument.activeElement,byId('files-search'));
 });
+test('long partial results keep coverage before the scroll list and Cancel outside it, with no empty complete status',async t=> {
+  const f=await setup(t,'coverage-layout'),reason='Searched part of the folder: the search reached its match bound.';
+  const longRows=Array.from({length:100},(_,index)=>({name:`note-${index}.md`,path:`docs/note-${index}.md`,kind:'file' as const}));
+  f.setSearch(async url=>Response.json({ok:true,data:f.result(url.searchParams.get('q')??'',{rows:longRows,more:true,coverage:{complete:false,visited:100,skipped:0,reason}})}));
+  f.open();await settle();const body=byId('modal-body'),list=byId('go-to-file-results'),status=body.querySelector('.file-navigation-status'),actions=body.querySelector('.dialog-actions');
+  assert.ok(status&&actions);assert.equal(list.classList.contains('picker-results'),true);assert.equal(list.children.length,100);
+  assert.equal(status.getAttribute('role'),'status');assert.equal(status.textContent,`More matches. Refine the name or folder. ${reason}`);
+  assert.deepEqual(body.children.map(node=>node.className),['secondary file-navigation-scope','sr-only','picker-input','secondary file-navigation-status','file-navigation-list picker-results','dialog-actions']);
+  assert.equal(actions.children[0]?.textContent,'Cancel');assert.equal(list.contains(status),false);assert.equal(list.contains(actions),false);
+  f.setSearch(async url=>Response.json({ok:true,data:f.result(url.searchParams.get('q')??'')}));f.query('complete');await settle();
+  assert.equal(status.textContent,'');assert.equal(list.classList.contains('picker-results'),true);assert.equal(list.children.length,rows.length);
+  actions.children[0]?.click();assert.equal(byId('modal').open,false);assert.equal(hostDocument.activeElement,byId('files-search'));
+});
 test('coverage and replaced searches never claim an empty complete folder and never retry automatically',async t=> {
   const f=await setup(t,'coverage');f.setSearch(async url=>Response.json({ok:true,data:f.result(url.searchParams.get('q')??'',{rows:[],more:true,coverage:{complete:false,visited:4000,skipped:0,reason:'Searched part of the folder: the search reached its entry bound.'}})}));
   f.open();await settle();let status=byId('modal-body').querySelector('.file-navigation-status');assert.match(status?.textContent??'',/No matches in the searched part.*More matches\. Refine the name or folder\..*entry bound/);assert.doesNotMatch(status?.textContent??'',/No matching files or folders/);
