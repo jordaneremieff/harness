@@ -108,6 +108,10 @@ export class SessionSidebar {
     node.dataset.sessionKey=open.dataset.sessionKey=menu.dataset.sessionKey=item.key;
     menu.setAttribute('aria-haspopup','menu');menu.setAttribute('aria-expanded','false');return view;
   }
+  private restoreFocus(active:HTMLElement,focused:string|undefined,index:number,nodes:HTMLElement[]):void {
+    if(active.isConnected){if(document.activeElement!==active)active.focus({preventScroll:true});}
+    else([...(this.node.querySelectorAll<HTMLButtonElement>('.sidebar-content-row'))].find(node=>node.dataset.sessionKey===focused)??nodes[Math.min(Math.max(0,index),nodes.length-1)]?.querySelector<HTMLButtonElement>('.sidebar-content-row')??byId('sessions-heading')).focus({preventScroll:true});
+  }
   private paint():void{
     try {
     const active=document.activeElement as HTMLElement|null,focused=active?.dataset.sessionKey,owned=!!active&&this.node.contains(active),index=[...this.node.children].findIndex(node=>node.contains(active));
@@ -121,10 +125,7 @@ export class SessionSidebar {
     for(const key of this.rowNodes.keys())if(!keep.has(key))this.rowNodes.delete(key);
     if(this.hooks.older?.())nodes.push(this.olderButton);
     reconcileChildren(this.node,nodes.length?nodes:[this.empty]);
-    if(owned&&active){
-      if(active.isConnected){if(document.activeElement!==active)active.focus({preventScroll:true});}
-      else([...(this.node.querySelectorAll<HTMLButtonElement>('.sidebar-content-row'))].find(node=>node.dataset.sessionKey===focused)??nodes[Math.min(Math.max(0,index),nodes.length-1)]?.querySelector<HTMLButtonElement>('.sidebar-content-row')??byId('sessions-heading')).focus({preventScroll:true});
-    }
+    if(owned&&active)this.restoreFocus(active,focused,index,nodes);
     } catch (error) {try {window.reportClientError?.('Sessions',error);} catch {} throw error;}
   }
 }

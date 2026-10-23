@@ -3,7 +3,7 @@ import {draftImageFingerprint} from '../shared/api.ts';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { contextMenu } from './context-menu.ts';
-import type { ConversationLayout, ProjectedFrame, Target, TargetState, Workspace } from '../shared/api.ts';
+import type { ConversationLayout, ProjectedFrame, Target, TargetState } from '../shared/api.ts';
 import { paneLeaves, movePaneTab, splitPane, activatePaneTab } from './pane-layout.ts';
 import { tabKey } from './tabs.ts';
 import {readReloadState, deleteReloadState} from './reload-storage.ts';

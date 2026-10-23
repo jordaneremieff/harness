@@ -18,7 +18,8 @@ globalThis.fetch=async(input,init)=>{
   const path=new URL(String(input),'http://ui.test').pathname;if(!path.startsWith('/api/sessions/metadata'))return fixtureFetch(input,init);
   const body=init?.body?JSON.parse(String(init.body)) as Record<string,unknown>:undefined;
   if((init?.method??'GET')==='GET')return Response.json({ok:true,data:{items:metadataItems}});
-  const target=(path.endsWith('/read')?(body?.targets as SessionMetadataTarget[])[0]:body?.target) as SessionMetadataTarget;
+  const targets=body?.targets as SessionMetadataTarget[]|undefined;
+  const target=(path.endsWith('/read')?targets?.[0]:body?.target) as SessionMetadataTarget|undefined;assert.ok(target);
   const alias=target.kind==='primary'?`primary:${target.key}`:target.kind==='agent'?`agent:${target.identity}`:`path:${target.path}`;
   const metadata=metadataItems.find(item=>item.aliases.includes(alias))??{target,aliases:[alias],title:'Untitled session',archived:false,canRename:true,canArchive:false,canRestore:false,reason:'Session state unavailable.'};
   if(path.endsWith('/read'))return Response.json({ok:true,data:{items:[metadata]}});
@@ -179,7 +180,8 @@ test('session metadata rename, archive, restore and replacement use exact aliase
   assert.equal(byId('modal-body').querySelector('.sidebar-content-row')?.textContent,'A useful title');byId('modal-body').querySelector('.session-row-menu')?.click();await settle();chooseMenu('Restore');await settle();
   assert.equal(rows()[0]?.textContent,'A useful title');assert.equal(byId('modal-body').textContent,'No archived sessions.');assert.equal(hostDocument.activeElement,byId('modal-close'));assert.equal(selectionSaves.length,0);
   byId('modal-close').click();assert.equal(eventNames.filter(name=>name==='sessions.metadata').length,1);
-  const renamed={...metadataItems[0]!,name:'Name from the event'};browser.event('sessions.metadata',renamed);assert.equal(byId('conversation-title').textContent,'Name from the event');
+  const originalMetadata=metadataItems[0];assert.ok(originalMetadata);
+  const renamed={...originalMetadata,name:'Name from the event'};browser.event('sessions.metadata',renamed);assert.equal(byId('conversation-title').textContent,'Name from the event');
   metadataItems=[{...renamed,target:{kind:'session',id:'native-a',path:'/fixture/project/a.jsonl',project:'/fixture/project'},aliases:['path:/fixture/project/a.jsonl','id:native-a'],archived:true}];
   browser.event('primary.state',{...primary,sessionId:'native-b',sessionFile:'/fixture/project/b.jsonl',sessionName:undefined});await settle();
   assert.equal(byId('conversation-title').textContent,'Untitled session');assert.equal(rows()[0]?.textContent,'Untitled session');
