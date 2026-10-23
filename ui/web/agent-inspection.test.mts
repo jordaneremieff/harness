@@ -4,7 +4,7 @@ import type {AgentInspectionView, InspectRequest, InspectionCheckpoint} from '..
 import {createAppFixture, type HostNode} from './app-fixture.mts';
 import {AgentInspection} from './agent-inspection.ts';
 import type {ConversationTask} from './conversation-tasks.ts';
-const {settle}=await createAppFixture();
+const {settle,hostDocument,HostResizeObserver}=await createAppFixture();
 const identity='00000000-0000-4000-8000-000000000001:2';
 function fixture(read:(input:InspectRequest,signal:AbortSignal)=>Promise<AgentInspectionView>,restore?:InspectionCheckpoint){
   const calls:InspectRequest[]=[];let saved:InspectionCheckpoint|null=restore??null,changed=0;
@@ -45,6 +45,30 @@ for(const source of ['local','historical'] as const)test(`long ${source} task su
   const text=node.querySelector('.task-text');assert.ok(text);assert.equal(text.textContent,subject);assert.equal(text.dataset.open,'false');
   click(inspection,'Show more');assert.equal(text.dataset.open,'true');assert.equal(text.textContent,subject);
   assert.equal(row.textContent,`${subject.slice(0,80)} · recorded input`);inspection.destroy();
+});
+test('task disclosure follows rendered overflow and retains expansion across resize, content and visibility changes',async t=>{
+  let row:ConversationTask={key:'geometry-task',entryId:'17',subject:'Measured task',state:'recorded',input:{text:'Brief input',complete:false,redacted:true},answer:{text:'Retained answer with a source [link](https://example.test/source)',complete:false,redacted:false}};
+  const inspection=new AgentInspection(identity,{read:async()=>{assert.fail('Disclosure never fetches omitted source text');},history:false,tasks:()=>[row],showConversation:()=>{},current:()=>true,changed:()=>{},restore:()=>null,save:()=>{}});
+  t.after(()=>inspection.destroy());
+  const node=inspection.node as unknown as HostNode;hostDocument.body.append(node);inspection.open('result');inspection.visibility(true);await settle();
+  node.querySelector('.task-select')?.click();await settle();
+  const prose=()=>node.querySelectorAll('.task-prose'),text=(section:HostNode)=>{const value=section.querySelector('.task-text');assert.ok(value);return value;},toggle=(section:HostNode)=>{const value=section.querySelector('button');assert.ok(value);return value;};
+  const geometry=(value:HostNode,width:number,full:number,clamped:number)=>Object.defineProperties(value,{clientWidth:{configurable:true,get:()=>width},scrollHeight:{configurable:true,get:()=>full},clientHeight:{configurable:true,get:()=>clamped}});
+  const input=text(prose()[0]),answer=text(prose()[1]),inputToggle=toggle(prose()[0]),answerToggle=toggle(prose()[1]);
+  const resize=HostResizeObserver.instances.find(observer=>observer.observed.has(answer));assert.ok(resize);
+  geometry(input,600,24,24);geometry(answer,600,120,72);resize.callback();
+  assert.equal(inputToggle.hidden,true);assert.equal(answerToggle.hidden,false);assert.equal(answerToggle.textContent,'Show more');
+  answerToggle.click();assert.equal(answer.dataset.open,'true');assert.equal(answerToggle.textContent,'Show less');assert.equal(answerToggle.hidden,false);
+  geometry(answer,1000,24,24);resize.callback();assert.equal(answer.dataset.open,'true');assert.equal(answerToggle.hidden,false);
+  row={...row,answer:{text:'Updated short retained answer',complete:false,redacted:false}};inspection.observe(undefined,true);
+  const updated=text(prose()[1]),updatedToggle=toggle(prose()[1]);assert.equal(updated.dataset.open,'true');assert.equal(updatedToggle.textContent,'Show less');assert.equal(updatedToggle.hidden,false);assert.equal(updated.textContent,row.answer?.text);assert.equal(resize.observed.has(answer),false);
+  geometry(updated,1000,24,24);updatedToggle.click();assert.equal(updated.dataset.open,'false');assert.equal(updatedToggle.hidden,true);
+  const updatedInput=text(prose()[0]),updatedInputToggle=toggle(prose()[0]);
+  inspection.visibility(false);geometry(updatedInput,0,120,72);resize.callback();assert.equal(updatedInputToggle.hidden,true);
+  geometry(updatedInput,160,120,72);inspection.visibility(true);await settle();assert.equal(updatedInputToggle.hidden,false);assert.equal(updatedInput.textContent,row.input?.text);
+  geometry(updated,160,120,72);resize.callback();assert.equal(updatedToggle.hidden,false);updatedToggle.click();assert.equal(updated.textContent,row.answer?.text);assert.equal(updatedToggle.textContent,'Show less');
+  assert.match(node.textContent,/Some text is withheld\./);assert.match(node.textContent,/Only retained text is shown\./);assert.ok(node.querySelectorAll('button').some(button=>button.textContent==='Copy answer'));assert.ok(node.querySelectorAll('button').some(button=>button.textContent==='Show in conversation'));
+  inspection.destroy();assert.equal(resize.observed.size,0);
 });
 test('the task list names itself, returns to the conversation, and says what its empty lists searched',async()=>{
   let returned=0;const calls:InspectRequest[]=[];

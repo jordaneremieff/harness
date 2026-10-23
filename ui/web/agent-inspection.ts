@@ -47,8 +47,11 @@ export class AgentInspection {
   private taskNodes=new Map<string,TaskNode>();
   private taskGroups=new Map<string,HTMLDetailsElement>();
   private expandedText=new Set<string>();
+  private proseToggles=new Map<HTMLElement,HTMLButtonElement>();
+  private readonly proseResize:ResizeObserver;
   constructor(identity:string,hooks:InspectionHooks){
     this.identity=identity;this.hooks=hooks;this.node.hidden=true;
+    this.proseResize=new ResizeObserver(()=>this.measureTaskProse());
     this.scroller.tabIndex=0;this.scroller.setAttribute('aria-label','Conversation tasks');this.status.setAttribute('role','status');
     const back=button('Back to conversation',()=>{this.conversation();this.hooks.returned?.();});back.className='inspection-back';
     this.header.append(element('h2','inspection-title','Sent and received tasks'),back);
@@ -70,15 +73,15 @@ export class AgentInspection {
   open(mode:'result',selector?:ResultSelector):void{
     if(selector&&!validResultSelector(selector))return;
     this.cancel();this.mode=mode;this.selector=selector?{...selector}:{};this.offset=0;this.entryId=undefined;this.scrollTop=0;this.loaded=undefined;this.selected=undefined;this.expandedText.delete('selected-answer');
-    this.content.replaceChildren();this.paintMode();this.persist();this.hooks.changed();
+    this.content.replaceChildren();this.measureTaskProse();this.paintMode();this.persist();this.hooks.changed();
     if(this.visible){if(this.hasSelector())void this.load();else void this.loadTasks();}
   }
   conversation():void{this.cancel();this.mode=undefined;this.paintMode();this.persist();this.hooks.changed();}
   visibility(visible:boolean):void{
     if(this.visible===visible)return;this.visible=visible;if(!visible){this.cancel();return;}
-    if(this.mode&&!this.loaded){if(this.hasSelector()||this.mode==='exact')void this.load();else void this.loadTasks();}this.scroller.scrollTop=this.scrollTop;
+    if(this.mode&&!this.loaded){if(this.hasSelector()||this.mode==='exact')void this.load();else void this.loadTasks();}this.scroller.scrollTop=this.scrollTop;this.measureTaskProse();
   }
-  destroy():void{this.cancel();this.node.remove();}
+  destroy():void{this.cancel();this.proseResize.disconnect();this.proseToggles.clear();this.node.remove();}
   private hasSelector():boolean{return Object.keys(this.selector).length>0;}
   private protectedContent():boolean{const selection=document.getSelection();return !!selection&&!selection.isCollapsed&&this.content.contains(selection.anchorNode);}
   private paintMode():void{this.node.hidden=!this.mode;this.node.dataset.view=this.mode??'conversation';if(!this.mode)setText(this.status,'');}
@@ -159,6 +162,7 @@ export class AgentInspection {
     reconcileChildren(this.content,nodes);
     for(const [key,cached] of this.taskNodes)if(!this.content.contains(cached.node)){this.taskNodes.delete(key);this.expandedText.delete(`input:${key}`);this.expandedText.delete(`answer:${key}`);}
     for(const [key,group] of this.taskGroups)if(!this.content.contains(group))this.taskGroups.delete(key);
+    this.measureTaskProse();
   }
   private taskSection(rows:readonly ConversationTask[],asked:boolean,title:string):HTMLElement{
     let section=this.sections.get(asked);if(!section){section=element('section','task-section');section.append(element('h3',undefined,title),element('div','task-rows'));this.sections.set(asked,section);}
@@ -205,10 +209,17 @@ export class AgentInspection {
   }
   private taskProse(value:TaskAnswer,key:string):HTMLElement{
     const section=element('section','task-prose'),text=element('div','task-text');text.dataset.open=String(this.expandedText.has(key));text.append(markdownDom(value.text));
-    const toggle=button(this.expandedText.has(key)?'Show less':'Show more',()=>{const open=!this.expandedText.has(key);if(open)this.expandedText.add(key);else this.expandedText.delete(key);text.dataset.open=String(open);setText(toggle,open?'Show less':'Show more');toggle.setAttribute('aria-expanded',String(open));});
-    toggle.setAttribute('aria-expanded',String(this.expandedText.has(key)));section.append(text,toggle);
+    const toggle=button(this.expandedText.has(key)?'Show less':'Show more',()=>{const open=!this.expandedText.has(key);if(open)this.expandedText.add(key);else this.expandedText.delete(key);text.dataset.open=String(open);setText(toggle,open?'Show less':'Show more');toggle.setAttribute('aria-expanded',String(open));this.measureTaskProse();});
+    toggle.hidden=!this.expandedText.has(key);toggle.setAttribute('aria-expanded',String(this.expandedText.has(key)));section.append(text,toggle);
+    this.proseToggles.set(text,toggle);this.proseResize.observe(text);
     if(!value.complete||value.redacted)section.append(element('p','secondary',value.redacted?'Some text is withheld.':'Only retained text is shown.'));
     return section;
+  }
+  private measureTaskProse():void{
+    for(const [text,toggle] of this.proseToggles){
+      if(!this.content.contains(text)){this.proseResize.unobserve(text);this.proseToggles.delete(text);continue;}
+      toggle.hidden=text.dataset.open!=='true'&&(!this.visible||this.node.hidden||text.clientWidth===0||text.scrollHeight<=text.clientHeight+1);
+    }
   }
   private paintTaskAnswer(item:HTMLElement,row:ConversationTask,result?:ResultInspection):void{
     const answer=taskAnswer(row,result);
@@ -237,7 +248,7 @@ export class AgentInspection {
     try{
       const value=await this.hooks.read(request,controller.signal);if(!this.current(serial,controller.signal))return;
       validateRead(value,request,this.identity);
-      this.loaded=value;this.content.replaceChildren(...(value.view==='exact'?this.renderExact(value):value.view==='result'?this.renderResult(value):[]));this.scroller.scrollTop=this.scrollTop;setText(this.status,`Read at ${value.readAt}`);this.persist();
+      this.loaded=value;this.content.replaceChildren(...(value.view==='exact'?this.renderExact(value):value.view==='result'?this.renderResult(value):[]));this.measureTaskProse();this.scroller.scrollTop=this.scrollTop;setText(this.status,`Read at ${value.readAt}`);this.persist();
     }catch(error){if(this.current(serial,controller.signal))setText(this.status,error instanceof Error?error.message:'The answer is unavailable.');}
     finally{if(serial===this.serial){this.pending=false;this.refresh.disabled=false;this.controller=undefined;}}
   }
