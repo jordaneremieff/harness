@@ -1,0 +1,25 @@
+import {byId, setText} from './dom.ts';
+
+export const navigationViews = ['sessions', 'agents', 'threads', 'files', 'settings'] as const;
+export type NavigationView = typeof navigationViews[number];
+export function validNavigationView(value: unknown): value is NavigationView {
+  return typeof value === 'string' && navigationViews.some(view => view === value);
+}
+const destinations: Record<NavigationView, string> = {sessions:'primary-section', agents:'roster-section', threads:'threads-section', files:'files-section', settings:'settings-section'};
+/** Navigation owns only this page's destination, never the workspace's pane layout. */
+export class NavigationViews {
+  view: NavigationView = 'sessions';
+  constructor(){this.render();}
+  show(view: NavigationView): void { this.view = view; this.render(); }
+  restore(value: unknown): void { this.show(validNavigationView(value) ? value : 'sessions'); }
+  render(): void {
+    for (const [view, id] of Object.entries(destinations)) {
+      const node = byId(id); node.hidden = view !== this.view; node.inert = node.hidden;
+    }
+    setText(byId('navigation-title'), this.view.charAt(0).toUpperCase() + this.view.slice(1));
+    byId('navigation-back').hidden = this.view === 'sessions';
+    byId('session-entry-actions').hidden = this.view !== 'sessions';
+    byId('sidebar').dataset.view = this.view;
+    const message=byId('agent-message-region');message.hidden=this.view!=='agents';message.inert=message.hidden;
+  }
+}

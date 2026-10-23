@@ -7,7 +7,7 @@ import type {ConversationTab,Target} from '../shared/api.ts';
 const browser = await createAppFixture();
 const {app,arrive,settle,byId,hostDocument,primaryFixture,agentFixture,targetFixture,primaryControl,agentControl,documentHandlers,transportLog} = browser;
 function input(name:string):void {for (const handler of documentHandlers.get(name) ?? []) handler({isTrusted:true,target:byId('modal'),key:'ArrowDown'});}
-for (const trigger of ['project-button', 'compact-project-button']) test(`${trigger} opens the file-root chooser and Other folder retains the browse path`, async t => {
+for (const trigger of ['project-button']) test(`${trigger} opens the file-root chooser and Other folder retains the browse path`, async t => {
   const target = {kind: 'primary' as const, key: 'folder-primary', epoch: 160}, folder = '/browse/current';
   await arrive({workspace: {id: `folder-${trigger}`, revision: 1, primaryKey: target.key, selectedTarget: target, conversationLayout: createPaneLayout([{kind: 'primary'}])},
     primaries: [primaryFixture({...target, cwd: '/sessions/project'}), primaryFixture({key: 'same-directory', epoch: 161, cwd: '/sessions/project'})], roster: [],
@@ -21,6 +21,7 @@ for (const trigger of ['project-button', 'compact-project-button']) test(`${trig
     if (path === '/api/projects') return Response.json({ok: true, data: {items: [{path: folder, name: 'current'}], total: 1, omitted: 0, nextCursor: null, observedAt: '2026-01-01T00:00:00Z'}});
     return original(input, init);
   };
+  app.showNavigationView('settings');
   const workspace = structuredClone(app.state.workspace), root = structuredClone(app.fileRoot.selection), control = byId(trigger);
   control.focus(); control.click(); await settle();
   const menu = hostDocument.body.querySelector('.context-menu'); assert.ok(menu);
@@ -117,6 +118,10 @@ test('cold agent history distinguishes no read, an active read, and a confirmed 
   assert.equal(transportLog.slice(before).some(call=>call.path.includes('/inputs') || call.path.endsWith('/start')),false);
 });
 
+async function openHandover():Promise<void>{
+  byId('commands-button').click();await settle();
+  const entry=byId('modal-body').querySelectorAll('.palette-row').find(node=>node.getAttribute('aria-label')?.startsWith('Continue a handover,'));assert.ok(entry);entry.click();await settle();
+}
 for (const destination of ['new', 'existing'] as const) test(`handover Continue uses one input in the chosen ${destination} session`, async t => {
   const target = {kind: 'primary' as const, key: `handover-${destination}`, epoch: 130};
   const old = primaryFixture({...target, activity: 'idle'}), saved = targetFixture(`draft-${destination}`, target, {draft: {revision: 3, text: 'Keep current draft', mode: 'prompt', persisted: true, images: []}});
@@ -138,7 +143,7 @@ for (const destination of ['new', 'existing'] as const) test(`handover Continue 
     }
     return original(input, init);
   };
-  byId('session-handover').click(); await settle();
+  await openHandover();
   const body = byId('modal-body'); assert.match(body.textContent, /marks the handover active/); assert.match(body.textContent, /cannot show or control a session that runs in a terminal/);
   assert.equal(byId('handover-destination').value, 'new'); assert.equal(body.querySelectorAll('option').some(option => option.value === 'busy:131'), false);
   assert.equal(opens, 0); assert.equal(inputs.length, 0);
@@ -158,7 +163,7 @@ test('a failed handover open retains the fields and exposes Details and Try agai
   const original = globalThis.fetch; t.after(() => {globalThis.fetch = original; byId('modal-close').click();});
   globalThis.fetch = async (input, init) => new URL(String(input), 'http://ui.test').pathname === '/api/primaries' && init?.method === 'POST'
     ? Response.json({ok: false, error: {code: 'host_unavailable', message: 'Session did not start', retry: 'read'}}) : original(input, init);
-  byId('session-handover').click(); byId('handover-pickup').value = 'sample-handover'; byId('handover-pickup').dispatch('input'); byId('handover-note').value = 'Keep the note';
+  await openHandover(); byId('handover-pickup').value = 'sample-handover'; byId('handover-pickup').dispatch('input'); byId('handover-note').value = 'Keep the note';
   byId('handover-continue').click(); await settle();
   assert.equal(byId('modal').open, true); assert.equal(byId('handover-pickup').value, 'sample-handover'); assert.equal(byId('handover-note').value, 'Keep the note');
   assert.equal(byId('handover-continue').textContent, 'Try again'); assert.match(byId('modal-error').textContent, /Details.*Session did not start/);

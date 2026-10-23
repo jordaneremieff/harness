@@ -1,4 +1,5 @@
 import {LIMITS, LAYOUT_VERSION, LAYOUT_VERSION_HEADER, validLayoutData, validWorkspaceTab, workspaceTabKey, type FileTab, type FilePosition, type DevLeaseIdentity} from '../shared/api.ts';
+import {validNavigationView, type NavigationView} from './navigation-view.ts';
 import {validInspectionCheckpoint, type InspectionCheckpoint} from '../shared/inspection.ts';
 export type DevFileCheckpoint = {tab:FileTab;position:FilePosition;digest:string;focused:boolean;selection?:NonNullable<DevCheckpointEntry['selection']>};
 export type DevBuild = {
@@ -17,7 +18,7 @@ export type DevCheckpointEntry = {
   selection?: {start: number; end: number; direction: 'forward' | 'backward' | 'none'};
 };
 export type DevReloadView = {
-  workspaceId: string; focusedPane: string; targets: DevCheckpointEntry[]; messageRecipient?: string;
+  workspaceId: string; focusedPane: string; targets: DevCheckpointEntry[]; messageRecipient?: string; navigationView?: NavigationView; drawerOpen?: boolean;
   focusedControl?: {targetKey: string; kind: 'composer' | 'message'}; files?:DevFileCheckpoint[]; inspections?:InspectionCheckpoint[]; composerStateKey?:string;
 };
 export type DevReloadCheckpoint = DevReloadView & {
@@ -150,7 +151,7 @@ function fileCheckpointState(files:unknown,focusedControl:unknown):boolean {
   return !files.some(file=>file.focused) || focusedControl === undefined;
 }
 function checkpointRecord(value:unknown):value is Record<string,unknown> {
-  return validLayoutData(value)&&record(value,['version','generation','oldClient','capturedAt','interactionRevision','workspaceId','focusedPane','targets'],ownKeys(value));
+  return validLayoutData(value)&&record(value,['version','generation','oldClient','capturedAt','interactionRevision','workspaceId','focusedPane','targets'],ownKeys(value))&&(value.navigationView===undefined||validNavigationView(value.navigationView))&&(value.drawerOpen===undefined||typeof value.drawerOpen==='boolean');
 }
 /** Structural validation does not replace the host's checks against freshly hydrated state. */
 export function validateDevReloadCheckpoint(value: unknown, generation: string, now: number): DevReloadCheckpoint | null {

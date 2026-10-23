@@ -199,7 +199,12 @@ a { color: var(--link); text-underline-offset: 2px; }
 .app { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .workbench { position: relative; display: grid; flex: 1; grid-template-columns: var(--sidebar-width,280px) minmax(0,1fr); min-height: 0; min-width: 0; }
 .workbench:has(> .sidebar[hidden]) { grid-template-columns: minmax(0,1fr); }
-.navigation-access { display: flex; flex: none; align-items: center; gap: var(--s1); min-width: 0; padding: 0 var(--s2); background: var(--side); }
+.navigation-access { display: flex; flex: none; align-items: center; gap: var(--s3); min-width: 0; min-height: 48px; padding: 0 var(--s3); background: var(--canvas); }
+.conversation-title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--fs-ui); font-weight: 500; }
+.navigation-access > button { flex: none; min-height: 44px; min-width: 44px; }
+.navigation-access > .navigation-toggle { padding-inline: var(--s2); }
+.workspace[data-single-conversation=true] .agent-context-identity { display: none; }
+.workspace[data-single-conversation=true] .agent-live-facts { flex: 1; justify-content: flex-start; }
 .compact-project-context { max-width: 24ch; font-size: var(--fs-ui); }
 .navigation-access :focus-visible { outline-offset: 2px; }
 .navigation-toggle { flex: none; font-size: var(--fs-ui); }
@@ -244,10 +249,6 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .sidebar-footer { display: flex; flex: none; align-items: center; gap: var(--s1); margin-top: auto; padding: var(--s1) var(--s2) 0; font-size: var(--fs-ui); }
 .sidebar-footer > .icon-button { justify-content: flex-start; padding: 0 var(--s1); }
 .sidebar-footer > .icon-button > .card-icon { margin-inline: var(--s1); }
-.status-controls { display: flex; flex: none; align-items: center; gap: var(--s1); }
-.status-controls[hidden] { display: none; }
-.status-controls > .icon-button { justify-content: flex-start; padding: 0 var(--s1); }
-.status-controls > .icon-button > .card-icon { margin-inline: var(--s1); }
 .sidebar-conversations > .section-body { max-height: 25dvh; overflow-y: auto; scrollbar-width: thin; }
 .conversation-group-title { display: flex; align-items: center; min-height: 24px; padding: 0 var(--s3); color: var(--dim); font-size: var(--fs-label); font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
 .tabs-attention { letter-spacing: 0; text-transform: none; font-size: var(--fs-meta); font-weight: 400; }
@@ -492,6 +493,7 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .pane-split > .pane-divider:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .pane-split > .pane-divider:focus-visible::after { background: var(--accent); }
 .pane-tree[data-focus-only=true] .pane-split { display: contents; }
+.pane-tree[data-focus-only=true] .pane-leaf { flex: 1; }
 .pane-tree[data-focus-only=true] .pane-divider { display: none; }
 #tabs-empty { padding: var(--s5) var(--gutter); }
 .sidebar-close { display: inline-flex; }
@@ -1295,7 +1297,7 @@ pre.tool-document { font-family: var(--mono); font-size: var(--fs-code); line-he
 .transcript-region > .empty-state { position: absolute; top: 0; left: 0; right: 0; width: calc(100% - 2 * var(--work-gutter)); max-width: var(--read-width); margin-inline: auto; padding: var(--s5) 0; font-size: var(--fs-ui); }
 
 /* Dialogs: one quiet shadow on floating surfaces */
-dialog { width: min(640px, calc(100vw - 32px)); max-height: 85dvh; padding: var(--s5); overflow: auto; border: 0; border-radius: var(--r-lg); background: var(--raised); color: var(--fg); box-shadow: var(--shadow); scrollbar-width: thin; }
+dialog { width: min(640px, calc(100vw - 32px)); max-height: min(85dvh, calc(var(--app-height, 100dvh) - 24px)); padding: var(--s5); overflow: auto; border: 0; border-radius: var(--r-lg); background: var(--raised); color: var(--fg); box-shadow: var(--shadow); scrollbar-width: thin; }
 dialog::backdrop { background: var(--backdrop); }
 :root[data-appearance=light] :is(dialog:not([data-variant=find]), .context-menu, .command-menu, .composer-intake-menu, .workbench-status .composer-detail-body, .receipt-details pre) { border: 1px solid var(--rule); }
 @media (prefers-color-scheme: light) {
@@ -1487,7 +1489,13 @@ dialog[data-variant=menu]::backdrop { background: transparent; }
   .palette-row, .palette-row[data-source=app], .palette-row[data-source=app]:has(> .palette-shortcut) { grid-template-columns: minmax(0,1fr) auto; }
   .palette-desc { grid-column: 1; grid-row: 2; }
   .palette-list { --palette-row-size: 56px; }
-  dialog { padding: var(--s5); }
+  dialog { padding: var(--s4); }
+  dialog:not([data-variant=find]) { top: 12px; bottom: auto; margin-block: 0; }
+  dialog[data-variant=palette] .modal-heading, dialog[data-variant=menu] .modal-heading { position: sticky; width: auto; height: auto; margin: 0; padding: 0 0 var(--s2); overflow: visible; clip: auto; white-space: normal; }
+  dialog[data-variant=palette] #modal-close, dialog[data-variant=menu] #modal-close { display: inline-flex; flex: none; align-items: center; justify-content: center; min-height: 44px; min-width: 44px; }
+  dialog[data-variant=palette], dialog[data-variant=picker] { max-height: min(70dvh, calc(var(--app-height, 100dvh) - 24px)); }
+  .modal-heading h2 { min-width: 0; overflow-wrap: anywhere; }
+  .modal-heading > button { flex: none; }
   .picker-session { gap: 0 var(--s2); }
 }
 @media (max-height:599px) {
@@ -1608,7 +1616,6 @@ button.thread-person:hover, button.thread-sender:hover { background: var(--raise
   .file-naming { flex-wrap: wrap; }
   .file-naming > .file-name-input { flex-basis: calc(100% - 24px); }
   .file-naming > .file-name-actions { margin-left: auto; }
-  .status-controls > .icon-button > .card-icon { margin-inline: var(--s3); }
   button, summary, .row-age, .row-message, .message-actions button, .transcript-actions button, .latest, .source-header button, .source-disclosure > .source-wrap, .tool-copy, .composer-model, .composer-thinking, .icon-button { min-height: 44px; min-width: 44px; }
   .source-disclosure > summary.source-header { min-height: 49px; }
   .card-action, .section-toggle, .attachment-row > button, .source-header button.card-action, .source-disclosure > .source-wrap.card-action { min-height: 44px; min-width: 44px; }
@@ -1699,7 +1706,18 @@ button.thread-person:hover, button.thread-sender:hover { background: var(--raise
 .sidebar .roster-footer { padding: 0; }
 .sidebar-content-row[data-unread=true] > .row-title::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: var(--s2); border-radius: 50%; background: var(--accent); vertical-align: middle; }
 .footer-label { display: none; }
-.sidebar-footer { display: grid; grid-template-columns: repeat(3,auto); justify-content: space-between; gap: var(--s1); }
+.sidebar-footer { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s2); }
+.sidebar-footer > button { min-height: 44px; padding-inline: var(--s2); text-align: left; color: var(--muted); }
+.sidebar-footer > button:hover { background: var(--raised); color: var(--fg); }
+#navigation-back { flex: none; min-height: 44px; color: var(--muted); }
+#session-entry-actions { flex: none; align-items: stretch; gap: var(--s2); padding: var(--s2) var(--s3); }
+#session-entry-actions > button { min-height: 44px; padding-inline: var(--s2); text-align: left; }
+#session-entry-actions > #session-new { display: flex; flex: 1; align-items: center; gap: var(--s2); background: var(--raised); color: var(--fg); border-radius: var(--r-sm); }
+#session-entry-actions > #session-open { color: var(--muted); }
+.sidebar[data-view=sessions] .primary-section { margin-top: var(--s2); }
+.settings-folder { display: flex; align-items: center; gap: var(--s2); padding-inline: var(--s3); min-height: 44px; }
+#settings-choices > button { min-height: 44px; }
+.sidebar[data-view=agents] .roster[data-catalog=true], .sidebar[data-view=threads] .threads-section[data-catalog=true] .threads-list { max-height: none; overflow: visible; }
 .sidebar-footer > .icon-button { width: auto; min-width: 0; gap: 2px; font-size: var(--fs-meta); }
 .sidebar-footer .footer-label { display: inline; white-space: nowrap; }
 .sidebar-footer #notices-count { display: none; }

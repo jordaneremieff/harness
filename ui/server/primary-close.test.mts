@@ -23,8 +23,8 @@ async function fixture(t:TestContext){
   return {root,children,owner,open};
 }
 async function close(registry:Registry,workspace:string,key:string,epoch=1,body:Record<string,unknown>={epoch}){
-  const operation=await registry.operations.reserve(workspace,'primary.close',{kind:'primary',key,epoch});
-  const context={method:'POST',parts:['api','primaries',key,'close'],url:new URL(`http://localhost/api/primaries/${key}/close`),body,workspace,operationId:operation.id};
+  const operation=await registry.dispatch({method:'POST',parts:['api','operations'],url:new URL('http://localhost/api/operations'),body:{kind:'primary.close',target:{kind:'primary',key,epoch}},workspace}) as {operationId:string};
+  const context={method:'POST',parts:['api','primaries',key,'close'],url:new URL(`http://localhost/api/primaries/${key}/close`),body,workspace,operationId:operation.operationId};
   return {operation:await registry.dispatch(context) as OperationView,context};
 }
 test('close uses the existing owner after backend replacement, frees capacity only on exit, and keeps drafts and retained queues',async t=>{
@@ -46,7 +46,10 @@ test('close uses the existing owner after backend replacement, frees capacity on
   if(operation.receipt?.kind==='rpc')assert.equal(JSON.stringify(operation.receipt.result?.value),JSON.stringify({closed:true}));
   assert.equal(registry.primary(key).view.lifecycle,'stopped');assert.equal(f.owner.descriptors().find(view=>view.key===key)?.exited,true);
   assert.equal(JSON.stringify((await registry.dispatch(context) as OperationView).receipt),JSON.stringify(operation.receipt));
-  const after=await registry.store.getTarget(workspace,state.targetKey);assert.deepEqual(after.draft,before.draft);assert.deepEqual(after.unconfirmed,before.unconfirmed);
+  const after=await registry.store.getTarget(workspace,state.targetKey);assert.deepEqual(after.draft,before.draft);
+  const beforeRecords=new Map(before.unconfirmed.map(record=>[record.operationId,record])),afterRecords=new Map(after.unconfirmed.map(record=>[record.operationId,record]));
+  assert.equal(beforeRecords.size,before.unconfirmed.length);assert.equal(afterRecords.size,after.unconfirmed.length);
+  assert.equal(after.unconfirmed.length,before.unconfirmed.length);assert.deepEqual(afterRecords,beforeRecords);
   assert.equal(child.writes.some(record=>['abort','clear_queue'].includes(record.type)),false);
   const next=await registry.openPrimary(f.root,undefined,workspace);await registry.waitPrimaryReady(next);assert.equal(f.children.length,LIMITS.primaries+1);
   for(const other of keys.slice(1)){assert.equal(registry.primary(other).view.lifecycle,'ready');assert.equal(f.children[keys.indexOf(other)].stdin.writableEnded,false);}

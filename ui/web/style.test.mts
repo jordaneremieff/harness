@@ -55,7 +55,7 @@ test('file navigation uses the picker flex allocation without a separate height 
   assert.equal(rule('dialog[data-variant=picker] #modal-body > :not(.picker-results)').trim(), 'flex: none;');
   assert.equal(rule('.file-navigation-status:empty').trim(), 'display: none;');
   assert.match(rule('.file-navigation-status'), /white-space: pre-wrap/);
-  assert.match(rule('dialog'), /max-height: 85dvh/);
+  assert.match(rule('dialog'), /max-height: min\(85dvh, calc\(var\(--app-height, 100dvh\) - 24px\)\)/);
   assert.match(rule('dialog[data-variant=palette], dialog[data-variant=picker]'), /max-height: 70dvh/);
 });
 test('quiet file rows use the existing muted ink without other presentation overrides', () => {
@@ -136,7 +136,7 @@ test('conversation actions live in the pane tab row and keep shared desktop and 
   assert.match(rule('.card-action'), /width: 24px; height: 24px; min-width: 24px; min-height: 24px/);
   assert.match(media('@media (pointer:coarse)'), /\.card-action, \.section-toggle[^{}]+\{ min-height: 44px; min-width: 44px/);
 });
-test('sidebar headings are text controls with counts and the finder is the first row of SESSIONS', () => {
+test('named views retain their controls and session creation remains separate from Find session', () => {
   const chevron = rule('.section-toggle > .card-icon-chevron');
   assert.match(chevron, /display: block; flex: none; width: 12px; height: 12px; color: var\(--dim\)/);
   assert.match(chevron, /transform: rotate\(0deg\); transition: transform 120ms/);
@@ -151,9 +151,9 @@ test('sidebar headings are text controls with counts and the finder is the first
   assert.match(rule('.section-toggle:hover'), /color: var\(--fg\)/); assert.match(rule('.section-toggle .count'), /margin-left: var\(--s2\)/);
   assert.match(rule('.threads-footer'), /padding-right: var\(--s3\); padding-left: var\(--s3\)/);
   assert.match(html, /id="files-count"/); assert.match(html, /id="agents-count"/);
-  assert.match(html, /<h2 id="sessions-heading" class="nav-heading">SESSIONS<\/h2>/);
+  assert.match(html, /<h2 id="sessions-heading" class="sr-only">Recent sessions<\/h2>/);
   assert.match(rule('.session-catalog'), /color: var\(--muted\)/);
-  assert.match(html, /id="session-open" class="icon-button"[^>]*data-control-icon="search"[^>]*aria-label="Find session"/);
+  assert.match(html, /id="session-open"[^>]*aria-label="Find session"[^>]*>Find session<\/button>/);
   assert.match(html, /id="session-new"[^>]*data-control-icon="plus"[^>]*aria-label="New session"/);
 });
 
@@ -639,7 +639,7 @@ test('lean chrome: gutter-marked user turns, no pills, compact roster rows and n
   assert.doesNotMatch(css, /\.agent-row(?::hover|:focus-within)[^{]+> \.row-message/);
   assert.match(rule('.agent-row > .row-age'), /grid-column: 2; width: auto/);
   assert.match(rule('.agent-row .row-select'), /grid-column: 1 \/ -1; grid-row: 1;/);
-  assert.doesNotMatch(css, /\.conversation-title-line|\.conversation-title\s*\{/);
+  assert.doesNotMatch(css, /\.conversation-title-line/);assert.match(rule('.conversation-title'),/flex: 1; min-width: 0; overflow: hidden/);
   assert.doesNotMatch(html, /conversation-title-line|conversation-head|head-actions|header-band/);
   assert.match(rule('.pane-actions'), /display: inline-flex; flex: none;[^}]*min-width: 24px; min-height: 24px/);
   assert.doesNotMatch(html, /id="session-actions"|id="tabs-list"|id="tabs-split"/);
@@ -702,32 +702,17 @@ test('working controls keep a quiet named Stop and visible delivery choices with
   assert.match(rule('.composer-settings'), /justify-content: flex-end/);
   assert.doesNotMatch(css, /\.modes\b/);
 });
-test('three direct utility controls retain named SVG slots and a separate unread badge', () => {
-  const footer = html.match(/<footer class="sidebar-footer"[\s\S]*?<\/footer>/)?.[0]; assert.ok(footer);
-  assert.equal([...footer.matchAll(/<button /g)].length, 3); assert.doesNotMatch(html, /id="app-menu"/);
-  for (const [id, name, icon, title] of [['commands-button', 'Commands', 'commands', 'Commands'], ['notifications-button', 'Notices', 'notifications', 'Notices'], ['appearance-button', 'Theme', 'appearance', 'Theme']]) {
-    const trigger = footer.match(new RegExp(`<button id="${id}"[\\s\\S]*?<\\/button>`))?.[0]; assert.ok(trigger);
-    assert.match(trigger, new RegExp(`aria-label="${name}"`)); assert.match(trigger, new RegExp(`title="${title}"`));
-    assert.match(trigger, /type="button"/); assert.match(trigger, /aria-haspopup="dialog"/); assert.match(trigger, new RegExp(`data-control-icon="${icon}"`));
-  }
-  assert.match(footer, /id="notices-count"[^>]*\shidden/);
-  assert.match(rule('.sidebar-footer > .icon-button > .card-icon'), /margin-inline: var\(--s1\)/);
-  assert.doesNotMatch(media('@media (pointer:coarse)'), /\.sidebar-footer > \.icon-button > \.card-icon\s*\{[^}]*margin-inline:/);
-  assert.match(rule('.ui-icon'), /display: block;[^}]*width: 16px; height: 16px/);
-  assert.match(rule('.icon-button'), /display: inline-flex;[^}]*min-width: 24px; height: 24px/);
-  assert.doesNotMatch(css, /\.sidebar-footer \.ui-icon\s*\{/);
+test('the drawer footer exposes named Tools and Settings rather than permanent utility icons', () => {
+  const footer=html.match(/<footer class="sidebar-footer"[\s\S]*?<\/footer>/)?.[0];assert.ok(footer);
+  assert.deepEqual([...footer.matchAll(/<button id="([^"]+)"/g)].map(match=>match[1]),['tools-button','settings-button']);
+  assert.match(footer,/id="tools-button"[^>]*aria-haspopup="menu"[^>]*>Tools<\/button>/);
+  assert.match(footer,/id="settings-button"[^>]*>Settings<\/button>/);
+  assert.match(rule('.sidebar-footer > button'),/min-height: 44px/);
 });
-test('the status line holds the three utility controls in a quiet group before the conversation name', () => {
-  const status = html.match(/<footer id="workbench-status"[\s\S]*?<\/footer>/)?.[0]; assert.ok(status);
-  const group = status.match(/<div id="status-controls"[^>]*>/)?.[0]; assert.ok(group);
-  assert.match(group, /class="status-controls"/); assert.match(group, /\shidden/); assert.match(group, /aria-label="Workbench controls"/);
-  assert.ok(status.indexOf(group) < status.indexOf('id="workbench-scope"'));
-  for (const id of ['commands-button', 'notifications-button', 'appearance-button']) assert.equal(status.includes(`id="${id}"`), false);
-  assert.match(rule('.status-controls'), /display: flex; flex: none; align-items: center; gap: var\(--s1\)/);
-  assert.match(rule('.status-controls[hidden]'), /display: none/);
-  assert.match(rule('.status-controls > .icon-button'), /justify-content: flex-start; padding: 0 var\(--s1\)/);
-  assert.doesNotMatch(rule('.status-controls'), /border|background/);
-  assert.match(media('@media (pointer:coarse)'), /\.status-controls > \.icon-button > \.card-icon \{ margin-inline: var\(--s3\)/);
+test('the status line retains facts and does not duplicate utility launchers', () => {
+  const status=html.match(/<footer id="workbench-status"[\s\S]*?<\/footer>/)?.[0];assert.ok(status);
+  for(const id of ['status-controls','tools-button','settings-button','commands-button','notifications-button','appearance-button'])assert.equal(status.includes(`id="${id}"`),false);
+  for(const id of ['workbench-scope','workbench-activity','focused-composer-status','workbench-version'])assert.ok(status.includes(`id="${id}"`));
 });
 test('card actions and expanded content share fixed geometry without label-width drift', () => {
   assert.match(rule('.card-action'), /width: 24px; height: 24px; min-width: 24px; min-height: 24px/);
@@ -756,7 +741,7 @@ test('partial output qualification shares the full tool summary width', () => {
 });
 test('visible controls carry labels and one icon stroke style', async () => {
   const icons = [...html.matchAll(/data-control-icon="([^"]+)"/g)].map(match => match[1]);
-  assert.ok(icons.includes('close') && icons.includes('commands') && icons.includes('notifications') && icons.includes('appearance') && icons.includes('restart'));
+  assert.ok(icons.includes('close') && icons.includes('more') && icons.includes('navigation') && icons.includes('restart'));
   const vocabulary = await readFile(new URL('./card-icons.ts', import.meta.url), 'utf8');
   assert.match(vocabulary, /setAttribute\('stroke', 'currentColor'\)/); assert.match(vocabulary, /setAttribute\('stroke-width', '1.5'\)/);
   assert.match(vocabulary, /setAttribute\('aria-hidden', 'true'\)/); assert.match(vocabulary, /setAttribute\('viewBox', '0 0 16 16'\)/);
@@ -772,7 +757,7 @@ test('visible controls carry labels and one icon stroke style', async () => {
   const app = await readFile(new URL('./app.ts', import.meta.url), 'utf8');
   assert.match(app, /cardAction\('plus', 'New tab'/); assert.match(app, /plus\.setAttribute\('aria-haspopup', 'menu'\)/);
   assert.doesNotMatch(html, /id="session-actions"|id="primary-send"|id="primary-stop"|id="notices-button"|window-actions/);
-  assert.match(html, /id="notifications-button"[^>]*aria-haspopup="dialog"/);
+  assert.match(html, /id="tools-button"[^>]*aria-haspopup="menu"/);
   assert.doesNotMatch(html.match(/<input id="agent-search"[^>]*>/)?.[0] ?? '', /\shidden/);
 });
 test('code wraps, output scrolls inside its block, and disclosures stay reachable', () => {
@@ -1015,7 +1000,7 @@ test('project and pane controls have unique identities without a global toolbar 
   const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]); assert.equal(ids.length, new Set(ids).size);
   assert.doesNotMatch(html, /project-bar|pane-heading|id="tab-bar"|id="statusbar"/);
   assert.match(html, /class="sidebar-footer"/); assert.match(rule('.connection-banner'), /flex-wrap: wrap/);
-  for (const id of ['project-button','compact-project-button','commands-button','notifications-button','appearance-button','connection','primary-usage']) assert.equal([...html.matchAll(new RegExp(`id="${id}"`, 'g'))].length, 1, id);
+  for (const id of ['project-button','conversation-title','tools-button','settings-button','connection','primary-usage']) assert.equal([...html.matchAll(new RegExp(`id="${id}"`, 'g'))].length, 1, id);
 });
 
 test('supplied roles stay inline metadata and expanded thinking separates from prose only', () => {
@@ -1192,7 +1177,7 @@ test('Message connection recovery shares flat state actions and retains native f
 });
 
 test('the sidebar footer stays at the bottom without a heavy separator', () => {
-  assert.equal([...css.matchAll(/^\.sidebar-footer \{/gm)].length, 2); assert.match(css, /^\.sidebar-footer \{ display: grid; grid-template-columns: repeat\(3,auto\); justify-content: space-between; gap: var\(--s1\); \}/m);
+  assert.equal([...css.matchAll(/^\.sidebar-footer \{/gm)].length, 2); assert.match(css, /^\.sidebar-footer \{ display: grid; grid-template-columns: 1fr 1fr; gap: var\(--s2\); \}/m);
   assert.match(rule('.sidebar-footer'), /align-items: center; gap: var\(--s1\); margin-top: auto; padding: var\(--s1\) var\(--s2\) 0/); assert.doesNotMatch(rule('.sidebar-footer'), /border-top:/);
 });
 
@@ -1202,12 +1187,12 @@ test('coarse sidebar footer icons keep compact margins after later declarations'
   assert.ok(margins.length > 0, 'Footer icon margins exist');
   assert.equal(margins.at(-1), 'var(--s1)', 'The effective coarse margin must retain the compact base value');
   assert.match(rule(':where(:root)'), /--s1: 4px;/);
-  assert.match(media('@media (pointer:coarse)'), /\.status-controls > \.icon-button > \.card-icon \{ margin-inline: var\(--s3\); \}/);
+  assert.doesNotMatch(css, /\.status-controls/);
 });
 
 test('the visible sidebar leads with its panel toggle at the same inset and inherits coarse pointer targets', () => {
   assert.match(rule('.sidebar-close'), /display: inline-flex/);
-  assert.match(rule('.nav-top'), /padding: 0 var\(--s2\) 0 var\(--s2\)/); assert.match(rule('.navigation-access'), /padding: 0 var\(--s2\)/);
+  assert.match(rule('.nav-top'), /padding: 0 var\(--s2\) 0 var\(--s2\)/); assert.match(rule('.navigation-access'), /min-height: 48px; padding: 0 var\(--s3\)/);
   assert.match(html, /id="sidebar-close" class="icon-button sidebar-close"[^>]+aria-label="Hide sidebar"/);
   assert.match(media('@media (max-width:743px)'), /\.sidebar-close \{ display: inline-flex/);
   assert.match(rule('.icon-button'), /width: 24px; height: 24px/);
@@ -1300,7 +1285,7 @@ test('phone drawer sections keep usable content inside one outer scroll owner', 
   assert.match(rule('.sidebar .roster'), /max-height: none; overflow: visible/);
   assert.match(rule('.sidebar .roster[data-catalog=true]'), /max-height: min\(50dvh,400px\); overflow-y: auto/);
   assert.match(html, /id="session-new"[^>]*>[\s\S]*?<span class="session-create-label">New session<\/span>/);
-  const sectionEnd = html.indexOf('</div>\n<section id="agent-message-panel"');
+  const sectionEnd = html.indexOf('<div id="agent-message-region"');
   assert.ok(html.indexOf('<div class="sidebar-scroll">') < html.indexOf('id="sidebar-conversations"'));
   assert.match(rule('.nav-heading-row'), /height: 28px/);
   assert.ok(sectionEnd > html.indexOf('id="roster-section"'));
@@ -1424,12 +1409,12 @@ test('the transcript scroller is not positioned, because render.ts measures its 
     assert.doesNotMatch(rule[2] ?? '', /(?:^|[;\s])position\s*:/, `${(rule[1] ?? '').trim()} must not declare position. The offsetTop sites in render.ts (anchor, restorePosition, historyAvailable, revealEntry) assume the scroller and its rows share one offset parent (.transcript-region). Positioning the scroller means moving those sites to rectangle geometry, as layoutOrigin does, in the same change.`);
   }
 });
-test('sidebar sections follow the document order Tabs, Recent, Agents, Sessions, Threads, Files and Files fills the rest', () => {
-  const order = ['sidebar-conversations', 'recent-section', 'roster-section', 'primary-section', 'threads-section', 'files-section'].map(id => html.indexOf(`<section id="${id}"`));
-  assert.ok(order.every((index, position) => index > 0 && (position === 0 || index > (order[position - 1] ?? 0))), 'sections appear in reading order');
-  assert.doesNotMatch(rule('.files-section'), /max-height/);
-  assert.match(rule('#files-section-body'), /flex: 1 1 auto; min-height: 0; overflow: auto/);
-  assert.ok(html.indexOf('id="files-section"') < html.indexOf('id="agent-message-panel"'));
+test('non-session destinations start hidden and one scroll owner holds the selected navigation view', () => {
+  for(const id of ['sidebar-conversations','roster-section','threads-section','files-section'])assert.match(html,new RegExp(`<section id="${id}"[^>]*hidden`));
+  assert.doesNotMatch(html,/id="recent-section"/);
+  assert.match(rule('.sidebar .sidebar-scroll'),/flex: 1; min-height: 0; overflow-y: auto/);
+  assert.match(html,/id="navigation-back"[^>]*hidden>Back to sessions/);
+  assert.match(html,/id="agent-message-region" hidden/);
 });
 test('a status row holds sender, kind and first line on one 28px line without fill or border', () => {
   assert.match(rule('.communication-toggle'), /display: flex; flex: 1 1 auto; align-items: center;[^}]*height: 28px; overflow: hidden; color: var\(--muted\); font-size: var\(--fs-meta\);[^}]*white-space: nowrap/);

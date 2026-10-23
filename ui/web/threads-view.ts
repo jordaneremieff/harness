@@ -69,6 +69,7 @@ export class ThreadExplorer {
   }
   get items(): readonly ThreadListItem[] { return this.overview?.items ?? []; }
   get expanded(): boolean { return !this.collapsed; }
+  expand(): void { this.toggle(false); }
   /** Marks the row whose thread the reader shows. */
   setCurrent(id: string | undefined): void { if (this.current !== id) { this.current = id; this.paint(); } }
   focusRow(id: string): boolean {

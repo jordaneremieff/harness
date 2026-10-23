@@ -958,13 +958,13 @@ test('visible controls supplement the palette without a header band or title cli
   for(const id of ['session-open','session-new','agent-new','commands-button','notifications-button','appearance-button'])assert.ok(byId(id)); assert.doesNotMatch(html,/window-actions|pane-heading|key-hint|id="notices-button"/); assert.ok(source.includes('focusedTranscript()?.expandLoaded')); assert.ok(source.includes("byId('notices-count').hidden = !unread")); assert.ok(source.includes("const activity = byId('workbench-activity'); if (!notice && view.detail) activity.title +=")); assert.ok(source.includes("!view.busy && view.responseOutcome === 'failed'")); assert.doesNotMatch(source, /Retrying after/); assert.ok(source.includes('if (item?.lastError)')); assert.doesNotMatch(source, /byId\('(?:session-title|agent-name)'\)\.addEventListener\('click'/); for (const binding of ["byId('session-new').addEventListener('click'", "byId('agent-refresh').addEventListener('click', refreshRoster)", "byId('agent-new').addEventListener('click'", "byId('commands-button').addEventListener('click', () => actions.palette())", "byId('notifications-button').addEventListener('click', notices)", "byId('appearance-button').addEventListener('click', () => actions.appearance())"]) assert.ok(source.includes(binding));
 });
 
-test('the sidebar header leads with the same panel icon as its show control', () => {
+test('the sidebar names its destination and the main header has a labelled Sessions control', () => {
   const header = byId('sidebar-close').parentNode; assert.ok(header);
-  assert.deepEqual(header.children.map(node => node.id), ['sidebar-close', 'project-name', 'project-button']);
+  assert.deepEqual(header.children.map(node => node.id), ['navigation-title', 'sidebar-close']);
   const toggle = byId('sidebar-close'), show = byId('sidebar-show');
-  assert.equal(toggle.dataset.controlIcon, show.dataset.controlIcon); assert.equal(toggle.dataset.controlIcon, 'navigation');
+  assert.match(html,/id="sidebar-show"[^>]*>Sessions<\/button>/);assert.equal(show.parentNode,byId('navigation-access'));
   assert.equal(toggle.getAttribute('aria-label'), 'Hide sidebar'); assert.equal(toggle.title, 'Hide sidebar');
-  assert.equal(header.querySelector('[data-control-icon="close"]'), null); assert.ok(toggle.querySelector('.card-icon-navigation'));
+  assert.ok(toggle.querySelector('.card-icon-navigation'));
 });
 test('file watch status alone exposes the heading refresh and Commands uses the same refresh', async t => {
   const fetch = globalThis.fetch;
@@ -984,20 +984,20 @@ test('file watch status alone exposes the heading refresh and Commands uses the 
   assert.ok(entry); assert.equal(entry.disabled, false); entry.click(); assert.equal(refreshes, 2);
   assert.equal(byId('files-refresh').hidden, true);
 });
-test('project identity names both direct controls with a launch-directory fallback', async () => {
+test('Settings names its folder control with a launch-directory fallback', async () => {
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture()], roster: []});
-  assert.equal(byId('project-name').textContent, 'project'); assert.equal(byId('compact-project-name').textContent, 'project');
+  app.showNavigationView('settings');assert.equal(byId('project-name').textContent, 'project');
   assert.equal(byId('project-button').title, 'Working folder: /fixture/project');
-  assert.equal(byId('project-name').title, '/fixture/project'); assert.equal(byId('compact-project-name').title, '/fixture/project');
+  assert.equal(byId('project-name').title, '/fixture/project');assert.equal(byId('project-name').closest('#settings-section'),byId('settings-section'));
   assert.equal(byId('project-button').getAttribute('aria-label'), 'Choose working folder');
   assert.match(html, /id="project-name" class="project-context">Working folder/);
 });
 
-test('working-folder context disambiguates loaded primaries and late recent projects in both headers', async () => {
+test('Settings disambiguates loaded folders and late recent projects', async () => {
   const first = primaryFixture({cwd: '/work/one/checkout', sessionName: 'Release notes'});
   const second = primaryFixture({key: 'p2', cwd: '/work/two/checkout', sessionName: 'Other title'});
   await arrive({workspace: {id: 'project-context', revision: 1, primaryKey: 'p'}, primaries: [first, second], roster: []});
-  for (const prefix of ['', 'compact-']) {
+  for (const prefix of ['']) {
     assert.equal(byId(`${prefix}project-name`).textContent, 'one/checkout');
     assert.equal(byId(`${prefix}project-name`).title, first.cwd);
     assert.equal(byId(`${prefix}project-button`).getAttribute('aria-description'), first.cwd);
@@ -1009,7 +1009,6 @@ test('working-folder context disambiguates loaded primaries and late recent proj
       : originalFetch(url, init);
     await openProjects();
     assert.equal(byId('project-name').textContent, 'work/one/checkout');
-    assert.equal(byId('compact-project-name').textContent, 'work/one/checkout');
     const rows = menuNode().children;
     assert.ok(rows.find(row => row.textContent === 'archive/one/checkout'));
     assert.ok(rows.find(row => row.textContent === 'work/one/checkout'));
@@ -1322,7 +1321,7 @@ test('sidebar sections retain their collapsed state per workspace and tab and fi
   Reflect.set(globalThis, 'sessionStorage', {getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => {values.set(key, value);}});
   const workspace = (id: string): Workspace => ({id, revision: 1, primaryKey: 'p'});
   await arrive({workspace: workspace('w'), primaries: [primaryFixture()], roster: []});
-  app.renderSidebarSections(); assert.equal(byId('agents-heading').attributes.get('aria-expanded'), 'true');
+  app.showNavigationView('sessions');app.renderSidebarSections(); assert.equal(byId('agents-heading').attributes.get('aria-expanded'), 'true');
   assert.equal(byId('agents-section-body').hidden, false);
   assert.equal(byId('primary-section').hidden, false); assert.equal(byId('primary-row').hidden, true); assert.equal(byId('primary-section-body').hidden, false); assert.equal(byId('session-open').hidden, false);
   app.setSidebarSection('agents', false);
@@ -1646,47 +1645,15 @@ test('Commands lists only the sidebar action that applies on wide and narrow win
   app.toggleSidebar(true); assert.deepEqual(listed(), ['Hide sidebar']);
   app.toggleSidebar(false); host.viewport = 1200; app.renderNavigation();
 });
-test('Commands, Notifications and Appearance move between the sidebar foot and the status line with the sidebar state', async t => {
+test('Tools and Settings stay in the sidebar and never occupy the status facts', async t => {
   t.after(() => {app.toggleSidebar(false); host.viewport = 1200;});
-  const ids = ['commands-button', 'notifications-button', 'appearance-button'];
-  const root = () => hostDocument.body;
-  const where = () => ids.map(id => byId(id).parentNode?.id);
-  const once = () => ids.every(id => root().querySelectorAll(`#${id}`).length === 1 && root().querySelectorAll('#notices-count').length === 1);
-  const inStatusLine = () => {
-    const status = byId('workbench-status'), group = byId('status-controls');
-    assert.equal(group.parentNode, status); assert.equal(group.hidden, false); assert.equal(status.children.indexOf(group), 0);
-    assert.ok(status.children.indexOf(group) < status.children.indexOf(byId('workbench-scope')));
-    assert.deepEqual(group.children.map(node => node.id), ids); assert.deepEqual(where(), ids.map(() => 'status-controls'));
-    for (const id of ids) assert.equal(byId(id).hidden, false);
-    assert.equal(byId('sidebar-footer').children.length, 0);
-  };
-  const inSidebarFoot = () => {
-    assert.equal(byId('status-controls').hidden, true); assert.equal(byId('status-controls').children.length, 0);
-    assert.deepEqual(byId('sidebar-footer').children.map(node => node.id), ids); assert.deepEqual(where(), ids.map(() => 'sidebar-footer'));
-    assert.equal(byId('sidebar-footer').parentNode, byId('sidebar'));
-  };
-  host.viewport = 1200;
-  await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'primary', key: 'p', epoch: 1}, sidebarVisible: true}, primaries: [primaryFixture()], roster: []});
-  inSidebarFoot(); assert.ok(once());
-  const bell = byId('notifications-button'), count = () => byId('notices-count');
-  app.toggleSidebar(false); await settle();
-  assert.equal(app.state.workspace?.sidebarVisible, false); assert.equal(byId('sidebar').hidden, true); inStatusLine(); assert.ok(once());
-  event('notice', {id: 'moved-notice', level: 'info', message: 'A notification', at: 'now'});
-  assert.equal(byId('notifications-button'), bell); assert.equal(count().textContent, '1'); assert.equal(count().hidden, false);
-  assert.equal(count().parentNode, bell); assert.equal(bell.attributes.get('aria-label'), 'Notifications (1 unread)');
-  byId('commands-button').click(); assert.equal(byId('modal-title').textContent, 'Commands'); byId('modal-close').click();
-  byId('appearance-button').click(); assert.ok(byId('modal-body').textContent.length > 0); byId('modal-close').click();
-  bell.click(); assert.match(byId('modal-body').textContent, /A notification/); byId('modal-close').click();
-  app.renderNavigation(); inStatusLine(); assert.ok(once());
-  app.toggleSidebar(true); await settle();
-  assert.equal(app.state.workspace?.sidebarVisible, true); inSidebarFoot(); assert.ok(once());
-  host.viewport = 700; app.renderNavigation();
-  assert.equal(app.drawerOpen, false); assert.equal(byId('sidebar').hidden, true); inStatusLine(); assert.ok(once());
-  event('notice', {id: 'narrow-notice', level: 'info', message: 'Another notification', at: 'now'});
-  assert.equal(count().textContent, '1'); assert.equal(count().parentNode, bell);
-  app.toggleSidebar(true); assert.equal(byId('sidebar').hidden, false); inSidebarFoot(); assert.ok(once());
-  assert.equal(count().textContent, '1'); assert.equal(count().hidden, false); assert.equal(count().parentNode, bell);
-  app.toggleSidebar(false); inStatusLine(); assert.ok(once()); assert.equal(count().textContent, '1');
+  await arrive({workspace:{id:'utility-home',revision:1,primaryKey:'p',sidebarVisible:true},primaries:[primaryFixture()],roster:[]});
+  for(const width of [1200,700])for(const visible of [false,true]){
+    host.viewport=width;app.toggleSidebar(visible);await settle();
+    assert.deepEqual(byId('sidebar-footer').children.map(node=>node.id),['tools-button','settings-button']);
+    for(const id of ['tools-button','settings-button'])assert.equal(byId('workbench-status').contains(byId(id)),false);
+    assert.equal(byId('navigation-access').hidden,false);assert.equal(hostDocument.body.querySelectorAll('#tools-button').length,1);
+  }
 });
 test('projected Message pointers stay inside the drawer without exempting the conversation transcript', async t => {
   t.after(() => {app.toggleSidebar(false); byId('agent-message-close').click(); host.viewport = 1200;});
@@ -1737,10 +1704,9 @@ test('reselecting the active conversation entry closes a drawer without a deskto
 
 test('the desktop transition restores the hidden-sidebar preference and a visible focus target', async () => {
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', sidebarVisible: false, selectedTarget: {kind: 'primary', key: 'p', epoch: 1}}, primaries: [primaryFixture()], roster: []});
-  host.viewport = 700; app.toggleSidebar(true); assert.equal(hostDocument.activeElement?.id, 'project-button');
-  const sidebar = byId('sidebar'); const project = byId('project-button'), parent = project.parentNode, sibling = project.nextSibling; assert.ok(parent); sidebar.append(project);
+  host.viewport = 700; app.toggleSidebar(true); assert.equal(hostDocument.activeElement?.id, 'sidebar-close');
   host.viewport = 1100; app.renderNavigation(); assert.equal(app.drawerOpen, false); assert.equal(byId('sidebar').hidden, true); assert.equal(app.state.workspace?.sidebarVisible, false);
-  assert.equal(hostDocument.activeElement, byId('sidebar-show')); parent.insertBefore(project, sibling); host.viewport = 1200;
+  assert.equal(hostDocument.activeElement, byId('sidebar-show')); host.viewport = 1200;
 });
 
 test('unread notifications name their direct control and clear only after deliberate review', async () => {
@@ -1767,20 +1733,16 @@ test('project navigation remains an anchored project-first menu beside direct ut
   assert.equal(byId('modal-title').textContent, 'Appearance'); byId('modal-close').click();
   assert.doesNotMatch(html, /id="app-menu"|id="window-menu"/);
 });
-test('three direct utility icons preserve inventory, native button focus, destinations and unread count', async () => {
-  await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture()], roster: []});
-  const footer = byId('sidebar').querySelector('.sidebar-footer'); assert.ok(footer);
-  assert.deepEqual(footer.querySelectorAll('button').map(node => node.getAttribute('aria-label')), ['Commands', 'Notifications', 'Theme']);
-  assert.equal(hostDocument.getElementById('app-menu'), undefined); assert.doesNotMatch(source, /byId\('app-menu'\)|'App menu'/);
-  event('notice', {id: 'direct-utility-notice', level: 'info', message: 'Review through the direct icon', at: 'now'});
-  for (const [id, icon, title, tip] of [['commands-button', 'commands', 'Commands', 'Commands'], ['appearance-button', 'appearance', 'Appearance', 'Theme'], ['notifications-button', 'notifications', 'Notifications', 'Notifications']]) {
-    const control = byId(id as string); assert.equal(control.getAttribute('type'), 'button'); assert.equal(control.tabIndex, 0); assert.equal(control.getAttribute('aria-haspopup'), 'dialog');
-    assert.equal(control.querySelector('svg')?.getAttribute('class'), `card-icon card-icon-${icon}`);
-    assert.equal(control.querySelector('svg')?.getAttribute('aria-hidden'), 'true'); assert.ok(control.title.startsWith(tip as string));
-    control.focus(); control.click(); await settle(); assert.equal(contextMenu.openNow, false); assert.equal(byId('modal').open, true); assert.equal(byId('modal-title').textContent, title);
-    assert.equal(byId('notices-count').hidden, id === 'notifications-button');
-    byId('modal-close').click(); assert.equal(hostDocument.activeElement, control);
-  }
+test('Tools exposes its named destinations and Settings exposes the existing preferences', async () => {
+  await arrive({workspace:{id:'named-tools',revision:1,primaryKey:'p'},primaries:[primaryFixture()],roster:[]});
+  byId('tools-button').click();const menu=menuNode();
+  assert.deepEqual(menu.querySelectorAll('button').map(node=>node.textContent),['Agents','Threads','Files','Notices','Commands']);
+  const commands=menu.querySelectorAll('button').find(node=>node.textContent==='Commands');assert.ok(commands);commands.click();
+  assert.equal(byId('modal-title').textContent,'Commands');byId('modal-close').click();
+  byId('settings-button').click();assert.equal(app.navigationViews.view,'settings');
+  for(const name of ['Appearance','Message input','Keyboard shortcuts','Agent presentation control','Workspaces','Archived workspaces','Saved drafts and messages','Help'])assert.ok(byId('settings-choices').querySelectorAll('button').find(node=>node.textContent===name),name);
+  const appearance=byId('settings-choices').querySelectorAll('button').find(node=>node.textContent==='Appearance');assert.ok(appearance);appearance.click();assert.equal(byId('modal-title').textContent,'Appearance');byId('modal-close').click();
+  byId('navigation-back').click();assert.equal(app.navigationViews.view,'sessions');
 });
 test('notifications produce existing semantic classes instead of unused prefixed classes', async () => {
   const css = await readFile(new URL('./style.css', import.meta.url), 'utf8');
