@@ -717,6 +717,7 @@ test('the sidebar has full-width New, Search and Tools rows and one Settings foo
   assert.match(footer,/class="nav-control-label">Settings<\/span>/);
   assert.match(html,/class="sidebar-tools"><button id="tools-button"[^>]*aria-haspopup="menu"/);
   assert.match(rule('#session-entry-actions'), /flex-direction: column; align-items: stretch/);
+  assert.match(rule('#session-entry-actions > button, .sidebar-tools > button'), /justify-content: flex-start; gap: var\(--s3\)/);
   assert.match(rule('#session-entry-actions > button, .sidebar-tools > button'), /width: 100%; min-height: 44px/);
   assert.match(rule('.sidebar-footer > button'),/min-height: 44px/);
 });

@@ -1707,7 +1707,7 @@ button.thread-person:hover, button.thread-sender:hover { background: var(--raise
 .sidebar-footer > button:hover { background: var(--raised); color: var(--fg); }
 #navigation-back { flex: none; min-height: 44px; color: var(--muted); }
 #session-entry-actions { display: flex; flex: none; flex-direction: column; align-items: stretch; gap: var(--s1); padding: var(--s2) var(--s3) 0; }
-#session-entry-actions > button, .sidebar-tools > button { display: flex; align-items: center; gap: var(--s3); width: 100%; min-height: 44px; padding-inline: var(--s3); border-radius: var(--r-sm); text-align: left; color: var(--muted); }
+#session-entry-actions > button, .sidebar-tools > button { display: flex; align-items: center; justify-content: flex-start; gap: var(--s3); width: 100%; min-height: 44px; padding-inline: var(--s3); border-radius: var(--r-sm); text-align: left; color: var(--muted); }
 #session-entry-actions > button:hover, .sidebar-tools > button:hover { background: var(--raised); color: var(--fg); }
 .sidebar-tools { flex: none; width: calc(100% - 2 * var(--s3)); margin: var(--s1) var(--s3) 0; }
 #session-entry-actions > button > .card-icon, .sidebar-tools > button > .card-icon, .sidebar-footer > button > .card-icon { width: 18px; height: 18px; flex: none; }

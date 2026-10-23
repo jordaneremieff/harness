@@ -114,7 +114,7 @@ export class SessionSidebar {
     const keep=new Set<string>(),nodes:HTMLElement[]=this.sessionRows().map(item=>{
       keep.add(item.key);let view=this.rowNodes.get(item.key);if(!view){view=this.createRow(item);this.rowNodes.set(item.key,view);}view.item=item;
       setText(view.label,item.name);view.open.title=item.name;view.open.setAttribute('aria-label',item.name);cardActionLabel(view.menu,`Actions for ${item.name}`);
-      if(item.selected??(item.primary?.key===this.hooks.selected())){view.open.setAttribute('aria-current','page');view.node.dataset.selected='true';}
+      if(item.selected??(!!item.primary?.key&&item.primary.key===this.hooks.selected())){view.open.setAttribute('aria-current','page');view.node.dataset.selected='true';}
       else{view.open.removeAttribute('aria-current');delete view.node.dataset.selected;}
       return view.node;
     });

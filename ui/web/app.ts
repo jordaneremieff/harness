@@ -1920,9 +1920,11 @@ function renderSettingsChoices(): void {
 }
 function showConversationDetails(target?:Target):void {
   const workspace=state.workspace?.id,tab=activeTab(currentLayout());
+  if(sessionReadPane?.id===currentLayout().focusedPane)target=undefined;
+  const reader=!target?(sessionReadPane?sessionReader:activeSessionReader()):undefined;let releaseDetails:(()=>void)|undefined;
   if(target?.kind==='primary')actions.sessionDetails(state.primaries.get(target.key));
   else if(target?.kind==='agent')actions.conversationDetails(target.identity);
-  else modal.open('Conversation details');
+  else modal.open('Conversation details',undefined,()=>releaseDetails?.());
   const body=modal.body;
   if(target) {
     const conversation=state.conversations.get(targetIdentity(target)),item=target.kind==='primary'?state.primaries.get(target.key):undefined;
@@ -1934,9 +1936,9 @@ function showConversationDetails(target?:Target):void {
     const owner=workspace?controllers.get(controllerKey(workspace,target)):undefined;
     if(owner?.elements.save.textContent)body.append(element('p','secondary',owner.elements.save.textContent));
     if(item?.sessionFile&&primarySessionState(item).word==='closed')body.append(button('Resume session',()=>{if(workspace===state.workspace?.id&&state.primaries.get(item.key)?.epoch===item.epoch)resumeTabSource({primary:item});}));
-  } else if(tab?.kind==='session') {
-    const saved=activeSessionReader()?.saved??sessionTabSaved(tab);body.append(details('Saved session',rawText(saved)));
-    body.append(button('Resume session',()=>{if(workspace===state.workspace?.id)resumeTabSource({saved});}));
+  } else if(reader||tab?.kind==='session') {
+    const saved=reader?.saved??(tab?.kind==='session'?sessionTabSaved(tab):undefined);if(saved)body.append(details('Saved session',rawText(saved)));
+    if(reader)releaseDetails=reader.presentDetails(body);
   } else if(tab?.kind==='file'&&state.workspace) {
     const owner=filesViews.owner(state.workspace.id,tab);body.append(details('File',rawText(tab)));
     if(owner?.status)body.append(element('p',undefined,owner.status));

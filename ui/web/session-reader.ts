@@ -38,6 +38,8 @@ export class SessionReader {
   private refresh=button('Refresh',()=>{void this.read(false);},'quiet');
   private resume=button('Resume here',()=>this.resumeCurrent(),'quiet');
   private sessionBar=new SessionStateBar();
+  private detailsNode=element('div','session-reader-details');
+  private problem=element('p','session-reader-status secondary');
   private barSource?:SessionReadSource;
   private transcript:Transcript;
   private source?:SessionReadSource;
@@ -61,11 +63,12 @@ export class SessionReader {
     this.hooks=hooks;
     const header=element('header','session-reader-header'),actions=element('div','session-reader-actions');
     const close=button('Close',hooks.close,'quiet');close.hidden=!!hooks.embedded;
-    actions.append(this.time,this.refresh,this.resume,close);
+    actions.append(close);this.detailsNode.append(this.time,this.refresh,this.resume,this.status,this.sessionBar.node);
     const tabs=element('div','session-reader-tabs');tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','Read-only session');tabs.hidden=!!hooks.embedded;
     this.heading.setAttribute('role','tab');this.heading.setAttribute('aria-selected','true');tabs.append(this.heading);
-    header.append(tabs,actions,this.status);this.scroller.tabIndex=0;
-    this.node.append(header,this.scroller,this.latest,this.sessionBar.node);this.node.hidden=true;
+    header.append(tabs,actions);header.hidden=!!hooks.embedded;this.scroller.tabIndex=0;
+    this.problem.hidden=true;this.problem.setAttribute('role','status');
+    this.node.append(header,this.problem,this.scroller,this.latest);this.node.hidden=true;
     this.node.addEventListener('focusin',hooks.focus);
     if(hooks.embedded)this.scroller.addEventListener('scroll',()=>this.scheduleView(),{passive:true});
     else this.node.addEventListener('keydown',event=>{if(event.key==='Escape'&&!event.defaultPrevented){event.preventDefault();hooks.close();}});
@@ -73,7 +76,7 @@ export class SessionReader {
     this.transcript=new Transcript({transcript:this.scroller,latest:this.latest,earlier:this.earlier},{primaryDraft:hooks.primaryDraft&&{...hooks.primaryDraft,caption:()=>this.heading.textContent??'Session',current:()=>this.loaded&&!!this.source&&!this.node.closest('[hidden],[inert]')},operatorInput:true,cwd:()=>this.source?.saved?.project??(this.source&&'primary' in this.source?this.source.primary.cwd:undefined),presentation:(expanded,showThinking,transcriptView,thinking)=>{this.reloadPresentation={...this.reloadPresentation,revision:this.reloadPresentation.revision+1,expanded:[...expanded],showThinking,...(transcriptView?{transcriptView}:{}),...(thinking?{thinking}:{})};},reading:()=>{},earlier:()=>{void this.read(true);}});
   }
   open(source:SessionReadSource):void {
-    this.controller?.abort();this.source=source;this.entries=[];this.before=null;this.primaryCursor=null;this.windowTrimmed=false;this.leaf=null;this.reading=false;this.loaded=false;setText(this.time,'');
+    this.detailsNode.remove();this.controller?.abort();this.source=source;this.entries=[];this.before=null;this.primaryCursor=null;this.windowTrimmed=false;this.leaf=null;this.reading=false;this.loaded=false;setText(this.time,'');
     this.transcript.reset();this.reloadPresentation={revision:0,expanded:[],showThinking:false};this.node.hidden=false;this.paintHeader();void this.read(false);
   }
   /** Opens a saved session tab and returns to its stored reading position once the snapshot loads. */
@@ -116,7 +119,7 @@ export class SessionReader {
     this.leaf=value.leaf;this.before=value.before;this.primaryCursor=value.primaryCursor;this.loaded=value.loaded;this.reading=false;
     this.refresh.disabled=false;this.earlier.disabled=false;this.node.hidden=false;this.transcript.reset();this.reloadPresentation=structuredClone(value.presentation);
     this.transcript.configure(this.reloadPresentation,value.reading);this.transcript.set(this.entries,undefined,undefined,!this.before&&!this.primaryCursor);this.transcript.historyAvailable(!!this.before||!!this.primaryCursor);
-    setText(this.time,value.asOf);setText(this.status,value.status);this.paintHeader();this.transcript.restore(value.reading);this.transcript.schedule();
+    setText(this.time,value.asOf);setText(this.status,value.status);this.problem.hidden=this.loaded;setText(this.problem,this.loaded?'':'Saved history is unavailable. Open Conversation details to refresh it.');this.paintHeader();this.transcript.restore(value.reading);this.transcript.schedule();
     const source=this.source;requestAnimationFrame(()=>{if(this.source!==source)return;this.scroller.scrollLeft=value.scrollLeft;if(value.focused)this.focus();});
   }
   captureGeometry():{source:SessionReadSource;geometry:ReturnType<Transcript['captureGeometry']>;scrollLeft:number}|undefined {
@@ -126,8 +129,12 @@ export class SessionReader {
     if(value&&this.source===value.source){this.transcript.applyGeometry(value.geometry);this.scroller.scrollLeft=value.scrollLeft;}
   }
   close():void {
-    this.controller?.abort();this.source=undefined;this.reading=false;this.node.hidden=true;this.node.remove();
+    this.detailsNode.remove();this.controller?.abort();this.source=undefined;this.reading=false;this.node.hidden=true;this.node.remove();
     if(this.viewTimer!==undefined){clearTimeout(this.viewTimer);this.viewTimer=undefined;}
+  }
+  presentDetails(parent:HTMLElement):()=>void {
+    parent.append(this.detailsNode);
+    return ()=>{if(this.detailsNode.parentElement===parent)this.detailsNode.remove();};
   }
   focus():void {this.scroller.focus({preventScroll:true});}
   refreshState():void {this.paintHeader();}
@@ -137,7 +144,7 @@ export class SessionReader {
   }
   private bindSessionBar(source:SessionReadSource):void {
     if(this.barSource===source)return;
-    this.sessionBar.node.remove();this.sessionBar=new SessionStateBar();this.barSource=source;this.node.append(this.sessionBar.node);
+    this.sessionBar.node.remove();this.sessionBar=new SessionStateBar();this.barSource=source;this.detailsNode.append(this.sessionBar.node);
   }
   viewState():SessionState {return this.loaded?readSessionState(this.source&&'primary' in this.source?this.source.primary:undefined,this.source?.saved,this.hooks.primaries?.()):{};}
   private resumeCurrent():void {
@@ -161,16 +168,17 @@ export class SessionReader {
     const source=this.source;if(!source||this.reading)return;
     if(earlier&&!this.before&&!this.primaryCursor)return;
     this.reading=true;this.refresh.disabled=true;this.earlier.disabled=true;this.paintHeader();setText(this.status,'Reading retained snapshot');
+    setText(this.problem,this.loaded?'':'Read saved conversation…');this.problem.hidden=this.loaded;
     const controller=new AbortController();this.controller=controller;
     try{
       await this.fetchSnapshot(source,earlier,AbortSignal.any([controller.signal,AbortSignal.timeout(30_000)]));
       this.presentSnapshot(source,controller);
-    }catch(error){if(!controller.signal.aborted&&this.source===source)setText(this.status,error instanceof Error?error.message:'The retained snapshot did not load.');}
+    }catch(error){if(!controller.signal.aborted&&this.source===source){setText(this.status,error instanceof Error?error.message:'The retained snapshot did not load.');setText(this.problem,'Saved history did not load. Open Conversation details to refresh it.');this.problem.hidden=false;}}
     finally{if(this.controller===controller){this.reading=false;this.refresh.disabled=false;this.earlier.disabled=false;this.paintHeader();}}
   }
   private presentSnapshot(source:SessionReadSource,controller:AbortController):void {
     if(controller.signal.aborted||this.source!==source)return;
-    this.loaded=true;this.transcript.set(this.entries,undefined,undefined,!this.before&&!this.primaryCursor);this.transcript.historyAvailable(!!this.before||!!this.primaryCursor);
+    this.loaded=true;this.problem.hidden=true;this.transcript.set(this.entries,undefined,undefined,!this.before&&!this.primaryCursor);this.transcript.historyAvailable(!!this.before||!!this.primaryCursor);
     const view=this.pendingView;this.pendingView=undefined;
     if(view){
       this.transcript.restore({revision:0,anchorId:view.anchorId,offsetPx:view.offsetPx,followTail:view.followTail});

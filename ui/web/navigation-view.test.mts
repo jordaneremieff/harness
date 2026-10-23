@@ -106,6 +106,20 @@ test('Sessions combines every open conversation with known sessions rather than 
   assert.equal(app.drawerOpen,false);assert.deepEqual(app.state.workspace?.selectedTarget,{kind:'agent',identity:'recent-8'});host.viewport=1200;
 });
 
+test('Recents selects only the exact saved row when no Primary is selected',async t=>{
+  const first={id:'selected-saved',path:'/fixture/selected.jsonl',project:'/fixture',revision:'r',title:'Selected saved session',titleSource:'name' as const,titleState:'ready' as const,modifiedAt:'2026-01-01T00:00:00Z',size:10};
+  const other={...first,id:'other-saved',path:'/fixture/other.jsonl',title:'Other saved session'},fetch=globalThis.fetch;
+  t.mock.method(globalThis,'fetch',async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const path=new URL(String(input),'http://ui.test').pathname;
+    if(path==='/api/sessions/published')return Response.json({ok:true,data:{items:[first,other],total:2,omitted:0,nextCursor:null,titleCursor:null,observedAt:''}});
+    if(path==='/api/sessions/history')return Response.json({ok:true,data:{session:first,entries:[],coverage:browser.coverage,leaf:null,before:null,observedAt:'2026-01-01T00:00:00Z'}});
+    return fetch(input,init);
+  });
+  await arrive({workspace:{id:'saved-selection',revision:1,conversationLayout:createPaneLayout([{kind:'session',id:first.id,path:first.path,project:first.project,name:first.title}])},primaries:[],roster:[]});await settle();
+  const rows=byId('recent-sessions').querySelectorAll('.sidebar-content-row'),selected=rows.filter(node=>node.getAttribute('aria-current')==='page');
+  assert.equal(rows.length,2);assert.deepEqual(selected.map(node=>node.textContent),[first.title]);
+});
+
 test('recent rows merge exact known identities without merging equal names',()=>{
   const row=(key:string,identities:string[]):SessionRow=>({key,identities,name:'Same name',at:0,title:''});
   const first=row('open-primary',['primary:p','path:/project/a.jsonl','id:a']);

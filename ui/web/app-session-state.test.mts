@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type {ConversationTab, SavedSession, SessionTab} from '../shared/api.ts';
+import type {ConversationTab, EntryView, SavedSession, SessionTab} from '../shared/api.ts';
 import {createAppFixture} from './app-fixture.mts';
 import {createPaneLayout} from './pane-layout.ts';
 import {SessionReader} from './session-reader.ts';
@@ -10,37 +10,60 @@ const browser=await createAppFixture();
 const {app,arrive,settle,event,hostDocument,primaryFixture,transportLog,byId,agentFixture,targetFixture}=browser;
 const saved:SavedSession={id:'retained-session',path:'/fixture/retained.jsonl',project:'/fixture',revision:'r1',title:'Retained session',titleState:'ready',titleSource:'name',modifiedAt:'2026-01-01T00:00:00Z',size:10};
 const tab:SessionTab={kind:'session',id:saved.id,path:saved.path,project:saved.project,name:saved.title};
-function page(session:SavedSession):Response {return Response.json({ok:true,data:{session,entries:[],coverage:{complete:true,truncated:false,omitted:0},leaf:null,before:null,observedAt:'2026-01-01T00:00:00Z'}});}
+function page(session:SavedSession,entries:EntryView[]=[]):Response {return Response.json({ok:true,data:{session,entries,coverage:{complete:true,truncated:false,omitted:0},leaf:null,before:null,observedAt:'2026-01-01T00:00:00Z'}});}
 function stateWords():[string|undefined,string|undefined] {
   const key=tabKey(tab);
   return [hostDocument.querySelectorAll('.conversation-tab').find(node=>node.dataset.tabKey===key)?.querySelector('.tab-session-state')?.textContent,
     hostDocument.querySelectorAll('.conversation-row').find(node=>node.dataset.tabKey===key)?.querySelector('.conversation-state')?.textContent];
 }
 function readerNode(){const node=hostDocument.querySelector('.session-reader');assert.ok(node);return node;}
+function openReaderDetails():void {byId('conversation-actions').click();const item=hostDocument.body.querySelector('.context-menu')?.querySelectorAll('button').find(node=>node.textContent==='Conversation details');assert.ok(item);item.click();}
 
 test('saved tab, Tabs row and reader share checked metadata and current exact ownership',async t=>{
   const original=globalThis.fetch,gate=Promise.withResolvers<void>();let writer:'live'|undefined='live';
-  t.after(()=>{gate.resolve();globalThis.fetch=original;});
+  t.after(()=>{gate.resolve();byId('modal-close').click();globalThis.fetch=original;});
   globalThis.fetch=async(input,init)=>{
     if(new URL(String(input),'http://ui.test').pathname!=='/api/sessions/history')return original(input,init);
     await gate.promise;return page({...saved,...(writer?{writer}:{})});
   };
   await arrive({workspace:{id:'checked-reader',revision:1,conversationLayout:createPaneLayout([tab])},primaries:[],roster:[]});
-  assert.deepEqual(stateWords(),['','']);assert.equal(readerNode().querySelector('.session-state-bar')?.hidden,true);
+  assert.deepEqual(stateWords(),['','']);assert.equal(readerNode().querySelector('.session-state-bar'),null);openReaderDetails();assert.equal(byId('modal-body').querySelector('.session-state-bar')?.hidden,true);
   assert.equal(byId('workbench-status').dataset.pane,'session');assert.equal(byId('workbench-scope').textContent,saved.title);assert.equal(byId('workbench-activity').textContent,'');
   gate.resolve();await settle();
-  assert.deepEqual(stateWords(),['live','Live']);assert.equal(readerNode().querySelector('.session-state-label')?.textContent,'Live in terminal');
+  assert.deepEqual(stateWords(),['live','Live']);assert.equal(byId('modal-body').querySelector('.session-state-label')?.textContent,'Live in terminal');
   assert.equal(byId('workbench-activity').textContent,'Live in terminal');
   const calls=transportLog.length;writer=undefined;event('sessions.writers',{released:[saved.id]});await settle();
-  assert.deepEqual(stateWords(),['closed','Closed']);assert.equal(readerNode().querySelector('.session-state-label')?.textContent,'Closed');assert.equal(byId('workbench-activity').textContent,'Closed');
+  assert.deepEqual(stateWords(),['closed','Closed']);assert.equal(byId('modal-body').querySelector('.session-state-label')?.textContent,'Closed');assert.equal(byId('workbench-activity').textContent,'Closed');
   const owner=primaryFixture({key:'reader-owner',epoch:31,cwd:saved.project,sessionId:saved.id,sessionFile:saved.path,activity:'idle'});
   event('primary.state',owner);await settle();
-  assert.deepEqual(stateWords(),['idle','Idle']);assert.equal(readerNode().querySelector('.session-state-bar')?.hidden,true);assert.equal(byId('workbench-activity').textContent,'Idle');
+  assert.deepEqual(stateWords(),['idle','Idle']);assert.equal(byId('modal-body').querySelector('.session-state-bar')?.hidden,true);assert.equal(byId('workbench-activity').textContent,'Idle');
   event('primary.state',{...owner,activity:'running'});await settle();assert.deepEqual(stateWords(),['live','Live']);assert.equal(byId('workbench-activity').textContent,'Live');
   event('primary.state',{...owner,lifecycle:'stopped'});await settle();assert.deepEqual(stateWords(),['closed','Closed']);assert.equal(byId('workbench-activity').textContent,'Closed');
   event('primary.state',{...owner,sessionId:'different-session'});await settle();assert.deepEqual(stateWords(),['','']);assert.equal(byId('workbench-activity').textContent,'');
-  assert.equal(readerNode().querySelector('.session-state-bar')?.hidden,true);
+  assert.equal(byId('modal-body').querySelector('.session-state-bar')?.hidden,true);
   assert.equal(transportLog.slice(calls).some(call=>call.method!=='GET'),false);
+  const bar=byId('modal-body').querySelector('.session-state-bar');assert.ok(bar);byId('modal-close').click();assert.equal(bar.isConnected,false);
+});
+
+test('saved reader details retain the existing controls and content warnings without normal diagnostic frames',async t=>{
+  const fetch=globalThis.fetch,details=new browser.HostNode('section'),copies:string[]=[];let resumed=0,reads=0;
+  const clipboard=Object.getOwnPropertyDescriptor(navigator,'clipboard');Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async(text:string)=>{copies.push(text);}}});
+  const reader=new SessionReader({embedded:true,primaries:()=>[],focus:()=>{},close:()=>{},resume:source=>{assert.equal(source.saved?.id,saved.id);assert.equal(source.saved?.path,saved.path);resumed++;}});
+  const message=browser.messageFixture('shortened-message',[{type:'text',text:'A retained excerpt'},{type:'omitted',label:'This content is shortened.'}]),entries=[browser.entryFixture('shortened-entry',[message])];
+  t.after(()=>{reader.close();details.remove();if(clipboard)Object.defineProperty(navigator,'clipboard',clipboard);else Reflect.deleteProperty(navigator,'clipboard');});
+  t.mock.method(globalThis,'fetch',async(input:RequestInfo|URL,init?:RequestInit)=>{
+    if(new URL(String(input),'http://ui.test').pathname!=='/api/sessions/history')return fetch(input,init);
+    reads++;return Response.json({ok:true,data:{session:saved,entries,coverage:{complete:false,truncated:true,omitted:1,reason:'Earlier entries remain available.'},leaf:'leaf',before:reads<3?'older':null,observedAt:'2026-01-01T00:00:00Z'}});
+  });
+  hostDocument.body.append(reader.node as unknown as typeof details,details);reader.open({saved});await settle();
+  assert.equal(reader.node.querySelector('.session-state-bar'),null);assert.equal(reader.node.querySelector<HTMLElement>('.session-reader-header')?.hidden,true);assert.doesNotMatch(reader.node.textContent??'',/entries loaded|as of|Earlier entries remain available/);assert.match(reader.node.textContent??'',/This content is shortened/);
+  const release=reader.presentDetails(details as unknown as HTMLElement),bar=details.querySelector('.session-state-bar');assert.ok(bar);assert.match(details.textContent,/entries loaded|as of/);assert.match(bar.textContent,/Closed/);
+  const refresh=details.querySelectorAll('button').find(node=>node.textContent==='Refresh');assert.ok(refresh);refresh.click();await settle();assert.equal(reads,2);
+  const earlier=(reader.node as unknown as typeof details).querySelectorAll('button').find(node=>node.textContent==='Earlier retained entries');assert.ok(earlier);earlier.click();await settle();assert.equal(reads,3);assert.match(reader.node.textContent??'',/This content is shortened/);
+  const resume=bar.querySelectorAll('button').find(node=>node.textContent==='Resume'),copy=bar.querySelectorAll('button').find(node=>node.textContent==='Copy');assert.ok(resume);assert.ok(copy);
+  resume.dispatch('click');copy.dispatch('click');await settle();assert.equal(resumed,1);assert.deepEqual(copies,["pi --session '/fixture/retained.jsonl'"]);
+  release();resume.dispatch('click');copy.dispatch('click');await settle();assert.equal(resumed,1);assert.equal(copies.length,1);assert.equal(bar.isConnected,false);
+  const releaseAgain=reader.presentDetails(details as unknown as HTMLElement);assert.equal(details.querySelector('.session-state-bar')===bar,true);releaseAgain();
 });
 
 test('writer release replaces a pending read and a closed tab rejects its late metadata',async t=>{
