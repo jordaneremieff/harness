@@ -1423,6 +1423,10 @@ dialog[data-variant=palette] #modal-body > * + * { margin-top: 0; }
 .palette-input { width: 100%; height: 36px; padding: var(--s1) var(--s2); border: 0; background: transparent; font-size: var(--fs-ui); }
 .palette-list { --palette-row-size: 32px; box-sizing: border-box; max-height: calc(round(down,max(0px,var(--palette-available-height,calc(70dvh - 64px)) - 8px),var(--palette-row-size)) + 8px); padding: 0; border-block: 4px solid transparent; overflow-y: auto; scrollbar-width: thin; scroll-snap-type: y mandatory; }
 .palette-list > .palette-row { box-sizing: border-box; height: var(--palette-row-size); min-height: var(--palette-row-size); scroll-snap-align: start; }
+dialog[data-variant=palette][data-mode=messages] .palette-list { --palette-row-size: 56px; }
+dialog[data-variant=palette][data-mode=messages] .palette-row { grid-template-columns: minmax(0,1fr); grid-template-rows: auto auto; row-gap: 0; padding-block: var(--s1); text-align: left; }
+dialog[data-variant=palette][data-mode=messages] .palette-desc { grid-column: 1; grid-row: 2; }
+.loaded-message-coverage { padding: var(--s2) var(--s1) 0; font-size: var(--fs-meta); }
 dialog[data-variant=menu] { inset: var(--menu-top) var(--menu-right) auto auto; width: 260px; margin: 0; padding: var(--s1); border-radius: var(--r-md); }
 dialog[data-variant=menu]::backdrop { background: transparent; }
 

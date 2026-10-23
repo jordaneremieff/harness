@@ -4,6 +4,7 @@ import type { AgentRow, Appearance, HandoffView, OperationView, PrimaryControl, 
 import { Actions, COMMAND_INVENTORY_PAGE_LIMIT, MODEL_NAME_PAGE_LIMIT, rankPalette } from './actions.ts';
 import { Modal } from './modal.ts';
 import { rankCommands } from './command-menu-state.ts';
+import {LOADED_MESSAGE_ROW_LIMIT} from './actions.ts';
 import type { ActionContext, PaletteEntry } from './actions.ts';
 const originalFetch = globalThis.fetch;
 const originalResizeObserver = Object.getOwnPropertyDescriptor(globalThis, 'ResizeObserver');
@@ -517,6 +518,37 @@ function paletteFixture(overrides: Partial<ActionContext> = {}) {
 function key(node: FakeNode, name: string, options: Record<string, unknown> = {}) {
   const event = new Event('keydown', {cancelable: true}); Object.assign(event, {key: name, ...options}); node.dispatchEvent(event); return event;
 }
+test('Loaded messages reuses the palette with bounded exact rows, full-text search and no resource read', () => {
+  const entries=Array.from({length:LOADED_MESSAGE_ROW_LIMIT+3},(_,index)=>({id:`own-${index}`,kind:'message',messages:[{id:`m-${index}`,role:'user',timestamp:1792700000000,state:'final' as const,coverage:{complete:true,truncated:false,omitted:0},parts:[{type:'text' as const,text:`yes\nExact body ${index}`}]}]}));
+  const picked:string[]=[];
+  const f=paletteFixture({loadedMessages:()=>({entries,jump:id=>picked.push(id)})});
+  try{
+    Object.defineProperty(f.actions,'load',{value:()=>{throw Error('Loaded messages must not read resources');}});
+    assert.ok(f.actions.paletteEntries().some(entry=>entry.name==='Jump to message…'));
+    for(const agent of [false,true])assert.ok(f.actions.sessionMenuEntries(agent).some(entry=>entry.name==='Jump to message…'));
+    f.actions.paletteEntries().find(entry=>entry.name==='Jump to message…')?.run();
+    const field=f.body.children[0]?.children[2],list=f.body.children[1],coverage=f.body.children[2];assert.ok(field&&list&&coverage);
+    assert.equal(f.node.dataset.mode,'messages');assert.equal(list.attributes.get('aria-label'),'Loaded messages');
+    assert.equal(list.children.length,LOADED_MESSAGE_ROW_LIMIT);assert.match(coverage.textContent,/Refine your search/);
+    assert.equal(textOf(list.children[0]?.children[0] as FakeNode),'yes');assert.notEqual(textOf(list.children[0] as FakeNode),textOf(list.children[1] as FakeNode));
+    assert.match(textOf(list.children[0] as FakeNode),/Message 1 · .*2026/);
+    field.value='Exact body 102';field.dispatchEvent(new Event('input'));
+    assert.equal(list.children.length,1);assert.match(textOf(list.children[0] as FakeNode),/Message 103/);
+    key(field,'Enter',{isComposing:true});assert.deepEqual(picked,[]);
+    key(field,'Enter');assert.deepEqual(picked,['own-102']);assert.equal(f.isOpen(),false);
+    list.children[0]?.dispatchEvent(new Event('click'));assert.deepEqual(picked,['own-102']);
+    f.actions.palette('messages');const nextField=f.body.children[0]?.children[2],nextList=f.body.children[1];assert.ok(nextField&&nextList);
+    key(nextField,'ArrowDown');key(nextField,'Enter');assert.deepEqual(picked,['own-102','own-1']);
+  }finally{f.restore();}
+});
+test('Loaded messages has an explicit empty state and does not acquire the composer',()=>{
+  const f=paletteFixture({loadedMessages:()=>({entries:[],jump:()=>{throw Error('No entry');}})});
+  try{
+    f.actions.palette('messages');assert.match(textOf(f.body),/No loaded own messages/);
+    const field=f.body.children[0]?.children[2];assert.ok(field);key(field,'Enter');assert.equal(f.isOpen(),true);
+    f.modal.open('Replacement');key(field,'Enter');assert.equal(f.isOpen(),true);
+  }finally{f.restore();}
+});
 test('Commands hides binding hints and Keyboard shortcuts derives actionable rows from current metadata', async () => {
   const calls: string[] = []; let previous = true;
   const f = paletteFixture({ownMessages: () => previous ? {previous: () => calls.push('previous')} : {}, messageBox: () => calls.push('message box')});

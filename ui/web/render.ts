@@ -913,6 +913,12 @@ export class Transcript {
     error.scrollIntoView({block: 'center'});
     return true;
   }
+  private isOwnMessage(entry:EntryView):boolean{
+    return !entry.sender&&!entry.messages?.some(message=>!!message.communication)&&!!entry.messages?.some(message=>message.role==='user');
+  }
+  loadedOwnMessages():EntryView[]{
+    return this.destroyed||this.hidden()?[]:this.chronological.filter(entry=>this.isOwnMessage(entry));
+  }
   ownMessageEntry(direction:-1|1):string|undefined{
     if(this.destroyed||this.hidden())return;
     const reading=this.geometryAnchor(),cursor=this.ownMessageCursor;
@@ -921,11 +927,14 @@ export class Transcript {
     const at=this.follow?this.chronological.length:this.chronological.findIndex(entry=>entry.id===source);
     for(let index=at+direction;index>=0&&index<this.chronological.length;index+=direction){
       const entry=this.chronological[index];
-      if(entry&&!entry.sender&&!entry.messages?.some(message=>!!message.communication)&&entry.messages?.some(message=>message.role==='user'))return entry.id;
+      if(entry&&this.isOwnMessage(entry))return entry.id;
     }
   }
   jumpOwnMessage(direction:-1|1):boolean{
-    const id=this.ownMessageEntry(direction);if(!id)return false;
+    const id=this.ownMessageEntry(direction);return id?this.jumpToOwnMessage(id):false;
+  }
+  jumpToOwnMessage(id:string):boolean{
+    if(this.destroyed||this.hidden()||!this.chronological.some(entry=>entry.id===id&&this.isOwnMessage(entry)))return false;
     this.revealEntry(id,false);
     const reading=this.geometryAnchor();this.ownMessageCursor={id,anchorId:reading?.id??null,offsetPx:reading?.offsetPx??0};
     return this.markNavigationEntry(this.displayId(id));

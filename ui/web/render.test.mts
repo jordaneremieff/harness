@@ -208,6 +208,21 @@ function row(identity: string, name?: string) {
   return {identity, name, storageId: identity, cwd: '/project', modifiedAt: 0, state: 'working', availability: 'live' as const, owner: 'here' as const, partial: false};
 }
 
+test('own-message choices preserve source order and jump to exact virtualised entries without focus changes',()=>{
+  setup();const view=transcript(),root=node('primary-transcript');
+  const own=(id:string):EntryView=>({id,kind:'message',messages:[{...message(`m-${id}`,'yes'),role:'user'}]});
+  const first=own('first-own'),last=own('last-own'),routed={...own('routed'),sender:{identity:'peer'}};
+  const carrier:EntryView={...own('carrier'),messages:[{...message('carrier-message','routed report'),role:'user',communication:{state:'unresolved'}}]};
+  const entries=[first,...Array.from({length:60},(_,index)=>entry(`answer-${index}`)),routed,carrier,last];
+  view.set(entries);flush();assert.deepEqual(view.loadedOwnMessages(),[first,last]);
+  const focus=node('primary-editor');focus.focus();assert.equal(root.querySelectorAll('.entry').some(row=>row.dataset.entryId==='first-own'),false);
+  assert.equal(view.jumpToOwnMessage('first-own'),true);flush();
+  assert.equal(root.querySelectorAll('.entry').find(row=>row.dataset.entryId==='first-own')?.classList.contains('own-message-focus'),true);
+  assert.equal(fakeDocument.activeElement,focus);assert.equal(view.ownMessageEntry(1),'last-own');
+  assert.equal(view.jumpOwnMessage(1),true);assert.equal(view.ownMessageEntry(-1),'first-own');
+  for(const id of ['routed','carrier','missing'])assert.equal(view.jumpToOwnMessage(id),false);
+  view.set([last]);flush();assert.equal(view.jumpToOwnMessage('first-own'),false);view.reset();
+});
 test('hidden conversations skip queued paints, restore and reading writes until reveal', () => {
   setup(); const section = new FakeNode('section'); section.className = 'conversation'; roots.push(section);
   const container = node('primary-transcript'); section.append(container);

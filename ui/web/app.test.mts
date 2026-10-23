@@ -497,6 +497,23 @@ test('Message B remains visible while main A retains its writer, caret and readi
   byId('agent-message-close').click(); await settle();
 });
 
+test('the loaded-message chooser retains drafts and exact navigation and refuses a replaced conversation',async()=>{
+  const target={kind:'primary' as const,key:'p',epoch:7721},saved=targetFixture('message-chooser',target,{draft:{revision:1,text:'Keep my unsent draft',mode:'steer',persisted:true}});
+  const own=(id:string)=>entryFixture(id,[{...messageFixture(`m-${id}`,[textPart('yes')]),role:'user',timestamp:1792700000000}]);
+  const history=[own('first-request'),...Array.from({length:50},(_,index)=>entryFixture(`reply-${index}`,[messageFixture(`reply-m-${index}`,[textPart('answer')])])),own('last-request')];
+  await arrive({workspace:{id:'message-chooser',revision:1,primaryKey:'p',selectedTarget:target},primaries:[primaryFixture({epoch:target.epoch})],roster:[],targets:[saved],history});
+  const editor=primaryControl('editor');editor.setSelectionRange(2,7,'backward');
+  const open=()=>{byId('commands-button').click();const choice=byId('modal-body').querySelectorAll('.palette-row').find(row=>row.querySelector('.palette-name')?.textContent==='Jump to message…');assert.ok(choice);choice.click();};
+  const before=transportLog.length;open();assert.equal(byId('modal-title').textContent,'Loaded messages');
+  const rows=byId('modal-body').querySelectorAll('.palette-row');assert.equal(rows.length,2);assert.match(rows[0]?.textContent??'',/Message 1/);assert.match(rows[1]?.textContent??'',/Message 2/);
+  rows[0]?.click();await settle();assert.equal(primaryControl('transcript').querySelector('[data-entry-id="first-request"]')?.classList.contains('own-message-focus'),true);
+  assert.equal(primaryControl('editor'),editor);assert.equal(editor.value,'Keep my unsent draft');assert.deepEqual([editor.selectionStart,editor.selectionEnd,editor.selectionDirection],[2,7,'backward']);
+  app.openConversationActions();const menu=menuNode().children.find(node=>node.textContent==='Jump to message…');assert.ok(menu);menu.click();assert.equal(byId('modal-title').textContent,'Loaded messages');byId('modal-close').click();
+  open();const stale=byId('modal-body').querySelectorAll('.palette-row')[0];assert.ok(stale);
+  await arrive({workspace:{id:'message-chooser-new',revision:1,primaryKey:'p'},primaries:[primaryFixture({epoch:7722})],roster:[],history:[own('first-request')]});
+  stale.click();await settle();assert.equal(primaryControl('transcript').querySelector('.own-message-focus'),null);
+  assert.equal(transportLog.slice(before).some(call=>call.path.includes('/inputs')||call.path.endsWith('/start')),false);
+});
 test('Commands find and thinking actions work on the agent-only focused transcript', async () => {
   const identity = 'agent-transcript-commands', target = {kind: 'agent' as const, identity};
   const saved = targetFixture('agent-transcript-commands', target, {presentation: {revision: 1, expanded: [], showThinking: false}});
@@ -1554,7 +1571,7 @@ test('local conversation actions group existing controls and open workspace inpu
   app.openConversationActions('agent-pane'); const menu = menuNode();
   assert.deepEqual(menu.children.filter(node => node.className === 'context-menu-heading').map(node => node.textContent), ['View', 'Messages and tasks', 'Session', 'Details']);
   const labels = menu.children.filter(node => node.tagName === 'button').map(node => node.textContent);
-  assert.deepEqual(labels, ['Conversation', 'Grouped', 'Show thinking', 'Find text', 'Expand loaded tools', 'Collapse loaded tools', 'Message', 'Sent and received tasks', 'Saved drafts and messages', 'Message input', 'Open in Pi terminal', 'Conversation details', 'Copy agent ID', 'Commands']);
+  assert.deepEqual(labels, ['Conversation', 'Grouped', 'Show thinking', 'Find text', 'Jump to message…', 'Expand loaded tools', 'Collapse loaded tools', 'Message', 'Sent and received tasks', 'Saved drafts and messages', 'Message input', 'Open in Pi terminal', 'Conversation details', 'Copy agent ID', 'Commands']);
   for (const label of ['Conversation', 'Grouped']) {const choice = menu.children.find(node => node.textContent === label); assert.ok(choice); assert.equal(choice.getAttribute('role'), 'menuitemradio'); assert.equal(choice.getAttribute('aria-description'), `View: ${label}`); assert.equal(choice.title, `View: ${label}`); assert.equal(choice.getAttribute('aria-checked'), String(label === 'Conversation'));}
   assert.equal(labels.includes('Show conversation'), false); assert.equal(labels.includes('New session'), false);
   menu.children.find(node => node.textContent === 'Message input')?.click();

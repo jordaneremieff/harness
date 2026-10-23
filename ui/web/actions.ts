@@ -17,6 +17,7 @@ import { navigateOptions } from './list-navigation.ts';
 import { responseOutcome } from './conversation-presentation.ts';
 import type { CommandInventory, CommandOption, CommandMatch } from './command-menu-state.ts';
 export const COMMAND_INVENTORY_PAGE_LIMIT = 8;
+export const LOADED_MESSAGE_ROW_LIMIT = 100;
 /** Pages of the Primary model list read for display names; a model beyond them shows its id. */
 export const MODEL_NAME_PAGE_LIMIT = 10;
 const appearanceChoices: readonly [Appearance, string][] = [['system', 'System'], ['dark', 'Dark'], ['light', 'Light']];
@@ -25,6 +26,12 @@ export function userStylesheetApplied(): boolean {
   return typeof document !== 'undefined' && document.querySelector?.('link[data-user-stylesheet]') != null;
 }
 type ResourceKind = 'commands' | 'models' | 'thinking';
+type PaletteMode='commands'|'goto'|'messages';
+const paletteLabels:Record<PaletteMode,{title:string;search:string;list:string}>={
+  commands:{title:'Commands',search:'Search commands and agents',list:'Commands and agents'},
+  goto:{title:'Go to conversation',search:'Search conversations',list:'Conversations'},
+  messages:{title:'Loaded messages',search:'Search loaded messages',list:'Loaded messages'},
+};
 const appCommands: CommandOption[] = [
   {name: 'new', description: 'Start a new session', source: 'app'},
   {name: 'resume', description: 'Resume a saved session', source: 'app'},
@@ -110,6 +117,7 @@ export type ActionContext = {
   copyLastAnswer?:()=>((()=>void)|undefined);
   threadPosts?:()=>{previous?:()=>void;next?:()=>void};
   ownMessages?:()=>{previous?:()=>void;next?:()=>void};
+  loadedMessages?:()=>{entries:EntryView[];jump:(id:string)=>void}|undefined;
   failedSteps?:()=>{previous?:()=>void;next?:()=>void};
   receivedResults?:()=>{previous?:()=>void;next?:()=>void};
   readSession:ConstructorParameters<typeof ProjectPicker>[0]['readSession'];convertSession?:()=>void;hasConvertibleSession?:()=>boolean;desk?:()=>void;closeDesk?:()=>void;messageBox?:()=>void;deskOpen?:()=>boolean; nextUnread?:()=>void; hasUnread?:()=>boolean; handover?: () => void; agentPresentation: ConstructorParameters<typeof ProjectPicker>[0]['agentPresentation']; snapshot: () => Snapshot | undefined; primary: () => PrimaryView | undefined; /** The Primary whose model list names models: the selected Primary when it is ready, else any ready Primary. */ namingPrimary?: () => PrimaryView | undefined; composer: Composer; commandsChanged: () => void; modelChanged?: () => void; modelNamesChanged?: () => void; modal: Modal;
@@ -476,6 +484,7 @@ export class Actions {
       entry('Hide thinking', 'Hide loaded thinking text', () => this.ctx.view(false, false), transcript, undefined, 'Requires a conversation transcript'),
       entry('Find text', 'Find text in this session', () => this.find(), transcript, undefined, 'Requires a conversation transcript'),
       ...copyLastAnswer?[entry('Copy last answer','Copy the latest loaded answer',copyLastAnswer)]:[],
+      ...this.ctx.loadedMessages?.()?[entry('Jump to message…','Choose one of your loaded messages',()=>this.palette('messages'))]:[],
       ...this.ownMessageEntries(),
       ...this.failedStepEntries(),
       ...this.receivedResultEntries(),
@@ -506,7 +515,7 @@ export class Actions {
         entries.push({...command, name: `Insert /${command.name}`, search: [`/${command.name}`], enabled: true, run: () => this.prepareText(`/${command.name}`)});
       }
     }
-    const conversation = new Set(['Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Previous own message', 'Next own message', 'Previous result', 'Next result', 'Previous post', 'Next post', 'Copy agent ID', 'Sent and received tasks', 'Close conversation tab']);
+    const conversation = new Set(['Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Jump to message…', 'Previous own message', 'Next own message', 'Previous result', 'Next result', 'Previous post', 'Next post', 'Copy agent ID', 'Sent and received tasks', 'Close conversation tab']);
     const primaryActions = new Set(['Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Model', 'Thinking', 'Review message', 'Insert /agent new']);
     const workspace = new Set(['New session', 'Sessions', 'Continue a handover', 'Saved drafts and messages', 'Appearance', 'Message input', 'Agent presentation control', 'Keyboard shortcuts', 'Help', 'Notifications', 'Refresh agents', 'Refresh files', 'Hide sidebar', 'Show sidebar', 'Projects', 'Next conversation tab', 'Previous conversation tab', 'Reopen closed tab']);
     const preferences = new Set(['Appearance','Message input','Agent presentation control','Hide sidebar','Show sidebar']);
@@ -557,7 +566,7 @@ export class Actions {
     return agents.slice().sort((a, b) => agentOrder(a) - agentOrder(b)).map(row => ({...(this.ctx.agentCaption?.(row.identity) ?? this.captions.get(row.identity)), description: [this.ctx.agentStatus(row), compactAge(row.modifiedAt, now)].filter(Boolean).join(' · '), search: [row.identity, ...row.handle ? [row.handle] : []], title: row.identity, source: 'agent', enabled: true, run: () => chooseTarget ? chooseTarget({kind: 'agent', identity: row.identity}) : this.ctx.selectAgent(row)}));
   }
   sessionMenuEntries(agent = false): PaletteEntry[] {
-    const names = new Set(agent ? ['Conversation details', 'Copy agent ID', 'Sent and received tasks', 'Saved drafts and messages', 'Message input', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Appearance', 'Help'] : ['New session', 'Sessions', 'Continue a handover', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Conversation details', 'Sent and received tasks', 'Saved drafts and messages', 'Message input', 'Appearance', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Model', 'Thinking', 'Review message']);
+    const names = new Set(agent ? ['Conversation details', 'Copy agent ID', 'Sent and received tasks', 'Saved drafts and messages', 'Message input', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Jump to message…', 'Appearance', 'Help'] : ['New session', 'Sessions', 'Continue a handover', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Conversation details', 'Sent and received tasks', 'Saved drafts and messages', 'Message input', 'Appearance', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Jump to message…', 'Model', 'Thinking', 'Review message']);
     return this.paletteEntries().filter(item => item.source === 'app' && names.has(item.name));
   }
   sessionMenu(agent = false): void {
@@ -578,16 +587,46 @@ export class Actions {
     }
     return entries;
   }
-  palette(mode: 'commands' | 'goto' = 'commands', chooseTarget?: (target: Target) => void): void {
+  private messageEntries(captured:ReturnType<NonNullable<ActionContext['loadedMessages']>>):PaletteEntry[]{
+    return (captured?.entries??[]).map((entry,index)=>{
+      const messages=entry.messages?.filter(message=>message.role==='user')??[];
+      const text=messages.flatMap(message=>message.parts.flatMap(part=>part.type==='text'?[part.text]:[])).join('\n');
+      const first=text.split(/\r?\n/,1)[0]?.trim()||'Message without text';
+      const timestamp=messages.find(message=>message.timestamp!==undefined)?.timestamp;
+      const description=`Message ${index+1}${timestamp!==undefined?` · ${absoluteTime(timestamp)}`:''}`;
+      return {name:first.length>120?`${first.slice(0,120)}…`:first,description,search:[text],title:entry.id,source:'app',enabled:true,run:()=>captured?.jump(entry.id)};
+    });
+  }
+  private messageMatches(entries:PaletteEntry[],query:string,coverage?:HTMLElement):CommandMatch[]{
+    const needle=query.toLocaleLowerCase();
+    const filtered=entries.filter(entry=>[entry.description,...entry.search??[]].some(text=>text.toLocaleLowerCase().includes(needle)));
+    const matches=filtered.slice(0,LOADED_MESSAGE_ROW_LIMIT).map(item=>({item,rank:1,marks:[]}));
+    if(coverage)coverage.textContent=`Loaded messages only. ${matches.length} of ${filtered.length} matches shown.${filtered.length>matches.length?' Refine your search to see other messages.':''}`;
+    return matches;
+  }
+  private paletteOptions(mode:PaletteMode,messages:PaletteEntry[],chooseTarget?: (target: Target) => void):PaletteEntry[]{
+    if(mode==='messages')return messages;
+    return mode==='goto'?this.gotoEntries(chooseTarget):this.paletteEntries();
+  }
+  private paletteNoMatches(mode:PaletteMode,query:string,messages:PaletteEntry[]):HTMLElement{
+    if(mode==='messages')return element('p','secondary',messages.length?'No loaded messages match.':'No loaded own messages.');
+    return paletteEmpty(query,mode==='commands'&&(!this.commandsLoaded||this.commandsIncomplete)||rosterIncomplete(this.ctx.snapshot()));
+  }
+  palette(mode: PaletteMode = 'commands', chooseTarget?: (target: Target) => void, captured=mode==='messages'?this.ctx.loadedMessages?.():undefined): void {
     let dispose = () => {};
-    const modal = this.ctx.modal; modal.open(mode === 'goto' ? 'Go to conversation' : 'Commands', undefined, () => dispose()); const token = modal.token;
+    const messageEntries=mode==='messages'?this.messageEntries(captured):[];
+    const labels=paletteLabels[mode];
+    const modal = this.ctx.modal; modal.open(labels.title, undefined, () => dispose()); const token = modal.token;
     modal.node.dataset.variant = 'palette'; modal.node.dataset.mode = mode;
-    const search = input(mode === 'goto' ? 'Search conversations' : 'Search commands and agents'); search.label.className = 'sr-only';
+    const searchLabel=labels.search;
+    const search = input(searchLabel); search.label.className = 'sr-only';
     search.field.setAttribute('role', 'combobox'); search.field.setAttribute('aria-autocomplete', 'list'); search.field.setAttribute('aria-expanded', 'true'); search.field.setAttribute('aria-controls', 'palette-list');
     const prompt = element('span', 'palette-prompt'); prompt.append(cardIcon('search')); prompt.setAttribute('aria-hidden', 'true');
-    search.field.className = 'palette-input'; search.field.placeholder = mode === 'goto' ? 'Search conversations' : 'Search commands and agents';
+    search.field.className = 'palette-input'; search.field.placeholder = searchLabel;
     const line = element('div', 'palette-input-row'); line.append(prompt, search.label, search.field);
-    const list = element('div', 'palette-list'); list.id = 'palette-list'; list.setAttribute('role', 'listbox'); list.setAttribute('aria-label', mode === 'goto' ? 'Conversations' : 'Commands and agents'); modal.body.append(line, list);
+    const list = element('div', 'palette-list'); list.id = 'palette-list'; list.setAttribute('role', 'listbox'); list.setAttribute('aria-label', labels.list); modal.body.append(line, list);
+    const coverage=mode==='messages'?element('p','secondary loaded-message-coverage'):undefined;
+    if(coverage){coverage.setAttribute('role','status');modal.body.append(coverage);}
     let active = 0; let matches: ReturnType<typeof rankCommands> = [];
     const reveal = () => {
       const selected = list.children[active] as HTMLElement | undefined; if (!selected) return;
@@ -624,15 +663,16 @@ export class Actions {
       else search.field.removeAttribute('aria-activedescendant');
     };
     const paint = () => {
-      const previous = matches[active]?.item as PaletteEntry | undefined; const entries = mode === 'goto' ? this.gotoEntries(chooseTarget) : this.paletteEntries();
-      matches = rankPalette(entries, search.field.value.trim());
+      const previous = matches[active]?.item as PaletteEntry | undefined; const entries = this.paletteOptions(mode,messageEntries,chooseTarget);
+      const query=search.field.value.trim();
+      matches=mode==='messages'?this.messageMatches(entries,query,coverage):rankPalette(entries,query);
       active = Math.max(0, matches.findIndex(match => match.item.name === previous?.name && match.item.source === previous?.source && (match.item as PaletteEntry).title === previous?.title)); list.replaceChildren();
       matches.forEach((match, index) => {
         const item = match.item as PaletteEntry;
         const row = paletteRow(item, match.marks, mode === 'goto' || item.source === 'agent', () => run(index)); row.id = `palette-option-${index}`;
         list.append(row);
       });
-      if (!matches.length) list.append(paletteEmpty(search.field.value, mode === 'commands' && (!this.commandsLoaded || this.commandsIncomplete) || rosterIncomplete(this.ctx.snapshot())));
+      if (!matches.length) list.append(this.paletteNoMatches(mode,search.field.value,messageEntries));
       sizePalette(); select();
     };
     search.field.addEventListener('input', () => { active = 0; matches = []; paint(); });
@@ -642,7 +682,7 @@ export class Actions {
       else if (event.key === 'Enter') { event.preventDefault(); if (!event.repeat) run(active); }
     });
     this.commandPaint = () => { if (modal.owns(token)) paint(); };
-    paint(); search.field.focus(); if (mode === 'goto') return;
+    paint(); search.field.focus(); if (mode !== 'commands') return;
     void this.load('commands').then(page => {
       if (!modal.owns(token)) return;
       paint(); if (page.nextCursor) {

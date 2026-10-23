@@ -12,6 +12,12 @@ function rule(selector: string): string {
 const declarations = (property: string): string[] => [...css.matchAll(new RegExp(`(?:^|[;{\\s])${property}:\\s*([^;}]+)`, 'g'))].map(match => match[1].trim());
 const media = (query: string): string => { const start = css.indexOf(query); assert.ok(start >= 0, `Missing ${query}`); const next = css.indexOf('\n@media', start + 1); return css.slice(start, next < 0 ? undefined : next); };
 
+test('loaded-message choices keep separate excerpt and date rows at phone and desktop widths',()=>{
+  assert.match(rule('dialog[data-variant=palette][data-mode=messages] .palette-list'),/--palette-row-size: 56px/);
+  assert.match(rule('dialog[data-variant=palette][data-mode=messages] .palette-row'),/grid-template-columns: minmax\(0,1fr\); grid-template-rows: auto auto/);
+  assert.match(rule('dialog[data-variant=palette][data-mode=messages] .palette-desc'),/grid-column: 1; grid-row: 2/);
+  assert.match(rule('dialog[data-variant=palette], dialog[data-variant=picker]'),/width: min\(680px, calc\(100vw - 32px\)\)/);
+});
 test('quiet file rows use the existing muted ink without other presentation overrides', () => {
   assert.equal(rule('.file-row-quiet').trim(), 'color: var(--muted);');
 });
