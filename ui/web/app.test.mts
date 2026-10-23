@@ -1591,13 +1591,13 @@ test('the Primary composer uses the projected conversation name without replacin
 
 test('navigation uses drawer state while a breakpoint resize still has desktop DOM visibility', async () => {
   host.viewport = 1200; await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', sidebarVisible: true}, primaries: [primaryFixture()], roster: []});
-  assert.equal(byId('sidebar').hidden, false); host.viewport = 760; byId('sidebar-show').click();
+  assert.equal(byId('sidebar').hidden, false); host.viewport = 700; byId('sidebar-show').click();
   assert.equal(app.drawerOpen, true); assert.equal(byId('sidebar').hidden, false); app.toggleSidebar(false); host.viewport = 1200;
 });
 
 test('drawer Close, outside pointer and Escape retain drafts and desktop visibility preference', async () => {
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'primary', key: 'p', epoch: 1}, sidebarVisible: true}, primaries: [primaryFixture()], roster: []});
-  host.viewport = 760; selectionSaves.length = 0; primaryControl('editor').value = 'Exact retained draft'; primaryControl('editor').dispatch('input'); primaryControl('transcript').scrollTop = 140;
+  host.viewport = 700; selectionSaves.length = 0; primaryControl('editor').value = 'Exact retained draft'; primaryControl('editor').dispatch('input'); primaryControl('transcript').scrollTop = 140;
   app.toggleSidebar(true); assert.equal(app.drawerOpen, true); assert.equal(byId('sidebar-show').hidden, false);
   byId('sidebar-close').click(); assert.equal(app.drawerOpen, false); assert.equal(hostDocument.activeElement, byId('sidebar-show'));
   app.toggleSidebar(true); let prevented = 0; let stopped = 0;
@@ -1614,7 +1614,7 @@ test('Commands lists only the sidebar action that applies on wide and narrow win
   const sidebarRows = () => byId('modal-body').querySelectorAll('.palette-row').map(row => row.querySelector('.palette-name')?.textContent).filter(name => name === 'Hide sidebar' || name === 'Show sidebar');
   const listed = () => {byId('commands-button').click(); const names = sidebarRows(); byId('modal-close').click(); return names;};
   host.viewport = 1200; assert.deepEqual(listed(), ['Hide sidebar']);
-  host.viewport = 760; app.renderNavigation(); assert.deepEqual(listed(), ['Show sidebar']);
+  host.viewport = 700; app.renderNavigation(); assert.deepEqual(listed(), ['Show sidebar']);
   app.toggleSidebar(true); assert.deepEqual(listed(), ['Hide sidebar']);
   app.toggleSidebar(false); host.viewport = 1200; app.renderNavigation();
 });
@@ -1652,7 +1652,7 @@ test('Commands, Notifications and Appearance move between the sidebar foot and t
   app.renderNavigation(); inStatusLine(); assert.ok(once());
   app.toggleSidebar(true); await settle();
   assert.equal(app.state.workspace?.sidebarVisible, true); inSidebarFoot(); assert.ok(once());
-  host.viewport = 760; app.renderNavigation();
+  host.viewport = 700; app.renderNavigation();
   assert.equal(app.drawerOpen, false); assert.equal(byId('sidebar').hidden, true); inStatusLine(); assert.ok(once());
   event('notice', {id: 'narrow-notice', level: 'info', message: 'Another notification', at: 'now'});
   assert.equal(count().textContent, '1'); assert.equal(count().parentNode, bell);
@@ -1685,7 +1685,7 @@ test('projected Message pointers stay inside the drawer without exempting the co
   }
 });
 test('drawer dismissal excludes its own controls, dialogs, command lists and context menus', () => {
-  host.viewport = 760; app.toggleSidebar(true);
+  host.viewport = 700; app.toggleSidebar(true);
   for (const node of [byId('sidebar'), new HostNode('dialog'), Object.assign(new HostNode('div'), {className: 'command-menu'}), Object.assign(new HostNode('div'), {className: 'context-menu'})]) {
     app.dismissDrawerPointer({target: node, preventDefault: () => assert.fail('excluded surface'), stopImmediatePropagation: () => assert.fail('excluded surface')} as unknown as PointerEvent);
     assert.equal(app.drawerOpen, true);
@@ -1704,12 +1704,12 @@ test('the conversation list reuses exact tab activation without a new navigation
 });
 
 test('reselecting the active conversation entry closes a drawer without a desktop preference write', async () => {
-  await arrive({workspace:{id:'w',revision:1,primaryKey:'p',sidebarVisible:true,selectedTarget:{kind:'agent',identity:'overflow-a'},conversationLayout:singlePane([{kind:'primary'},{kind:'agent',identity:'overflow-a'}],'agent:overflow-a')},primaries:[primaryFixture({epoch:716})],roster:[agentFixture('overflow-a')]});host.viewport=760;app.toggleSidebar(true);selectionSaves.length=0;byId('sidebar-conversations').querySelector('[data-tab-key="agent:overflow-a"]')?.click();await settle();assert.equal(app.drawerOpen,false);assert.equal(byId('sidebar').hidden,true);assert.equal(app.state.workspace?.sidebarVisible,true);assert.equal(selectionSaves.some(save=>save.body.sidebarVisible!==undefined),false);host.viewport=1200;
+  await arrive({workspace:{id:'w',revision:1,primaryKey:'p',sidebarVisible:true,selectedTarget:{kind:'agent',identity:'overflow-a'},conversationLayout:singlePane([{kind:'primary'},{kind:'agent',identity:'overflow-a'}],'agent:overflow-a')},primaries:[primaryFixture({epoch:716})],roster:[agentFixture('overflow-a')]});host.viewport=700;app.toggleSidebar(true);selectionSaves.length=0;byId('sidebar-conversations').querySelector('[data-tab-key="agent:overflow-a"]')?.click();await settle();assert.equal(app.drawerOpen,false);assert.equal(byId('sidebar').hidden,true);assert.equal(app.state.workspace?.sidebarVisible,true);assert.equal(selectionSaves.some(save=>save.body.sidebarVisible!==undefined),false);host.viewport=1200;
 });
 
 test('the desktop transition restores the hidden-sidebar preference and a visible focus target', async () => {
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', sidebarVisible: false, selectedTarget: {kind: 'primary', key: 'p', epoch: 1}}, primaries: [primaryFixture()], roster: []});
-  host.viewport = 760; app.toggleSidebar(true); assert.equal(hostDocument.activeElement?.id, 'project-button');
+  host.viewport = 700; app.toggleSidebar(true); assert.equal(hostDocument.activeElement?.id, 'project-button');
   const sidebar = byId('sidebar'); const project = byId('project-button'), parent = project.parentNode, sibling = project.nextSibling; assert.ok(parent); sidebar.append(project);
   host.viewport = 1100; app.renderNavigation(); assert.equal(app.drawerOpen, false); assert.equal(byId('sidebar').hidden, true); assert.equal(app.state.workspace?.sidebarVisible, false);
   assert.equal(hostDocument.activeElement, byId('sidebar-show')); parent.insertBefore(project, sibling); host.viewport = 1200;

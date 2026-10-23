@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
+import { PERSISTENT_SIDEBAR_MIN_WIDTH } from './layout-breakpoints.ts';
 const css = await readFile(new URL('./style.css', import.meta.url), 'utf8');
 const html = await readFile(new URL('./index.html', import.meta.url), 'utf8');
 function rule(selector: string): string {
@@ -272,7 +273,7 @@ test('off-pane Message roots pass header pointers through while the original com
   assert.match(rule('.conversation[data-message-only=true] > :not(.composer)'), /display: none/);
 });
 test('the narrow drawer covers transcripts while only its projected Message writer crosses the drawer layer', () => {
-  const narrow = media('@media (max-width:899px)');
+  const narrow = media('@media (max-width:743px)');
   assert.match(narrow, /\.app\.drawer-open \.workbench > \.sidebar \{[^}]*z-index: 10;/);
   assert.match(narrow, /\.app\.drawer-open \.stable-views \{ z-index: auto; \}/);
   assert.doesNotMatch(narrow, /\.app\.drawer-open \.stable-views \{[^}]*z-index: \d/);
@@ -748,9 +749,9 @@ test('the desktop Message panel stays outside the sidebar section flow and the r
   assert.match(rule('.agent-message-panel'), /flex: none;/);
 });
 test('responsive, short, coarse, reduced-motion and forced-color paths remain', () => {
-  for (const width of [899, 599]) assert.ok(css.includes(`${width}px`));
+  for (const width of [743, 599]) assert.ok(css.includes(`${width}px`));
   assert.match(css, /\.app\.drawer-open \.workbench > \.sidebar/);
-  assert.match(media('@media (max-width:899px)'), /\.sidebar > \.resizer \{ display: none; \}/);
+  assert.match(media('@media (max-width:743px)'), /\.sidebar > \.resizer \{ display: none; \}/);
   assert.ok(media('@media (max-height:599px)').includes('.sidebar-scroll > :is(.roster-section, .files-section) { min-height: 28px; }'));
   const coarse = media('@media (pointer:coarse)');
   assert.match(coarse, /\.icon-button \{ min-height: 44px; min-width: 44px; \}/);
@@ -1117,7 +1118,7 @@ test('the visible sidebar leads with its panel toggle at the same inset and inhe
   assert.match(rule('.sidebar-close'), /display: inline-flex/);
   assert.match(rule('.nav-top'), /padding: 0 var\(--s2\) 0 var\(--s2\)/); assert.match(rule('.navigation-access'), /padding: 0 var\(--s2\)/);
   assert.match(html, /id="sidebar-close" class="icon-button sidebar-close"[^>]+aria-label="Hide sidebar"/);
-  assert.match(media('@media (max-width:899px)'), /\.sidebar-close \{ display: inline-flex/);
+  assert.match(media('@media (max-width:743px)'), /\.sidebar-close \{ display: inline-flex/);
   assert.match(rule('.icon-button'), /width: 24px; height: 24px/);
   assert.match(media('@media (pointer:coarse)'), /min-height: 44px; min-width: 44px/);
 });
@@ -1457,4 +1458,9 @@ test('the final coarse-pointer block wins over the density rules and restores 44
   }
   for (const needle of ['.sidebar .agent-row > .row-message', '.sidebar .conversation-row', '.sidebar .nav-row']) assert.ok(before.includes(needle), `${needle} density rule exists before the block`);
   assert.match(rule('.sidebar .nav-row, .sidebar .sidebar-action'), /height: 30px/);
+});
+
+test('the drawer media query and the persistent sidebar constant name the same width', () => {
+  assert.ok(css.includes(`@media (max-width:${PERSISTENT_SIDEBAR_MIN_WIDTH - 1}px) {`));
+  assert.equal(css.includes('@media (max-width:899px)'), false);
 });

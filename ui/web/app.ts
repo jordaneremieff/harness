@@ -1,4 +1,5 @@
 import type { AgentHistoryPage, AgentRow, Bootstrap, EntryView, EventData, HistoryPage, OperationView, PrimaryView, PresentationView, ProjectedFrame, SavedSession, SessionTab, Snapshot, Target, TargetState, ThreadOverview, ThreadPageView, Workspace, WorkspacePage } from '../shared/api.ts';
+import { persistentSidebarQuery } from './layout-breakpoints.ts';
 import { toolArgumentText } from './format.ts';
 import { draftHasContent, draftImageFingerprint, LIMITS, resolveAppearance, validSessionTab } from '../shared/api.ts';
 import { Actions } from './actions.ts';
@@ -520,7 +521,6 @@ function openToolFile(destination:FileReferenceDestination):void {
   closeToolFile(false);const captured:ToolFilePane={context:deskContext(),rootId:destination.rootId,stamp:JSON.stringify(base.root),id:companion.id,focus:companion.id,layout:companion.layout};
   toolFilePane=captured;toolFileReader.closeLabel(companion.overPrimary?'Back to Primary':'Close');toolFileReader.open(workspace.id,destination,()=>toolFileCurrent(captured));renderNavigation();
 }
-export /** A narrow touch screen reads files: Markdown opens rendered, and the source tab remains one tap away. */
 /** Touch screens: the visible height (not the layout height) drives the shell, so the composer sits above the on-screen keyboard. */
 function installViewportSync():void {
   const viewport = window.visualViewport; if (!viewport || typeof matchMedia !== 'function' || !matchMedia('(pointer:coarse)').matches) return;
@@ -533,8 +533,9 @@ function installViewportSync():void {
   };
   viewport.addEventListener('resize', sync); viewport.addEventListener('scroll', sync); sync();
 }
+/** A narrow touch screen reads files: Markdown opens rendered, and the source tab remains one tap away. */
 function phoneScreen():boolean {return typeof matchMedia==='function'&&matchMedia('(pointer:coarse) and (max-width:599px)').matches;}
-function chooseFile(rootId:string,path:string,focus = true):void {
+export function chooseFile(rootId:string,path:string,focus = true):void {
   if (!state.workspace) return;leaveOverlayDesk();
   try {applyLayout(fileBrowse.choose(currentLayout(),{kind:'file',rootId,path,...(markdownPath(path)&&phoneScreen()?{view:'preview' as const}:{})},key=> {const tab = paneLeaves(currentLayout().root).flatMap(pane=>pane.tabs).find(tab=>tabKey(tab) === key);if (tab?.kind !== 'file') return false;const owner = filesViews.owner(state.workspace?.id ?? '',tab);return !!owner && (owner.loading || owner.modified || owner.unsaved);}));if (focus) focusEditor();} catch (error) {showError(error);}
 }
@@ -1447,7 +1448,7 @@ function selection(change: SelectionChange): Promise<void> {
     catch (error) { return Promise.reject(error); }
   }
   if (change.selectedTarget !== undefined) { drawerOpen = false; tabStrip.requestReveal(); }
-  if (change.sidebarVisible !== undefined && !matchMedia('(min-width: 900px)').matches) {
+  if (change.sidebarVisible !== undefined && !matchMedia(persistentSidebarQuery).matches) {
     drawerOpen = change.sidebarVisible; const {sidebarVisible: _visible, ...rest} = change; change = rest; renderNavigation(); roster.schedule();
     if (!Object.keys(change).length) return Promise.resolve();
   }
@@ -1773,7 +1774,7 @@ function renderAll(): void {
   primaryDraftSelection?.refresh();
 }
 export function renderNavigation(): void {
-  const narrow = !matchMedia('(min-width: 900px)').matches;
+  const narrow = !matchMedia(persistentSidebarQuery).matches;
   const drawerClosed = !narrow && drawerOpen;
   if (!narrow) drawerOpen = false;
   const {sidebarVisible: visible, agentSelected} = navigationState(state.workspace ? workspaceEntry.view(state.workspace,primaryTarget()) : undefined, narrow, drawerOpen);
@@ -1819,7 +1820,7 @@ function renderSessionEntry(hasTab: boolean): void {
 }
 function focusEditor(): void {if(sessionReadPane){sessionReader.focus();return;}if(threadPane?.paneId===currentLayout().focusedPane){threadReader.focus();return;}const selected=layoutTarget(currentLayout(),primaryTarget());const owner=selected&&state.workspace?controllers.get(controllerKey(state.workspace.id,selected)):undefined;if(owner&&threadHost===owner){threadReader.focus();return;}if(owner?.inspection?.active){owner.inspection.scroller.focus({preventScroll:true});return;}const tab = activeTab(currentLayout());if (tab?.kind === 'file' && state.workspace) {filesViews.view(state.workspace,tab).focus();return;}const target = layoutTarget(currentLayout(), primaryTarget()); if (target) conversationController(target).composer.focus(); }
 export function toggleSidebar(visible: boolean): void {
-  if (!matchMedia('(min-width: 900px)').matches) {
+  if (!matchMedia(persistentSidebarQuery).matches) {
     drawerOpen = visible; renderNavigation(); roster.schedule(); byId(visible ? 'project-button' : 'sidebar-show').focus(); return;
   }
   const applied = selection({sidebarVisible: visible});
@@ -3379,7 +3380,7 @@ function bind(): void {
 
   byId('agent-message-close').addEventListener('click', () => closeMessagePanel());
   byId('primary-row').addEventListener('click', selectPrimary);
-  byId('sidebar-show').addEventListener('click', () => toggleSidebar(matchMedia('(min-width: 900px)').matches ? byId('sidebar').hidden : !drawerOpen));
+  byId('sidebar-show').addEventListener('click', () => toggleSidebar(matchMedia(persistentSidebarQuery).matches ? byId('sidebar').hidden : !drawerOpen));
   byId('sidebar-close').addEventListener('click', () => toggleSidebar(false));
 
   document.addEventListener('pointerdown', dismissDrawerPointer, true);

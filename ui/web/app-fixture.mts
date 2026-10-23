@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { PERSISTENT_SIDEBAR_MIN_WIDTH, persistentSidebarQuery } from './layout-breakpoints.ts';
 import { readFile } from 'node:fs/promises';
 import {after} from 'node:test';
 import type { AgentRow, ConversationLayout, ConversationTab, EntryView, MessageView, OperationView, PartView, PrimaryView, ProjectedFrame, Snapshot, Target, TargetState, Workspace } from '../shared/api.ts';
@@ -389,7 +390,7 @@ class HostResizeObserver {
 function installHost(): void {
   Object.assign(globalThis, {
     document: hostDocument, HTMLElement: HostNode, Node: {ELEMENT_NODE: 1, TEXT_NODE: 3, DOCUMENT_FRAGMENT_NODE: 11}, window: view, location: {href: 'http://ui.test/app?workspace=w', hash: ''},
-    history: {replaceState() {}}, sessionStorage: hostSessionStorage, indexedDB:new ReloadStorageFactory(), matchMedia: (query: string) => ({matches: query === '(min-width: 900px)' && host.viewport >= 900 || query === '(max-width: 599px)' && host.viewport < 600, addEventListener() {}, removeEventListener() {}}),
+    history: {replaceState() {}}, sessionStorage: hostSessionStorage, indexedDB:new ReloadStorageFactory(), matchMedia: (query: string) => ({matches: query === persistentSidebarQuery && host.viewport >= PERSISTENT_SIDEBAR_MIN_WIDTH || query === '(max-width: 599px)' && host.viewport < 600, addEventListener() {}, removeEventListener() {}}),
     getComputedStyle: view.getComputedStyle, requestAnimationFrame: hostRequestAnimationFrame, cancelAnimationFrame: hostCancelAnimationFrame,
     ResizeObserver: HostResizeObserver,
     MutationObserver: class {observe(): void {} disconnect(): void {}},

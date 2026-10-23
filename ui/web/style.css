@@ -1428,7 +1428,7 @@ dialog[data-variant=menu]::backdrop { background: transparent; }
   .workspace, .stable-views { --gutter: 14px; }
   .workbench { grid-template-columns: var(--sidebar-width,280px) minmax(0,1fr); }
 }
-@media (max-width:899px) {
+@media (max-width:743px) {
   .workbench { grid-template-columns: minmax(0,1fr); }
   .sidebar { display: none; }
   .sidebar > .resizer { display: none; }
