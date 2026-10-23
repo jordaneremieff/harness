@@ -18,7 +18,7 @@ import { basename, isAbsolute, join, resolve } from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { findMarkdownHeading, markdownHeadings } from "./headings.ts";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import { memoryRoot, SLUG } from "./store.ts";
+import { memoryRoot, redactCredentials, SLUG } from "./store.ts";
 import { historyDirectory, revisionIdentity } from "./history.ts";
 import { sourceFreshness } from "./lifecycle.ts";
 
@@ -142,7 +142,7 @@ export type HistoryOptions = { slug: string; cursor?: string; limit?: number; pl
 export class MemoryRetrievalError extends Error {
 	readonly code: "input" | "corpus" | "changed" | "aborted";
 	constructor(message: string, code: "input" | "corpus" | "changed" | "aborted") {
-		super(bounded(message, MAX_ERROR_CHARS));
+		super(bounded(redactCredentials(message), MAX_ERROR_CHARS));
 		this.name = "MemoryRetrievalError";
 		this.code = code;
 	}

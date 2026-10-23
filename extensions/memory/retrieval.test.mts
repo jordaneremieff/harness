@@ -905,6 +905,33 @@ test("retrieval refusals name unknown options and rejected subjects without writ
 	assert.equal(readFileSync(join(root, "README.md"), "utf8"), README);
 });
 
+test("retrieval errors redact credential-shaped keys and subjects before clipping", async () => {
+	const root = corpus({ "README.md": README, "good.md": ACTIVE });
+	const before = readdirSync(root).sort();
+	const token = `sk-${"x".repeat(24)}`;
+	const revision = newRevision("a".repeat(64));
+	const operations = [
+		() => searchMemory(root, { [token]: true } as SearchOptions),
+		() => readMemory(root, { slug: "good", [token]: true } as ReadOptions),
+		() => historyMemory(root, { slug: "good", [token]: true } as Parameters<typeof historyMemory>[1]),
+		() => readMemory(root, { slug: `${token}.md` }),
+		() => readMemory(root, { slug: `${token}/bad` }),
+		() => historyMemory(root, { slug: `${token}/bad` }),
+		() => readMemory(root, { slug: token }),
+		() => readMemory(root, { slug: token, revision }),
+		() => searchMemory(root, { [`${"z".repeat(470)} ${token}`]: true } as SearchOptions),
+	];
+	for (const operation of operations) await assert.rejects(operation(), (error) => {
+		assert.ok(error instanceof MemoryRetrievalError);
+		assert.ok(!error.message.includes(token));
+		assert.ok(!error.message.includes("sk-"));
+		assert.ok(error.message.length <= 500);
+		return true;
+	});
+	assert.deepEqual(readdirSync(root).sort(), before);
+	assert.equal(readFileSync(join(root, "good.md"), "utf8"), ACTIVE);
+});
+
 test("stays read-only for browse, search, source reads, and missing notes", async () => {
 	const root = corpus({ "README.md": README, "good.md": ACTIVE });
 	const before = readdirSync(root).sort();

@@ -205,14 +205,32 @@ function checkCredentials(payload: string, location = "resulting note"): void {
 		);
 }
 
+const PRIVATE_KEY_MARKER = /-----BEGIN [A-Z ]*PRIVATE KEY-----/i;
+const CREDENTIAL_TOKEN = /\b(?:sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[A-Z0-9]{16})\b/i;
+
 function credentialFamily(payload: string): string | undefined {
-	return /-----BEGIN [A-Z ]*PRIVATE KEY-----/i.test(payload)
+	return PRIVATE_KEY_MARKER.test(payload)
 		? "private-key marker"
-		: /\b(?:sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[A-Z0-9]{16})\b/i.test(
-					payload,
-				)
-			? "recognized token prefix"
-			: undefined;
+		: CREDENTIAL_TOKEN.test(payload) ? "recognized token prefix" : undefined;
+}
+
+/** Error text shares the writer's recognised credential formats, before any output clipping. */
+export function redactCredentials(value: string): string {
+	if (PRIVATE_KEY_MARKER.test(value)) return "[redacted credential material]";
+	return value.replace(new RegExp(CREDENTIAL_TOKEN.source, "gi"), "[redacted]");
+}
+
+/** Validation occurs before corpus access, so its refusal always has zero publications. */
+function preflight(subject: unknown, validate: () => void): void {
+	try {
+		validate();
+	} catch (error) {
+		const slug = typeof subject === "string" ? redactCredentials(subject).slice(0, 120) : "[invalid subject]";
+		throw new MemoryWriteError({
+			ok: false, slug, file: `${slug}.md`, written: [], notWritten: [], captured: [], historyOmitted: [], initialized: false,
+			error: redactCredentials(error instanceof Error ? error.message : "Invalid mutation input"),
+		});
+	}
 }
 
 /** Open the inode itself, not a link target, and bound the read before allocation. */
@@ -602,8 +620,11 @@ export function editMemory(
 	signal?: AbortSignal,
 	hooks: WriteHooks = {},
 ): WriteReceipt {
-	memoryRoot(rootValue);
-	validateEdit(input);
+	preflight(input?.slug, () => {
+		memoryRoot(rootValue);
+		validateEdit(input);
+		checkAbort(signal);
+	});
 	return mutate(rootValue, input.slug, (root) => planEdit(root, input, signal), signal, hooks);
 }
 
@@ -666,14 +687,17 @@ export function reviewMemory(
 	signal?: AbortSignal,
 	hooks: WriteHooks = {},
 ): WriteReceipt {
-	memoryRoot(rootValue);
-	validateReviewIdentity(input);
-	validateReviewSelection(input, true);
-	if (input.outcome !== "confirmed" && input.outcome !== "unresolved") throw new Error("Invalid review outcome");
-	if (input.outcome === "unresolved") text(input.reason, "reason", 600);
-	else if (input.reason !== undefined) throw new Error("reason applies only to an unresolved review");
-	if (input.reactivate !== undefined && (input.reactivate !== true || input.outcome !== "confirmed"))
-		throw new Error("Reactivation requires an explicit confirmed review");
+	preflight(input?.slug, () => {
+		memoryRoot(rootValue);
+		validateReviewIdentity(input);
+		validateReviewSelection(input, true);
+		if (input.outcome !== "confirmed" && input.outcome !== "unresolved") throw new Error("Invalid review outcome");
+		if (input.outcome === "unresolved") text(input.reason, "reason", 600);
+		else if (input.reason !== undefined) throw new Error("reason applies only to an unresolved review");
+		if (input.reactivate !== undefined && (input.reactivate !== true || input.outcome !== "confirmed"))
+			throw new Error("Reactivation requires an explicit confirmed review");
+		checkAbort(signal);
+	});
 	return mutate(
 		rootValue,
 		input.slug,
@@ -689,9 +713,12 @@ export function retireMemory(
 	signal?: AbortSignal,
 	hooks: WriteHooks = {},
 ): WriteReceipt {
-	memoryRoot(rootValue);
-	validateReviewIdentity(input);
-	text(input.reason, "reason", 600);
+	preflight(input?.slug, () => {
+		memoryRoot(rootValue);
+		validateReviewIdentity(input);
+		text(input.reason, "reason", 600);
+		checkAbort(signal);
+	});
 	return mutate(
 		rootValue,
 		input.slug,
@@ -756,9 +783,11 @@ export function writeMemory(
 	signal?: AbortSignal,
 	hooks: WriteHooks = {},
 ): WriteReceipt {
-	memoryRoot(rootValue);
-	validate(input);
-	checkAbort(signal);
+	preflight(input?.slug, () => {
+		memoryRoot(rootValue);
+		validate(input);
+		checkAbort(signal);
+	});
 	try {
 		mkdirSync(rootValue, { recursive: true, mode: 0o700 });
 	} catch (error) {

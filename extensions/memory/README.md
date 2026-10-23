@@ -638,11 +638,14 @@ files manually. A PID alone does not prove stale ownership. Malformed or empty l
 also refuse with this recovery instruction; no hidden unrecoverable state exists.
 Search ignores these hidden artifacts. The extension never reclaims locks by age.
 
-Retrieval refusals name unknown option keys and rejected subject slugs. Missing
-note refusals include the note filename and the search recovery step.
+Retrieval refusals name unknown option keys and rejected subject slugs. The writer's
+recognised credential formats are redacted before error clipping, including in
+rejected keys and subjects. Missing note refusals include the note filename and
+the search recovery step.
 
 Write errors distinguish zero live publications, partial live publication, and
-completed live publication with cleanup failure. The receipt retains exact
+completed live publication with cleanup failure. All mutation entrypoints use the
+zero-publication receipt for preflight validation refusals, before corpus access. The receipt retains exact
 `written` and `notWritten` files. Zero live publications does not imply zero
 history captures; inspect `captured` separately.
 

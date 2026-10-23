@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import { editMemory, type MemoryWrite, MemoryWriteError, memoryRoot, sourceDigest, writeMemory } from "./store.ts";
+import { editMemory, type MemoryWrite, MemoryWriteError, memoryRoot, reviewMemory, retireMemory, sourceDigest, writeMemory } from "./store.ts";
 
 function corpus(t: { after(fn: () => void): void }): string {
 	const root = mkdtempSync(join(tmpdir(), "memory-store-"));
@@ -308,6 +308,37 @@ test("a publication failure reports exactly committed and remaining files", (t) 
 	});
 	assert.equal(metadata(root, "old-b").status, "superseded");
 });
+test("every mutation reports preflight refusals without corpus access", (t) => {
+	const root = corpus(t);
+	const first = writeMemory(root, note());
+	const expectedDigest = first.digest as string;
+	const before = new Map(readdirSync(root).map((file) => [file, readFileSync(join(root, file), "utf8")]));
+	const token = `sk-${"x".repeat(24)}`;
+	const operations = [
+		() => writeMemory(root, { ...note(), summary: "" }),
+		() => editMemory(root, { slug: "editor-choice", expectedDigest: "bad", verified: true, edits: [{ oldText: "a", newText: "b" }] }),
+		() => reviewMemory(root, { slug: "editor-choice", expectedDigest, outcome: "confirmed", reason: "Not applicable", sources: "Synthetic source" }),
+		() => retireMemory(root, { slug: "editor-choice", expectedDigest, reason: "", sources: "Synthetic source" }),
+		() => writeMemory(root, { ...note(), slug: token }),
+		() => editMemory(root, { slug: token, expectedDigest, verified: true, edits: [{ oldText: "a", newText: "b" }] }),
+		() => reviewMemory(root, { slug: token, expectedDigest, outcome: "confirmed", sources: "Synthetic source" }),
+		() => retireMemory(root, { slug: token, expectedDigest, reason: "Withdraw", sources: "Synthetic source" }),
+	];
+	for (const operation of operations) {
+		const error = failure(operation);
+		assert.ok(error.message.startsWith("Memory write stopped; no live files were written: "));
+		assert.deepEqual(error.receipt.written, []);
+		assert.deepEqual(error.receipt.notWritten, []);
+		assert.deepEqual(error.receipt.captured, []);
+		assert.deepEqual(error.receipt.historyOmitted, []);
+		assert.equal(error.receipt.initialized, false);
+		assert.ok(!error.message.includes(token));
+		assert.ok(!JSON.stringify(error.receipt).includes(token));
+		assert.deepEqual(readdirSync(root).sort(), [...before.keys()].sort());
+		for (const [file, source] of before) assert.equal(readFileSync(join(root, file), "utf8"), source);
+	}
+});
+
 test("body validation refusal reports zero live writes and preserves every source", (t) => {
 	const root = corpus(t);
 	const first = writeMemory(root, note());
