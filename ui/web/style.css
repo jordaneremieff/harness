@@ -1674,7 +1674,7 @@ button.thread-person:hover, button.thread-sender:hover { background: var(--raise
 .sidebar .roster-footer { padding: 0; }
 .sidebar-content-row[data-unread=true] > .row-title::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: var(--s2); border-radius: 50%; background: var(--accent); vertical-align: middle; }
 .footer-label { display: none; }
-.sidebar-footer { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: var(--s1); }
+.sidebar-footer { display: grid; grid-template-columns: repeat(3,auto); justify-content: space-between; gap: var(--s1); }
 .sidebar-footer > .icon-button { width: auto; min-width: 0; gap: 2px; font-size: var(--fs-meta); }
 .sidebar-footer .footer-label { display: inline; white-space: nowrap; }
 .sidebar-footer #notices-count { display: none; }
