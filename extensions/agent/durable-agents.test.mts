@@ -562,6 +562,27 @@ it("describes normal follow-up timing and active await release in both tool regi
 	}
 });
 
+it("states the handle requirement in both spawn role schemas and preserves the refusal", async (t) => {
+	const ordinary: { name: string; parameters: { properties: Record<string, { description?: string }> } }[] = [];
+	registerAgentExtension({ events: { on: () => () => {}, emit() {} }, on() {}, registerTool(tool: typeof ordinary[number]) { ordinary.push(tool); }, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {} } as unknown as ExtensionAPI);
+	const { extension, registry } = buildRegistry();
+	for (const tools of [ordinary, extension.tools ?? []]) {
+		const spawn = tools.find((tool) => tool.name === "agent_spawn");
+		assert.ok(spawn);
+		const schema = spawn.parameters as { properties: Record<string, { description?: string }> };
+		assert.equal(schema.properties.role.description, "Requires handle. Durable role text for the created agent; without a handle, omit role and use agent_profile for another agent.");
+	}
+	const route = createRoute();
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	t.after(() => harness.close(context));
+	route.script.push({ tool: "agent_spawn", args: { role: "Review source" } });
+	await say(root, "Create a role without a handle");
+	const result = (await toolOutcomes(harness, root.id)).find((outcome) => outcome.name === "agent_spawn");
+	assert.equal(result?.isError, true);
+	assert.equal(result?.text, "A creation role requires a handle; use agent_profile for another agent");
+	assert.equal((await harness.snapshot(TestChildren, root.id, context))?.children.length ?? 0, 0);
+});
+
 it("accepts every shared thinking level in native spawn, configure, and attach schemas", () => {
 	const { extension } = buildRegistry();
 	for (const name of ["agent_spawn", "agent_configure", "agent_attach"]) {

@@ -69,6 +69,11 @@ An ordinary primary remains responsive and receives normal routed results.
 | `agent_inspect` | Read bounded native entries, activity, branches, literal search, or retained results; ordinary targets support raw latest-retained activity/history. |
 | `agent_collaborate` | Discover, create, read, join, leave, post to, revise, or close a shared peer thread. Joining subscribes to passive notices; only explicit `notify` recipients get a model wake. |
 
+A spawn `role` requires a `handle`; omit `role` for an unnamed creation and
+use `agent_profile` to set another agent's role. A busy configuration refusal
+names the canonical target identity and preserves a supplied handle. Repeat
+`agent_configure` after that target's current work ends.
+
 Each `agent_list` call collects one bounded catalog batch before it observes
 hosts. Continuations retain both the native page position and the last visited
 catalog filename. Catalog discovery sorts filenames and resumes strictly after
@@ -846,6 +851,10 @@ elapsed; activity `elapsedMs` remains qualified tool-call-entry age. Neither
 quantity replaces recorded execution time. See the
 [host timing contract](../../docs/agent-host-contract.md#current-operation-identities)
 for fields and current schema identities.
+
+Search continuations require the complete returned `nextCursor` object unchanged,
+including `cursor`, `skip`, and `scannedBytes`. An incomplete or malformed object
+is refused rather than restarting the search.
 
 Continue incomplete pages even without matches. Provider signatures, image
 payloads, and redacted thinking stay omitted with markers and counts on raw

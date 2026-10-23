@@ -351,7 +351,10 @@ const SpawnParams = Type.Object(
 	{
 		handle: Type.Optional(HandleSchema),
 		preset: PresetParameter,
-		role: Type.Optional(Type.String({ maxLength: 2000 })),
+		role: Type.Optional(Type.String({
+			maxLength: 2000,
+			description: "Requires handle. Durable role text for the created agent; without a handle, omit role and use agent_profile for another agent.",
+		})),
 		prompt: Type.Optional(
 			Type.String({ description: "Initial assignment for the agent. Without one the agent stays idle." }),
 		),

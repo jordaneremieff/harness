@@ -197,8 +197,8 @@ export const AgentForkDoc = defineDoc<AgentForkState>({
 /** One conversation cannot accept a configuration change while it is running. */
 export class DurableConversationBusyError extends Error {
 	readonly conversationId: ConversationId;
-	constructor(conversationId: ConversationId) {
-		super(`conversation ${conversationId} is busy; configuration requires an idle conversation`);
+	constructor(conversationId: ConversationId, sessionId: string) {
+		super(`conversation ${sessionId} is busy; configuration requires an idle conversation. After its current work ends, repeat agent_configure with sessionId: ${sessionId}`);
 		this.name = "DurableConversationBusyError";
 		this.conversationId = conversationId;
 	}
@@ -566,9 +566,9 @@ export function conversationIsIdle(inspection: HarnessInspection, conversationId
 	return !liveTask && !waiting;
 }
 
-export async function assertConversationIdle(harness: Harness, conversationId: ConversationId, context: Context): Promise<void> {
+export async function assertConversationIdle(harness: Harness, conversationId: ConversationId, context: Context, sessionId: string): Promise<void> {
 	const inspection = await harness.inspect(context);
-	if (!conversationIsIdle(inspection, conversationId)) throw new DurableConversationBusyError(conversationId);
+	if (!conversationIsIdle(inspection, conversationId)) throw new DurableConversationBusyError(conversationId, sessionId);
 }
 
 export interface DurableForkOptions {
@@ -915,7 +915,7 @@ export async function configureConversation(
 	params: DurableConfigureParams,
 	context: Context,
 ): Promise<ConfigurationResult> {
-	await assertConversationIdle(harness, conversation.id, context);
+	await assertConversationIdle(harness, conversation.id, context, options.sessionId);
 	const patch = configurationPatch(params);
 	const before = await readConfigurationState(harness, conversation, context);
 	const fileExists = options.storagePath !== undefined && existsSync(options.storagePath);

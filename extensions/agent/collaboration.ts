@@ -80,12 +80,12 @@ const CollaborationMutations = defineDocFamily<StoredMutation, null>({ kind: "ag
 function text(input: Record<string, unknown>, key: string, max: number, optional = false): string {
 	const value = input[key];
 	if (value === undefined && optional) return "";
-	if (typeof value !== "string" || value.trim() === "") throw new Error(`${key} is required and must be nonblank text`);
-	if (value.length > max) throw new Error(`${key} exceeds the maximum length of ${max} characters`);
+	if (typeof value !== "string" || value.trim() === "") throw new Error(`${key} is required and must be nonblank text${key === "title" ? "; supply title as nonblank text in the create or revise call" : ""}`);
+	if (value.length > max) throw new Error(`${key} exceeds the maximum length of ${max} characters${key === "title" ? "; shorten title to at most 160 characters and repeat the call" : ""}`);
 	return value;
 }
 export function collaborationIdentity(value: unknown, field: string): string {
-	const requirement = `${field} requires an exact discovered identity: a canonical lowercase UUID for a bare root, or UUID:positive nonroot conversation ID (a safe integer greater than ${ROOT_CONVERSATION_ID}); a root uses the bare storage ID`;
+	const requirement = `${field} requires an exact discovered identity: a canonical lowercase UUID for a bare root, or UUID:positive nonroot conversation ID (a safe integer greater than ${ROOT_CONVERSATION_ID}); a root uses the bare storage ID${field === "integrator" ? ". Call agent_list and copy the discovered identity into integrator; omit integrator to use the caller" : ""}`;
 	if (typeof value !== "string" || !ID.test(value)) throw new Error(requirement);
 	const suffix = value.split(":")[1];
 	if (suffix !== undefined && (!Number.isSafeInteger(Number(suffix)) || Number(suffix) <= ROOT_CONVERSATION_ID)) throw new Error(requirement);
@@ -141,13 +141,13 @@ function joinThread(thread: CollaborationThread, input: Record<string, unknown>,
 	const member = thread.members.find((item) => item.identity === actor);
 	if (member) member.contribution = contribution;
 	else {
-		if (thread.members.length >= MAX_MEMBERS) throw new Error("The thread reached its participant bound");
+		if (thread.members.length >= MAX_MEMBERS) throw new Error("The thread reached its participant bound; call agent_collaborate with action: create and sessionId set to a discovered Durable agent to start another thread");
 		thread.members.push({ identity: actor, contribution, joinedAt: now });
 	}
 	return text(input, "message", 8000, true) || contribution || "Joined the thread.";
 }
 function reviseThread(thread: CollaborationThread, input: Record<string, unknown>, actor: string, origin: string): string {
-	if (actor !== thread.creator && actor !== thread.integrator && origin !== "operator") throw new Error("Only the creator, integrator or operator revises the governing frame; post a proposal instead");
+	if (actor !== thread.creator && actor !== thread.integrator && origin !== "operator") throw new Error(`Only the creator, integrator or operator revises the governing frame; call agent_collaborate with action: post, threadId: ${thread.id}, and message containing your proposal`);
 	Object.assign(thread, frame(input, actor)); thread.revision += 1;
 	return JSON.stringify(frame(input, actor));
 }
@@ -170,7 +170,7 @@ function applyThreadAction(thread: CollaborationThread, input: Record<string, un
 }
 function requireParticipation(thread: CollaborationThread, action: string, actor: string, origin: string): void {
 	if (["create", "join"].includes(action) || origin === "operator") return;
-	if (!thread.members.some((item) => item.identity === actor)) throw new Error("Join the thread before changing it");
+	if (!thread.members.some((item) => item.identity === actor)) throw new Error(`Join the thread before changing it; call agent_collaborate with action: join and threadId: ${thread.id}, then repeat action: ${action}`);
 }
 function replyReference(input: Record<string, unknown>, sequence: number): number | null {
 	const replyTo = input.replyTo ?? null;
@@ -204,7 +204,7 @@ export async function mutateCollaboration(harness: Harness, storageId: string, i
 		}
 		const thread = stored.thread;
 		if (thread === null) throw new Error("Thread not found; repeat discovery or check threadId");
-		if (thread.closed) throw new Error("This thread is closed; read its retained exchange or create a new thread");
+		if (thread.closed) throw new Error(`This thread is closed; call agent_collaborate with action: read and threadId: ${id} to read it, or action: create and sessionId: ${storageId} to start another thread`);
 		requireParticipation(thread, action, actor, origin);
 		const content = applyThreadAction(thread, input, action, actor, origin, now);
 		const replyTo = replyReference(input, thread.sequence);

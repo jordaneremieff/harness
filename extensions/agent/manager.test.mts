@@ -1464,6 +1464,29 @@ for (const operation of ["submit", "task-submit"] as const) it(`preserves explic
 	}
 });
 
+it("preserves the resolved identity and supplied handle on configure refusals", async (t) => {
+	const root = fixtureRoot(t);
+	const manager = new AgentManager(managerOptions(root, {
+		acquire: async (metadata) => fakeConnection(metadata, async () => { throw new Error(`conversation ${metadata.storageId} is busy; configuration requires an idle conversation`); }),
+	}));
+	t.after(() => manager.close());
+	const created = manager.catalog.createHandled({ cwd: root, agentDir: root, packageDir: root, model: { provider: "acme", modelId: "model-x" }, thinkingLevel: "off" }, "reviewer", "Review source");
+	await assert.rejects(manager.control("configure", { sessionId: "@reviewer", name: "Review" }, { id: "caller", cwd: root }), {
+		message: `Configure of ${created.record.storageId} (@reviewer) failed: conversation ${created.record.storageId} is busy; configuration requires an idle conversation`,
+	});
+});
+
+it("names a Durable target recovery when collaboration targets an ordinary primary", async (t) => {
+	const root = fixtureRoot(t);
+	const manager = new AgentManager(managerOptions(root));
+	t.after(() => manager.close());
+	const id = randomUUID();
+	await manager.registerPrimary(id, { signal: new AbortController().signal, cwd: root, send() {} });
+	await assert.rejects(manager.collaborate({ action: "create", sessionId: id }, { id: randomUUID(), cwd: root }), {
+		message: "A registered primary accepts messages, not Durable session controls; call agent_list, then repeat agent_collaborate with sessionId set to a discovered Durable agent identity, not this primary",
+	});
+});
+
 it("returns a compact status snapshot from a mutation instead of the full status", async (t) => {
 	const root = fixtureRoot(t);
 	const fullStatus = {

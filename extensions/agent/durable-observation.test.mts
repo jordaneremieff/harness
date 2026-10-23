@@ -280,6 +280,16 @@ it("continues history, search, and exact reads from a cold snapshot", async (t) 
 		assert.ok(firstMatch);
 		assert.match(firstMatch.excerpt, /needle/u);
 		assert.ok(search.nextCursor !== null, "a bounded search returns a continuation");
+		const cursorError = { message: "Invalid search cursor; pass the complete nextCursor object unchanged as cursor, including cursor, skip, and scannedBytes" };
+		for (const cursor of [null, [], 1, "cursor", {}, { after: 1 }, { cursor: null }, { cursor: null, skip: 0 },
+			{ cursor: null, skip: 33, scannedBytes: 0 },
+			{ cursor: null, skip: -1, scannedBytes: 0 }, { cursor: null, skip: 0.5, scannedBytes: 0 },
+			{ cursor: null, skip: "0", scannedBytes: 0 }, { cursor: null, skip: 0, scannedBytes: -1 },
+			{ cursor: null, skip: 0, scannedBytes: "0" }, { cursor: {}, skip: 0, scannedBytes: 0 },
+			{ cursor: { after: "1" }, skip: 0, scannedBytes: 0 }, { cursor: { after: 1, order: "bad" }, skip: 0, scannedBytes: 0 },
+			{ ...(search.nextCursor as object), extra: true }]) {
+			await assert.rejects(observation.request("inspect", { view: "search", query: "needle", limit: 1, cursor }), cursorError);
+		}
 		const more = (await observation.request("inspect", { view: "search", query: "needle", limit: 5, cursor: search.nextCursor })) as { matches: readonly { entryId: number }[] };
 		assert.ok(!more.matches.some((match) => match.entryId === firstMatch.entryId), "the search continuation does not repeat matches");
 

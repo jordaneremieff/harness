@@ -501,7 +501,15 @@ export class AgentManager {
 			this.recoveryErrors.delete(record.storageId);
 			this.failures.delete(record.storageId);
 		}
-		return this.controlClient(await this.connection(record), method, params, caller);
+		return this.selectedControl(record, method, params, caller, selector);
+	}
+
+	private async selectedControl(record: CatalogRecord, method: string, params: Record<string, unknown>, caller: AgentCaller, selector: string): Promise<unknown> {
+		try { return await this.controlClient(await this.connection(record), method, params, caller); }
+		catch (error) {
+			if (method !== "configure" || !selector.startsWith("@")) throw error;
+			throw new Error(`Configure of ${String(params.sessionId)} (${selector}) failed: ${errorText(error)}`, { cause: error });
+		}
 	}
 
 	private requestedOperation(method: string, params: Record<string, unknown>): string {
@@ -553,6 +561,7 @@ export class AgentManager {
 
 	private async primaryControl(method: string, input: Record<string, unknown>, sessionId: string, caller: AgentCaller): Promise<unknown> {
 		if (method === "status" || method === "inspect") return this.observePrimary(sessionId, method === "status" ? { view: "status" } : input);
+		if (method === "collaboration-mutate") throw new Error("A registered primary accepts messages, not Durable session controls; call agent_list, then repeat agent_collaborate with sessionId set to a discovered Durable agent identity, not this primary");
 		return this.primaryMessage(method, input, sessionId, caller);
 	}
 
@@ -748,7 +757,7 @@ export class AgentManager {
 			let resolved = value;
 			if (typeof value === "string" && value.startsWith("@")) {
 				try { resolved = await this.resolveTarget(value); }
-				catch (error) { throw new Error(`${field}: handle resolution failed: ${errorText(error)}`); }
+				catch (error) { throw new Error(`${field}: handle resolution failed: ${errorText(error)}. Call agent_list and copy a discovered identity into ${field}${field === "integrator" ? "; omit integrator to use the caller" : ""}`); }
 			}
 			return collaborationIdentity(resolved, field);
 		};

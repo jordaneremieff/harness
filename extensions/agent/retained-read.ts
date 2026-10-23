@@ -109,7 +109,7 @@ function parseParams(method: ReadRequest["method"], value: unknown, storageId: s
 			inspectNumbers(value);
 			inspectTextAndCursor(value);
 			inspectSelectors(value);
-			parseInspectParams(value);
+			try { parseInspectParams(value); } catch (error) { throw retainedRequestError(error); }
 		}
 	}
 	return value;
@@ -201,7 +201,11 @@ function collaborationResult(request: ReadRequest, result: unknown): unknown {
 }
 
 function retainedRequestError(error: unknown): unknown {
-	if (error instanceof InspectionRequestError) return new RetainedReadError("invalid_request");
+	if (error instanceof InspectionRequestError) {
+		const failure = new RetainedReadError("invalid_request");
+		failure.message = error.message;
+		return failure;
+	}
 	if (error instanceof CollaborationReadError) {
 		const failure = new RetainedReadError(error.code);
 		if (error.code === "not_found") failure.message = "The retained thread does not exist.";

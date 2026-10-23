@@ -396,7 +396,9 @@ it("configures an idle conversation and refuses a busy one", async (t) => {
 
 		const submitted = await host.submit({ message: "busy now", requestId: "config-busy" });
 		await started.promise;
-		await assert.rejects(host.request("configure", { name: "too soon" }), /busy/u);
+		await assert.rejects(host.request("configure", { name: "too soon" }), {
+			message: `conversation ${fixtureStorageId} is busy; configuration requires an idle conversation. After its current work ends, repeat agent_configure with sessionId: ${fixtureStorageId}`,
+		});
 		release.resolve();
 		await wait(host, submitted.submissionId);
 		await host.request("configure", { name: "after idle" });

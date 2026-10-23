@@ -517,7 +517,8 @@ export function parseInspectParams(params: RequestParams | undefined): DurableIn
 	if (requestId === "") throw new TypeError("requestId must be nonempty");
 	const source = requestString(params, "source");
 	const cursor = params?.cursor;
-	if (cursor !== undefined && (typeof cursor !== "object" || cursor === null || Array.isArray(cursor))) throw new TypeError("cursor must be an object");
+	if (view === "search") searchCursor(cursor);
+	else if (cursor !== undefined && (typeof cursor !== "object" || cursor === null || Array.isArray(cursor))) throw new TypeError("cursor must be an object");
 	return {
 		...optionalParam("view", view as DurableInspectParams["view"] | undefined),
 		...optionalParam("limit", requestInteger(params, "limit")),
@@ -1433,8 +1434,19 @@ function scanSearchPage(
 	return { scannedEntries, scannedBytes, resume: null };
 }
 
+function searchCursor(value: unknown): SearchCursor | null {
+	if (value === undefined) return null;
+	const fail = (): never => { throw new InspectionRequestError("Invalid search cursor; pass the complete nextCursor object unchanged as cursor, including cursor, skip, and scannedBytes"); };
+	if (value === null || typeof value !== "object" || Array.isArray(value)) return fail();
+	const prior = value as Record<string, unknown>;
+	if (Object.keys(prior).length !== 3 || !Object.hasOwn(prior, "cursor") || !Number.isSafeInteger(prior.skip) || Number(prior.skip) < 0 || Number(prior.skip) > 32 || !Number.isSafeInteger(prior.scannedBytes) || Number(prior.scannedBytes) < 0) return fail();
+	const cursor = prior.cursor;
+	if (cursor !== null && (typeof cursor !== "object" || Array.isArray(cursor) || !Number.isSafeInteger((cursor as Cursor).after) || ((cursor as Cursor).order !== undefined && (cursor as Cursor).order !== "ascending" && (cursor as Cursor).order !== "descending"))) return fail();
+	return prior as unknown as SearchCursor;
+}
+
 async function scanSearch(conversation: Conversation, params: DurableInspectParams, query: string, maxMatches: number, context: Context): Promise<SearchScan> {
-	const prior = (params.cursor ?? null) as SearchCursor | null;
+	const prior = searchCursor(params.cursor);
 	let cursor: Cursor | undefined = prior?.cursor ?? undefined;
 	let skip = prior?.skip ?? 0;
 	let scannedBytes = 0;

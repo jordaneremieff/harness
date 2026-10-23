@@ -246,6 +246,40 @@ it("retains a shared frame and deduplicates the same mutation without any model 
 	assert.equal(page.thread.integrator, actor);
 });
 
+it("names recovery calls for participation, full threads, closed threads, titles, and integrators", async (t) => {
+	const f = await fixture(t);
+	for (const [index, title] of [undefined, " ", "x".repeat(161)].entries()) {
+		const message = index === 2
+			? "title exceeds the maximum length of 160 characters; shorten title to at most 160 characters and repeat the call"
+			: "title is required and must be nonblank text; supply title as nonblank text in the create or revise call";
+		await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, mutation("create", `bad-title-${index}`, { ...frame, title }), context), { message });
+	}
+	assert.throws(() => collaborationIdentity("name", "integrator"), /Call agent_list and copy the discovered identity into integrator; omit integrator to use the caller/u);
+	const created = await mutateCollaboration(f.host.harness, f.storageId, mutation("create", "create", frame), context);
+	const threadId = created.threadId;
+	for (const action of ["post", "leave", "revise", "close"]) {
+		await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, mutation(action, `not-joined-${action}`, { ...frame, threadId, senderIdentity: peer, message: "Proposal" }), context), {
+			message: `Join the thread before changing it; call agent_collaborate with action: join and threadId: ${threadId}, then repeat action: ${action}`,
+		});
+	}
+	await mutateCollaboration(f.host.harness, f.storageId, mutation("join", "join", { threadId, senderIdentity: peer }), context);
+	await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, mutation("revise", "not-integrator", { ...frame, threadId, senderIdentity: peer }), context), {
+		message: `Only the creator, integrator or operator revises the governing frame; call agent_collaborate with action: post, threadId: ${threadId}, and message containing your proposal`,
+	});
+	await f.host.harness.commit(async (tx) => {
+		const stored = await tx.doc(CollaborationThreads, threadId, null);
+		assert.ok(stored.thread);
+		stored.thread.members = Array.from({ length: 64 }, (_, index) => ({ identity: index === 0 ? actor : `${actor}:${index + 1}`, contribution: "", joinedAt: 1 }));
+	}, context);
+	await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, mutation("join", "full", { threadId, senderIdentity: peer }), context), {
+		message: "The thread reached its participant bound; call agent_collaborate with action: create and sessionId set to a discovered Durable agent to start another thread",
+	});
+	await mutateCollaboration(f.host.harness, f.storageId, mutation("close", "close", { threadId, message: "Done" }), context);
+	await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, mutation("join", "closed", { threadId, senderIdentity: peer }), context), {
+		message: `This thread is closed; call agent_collaborate with action: read and threadId: ${threadId} to read it, or action: create and sessionId: ${f.storageId} to start another thread`,
+	});
+});
+
 it("keeps request IDs distinct across peer storages and permits self-chosen contribution changes", async (t) => {
 	const f = await fixture(t);
 	const created = await mutateCollaboration(f.host.harness, f.storageId, mutation("create", "same-task", frame), context);

@@ -123,6 +123,18 @@ it("validates identity, exact contracts, and parameters before retained I/O", as
 	assert.equal(reads, 0);
 });
 
+it("rejects incomplete search cursors before retained I/O and preserves their recovery text", async () => {
+	let reads = 0;
+	const hooks = { readCatalog: () => { reads++; throw new Error("Must not read"); } };
+	for (const cursor of [{}, { after: 1 }, { cursor: null, skip: 0 }, { cursor: {}, skip: 0, scannedBytes: 0 }]) {
+		const response = await retainedRead(bytes(request("/synthetic/store", storageId, "inspect", { view: "search", query: "needle", cursor })), undefined, hooks);
+		failure(response, "invalid_request");
+		if (response.ok) throw new Error("Expected invalid cursor");
+		assert.equal(response.error.message, "Invalid search cursor; pass the complete nextCursor object unchanged as cursor, including cursor, skip, and scannedBytes");
+	}
+	assert.equal(reads, 0);
+});
+
 it("bounds and correlates errors for JSON, request, output, deadline, cancellation, and internal failures", async () => {
 	failure(await retainedRead(Buffer.from("{bad")), "invalid_request");
 	failure(await retainedRead(Buffer.from(`${JSON.stringify(request())} {}`)), "invalid_request");
