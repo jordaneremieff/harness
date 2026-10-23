@@ -1074,6 +1074,9 @@ function updateConversationStatus(target: Target | undefined, view: Conversation
   activity.dataset.busy = String(!notice && view.busy); activity.dataset.tone = view.tone;
   activity.setAttribute('role', 'status');
 }
+function messageEditorFocused():boolean {
+  return !!footerController && messageTarget.current?.identity === (footerController.target.kind === 'agent' ? footerController.target.identity : undefined) && footerController.elements.root.contains(document.activeElement);
+}
 function renderWorkbenchStatus(): void {
   releaseNotice.refresh();
   byId('files-refresh').hidden = !fileWatch.status;
@@ -1082,12 +1085,13 @@ function renderWorkbenchStatus(): void {
   byId('workbench-activity').dataset.notice = String(!!notice);
   const retained = byId<HTMLButtonElement>('file-retained-drafts');retained.hidden = !filesViews.retained().length;setText(retained,'Review retained draft');retained.onclick = reviewRetainedDrafts;
   const tab = activeTab(currentLayout());
-  if (threadPane?.paneId === currentLayout().focusedPane && threadReader.active) {
+  const editingMessage = messageEditorFocused();
+  if (!editingMessage && threadPane?.paneId === currentLayout().focusedPane && threadReader.active) {
     workbenchStatus.update('agent', threadReader.active.title || 'Thread', 'Thread', threadReader.active.id);
     byId('focused-composer-status').hidden = true; return;
   }
   byId('focused-composer-status').hidden = false;
-  const editingMessage = footerController && messageTarget.current?.identity === (footerController.target.kind === 'agent' ? footerController.target.identity : undefined) && footerController.elements.root.contains(document.activeElement);
+  if (tab?.kind === 'session' && !editingMessage) {renderSessionWorkbenchStatus(tab);return;}
   if (tab?.kind === 'file' && !editingMessage) {renderFileWorkbenchStatus(tab);return;}
   const selected = layoutTarget(currentLayout(), primaryTarget()) ?? undefined;
   const target = editingMessage ? footerController?.target : selected;
@@ -1110,7 +1114,7 @@ function reviewRetainedDrafts():void {
   modal.actions(button('Close',()=>modal.close()));first?.focus();first?.setSelectionRange(0,first.value.length);
 }
 function skipKind(controller:ConversationController|undefined):'message'|'actions' {return !controller||(controller.target.kind==='primary'&&controller.elements.root.hidden)?'actions':'message';}
-const skipLabels={message:'Skip to message box',actions:'Skip to session actions',files:'Skip to files'} as const;
+const skipLabels={message:'Skip to message box',actions:'Skip to session actions',files:'Skip to files',session:'Skip to session'} as const;
 function setSkipLink(kind:keyof typeof skipLabels,href:string):void {const skip=byId<HTMLAnchorElement>('skip-composer');skip.href=href;skip.dataset.skip=kind;skip.textContent=skipLabels[kind];}
 function goToMessageBox():void {
   const selected=layoutTarget(currentLayout(),primaryTarget());
@@ -1120,9 +1124,18 @@ function goToMessageBox():void {
 }
 function skipToSurface():void {
   const kind=byId('skip-composer').dataset.skip;
+  if(kind==='session'){activeSessionReader()?.focus();return;}
   if(kind==='files'){const stop=document.querySelector<HTMLElement>('#files-tree [tabindex="0"], #files-tree button');if(stop){stop.focus();return;}}
   else if(skipKind(footerController)==='actions'){const first=footerController?.sessionBar?.node.querySelector<HTMLElement>('button:not([disabled]), a[href], [tabindex="0"]');if(first){first.focus();return;}byId('session-new').focus();return;}
   focusEditor();
+}
+function renderSessionWorkbenchStatus(tab:SessionTab):void {
+  const reader = activeSessionReader(), view = reader?.viewState(), activity = byId('workbench-activity');
+  footerController = undefined;
+  workbenchStatus.update('session', reader?.saved ? sessionLabel(reader.saved) : tabLabel(tab), view?.terminal ? 'Live in terminal' : view?.word ? `${view.word.charAt(0).toUpperCase()}${view.word.slice(1)}` : '', tab.path);
+  activity.dataset.busy = 'false'; activity.dataset.tone = 'secondary'; activity.dataset.notice = 'false'; activity.setAttribute('role', 'status');
+  const slot = byId('focused-composer-status'); slot.replaceChildren(); slot.hidden = true;
+  setSkipLink('session', '#conversation-panes');
 }
 function renderFileWorkbenchStatus(tab:FileTab):void {
   footerController = undefined;byId('workbench-activity').dataset.busy = 'false';const owner = state.workspace && filesViews.owner(state.workspace.id,tab);workbenchStatus.update('file',tab.path,fileActionStatus || owner?.status || fileWatch.status,tab.path);
@@ -1330,7 +1343,7 @@ function activeSessionReader():SessionReader|undefined {
 function sessionTabReader(workspace:string,tab:SessionTab):SessionReader {
   const key=`${workspace}\n${tabKey(tab)}`,known=sessionTabReaders.get(key);if(known)return known;
   const tabId=tabKey(tab);
-  const reader=new SessionReader({embedded:true,primaryDraft:primaryDraftActions,primaries:()=>currentSnapshot()?.primaries,focus:()=>{},close:()=>{},resume:resumeTabSource,view:view=>persistSessionView(workspace,tabId,view),state:()=>{if(state.workspace?.id===workspace&&sessionTabReaders.get(key)===reader)tabStrip.render();}});
+  const reader=new SessionReader({embedded:true,primaryDraft:primaryDraftActions,primaries:()=>currentSnapshot()?.primaries,focus:()=>renderWorkbenchStatus(),close:()=>{},resume:resumeTabSource,view:view=>persistSessionView(workspace,tabId,view),state:()=>{if(state.workspace?.id===workspace&&sessionTabReaders.get(key)===reader){tabStrip.render();renderWorkbenchStatus();}}});
   sessionTabReaders.set(key,reader);reader.openTab({saved:sessionTabSaved(tab)},readSessionView(tab.view));return reader;
 }
 function placeSessionTab(host:HTMLElement,tab:ConversationTab|undefined):boolean {
@@ -1822,7 +1835,7 @@ function renderSessionEntry(hasTab: boolean): void {
   const chooser = byId('session-chooser'); chooser.hidden = !firstUse;
   if (firstUse && snapshot) picker.mount(chooser, projectPath()); else picker.unmount();
 }
-function focusEditor(): void {if(sessionReadPane){sessionReader.focus();return;}if(threadPane?.paneId===currentLayout().focusedPane){threadReader.focus();return;}const selected=layoutTarget(currentLayout(),primaryTarget());const owner=selected&&state.workspace?controllers.get(controllerKey(state.workspace.id,selected)):undefined;if(owner&&threadHost===owner){threadReader.focus();return;}if(owner?.inspection?.active){owner.inspection.scroller.focus({preventScroll:true});return;}const tab = activeTab(currentLayout());if (tab?.kind === 'file' && state.workspace) {filesViews.view(state.workspace,tab).focus();return;}const target = layoutTarget(currentLayout(), primaryTarget()); if (target) conversationController(target).composer.focus(); }
+function focusEditor(): void {if(sessionReadPane){sessionReader.focus();return;}if(threadPane?.paneId===currentLayout().focusedPane){threadReader.focus();return;}const savedReader=activeSessionReader();if(savedReader){savedReader.focus();return;}const selected=layoutTarget(currentLayout(),primaryTarget());const owner=selected&&state.workspace?controllers.get(controllerKey(state.workspace.id,selected)):undefined;if(owner&&threadHost===owner){threadReader.focus();return;}if(owner?.inspection?.active){owner.inspection.scroller.focus({preventScroll:true});return;}const tab = activeTab(currentLayout());if (tab?.kind === 'file' && state.workspace) {filesViews.view(state.workspace,tab).focus();return;}const target = layoutTarget(currentLayout(), primaryTarget()); if (target) conversationController(target).composer.focus(); }
 export function toggleSidebar(visible: boolean): void {
   if (!matchMedia(persistentSidebarQuery).matches) {
     drawerOpen = visible; renderNavigation(); roster.schedule(); byId(visible ? 'project-button' : 'sidebar-show').focus(); return;

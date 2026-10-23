@@ -1,6 +1,6 @@
 import {byId, element, setText} from './dom.ts';
 
-type Pane = 'primary' | 'agent' | 'file';
+type Pane = 'primary' | 'agent' | 'file' | 'session';
 const geometryProperties = ['height', 'min-height', 'max-height', 'overflow-x', 'overflow-y'] as const;
 type GeometryHold = {pointerId: number; styles: {name: string; value: string; priority: string}[]; frame?: number};
 /** Focus changes only status text and visibility, never editor or control ownership. */

@@ -114,6 +114,19 @@ test('status disclosures and tooltips retain the current exact name and activity
   assert.equal(nodes.get('workbench-scope')?.textContent,'Exact agent');assert.equal(nodes.get('workbench-scope')?.title,'Exact agent\nexact-agent');assert.equal(nodes.get('workbench-activity')?.textContent,'Not connected');assert.equal(nodes.get('workbench-activity')?.title,'Not connected');assert.equal(nodes.get('workbench-activity')?.attributes.get('aria-label'),'Not connected');
   status.update('primary','Primary','Ready');assert.equal(nodes.get('primary-status-summary')?.textContent,'Primary · Ready');
 });
+test('saved session scope hides both usage groups and restores the next conversation group', t => {
+  const {status, footer, nodes} = fixture(t);
+  status.update('primary', 'Primary', 'Ready');
+  status.update('session', 'Retained session', 'Live in terminal', '/fixture/retained.jsonl');
+  assert.equal(footer.dataset.pane, 'session');assert.equal(nodes.get('workbench-scope')?.textContent, 'Retained session');
+  assert.equal(nodes.get('workbench-activity')?.textContent, 'Live in terminal');
+  for (const owner of ['primary', 'agent']) assert.equal(nodes.get(`workbench-status-${owner}`)?.hidden, true);
+  status.update('agent', 'Recipient', 'Ready');
+  assert.equal(nodes.get('workbench-status-primary')?.hidden, true);assert.equal(nodes.get('workbench-status-agent')?.hidden, false);
+  status.update('primary', 'Primary', 'Ready');
+  assert.equal(nodes.get('workbench-status-primary')?.hidden, false);assert.equal(nodes.get('workbench-status-agent')?.hidden, true);
+});
+
 test('hidden or invalid footer geometry creates no hold or cleanup frame', t => {
   const {footer, document, frames, fire, press} = fixture(t);
   for (const height of [0, -1, NaN, Infinity]) {footer.height = height; press(); assert.equal(footer.declarations.size, 0);}
