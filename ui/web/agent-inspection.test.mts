@@ -3,6 +3,7 @@ import test from 'node:test';
 import type {AgentInspectionView, InspectRequest, InspectionCheckpoint} from '../shared/inspection.ts';
 import {createAppFixture, type HostNode} from './app-fixture.mts';
 import {AgentInspection} from './agent-inspection.ts';
+import type {ConversationTask} from './conversation-tasks.ts';
 const {settle}=await createAppFixture();
 const identity='00000000-0000-4000-8000-000000000001:2';
 function fixture(read:(input:InspectRequest,signal:AbortSignal)=>Promise<AgentInspectionView>,restore?:InspectionCheckpoint){
@@ -29,6 +30,21 @@ test('an unavailable result keeps its native reason without inventing selector I
 });
 test('wrong target and contradictory result selectors are explicit read failures',async()=>{
   const f=fixture(async()=>({view:'result',identity:'another',readAt:'now',status:'done',submissionId:99,usage:{value:{},truncated:false}}));f.inspection.open('result',{submissionId:3});f.inspection.visibility(true);await settle();assert.match(f.inspection.node.textContent??'',/answer target changed/);f.inspection.destroy();
+});
+for(const source of ['local','historical'] as const)test(`long ${source} task subjects retain their full input behind a compact row`,async()=>{
+  const subject='Review the current task presentation. '.repeat(60),input={text:subject,complete:true,redacted:false};
+  const local:ConversationTask={key:'task',entryId:'17',subject,state:'recorded',input};
+  const inspection=new AgentInspection(identity,{
+    read:async()=>({view:'history',identity,readAt:'now',entries:[{id:17,kind:'message',source:'user',text:{text:subject,shortened:false,protected:false},truncated:false,calls:[],callsOmitted:0,tools:[]}],nextCursor:null,detail:{text:'',shortened:false,protected:false}}),
+    history:source==='historical',tasks:()=>source==='local'?[local]:[],current:()=>true,changed:()=>{},restore:()=>null,save:()=>{},
+  });
+  inspection.open('result');inspection.visibility(true);await settle();
+  const node=inspection.node as unknown as HostNode,row=node.querySelector('.task-select');assert.ok(row);
+  assert.equal(row.textContent,`${subject.slice(0,80)} · recorded input`);assert.equal(row.title,subject);
+  row.click();await settle();
+  const text=node.querySelector('.task-text');assert.ok(text);assert.equal(text.textContent,subject);assert.equal(text.dataset.open,'false');
+  click(inspection,'Show more');assert.equal(text.dataset.open,'true');assert.equal(text.textContent,subject);
+  assert.equal(row.textContent,`${subject.slice(0,80)} · recorded input`);inspection.destroy();
 });
 test('the task list names itself, returns to the conversation, and says what its empty lists searched',async()=>{
   let returned=0;const calls:InspectRequest[]=[];

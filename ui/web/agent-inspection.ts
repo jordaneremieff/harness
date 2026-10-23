@@ -195,7 +195,7 @@ export class AgentInspection {
   private taskRow(row:ConversationTask):HTMLElement{
     const result=row.reference?this.answers.get(referenceKey(row.reference)):undefined;
     const state=taskState(row,result),cached=this.taskNodes.get(row.key)??this.createTaskNode(row);
-    cached.row=row;const sender=this.taskSenderName(row);setText(cached.select,[sender,row.subject,state].filter(Boolean).join(' · '));cached.select.dataset.state=state;cached.select.setAttribute('aria-expanded',String(this.selected===row.key));
+    cached.row=row;const sender=this.taskSenderName(row);setText(cached.select,[sender,row.subject.slice(0,80),state].filter(Boolean).join(' · '));cached.select.title=row.subject;cached.select.dataset.state=state;cached.select.setAttribute('aria-expanded',String(this.selected===row.key));
     const item=cached.body;item.hidden=this.selected!==row.key;
     const currentAnswer=taskAnswer(row,result),inputKey=JSON.stringify(row.input);
     if(cached.open===(this.selected===row.key)&&cached.answerText===currentAnswer?.text&&cached.inputKey===inputKey&&cached.result===result&&cached.reason===row.reason)return cached.node;
