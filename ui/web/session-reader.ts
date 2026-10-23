@@ -25,7 +25,7 @@ export function sameSessionView(a:SessionView|undefined,b:SessionView|undefined)
 }
 type Hooks={primaryDraft?:PrimaryDraftActions;primaries?:()=>readonly PrimaryView[]|undefined;focus:()=>void;close:()=>void;resume:(source:SessionReadSource)=>void;
   /** A saved session tab supplies its own title and close control, and reports its reading position. */
-  embedded?:boolean;view?:(view:SessionView)=>void};
+  embedded?:boolean;view?:(view:SessionView)=>void;state?:()=>void};
 /** A read-only view has no conversation target, writer or composer. A saved session tab keeps only its reading position in the layout. */
 export class SessionReader {
   readonly node=element('section','session-reader');
@@ -131,11 +131,15 @@ export class SessionReader {
   }
   focus():void {this.scroller.focus({preventScroll:true});}
   refreshState():void {this.paintHeader();}
+  refreshWriter(released:readonly string[]):void {
+    if(!this.source?.saved||!released.includes(this.source.saved.id))return;
+    this.controller?.abort();this.reading=false;void this.read(false);
+  }
   private bindSessionBar(source:SessionReadSource):void {
     if(this.barSource===source)return;
     this.sessionBar.node.remove();this.sessionBar=new SessionStateBar();this.barSource=source;this.node.append(this.sessionBar.node);
   }
-  private viewState():SessionState {return readSessionState(this.source&&'primary' in this.source?this.source.primary:undefined,this.source?.saved,this.hooks.primaries?.());}
+  viewState():SessionState {return this.loaded?readSessionState(this.source&&'primary' in this.source?this.source.primary:undefined,this.source?.saved,this.hooks.primaries?.()):{};}
   private resumeCurrent():void {
     const source=this.source,view=this.viewState();
     if(!source||!this.loaded||this.reading||view.terminal||this.node.closest('[hidden],[inert]'))return;
@@ -151,7 +155,7 @@ export class SessionReader {
     this.heading.title=[saved?.id??primary?.sessionId,primary?`Primary ${primary.key}`:'',saved?.path??primary?.sessionFile,folder].filter(Boolean).join('\n');
     this.resume.hidden=!this.loaded||!!view.terminal||view.primary?.lifecycle!=='ready';this.resume.disabled=this.reading;
     const current=()=>{const next=this.viewState();return this.source===source&&this.loaded&&!this.reading&&next.word===view.word&&next.terminal===view.terminal&&next.path===view.path&&next.project===view.project&&next.primary?.key===view.primary?.key&&next.primary?.epoch===view.primary?.epoch;};
-    this.sessionBar.update(this.loaded||view.terminal?view:{},current,()=>this.resumeCurrent(),!this.reading);
+    this.sessionBar.update(view,current,()=>this.resumeCurrent(),!this.reading);this.hooks.state?.();
   }
   private async read(earlier:boolean):Promise<void>{
     const source=this.source;if(!source||this.reading)return;

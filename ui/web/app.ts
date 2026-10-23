@@ -468,7 +468,7 @@ const tabStrip = new TabStrip({layout: currentLayout, reopen: () => workspaceEnt
   draft: tab => { const target = controllerTarget(tab), workspace = state.workspace?.id; if (!target || !workspace) return false; const index = [...state.targetIndex.values()].find(item => sameTarget(item.target, target)), saved = targetState(target); return controllers.get(controllerKey(workspace, target))?.composer.retained(workspace, target, index) ?? (!!index?.hasDraft || (!!saved && draftHasContent(saved.draft))); },
   identity: tab => tab.kind !== 'file' && tab.kind !== 'session' ? tabPresentation(tab).identityTail ?? '' : undefined,
   section: {collapsed: () => sidebarSections.tabs, toggle: () => setSidebarSection('tabs', !sidebarSections.tabs)},
-  status: tab => { if(tab.kind==='session'){const word=readSessionState(undefined,sessionTabSaved(tab),currentSnapshot()?.primaries).word;return {label:word?`${word.charAt(0).toUpperCase()}${word.slice(1)}`:'',glyph:'',tone:'secondary',word};} if (tab.kind === 'file') {const owner = state.workspace && filesViews.owner(state.workspace.id,tab);return {label:owner?.modified ? 'Modified' : '',glyph:owner?.modified ? '•' : '',tone:owner?.modified ? 'warning' : 'secondary'};}const view = tabPresentation(tab), attention = attentionFor(controllerTarget(tab)); return {label: [attention?.label, view.activity, view.tool?.name].filter(Boolean).join(' · '), rowLabel: attention?.label ?? view.activity, glyph: presentationGlyph(view), tone:view.tone, attention, word:tab.kind==='primary'?primarySessionState(primary()).word:undefined}; },
+  status: tab => { if(tab.kind==='session'){const word=state.workspace?sessionTabReaders.get(`${state.workspace.id}\n${tabKey(tab)}`)?.viewState().word:undefined;return {label:word?`${word.charAt(0).toUpperCase()}${word.slice(1)}`:'',glyph:'',tone:'secondary',word};} if (tab.kind === 'file') {const owner = state.workspace && filesViews.owner(state.workspace.id,tab);return {label:owner?.modified ? 'Modified' : '',glyph:owner?.modified ? '•' : '',tone:owner?.modified ? 'warning' : 'secondary'};}const view = tabPresentation(tab), attention = attentionFor(controllerTarget(tab)); return {label: [attention?.label, view.activity, view.tool?.name].filter(Boolean).join(' · '), rowLabel: attention?.label ?? view.activity, glyph: presentationGlyph(view), tone:view.tone, attention, word:tab.kind==='primary'?primarySessionState(primary()).word:undefined}; },
   overflow: (overflow, pane) => { const region = paneRegions.get(pane); if (region) region.menu.dataset.overflow = String(overflow); }},
   {panes: () => [...paneRegions].map(([id, pane]) => ({id, tabs: pane.tabs, controls: [...controllers.values()].find(owner => stableViews().slot(owner.root) === pane.content)?.root.id ?? pane.content.id})), conversations: byId('sidebar-conversations')});
 let fileActionStatus = '';
@@ -1330,7 +1330,7 @@ function activeSessionReader():SessionReader|undefined {
 function sessionTabReader(workspace:string,tab:SessionTab):SessionReader {
   const key=`${workspace}\n${tabKey(tab)}`,known=sessionTabReaders.get(key);if(known)return known;
   const tabId=tabKey(tab);
-  const reader=new SessionReader({embedded:true,primaryDraft:primaryDraftActions,primaries:()=>currentSnapshot()?.primaries,focus:()=>{},close:()=>{},resume:resumeTabSource,view:view=>persistSessionView(workspace,tabId,view)});
+  const reader=new SessionReader({embedded:true,primaryDraft:primaryDraftActions,primaries:()=>currentSnapshot()?.primaries,focus:()=>{},close:()=>{},resume:resumeTabSource,view:view=>persistSessionView(workspace,tabId,view),state:()=>{if(state.workspace?.id===workspace&&sessionTabReaders.get(key)===reader)tabStrip.render();}});
   sessionTabReaders.set(key,reader);reader.openTab({saved:sessionTabSaved(tab)},readSessionView(tab.view));return reader;
 }
 function placeSessionTab(host:HTMLElement,tab:ConversationTab|undefined):boolean {
@@ -1701,7 +1701,7 @@ function refreshFileConnection():void {void watchFiles(true);filesTree.refresh()
 function applyEvent(event: ReceivedEvent): void {
   const name = event.name;
   if (name === 'primary.delta' || name === 'primary.message' || name === 'primary.entry' || name === 'primary.tool') renderPrimaryEvent(event);
-  else if (name === 'primary.state') { renderPrimary(); extensionDialogs.update(); }
+  else if (name === 'primary.state') { renderPrimary(); refreshSessionStates(); extensionDialogs.update(); }
   else if (name === 'primary.recovery' || name === 'primary.queue') renderPrimary();
   else if (name === 'agent.frame') renderObservedAgent(event.envelope.data as EventData['agent.frame'], event.receivedAt);
   else if (name === 'agent.roster' || name === 'agent.availability') renderRosterEvent(event);
@@ -1711,7 +1711,10 @@ function applyShellEvent(event:ReceivedEvent):void {
   switch (event.name) {
     case 'workspace.changed': renderAll();void loadVisibleHistory();break;
     case 'files.changed': fileChanges(event.envelope.data as FileChanges,event.envelope.workspaceId);break;
-    case 'sessions.writers': picker.writersChanged();break;
+    case 'sessions.writers': {
+      picker.writersChanged();const {released}=event.envelope.data as EventData['sessions.writers'];
+      sessionReader.refreshWriter(released);for(const reader of sessionTabReaders.values())reader.refreshWriter(released);break;
+    }
     case 'draft.changed': updateDraft(event.envelope.data as EventData['draft.changed']);break;
     case 'operation.changed': showOperation(event.envelope.data as OperationView);break;
     case 'notice': {const notice = event.envelope.data as EventData['notice'];if (notice.code?.startsWith('control_')) {controlStatus = notice.message;controlStatusWorkspace = state.workspace?.id;renderWorkbenchStatus();}noticesBadge();break;}
@@ -1787,7 +1790,7 @@ export function renderNavigation(): void {
   placeWorkbenchControls(visible);
   const layout = toolFileLayout(); const tab = activeTab(layout);
   renderPaneTree(layout); renderSessionEntry(!!tab); byId('conversation-panes').hidden = !hasConversation() && !threadPane && !sessionReadPane;
-  tabStrip.render();if(sessionReadPane)sessionReader.refreshState();for(const reader of sessionTabReaders.values())reader.refreshState(); renderIdentity();
+  tabStrip.render();refreshSessionStates(); renderIdentity();
   byId('primary-row').hidden = !primary() || paneLeaves(layout.root).some(pane => pane.tabs.some(tab => tab.kind === 'primary'));
   byId('primary-section').hidden = false; byId('primary-section-body').hidden = false;
   byId('primary-row').setAttribute('aria-label', 'Return to Primary'); byId('primary-row').setAttribute('aria-current', agentSelected ? 'false' : 'page');
@@ -1795,6 +1798,7 @@ export function renderNavigation(): void {
   if (navigation.parentElement !== leading) leading.prepend(navigation);
   renderSidebarSections();renderFiles(); renderConnection();
 }
+function refreshSessionStates():void {if(sessionReadPane)sessionReader.refreshState();for(const reader of sessionTabReaders.values())reader.refreshState();}
 function renderWorkspaceAccess(): void {
   byId('appearance-button').hidden = !state.workspace;
   for(const id of ['project-button','compact-project-button']) {
