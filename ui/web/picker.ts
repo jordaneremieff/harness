@@ -8,7 +8,7 @@ import { duplicateIdentityTails } from './tabs.ts';
 import { absoluteTime, dayLabel, relativeTime } from './format.ts';
 import type { Modal } from './modal.ts';
 import { filterSessions, loadedPrimarySession, mergeSessions, mergeSessionTitles, savedPathValid, sessionCoverage, sessionEmptyMessage, sessionOwner, sessionSize, sessionLabel, type SessionList } from './picker-state.ts';
-import { operation, request, reserve } from './transport.ts';
+import { ApiError, operation, request, reserve } from './transport.ts';
 
 function pickerField(control: {label: HTMLLabelElement; field: HTMLElement}, visibleLabel = false): HTMLElement {
   control.field.className = 'picker-input';
@@ -75,7 +75,7 @@ function durableListDetails(roster?: CachedRoster): string {
 
 type Context = {snapshot(): Snapshot | undefined; primary(): PrimaryView | undefined; modal: Modal;
   agentPresentation(row: AgentRow): Pick<ConversationPresentation, 'name' | 'identityTail' | 'activity' | 'tone' | 'cwd' | 'hideVisibleState'>;
-  readSession(item:SavedSession):void;selection(change: SelectionChange): Promise<void>; reload(): Promise<void>; selectOpened?(): (key:string)=>Promise<void>; selectConverted?(): (identity:string)=>Promise<void>; project?(): string | undefined; projectsChanged?(): void; titlesChanged?(): void; workingFolder?(path:string):Promise<void>};
+  closeIdle?(primary:PrimaryView):Promise<void>;readSession(item:SavedSession):void;selection(change: SelectionChange): Promise<void>; reload(): Promise<void>; selectOpened?(): (key:string)=>Promise<void>; selectConverted?(): (identity:string)=>Promise<void>; project?(): string | undefined; projectsChanged?(): void; titlesChanged?(): void; workingFolder?(path:string):Promise<void>};
 
 const WRITER_ACTIVE = 'A terminal session is writing this file. Resume when it ends.';
 const WRITER_ENDED = 'Terminal ended';
@@ -131,8 +131,38 @@ export class ProjectPicker {
     const cwd = project ?? this.project();
     if (!cwd) { this.openProject(); return; }
     if (!this.inline) this.begin('Starting session');
-    void this.run(() => this.start(cwd));
+    void this.run(() => this.start(cwd), cause => this.creationError(cause,cwd));
   }
+  private creationError(cause:unknown,project:string):void {
+    if(!(cause instanceof ApiError)||cause.view.code!=='capacity'||cause.view.message!=='The primary capacity is full.'){this.error(cause);return;}
+    this.unmount();
+    const {body,token}=this.begin('Session limit reached'),workspace=this.ctx.snapshot()?.workspace.id;
+    const currentWorkspace=()=>this.ctx.snapshot()?.workspace.id===workspace,closeIdle=this.ctx.closeIdle;
+    const summary=element('p','error','The session limit is full. Close an idle session, then create a new session. Your saved conversations and drafts stay available.');summary.setAttribute('role','alert');
+    body.append(summary,details('Details',cause.message));
+    const idle=this.ctx.snapshot()?.primaries.filter(item=>this.idleClosable(item))??[];
+    if(closeIdle&&idle.length)for(const primary of idle){
+      const name=`${primary.sessionName||primary.extension?.title||this.projectName(primary.cwd)} · ${primary.key.slice(-4)}`;
+      body.append(button(`Close ${name}`,()=>{
+        if(!this.owns(token)||!currentWorkspace())return;
+        this.ctx.modal.confirm(`Close ${name}?`,'This closes the idle browser session. Its saved conversation and drafts remain available.',async()=>{
+          const confirmation=this.ctx.modal.token;
+          if(!currentWorkspace())throw new Error('The workspace changed. Choose the session again.');
+          await closeIdle(this.currentIdle(primary));
+          if(!this.ctx.modal.owns(confirmation)||!currentWorkspace())return;
+          this.begin('Session closed');this.ctx.modal.body.append(element('p',undefined,`${name} is closed. Its saved conversation and drafts remain available.`));
+          this.ctx.modal.actions(button('New session',()=>this.newSession(project)),button('Close',()=>this.ctx.modal.close()));
+        },'Close session');
+      },'nav-row'));
+    }else body.append(element('p','secondary','No idle session is available to close. Finish work in a session, then try again.'));
+    this.ctx.modal.actions(button('Cancel',()=>this.ctx.modal.close()),button('Try again',()=>this.newSession(project)));
+  }
+  private currentIdle(primary:PrimaryView):PrimaryView {
+    const current=this.ctx.snapshot()?.primaries.find(item=>item.key===primary.key&&item.epoch===primary.epoch);
+    if(!current||!this.idleClosable(current))throw new Error('This session is no longer idle. Choose another idle session.');
+    return current;
+  }
+  private idleClosable(primary:PrimaryView):boolean {return primary.lifecycle==='ready'&&primary.activity==='idle'&&!primary.pendingDialogs.length&&!primary.pendingOperationIds.length;}
   private project(): string | undefined { return this.ctx.project?.() ?? this.ctx.primary()?.cwd ?? (this.ctx.snapshot() as Bootstrap | undefined)?.launchCwd; }
   projectPaths(): string[] {
     const snapshot = this.ctx.snapshot();
@@ -148,6 +178,7 @@ export class ProjectPicker {
   private error(cause: unknown, message = 'The session did not open. Your project choice is unchanged.'): void {
     const text = cause instanceof Error ? cause.message : String(cause);
     if (writerRefused(cause)) message = WRITER_ACTIVE;
+    if(!this.inline){this.ctx.modal.error(cause,message);return;}
     const disclosure = details('Details', text); disclosure.className = 'picker-error-details';
     const summary = element('p', 'error', message); summary.hidden = !message; summary.setAttribute('role', 'alert');
     this.inlineError?.replaceChildren(summary, ...(cause === undefined ? [] : [disclosure]));
@@ -193,7 +224,7 @@ export class ProjectPicker {
     const projectDetails = element('details', 'picker-path');
     const folderSummary = element('summary', 'secondary', 'Working folder'); cardDisclosure(folderSummary);
     projectDetails.append(folderSummary, element('p', 'identity', project));
-    const buttons = [...(this.inline ? [] : [cardAction('folder', 'Change working folder', () => this.selectProject())]), cardAction('plus', 'New session', () => { void this.run(() => this.start(project)); })];
+    const buttons = [...(this.inline ? [] : [cardAction('folder', 'Change working folder', () => this.selectProject())]), cardAction('plus', 'New session', () => { void this.run(() => this.start(project),cause=>this.creationError(cause,project)); })];
     if (this.inline) { body.append(projectDetails); this.actions(...buttons); return; }
     const context = element('div', 'picker-context'), actions = element('div', 'picker-context-actions');
     actions.append(...buttons); context.append(projectDetails, actions); body.append(context);
@@ -567,7 +598,7 @@ export class ProjectPicker {
     const selected = this.ctx.selectOpened?.(),revision = this.revision,inline = !!this.inline;
     const result = await operation('primary.open', '/api/primaries', {cwd: project, ...(path !== undefined ? {sessionFile: path} : {})});
     const opened = result as unknown as {primaryKey?: string; operation?: OperationView};
-    if (opened.operation?.error) throw new Error(opened.operation.error.message);
+    if (opened.operation?.error) throw new ApiError(opened.operation.error);
     if (!opened.primaryKey) throw new Error('Pi did not open the primary. Your project choice stays unchanged.');
     await this.ctx.reload();
     // Refresh removes the first-use chooser when its returned session arrives.

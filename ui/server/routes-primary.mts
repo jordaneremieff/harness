@@ -1,4 +1,4 @@
-import type { DialogResponse, HandoffRequest, PrimaryControl, SessionAction, Target } from '../shared/api.ts';
+import type { DialogResponse, HandoffRequest, OperationKind, PrimaryControl, SessionAction, Target } from '../shared/api.ts';
 import type { Registry } from './registry.mts';
 import type { RequestContext } from './http.mts';
 import { ApiError } from './errors.mts';
@@ -18,11 +18,13 @@ export async function dispatchPrimary(registry: Registry, context: RequestContex
   const epoch = v.integer(body.epoch,'epoch'); const target: Target = {kind:'primary',key,epoch};
   const action = parts[3];
   if(action === 'inputs') return input(registry,context,workspace,target);
-  const kind = action === 'dialogs' ? 'primary.dialog' : action === 'stop' ? 'primary.stop' : action === 'session' ? 'primary.session' : action === 'handoff' ? 'primary.handoff' : 'primary.control';
+  const kind = mutationKind(action);
   validateMutation(action,body);
+  if(action==='close')registry.primary(key,epoch);
   return execute(registry,context.operationId,{workspaceId:workspace,kind,target,body},async()=> {
     const session = registry.primary(key,epoch,true); registry.queueWorkspaces.set(key,workspace); let result: unknown;
-    if(action === 'stop') result = await session.stop();
+    if(action === 'close') {await session.close(epoch);result={closed:true};}
+    else if(action === 'stop') result = await session.stop();
     else if(action === 'session') result = await transition(registry,session,key,body);
     else if(action === 'control') result = await control(session,body as PrimaryControl);
     else if(action === 'dialogs') { await session.respond(v.string(parts[4],'dialog ID'),body as DialogResponse); result={responded:true}; }
@@ -30,6 +32,16 @@ export async function dispatchPrimary(registry: Registry, context: RequestContex
     else throw new ApiError('invalid_request','The primary action does not exist.',404);
     return {state:'completed',receipt:{kind:'rpc',result:projectJson(result ?? null)}};
   });
+}
+function mutationKind(action:string|undefined):OperationKind {
+  switch(action){
+    case 'dialogs':return 'primary.dialog';
+    case 'stop':return 'primary.stop';
+    case 'session':return 'primary.session';
+    case 'handoff':return 'primary.handoff';
+    case 'close':return 'primary.close';
+    default:return 'primary.control';
+  }
 }
 async function transition(registry: Registry, session: ReturnType<Registry['primary']>, key: string, body: Record<string,unknown>) {
   let claimed: string | undefined;
@@ -127,7 +139,7 @@ async function input(registry: Registry, context: RequestContext, workspace: str
   });
 }
 function validateMutation(action: string | undefined,body: Record<string,unknown>) {
-  if(action==='stop') {v.fields(body,['epoch'],['epoch']);return;}
+  if(action==='stop'||action==='close') {v.fields(body,['epoch'],['epoch']);return;}
   if(action==='session') {validateSession(body);return;}
   if(action==='handoff') {v.fields(body,['epoch','mode','clearQueue'],['epoch','mode','clearQueue']);v.choice(body.mode,['settle','abort'],'handoff mode');v.boolean(body.clearQueue,'queue choice');return;}
   if(action==='dialogs') {v.fields(body,['epoch','value','confirmed','cancelled'],['epoch']); if(['value','confirmed','cancelled'].filter(key=>key in body).length!==1) throw new ApiError('invalid_request','The dialog response is invalid.');return;}

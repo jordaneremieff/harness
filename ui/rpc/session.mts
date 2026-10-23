@@ -501,13 +501,33 @@ export class PrimarySession {
     let timer:NodeJS.Timeout|undefined;
     return Promise.race([work,new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new RpcError('handoff_blocked','Primary shutdown exceeded its deadline; the writer remains owned.')),this.options.shutdownTimeoutMs??30000);})]).finally(()=>clearTimeout(timer));
   }
-  close():Promise<void> {
+  close(epoch?:number):Promise<void> {
+    if(epoch!==undefined){try{this.epoch(epoch);this.admit();this.requireIdleClose();}catch(error){return Promise.reject(error);}}
     if(this.identityQuarantined&&this.client.child&&!this.client.exited)return Promise.reject(new RpcError('handoff_blocked','The owned primary identity is unconfirmed; its writer remains owned.'));
     if(!this.shutdownWork){
-      const work=this.closeOnce().finally(async()=>{this.fileClosing??=this.fileHistory?.close();await this.fileClosing;});this.shutdownWork=work;
+      const work=(epoch===undefined?this.closeOnce():this.closeIdleOnce(epoch)).finally(async()=>{if(epoch===undefined||this.view.lifecycle!=='ready'){this.fileClosing??=this.fileHistory?.close();await this.fileClosing;}});this.shutdownWork=work;
       void work.catch(()=>{if(this.shutdownWork===work)this.shutdownWork=undefined;});
     }
     this.closing??=this.waitShutdown(this.shutdownWork).catch(error=>{this.closing=undefined;throw error;});return this.closing;
+  }
+  private requireIdleClose():void {
+    if(this.view.activity!=='idle'||this.view.retry||this.view.pendingDialogs.length||this.view.pendingOperationIds.length||this.client.pendingCount||this.queueRecoveryPending||this.imagePreparation||this.refreshing||this.attaching||this.modelChanges)
+      throw new RpcError('not_ready','Close requires an idle primary without pending work or dialogs.');
+  }
+  private async closeIdleOnce(epoch:number):Promise<void> {
+    this.frozen=true;
+    try {
+      const state=object(await this.client.request('get_state'));
+      this.epoch(epoch);
+      if(this.view.lifecycle!=='ready')throw new RpcError('not_ready','Primary lifecycle changed during close.');
+      if(!this.client.synchronized)throw new RpcError('not_ready','Primary state is not confirmed.');
+      this.requireIdleClose();
+      if(state.isStreaming!==false||state.isCompacting!==false||state.pendingMessageCount!==0)
+        throw new RpcError('not_ready','Close requires an idle primary with an empty queue.');
+      this.view.lifecycle='stopping';this.projection.state();
+      await this.client.close();
+      if(!this.client.exited||String(this.view.lifecycle)!=='stopped')throw new RpcError('handoff_blocked','RPC writer did not exit cleanly.');
+    } catch(error) {if(this.view.lifecycle==='ready'){this.frozen=false;this.recoverStream();}throw error;}
   }
   private async closeOnce(): Promise<void> {
     this.frozen = true; this.invalidatePreparation(); this.rejectStartup?.(new RpcError('not_ready', 'Primary is closed.'));

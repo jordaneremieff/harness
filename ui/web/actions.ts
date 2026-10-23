@@ -304,7 +304,7 @@ export class Actions {
       this.ctx.modelChanged?.();
     }
   }
-  private sessionPicker(): ProjectPicker { this.picker ??= new ProjectPicker(this.ctx); return this.picker; }
+  private sessionPicker(): ProjectPicker { this.picker ??= new ProjectPicker({...this.ctx,closeIdle:primary=>this.closeIdleSession(primary)}); return this.picker; }
   projectPicker(): void { this.sessionPicker().open(); }
   openProject(): void { this.sessionPicker().openProject(); }
   newSession(project?: string): void { this.ctx.newSession(project); }
@@ -466,6 +466,7 @@ export class Actions {
     const entries = [
       entry('New session', 'Create another session in the working folder', () => this.newSession(), true, 'new'),
       entry('Replace current session', 'Start fresh in this Primary without creating another Primary', () => this.replaceCurrentSession(), ready),
+      ...this.closeSessionEntries(primary,agent),
       entry('Sessions', 'Open retained session history', () => this.projectPicker(), true, 'resume'),
       ...this.conversionEntries(),
       ...this.ctx.handover ? [entry('Continue a handover', 'Pick up a handover in a browser session', this.ctx.handover)] : [],
@@ -524,7 +525,7 @@ export class Actions {
       }
     }
     const conversation = new Set(['Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Jump to message…', 'Previous own message', 'Next own message', 'Previous result', 'Next result', 'Previous post', 'Next post', 'Copy agent ID', 'Sent and received tasks', 'Close conversation tab']);
-    const primaryActions = new Set(['Replace current session', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Model', 'Thinking', 'Review message', 'Insert /agent new']);
+    const primaryActions = new Set(['Close session', 'Replace current session', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Model', 'Thinking', 'Review message', 'Insert /agent new']);
     const workspace = new Set(['New session', 'Sessions', 'Continue a handover', 'Saved drafts and messages', 'Appearance', 'Message input', 'Agent presentation control', 'Keyboard shortcuts', 'Help', 'Notifications', 'Refresh agents', 'Refresh files', 'Go to file…', 'Hide sidebar', 'Show sidebar', 'Projects', 'Next conversation tab', 'Previous conversation tab', 'Reopen closed tab']);
     const preferences = new Set(['Appearance','Message input','Agent presentation control','Hide sidebar','Show sidebar']);
     return [...entries.filter(item => item.enabled && (workspaceReady || !preferences.has(item.name))).map(item => {
@@ -574,7 +575,7 @@ export class Actions {
     return agents.slice().sort((a, b) => agentOrder(a) - agentOrder(b)).map(row => ({...(this.ctx.agentCaption?.(row.identity) ?? this.captions.get(row.identity)), description: [this.ctx.agentStatus(row), compactAge(row.modifiedAt, now)].filter(Boolean).join(' · '), search: [row.identity, ...row.handle ? [row.handle] : []], title: row.identity, source: 'agent', enabled: true, run: () => chooseTarget ? chooseTarget({kind: 'agent', identity: row.identity}) : this.ctx.selectAgent(row)}));
   }
   sessionMenuEntries(agent = false): PaletteEntry[] {
-    const names = new Set(agent ? ['Conversation details', 'Copy agent ID', 'Sent and received tasks', 'Saved drafts and messages', 'Message input', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Jump to message…', 'Appearance', 'Help'] : ['New session', 'Replace current session', 'Sessions', 'Continue a handover', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Conversation details', 'Sent and received tasks', 'Saved drafts and messages', 'Message input', 'Appearance', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Jump to message…', 'Model', 'Thinking', 'Review message']);
+    const names = new Set(agent ? ['Conversation details', 'Copy agent ID', 'Sent and received tasks', 'Saved drafts and messages', 'Message input', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Jump to message…', 'Appearance', 'Help'] : ['New session', 'Replace current session', 'Close session', 'Sessions', 'Continue a handover', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Conversation details', 'Sent and received tasks', 'Saved drafts and messages', 'Message input', 'Appearance', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Jump to message…', 'Model', 'Thinking', 'Review message']);
     return this.paletteEntries().filter(item => item.source === 'app' && names.has(item.name));
   }
   sessionMenu(agent = false): void {
@@ -832,6 +833,31 @@ export class Actions {
     }, 'Restore message');
     this.ctx.modal.body.append(element('p', undefined, 'Message to restore'), element('pre', undefined, text));
     if (draft) this.ctx.modal.body.append(element('p', undefined, 'Current draft'), element('pre', undefined, draft));
+  }
+  private idleSession(primary:PrimaryView|undefined):primary is PrimaryView {return !!primary&&primary.lifecycle==='ready'&&primary.activity==='idle'&&!primary.pendingDialogs.length&&!primary.pendingOperationIds.length;}
+  private idlePrimary(primary:PrimaryView|undefined):PrimaryView|undefined {
+    if(!primary)return;
+    const current=this.ctx.snapshot()?.primaries.find(item=>item.key===primary.key&&item.epoch===primary.epoch);
+    return this.idleSession(current)?current:undefined;
+  }
+  private closeSessionEntries(primary:PrimaryView|undefined,agent:ReturnType<ActionContext['selectedAgent']>):PaletteEntry[]{
+    if(agent||!this.idlePrimary(primary))return [];
+    return [{name:'Close session',description:'Close this idle browser session without deleting its saved conversation or draft',source:'app',enabled:true,run:()=>this.closeSession(primary)}];
+  }
+  closeSession(primary=this.ctx.primary()):void {
+    const current=this.idlePrimary(primary);if(!current)return;
+    const name=`${current.sessionName||current.extension?.title||current.cwd.split('/').filter(Boolean).at(-1)||'Session'} · ${current.key.slice(-4)}`;
+    this.ctx.modal.confirm(`Close ${name}?`,'This closes the idle browser session. Existing saved conversations and drafts remain available.',()=>this.closeIdleSession(current),'Close session');
+  }
+  async closeIdleSession(primary:PrimaryView):Promise<void> {
+    const workspace=this.ctx.snapshot()?.workspace.id;
+    const current=()=>{const row=this.ctx.snapshot()?.primaries.find(item=>item.key===primary.key&&item.epoch===primary.epoch);return this.ctx.snapshot()?.workspace.id===workspace&&this.idleSession(row);};
+    if(!current())throw new Error('This session is no longer idle. Choose another idle session.');
+    const target=this.target(primary),id=await reserve('primary.close',target);
+    if(!current())throw new Error('This session changed. Choose the action again.');
+    const result=await operation('primary.close',this.path(primary,'close'),{epoch:primary.epoch},target,id);
+    if(result.state!=='completed')throw result.error?new ApiError(result.error):new Error('Session closure is not confirmed. Check the session before another attempt.');
+    await this.ctx.reload();
   }
   handoff(): void {
     const primary = this.readyPrimary(this.ctx.primary(),'handoff'); if (!primary) return;

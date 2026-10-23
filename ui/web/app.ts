@@ -745,7 +745,7 @@ function fileTreeOperation(rootId:string,action:FileTreeAction,path:string,value
   const pane = currentLayout().focusedPane,input = document.activeElement;
   return mutateFile(workspace,rootId,action,path,value,()=>state.workspace?.id === workspace && currentLayout().focusedPane === pane && document.activeElement === input);
 }
-const picker = new ProjectPicker({readSession:saved=>openSessionRead({saved}),snapshot: currentSnapshot, primary, modal, agentPresentation:row=>presentation({kind:'agent',identity:row.identity}), selection:change=>{if(change.selectedTarget?.kind==='agent')conversationController(change.selectedTarget).passive=false;return selection(change);}, reload, selectOpened:capturePrimarySelection, selectConverted:captureNativeSelection, project: projectPath, projectsChanged: renderIdentity,titlesChanged:primaryTitlesChanged,workingFolder:path=>fileRoot.choose(path)});
+const picker = new ProjectPicker({closeIdle:primary=>actions.closeIdleSession(primary),readSession:saved=>openSessionRead({saved}),snapshot: currentSnapshot, primary, modal, agentPresentation:row=>presentation({kind:'agent',identity:row.identity}), selection:change=>{if(change.selectedTarget?.kind==='agent')conversationController(change.selectedTarget).passive=false;return selection(change);}, reload, selectOpened:capturePrimarySelection, selectConverted:captureNativeSelection, project: projectPath, projectsChanged: renderIdentity,titlesChanged:primaryTitlesChanged,workingFolder:path=>fileRoot.choose(path)});
 actions.projectPicker = () => picker.open(projectPath());
 const handover = new HandoverDialog({modal, workspace: () => state.workspace?.id, cwd: () => launchCwd ?? projectPath() ?? '', primaries: () => [...state.primaries.values()],
   caption: item => presentationName(presentation({kind: 'primary', key: item.key, epoch: item.epoch})), savedAt: item => picker.savedSession(item)?.modifiedAt,
@@ -3212,7 +3212,7 @@ export function openConversationActions(paneId: string = focusedPane, key?: stri
   const groups: [string, ContextItem[]][] = [
     ['View', [...choices, ...['Show thinking', 'Find text', 'Jump to message…', 'Expand loaded tools', 'Collapse loaded tools'].flatMap(name => entries.filter(item => item.label === name))]],
     ['Messages and tasks', ['Message', 'Refresh messages', 'Review message', 'Sent and received tasks', 'Saved drafts and messages', 'Message input'].flatMap(name => entries.filter(item => item.label === name))],
-    ['Session', ['New session', 'Replace current session', 'Continue a handover', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Open in Pi terminal'].flatMap(name => entries.filter(item => item.label === name))],
+    ['Session', ['New session', 'Replace current session', 'Close session', 'Continue a handover', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Open in Pi terminal'].flatMap(name => entries.filter(item => item.label === name))],
     ['Details', ['Conversation details', 'Copy agent ID'].flatMap(name => entries.filter(item => item.label === name))],
   ];
   const grouped = groups.flatMap(([heading, items], group) => items.map((item, index) => index === 0 ? {...item, heading, separatorBefore: group > 0} : item));

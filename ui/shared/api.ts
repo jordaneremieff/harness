@@ -249,7 +249,7 @@ export type ConfigurationReceipt = {kind: 'configuration'; identity: string; out
   after: {name: string; model: string | null; thinkingLevel: string | null}; afterSource: 'live' | 'retained';
   persistence: 'completed' | 'uncertain' | 'not-attempted'; clamped?: boolean; note?: string};
 export type OperationKind = 'primary.open' | 'primary.input' | 'primary.stop' | 'primary.session' |
-  'primary.control' | 'primary.dialog' | 'primary.handoff' | 'agent.input' | 'agent.abort' | 'agent.configure' | 'agent.convert' | 'agent.command';
+  'primary.control' | 'primary.dialog' | 'primary.handoff' | 'primary.close' | 'agent.input' | 'agent.abort' | 'agent.configure' | 'agent.convert' | 'agent.command';
 /** Admission is separate from the eventual answer. Completed is a local control response. */
 export type OperationView = {id: string; kind: OperationKind; target?: Target; action?: string;
   state: 'reserved' | 'dispatched' | 'accepted' | 'rejected' | 'uncertain' | 'completed';
@@ -327,7 +327,7 @@ export const ROUTES = [
   'GET /api/workspaces', 'POST /api/workspaces', 'POST /api/workspaces/:id/restore', 'POST /api/workspaces/:id/observation', 'POST /api/operations', 'GET /api/operations/:id', 'POST /api/operations/:id/reconcile', 'DELETE /api/operations/:id',
   'POST /api/primaries', 'GET /api/primaries/:key', 'GET /api/primaries/:key/history', 'GET /api/primaries/:key/history/output', 'GET /api/primaries/:key/history/image', 'GET /api/primaries/:key/resources/:kind',
   'GET /api/primaries/:key/diagnostics', 'POST /api/primaries/:key/inputs', 'POST /api/primaries/:key/stop',
-  'POST /api/primaries/:key/session', 'POST /api/primaries/:key/control', 'POST /api/primaries/:key/dialogs/:dialogId', 'POST /api/primaries/:key/handoff',
+  'POST /api/primaries/:key/session', 'POST /api/primaries/:key/control', 'POST /api/primaries/:key/dialogs/:dialogId', 'POST /api/primaries/:key/handoff', 'POST /api/primaries/:key/close',
   'GET /api/agents', 'POST /api/agents/refresh', 'GET /api/agents/:identity/history', 'GET /api/agents/:identity/history/image', 'POST /api/agents/:identity/inspect',
   'GET /api/threads', 'GET /api/threads/read',
   'POST /api/agents/:identity/inputs', 'POST /api/agents/:identity/abort', 'POST /api/agents/:identity/configure',
