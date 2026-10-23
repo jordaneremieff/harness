@@ -53,6 +53,12 @@ The extension contributes its own directory through `resources_discover` so
 that same directory through Pi's public services resource loader before the
 host builds its skills prompt. No separate global skill route is needed.
 
+Lexical rules ignore a short quoted mention when the complete quoted content
+matches a term or multiword phrase. Matching straight or curly single and double
+quotes qualify. Extra clause words and sentence punctuation keep a quoted use
+in scope. Inline code already stays outside the prose view. These exclusions
+do not suppress other rule groups.
+
 [Rule data](data/rules.json) is the single rule source. The meter reads it
 directly. Generate the references after a rule change:
 

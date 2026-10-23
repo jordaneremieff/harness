@@ -27,6 +27,35 @@ function candidates(source: string): string[] {
 	return [...new Set(stripped.match(/[a-z]{3,}/gi) ?? [])];
 }
 
+test("short quoted lexical mentions are not uses of their terms", () => {
+	for (const [open, close] of [['"', '"'], ["'", "'"], ["“", "”"], ["‘", "’"]]) {
+		assert.equal(fires(`The report names ${open}pivotal${close}.`, "lexical.pivotal"), false);
+		assert.equal(fires(`The report names ${open} robust ${close}.`, "lexical.robust"), false);
+		assert.equal(fires(`The report names ${open}shed light${close}.`, "lexical.tier-two"), false);
+		assert.equal(fires(`${open}This pivotal design is robust.${close}`, "lexical.pivotal"), true);
+		assert.equal(fires(`${open}This pivotal design is robust.${close}`, "lexical.robust"), true);
+		assert.equal(fires(`${open}a pivotal design${close}`, "lexical.pivotal"), true);
+		assert.equal(fires(`${open}robust.${close}`, "lexical.robust"), true);
+		assert.equal(fires(`${open}that's not nothing${close}`, "lexical.agent-speak"), true);
+	}
+});
+
+test("mention exemptions preserve genuine uses, unmatched quotes and other rule groups", () => {
+	assert.equal(count(run('The report names "pivotal". The pivotal design is robust.'), "lexical.pivotal"), 1);
+	assert.equal(fires('The report names "pivotal”.', "lexical.pivotal"), true);
+	assert.equal(fires("The report names ‘pivotal'.", "lexical.pivotal"), true);
+	assert.equal(fires("The report calls it 'pivotal's effect.", "lexical.pivotal"), true);
+	assert.equal(fires('The report names "pivotal', "lexical.pivotal"), true);
+	assert.equal(fires('The report quotes "an outcome — here".', "punctuation.em-dash"), true);
+	assert.equal(fires('The report quotes "pivotal\nwork".', "lexical.pivotal"), true);
+});
+
+test("inline code already excludes lexical mentions without hiding surrounding uses", () => {
+	assert.equal(fires("The report names `pivotal` and `robust`.", "lexical.pivotal"), false);
+	assert.equal(fires("The report names `pivotal` and `robust`.", "lexical.robust"), false);
+	assert.equal(fires("The `pivotal` token appears in a pivotal design.", "lexical.pivotal"), true);
+});
+
 test("a context word in an earlier sentence or paragraph never hides a different term", () => {
 	const text = "Here is a seamless overview of the plan.\n\n- **Status:** the fix is load-bearing; it is done.\n";
 	const report = run(text);

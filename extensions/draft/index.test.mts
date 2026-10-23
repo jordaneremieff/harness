@@ -63,6 +63,18 @@ test("hard findings request one hidden repair with real line numbers and calibra
 	assert.match(result?.entries?.[0]?.content ?? "", /punctuation\.em-dash line 2/u);
 	assert.match(result?.entries?.[0]?.content ?? "", /Calibration: .*cohort/u);
 });
+test("a reply that only names lexical findings does not request a repair", async () => {
+	const result = await load().settle('The report flags “pivotal” and “robust” as stock vocabulary. Both findings occur on line 2.');
+	assert.equal(result, undefined);
+});
+
+test("a reply that uses lexical terms inside a quoted sentence still requests a repair", async () => {
+	const result = await load().settle('The proposal says, “This pivotal design is robust.”');
+	assert.equal(result?.continue, true);
+	assert.match(result?.entries?.[0]?.content ?? "", /lexical\.pivotal/u);
+	assert.match(result?.entries?.[0]?.content ?? "", /lexical\.robust/u);
+});
+
 test("clean, empty, aborted, failed and disabled replies add nothing", async () => {
 	const h = load();
 	assert.equal(await h.settle("The parser rejects an empty file."), undefined);

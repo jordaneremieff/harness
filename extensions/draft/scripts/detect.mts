@@ -425,6 +425,26 @@ export function dedupeScored(hits: Hit[]): Hit[] {
 	return kept;
 }
 
+const MENTION_QUOTES: Readonly<Record<string, string>> = { '"': '"', "'": "'", "“": "”", "‘": "’" };
+const MAX_MENTION_CHARS = 80;
+const MAX_MENTION_WORDS = 6;
+const CLAUSE_HEAD = /^(?:(?:i|we|you|he|she|it|they|this|that|these|those)\s+(?:am|is|are|was|were|have|has|had|do|does|did|can|could|will|would|should|must)\b|(?:i|we|you|he|she|it|they|this|that|these|those)['’](?:s|re|ve|d|ll)\b)/iu;
+
+/** A lexical mention occupies its whole short quote, never just part of a quoted clause. */
+function quotedMention(ex: Extracted, range: Range): boolean {
+	if (range.end - range.start > MAX_MENTION_CHARS) return false;
+	const term = ex.raw.slice(range.start, range.end);
+	if (/[\n.!?;:]/u.test(term) || CLAUSE_HEAD.test(term) || countWords(term) > MAX_MENTION_WORDS) return false;
+	let start = range.start;
+	let end = range.end;
+	while (start > 0 && range.start - start < MAX_MENTION_CHARS && /[ \t]/u.test(ex.raw[start - 1] ?? "")) start -= 1;
+	while (end < ex.raw.length && end - range.end < MAX_MENTION_CHARS && /[ \t]/u.test(ex.raw[end] ?? "")) end += 1;
+	const open = ex.raw[start - 1] ?? "";
+	const close = ex.raw[end] ?? "";
+	if (MENTION_QUOTES[open] !== close) return false;
+	return !/[\p{L}\p{N}_]/u.test(ex.raw[start - 2] ?? "") && !/[\p{L}\p{N}_]/u.test(ex.raw[end + 1] ?? "");
+}
+
 function hitsForRule(c: CompiledRule, doc: Doc, options: Options): Hit[] {
 	const { ex } = doc;
 	const rule = c.rule;
@@ -435,6 +455,7 @@ function hitsForRule(c: CompiledRule, doc: Doc, options: Options): Hit[] {
 	const seen = new Set<string>();
 	const hits: Hit[] = [];
 	for (const range of ranges) {
+		if (rule.group === "lexical" && quotedMention(ex, range)) continue;
 		if (twinned(c, ex, view, range.start, range.end)) continue;
 		const text = ex.text.slice(range.start, range.end);
 		const key = text.toLowerCase();
