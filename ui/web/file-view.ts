@@ -43,6 +43,7 @@ export class FileView {
         quote.addEventListener('click',()=> {const quotation = this.quotation;if (quotation?.source.current() && !draft.reason()) draft.append(quotation.source,quotation.text);else this.clearQuotation();});
         actions.append(quote);this.quoteButton = quote;
         editor.addEventListener('select',()=>this.selectQuotation());
+        editor.addEventListener('selectionchange',()=>this.selectQuotation());
       }
       editor.addEventListener('input',()=> {this.clearQuotation();this.clearLineMark();owner.edit(editor.value);this.overlay?.invalidate();});
       editor.addEventListener('keydown',event=> {if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 's') {event.preventDefault();if (!event.repeat && !event.isComposing) void owner.save().catch(()=>{});}});

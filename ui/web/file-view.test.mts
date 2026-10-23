@@ -36,6 +36,21 @@ for (const modified of [false,true]) test(`native source quotation preserves the
   assert.equal(addition,`> ${selected.replaceAll('\n','\n> ')}\n\n— note.txt:2 · ${modified ? 'Editor selection \\(modified\\)' : 'Saved file selection'}`);assert.equal(captured?.current(),true);
   editor.setSelectionRange(start,start);editor.dispatch('select');assert.equal(quote.hidden,true);assert.equal(captured?.current(),false);
 });
+test('textarea selectionchange hides collapsed quotation and captures updated ranges without select',async context=> {
+  let view:FileView;const captured:PrimaryDraftSource[] = [],additions:string[] = [];
+  const owner = new FileOwner('selection-change-quote',tab,async()=>source('first\nsecond\nthird\n'),()=>view?.paint());
+  view = new FileView(owner,undefined,()=>{},false,undefined,{reason:()=>'',current:()=>true,append:(source,text)=> {captured.push(source);additions.push(primaryDraftText(source,text));}});
+  byId('workspace').append(view.root as unknown as HostNode);view.root.hidden = false;view.root.inert = false;context.after(()=> {owner.dispose();view.destroy();});await owner.load();await settle();
+  const editor = view.editor as unknown as HostNode,quote = (view.root as unknown as HostNode).querySelector('.file-quote-selection');assert.ok(quote);
+  editor.setSelectionRange(6,13);editor.dispatch('select');quote.click();assert.equal(captured[0]?.current(),true);
+  editor.setSelectionRange(13,13);editor.dispatch('selectionchange');assert.equal(quote.hidden,true);assert.equal(captured[0]?.current(),false);
+  quote.click();assert.equal(additions.length,1);
+  editor.setSelectionRange(6,13);editor.dispatch('selectionchange');assert.equal(quote.hidden,false);assert.equal(captured[0]?.current(),false);
+  quote.click();assert.equal(captured[1]?.current(),true);
+  editor.setSelectionRange(13,18);editor.dispatch('selectionchange');assert.equal(quote.hidden,false);assert.equal(captured[1]?.current(),false);
+  quote.click();assert.equal(captured[2]?.current(),true);
+  assert.deepEqual(additions,['> second\n> \n\n— note.txt:2 · Saved file selection','> second\n> \n\n— note.txt:2 · Saved file selection','> third\n\n— note.txt:3 · Saved file selection']);
+});
 for (const change of ['edit','range','workspace','hidden','move','disk'] as const) test(`native source quotation refuses a stale ${change}`,async context=> {
   let view:FileView,current = true,captured:PrimaryDraftSource|undefined,calls = 0;
   const owner = new FileOwner('stale-quote',tab,async()=>source('first\nsecond\n'),()=>view?.paint());
