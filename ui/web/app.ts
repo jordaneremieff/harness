@@ -521,6 +521,18 @@ function openToolFile(destination:FileReferenceDestination):void {
   toolFilePane=captured;toolFileReader.closeLabel(companion.overPrimary?'Back to Primary':'Close');toolFileReader.open(workspace.id,destination,()=>toolFileCurrent(captured));renderNavigation();
 }
 export /** A narrow touch screen reads files: Markdown opens rendered, and the source tab remains one tap away. */
+/** Touch screens: the visible height (not the layout height) drives the shell, so the composer sits above the on-screen keyboard. */
+function installViewportSync():void {
+  const viewport = window.visualViewport; if (!viewport || typeof matchMedia !== 'function' || !matchMedia('(pointer:coarse)').matches) return;
+  const root = document.documentElement;
+  const sync = (): void => {
+    if (viewport.scale !== 1) {root.style.removeProperty('--app-height'); delete root.dataset.keyboard; document.body.style.translate = ''; return;}
+    root.style.setProperty('--app-height', `${Math.round(viewport.height)}px`);
+    root.dataset.keyboard = String(window.innerHeight - viewport.height > 120);
+    document.body.style.translate = viewport.offsetTop > 0 ? `0 ${Math.round(viewport.offsetTop)}px` : '';
+  };
+  viewport.addEventListener('resize', sync); viewport.addEventListener('scroll', sync); sync();
+}
 function phoneScreen():boolean {return typeof matchMedia==='function'&&matchMedia('(pointer:coarse) and (max-width:599px)').matches;}
 function chooseFile(rootId:string,path:string,focus = true):void {
   if (!state.workspace) return;leaveOverlayDesk();
@@ -3339,6 +3351,7 @@ function bind(): void {
     devInteractionRevision++;if (name !== 'select' && name !== 'scroll') selectionIntentRevision++;
     devRestoreWake?.();
   }, {capture: true, passive: true});
+  installViewportSync();
   window.addEventListener('pagehide', event => {releaseNotice.readiness(false); if (!event.persisted) {releaseNotice.destroy(); threadReader.destroy(); endDeskReview(); review.destroy();} if (!event.persisted && !devNavigating) devReload?.destroy();});
   window.addEventListener('pageshow', () => {devNavigating=false;releaseNotice.readiness(connected && !releasePage);});
   setRequestTiming((start, end) => {diagnostics.measure('control-roundtrip', start, end);});

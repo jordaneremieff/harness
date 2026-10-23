@@ -1216,7 +1216,7 @@ test('phone chrome removes redundant tab arrows and coarse tree names retain exp
   assert.match(rule('.file-name-actions'),/display: none/);
   assert.match(html,/viewport-fit=cover/);
   for(const edge of ['top','right','bottom','left'])assert.ok(rule('body').includes(`env(safe-area-inset-${edge})`));
-  assert.match(rule('body'),/height: 100dvh/);
+  assert.match(rule('body'),/height: var\(--app-height, 100dvh\)/);
 });
 test('slash rows use the composer container and full-width descriptions at narrow pane widths', () => {
   const start = css.indexOf('@container composer (max-width: 540px)'); assert.ok(start >= 0);
