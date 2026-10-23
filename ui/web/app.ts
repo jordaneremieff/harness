@@ -2773,6 +2773,7 @@ function deskAgentFact(agent:AgentRow):string {
   if(attention?.kind==='provider-blocked')return 'Provider blocked';
   if(attention?.kind==='failed-turn')return 'Turn failed';
   if(attention?.kind==='task-blocked')return `Task blocked${attention.reason?`: ${attention.reason.replaceAll('_',' ')}`:''}`;
+  if(agent.currentTool?.name==='agent_await')return 'Waiting for agent results';
   return agent.currentTool?[agent.currentTool.name,toolArgumentText(agent.currentTool.argument)].filter(Boolean).join(' · '):'Working';
 }
 function deskAgentRows(agents:AgentRow[],tasks:ConversationTask[]):DeskRow[]{

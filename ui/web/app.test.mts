@@ -2137,6 +2137,27 @@ test('failed-session recovery leaves retained text and unconfirmed input under t
   assert.doesNotMatch(primaryControl('activity').textContent, /Resume this session/);
 });
 
+test('Desk waiting facts use plain words and preserve attention precedence and other tool facts', async t => {
+  const working={state:'working' as const,currentTool:{name:'agent_await',argument:'Supplied wait details'}};
+  const roster=[agentFixture('desk-waiter',working),
+    agentFixture('desk-provider',{...working,attention:{kind:'provider-blocked'}}),
+    agentFixture('desk-task',{...working,attention:{kind:'task-blocked',reason:'missing_task'}}),
+    agentFixture('desk-turn',{...working,attention:{kind:'failed-turn'}}),
+    agentFixture('desk-reader',{state:'working',currentTool:{name:'read',argument:'src/current-file.ts'}}),
+    agentFixture('desk-working',{state:'working'})];
+  await arrive({workspace:{id:'desk-wait-facts',revision:1,primaryKey:'p'},primaries:[primaryFixture()],roster,history:[]});
+  byId('commands-button').click();const open=byId('modal-body').querySelectorAll('.palette-row').find(row=>row.querySelector('.palette-name')?.textContent==='Open Desk');assert.ok(open);open.click();await settle();
+  const desk=hostDocument.body.querySelector('.desk');assert.ok(desk);assert.equal(desk.hidden,false);
+  t.after(async()=>{desk.querySelector('.desk-heading')?.querySelector('button')?.click();await settle();});
+  const facts=new Map(desk.querySelectorAll('.desk-row-title').map(row=>[row.title,row.textContent]));
+  assert.match(facts.get('desk-waiter')??'',/ · Waiting for agent results$/);
+  assert.match(facts.get('desk-provider')??'',/ · Provider blocked$/);
+  assert.match(facts.get('desk-task')??'',/ · Task blocked: missing task$/);
+  assert.match(facts.get('desk-turn')??'',/ · Turn failed$/);
+  assert.match(facts.get('desk-reader')??'',/ · read · src\/current-file\.ts$/);
+  assert.match(facts.get('desk-working')??'',/ · Working$/);
+  assert.equal([...facts.values()].some(text=>text.includes('agent_await')||text.includes('Supplied wait details')),false);
+});
 test('accepted working activity owns the tool while retained settings stay composer-local', async () => {
   const row=agentFixture('tool-agent',{state:'working',currentTool:{name:'read',argument:'src/current-file.ts'},model:{provider:'fixture',modelId:'tool-model'}});
   await arrive({workspace:{id:'w',revision:1,selectedTarget:{kind:'agent',identity:row.identity},panelVisible:true},primaries:[],roster:[row],observations:[observation(row.identity,{revision:1,observedAt:'now',entries:[],live:[],nextBefore:null,status:{busy:true},coverage})]});
