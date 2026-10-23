@@ -1731,7 +1731,7 @@ button.thread-person:hover, button.thread-sender:hover { background: var(--raise
 .sidebar .settings-control { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: var(--s1) var(--s3); padding-block: var(--s2); }
 .settings-control-label { grid-column: 1; grid-row: 1; }
 .settings-control-description { grid-column: 1; grid-row: 2; color: var(--muted); font-size: var(--fs-meta); overflow-wrap: anywhere; }
-.settings-control-switch { grid-column: 2; grid-row: 1 / 3; align-self: center; min-width: 40px; padding: var(--s1); border: 1px solid var(--rule); border-radius: var(--r-sm); color: var(--muted); font-size: var(--fs-meta); text-align: center; }
+.settings-control-switch { grid-column: 2; grid-row: 1 / 3; align-self: center; min-width: 40px; padding: var(--s1); border: 1px solid var(--edge); border-radius: var(--r-sm); color: var(--muted); font-size: var(--fs-meta); text-align: center; }
 .settings-control[aria-checked=true] .settings-control-switch { border-color: var(--fg); color: var(--fg); }
 .settings-choice-state { flex: none; margin-left: auto; color: var(--muted); font-size: var(--fs-meta); }
 .sidebar[data-view=agents] .sidebar-scroll { display: flex; overflow: hidden; }

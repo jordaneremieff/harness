@@ -1892,6 +1892,36 @@ function showInterfaceUpdates():void {
   const body=modal.open('Interface updates',undefined,()=>{for(const node of nodes)byId('workbench-status').insertBefore(node,versionStatus.node);});
   body.append(element('p','secondary','Automatic updates retain your drafts. Available update actions appear here.'),...nodes);
 }
+function runSettingsChoice(name: string): void {
+  if(name==='Version and health'){healthStatus.open();return;}
+  if(name==='Interface updates'){showInterfaceUpdates();return;}
+  if(name==='Archived sessions'){openArchivedSessions();return;}
+  if(name==='Retained file drafts'){reviewRetainedDrafts();return;}
+  const current=actions.paletteEntries().find(entry=>entry.source==='app'&&entry.name===name);
+  if(current?.enabled)current.run();
+}
+function renderAgentControl(node: HTMLButtonElement, checked: boolean): void {
+  node.classList.add('settings-control'); node.setAttribute('role','switch');
+  node.setAttribute('aria-label','Agent control'); node.setAttribute('aria-checked',String(checked));
+  node.setAttribute('aria-describedby','settings-agent-control-description');
+  let indicator=node.querySelector<HTMLElement>('.settings-control-switch');
+  if(!indicator){
+    const description=element('span','settings-control-description','Allow agents to arrange this workspace and show notices.');
+    description.id='settings-agent-control-description';
+    indicator=element('span','settings-control-switch'); indicator.setAttribute('aria-hidden','true');
+    node.append(element('span','settings-control-label','Agent control'),description,indicator);
+  }
+  setText(indicator,checked ? 'On' : 'Off');
+}
+function renderSettingsChoice(item: PaletteEntry, existing: HTMLButtonElement | undefined): HTMLButtonElement {
+  const node=existing??button('',()=>runSettingsChoice(item.name),'nav-row');
+  node.dataset.setting=item.name;
+  node.title=item.disabledReason??item.description; node.disabled=!item.enabled;
+  node.setAttribute('aria-disabled',String(!item.enabled));
+  if(item.name==='Agent presentation control')renderAgentControl(node,item.checked===true);
+  else{node.setAttribute('aria-label',item.name);setText(node,item.name);}
+  return node;
+}
 function renderSettingsChoices(): void {
   const groups = [
     {id:'settings-preferences', names:['Appearance','Message input','Agent presentation control','Keyboard shortcuts']},
@@ -1910,29 +1940,7 @@ function renderSettingsChoices(): void {
   const nodes: HTMLButtonElement[] = [];
   for (const group of groups) for (const name of group.names) {
     const item = available.get(name); if (!item) continue;
-    const node = existing.get(item.name) ?? button('', () => {
-      if(item.name==='Version and health'){healthStatus.open();return;}
-      if(item.name==='Interface updates'){showInterfaceUpdates();return;}
-      if(item.name==='Archived sessions'){openArchivedSessions();return;}
-      if(item.name==='Retained file drafts'){reviewRetainedDrafts();return;}
-      const current = actions.paletteEntries().find(entry => entry.source === 'app' && entry.name === item.name);
-      if (current?.enabled) current.run();
-    }, 'nav-row');
-    node.dataset.setting = item.name;
-    node.title = item.disabledReason ?? item.description; node.disabled = !item.enabled;
-    node.setAttribute('aria-disabled', String(!item.enabled));
-    if (item.name === 'Agent presentation control') {
-      node.classList.add('settings-control'); node.setAttribute('role','switch');
-      node.setAttribute('aria-label','Agent control'); node.setAttribute('aria-checked',String(item.checked));
-      node.setAttribute('aria-describedby','settings-agent-control-description');
-      if (!node.querySelector('.settings-control-label')) {
-        const description=element('span','settings-control-description','Allow agents to arrange this workspace and show notices.');
-        description.id='settings-agent-control-description';
-        const state=element('span','settings-control-switch'); state.setAttribute('aria-hidden','true');
-        node.append(element('span','settings-control-label','Agent control'),description,state);
-      }
-      setText(node.querySelector('.settings-control-switch')!,item.checked ? 'On' : 'Off');
-    } else {node.setAttribute('aria-label',item.name);setText(node,item.name);}
+    const node=renderSettingsChoice(item,existing.get(item.name));
     const parent=byId(group.id); if(node.parentElement!==parent)parent.append(node);
     nodes.push(node);
   }

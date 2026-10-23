@@ -315,13 +315,18 @@ export class Roster {
     return resolved.hideVisibleState && rosterWorking(row, resolved)
       ? {...resolved, label: 'Working', tone: 'info', hideVisibleState: false} : resolved;
   }
+  private updateState(cached: RowNode, row: AgentRow, state: RosterStatus): void {
+    const working=rosterWorking(row,state);
+    setText(cached.state,state.attention ? 'Blocked' : working ? 'Working' : '');
+    cached.state.hidden=!cached.state.textContent; cached.state.title=state.attention?.title??state.label;
+    cached.state.dataset.tone=state.tone??'secondary'; cached.state.dataset.busy=String(working);
+    cached.node.dataset.previewKind=state.attention ? 'failure' : working ? 'work' : 'role';
+  }
   private row(row: AgentRow, identity: string): RowNode {
     const cached = this.cache.get(row.identity) ?? this.createRow(row);
     const state = this.rowStatus(row);
-    const working = rosterWorking(row,state);
-    setText(cached.state, state.attention ? 'Blocked' : working ? 'Working' : ''); cached.state.hidden = !cached.state.textContent; cached.state.title = state.attention?.title ?? state.label; cached.state.dataset.tone = state.tone ?? 'secondary'; cached.state.dataset.busy = String(working); setText(cached.name, state.name ?? rowName(row));
+    this.updateState(cached,row,state); setText(cached.name,state.name??rowName(row));
     const caption=this.captions.get(row.identity);cached.name.title=`${cached.name.textContent}\n${caption.source==='first-message'?'Title from first message, not a supplied name':'Conversation name'}`;
-    cached.node.dataset.previewKind = state.attention ? 'failure' : working ? 'work' : 'role';
     const fact = servedFact(row,state);
     this.updatePreview(cached, fact); cached.node.dataset.detail = String(!cached.preview.hidden);
     identity = state.name !== undefined ? state.tail ?? '' : identity; setText(cached.identity, identity); cached.identity.hidden = !identity; cached.identity.title = `Agent ID: ${row.identity}`;

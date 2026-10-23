@@ -1705,7 +1705,9 @@ test('Tools exposes its named destinations and Settings exposes the existing pre
   const commands=menu.querySelectorAll('button').find(node=>node.textContent==='Commands');assert.ok(commands);commands.click();
   assert.equal(byId('modal-title').textContent,'Commands');byId('modal-close').click();
   byId('settings-button').click();assert.equal(app.navigationViews.view,'settings');
-  for(const name of ['Appearance','Message input','Keyboard shortcuts','Agent presentation control','Workspaces','Archived workspaces','Saved drafts and messages','Help'])assert.ok(byId('settings-choices').querySelectorAll('button').find(node=>node.getAttribute('aria-label')===name),name);
+  for(const name of ['Appearance','Message input','Keyboard shortcuts','Agent control','Workspaces','Archived workspaces','Saved drafts and messages','Help'])assert.ok(byId('settings-choices').querySelectorAll('button').find(node=>node.getAttribute('aria-label')===name),name);
+  const agentControl=byId('settings-choices').querySelectorAll('button').find(node=>node.getAttribute('aria-label')==='Agent control');assert.ok(agentControl);
+  assert.equal(agentControl.getAttribute('role'),'switch');assert.equal(agentControl.getAttribute('aria-checked'),String(app.state.workspace?.agentControl!==false));
   const appearance=byId('settings-choices').querySelectorAll('button').find(node=>node.textContent==='Appearance');assert.ok(appearance);appearance.click();assert.equal(byId('modal-title').textContent,'Appearance');byId('modal-close').click();
   byId('navigation-back').click();assert.equal(app.navigationViews.view,'sessions');
 });

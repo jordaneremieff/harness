@@ -33,6 +33,7 @@ test('Settings separates plain groups and keeps the Agent control explanation be
   assert.match(explanation, /overflow-wrap: anywhere/);
   assert.doesNotMatch(explanation, /display: none|overflow: hidden|line-clamp|mask-image/);
   assert.match(rule('.settings-control-switch'), /grid-column: 2; grid-row: 1 \/ 3; align-self: center/);
+  assert.match(rule('.settings-control-switch'), /border: 1px solid var\(--edge\)/);
   assert.match(rule('.settings-control[aria-checked=true] .settings-control-switch'), /border-color: var\(--fg\); color: var\(--fg\)/);
 });
 test('Notices show three subject lines before separate metadata without a fade or a floated whole-row button', () => {
