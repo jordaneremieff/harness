@@ -346,6 +346,12 @@ async function interruptPreparation(mode: string, recovery: PreparationRecovery)
   await settle();
 }
 async function latePreparationFixture(surface: string, mode: string, t: {after: (fn: () => Promise<void>) => void}) {
+  await settle();
+  if (!documentDispatches.includes('ui-ready')) {
+    for (const meta of startupMetadata) meta.remove();
+    const stream = streamSources.at(-1); assert.ok(stream); stream.emit('ready', {bootId: 'boot'});
+    pageHidden(false); await settle();
+  }
   const original = globalThis.fetch, pending = Promise.withResolvers<Response>(), recovery = preparationRecovery(); let held = true, requests = 0;
   const prefix = `late-${surface}-${mode}`, a = agentFixture(`${prefix}-a`), b = agentFixture(`${prefix}-b`);
   const targetA = {kind: 'agent' as const, identity: a.identity}, targetB = {kind: 'agent' as const, identity: b.identity};
