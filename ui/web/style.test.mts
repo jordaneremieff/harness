@@ -1196,6 +1196,21 @@ test('prose fills the shared reading column without shrinking technical blocks',
   assert.doesNotMatch(rule('.markdown-content:is(table)'), /600px/);
   assert.match(rule('.message-body'), /font-size: var\(--fs-body\); line-height: 1\.65/);
 });
+test('Markdown file previews centre a bounded column without narrowing source editors or removing local scrolling', () => {
+  const preview = rule('.file-content');
+  assert.match(preview, /max-width: var\(--read-width\);/);
+  assert.match(preview, /(?:^|;)\s*width: 100%;/);
+  assert.match(preview, /margin-inline: auto;/);
+  assert.match(preview, /font-size: var\(--fs-body\); line-height: 1\.65;/);
+  assert.match(rule('.file-view'), /padding: 0 var\(--gutter\);/);
+  const source = rule('.file-editor');
+  assert.match(source, /width: 100%;/);
+  assert.match(source, /white-space: pre; overflow: auto;/);
+  assert.doesNotMatch(source, /max-width:/);
+  assert.match(rule('.file-content pre'), /overflow: auto;/);
+  assert.match(rule('.markdown-content:is(table)'), /overflow-x: auto;/);
+});
+
 test('phone drawer sections keep usable content inside one outer scroll owner', () => {
   const phone = media('@media (max-width:599px)');
   assert.match(phone,/\.app\.drawer-open \.sidebar-scroll \{ display: block; flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain/);

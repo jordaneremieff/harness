@@ -342,7 +342,7 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .file-status-actions button { font-size: var(--fs-meta); }
 .file-reading { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding-block: var(--s3); overflow-anchor: none; }
 .file-state { color: var(--muted); }
-.file-content { font-size: var(--fs-body); line-height: 1.65; }
+.file-content { max-width: var(--read-width); width: 100%; margin-inline: auto; font-size: var(--fs-body); line-height: 1.65; }
 .file-text { margin: 0; white-space: pre; font-family: var(--mono); font-size: var(--fs-code); line-height: 1.55; tab-size: 4; }
 .file-content pre { overflow: auto; }
 @media (pointer: coarse) { .file-row { min-height: 44px; } }
