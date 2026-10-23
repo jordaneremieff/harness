@@ -281,6 +281,17 @@ test('draft attachments keep a fixed contained preview and bounded wrapping deta
   assert.match(rule('.attachment-actions'), /grid-column: 1 \/ -1; display: flex; flex-wrap: wrap/);
   assert.match(rule('.composer-attachments'), /flex-wrap: wrap/);
 });
+test('draft image previews bound their viewport while Fit and Actual size retain distinct image constraints', () => {
+  assert.match(rule('.attachment-dialog'), /width: min\(90vw,900px\); height: min\(90dvh,800px\); max-height: 90dvh/);
+  assert.equal(rule('.attachment-dialog[open]').trim(), 'display: flex;');
+  assert.match(rule('.image-preview'), /flex-direction: column;.*min-height: 0/);
+  assert.match(rule('.image-preview-controls'), /flex-wrap: wrap/);
+  assert.match(rule('.image-preview-viewport'), /flex: 1; min-width: 0; min-height: 0; overflow: auto/);
+  assert.match(rule('.attachment-dialog.image-preview-fit .image-preview-viewport'), /grid-template: minmax\(0,1fr\) \/ minmax\(0,1fr\); place-items: center/);
+  assert.equal(rule('.attachment-dialog.image-preview-fit .image-preview-content').trim(), 'max-height: 100%;');
+  assert.match(rule('.image-preview-fit .image-preview-content'), /max-width: 100%/);
+  assert.match(rule('.image-preview-actual .image-preview-content'), /width: auto; height: auto; max-width: none; max-height: none; margin: 0/);
+});
 test('attachment metadata uses the fixed scale and preview inherits the dialog hairline', () => {
   assert.match(rule('.attachment-digest'), /font-size: var\(--fs-meta\); color: var\(--muted\)/);
   assert.match(rule('dialog'), /border: 0/);

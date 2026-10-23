@@ -1127,8 +1127,10 @@ pre.tool-document { font-family: var(--mono); font-size: var(--fs-code); line-he
 .attachment-summary { width: 100%; margin: var(--s1) 0; padding-left: var(--s4); }
 .attachment-summary li { overflow-wrap: anywhere; }
 .attachment-digest { display: block; font-size: var(--fs-meta); color: var(--muted); overflow-wrap: anywhere; }
-.attachment-dialog { max-width: min(90vw,900px); max-height: 90dvh; padding: var(--s5); background: var(--canvas); color: var(--fg); }
-.attachment-dialog > img { display: block; max-width: 100%; max-height: 65dvh; margin: var(--s2) auto; object-fit: contain; }
+.attachment-dialog { width: min(90vw,900px); height: min(90dvh,800px); max-height: 90dvh; padding: var(--s5); background: var(--canvas); color: var(--fg); }
+.attachment-dialog[open] { display: flex; }
+.attachment-dialog.image-preview-fit .image-preview-viewport { display: grid; grid-template: minmax(0,1fr) / minmax(0,1fr); place-items: center; }
+.attachment-dialog.image-preview-fit .image-preview-content { max-height: 100%; }
 .composer-intake { display: inline-flex; flex: none; align-items: center; }
 .attach { min-height: 28px; padding: var(--s1) var(--s2); color: var(--muted); font-size: var(--fs-ui); }
 .composer .attachment-sources { width: 32px; height: 32px; min-width: 32px; min-height: 32px; border-radius: var(--r-md); background: transparent; color: var(--fg); }

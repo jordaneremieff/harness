@@ -4,12 +4,28 @@ import { ApiError, draftImageUrl, uploadDraftImage } from './transport.ts';
 import { button, element } from './dom.ts';
 
 export function previewAttachment(workspace: string, targetKey: string, image: DraftImage, invoker: HTMLElement): void {
-  const dialog = element('dialog', 'attachment-dialog'); dialog.setAttribute('aria-label', `Preview ${image.name}`);
-  const picture = element('img'); picture.src = draftImageUrl(workspace, targetKey, image.digest); picture.alt = image.name;
+  const dialog = element('dialog'); dialog.setAttribute('aria-label', `Preview ${image.name}`);
+  const controls = element('div', 'image-preview-controls');
+  const sizes = element('div', 'image-preview-sizes'); sizes.setAttribute('role', 'group'); sizes.setAttribute('aria-label', 'Image size');
+  const fit = button('Fit', () => choose('fit')), actual = button('Actual size', () => choose('actual'));
+  sizes.append(fit, actual); controls.append(element('p', 'attachment-name image-preview-info', image.name), sizes);
+  const viewport = element('div', 'image-preview-viewport'); viewport.tabIndex = 0; viewport.setAttribute('role', 'region'); viewport.setAttribute('aria-label', 'Image preview');
+  const picture = element('img', 'image-preview-content'); picture.alt = image.name;
   picture.decoding = 'async'; picture.referrerPolicy = 'no-referrer';
-  const error = element('p', 'warning'); picture.addEventListener('error', () => {error.textContent = 'The image is unavailable. Its saved reference is unchanged.';});
-  dialog.append(element('p', 'attachment-name', image.name), picture, error, button('Close preview', () => dialog.close()));
-  dialog.addEventListener('close', () => {dialog.remove(); if (invoker.isConnected) invoker.focus({preventScroll: true});}, {once: true});
+  const error = element('p', 'warning image-preview-status'); error.setAttribute('role', 'status');
+  let disposed = false;
+  function choose(mode: 'fit' | 'actual'): void {
+    dialog.className = `attachment-dialog image-preview image-preview-${mode}`;
+    fit.setAttribute('aria-pressed', String(mode === 'fit')); actual.setAttribute('aria-pressed', String(mode === 'actual'));
+  }
+  function clear(): void {picture.removeAttribute('src'); picture.remove();}
+  picture.addEventListener('error', () => {
+    if (disposed) return;
+    clear(); error.textContent = 'The image is unavailable. Its saved reference is unchanged.';
+  });
+  viewport.append(picture); dialog.append(controls, error, viewport, button('Close preview', () => dialog.close()));
+  dialog.addEventListener('close', () => {disposed = true; clear(); dialog.remove(); if (invoker.isConnected) invoker.focus({preventScroll: true});}, {once: true});
+  choose('fit'); picture.src = draftImageUrl(workspace, targetKey, image.digest);
   document.body.append(dialog); dialog.showModal();
 }
 export function attachmentSummary(workspace: string, targetKey: string, images: readonly DraftImage[]): HTMLElement {

@@ -4,8 +4,76 @@ import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { LIMITS } from '../shared/api.ts';
 import type { DraftImage, ImageUploadView } from '../shared/api.ts';
-import { attachmentMetadata, attachmentName, ComposerAttachments, includedText, missingImageIndexes } from './composer-attachments.ts';
+import { attachmentMetadata, attachmentName, ComposerAttachments, includedText, missingImageIndexes, previewAttachment } from './composer-attachments.ts';
 import { ApiError } from './transport.ts';
+
+class PreviewNode extends EventTarget {
+  children: PreviewNode[] = []; parent?: PreviewNode; className = ''; textContent = ''; src = ''; alt = ''; decoding = ''; referrerPolicy = ''; tabIndex = -1;
+  attributes = new Map<string, string>(); open = false; isConnected = true; focusOptions?: FocusOptions;
+  readonly tag: string;
+  constructor(tag: string) {super(); this.tag = tag;}
+  setAttribute(name: string, value: string): void {this.attributes.set(name, value);}
+  removeAttribute(name: string): void {this.attributes.delete(name); if (name === 'src') this.src = '';}
+  append(...nodes: PreviewNode[]): void {for (const node of nodes) {this.children.push(node); node.parent = this;}}
+  remove(): void {if (this.parent) this.parent.children = this.parent.children.filter(node => node !== this); this.parent = undefined;}
+  focus(options: FocusOptions): void {this.focusOptions = options;}
+  showModal(): void {this.open = true;}
+  close(): void {this.open = false; this.dispatchEvent(new Event('close'));}
+  all(): PreviewNode[] {return this.children.flatMap(node => [node, ...node.all()]);}
+  find(tag: string, text?: string): PreviewNode {
+    const node = this.all().find(node => node.tag === tag && (text === undefined || node.textContent === text));
+    assert.ok(node, `Missing ${tag} ${text ?? ''}`); return node;
+  }
+}
+function previewFixture(t: TestContext) {
+  const body = new PreviewNode('body'), invoker = new PreviewNode('button');
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  Object.defineProperty(globalThis, 'document', {configurable: true, value: {body, createElement: (tag: string) => new PreviewNode(tag)}});
+  t.after(() => {if (previous) Object.defineProperty(globalThis, 'document', previous); else Reflect.deleteProperty(globalThis, 'document');});
+  t.mock.method(globalThis, 'fetch', () => {throw new Error('Preview must not fetch through transport');});
+  const image: DraftImage = Object.freeze({name: 'screen & detail.png', digest: 'a'.repeat(64), mimeType: 'image/png', bytes: 2048, width: 3000, height: 2000});
+  previewAttachment('workspace / one', 'target / two', image, invoker as unknown as HTMLElement);
+  return {body, invoker, image, dialog: body.find('dialog'), picture: body.find('img')};
+}
+test('draft preview starts fitted and toggles natural size without changing its exact image or draft', t => {
+  const {dialog, picture, image} = previewFixture(t);
+  assert.equal(dialog.open, true); assert.equal(dialog.attributes.get('aria-label'), `Preview ${image.name}`);
+  assert.equal(dialog.find('p', image.name).textContent, image.name); assert.equal(picture.alt, image.name);
+  const source = `/api/workspaces/workspace%20%2F%20one/targets/target%20%2F%20two/images/${image.digest}`;
+  assert.equal(picture.src, source); assert.equal(picture.decoding, 'async'); assert.equal(picture.referrerPolicy, 'no-referrer');
+  assert.equal(picture.parent?.tabIndex, 0); assert.equal(picture.parent?.attributes.get('role'), 'region');
+  assert.equal(picture.parent?.attributes.get('aria-label'), 'Image preview');
+  const fit = dialog.find('button', 'Fit'), actual = dialog.find('button', 'Actual size');
+  assert.equal(fit.parent?.attributes.get('role'), 'group'); assert.equal(fit.parent?.attributes.get('aria-label'), 'Image size');
+  assert.match(dialog.className, /image-preview-fit/); assert.equal(fit.attributes.get('aria-pressed'), 'true'); assert.equal(actual.attributes.get('aria-pressed'), 'false');
+  actual.dispatchEvent(new Event('click'));
+  assert.match(dialog.className, /image-preview-actual/); assert.equal(actual.attributes.get('aria-pressed'), 'true'); assert.equal(fit.attributes.get('aria-pressed'), 'false');
+  assert.equal(dialog.find('img'), picture); assert.equal(picture.src, source);
+  fit.dispatchEvent(new Event('click')); assert.match(dialog.className, /image-preview-fit/); assert.equal(fit.attributes.get('aria-pressed'), 'true');
+});
+test('Close preview clears the source, removes the dialog and returns focus without scroll', t => {
+  const {body, dialog, picture, invoker} = previewFixture(t);
+  const error = dialog.children.find(node => node.attributes.get('role') === 'status'); assert.ok(error);
+  dialog.find('button', 'Close preview').dispatchEvent(new Event('click'));
+  assert.equal(body.children.length, 0); assert.equal(picture.src, ''); assert.equal(picture.parent, undefined);
+  assert.deepEqual(invoker.focusOptions, {preventScroll: true});
+  picture.dispatchEvent(new Event('error')); assert.equal(error.textContent, '');
+});
+test('native dialog cancellation stays unhandled and close skips a removed attachment control', t => {
+  const {body, dialog, picture, invoker} = previewFixture(t); invoker.isConnected = false;
+  const cancel = new Event('cancel', {cancelable: true}); dialog.dispatchEvent(cancel); assert.equal(cancel.defaultPrevented, false);
+  dialog.close(); assert.equal(body.children.length, 0); assert.equal(picture.src, ''); assert.equal(invoker.focusOptions, undefined);
+});
+test('failed draft images retain the exact unavailable message and release their source safely', t => {
+  const {body, dialog, picture, invoker} = previewFixture(t);
+  picture.dispatchEvent(new Event('error'));
+  const error = dialog.children.find(node => node.attributes.get('role') === 'status'); assert.ok(error);
+  assert.equal(error.textContent, 'The image is unavailable. Its saved reference is unchanged.');
+  assert.equal(picture.src, ''); assert.equal(picture.parent, undefined);
+  dialog.find('button', 'Actual size').dispatchEvent(new Event('click')); assert.equal(picture.src, '');
+  dialog.close(); picture.dispatchEvent(new Event('error'));
+  assert.equal(body.children.length, 0); assert.deepEqual(invoker.focusOptions, {preventScroll: true});
+});
 
 function png(width = 1, height = 1, seed = 0): Uint8Array {
   const bytes = new Uint8Array(57), view = new DataView(bytes.buffer);
