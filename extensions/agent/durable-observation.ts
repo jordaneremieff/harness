@@ -659,10 +659,16 @@ function publicUsageState(usage: UsageState): UsageState {
 }
 
 export function publicLiveState(live: LiveState | undefined): LiveState | null {
-	const generation = live?.generation;
+	if (live === undefined) return null;
+	const projected = { ...live };
+	const generation = live.generation;
 	const message = generation?.message;
-	if (!message || !generation) return live ?? null;
-	return { ...live, generation: { ...generation, message: { ...message, content: message.content.map(publicContentPart), usage: publicUsage(message.usage) } } };
+	if (message && generation) projected.generation = { ...generation, message: { ...message, content: message.content.map(publicContentPart), usage: publicUsage(message.usage) } };
+	if (live.nestedTools !== undefined) projected.nestedTools = live.nestedTools.map((slot) => {
+		const summary = slot.summary;
+		return summary?.usage === undefined ? slot : { ...slot, summary: { ...summary, usage: publicUsage(summary.usage) } };
+	});
+	return projected;
 }
 
 export async function readConversationStatus(

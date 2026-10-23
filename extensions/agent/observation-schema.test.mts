@@ -117,6 +117,29 @@ it("validates native response duration and optional task lifecycle timestamps", 
 	}
 });
 
+for (const withGeneration of [false, true]) it(`projects nested summary usage with generation message=${withGeneration}`, async (t) => {
+	const { host } = await openRun(t);
+	const usage = { ...answerMessage().usage, reasoning: 0, cacheWrite1h: 0, cost: { ...answerMessage().usage.cost, totalFromProvider: false } };
+	const nested = { callId: "outer/child", name: "evidence", taskId: 2, parentCallId: "outer", parentTaskId: 1, arguments: {}, status: "done", summary: { isError: false, durationMs: 0, usage } };
+	const raw = {
+		nestedTools: [nested, { ...nested, callId: "outer/pending", taskId: 3, status: "pending", summary: undefined }, { ...nested, callId: "outer/unmetered", taskId: 4, summary: { isError: true, error: "Tool failed" } }],
+		tools: [{ callId: "outer", name: "codemode", taskId: 1, status: "running", details: { usage } }],
+		...(withGeneration ? { generation: { attempt: 1, message: { ...answerMessage(), usage } } } : {}),
+	};
+	await host.harness.commit(async (tx) => { Object.assign(await tx.doc(LiveDoc, host.root().id), JSON.parse(JSON.stringify(raw))); }, BACKGROUND_CONTEXT);
+	const before = await host.harness.snapshot(LiveDoc, host.root().id, BACKGROUND_CONTEXT);
+	const status = await host.request("status", { sessionId: fixtureStorageId }) as { conversation: { live: typeof raw } };
+	structuredObservation(LiveStateSchema, status.conversation.live);
+	structuredObservation(StatusOutputSchema, status);
+	const { totalFromProvider: _metadata, ...cost } = usage.cost;
+	assert.deepEqual(status.conversation.live.nestedTools[0].summary, { ...nested.summary, usage: { ...usage, cost } });
+	assert.deepEqual(status.conversation.live.nestedTools.slice(1), JSON.parse(JSON.stringify(raw.nestedTools.slice(1))));
+	assert.deepEqual(status.conversation.live.tools, raw.tools);
+	assert.equal(Object.hasOwn(status.conversation.live, "generation"), withGeneration);
+	if (withGeneration) assert.deepEqual(status.conversation.live.generation?.message.usage, { ...usage, cost });
+	assert.deepEqual(await host.harness.snapshot(LiveDoc, host.root().id, BACKGROUND_CONTEXT), before);
+});
+
 it("projects provider usage metadata after an incomplete tool response and a rejected next request", async (t) => {
 	const usage = { ...answerMessage().usage, reasoning: 0, cacheWrite1h: 0, cost: { ...answerMessage().usage.cost, totalFromProvider: false } };
 	const incomplete = { ...answerMessage(), content: [{ type: "toolCall" as const, id: "", name: "", arguments: {} }], usage, stopReason: "length" as const };
