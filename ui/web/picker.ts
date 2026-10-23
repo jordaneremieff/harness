@@ -32,17 +32,24 @@ function dayGrouped(items: readonly SavedSession[], rows: HTMLElement[], days: {
   });
   return out;
 }
-function groupHeading(name: string, qualifier?: string, partialChanged?: (partial: boolean) => void) {
-  const node = element('div', 'picker-group-heading'), disclosure = element('details', 'picker-list-details');
-  const summary = element('summary'), content = element('p', 'secondary picker-list-facts');
-  disclosure.append(summary, content); node.append(element('h2', undefined, name));
-  if (qualifier) node.append(element('span', 'secondary', qualifier));
-  node.append(disclosure);
-  const update = (text: string, partial: boolean) => {
-    const label = 'List details'; summary.textContent = label; cardDisclosure(summary); partialChanged?.(partial && !!text);
-    summary.setAttribute('aria-label', `${label}: ${name}`); content.textContent = text; disclosure.hidden = !text;
+function searchCoverage() {
+  const node = element('section'), notices = element('div'), disclosure = element('details', 'picker-list-details');
+  const summary = element('summary', undefined, 'Search coverage'); cardDisclosure(summary); notices.setAttribute('aria-live', 'polite');
+  disclosure.append(summary); node.append(notices, disclosure); return {node, notices, disclosure, summary};
+}
+function groupHeading(name: string, coverage: ReturnType<typeof searchCoverage>) {
+  const node = element('div', 'picker-group-heading'); node.append(element('h2', undefined, name));
+  const facts = element('section'), content = element('p', 'secondary picker-list-facts'), notice = element('p', 'secondary');
+  facts.append(element('h3', 'picker-heading', name), content); coverage.disclosure.append(facts); coverage.notices.append(notice);
+  const update = (text: string, partial: boolean, status = '') => {
+    content.textContent = text; facts.hidden = !text;
+    const message = [status, partial && text ? 'Loaded results are partial.' : ''].filter(Boolean).join(' ');
+    notice.textContent = message ? `${name}: ${message}` : ''; notice.hidden = !message;
   };
-  update('', false); return {node, disclosure, summary, update};
+  update('', false); return {node, update};
+}
+function groupEmpty(list: HTMLElement, query: string, count: number, available: boolean): void {
+  if (available && !query.trim() && !count) list.append(element('p', 'secondary', sessionEmptyMessage('')));
 }
 function projectCoverage(page: RecentProjectPage): string {
   if (!page.nextCursor && !page.omitted) return '';
@@ -231,7 +238,7 @@ export class ProjectPicker {
   }
   private show(project?: string): void {
     if (!project) { this.selectProject(); return; }
-    const {body, token} = this.begin(`Sessions in ${this.projectName(project)}`); this.shownProject = project;
+    const {body, token} = this.begin('Search sessions'); this.shownProject = project;
     this.sessionContext(body, project);
     body.append(element('p', 'secondary', 'Loading sessions'));
     void this.sessions(project).catch(cause => {
@@ -334,33 +341,37 @@ export class ProjectPicker {
       if (!this.owns(initialToken) || choosing !== this.choosing) return;
       this.noteWriters(first.items);
     }
-    const {body, token, signal} = this.begin(`Sessions in ${this.projectName(project)}`); this.shownProject = project;
+    const {body, token, signal} = this.begin('Search sessions'); this.shownProject = project;
     this.sessionContext(body, project);
     const search = input('Search sessions'); search.field.id = 'picker-search'; search.label.htmlFor = search.field.id; search.field.placeholder = 'Search sessions';
     const searchRow = element('div', 'picker-search-row'); searchRow.append(pickerField(search)); body.append(searchRow);
     const results = element('div', 'picker-results'); body.append(results);
-    const paintCatalog = this.catalog(results,signal,token,()=>search.field.value,()=>search.field.focus(),()=>paint(),project);
-    const ordinary = element('section', 'picker-folder-ordinary'), heading = groupHeading(`Your sessions in ${this.projectName(project)}`); ordinary.append(heading.node);
+    const coverage = searchCoverage();
+    const ordinary = element('section', 'picker-folder-ordinary'), heading = groupHeading(`Your sessions in ${this.projectName(project)}`, coverage); ordinary.append(heading.node);
+    const paintCatalog = this.catalog(results,signal,token,()=>search.field.value,()=>search.field.focus(),()=>paint(),project,coverage);
+    const empty = element('p', 'secondary', 'No matches in loaded sessions'); empty.hidden = true;
     const list = element('div', 'picker-sessions');
     const error = element('p', 'error'); error.setAttribute('role', 'alert');
     let data = first ? mergeSessions(undefined, first) : existing;
-    let render = 0; let loading = 0; const titleRequests = new Set<string>();
+    let render = 0; let loading = 0; let refreshing = false; const titleRequests = new Set<string>();
     const more = cardAction('next', 'Load more', () => { void load(data?.nextCursor ?? undefined); }); more.id = 'picker-more';
     const moreLabel = more.querySelector('.card-action-label'); if (moreLabel) moreLabel.className = 'card-action-label';
     const updateCoverage = () => {
       if (data) {
         const registered = this.published?.items.filter(item => item.project === project).length ?? 0;
-        heading.update([savedListDetails(data), registered ? `${registered} registered records also supply this folder's rows.` : ''].filter(Boolean).join('\n'), partialSessions(data));
+        heading.update([savedListDetails(data), registered ? `${registered} registered records also supply this folder's rows.` : ''].filter(Boolean).join('\n'), partialSessions(data), refreshing ? 'Loading saved sessions.' : '');
       }
     };
     const paint = () => {
       const focusedPath = [...list.querySelectorAll<HTMLButtonElement>('.picker-select')].find(row=>row===document.activeElement)?.dataset.sessionPath;
-      const version = ++render; paintCatalog(); list.replaceChildren();
+      const version = ++render, catalogMatches = paintCatalog(); list.replaceChildren();
       if (!data) { updateCoverage(); return; }
       const folder = new Map(data.items.map(item => [item.path, item]));
       for (const item of this.published?.items ?? []) if (item.project === project) folder.set(item.path, item);
       const folderItems = [...folder.values()];
-      const matches = filterSessions(folderItems, search.field.value);
+      const matches = filterSessions(folderItems, search.field.value), filtering = !!search.field.value.trim();
+      heading.node.hidden = filtering && !matches.length; ordinary.hidden = filtering && !matches.length && file.hidden;
+      empty.hidden = !filtering || matches.length + catalogMatches > 0;
       const tails = duplicateIdentityTails(folderItems.map(item => ({name: sessionLabel(item), identity: item.id})));
       if (focusedPath && !matches.some(item => item.path === focusedPath)) { search.field.focus(); error.textContent = 'The selected session is no longer in this loaded list.'; }
       more.hidden = !data.nextCursor;
@@ -375,7 +386,7 @@ export class ProjectPicker {
         if (offset < matches.length) requestAnimationFrame(batch);
       };
       batch();
-      if (!matches.length) list.append(element('p', 'secondary', sessionEmptyMessage(search.field.value)));
+      groupEmpty(list, search.field.value, matches.length, true);
     };
     const save = () => {
       if (!data) return;
@@ -385,7 +396,7 @@ export class ProjectPicker {
     };
     const load = async (cursor?: string) => {
       const generation = ++loading; const current = () => this.owns(token) && generation === loading;
-      more.disabled = true; refresh.disabled = true; error.textContent = '';
+      more.disabled = true; refresh.disabled = true; error.textContent = ''; refreshing = true; updateCoverage();
       try {
         const page = await request<SavedSessionPage>(`/api/sessions?project=${encodeURIComponent(project)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`, 'GET', undefined, undefined, signal);
         if (!this.owns(token)) return;
@@ -393,7 +404,7 @@ export class ProjectPicker {
         this.noteWriters(page.items);
         data = mergeSessions(data, page, !!cursor); save(); paint(); void fillTitles(page);
       } catch (cause) { if (!signal.aborted && current()) { error.textContent = 'The saved list did not refresh. Use Refresh to reload the first page.'; this.error(cause, ''); } }
-      finally { if (current()) {more.disabled = false; refresh.disabled = false;} }
+      finally { if (current()) {more.disabled = false; refresh.disabled = false; refreshing = false; updateCoverage();} }
     };
     const fillTitles = async (page: SavedSessionPage) => {
       if (!page.titleCursor || !page.items.some(item => item.titleState === 'pending') || titleRequests.has(page.titleCursor)) return;
@@ -414,13 +425,13 @@ export class ProjectPicker {
     const options = cardAction('more', 'Saved session options', () => {
       const box = options.getBoundingClientRect();
       contextMenu.open(options, {x: box.left, y: box.bottom}, 'Saved session options', [
-        {key: 'details', label: 'List details', run: () => { heading.disclosure.hidden = false; heading.disclosure.open = true; heading.summary.focus(); }},
-        {key: 'file', label: 'Session file', run: () => { file.hidden = false; file.open = true; file.querySelector<HTMLInputElement>('#picker-session-path')?.focus(); }},
+        {key: 'details', label: 'List details', run: () => { coverage.disclosure.open = true; coverage.summary.focus(); }},
+        {key: 'file', label: 'Session file', run: () => { file.hidden = false; file.open = true; ordinary.hidden = false; file.querySelector<HTMLInputElement>('#picker-session-path')?.focus(); }},
       ], () => this.owns(token));
     });
     options.setAttribute('aria-haspopup', 'menu'); options.setAttribute('aria-expanded', 'false');
     searchRow.append(options);
-    ordinary.append(list, error, file); results.prepend(ordinary); body.append(more);
+    ordinary.append(list, file); coverage.node.prepend(error); results.prepend(ordinary); results.append(empty, coverage.node); body.append(more);
     results.addEventListener('keydown', event => {
       if (event.target instanceof HTMLButtonElement && event.target.matches('.picker-select, .picker-durable-select')) this.navigate(event, results);
     });
@@ -431,15 +442,13 @@ export class ProjectPicker {
     });
     save(); paint(); for (const page of data?.pendingTitles ?? []) void fillTitles(page); search.field.focus();
   }
-  private catalog(body:HTMLElement,signal:AbortSignal,token:number,query:()=>string,focusSearch:()=>void,changed:()=>void,project:string):()=>void {
-    const durable=element('section','picker-durable'), durableHeading=groupHeading('Agent conversations');
+  private catalog(body:HTMLElement,signal:AbortSignal,token:number,query:()=>string,focusSearch:()=>void,changed:()=>void,project:string,coverage:ReturnType<typeof searchCoverage>):()=>number {
+    const ordinary=element('section','picker-ordinary'), registered=element('div','picker-registered-list'), registeredHeading=groupHeading('Your sessions in other folders', coverage);
+    ordinary.append(registeredHeading.node, registered);
+    const durable=element('section','picker-durable'), durableHeading=groupHeading('Agent conversations', coverage);
     const roster = this.ctx.snapshot()?.roster, list = element('div', 'picker-durable-list');
-    const coverage = element('p', 'secondary picker-durable-coverage', durableCoverage(roster)); coverage.hidden = !coverage.textContent;
-    durableHeading.update(durableListDetails(roster), !!roster && (!!roster.nextCursor || !roster.scan.complete || !!roster.scan.skipped || !!roster.scan.omitted));
-    durable.append(durableHeading.node, coverage, list);
-    const ordinary=element('section','picker-ordinary'), registered=element('div','picker-registered-list'), registeredHeading=groupHeading('Your sessions in other folders');
-    const status=element('p','secondary'); status.setAttribute('aria-live','polite');
-    ordinary.append(registeredHeading.node, status, registered);
+    durableHeading.update(durableListDetails(roster), !!roster && (!!roster.nextCursor || !roster.scan.complete || !!roster.scan.skipped || !!roster.scan.omitted), durableCoverage(roster));
+    durable.append(durableHeading.node, list);
     body.append(ordinary,durable);
     let loaded=false,failed=false,expanded=false;
     const showAll = button('Show all', () => {expanded = true; changed();}, 'picker-show-all quiet'); showAll.hidden = true; durable.append(showAll);
@@ -451,8 +460,8 @@ export class ProjectPicker {
     };
     const updateRegisteredDetails=()=> {
       const published=loaded?this.published:undefined;
-      registeredHeading.update(published ? savedListDetails(published, true) : '', !!published && partialSessions(published));
-      status.textContent=failed ? 'Registered ordinary sessions are unavailable. Refresh the session picker.' : published ? '' : 'Loading registered ordinary sessions'; status.hidden=!status.textContent;
+      const status=failed ? 'Registered ordinary sessions are unavailable. Refresh the session picker.' : published ? '' : 'Loading registered ordinary sessions';
+      registeredHeading.update(published ? savedListDetails(published, true) : '', !!published && partialSessions(published), status);
     };
     const paint=()=> {
       const focused=selectable().find(row=>row===document.activeElement);
@@ -465,14 +474,16 @@ export class ProjectPicker {
       const visible = expanded || needle ? matches : matches.slice(0, 5);
       list.replaceChildren(...visible.map(row=>this.durableRow(row)));
       showAll.hidden = expanded || !!needle || matches.length <= 5; showAll.textContent = `Show all ${matches.length}`;
-      if(!matches.length && roster?.scan.state === 'ready' && !roster.error)list.append(element('p','secondary',sessionEmptyMessage(query())));
+      durable.hidden = !!needle && !matches.length;
+      groupEmpty(list, query(), matches.length, roster?.scan.state === 'ready' && !roster.error);
       const published=loaded?this.published:undefined;
       const items=filterSessions(published?.items ?? [],query()).filter(item=>item.project !== project);
       const tails=duplicateIdentityTails((published?.items ?? []).map(item=>({name:sessionLabel(item),identity:item.id})));
       registered.replaceChildren(...items.map(item=>this.row(item,tails.get(item.id))));
-      if(published && !items.length)registered.append(element('p','secondary',sessionEmptyMessage(query())));
+      ordinary.hidden = !!needle && !items.length;
+      groupEmpty(registered, query(), items.length, !!published);
       updateRegisteredDetails();
-      restoreFocus(focused);
+      restoreFocus(focused); return matches.length + items.length;
     };
     const readPublished=()=>void request<SavedSessionPage>('/api/sessions/published','GET',undefined,undefined,signal).then(page=>{
       if(!this.owns(token)||signal.aborted)return;

@@ -62,13 +62,13 @@ for (const [name, page] of [
     const line = searchRow.children[0]; assert.ok(line); assert.equal(line.className, 'picker-input-row'); assert.equal(search.className, 'picker-input');
     assert.equal(line.children.length, 2); assert.equal(search.id, label.htmlFor);
     assert.equal(line.children[0], label); assert.equal(line.children[1], search);
-    const freshness = ordinary.querySelector('.picker-list-details'); assert.ok(freshness);
+    const freshness = body.querySelector('.picker-list-details'); assert.ok(freshness);
     assert.match(freshness.textContent, /Saved list · now/);
-    assert.match(freshness.textContent, /sessions loaded/); assert.equal(freshness.children[0]?.textContent, 'List details');
+    assert.match(freshness.textContent, /sessions loaded/); assert.equal(freshness.children[0]?.textContent, 'Search coverage');
     assert.ok(nodes.find(node => node.tag === 'button' && node.attributes['aria-label'] === 'Refresh saved sessions'));
     search.value = 'no match'; search.dispatch('input');
-    const empty = nodes.find(node => node.className === 'picker-sessions')?.children.find(node => node.tag === 'p'); assert.ok(empty);
-    assert.equal(empty.textContent, 'No matches in this group.');
+    const empty = body.querySelector('.picker-results')?.children.find(node => node.tag === 'p'); assert.ok(empty);
+    assert.equal(empty.hidden, false); assert.equal(empty.textContent, 'No matches in loaded sessions'); assert.equal(ordinary.hidden, true);
     assert.equal(nodes.find(node => node.id === 'picker-more')?.hidden, name !== 'more pages');
   } finally {
     globalThis.fetch = oldFetch;
@@ -103,8 +103,8 @@ function directPicker(t: TestContext, active?: PrimaryView, page: SavedSessionPa
   const state = {primaries: active ? [active] : [], launchCwd: '/project', ...(catalog ? {roster: catalog.roster} : {})} as unknown as Bootstrap;
   const reads: SavedSession[] = []; let reloads = 0; let titleChanges = 0; let failure = false; let listFailure = false; let closed = false; let error = ''; let running = false;
   const modal = {
-    node: {dataset: {} as Record<string, string>}, body, token: 0, close: () => {closed = true;},
-    open: () => { modal.token++; body.replaceChildren(); closed = false; return body; },
+    node: {dataset: {} as Record<string, string>}, body, token: 0, title: '', close: () => {closed = true;},
+    open: (title = '') => { modal.title = title; modal.token++; body.replaceChildren(); closed = false; return body; },
     owns: (token: number) => !closed && modal.token === token,
     actions: (...buttons: Node[]) => body.append(...buttons),
     error: (cause: unknown) => { error = cause instanceof Error ? cause.message : String(cause); },
@@ -166,7 +166,7 @@ test('ordinary groups precede five agent rows and search reaches collapsed agent
   const rows = Array.from({length: 40}, (_, index) => catalogRow(`agent-${index}`));
   const setup = directPicker(t, undefined, saved, undefined, {roster: catalogRoster(rows), published: {...saved, items: [{...ordinarySample, project: '/other-project', path: '/other-project/other.jsonl'}]}});
   setup.picker.open(); await settle(); const results = setup.body.querySelector('.picker-results'); assert.ok(results);
-  assert.deepEqual(results.children.map(node => node.className), ['picker-folder-ordinary', 'picker-ordinary', 'picker-durable']);
+  assert.deepEqual(results.children.slice(0, 3).map(node => node.className), ['picker-folder-ordinary', 'picker-ordinary', 'picker-durable']);
   assert.match(results.children[0]?.textContent ?? '', /Your sessions in/); assert.match(results.children[1]?.textContent ?? '', /Your sessions in other folders/);
   assert.equal(setup.body.querySelectorAll('.picker-durable-select').length, 5);
   const showAll = setup.body.querySelector('.picker-show-all'), search = setup.body.querySelector('#picker-search'); assert.ok(showAll && search); assert.equal(showAll.textContent, 'Show all 40');
@@ -215,20 +215,30 @@ function pickerKeyboard(t:TestContext) {
   return (node:Node,key:string,target=node)=>node.dispatch('keydown',new Key(key,target) as unknown as Record<string,unknown>);
 }
 const searchCatalog=()=>({roster:{...catalogRoster([{...catalogRow('designer'),name:'Web UI designer'},{...catalogRow('other'),name:'Other agent'}]),nextCursor:'more'},published:{...saved,omitted:1,items:[{...ordinarySample,path:'/registered.jsonl',title:'Registered planning'}]}});
-test('one query filters every loaded group without fetching or weakening coverage and duplicate suppression',async t=> {
+test('Search sessions puts query matches before one source-labelled coverage disclosure without extra reads',async t=> {
   const catalog=searchCatalog(),duplicate={...ordinarySample,path:'/registered.jsonl',title:'Folder alias'};
   const setup=directPicker(t,undefined,{...saved,items:[ordinarySample,duplicate]},undefined,catalog);setup.picker.open();await settle();
   const search=setup.body.querySelector('#picker-search'),results=setup.body.querySelector('.picker-results');assert.ok(search&&results);
   const rows=()=>results.querySelectorAll('.picker-durable-select, .picker-select');const calls=setup.calls.length;
+  assert.equal(setup.modal.title, 'Search sessions');
+  const coverage=results.children.at(-1),disclosure=coverage?.querySelector('.picker-list-details');assert.ok(coverage&&disclosure);
+  assert.equal(results.querySelectorAll('.picker-list-details').length,1);assert.equal(disclosure.children[0]?.textContent,'Search coverage');assert.equal(disclosure.open,false);
+  assert.deepEqual(disclosure.children.slice(1).map(source=>source.children[0]?.textContent),['Your sessions in project','Your sessions in other folders','Agent conversations']);
+  assert.match(disclosure.textContent,/1 discovery records are unavailable or outside the bound/);
+  assert.match(coverage.children[1]?.textContent??'',/Loaded results are partial/);assert.equal(disclosure.querySelectorAll('.picker-list-facts').length,3);
+  const visibleGroups=()=>results.children.filter(node=>node.tag==='section'&&node!==coverage&&!node.hidden);
+  const empty=results.children.find(node=>node.tag==='p');assert.ok(empty);
   assert.deepEqual(rows().map(row=>row.dataset.agentIdentity??row.dataset.sessionPath),[ordinarySample.path,'/registered.jsonl','designer','other']);
   for(const [query,expected] of [['Web UI designer','designer'],['Registered planning','/registered.jsonl'],['Saved title',ordinarySample.path]] as const) {
     search.value=query;search.dispatch('input');assert.deepEqual(rows().map(row=>row.dataset.agentIdentity??row.dataset.sessionPath),[expected]);
-    assert.equal(results.querySelector('.picker-durable')?.querySelector('.picker-list-details')?.children[0]?.textContent,'List details');assert.equal(results.querySelector('.picker-ordinary')?.querySelector('.picker-list-details')?.children[0]?.textContent,'List details');
-    assert.equal(rowCount(setup), 1);
+    assert.equal(visibleGroups().length,1);assert.equal(visibleGroups()[0]?.querySelectorAll('.picker-durable-select, .picker-select').length,1);
+    assert.equal(empty.hidden,true);assert.equal(results.children.at(-1),coverage);assert.equal(disclosure.open,false);
+    assert.equal(results.querySelectorAll('.picker-list-details').length,1);assert.equal(rowCount(setup), 1);
   }
   search.value='Folder alias';search.dispatch('input');assert.equal(rows().length,0);
   search.value='not present';search.dispatch('input');assert.equal(rows().length,0);
-  for(const group of ['.picker-durable','.picker-ordinary','.picker-folder-ordinary'])assert.match(results.querySelector(group)?.textContent??'',/No matches in this group/);
+  assert.equal(visibleGroups().length,0);assert.equal(empty.hidden,false);assert.equal(empty.textContent,'No matches in loaded sessions');
+  assert.equal(descendants(results).filter(node=>node.tag==='p'&&node.textContent==='No matches in loaded sessions').length,1);
   assert.equal(rowCount(setup), 0);
   search.value='';search.dispatch('input');assert.equal(rowCount(setup), 4);
   assert.equal(setup.calls.length,calls);assert.equal(setup.selections.length,0);
@@ -262,8 +272,8 @@ test('Durable coverage remains local and a ready blank ordinary title displays a
   const filled = {...saved, items: [{...ordinarySample, title: '', titleState: 'ready' as const}]};
   const roster = {...catalogRoster(), stale: true, nextCursor: 'more', scan: {...catalogRoster().scan, complete: false}};
   const setup = directPicker(t, undefined, pending, undefined, {roster, published: noPublished, titlePage: filled}); setup.picker.open(); await settle(); await settle();
-  const durable = setup.body.querySelector('.picker-durable'); assert.ok(durable); const notice = durable.querySelector('.picker-durable-coverage'); assert.ok(notice);
-  assert.match(durable.querySelector('.picker-durable-list')?.textContent ?? '', /No loaded sessions in this group/); assert.match(notice.textContent, /Saved Durable catalog/);   const folder = setup.body.querySelector('.picker-folder-ordinary'); assert.ok(folder); assert.equal(folder.querySelector('.picker-session-title')?.textContent, 'project · s');
+  const durable = setup.body.querySelector('.picker-durable'); assert.ok(durable); const coverage = setup.body.querySelector('.picker-results')?.children.at(-1); assert.ok(coverage);
+  assert.match(durable.querySelector('.picker-durable-list')?.textContent ?? '', /No loaded sessions in this group/); assert.match(coverage.children[1]?.textContent ?? '', /Saved Durable catalog/);   const folder = setup.body.querySelector('.picker-folder-ordinary'); assert.ok(folder); assert.equal(folder.querySelector('.picker-session-title')?.textContent, 'project · s');
   assert.equal(filled.items[0]?.title, ''); assert.equal(pending.items[0]?.titleState, 'pending'); assert.ok(setup.calls.some(call => call.path.includes('&titles=titles')));
 });
 test('global count follows late titles, local pages and the current query', async t => {
@@ -297,8 +307,8 @@ test('loaded Primary metadata follows title completion and newer registered evid
   assert.equal(setup.picker.savedSession(primary)?.titleState,'unavailable');assert.ok(setup.titleChanges>changed);
   let refresh=Promise.withResolvers<Response>();globalThis.fetch=async(input,init)=>String(input)==='/api/sessions/published'?refresh.promise:original(input,init);
   setup.picker.open();await settle();assert.equal(setup.picker.savedSession(primary)?.titleState,'unavailable');
-  assert.match(setup.body.querySelector('.picker-ordinary')?.textContent??'',/Loading registered ordinary sessions/);assert.equal(setup.body.querySelector('.picker-registered-list')?.children.length,0);
-  refresh.reject(new Error('offline'));await settle();assert.equal(setup.picker.savedSession(primary)?.titleState,'unavailable');assert.match(setup.body.querySelector('.picker-ordinary')?.textContent??'',/Registered ordinary sessions are unavailable/);
+  assert.match(setup.body.textContent,/Loading registered ordinary sessions/);assert.equal(setup.body.querySelector('.picker-registered-list')?.children.length,0);
+  refresh.reject(new Error('offline'));await settle();assert.equal(setup.picker.savedSession(primary)?.titleState,'unavailable');assert.match(setup.body.textContent,/Registered ordinary sessions are unavailable/);
   refresh=Promise.withResolvers<Response>();setup.picker.open();await settle();setup.modal.close();
   refresh.resolve(Response.json({ok:true,data:{...saved,items:[{...pending,title:'Old prompt',titleState:'ready'}]}}));await settle();assert.equal(setup.picker.savedSession(primary)?.titleState,'unavailable');
   assert.equal(setup.picker.savedSession({...primary,sessionId:'other'}),undefined);assert.equal(setup.picker.savedSession({...primary,sessionFile:'/other'}),undefined);
@@ -329,17 +339,17 @@ test('global count tracks rendered batches and ignores batches from an older que
   search.value = ''; search.dispatch('input'); for (const callback of frames.splice(0)) callback();
   assert.equal(rowCount(setup), 21); assert.equal(setup.body.querySelectorAll('.picker-select').length, 21);
 });
-test('group disclosures preserve exact coverage while unsettled states never claim an empty search', async t => {
+test('Search coverage preserves source facts and visible unsettled notices outside its closed disclosure', async t => {
   const roster = {...catalogRoster(), stale: true, scan: {...catalogRoster().scan, state: 'failed' as const, complete: false, skipped: 3, omitted: 4}, error: {code: 'scan_failed', message: 'Exact catalog failure', retry: 'none' as const}};
   const setup = directPicker(t, undefined, saved, undefined, {roster, published: {...saved, omitted: 62}});
   setup.picker.open(); await settle();
   const durable = setup.body.querySelector('.picker-durable'), registered = setup.body.querySelector('.picker-ordinary'); assert.ok(durable && registered);
-  assert.match(durable.querySelector('.picker-durable-coverage')?.textContent ?? '', /could not refresh.*Saved Durable catalog/);
+  const coverage=setup.body.querySelector('.picker-results')?.children.at(-1);assert.ok(coverage);
+  assert.match(coverage.children[1]?.textContent??'', /Agent conversations:.*could not refresh.*Saved Durable catalog/);
   assert.doesNotMatch(durable.querySelector('.picker-durable-list')?.textContent ?? '', /No matches|No loaded/);
-  const facts = durable.querySelector('.picker-list-details'); assert.ok(facts);
-  assert.equal(facts.open, false); assert.match(facts.textContent, /List details.*0 Durable conversations loaded/);   assert.match(facts.textContent, /3 skipped; 4 omitted/); assert.match(facts.textContent, /Exact catalog failure/);
-  assert.match(facts.children[0]?.attributes['aria-label'] ?? '', /Agent conversations/);
-  assert.match(registered.querySelector('.picker-list-details')?.textContent ?? '', /62 discovery records are unavailable or outside the bound/);
+  const facts = coverage.querySelector('.picker-list-details'); assert.ok(facts);
+  assert.equal(facts.open, false); assert.equal(facts.children[0]?.textContent,'Search coverage'); assert.match(facts.textContent, /0 Durable conversations loaded/); assert.match(facts.textContent, /3 skipped; 4 omitted/); assert.match(facts.textContent, /Exact catalog failure/);
+  assert.match(facts.textContent, /Your sessions in other folders.*62 discovery records are unavailable or outside the bound/);
   assert.doesNotMatch(registered.textContent, /Conversion copies saved context only/); assert.match(registered.textContent, /Your sessions in other folders/);
 });
 const active = {key: 'current', cwd: '/project', epoch: 1, lifecycle: 'ready'} as PrimaryView;
@@ -558,7 +568,7 @@ test('first use mounts the shared session list inline and reads a saved session 
   const setup = directPicker(t); const root = new Node('main');
   setup.picker.mount(root as unknown as HTMLElement, '/project'); await settle();
   assert.equal(setup.modal.token, 0);
-  assert.match(root.textContent, /Sessions in project/);
+  assert.match(root.textContent, /Search sessions/);
   assert.ok(descendants(root).find(node => node.id === 'picker-search'));
   const select = descendants(root).find(node => node.className === 'picker-select'); assert.ok(select);
   select.click(); await settle();
@@ -612,7 +622,7 @@ test('chooser controls stay with their title, search and list disclosure while r
   const setup = directPicker(t); const root = new Node('main');
   setup.picker.mount(root as unknown as HTMLElement, '/project'); await settle();
   const header = root.children[0]; assert.ok(header); assert.equal(header.className, 'picker-header');
-  assert.equal(header.children[0]?.tag, 'h1'); assert.match(header.children[0]?.textContent ?? '', /Sessions in project/);
+  assert.equal(header.children[0]?.tag, 'h1'); assert.equal(header.children[0]?.textContent, 'Search sessions');
   assert.equal(header.children[1]?.className, 'dialog-actions');
   assert.deepEqual(header.children[1]?.children.map(node => node.attributes['aria-label']), ['New session']);
   assert.equal(root.querySelectorAll('.picker-context').length,0);assert.equal(descendants(root).some(node=>node.attributes['aria-label']==='Change working folder'),false);
@@ -620,7 +630,7 @@ test('chooser controls stay with their title, search and list disclosure while r
   assert.equal(searchRow.children[0]?.className, 'picker-input-row'); assert.equal(searchRow.children[1]?.attributes['aria-label'], 'Refresh saved sessions');
   assert.equal(searchRow.children[2]?.attributes['aria-label'], 'Saved session options');
   const folder = nodes.find(node => node.className === 'picker-folder-ordinary'); assert.ok(folder);
-  const listDetails = folder.querySelector('.picker-list-details'); assert.ok(listDetails);
+  const listDetails = root.querySelector('.picker-list-details'); assert.ok(listDetails);
   const results = nodes.find(node => node.className === 'picker-results'); assert.ok(results);
   assert.equal(results.children[0], folder); assert.ok(root.querySelector('#picker-more'));
   assert.equal(listDetails.children.some(node => node.textContent === 'Session file'), false);
@@ -647,7 +657,7 @@ test('first-use project selection keeps one inline host and recent rows directly
   const recent = body.children.find(node => node.textContent === 'other'); assert.ok(recent);
   const folder = body.children.find(node => node.textContent === 'Other folder'); assert.ok(folder);
   assert.ok(body.children.indexOf(recent) < body.children.indexOf(folder)); recent.click(); await settle();
-  assert.equal(setup.modal.token, 0); assert.match(root.textContent, /^Sessions in other/);
+  assert.equal(setup.modal.token, 0); assert.match(root.textContent, /^Search sessions/);
   assert.equal(setup.calls.filter(call => call.path === '/api/sessions?project=%2Fother').length, 1);
   assert.equal(setup.calls.some(call => call.path === '/api/primaries'), false);
 });

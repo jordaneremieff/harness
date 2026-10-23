@@ -192,9 +192,13 @@ all loaded groups: Durable conversations, registered ordinary sessions, and ordi
 sessions in the working folder. Arrow navigation follows their visible order; Enter
 activates the focused row, or the first match from the search field. Conversion
 remains a separate Commands action for the selected verified saved snapshot. A query
-reads no new catalog or session page. Each group keeps its own empty or incomplete
-state. Group-local List details retain loaded counts, known totals, omissions,
-uncertain titles and saved-read times. The last **Load more** row advances the
+reads no new catalog or session page. The picker title is **Search sessions**.
+A nonblank query shows only matching source groups, or **No matches in loaded sessions**
+when no loaded row matches. Clearing the query restores all groups and their empty
+states. One **Search coverage** disclosure follows the results inside their scroller.
+Its source-labelled facts retain loaded counts, known totals, omissions, uncertain
+titles and saved-read times. Partial-source, loading and error notices remain visible
+outside the closed disclosure. The last **Load more** row advances the
 existing folder cursor when one exists; there is no partial-count footer or
 inactive continuation control. Live rows read **live in terminal** and open their
 exact snapshot without Resume or Convert controls. The heading search and Commands
