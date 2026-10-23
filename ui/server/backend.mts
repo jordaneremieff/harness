@@ -14,6 +14,7 @@ import {readUserStylesheet, type UserStylesheetSource} from './user-stylesheet.m
 import {LifecycleLog,redactLifecycle} from './lifecycle-log.mts';
 import {ClientErrorLog} from './client-error-log.mts';
 import {parseArgs, type Options} from './options.mts';
+import {readPrivateRoute} from './settings.mts';
 export {parseArgs} from './options.mts';
 import {Control} from './control.mts';
 import {ControlDiscovery} from './control-discovery.mts';
@@ -74,6 +75,7 @@ async function openClientErrorLog(directory:string):Promise<ClientErrorLog|undef
 export async function startBackend(options:Options, injection:Partial<Pick<RegistryOptions,'agents'|'primary'|'measure'|'connectOwner'>> & {userStylesheet?:UserStylesheetSource; assets?:Map<string,Asset>; assetRoot?:string; identity?:UiIdentity; supervisorRestarts?:number; onRestart?:()=>void; release?:{directory:string;manifest:ReleaseManifest;previous?:string}}={}) {
   const startedAt=new Date().toISOString(),paths=statePaths(),stateDir=options.stateDir??paths.stateDir;
   requireAbsoluteCwd(options.cwd);
+  const privateRoute = readPrivateRoute({agentDir: paths.agentDir});
   let development:Awaited<ReturnType<typeof DevelopmentBuild.open>>|undefined;
   let diagnostics:DiagnosticSink|undefined,log:LifecycleLog|undefined,clientErrors:ClientErrorLog|undefined;
   let startupRegistry:Registry|undefined,startupHttp:LocalHttp|undefined,files:Files|undefined,control:Control|undefined,controlDiscovery:ControlDiscovery|undefined;
@@ -102,7 +104,7 @@ export async function startBackend(options:Options, injection:Partial<Pick<Regis
       services:serviceHealth(registry,files,stopping),
       build:{state:generations?.status().status??'static'},
       ...(registry.options.owner ? {owner:{pid:process.ppid,incarnation:registry.options.owner.hello.ownerIncarnation,protocol:registry.options.owner.hello.protocol},backend:{pid:process.pid,...(release?{release:release.manifest.id}:{})}} : {})});
-    const http=new LocalHttp(registry,assets,undefined,{clientErrors,generations,diagnostics,identity,files,health,control:{service:control},userStylesheet:userStylesheetSource(injection.userStylesheet)});startupHttp=http;
+    const http=new LocalHttp(registry,assets,undefined,{clientErrors,generations,diagnostics,identity,files,health,control:{service:control},userStylesheet:userStylesheetSource(injection.userStylesheet)},{config:privateRoute,stateDir});startupHttp=http;
     const url=await http.listen(options.port);
     await controlDiscovery.publish(stateDir,http.boundary.origin,registry.journal.bootId);
     development?.generations.observe(status=> {
@@ -199,6 +201,7 @@ async function cli() {
   };
   const prewarm=async(message:Start)=>{
     if(!message.release)throw new Error('Prewarm requires a sealed release.');
+    readPrivateRoute({agentDir:statePaths().agentDir});
     await manifestAt(message.release.directory,true);await assetMap(resolve(message.release.directory,'ui'));
     if(message.ownerState){const probe=await connectOwner(message.ownerState);try{const hello=await probe.request<OwnerHello>({kind:'hello'});if(hello.protocol!==message.release.manifest.ownerProtocol)throw new Error('The live owner protocol differs.');}finally{probe.close();}}
     process.send?.({kind:'prewarmed'});

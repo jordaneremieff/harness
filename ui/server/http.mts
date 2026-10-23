@@ -5,7 +5,9 @@ import { createServer, type IncomingMessage, type ServerResponse, type Server } 
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { LIMITS, ROUTES, LAYOUT_VERSION_HEADER, validAgentViews } from '../shared/api.ts';
-import { LocalBoundary, securityHeaders } from './boundary.mts';
+import { LocalBoundary, securityHeaders, type Entrypoint } from './boundary.mts';
+import type {PrivateRoute} from './settings.mts';
+import {listenPrivateSocket} from './private-socket.mts';
 import { ApiError, errorView } from './errors.mts';
 import { IMAGE_BYTES, ImageResponse } from './images.mts';
 import { isImageRoute } from './image-request.mts';
@@ -169,7 +171,10 @@ function operationKey(request: IncomingMessage) {
 /** Bounded request admission uses elapsed-time token accounting, never a refill timer. */
 export class LocalHttp {
   readonly server: Server;
-  readonly boundary = new LocalBoundary();
+  readonly boundary: LocalBoundary;
+  readonly privateServer?: Server;
+  private privateAccess?: {config: PrivateRoute; stateDir: string};
+  private privateSocket?: Awaited<ReturnType<typeof listenPrivateSocket>>;
   private stopped = false;
   private active = 0;
   private imageReads = 0;
@@ -183,18 +188,27 @@ export class LocalHttp {
   private buildStreams=new Set<ServerResponse>();
   private closeWork?: Promise<void>;
   private drainWaiters = new Set<() => void>();
-  constructor(backend: HttpBackend, assets: Map<string, Asset>, sessions: Pick<SessionStore, 'sessions' | 'projects' | 'titles'> = new SessionStore(), development:DevelopmentHttp = {}) {
+  constructor(backend: HttpBackend, assets: Map<string, Asset>, sessions: Pick<SessionStore, 'sessions' | 'projects' | 'titles'> = new SessionStore(), development:DevelopmentHttp = {}, privateAccess?: {config: PrivateRoute | undefined; stateDir: string}) {
     this.backend = backend; this.assets = assets; this.sessions = sessions;this.development=development;
-    this.server = createServer((request, response) => { void this.handle(request, response); });
-    this.server.requestTimeout = 30_000;
-    this.server.headersTimeout = 10_000;
-    this.server.maxHeadersCount = 64;
+    this.privateAccess = privateAccess?.config ? {config: Object.freeze({...privateAccess.config}), stateDir: privateAccess.stateDir} : undefined;
+    this.boundary = new LocalBoundary(this.privateAccess?.config);
+    this.server = this.createListener('local');
+    if (this.privateAccess) this.privateServer = this.createListener('private');
+  }
+  private createListener(entrypoint: Entrypoint): Server {
+    const server = createServer((request, response) => {void this.handle(request, response, entrypoint);});
+    server.requestTimeout = 30_000; server.headersTimeout = 10_000; server.maxHeadersCount = 64;
+    return server;
   }
   async listen(port = 4318) {
-    await new Promise<void>((resolve, reject) => { this.server.once('error', reject); this.server.listen(port, '127.0.0.1', () => {this.server.off('error', reject); resolve();}); });
-    const address = this.server.address();
-    if (!address || typeof address === 'string') throw new Error('Missing loopback address');
-    this.boundary.setPort(address.port); return `${this.boundary.origin}/`;
+    this.stopped = true;
+    try {
+      if (this.privateServer && this.privateAccess) this.privateSocket = await listenPrivateSocket(this.privateServer, this.privateAccess.stateDir);
+      await new Promise<void>((resolve, reject) => { this.server.once('error', reject); this.server.listen(port, '127.0.0.1', () => {this.server.off('error', reject); resolve();}); });
+      const address = this.server.address();
+      if (!address || typeof address === 'string') throw new Error('Missing loopback address');
+      this.boundary.setPort(address.port); this.stopped = false; return `${this.boundary.origin}/`;
+    } catch (error) {await this.close(); throw error;}
   }
   stopAdmission() { this.stopped = true; }
   resumeAdmission() {if (!this.closeWork) this.stopped = false;}
@@ -215,11 +229,19 @@ export class LocalHttp {
   private async finishClose(): Promise<void> {
     this.stopAdmission(); this.backend.journal.close();
     for(const response of this.buildStreams) response.end();
-    try {await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => this.server.closeAllConnections(), HTTP_CLOSE_GRACE_MS); timer.unref();
-        this.server.close(error => {clearTimeout(timer); if (error) reject(error); else resolve();});
-        this.server.closeIdleConnections();
-    });} finally {await this.sessionRead.close();}
+    try {
+      const results = await Promise.allSettled([this.server, this.privateServer].map(server => server ? this.closeListener(server) : Promise.resolve()));
+      await this.privateSocket?.cleanup();
+      const failed = results.find(result => result.status === 'rejected'); if (failed?.status === 'rejected') throw failed.reason;
+    } finally {await this.sessionRead.close();}
+  }
+  private async closeListener(server: Server): Promise<void> {
+    if (!server.listening) return;
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => server.closeAllConnections(), HTTP_CLOSE_GRACE_MS); timer.unref();
+      server.close(error => {clearTimeout(timer); if (error) reject(error); else resolve();});
+      server.closeIdleConnections();
+    });
   }
   private rate(key: string) {
     const now = performance.now(); const bucket = this.buckets.get(key) ?? {tokens: 240, at: now};
@@ -227,18 +249,18 @@ export class LocalHttp {
     if (bucket.tokens < 1) throw new ApiError('capacity', 'The request rate exceeds the local bound.', 429, 'read');
     bucket.tokens--; this.buckets.set(key, bucket);
   }
-  private async handle(request: IncomingMessage, response: ServerResponse) {
+  private async handle(request: IncomingMessage, response: ServerResponse, entrypoint: Entrypoint) {
     securityHeaders(response);const started=performance.now();
     try {
       if (this.stopped) throw new ApiError('not_ready', 'The backend no longer accepts requests.', 503);
-      this.boundary.validate(request);
+      const origin = this.boundary.validate(request, entrypoint);
       const rawPath = (request.url ?? '/').split('?')[0] ?? '/'; pathParts(rawPath);
-      const url = new URL(request.url ?? '/', this.boundary.origin);
+      const url = new URL(request.url ?? '/', origin);
       if (await this.pageRoute(response, url, request.method ?? 'GET')) return;
       this.rate(url.pathname.startsWith('/api/control/')&&url.pathname!==CONTROL_ROUTES.ack?'agent-control':'loopback');
       if (this.active >= 64) throw new ApiError('capacity', 'Too many requests are active.', 429, 'read');
       this.active++;
-      try { await this.route(request, response); } finally { this.active--; for (const done of this.drainWaiters) done(); }
+      try { await this.route(request, response, origin); } finally { this.active--; for (const done of this.drainWaiters) done(); }
     } catch (error) {rejectRequest(response, error);}
     finally {this.recordRequest(started);}
   }
@@ -246,10 +268,10 @@ export class LocalHttp {
     if(!this.development.diagnostics) return;
     this.development.diagnostics.request(performance.now()-started);
   }
-  private async route(request: IncomingMessage, response: ServerResponse) {
+  private async route(request: IncomingMessage, response: ServerResponse, origin: string) {
     const rawPath=(request.url??'/').split('?')[0]??'/';
     pathParts(rawPath);
-    const url = new URL(request.url ?? '/', this.boundary.origin);
+    const url = new URL(request.url ?? '/', origin);
     const method = request.method ?? 'GET'; const parts = pathParts(url.pathname);
     if(url.pathname === '/api/client-errors') {
       requireMethod(method,'POST');

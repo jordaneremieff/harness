@@ -93,8 +93,8 @@ async function inProcessHttp(context:TestContext, identity?: UiIdentity) {
   const invoke=async(path:string,method='GET',body?:unknown,headers:Record<string,string>={})=> {
     const raw=body===undefined?'':JSON.stringify(body);const request=Readable.from(raw?[Buffer.from(raw)]:[]) as unknown as IncomingMessage;
     request.url=path;request.method=method;request.headers={host:'127.0.0.1:12345',origin:http.boundary.origin,'content-type':'application/json','content-length':String(Buffer.byteLength(raw)),...headers};
-    const response=new MemoryResponse();const handler=http as unknown as {handle(request:IncomingMessage,response:ServerResponse):Promise<void>};
-    await handler.handle(request,response as unknown as ServerResponse);return response;
+    const response=new MemoryResponse();const handler=http as unknown as {handle(request:IncomingMessage,response:ServerResponse,entrypoint:'local'):Promise<void>};
+    await handler.handle(request,response as unknown as ServerResponse,'local');return response;
   };
   return {http,backend,generations,diagnostics,rows,counts,invoke,advance:(value:number)=>{now=value;}};
 }
@@ -616,6 +616,6 @@ test('raw body deadline cancels a stalled producer without an unhandled rejectio
   f.backend.uploadImage = async (ctx, _headers, body) => {reached(); try {for await (const _chunk of body) ctx.checkActive();} finally {cancelled = ctx.signal.aborted;} return {};};
   const request = new Readable({read() {}}) as unknown as IncomingMessage; request.url = '/api/workspaces/w/targets/t/images?name=x.png&epoch=1'; request.method = 'POST';
   request.headers = {host: '127.0.0.1:12345', origin: f.http.boundary.origin, 'content-type': 'image/png'};
-  const response = new MemoryResponse(); const pending = (f.http as unknown as {handle(request: IncomingMessage, response: ServerResponse): Promise<void>}).handle(request, response as unknown as ServerResponse);
+  const response = new MemoryResponse(); const pending = (f.http as unknown as {handle(request: IncomingMessage, response: ServerResponse, entrypoint: 'local'): Promise<void>}).handle(request, response as unknown as ServerResponse, 'local');
   await entered; context.mock.timers.tick(LIMITS.imageReceiveMs); await pending; assert.equal(response.statusCode, 408); assert.equal(cancelled, true); request.destroy();
 });

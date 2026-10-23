@@ -27,6 +27,62 @@ The backend uses native Node TypeScript stripping; runtime files contain only er
 
 `PI_CODING_AGENT_DIR` selects the Pi agent directory; otherwise the usual home-relative Pi directory applies. `PI_AGENT_SESSIONS_DIR` selects the retained agent store; otherwise it is `<agentDir>/agent-sessions`.
 
+## Optional private phone access
+
+Private access is off by default. The desktop URL remains an unauthenticated `127.0.0.1` TCP listener. Private access uses a separate HTTP Unix socket at `<stateDir>/private/http.sock`, not the desktop port. Both listeners use the same routes, limits, release fence and shutdown.
+
+Set both fields in the `ui` section of `<agentDir>/harness.json`:
+
+```json
+{
+  "version": 1,
+  "ui": {
+    "privateOrigin": "https://desktop.example.ts.net",
+    "privateOwnerLogin": "owner@example.com"
+  }
+}
+```
+
+| Key | Environment | Default | Constraints |
+|---|---|---|---|
+| `privateOrigin` | `PI_UI_PRIVATE_ORIGIN` | unset | Exact lowercase HTTPS hostname below `ts.net`; default HTTPS port only, without an explicit port, credentials, trailing slash, path, query, fragment or wildcard. |
+| `privateOwnerLogin` | `PI_UI_PRIVATE_OWNER_LOGIN` | unset | Exact case-sensitive ASCII login, one to 254 printable non-space characters, without commas, semicolons or backslashes. No trimming, case folding, domain matching or encoded-identity decoding. |
+
+A present environment value overrides its corresponding document field, including an empty value that is invalid. Both absent means disabled. Partial or invalid private configuration, or an unreadable or malformed configuration document, refuses backend startup rather than silently disabling access. Stylesheet validity remains independent: an invalid stylesheet does not disable valid private settings, and a valid stylesheet does not excuse invalid private settings.
+
+The backend reads private settings once at startup. For an already running sealed UI, set the document fields and switch to a **different** sealed release that contains this support, or let the next normal UI release activate it. Switching to the current release is a no-op and does not reload settings. Do not stop the raw owner merely to apply these settings. Environment overrides in this initial-launch example do not change a running supervisor's environment:
+
+```sh
+PI_UI_PRIVATE_ORIGIN='https://<machine>.<tailnet>.ts.net' \
+PI_UI_PRIVATE_OWNER_LOGIN='<exact-owner-login>' \
+npm run ui:start -- --state-dir '<absolute-state-dir>'
+```
+
+After a supporting backend starts with valid settings, a separately authorised Tailscale setup uses this command shape:
+
+```sh
+tailscale serve --bg --https=443 'unix:<absolute-state-dir>/private/http.sock'
+tailscale serve status --json
+```
+
+Do not target port `4318`, use a TCP forwarder, enable Funnel or expose this socket through another proxy. [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve) supplies private HTTPS and replaces its user identity headers. This backend requires the exact owner login; another user, a shared-device visitor with another login, a tagged device without user identity, or any Funnel marker is refused.
+
+The private socket requires exactly one `Host: localhost`, the configured hostname in `X-Forwarded-Host`, `X-Forwarded-Proto: https`, and the exact `Tailscale-User-Login`. Duplicate or malformed security headers are refused. Every unsafe method requires the exact external HTTPS Origin. Reads reject a supplied different Origin. Fetch Metadata permits only `same-origin`, `none` or absence. Authentication precedes assets, stylesheet reads, health, bodies, files, control actions and streams. The TCP listener rejects proxy identity and forwarding headers even when private access is disabled. Neither listener enables CORS.
+
+The backend creates an owned `0700` directory and a `0600` socket. It refuses symlinks, unsafe ownership or permissions, unexplained existing entries and unsupported socket path lengths. It does not take over a stale socket. Release prewarm validates settings without binding; activation binds only after the old backend closes. Close removes only the instance's socket and closes streams on both listeners.
+
+This is a proxy-only ingress, not cryptographic proof that a Unix caller is tailscaled. The UI account and root remain trusted: both already control the unauthenticated desktop UI and can forge a local Unix request. The socket excludes other OS accounts and arbitrary TCP callers, not those trusted principals.
+
+Before network activation is accepted, verify the installed Serve process against the socket: the owner's request succeeds, another login fails, and Host, forwarded host, protocol and login match the contract above. Upstream source and CLI help do not establish an installed process's proxy behaviour. If its semantics differ, the route fails closed; do not add a loopback fallback. Server tests do not establish phone or Serve acceptance.
+
+To disable this route, remove only this Serve mapping with the same flags used to create it:
+
+```sh
+tailscale serve --bg --https=443 'unix:<absolute-state-dir>/private/http.sock' off
+```
+
+Then remove both private fields and any private environment overrides before a different supporting backend activates. Until replacement, the current backend retains its startup settings. [Serve CLI documentation](https://tailscale.com/docs/reference/tailscale-cli/serve) describes the `off` form. Do not reset unrelated Serve configuration.
+
 ## Dates and times
 
 Dates use one fixed day-first `en-AU` form in the local time zone, with a 12-hour clock and uppercase AM/PM. Absolute times include the year, for example `20 Oct 2026, 5:48 PM`; older compact ages omit the year. Thread events show only the time on the same local day, or `7 Oct, 5:56 AM` otherwise. Health start times and extension dialog deadlines include seconds, for example `20 Oct, 5:48:33 PM`. Exact timestamp descriptions also include the year and short zone name. Relative age words, number formats, ISO titles and machine-readable timestamp attributes remain unchanged.
@@ -35,7 +91,7 @@ Dates use one fixed day-first `en-AU` form in the local time zone, with a 12-hou
 
 **Appearance** offers System, Dark and Light. Under it, one quiet line says "Your stylesheet is applied." or "Add your own stylesheet with ui.userStylesheet in harness.json." The line reflects the loaded page: the server links the stylesheet into the page only when the file is usable at page load.
 
-One setting in the `ui` section of `<agentDir>/harness.json` selects a user stylesheet, following the [extension configuration contract](../docs/conventions/extension-config.md). The UI reads its section with its own code in [server/settings.mts](server/settings.mts); it publishes no settings event, so **Version and health** is its inspection view.
+The `userStylesheet` setting in the `ui` section of `<agentDir>/harness.json` selects a user stylesheet, following the [extension configuration contract](../docs/conventions/extension-config.md). The UI reads its section with its own code in [server/settings.mts](server/settings.mts); it publishes no settings event, so **Version and health** is its inspection view.
 
 | Key | Environment | Type | Default | Constraints | Description |
 |---|---|---|---|---|---|

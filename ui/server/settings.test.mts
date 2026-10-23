@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
-import { readSettings, settings } from './settings.mts';
+import { readPrivateRoute, readSettings, settings } from './settings.mts';
 
 async function agentDir(context: TestContext, document?: unknown, raw?: string) {
   const dir = await mkdtemp(join(tmpdir(), 'ui-settings-test-'));
@@ -20,7 +20,7 @@ test('the declaration names the ui section, the path type and the environment ov
 });
 test('a missing document leaves the stylesheet unset without a diagnostic', async context => {
   const snapshot = readSettings({agentDir: await agentDir(context), env: {}});
-  assert.deepEqual(snapshot, {userStylesheet: undefined, origin: 'default', status: 'unset', diagnostics: []});
+  assert.deepEqual(snapshot, {privateRoute: undefined, privateStatus: 'disabled', userStylesheet: undefined, origin: 'default', status: 'unset', diagnostics: []});
 });
 test('a relative document path resolves against the agent directory and an absolute path is kept', async context => {
   const dir = await agentDir(context, {version: 1, ui: {userStylesheet: 'ui/mine.css'}});
@@ -54,4 +54,52 @@ test('the environment still selects a stylesheet when the document is unreadable
   assert.equal(readSettings({agentDir: dir, env: {PI_UI_USER_STYLESHEET: '/a.css'}}).userStylesheet, '/a.css');
   await writeFile(join(dir, 'other.json'), JSON.stringify({version: 1, ui: {userStylesheet: 'b.css'}}));
   assert.equal(readSettings({agentDir: dir, env: {PI_HARNESS_FILE: 'other.json'}}).userStylesheet, join(dir, 'b.css'));
+});
+const privateOrigin = 'https://desktop.example.ts.net', privateOwnerLogin = 'Owner@example.com';
+test('private access is disabled by absence and complete configuration is immutable and independent of stylesheet validity', async context => {
+  const dir = await agentDir(context);
+  assert.equal(readPrivateRoute({agentDir: dir, env: {}}), undefined);
+  await writeFile(join(dir, 'harness.json'), JSON.stringify({version: 1, ui: {privateOrigin, privateOwnerLogin, userStylesheet: 5}}));
+  const snapshot = readSettings({agentDir: dir, env: {}});
+  assert.equal(snapshot.status, 'invalid'); assert.equal(snapshot.privateStatus, 'valid');
+  assert.deepEqual(snapshot.privateRoute, {origin: privateOrigin, host: 'desktop.example.ts.net', ownerLogin: privateOwnerLogin});
+  assert.ok(Object.isFrozen(snapshot.privateRoute));
+  await writeFile(join(dir, 'harness.json'), JSON.stringify({version: 1, ui: {privateOrigin, userStylesheet: 'valid.css'}}));
+  const partial = readSettings({agentDir: dir, env: {}});
+  assert.equal(partial.status, 'valid'); assert.equal(partial.privateStatus, 'invalid');
+  assert.throws(() => readPrivateRoute({agentDir: dir, env: {}}), /invalid or incomplete/);
+});
+test('private environment overrides select each field without fallback for an invalid present value', async context => {
+  const dir = await agentDir(context, {version: 1, ui: {privateOrigin, privateOwnerLogin}});
+  const env = {PI_UI_PRIVATE_ORIGIN: 'https://other.example.ts.net', PI_UI_PRIVATE_OWNER_LOGIN: 'other@example.com'};
+  assert.deepEqual(readPrivateRoute({agentDir: dir, env}), {origin: env.PI_UI_PRIVATE_ORIGIN, host: 'other.example.ts.net', ownerLogin: env.PI_UI_PRIVATE_OWNER_LOGIN});
+  for (const invalid of [{PI_UI_PRIVATE_ORIGIN: ''}, {PI_UI_PRIVATE_OWNER_LOGIN: ''}]) assert.throws(() => readPrivateRoute({agentDir: dir, env: invalid}), /invalid or incomplete/);
+});
+test('private origins reject every alternate authority and non-origin shape; logins remain bounded exact ASCII', async context => {
+  const dir = await agentDir(context);
+  const origins = ['', 'http://desktop.example.ts.net', 'https://desktop.example.ts.net:443', 'https://desktop.example.ts.net:444',
+    'https://desktop.example.ts.net/', 'https://desktop.example.ts.net/a', 'https://desktop.example.ts.net?x', 'https://desktop.example.ts.net#x',
+    'https://user@desktop.example.ts.net', 'https://*.example.ts.net', 'https://desktop.example.ts.net.evil.test',
+    'https://127.0.0.1', 'https://desktop.EXAMPLE.ts.net', 'https://-desktop.example.ts.net', 'https://desktop.example.ts.net.',
+    `https://${'a'.repeat(64)}.example.ts.net`, `https://${'a.'.repeat(130)}ts.net`, null, 7];
+  for (const origin of origins) {
+    await writeFile(join(dir, 'harness.json'), JSON.stringify({version: 1, ui: {privateOrigin: origin, privateOwnerLogin}}));
+    assert.throws(() => readPrivateRoute({agentDir: dir, env: {}}), /invalid or incomplete/, String(origin));
+  }
+  for (const login of ['', ' owner@example.com', 'owner@example.com ', 'owner\n@example.com', 'ownér@example.com', 'owner,other', 'a'.repeat(255), null, 8]) {
+    await writeFile(join(dir, 'harness.json'), JSON.stringify({version: 1, ui: {privateOrigin, privateOwnerLogin: login}}));
+    assert.throws(() => readPrivateRoute({agentDir: dir, env: {}}), /invalid or incomplete/);
+  }
+  for (const partial of [{privateOrigin}, {privateOwnerLogin}]) {
+    await writeFile(join(dir, 'harness.json'), JSON.stringify({version: 1, ui: partial}));
+    assert.throws(() => readPrivateRoute({agentDir: dir, env: {}}), /invalid or incomplete/);
+  }
+});
+test('an unreadable or malformed private configuration document fails closed, not as disabled', async context => {
+  const dir = await agentDir(context, undefined, '{bad');
+  assert.throws(() => readPrivateRoute({agentDir: dir, env: {}}), /invalid or incomplete/);
+  for (const document of [{version: 2}, {version: 1, ui: []}]) {
+    await writeFile(join(dir, 'harness.json'), JSON.stringify(document));
+    assert.throws(() => readPrivateRoute({agentDir: dir, env: {}}), /invalid or incomplete/);
+  }
 });
