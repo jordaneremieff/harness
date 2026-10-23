@@ -397,7 +397,7 @@ test('model and thinking use separate readable targets on the composer shelf', (
   assert.equal((html.match(/<footer id="workbench-status"/g) ?? []).length, 1);
   assert.match(rule('.workbench-status'), /flex-wrap: wrap/); assert.match(rule('.workbench-version'), /margin-left: auto/);
   assert.match(rule('.workbench-status-facts'), /gap: var\(--s1\) var\(--s4\)/);
-  assert.match(rule('.palette-row[data-source=app]'), /grid-template-columns: minmax\(0,30%\) minmax\(0,1fr\)/);
+  assert.match(rule('.palette-row[data-source=app]'), /grid-template-columns: minmax\(0,36%\) minmax\(0,1fr\)/);
 });
 test('agent settings details preserve line boundaries without changing other footer text', () => {
   assert.equal(rule('#agent-settings-detail').trim(),'white-space: pre-line;');
