@@ -1223,14 +1223,14 @@ pre.tool-document { font-family: var(--mono); font-size: var(--fs-code); line-he
 .composer-intake-menu > .context-menu-item:hover, .composer-intake-menu > .context-menu-item:focus-visible { background: var(--menu-hover); }
 
 /* Lists in menus, palette and pickers */
-.command-option, .palette-row { position: relative; display: grid; grid-template-columns: minmax(0,30%) minmax(0,1fr) 10ch; align-items: center; gap: var(--s3); width: 100%; min-height: 30px; padding: 0 var(--s3); border: 0; border-radius: var(--r-sm); cursor: pointer; }
+.command-option, .palette-row { position: relative; display: grid; grid-template-columns: minmax(0,36%) minmax(0,1fr) 10ch; align-items: center; gap: var(--s3); width: 100%; min-height: 30px; padding: 0 var(--s3); border: 0; border-radius: var(--r-sm); cursor: pointer; }
 .palette-row:hover { background: var(--canvas); }
 .command-option { min-height: 32px; padding: 0 var(--s3); border-radius: var(--r-sm); }
 .command-option:hover, .command-option[aria-selected=true] { background: var(--menu-hover); }
 .palette-check { position: absolute; right: 14px; width: 14px; height: 14px; color: var(--fg); }
 .palette-row[aria-checked] .palette-source { padding-right: var(--s5); }
-.palette-row[data-source=app] { grid-template-columns: minmax(0,30%) minmax(0,1fr); }
-.palette-row[data-source=app]:has(> .palette-shortcut) { grid-template-columns: minmax(0,30%) minmax(0,1fr) auto; }
+.palette-row[data-source=app] { grid-template-columns: minmax(0,36%) minmax(0,1fr); }
+.palette-row[data-source=app]:has(> .palette-shortcut) { grid-template-columns: minmax(0,36%) minmax(0,1fr) auto; }
 .palette-shortcut { grid-column: -2; grid-row: 1; justify-self: end; color: var(--muted); font-family: inherit; font-size: var(--fs-meta); font-weight: 400; white-space: nowrap; }
 .palette-row[data-source=app][aria-checked] .palette-desc { padding-right: var(--s5); }
 .palette-row[data-kind=conversation] { grid-template-columns: minmax(0,1fr) auto; }
