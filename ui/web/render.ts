@@ -2237,7 +2237,9 @@ export class Transcript {
   }
   private openToolPreview(tool:ToolNode):void {
     if(!tool.source||!this.currentToolSource(tool,tool.source,this.generation))return;
+    const held=!!tool.previewMore&&document.activeElement===tool.previewMore;
     tool.node.open=true;this.toolExpansion(tool);tool.technical.open=true;
+    if(held)tool.node.querySelector<HTMLElement>('summary')?.focus({preventScroll:true});
     if(tool.inspections){if(tool.source.name==='write'||tool.source.name==='edit')tool.inspections.arguments.open=true;else tool.inspections.output.open=true;}
   }
   private toolExpansion(tool: ToolNode): void {
