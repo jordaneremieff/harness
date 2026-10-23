@@ -644,7 +644,7 @@ test('three direct utility controls retain named SVG slots and a separate unread
   }
   assert.match(footer, /id="notices-count"[^>]*\shidden/);
   assert.match(rule('.sidebar-footer > .icon-button > .card-icon'), /margin-inline: var\(--s1\)/);
-  assert.match(media('@media (pointer:coarse)'), /\.sidebar-footer > \.icon-button > \.card-icon \{ margin-inline: var\(--s3\)/);
+  assert.doesNotMatch(media('@media (pointer:coarse)'), /\.sidebar-footer > \.icon-button > \.card-icon\s*\{[^}]*margin-inline:/);
   assert.match(rule('.ui-icon'), /display: block;[^}]*width: 16px; height: 16px/);
   assert.match(rule('.icon-button'), /display: inline-flex;[^}]*min-width: 24px; height: 24px/);
   assert.doesNotMatch(css, /\.sidebar-footer \.ui-icon\s*\{/);
@@ -1116,6 +1116,15 @@ test('Message connection recovery shares flat state actions and retains native f
 test('the sidebar footer stays at the bottom without a heavy separator', () => {
   assert.equal([...css.matchAll(/^\.sidebar-footer \{/gm)].length, 2); assert.match(css, /^\.sidebar-footer \{ display: grid; grid-template-columns: repeat\(3,auto\); justify-content: space-between; gap: var\(--s1\); \}/m);
   assert.match(rule('.sidebar-footer'), /align-items: center; gap: var\(--s1\); margin-top: auto; padding: var\(--s1\) var\(--s2\) 0/); assert.doesNotMatch(rule('.sidebar-footer'), /border-top:/);
+});
+
+test('coarse sidebar footer icons keep compact margins after later declarations', () => {
+  const margins = [...css.matchAll(/(?:^|\n)\s*\.sidebar-footer > \.icon-button > \.card-icon\s*\{([^}]+)\}/g)]
+    .flatMap(match => [...match[1].matchAll(/(?:^|;)\s*margin-inline:\s*([^;]+)/g)].map(declaration => declaration[1].trim()));
+  assert.ok(margins.length > 0, 'Footer icon margins exist');
+  assert.equal(margins.at(-1), 'var(--s1)', 'The effective coarse margin must retain the compact base value');
+  assert.match(rule(':where(:root)'), /--s1: 4px;/);
+  assert.match(media('@media (pointer:coarse)'), /\.status-controls > \.icon-button > \.card-icon \{ margin-inline: var\(--s3\); \}/);
 });
 
 test('the visible sidebar leads with its panel toggle at the same inset and inherits coarse pointer targets', () => {

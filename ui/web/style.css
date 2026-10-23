@@ -1583,7 +1583,6 @@ button.thread-person:hover, button.thread-sender:hover { background: var(--raise
   .file-naming { flex-wrap: wrap; }
   .file-naming > .file-name-input { flex-basis: calc(100% - 24px); }
   .file-naming > .file-name-actions { margin-left: auto; }
-  .sidebar-footer > .icon-button > .card-icon { margin-inline: var(--s3); }
   .status-controls > .icon-button > .card-icon { margin-inline: var(--s3); }
   button, summary, .row-age, .row-message, .message-actions button, .transcript-actions button, .latest, .source-header button, .source-disclosure > .source-wrap, .tool-copy, .composer-model, .composer-thinking, .icon-button { min-height: 44px; min-width: 44px; }
   .source-disclosure > summary.source-header { min-height: 49px; }
