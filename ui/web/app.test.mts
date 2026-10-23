@@ -1048,6 +1048,8 @@ test('the Primary row carries no state glyph, so its title starts at the common 
 });
 
 test('sidebar controls are visible and their icons have consistent decorative strokes and named buttons', async () => {
+  assert.ok(byId('session-new').querySelector('.session-create-label'), 'Icon setup retains the visible HTML label');
+  assert.equal(byId('session-new').querySelector('.session-create-label')?.classList.contains('sr-only'), false);
   for(const id of ['agent-refresh','agent-new','sidebar-close']){const node=byId(id); assert.equal(node.hidden,false); assert.ok(node.getAttribute('aria-label')); const icon=node.querySelector('svg'); assert.ok(icon); assert.equal(icon.getAttribute('width'),'16'); assert.equal(icon.getAttribute('height'),'16'); assert.equal(icon.getAttribute('focusable'),'false'); assert.equal(icon.getAttribute('stroke'),'currentColor'); assert.equal(icon.getAttribute('stroke-width'),'1.5'); assert.equal(icon.getAttribute('aria-hidden'),'true');} assert.match(html,/id="agent-search"[^>]*placeholder="Filter agents"/);
 });
 test('pane controls separate creation from conversation actions without title rows', async () => {
@@ -1055,7 +1057,7 @@ test('pane controls separate creation from conversation actions without title ro
   const pane=paneNode('pane-1'); assert.equal(pane.querySelectorAll('.pane-actions').length,2); assert.equal(pane.querySelector('.pane-conversation-actions')?.getAttribute('aria-label'),'Conversation actions'); assert.equal(pane.querySelector('.pane-actions')?.getAttribute('aria-label'),'New tab'); assert.equal(pane.querySelector('.pane-actions svg')?.getAttribute('class'),'card-icon card-icon-plus'); assert.equal(primaryControl('transcript').getAttribute('aria-label'),'Conversation messages'); assert.equal(primaryControl('send').textContent,'Send'); assert.doesNotMatch(html,/pane-heading|id="tab-split"|id="session-title"/);
 });
 
-test('pane strips expose local navigation, a direct new-tab chooser and a separate complete tab list', async () => {
+test('pane strips expose local navigation, explicit new-session and existing-conversation actions, and a complete tab list', async () => {
   const layout = singlePane([{kind: 'primary'}, {kind: 'agent', identity: 'strip-a'}, {kind: 'agent', identity: 'strip-b'}]);
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', conversationLayout: layout}, primaries: [primaryFixture({epoch: 8405})], roster: [agentFixture('strip-a', {name: 'First full tab name'}), agentFixture('strip-b', {name: 'Second full tab name'})]});
   const pane = paneNode('pane-1'); const bar = pane.querySelector('.tab-bar'); assert.ok(bar);
@@ -1069,6 +1071,9 @@ test('pane strips expose local navigation, a direct new-tab chooser and a separa
   const selected = menuNode().children.find(node => node.textContent === 'First full tab name'); assert.equal(selected?.getAttribute('aria-checked'), 'true');
   const second = menuNode().children.find(node => node.textContent === 'Second full tab name'); assert.ok(second); second.click(); await settle(); assert.equal(next.disabled, true);
   contextMenu.close(); const plus = pane.querySelector('.pane-actions'); assert.ok(plus); plus.focus(); plus.click(); await settle();
+  assert.equal(contextMenu.openNow, true); assert.equal(plus.getAttribute('aria-haspopup'), 'menu');
+  assert.deepEqual(menuNode().children.map(node => node.textContent), ['New session', 'Open conversation']);
+  menuNode().children.find(node => node.textContent === 'Open conversation')?.click();
   assert.equal(contextMenu.openNow, false); assert.equal(byId('modal-title').textContent, 'Go to conversation'); byId('modal-close').click();
   app.openTabActions('pane-1'); for (const name of ['Split right', 'Split down', 'Close tab']) assert.ok(menuNode().children.some(node => node.textContent === name)); contextMenu.close();
 });

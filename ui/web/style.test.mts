@@ -770,7 +770,7 @@ test('visible controls carry labels and one icon stroke style', async () => {
   assert.match(factory, /send\.setAttribute\('aria-label', 'Send message'\)/);
   assert.match(factory, /stop\.setAttribute\('aria-label', 'Stop response'\)/);
   const app = await readFile(new URL('./app.ts', import.meta.url), 'utf8');
-  assert.match(app, /cardAction\('plus', 'New tab'/); assert.match(app, /plus\.setAttribute\('aria-haspopup', 'dialog'\)/);
+  assert.match(app, /cardAction\('plus', 'New tab'/); assert.match(app, /plus\.setAttribute\('aria-haspopup', 'menu'\)/);
   assert.doesNotMatch(html, /id="session-actions"|id="primary-send"|id="primary-stop"|id="notices-button"|window-actions/);
   assert.match(html, /id="notifications-button"[^>]*aria-haspopup="dialog"/);
   assert.doesNotMatch(html.match(/<input id="agent-search"[^>]*>/)?.[0] ?? '', /\shidden/);
@@ -1124,8 +1124,8 @@ test('drawer and overflow controls share accessible inline stroke icons', async 
   assert.match(button, /data-control-icon="navigation"/); assert.match(button, /aria-label="Hide sidebar"/);
   const app = await readFile(new URL('./app.ts', import.meta.url), 'utf8');
   assert.equal([...app.matchAll(/const plus = cardAction\('plus'/g)].length, 1);
-  assert.match(app, /cardAction\('plus', 'New tab', \(\) => choosePaneTarget\(leaf\.id\)/);
-  assert.match(app, /plus\.setAttribute\('aria-haspopup', 'dialog'\)/);
+  assert.match(app, /cardAction\('plus', 'New tab', \(\) => newPaneMenu\(leaf\.id\)/);
+  assert.match(app, /plus\.setAttribute\('aria-haspopup', 'menu'\)/);
   assert.match(app, /cardAction\('chevron', 'Tabs in this pane'/);
   assert.match(app, /bar\.append\(previous, next, tabs, plus, menu, actions\); node\.append\(bar, content\)/);
   assert.match(rule('.pane-menu > .card-icon'), /transform: rotate\(90deg\)/);
@@ -1295,7 +1295,11 @@ test('phone drawer sections keep usable content inside one outer scroll owner', 
   assert.match(phone,/\.app\.drawer-open \.files-section \{ flex: none; max-height: none; min-height: 0/);
   assert.match(phone,/\.app\.drawer-open #files-section-body \{ overflow: visible/);
   assert.match(phone,/\.app\.drawer-open \.sidebar-scroll > \.roster-section \{ flex: none/);
-  assert.match(phone,/\.app\.drawer-open \.roster \{ flex: none; min-height: 44px; max-height: 50dvh/);
+  assert.match(phone,/\.app\.drawer-open \.roster \{ flex: none; min-height: 44px; max-height: none/);
+  assert.match(rule('.sidebar .roster-body'), /flex: none/);
+  assert.match(rule('.sidebar .roster'), /max-height: none; overflow: visible/);
+  assert.match(rule('.sidebar .roster[data-catalog=true]'), /max-height: min\(50dvh,400px\); overflow-y: auto/);
+  assert.match(html, /id="session-new"[^>]*>[\s\S]*?<span class="session-create-label">New session<\/span>/);
   const sectionEnd = html.indexOf('</div>\n<section id="agent-message-panel"');
   assert.ok(html.indexOf('<div class="sidebar-scroll">') < html.indexOf('id="sidebar-conversations"'));
   assert.match(rule('.nav-heading-row'), /height: 28px/);

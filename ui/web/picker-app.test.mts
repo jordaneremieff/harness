@@ -41,7 +41,17 @@ function originTab(origin:string,identity:string):ConversationTab|undefined {
   if (origin === 'agent') return {kind:'agent',identity};
   return origin === 'primary' ? {kind:'primary'} : undefined;
 }
-for (const origin of ['empty','file','agent','primary'] as const) for (const action of ['new','resume'] as const) test(`${action} completion accepts the server-selected Primary from ${origin}`,async t=> {
+async function createSession(entry: 'new' | 'new-tab' | 'commands'): Promise<void> {
+  if (entry === 'new') {byId('session-new').click(); return;}
+  if (entry === 'new-tab') {
+    const plus = byId('conversation-panes').querySelector('.pane-actions'); assert.ok(plus); plus.click();
+    const choice = hostDocument.body.querySelector('.context-menu')?.children.find(node => node.textContent === 'New session'); assert.ok(choice); choice.click(); return;
+  }
+  byId('commands-button').click(); await settle();
+  const choice = byId('modal-body').querySelectorAll('.palette-row').find(node => node.getAttribute('aria-label')?.startsWith('New session,')); assert.ok(choice); choice.click();
+}
+for (const origin of ['empty','file','agent','primary'] as const) for (const action of ['new','new-tab','commands','resume'] as const) test(`${action} completion accepts the server-selected Primary from ${origin}`,async t=> {
+  const creating = action !== 'resume';
   const key = `${origin}-${action}`,old = {kind:'primary' as const,key:'old',epoch:20},target = {kind:'primary' as const,key,epoch:21},row = agentFixture(key);
   const tab = originTab(origin,row.identity);
   const layout = createPaneLayout(tab ? [tab] : []),selectedTarget = origin === 'agent' ? {kind:'agent' as const,identity:row.identity} : origin === 'empty' ? undefined : old;
@@ -61,11 +71,11 @@ for (const origin of ['empty','file','agent','primary'] as const) for (const act
     return previous(input,init);
   };
   byId('workbench-version').focus();
-  if (action === 'new') byId('session-new').click();
+  if (action !== 'resume') await createSession(action);
   else {byId('session-open').click();await settle();const saved = hostDocument.body.querySelector('.picker-select');assert.ok(saved);saved.click();await settle();const resume = hostDocument.body.querySelectorAll('button').find(node=>node.textContent === 'Resume' && !node.hidden);assert.ok(resume,'The closed-session view offers Resume');resume.click();}
   await settle();await app.selectionQueue.drain();await settle();assert.equal(opens,1);
-  assert.equal(app.state.workspace?.primaryKey,key);assert.deepEqual(app.state.workspace?.selectedTarget,target);if (action === 'new') assert.equal(activeTab(workspaceLayout(app.state.workspace))?.kind,'primary');
-  if (action === 'new' || origin !== 'file') assert.equal(hostDocument.activeElement,primaryControl('editor'));
+  assert.equal(app.state.workspace?.primaryKey,key);assert.deepEqual(app.state.workspace?.selectedTarget,target);if (creating) assert.equal(activeTab(workspaceLayout(app.state.workspace))?.kind,'primary');
+  if (creating || origin !== 'file') assert.equal(hostDocument.activeElement,primaryControl('editor'));
   const rendered = workspaceLayout(app.state.workspace);
   if (tab?.kind === 'file') assert.ok(rendered.root.kind === 'pane' && rendered.root.tabs.some(item=>tabKey(item) === tabKey(tab)));
 });

@@ -114,6 +114,7 @@ function findStatusText(result: FindStatus | undefined, query: string): string {
 export type SettingsSelection = {target: Target; model?: {provider: string; modelId: string}; thinking?: string; levels?: string[]; primary?: PrimaryView; closed?: () => void; guard: () => string | undefined};
 export type SelectionChange = Partial<Omit<Workspace, 'selectedTarget'>> & {selectedTarget?: Target | null};
 export type ActionContext = {
+  newSession(project?: string): void;
   copyLastAnswer?:()=>((()=>void)|undefined);
   threadPosts?:()=>{previous?:()=>void;next?:()=>void};
   ownMessages?:()=>{previous?:()=>void;next?:()=>void};
@@ -306,8 +307,9 @@ export class Actions {
   private sessionPicker(): ProjectPicker { this.picker ??= new ProjectPicker(this.ctx); return this.picker; }
   projectPicker(): void { this.sessionPicker().open(); }
   openProject(): void { this.sessionPicker().openProject(); }
-  newSession(project?: string): void {
-    const primary = this.ctx.primary(); if (!primary) { this.sessionPicker().newSession(project); return; }
+  newSession(project?: string): void { this.ctx.newSession(project); }
+  replaceCurrentSession(): void {
+    const primary = this.readyPrimary(); if (!primary) return;
     if (this.changingSession) return;
     this.changingSession = true;
     void this.replaceSession(primary).catch(cause => {
@@ -462,7 +464,8 @@ export class Actions {
     const ready = !!this.readyPrimary(primary), workspaceReady = !!this.ctx.snapshot()?.workspace, copyLastAnswer=this.ctx.copyLastAnswer?.();
     const entry = (name: string, description: string, run: () => void, enabled = true, alias?: string, disabledReason = 'Requires a Primary session'): PaletteEntry => ({name, description, source: 'app', enabled, run, ...(!enabled ? {disabledReason} : {}), ...(alias ? {search: [alias, `/${alias}`]} : {})});
     const entries = [
-      entry('New session', 'Start a new session', () => this.newSession(), true, 'new'),
+      entry('New session', 'Create another session in the working folder', () => this.newSession(), true, 'new'),
+      entry('Replace current session', 'Start fresh in this Primary without creating another Primary', () => this.replaceCurrentSession(), ready),
       entry('Sessions', 'Open retained session history', () => this.projectPicker(), true, 'resume'),
       ...this.conversionEntries(),
       ...this.ctx.handover ? [entry('Continue a handover', 'Pick up a handover in a browser session', this.ctx.handover)] : [],
@@ -521,7 +524,7 @@ export class Actions {
       }
     }
     const conversation = new Set(['Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Jump to message…', 'Previous own message', 'Next own message', 'Previous result', 'Next result', 'Previous post', 'Next post', 'Copy agent ID', 'Sent and received tasks', 'Close conversation tab']);
-    const primaryActions = new Set(['Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Model', 'Thinking', 'Review message', 'Insert /agent new']);
+    const primaryActions = new Set(['Replace current session', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Model', 'Thinking', 'Review message', 'Insert /agent new']);
     const workspace = new Set(['New session', 'Sessions', 'Continue a handover', 'Saved drafts and messages', 'Appearance', 'Message input', 'Agent presentation control', 'Keyboard shortcuts', 'Help', 'Notifications', 'Refresh agents', 'Refresh files', 'Go to file…', 'Hide sidebar', 'Show sidebar', 'Projects', 'Next conversation tab', 'Previous conversation tab', 'Reopen closed tab']);
     const preferences = new Set(['Appearance','Message input','Agent presentation control','Hide sidebar','Show sidebar']);
     return [...entries.filter(item => item.enabled && (workspaceReady || !preferences.has(item.name))).map(item => {
@@ -571,7 +574,7 @@ export class Actions {
     return agents.slice().sort((a, b) => agentOrder(a) - agentOrder(b)).map(row => ({...(this.ctx.agentCaption?.(row.identity) ?? this.captions.get(row.identity)), description: [this.ctx.agentStatus(row), compactAge(row.modifiedAt, now)].filter(Boolean).join(' · '), search: [row.identity, ...row.handle ? [row.handle] : []], title: row.identity, source: 'agent', enabled: true, run: () => chooseTarget ? chooseTarget({kind: 'agent', identity: row.identity}) : this.ctx.selectAgent(row)}));
   }
   sessionMenuEntries(agent = false): PaletteEntry[] {
-    const names = new Set(agent ? ['Conversation details', 'Copy agent ID', 'Sent and received tasks', 'Saved drafts and messages', 'Message input', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Jump to message…', 'Appearance', 'Help'] : ['New session', 'Sessions', 'Continue a handover', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Conversation details', 'Sent and received tasks', 'Saved drafts and messages', 'Message input', 'Appearance', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Jump to message…', 'Model', 'Thinking', 'Review message']);
+    const names = new Set(agent ? ['Conversation details', 'Copy agent ID', 'Sent and received tasks', 'Saved drafts and messages', 'Message input', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Jump to message…', 'Appearance', 'Help'] : ['New session', 'Replace current session', 'Sessions', 'Continue a handover', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Conversation details', 'Sent and received tasks', 'Saved drafts and messages', 'Message input', 'Appearance', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Jump to message…', 'Model', 'Thinking', 'Review message']);
     return this.paletteEntries().filter(item => item.source === 'app' && names.has(item.name));
   }
   sessionMenu(agent = false): void {

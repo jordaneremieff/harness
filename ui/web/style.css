@@ -1470,7 +1470,7 @@ dialog[data-variant=menu]::backdrop { background: transparent; }
   .app.drawer-open #files-section-body { overflow: visible; }
   .app.drawer-open .sidebar-scroll > .roster-section { flex: none; min-height: 0; }
   .app.drawer-open .roster-body { flex: none; }
-  .app.drawer-open .roster { flex: none; min-height: 44px; max-height: 50dvh; }
+  .app.drawer-open .roster { flex: none; min-height: 44px; max-height: none; }
   .tab-bar > .pane-tab-nav, .navigation-access > .compact-project-context, .navigation-access > .compact-project-button { display: none; }
   .workbench-status { gap: 0 var(--s1); padding-inline: var(--s2); }
   .workbench-status:not([data-pane=file]) > :is(.workbench-scope, .workbench-activity) { display: none; }
@@ -1668,7 +1668,8 @@ button.thread-person:hover, button.thread-sender:hover { background: var(--raise
 .sidebar .sidebar-scroll { display: block; flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
 .sidebar .sidebar-scroll > .nav-section { flex: none; min-height: 0; }
 .sidebar .sidebar-conversations > .section-body, .sidebar #files-section-body { max-height: none; overflow: visible; }
-.sidebar .roster { flex: none; overflow: visible; }
+.sidebar .roster-body { flex: none; }
+.sidebar .roster { flex: none; max-height: none; overflow: visible; }
 .sidebar .roster[data-catalog=true] { max-height: min(50dvh,400px); overflow-y: auto; }
 .sidebar .threads-list { max-height: none; overflow: visible; }
 .sidebar .nav-row.thread-row { flex-direction: row; align-items: center; gap: var(--s2); height: 48px; min-height: 48px; }

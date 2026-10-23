@@ -28,7 +28,7 @@ const operation: OperationView = {id: 'op', kind: 'primary.control', state: 'com
 const ready = {snapshot: () => ({primaries: [primary]}) as unknown as ReturnType<ActionContext['snapshot']>};
 const workspaceReady = {snapshot: () => ({primaries: [primary], workspace: {}}) as unknown as ReturnType<ActionContext['snapshot']>};
 function context(overrides: Partial<ActionContext> = {}): ActionContext {
-  return {agentPresentation: row => ({name: row.name ?? 'Unnamed conversation', activity: 'Running', tone: 'secondary', cwd: row.cwd}), snapshot: () => undefined, primary: () => primary, composer: {commandsChanged: () => {}} as ActionContext['composer'], commandsChanged: () => {overrides.composer?.commandsChanged?.();}, modal: {} as ActionContext['modal'], selection: async () => undefined, reload: async () => undefined, result: () => undefined, rosterRefresh: () => undefined, filesRefresh: () => undefined, hasTranscript: () => !!(overrides.primary ?? (() => primary))(), find: () => undefined, recovery: () => undefined, primaryEntries: () => [], agents: () => [], selectedAgent: () => undefined, agentStatus: row => row.availability === 'live' ? row.state : row.availability, selectAgent: () => {}, selectPrimary: () => {}, notices: () => {}, sidebar: () => {}, sidebarShown: () => true, view: () => {}, copyAgent: () => {}, inspectAgent: () => {}, readSession: () => {}, ...overrides};
+  return {newSession: () => {}, agentPresentation: row => ({name: row.name ?? 'Unnamed conversation', activity: 'Running', tone: 'secondary', cwd: row.cwd}), snapshot: () => undefined, primary: () => primary, composer: {commandsChanged: () => {}} as ActionContext['composer'], commandsChanged: () => {overrides.composer?.commandsChanged?.();}, modal: {} as ActionContext['modal'], selection: async () => undefined, reload: async () => undefined, result: () => undefined, rosterRefresh: () => undefined, filesRefresh: () => undefined, hasTranscript: () => !!(overrides.primary ?? (() => primary))(), find: () => undefined, recovery: () => undefined, primaryEntries: () => [], agents: () => [], selectedAgent: () => undefined, agentStatus: row => row.availability === 'live' ? row.state : row.availability, selectAgent: () => {}, selectPrimary: () => {}, notices: () => {}, sidebar: () => {}, sidebarShown: () => true, view: () => {}, copyAgent: () => {}, inspectAgent: () => {}, readSession: () => {}, ...overrides};
 }
 test('model catalog absence disables choices without discarding exact thinking metadata',async()=> {
   const current={...primary,model:{provider:'fixture',id:'model',name:'Fixture',reasoning:true,input:['text'],thinkingLevels:['off','high']}};
@@ -72,7 +72,16 @@ test('agent palette descriptions use the required recipient status callback with
   assert.equal(entry.description, label); assert.deepEqual(seen, [row]);
   label = ''; assert.equal(actions.paletteEntries().find(item => item.source === 'agent')?.description, '');
 });
-test('New session starts once without confirmation and leaves the old recipient draft unchanged', async () => {
+test('New session and its command entry use the app-owned creation hook rather than replacement', () => {
+  const requested: (string | undefined)[] = [];
+  const actions = new Actions(context({...workspaceReady, newSession: project => requested.push(project)}));
+  globalThis.fetch = async () => {throw new Error('Creation belongs to the app picker');};
+  actions.newSession('/chosen');
+  actions.paletteEntries().find(item => item.name === 'New session')?.run();
+  assert.deepEqual(requested, ['/chosen', undefined]);
+  assert.ok(actions.sessionMenuEntries().find(item => item.name === 'Replace current session'));
+});
+test('Replace current session starts once without confirmation and leaves the old recipient draft unchanged', async () => {
   const started = Promise.withResolvers<void>(); const response = Promise.withResolvers<Response>(); const reloaded = Promise.withResolvers<void>();
   const draft = {target: {kind: 'primary' as const, key: 'p', epoch: 1}, editor: {value: 'Keep this old session draft'}, commandsChanged() {}};
   let current = primary; const seen: string[] = []; const emitted: OperationView[] = [];
@@ -82,8 +91,8 @@ test('New session starts once without confirmation and leaves the old recipient 
     assert.equal(path, '/api/primaries/p/session'); assert.deepEqual(JSON.parse(String(init?.body)), {epoch: 1, action: 'new'});
     started.resolve(); return response.promise;
   };
-  const actions = new Actions(context({primary: () => current, composer: draft as ActionContext['composer'], modal: {confirm() {throw new Error('New session needs no confirmation');}} as unknown as ActionContext['modal'], result: value => emitted.push(value), reload: async () => {reloaded.resolve();}}));
-  actions.newSession(); actions.newSession(); await started.promise; current = {...primary, key: 'other', epoch: 4};
+  const actions = new Actions(context({...ready, primary: () => current, composer: draft as ActionContext['composer'], modal: {confirm() {throw new Error('New session needs no confirmation');}} as unknown as ActionContext['modal'], result: value => emitted.push(value), reload: async () => {reloaded.resolve();}}));
+  actions.replaceCurrentSession(); actions.replaceCurrentSession(); await started.promise; current = {...primary, key: 'other', epoch: 4};
   response.resolve(Response.json({ok: true, data: {...operation, kind: 'primary.session'}})); await reloaded.promise;
   assert.deepEqual(seen, ['/api/operations', '/api/primaries/p/session']); assert.equal(emitted.length, 1);
   assert.deepEqual(draft.target, {kind: 'primary', key: 'p', epoch: 1}); assert.equal(draft.editor.value, 'Keep this old session draft');
@@ -634,7 +643,7 @@ test('the palette lists the one sidebar action that applies and still finds it b
 test('palette covers every displaced control and session availability follows the menu', () => {
   const actions = new Actions(context(workspaceReady));
   const names = actions.paletteEntries().filter(item => item.source === 'app').map(item => item.name);
-  assert.deepEqual(names, ['New session', 'Sessions', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Conversation details', 'Saved drafts and messages', 'Appearance', 'Message input', 'Agent presentation control', 'Keyboard shortcuts', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Notifications', 'Refresh agents', 'Refresh files', 'Insert /agent new', 'Hide sidebar', 'Projects', 'Workspaces', 'Archived workspaces', 'Model', 'Thinking', 'Sent and received tasks']);
+  assert.deepEqual(names, ['New session', 'Replace current session', 'Sessions', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Conversation details', 'Saved drafts and messages', 'Appearance', 'Message input', 'Agent presentation control', 'Keyboard shortcuts', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Notifications', 'Refresh agents', 'Refresh files', 'Insert /agent new', 'Hide sidebar', 'Projects', 'Workspaces', 'Archived workspaces', 'Model', 'Thinking', 'Sent and received tasks']);
   const absent = new Actions(context({...workspaceReady, primary: () => undefined})).paletteEntries();
   assert.deepEqual(absent.filter(item => !item.enabled), []);
   for (const name of ['Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Model', 'Thinking', 'Sent and received tasks']) assert.equal(absent.some(item => item.name === name), false, name);
