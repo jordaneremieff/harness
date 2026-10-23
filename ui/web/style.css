@@ -1680,7 +1680,7 @@ button.thread-person:hover, button.thread-sender:hover { background: var(--raise
 .sidebar-footer > .icon-button { width: auto; min-width: 0; gap: 2px; font-size: var(--fs-meta); }
 .sidebar-footer .footer-label { display: inline; white-space: nowrap; }
 .sidebar-footer #notices-count { display: none; }
-.session-reader { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; position: relative; overflow: hidden; }
+.session-reader { --work-gutter: 24px; display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; position: relative; overflow: hidden; }
 .session-reader[hidden] { display: none; }
 .session-reader-header { flex: none; padding: var(--s3) var(--s4); }
 .session-reader-title { margin: 0; color: var(--fg); font-size: var(--fs-ui); font-weight: 500; overflow-wrap: anywhere; }

@@ -543,6 +543,7 @@ test('the sidebar resizes through a persisted width and the column sits beside i
   assert.match(rule('.agent-message-panel'), /height: var\(--panel-height, auto\)/);
   assert.doesNotMatch(rule('.composer textarea'), /max-height|--composer-height/);
   assert.match(rule('.conversation'), /--work-gutter: 24px/);
+  assert.match(rule('.session-reader'), /--work-gutter: 24px/);
   assert.doesNotMatch(rule('.workspace'), /padding-left|margin-left/);
   assert.match(rule('.conversation > :not(.transcript-region)'), /width: calc\(100% - 2 \* var\(--work-gutter\)\); max-width: var\(--read-width\)/);
   assert.match(rule('.transcript > .entry, .transcript > button'), /width: 100%; max-width: var\(--read-width\)/);
