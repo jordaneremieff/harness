@@ -1397,6 +1397,9 @@ dialog textarea:focus-visible { border-color: var(--edge); outline: 2px solid va
 .picker-group-heading > .picker-list-details { min-width: 0; max-width: 100%; }
 .picker-group-heading > .picker-list-details[open] { flex-basis: 100%; }
 .picker-list-facts { white-space: pre-line; overflow-wrap: anywhere; }
+.picker-search-coverage > summary { display: inline-flex; align-items: center; gap: var(--s1); min-height: 44px; }
+.picker-search-coverage > summary > .card-icon-chevron { flex: none; width: 12px; height: 12px; transform: rotate(0deg); }
+.picker-search-coverage[open] > summary > .card-icon-chevron { transform: rotate(90deg); }
 #picker-more { display: inline-flex; gap: var(--s1); width: auto; padding-inline: var(--s1); }
 .picker-folder, .picker-file { margin-top: var(--s4); }
 .picker-folder > :not(summary), .picker-file > :not(summary) { margin-top: var(--s2); }

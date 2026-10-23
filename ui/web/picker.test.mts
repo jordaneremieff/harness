@@ -223,6 +223,9 @@ test('Search sessions puts query matches before one source-labelled coverage dis
   assert.equal(setup.modal.title, 'Search sessions');
   const coverage=results.children.at(-1),disclosure=coverage?.querySelector('.picker-list-details');assert.ok(coverage&&disclosure);
   assert.equal(results.querySelectorAll('.picker-list-details').length,1);assert.equal(disclosure.children[0]?.textContent,'Search coverage');assert.equal(disclosure.open,false);
+  assert.equal(disclosure.classList.contains('picker-search-coverage'),true);
+  const chevron=disclosure.children[0]?.children[0];assert.ok(chevron);assert.equal(chevron.tag,'svg');
+  assert.match(chevron.attributes.class??'',/card-icon-chevron/);assert.equal(chevron.attributes['aria-hidden'],'true');assert.equal(chevron.attributes.focusable,'false');
   assert.deepEqual(disclosure.children.slice(1).map(source=>source.children[0]?.textContent),['Your sessions in project','Your sessions in other folders','Agent conversations']);
   assert.match(disclosure.textContent,/1 discovery records are unavailable or outside the bound/);
   assert.match(coverage.children[1]?.textContent??'',/Loaded results are partial/);assert.equal(disclosure.querySelectorAll('.picker-list-facts').length,3);

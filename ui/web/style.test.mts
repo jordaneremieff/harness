@@ -80,6 +80,14 @@ test('loaded-message choices keep separate excerpt and date rows at phone and de
   assert.match(rule('dialog[data-variant=palette][data-mode=messages] .palette-desc'),/grid-column: 1; grid-row: 2/);
   assert.match(rule('dialog[data-variant=palette], dialog[data-variant=picker]'),/width: min\(680px, calc\(100vw - 32px\)\)/);
 });
+test('Search coverage has one local chevron that follows its native disclosure state and preserves touch height', () => {
+  assert.match(rule('.picker-search-coverage > summary'), /display: inline-flex; align-items: center; gap: var\(--s1\); min-height: 44px/);
+  assert.equal(rule('.picker-search-coverage > summary > .card-icon-chevron').trim(), 'flex: none; width: 12px; height: 12px; transform: rotate(0deg);');
+  assert.equal(rule('.picker-search-coverage[open] > summary > .card-icon-chevron').trim(), 'transform: rotate(90deg);');
+  assert.match(css.slice(css.lastIndexOf('@media (pointer:coarse)')), /summary\.card-disclosure \{ min-height: 44px; \}/);
+  assert.equal(rule('summary::before').trim(), 'content: none;');
+  assert.equal(rule('.picker-list-facts').trim(), 'white-space: pre-line; overflow-wrap: anywhere;');
+});
 test('file navigation keeps readable parent paths and Files heading controls without truncation', () => {
   assert.match(rule('.file-navigation-row'), /min-height: 44px/);
   assert.match(rule('.file-navigation-words'), /display: grid;.*min-width: 0/);

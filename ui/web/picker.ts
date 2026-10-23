@@ -1,7 +1,7 @@
 import type { AgentRow, CachedRoster, Bootstrap, OperationView, PrimaryView, RecentProjectPage, SavedSession, SavedSessionPage, Snapshot } from '../shared/api.ts';
 import type { SelectionChange } from './actions.ts';
 import { button, details, element, input } from './dom.ts';
-import { cardAction, cardDisclosure, controlIcon } from './card-icons.ts';
+import { cardAction, cardDisclosure, cardIcon, controlIcon } from './card-icons.ts';
 import { projectIdentity, projectLabels, presentationName, type ConversationPresentation } from './conversation-presentation.ts';
 import { contextMenu, type ContextItem } from './context-menu.ts';
 import { duplicateIdentityTails } from './tabs.ts';
@@ -33,8 +33,8 @@ function dayGrouped(items: readonly SavedSession[], rows: HTMLElement[], days: {
   return out;
 }
 function searchCoverage() {
-  const node = element('section'), notices = element('div'), disclosure = element('details', 'picker-list-details');
-  const summary = element('summary', undefined, 'Search coverage'); cardDisclosure(summary); notices.setAttribute('aria-live', 'polite');
+  const node = element('section'), notices = element('div'), disclosure = element('details', 'picker-list-details picker-search-coverage');
+  const summary = element('summary', undefined, 'Search coverage'); summary.prepend(cardIcon('chevron')); cardDisclosure(summary); notices.setAttribute('aria-live', 'polite');
   disclosure.append(summary); node.append(notices, disclosure); return {node, notices, disclosure, summary};
 }
 function groupHeading(name: string, coverage: ReturnType<typeof searchCoverage>) {
