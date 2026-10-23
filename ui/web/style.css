@@ -354,11 +354,12 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .agent-row { position: relative; display: grid; grid-template-columns: minmax(0,1fr) max-content; align-items: start; }
 .agent-row:hover, .agent-row:has(> .row-select[aria-current=page]) { background: var(--raised); border-radius: var(--r-sm); }
 .agent-row:is([data-action=message],[data-action=resume]) { grid-template-columns: minmax(0,1fr) max-content 24px; }
-.agent-row .row-select { grid-column: 1 / -1; grid-row: 1; display: grid; grid-template-columns: subgrid; grid-template-rows: 30px auto; row-gap: 0; align-items: start; height: auto; min-height: 30px; padding: 0 var(--s2) 0 var(--s3); }
+.agent-row .row-select { grid-column: 1 / -1; grid-row: 1; display: grid; grid-template-columns: subgrid; grid-template-rows: 30px auto auto; row-gap: 0; align-items: start; height: auto; min-height: 30px; padding: 0 var(--s2) 0 var(--s3); }
 .agent-row .row-heading { grid-column: 1; grid-row: 1; display: flex; align-items: center; gap: var(--s1); height: 30px; min-width: 0; overflow: hidden; }
 .agent-row .row-name { flex: 1; font-size: var(--fs-ui); line-height: 30px; white-space: nowrap; }
 .agent-row .row-identity { flex: none; }
-.agent-row .row-summary { grid-column: 1 / -1; grid-row: 2; display: block; min-width: 0; height: 20px; color: var(--muted); font-size: var(--fs-meta); line-height: 20px; white-space: nowrap; overflow: hidden; text-overflow: clip; mask-image: linear-gradient(to right,#000 calc(100% - 24px),transparent); }
+.agent-row .row-model { grid-column: 1 / -1; grid-row: 2; min-width: 0; color: var(--muted); font-size: var(--fs-meta); line-height: 18px; white-space: normal; overflow-wrap: anywhere; }
+.agent-row .row-summary { grid-column: 1 / -1; grid-row: 3; display: block; min-width: 0; height: 20px; color: var(--muted); font-size: var(--fs-meta); line-height: 20px; white-space: nowrap; overflow: hidden; text-overflow: clip; mask-image: linear-gradient(to right,#000 calc(100% - 24px),transparent); }
 .agent-row .row-state { width: auto; justify-content: flex-start; line-height: 16px; vertical-align: middle; white-space: nowrap; }
 .row-state[data-busy=true]::before { content: ""; flex: none; width: 10px; height: 10px; margin-right: var(--s1); border: 1.5px solid currentColor; border-left-color: transparent; border-radius: 50%; animation: work-pulse 900ms linear infinite; }
 @media (prefers-reduced-motion:reduce) { .row-state[data-busy=true]::before { animation: none; } }
@@ -1613,7 +1614,7 @@ button.thread-person:hover, button.thread-sender:hover { background: var(--raise
   .composer :is(.attachment-sources, .composer-model, .composer-thinking, .send, .stop, .queue, .composer-state-detail, .composer-recall-restore) { min-width: 44px; min-height: 44px; }
   .composer-meta { grid-template-columns: minmax(0,1fr); }
   .command-option, .palette-row, .nav-row, .row-select { min-height: 44px; height: auto; }
-  .agent-row .row-select { grid-template-rows: 44px auto; min-height: 44px; }
+  .agent-row .row-select { grid-template-rows: 44px auto auto; min-height: 44px; }
   .agent-row .row-heading { height: 44px; }
   .row-age, .row-message { top: 0; height: 44px; display: inline-flex; align-items: center; }
   .message-actions, .tool-copy, .row-message { opacity: 1; pointer-events: auto; }
@@ -1659,15 +1660,13 @@ button.thread-person:hover, button.thread-sender:hover { background: var(--raise
 .sidebar .row-title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: clip; mask-image: linear-gradient(to right,#000 calc(100% - 24px),transparent); }
 .sidebar .row-meta { flex: none; margin: 0; color: var(--muted); font-size: var(--fs-meta); white-space: nowrap; }
 .sidebar .conversation-row { min-height: 30px; height: 30px; border-radius: 0; }
-.sidebar .agent-row { min-height: 30px; height: 30px; border-radius: 0; }
-.sidebar .agent-row[data-detail=true] { min-height: 48px; height: 48px; }
-.sidebar .agent-row .row-select { grid-column: 1; grid-template-columns: minmax(0,1fr) max-content; grid-template-rows: 30px; min-height: 30px; height: 100%; padding: 0 var(--s3); }
-.sidebar .agent-row[data-detail=true] .row-select { grid-template-rows: 30px 18px; }
+.sidebar .agent-row { min-height: 30px; height: auto; border-radius: 0; }
+.sidebar .agent-row .row-select { grid-column: 1; grid-template-columns: minmax(0,1fr) max-content; grid-template-rows: 30px auto auto; min-height: 30px; height: auto; padding: 0 var(--s3); }
 .sidebar .agent-row .row-heading { grid-column: 1; grid-row: 1; min-width: 0; }
 .sidebar .agent-row .row-name { min-width: 0; overflow: hidden; text-overflow: clip; mask-image: linear-gradient(to right,#000 calc(100% - 24px),transparent); }
 .sidebar .agent-row .row-summary { display: contents; }
 .sidebar .agent-row .row-state { grid-column: 2; grid-row: 1; align-self: center; height: auto; font-size: var(--fs-meta); }
-.sidebar .agent-row .row-preview { display: block; grid-column: 1 / -1; grid-row: 2; min-width: 0; height: 18px; line-height: 18px; overflow: hidden; white-space: nowrap; text-overflow: clip; mask-image: linear-gradient(to right,#000 calc(100% - 24px),transparent); color: var(--muted); font-size: var(--fs-meta); }
+.sidebar .agent-row .row-preview { display: block; grid-column: 1 / -1; grid-row: 3; min-width: 0; height: 18px; line-height: 18px; overflow: hidden; white-space: nowrap; text-overflow: clip; mask-image: linear-gradient(to right,#000 calc(100% - 24px),transparent); color: var(--muted); font-size: var(--fs-meta); }
 .sidebar .agent-row .row-separator, .sidebar .agent-row .row-identity { display: none; }
 .sidebar .agent-row > .row-age { height: 30px; min-height: 30px; }
 .sidebar .agent-row > .row-message { width: 24px; height: 30px; min-height: 30px; }
@@ -1821,9 +1820,7 @@ pre[data-wrap=true] { white-space: pre-wrap; overflow-wrap: anywhere; }
 }
 @media (pointer:coarse) {
   .sidebar .nav-row, .sidebar .sidebar-action, .sidebar .conversation-row, .sidebar .agent-row, .sidebar .agent-row .row-select { height: auto; min-height: 44px; }
-  .sidebar .agent-row .row-select { grid-template-rows: 44px; }
-  .sidebar .agent-row[data-detail=true] .row-select { grid-template-rows: 44px 18px; }
-  .sidebar .agent-row[data-detail=true] { height: auto; min-height: 62px; }
+  .sidebar .agent-row .row-select { grid-template-rows: 44px auto auto; }
   .sidebar .agent-row > .row-age, .sidebar .agent-row > .row-message { height: 44px; min-height: 44px; }
   .sidebar .agent-row > .row-message { width: 44px; }
   .roster-older, .roster-more { height: auto; min-height: 44px; }

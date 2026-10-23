@@ -23,21 +23,30 @@ test('raised-menu hover and keyboard selection use visible mode-aware surfaces',
   }
   assert.equal(declarations('background').filter(value => value === 'var(--menu-hover)').length, 4);
 });
-test('roster rows have one 30px heading line and one optional 20px summary line', () => {
+test('roster rows place a wrapping model line between the heading and optional summary', () => {
   assert.match(rule('.agent-row'), /grid-template-columns: minmax\(0,1fr\) max-content/);
   assert.match(rule('.agent-row:is([data-action=message],[data-action=resume])'), /max-content 24px/);
   const select = rule('.agent-row .row-select');
   assert.match(select, /grid-column: 1 \/ -1; grid-row: 1;/);
-  assert.match(select, /grid-template-columns: subgrid; grid-template-rows: 30px auto; row-gap: 0/);
+  assert.match(select, /grid-template-columns: subgrid; grid-template-rows: 30px auto auto; row-gap: 0/);
   assert.match(select, /height: auto; min-height: 30px; padding: 0 var\(--s2\) 0 var\(--s3\)/);
-  assert.match(media('@media (pointer:coarse)'), /\.agent-row \.row-select \{ grid-template-rows: 44px auto; min-height: 44px; \}/);
+  assert.match(media('@media (pointer:coarse)'), /\.agent-row \.row-select \{ grid-template-rows: 44px auto auto; min-height: 44px; \}/);
   assert.match(media('@media (pointer:coarse)'), /\.agent-row \.row-heading \{ height: 44px; \}/);
   assert.match(rule('.agent-row .row-heading'), /grid-column: 1; grid-row: 1; display: flex/);
   assert.match(rule('.agent-row .row-heading'), /height: 30px; min-width: 0; overflow: hidden/);
   assert.match(rule('.agent-row .row-name'), /flex: 1; font-size: var\(--fs-ui\); line-height: 30px; white-space: nowrap/);
   assert.match(rule('.row-title, .row-name'), /overflow: hidden; color: var\(--fg\); font-weight: 500; text-overflow: clip/);
+  const model = rule('.agent-row .row-model');
+  assert.match(model, /grid-column: 1 \/ -1; grid-row: 2; min-width: 0/);
+  assert.match(model, /color: var\(--muted\); font-size: var\(--fs-meta\); line-height: 18px/);
+  assert.match(model, /white-space: normal; overflow-wrap: anywhere/);
+  assert.doesNotMatch(model, /(?:^|;)\s*(?:height|max-height|overflow|text-overflow):/);
+  assert.match(rule('.sidebar .agent-row'), /height: auto/);
+  assert.match(rule('.sidebar .agent-row .row-select'), /grid-template-rows: 30px auto auto; min-height: 30px; height: auto/);
+  assert.match(rule('.sidebar .agent-row .row-preview'), /grid-row: 3/);
+  assert.match(css.slice(css.lastIndexOf('@media (pointer:coarse)')), /\.sidebar \.agent-row \.row-select \{ grid-template-rows: 44px auto auto;/);
   const summary = rule('.agent-row .row-summary');
-  assert.match(summary, /grid-column: 1 \/ -1; grid-row: 2/);
+  assert.match(summary, /grid-column: 1 \/ -1; grid-row: 3/);
   assert.match(summary, /height: 20px; color: var\(--muted\); font-size: var\(--fs-meta\); line-height: 20px/);
   assert.match(summary, /white-space: nowrap; overflow: hidden; text-overflow: clip/);
   assert.doesNotMatch(rule('.agent-row .row-state'), /grid-row|grid-column/);

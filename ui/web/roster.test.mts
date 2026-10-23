@@ -89,14 +89,14 @@ function row(identity: string, facts: Partial<AgentRow> = {}): AgentRow {
   return {identity, name: 'Agent', storageId: identity, cwd: '/project', modifiedAt: 0, state: 'working', availability: 'live', owner: 'here', partial: false, ...facts};
 }
 
-test('two-line roster summaries keep only the first reply line and omit empty fields', () => {
+test('roster summaries keep only the first reply line and omit empty fields', () => {
   const f = setup();
   const roster = new RosterView(() => {}, () => {}, undefined, () => {}, source => ({label: source.state === 'working' ? 'Working' : 'Running', glyph: '?', tone: 'info', hideVisibleState: source.state !== 'working', tool: source.state === 'working' ? source.currentTool : undefined}));
   const name = 'A complete long conversation name '.repeat(12).trim();
   const source = row('two-lines', {name, role: '**First reply line**\nSecond reply line', currentTool: {name: 'read', argument: 'a.ts'}});
   roster.set([source]); f.flush();
   const node = required(rowsOf(f.node)[0]), select = node.query('row-select'), heading = node.query('row-heading'), summary = node.query('row-summary');
-  assert.deepEqual(select.children, [heading, summary]); assert.ok(heading.query('row-name').title.includes(name));
+  assert.deepEqual(select.children, [heading, node.query('row-model'), summary]); assert.equal(node.query('row-model').hidden, true); assert.ok(heading.query('row-name').title.includes(name));
   assert.equal(summary.query('row-state').textContent, 'Working'); assert.equal(summary.query('row-state').className, 'row-state');
   assert.equal(summary.query('row-state').dataset.busy, 'true'); assert.equal(summary.query('row-preview').textContent, 'read · a.ts');
   assert.equal(summary.hidden, false); assert.equal(summary.query('row-separator').hidden, false);
@@ -211,11 +211,11 @@ test('roster has sibling native actions and plain retained, idle and working sta
   assert.match(select.attributes['aria-label'] ?? '', /stored/);
   assert.equal(idle.attributes['aria-current'], undefined); assert.equal(idle.query('row-select').attributes['aria-current'], 'page');
   assert.equal(stored.query('row-select').attributes['aria-current'], 'false');
-  assert.equal(select.children.length, 2);
+  assert.equal(select.children.length, 3); assert.equal(select.children[1]?.className, 'row-model'); assert.equal(select.children[1]?.hidden, true);
   assert.deepEqual(select.children[0]?.children.map(child => child.className), ['row-name', 'row-identity muted']);
-  assert.deepEqual(select.children[1]?.children.map(child => child.className), ['row-state', 'row-separator', 'row-preview']);
+  assert.deepEqual(select.children[2]?.children.map(child => child.className), ['row-state', 'row-separator', 'row-preview']);
   assert.equal(stored.dataset.live, 'false'); assert.equal(idle.dataset.live, 'true'); assert.equal(working.dataset.live, 'true');
-  for (const removed of ['row-word', 'row-detail', 'row-model', 'row-activity']) assert.throws(() => stored.query(removed));
+  for (const removed of ['row-word', 'row-detail', 'row-activity']) assert.throws(() => stored.query(removed));
   assert.equal(idle.query('row-select').title, 'idle'); assert.equal(working.query('row-select').title, 'Working');
   assert.equal(select.title, 'stored'); assert.equal(select.attributes['aria-description'], select.title);
   assert.equal(age.tabIndex, -1); assert.equal(age.query('timestamp').textContent, '10m');
@@ -270,14 +270,36 @@ test('row ages are compact while exact metadata, relative labels and absolute to
     age.click(); assert.equal(age.textContent, text); assert.equal(age.attributes['aria-label'], `Timestamp for Agent · ${relativeTime(value, now)}`);
   }
 });
-test('one-line row titles retain the provider, model, thinking level and activity', () => {
+test('roster model line follows the name before activity and retains tooltip and search facts', () => {
   const fixture = setup(); const roster = new Roster(() => {}, () => {});
   roster.set([row('one', {model: {provider: 'vendor', modelId: 'model-x', thinkingLevel: 'high'}, currentTool: {name: 'read', argument: 'a.ts'}})]); fixture.flush();
   const select = required(rowsOf(fixture.node)[0]).query('row-select');
   assert.equal(select.title, 'vendor/model-x · high\nWorking\nread · a.ts'); assert.equal(select.attributes['aria-description'], `${select.title}\nPreview: read · a.ts`);
-  assert.doesNotMatch(select.textContent, /model-x/);
+  assert.deepEqual(select.children.map(child => child.className), ['row-heading', 'row-model', 'row-summary']);
+  assert.equal(select.query('row-model').textContent, 'vendor/model-x · high'); assert.equal(select.query('row-model').hidden, false);
+  assert.equal(select.query('row-preview').textContent, 'read · a.ts');
   fixture.search.value = 'vendor/'; fixture.search.dispatch('input'); fixture.flush();
   assert.equal(rowsOf(fixture.node).filter(child => child.className === 'agent-row').length, 1);
+});
+test('model updates omit absent facts and preserve keyed actions, focus and row measurement', () => {
+  const f = setup(), selected: AgentRow[] = [], messages: string[] = [];
+  const roster = new Roster(source => selected.push(source), () => {}, undefined, identity => messages.push(identity));
+  const source = row('model', {state: 'idle', role: 'Review changes', modifiedAt: 1});
+  roster.set([source]); f.flush();
+  const node = required(rowsOf(f.node)[0]), select = node.query('row-select'), model = node.query('row-model'), age = node.query('row-age'), message = node.query('row-message');
+  select.focus(); const measurements: number[] = [];
+  Object.defineProperty(node, 'offsetHeight', {get() {const height = model.hidden ? 48 : 84; measurements.push(height); return height;}});
+  const changed = {...source, model: {provider: 'vendor', modelId: 'long-model-name', thinkingLevel: 'high'}, thinkingLevel: 'low'};
+  roster.set([changed]); f.flush();
+  assert.equal(model.textContent, 'vendor/long-model-name · high'); assert.equal(model.hidden, false); assert.ok(measurements.includes(84));
+  assert.equal(node.query('row-preview').textContent, 'Review changes'); assert.equal(f.document.activeElement, select);
+  assert.equal(rowsOf(f.node)[0], node); assert.equal(node.query('row-age'), age); assert.equal(node.query('row-message'), message);
+  select.click(); message.click(); assert.equal(selected[0], changed); assert.deepEqual(messages, ['model']);
+  roster.set([{...changed, model: {provider: 'vendor', modelId: 'model-y'}}]); f.flush(); assert.equal(model.textContent, 'vendor/model-y · low');
+  roster.set([{...source, model: {provider: 'vendor', modelId: 'model-y'}}]); f.flush(); assert.equal(model.textContent, 'vendor/model-y');
+  roster.set([{...source, thinkingLevel: 'high'}]); f.flush();
+  assert.equal(model.textContent, ''); assert.equal(model.hidden, true); assert.ok(measurements.includes(48));
+  assert.equal(node.query('row-model'), model); assert.equal(f.document.activeElement, select); assert.doesNotMatch(select.textContent, /unknown|unavailable|high/);
 });
 test('activity line never repeats the status and keeps distinct details', () => {
   const live = {identity: 's:2', storageId: 's', cwd: '/p', modifiedAt: 0, state: 'working', owner: 'here', availability: 'live', partial: false} as AgentRow;
