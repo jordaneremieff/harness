@@ -1140,6 +1140,7 @@ export class Transcript {
     const text = this.latest.querySelector('.latest-text') ?? this.latest;
     if (text.textContent !== label.text) text.textContent = label.text;
     this.latest.setAttribute('aria-label', label.accessible);
+    this.latest.title = label.accessible;
   }
   /** An upward move that ends near the first loaded row asks for the next older page; the loader keeps its own one-page-at-a-time guard. */
   private readEarlier(upward: boolean): void {

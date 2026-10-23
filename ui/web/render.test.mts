@@ -3474,11 +3474,11 @@ test('the Latest control counts what arrives while the reader is away, announces
   assert.equal(latest.hidden, true);
   scroll.to(2000); flush(); assert.equal(latest.hidden, false); assert.equal(latest.textContent, 'Latest');
   view.set([...all, entry('e60')]); flush();
-  assert.equal(latest.textContent, 'Latest \u00b7 1 new'); assert.equal(latest.attributes['aria-label'], 'Latest message, 1 new'); assert.equal(node('announcements').textContent, 'New messages below');
+  assert.equal(latest.textContent, 'Latest \u00b7 1 new'); assert.equal(latest.attributes['aria-label'], 'Latest message, 1 new'); assert.equal(latest.title, 'Latest message, 1 new'); assert.equal(node('announcements').textContent, 'New messages below');
   node('announcements').textContent = '';
   view.set([...all, entry('e60'), entry('e61')]); flush();
   assert.equal(latest.textContent, 'Latest \u00b7 2 new'); assert.equal(node('announcements').textContent, '', 'later arrivals stay silent');
-  latest.dispatch('click'); flush(); assert.equal(latest.hidden, true); assert.equal(latest.textContent, 'Latest'); assert.equal(latest.attributes['aria-label'], 'Latest message');
+  latest.dispatch('click'); flush(); assert.equal(latest.hidden, true); assert.equal(latest.textContent, 'Latest'); assert.equal(latest.attributes['aria-label'], 'Latest message'); assert.equal(latest.title, 'Latest message');
   scroll.to(1500); flush(); view.set([...all, entry('e60'), entry('e61'), entry('e62')]); flush();
   assert.equal(latest.textContent, 'Latest \u00b7 1 new', 'the count restarted after the return');
 });

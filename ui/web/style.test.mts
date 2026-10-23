@@ -824,6 +824,16 @@ test('Latest occupies the existing composer control line outside the transcript 
   assert.match(app, /elements\.sources\?\.after\(latest\)/, 'the jump control follows the intake control on the composer line');
   assert.doesNotMatch(html, /id="(?:primary|agent)-(?:transcript|latest)"/);
 });
+test('narrow composers reserve a permanent touch-sized Latest icon beside Add', () => {
+  const start = css.indexOf('@container composer (max-width: 420px)');
+  const compact = css.slice(start, css.indexOf('\n}', start));
+  assert.ok(start >= 0);
+  assert.match(compact, /\.composer-intake:has\(> \.latest\) \{ flex-basis: calc\(88px \+ var\(--s2\)\); \}/);
+  assert.match(compact, /\.composer-intake > \.latest \{ width: 44px; min-width: 44px; min-height: 44px; justify-content: center; \}/);
+  assert.match(compact, /\.composer-intake > \.latest > \.latest-text \{ display: none; \}/);
+  assert.match(compact, /\.composer-line \{ flex-wrap: wrap; \}/);
+  assert.doesNotMatch(compact, /:not\(\[hidden\]\)|:has\([^}]*:not/);
+});
 test('native text flow preserves scroll boundaries without line paint clipping', () => {
   assert.doesNotMatch(css, /data-rest-lines|rest-line-|clip-path:/);
   assert.match(rule('.pre-text-frame'), /display: block; min-width: 0/);

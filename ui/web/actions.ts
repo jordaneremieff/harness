@@ -36,7 +36,7 @@ const appCommands: CommandOption[] = [
   {name: 'new', description: 'Start a new session', source: 'app'},
   {name: 'resume', description: 'Resume a saved session', source: 'app'},
   {name: 'fork', description: 'Start a branch from a user message', source: 'app'},
-  {name: 'compact', description: 'Summarize the session context', source: 'app'},
+  {name: 'compact', description: 'Summarise the session context', source: 'app'},
   {name: 'model', description: 'Choose Primary model', source: 'app'},
   {name: 'thinking', description: 'Choose the thinking level for Primary', source: 'app'},
 ];
@@ -463,7 +463,7 @@ export class Actions {
       ...this.conversionEntries(),
       ...this.ctx.handover ? [entry('Continue a handover', 'Pick up a handover in a browser session', this.ctx.handover)] : [],
       entry('Fork from message', 'Branch from a loaded user message', () => this.forkPicker(), ready, 'fork'),
-      entry('Compact', 'Summarize primary context', () => this.compact(), ready, 'compact'),
+      entry('Compact', 'Summarise primary context', () => this.compact(), ready, 'compact'),
       entry('Automatic retry', 'Enable or disable Pi retry', () => this.automaticSettings('autoRetry'), ready),
       entry('Automatic compaction', 'Enable or disable Pi compaction', () => this.automaticSettings('autoCompaction'), ready),
       entry('Continue in terminal', 'Continue this session in the terminal', () => this.handoff(), !!this.readyPrimary(primary,'handoff')),
