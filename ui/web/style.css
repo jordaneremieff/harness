@@ -1139,6 +1139,14 @@ pre.tool-document { font-family: var(--mono); font-size: var(--fs-code); line-he
 .composer .attachment-sources:disabled { background: transparent; color: var(--dim); opacity: .55; }
 .composer .card-icon:not(.card-icon-chevron) { width: 18px; height: 18px; }
 .composer button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.file-navigation-scope { overflow-wrap: anywhere; }
+.file-navigation-list { max-height: 48dvh; overflow: auto; margin-top: var(--s2); }
+.file-navigation-row { display: flex; align-items: center; gap: var(--s2); width: 100%; min-height: 44px; padding: var(--s2); text-align: left; }
+.file-navigation-words { display: grid; gap: var(--s1); min-width: 0; }
+.file-navigation-name, .file-navigation-parent { white-space: normal; overflow-wrap: anywhere; }
+.file-navigation-name { font-weight: 500; }
+.file-navigation-parent { font-size: var(--fs-meta); }
+.file-navigation-status { white-space: pre-wrap; }
 .working-file-filter { display: block; width: 100%; margin: var(--s2) 0; }
 .working-file-list { max-height: 36dvh; overflow: auto; }
 .working-file-row { display: flex; align-items: center; gap: var(--s2); width: 100%; min-height: 28px; text-align: left; }

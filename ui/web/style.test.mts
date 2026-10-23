@@ -37,6 +37,17 @@ test('loaded-message choices keep separate excerpt and date rows at phone and de
   assert.match(rule('dialog[data-variant=palette][data-mode=messages] .palette-desc'),/grid-column: 1; grid-row: 2/);
   assert.match(rule('dialog[data-variant=palette], dialog[data-variant=picker]'),/width: min\(680px, calc\(100vw - 32px\)\)/);
 });
+test('file navigation keeps readable parent paths and Files heading controls without truncation', () => {
+  assert.match(rule('.file-navigation-row'), /min-height: 44px/);
+  assert.match(rule('.file-navigation-words'), /display: grid;.*min-width: 0/);
+  const words = rule('.file-navigation-name, .file-navigation-parent');
+  assert.match(words, /white-space: normal; overflow-wrap: anywhere/);
+  assert.doesNotMatch(words, /text-overflow|max-height|overflow: hidden/);
+  const files = html.slice(html.indexOf('<section id="files-section"'), html.indexOf('<section id="agent-message-panel"'));
+  assert.match(files, /id="files-heading" class="section-toggle"/);
+  assert.match(files, /id="files-search"[^>]*data-control-icon="search"[^>]*aria-label="Go to file…"/);
+  assert.match(files, /id="files-refresh"/);
+});
 test('quiet file rows use the existing muted ink without other presentation overrides', () => {
   assert.equal(rule('.file-row-quiet').trim(), 'color: var(--muted);');
 });
