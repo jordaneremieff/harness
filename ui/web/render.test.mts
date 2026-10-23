@@ -2922,6 +2922,7 @@ test('whole-workbench status retains controls and selects only the focused fact 
 test('static workbench markup owns one footer and keeps composer actions without fact rings', () => {
   const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
   assert.equal([...html.matchAll(/<footer id="workbench-status"/g)].length, 1); assert.match(html, /<\/main>\s*<\/div>\s*<dialog id="modal"[\s\S]*?<\/dialog>\s*<footer id="workbench-status"/);
+  assert.match(html, /<footer id="workbench-status"[^>]*\shidden>/);
   assert.doesNotMatch(html, /<form id="(?:primary|agent)-composer"/);
   const composer = readFileSync(new URL('./composer.ts', import.meta.url), 'utf8');
   const factory = composer.slice(composer.indexOf('export function createComposerElements('), composer.indexOf('\ntype Edit ='));
@@ -2938,7 +2939,7 @@ test('static workbench markup owns one footer and keeps composer actions without
   assert.match(factory, /const intake = element\('span','composer-intake'\); intake\.append\(attach,sources,picker\)/);
   assert.match(factory, /cardAction\('plus', 'Add to message'/);
   assert.match(factory, /const queueGuidance = element\('span', 'sr-only', queueDescription\)/);
-  assert.match(factory, /root\.append\(receipt, utilities, input, meta, queueGuidance\)/); assert.match(factory, /meta\.append\(state, stateDetails\)/); assert.match(factory, /utilities\.append\(recallLine, handoverHint\)/); assert.match(factory, /line\.append\(intake, stop, settings, bar\)/); assert.match(factory, /bar\.append\(submit\)/); assert.match(factory, /submit\.append\(queue, start, send\)/);
+  assert.match(factory, /root\.append\(receipt, utilities, input, meta, queueGuidance\)/); assert.match(factory, /meta\.append\(state, stateDetails\)/); assert.match(factory, /utilities\.append\(recallLine, handoverHint\)/); assert.match(factory, /line\.append\(intake, settings, bar\)/); assert.match(factory, /bar\.append\(submit\)/); assert.match(factory, /submit\.append\(stop, queue, start, send\)/);
   assert.doesNotMatch(factory, /composer-guidance|usage-details|class="statusline"|root\.append\([^)]*receiptDetails/);
   assert.equal([...html.matchAll(/id="focused-composer-status" class="workbench-draft-state"/g)].length, 1);
 });
@@ -2951,7 +2952,9 @@ test('composer utilities precede the writing surface and transcript paints retai
   assert.deepEqual(root.children, [elements.receipt, utilities, input, elements.meta, elements.queueGuidance]);
   assert.deepEqual(utilities.children, [elements.recallLine, elements.handoverHint]);
   assert.deepEqual((elements.meta as unknown as FakeNode).children, [elements.state, elements.stateDetails]);
-  assert.deepEqual(shelf.children, [input.querySelector('.composer-intake'), input.querySelector('.stop'), elements.settings, input.querySelector('.composer-bar')]);
+  assert.deepEqual(shelf.children, [input.querySelector('.composer-intake'), elements.settings, input.querySelector('.composer-bar')]);
+  const submit=input.querySelector('.composer-submit'),stop=input.querySelector('.stop');assert.ok(submit&&stop);
+  assert.deepEqual(submit.children,[stop,elements.queue,elements.start,elements.send]);
   assert.equal(surface.parentNode, input); assert.equal(editor.parentNode, surface); assert.equal(surface.children[1], editor);
   const host = new FakeNode('section'); roots.push(host); root.hidden = false; host.append(node('primary-transcript'), root);
   editor.value = 'Retained native draft'; const moves = editor.moves;

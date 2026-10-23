@@ -702,8 +702,8 @@ function renderFiles():void {
   const tab = activeTab(currentLayout());filesTree.selectFile(tab?.kind === 'file' ? tab.rootId : undefined,tab?.kind === 'file' ? tab.path : undefined);
 }
 function remapFileViews(workspace:string,move:FileMove):void {
-  filesViews.remap(workspace,move);fileBrowse.remap(move);filesTree.remap(move);
   if (state.workspace?.id === workspace) state = {...state,workspace:selectionQueue.remapFiles(workspace,move) ?? movedWorkspaceFiles(state.workspace,move)};
+  filesViews.remap(workspace,move);fileBrowse.remap(move);filesTree.remap(move);
 }
 function fileChanges(change:FileChanges,workspaceId?:string):void {
   const workspace = state.workspace;if (!workspace || workspaceId && workspaceId !== workspace.id) return;
@@ -1152,7 +1152,7 @@ function renderFileWorkbenchStatus(tab:FileTab):void {
   if (fileWatch.detail && !fileActionStatus && !owner?.status) {const activity = byId('workbench-activity');activity.title = `${activity.title}\n${fileWatch.detail}`;}
   const slot = byId('focused-composer-status');slot.replaceChildren();
   if (owner?.conflict) {const controls = element('span','file-status-actions');controls.append(button('Re-read file',()=> {void owner.reread();}),button('Keep editing',()=>focusEditor()));slot.append(controls);}
-  if(state.workspace) {
+  if(state.workspace&&owner) {
     const view=filesViews.view(state.workspace,tab);let feedback=view.root.querySelector<HTMLElement>('.file-feedback');
     if(!feedback){feedback=element('div','exception file-feedback');feedback.setAttribute('role','status');view.root.prepend(feedback);}
     const problem=[owner&&(owner.error||owner.draftError||owner.conflict||owner.encoding?.writable===false)?owner.status:'',fileActionStatus.startsWith('File action not confirmed.')?fileActionStatus:'',fileWatch.status].filter(Boolean).join(' ');
@@ -2492,6 +2492,7 @@ function renderAvailability(): void {
   if (messageTarget.current) renderMessagePanel(); renderIdentity(); tabStrip.render(); roster.schedule(); renderSidebarMetadata();
 }
 export async function selectAgent(row: AgentRow): Promise<void> {
+  if(comparisonChoice){const tab:ConversationTab={kind:'agent',identity:row.identity};if(chooseComparison(tabKey(tab),tab))return;}
   leaveOverlayDesk();conversationController({kind: 'agent', identity: row.identity}).passive = false;
   const origin = document.activeElement; drawerOpen = false;
   const applied = selection({panelVisible: true, selectedTarget: {kind: 'agent', identity: row.identity}});
@@ -3370,6 +3371,7 @@ export function inspectAgent(identity = selectedAgent(), mode:'result'='result',
     if(source){const added=openTab({...layout,focusedPane:source.id},{kind:'agent',identity});const split=splitPane(added,source.id,'x',paneSpace(source.id),key);
       next=split;if(split===added&&primaryPane)announce('Tasks use this pane. Keep Primary available in its tab.');}
   }
+  if(next.root.kind==='split'){comparisonOpen=true;comparisonWorkspace=state.workspace.id;}
   controller.inspection?.open(mode,selector);applyLayout(next);renderInspection(controller);
 }
 function conversationMenuItems(target: Target): ContextItem[] {

@@ -25,13 +25,14 @@ test('non-Git display contains only the declared iteration', () => {
   assert.equal(node.textContent, `ui ${UI_ITERATION}`); assert.equal(node.title, node.textContent);
   assert.equal(node.attributes.get('aria-label'), `Version ui ${UI_ITERATION}, open health`);
 });
-test('identity is the final footer control after the conversation and measures groups, with quiet ink in the line font', async () => {
+test('identity is the final hidden status control after the conversation and measures groups, with quiet ink in the line font', async () => {
   const html = await readFile(new URL('./index.html', import.meta.url), 'utf8');
-  const footer = /<footer id="workbench-status"[^>]*>([\s\S]*?)<\/footer>/.exec(html)?.[1]; assert.ok(footer);
+  const footer = /<footer id="workbench-status"[^>]*\shidden>([\s\S]*?)<\/footer>/.exec(html)?.[1]; assert.ok(footer);
   assert.equal((html.match(/id="workbench-version"/g) ?? []).length, 1);
   assert.doesNotMatch(html, /workbench-health/);
   assert.match(footer, /<button id="workbench-version"[^>]*><\/button>\s*$/);
-  const order = ['id="status-controls"', 'id="workbench-scope"', 'id="workbench-activity"', 'id="workbench-status-primary"', 'id="workbench-status-agent"', 'id="workbench-version"'];
+  assert.doesNotMatch(footer,/id="status-controls"/);
+  const order = ['id="workbench-scope"', 'id="workbench-activity"', 'id="workbench-status-primary"', 'id="workbench-status-agent"', 'id="workbench-version"'];
   const positions = order.map(marker => footer.indexOf(marker));
   assert.ok(positions.every(at => at >= 0)); assert.deepEqual([...positions].sort((a, b) => a - b), positions);
   const css = await readFile(new URL('./style.css', import.meta.url), 'utf8');

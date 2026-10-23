@@ -3,7 +3,7 @@ import test from 'node:test';
 import type { ProjectedFrame } from '../shared/api.ts';
 import {createAppFixture} from './app-fixture.mts';
 import {Transcript} from './render.ts';
-const {app, arrive, settle, event, hostDocument, byId, agentControl, primaryControl, primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, observation, singlePane, coverage, transportLog} = await createAppFixture();
+const {app, arrive, settle, comparePanes, event, hostDocument, byId, agentControl, primaryControl, primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, observation, singlePane, coverage, transportLog} = await createAppFixture();
 
 test('caption fact events refresh idle subjects and every affected recipient without transcript rebuilds', async t => {
   const a='00000000-0000-4000-8000-000000000301', b='00000000-0000-4000-8000-000000000302', targetA={kind:'agent' as const,identity:a}, targetB={kind:'agent' as const,identity:b};
@@ -12,6 +12,7 @@ test('caption fact events refresh idle subjects and every affected recipient wit
   const tool=entryFixture('idle-subject',[messageFixture('idle-source',[{type:'toolCall',callId:'idle-call',name:'custom',arguments:{value:{sessionId:a},truncated:false}},{type:'toolResult',callId:'idle-call',name:'custom',isError:false,parts:[textPart(`Supplied ${a}`)]}])]);
   await arrive({workspace:{id:'caption-events',revision:1,primaryKey:'p',selectedTarget:targetB,conversationLayout:layout},primaries:[primaryFixture({epoch:targetP.epoch,activity:'idle'})],roster:[agentFixture(b,{name:'Partner',handle:undefined})],history:[tool],
     targets:[targetFixture('caption-p',targetP),targetFixture('caption-a',targetA),targetFixture('caption-b',targetB,{draft:{revision:1,text:'Keep B draft',mode:'prompt',persisted:true}})]});
+  await comparePanes(b);
   byId('roster').querySelectorAll('button').find(item => item.textContent.startsWith('All agents'))?.click(); await settle();
   const primaryRoot=primaryControl('transcript'), card=primaryRoot.querySelector('.tool-card'), subject=card?.querySelector('.tool-target'), preview=card?.querySelector('.tool-preview'); assert.ok(card && subject && preview);
   assert.equal(subject.textContent,''); assert.equal(subject.hidden,true); assert.equal(subject.title,a); const editor=app.agentComposer().editor; editor.focus(); editor.setSelectionRange(1,5,'backward');

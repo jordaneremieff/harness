@@ -73,7 +73,7 @@ for (const origin of ['empty','file','agent','primary'] as const) for (const act
   };
   byId('workbench-version').focus();
   if (action !== 'resume') await createSession(action);
-  else {byId('session-open').click();await settle();const saved = hostDocument.body.querySelector('.picker-select');assert.ok(saved);saved.click();await settle();const resume = hostDocument.body.querySelectorAll('button').find(node=>node.textContent === 'Resume' && !node.hidden);assert.ok(resume,'The closed-session view offers Resume');resume.click();}
+  else {byId('session-open').click();await settle();const saved = hostDocument.body.querySelector('.picker-select');assert.ok(saved);saved.click();await settle();byId('conversation-actions').click();const details=hostDocument.body.querySelector('.context-menu')?.querySelectorAll('button').find(node=>node.textContent==='Conversation details');assert.ok(details);details.click();await settle();const resume = byId('modal-body').querySelectorAll('button').find(node=>node.textContent === 'Resume' && !node.hidden);assert.ok(resume,'Conversation details offers the closed-session Resume control');resume.dispatch('click');}
   await settle();await app.selectionQueue.drain();await settle();assert.equal(opens,1);
   assert.equal(app.state.workspace?.primaryKey,key);assert.deepEqual(app.state.workspace?.selectedTarget,target);if (creating) assert.equal(activeTab(workspaceLayout(app.state.workspace))?.kind,'primary');
   if (creating || origin !== 'file') assert.equal(hostDocument.activeElement,primaryControl('editor'));

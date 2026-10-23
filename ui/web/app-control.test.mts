@@ -15,9 +15,16 @@ async function apply(request:ControlRequest):Promise<ControlAck|undefined> {
   globalThis.fetch = async(input,init)=> {if(String(input).startsWith('/api/control/ack')) {ack = JSON.parse(String(init?.body));return Response.json({ok:true,data:{}});}return original(input,init);};
   try {const work = app.browserControl.receive(request);await settle();await work;return ack;}finally {globalThis.fetch = original;}
 }
+async function compare(identity:string):Promise<void> {
+  const width=f.host.viewport;f.host.viewport=2400;app.renderNavigation();await settle();app.openTabsList('primary-pane');
+  const split=hostDocument.body.querySelector('.context-menu')?.querySelectorAll('button').find(row=>row.textContent==='Split right');assert.ok(split);split.click();await settle();
+  const row=byId('recent-sessions').querySelector(`.sidebar-content-row[data-session-key="agent:${identity}"]`);assert.ok(row);row.click();await settle();
+  const layout=app.state.workspace?.conversationLayout;assert.ok(layout);app.applyLayout({...layout,focusedPane:'primary-pane'});await settle();f.host.viewport=width;app.renderNavigation();await settle();hostDocument.activeElement=hostDocument.body;
+}
 async function setup(id:string,split=false) {
   const target = {kind:'primary',key:'p',epoch:1} as const,row=f.agentFixture(`${id}-side`);
   await arrive({workspace:{id,revision:1,primaryKey:'p',...(split ? {conversationLayout:f.twoPanes(row.identity,'primary-pane')} : {})},primaries:[primaryFixture({activity:'idle'})],roster:split ? [row] : [],targets:[targetFixture(id,target,{draft:{revision:1,text:'Native draft remains exact',mode:'prompt',persisted:true}}),...(split ? [targetFixture(row.identity,{kind:'agent',identity:row.identity})] : [])]});
+  if(split)await compare(row.identity);
   event('ready',{bootId:'boot',connectionId:'control-stream'});await settle();
 }
 test('restored drafts remain passive without autofocus, input preparation or draft-mode writes',async()=> {
@@ -95,7 +102,7 @@ test('neutral control refuses reflow of an anchored reading pane and preserves i
   hostDocument.activeElement=hostDocument.body;const target={kind:'primary' as const,key:'p',epoch:41},row=f.agentFixture('reading-side'),reading={revision:2,anchorId:'reading-anchor',offsetPx:25,followTail:false};
   const saved=targetFixture('reading-geometry',target,{reading}),history=['before-anchor','reading-anchor',...Array.from({length:12},(_,index)=>`after-${index}`)].map(id=>f.entryFixture(id,[f.messageFixture(`message-${id}`,[f.textPart(id)])]));
   await arrive({workspace:{id:'reading-geometry',revision:1,primaryKey:'p',conversationLayout:f.twoPanes(row.identity,'primary-pane')},primaries:[primaryFixture({epoch:41})],roster:[row],targets:[saved,targetFixture('reading-side',{kind:'agent',identity:row.identity})],history});
-  event('ready',{bootId:'boot',connectionId:'control-stream'});await settle();const transcript=primaryControl('transcript');
+  await compare(row.identity);event('ready',{bootId:'boot',connectionId:'control-stream'});await settle();const transcript=primaryControl('transcript');
   const position=()=> {const anchor=transcript.querySelector('[data-entry-id="reading-anchor"]');assert.ok(anchor);return {id:anchor.dataset.entryId,offset:transcript.scrollTop-(anchor.offsetTop-transcript.offsetTop)};};
   const before=position(),layout=JSON.stringify(app.state.workspace?.conversationLayout);assert.deepEqual(before,{id:reading.anchorId,offset:reading.offsetPx});assert.deepEqual(app.state.targets.get(saved.targetKey)?.reading,reading);
   const intents:ControlRequest['intent'][]=[{action:'resize',splitId:'split-fixture',ratio:37},{action:'swap',splitId:'split-fixture'},{action:'split',paneId:'primary-pane',axis:'y',view:{kind:'file',rootId:'root',path:'reading.md'}}];

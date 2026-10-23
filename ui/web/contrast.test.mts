@@ -95,8 +95,12 @@ const decorativeTintedEdges = new Set([".stop|border-color|color-mix(in srgb, va
   '.command-menu, .composer-intake-menu|border|1px solid color-mix(in srgb, var(--rule) 60%, transparent)',
   '.context-menu.composer-intake-menu|border|1px solid color-mix(in srgb, var(--rule) 60%, transparent)',
 ]);
-// Non-content paint: the backdrop dims the page; the resting divider separates positioned panes.
-const decorativeBackgrounds = new Set(["dialog::backdrop|var(--backdrop)", ".pane-split > .pane-divider::after|var(--rule)"]);
+// Non-content paint: backdrops dim the page without text; the resting divider separates positioned panes.
+const decorativeBackgrounds = new Set([
+  "dialog::backdrop|var(--backdrop)",
+  ".app.drawer-open #sidebar-scrim|var(--backdrop)",
+  ".pane-split > .pane-divider::after|var(--rule)",
+]);
 // Graphic paint carries no text; meaningful hover/focus and selected marks still meet 3:1.
 const graphicForegrounds = new Map([
   ['.tab-dot', 'muted'],
@@ -733,6 +737,25 @@ test('source highlights and rendered spans use identical complete foreground tok
   for(const selector of ['.markdown-content:is(h1, h2, h3, h4, h5, h6)','.markdown-content .markdown-inline-code','.markdown-content:is(blockquote)','.markdown-content:is(table)'])assert.ok(rules.some(rule=>rule.selector===selector),selector);
   assert.throws(()=>audit(css.replace(/--syntax-property:\s*#[a-f0-9]{6};/i,'')),/lacks --syntax-property/);
 });
+test('the empty drawer scrim uses backdrop paint without admitting translucent content surfaces', () => {
+  const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+  assert.match(html, /<button id="sidebar-scrim"[^>]*aria-label="Close navigation"[^>]*><\/button>/);
+  const selector = '.app.drawer-open #sidebar-scrim';
+  const scrim = parse(css).find(rule => rule.selector === selector);
+  assert.ok(scrim);
+  assert.equal(scrim.declarations.find(declaration => declaration.property === 'background')?.value, 'var(--backdrop)');
+  assert.ok(!scrim.declarations.some(declaration => textProperties.has(declaration.property)));
+  for (const theme of ['dark', 'light']) {
+    assert.ok(result.exclusions.some(exclusion => exclusion.startsWith(`${theme}: non-content paint `) && exclusion.endsWith(`${selector}: var(--backdrop)`)));
+  }
+  assert.ok(!surfaces.includes('backdrop'));
+  assert.ok(audit(`${css}\n.probe { background: var(--backdrop); }`).issues.some(issue => issue.includes('non-surface background')));
+  for (const value of ['#0000004d', 'var(--unexpected)', 'color-mix(in srgb, var(--fg) 30%, transparent)']) {
+    assert.ok(audit(`${css}\n${selector} { background: ${value}; }`).issues.some(issue => issue.includes('unmodeled background')), value);
+  }
+  assert.ok(audit(`${css}\n${selector} { opacity: .5; }`).issues.some(issue => issue.includes('partial opacity')));
+});
+
 test("all color declarations use modeled semantic tokens", () => assert.deepEqual(result.issues, []));
 test("graphic paint measures selected marks and divider hover/focus without opening a surface exception", () => {
   const rows = result.measurements.filter(row => row.kind === "graphic-paint");

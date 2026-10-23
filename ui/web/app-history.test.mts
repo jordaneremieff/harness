@@ -295,6 +295,7 @@ test('Latest keeps its newer intent after pane focus refreshes history from a st
     return original(input,init);
   };
   await arrive({workspace:{id:workspace,revision:1,primaryKey:'p',conversationLayout:fixtureHost.twoPanes(side.identity)},primaries:[primaryFixture({epoch:target.epoch})],roster:[side],targets:[saved,targetFixture(`${workspace}-side`,{kind:'agent',identity:side.identity})],history:items});
+  await fixtureHost.comparePanes(side.identity);
   event('ready',{bootId:'boot',connectionId:'latest-history-stream'});await settle();const transcript=primaryControl('transcript'),latest=primaryControl('latest'),anchor=transcript.querySelector('[data-entry-id="saved-anchor"]');assert.ok(anchor);
   assert.equal(transcript.scrollTop-(anchor.offsetTop-transcript.offsetTop),reading.offsetPx);assert.deepEqual(app.state.targets.get(saved.targetKey)?.reading,reading);assert.equal(app.state.workspace?.conversationLayout?.focusedPane,'agent-pane');
   refreshing=true;latest.dispatch('pointerdown',{isTrusted:true});latest.click();transcript.dispatch('scrollend');assert.equal(app.state.workspace?.conversationLayout?.focusedPane,'primary-pane');await settle();

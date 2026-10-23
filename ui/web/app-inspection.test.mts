@@ -56,6 +56,7 @@ async function referenceCase(complete:boolean,count:number,requests:ResultRead[]
     const before=requests.length;action.click();await settle();
     assert.equal(requests.length,before+1);assert.match(requests.at(-1)?.path??'',new RegExp(encodeURIComponent(identity)));
     assert.deepEqual(requests.at(-1)?.body,{view:'result',...references[index]});
+    const primaryRow=f.byId('recent-sessions').querySelector('.sidebar-content-row[data-session-key="primary"]');assert.ok(primaryRow);primaryRow.click();await settle();
   }
 }
 test('result references use all four exact plain-text variants and retain every native selector',async t=>{

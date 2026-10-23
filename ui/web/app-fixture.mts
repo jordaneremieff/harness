@@ -212,7 +212,7 @@ const view = {
 const host = {viewport: 1200, splitter: 5};
 hostDocument.documentElement.classList.add('conversation');
 function rectWidth(node: HostNode): number {
-  if (node.id === 'conversation-panes') return host.viewport - (host.viewport >= 900 && !hostIds.get('sidebar')?.hidden ? 272 : 0);
+  if (node.id === 'conversation-panes') return host.viewport - (host.viewport >= 1000 && !hostIds.get('sidebar')?.hidden ? 288 : 0);
   if (node.classList.contains('pane-leaf') || node.classList.contains('pane-split')) {
     const parent = node.parentNode;
     if (parent?.id === 'conversation-panes') return rectWidth(parent);
@@ -454,6 +454,17 @@ async function confirmFixtureAvailability(): Promise<void> {
     }
   }
 }
+async function comparePanes(identity:string,paneId='primary-pane'):Promise<void> {
+  const width=host.viewport,focused=app.focusedPane;host.viewport=2400;app.renderNavigation();await settle();
+  try {
+    app.focusPane(paneId);await settle();app.openTabsList(paneId);
+    const split=hostDocument.body.querySelector('.context-menu')?.querySelectorAll('button').find(node=>node.textContent==='Split right');
+    if(!split)throw new Error('The comparison split control is absent.');split.click();await settle();
+    const peer=byId('recent-sessions').querySelector(`.sidebar-content-row[data-session-key="agent:${identity}"]`);
+    if(!peer)throw new Error('The retained comparison session is absent.');peer.click();await settle();
+    app.focusPane(focused);await settle();
+  } finally {host.viewport=width;app.renderNavigation();await settle();}
+}
 function event(name: string, data: unknown, target?: Target): void {
   cursorSequence = Math.max(cursorSequence + 1, ++eventSequence + 1000);
   app.receive({name: name as never, id: `boot:${cursorSequence}`, envelope: {at: '', ...(target ? {target} : {}), data} as never, bytes: 64});
@@ -472,7 +483,7 @@ export async function createAppFixture(profile: 'application' | 'workspace' = 'w
   app = await import('./app.ts');
   if (!application) {await settle(); event('ready', {bootId: 'boot'}); await settle();}
   return {app, host, hostDocument, HostNode, HostResizeObserver, beforeUnload, dispatchWindow, arrive, settle, event, byId, primaryControl, agentControl, controls, paneNode,
-    primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, imagePart, twoPanes, singlePane, observation,
+    primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, imagePart, twoPanes, singlePane, observation, comparePanes,
     coverage, transportLog, selectionSaves, hostSessionStorage, startupMetadata, developmentSources, streamSources, documentDispatches,
     flushFrames, documentHandlers, view, snapshotOf, fixturePreparation,
     failSelection: (value: typeof selectionFailure): void => {selectionFailure = value;},

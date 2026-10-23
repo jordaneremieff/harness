@@ -3,7 +3,7 @@ import test from 'node:test';
 import type {Target} from '../shared/api.ts';
 import {contextMenu} from './context-menu.ts';
 import {createAppFixture} from './app-fixture.mts';
-const {app, arrive, settle, event, byId, primaryControl, paneNode, primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, twoPanes, observation, coverage, transportLog} = await createAppFixture();
+const {app, arrive, settle, comparePanes, event, byId, primaryControl, paneNode, primaryFixture, agentFixture, targetFixture, entryFixture, messageFixture, textPart, twoPanes, observation, coverage, transportLog} = await createAppFixture();
 
 const forbidden = (start: number) => transportLog.slice(start).filter(call => call.method === 'POST' && (call.path.endsWith('/targets') || call.path.endsWith('/start') || call.path.includes('/inputs') || call.path === '/api/operations'));
 function notice(target: Target, code = 'observation_unavailable'): void {
@@ -119,10 +119,12 @@ test('local conversation menus never select another recipient and target its Vie
   const target: Target = {kind: 'agent', identity: 'local-menu'};
   const p: Target = {kind: 'primary', key: 'p', epoch: 124};
   await arrive({workspace: {id: 'local-menu', revision: 1, primaryKey: 'p', conversationLayout: twoPanes(target.identity, 'primary-pane')}, primaries: [primaryFixture({epoch: 124})], roster: [agentFixture(target.identity)], targets: [targetFixture('local-primary', p), targetFixture('local-agent', target)], observations: [observation(target.identity, {revision: 1, observedAt: 'now', entries: [entryFixture('local-thinking', [messageFixture('thinking-message', [{type: 'thinking', text: 'Reported reasoning'}])])], live: [], nextBefore: null, status: {busy: false}, coverage})]});
+  await comparePanes(target.identity);
   const selected = app.state.workspace?.selectedTarget, start = transportLog.length;
   app.openTabActions('agent-pane'); const short = globalThis.document.querySelector('.context-menu'); assert.ok(short);
   assert.equal([...short.querySelectorAll('button')].some(node => node.textContent === 'Show thinking'), false);
-  const more = [...short.querySelectorAll('button')].find(node => node.textContent === 'Conversation actions'); assert.ok(more); more.click();
+  assert.equal([...short.querySelectorAll('button')].some(node=>node.textContent==='Conversation actions'),false);
+  app.openConversationActions('agent-pane');
   const menu = globalThis.document.querySelector('.context-menu'); assert.ok(menu); assert.equal(menu.getAttribute('aria-label'), 'Conversation actions');
   assert.deepEqual(app.state.workspace?.selectedTarget, selected); assert.deepEqual(forbidden(start), []);
   const thinking = [...menu.querySelectorAll('button')].find(node => node.textContent === 'Show thinking'); assert.ok(thinking); thinking.click(); await settle();

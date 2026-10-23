@@ -4,12 +4,16 @@ import {activeTab} from './tabs.ts';
 import { createPaneLayout, splitPane } from './pane-layout.ts';
 import {createAppFixture} from './app-fixture.mts';
 const {app, arrive, settle, host, byId, paneNode, primaryControl, agentControl, primaryFixture, agentFixture, targetFixture, twoPanes, selectionSaves, failSelection, hostDocument} = await createAppFixture();
+async function compare(pane='primary-pane',key='agent:a'):Promise<void> {
+  const width=host.viewport;host.viewport=2400;app.renderNavigation();await settle();app.openTabsList(pane);const split=hostDocument.body.querySelector('.context-menu')?.querySelectorAll('button').find(row=>row.textContent==='Split right');assert.ok(split);split.click();await settle();
+  const row=byId('recent-sessions').querySelector(`.sidebar-content-row[data-session-key="${key}"]`);assert.ok(row);row.click();await settle();host.viewport=width;app.renderNavigation();await settle();
+}
 async function fixture(width = 1200, ratio = 50, sidebar = true) {
   host.viewport = width; failSelection(undefined); const layout = twoPanes('a'); assert.equal(layout.root.kind, 'split'); if (layout.root.kind === 'split') layout.root.ratio = ratio;
   const primary = targetFixture('size-primary', {kind: 'primary', key: 'p', epoch: 1}), agent = targetFixture('size-agent', {kind: 'agent', identity: 'a'});
   primary.draft.text = 'Primary draft'; agent.draft.text = 'Agent draft';
   await arrive({workspace: {id: 'pane-size', revision: 10, primaryKey: 'p', selectedTarget: {kind: 'agent', identity: 'a'}, sidebarVisible: sidebar, conversationLayout: layout}, primaries: [primaryFixture()], roster: [agentFixture('a')], targets: [primary, agent]});
-  selectionSaves.length = 0; const node = byId('conversation-panes').querySelector('.pane-split'); assert.ok(node); const handle = node.querySelector('.pane-divider'); assert.ok(handle);
+  await compare();app.toggleSidebar(sidebar);await settle();selectionSaves.length = 0; const node = byId('conversation-panes').querySelector('.pane-split'); assert.ok(node); const handle = node.querySelector('.pane-divider'); assert.ok(handle);
   return {layout, node, handle, primary: primaryControl('root'), agent: agentControl('root'), editors: [app.primaryComposer().editor, app.agentComposer().editor], drafts: [app.primaryComposer().state?.draft, app.agentComposer().state?.draft]};
 }
 test('first split from a workspace without a saved layout admits its exact chooser target', async () => {
@@ -21,9 +25,12 @@ test('first split from a workspace without a saved layout admits its exact choos
   const menu = hostDocument.body.querySelector('.context-menu'); assert.ok(menu);
   const split = menu.querySelectorAll('button').find(row => row.textContent === 'Split right'); assert.ok(split); split.dispatch('click'); await settle();
   assert.doesNotMatch(byId('announcements').textContent, /This item changed|This pane changed/);
-  const row = byId('modal-body').querySelectorAll('.palette-row').find(row => row.title === 'a'); assert.ok(row); row.dispatch('click'); await settle();
+  assert.equal(byId('navigation-title').textContent,'Pi');assert.equal(byId('recent-sessions').querySelector('.sidebar-content-row[data-session-key="agent:a"]'),null);
+  app.showNavigationView('agents');await app.selectAgent(agentFixture('a',{name:'Other agent'}));await settle();
   assert.equal(app.splitActive(), true); assert.deepEqual(app.state.workspace?.selectedTarget, {kind: 'agent', identity: 'a'});
-  assert.equal(app.primaryComposer().editor, editor); assert.equal(app.primaryComposer().state?.draft.text, 'retained exact draft'); assert.equal(selectionSaves.length, 1);
+  assert.equal(app.primaryComposer().editor, editor); assert.equal(app.primaryComposer().state?.draft.text, 'retained exact draft');
+  assert.equal(selectionSaves.filter(save=>Object.hasOwn(save.body,'conversationLayout')).length,1);
+  assert.equal(selectionSaves.filter(save=>save.body.sidebarVisible===true).length,1);assert.equal(selectionSaves.length,2);
 });
 test('fresh pane menu rejects a real workspace revision change before dispatch', async () => {
   await arrive({workspace: {id: 'fresh-stale', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture()], roster: []}, true);
@@ -35,8 +42,8 @@ test('fresh pane menu rejects a real workspace revision change before dispatch',
 });
 test('split restoration clamps pixel tracks without replacing the saved ratio or retained conversation state', async () => {
   const f = await fixture(1200, 20); assert.equal(app.splitActive(), true); assert.equal(f.node.properties.get('--pane-first'), '320px');
-  assert.deepEqual(app.state.workspace?.conversationLayout, f.layout); assert.equal(selectionSaves.length, 0); assert.equal(f.handle.getAttribute('aria-valuemin'), '320'); assert.equal(f.handle.getAttribute('aria-valuemax'), '604');
-  host.viewport = 2000; app.renderNavigation(); await settle(); assert.equal(f.node.properties.get('--pane-first'), '345px');
+  assert.deepEqual(app.state.workspace?.conversationLayout, f.layout); assert.equal(selectionSaves.length, 0); assert.equal(f.handle.getAttribute('aria-valuemin'), '320'); assert.equal(f.handle.getAttribute('aria-valuemax'), '588');
+  host.viewport = 2000; app.renderNavigation(); await settle(); assert.equal(f.node.properties.get('--pane-first'), '342px');
   assert.equal(primaryControl('root'), f.primary); assert.equal(agentControl('root'), f.agent); assert.deepEqual([app.primaryComposer().editor, app.agentComposer().editor], f.editors); assert.deepEqual([app.primaryComposer().state?.draft, app.agentComposer().state?.draft], f.drafts); assert.equal(selectionSaves.length, 0);
 });
 test('a safe split uses the current pane menu contract without changing the sidebar preference or selected target', async () => {
@@ -65,6 +72,7 @@ test('phone vertical splits show one leaf and the existing menu switches without
     const primary = targetFixture('phone-primary',{kind:'primary',key:'p',epoch:1}),agent = targetFixture('phone-agent',{kind:'agent',identity:'a'});primary.draft.text = 'Primary retained';agent.draft.text = 'Agent retained';
     await arrive({workspace:{id:`phone-panes-${width}`,revision:1,primaryKey:'p',selectedTarget:agent.target,conversationLayout:layout},primaries:[primaryFixture()],roster:[agentFixture('a',{model:{provider:'fixture',modelId:'phone-model'},thinkingLevel:'high'})],targets:[primary,agent]});
     assert.match(byId('agent-settings-detail').textContent,/fixture\/phone-model/);assert.match(byId('agent-settings-detail').textContent,/Thinking high/);assert.equal(byId('agent-usage-details').hidden,false);
+    await compare();
     const originalRoot = app.state.workspace?.conversationLayout?.root,editors = [primaryControl('editor'),agentControl('editor')],parents = editors.map(editor=>editor.parentNode);
     const agentEditor = agentControl('editor');agentEditor.setSelectionRange(2,5,'backward');agentEditor.dispatch('select');selectionSaves.length = 0;
     assert.equal(byId('conversation-panes').dataset.focusOnly,'true');assert.equal(paneNode('primary-pane').hidden,true);assert.equal(paneNode('agent-pane').hidden,false);

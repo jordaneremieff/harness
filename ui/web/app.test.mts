@@ -146,7 +146,7 @@ test('development restoration accepts a fresh Agent epoch but refuses later epoc
 });
 
 test('development drain preserves exact local draft bytes after view preferences and selection settle', async t => {
-  const saved = await devHookFixture('dev-drain', 9662); const primary = app.primaryComposer(), agent = app.agentComposer(), p = controls(primary), a = controls(agent), original = globalThis.fetch;
+  const saved = await devHookFixture('dev-drain', 9662);await browser.comparePanes('dev-drain-agent'); const primary = app.primaryComposer(), agent = app.agentComposer(), p = controls(primary), a = controls(agent), original = globalThis.fetch;
   const held: {path: string; finish: () => Promise<void>}[] = []; let holding = true;
   globalThis.fetch = async (input, init) => {
     const path = new URL(String(input), 'http://ui.test').pathname;
@@ -180,9 +180,9 @@ test('development drain preserves exact local draft bytes after view preferences
 });
 
 test('development CSS hooks retain cards, editors, carets and the same reading anchor', async () => {
-  await devHookFixture('dev-css', 9663); const p=controls(app.primaryComposer()),a=controls(app.agentComposer()),pe=p('editor'),ae=a('editor'),forms=[p('composer'),a('composer')],root=p('transcript');
+  await devHookFixture('dev-css', 9663);await browser.comparePanes('dev-css-agent'); const p=controls(app.primaryComposer()),a=controls(app.agentComposer()),pe=p('editor'),ae=a('editor'),forms=[p('composer'),a('composer')],root=p('transcript');
   root.scrollTop=857;root.dispatch('scroll');flushFrames();const card=root.querySelector('[data-entry-id="dev-history-6"]'),before=root.querySelector('[data-entry-id="dev-history-5"]');assert.ok(card);assert.ok(before);
-  root.scrollTop=card.offsetTop-root.offsetTop+17;root.dispatch('scroll');root.dispatch('scrollend');await settle();pe.focus();pe.setSelectionRange(2,7,'backward');ae.setSelectionRange(1,6,'forward');
+  root.scrollTop=card.offsetTop-root.offsetTop+17;root.dispatch('scroll');root.dispatch('scrollend');await settle();pe.focus();pe.setSelectionRange(2,7,'backward');pe.dispatch('select');ae.setSelectionRange(1,6,'forward');ae.dispatch('select');
   const offset=root.scrollTop-(card.offsetTop-root.offsetTop),captured=app.captureDevCssState();(before.style as {height?:string}).height='260px';app.applyDevCssState(captured);await settle();
   assert.equal(root.querySelector('[data-entry-id="dev-history-6"]'),card);assert.equal(root.scrollTop-(card.offsetTop-root.offsetTop),offset);assert.equal(p('editor'),pe);assert.equal(a('editor'),ae);assert.equal(p('composer'),forms[0]);assert.equal(a('composer'),forms[1]);
   assert.deepEqual([pe.selectionStart,pe.selectionEnd,pe.selectionDirection],[2,7,'backward']);assert.deepEqual([ae.selectionStart,ae.selectionEnd,ae.selectionDirection],[1,6,'forward']);assert.equal(pe.value,'Primary private draft');assert.equal(ae.value,'Agent private draft');assert.equal(hostDocument.activeElement,pe);
@@ -542,6 +542,7 @@ test('local Find captures the exact pane across query edits, focus changes and t
   const primarySaved = targetFixture('find-primary', target, {draft: {revision: 1, text: 'Primary draft', images: [attachedImage()], mode: 'prompt', persisted: true}});
   const agentSaved = targetFixture('find-agent', {kind: 'agent', identity}, {draft: {revision: 1, text: 'Agent draft', images: [attachedImage()], mode: 'prompt', persisted: true}});
   await arrive({workspace: {id: 'find-capture', revision: 1, primaryKey: 'p', selectedTarget: agentSaved.target, conversationLayout: twoPanes(identity)}, primaries: [primaryFixture({epoch: target.epoch})], roster: [agentFixture(identity)], targets: [primarySaved, agentSaved], observations: [observation(identity, {revision: 1, observedAt: 'now', entries: agentRows, live: [], nextBefore: null, status: {busy: false}, coverage}, 10)], history: primaryRows});
+  await browser.comparePanes(identity);
   const capturedAgent = app.agentComposer(), capturedControls = controls(capturedAgent), agentEditor = capturedControls('editor');
   app.focusPane('primary-pane'); await settle(); const primaryEditor = primaryControl('editor'); primaryEditor.setSelectionRange(2, 5, 'backward');
   const start = transportLog.length;
@@ -1126,13 +1127,15 @@ test('sidebar width commits preserve transcript requests and pane refresh follow
   const panes = source.slice(source.indexOf('function refreshPaneSizes('), source.indexOf('function currentSnapshot('));
   assert.ok(panes.includes('selectionQueue.select({sidebarWidth: value})')); assert.doesNotMatch(panes, /\bselection\(|historyAbort/);
   assert.ok(panes.includes('if (workspace.id !== paneWorkspace)')); assert.ok(panes.includes('resizer.destroy()')); assert.ok(panes.includes('paneResizers[0]?.refresh()'));
-  assert.ok(panes.includes('read: () => state.workspace?.sidebarWidth ?? 280'));
-  assert.ok(panes.includes("axis: 'x', min: 200, max: 480, defaultValue: 280"));
+  assert.ok(panes.includes('read: () => state.workspace?.sidebarWidth ?? 288'));
+  assert.ok(panes.includes("axis: 'x', min: 200, max: 480, defaultValue: 288"));
   const render = source.slice(source.indexOf('function renderAll('), source.indexOf('function renderNavigation('));
   assert.ok(render.indexOf('refreshPaneSizes()') > render.indexOf('renderMessagePanel()'));
+  const height=source.slice(source.indexOf('function composerHeight('),source.indexOf('function composerResizer('));
   const composer = source.slice(source.indexOf('function composerResizer('), source.indexOf('function refreshPaneSizes('));
-  assert.ok(composer.includes('composer.setManualHeight(preferred)')); assert.ok(composer.includes('dragThreshold: 4'), 'a plain press on the handle stores nothing'); assert.ok(composer.includes('applyInitial: preferred !== undefined')); assert.ok(composer.includes('-min`'));
-  assert.ok(composer.includes('composer.setManualHeight(undefined)')); assert.doesNotMatch(source, /--composer-height/);
+  assert.ok(height.includes('composer.setManualHeight(preferred)'));assert.ok(height.includes('composer.setManualHeight(undefined)'));assert.ok(height.includes('-min`'));
+  assert.ok(composer.includes('dragThreshold:4'), 'a plain press on the handle stores nothing');assert.ok(composer.includes('applyInitial:size.manual()'));assert.ok(composer.includes('write:size.write,onCommit:size.commit,onReset:size.reset'));
+  assert.equal((composer.match(/composerHeight\(controller\)/g)??[]).length,2,'the drag handle and size dialog use the same height owner');assert.doesNotMatch(source, /--composer-height/);
 });
 test('per-tab pane sizes accept bounded integers and storage failures remain nonfatal', async () => {
   const values = new Map<string, string>();
@@ -1488,7 +1491,7 @@ test('direct conversation actions capture each inactive pane without navigation 
     assert.equal(app.focusedPane, focused); assert.deepEqual(app.state.workspace?.selectedTarget, selected);
     const transcript=root.querySelector('.transcript'),other=roots[index===0?1:0].querySelector('.transcript');assert.ok(transcript&&other);const otherView=other.dataset.view;
     trigger.click();const grouped=menuNode().children.find(node=>node.textContent==='Grouped');assert.ok(grouped);assert.equal(grouped.getAttribute('aria-description'),'View: Grouped');assert.equal(grouped.getAttribute('role'),'menuitemradio');grouped.click();await settle();assert.equal(transcript.dataset.view,'grouped');assert.equal(other.dataset.view,otherView);
-    app.openTabActions(inactive);const route=menuNode().children.find(node=>node.textContent==='Conversation actions');assert.ok(route);route.click();const conversation=menuNode().children.find(node=>node.textContent==='Conversation');assert.ok(conversation);assert.equal(conversation.title,'View: Conversation');assert.equal(menuNode().children.find(node=>node.textContent==='Grouped')?.getAttribute('aria-checked'),'true');conversation.click();await settle();assert.equal(transcript.dataset.view,'chronological');assert.equal(other.dataset.view,otherView);assert.deepEqual(app.state.workspace?.selectedTarget,selected);
+    app.openConversationActions(inactive);const conversation=menuNode().children.find(node=>node.textContent==='Conversation');assert.ok(conversation);assert.equal(conversation.title,'View: Conversation');assert.equal(menuNode().children.find(node=>node.textContent==='Grouped')?.getAttribute('aria-checked'),'true');conversation.click();await settle();assert.equal(transcript.dataset.view,'chronological');assert.equal(other.dataset.view,otherView);assert.deepEqual(app.state.workspace?.selectedTarget,selected);
     assert.equal(root.dataset.paneId, inactive);
   }
   assert.equal(primaryControl('editor'), editors[0]); assert.equal(agentControl('editor'), editors[1]);
@@ -1537,7 +1540,7 @@ test('local conversation actions group existing controls and open workspace inpu
   app.openConversationActions('agent-pane'); const menu = menuNode();
   assert.deepEqual(menu.children.filter(node => node.className === 'context-menu-heading').map(node => node.textContent), ['View', 'Messages and tasks', 'Session', 'Details']);
   const labels = menu.children.filter(node => node.tagName === 'button').map(node => node.textContent);
-  assert.deepEqual(labels, ['Conversation', 'Grouped', 'Show thinking', 'Find text', 'Jump to message…', 'Expand loaded tools', 'Collapse loaded tools', 'Message', 'Sent and received tasks', 'Saved drafts and messages', 'Message input', 'Open in Pi terminal', 'Conversation details', 'Copy agent ID', 'Commands']);
+  assert.deepEqual(labels, ['Conversation', 'Grouped', 'Show thinking', 'Find text', 'Jump to message…', 'Expand loaded tools', 'Collapse loaded tools', 'Message box sizeThis conversation has no editable message box.', 'Message', 'Sent and received tasks', 'Saved drafts and messages', 'Message input', 'Open in Pi terminal', 'Conversation details', 'Copy agent ID', 'Layout', 'Commands']);
   for (const label of ['Conversation', 'Grouped']) {const choice = menu.children.find(node => node.textContent === label); assert.ok(choice); assert.equal(choice.getAttribute('role'), 'menuitemradio'); assert.equal(choice.getAttribute('aria-description'), `View: ${label}`); assert.equal(choice.title, `View: ${label}`); assert.equal(choice.getAttribute('aria-checked'), String(label === 'Conversation'));}
   assert.equal(labels.includes('Show conversation'), false); assert.equal(labels.includes('New session'), false);
   menu.children.find(node => node.textContent === 'Message input')?.click();
@@ -1612,7 +1615,7 @@ test('Tools and Settings stay in the sidebar and never occupy the status facts',
   await arrive({workspace:{id:'utility-home',revision:1,primaryKey:'p',sidebarVisible:true},primaries:[primaryFixture()],roster:[]});
   for(const width of [1200,700])for(const visible of [false,true]){
     host.viewport=width;app.toggleSidebar(visible);await settle();
-    assert.deepEqual(byId('sidebar-footer').children.map(node=>node.id),['tools-button','settings-button']);
+    assert.deepEqual(byId('sidebar-footer').children.map(node=>node.id),['settings-button']);assert.equal(byId('sidebar-tools').contains(byId('tools-button')),true);
     for(const id of ['tools-button','settings-button'])assert.equal(byId('workbench-status').contains(byId(id)),false);
     assert.equal(byId('navigation-access').hidden,false);assert.equal(hostDocument.body.querySelectorAll('#tools-button').length,1);
   }
@@ -1702,7 +1705,7 @@ test('Tools exposes its named destinations and Settings exposes the existing pre
   const commands=menu.querySelectorAll('button').find(node=>node.textContent==='Commands');assert.ok(commands);commands.click();
   assert.equal(byId('modal-title').textContent,'Commands');byId('modal-close').click();
   byId('settings-button').click();assert.equal(app.navigationViews.view,'settings');
-  for(const name of ['Appearance','Message input','Keyboard shortcuts','Agent presentation control','Workspaces','Archived workspaces','Saved drafts and messages','Help'])assert.ok(byId('settings-choices').querySelectorAll('button').find(node=>node.textContent===name),name);
+  for(const name of ['Appearance','Message input','Keyboard shortcuts','Agent presentation control','Workspaces','Archived workspaces','Saved drafts and messages','Help'])assert.ok(byId('settings-choices').querySelectorAll('button').find(node=>node.getAttribute('aria-label')===name),name);
   const appearance=byId('settings-choices').querySelectorAll('button').find(node=>node.textContent==='Appearance');assert.ok(appearance);appearance.click();assert.equal(byId('modal-title').textContent,'Appearance');byId('modal-close').click();
   byId('navigation-back').click();assert.equal(app.navigationViews.view,'sessions');
 });
@@ -1752,7 +1755,7 @@ test('the sidebar avoids a duplicate Primary destination and retains its closed-
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p'}, primaries: [primaryFixture()], roster: []});
   assert.equal(byId('primary-row').hidden, true);
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', conversationLayout: singlePane([])}, primaries: [primaryFixture()], roster: []});
-  assert.equal(byId('primary-row').hidden, false); assert.equal(byId('primary-row').attributes.get('aria-label'), 'Return to Primary');
+  assert.equal(byId('primary-row').hidden, false); assert.equal(byId('primary-row').attributes.get('aria-label'), 'New session');
   byId('primary-row').click(); await settle(); assert.equal(byId('primary-row').hidden, true);
   assert.equal(paneLeaves(app.state.workspace?.conversationLayout?.root ?? singlePane([]).root)[0]?.tabs[0]?.kind, 'primary');
 });
