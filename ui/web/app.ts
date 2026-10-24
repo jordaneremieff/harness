@@ -1923,7 +1923,7 @@ function renderConversationHeader(layout: ConversationLayout): void {
 }
 export function showNavigationView(view: NavigationView): void {
   navigationViews.show(view);
-  if (view === 'agents') refreshStaleRoster();
+  if (view === 'agents' || view === 'sessions') refreshRosterOnDemand();
   if (view === 'threads') threadExplorer.loadIfNeeded();
   if (view === 'settings') renderSettingsChoices();
   navigationViews.render();
@@ -2124,6 +2124,7 @@ function renderSessionEntry(hasTab: boolean): void {
 }
 function focusEditor(): void {if(sessionReadPane){sessionReader.focus();return;}if(threadPane?.paneId===currentLayout().focusedPane){threadReader.focus();return;}const savedReader=activeSessionReader();if(savedReader){savedReader.focus();return;}const selected=layoutTarget(currentLayout(),primaryTarget());const owner=selected&&state.workspace?controllers.get(controllerKey(state.workspace.id,selected)):undefined;if(owner&&threadHost===owner){threadReader.focus();return;}if(owner?.inspection?.active){owner.inspection.scroller.focus({preventScroll:true});return;}const tab = activeTab(currentLayout());if (tab?.kind === 'file' && state.workspace) {filesViews.view(state.workspace,tab).focus();return;}const target = layoutTarget(currentLayout(), primaryTarget()); if (target) conversationController(target).composer.focus(); }
 export function toggleSidebar(visible: boolean): void {
+  if (visible) refreshRosterOnDemand();
   if (!matchMedia(persistentSidebarQuery).matches) {toggleDrawer(visible);return;}
   const applied = selection({sidebarVisible: visible});
   byId(visible ? 'sidebar-close' : 'sidebar-show').focus();
@@ -2136,6 +2137,7 @@ function focusDrawerControl(node:HTMLElement):void {
   node.focus({preventScroll:true});
 }
 function toggleDrawer(visible:boolean):void {
+  if(visible)refreshRosterOnDemand();
   if(visible&&!drawerOpen){const active=document.activeElement;drawerReturnFocus=active instanceof HTMLElement&&!byId('sidebar').contains(active)?active:byId('sidebar-show');}
   drawerOpen = visible; renderNavigation(); roster.schedule();
   const restore=drawerReturnFocus; if(!visible)drawerReturnFocus=undefined;
@@ -3553,6 +3555,13 @@ function showError(error: unknown): void {
 function showRosterError(error: unknown): void { const message = 'Agents could not be refreshed.'; announce(message); byId('roster-footer').replaceChildren(element('p', 'error', message), details('Details', errorMessage(error)), cardAction('restart', 'Refresh agent roster', () => { void reload().catch(showRosterError); })); }
 function refreshFiles(): void {filesTree.refresh();}
 function refreshRoster(): void { void request('/api/agents/refresh', 'POST', {}).catch(showRosterError); }
+let lastRosterRefreshAt = 0;
+/** The host's directory watch can drop the create of a new Durable agent, so opening the sidebar or returning to the page asks the host to rescan, at most once every ten seconds. */
+export function refreshRosterOnDemand(): void {
+  const now = Date.now();
+  if (!connected || now - lastRosterRefreshAt < 10_000 || state.rosterMeta?.scan.state === 'running') return;
+  lastRosterRefreshAt = now; refreshRoster();
+}
 function moreRoster(): void {
   const cursor = state.rosterMeta?.nextCursor;
   if (cursor) { void request<import('../shared/api.ts').CachedRoster>(`/api/agents?limit=20&cursor=${encodeURIComponent(cursor)}`).then(page => {
@@ -3984,9 +3993,9 @@ function bind(): void {
   document.addEventListener('visibilitychange', () => {
     diagnostics.setHidden(document.hidden); releaseNotice.readiness(connected && !releasePage); for (const controller of controllers.values()) controller.transcript.visibilityChanged();
     if (!document.hidden && !uiReady) void finishStartup().catch(showError);
-    if (!document.hidden) { threadExplorer.refreshIfStale(); threadReader.refreshIfStale(); picker.writersChanged(); }
+    if (!document.hidden) { threadExplorer.refreshIfStale(); threadReader.refreshIfStale(); picker.writersChanged(); refreshRosterOnDemand(); }
   });
-  window.addEventListener('focus', () => picker.writersChanged());
+  window.addEventListener('focus', () => { picker.writersChanged(); refreshRosterOnDemand(); });
 }
 export function devHold(): DevReloadHold | undefined {
   if (browserControl.applying || selectionQueue.unsettled) return 'input';

@@ -115,3 +115,15 @@ test('a live Durable conversation is listed in Recents and opens from the list',
   rowFor('Web orchestrator')?.click(); await settle(); await settle();
   assert.deepEqual(app.state.workspace?.selectedTarget, {kind: 'agent', identity: durable.identity});
 });
+
+test('opening the sidebar asks the host to rescan agents, at most once every ten seconds', async () => {
+  const current = primaryFixture({epoch: 41500, key: 'open7', sessionId: 'id-open7', sessionFile: '/fixture/project/open7.jsonl', sessionName: 'Open now'});
+  await arrive({workspace: {id: 'states-rescan', revision: 1, primaryKey: current.key}, primaries: [current], roster: []} as never);
+  await settle();
+  const rescans = () => transportLog.filter(call => call.method === 'POST' && call.path === '/api/agents/refresh').length;
+  const before = rescans();
+  app.toggleSidebar(true); await settle(); app.toggleSidebar(false); app.toggleSidebar(true); await settle();
+  assert.ok(rescans() - before <= 1, 'a second open inside ten seconds does not rescan again');
+  app.refreshRosterOnDemand(); await settle();
+  assert.ok(rescans() - before <= 1);
+});
