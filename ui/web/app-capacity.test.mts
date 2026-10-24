@@ -5,7 +5,9 @@ import {createPaneLayout} from './pane-layout.ts';
 const browser=await createAppFixture();
 const {app,arrive,settle,byId,hostDocument,primaryFixture,targetFixture}=browser;
 
-for(const entry of ['sidebar','commands-sessions'])for(const empty of [false,true])test(`${entry} capacity recovery names an ${empty?'empty':'saved'} idle session and requires explicit closure`,async t=>{
+const capacityRefusal=()=>Response.json({ok:true,data:{operation:{id:'capacity-open',state:'rejected',error:{code:'capacity',message:'The primary capacity is full.',retry:'manual'}}}});
+
+for(const entry of ['sidebar','commands-sessions'])for(const empty of [false,true])test(`${entry} creation at the process limit closes ${empty?'an empty':'a saved'} idle session and opens the new one`,async t=>{
   const idle=primaryFixture({key:`idle-${empty}`,epoch:22001,activity:'idle',sessionName:'Quiet session',sessionFile:empty?undefined:'/project/retained.jsonl',pendingDialogs:[],pendingOperationIds:[]});
   const busy=primaryFixture({key:'busy-session',epoch:22002,activity:'running',sessionName:'Busy session'});
   const target={kind:'primary' as const,key:idle.key,epoch:idle.epoch};
@@ -16,7 +18,12 @@ for(const entry of ['sidebar','commands-sessions'])for(const empty of [false,tru
   globalThis.fetch=async(input,init)=>{
     const path=new URL(String(input),'http://ui.test').pathname,body=JSON.parse(String(init?.body??'{}'));
     if(init?.method==='POST')calls.push({path,body});
-    if(path==='/api/primaries'&&init?.method==='POST')return Response.json({ok:true,data:{operation:{id:'capacity-open',state:'rejected',error:{code:'capacity',message:'The primary capacity is full.',retry:'manual'}}}});
+    if(path==='/api/primaries'&&init?.method==='POST'){
+      if(calls.filter(call=>call.path==='/api/primaries').length===1)return capacityRefusal();
+      const opened=primaryFixture({key:`opened-${empty}`,epoch:22003,activity:'idle'});
+      browser.fixture={...browser.fixture,primaries:[{...idle,lifecycle:'stopped'},busy,opened]};
+      return Response.json({ok:true,data:{primaryKey:opened.key,operation:{state:'completed'}}});
+    }
     if(path===`/api/primaries/${idle.key}/close`){
       assert.deepEqual(body,{epoch:idle.epoch});
       browser.fixture={...browser.fixture,primaries:[{...idle,lifecycle:'stopped'},busy]};
@@ -30,41 +37,65 @@ for(const entry of ['sidebar','commands-sessions'])for(const empty of [false,tru
     const create=byId('modal-body').querySelectorAll('button').find(node=>node.getAttribute('aria-label')==='New session');assert.ok(create);create.click();
   }else byId('session-new').click();
   await settle();
-  assert.equal(byId('modal-title').textContent,'Session limit reached');
-  assert.match(byId('modal-body').textContent,/The session limit is full\. Close an idle session/);
-  assert.match(byId('modal-body').textContent,/Your saved conversations and drafts stay available/);
-  assert.match(byId('modal-body').textContent,/The primary capacity is full/);
-  const choice=byId('modal-body').querySelectorAll('button').find(node=>node.textContent.startsWith('Close Quiet session'));
-  assert.ok(choice);assert.doesNotMatch(byId('modal-body').textContent,/Close Busy session/);
-  assert.equal(calls.filter(call=>call.path.endsWith('/close')).length,0);
-  choice.click();assert.match(byId('modal-title').textContent,/Close Quiet session/);
-  assert.equal(calls.filter(call=>call.path.endsWith('/close')).length,0);
-  const confirm=byId('modal-body').querySelectorAll('button').find(node=>node.textContent==='Close session');assert.ok(confirm);confirm.click();await settle();
-  assert.equal(calls.filter(call=>call.path.endsWith('/close')).length,1);
-  assert.equal(calls.filter(call=>call.path==='/api/primaries').length,1,'Closure never retries creation automatically.');
+  assert.deepEqual(calls.filter(call=>call.path.endsWith('/close')).map(call=>call.path),[`/api/primaries/${idle.key}/close`],'Only the idle session closes.');
+  assert.equal(calls.filter(call=>call.path==='/api/primaries').length,2,'Creation continues after the idle session closes.');
   assert.equal(calls.some(call=>call.path.endsWith('/handoff')||call.path.endsWith('/stop')),false);
-  assert.equal(byId('modal-title').textContent,'Session closed');
-  assert.ok(byId('modal-body').querySelectorAll('button').find(node=>node.textContent==='New session'));
+  assert.notEqual(byId('modal-title').textContent,'Session limit reached');
   assert.equal([...app.state.targets.values()].find(item=>item.targetKey===draft.targetKey)?.draft.text,'Retained draft');
 });
 
-test('capacity confirmation refuses a session that becomes busy and Cancel closes nothing',async t=>{
-  const idle=primaryFixture({key:'capacity-stale',epoch:22100,activity:'idle',sessionName:'Changing session',pendingOperationIds:[]});
-  await arrive({workspace:{id:'capacity-stale',revision:1,primaryKey:idle.key},primaries:[idle],roster:[]});
+test('creation at the process limit closes another idle session before the one on screen',async t=>{
+  const shown=primaryFixture({key:'capacity-shown',epoch:22050,activity:'idle',sessionName:'Shown session',sessionFile:'/project/shown.jsonl',pendingOperationIds:[]});
+  const other=primaryFixture({key:'capacity-other',epoch:22051,activity:'idle',sessionName:'Other session',sessionFile:'/project/other.jsonl',pendingOperationIds:[]});
+  await arrive({workspace:{id:'capacity-order',revision:1,primaryKey:shown.key},primaries:[shown,other],roster:[]});
+  const original=globalThis.fetch,closes:string[]=[];let opens=0;
+  t.after(()=>{globalThis.fetch=original;if(byId('modal').open)byId('modal-close').click();});
+  globalThis.fetch=async(input,init)=>{
+    const path=new URL(String(input),'http://ui.test').pathname;
+    if(path==='/api/primaries'&&init?.method==='POST'){
+      if(++opens===1)return capacityRefusal();
+      const opened=primaryFixture({key:'capacity-opened',epoch:22052,activity:'idle'});
+      browser.fixture={...browser.fixture,primaries:[shown,{...other,lifecycle:'stopped'},opened]};
+      return Response.json({ok:true,data:{primaryKey:opened.key,operation:{state:'completed'}}});
+    }
+    if(path.endsWith('/close')){closes.push(path);browser.fixture={...browser.fixture,primaries:[shown,{...other,lifecycle:'stopped'}]};return Response.json({ok:true,data:{id:'order-close',kind:'primary.close',state:'completed'}});}
+    return original(input,init);
+  };
+  byId('session-new').click();await settle();
+  assert.deepEqual(closes,[`/api/primaries/${other.key}/close`]);assert.equal(opens,2);
+});
+
+test('creation at the process limit reports the limit and closes nothing when every session works',async t=>{
+  const busy=primaryFixture({key:'capacity-busy',epoch:22100,activity:'running',sessionName:'Working session',pendingOperationIds:[]});
+  await arrive({workspace:{id:'capacity-busy',revision:1,primaryKey:busy.key},primaries:[busy],roster:[]});
   const original=globalThis.fetch;let closes=0;t.after(()=>{globalThis.fetch=original;if(byId('modal').open)byId('modal-close').click();});
   globalThis.fetch=async(input,init)=>{
     const path=new URL(String(input),'http://ui.test').pathname;
-    if(path==='/api/primaries'&&init?.method==='POST')return Response.json({ok:true,data:{operation:{state:'rejected',error:{code:'capacity',message:'The primary capacity is full.',retry:'manual'}}}});
+    if(path==='/api/primaries'&&init?.method==='POST')return capacityRefusal();
     if(path.endsWith('/close'))closes++;
     return original(input,init);
   };
   byId('session-new').click();await settle();
-  let choice=byId('modal-body').querySelectorAll('button').find(node=>node.textContent.startsWith('Close Changing session'));assert.ok(choice);choice.click();
-  const cancel=byId('modal-body').querySelectorAll('button').find(node=>node.textContent==='Cancel');assert.ok(cancel);cancel.click();await settle();assert.equal(closes,0);
-  byId('session-new').click();await settle();choice=byId('modal-body').querySelectorAll('button').find(node=>node.textContent.startsWith('Close Changing session'));assert.ok(choice);choice.click();
-  app.state.primaries.set(idle.key,{...idle,activity:'running'});
-  const confirm=byId('modal-body').querySelectorAll('button').find(node=>node.textContent==='Close session');assert.ok(confirm);confirm.click();await settle();
-  assert.equal(closes,0);assert.match(byId('modal-error').textContent,/no longer idle/);
+  assert.equal(byId('modal-title').textContent,'Session limit reached');
+  assert.match(byId('modal-body').textContent,/No idle session is available to close/);
+  assert.match(byId('modal-body').textContent,/The primary capacity is full/);
+  assert.equal(closes,0);
+});
+
+test('an idle session that starts work before its close stays open',async t=>{
+  const idle=primaryFixture({key:'capacity-stale',epoch:22150,activity:'idle',sessionName:'Changing session',pendingOperationIds:[]});
+  await arrive({workspace:{id:'capacity-stale',revision:1,primaryKey:idle.key},primaries:[idle],roster:[]});
+  const original=globalThis.fetch;let closes=0,opens=0;t.after(()=>{globalThis.fetch=original;if(byId('modal').open)byId('modal-close').click();});
+  globalThis.fetch=async(input,init)=>{
+    const path=new URL(String(input),'http://ui.test').pathname;
+    if(path==='/api/primaries'&&init?.method==='POST'){opens++;return capacityRefusal();}
+    if(path==='/api/operations')app.state.primaries.set(idle.key,{...idle,activity:'running'});
+    if(path.endsWith('/close'))closes++;
+    return original(input,init);
+  };
+  byId('session-new').click();await settle();
+  assert.equal(closes,0);assert.equal(opens,1);
+  assert.equal(byId('modal-title').textContent,'Session limit reached');
 });
 
 for(const placement of ['modal','inline'])test(`${placement} creation retains ordinary errors outside capacity recovery`,async t=>{
@@ -86,24 +117,22 @@ for(const placement of ['modal','inline'])test(`${placement} creation retains or
   assert.equal(byId('modal').open,placement==='modal');assert.notEqual(byId('modal-title').textContent,'Session limit reached');
 });
 
-for(const newer of ['dialog','workspace'])test(`a delayed idle close preserves the newer ${newer}`,async t=>{
+for(const newer of ['dialog','workspace'])test(`a delayed automatic close preserves the newer ${newer}`,async t=>{
   const idle=primaryFixture({key:`delayed-${newer}`,epoch:22300,activity:'idle',sessionName:'Delayed session',pendingOperationIds:[]});
   await arrive({workspace:{id:`delayed-${newer}`,revision:1,primaryKey:idle.key},primaries:[idle],roster:[]});
-  const original=globalThis.fetch,pending=Promise.withResolvers<Response>();let closes=0;
+  const original=globalThis.fetch,pending=Promise.withResolvers<Response>();let closes=0,opens=0;
   t.after(()=>{pending.resolve(Response.json({ok:true,data:{id:'late-close',kind:'primary.close',state:'completed'}}));globalThis.fetch=original;if(byId('modal').open)byId('modal-close').click();});
   globalThis.fetch=async(input,init)=>{
     const path=new URL(String(input),'http://ui.test').pathname;
-    if(path==='/api/primaries'&&init?.method==='POST')return Response.json({ok:true,data:{operation:{state:'rejected',error:{code:'capacity',message:'The primary capacity is full.',retry:'manual'}}}});
+    if(path==='/api/primaries'&&init?.method==='POST'){opens++;return capacityRefusal();}
     if(path.endsWith('/close')){closes++;return pending.promise;}
     return original(input,init);
   };
-  byId('session-new').click();await settle();
-  const choice=byId('modal-body').querySelectorAll('button').find(node=>node.textContent.startsWith('Close Delayed session'));assert.ok(choice);choice.click();
-  const confirm=byId('modal-body').querySelectorAll('button').find(node=>node.textContent==='Close session');assert.ok(confirm);confirm.click();await settle();assert.equal(closes,1);
+  byId('session-new').click();await settle();assert.equal(closes,1);
   if(newer==='dialog'){byId('commands-button').click();assert.equal(byId('modal-title').textContent,'Commands');}
   else await arrive({workspace:{id:'newer-workspace',revision:1,primaryKey:idle.key},primaries:[idle],roster:[]});
   pending.resolve(Response.json({ok:true,data:{id:'late-close',kind:'primary.close',state:'completed'}}));await settle();
-  assert.notEqual(byId('modal-title').textContent,'Session closed');
+  assert.equal(opens,1,'A later choice ends the automatic creation.');
   if(newer==='dialog'){assert.equal(byId('modal-title').textContent,'Commands');assert.equal(byId('modal').open,true);}
   else assert.equal(app.state.workspace?.id,'newer-workspace');
 });

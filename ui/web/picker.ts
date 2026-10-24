@@ -10,6 +10,9 @@ import type { Modal } from './modal.ts';
 import { filterSessions, loadedPrimarySession, mergeSessions, mergeSessionTitles, savedPathValid, sessionCoverage, sessionEmptyMessage, sessionOwner, sessionSize, sessionLabel, type SessionList } from './picker-state.ts';
 import { ApiError, operation, request, reserve } from './transport.ts';
 
+/** Creation that meets the process limit closes at most this many idle sessions before it reports the limit. */
+const RECYCLE_ATTEMPTS = 3;
+
 function pickerField(control: {label: HTMLLabelElement; field: HTMLElement}, visibleLabel = false): HTMLElement {
   control.field.className = 'picker-input';
   const line = element('div', 'picker-input-row');
@@ -140,8 +143,20 @@ export class ProjectPicker {
     if (!this.inline) this.begin('Starting session');
     void this.run(() => this.start(cwd), cause => this.creationError(cause,cwd));
   }
-  private creationError(cause:unknown,project:string):void {
+  private creationError(cause:unknown,project:string,recycled=0):void {
     if(!(cause instanceof ApiError)||cause.view.code!=='capacity'||cause.view.message!=='The primary capacity is full.'){this.error(cause);return;}
+    const spare=recycled<RECYCLE_ATTEMPTS?this.recyclable():undefined,recycle=this.ctx.closeIdle;
+    if(spare&&recycle){
+      // The process limit does not stop creation while an idle session can give up its process. Its saved conversation and drafts stay.
+      this.unmount();
+      const {token}=this.begin('Starting session'),workspace=this.ctx.snapshot()?.workspace.id;
+      void this.run(async()=>{
+        try{await recycle(spare);}catch{throw cause;}
+        if(!this.owns(token)||this.ctx.snapshot()?.workspace.id!==workspace)return;
+        await this.start(project);
+      },next=>this.creationError(next,project,recycled+1));
+      return;
+    }
     this.unmount();
     const {body,token}=this.begin('Session limit reached'),workspace=this.ctx.snapshot()?.workspace.id;
     const currentWorkspace=()=>this.ctx.snapshot()?.workspace.id===workspace,closeIdle=this.ctx.closeIdle;
@@ -168,6 +183,12 @@ export class ProjectPicker {
     const current=this.ctx.snapshot()?.primaries.find(item=>item.key===primary.key&&item.epoch===primary.epoch);
     if(!current||!this.idleClosable(current))throw new Error('This session is no longer idle. Choose another idle session.');
     return current;
+  }
+  /** The idle session that gives up its process for a new one: another session before the one on screen, and an empty one first. */
+  private recyclable():PrimaryView|undefined {
+    const selected=this.ctx.primary()?.key,idle=this.ctx.snapshot()?.primaries.filter(item=>this.idleClosable(item))??[];
+    const others=idle.filter(item=>item.key!==selected);
+    return others.find(item=>!item.sessionFile)??others[0]??idle.find(item=>item.key===selected);
   }
   private idleClosable(primary:PrimaryView):boolean {return primary.lifecycle==='ready'&&primary.activity==='idle'&&!primary.pendingDialogs.length&&!primary.pendingOperationIds.length;}
   private project(): string | undefined { return this.ctx.project?.() ?? this.ctx.primary()?.cwd ?? (this.ctx.snapshot() as Bootstrap | undefined)?.launchCwd; }
