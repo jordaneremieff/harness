@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { AgentRow, ProjectedFrame, PrimaryView, SavedSession } from '../shared/api.ts';
-import { effortText, modelText, composerFolder, conversationPresentation, presentationGlyph, presentationName, projectIdentity, projectLabels, agentHistoryNote, readsSavedMessages, agentComposerState, responseOutcome, settingsLabel } from './conversation-presentation.ts';
+import { showsLastObserved, effortText, modelText, composerFolder, conversationPresentation, presentationGlyph, presentationName, projectIdentity, projectLabels, agentHistoryNote, readsSavedMessages, agentComposerState, responseOutcome, settingsLabel } from './conversation-presentation.ts';
 const row: AgentRow = {identity: 'agent:one', storageId: 'agent', cwd: '/projects/work', name: 'Worker', modifiedAt: 0,
   state: 'unavailable', owner: 'unknown', availability: 'live', partial: false,
   capabilities: {input: true, observe: true, history: true, abort: true, configure: false}};
@@ -297,4 +297,11 @@ test('model text prefers the model list name, then the reported name, then the i
   assert.equal(modelText({modelId: 'id', name: 'Reported'}), 'Reported');
   assert.equal(modelText({modelId: 'id', name: '  '}, ' '), 'id'); assert.equal(modelText({modelId: 'id'}), 'id');
   assert.equal(effortText('high'), 'High'); assert.equal(effortText('xhigh'), 'Xhigh'); assert.equal(effortText(''), '');
+});
+
+test('Last observed appears only for content that was observed earlier', () => {
+  assert.equal(showsLastObserved({retainedSession: false, entries: 0}, true), false, 'an unstarted conversation has nothing observed');
+  assert.equal(showsLastObserved({retainedSession: false, entries: 3}, false), false, 'a connected conversation is current');
+  assert.equal(showsLastObserved({retainedSession: false, entries: 3}, true), true);
+  assert.equal(showsLastObserved({retainedSession: true, entries: 0}, false), true);
 });

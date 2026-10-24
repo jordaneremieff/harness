@@ -80,7 +80,7 @@ import { inputOperation, operationLabel } from './operation-label.ts';
 import { PreferenceQueue } from './preference-queue.ts';
 import { BrowserDiagnostics } from './diagnostics.ts';
 import {DevReload, devReloadPresentation, validateDevReloadCheckpoint, type DevReloadCheckpoint, type DevReloadHooks, type DevCheckpointEntry, type DevReloadHold, type DevReloadNotice} from './dev-reload.ts';
-import { conversationPresentation, effortText, modelText, presentationGlyph, presentationName, projectIdentity, composerFolder, agentHistoryNote, readsSavedMessages, agentComposerState, settingsLabel } from './conversation-presentation.ts';
+import { conversationPresentation, effortText, modelText, presentationGlyph, presentationName, projectIdentity, composerFolder, agentHistoryNote, readsSavedMessages, agentComposerState, settingsLabel, showsLastObserved } from './conversation-presentation.ts';
 import type { AgentComposerState, ConversationPresentation } from './conversation-presentation.ts';
 import type { ComposerStateView } from './composer.ts';
 import { newerOperation, mergeOperationMap } from './operation-state.ts';
@@ -1208,7 +1208,9 @@ function renderAgentLiveStrip(controller: ConversationController, view: Conversa
   if(controller.inspection?.active)controller.liveStrip.node.hidden=true;
 }
 function renderObserved(controller:ConversationController, hide:boolean):void {
-  controllerNode(controller,'observed').hidden=controller.target.kind === 'agent' || !state.conversations.get(targetIdentity(controller.target))?.retainedSession&&hide;
+  const conversation=state.conversations.get(targetIdentity(controller.target));
+  const observed=!!conversation&&showsLastObserved({retainedSession:!!conversation.retainedSession,entries:conversation.entryOrder.length},!hide);
+  controllerNode(controller,'observed').hidden=controller.target.kind === 'agent' || !observed;
 }
 function selectedAgent(): string | undefined { const tab=activeTab(currentLayout());return tab?.kind === 'agent' ? tab.identity : undefined; }
 function targetState(target?: Target): TargetState | undefined {
@@ -3116,7 +3118,18 @@ function openSessionTab(tab:SessionTab):void {
   modal.close(false);if(chooseComparison(tabKey(tab),tab))return;
   try{applyLayout(openTab(currentLayout(),tab));}catch(error){showError(error);}
 }
+/** Opening a session that nothing else writes engages it at once: a live conversation with a composer, never a snapshot without one. A session a terminal holds stays a snapshot. */
+function engageSession(source:SessionReadSource):boolean {
+  if(!connected||selecting)return false;
+  const view=readSessionState('primary' in source?source.primary:undefined,source.saved,currentSnapshot()?.primaries);
+  if(view.terminal)return false;
+  const ready=view.primary?.lifecycle==='ready',closed=view.word==='closed'&&!!view.project&&!!view.path;
+  if(!ready&&!closed)return false;
+  modal.close(false);leaveOverlayDesk();closeToolFile(false);drawerOpen=false;
+  resumeTabSource(source);return true;
+}
 function openSessionRead(source:SessionReadSource):void {
+  if(engageSession(source))return;
   leaveOverlayDesk();closeToolFile(false);
   const tab=state.workspace?sessionTabFor(source):undefined;
   if(tab){openSessionTab(tab);return;}

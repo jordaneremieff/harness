@@ -210,3 +210,7 @@ export function projectIdentity(view: Pick<ConversationPresentation, 'cwd'>, lau
   const path = view.cwd || launchCwd;
   return {path, name: path ? projectLabels([...listedPaths, path]).get(path) ?? path : 'Working folder'};
 }
+/** The "Last observed" label says that shown content was seen earlier, so a conversation with nothing observed never carries it. */
+export function showsLastObserved(conversation: {retainedSession: boolean; entries: number}, offline: boolean): boolean {
+  return conversation.retainedSession || offline && conversation.entries > 0;
+}
