@@ -11,7 +11,8 @@ const cssPath = process.env.CONTRAST_CSS
 	: fileURLToPath(new URL("./style.css", import.meta.url));
 const css = readFileSync(cssPath, "utf8");
 const syntaxTokens = TONES.map(tone=>tone.startsWith('md-') ? tone : `syntax-${tone}`);
-const foregrounds = ["fg", "muted", "dim", "success", "error", "warning", "link", "accent", "info", "peer-label", ...syntaxTokens];
+const toolKinds = ["shell", "read", "edit", "search", "web", "agent", "memory", "other"];
+const foregrounds = ["fg", "muted", "dim", "success", "error", "warning", "link", "accent", "info", "peer-label", ...syntaxTokens, ...toolKinds.map(kind => `tool-${kind}`)];
 // Generic text and syntax inherit across these content surfaces.
 const surfaces = ["canvas", "side", "raised", "code", "run-bg", "ok-bg", "err-bg", "peer-bg"];
 // Diff producers emit plain spans with explicit ink, not nested syntax or arbitrary content.
@@ -27,7 +28,9 @@ function textThreshold(name: string, theme: string, background?: string): number
 const inverseFills: string[] = ['fg', 'muted'];
 // The edge token marks controls, status rules and neutral selections; the accent marks focus.
 const graphics = ["edge", "accent"];
-const required = [...foregrounds, ...surfaces, ...diffSurfaces.keys(), ...graphics, "rule"];
+// A kind-tinted surface holds only its own kind ink: the chip and the title row of a call, never general content.
+const toolSurfaces = new Map(toolKinds.map(kind => [`tool-${kind}-bg`, {selectors: [`.tool-shell[data-kind=${kind}] .tool-kind`, `.tool-shell[data-kind=${kind}] .tool-tier`], foreground: `tool-${kind}`}]));
+const required = [...foregrounds, ...surfaces, ...diffSurfaces.keys(), ...toolSurfaces.keys(), ...graphics, "rule"];
 // Rule hairlines decorate content already identified by text or position.
 // Any new use of the low-contrast rule needs a deliberate classification.
 const decorativeHairlines = new Set([
@@ -320,6 +323,7 @@ function matrix(palette: Palette, theme: string, measure: Measure) {
 	}
 	for (const fg of foregrounds) for (const bg of surfaces) measure("text-matrix", `--${fg} / --${bg}`, fg, bg, textThreshold(fg, theme, bg));
   for (const [bg, {foreground}] of diffSurfaces) measure('diff-text', `--${foreground} / --${bg}`, foreground, bg, 6.5);
+  for (const [bg, {foreground}] of toolSurfaces) measure('tool-text', `--${foreground} / --${bg}`, foreground, bg, 6);
 	for (const fill of inverseFills) measure("inverse-text", `--canvas / --${fill}`, "canvas", fill, textThreshold(fill, theme));
 	for (const bg of surfaces) measure("border-matrix", `--edge / --${bg}`, "edge", bg, 3);
 	for (const bg of surfaces) measure("focus-matrix", `--accent / --${bg}`, "accent", bg, 3);
@@ -429,10 +433,11 @@ function runBackground(context: Context, value: string): boolean {
   return true;
 }
 function diffBackground(context: Context, name: string): boolean {
-  const diff = diffSurfaces.get(name);
-  if (!diff) return false;
-  if (context.rule.selector !== diff.selector || token(context.decl.color ?? '') !== diff.foreground) context.issues.push(`${context.theme}: diff surface requires its explicit foreground: ${context.source}`);
-  else context.measure('diff-background', `${context.source} --${diff.foreground} / --${name}`, diff.foreground, name, 6.5);
+  const diff = diffSurfaces.get(name), tool = toolSurfaces.get(name);
+  if (!diff && !tool) return false;
+  const selectors = diff ? [diff.selector] : tool!.selectors, foreground = (diff ?? tool!).foreground;
+  if (!selectors.includes(context.rule.selector) || token(context.decl.color ?? '') !== foreground) context.issues.push(`${context.theme}: diff surface requires its explicit foreground: ${context.source}`);
+  else context.measure('diff-background', `${context.source} --${foreground} / --${name}`, foreground, name, diff ? 6.5 : 6);
   return true;
 }
 // Mixed fills resolve to opaque colors, then every text tier that can sit on them is measured.
@@ -665,6 +670,7 @@ test("every required matrix pair is measured in both themes", () => {
 		foregrounds.length * surfaces.length * 2,
 	);
   assert.equal(result.measurements.filter((m) => m.kind === 'diff-text').length, diffSurfaces.size * 2);
+  assert.equal(result.measurements.filter((m) => m.kind === 'tool-text').length, toolSurfaces.size * 2);
 	assert.equal(result.measurements.filter((m) => m.kind === "inverse-text").length, inverseFills.length * 2);
 	assert.equal(result.measurements.filter((m) => m.kind === "border-matrix").length, surfaces.length * 2);
 	assert.equal(result.measurements.filter((m) => m.kind === "focus-matrix").length, surfaces.length * 2);
