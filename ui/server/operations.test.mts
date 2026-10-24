@@ -7,6 +7,7 @@ import { Operations, nativeRequestId } from './operations.mts';
 import type { DispatchResult, ExecuteRequest } from './operations.mts';
 import { StateStore } from './state.mts';
 import type {Target} from '../shared/api.ts';
+import {LIMITS} from '../shared/api.ts';
 import {primaryMutation} from '../rpc/primary-operation.mts';
 async function retainReturnedQueue(operations: Operations, workspace: string, target: Extract<Target, {kind: 'primary'}>, rows: {steering: string[]; followUp: string[]}) {
   const id = await operations.beginQueueClear(workspace, target, rows.steering.length + rows.followUp.length);
@@ -200,12 +201,39 @@ test('definite refusal retains draft without an uncertain copy; expired reservat
   assert.equal((await store.getTarget(workspace.id, target.targetKey)).unconfirmed.length, 0);
   let now = Date.now(); const clock = new Operations(store, {now: () => now});
   const reservation = await clock.reserve(workspace.id, 'primary.stop', target.target); now += 600_001;
-  await assert.rejects(clock.execute(reservation.id, {workspaceId: workspace.id, kind: 'primary.stop', target: target.target, body: {}}, async () => { throw new Error('must not send'); }), /expired/);
+  await assert.rejects(clock.execute(reservation.id, {workspaceId: workspace.id, kind: 'primary.stop', target: target.target, body: {}}, async () => { throw new Error('must not send'); }), {code: 'operation_expired'});
   for (let index = 0; index < 16; index++) await clock.reserve(workspace.id, 'primary.stop', target.target);
   await assert.rejects(clock.reserve(workspace.id, 'primary.stop', target.target), /Too many/);
   await assert.rejects(clock.reserve(workspace.id, 'agent.abort', target.target), /exact target/);
 });
 
+test('expired unused input is distinct from an unknown key and a fresh queued receipt survives restart', async t => {
+  const {store, workspace, target, request: initial, reopen} = await setup(t);
+  const draft = await store.putDraft(workspace.id, target.targetKey, {expectedRevision: 1, text: 'exact message', mode: 'steer'});
+  const request: ExecuteRequest = {...initial, body: {message: draft.text, mode: draft.mode, draftRevision: draft.revision}, input: {targetKey: target.targetKey, text: draft.text, mode: draft.mode, draftRevision: draft.revision}};
+  let now = Date.now(), sends = 0; const clock = new Operations(store, {now: () => now});
+  const expired = await clock.reserve(workspace.id, 'primary.input', target.target); now += LIMITS.reservationMs;
+  await assert.rejects(clock.execute(expired.id, request, async () => {sends++; return {state: 'accepted', receipt: {kind: 'rpc', disposition: 'queued'}};}), {code: 'operation_expired'});
+  assert.equal(sends, 0); assert.equal((await store.getTarget(workspace.id, target.targetKey)).draft.text, 'exact message');
+  await assert.rejects(clock.execute(expired.id, request, async () => {sends++; throw Error('Unknown keys must not dispatch');}), {code: 'unknown_operation'});
+  const fresh = await clock.reserve(workspace.id, 'primary.input', target.target);
+  const accepted = await clock.execute(fresh.id, request, async () => {sends++; assert.equal(store.record(fresh.id).input?.mode, 'steer'); return {state: 'accepted', receipt: {kind: 'rpc', disposition: 'queued'}};});
+  assert.equal(accepted.state, 'accepted'); assert.equal(accepted.receipt?.kind, 'rpc');
+  const check = async (operations: Operations) => {
+    assert.deepEqual(await operations.reconcile(fresh.id), accepted);
+    assert.deepEqual(await operations.execute(fresh.id, request, async () => {sends++; throw Error('Accepted input must not resend');}), accepted);
+    await operations.markUncertain(target.target); assert.deepEqual(await operations.get(fresh.id), accepted);
+  };
+  await check(clock); const restarted = await reopen(); await check(new Operations(restarted, {now: () => now}));
+  assert.equal(sends, 1); assert.equal((await restarted.getTarget(workspace.id, target.targetKey)).unconfirmed.length, 0);
+});
+test('pruned preparation keys remain unknown rather than claim a proven unused expiry', async t => {
+  const {store, workspace, target, request} = await setup(t); let now = Date.now(), sends = 0;
+  const clock = new Operations(store, {now: () => now}), expired = await clock.reserve(workspace.id, 'primary.input', target.target);
+  now += LIMITS.reservationMs; await clock.reserve(workspace.id, 'primary.input', target.target);
+  await assert.rejects(clock.execute(expired.id, request, async () => {sends++; throw Error('Must not dispatch');}), {code: 'unknown_operation'});
+  assert.equal(sends, 0);
+});
 test('input recovery capacity refuses new work and never evicts unresolved records', async t => {
   const {store, operations, view, request} = await setup(t);
   const captured = request.input; assert.ok(captured); const capturedTarget = request.target; assert.ok(capturedTarget);

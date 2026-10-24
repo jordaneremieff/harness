@@ -126,7 +126,7 @@ async function syncDirectory(path: string): Promise<void> {
   const dir = await open(path, constants.O_RDONLY); try { await dir.sync(); } finally { await dir.close(); }
 }
 
-type SelectionInput = {expectedRevision: number; primaryKey?: string; selectedTarget?: Target | null; panelVisible?: boolean; sidebarVisible?: boolean; sidebarWidth?: number; appearance?: Appearance; enterSendsMessages?: boolean; agentControl?:boolean; conversationLayout?: ConversationLayout; filePositions?: Record<string,FilePosition>};
+type SelectionInput = {expectedRevision: number; primaryKey?: string; selectedTarget?: Target | null; panelVisible?: boolean; sidebarVisible?: boolean; sidebarWidth?: number; appearance?: Appearance; enterSendsMessages?: boolean; agentControl?:boolean; recentModels?: Workspace['recentModels']; conversationLayout?: ConversationLayout; filePositions?: Record<string,FilePosition>};
 function fileKeys(layout?:ConversationLayout):Set<string> {
   const keys = new Set<string>();
   const visit = (node:ConversationLayout['root']):void => {if (node.kind === 'split') {visit(node.first);visit(node.second);} else for (const tab of node.tabs) if (tab.kind === 'file') keys.add(workspaceTabKey(tab));};
@@ -140,6 +140,17 @@ export function validateFilePositions(value:unknown, layout?:ConversationLayout)
 function validateEnterPreference(value: unknown): void {
   if (value !== undefined && typeof value !== 'boolean') throw new StateError('invalid_request', 'Invalid Enter preference');
 }
+function validateRecentModels(value: unknown): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value) || value.length > 5) throw new StateError('invalid_request', 'Invalid recent models');
+  const identities = new Set<string>();
+  for (const item of value) {
+    if (!item || typeof item !== 'object' || Array.isArray(item) || Object.keys(item).length !== 2 || !['provider', 'modelId'].every(key => typeof item[key] === 'string' && item[key].trim().length > 0 && item[key].length <= LIMITS.idChars && !/[\u0000-\u001f\u007f]/.test(item[key]))) throw new StateError('invalid_request', 'Invalid recent model identity');
+    const identity = JSON.stringify([item.provider, item.modelId]);
+    if (identities.has(identity)) throw new StateError('invalid_request', 'Duplicate recent model');
+    identities.add(identity);
+  }
+}
 function validateAgentControl(value:unknown):void {if(value!==undefined&&typeof value!=='boolean')throw new StateError('invalid_request','Invalid agent control setting');}
 function validateSelection(input: SelectionInput): void {
       if (input.selectedTarget) validateTarget(input.selectedTarget);
@@ -150,8 +161,9 @@ function validateSelection(input: SelectionInput): void {
       if (input.appearance !== undefined && !(APPEARANCES as readonly string[]).includes(input.appearance)) throw new StateError('invalid_request', 'Invalid appearance');
       validateEnterPreference(input.enterSendsMessages);
       validateAgentControl(input.agentControl);
+      validateRecentModels(input.recentModels);
       if (input.conversationLayout !== undefined) validateConversationLayout(input.conversationLayout);
-      const allowed = ['expectedRevision', 'primaryKey', 'selectedTarget', 'panelVisible', 'sidebarVisible', 'sidebarWidth', 'appearance', 'enterSendsMessages', 'agentControl', 'conversationLayout', 'filePositions'];
+      const allowed = ['expectedRevision', 'primaryKey', 'selectedTarget', 'panelVisible', 'sidebarVisible', 'sidebarWidth', 'appearance', 'enterSendsMessages', 'agentControl', 'recentModels', 'conversationLayout', 'filePositions'];
       if (Object.keys(input).some(key => !allowed.includes(key))) throw new StateError('invalid_request', 'Unknown workspace field');
 }
 function knownTabFields(tab:import('../shared/api.ts').WorkspaceTab):string[] {
@@ -184,16 +196,25 @@ function validateOpaqueLayoutWrite(current:ConversationLayout|undefined,incoming
   if(version===undefined&&before.size&&!isDeepStrictEqual(current,incoming))throw new StateError('layout_version','Reload this page before changing the retained layout. No view state changed.',409);
   for(const [key,value] of before)if(!key.startsWith('tab:session:')&&!isDeepStrictEqual(value,after.get(key)))throw new StateError('layout_version','This page cannot replace retained view metadata. No view state changed.',409);
 }
+function applyWorkspacePreferences(value: Workspace, input: SelectionInput): void {
+  if (input.panelVisible !== undefined) value.panelVisible = input.panelVisible;
+  if (input.sidebarVisible !== undefined) value.sidebarVisible = input.sidebarVisible;
+  if (input.sidebarWidth !== undefined) value.sidebarWidth = input.sidebarWidth;
+  if (input.appearance !== undefined) value.appearance = input.appearance;
+  if (input.enterSendsMessages !== undefined) value.enterSendsMessages = input.enterSendsMessages;
+  if (input.agentControl !== undefined) value.agentControl = input.agentControl;
+  if (input.recentModels !== undefined) value.recentModels = structuredClone(input.recentModels);
+}
+function validateSavedPreferences(record: Workspace): void {
+  try { validateRecentModels(record.recentModels); } catch { throw new StateError('not_ready', 'Invalid saved recent models', 503); }
+  if (record.agentControl !== undefined && typeof record.agentControl !== 'boolean') throw new StateError('not_ready', 'Invalid saved agent control setting', 503);
+  if (record.enterSendsMessages !== undefined && typeof record.enterSendsMessages !== 'boolean') throw new StateError('not_ready', 'Invalid saved Enter preference', 503);
+}
 function selectedWorkspace(current: Workspace, input: SelectionInput, layoutVersion?:number): Workspace {
       const value: Workspace = {...current, revision: current.revision + 1};
       if(layoutVersion!==undefined&&(input.conversationLayout!==undefined||input.filePositions!==undefined))value.layoutVersion=layoutVersion;
       if (input.primaryKey !== undefined) value.primaryKey = input.primaryKey;
-      if (input.panelVisible !== undefined) value.panelVisible = input.panelVisible;
-      if (input.sidebarVisible !== undefined) value.sidebarVisible = input.sidebarVisible;
-      if (input.sidebarWidth !== undefined) value.sidebarWidth = input.sidebarWidth;
-      if (input.appearance !== undefined) value.appearance = input.appearance;
-      if (input.enterSendsMessages !== undefined) value.enterSendsMessages = input.enterSendsMessages;
-      if(input.agentControl!==undefined)value.agentControl=input.agentControl;
+      applyWorkspacePreferences(value, input);
       if (input.conversationLayout !== undefined) value.conversationLayout = structuredClone(input.conversationLayout);
       if (input.selectedTarget === null) delete value.selectedTarget;
       else if (input.selectedTarget !== undefined) value.selectedTarget = structuredClone(input.selectedTarget);
@@ -325,8 +346,7 @@ export class StateStore {
         const record = value as Workspace;
         if (!UUID.test(record.id) || !Number.isSafeInteger(record.revision)) throw new StateError('not_ready', 'Invalid saved workspace', 503);
         validateSavedLayoutVersion(record.layoutVersion);
-        if(record.agentControl!==undefined&&typeof record.agentControl!=='boolean')throw new StateError('not_ready','Invalid saved agent control setting',503);
-        if (record.enterSendsMessages !== undefined && typeof record.enterSendsMessages !== 'boolean') throw new StateError('not_ready', 'Invalid saved Enter preference', 503);
+        validateSavedPreferences(record);
         if (record.conversationLayout !== undefined) validateConversationLayout(record.conversationLayout);
         if (record.filePositions !== undefined) validateFilePositions(record.filePositions,record.conversationLayout);
         this.workspaces.set(record.id, record);

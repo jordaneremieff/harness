@@ -98,6 +98,7 @@ const decorativeTintedEdges = new Set([".stop|border-color|color-mix(in srgb, va
 // Non-content paint: backdrops dim the page without text; the resting divider separates positioned panes.
 const decorativeBackgrounds = new Set([
   "dialog::backdrop|var(--backdrop)",
+  "dialog[open][data-sheet]::backdrop|var(--backdrop)",
   "dialog[data-variant=palette][data-mode=commands]::backdrop|var(--backdrop)",
   ".app.drawer-open #sidebar-scrim|var(--backdrop)",
   ".pane-split > .pane-divider::after|var(--rule)",

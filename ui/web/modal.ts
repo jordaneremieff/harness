@@ -1,5 +1,6 @@
 import { byId, button, details, element, setText } from './dom.ts';
 import { errorMessage } from './transport.ts';
+import { contextMenu } from './context-menu.ts';
 
 export class Modal {
   readonly node = byId<HTMLDialogElement>('modal');
@@ -34,6 +35,7 @@ export class Modal {
     this.node.style.setProperty('--menu-right', `${Math.max(8, Math.round(innerWidth - box.right))}px`);
   }
   open(title: string, cancel?: () => void, closed?: () => void, variant?: 'find' | 'image'): HTMLElement {
+    contextMenu.close(false);
     const previousClose = this.closeAction; this.closeAction = undefined; previousClose?.();
     if (this.node.open && (this.node.dataset.variant === 'find' || variant === 'find')) this.close(false);
     this.revision++; this.presented = true; this.restoreOnClose = true;
@@ -41,11 +43,16 @@ export class Modal {
     this.body.replaceChildren();
     setText(byId('modal-title'), title); byId('modal-error').replaceChildren();
     delete this.node.dataset.variant;
+    delete this.node.dataset.sheet;
+    if (variant !== 'find' && variant !== 'image') this.sheet('content');
     this.cancelAction = cancel; this.closeAction = closed;
     if (variant) this.node.dataset.variant = variant;
     if (!this.node.open) {if (variant === 'find') this.node.show(); else this.node.showModal();}
     return this.body;
   }
+  /** Sheet sizing changes presentation only, never request cancellation or approval. */
+  sheet(kind: 'content' | 'searchable'): void { this.node.dataset.sheet = kind; }
+  focusTitle(): void { const title = byId('modal-title'); title.tabIndex = -1; title.focus({preventScroll: true}); }
   get openNow(): boolean { return this.node.open; }
   get token(): number { return this.revision; }
   owns(token: number): boolean { return this.node.open && this.revision === token; }
@@ -56,9 +63,10 @@ export class Modal {
     this.presented = false; this.closeAction = undefined; this.cancelAction = undefined; this.restore = undefined;
     closed?.();
     if (!focus || this.revision !== revision || this.node.open) return;
-    if (restore?.isConnected) restore.focus(); else this.focusCurrent();
+    if (restore?.isConnected) restore.focus({preventScroll: true}); else this.focusCurrent();
   }
   close(restore = true): void {
+    contextMenu.close(false);
     this.restoreOnClose = restore; this.cancelAction = undefined; this.node.close(); this.finishClose();
   }
   cancel(): void { if (this.cancelAction) this.cancelAction(); else this.close(); }

@@ -1,10 +1,17 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import type { RecoveryInput, Snapshot, TargetIndex, TargetState, UnconfirmedInput } from '../shared/api.ts';
-import { exactInput, recoveryName, Recovery } from './recovery.ts';
+import { exactInput, recoveryLabel, recoveryName, Recovery } from './recovery.ts';
 const originalFetch = globalThis.fetch;
 afterEach(() => {globalThis.fetch = originalFetch;});
 const input: UnconfirmedInput = {admission: 'unconfirmed', images: [], operationId: 'copy', target: {kind: 'primary', key: 'p', epoch: 1}, text: 'exact whitespace\n  ', mode: 'prompt', submittedDraftRevision: 3, createdAt: '2026-10-08T12:00:00Z', reason: 'unconfirmed'};
+test('accepted queued image copies stay distinct from unknown delivery and unconfirmed image handling', () => {
+  const queued = {...input, admission: 'queued-image', receipt: {kind: 'rpc', disposition: 'queued'}} as RecoveryInput;
+  assert.equal(recoveryLabel(queued).title, 'Message received'); assert.match(recoveryLabel(queued).warning, /does not show whether processing finished/);
+  assert.equal(recoveryLabel(input).title, 'Delivery not confirmed');
+  assert.equal(recoveryLabel({...queued, admission: 'handled-image'} as RecoveryInput).title, 'Input handled; images not confirmed');
+  assert.equal(queued.admission, 'queued-image'); assert.equal(queued.operationId, input.operationId);
+});
 test('a complete preview still fetches the authoritative recovery disposition and whitespace', async () => {
   globalThis.fetch = async () => Response.json({ok: true, data: input});
   assert.deepEqual(await exactInput('workspace', input), input);
@@ -70,6 +77,7 @@ test('recovery discovers all indexed copies and reads full tuples before disposi
   for (const row of rows) {row.all(node => node.textContent === 'Review saved copy')[0].dispatchEvent(new Event('click')); await drain();}
   assert.deepEqual(calls.filter(call => call.method === 'GET' && call.path.includes('/unconfirmed/')).map(call => call.path.split('/').at(-1)), copies.map(item => item.operationId));
   for (const [i, row] of rows.entries()) {assert.match(row.textContent, new RegExp(`complete ${i}`)); assert.match(row.textContent, /one.png/); assert.ok(row.all(node => node.attrs['aria-label'] === 'Copy text only').length);}
+  assert.match(rows[1].textContent, /Message received/); assert.doesNotMatch(rows[1].textContent, /Queued image copy|Delivery not confirmed/);
   assert.match(rows[1].textContent, /Current queue membership is unknown/); assert.match(rows[2].textContent, /Image delivery is not confirmed/);
   assert.equal(rows[3].all(node => node.textContent === 'Admission receipt').length, 0); assert.match(rows[3].textContent, /Message not sent/);
   rows[1].all(node => node.textContent === 'Restore to this draft')[0].dispatchEvent(new Event('click')); await drain();

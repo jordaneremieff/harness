@@ -4,11 +4,11 @@ import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { LIMITS } from '../shared/api.ts';
 import type { DraftImage, ImageUploadView } from '../shared/api.ts';
-import { attachmentMetadata, attachmentName, ComposerAttachments, includedText, missingImageIndexes, previewAttachment } from './composer-attachments.ts';
+import { attachmentMetadata, attachmentName, attachmentSummary, ComposerAttachments, includedText, missingImageIndexes, previewAttachment } from './composer-attachments.ts';
 import { ApiError } from './transport.ts';
 
 class PreviewNode extends EventTarget {
-  children: PreviewNode[] = []; parent?: PreviewNode; className = ''; textContent = ''; src = ''; alt = ''; decoding = ''; referrerPolicy = ''; tabIndex = -1;
+  children: PreviewNode[] = []; parent?: PreviewNode; className = ''; textContent = ''; src = ''; alt = ''; decoding = ''; referrerPolicy = ''; loading = ''; title = ''; tabIndex = -1;
   attributes = new Map<string, string>(); open = false; isConnected = true; focusOptions?: FocusOptions;
   readonly tag: string;
   constructor(tag: string) {super(); this.tag = tag;}
@@ -35,6 +35,19 @@ function previewFixture(t: TestContext) {
   previewAttachment('workspace / one', 'target / two', image, invoker as unknown as HTMLElement);
   return {body, invoker, image, dialog: body.find('dialog'), picture: body.find('img')};
 }
+test('saved attachment summaries show authenticated thumbnails and keep the exact digest in closed details', t => {
+  const {body,dialog,image}=previewFixture(t);dialog.close();
+  const summary=attachmentSummary('workspace / one','target / two',[image]) as unknown as PreviewNode;body.append(summary);
+  const row=summary.children[0];assert.ok(row);const preview=row.find('button'),picture=preview.find('img'),details=row.find('details');
+  const source=`/api/workspaces/workspace%20%2F%20one/targets/target%20%2F%20two/images/${image.digest}`;
+  assert.equal(preview.attributes.get('aria-label'),`Preview ${image.name}`);assert.equal(preview.find('span',image.name).textContent,image.name);assert.equal(preview.title,image.name);
+  assert.equal(picture.src,source);assert.equal(picture.loading,'lazy');assert.equal(picture.decoding,'async');assert.equal(picture.referrerPolicy,'no-referrer');
+  assert.equal(details.open,false);assert.equal(details.find('summary','Details').textContent,'Details');assert.equal(details.find('code').textContent,image.digest);
+  picture.dispatchEvent(new Event('error'));assert.equal(picture.src,'');preview.dispatchEvent(new Event('click'));
+  const opened=body.find('dialog');assert.equal(opened.find('img').src,source);opened.close();assert.deepEqual(preview.focusOptions,{preventScroll:true});
+  assert.throws(()=>attachmentSummary('workspace','target',[{...image,digest:'../invalid'}]),/Invalid image identity/);
+  assert.equal(image.digest,'a'.repeat(64));assert.equal(image.name,'screen & detail.png');
+});
 test('draft preview starts fitted and toggles natural size without changing its exact image or draft', t => {
   const {dialog, picture, image} = previewFixture(t);
   assert.equal(dialog.open, true); assert.equal(dialog.attributes.get('aria-label'), `Preview ${image.name}`);
@@ -113,6 +126,15 @@ test('container metadata checks signatures, dimensions and complete PNG/JPEG str
   const animated = png(); animated.set(new TextEncoder().encode('acTL'), 37); assert.throws(() => attachmentMetadata(animated), /Animated/);
   const trailing = new Uint8Array(58); trailing.set(png()); assert.throws(() => attachmentMetadata(trailing), /container/);
   const malformed = png(); new DataView(malformed.buffer).setUint32(33, 1000); assert.throws(() => attachmentMetadata(malformed), /malformed/);
+});
+test('JPEG frame dimensions remain available after bounded camera metadata beyond 64 KiB', () => {
+  const bytes = new Uint8Array(2 + 2 * 65537 + 12); bytes.set([255,216]);
+  for (const offset of [2,65539]) bytes.set([255,225,255,255],offset);
+  bytes.set([255,192,0,8,8,0,2,0,3,1,255,217],131076);
+  assert.deepEqual(attachmentMetadata(bytes), {mimeType:'image/jpeg',bytes:bytes.length,width:3,height:2});
+  const malformed = bytes.slice(); malformed.set([255,225,255,255],131076);
+  assert.throws(() => attachmentMetadata(malformed), /segment/);
+  assert.throws(() => attachmentMetadata(new Uint8Array(LIMITS.imageBytes + 1)), /8 MiB/);
 });
 test('filenames use code-point and control/path bounds without inferring a host path', () => {
   assert.equal(attachmentName('🖼'.repeat(240)), '🖼'.repeat(240));

@@ -183,6 +183,7 @@ export type ConversationLayout = {root: PaneNode; focusedPane: string};
 /** Shared tabs use compare-and-set revisions for view state. */
 export type Workspace = {id: string; revision: number; layoutVersion?: number; primaryKey?: string; selectedTarget?: Target;
   panelVisible?: boolean; sidebarVisible?: boolean; sidebarWidth?: number; appearance?: Appearance; enterSendsMessages?: boolean; agentControl?: boolean;
+  recentModels?: {provider: string; modelId: string}[];
   conversationLayout?: ConversationLayout; filePositions?: Record<string, FilePosition>};
 export function validAgentViews(value: unknown): value is string[] {
   return Array.isArray(value) && value.length <= LIMITS.identityLookup && new Set(value).size === value.length && value.every(identity=>typeof identity === 'string' && identity.length > 0 && identity.length <= 256 && !/[\u0000-\u001f\u007f]/.test(identity));

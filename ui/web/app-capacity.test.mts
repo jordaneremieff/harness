@@ -119,7 +119,7 @@ for(const entry of ['commands','conversation'])test(`${entry} closes a named emp
     if(path===`/api/primaries/${primary.key}/close`){closes++;assert.deepEqual(JSON.parse(String(init?.body)),{epoch:primary.epoch});browser.fixture={...browser.fixture,primaries:[{...primary,lifecycle:'stopped'}]};return Response.json({ok:true,data:{id:'normal-close',kind:'primary.close',state:'completed'}});}
     assert.equal(path.endsWith('/handoff')||path.endsWith('/stop'),false);return original(input,init);
   };
-  if(entry==='commands')byId('commands-button').click();else app.openConversationActions();await settle();
+  if(entry==='commands')byId('commands-button').click();else {app.openConversationActions();hostDocument.body.querySelector('.context-menu')?.querySelectorAll('button').find(node=>node.textContent==='Session details')?.click();}await settle();
   const choices=entry==='commands'?byId('modal-body').querySelectorAll('.palette-row'):hostDocument.body.querySelector('.context-menu')?.querySelectorAll('button');
   const close=choices?.find(node=>entry==='commands'?node.getAttribute('aria-label')?.startsWith('Close session,'):node.textContent==='Close session');assert.ok(close);close.click();
   assert.match(byId('modal-title').textContent,/Close Empty session/);assert.equal(closes,0);

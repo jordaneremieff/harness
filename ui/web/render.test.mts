@@ -480,7 +480,7 @@ test('callId joins call and results across entries with one bounded disclosure a
   assert.equal(card.querySelector('.tool-state-word')?.textContent, 'Failed');
   assert.equal(card.parentNode?.dataset.status, 'error'); assert.match(card.querySelector('.tool-state-word')?.textContent ?? '', /Failed/);
 });
-test('collapsed cards prefer supplied structured summaries and keep exact raw copy, timing and arguments', async () => {
+test('collapsed cards keep structured output inside the result and preserve exact raw copy, timing and arguments', async () => {
   setup(); const view = transcript(); const raw = '{\n  "count": 2,\n  "valid": true\n}';
   const source = contentEntry('summary', {path: 'result.txt', offset: 40, limit: 8}, raw);
   const parts = source.messages[0]?.parts; assert.ok(parts);
@@ -489,7 +489,9 @@ test('collapsed cards prefer supplied structured summaries and keep exact raw co
   result.parts = [{type: 'text', text: raw, structured: {value: {count: 2, valid: true}, truncated: false}}];
   view.set([source], new Map([[call.callId, {callId: call.callId, name: 'read', phase: 'end', durationMs: 37}]])); flush();
   const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card);
-  assert.equal(card.querySelector('.tool-preview')?.textContent, 'count: 2 · valid: true');
+  assert.equal(card.querySelector('.tool-preview')?.textContent, '');
+  assert.equal(card.querySelector('.tool-preview')?.hidden, true);
+  assert.match(card.querySelector('.tool-name')?.textContent ?? '', /Read.*result.txt/);
   assert.equal(card.querySelector('.tool-secondary')?.textContent, 'lines 40–47');
   assert.equal(card.querySelector('summary')?.querySelectorAll('.card-icon-disclosure').length, 0);
   const action = card.parentNode?.querySelector('.tool-copy'); assert.ok(action); assert.equal(action.textContent, 'Copy output');
@@ -500,6 +502,30 @@ test('collapsed cards prefer supplied structured summaries and keep exact raw co
   card.open = true; card.dispatch('toggle'); flush();
   assert.equal(card.querySelector('.tool-output-info')?.textContent, '');
   assert.ok(card.querySelector('.tool-arguments')); assert.ok(card.querySelector('.tool-raw-output')); view.reset();
+});
+test('structured protocol fields stay below the collapsed tool sentence and raw output stays exact', () => {
+  setup(); const view = transcript();
+  const value = {coverage: {omittedEntries: 22}, view: 'activity', transport: {offset: 90}}, raw = JSON.stringify(value);
+  const source = contentEntry('protocol-fields', {path: 'report.json'}, raw, false, {value, truncated: true});
+  for (const part of source.messages[0]?.parts ?? []) if (part.type === 'toolCall' || part.type === 'toolResult') part.name = 'read';
+  view.set([source]); flush(); const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card);
+  const summary = card.querySelector('summary'); assert.ok(summary);
+  assert.match(summary.textContent, /Read.*report.json/); assert.doesNotMatch(summary.textContent, /coverage|omittedEntries|transport|Partial preview/);
+  assert.equal(card.querySelector('.tool-preview-more')?.hidden, true);
+  card.open = true; card.dispatch('toggle'); flush();
+  assert.ok(card.querySelector('.tool-result-parts'));
+  const inspection = card.querySelector('.tool-raw-output'); assert.ok(inspection);
+  inspection.open = true; inspection.dispatch('toggle');
+  assert.equal(inspection.querySelector('pre')?.textContent, raw); view.reset();
+});
+test('tool coverage uses a plain notice and retains the exact supplied reason inside Source', () => {
+  setup(); const view = transcript(); const reason = 'Display limits or protected content';
+  view.set([{id: 'unavailable-output', kind: 'message', messages: [{...message('tool-output', ''), role: 'toolResult', parts: [], coverage: {complete: false, truncated: true, omitted: 1, reason}}]}]); flush();
+  const card = node('primary-transcript').querySelector('.message'); assert.ok(card);
+  assert.equal(card.querySelector('.message-coverage')?.textContent, 'Some tool output is unavailable. See Source for details.');
+  assert.doesNotMatch(card.textContent, new RegExp(reason));
+  messageAction(card, 'Source').run();
+  assert.match(card.querySelector('.message-source')?.textContent ?? '', new RegExp(reason)); view.reset();
 });
 test('a result before its call moves the same card to its call owner and removed parts disappear', () => {
   setup(); const view = transcript(); const result = {type: 'toolResult' as const, callId: 'x', name: 'custom', parts: [{type: 'text' as const, text: 'result'}], isError: false};
@@ -1093,7 +1119,7 @@ test('bash command and output stay distinct, and shell status follows live compl
   const call = {type: 'toolCall' as const, callId: 'bash', name: 'bash', arguments: {value: {command: 'echo first\necho second', timeout: 45}, truncated: false}};
   const entries = [{id: 'call', kind: 'message', messages: [{...message('bash', ''), parts: [call]}]}];
   view.set(entries); flush(); const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card);
-  assert.equal(card.parentNode?.dataset.status, 'missing'); assert.match(card.textContent, /No result recorded/); assert.equal(card.querySelector('.tool-name')?.textContent, 'Run echo first echo second');
+  assert.equal(card.parentNode?.dataset.status, 'missing'); assert.match(card.textContent, /No result recorded/); assert.equal(card.querySelector('.tool-name')?.textContent, 'Run a shell command');
   assert.equal(card.querySelector('.tool-target')?.title, '$ echo first\necho second'); assert.equal(card.querySelector('.tool-target')?.hidden, true);
   assert.equal(card.querySelector('.tool-secondary')?.textContent, ''); assert.match(card.querySelector('.tool-expanded')?.textContent ?? '', /\(timeout 45s\)/);
   assert.equal(card.querySelector('.tool-expanded')?.hidden, true); assert.doesNotMatch(card.querySelector('summary')?.textContent ?? '', /timeout/);
@@ -1246,6 +1272,10 @@ test('the browser copy of a sent message reads as the operator\'s own with its d
   assert.deepEqual(errors.map(item => [item.hidden, item.textContent]), [[true, ''], [true, ''], [false, 'Message not sent'], [false, 'Delivery not confirmed']]);
   assert.equal(errors[2]?.querySelector('details'), null); assert.equal(errors[2]?.className, 'error message-error');
   assert.equal(errors[3]?.querySelector('details'), null); assert.equal(errors[3]?.className, 'warning message-error', 'an unconfirmed copy is an unknown state');
+  const pending = root.querySelector('.message-text'); assert.ok(pending);
+  assert.equal(pending.tagName, 'div'); assert.equal(pending.classList.contains('stream-text'), true);
+  assert.equal(pending.querySelector('pre'), null); assert.equal(pending.querySelector('code'), null);
+  assert.match(readFileSync(new URL('./style.css', import.meta.url), 'utf8'), /\.message-body \{[^}]*font-family: var\(--sans\)/);
   view.set([echo('a', 'Sent')]); flush();
   assert.deepEqual(root.querySelectorAll('.message-delivery').map(item => [item.textContent, item.hidden]), [['· Sent', false]]); view.reset();
 });
@@ -1347,6 +1377,41 @@ for (const route of ['capture', 'paint', 'own-scroll']) {
     } finally {geometry.restore();}
   });
 }
+test('actual transcript scroll saves the current reading anchor once per render without scrollend', () => {
+  setup(); const readings: ReadingView[] = [], view = new Transcript('primary', {presentation: () => {}, reading: value => readings.push(value)});
+  view.set(Array.from({length: 30}, (_, index) => entry(`e${index}`))); flush();
+  const root = node('primary-transcript'); root.dispatch('scroll');
+  for (const top of [350, 490, 630]) {root.scrollTop = top; root.dispatch('scroll');}
+  assert.equal(readings.length, 0); flush();
+  assert.equal(readings.length, 1); assert.equal(readings[0]?.followTail, false);
+  assert.equal(readings[0]?.anchorId, view.captureGeometry().anchor?.id);
+  assert.equal(readings[0]?.offsetPx, view.captureGeometry().anchor?.offsetPx);
+  const before = readings.length; root.scrollTop = 800; root.dispatch('scroll'); view.reset(); flush();
+  assert.equal(readings.length, before, 'reset cancels the old scroll save'); view.destroy();
+});
+test('return to the tail without scrollend releases the scroll guard before later text arrives', () => {
+  setup(); const view = transcript(), root = node('primary-transcript'); scrollable(root);
+  const entries = Array.from({length: 8}, (_, index) => entry(`tail-${index}`));
+  view.set(entries); flush(); root.dispatch('scroll');
+  root.scrollTop = root.scrollHeight - root.clientHeight - 120; root.dispatch('scroll'); flush();
+  assert.equal(node('primary-latest').hidden, false);
+  root.scrollTop = root.scrollHeight - root.clientHeight; root.dispatch('scroll'); flush();
+  assert.equal(node('primary-latest').hidden, true);
+  const previous = root.scrollTop;
+  view.set([...entries, entry('tail-new', 'New plain text')]); flush();
+  assert.ok(root.scrollTop > previous, 'later text advances the viewport after the user returns to the tail');
+  assert.equal(root.scrollTop, root.scrollHeight - root.clientHeight); view.destroy();
+});
+test('Latest saves tail intent immediately without a later scroll event', () => {
+  setup(); const readings: ReadingView[] = [], view = new Transcript('primary', {presentation: () => {}, reading: value => readings.push(value)});
+  view.configure(undefined, {revision: 6, anchorId: 'e3', offsetPx: 17, followTail: false});
+  view.set(Array.from({length: 30}, (_, index) => entry(`e${index}`))); flush();
+  const root = node('primary-transcript'); root.dispatch('scroll');
+  node('primary-latest').click();
+  assert.deepEqual(readings.at(-1), {revision: 6, anchorId: null, offsetPx: 0, followTail: true});
+  root.dispatch('scroll'); flush();
+  assert.deepEqual(readings.at(-1), {revision: 6, anchorId: null, offsetPx: 0, followTail: true}); view.destroy();
+});
 test('a distinct user scroll supersedes a retained geometry anchor after an internal scroll notification', () => {
   setup(); const view = transcript(); const entries = Array.from({length: 30}, (_, i) => entry(`e${i}`));
   view.configure(undefined, {revision: 1, anchorId: 'e4', offsetPx: 108, followTail: false}); view.set(entries); flush();
@@ -1595,7 +1660,7 @@ test('quiet successful lookup text stays exact in expanded output, Raw output an
     assert.deepEqual(source, original);
   } finally { if (previous) Object.defineProperty(globalThis, 'navigator', previous); else Reflect.deleteProperty(globalThis, 'navigator'); view.reset(); }
 });
-test('quiet flags leave errors, live output, structured summaries and supplied previews intact', () => {
+test('quiet flags preserve errors, live output and supplied previews while structured output stays inside', () => {
   setup(); const view = transcript(); const raw = 'Neutral result text';
   const named = (id: string, name: string, args: Record<string, unknown> = {}, error = false, structured?: JsonDisplay) => {
     const source = contentEntry(id, args, raw, error, structured);
@@ -1612,9 +1677,9 @@ test('quiet flags leave errors, live output, structured summaries and supplied p
     live,
   ], new Map([['quiet-live', {callId: 'quiet-live', name: 'registry', phase: 'update', parts: [{type: 'text', text: raw}]}]])); flush();
   const previews = node('primary-transcript').querySelectorAll('.tool-preview'); assert.equal(previews.length, 6);
-  assert.deepEqual(previews.slice(0, 4).map(preview => preview.textContent), [raw, 'count: 2 · valid: true', raw, 'Supplied text']);
+  assert.deepEqual(previews.slice(0, 4).map(preview => preview.textContent), [raw, '', raw, 'Supplied text']);
   assert.match(previews[4]?.textContent ?? '', /- Before\n\+ After/); assert.equal(previews[5]?.textContent, raw);
-  for (const preview of previews) assert.equal(preview.hidden, false);
+  assert.deepEqual(previews.map(preview => preview.hidden), [false, true, false, false, false, false]);
   view.reset();
 });
 test('profile update alone quiets the same result text with complete public arguments', () => {
@@ -1632,7 +1697,7 @@ test('profile update alone quiets the same result text with complete public argu
   assert.deepEqual(previews.map(preview => [preview.textContent, preview.hidden]), [['', true], [raw, false], [raw, false], [raw, false]]);
   view.reset();
 });
-test('collapsed previews are prose only for Markdown reads and structured summaries', () => {
+test('collapsed previews retain Markdown prose while generic structured output stays inside the result', () => {
   setup(); const view = transcript(); const markdown = '# Plan\nRead the [guide](https://example.com/guide) first.';
   const entries = ['read', 'bash'].map(name => {
     const source = contentEntry(`prose-${name}`, {path: 'docs/plan.md'}, markdown); const parts = source.messages[0]?.parts; assert.ok(parts);
@@ -1649,7 +1714,7 @@ test('collapsed previews are prose only for Markdown reads and structured summar
   assert.equal(previews[2]?.querySelector('.tool-prose-preview'), null); assert.equal(previews[2]?.textContent, markdown);
   const summary = contentEntry('prose-summary', {path: 'result.json'}, '{"count":2}', false, {value: {count: 2}, truncated: false});
   view.set([summary]); flush();
-  assert.equal(node('primary-transcript').querySelector('.tool-preview')?.querySelector('.tool-prose-preview')?.textContent, 'count: 2');
+  assert.equal(node('primary-transcript').querySelector('.tool-preview')?.hidden, true);
   const failed = contentEntry('prose-failed', {path: 'docs/plan.md'}, markdown, true); for (const part of failed.messages[0]?.parts ?? []) if (part.type === 'toolCall' || part.type === 'toolResult') part.name = 'read';
   view.set([failed]); flush();
   assert.equal(node('primary-transcript').querySelector('.tool-preview')?.querySelector('.tool-prose-preview'), null);
@@ -2414,7 +2479,7 @@ test('tool subjects keep complete retained text without cut marks and omit a fir
     const prefix = name === 'bash' ? '$ ' : '';
     const characterCut = targetFor(name, key, 'x'.repeat(4200));
     assert.equal(characterCut.textContent, ''); assert.equal(characterCut.hidden, true); assert.equal(characterCut.title, `${prefix}${'x'.repeat(4200)}`);
-    const captions = {bash: [`Ran ${'x'.repeat(4200)}`, 'Ran first line second line', 'Ran Complete unknown TypeScr'], read: [`Read ${'x'.repeat(4200)}`, 'Read first line\nsecond line', 'Read Complete unknown TypeScr'], custom: ['Used custom', 'Used custom', 'Used custom']};
+    const captions = {bash: ['Ran a shell command', 'Ran a shell command', 'Ran a shell command'], read: [`Read ${'x'.repeat(4200)}`, 'Read first line\nsecond line', 'Read Complete unknown TypeScr'], custom: ['Used custom', 'Used custom', 'Used custom']};
     assert.equal(characterCut.closest('.tool-card')?.querySelector('.tool-name')?.textContent, captions[name][0]);
     const lineCut = targetFor(name, key, 'first line\nsecond line'); assert.equal(lineCut.textContent, '');
     assert.equal(lineCut.title, prefix.concat('first line', String.fromCharCode(10), 'second line'));
@@ -2428,9 +2493,11 @@ test('multiline tool targets keep a compact row and complete retained title and 
   setup(); const view = transcript(); const command = ['printf first', 'printf second', 'printf third'].join(String.fromCharCode(10));
   const source = contentEntry('multiline-command', {command}, 'output'); const message = source.messages[0]; assert.ok(message); for (const part of message.parts) part.name = 'bash';
   view.set([source]); flush(); const card = node('primary-transcript').querySelector('.tool-card'); const target = card?.querySelector('.tool-target'); assert.ok(card); assert.ok(target);
-  assert.equal(card.querySelector('.tool-name')?.textContent, 'Ran printf first printf second printf third'); assert.equal(target.textContent, ''); assert.equal(target.hidden, true); assert.equal(target.title, `$ ${command}`);
+  assert.equal(card.querySelector('.tool-name')?.textContent, 'Ran a shell command'); assert.equal(target.textContent, ''); assert.equal(target.hidden, true); assert.equal(target.title, `$ ${command}`);
   card.open = true; card.dispatch('toggle'); flush(); const args = card.querySelector('.tool-arguments'); assert.ok(args); args.open = true; args.dispatch('toggle'); flush();
+  assert.equal(JSON.parse(args.querySelector('pre')?.textContent ?? '{}').command, command);
   assert.match(args.textContent, /printf second/); assert.match(args.textContent, /printf third/);
+  assert.equal(card.querySelector('.tool-command')?.textContent, command);
   const text = 'x'.repeat(70000); const large = contentEntry('multiline-command', {command: text}, 'output'); const largeMessage = large.messages[0]; assert.ok(largeMessage); for (const part of largeMessage.parts) part.name = 'bash';
   view.set([large]); flush(); assert.ok(target.title.length <= 65536); view.reset();
 });
@@ -2941,7 +3008,13 @@ test('static workbench markup owns one footer and keeps composer actions without
   assert.match(factory, /const intake = element\('span','composer-intake'\); intake\.append\(attach,sources,picker\)/);
   assert.match(factory, /cardAction\('plus', 'Add to message'/);
   assert.match(factory, /const queueGuidance = element\('span', 'sr-only', queueDescription\)/);
-  assert.match(factory, /root\.append\(receipt, utilities, input, meta, queueGuidance\)/); assert.match(factory, /meta\.append\(state, stateDetails\)/); assert.match(factory, /utilities\.append\(recallLine, handoverHint\)/); assert.match(factory, /line\.append\(intake, settings, bar\)/); assert.match(factory, /bar\.append\(submit\)/); assert.match(factory, /submit\.append\(stop, queue, start, send\)/);
+  assert.match(factory, /root\.append\(receipt, utilities, input, meta, queueGuidance\)/); assert.match(factory, /meta\.append\(state, stateDetails\)/); assert.match(factory, /utilities\.append\(recallLine, handoverHint\)/); assert.match(factory, /line\.append\(intake, settings, bar\)/);
+  setup(); const elements = createComposerElements('render-structure'), root = elements.root as unknown as FakeNode;
+  const submit = root.querySelector('.composer-submit'); assert.ok(submit);
+  assert.equal(submit.parentNode, root.querySelector('.composer-bar'));
+  const stopSlot = root.querySelector('.composer-stop-slot'); assert.ok(stopSlot);
+  assert.deepEqual(stopSlot.children, [root.querySelector('.stop')]);
+  assert.deepEqual(submit.children, [stopSlot, elements.queue, elements.start, elements.send]);
   assert.doesNotMatch(factory, /composer-guidance|usage-details|class="statusline"|root\.append\([^)]*receiptDetails/);
   assert.equal([...html.matchAll(/id="focused-composer-status" class="workbench-draft-state"/g)].length, 1);
 });
@@ -2956,7 +3029,8 @@ test('composer utilities precede the writing surface and transcript paints retai
   assert.deepEqual((elements.meta as unknown as FakeNode).children, [elements.state, elements.stateDetails]);
   assert.deepEqual(shelf.children, [input.querySelector('.composer-intake'), elements.settings, input.querySelector('.composer-bar')]);
   const submit=input.querySelector('.composer-submit'),stop=input.querySelector('.stop');assert.ok(submit&&stop);
-  assert.deepEqual(submit.children,[stop,elements.queue,elements.start,elements.send]);
+  const stopSlot=input.querySelector('.composer-stop-slot');assert.ok(stopSlot);
+  assert.deepEqual(stopSlot.children,[stop]); assert.deepEqual(submit.children,[stopSlot,elements.queue,elements.start,elements.send]);
   assert.equal(surface.parentNode, input); assert.equal(editor.parentNode, surface); assert.equal(surface.children[1], editor);
   const host = new FakeNode('section'); roots.push(host); root.hidden = false; host.append(node('primary-transcript'), root);
   editor.value = 'Retained native draft'; const moves = editor.moves;
@@ -3208,7 +3282,7 @@ test('two independent scoped Transcript roots keep Source, reading and shared si
     assert.equal(right.root.querySelector('.message'), second); assert.equal(right.root.querySelector('.message-source'), rightRegion); assert.ok(right.readings.length > 0);
     leftCopy.run?.(); leftSource.run?.(); messageAction(second, 'Copy').run?.(); await Promise.resolve(); assert.deepEqual(f.writes, ['Right exact text']);
     fakeDocument.activeElement = null; right.view.set([entry('same', 'Updated right text')]); f.drain(); assert.match(right.root.textContent, /Updated right text/); assert.equal(left.root.children.length, 0);
-    right.latest.click(); assert.equal(right.readings.at(-1)?.followTail, false); right.root.dispatch('scrollend'); assert.equal(right.readings.at(-1)?.followTail, true);
+    right.latest.click(); assert.equal(right.readings.at(-1)?.followTail, true); right.root.dispatch('scrollend'); assert.equal(right.readings.at(-1)?.followTail, true);
     right.view.destroy(); assert.equal([...documentHandlers.values()].flat().length, 0); assert.equal(f.listeners(f.fonts).length, 0); assert.equal(f.media.flatMap(f.listeners).length, 0);
     assert.equal(rightResize.disconnects, 1); assert.equal(f.rafs.size, 0); assert.equal(f.timeouts.size, 0); assert.equal(f.intervals.size, 0);
   } finally { left.view.destroy(); right.view.destroy(); f.restore(); }
@@ -3652,14 +3726,14 @@ test('a caption revision alone leaves the open expanded path unchanged and refre
   } finally { f.view.destroy(); }
 });
 
-test('a deferred caption refresh also updates structured summary identity names', () => {
+test('a deferred caption refresh keeps generic structured fields inside the result', () => {
   setup(); const identity = '00000000-0000-4000-8000-000000000003'; let known = false;
   const view = new Transcript('primary', {presentation: () => {}, reading: () => {}, subject: value => known && value === identity ? {text: 'Sample owner', name: 'Sample owner', provenance: 'reported'} : undefined});
   try {
     const value = {sessionId: identity, status: 'ready'}, source = contentEntry('summary-caption', {}, JSON.stringify(value), false, {value, truncated: false});
     view.set([source]); flush(); const preview = node('primary-transcript').querySelector('.tool-preview'); assert.ok(preview); assert.doesNotMatch(preview.textContent, /Sample owner/);
     view.defer(() => view.set([source])); known = true; view.refreshSubjects(); flush();
-    assert.match(preview.textContent, /Sample owner/); assert.doesNotMatch(preview.textContent, new RegExp(identity));
+    assert.equal(preview.textContent, ''); assert.equal(preview.hidden, true);
   } finally { view.destroy(); }
 });
 

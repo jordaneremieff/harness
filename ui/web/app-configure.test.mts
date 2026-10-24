@@ -22,14 +22,14 @@ test('agent selectors keep exact recipient, confirmed labels, draft and caret th
   assert.equal(agentControl('model').textContent,'Readable model');assert.equal(agentControl('thinking').textContent,'Low');assert.equal(agentControl('thinking').disabled,false,agentControl('thinking').title);
   const captured=controls(app.agentComposer()),editor=captured('editor');editor.focus();editor.setSelectionRange(2,8,'backward');
   agentControl('thinking').click();await settle();app.focusPane('primary-pane');await settle();
-  const high=byId('modal-body').querySelectorAll('button').find(node=>node.textContent==='high');assert.ok(high);high.click();await settle();
+  const high=byId('modal-body').querySelectorAll('button').find(node=>node.dataset.level==='high');assert.ok(high);high.click();await settle();
   assert.equal(calls,1);assert.equal(captured('thinking').textContent,'Low');assert.equal(captured('model').disabled,true);assert.equal(captured('thinking').disabled,true);assert.match(captured('state').textContent,/Updating settings/);
   const result:OperationView={id:'op-1',kind:'agent.configure',target,state:'completed',createdAt:'2026-10-20T00:00:00.000Z',updatedAt:'2026-10-20T00:00:01.000Z',receipt:{kind:'configuration',identity,outcome:'applied',after:{name:'Recipient',model:'fixture/model',thinkingLevel:'high'},afterSource:'live',persistence:'completed'}};
   resolve(Response.json({ok:true,data:result}));await settle();
-  assert.equal(captured('thinking').textContent,'High');assert.equal(captured('editor'),editor);assert.equal(editor.value,draft.draft.text);assert.deepEqual([editor.selectionStart,editor.selectionEnd,editor.selectionDirection],[2,8,'backward']);assert.equal(hostDocument.activeElement,editor);assert.equal(calls,1);
+  assert.equal(captured('thinking').textContent,'High');assert.equal(captured('editor'),editor);assert.equal(editor.value,draft.draft.text);assert.deepEqual([editor.selectionStart,editor.selectionEnd,editor.selectionDirection],[2,8,'backward']);assert.equal(hostDocument.activeElement,captured('thinking'));assert.equal(calls,1);
   event('agent.frame',{identity,connectionEpoch,frame:{...frame,revision:2,status:{...frame.status,busy:true}}},target);await settle();
   assert.equal(captured('model').disabled,true);assert.equal(captured('thinking').disabled,true);
-  assert.match(captured('state').textContent,/Steer at the next step; Queue adds a follow-up\./);assert.doesNotMatch(captured('state').textContent,/locked|Wait while/);
+  assert.match(captured('state').textContent,/Send a message while this conversation works\. The agent reads it at its next step\./);assert.doesNotMatch(captured('state').textContent,/locked|Wait while/);
   for(const key of ['model','thinking']){const node=captured(key);assert.equal(node.getAttribute('aria-description'),'Model and thinking are locked while this agent works.');assert.match(node.title,/Model and thinking are locked while this agent works\./);assert.equal(node.getAttribute('aria-describedby'),null);}
   assert.equal((editor as HostNode & {placeholder:string}).placeholder,'Message');
 });
@@ -53,8 +53,8 @@ test('busy Primary retains its existing model and thinking controls',async t=> {
   const primary=primaryFixture({epoch:8130,activity:'running',model:{provider:'fixture',id:'primary-busy',name:'Busy Primary model',reasoning:true,input:['text']},thinkingLevel:'high'});
   await arrive({workspace:{id:'primary-busy',revision:1,primaryKey:primary.key,selectedTarget:{kind:'primary',key:primary.key,epoch:primary.epoch}},primaries:[primary],roster:[],targets:[targetFixture('primary-busy-draft',{kind:'primary',key:primary.key,epoch:primary.epoch})]});event('ready',{bootId:'boot'});await settle();
   assert.equal(primaryControl('model').disabled,false);assert.equal(primaryControl('thinking').disabled,false);assert.doesNotMatch(primaryControl('model').title,/locked|Wait while/);assert.equal(primaryControl('thinking').textContent,'High');
-  assert.equal((primaryControl('editor') as HostNode & {placeholder:string}).placeholder,'Message');assert.match(primaryControl('state').textContent,/Steer at the next step; Queue adds a follow-up\./);
-  for(const key of ['send','queue']){assert.equal(primaryControl(key).hidden,false);assert.equal(primaryControl(key).disabled,true);}
+  assert.equal((primaryControl('editor') as HostNode & {placeholder:string}).placeholder,'Message');assert.match(primaryControl('state').textContent,/Send a message while this conversation works\. The agent reads it at its next step\./);
+  assert.equal(primaryControl('send').hidden,false);assert.equal(primaryControl('send').disabled,true);assert.equal(primaryControl('queue').hidden,true);
 });
 
 test('unknown capability and uncertain configure remain visible without fabricated levels or automatic retry',async()=> {

@@ -49,7 +49,7 @@ test('model holds start before reservation and release only their own authoritat
   const actions = new Actions(context({...ready, modelChanged: () => {changed++;}})), target = operation.target; assert.ok(target);
   const first = actions.control({action: 'model', provider: 'fixture', modelId: 'model'} as PrimaryControl);
   assert.equal(actions.modelChanging(target), true); reserved.resolve(Response.json({ok: true, data: {operationId: 'old'}})); await assert.rejects(first, /response lost/);
-  await actions.control({action: 'model', provider: 'fixture', modelId: 'other'} as PrimaryControl);
+  await assert.rejects(actions.control({action: 'model', provider: 'fixture', modelId: 'other'} as PrimaryControl), /not confirmed/);
   assert.equal(actions.modelChanging(target), true); assert.equal(actions.modelChanging({...target, epoch: 2} as Target), false);
   assert.equal(actions.modelChanging(target, [{...operation, id: 'old', state: 'uncertain'}]), true);
   assert.equal(actions.modelChanging(target, [{...operation, id: 'old'}]), false); assert.equal(changed, 4);
@@ -515,6 +515,18 @@ test('a failed later page retains incomplete items and retry reuses confirmed ea
   assert.equal(actions.commandOptions().incomplete, undefined); assert.equal(actions.commandOptions().items.some(item => item.name === 'recovered'), true);
 });
 
+function settingsFixture(overrides: Partial<ActionContext> = {}, touch = true) {
+  const descriptors = new Map(['document', 'HTMLElement', 'matchMedia'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  const nodes = new Map(['modal', 'modal-body', 'modal-close', 'modal-title', 'modal-error'].map(id => [id, new FakeNode()]));
+  const doc = fakeDocument();
+  Object.defineProperty(globalThis, 'document', {configurable: true, value: {...doc, get activeElement() {return focused;}, getElementById: (id: string) => nodes.get(id)}});
+  Object.defineProperty(globalThis, 'HTMLElement', {configurable: true, value: FakeNode});
+  Object.defineProperty(globalThis, 'matchMedia', {configurable: true, value: () => ({matches: touch})});
+  const modal = new Modal(), actions = new Actions(context({...ready, modal, ...overrides})), body = nodes.get('modal-body') as FakeNode;
+  return {actions, modal, body, nodes, rows: () => body.children.find(node => node.className.includes('model-results') || node.className.includes('thinking-options'))?.children.filter(node => node.tagName === 'button') ?? [], restore: () => {
+    for (const [key, descriptor] of descriptors) {if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key);}
+  }};
+}
 function paletteFixture(overrides: Partial<ActionContext> = {}) {
   const oldDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
   const document = fakeDocument(); Object.defineProperty(globalThis, 'document', {configurable: true, value: document});
@@ -591,6 +603,103 @@ test('Keyboard shortcuts reads new binding metadata without a second roster and 
     assert.match(textOf(row), /Local action.*Exact current context.*Fixture key/); assert.equal(row.attributes.get('aria-keyshortcuts'), 'Control+X'); assert.equal(calls, 0);
     row.dispatchEvent(new Event('click')); assert.equal(calls, 1);
   } finally {f.restore();}
+});
+test('model choices put current and exact loaded recents first, retain identity search and disclose pagination', async () => {
+  const model = (provider: string, id: string) => ({provider, id, name: 'Readable', reasoning: true, input: ['text']});
+  const current = {...primary, model: model('vendor', 'current')}, workspace = {id: 'workspace', recentModels: [{provider: 'vendor', modelId: 'recent'}, {provider: 'missing', modelId: 'not-loaded'}, {provider: 'vendor', modelId: 'current'}]};
+  const f = settingsFixture({primary: () => current, snapshot: () => ({primaries: [current], workspace}) as unknown as Snapshot});
+  const paths: string[] = [];
+  globalThis.fetch = async path => {paths.push(String(path)); return Response.json({ok: true, data: String(path).includes('cursor=') ? {items: [model('other', 'later'), model('vendor', 'recent')], nextCursor: null, revision: 'r'} : {items: [model('other', 'plain'), model('vendor', 'recent'), model('vendor', 'current')], nextCursor: 'next', revision: 'r'}});};
+  try {
+    f.actions.modelPicker(); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.nodes.get('modal')?.dataset.sheet, 'searchable'); assert.equal(focused, f.nodes.get('modal-title'));
+    assert.deepEqual(f.rows().map(row => row.title), ['vendor/current', 'vendor/recent', 'other/plain']);
+    assert.equal(f.rows()[0]?.attributes.get('aria-checked'), 'true'); assert.equal(f.rows()[0]?.children[1]?.textContent, 'Readable');
+    const search = f.body.children.find(node => node.className === 'model-search'); assert.ok(search);
+    search.value = 'other/plain'; search.dispatchEvent(new Event('input')); assert.deepEqual(f.rows().map(row => row.title), ['other/plain']);
+    assert.match(textOf(f.body), /Search covers listed models/);
+    const more = f.body.children.find(node => node.textContent === 'More models'); assert.ok(more); more.dispatchEvent(new Event('click')); await new Promise(resolve => setImmediate(resolve));
+    search.value = ''; search.dispatchEvent(new Event('input')); assert.equal(f.rows().length, 4); assert.equal(more.hidden, true); assert.match(textOf(f.body), /Search covers the available model list/); assert.equal(paths.length, 2);
+  } finally {f.restore();}
+});
+test('current and recent models beyond the first page use only their exact Primary catalogue', async () => {
+  const model = (id: string) => ({provider: 'vendor', id, name: `Model ${id}`, reasoning: true, input: ['text']});
+  let current = {...primary, model: model('current-later')};
+  const workspace = {id: 'workspace', recentModels: [{provider: 'vendor', modelId: 'recent-later'}]}, paths: string[] = [];
+  const f = settingsFixture({primary: () => current, snapshot: () => ({primaries: [current], workspace}) as unknown as Snapshot});
+  globalThis.fetch = async path => {
+    paths.push(String(path));
+    return Response.json({ok: true, data: String(path).includes('/other/') ? {items: [model('other-only')], nextCursor: null, revision: 'other'} : String(path).includes('cursor=') ? {items: [model('current-later'), model('recent-later')], nextCursor: null, revision: 'r'} : {items: [model('first-page')], nextCursor: 'next', revision: 'r'}});
+  };
+  try {
+    f.actions.readModelNames(); await new Promise(resolve => setImmediate(resolve)); assert.equal(paths.length, 2);
+    f.actions.modelPicker(); await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(f.rows().map(row => row.title), ['vendor/current-later', 'vendor/recent-later', 'vendor/first-page']); assert.equal(paths.length, 2);
+    assert.equal(f.rows()[0]?.attributes.get('aria-checked'), 'true');
+    current = {...current, key: 'other', epoch: 2}; f.modal.close(); f.actions.readModelNames(); await new Promise(resolve => setImmediate(resolve));
+    f.actions.modelPicker(); await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(f.rows().map(row => row.title), ['vendor/other-only']);
+    assert.equal(f.actions.modelName('vendor', 'recent-later'), 'Model recent-later', 'retained names are not availability for another Primary');
+  } finally {f.restore();}
+});
+test('thinking choices focus the selected supported value and keep unfamiliar protocol values', async () => {
+  const f = settingsFixture(); const sent: unknown[] = [];
+  try {
+    f.actions.configure = async (_selection, patch) => {sent.push(patch);};
+    f.actions.thinkingPicker({target: {kind: 'agent', identity: 'exact'}, thinking: 'xhigh', levels: ['off', 'xhigh', 'max', 'adaptive'], guard: () => undefined});
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(f.rows().map(row => row.children[1]?.textContent), ['Off', 'Extra high', 'Maximum', 'Adaptive']);
+    assert.equal(focused, f.rows()[1]); assert.equal(f.rows()[1]?.attributes.get('aria-checked'), 'true');
+    f.rows()[3]?.dispatchEvent(new Event('click')); await new Promise(resolve => setImmediate(resolve)); assert.deepEqual(sent, [{thinkingLevel: 'adaptive'}]);
+  } finally {f.restore();}
+});
+test('late model pages never repaint a replacement request or steal its focus', async () => {
+  const response = Promise.withResolvers<Response>(); const f = settingsFixture(); globalThis.fetch = async () => response.promise;
+  try {
+    f.actions.modelPicker(); f.modal.open('Permission request'); const title = f.nodes.get('modal-title'); title?.focus();
+    response.resolve(Response.json({ok: true, data: {items: [], nextCursor: null, revision: 'r'}})); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(title?.textContent, 'Permission request'); assert.equal(f.body.children.length, 0); assert.equal(focused, title);
+  } finally {f.restore();}
+});
+test('a confirmed model records bounded recents but a preference failure never becomes a model failure', async () => {
+  for (const fail of [false, true]) {
+    const workspace = {id: 'workspace', recentModels: Array.from({length: 5}, (_, index) => ({provider: 'vendor', modelId: String(index)}))}, writes: unknown[] = [];
+    const f = settingsFixture({snapshot: () => ({primaries: [primary], workspace}) as unknown as Snapshot, selection: async value => {writes.push(value); if (fail) throw new Error('Preference disk unavailable');}});
+    globalThis.fetch = async () => Response.json({ok: true, data: {items: [{provider: 'vendor', id: 'new', name: 'New model', reasoning: false, input: ['text']}], nextCursor: null, revision: 'r'}});
+    try {
+      let applied = 0; f.actions.configure = async () => {applied++;}; f.actions.modelPicker(); await new Promise(resolve => setImmediate(resolve));
+      f.rows()[0]?.dispatchEvent(new Event('click')); await new Promise(resolve => setImmediate(resolve));
+      assert.equal(applied, 1); assert.deepEqual(writes, [{recentModels: [{provider: 'vendor', modelId: 'new'}, ...workspace.recentModels.slice(0, 4)]}]);
+      assert.equal(f.modal.openNow, fail);
+      if (fail) {assert.equal(f.rows()[0]?.attributes.get('aria-checked'), 'true'); assert.match(textOf(f.nodes.get('modal-error') as FakeNode), /Model applied\. Recent choices were not saved/); assert.doesNotMatch(textOf(f.nodes.get('modal-error') as FakeNode), /The action failed/);}
+    } finally {f.restore();}
+  }
+});
+test('an unconfirmed model does not change selection or recents', async () => {
+  const workspace = {id: 'workspace'}, f = settingsFixture({snapshot: () => ({primaries: [primary], workspace}) as unknown as Snapshot, selection: async () => {throw new Error('Recents must not change');}});
+  globalThis.fetch = async () => Response.json({ok: true, data: {items: [{provider: 'v', id: 'm', name: 'Model', reasoning: false, input: ['text']}], nextCursor: null, revision: 'r'}});
+  try {
+    f.actions.configure = async () => {throw new Error('Settings update was not confirmed.');};
+    f.actions.modelPicker(); await new Promise(resolve => setImmediate(resolve)); f.rows()[0]?.dispatchEvent(new Event('click')); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.modal.openNow, true); assert.equal(f.rows()[0]?.attributes.get('aria-checked'), 'false'); assert.match(textOf(f.nodes.get('modal-error') as FakeNode), /not confirmed/);
+  } finally {f.restore();}
+});
+test('confirmed model changes never save recents to a replacement workspace', async () => {
+  let workspace = {id: 'first'}, writes = 0; const pending = Promise.withResolvers<void>();
+  const f = settingsFixture({snapshot: () => ({primaries: [primary], workspace}) as unknown as Snapshot, selection: async () => {writes++;}});
+  globalThis.fetch = async () => Response.json({ok: true, data: {items: [{provider: 'v', id: 'm', name: 'Model', reasoning: false, input: ['text']}], nextCursor: null, revision: 'r'}});
+  try {
+    f.actions.configure = () => pending.promise; f.actions.modelPicker(); await new Promise(resolve => setImmediate(resolve)); f.rows()[0]?.dispatchEvent(new Event('click'));
+    workspace = {id: 'replacement'}; pending.resolve(); await new Promise(resolve => setImmediate(resolve)); assert.equal(writes, 0);
+  } finally {f.restore();}
+});
+test('Primary configuration rechecks the captured guard after reservation without dispatch or a false pending hold', async () => {
+  const reserved = Promise.withResolvers<Response>(); const seen: string[] = []; let reason: string | undefined;
+  globalThis.fetch = async path => {seen.push(String(path)); return reserved.promise;};
+  const actions = new Actions(context(ready)), target = {kind: 'primary' as const, key: primary.key, epoch: primary.epoch};
+  const pending = actions.configure({target, primary, guard: () => reason}, {thinkingLevel: 'high'}), rejected = assert.rejects(pending, /changed/);
+  reason = 'The workspace changed.'; reserved.resolve(Response.json({ok: true, data: {operationId: 'reserved'}})); await rejected;
+  assert.deepEqual(seen, ['/api/operations']); assert.equal(actions.modelChanging(target), false);
 });
 test('Message input opens the workspace preference without mutation and the native checkbox saves its value', async () => {
   for (const enabled of [undefined, false, true]) {

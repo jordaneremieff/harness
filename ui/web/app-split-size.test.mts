@@ -25,7 +25,7 @@ test('first split from a workspace without a saved layout admits its exact choos
   const menu = hostDocument.body.querySelector('.context-menu'); assert.ok(menu);
   const split = menu.querySelectorAll('button').find(row => row.textContent === 'Split right'); assert.ok(split); split.dispatch('click'); await settle();
   assert.doesNotMatch(byId('announcements').textContent, /This item changed|This pane changed/);
-  assert.equal(byId('navigation-title').textContent,'Pi');assert.equal(byId('recent-sessions').querySelector('.sidebar-content-row[data-session-key="agent:a"]'),null);
+  assert.equal(byId('navigation-title').textContent,'Sessions');assert.equal(byId('recent-sessions').querySelector('.sidebar-content-row[data-session-key="agent:a"]'),null);
   app.showNavigationView('agents');await app.selectAgent(agentFixture('a',{name:'Other agent'}));await settle();
   assert.equal(app.splitActive(), true); assert.deepEqual(app.state.workspace?.selectedTarget, {kind: 'agent', identity: 'a'});
   assert.equal(app.primaryComposer().editor, editor); assert.equal(app.primaryComposer().state?.draft.text, 'retained exact draft');

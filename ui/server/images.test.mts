@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FileHistory } from './history.mts';
-import { IMAGE_BYTES, IMAGE_EDGE, IMAGE_PIXELS, imagePart, readImage } from './images.mts';
+import { IMAGE_BYTES, IMAGE_EDGE, IMAGE_PIXELS, imagePart, readImage, validateImageBytes } from './images.mts';
 import { imageRequest } from './image-request.mts';
 import { projectFrame, projectSavedEntry } from './projection.mts';
 import {ApiError} from './errors.mts';
@@ -32,6 +32,22 @@ test('a baseline JPEG projects dimensions and returns the original exact image b
   assert.ok(!JSON.stringify(image).includes(jpegData));
   const result = readImage({...entry, message: {role: 'user', content: [jpeg]}}, source, image.digest);
   assert.equal(result.mimeType, 'image/jpeg'); assert.equal(Buffer.from(result.data).toString('base64'), jpegData);
+});
+test('JPEG metadata before its frame header stays inside the uploaded byte bound', () => {
+  const original = Buffer.from(jpegData, 'base64'), app = Buffer.alloc(40_004);
+  app[0] = 0xff; app[1] = 0xef; app.writeUInt16BE(app.length - 2, 2);
+  const jpeg = Buffer.concat([original.subarray(0, 2), app, app, original.subarray(2)]);
+  const metadata = validateImageBytes(jpeg, 'image/jpeg');
+  assert.deepEqual([metadata.width, metadata.height, metadata.bytes], [1, 1, jpeg.length]);
+  const part = {type: 'image', mimeType: 'image/jpeg', data: jpeg.toString('base64')}, projected = imagePart(part); assert.ok(projected.type === 'image');
+  assert.deepEqual(Buffer.from(readImage({...entry, message: {role: 'user', content: [part]}}, source, projected.digest).data), jpeg);
+  assert.throws(() => readImage({...entry, message: {role: 'user', content: [part]}}, source, '0'.repeat(64)), {code: 'stale_revision'});
+  const malformed = Buffer.from(jpeg); malformed.writeUInt16BE(1, 4);
+  assert.throws(() => validateImageBytes(malformed, 'image/jpeg'), {code: 'invalid_request'});
+  assert.throws(() => validateImageBytes(Buffer.from([0xff, 0xd8, 0xff, 0xef, 0xff, 0xff, 0xff, 0xd9]), 'image/jpeg'), /malformed or unsupported/);
+  const pixels = Buffer.from(jpeg); pixels.writeUInt16BE(5000, app.length * 2 + 7); pixels.writeUInt16BE(5000, app.length * 2 + 9);
+  assert.throws(() => validateImageBytes(pixels, 'image/jpeg'), /dimensions exceed/);
+  assert.throws(() => validateImageBytes(Buffer.alloc(IMAGE_BYTES + 1), 'image/jpeg'), /allowed bounds/);
 });
 test('PNG and JPEG reject a pixel product overflow even when both edges fit', () => {
   const edge = 5000; assert.ok(edge < IMAGE_EDGE && edge * edge > IMAGE_PIXELS);

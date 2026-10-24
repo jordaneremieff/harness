@@ -24,7 +24,9 @@ test('notice inspection navigates without target preparation, Start or send and 
   assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [2, 7, 'backward']);
   assert.deepEqual(app.state.targets.get(saved.targetKey)?.draft.images, images);
   app.openConversationActions(); const menu = globalThis.document.querySelector('.context-menu'); assert.ok(menu);
-  const explicit = [...menu.querySelectorAll('button')].find(node => node.textContent === 'Message'); assert.ok(explicit);
+  menu.querySelectorAll('button').find(node=>node.textContent==='Tasks')?.click();
+  const taskMenu=globalThis.document.querySelector('.context-menu');assert.ok(taskMenu);
+  const explicit = [...taskMenu.querySelectorAll('button')].find(node => node.textContent === 'Message'); assert.ok(explicit);
   const beforeMessage = transportLog.length; explicit.click(); await settle();
   assert.equal(transportLog.slice(beforeMessage).filter(call => call.method === 'POST' && call.path.endsWith('/targets')).length, 1);
   assert.equal(transportLog.slice(beforeMessage).some(call => call.path.endsWith('/start') || call.path.includes('/inputs')), false);
@@ -49,7 +51,9 @@ test('cold live indexed notice and reference destinations never reserve input un
     event('agent.availability', {identity, connectionEpoch: app.state.agentEpochs.get(identity) ?? 1, state: 'live', capabilities: {input: true}}); await settle();
     assert.deepEqual(forbidden(start), []);
     app.openConversationActions(); const menu = globalThis.document.querySelector('.context-menu'); assert.ok(menu);
-    const explicit = [...menu.querySelectorAll('button')].find(node => node.textContent === 'Message'); assert.ok(explicit);
+    menu.querySelectorAll('button').find(node=>node.textContent==='Tasks')?.click();
+    const taskMenu=globalThis.document.querySelector('.context-menu');assert.ok(taskMenu);
+    const explicit = [...taskMenu.querySelectorAll('button')].find(node => node.textContent === 'Message'); assert.ok(explicit);
     const before = transportLog.length; explicit.click(); await settle();
     const calls = transportLog.slice(before);
     assert.equal(calls.filter(call => call.method === 'POST' && call.path.endsWith('/targets')).length, 1);
@@ -154,7 +158,9 @@ test('local conversation menus never select another recipient and target its Vie
   app.openConversationActions('agent-pane');
   const menu = globalThis.document.querySelector('.context-menu'); assert.ok(menu); assert.equal(menu.getAttribute('aria-label'), 'Conversation actions');
   assert.deepEqual(app.state.workspace?.selectedTarget, selected); assert.deepEqual(forbidden(start), []);
-  const thinking = [...menu.querySelectorAll('button')].find(node => node.textContent === 'Show thinking'); assert.ok(thinking); thinking.click(); await settle();
+  menu.querySelectorAll('button').find(node=>node.textContent==='Display')?.click();
+  const displayMenu=globalThis.document.querySelector('.context-menu');assert.ok(displayMenu);
+  const thinking = [...displayMenu.querySelectorAll('button')].find(node => node.textContent === 'Show thinking'); assert.ok(thinking); thinking.click(); await settle();
   const slot = paneNode('agent-pane').querySelector('.pane-content'); assert.ok(slot);
   const agentRoot = [...globalThis.document.querySelectorAll<HTMLElement>('.conversation')].find(root => app.stableViews().slot(root) === slot as unknown as HTMLElement);
   assert.ok(agentRoot); assert.equal(agentRoot.querySelector<HTMLDetailsElement>('.thinking')?.open, true); assert.deepEqual(app.state.workspace?.selectedTarget, selected);

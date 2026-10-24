@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {InputEchoes} from './input-echoes.ts';
-import type {EntryView} from '../shared/api.ts';
+import type {EntryView, OperationView} from '../shared/api.ts';
 
 test('captured input appears before dispatch and native confirmation replaces the echo once',()=>{
   const echoes=new InputEchoes(),target={kind:'agent' as const,identity:'dev'};
@@ -13,6 +13,27 @@ test('captured input appears before dispatch and native confirmation replaces th
   const native:EntryView={id:'native',kind:'pi.user',messages:[{id:'message',role:'user',timestamp:Date.now(),parts:[{type:'text',text:'hello'}],state:'final',coverage:{complete:true,truncated:false,omitted:0}}]};
   assert.deepEqual(echoes.entries('workspace',target,[native]),[native]);
   assert.deepEqual(echoes.entries('workspace',target,[native]),[native]);
+});
+test('queued acceptance survives a late HTTP failure and stale reconnect records without a second copy',()=>{
+  const echoes=new InputEchoes(),target={kind:'primary' as const,key:'p',epoch:1};
+  echoes.capture('workspace',{operationId:'queued',target,text:'hello',mode:'steer',images:[],draftRevision:1,edit:1},[]);
+  const accepted:OperationView={id:'queued',kind:'primary.input',target,state:'accepted',createdAt:'2026-01-01T00:00:00Z',updatedAt:'2026-01-01T00:00:01Z',receipt:{kind:'rpc',disposition:'queued'}};
+  echoes.settle(accepted);echoes.failed('queued',true);echoes.failed('queued',false);
+  for(const state of ['reserved','dispatched','uncertain'] as const)echoes.settle({...accepted,state,updatedAt:'2026-01-01T00:00:02Z'});
+  const copies=echoes.entries('workspace',target,[]);assert.equal(copies.length,1);assert.equal(copies[0]?.messages?.[0]?.error,undefined);
+  assert.deepEqual(copies[0]?.data?.value,{delivery:'Sent'});
+  const native:EntryView={id:'native',kind:'message',messages:[{id:'m',role:'user',timestamp:Date.now(),parts:[{type:'text',text:'hello'}],state:'final',coverage:{complete:true,truncated:false,omitted:0}}]};
+  assert.deepEqual(echoes.entries('workspace',target,[native]),[native]);echoes.failed('queued',true);assert.deepEqual(echoes.entries('workspace',target,[native]),[native]);
+});
+test('provisional or wrong-target events never establish input acceptance',()=>{
+  const echoes=new InputEchoes(),target={kind:'primary' as const,key:'p',epoch:1};
+  echoes.capture('workspace',{operationId:'one',target,text:'hello',mode:'prompt',images:[],draftRevision:1,edit:1},[]);
+  for(const state of ['reserved','dispatched'] as const)echoes.settle({id:'one',kind:'primary.input',target,state,createdAt:'',updatedAt:''});
+  echoes.settle({id:'one',kind:'primary.input',target:{...target,epoch:2},state:'accepted',createdAt:'',updatedAt:''});
+  assert.equal(echoes.entries('workspace',target,[])[0]?.messages?.[0]?.state,'partial');
+  echoes.failed('one',true);assert.equal(echoes.entries('workspace',target,[])[0]?.messages?.[0]?.error,'Delivery not confirmed');
+  echoes.settle({id:'one',kind:'primary.input',target,state:'accepted',createdAt:'',updatedAt:''});
+  assert.equal(echoes.entries('workspace',target,[])[0]?.messages?.[0]?.error,undefined);
 });
 test('a settled command with no native message keeps its time order before its notice and later messages',()=>{
   const echoes=new InputEchoes(),target={kind:'primary' as const,key:'p',epoch:1};

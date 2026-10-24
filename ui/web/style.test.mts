@@ -22,11 +22,11 @@ test('Commands keeps its title and Close control visible above the bounded nativ
   assert.match(rule('.palette-list'), /--palette-available-height/);
   assert.match(rule('.palette-list'), /overflow-y: auto/);
 });
-test('only open Commands suppresses the narrow drawer and scrim beneath the standard modal backdrop', () => {
+test('an open modal suppresses the narrow navigation surface and scrim beneath it', () => {
   assert.equal(rule('dialog::backdrop').trim(), 'background: var(--backdrop);');
   assert.equal(rule('dialog[data-variant=palette]::backdrop').trim(), 'background: transparent;');
   assert.equal(rule('dialog[data-variant=palette][data-mode=commands]::backdrop').trim(), 'background: var(--backdrop);');
-  const selector = '.app.drawer-open:has(> dialog[open][data-variant=palette][data-mode=commands]) > .workbench > :is(.sidebar, #sidebar-scrim)';
+  const selector = '.app.drawer-open:has(> dialog[open]:not([data-variant=find])) > .workbench > :is(.sidebar, #sidebar-scrim)';
   assert.equal(rule(selector).trim(), 'visibility: hidden;');
   assert.ok(media(`@media (max-width:${PERSISTENT_SIDEBAR_MIN_WIDTH - 1}px)`).includes(`${selector} { visibility: hidden; }`));
 });
@@ -162,7 +162,7 @@ test('roster activity owns a 10px inline spinner and filters stay quiet until fo
   assert.match(spinner, /width: 10px; height: 10px/); assert.match(spinner, /border: 1.5px solid currentColor/);
   assert.match(spinner, /animation: work-pulse 900ms linear infinite/);
   assert.match(css, /@media \(prefers-reduced-motion:reduce\) \{ \.row-state\[data-busy=true\]::before \{ animation: none; \} \}/);
-  assert.match(rule('.nav-filter'), /border: 0; border-radius: 0; background: transparent; font-size: var\(--fs-ui\)/);
+  assert.match(rule('.nav-filter'), /border: 0; border-radius: 0; background: transparent; font-size: var\(--fs-body\)/);
   assert.match(rule('.nav-filter::placeholder'), /color: var\(--muted\)/);
   assert.match(rule('.nav-search'), /height: 30px; margin: 0 var\(--s3\); border-bottom: 1px solid transparent/);
   assert.match(rule('.nav-search:focus-within'), /border-bottom-color: var\(--rule\)/);
@@ -295,6 +295,7 @@ test('spacing tokens define one rhythm across transcript, threads, tools, sideba
     for (const [, property, value] of body.matchAll(/(?:^|;)\s*((?:margin|padding)(?:-[\w-]+)?|(?:row-|column-)?gap)\s*:\s*([^;]+)/g)) {
       checked++;
       let normalized = value.replace(/var\(--s[1-7]\)/g, '0').replace(/var\(--work-gutter\)/g, '0').replace(/\s*!important$/, '');
+      normalized = normalized.replace(/env\(safe-area-inset-(?:top|right|bottom|left)\)/g, '0').replace(/max\(0,\s*0\)/g, '0');
       normalized = normalized.replace(/(?<![\d.])-?(\d+)px\b/g, (match, size) => [2, 4, 6, 8, 12, 16, 24, 28, 32, 48].includes(Number(size)) ? '0' : match);
       if (/\.file-(?:row|naming)\b/.test(selectors)) normalized = normalized.replace(/var\(--file-depth,0\)|var\(--fs-code\)/g, '0');
       assert.match(normalized, /^(?:\s*(?:0|auto|calc\([\d\s.+*/(),%-]+\))\s*)+$/, `${selectors.trim()} ${property}: ${value}`);
@@ -374,7 +375,7 @@ test('draft attachments keep a fixed contained preview and bounded wrapping deta
   assert.match(rule('.attachment-row'), /min-width: 0; max-width: 100%/);
   assert.match(rule('.attachment-info'), /min-width: 0; overflow-wrap: anywhere/);
   assert.match(rule('.attachment-details > p'), /white-space: pre-wrap; overflow-wrap: anywhere/);
-  assert.match(rule('.attachment-actions'), /grid-column: 1 \/ -1; display: flex; flex-wrap: wrap/);
+  assert.match(rule('.attachment-actions'), /display: flex; flex-wrap: wrap/);
   assert.match(rule('.composer-attachments'), /flex-wrap: wrap/);
 });
 test('draft image previews bound their viewport while Fit and Actual size retain distinct image constraints', () => {
@@ -401,7 +402,7 @@ test('off-pane Message roots pass header pointers through while the original com
 });
 test('the narrow drawer covers transcripts while only its projected Message writer crosses the drawer layer', () => {
   const narrow = media('@media (max-width:999px)');
-  assert.match(narrow, /\.app\.drawer-open \.workbench > \.sidebar \{[^}]*z-index: 10;[^}]*width: min\(320px, calc\(100vw - 48px\)\)/);
+  assert.match(narrow, /\.app\.drawer-open \.workbench > \.sidebar \{ position: absolute; inset: 0;[^}]*z-index: 10;[^}]*width: 100%/);
   assert.match(narrow, /\.app\.drawer-open #sidebar-scrim \{ position: absolute; inset: 0; z-index: 9; display: block/);
   assert.match(rule('#sidebar-scrim'), /display: none/);
   assert.match(narrow, /\.app\.drawer-open \.stable-views \{ z-index: auto; \}/);
@@ -432,7 +433,7 @@ test('blue marks focus while selected rows and tabs use neutral rules and surfac
     const graphic = graphicTokens.get(item.selector);
     if (graphic) assert.equal(item.value, graphic);
     else if (['.composer-intake-menu > .context-menu-item:hover, .composer-intake-menu > .context-menu-item:focus-visible', '.command-option:hover, .command-option[aria-selected=true]'].includes(item.selector)) assert.equal(item.value, 'var(--menu-hover)');
-    else if (/^\.composer(?:-input|\b)|^\.queue:not\(:disabled\):hover$|^\.send:disabled$/.test(item.selector)) assert.match(item.value, /color-mix|transparent|ButtonText|ButtonFace|var\(--composer-fill\)/);
+    else if (/^\.composer(?:-input|\b)|^\.queue:not\(:disabled\):hover$|^\.send:disabled$/.test(item.selector)) assert.match(item.value, /color-mix|transparent|ButtonText|ButtonFace|var\(--(?:composer-fill|raised)\)/);
     else if (item.selector === '.communication-group-row .communication-toggle:hover') assert.equal(item.value, 'color-mix(in srgb,var(--fg) 5%,var(--raised))');
     else assert.doesNotMatch(item.value, /--(?:fg|muted|dim|link)\b/, `ink used as a fill: ${item.value}`);
   }
@@ -465,11 +466,11 @@ test('stored and live conversation names use primary text while metadata stays q
 test('small radii and quiet surfaces limit motion to the busy marker and section chevrons', () => {
   const radii = declarations('border-radius');
   assert.match(rule('.composer-input'), /border-radius: var\(--r-lg\)/); assert.match(rule('.context-menu-compact'), /border-radius: var\(--r-md\)/);
-  assert.deepEqual([...new Set(radii)].sort(), ['0', '0 0 var(--r-md) var(--r-md)', '0 var(--r-sm) var(--r-sm) 0', '50%', '6px', '8px', 'var(--r-lg)', 'var(--r-md)', 'var(--r-sm)']);
+  assert.deepEqual([...new Set(radii)].sort(), ['0', '0 0 var(--r-md) var(--r-md)', '0 var(--r-sm) var(--r-sm) 0', '50%', '6px', '8px', 'var(--r-lg)', 'var(--r-lg) var(--r-lg) 0 0', 'var(--r-md)', 'var(--r-sm)']);
   assert.deepEqual([...new Set(declarations('box-shadow'))].sort(), ['inset 0 -2px var(--accent)', 'inset 0 -2px var(--edge)', 'none', 'var(--shadow)']);
   assert.match(rule('dialog[open][data-variant=find]'), /box-shadow: none/);
   const shadowed = [...css.matchAll(/(?:^|\n)\s*([^{}\n]+)\{[^}]*box-shadow: var\(--shadow\)/g)].map(match => match[1].trim()).sort();
-  assert.deepEqual(shadowed, ['.app.drawer-open .workbench > .sidebar', '.command-menu, .composer-intake-menu', '.context-menu', '.context-menu.composer-intake-menu', '.primary-draft-selection', '.receipt-details pre', '.workbench-status .composer-detail-body', 'dialog']);
+  assert.deepEqual(shadowed, ['.app.drawer-open .workbench > .sidebar', '.command-menu, .composer-intake-menu', '.composer-intake > .latest', '.context-menu', '.context-menu.composer-intake-menu', '.primary-draft-selection', '.receipt-details pre', '.workbench-status .composer-detail-body', 'dialog']);
   assert.doesNotMatch(css, /scroll-behavior:\s*smooth|backdrop-filter|text-shadow/);
   const fades = css.replace(/mask-image: linear-gradient\(to right,#000 calc\(100% - 24px\),transparent\)|background: linear-gradient\(to bottom,transparent,var\(--(?:side|canvas)\)\)/g, '');
   assert.doesNotMatch(fades, /gradient/);
@@ -735,15 +736,17 @@ test('the writing surface groups Add and the required action below native text',
   assert.match(rule('.composer-line'), /min-height: 36px; margin-top: var\(--s4\)/);
   assert.match(rule('.start'), /width: auto; min-width: 82px; gap: var\(--s2\); padding: 0 var\(--s3\); font-size: var\(--fs-ui\); font-weight: 500; white-space: nowrap/);
 });
-test('narrow composers separate configuration from one right-aligned delivery group', () => {
+test('narrow composers keep Send and Stop in separate stable positions', () => {
   const narrow = [...css.matchAll(/@container conversation \(max-width: 480px\) \{([\s\S]*?)\n\}/g)].map(match => match[1]).join('\n');
   assert.match(rule('.composer-bar'), /flex-wrap: nowrap;[^}]*justify-content: flex-end/);
   const shelfStart = css.indexOf('@container composer (max-width: 600px)');
   assert.ok(shelfStart >= 0);
   const shelf = css.slice(shelfStart, css.indexOf('\n}', shelfStart));
   assert.match(shelf, /\.composer-intake \{ grid-column: 1; grid-row: 1/);
-  assert.match(shelf, /\.composer-settings \{ grid-column: 2; grid-row: 1; flex-wrap: wrap/);
-  assert.match(shelf, /\.composer-bar \{ grid-column: 1 \/ -1; grid-row: 2; justify-self: end/);
+  assert.match(shelf, /\.composer-settings \{ grid-column: 2; grid-row: 1; flex-wrap: nowrap/);
+  assert.match(shelf, /\.composer-bar \{ grid-column: 3; grid-row: 1; justify-self: end/);
+  assert.doesNotMatch(shelf, /\.composer\[data-working\]/);
+  assert.match(rule('.composer-stop-slot'), /width: 36px; min-width: 36px; min-height: 36px/);
   assert.match(rule('.composer-line'), /display: grid; grid-template-columns: auto minmax\(0,1fr\) auto/);
   assert.doesNotMatch(narrow, /\.composer-bar[^}]*flex-basis: 100%/);
   assert.doesNotMatch(css, /\.composer-bar[^{}]*\{[^}]*justify-content: (?:center|flex-start)/);
@@ -766,15 +769,18 @@ test('working controls keep a square Stop and visible named delivery choices', (
   assert.match(rule('.composer-settings'), /justify-content: flex-start/);
   assert.doesNotMatch(css, /\.modes\b/);
 });
-test('the sidebar has full-width New, Search and Tools rows and one Settings footer row', () => {
+test('the sidebar has full-width New and Search rows, clear destinations and one Settings footer row', () => {
   const footer=html.match(/<footer class="sidebar-footer"[\s\S]*?<\/footer>/)?.[0];assert.ok(footer);
   assert.deepEqual([...footer.matchAll(/<button id="([^"]+)"/g)].map(match=>match[1]),['settings-button']);
   assert.match(footer,/id="settings-button"[^>]*aria-label="Settings"/);
   assert.match(footer,/class="nav-control-label">Settings<\/span>/);
-  assert.match(html,/class="sidebar-tools"><button id="tools-button"[^>]*aria-haspopup="menu"/);
+  assert.match(html,/id="sidebar-tools" class="navigation-destinations"/);
+  for (const name of ['agents','threads','files','notices','commands']) assert.match(html,new RegExp(`id="navigate-${name}"`));
+  assert.match(rule('.navigation-destinations'), /grid-template-columns: repeat\(2,minmax\(0,1fr\)\)/);
+  assert.match(rule('.navigation-destinations > button'), /min-width: 44px; min-height: 44px/);
   assert.match(rule('#session-entry-actions'), /flex-direction: column; align-items: stretch/);
-  assert.match(rule('#session-entry-actions > button, .sidebar-tools > button'), /justify-content: flex-start; gap: var\(--s3\)/);
-  assert.match(rule('#session-entry-actions > button, .sidebar-tools > button'), /width: 100%; min-height: 44px/);
+  assert.match(rule('#session-entry-actions > button'), /justify-content: flex-start; gap: var\(--s3\)/);
+  assert.match(rule('#session-entry-actions > button'), /width: 100%; min-height: 44px/);
   assert.match(rule('.sidebar-footer > button'),/min-height: 44px/);
 });
 test('the status line retains facts and does not duplicate utility launchers', () => {
@@ -825,7 +831,7 @@ test('visible controls carry labels and one icon stroke style', async () => {
   const app = await readFile(new URL('./app.ts', import.meta.url), 'utf8');
   assert.match(app, /cardAction\('plus', 'New tab'/); assert.match(app, /plus\.setAttribute\('aria-haspopup', 'menu'\)/);
   assert.doesNotMatch(html, /id="session-actions"|id="primary-send"|id="primary-stop"|id="notices-button"|window-actions/);
-  assert.match(html, /id="tools-button"[^>]*aria-haspopup="menu"/);
+  assert.match(html, /id="navigate-commands"[^>]*aria-label="Commands"/);
   assert.doesNotMatch(html.match(/<input id="agent-search"[^>]*>/)?.[0] ?? '', /\shidden/);
 });
 test('code wraps, output scrolls inside its block, and disclosures stay reachable', () => {
@@ -941,14 +947,51 @@ test('Latest occupies the existing composer control line outside the transcript 
   assert.match(app, /elements\.sources\?\.after\(latest\)/, 'the jump control follows the intake control on the composer line');
   assert.doesNotMatch(html, /id="(?:primary|agent)-(?:transcript|latest)"/);
 });
-test('narrow composers reserve a permanent touch-sized Latest icon beside Add', () => {
-  const start = css.indexOf('@container composer (max-width: 420px)');
+test('narrow composers keep Latest above the editor without extra row width or hidden labels', () => {
+  const start = css.indexOf('@container composer (max-width: 600px)');
   const compact = css.slice(start, css.indexOf('\n}', start));
   assert.ok(start >= 0);
-  assert.match(compact, /\.composer-intake > \.latest \{ width: 44px; min-width: 44px; min-height: 44px; justify-content: center; \}/);
-  assert.match(compact, /\.composer-intake > \.latest > \.latest-text \{ display: none; \}/);
-  assert.match(css, /@container composer \(max-width: 600px\) \{\s*\.composer-line \{ grid-template-columns: auto minmax\(0,1fr\); \}/);
-  assert.doesNotMatch(compact, /:not\(\[hidden\]\)|:has\([^}]*:not/);
+  assert.match(compact, /\.composer-intake > \.latest \{ position: absolute; right: 0; bottom: calc\(100% \+ 8px\)/);
+  assert.match(compact, /min-width: 44px; min-height: 44px; max-width: 100%/);
+  assert.doesNotMatch(compact, /\.latest-text \{ display: none/);
+  assert.match(compact, /\.composer-line \{ grid-template-columns: auto minmax\(0,1fr\) auto/);
+});
+test('mobile sheets share viewport bounds, visible dismissal and separate searchable result allocation', () => {
+  const mobile = media('@media (max-width:999px)');
+  assert.match(rule('dialog[open][data-sheet]'), /display: flex; flex-direction: column; overflow: hidden; max-height: min\(85dvh, calc\(var\(--app-height, 100dvh\) - 16px\)\)/);
+  assert.match(mobile, /dialog\[open\]\[data-sheet\] \{ inset: auto 0 max\(0px,calc\(100% - var\(--app-height,100dvh\) - var\(--app-top,0px\)\)\)/);
+  assert.match(mobile, /dialog\[open\]\[data-sheet=searchable\] \{ height: min\(80dvh, calc\(var\(--app-height, 100dvh\) - 16px\)\)/);
+  assert.match(mobile, /dialog\[open\]\[data-sheet\] #modal-close \{ display: inline-flex;[^}]*min-width: 44px; min-height: 44px/);
+  assert.match(rule('dialog[data-sheet=searchable] > #modal-body'), /display: flex; flex: 1; flex-direction: column; overflow: hidden/);
+  assert.match(rule('.model-results'), /flex: 1; min-height: 0; max-height: none/);
+  assert.match(rule('.model-results .choice-value'), /font-size: var\(--fs-body\); white-space: normal; overflow-wrap: anywhere/);
+  assert.match(rule('.model-results .choice-detail'), /font-size: var\(--fs-meta\); white-space: normal; overflow-wrap: anywhere/);
+  assert.match(rule('.context-menu.context-menu-sheet-body'), /position: static;[^}]*width: 100%; min-height: 0;[^}]*overflow: auto; box-shadow: none/);
+  assert.match(rule('.sheet-close'), /min-width: 44px; min-height: 44px/);
+});
+test('composer receipt text uses body type and compact image rows keep actions inline', () => {
+  assert.match(rule('.receipt pre'), /font-family: var\(--sans\); font-size: var\(--fs-body\)/);
+  assert.match(rule('.message.user .message-text.stream-text'), /font-family: var\(--sans\); font-size: var\(--fs-body\)/);
+  assert.match(rule('.attachment-row'), /grid-template-columns: minmax\(0,1fr\) auto auto/);
+  assert.doesNotMatch(rule('.attachment-actions'), /grid-column: 1 \/ -1/);
+  assert.match(rule('.retained-input-copy > summary'), /min-height: 44px/);
+  assert.match(rule('.attachment-summary'), /display: flex; flex-wrap: wrap;[^}]*padding: 0; list-style: none/);
+  assert.match(rule('.attachment-summary-preview img'), /width: 40px; height: 40px; object-fit: contain/);
+  assert.match(rule('.attachment-summary-preview .attachment-name'), /max-width: 180px; overflow: hidden/);
+});
+test('mobile composers keep empty drafts at the bottom and preserve one conversation scroll owner', () => {
+  const mobile = media('@media (max-width:999px)');
+  assert.match(mobile, /\.conversation\.conversation-empty > \.composer:not\(\[data-message-panel=true\]\):not\(\[data-desk-panel=true\]\) \{ position: relative; top: auto; left: auto; right: auto; transform: none/);
+  assert.match(mobile, /\.composer-input \{ display: flex; flex: 0 1 auto; flex-direction: column; min-height: 122px; padding: var\(--s3\)/);
+  assert.match(mobile, /\.composer-line \{ flex: none; margin-top: var\(--s2\)/);
+  assert.match(mobile, /\.composer > \.receipt \{ max-height: min\(64px,calc\(var\(--app-height,100dvh\) \* .14\)\)/);
+  assert.match(mobile, /\.composer-attachments \{ flex: 0 1 auto; min-height: 0; max-height: min\(80px,calc\(var\(--app-height,100dvh\) \* .16\)\)/);
+  assert.match(rule('input, textarea, select'), /font-size: var\(--fs-body\)/);
+  assert.match(rule('.composer-expand'), /min-width: 44px; min-height: 36px/);
+  assert.match(rule('.composer[data-expanded=true] .composer-input > .resizer'), /display: none/);
+  assert.match(media('@media (pointer:coarse)'), /\.composer-expand, \.send, \.stop,[^}]*min-width: 44px; min-height: 44px/);
+  assert.match(media('@media (max-height:599px)'), /\.conversation \{ overflow-y: hidden; \}/);
+  assert.match(media('@media (max-height:599px)'), /\.transcript-region \{ min-height: 0; \}/);
 });
 test('native text flow preserves scroll boundaries without line paint clipping', () => {
   assert.doesNotMatch(css, /data-rest-lines|rest-line-|clip-path:/);
@@ -1040,8 +1083,8 @@ test('one workbench footer owns wrapped facts while settings sit on the composer
   assert.match(factory, /const id = `composer-\$\{encodeURIComponent\(instanceId\)\}`/);
   assert.match(factory, /root\.append\(receipt, utilities, input, meta, queueGuidance\)/);
   assert.match(factory, /const queueGuidance = element\('span', 'sr-only', queueDescription\)/);
-  assert.match(factory, /submit\.append\(stop, queue, start, send\)/);
-  assert.match(factory, /bar\.append\(submit\)/);
+  assert.match(factory, /stopSlot\.append\(stop\)/); assert.match(factory, /submit\.append\(stopSlot, queue, start, send\)/);
+  assert.match(factory, /bar\.append\(expand, submit\)/);
   assert.match(factory, /intake\.append\(attach,sources,picker\)/);
   assert.match(factory, /line\.append\(intake, settings, bar\)/);
   assert.doesNotMatch(factory, /usage-details|workbench-status-facts|root\.append\([^)]*\b(?:save|receiptDetails)\b/);
@@ -1080,7 +1123,7 @@ test('project and pane controls have unique identities without a global toolbar 
   const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]); assert.equal(ids.length, new Set(ids).size);
   assert.doesNotMatch(html, /project-bar|pane-heading|id="tab-bar"|id="statusbar"/);
   assert.match(html, /class="sidebar-footer"/); assert.match(rule('.connection-banner'), /flex-wrap: wrap/);
-  for (const id of ['project-button','conversation-title','tools-button','settings-button','connection','primary-usage']) assert.equal([...html.matchAll(new RegExp(`id="${id}"`, 'g'))].length, 1, id);
+  for (const id of ['project-button','conversation-title','navigate-agents','navigate-threads','navigate-files','settings-button','connection','primary-usage']) assert.equal([...html.matchAll(new RegExp(`id="${id}"`, 'g'))].length, 1, id);
 });
 
 test('supplied roles stay inline metadata and expanded thinking separates from prose only', () => {
@@ -1094,7 +1137,7 @@ test('supplied roles stay inline metadata and expanded thinking separates from p
 
 test('focus marks the actual editor and its local split identity without changing placement', () => {
   assert.match(rule('.composer textarea:focus-visible'), /outline: none/);
-  assert.match(rule('.composer-input:has(textarea:focus-visible)'), /border-color: var\(--border-strong\); outline: none; box-shadow: none/);
+  assert.match(rule('.composer-input:has(textarea:focus-visible)'), /border-color: var\(--border-strong\); outline: 2px solid var\(--accent\); outline-offset: 2px; box-shadow: none/);
   assert.match(rule('.composer-input'), /border: 1px solid var\(--rule\)/);
   assert.match(rule('.pane-leaf[data-focused=true] > .tab-bar .conversation-tab[aria-selected=true]'), /box-shadow: inset 0 -2px var\(--accent\)/);
   assert.doesNotMatch(css, /\.pane-heading/);
@@ -1210,7 +1253,7 @@ test('the composer uses shared SVG selectors and visible effort at narrow widths
   assert.doesNotMatch(css, /\.composer-settings-text[^{}]*::after|\.composer-settings-effort[^{}]*::after/);
   assert.match(rule('.composer .attachment-sources'), /color: var\(--fg\)/);
   assert.doesNotMatch(css, /\.composer-thinking, \.composer-settings-effort \{ display: none/);
-  assert.match(css, /\.composer-settings \{ grid-column: 2; grid-row: 1; flex-wrap: wrap; \}/);
+  assert.match(css, /\.composer-settings \{ grid-column: 2; grid-row: 1; flex-wrap: nowrap; gap: var\(--s1\); \}/);
   assert.match(rule('.composer-settings'), /min-width: 0; max-width: 100%/);
 });
 test('empty composer regions collapse and plain intake/settings retain focus and open-state feedback', () => {
@@ -1263,6 +1306,22 @@ test('the sidebar footer stays at the bottom with one full-width Settings row', 
   assert.doesNotMatch(rule('.sidebar-footer'), /border-top:|grid-template-columns/);
 });
 
+test('normal editable fields retain body text size in their more specific selectors', () => {
+  for (const selector of ['input, textarea, select', '.nav-filter', '.picker-input', '.palette-input', '.composer textarea']) {
+    assert.match(rule(selector), /font-size: var\(--fs-body\)/, selector);
+    assert.doesNotMatch(rule(selector), /font-size: var\(--fs-(?:ui|meta|code)\)/, selector);
+  }
+});
+test('recent session buttons put bounded secondary context below the title', () => {
+  const row = rule('.sidebar .sidebar-session-row > .sidebar-content-row');
+  assert.match(row, /flex-direction: column; align-items: stretch; justify-content: center/);
+  assert.match(row, /height: auto; min-height: 56px/);
+  assert.match(rule('.sidebar-content-row > .row-title'), /display: block; font-size: var\(--fs-body\); line-height: 24px/);
+  const context = rule('.sidebar-session-context');
+  assert.match(context, /display: block; min-width: 0; max-width: 100%/);
+  assert.match(context, /color: var\(--muted\); font-size: var\(--fs-meta\); line-height: 20px/);
+  assert.match(context, /overflow: hidden; text-overflow: ellipsis; white-space: nowrap/);
+});
 test('session title and row menu reserve disjoint targets with visible touch actions', () => {
   assert.match(rule('.sidebar-session-row'), /display: flex; align-items: center; min-width: 0/);
   assert.match(rule('.sidebar .sidebar-session-row > .sidebar-content-row'), /flex: 1; width: 0; min-width: 0/);
@@ -1274,7 +1333,7 @@ test('session title and row menu reserve disjoint targets with visible touch act
 });
 
 test('sidebar actions share readable icon geometry without compact footer overrides', () => {
-  assert.match(rule('#session-entry-actions > button > .card-icon, .sidebar-tools > button > .card-icon, .sidebar-footer > button > .card-icon'), /width: 18px; height: 18px; flex: none/);
+  assert.match(rule('#session-entry-actions > button > .card-icon, .sidebar-footer > button > .card-icon'), /width: 18px; height: 18px; flex: none/);
   assert.match(rule('.sidebar-footer > button'), /gap: var\(--s3\)/);
   assert.doesNotMatch(css, /\.sidebar-footer > \.icon-button|\.status-controls/);
 });
@@ -1477,9 +1536,9 @@ test('sidebar heading rails keep the shared edge and plain labels reserve chevro
   assert.match(rule('.agent-row .row-select'), /padding: 0 var\(--s2\) 0 var\(--s3\)/); assert.match(rule('.nav-search'), /margin: 0 var\(--s3\)/);
 });
 
-test('the draft-save failure row wraps, stays visible and offers a quiet text retry', () => {
+test('the draft-save failure row wraps within its receipt budget and offers a quiet text retry', () => {
   assert.match(rule('.receipt-save-failure'), /display: flex; flex-wrap: wrap;/); assert.match(rule('.receipt-save-failure'), /overflow: visible;/);
-  assert.match(rule('.receipt:has(> .receipt-save-failure:only-child)'), /max-height: none; overflow: visible;/);
+  assert.match(rule('.receipt:has(> .receipt-save-failure:only-child)'), /max-height: inherit; overflow: auto;/);
   assert.match(rule('.receipt .receipt-save-failure > .receipt-retry'), /padding: var\(--s1\) 0; color: var\(--muted\); font-size: var\(--fs-meta\);/);
 });
 

@@ -33,10 +33,10 @@ export async function exactInput(workspace: string, item: Pick<InputCopy, 'opera
   return exact;
 }
 export function recoveryLabel(item: RecoveryInput): {title: string; warning: string} {
-  if (item.admission === 'queued-image') return {title: 'Queued image copy', warning: 'The original input was admitted. It might already have run. Current queue membership is unknown.'};
+  if (item.admission === 'queued-image') return {title: 'Message received', warning: 'The message was received. This saved copy does not show whether processing finished. Current queue membership is unknown.'};
   if (item.admission === 'handled-image') return {title: 'Input handled; images not confirmed', warning: 'The original input was handled. Image delivery is not confirmed.'};
   if (item.admission === 'refused') return {title: 'Message not sent', warning: 'This attempt was refused. The original draft is retained without an admission receipt.'};
-  return {title: 'Send not confirmed', warning: 'Check before you send again. This copy does not prove that the original was not sent.'};
+  return {title: 'Delivery not confirmed', warning: 'Check delivery before another send. This copy does not prove that the original was not sent.'};
 }
 export class Recovery {
   private ctx: RecoveryContext;

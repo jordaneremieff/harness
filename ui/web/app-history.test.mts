@@ -316,13 +316,13 @@ test('a failed resume read releases reading persistence without applying the sav
   assert.notDeepEqual(app.state.targets.get(h.saved.targetKey)?.reading, h.reading);
 });
 for (const type of ['pointerdown', 'keydown', 'beforeinput', 'input', 'change', 'compositionstart', 'compositionend', 'wheel']) {
-  test(`trusted ${type} cancels a pending resume reading before late history returns`, async t => {
+  test(`trusted transcript ${type} cancels a pending resume reading before late history returns`, async t => {
     const h = await pendingResume(t);
-    h.root.dispatch(type, {isTrusted: true});
+    h.root.dispatch(type, {isTrusted: true,target:h.transcript});
     await h.finish();
     assert.equal(primaryControl('root'), h.root);
     assert.equal(app.state.conversations.get(targetIdentity(h.target))?.entries.has('saved-anchor'), true);
-    assert.equal(h.transcript.scrollTop, 0, 'Late history restored a position after actual input');
+    assert.equal(h.transcript.scrollTop, 0, 'Late history restored a position after actual transcript input');
     h.transcript.scrollTop = 13; h.transcript.dispatch('scroll'); h.transcript.dispatch('scrollend'); await settle();
     assert.notDeepEqual(app.state.targets.get(h.saved.targetKey)?.reading, h.reading, 'Canceled ownership still blocks later reading persistence');
   });

@@ -3,6 +3,7 @@ import {createHash} from 'node:crypto';
 import { beforeEach, test } from 'node:test';
 import type { CommandInventory } from './command-menu-state.ts';
 beforeEach(context => { context.mock.timers.enable({apis: ['setTimeout', 'Date'], now: 0}); Reflect.deleteProperty(globalThis, 'sessionStorage'); });
+import { LIMITS } from '../shared/api.ts';
 import type { DraftImage, DraftView, OperationView, Target, TargetIndex, TargetState } from '../shared/api.ts';
 
 import { Composer, createComposerElements, type ComposerElements } from './composer.ts';
@@ -69,12 +70,12 @@ const actionText = (node: NodeFake): string | undefined => node.querySelector('.
 const turn = async () => { for (let index = 0; index < 20; index++) await Promise.resolve(); };
 function scopedNodes(id: string, withMenu: boolean) {
   const nodes = new Map<string, NodeFake>();
-  for (const name of ['editor', 'recipient', 'composer', 'queue', 'send', 'caption', 'save', 'receipt', 'receipt-details', 'command-menu', 'attachments']) {const node = new NodeFake(); node.id = `${id}-${name}`; nodes.set(name, node);}
+  for (const name of ['editor', 'recipient', 'composer', 'queue', 'send', 'caption', 'save', 'receipt', 'receipt-details', 'command-menu', 'attachments', 'expand']) {const node = new NodeFake(); node.id = `${id}-${name}`; nodes.set(name, node);}
   const node = (name: string) => nodes.get(name) as NodeFake;
   const delivery = new NodeFake(); delivery.tag = 'select'; node('queue').append(delivery);
   const pane = new NodeFake(); Object.defineProperty(pane, 'clientHeight', {get: () => node('editor').conversationHeight});
   pane.append(node('composer')); node('composer').append(node('editor'), node('recipient'), node('receipt'), node('queue'), node('send'), node('attachments'));
-  const elements = {root:node('composer'), editor:node('editor'), recipient:node('recipient'), receipt:node('receipt'), receiptDetails:node('receipt-details'), queue:node('queue'), send:node('send'), save:node('save'), attachments:node('attachments'), commandMenu:withMenu ? node('command-menu') : undefined} as unknown as ComposerElements;
+  const elements = {root:node('composer'), editor:node('editor'), recipient:node('recipient'), receipt:node('receipt'), receiptDetails:node('receipt-details'), queue:node('queue'), send:node('send'), save:node('save'), attachments:node('attachments'), expand:node('expand'), commandMenu:withMenu ? node('command-menu') : undefined} as unknown as ComposerElements;
   return {node, elements};
 }
 function fixture(prefix: 'primary' | 'agent' = 'primary', commands?: () => CommandInventory, withMenu = prefix === 'primary', timing?: (start: number, end: number) => void, enterSends: () => boolean = () => false, imageInput = () => ({allowed: true, reason: ''}), prepareInput: () => boolean = () => true) {
@@ -95,13 +96,13 @@ function fixture(prefix: 'primary' | 'agent' = 'primary', commands?: () => Comma
       for (const notify of arrivals) notify();
     });
   }});
-  const submitted: OperationView[] = []; let unknown = (_text: string, _send: () => void) => false;
+  const submitted: OperationView[] = [], failed: Array<{id:string;uncertain:boolean}> = []; let unknown = (_text: string, _send: () => void) => false;
   const retained: {workspace: string; target: Target; value: boolean}[] = [];
   const create = (id: string, inventory?: () => CommandInventory, menu = true) => {
     const scope = scopedNodes(id, menu); const composer = new Composer(scope.elements, {submitted:result => submitted.push(result), unknownCommand:(text, send) => unknown(text, send), commands:inventory, retained:(workspace, target, value) => retained.push({workspace,target,value})});
     return {...scope, composer};
   };
-  const composer = new Composer(scoped.elements, {timing, enterSends, imageInput, prepareInput, submitted: result => submitted.push(result), unknownCommand: (text, send) => unknown(text, send), commands, retained: (workspace, target, value) => retained.push({workspace, target, value})});
+  const composer = new Composer(scoped.elements, {timing, enterSends, imageInput, prepareInput, submitted: result => submitted.push(result), failed:(id,uncertain)=>failed.push({id,uncertain}), unknownCommand: (text, send) => unknown(text, send), commands, retained: (workspace, target, value) => retained.push({workspace, target, value})});
   const node = scoped.node;
   const pick = (method: string, suffix: string) => { const call = calls.find(item => item.method === method && item.path.endsWith(suffix)); assert.ok(call, `${method} ${suffix}`); return call; };
   const ok = (call: Call, value: unknown) => { calls.splice(calls.indexOf(call), 1); call.resolve({ok: true, data: value}); };
@@ -119,7 +120,7 @@ function fixture(prefix: 'primary' | 'agent' = 'primary', commands?: () => Comma
     const notify = () => {const call = calls.find(item => item.method === method && item.path.endsWith(suffix)); if (call) {arrivals.delete(notify); resolve(call);}};
     arrivals.add(notify); notify();
   });
-  return {composer, node, calls, retained, pick, ok, fail, saved, admit, click, confirmSend, connect, submitted, frames, copied, openReceipt, create, lookups, waitCall, elements:scoped.elements, reservations: () => sequence,
+  return {composer, node, calls, retained, pick, ok, fail, saved, admit, click, confirmSend, connect, submitted, failed, frames, copied, openReceipt, create, lookups, waitCall, elements:scoped.elements, reservations: () => sequence,
     unknown: (handler: typeof unknown) => { unknown = handler; }};
 }
 
@@ -245,11 +246,11 @@ test('a typed @ file is staged, only its token leaves the draft, and a changed d
   composer.setText('see @a now'); await open(); key('Enter'); assert.ok(release); editor.value = 'see @a now!'; editor.fire('input');
   assert.equal(release(), false); assert.equal(editor.value, 'see @a now!'); void staged; composer.destroy(); void f;
 });
-test('the Send, Steer and Run tooltips name the action and never a key', () => {
+test('the Send and Run tooltips name the action and never a key', () => {
   const keyless = /⌘|Ctrl|Enter/;
   for (const enterSends of [true, false]) {
     const f = fixture('primary', undefined, true, undefined, () => enterSends); f.connect(); assert.equal(f.node('send').title, 'Send');
-    f.composer.availability(true, true, true); assert.equal(f.node('send').title, 'Steer: send now; the agent reads it at its next step'); assert.doesNotMatch(f.node('send').title, keyless);
+    f.composer.availability(true, true, true); assert.equal(f.node('send').title, 'Send now. The agent reads your message at its next step.'); assert.doesNotMatch(f.node('send').title, keyless);
     f.composer.destroy();
   }
 });
@@ -388,7 +389,7 @@ test('attachment preparation keeps short states, full errors and explicit text a
   const include = textRow.find('Include text from notes.txt'); assert.ok(include); assert.equal(include.textContent, 'Include text');
   assert.equal(textRow.querySelector('.attachment-details')?.contains(include), false);
   const invalid = new File(['invalid image'], 'broken.png', {type: 'image/png'}); f.composer.addFiles([invalid]); await new Promise(resolve => setImmediate(resolve));
-  const failedRow = f.node('attachments').children[1]; assert.ok(failedRow?.find('Unavailable'));
+  const failedRow = f.node('attachments').children[1]; assert.ok(failedRow?.find('Not attached'));
   const details = failedRow.querySelector('.attachment-details'); assert.ok(details); assert.match(details.textContent, /Only valid PNG and JPEG images are supported/);
   const retry = failedRow.find('Retry broken.png'); assert.ok(retry); assert.equal(retry.textContent, 'Retry'); assert.equal(details.contains(retry), false);
   const saved = f.composer.captureReload()[0]; assert.equal(saved?.attachments?.items[1]?.file, invalid);
@@ -679,7 +680,7 @@ test('network loss after dispatch retains original key, copy, restore, receipt c
   assert.match(f.node('receipt').textContent, /op-1/); assert.match(f.node('receipt').textContent, / exact\n /); await f.composer.send(); assert.equal(f.calls.length, 0);
   f.click('Copy original text only'); await turn(); assert.deepEqual(f.copied, [' exact\n ']); f.click('Restore to draft'); await turn(); assert.deepEqual(f.pick('POST', '/restore').body, {expectedDraftRevision: 4}); f.fail(f.pick('POST', '/restore'), 'host_unavailable'); await turn(); assert.equal(f.composer.editor.value, ' exact\n ');
   f.click('Check delivery'); assert.equal(f.pick('POST', '/reconcile').path, '/api/operations/op-1/reconcile'); f.fail(f.pick('POST', '/reconcile'), 'unknown_operation'); await turn();
-  assert.match(f.node('receipt').textContent, /admission remains unknown/); f.click('Send again'); assert.equal(f.calls.length, 0);
+  assert.match(f.node('receipt').textContent, /original delivery is not confirmed/); f.click('Send again'); assert.equal(f.calls.length, 0);
   f.confirmSend(); await turn(); assert.equal(f.pick('POST', '/inputs').id, 'op-2'); f.admit(a, 'rejected'); await turn();
 });
 test('a confirmed send again keeps the follow-up delivery of the uncertain Queue send', async () => {
@@ -692,7 +693,7 @@ test('a confirmed send again keeps the follow-up delivery of the uncertain Queue
 test('an uncertain send result shows one warning and retains explicit recovery controls', async () => {
   const f = fixture(); const a = f.connect(state('a', draft(2, 'original')));
   const sending = f.composer.send(); await turn(); f.admit(a, 'uncertain'); await sending;
-  const receipt = f.node('receipt'); assert.equal(receipt.textContent.split('Send not confirmed. Check before you send again.').length - 1, 1);
+  const receipt = f.node('receipt'); assert.equal(receipt.textContent.split('Delivery not confirmed. Check delivery before another send.').length - 1, 1);
   assert.doesNotMatch(receipt.textContent, /Check the receipt before another submission/);
   for (const label of ['Check delivery', 'Copy original text only', 'Restore to draft', 'Send again']) assert.ok(receipt.find(label));
   assert.equal(f.composer.editor.value, 'original'); assert.equal(f.calls.length, 0);
@@ -705,7 +706,7 @@ test('an unconfirmed send shows one Details that starts with the reason, and a r
   const receipt = f.node('receipt'); const found = disclosures(receipt);
   assert.equal(found.length, 1); assert.equal(found[0]?.children[0]?.textContent, 'Details');
   assert.ok(found[0]?.children[1]?.textContent.startsWith('delivery_uncertain\n\n')); assert.ok(found[0]?.children[1]?.textContent.includes(call.id as string));
-  assert.equal(receipt.textContent.split('Send not confirmed. Check before you send again.').length - 1, 1); assert.ok(receipt.find('Review message'));
+  assert.equal(receipt.textContent.split('Delivery not confirmed. Check delivery before another send.').length - 1, 1); assert.ok(receipt.find('Review message'));
   const g = fixture(); g.connect(state('a', draft(2, 'original')));
   const refused = g.composer.send(); await g.waitCall('POST', '/inputs'); g.fail(g.pick('POST', '/inputs'), 'invalid_request'); await refused;
   const refusal = g.node('receipt'); assert.match(refusal.textContent, /Message not sent/); assert.equal(disclosures(refusal).length, 1); assert.equal(disclosures(refusal)[0]?.children[1]?.textContent, 'invalid_request');
@@ -713,22 +714,29 @@ test('an unconfirmed send shows one Details that starts with the reason, and a r
 test('restoring uncertain input does not replace a newer draft without an explicit choice', async () => {
   const f = fixture(); const a = f.connect(state('a', draft(2, 'original'))); const sending = f.composer.send(); await turn(); f.admit(a, 'uncertain'); await sending;
   f.composer.availability(false, false, false); f.composer.setText('newer'); f.click('Restore to draft'); await turn(); assert.equal(f.composer.editor.value, 'newer');
-  f.composer.availability(true, true, false); f.saved('newer', 3); await turn();
+  f.composer.availability(true, true, false); f.fail(f.pick('POST', '/op-1/reconcile'), 'unknown_operation'); f.saved('newer', 3); await turn();
   f.click('Restore to draft'); await turn(); f.click('Replace draft with original');
   assert.equal(f.composer.editor.value, 'newer'); assert.deepEqual(f.pick('POST', '/restore').body, {expectedDraftRevision: 3});
   f.ok(f.pick('POST', '/restore'), draft(4, 'original')); await turn(); assert.equal(f.composer.editor.value, 'original'); assert.equal(f.calls.length, 0);
 });
 test('restored input uses one Composer recovery UI, blocks duplicates, and accepts late receipt', async () => {
   const f = fixture(); const a = state('a', draft(2, 'original')); a.unconfirmed.push({admission: 'unconfirmed', images: [], operationId: 'retained', target: a.target, text: 'original', mode: 'prompt', submittedDraftRevision: 2, createdAt: '', reason: 'unknown'});
-  f.connect(a); assert.equal(f.node('receipt').textContent.split('Send not confirmed').length - 1, 1);
+  f.connect(a); assert.equal(f.node('receipt').textContent.split('Delivery not confirmed').length - 1, 1);
   for (const label of ['Check delivery', 'Copy original text only', 'Restore to draft']) assert.ok(f.node('receipt').find(label));
   await f.composer.send(); assert.equal(f.calls.length, 0);
   assert.equal(f.composer.updateOperation({id: 'retained', kind: 'primary.input', target: a.target, state: 'accepted', createdAt: '', updatedAt: ''}), true);
   await turn(); f.ok(f.pick('GET', '/a'), state('a', draft(3, ''))); await turn(); assert.equal(f.composer.editor.value, '');
 });
-test('unknown or expired reservation rejects explicitly without blind resend', async () => {
+test('an unknown operation retains uncertain input and never resends automatically', async () => {
   const f = fixture(); f.connect(state('a', draft(1, 'sent'))); const sending = f.composer.send(); await turn(); f.fail(f.pick('POST', '/inputs'), 'unknown_operation'); await sending;
-  assert.equal(f.composer.editor.value, 'sent'); assert.match(f.node('receipt').textContent, /reservation expired or unknown/); assert.doesNotMatch(f.node('receipt').textContent, /Send not confirmed/);
+  assert.equal(f.composer.editor.value, 'sent'); assert.match(f.node('receipt').textContent, /Delivery not confirmed/);
+  assert.doesNotMatch(f.node('receipt').textContent, /text was not sent|reservation/); assert.equal(f.node('send').disabled, true);
+  await f.composer.send(); assert.equal(f.calls.length, 0); assert.equal(f.reservations(), 2);
+});
+test('proven pre-dispatch expiry preserves the draft and permits only a deliberate retry', async () => {
+  const f = fixture(); f.connect(state('a', draft(1, 'sent'))); const sending = f.composer.send(); await turn(); f.fail(f.pick('POST', '/inputs'), 'operation_expired'); await sending;
+  assert.equal(f.composer.editor.value, 'sent'); assert.match(f.node('receipt').textContent, /Message was not sent. Try Send again./);
+  assert.doesNotMatch(f.node('receipt').textContent, /Delivery not confirmed|reservation/); assert.equal(f.node('send').disabled, false);
   assert.equal(f.calls.length, 0); assert.equal(f.reservations(), 2);
 });
 test('IME, repeat, ShiftEnter, prevented autocomplete, and modified Enter do not submit; busy Tab stays native', async () => {
@@ -767,7 +775,7 @@ test('the send key and the action slot capture steer, Queue captures followUp, a
     f.composer.availability(true, true, busy); act(f); const call = await f.waitCall('POST', '/inputs'); const mode = call.body.mode; f.admit(target, 'rejected'); await turn(); return mode;
   };
   const key = (f: ReturnType<typeof fixture>) => f.node('editor').fire('keydown', {key: 'Enter'});
-  const queue = (f: ReturnType<typeof fixture>) => f.node('queue').fire('click');
+  const queue = (f: ReturnType<typeof fixture>) => {void f.composer.queueMessage();};
   for (const saved of ['prompt', 'steer', 'followUp']) {
     assert.equal(await sent('primary', saved, true, key), 'steer', `primary key, saved ${saved}`);
     assert.equal(await sent('primary', saved, true, f => f.node('composer').fire('submit')), 'steer', `primary submit, saved ${saved}`);
@@ -784,10 +792,14 @@ test('stale save retains both exact copies from the error without a receipt fetc
   call.resolve({ok: false, error: {code: 'stale_revision', message: 'stale', retry: 'manual', details: {value: draft(2, ' remote\n '), truncated: false}}});
   await turn(); assert.equal(f.composer.editor.value, ' local\n '); assert.match(f.node('receipt').textContent, / remote\n /); assert.match(f.node('receipt').textContent, / local\n /); f.node('receipt').find('Review');
 });
-test('local reservation expiry requires a new explicit send and never dispatches the old key', async context => {
+test('local expiry renews once before dispatch and never uses the expired operation key', async context => {
   let now = 100; context.mock.method(Date, 'now', () => now);
-  const f = fixture(); f.connect(state('a', draft(1, 'sent'))); await turn(); now += 600001; await f.composer.send();
-  assert.equal(f.calls.length, 0); assert.match(f.node('receipt').textContent, /reservation expired/); assert.equal(f.reservations(), 2);
+  const f = fixture(), a = f.connect(state('a', draft(1, 'sent'))); await turn(); assert.equal(f.reservations(), 1);
+  now += LIMITS.reservationMs + 1; const sending = f.composer.send(); const input = await f.waitCall('POST', '/inputs');
+  assert.equal(input.id, 'op-2'); assert.equal(input.body.message, 'sent'); assert.equal(f.reservations(), 2);
+  assert.equal(f.calls.filter(call => call.path.endsWith('/inputs')).length, 1); f.admit(a); await turn();
+  f.ok(f.pick('GET', '/a'), state('a', draft(2, ''))); await sending;
+  assert.equal(f.composer.editor.value, ''); assert.doesNotMatch(f.node('receipt').textContent, /expired|reservation/);
 });
 test('an earlier late acceptance keeps a newer already-saved edit', async () => {
   const f = fixture(); const a = f.connect(state('a', draft(4, 'original'))); const sending = f.composer.send(); await turn(); const result = f.admit(a, 'uncertain'); await sending;
@@ -799,7 +811,7 @@ test('late hidden-target acceptance never clears the selected target and stale c
   const f = fixture(); const a = f.connect(state('a', draft(4, 'original'))); const sending = f.composer.send(); await turn(); const result = f.admit(a, 'uncertain'); await sending;
   f.composer.attach('w', state('b', draft(3, 'B'))); f.composer.updateOperation({...result, state: 'accepted'}); await turn(); f.ok(f.pick('GET', '/a'), state('a', draft(5, ''))); await turn();
   assert.equal(f.composer.editor.value, 'B'); a.unconfirmed.push({admission: 'unconfirmed', images: [], operationId: result.id, target: a.target, text: 'original', mode: 'prompt', submittedDraftRevision: 4, createdAt: '', reason: 'old snapshot'});
-  f.composer.attach('w', a); assert.equal(f.composer.editor.value, ''); assert.doesNotMatch(f.node('receipt').textContent, /Send not confirmed/);
+  f.composer.attach('w', a); assert.equal(f.composer.editor.value, ''); assert.doesNotMatch(f.node('receipt').textContent, /Delivery not confirmed/);
 });
 test('agent uncertainty blocks the same input but permits a different explicitly submitted revision', async () => {
   const f = fixture('agent'); const a = f.connect(state('a', draft(1, 'original', 'followUp'), true)); const sending = f.composer.send(); await turn(); f.admit(a, 'uncertain'); await sending;
@@ -827,7 +839,7 @@ test('delayed draft restoration returns focus only to the original action owner'
   for (const nextFocus of ['composer-action', 'external', 'restore'] as const) {
     const f = fixture(); const a = state('a', draft(3, '', 'steer'));
     const item = {admission: 'unconfirmed' as const, images: [], operationId: 'retained', target: a.target, text: 'preview', mode: 'steer', submittedDraftRevision: 2, createdAt: '', reason: 'unknown', textTruncated: true as const}; a.unconfirmed.push(item);
-    f.connect(a); f.composer.availability(true, true, true); assert.equal(f.node('queue').hidden, false); assert.equal(f.node('queue').disabled, true);
+    f.connect(a); f.composer.availability(true, true, true); assert.equal(f.node('queue').hidden, true); assert.equal(f.node('queue').disabled, true);
     const otherAction = new NodeFake(); otherAction.tag = 'button'; otherAction.type = 'button'; otherAction.setAttribute('aria-label', 'Add to message'); f.node('composer').append(otherAction);
     const restore = f.node('receipt').find('Restore to draft'); assert.ok(restore); restore.focus(); restore.fire('click');
     const fetch = f.pick('GET', '/retained'); assert.equal(fetch.path, '/api/workspaces/w/unconfirmed/retained');
@@ -841,7 +853,7 @@ test('delayed draft restoration returns focus only to the original action owner'
 test('explicit replacement starts a fresh focus intent after delayed restoration review', async () => {
   const f = fixture(); const a = state('a', draft(3, 'newer', 'steer'));
   const item = {admission: 'unconfirmed' as const, images: [], operationId: 'retained', target: a.target, text: 'preview', mode: 'steer', submittedDraftRevision: 2, createdAt: '', reason: 'unknown', textTruncated: true as const}; a.unconfirmed.push(item);
-  f.connect(a); f.composer.availability(true, true, true); assert.equal(f.node('queue').hidden, false);
+  f.connect(a); f.composer.availability(true, true, true); assert.equal(f.node('queue').hidden, true);
   f.node('editor').setSelectionRange(1, 4, 'backward'); f.node('editor').fire('select');
   const restore = f.node('receipt').find('Restore to draft'); assert.ok(restore); restore.focus(); restore.fire('click');
   const delivery = f.node('queue'); delivery.focus();
@@ -857,7 +869,7 @@ test('failed exact recovery fetch never copies or restores the preview', async (
   const f = fixture(); const a = state('a', draft(3, 'newer'));
   a.unconfirmed.push({admission: 'unconfirmed', images: [], operationId: 'retained', target: a.target, text: 'preview', mode: 'prompt', submittedDraftRevision: 2, createdAt: '', reason: 'unknown', textTruncated: true});
   f.connect(a); f.click('Copy original text only'); f.fail(f.pick('GET', '/retained'), 'host_unavailable'); await turn();
-  assert.deepEqual(f.copied, []); assert.equal(f.composer.editor.value, 'newer'); assert.match(f.node('receipt').textContent, /Send not confirmed/);
+  assert.deepEqual(f.copied, []); assert.equal(f.composer.editor.value, 'newer'); assert.match(f.node('receipt').textContent, /Delivery not confirmed/);
 });
 test('accepted native receipt exposes exact identity, submission ID, and request key', async () => {
   const f = fixture('agent'); const a = f.connect(state('a', draft(2, 'sent', 'followUp'), true)); const sending = f.composer.send(); await turn();
@@ -875,6 +887,63 @@ test('accepted operation event before cleanup and HTTP response never creates a 
   assert.equal(f.composer.editor.value, ''); assert.equal(f.composer.unsaved, false); assert.doesNotMatch(f.node('save').textContent, /Review/);
 });
 
+test('snapshot receipts settle only exact terminal input after hydration in either delivery order', async () => {
+  for(const beforeAttach of [false,true]) {
+    const f=fixture(),a=state('snapshot-target',draft(2,'original'));
+    a.unconfirmed.push({admission:'unconfirmed',images:[],operationId:'snapshot-input',target:a.target,text:'original',mode:'prompt',submittedDraftRevision:2,createdAt:'',reason:'Lost response'});
+    const accepted:OperationView={id:'snapshot-input',kind:'primary.input',target:a.target,state:'accepted',createdAt:'',updatedAt:'2',receipt:{kind:'rpc',disposition:'queued'}};
+    if(beforeAttach)f.composer.receipts([accepted]);f.connect(a);
+    if(!beforeAttach){
+      for(const mismatch of [{...accepted,id:'other-id'},{...accepted,kind:'primary.control' as const},{...accepted,kind:'agent.input' as const},{...accepted,target:{kind:'primary' as const,key:'other',epoch:7}}]) {
+        f.composer.receipts([mismatch]);assert.equal(f.composer.reloadHold,'uncertain');assert.equal(f.composer.editor.value,'original');assert.equal(f.calls.length,0);
+      }
+      f.composer.receipts([accepted]);
+    }
+    const cleanup=await f.waitCall('GET','/snapshot-target');assert.equal(f.composer.editor.value,'');
+    f.ok(cleanup,state('snapshot-target',draft(3,'')));await turn();assert.equal(f.composer.reloadHold,undefined);
+    f.composer.receipts([{...accepted,state:'uncertain',updatedAt:'3'}]);assert.match(f.node('receipt').textContent,/Message queued/);
+    assert.doesNotMatch(f.node('receipt').textContent,/Delivery not confirmed/);assert.equal(f.calls.some(call=>call.path.endsWith('/inputs')),false);f.composer.destroy();
+  }
+});
+test('snapshot absence never proves acceptance and reconnect reads the exact uncertain ID once', async () => {
+  const f=fixture(),a=state('snapshot-target',draft(2,'original'));
+  a.unconfirmed.push({admission:'unconfirmed',images:[],operationId:'missing-input',target:a.target,text:'original',mode:'prompt',submittedDraftRevision:2,createdAt:'',reason:'Lost response'});
+  f.connect(a);f.composer.receipts([]);assert.equal(f.composer.reloadHold,'uncertain');assert.equal(f.composer.editor.value,'original');assert.equal(f.calls.length,0);
+  f.composer.availability(false,true,false);f.composer.availability(true,true,false);const lookup=await f.waitCall('POST','/missing-input/reconcile');
+  f.composer.availability(true,true,false);f.click('Check delivery');assert.equal(f.calls.filter(call=>call.path.endsWith('/reconcile')).length,1);
+  f.fail(lookup,'unknown_operation');await turn();assert.equal(f.composer.reloadHold,'uncertain');assert.equal(f.composer.editor.value,'original');
+  assert.equal(f.calls.some(call=>call.path.endsWith('/inputs')),false);
+  f.composer.availability(false,true,false);f.composer.availability(true,true,false);const exact=await f.waitCall('POST','/missing-input/reconcile');
+  f.ok(exact,{id:'missing-input',kind:'primary.input',target:a.target,state:'accepted',createdAt:'',updatedAt:'2',receipt:{kind:'rpc',disposition:'queued'}});
+  const cleanup=await f.waitCall('GET','/snapshot-target');f.ok(cleanup,state('snapshot-target',draft(3,'')));await turn();
+  assert.equal(f.composer.reloadHold,undefined);assert.equal(f.composer.editor.value,'');assert.equal(f.calls.some(call=>call.path.endsWith('/inputs')),false);f.composer.destroy();
+});
+test('settled accepted input never calls the failed hook after late HTTP rejection', async () => {
+  const f=fixture(),a=f.connect(state('a',draft(2,'sent'))),sending=f.composer.send(),input=await f.waitCall('POST','/inputs');
+  const accepted:OperationView={id:input.id as string,kind:'primary.input',target:a.target,state:'accepted',createdAt:'',updatedAt:'2',receipt:{kind:'rpc',disposition:'queued'}};
+  f.composer.updateOperation(accepted);const cleanup=await f.waitCall('GET','/a');f.ok(cleanup,state('a',draft(3,'')));await turn();
+  f.calls.splice(f.calls.indexOf(input),1);input.reject(new Error('Lost response after settlement'));await sending;
+  assert.deepEqual(f.failed,[]);assert.match(f.node('receipt').textContent,/Message queued/);assert.doesNotMatch(f.node('receipt').textContent,/Delivery not confirmed|Message not sent/);assert.equal(f.composer.reloadHold,undefined);f.composer.destroy();
+});
+test('accepted queued event survives late HTTP failure while cleanup remains pending', async () => {
+  const f = fixture(), a = f.connect(state('a', draft(2, 'sent', 'steer'))); f.composer.availability(true, true, true);
+  const sending = f.composer.send(); const input = await f.waitCall('POST', '/inputs');
+  const accepted: OperationView = {id: input.id as string,kind:'primary.input',target:a.target,state:'accepted',createdAt:'',updatedAt:'2',receipt:{kind:'rpc',disposition:'queued'}};
+  assert.equal(f.composer.updateOperation(accepted), true); const cleanup = await f.waitCall('GET', '/a');
+  assert.equal(f.composer.editor.value, ''); f.calls.splice(f.calls.indexOf(input),1); input.reject(new Error('Lost HTTP response'));
+  await turn(); assert.equal(f.composer.editor.value, ''); assert.equal(f.node('receipt').find('Check delivery'), undefined);
+  assert.match(f.node('receipt').textContent,/Message queued/); assert.doesNotMatch(f.node('receipt').textContent,/Delivery not confirmed|Message not sent|Lost HTTP/); assert.deepEqual(f.failed,[]);
+  assert.equal(f.composer.updateOperation({...accepted,state:'uncertain',updatedAt:'3'}),true);
+  assert.doesNotMatch(f.node('receipt').textContent,/Delivery not confirmed/);
+  f.ok(cleanup, state('a',draft(3,'','steer'))); await sending; assert.equal(f.composer.unsaved,false); assert.equal(f.composer.reloadHold, undefined);
+  assert.equal(f.calls.some(call=>call.path.endsWith('/inputs')),false); f.composer.destroy();
+});
+test('provisional operation progress does not become an uncertain admission', async () => {
+  const f=fixture(),a=f.connect(state('a',draft(1,'sent'))); const sending=f.composer.send();const input=await f.waitCall('POST','/inputs');
+  for(const operationState of ['reserved','dispatched'] as const) f.composer.updateOperation({id:input.id as string,kind:'primary.input',target:a.target,state:operationState,createdAt:'',updatedAt:operationState});
+  assert.doesNotMatch(f.node('receipt').textContent,/Delivery not confirmed/);assert.equal(f.composer.editor.value,'sent');
+  f.admit(a,'rejected');await sending;f.composer.destroy();
+});
 test('accepted-event cleanup keeps newer edits and advances their next save revision', async () => {
   const f = fixture(); const a = f.connect(state('a', draft(5, 'sent'))); const sending = f.composer.send(); await turn(); const input = f.pick('POST', '/inputs');
   const accepted: OperationView = {id: input.id as string, kind: 'primary.input', target: a.target, state: 'accepted', createdAt: '', updatedAt: ''};
@@ -936,6 +1005,35 @@ test('input and control receipts share one disclosure and never leak across targ
   f.composer.receipts([result, {...result, id: 'control', kind: 'primary.control', state: 'completed', updatedAt: '2026-10-08T12:01:00Z'}]);
   assert.equal(f.node('receipt-details').children.length, 1); f.openReceipt(); assert.match(f.node('receipt-details').textContent, /Input receipt/); assert.match(f.node('receipt-details').textContent, /Action receipt/); assert.equal(f.node('receipt').textContent, '');
   f.composer.attach('w', state('b')); assert.equal(f.node('receipt-details').textContent, ''); assert.equal(f.node('save').textContent, '');
+});
+
+test('mobile geometry caps desktop manual height and expansion keeps the native draft and range', () => {
+  const computed = Object.getOwnPropertyDescriptor(globalThis, 'getComputedStyle'), media = Object.getOwnPropertyDescriptor(globalThis, 'matchMedia');
+  let mobile = false;
+  Object.defineProperty(globalThis, 'getComputedStyle', {configurable: true, value: () => ({lineHeight: '22.5px', paddingTop: '8px', paddingBottom: '8px', borderTopWidth: '1px', borderBottomWidth: '1px'})});
+  Object.defineProperty(globalThis, 'matchMedia', {configurable: true, value: (query: string) => ({matches: query.includes('pointer:coarse') && mobile})});
+  try {
+    const f = fixture(), saved = state('a', {...draft(1, 'Native draft\nSecond line'), images: [image()]}); f.connect(saved);
+    const editor = f.node('editor'), parent = editor.parentElement, data = f.composer.state?.draft, expand = f.node('expand'); editor.isConnected = true;
+    const paint = () => {for (const frame of f.frames.splice(0)) frame();};
+    editor.focus(); editor.setSelectionRange(2, 9, 'backward'); editor.scrollTop = 13; editor.scrollLeft = 4;
+    f.composer.setManualHeight(600); paint(); assert.equal(editor.style.height, '540px');
+    mobile = true; f.composer.resize(); paint(); assert.equal(editor.style.height, '63px');
+    editor.conversationHeight = 400; f.composer.resize(); paint(); assert.equal(editor.style.height, '63px');
+    editor.fire('compositionstart'); expand.fire('click'); paint();
+    assert.equal(expand.getAttribute('aria-expanded'), 'true'); assert.equal(expand.textContent, 'Return'); assert.equal(editor.style.height, '353.5px'); assert.equal(f.node('composer').style.maxHeight, '376px');
+    assert.equal(f.composer.reloadHold, 'ime'); assert.equal(editor.parentElement, parent); assert.equal(f.composer.editor, editor);
+    assert.equal(f.composer.state?.draft, data); assert.deepEqual(f.composer.state?.draft.images, saved.draft.images);
+    assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection, editor.scrollTop, editor.scrollLeft], [2, 9, 'backward', 13, 4]);
+    editor.conversationHeight = 140; f.composer.resize(); paint(); assert.equal(f.node('composer').style.maxHeight, '140px');
+    editor.conversationHeight = 400; expand.fire('click'); paint(); assert.equal(editor.style.height, '63px'); assert.equal(expand.getAttribute('aria-expanded'), 'false');
+    editor.fire('compositionend'); mobile = false; editor.conversationHeight = 900; f.composer.resize(); paint();
+    assert.equal(editor.style.height, '540px'); assert.equal(f.calls.length, 0);
+    f.composer.destroy();
+  } finally {
+    if (computed) Object.defineProperty(globalThis, 'getComputedStyle', computed); else Reflect.deleteProperty(globalThis, 'getComputedStyle');
+    if (media) Object.defineProperty(globalThis, 'matchMedia', media); else Reflect.deleteProperty(globalThis, 'matchMedia');
+  }
 });
 
 test('editor height grows locally, caps long drafts, shrinks, and keeps an explicit size as its resting minimum', () => {
@@ -1013,8 +1111,8 @@ test('a queued admission names the delivery mode in the quiet tier while a refus
   };
   const steer = fixture(); const sa = steer.connect(state('a', draft(2, 'steer this'))); steer.composer.availability(true, true, true);
   await admitQueued(steer, sa, steer.composer.send(), 'steer');
-  assert.equal(steer.node('receipt').textContent, 'Steer queued');
-  assert.equal(steer.node('receipt').children[0]?.className, 'secondary'); assert.equal(announcements().textContent, 'Steer queued');
+  assert.equal(steer.node('receipt').textContent, 'Message queued');
+  assert.equal(steer.node('receipt').children[0]?.className, 'secondary'); assert.equal(announcements().textContent, 'Message queued');
   const follow = fixture(); const fa = follow.connect(state('a', draft(2, 'after this run'))); follow.composer.availability(true, true, true);
   await admitQueued(follow, fa, follow.composer.send(false, undefined, 'followUp'), 'followUp');
   assert.equal(follow.node('receipt').textContent, 'Message queued');
@@ -1055,9 +1153,10 @@ test('save Retry clears the matching save failure after an acknowledged retry', 
 });
 test('journal refusals and uncertain input remain visible outside routine admission notices', () => {
   const f = fixture(); const a = f.connect(); const result: OperationView = {id: 'other-tab', kind: 'primary.input', target: a.target, state: 'uncertain', createdAt: '', updatedAt: ''};
-  f.composer.receipts([result]); assert.match(f.node('receipt').textContent, /Send not confirmed/);
+  f.composer.receipts([result]); assert.match(f.node('receipt').textContent, /Delivery not confirmed/);
   f.composer.receipts([{...result, state: 'rejected'}]); assert.match(f.node('receipt').textContent, /Message not sent/);
-  f.composer.receipts([{...result, state: 'accepted'}]); assert.equal(f.node('receipt').textContent, '');
+  f.composer.receipts([{...result, state: 'accepted'}]); assert.match(f.node('receipt').textContent, /Message not sent/);
+  f.composer.receipts([{...result, id:'different-operation', state: 'accepted'}]); assert.equal(f.node('receipt').textContent, '');
 });
 test('exact live target reuse retains the unchanged draft range through detach and attach', () => {
   const f = fixture(); const target = f.connect(state('a', draft(3, 'retained draft')));
@@ -1114,7 +1213,7 @@ test('close retains pending and unconfirmed sends and reopening never sends them
   const f = fixture('agent'); const a = f.connect(state('a', draft(2, 'original', 'followUp'), true));
   const sending = f.composer.send(); await turn(); f.composer.attach('w');
   assert.equal(f.composer.retained('w', a.target), true); f.admit(a, 'uncertain'); await sending;
-  f.composer.attach('w', a); assert.match(f.node('receipt').textContent, /Send not confirmed/);
+  f.composer.attach('w', a); assert.match(f.node('receipt').textContent, /Delivery not confirmed/);
   assert.ok(f.node('receipt').find('Check delivery')); assert.ok(f.node('receipt').find('Copy original text only')); assert.ok(f.node('receipt').find('Restore to draft'));
   await f.composer.send(); assert.equal(f.calls.length, 0);
 });
@@ -1168,7 +1267,7 @@ test('offline Resume attaches the exact buffer before preparation and keeps it a
 test('ready agent Send requires a nonempty draft and readiness never submits input', () => {
   const f = fixture('agent');
   f.connect(state('a', draft(0, '', 'followUp'), true));
-  assert.equal(f.node('send').hidden, true); assert.equal(f.node('send').disabled, true);
+  assert.equal(f.node('send').hidden, false); assert.equal(f.node('send').disabled, true);
   f.composer.attach('w', state('a', draft(1, '  ', 'followUp'), true));
   assert.equal(f.node('send').disabled, true);
   f.composer.attach('w', state('a', draft(2, 'Fixture text', 'followUp'), true));
@@ -1206,22 +1305,22 @@ test('a fixed placeholder and busy delivery capability preserve the exact native
   assert.equal(editor.placeholder, 'Message'); assert.equal(f.node('editor').getAttribute('aria-label'), `Draft for ${name}`);
   for (const [connected, ready, busy, supported, visible] of [[true, true, true, false, false], [true, true, true, true, true], [true, true, false, true, false], [false, true, true, true, false], [true, false, true, true, false]] as const) {
     f.composer.availability(connected, ready, busy, false, supported);
-    assert.equal(f.node('queue').hidden, !visible);
+    assert.equal(f.node('queue').hidden, true); assert.equal(f.composer.queueAvailable, visible);
     assert.equal(f.composer.editor, editor); assert.equal(editor.parentElement, parent); assert.equal(editor.value, 'Exact local draft');
     assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [2, 9, 'backward']); assert.deepEqual(f.composer.target, a.target);
   }
   assert.equal(f.calls.length, 0); assert.equal(f.submitted.length, 0);
 });
-test('confirmed work keeps named Steer and Queue visible with empty drafts disabled', () => {
+test('confirmed work keeps plain Send visible and offers Queue through an explicit action', () => {
   const f = fixture(); f.connect(); f.composer.recipient('Message Primary'); f.composer.availability(true, true, true);
   const root = f.node('composer'), send = f.node('send'), queue = f.node('queue');
-  assert.equal(root.dataset.working, 'empty'); assert.equal(queue.hidden, false); assert.equal(queue.disabled, true); assert.equal(send.hidden, false); assert.equal(send.disabled, true); assert.equal(actionText(send), 'Steer'); assert.equal(send.querySelector('.action-label')?.classList.contains('sr-only'), false);
+  assert.equal(root.dataset.working, 'empty'); assert.equal(queue.hidden, true); assert.equal(queue.disabled, true); assert.equal(send.hidden, false); assert.equal(send.disabled, true); assert.equal(actionText(send), 'Send'); assert.equal(send.querySelector('.action-label')?.classList.contains('sr-only'), true);
   f.composer.setText('Look at the failing test'); f.saved('Look at the failing test');
-  assert.equal(root.dataset.working, 'draft'); assert.equal(queue.hidden, false); assert.equal(queue.disabled, false); assert.equal(send.disabled, false);
-  assert.equal(actionText(send), 'Steer'); assert.equal(send.getAttribute('aria-label'), 'Steer message'); assert.equal(send.title, 'Steer: send now; the agent reads it at its next step');
+  assert.equal(root.dataset.working, 'draft'); assert.equal(queue.hidden, true); assert.equal(queue.disabled, false); assert.equal(send.disabled, false);
+  assert.equal(actionText(send), 'Send'); assert.equal(send.getAttribute('aria-label'), 'Send message'); assert.equal(send.title, 'Send now. The agent reads your message at its next step.');
   const description = 'Queue this message for a later step. During a wait for agent results, the message joins the current work.';
   assert.equal(queue.title, description); assert.equal(queue.getAttribute('aria-description'), description);
-  f.composer.setText(''); assert.equal(root.dataset.working, 'empty'); assert.equal(queue.hidden, false); assert.equal(queue.disabled, true);
+  f.composer.setText(''); assert.equal(root.dataset.working, 'empty'); assert.equal(queue.hidden, true); assert.equal(queue.disabled, true);
   f.composer.availability(true, true, false); assert.equal(root.dataset.working, undefined); assert.equal(queue.hidden, true); assert.equal(actionText(send), 'Send'); assert.equal(send.getAttribute('aria-label'), 'Send message');
 });
 test('Queue keeps its exact explanation and an accessible local reason without changing delivery or the draft', () => {
@@ -1252,7 +1351,7 @@ test('working image-only drafts retain both delivery actions and recognized comm
   const commands = () => ({state: 'ready' as const, items: [{name: 'status', description: 'Read status', source: 'extension'}]});
   const f = fixture('agent', commands); f.connect(state('images', {...draft(2, '', 'followUp'), images: [image()]}, true));
   f.composer.availability(true, true, true);
-  assert.equal(f.node('send').disabled, false); assert.equal(f.node('queue').hidden, false); assert.equal(f.node('queue').disabled, false);
+  assert.equal(f.node('send').disabled, false); assert.equal(f.node('queue').hidden, true); assert.equal(f.node('queue').disabled, false);
   f.composer.attach('w', state('command', draft(3, '/status', 'followUp'), true));
   assert.equal(actionText(f.node('send')), 'Run command'); assert.equal(f.node('send').disabled, false); assert.equal(f.node('queue').hidden, true);
   assert.equal(f.calls.some(call => call.path.endsWith('/inputs') || call.path.endsWith('/command')), false);
@@ -1267,20 +1366,20 @@ test('working guidance stays assistive while command actions and genuine problem
   assert.equal(elements.send.title, 'Run /status on this agent. It sends no message');
   composer.setText('Continue with this change');
   assert.equal(label?.hidden, true); assert.equal(elements.state?.classList.contains('sr-only'), true);
-  assert.equal(line?.textContent, 'Steer at the next step; Queue adds a follow-up.'); assert.equal(elements.queue.hidden, false); assert.equal(elements.send.getAttribute('aria-label'), 'Steer message');
+  assert.equal(line?.textContent, 'Send a message while this conversation works. The agent reads it at its next step.'); assert.equal(elements.queue.hidden, true); assert.equal(elements.send.getAttribute('aria-label'), 'Send message');
   assert.equal(elements.send.getAttribute('aria-describedby'), line?.id);
   composer.setText('/status'); assert.equal(line?.textContent, 'Working'); assert.equal(elements.queue.hidden, true);
   composer.setState({line: 'The connection failed. Check the connection before you send.', label: 'Connection failed', tone: 'error'});
   assert.equal(label?.hidden, false); assert.equal(label?.textContent, 'Connection failed'); assert.equal(elements.state?.classList.contains('sr-only'), false);
   assert.equal(host.calls.some(call => call.path.endsWith('/inputs') || call.path.endsWith('/command')), false); composer.destroy();
 });
-test('empty ready drafts omit Send while text, images and required recovery retain their actions', () => {
+test('empty ready drafts retain disabled Send while text, images and required recovery retain their actions', () => {
   for (const kind of ['primary', 'agent'] as const) {
     const f = fixture(kind); f.connect(state('empty', draft(1, ''), kind === 'agent'));
     const editor = f.composer.editor, parent = editor.parentElement, send = f.node('send');
-    assert.equal(send.hidden, true); editor.focus(); editor.setSelectionRange(0, 0);
-    f.composer.setText('x'); assert.equal(send.hidden, false);
-    f.composer.setText(''); assert.equal(send.hidden, true);
+    assert.equal(send.hidden, false); assert.equal(send.disabled, true); editor.focus(); editor.setSelectionRange(0, 0);
+    f.composer.setText('x'); assert.equal(send.hidden, false); assert.equal(send.disabled, false);
+    f.composer.setText(''); assert.equal(send.hidden, false); assert.equal(send.disabled, true);
     assert.equal(f.composer.editor, editor); assert.equal(editor.parentElement, parent); assert.equal(editor.selectionStart, 0);
     const imageOnly = state('image-only', {...draft(2, ''), images: [{digest: 'a'.repeat(64), mimeType: 'image/png', bytes: 67, width: 1, height: 1, name: 'draft.png'}]}, kind === 'agent');
     f.composer.attach('w', imageOnly); assert.equal(send.hidden, false); assert.equal(send.disabled, false);
@@ -1294,11 +1393,27 @@ test('unconfirmed delivery puts captured identifiers and text in closed disclosu
   const f = fixture(); const a = state('captured', draft(2, 'message'));
   a.unconfirmed.push({admission: 'unconfirmed', images: [], operationId: 'unconfirmed-id', target: a.target, text: 'message', mode: 'prompt', submittedDraftRevision: 2, createdAt: '', reason: 'unknown'});
   f.connect(a); const row = f.node('receipt').children.find(node => node.find('Check delivery')); assert.ok(row);
-  assert.match(row.children[0]?.textContent ?? '', /Send not confirmed. Check before you send again./);
+  assert.match(row.children[0]?.textContent ?? '', /Delivery not confirmed. Check delivery before another send./);
   assert.equal(row.children[1]?.open, false); assert.equal(row.children[2]?.open, false);
   assert.match(row.children[1]?.textContent ?? '', /unconfirmed-id/); assert.match(row.children[2]?.textContent ?? '', /Review message/);
 });
 
+test('queued image copies stay out of the inline receipt slot while saved state and handled warnings persist', () => {
+  const f=fixture(), a=state('saved-copy',draft(2,''));
+  const item={admission:'queued-image' as const,images:[image()],operationId:'saved-image-id',target:a.target,text:'Exact image message',mode:'steer',submittedDraftRevision:1,createdAt:'',receipt:{kind:'rpc' as const,disposition:'queued' as const}};
+  a.retainedInputs.push(item);f.connect(a);
+  assert.equal(f.node('receipt').querySelector('.retained-input-copy'),undefined);assert.doesNotMatch(f.node('receipt').textContent,/Message received/);
+  f.composer.receipts([]);f.composer.receipts([]);
+  assert.equal(f.node('receipt').querySelector('.retained-input-copy'),undefined);
+  f.composer.attach('w',a);f.composer.attach('w',a);
+  assert.equal(f.node('receipt').querySelector('.retained-input-copy'),undefined);assert.doesNotMatch(f.node('receipt').textContent,/Message received/);
+  assert.equal(f.composer.state?.retainedInputs.length,1);assert.deepEqual(f.composer.state?.retainedInputs[0]?.images,[image()]);
+  f.composer.attach('w',{...a,retainedInputs:[{...item,admission:'handled-image'}]});
+  const warning=f.node('receipt').querySelector('.retained-input-copy');assert.ok(warning);
+  assert.equal(warning.querySelector('summary')?.textContent,'Input handled; images not confirmed');assert.match(warning.textContent,/one.png/);
+  assert.ok(warning.find('Copy text only'));assert.ok(warning.find('Restore complete copy'));
+  assert.equal(f.calls.length,0);f.composer.destroy();
+});
 test('two scoped instances keep separate drafts, caret, recipient controls and save routes without instance lookups', async () => {
   const f = fixture('agent'); f.connect(state('a', draft(0, 'draft A', 'followUp'), true));
   const other = f.create('second'); other.composer.attach('w', state('b', draft(0, 'draft B', 'followUp'), true)); other.composer.availability(true, false, false);
@@ -1326,7 +1441,8 @@ test('scoped element factories create distinct editors and exact label/resize/co
   const stop = first.root.querySelector<HTMLButtonElement>('.stop'); assert.equal(actionText(stop as NodeFake), 'Stop'); assert.equal(stop?.querySelector('.action-label')?.classList.contains('sr-only'), true); assert.equal(stop?.title, 'Stop response');
   const line = first.root.querySelector('.composer-line'), bar = first.root.querySelector('.composer-bar'), submit = first.root.querySelector('.composer-submit');
   assert.deepEqual(Array.from(line?.children ?? []).map(node => node.className), ['composer-intake', 'composer-settings', 'composer-bar']);
-  assert.ok(submit); assert.equal(bar?.contains(submit), true); assert.deepEqual(Array.from(submit.children), [stop, first.queue, first.start, first.send]);
+  assert.ok(submit); const stopSlot=submit.querySelector('.composer-stop-slot');assert.ok(stopSlot);assert.deepEqual(Array.from(stopSlot.children),[stop]);
+  assert.equal(bar?.contains(submit), true); assert.deepEqual(Array.from(submit.children), [stopSlot, first.queue, first.start, first.send]);
   assert.equal(first.send.getAttribute('aria-label'), 'Send message'); assert.equal(actionText(first.send), 'Send'); assert.equal(first.send.children.length, 2);
   assert.equal(first.queue.getAttribute('aria-label'), 'Queue message'); assert.equal(first.queue.textContent, 'Queue'); assert.equal(first.queue.hidden, true); assert.equal(first.root.querySelector('select'), undefined); assert.equal(first.send.type, 'submit'); assert.equal(first.send.disabled, true);
   assert.equal(first.root.contains(first.editor), true); assert.equal(first.root.contains(first.save), false); assert.equal(first.root.contains(first.receiptDetails), false);

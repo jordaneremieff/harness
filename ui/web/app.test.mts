@@ -24,6 +24,13 @@ async function openProjects(): Promise<void> {
 }
 function tabsNode(pane = app.focusedPane): HostNode { const node = paneNode(pane).querySelector('.conversation-tabs'); assert.ok(node); return node; }
 function menuNode(): HostNode { const node = hostDocument.body.querySelector('.context-menu'); assert.ok(node); return node; }
+function conversationChoice(label:string):HostNode|undefined {
+  const choice=menuNode().children.find(node=>node.textContent===label);
+  if(choice)return choice;
+  const parent:Record<string,string>={'Message':'Tasks','Refresh messages':'Tasks','Sent and received tasks':'Tasks','Show thinking':'Display','Grouped':'Display','Conversation':'Display','Expand loaded tools':'Display','Collapse loaded tools':'Display','Find text':'Find','Jump to message…':'Find','Conversation details':'Session details','Copy agent ID':'Session details','Open in Pi terminal':'Session details','Close session':'Session details'};
+  menuNode().children.find(node=>node.textContent===parent[label])?.click();
+  return menuNode().children.find(node=>node.textContent===label);
+}
 function pressContext(target: HostNode): void { target.dispatch('contextmenu', {clientX: 10, clientY: 50}); }
 
 function descendants(node: HostNode): HostNode[] { return [...node.children, ...node.children.flatMap(descendants)]; }
@@ -104,7 +111,7 @@ test('Agent image controls reject stale capabilities without borrowing transcrip
 test('development checkpoint captures exact owners and rejects workspace, recipient and revision changes', async t => {
   const saved = await devHookFixture('dev-capture', 9660), original = globalThis.fetch;
   t.after(() => {globalThis.fetch = original; byId('agent-message-close').click();});
-  app.focusPane('primary-pane'); await settle(); app.openConversationActions('agent-pane'); const message = menuNode().children.find(node => node.textContent === 'Message'); assert.ok(message); message.click(); await settle();
+  app.focusPane('primary-pane'); await settle(); app.openConversationActions('agent-pane'); const message = conversationChoice('Message'); assert.ok(message); message.click(); await settle();
   const editor = messageControl('editor'); editor.focus(); editor.setSelectionRange(2, 7, 'backward'); const checkpoint = devCheckpoint();
   assert.equal(checkpoint.workspaceId, 'dev-capture'); assert.equal(checkpoint.targets.length, 2); assert.equal(checkpoint.messageRecipient, saved.agent.targetKey); assert.deepEqual(checkpoint.focusedControl, {targetKey: saved.agent.targetKey, kind: 'message'});
   assert.deepEqual(checkpoint.targets.map(entry => entry.targetKey).sort(), [saved.primary.targetKey, saved.agent.targetKey].sort()); assert.doesNotMatch(JSON.stringify(checkpoint), /private draft|Development history/);
@@ -157,7 +164,7 @@ test('development drain preserves exact local draft bytes after view preferences
   const before = transportLog.length, pe = p('editor'), ae = a('editor'); pe.value = 'Primary queued draft'; pe.dispatch('input'); ae.value = 'Agent queued draft'; ae.dispatch('input');
   pe.setSelectionRange(2, 7, 'backward'); pe.dispatch('select'); ae.setSelectionRange(1, 6, 'forward'); ae.dispatch('select');
   const scroller = p('transcript'); scroller.scrollTop = 180; scroller.dispatch('scroll'); flushFrames(); scroller.dispatch('scrollend');
-  app.openConversationActions('primary-pane'); const grouped = menuNode().children.find(node => node.textContent === 'Grouped'); assert.ok(grouped); grouped.click(); await settle();
+  app.openConversationActions('primary-pane'); const grouped = conversationChoice('Grouped'); assert.ok(grouped); grouped.click(); await settle();
   app.applyLayout(singlePane()); await settle(); assert.equal(agent.canDispose, false);
   const aborted = new AbortController(); aborted.abort(new Error('Drain cancelled')); await assert.rejects(app.drainDev(aborted.signal), /Drain cancelled/);
   let done = false; const drain = app.drainDev(new AbortController().signal).then(() => {done = true;}); await settle(); assert.equal(done, false);
@@ -508,7 +515,7 @@ test('the loaded-message chooser retains drafts and exact navigation and refuses
   const rows=byId('modal-body').querySelectorAll('.palette-row');assert.equal(rows.length,2);assert.match(rows[0]?.textContent??'',/Message 1/);assert.match(rows[1]?.textContent??'',/Message 2/);
   rows[0]?.click();await settle();assert.equal(primaryControl('transcript').querySelector('[data-entry-id="first-request"]')?.classList.contains('own-message-focus'),true);
   assert.equal(primaryControl('editor'),editor);assert.equal(editor.value,'Keep my unsent draft');assert.deepEqual([editor.selectionStart,editor.selectionEnd,editor.selectionDirection],[2,7,'backward']);
-  app.openConversationActions();const menu=menuNode().children.find(node=>node.textContent==='Jump to message…');assert.ok(menu);menu.click();assert.equal(byId('modal-title').textContent,'Loaded messages');byId('modal-close').click();
+  app.openConversationActions();const menu=conversationChoice('Jump to message…');assert.ok(menu);menu.click();assert.equal(byId('modal-title').textContent,'Loaded messages');byId('modal-close').click();
   open();const stale=byId('modal-body').querySelectorAll('.palette-row')[0];assert.ok(stale);
   await arrive({workspace:{id:'message-chooser-new',revision:1,primaryKey:'p'},primaries:[primaryFixture({epoch:7722})],roster:[],history:[own('first-request')]});
   stale.click();await settle();assert.equal(primaryControl('transcript').querySelector('.own-message-focus'),null);
@@ -546,7 +553,7 @@ test('local Find captures the exact pane across query edits, focus changes and t
   const capturedAgent = app.agentComposer(), capturedControls = controls(capturedAgent), agentEditor = capturedControls('editor');
   app.focusPane('primary-pane'); await settle(); const primaryEditor = primaryControl('editor'); primaryEditor.setSelectionRange(2, 5, 'backward');
   const start = transportLog.length;
-  app.openConversationActions('agent-pane'); menuNode().children.find(node => node.textContent === 'Find text')?.click();
+  app.openConversationActions('agent-pane'); conversationChoice('Find text')?.click();
   const query = byId('modal-body').querySelector('input'); assert.ok(query); assert.equal(byId('modal').dataset.variant, 'find');
   const status = byId('modal-body').querySelector('.find-status'); assert.ok(status);
   query.value = 'needle'; query.dispatch('keydown', {key: 'Enter', shiftKey: false}); await settle();
@@ -836,7 +843,7 @@ test('hide retains a queued recovery retry and reveal does not add another attem
 test('message panel moves the existing form outside the roster without changing the main view', async () => {
   const row=agentFixture('movable-message'); await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:{kind:'agent',identity:row.identity},conversationLayout:twoPanes(row.identity)},primaries:[primaryFixture({epoch:706})],roster:[row]});
   const selected=app.state.workspace?.selectedTarget,agent=controls(app.agentComposer()),form=agent('composer'),editor=agent('editor'),root=agent('root'),saved=selectionSaves.length;
-  app.openConversationActions('agent-pane'); const message = menuNode().children.find(node => node.textContent === 'Message'); assert.ok(message); message.click(); await settle();
+  app.openConversationActions('agent-pane'); const message = conversationChoice('Message'); assert.ok(message); message.click(); await settle();
   assert.equal(messageControl('composer'),form); assert.equal(messageControl('editor'),editor); assert.equal(form.parentNode,agentControl('root')); assert.equal(app.stableViews().slot(form as unknown as HTMLElement)?.id,'agent-message-editor-slot'); assert.equal(byId('roster').contains(form),false); assert.deepEqual(app.state.workspace?.selectedTarget,selected); assert.equal(selectionSaves.length,saved);
   byId('agent-message-close').click(); await settle(); assert.equal(form.parentNode,root);
 });
@@ -848,7 +855,7 @@ test('preference completions keep their captured request and leave a newer targe
     await arrive({workspace: {id:'w',revision:1,primaryKey:'p',selectedTarget:target}, primaries:[primaryFixture({epoch})],roster:[],targets:[targetFixture(key,target)]});
     let finish: (response: Response) => void = () => { throw new Error('No pending preference'); };
     browser.preferenceSave = () => new Promise(resolve => { finish = resolve; });
-    const before = transportLog.length; app.openConversationActions(); const grouped = menuNode().children.find(node => node.textContent === 'Grouped'); assert.ok(grouped); grouped.click(); await settle();
+    const before = transportLog.length; app.openConversationActions(); const grouped = conversationChoice('Grouped'); assert.ok(grouped); grouped.click(); await settle();
     const call = transportLog.slice(before).find(item => item.path.endsWith('/presentation')); assert.ok(call);
     assert.equal(call.path, `/api/workspaces/w/targets/${key}/presentation`);
     assert.equal((call.body as Record<string,unknown>).transcriptView, 'grouped');
@@ -861,7 +868,7 @@ test('preference completions keep their captured request and leave a newer targe
   const target = {kind:'primary' as const,key:'p',epoch:8300};
   await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:target},primaries:[primaryFixture({epoch:target.epoch})],roster:[],targets:[targetFixture('preference-current',target)]});
   browser.preferenceSave = async () => Response.json({ok:false,error:{code:'capacity',message:'Current preference refused',retry:'manual'}});
-  app.openConversationActions(); const grouped = menuNode().children.find(node => node.textContent === 'Grouped'); assert.ok(grouped); grouped.click(); await settle();
+  app.openConversationActions(); const grouped = conversationChoice('Grouped'); assert.ok(grouped); grouped.click(); await settle();
   assert.match(primaryControl('view-notice').textContent, /View preferences not saved/);
   assert.match(primaryControl('view-notice').textContent, /Restore saved view/);
 });
@@ -873,7 +880,7 @@ async function thinkingFixture(epoch: number, shown = false): Promise<TargetStat
   return saved;
 }
 function thinkingChoice(): HostNode {
-  app.openConversationActions(); const choice = menuNode().children.find(node => node.textContent === 'Show thinking'); assert.ok(choice); return choice;
+  app.openConversationActions(); const choice = conversationChoice('Show thinking'); assert.ok(choice); return choice;
 }
 function thinkingDisclosure(): HostNode {
   const node = primaryControl('transcript').querySelector('.thinking'); assert.ok(node); return node;
@@ -963,7 +970,7 @@ test('the sidebar names its destination and the main header has an explicit side
   const header = byId('sidebar-close').parentNode; assert.ok(header);
   assert.deepEqual(header.children.map(node => node.id), ['navigation-back','navigation-title','navigation-view-actions','sidebar-close']);
   const toggle = byId('sidebar-close'), show = byId('sidebar-show');
-  assert.match(html,/id="sidebar-show"[^>]*aria-label="Show sidebar"/);assert.ok(show.querySelector('.card-icon-navigation'));assert.equal(show.parentNode,byId('navigation-access'));
+  assert.match(html,/id="sidebar-show"[^>]*aria-label="Sessions"/);assert.ok(show.querySelector('.card-icon-navigation'));assert.equal(show.parentNode,byId('navigation-access'));
   assert.equal(toggle.getAttribute('aria-label'), 'Hide sidebar'); assert.equal(toggle.title, 'Hide sidebar');
   assert.ok(toggle.querySelector('.card-icon-navigation'));
 });
@@ -1460,14 +1467,18 @@ test('context menus capture inactive tabs and never close a later selection', as
   await arrive(base);const stale=tabsNode().querySelector('[data-tab-key="agent:menu-a"]');assert.ok(stale);pressContext(stale);const staleClose=menuNode().children.find(node=>node.textContent==='Close tab');assert.ok(staleClose);app.applyLayout(activatePaneTab(layout,'pane-1','agent:menu-b'));await settle();const saves=selectionSaves.length;staleClose.click();await settle();assert.equal(selectionSaves.length,saves);assert.deepEqual(app.state.workspace?.selectedTarget,{kind:'agent',identity:'menu-b'});assert.match(byId('announcements').textContent,/changed.*again/);
 });
 test('agent and Primary pane menus expose supported actions while text inputs keep native menus', async () => {
-  await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:{kind:'agent',identity:'context-agent'},conversationLayout:twoPanes('context-agent')},primaries:[primaryFixture({epoch:714})],roster:[agentFixture('context-agent',{capabilities:{input:true,inspect:true}})]});app.openConversationActions('agent-pane');for(const label of ['Message','Copy agent ID','Conversation details','Sent and received tasks','Open in Pi terminal'])assert.ok(menuNode().children.some(node=>node.textContent===label));assert.equal(menuNode().children.some(node=>node.textContent==='New session'),false);contextMenu.close();assert.equal(hostDocument.activeElement,paneNode('agent-pane').querySelector('.pane-conversation-actions'));
-  pressContext(primaryControl('editor'));assert.equal(contextMenu.openNow,false);app.openConversationActions('primary-pane');assert.equal(menuNode().children.some(node=>['Appearance','Help','Model','Thinking','Refresh agent roster'].includes(node.textContent)),false); assert.ok(menuNode().children.some(node=>node.textContent==='Commands')); const thinking = menuNode().children.find(node=>node.textContent==='Show thinking'); assert.ok(thinking); assert.equal(thinking.getAttribute('role'),'menuitemcheckbox'); assert.equal(thinking.getAttribute('aria-checked'),'false'); assert.equal(menuNode().children.some(node=>node.textContent==='Hide thinking'),false); assert.equal(menuNode().children.some(node=>node.textContent==='Show conversation'),false);contextMenu.close();
+  await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:{kind:'agent',identity:'context-agent'},conversationLayout:twoPanes('context-agent')},primaries:[primaryFixture({epoch:714})],roster:[agentFixture('context-agent',{capabilities:{input:true,inspect:true}})]});app.openConversationActions('agent-pane');for(const [page,labels] of [['Tasks',['Message','Sent and received tasks']],['Session details',['Copy agent ID','Conversation details','Open in Pi terminal']]] as const){menuNode().children.find(node=>node.textContent===page)?.click();for(const label of labels)assert.ok(menuNode().children.some(node=>node.textContent===label));menuNode().children.find(node=>node.textContent==='Back')?.click();}assert.equal(menuNode().children.some(node=>node.textContent==='New session'),false);contextMenu.close();assert.equal(hostDocument.activeElement,paneNode('agent-pane').querySelector('.pane-conversation-actions'));
+  pressContext(primaryControl('editor'));assert.equal(contextMenu.openNow,false);app.openConversationActions('primary-pane');assert.equal(menuNode().children.some(node=>['Appearance','Help','Model','Thinking','Refresh agent roster'].includes(node.textContent)),false); assert.ok(menuNode().children.some(node=>node.textContent==='Commands')); const thinking = conversationChoice('Show thinking'); assert.ok(thinking); assert.equal(thinking.getAttribute('role'),'menuitemcheckbox'); assert.equal(thinking.getAttribute('aria-checked'),'false'); assert.equal(menuNode().children.some(node=>node.textContent==='Hide thinking'),false); assert.equal(menuNode().children.some(node=>node.textContent==='Show conversation'),false);contextMenu.close();
 });
 test('an agent tab without a roster row keeps its conversation actions but not Show conversation or Message', async () => {
   await arrive({workspace:{id:'w',revision:1,primaryKey:'p',selectedTarget:{kind:'agent',identity:'child-agent:23464'},conversationLayout:twoPanes('child-agent:23464')},primaries:[primaryFixture({epoch:715})],roster:[]});
-  app.openConversationActions('agent-pane'); const labels=menuNode().children.map(node=>node.textContent);
-  for(const label of ['Sent and received tasks','Open in Pi terminal','Find text','Show thinking','Expand loaded tools','Collapse loaded tools','Conversation details','Copy agent ID','Commands'])assert.ok(labels.includes(label),label);
-  for(const label of ['Show conversation','Message'])assert.equal(labels.includes(label),false,label);
+  app.openConversationActions('agent-pane');
+  assert.deepEqual(menuNode().children.filter(node=>node.tagName==='button').map(node=>node.textContent),['Find','Display','Tasks','Session details','Commands']);
+  for(const label of ['Sent and received tasks','Open in Pi terminal','Find text','Show thinking','Expand loaded tools','Collapse loaded tools','Conversation details','Copy agent ID']){
+    assert.ok(conversationChoice(label),label);menuNode().children.find(node=>node.textContent==='Back')?.click();
+  }
+  menuNode().children.find(node=>node.textContent==='Tasks')?.click();
+  for(const label of ['Show conversation','Message'])assert.equal(menuNode().children.some(node=>node.textContent===label),false,label);
   contextMenu.close();
 });
 test('direct conversation actions capture each inactive pane without navigation or editor replacement', async () => {
@@ -1484,14 +1495,14 @@ test('direct conversation actions capture each inactive pane without navigation 
     trigger.dispatch('pointerdown', {type: 'pointerdown', button: 0, isPrimary: true}); trigger.focus(); trigger.click();
     assert.equal(app.focusedPane, focused); assert.deepEqual(app.state.workspace?.selectedTarget, selected); assert.equal(selectionSaves.length, saves); assert.equal(transportLog.length, requests);
     assert.equal(trigger.getAttribute('aria-expanded'), 'true'); assert.equal(menuNode().getAttribute('aria-label'), 'Conversation actions');
-    for (const label of ['Find text', 'Show thinking', 'Message input', 'Conversation details']) assert.ok(menuNode().children.find(node => node.textContent === label));
+    for (const label of ['Find', 'Display', 'Tasks', 'Session details', 'Commands']) assert.ok(menuNode().children.find(node => node.textContent === label));
     contextMenu.close(); assert.equal(hostDocument.activeElement, trigger); assert.equal(trigger.getAttribute('aria-expanded'), 'false'); assert.equal(app.focusedPane, focused);
-    trigger.click(); const thinking = menuNode().children.find(node => node.textContent === 'Show thinking'); assert.ok(thinking); const shown = thinking.getAttribute('aria-checked'); thinking.click(); await settle();
-    trigger.click(); assert.notEqual(menuNode().children.find(node => node.textContent === 'Show thinking')?.getAttribute('aria-checked'), shown); contextMenu.close();
+    trigger.click(); const thinking = conversationChoice('Show thinking'); assert.ok(thinking); const shown = thinking.getAttribute('aria-checked'); thinking.click(); await settle();
+    trigger.click(); assert.notEqual(conversationChoice('Show thinking')?.getAttribute('aria-checked'), shown); contextMenu.close();
     assert.equal(app.focusedPane, focused); assert.deepEqual(app.state.workspace?.selectedTarget, selected);
     const transcript=root.querySelector('.transcript'),other=roots[index===0?1:0].querySelector('.transcript');assert.ok(transcript&&other);const otherView=other.dataset.view;
-    trigger.click();const grouped=menuNode().children.find(node=>node.textContent==='Grouped');assert.ok(grouped);assert.equal(grouped.getAttribute('aria-description'),'View: Grouped');assert.equal(grouped.getAttribute('role'),'menuitemradio');grouped.click();await settle();assert.equal(transcript.dataset.view,'grouped');assert.equal(other.dataset.view,otherView);
-    app.openConversationActions(inactive);const conversation=menuNode().children.find(node=>node.textContent==='Conversation');assert.ok(conversation);assert.equal(conversation.title,'View: Conversation');assert.equal(menuNode().children.find(node=>node.textContent==='Grouped')?.getAttribute('aria-checked'),'true');conversation.click();await settle();assert.equal(transcript.dataset.view,'chronological');assert.equal(other.dataset.view,otherView);assert.deepEqual(app.state.workspace?.selectedTarget,selected);
+    trigger.click();const grouped=conversationChoice('Grouped');assert.ok(grouped);assert.equal(grouped.getAttribute('aria-description'),'View: Grouped');assert.equal(grouped.getAttribute('role'),'menuitemradio');grouped.click();await settle();assert.equal(transcript.dataset.view,'grouped');assert.equal(other.dataset.view,otherView);
+    app.openConversationActions(inactive);const conversation=conversationChoice('Conversation');assert.ok(conversation);assert.equal(conversation.title,'View: Conversation');assert.equal(conversationChoice('Grouped')?.getAttribute('aria-checked'),'true');conversation.click();await settle();assert.equal(transcript.dataset.view,'chronological');assert.equal(other.dataset.view,otherView);assert.deepEqual(app.state.workspace?.selectedTarget,selected);
     assert.equal(root.dataset.paneId, inactive);
   }
   assert.equal(primaryControl('editor'), editors[0]); assert.equal(agentControl('editor'), editors[1]);
@@ -1502,7 +1513,7 @@ test('direct conversation menu rejects an action after its captured layout chang
   const identity = 'stale-direct-menu', layout = twoPanes(identity);
   await arrive({workspace: {id: 'stale-direct', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'agent', identity}, conversationLayout: layout}, primaries: [primaryFixture({epoch: 717})], roster: [agentFixture(identity)]});
   const trigger = paneNode('agent-pane').querySelector('.pane-conversation-actions'); assert.ok(trigger); trigger.click();
-  const details = menuNode().children.find(node => node.textContent === 'Grouped'); assert.ok(details);const transcript=agentControl('transcript'),view=transcript.dataset.view;
+  const details = conversationChoice('Grouped'); assert.ok(details);const transcript=agentControl('transcript'),view=transcript.dataset.view;
   app.applyLayout({...layout, focusedPane: 'primary-pane'}); await settle(); const before = transportLog.length;
   details.click(); await settle(); assert.equal(transcript.dataset.view,view); assert.equal(transportLog.length, before); assert.match(byId('announcements').textContent, /changed.*again/); assert.equal(contextMenu.openNow, false);
 });
@@ -1533,23 +1544,22 @@ test('Primary model and thinking are picker buttons under its composer with acce
   assert.equal(thinking.textContent, 'High'); assert.equal(thinking.attributes.get('aria-label'), 'Thinking level for Primary: high'); assert.ok(primaryControl('settings').contains(model)); assert.ok(model.querySelector('.card-icon-chevron')); assert.ok(thinking.querySelector('.card-icon-chevron')); assert.equal(primaryControl('settings').querySelector('.composer-settings-separator'), null);
 });
 
-test('local conversation actions group existing controls and open workspace input settings without navigation', async () => {
+test('conversation actions use short destinations and Settings owns workspace input preferences', async () => {
   const identity = 'grouped-menu-agent';
-  await arrive({workspace: {id: 'grouped-menu', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'agent', identity}, conversationLayout: twoPanes(identity)}, primaries: [primaryFixture({epoch: 715})], roster: [agentFixture(identity, {capabilities: {input: true, inspect: true}})]});
+  await arrive({workspace: {id: 'grouped-menu', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'agent', identity}, conversationLayout: twoPanes(identity)}, primaries: [primaryFixture({epoch: 715,activity:'idle',capabilities:{handoff:true}})], roster: [agentFixture(identity, {capabilities: {input: true, inspect: true}})]});
   const selected = app.state.workspace?.selectedTarget, saves = selectionSaves.length, requests = transportLog.length;
-  app.openConversationActions('agent-pane'); const menu = menuNode();
-  assert.deepEqual(menu.children.filter(node => node.className === 'context-menu-heading').map(node => node.textContent), ['View', 'Messages and tasks', 'Session', 'Details']);
-  const labels = menu.children.filter(node => node.tagName === 'button').map(node => node.textContent);
-  assert.deepEqual(labels, ['Conversation', 'Grouped', 'Show thinking', 'Find text', 'Jump to message…', 'Expand loaded tools', 'Collapse loaded tools', 'Message box sizeThis conversation has no editable message box.', 'Message', 'Sent and received tasks', 'Saved drafts and messages', 'Message input', 'Open in Pi terminal', 'Conversation details', 'Copy agent ID', 'Layout', 'Commands']);
-  for (const label of ['Conversation', 'Grouped']) {const choice = menu.children.find(node => node.textContent === label); assert.ok(choice); assert.equal(choice.getAttribute('role'), 'menuitemradio'); assert.equal(choice.getAttribute('aria-description'), `View: ${label}`); assert.equal(choice.title, `View: ${label}`); assert.equal(choice.getAttribute('aria-checked'), String(label === 'Conversation'));}
-  assert.equal(labels.includes('Show conversation'), false); assert.equal(labels.includes('New session'), false);
-  menu.children.find(node => node.textContent === 'Message input')?.click();
+  app.openConversationActions('agent-pane');
+  assert.deepEqual(menuNode().children.filter(node=>node.tagName==='button').map(node=>node.textContent),['Find','Display','Tasks','Session details','Commands']);
+  conversationChoice('Grouped');
+  for (const label of ['Conversation', 'Grouped']) {const choice = conversationChoice(label); assert.ok(choice); assert.equal(choice.getAttribute('role'), 'menuitemradio'); assert.equal(choice.getAttribute('aria-description'), `View: ${label}`); assert.equal(choice.title, `View: ${label}`); assert.equal(choice.getAttribute('aria-checked'), String(label === 'Conversation'));}
+  contextMenu.close();app.showNavigationView('settings');
+  byId('settings-preferences').querySelectorAll('button').find(node=>node.dataset.setting==='Message input')?.click();
   assert.equal(byId('modal-title').textContent, 'Message input'); assert.match(byId('modal-body').textContent, /Applies to this workspace/);
   assert.deepEqual(app.state.workspace?.selectedTarget, selected); assert.equal(selectionSaves.length, saves); assert.equal(transportLog.length, requests);
   byId('modal-close').click(); app.focusPane('primary-pane'); await settle(); app.openConversationActions('primary-pane');
-  assert.deepEqual(menuNode().children.filter(node => node.className === 'context-menu-heading').map(node => node.textContent), ['View', 'Messages and tasks', 'Session', 'Details']);
-  const primaryLabels = menuNode().children.filter(node => node.tagName === 'button').map(node => node.textContent);
-  assert.ok(primaryLabels.indexOf('New session') > primaryLabels.indexOf('Message input')); assert.ok(primaryLabels.indexOf('Conversation details') > primaryLabels.indexOf('Continue in terminal')); assert.equal(primaryLabels.at(-1), 'Commands'); contextMenu.close();
+  assert.deepEqual(menuNode().children.filter(node=>node.tagName==='button').map(node=>node.textContent),['Find','Display','Tasks','Session details','Commands']);
+  conversationChoice('Conversation details');const primaryLabels=menuNode().children.map(node=>node.textContent);
+  assert.ok(primaryLabels.includes('Continue in terminal'));assert.ok(primaryLabels.includes('Layout'));assert.equal(primaryLabels.includes('New session'),false);contextMenu.close();
 });
 test('composer settings preserve exact long values and existing eligibility without replacing controls', async () => {
   const id = 'long-model-value'.repeat(60);
@@ -1610,14 +1620,14 @@ test('Commands lists only the sidebar action that applies on wide and narrow win
   app.toggleSidebar(true); assert.deepEqual(listed(), ['Hide sidebar']);
   app.toggleSidebar(false); host.viewport = 1200; app.renderNavigation();
 });
-test('Tools and Settings stay in the sidebar and never occupy the status facts', async t => {
+test('Destinations and Settings stay in the sidebar and never occupy the status facts', async t => {
   t.after(() => {app.toggleSidebar(false); host.viewport = 1200;});
   await arrive({workspace:{id:'utility-home',revision:1,primaryKey:'p',sidebarVisible:true},primaries:[primaryFixture()],roster:[]});
   for(const width of [1200,700])for(const visible of [false,true]){
     host.viewport=width;app.toggleSidebar(visible);await settle();
-    assert.deepEqual(byId('sidebar-footer').children.map(node=>node.id),['settings-button']);assert.equal(byId('sidebar-tools').contains(byId('tools-button')),true);
-    for(const id of ['tools-button','settings-button'])assert.equal(byId('workbench-status').contains(byId(id)),false);
-    assert.equal(byId('navigation-access').hidden,false);assert.equal(hostDocument.body.querySelectorAll('#tools-button').length,1);
+    assert.deepEqual(byId('sidebar-footer').children.map(node=>node.id),['settings-button']);assert.equal(byId('sidebar-tools').contains(byId('navigate-commands')),true);
+    for(const id of ['navigate-commands','settings-button'])assert.equal(byId('workbench-status').contains(byId(id)),false);
+    assert.equal(byId('navigation-access').hidden,false);assert.equal(hostDocument.body.querySelectorAll('#navigate-commands').length,1);
   }
 });
 test('projected Message pointers stay inside the drawer without exempting the conversation transcript', async t => {
@@ -1698,11 +1708,10 @@ test('project navigation remains an anchored project-first menu beside direct ut
   assert.equal(byId('modal-title').textContent, 'Appearance'); byId('modal-close').click();
   assert.doesNotMatch(html, /id="app-menu"|id="window-menu"/);
 });
-test('Tools exposes its named destinations and Settings exposes the existing preferences', async () => {
+test('Navigation exposes its named destinations and Settings exposes the existing preferences', async () => {
   await arrive({workspace:{id:'named-tools',revision:1,primaryKey:'p'},primaries:[primaryFixture()],roster:[]});
-  byId('tools-button').click();const menu=menuNode();
-  assert.deepEqual(menu.querySelectorAll('button').map(node=>node.textContent),['Agents','Threads','Files','Notices','Commands']);
-  const commands=menu.querySelectorAll('button').find(node=>node.textContent==='Commands');assert.ok(commands);commands.click();
+  assert.deepEqual(byId('sidebar-tools').querySelectorAll('button').map(node=>node.getAttribute('aria-label')),['Agents','Threads','Files','Notices','Commands']);
+  byId('navigate-commands').click();
   assert.equal(byId('modal-title').textContent,'Commands');byId('modal-close').click();
   byId('settings-button').click();assert.equal(app.navigationViews.view,'settings');
   for(const name of ['Appearance','Message input','Keyboard shortcuts','Agent control','Workspaces','Archived workspaces','Saved drafts and messages','Help'])assert.ok(byId('settings-choices').querySelectorAll('button').find(node=>node.getAttribute('aria-label')===name),name);
@@ -1767,7 +1776,7 @@ test('stored connection checks keep both drafts and reserve no input while Start
   const primaryTarget = {kind: 'primary' as const, key: 'p', epoch: 2};
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: target, panelVisible: true}, primaries: [primaryFixture({epoch: 2})], roster: [agentFixture(target.identity, {availability: 'stored', capabilities: {input: false}})], targets: [targetFixture('check-primary', primaryTarget, {draft: {revision: 7, text: 'Primary keep', mode: 'prompt', persisted: true}}), targetFixture('check-agent', target, {draft: {revision: 7, text: 'Agent keep', mode: 'followUp', persisted: true}})]});
   const primaryEditor = primaryControl('editor'); const agentEditor = agentControl('editor');
-  assert.equal(agentControl('state').hidden, false); app.openConversationActions(); menuNode().children.find(node => node.textContent === 'Open in Pi terminal')?.click(); assert.match(byId('modal-body').textContent, /agent attach stored-check/); byId('modal-close').click();
+  assert.equal(agentControl('state').hidden, false); app.openConversationActions(); conversationChoice('Open in Pi terminal')?.click(); assert.match(byId('modal-body').textContent, /agent attach stored-check/); byId('modal-close').click();
   assert.equal(byId('agent-usage-details').hidden, false); assert.equal(agentControl('editor').disabled, false); assert.equal(agentControl('start').hidden, false); assert.equal(agentControl('send').hidden, true);
   assert.match(byId('agent-usage').textContent, /Cache usage is not reported/); assert.equal(byId('agent-usage-summary').textContent, '');
   const start = transportLog.length; await app.checkAgentConnection('w', target.identity); await settle();
@@ -2115,7 +2124,7 @@ test('accepted working activity owns the tool while retained settings stay compo
   assert.equal(tabsNode().children.find(node => node.attributes.get('aria-selected') === 'true')?.querySelector('.tab-dot')?.title, 'Working'); assert.equal(agentControl('model').querySelector('.composer-setting-label')?.textContent,'tool-model');
   assert.match(agentControl('model').getAttribute('aria-label') ?? '', /: fixture\/tool-model$/); assert.match(agentControl('model').title, /Last observed model/); assert.doesNotMatch(html, /agent-pane-heading/);
   app.openConversationActions(); const menu = hostDocument.body.children.find(node => node.className === 'context-menu'); assert.ok(menu);
-  const detailsAction = menu.children.find(node => node.textContent === 'Conversation details'); assert.ok(detailsAction); detailsAction.click();
+  const detailsAction = conversationChoice('Conversation details'); assert.ok(detailsAction); detailsAction.click();
   assert.match(byId('modal-body').textContent, /Last reported tool/); assert.match(byId('modal-body').textContent, /src\/current-file.ts/); byId('modal-close').click();
 });
 
@@ -2229,7 +2238,7 @@ test('three exact owners isolate drafts, carets, roots and accepted frames throu
   browser.fixture = {...browser.fixture, observations: [observation(a.identity, frame(a.identity, 1), 11), observation(b.identity, frame(b.identity, 1), 20)]};
   const restored = splitPane(app.state.workspace?.conversationLayout ?? moved, 'pane-a', 'y', {width: 760, height: 640, divider: 4}, tabKey(b)); app.applyLayout(restored); await settle();
   app.applyLayout(activatePaneTab(app.state.workspace?.conversationLayout ?? restored, 'pane-a', tabKey(a))); await settle();
-  const bPane = paneLeaves((app.state.workspace?.conversationLayout ?? restored).root).find(pane => pane.active === tabKey(b)); assert.ok(bPane); app.openConversationActions(bPane.id); const message = menuNode().children.find(node => node.textContent === 'Message'); assert.ok(message); message.click(); await settle();
+  const bPane = paneLeaves((app.state.workspace?.conversationLayout ?? restored).root).find(pane => pane.active === tabKey(b)); assert.ok(bPane); app.openConversationActions(bPane.id); const message = conversationChoice('Message'); assert.ok(message); message.click(); await settle();
   assert.equal(messageControl('composer'), forms[2]); assert.equal(messageControl('editor'), editors[2]); assert.equal(forms[2]?.parentNode, roots[2]); assert.equal(app.stableViews().slot(forms[2] as unknown as HTMLElement)?.id,'agent-message-editor-slot'); assert.deepEqual(app.state.workspace?.selectedTarget, a); editors[2]?.focus();
   event('agent.frame', {identity: a.identity, connectionEpoch: 11, frame: frame(a.identity, 2)}); event('agent.frame', {identity: b.identity, connectionEpoch: 20, frame: frame(b.identity, 2)}); await settle();
   assert.match(ac('transcript').textContent, /three-a frame 2/); assert.doesNotMatch(ac('transcript').textContent, /three-b frame/);
@@ -2246,7 +2255,7 @@ test('Message projection stays visible through a pending tab selection and layou
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: target, conversationLayout: layout}, primaries: [primaryFixture({epoch: 9503})], roster: [agentFixture(target.identity)],
     targets: [targetFixture('projected-target', target, {draft: {revision: 2, text: 'Keep the exact draft', mode: 'prompt', persisted: true}})]});
   const owner = controls(app.agentComposer()), root = owner('root'), editor = owner('editor'), form = owner('composer');
-  app.openConversationActions('pane-1'); const message = menuNode().children.find(node => node.textContent === 'Message'); assert.ok(message); message.click(); await settle();
+  app.openConversationActions('pane-1'); const message = conversationChoice('Message'); assert.ok(message); message.click(); await settle();
   editor.focus(); editor.setSelectionRange(3, 12, 'backward'); editor.dispatch('select');
   const original = globalThis.fetch, held = Promise.withResolvers<void>(), started = Promise.withResolvers<void>();
   t.after(() => {globalThis.fetch = original; held.resolve(); byId('agent-message-close').click();});
@@ -2322,7 +2331,7 @@ test('queued view writes keep the old workspace acknowledgment despite a same-ke
     const scroller = primaryControl('transcript');
     const change = async (value: number) => {
       if (kind === 'reading') {scroller.scrollTop = value; scroller.dispatch('scroll'); flushFrames(); scroller.dispatch('scrollend');}
-      else {app.openConversationActions(); const item = menuNode().children.find(node => node.textContent === (value === 120 ? 'Grouped' : 'Conversation')); assert.ok(item); item.click();}
+      else {app.openConversationActions(); const item = conversationChoice(value === 120 ? 'Grouped' : 'Conversation'); assert.ok(item); item.click();}
       await settle();
     };
     await change(120); assert.equal(requests.length, 1); await change(240); assert.equal(requests.length, 1);
@@ -2389,7 +2398,7 @@ test('composer settings show the Primary model list name and capitalized effort,
     assert.equal(reads.length, 1); assert.match(reads[0] ?? '', /^\/api\/primaries\/p\/resources\/models\?limit=100(&|$)/);
   } finally {globalThis.fetch = previous;}
 });
-test('the Add menu names its rows, shows only the typed triggers, and Earlier messages starts the same browse as Up', async () => {
+test('the Add menu names its rows, shows only the typed triggers, and Reuse an earlier message recalls the same text as Up', async () => {
   const ask = (id: string, text: string) => entryFixture(id, [{...messageFixture(`${id}-m`, [textPart(text)]), role: 'user'}]);
   const target = {kind: 'primary' as const, key: 'p', epoch: 9812};
   await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: target}, primaries: [primaryFixture({epoch: 9812, lifecycle: 'ready'})], roster: [], targets: [targetFixture('add-menu-primary', target, {draft: {revision: 1, text: '', mode: 'prompt', persisted: true}})], history: [ask('h1', 'first ask'), ask('h2', 'second ask')]});
@@ -2399,18 +2408,18 @@ test('the Add menu names its rows, shows only the typed triggers, and Earlier me
     const open = () => {primaryControl('composer').querySelector('.attachment-sources')?.click(); const menu = hostDocument.body.querySelector('.context-menu'); assert.ok(menu); return menu;};
     const menu = open(); assert.equal(menu.className, 'context-menu context-menu-compact composer-intake-menu'); assert.equal(menu.children[0]?.textContent, 'Add to message'); assert.equal(menu.children[0]?.getAttribute('role'), 'presentation');
     const rows = menu.children.filter(node => node.getAttribute('role') === 'menuitem');
-    assert.deepEqual(rows.map(row => row.querySelector('.context-menu-label')?.textContent), ['Upload files or images', 'Reference a file', 'Run a command', 'Earlier messages']);
+    assert.deepEqual(rows.map(row => row.querySelector('.context-menu-label')?.textContent), ['Upload files or images', 'Reference a file', 'Run a command', 'Reuse an earlier message']);
     assert.deepEqual(rows.map(row => row.querySelector('.context-menu-hint')?.textContent ?? ''), ['', '@', '/', '']);
     assert.deepEqual(rows.map(row => row.querySelector('.card-icon')?.getAttribute('class')), ['card-icon card-icon-upload context-menu-icon', 'card-icon card-icon-file context-menu-icon', 'card-icon card-icon-commands context-menu-icon', 'card-icon card-icon-history context-menu-icon']);
     assert.deepEqual(rows.map(row => row.querySelector('.context-menu-hint')?.getAttribute('aria-hidden') ?? 'none'), ['none', 'true', 'true', 'none']);
-    assert.deepEqual(rows.map(row => row.textContent.replace(/[@/]$/, '')), ['Upload files or images', 'Reference a file', 'Run a command', 'Earlier messages']);
+    assert.deepEqual(rows.map(row => row.textContent.replace(/[@/]$/, '')), ['Upload files or images', 'Reference a file', 'Run a command', 'Reuse an earlier message']);
     assert.equal(menu.querySelector('.context-menu-note'), null); assert.equal(rows[3]?.getAttribute('aria-disabled'), 'false');
-    editor.focus(); rows[3]?.click();
+    rows[3]?.click();assert.equal(hostDocument.activeElement,editor);
     assert.equal(editor.value, 'second ask'); assert.equal(hostDocument.body.querySelector('.context-menu'), null); assert.equal(primaryControl('meta').dataset.recall, 'true');
     editor.dispatch('keydown', {key: 'Escape'}); assert.equal(editor.value, '');
     editor.value = 'typed'; editor.dispatch('input');
     const second = open(), earlier = second.children.filter(node => node.getAttribute('role') === 'menuitem')[3];
-    assert.equal(earlier?.getAttribute('aria-disabled'), 'true'); assert.equal(earlier?.title, 'Clear the draft to browse earlier messages.'); assert.equal(earlier?.getAttribute('aria-description'), earlier?.title);
+    assert.equal(earlier?.getAttribute('aria-disabled'), 'true'); assert.equal(earlier?.title, 'Clear the draft to reuse an earlier message.'); assert.equal(earlier?.getAttribute('aria-description'), earlier?.title);
     assert.equal(second.querySelector('.context-menu-note'), null); earlier?.click(); assert.equal(editor.value, 'typed');
     assert.equal(transportLog.slice(logged).some(call => call.path.includes('/inputs') || call.path.includes('/operations')), false, 'the menu sends nothing');
   } finally {Reflect.deleteProperty(hostDocument, 'execCommand'); contextMenu.close();}

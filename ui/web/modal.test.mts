@@ -121,6 +121,23 @@ test('a pending action blocks duplicate dispatch and preserves disabled controls
     finish(); await pending; assert.equal(enabled.disabled, false); assert.equal(disabled.disabled, true);
   } finally {fake.restore();}
 });
+test('a replacement modal releases the existing menu without invoking protocol cancellation', t => {
+  const fake = setup(); const releases: boolean[] = []; t.mock.method(contextMenu, 'close', (restore = true) => {releases.push(restore);});
+  try {
+    const modal = new Modal(); let cancelled = 0; modal.open('Request', () => {cancelled++;}); modal.open('Models'); modal.close();
+    assert.deepEqual(releases, [false, false, false]); assert.equal(cancelled, 0);
+  } finally {fake.restore();}
+});
+test('sheet sizing resets on replacement and title focus never approves or focuses an input', () => {
+  const fake = setup();
+  try {
+    const modal = new Modal(); let cancels = 0; modal.open('Models'); modal.sheet('searchable'); modal.focusTitle();
+    assert.equal(fake.nodes.get('modal')?.dataset.sheet, 'searchable'); assert.equal(fake.nodes.get('modal-title')?.focused, true);
+    modal.open('Request', () => {cancels++;}); assert.equal(fake.nodes.get('modal')?.dataset.sheet, 'content'); assert.equal(cancels, 0);
+    fake.nodes.get('modal-close')?.dispatchEvent(new Event('click')); assert.equal(cancels, 1); assert.equal(modal.openNow, true);
+    modal.open('Find', undefined, undefined, 'find'); assert.equal(fake.nodes.get('modal')?.dataset.sheet, undefined);
+  } finally {fake.restore();}
+});
 test('Escape invokes protocol cancellation rather than untracked dismissal', () => {
   const fake = setup();
   try {

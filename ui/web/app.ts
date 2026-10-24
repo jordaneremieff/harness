@@ -410,6 +410,8 @@ function bindControllerInput(controller:ConversationController):void {
 function bindControllerReadingIntent(controller: ConversationController): void {
   const interrupt = (event: Event) => {
     if (!event.isTrusted) return;
+    const origin=event.target as Node|null;
+    if(!origin||!controller.transcript.node.contains(origin)&&!controllerNode(controller,'latest').contains(origin))return;
     const reading = controller.historyReading ?? controller.saved?.reading;
     controller.historyReading = undefined; controller.transcript.abandonRestore(reading);
   };
@@ -540,16 +542,27 @@ function openToolFile(destination:FileReferenceDestination):void {
   toolFilePane=captured;toolFileReader.closeLabel(companion.overPrimary?'Back to Primary':'Close');toolFileReader.open(workspace.id,destination,()=>toolFileCurrent(captured));renderNavigation();
 }
 /** Touch screens: the visible height (not the layout height) drives the shell, so the composer sits above the on-screen keyboard. */
-function installViewportSync():void {
+export function installViewportSync():void {
   const viewport = window.visualViewport; if (!viewport || typeof matchMedia !== 'function' || !matchMedia('(pointer:coarse)').matches) return;
   const root = document.documentElement;
   const sync = (): void => {
-    if (viewport.scale !== 1) {root.style.removeProperty('--app-height'); delete root.dataset.keyboard; document.body.style.translate = ''; return;}
-    root.style.setProperty('--app-height', `${Math.round(viewport.height)}px`);
-    root.dataset.keyboard = String(window.innerHeight - viewport.height > 120);
-    document.body.style.translate = viewport.offsetTop > 0 ? `0 ${Math.round(viewport.offsetTop)}px` : '';
+    const reading=[...controllers.values()].filter(controller=>!controller.root.hidden&&!controller.root.inert).map(controller=>({controller,geometry:controller.transcript.captureGeometry()}));
+    if (viewport.scale !== 1) {
+      root.style.removeProperty('--app-height');root.style.removeProperty('--app-top');delete root.dataset.keyboard;document.body.style.translate='';
+    }else{
+      root.style.setProperty('--app-height',`${Math.round(viewport.height)}px`);
+      root.style.setProperty('--app-top',`${Math.max(0,Math.round(viewport.offsetTop))}px`);
+      root.dataset.keyboard=String(window.innerHeight-viewport.height>120);
+      document.body.style.translate=viewport.offsetTop>0?`0 ${Math.round(viewport.offsetTop)}px`:'';
+    }
+    workspaceViews?.sync();
+    for(const controller of controllers.values())controller.composer.placement(false);
+    for(const saved of reading)saved.controller.transcript.applyGeometry(saved.geometry);
+    workspaceViews?.request();
   };
-  viewport.addEventListener('resize', sync); viewport.addEventListener('scroll', sync); sync();
+  let scheduled=false;
+  const schedule=()=>{if(scheduled)return;scheduled=true;requestAnimationFrame(()=>{scheduled=false;sync();});};
+  viewport.addEventListener('resize', schedule); viewport.addEventListener('scroll', schedule); sync();
 }
 /** A narrow touch screen reads files: Markdown opens rendered, and the source tab remains one tap away. */
 function phoneScreen():boolean {return typeof matchMedia==='function'&&matchMedia('(pointer:coarse) and (max-width:599px)').matches;}
@@ -888,9 +901,9 @@ export function storeTabSize(key: string, value: number | undefined): void {
 function composerHeight(controller:ConversationController):ComposerHeight {
   if(controller.height)return controller.height;
   const composer=controller.composer,base=`ui:pane:${controller.workspaceId}:${targetIdentity(controller.target)}:composer`,key=`${base}-min`;
-  storeTabSize(base,undefined);const cap=phoneScreen()?Math.max(80,Math.round(window.innerHeight*0.35)):640,stored=tabSize(key,40,640);
-  let preferred=stored===undefined?undefined:Math.min(stored,cap);composer.setManualHeight(preferred);
-  controller.height={min:40,max:cap,defaultValue:Math.min(144,cap),manual:()=>preferred!==undefined,
+  storeTabSize(base,undefined);
+  let preferred=tabSize(key,40,640);composer.setManualHeight(preferred);
+  controller.height={min:40,max:640,defaultValue:144,manual:()=>preferred!==undefined,
     read:()=>preferred??composer.editor.offsetHeight,write:value=>composer.setManualHeight(value),commit:value=>{preferred=value;storeTabSize(key,value);},
     reset:()=>{preferred=undefined;storeTabSize(key,undefined);composer.setManualHeight(undefined);}};
   return controller.height;
@@ -1051,7 +1064,7 @@ function presentation(target?: Target): ConversationPresentation {
   const conversation = target ? state.conversations.get(targetIdentity(target)) : undefined;
   const tool = target?.kind === 'primary' ? [...conversation?.tools.values() ?? []].findLast(item => item.phase !== 'end') : undefined;
   const item = target?.kind === 'primary' ? state.primaries.get(target.key) : undefined;
-  const view=conversationPresentation({target, primary: item, savedSession: picker.savedSession(item),
+  const view=conversationPresentation({target, primary: item, savedSession: primaryTitleSession(item),
     row, caption: targetCaption(target), availability: target?.kind === 'agent' && !liveConnection(controller) && !controller?.connectionError ? state.agentAvailability.get(target.identity) : undefined,
     negotiated: agentNegotiation(target, controller),
     entries: conversation ? conversationBlocks(conversation) : undefined,
@@ -1824,7 +1837,7 @@ function renderSidebarAccess(narrow:boolean,visible:boolean,drawerClosed:boolean
   byId('sidebar-show').hidden = false; byId('navigation-access').hidden = false;
   renderWorkspaceAccess();
   const toggle=byId('sidebar-show');toggle.setAttribute('aria-expanded',String(visible));
-  toggle.setAttribute('aria-label',visible?'Hide sidebar':'Show sidebar');toggle.title=visible?'Hide sidebar':'Show sidebar';
+  toggle.setAttribute('aria-label',visible?'Close navigation':'Sessions');toggle.title=visible?'Close navigation':'Sessions';
   const drawer=narrow&&drawerOpen;byId('sidebar-scrim').hidden=!drawer;
   const sidebar=byId('sidebar');if(drawer){sidebar.setAttribute('role','dialog');sidebar.setAttribute('aria-modal','true');}else{sidebar.removeAttribute('role');sidebar.removeAttribute('aria-modal');}
   if (drawerClosed && !visible && byId('sidebar').contains(document.activeElement)) byId('sidebar-show').focus({preventScroll: true});
@@ -1879,18 +1892,14 @@ export function showNavigationView(view: NavigationView): void {
   byId('navigation-title').title = view === 'files' ? projectPath() ?? 'Files' : view === 'agents' ? roster.diagnostics() : '';
   roster.schedule();
 }
-function navigationTools(): void {
-  const trigger = byId('tools-button'), box = trigger.getBoundingClientRect();
-  const items: ContextItem[] = (['agents','threads','files'] as const).map(view => ({
-    label: view.charAt(0).toUpperCase() + view.slice(1), run: () => {showNavigationView(view); byId('navigation-back').focus({preventScroll:true});},
-  }));
-  items.push({label:'Notices', run: notices}, {label:'Commands', run: () => actions.palette()});
-  contextMenu.open(trigger, {x:box.left,y:box.top}, 'Tools', items);
-}
 function showInterfaceUpdates():void {
   const nodes=[releaseNotice.node,...byId('workbench-status').querySelectorAll<HTMLElement>('.workbench-update')];
   const body=modal.open('Interface updates',undefined,()=>{for(const node of nodes)byId('workbench-status').insertBefore(node,versionStatus.node);});
   body.append(element('p','secondary','Automatic updates retain your drafts. Available update actions appear here.'),...nodes);
+}
+let settingsPage:'home'|'workspace'|'help'='home';
+function showSettingsPage(page:typeof settingsPage):void {
+  settingsPage=page;renderSettingsChoices();byId(page==='home'?'settings-workspace-page':'settings-back').focus({preventScroll:true});
 }
 function runSettingsChoice(name: string): void {
   if(name==='Version and health'){healthStatus.open();return;}
@@ -1923,6 +1932,9 @@ function renderSettingsChoice(item: PaletteEntry, existing: HTMLButtonElement | 
   return node;
 }
 function renderSettingsChoices(): void {
+  byId('settings-preferences').hidden=settingsPage!=='home';byId('settings-pages').hidden=settingsPage!=='home';
+  byId('settings-workspace').hidden=settingsPage!=='workspace';byId('settings-help').hidden=settingsPage!=='help';
+  byId('settings-back').hidden=settingsPage==='home';
   const groups = [
     {id:'settings-preferences', names:['Appearance','Message input','Agent presentation control','Keyboard shortcuts']},
     {id:'settings-workspace', names:['Workspaces','Archived workspaces','Archived sessions','Saved drafts and messages','Retained file drafts']},
@@ -1996,11 +2008,16 @@ function openSavedConversationActions(paneId:string,trigger:HTMLElement):void {
   const workspace=state.workspace,layout=currentLayout(),leaf=paneById(layout,paneId),tab=leaf?.tabs.find(item=>tabKey(item)===leaf.active);
   if(!workspace||tab?.kind!=='session')return;
   const key=tabKey(tab),revision=workspace.revision,valid=()=>state.workspace?.id===workspace.id&&state.workspace.revision===revision&&samePaneLayout(currentLayout(),layout);
-  contextMenu.open(trigger,paneMenuPoint(trigger),'Conversation actions',[
-    {label:'Conversation details',run:()=>showConversationDetails()},
-    {label:'Arrange view…',run:()=>openPaneMenu(paneId,undefined,key,'context',trigger)},
-    {label:'Close view',separatorBefore:true,run:()=>closeConversationTab(key)},
-  ],valid);
+  const open=(title:string,items:ContextItem[])=>contextMenu.open(trigger,paneMenuPoint(trigger),title,items,valid);
+  const home=()=>open('Conversation actions',[
+    {label:'Session details',run:()=>showConversationDetails()},
+    {label:'Display',run:()=>open('Display',[
+      {label:'Back',run:home},
+      {label:'Arrange view…',run:()=>openPaneMenu(paneId,undefined,key,'context',trigger)},
+      {label:'Close view',separatorBefore:true,run:()=>closeConversationTab(key)},
+    ])},
+    {label:'Commands',run:()=>actions.palette()},
+  ]);home();
 }
 function renderSessionEntry(hasTab: boolean): void {
   const firstUse = !hasConversation() && !threadPane && !sessionReadPane;
@@ -2140,7 +2157,7 @@ function applyPreparation(controller: ConversationController, prepared: import('
 function wireSettingPickers(controller: ConversationController): void {
   for(const [node,picker]of [[controller.elements.model,'modelPicker'],[controller.elements.thinking,'thinkingPicker']] as const)node?.addEventListener('click',()=> {
     if(node.disabled)return;node.setAttribute('aria-expanded','true');
-    const captured=settingSelection(controller);captured.closed=()=>node.setAttribute('aria-expanded','false');actions[picker](captured);
+    const captured=settingSelection(controller);captured.trigger=node;captured.closed=()=>node.setAttribute('aria-expanded','false');actions[picker](captured);
   });
 }
 function configurationReadback(target:Target,operation:OperationView):boolean {
@@ -2758,6 +2775,7 @@ function currentTranscriptTarget(captured: TranscriptTarget): boolean {
   return captured.workspaceId === state.workspace?.id && controllers.get(controllerKey(captured.workspaceId, captured.saved.target)) === captured.controller && captured.controller.saved?.targetKey === captured.saved.targetKey;
 }
 function updateRetainedOperation(result: OperationView, workspaceId: string | undefined): void {
+  if(inputOperation(result))inputEchoes.settle(result);
   for (const controller of controllers.values()) if (controller.workspaceId === workspaceId) controller.composer.updateOperation(result); collectControllers();
 }
 function showOperation(result: OperationView, workspaceId = state.workspace?.id): void {
@@ -2767,6 +2785,7 @@ function showOperation(result: OperationView, workspaceId = state.workspace?.id)
   if (result.kind === 'primary.handoff') actions.handoffResult(result);
   if(result.kind==='agent.configure'||result.kind==='primary.control')renderAllComposerSettings();
   if (inputOperation(result)) {
+    inputEchoes.settle(result);
     if (['accepted', 'rejected', 'uncertain'].includes(result.state)) for (const controller of controllers.values()) controller.composer.updateOperation(result);
   }
   for (const controller of controllers.values()) controller.composer.receipts(state.operations.values()); collectControllers();
@@ -3139,15 +3158,30 @@ function openSessionRowMenu(item:SessionRow,origin:HTMLElement,known?:SessionMet
     const mutation=sessionRowMutation(metadata,captured);
     contextMenu.open(origin,{x:box.right,y:box.bottom},`Actions for ${title}`,[
       {label:'Rename',enabled:metadata.canRename&&!pending,disabledReason:pending?'A session action is in progress.':metadata.reason,run:()=>renameSession(mutation,title,!!known,current)},
-      sessionArchiveItem(metadata,archived,pending,mutation,title,known,origin)],valid);
+      sessionArchiveItem(metadata,archived,pending,mutation,title,known,origin),...sessionArchivePrerequisite(metadata,item)],valid);
   }).catch(error=>{if(valid()&&contextMenu.owns(origin))contextMenu.open(origin,{x:box.right,y:box.bottom},`Actions for ${item.name}`,[{label:'Session state unavailable',enabled:false,disabledReason:errorMessage(error),run:()=>{}}],valid);});
+}
+function sessionArchivePrerequisite(metadata:SessionMetadata,item:SessionRow):ContextItem[] {
+  if(metadata.archived||metadata.canArchive)return [];
+  const target=metadata.target;
+  if(target.kind==='primary'){
+    const primary=state.primaries.get(target.key);if(!primary||primary.epoch!==target.epoch)return [];
+    if(primary.lifecycle==='ready'&&primary.activity==='idle'&&!primary.pendingDialogs.length&&!primary.pendingOperationIds.length)return [{label:'Close session',description:'Release this idle writer before Archive. The conversation and draft remain.',run:()=>actions.closeSession(primary)}];
+    return [{label:'Open conversation',description:'Inspect current work there. Close the idle session before Archive.',run:()=>{drawerOpen=false;void navigateReference({target}).catch(showError);}}];
+  }
+  return [{label:target.kind==='agent'?'Open session controls':'Writer details',run:()=>{
+    const body=modal.open('Archive prerequisite');body.append(element('p',undefined,target.kind==='agent'?'Archive requires the agent host to stop. Stop interrupts work; it does not close the host.':'Close the terminal writer before Archive. This interface does not stop an external writer.'));
+    if(target.kind==='agent')body.append(button('Open in Pi terminal',()=>showAgentCommand(target.identity)));
+    else body.append(details('Session',rawText(item.saved??target)));
+  }}];
 }
 function sessionRowMutation(metadata:SessionMetadata,captured:PrimaryView|undefined):SessionMetadata {
   return captured?.sessionId&&captured.sessionFile?{...metadata,target:{kind:'session',id:captured.sessionId,path:captured.sessionFile,project:captured.cwd}}:metadata;
 }
 function sessionArchiveItem(metadata:SessionMetadata,archived:boolean,pending:boolean,mutation:SessionMetadata,title:string,known:SessionMetadata|undefined,origin:HTMLElement):ContextItem {
   const action=archived?'restore':'archive',label=archived?'Restore':'Archive';
-  return {label,enabled:(archived?metadata.canRestore:metadata.canArchive)&&!pending,disabledReason:pending?'A session action is in progress.':metadata.reason??'Session state unavailable.',run:()=>archiveSessionRow(mutation,action,title,known,origin)};
+  const reason=metadata.reason==='Stop this session before archiving.'?'Close the writer before archiving. Stop only interrupts work.':metadata.reason;
+  return {label,enabled:(archived?metadata.canRestore:metadata.canArchive)&&!pending,description:metadata.reason,disabledReason:pending?'A session action is in progress.':reason??'Session state unavailable.',run:()=>archiveSessionRow(mutation,action,title,known,origin)};
 }
 function archiveSessionRow(mutation:SessionMetadata,action:'archive'|'restore',title:string,known:SessionMetadata|undefined,origin:HTMLElement):void {
   const rows=[...byId('recent-sessions').querySelectorAll<HTMLElement>('.sidebar-session-row')],index=rows.findIndex(row=>row.contains(origin));
@@ -3184,7 +3218,13 @@ function recentTabIdentities(tab:ConversationTab):string[]{
   const item=primary(),identities=[`primary:${item?.key}`];
   if(item?.sessionFile)identities.push(`path:${item.sessionFile}`);if(item?.sessionId)identities.push(`id:${item.sessionId}`);return identities;
 }
+function primaryTitleSession(item:PrimaryView|undefined):SavedSession|undefined {
+  const listed=sessionSidebar.savedSession(item),picked=picker.savedSession(item);
+  return listed?.titleState==='ready'?listed:picked??listed;
+}
 function loadedPromptTitle(target:Target):string|undefined {
+  const owner=state.workspace?controllers.get(controllerKey(state.workspace.id,target)):undefined;
+  if(!owner?.historyReady||!owner.historyComplete||hasEarlierHistory(owner))return;
   const conversation=state.conversations.get(targetIdentity(target));
   for(const entry of conversation?conversationBlocks(conversation):[]) {
     const message=(entry.messages??[]).find(message=>message.role==='user'&&message.communication?.state!=='ready'&&message.communication?.state!=='unavailable'&&message.parts.some(part=>part.type==='text'&&part.text.trim()));
@@ -3203,15 +3243,15 @@ function humanTabTitle(tab:ConversationTab):string {
 }
 function targetHumanTitle(target:Target):string {
   if(target.kind==='primary') {
-    const item=state.primaries.get(target.key),saved=item?picker.savedSession(item):undefined;
+    const item=state.primaries.get(target.key),saved=primaryTitleSession(item);
     return humanSessionTitle([item?.extension?.title,item?.sessionName,saved?sessionCaptionRecord(saved).name:undefined,loadedPromptTitle(target)],!!item&&!item.sessionFile);
   }
   const row=state.roster.get(target.identity)??identityNames.get(target.identity),frame=state.conversations.get(targetIdentity(target))?.frame;
   return humanSessionTitle([frame?.status.name,row?.name,row?.firstMessage,loadedPromptTitle(target)]);
 }
 function recentTabRow(tab:ConversationTab,pane:PaneLeaf,layout:ConversationLayout):SessionRow {
-  const key=tabKey(tab),name=humanTabTitle(tab),target=controllerTarget(tab);
-  return {key,identities:recentTabIdentities(tab),name,at:0,title:name,...(target?{target}:{}),...(tab.kind==='session'?{saved:sessionTabSaved(tab)}:{}),selected:pane.id===layout.focusedPane&&key===pane.active,activate:()=>activateConversationTab(pane.id,key)};
+  const key=tabKey(tab),name=humanTabTitle(tab),target=controllerTarget(tab),agent=tab.kind==='agent'?state.roster.get(tab.identity):undefined;
+  return {key,identities:recentTabIdentities(tab),name,at:agent?.modifiedAt??0,title:name,...(agent?{project:agent.cwd,activity:agent.state?`Last observed: ${agent.state.replaceAll('_',' ')}`:undefined}:{}),...(target?{target}:{}),...(tab.kind==='session'?{saved:sessionTabSaved(tab)}:{}),selected:pane.id===layout.focusedPane&&key===pane.active,activate:()=>activateConversationTab(pane.id,key)};
 }
 function recentConversationRows(): import('./sidebar-useful.ts').SessionRow[] {
   const layout=currentLayout();
@@ -3487,15 +3527,29 @@ export function openConversationActions(paneId: string = focusedPane, key?: stri
   const view = owner.transcript.node.dataset.view === 'grouped' ? 'grouped' : 'chronological';
   const choices: ContextItem[] = (['chronological', 'grouped'] as const).map(mode => ({label: mode === 'chronological' ? 'Conversation' : 'Grouped', description: mode === 'chronological' ? 'View: Conversation' : 'View: Grouped', checked: view === mode, run: () => owner.transcript.setView(mode)}));
   const entries = (tab.kind === 'agent' ? agentMenuItems(tab.identity) : conversationMenuItems(target)).filter(item => item.label !== 'Show conversation');
-  const groups: [string, ContextItem[]][] = [
-    ['View', [...choices, ...['Show thinking', 'Find text', 'Jump to message…', 'Expand loaded tools', 'Collapse loaded tools', 'Message box size'].flatMap(name => entries.filter(item => item.label === name))]],
-    ['Messages and tasks', ['Message', 'Refresh messages', 'Review message', 'Sent and received tasks', 'Saved drafts and messages', 'Message input'].flatMap(name => entries.filter(item => item.label === name))],
-    ['Session', ['New session', 'Replace current session', 'Close session', 'Continue a handover', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Open in Pi terminal'].flatMap(name => entries.filter(item => item.label === name))],
-    ['Details', ['Conversation details', 'Copy agent ID'].flatMap(name => entries.filter(item => item.label === name))],
-  ];
-  const grouped = groups.flatMap(([heading, items], group) => items.map((item, index) => index === 0 ? {...item, heading, separatorBefore: group > 0} : item));
-  const box = trigger.getBoundingClientRect(); contextMenu.open(trigger, {x: box.right, y: box.bottom}, 'Conversation actions', [...grouped, {label:'Layout',separatorBefore:true,run:()=>openPaneMenu(paneId,undefined,undefined,'context',trigger)}, {label: 'Commands', separatorBefore: true, run: () => actions.palette()}],
-    () => state.workspace?.id === workspace && samePaneLayout(currentLayout(), current) && sameTarget(controllerTarget(tab), target) && (target.kind === 'primary' || state.roster.has(target.identity) === rowAtOpen));
+  const valid=()=>state.workspace?.id===workspace&&samePaneLayout(currentLayout(),current)&&sameTarget(controllerTarget(tab),target)&&(target.kind==='primary'||state.roster.has(target.identity)===rowAtOpen);
+  const named=(names:string[])=>names.flatMap(name=>entries.filter(item=>item.label===name));
+  const box=trigger.getBoundingClientRect();
+  const open=(title:string,items:ContextItem[])=>contextMenu.open(trigger,{x:box.right,y:box.bottom},title,items,valid);
+  const page=(title:string,items:ContextItem[])=>open(title,[{label:'Back',run:home},...items]);
+  const home=()=>open('Conversation actions',[
+    {label:'Find',run:()=>page('Find',named(['Find text','Jump to message…']))},
+    {label:'Display',run:()=>page('Display',[...choices,...named(['Show thinking','Expand loaded tools','Collapse loaded tools','Message box size'])])},
+    {label:'Tasks',run:()=>page('Tasks',[
+      ...named(['Sent and received tasks','Message','Refresh messages','Review message']),
+      ...owner.composer.queueAvailable?[{label:'Queue message',description:target.kind==='agent'?'Queue a follow-up. During an agent wait, it joins the current work.':'Send this draft after the current work.',run:()=>{
+        if(!owner.composer.queueAvailable)return;owner.passive=false;renderController(owner);void owner.composer.queueMessage().catch(showError);
+      }}]:[],
+    ])},
+    {label:'Session details',run:()=>page('Session details',[
+      ...named(['Conversation details','Copy agent ID']),
+      {label:'Name and archive',run:()=>openSessionRowMenu({key:targetIdentity(target),name:targetHumanTitle(target),at:0,title:targetHumanTitle(target),target},trigger)},
+      ...named(['Replace current session','Close session','Continue a handover','Fork from message','Compact','Automatic retry','Automatic compaction','Continue in terminal','Open in Pi terminal']),
+      {label:'Layout',run:()=>openPaneMenu(paneId,undefined,undefined,'context',trigger)},
+    ])},
+    {label:'Commands',run:()=>actions.palette()},
+  ]);
+  home();
 }
 function beginComparison(pane:string,axis:'x'|'y'):void {
   const workspace=state.workspace?.id;if(!workspace)return;
@@ -3721,8 +3775,13 @@ function bind(): void {
   }).observe(byId('conversation-panes'));
   matchMedia('(pointer: coarse)').addEventListener('change', renderNavigation);
   for (const id of ['project-button']) byId(id).addEventListener('click', () => picker.openProject(byId(id)));
-  byId('tools-button').addEventListener('click', navigationTools);
-  byId('settings-button').addEventListener('click', () => showNavigationView('settings'));
+  for(const view of ['agents','threads','files'] as const)byId(`navigate-${view}`).addEventListener('click',()=>{showNavigationView(view);byId('navigation-back').focus({preventScroll:true});});
+  byId('navigate-notices').addEventListener('click',notices);byId('navigate-commands').addEventListener('click',()=>actions.palette());
+  byId('session-search').addEventListener('input',()=>sessionSidebar.filter(byId<HTMLInputElement>('session-search').value));
+  byId('settings-workspace-page').addEventListener('click',()=>showSettingsPage('workspace'));
+  byId('settings-help-page').addEventListener('click',()=>showSettingsPage('help'));
+  byId('settings-back').addEventListener('click',()=>showSettingsPage('home'));
+  byId('settings-button').addEventListener('click', () => {settingsPage='home';showNavigationView('settings');});
   byId('navigation-back').addEventListener('click', () => {showNavigationView('sessions'); byId('session-new').focus({preventScroll:true});});
   byId('conversation-actions').addEventListener('click', mainConversationActions);
   byId('commands-button').addEventListener('click', () => actions.palette());

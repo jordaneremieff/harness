@@ -72,7 +72,7 @@ function jpegSegment(bytes: Buffer, start: number): {marker: number; offset: num
 function jpeg(bytes: Buffer): {width: number; height: number} {
   if (bytes.length < 4 || bytes.readUInt16BE(0) !== 0xffd8 || bytes.readUInt16BE(bytes.length - 2) !== 0xffd9) invalid();
   let offset = 2;
-  while (offset + 4 <= bytes.length && offset < 65536) {
+  while (offset + 4 <= bytes.length) {
     const segment = jpegSegment(bytes, offset); const {marker, length} = segment; offset = segment.offset;
     if (marker === 0xda || marker === 0xd9) break;
     if ([0xc0, 0xc1, 0xc2].includes(marker)) {
@@ -81,7 +81,7 @@ function jpeg(bytes: Buffer): {width: number; height: number} {
     }
     offset += length;
   }
-  return invalid('JPEG dimensions are unavailable within the header limit.');
+  return invalid('JPEG dimensions are unavailable.');
 }
 export type ValidatedImage = Omit<DraftImage, 'name'>;
 /** Binary policy is shared with transcript decoding; callers run it in workers. */

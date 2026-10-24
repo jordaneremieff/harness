@@ -20,17 +20,18 @@ import { clampSelection, draftPresentation, editorSelectionKey, readEditorSelect
 import type { EditorSelection } from './draft-presentation.ts';
 export type { CommandOption } from './command-menu-state.ts';
 import { inputOperation, operationLabel } from './operation-label.ts';
+import { newerOperation } from './operation-state.ts';
 import { acknowledgeDraft, beginDraftSave, captureSubmission, createDraft, draftSaved, editDraft, receiveDraft, rejectDraftSave, resolveDraftConflict, restoreLocalDraft, settleSubmission } from './draft-state.ts';
 import type { DraftSave, DraftState, Submission } from './draft-state.ts';
 import { ApiError, draftImageUrl, errorMessage, operation, request, reserve } from './transport.ts';
 
 export type ComposerHooks = {recallItems?: () => readonly string[]; fileSearch?: (query: string, signal: AbortSignal) => Promise<FileSearchResult> | undefined; fileStage?: (path: string, signal: AbortSignal, current: () => boolean, stage: (files: readonly File[]) => boolean) => Promise<boolean>; workingFile?:(stage:(files:readonly File[])=>boolean)=>void; changed?:()=>void; draftStatusChanged?:()=>void; captured?: (submission:Submission)=>void; failed?: (operationId:string,uncertain:boolean)=>void; prepareInput?: () => boolean; imageState?: (workspace: string, state: TargetState) => void; imageInput?: (target: Target) => {allowed: boolean; reason?: string}; recovery?: () => void; layoutHeight?: () => number | undefined; timing?: (start: number, end: number) => void; submitted: (operation: OperationView) => void; unknownCommand: (text: string, sendLiteral: () => void) => boolean; enterSends?: () => boolean; commands?: (deliberate: boolean) => CommandInventory; moreCommands?: (target: Target) => Promise<void>; retained?: (workspace: string, target: Target, retained: boolean) => void};
 export type ComposerElements = {root: HTMLFormElement; editor: HTMLTextAreaElement; recipient: HTMLElement; receipt: HTMLElement;
-  receiptDetails: HTMLElement; queue: HTMLButtonElement; queueGuidance?: HTMLElement; send: HTMLButtonElement; save: HTMLElement; fileMenu?: HTMLElement; recallHint?: HTMLElement; handoverHint?: HTMLElement; recallLine?: HTMLElement; recallRestore?: HTMLButtonElement; meta?: HTMLElement; model?: HTMLButtonElement; thinking?: HTMLButtonElement; settings?: HTMLElement; utilities?: HTMLElement; commandMenu?: HTMLElement; overlay?: HTMLElement; attachments?: HTMLElement; attach?: HTMLButtonElement; sources?: HTMLButtonElement; picker?: HTMLInputElement; state?: HTMLElement; stateDetails?: HTMLElement; start?: HTMLButtonElement};
+  receiptDetails: HTMLElement; queue: HTMLButtonElement; queueGuidance?: HTMLElement; send: HTMLButtonElement; save: HTMLElement; fileMenu?: HTMLElement; recallHint?: HTMLElement; handoverHint?: HTMLElement; recallLine?: HTMLElement; recallRestore?: HTMLButtonElement; meta?: HTMLElement; model?: HTMLButtonElement; thinking?: HTMLButtonElement; settings?: HTMLElement; utilities?: HTMLElement; expand?: HTMLButtonElement; commandMenu?: HTMLElement; overlay?: HTMLElement; attachments?: HTMLElement; attach?: HTMLButtonElement; sources?: HTMLButtonElement; picker?: HTMLInputElement; state?: HTMLElement; stateDetails?: HTMLElement; start?: HTMLButtonElement};
 /** An agent-specific state below the writing surface, with at most one action in the Send position (`hideSend` removes the disabled Send when the state offers none) and optional exact details. `line` is the full assistive sentence; `label` is its visible summary. `withoutDraft` keeps the composer on screen, with the editor and add control disabled, while no draft is attached, so the state and its action stay reachable. */
 export type ComposerStateView = {line: string; label?: string; tone?: 'error' | 'warning'; hideSend?: boolean; withoutDraft?: boolean; action?: {label: string; title?: string; pending?: boolean; disabled?: boolean; recovery?: boolean; run: () => void}; blocksSend?: boolean; detail?: string};
 /** An accepted queued input is expected behaviour, so its notice uses the quiet tier, not the warning tier. */
-const queuedAdmissionNotice = (text: string): boolean => text === 'Message queued' || text === 'Steer queued';
+const queuedAdmissionNotice = (text: string): boolean => text === 'Message queued';
 const queueDescription = 'Queue this message for a later step. During a wait for agent results, the message joins the current work.';
 const actionParts = new WeakMap<HTMLElement, {label: HTMLElement; icon?: CardIcon; mark?: SVGSVGElement}>();
 function paintAction(node: HTMLButtonElement, icon: CardIcon, label: string, visible = false): void {
@@ -65,7 +66,6 @@ export function createComposerElements(instanceId: string): ComposerElements {
   stateLabel.setAttribute('aria-hidden', 'true'); stateLine.id = `${id}-state-line`; stateDetail.id = `${id}-state-detail`; stateDetail.type = 'button'; stateDetail.hidden = true; stateDetail.setAttribute('aria-expanded', 'false'); setText(stateDetail, 'Details'); state.append(stateLabel, stateLine, stateDetail);
   const stateDetails = element('pre', 'composer-state-details'); stateDetails.id = `${id}-state-details`; stateDetails.hidden = true; stateDetails.setAttribute('aria-label', 'Agent details'); stateDetail.setAttribute('aria-controls', stateDetails.id);
   const input = element('div', 'composer-input');
-  // Queue chooses followUp mode; the send key and Steer reach the next step.
   const queue = element('button', 'queue', 'Queue'); queue.id = `${id}-queue`; queue.type = 'button'; queue.hidden = true; queue.setAttribute('aria-label', 'Queue message');
   const queueGuidance = element('span', 'sr-only', queueDescription); queueGuidance.id = `${id}-queue-guidance`;
   const stop = element('button', 'stop'); stop.id = `${id}-stop`; stop.type = 'button'; stop.hidden = true; stop.title = 'Stop response'; paintAction(stop, 'stop', 'Stop');
@@ -77,8 +77,10 @@ export function createComposerElements(instanceId: string): ComposerElements {
   sources.setAttribute('aria-haspopup','menu'); sources.setAttribute('aria-expanded','false');
   const intake = element('span','composer-intake'); intake.append(attach,sources,picker);
   const start = element('button', 'send start'); start.id = `${id}-start`; start.type = 'button'; start.hidden = true; paintAction(start, 'play', 'Start', true);
-  const submit = element('div', 'composer-submit'); submit.append(stop, queue, start, send);
-  const bar = element('div', 'composer-bar'); bar.append(submit); const line = element('div', 'composer-line');
+  const stopSlot = element('span', 'composer-stop-slot'); stopSlot.append(stop);
+  const submit = element('div', 'composer-submit'); submit.append(stopSlot, queue, start, send);
+  const expand = element('button', 'composer-expand', 'Expand'); expand.type = 'button'; expand.setAttribute('aria-label', 'Expand message editor'); expand.title = 'Expand message editor'; expand.setAttribute('aria-expanded', 'false'); expand.setAttribute('aria-controls', editor.id);
+  const bar = element('div', 'composer-bar'); bar.append(expand, submit); const line = element('div', 'composer-line');
   const model = element('button', 'composer-model'), thinking = element('button', 'composer-thinking'), settingsText = element('span', 'composer-settings-text');
   model.id = `${id}-model`; thinking.id = `${id}-thinking`; settingsText.id = `${id}-settings-text`; model.type = thinking.type = 'button'; model.hidden = thinking.hidden = settingsText.hidden = true;
   const settings = element('div', 'composer-settings'); settings.id = `${id}-settings`; settings.setAttribute('role', 'group'); settings.setAttribute('aria-label', 'Model and thinking');
@@ -98,7 +100,7 @@ export function createComposerElements(instanceId: string): ComposerElements {
   input.append(commandMenu, fileMenu, recipient, surface, attachments, line, resize); root.append(receipt, utilities, input, meta, queueGuidance);
   const save = element('span', 'draft-state'); save.id = `${id}-save`;
   const receiptDetails = element('span', 'receipt-details'); receiptDetails.id = `${id}-receipt-details`;
-  return {root, editor, recipient, receipt, receiptDetails, queue, queueGuidance, send, save, fileMenu, recallHint, handoverHint, recallLine, recallRestore, meta, model, thinking, settings, utilities, commandMenu, overlay, attachments, attach, sources, picker, state, stateDetails, start};
+  return {root, editor, recipient, receipt, receiptDetails, queue, queueGuidance, send, save, fileMenu, recallHint, handoverHint, recallLine, recallRestore, meta, model, thinking, settings, utilities, expand, commandMenu, overlay, attachments, attach, sources, picker, state, stateDetails, start};
 }
 type Edit = {text: string; mode: string; images: DraftImage[]; edit: number};
 type InsertionCapture = {buffer: Buffer; edit: number; text: string; start: number; end: number; direction: 'forward' | 'backward' | 'none'};
@@ -112,17 +114,35 @@ export function validComposerReloadState(value:unknown):value is ComposerReloadS
   try{return !!data.server&&data.server.persisted===true&&Number.isSafeInteger(data.server.revision)&&Array.isArray(data.images)&&!!createDraft({...data.server,images:data.images});}catch{return false;}
 }
 type SendConsent = {buffer: Buffer; edit: number; revision: number; tuple: Edit; operations: Set<string>; used?: true; differentMessage?: true};
-type Pending = {submission: Submission; original?: UnconfirmedInput; uncertain: boolean; reason?: string; cleanup?: DraftView; settling?: Promise<void>};
+type Pending = {submission: Submission; original?: UnconfirmedInput; uncertain: boolean; reason?: string; cleanup?: DraftView; settling?: Promise<void>; result?: OperationView; checking?: boolean};
+const definiteInputResult = (result?: OperationView): boolean => result?.state === 'accepted' || result?.state === 'rejected';
 type Buffer = {selection?: EditorSelection; workspace: string; state: TargetState; data: DraftState; saving?: Promise<DraftView>; submitting: boolean;
-  attachments?: ComposerAttachments; inclusions?: Map<number, InsertionCapture>; imageErrors?: Set<string>; imageReview?: boolean; review: boolean; insertionCopy?: string; saveError?: string; outstandingSince?: number; slowTimer?: ReturnType<typeof setTimeout>; localCopy?: string; reservation?: {promise: Promise<string>; at: number}; pending: Map<string, Pending>; resolved: Set<string>; notice: string; noticeDetails?: string; lastOperation?: OperationView; retained?: boolean; commandDismissed?: string};
+  attachments?: ComposerAttachments; inclusions?: Map<number, InsertionCapture>; imageErrors?: Set<string>; imageReview?: boolean; review: boolean; insertionCopy?: string; saveError?: string; outstandingSince?: number; slowTimer?: ReturnType<typeof setTimeout>; localCopy?: string; reservation?: {promise: Promise<string>; at: number}; pending: Map<string, Pending>; resolved: Set<string>; notice: string; noticeDetails?: string; lastOperation?: OperationView; retained?: boolean; commandDismissed?: string; retainedCopyNodes?: Map<string, {node: HTMLDetailsElement; signature: string}>};
 const encoded = encodeURIComponent;
 const sameTarget = (a: Target, b?: Target): boolean => JSON.stringify(a) === JSON.stringify(b);
+
+type ComposerHeightGeometry = {line: number; extra: number; minimum: number; available: number; chrome: number; short: boolean; mobile: boolean; expanded: boolean; manual?: number};
+/** Manual height is a resting minimum; mobile and expanded layouts apply their current visible bounds. */
+function composerHeightBounds(geometry: ComposerHeightGeometry): {cap: number; floor: number; limit?: number} {
+  const {line, extra, minimum, available, chrome, short, mobile, expanded, manual} = geometry;
+  const baseline = Math.max(line + extra, minimum);
+  const limit = mobile ? Math.min(available, Math.max(baseline + 140, available * 0.6)) : undefined;
+  if (expanded) {const cap = Math.max(baseline, available - chrome - 24); return {cap, floor: cap, limit: Math.min(available, Math.max(baseline + 140, available - 24))};}
+  const autoCap = Math.min(10 * line + extra, available * (short ? 0.25 : 0.3));
+  const mobileCap = Math.min(autoCap, 6 * line + extra, Math.max(baseline, (limit ?? available) - chrome));
+  const preferred = mobile ? undefined : manual;
+  const desktopCap = preferred === undefined ? autoCap : Math.max(autoCap, Math.min(preferred, available * 0.6));
+  const cap = Math.max(baseline, mobile ? mobileCap : desktopCap);
+  const floor = preferred === undefined ? baseline : Math.min(cap, Math.max(baseline, preferred));
+  return {cap, floor, limit};
+}
 
 export class Composer {
   readonly editor: HTMLTextAreaElement;
   private buffers = new Map<string, Buffer>();
   private current?: Buffer;
   private connected = false;
+  private hadConnection = false;
   private gated = false;
   private get admissionBlocked(): boolean { return !this.connected || this.gated; }
   private ready = false;
@@ -134,6 +154,7 @@ export class Composer {
   private admittedSaves = new WeakMap<DraftSave,Submission>();
   private sizePending = false;
   private manualHeight?: number;
+  private expanded = false;
   private elements: ComposerElements;
   private cleanup: (() => void)[] = [];
   private destroyed = false;
@@ -164,6 +185,10 @@ export class Composer {
       });
     });
     this.listen(this.editor, 'keydown', event => this.key(event));
+    if (elements.expand) {
+      this.listen(elements.expand, 'mousedown', event => event.preventDefault());
+      this.listen(elements.expand, 'click', () => this.setExpanded(!this.expanded));
+    }
     this.bindAttachments();
     for (const event of ['select', 'keyup', 'blur', 'scroll'] as const) this.listen(this.editor, event, () => this.rememberSelection());
     this.listen(this.editor, 'focus', () => this.restoreSelection(this.current));
@@ -193,7 +218,7 @@ export class Composer {
     this.listen(this.editor, 'pointerup', () => this.rememberSelection());
     this.listen(elements.root, 'submit', event => { event.preventDefault(); void this.send(); });
     this.editor.placeholder = 'Message';
-    this.listen(elements.queue, 'click', () => { if (this.current && !this.textLimit) void this.send(false, undefined, 'followUp'); });
+    this.listen(elements.queue, 'click', () => {void this.queueMessage();});
     if (elements.recallRestore) {
       this.listen(elements.recallRestore, 'mousedown', event => event.preventDefault());
       this.listen(elements.recallRestore, 'click', () => {
@@ -219,6 +244,21 @@ export class Composer {
     this.recipientGuidance = guidance; this.renderControls();
   }
   placement(_sidebar: boolean): void { this.resize(); this.renderControls(); }
+  get queueAvailable(): boolean {return this.working && !this.elements.send.disabled && !!this.current && !this.commandDraft(this.current);}
+  async queueMessage(): Promise<void> {if (this.queueAvailable) await this.send(false, undefined, 'followUp');}
+  /** Changes only geometry; the same native editor keeps its value, range and undo stack. */
+  setExpanded(expanded: boolean): void {
+    if (this.destroyed || this.expanded === expanded) return;
+    this.expanded = expanded; this.elements.root.dataset.expanded = String(expanded);
+    const control = this.elements.expand;
+    if (control) {
+      setText(control, expanded ? 'Return' : 'Expand');
+      control.setAttribute('aria-expanded', String(expanded));
+      control.setAttribute('aria-label', expanded ? 'Return to compact message editor' : 'Expand message editor');
+      control.title = expanded ? 'Return to compact message editor' : 'Expand message editor';
+    }
+    this.resize();
+  }
   commandsChanged(): void { this.commandMenu?.update(); this.render(); }
   setState(view?: ComposerStateView): void {
     if (this.destroyed) return;
@@ -231,7 +271,7 @@ export class Composer {
   private combinedState(view?:ComposerStateView):ComposerStateView|undefined {
     const settings=this.settingsState;
     if(!settings&&!view&&this.working&&!this.gated){
-      const line=this.current&&this.commandDraft(this.current)?'Working':'Steer at the next step; Queue adds a follow-up.';
+      const line=this.current&&this.commandDraft(this.current)?'Working':'Send a message while this conversation works. The agent reads it at its next step.';
       return {line};
     }
     if(!settings)return view;if(!view)return settings;
@@ -239,7 +279,7 @@ export class Composer {
   }
   private paintState(view?: ComposerStateView): void {
     view=this.combinedState(view);
-    const {state, start} = this.elements; if (!state || !start) return;
+    const {state, start} = this.elements; if (!state || !start) {this.render(); return;}
     start.hidden = !view?.action; start.disabled = !!view?.action?.disabled; start.setAttribute('aria-busy', String(!!view?.action?.pending));
     paintAction(start, view?.action?.pending ? 'working' : view?.action?.recovery ? 'restart' : 'play', view?.action?.label ?? 'Start', true);
     start.setAttribute('aria-label', view?.action?.label ?? 'Start');
@@ -289,7 +329,7 @@ export class Composer {
     }
     const switched = this.current !== buffer; this.current = buffer;
     if (switched || !sameTarget(state.target, previousTarget)) { this.commandMenu?.reset(); this.fileMenu?.reset(); this.mentionAbort?.abort(); this.recall = undefined; this.renderRecall(); }
-    this.hydrate(buffer, state);
+    this.hydrate(buffer, state); this.reconcileReceipts(buffer);
     if (switched) { this.editor.value = buffer.data.text; this.editor.scrollTop = 0; this.editor.scrollLeft = 0; this.restoreSelection(buffer); }
     this.paint(buffer); this.prepare(buffer);
     this.receipt(buffer); this.flush(buffer);
@@ -301,7 +341,7 @@ export class Composer {
     if (this.current) this.receipt(this.current);
   }
   availability(connected: boolean, ready: boolean, busy: boolean, gated = false, deliverySupported = ready): void {
-    this.connected = connected; this.ready = ready; this.busy = busy; this.gated = gated; this.deliverySupported = deliverySupported;
+    this.setConnection(connected); this.ready = ready; this.busy = busy; this.gated = gated; this.deliverySupported = deliverySupported;
     if (!connected) for (const buffer of this.buffers.values()) buffer.attachments?.suspend();
     const buffer = this.current;
     if (buffer) {
@@ -310,7 +350,29 @@ export class Composer {
     }
     this.resize(); this.render(); if (buffer) {this.paintAttachments(buffer); this.receipt(buffer);} this.commandMenu?.update(); this.fileMenu?.update(); if (!this.admissionBlocked) for (const item of this.buffers.values()) this.flush(item);
   }
-  receipts(operations: Iterable<OperationView>): void { this.operations = [...operations]; this.receipt(this.current); this.render(); }
+  private setConnection(connected: boolean): void {
+    const reconnected = connected && !this.connected && this.hadConnection;
+    this.connected = connected; if (connected) this.hadConnection = true;
+    if (reconnected) this.recheckUncertain();
+  }
+  private recheckUncertain(): void {
+    for (const buffer of this.buffers.values()) for (const pending of buffer.pending.values()) {
+      if (pending.uncertain && !definiteInputResult(pending.result)) void this.check(buffer, pending);
+    }
+  }
+  receipts(operations: Iterable<OperationView>): void {
+    const previous = new Map(this.operations.map(result => [result.id, result]));
+    this.operations = [...operations].map(result => newerOperation(previous.get(result.id), result));
+    for (const buffer of this.buffers.values()) this.reconcileReceipts(buffer);
+    this.receipt(this.current); this.render();
+  }
+  private reconcileReceipts(buffer: Buffer): void {
+    for (const result of this.operations) {
+      if (!definiteInputResult(result)) continue;
+      const pending = buffer.pending.get(result.id);
+      if (pending && this.matchesInput(pending, result)) void this.finish(buffer, pending, result);
+    }
+  }
   get serverDraftRevision(): number | undefined { return this.current?.data.server.revision; }
   /** All retained buffers count, including conversations outside the focused pane. */
   get releaseReloadState(): 'ready' | 'pending' | 'failed' | 'blocked' {
@@ -504,13 +566,13 @@ export class Composer {
     const origin=this.elements.sources, captured=this.insertionCapture(); if (!origin) return;
     const current=()=>!this.destroyed && this.current===captured?.buffer;
     const box=(origin.closest('.composer-input') ?? origin).getBoundingClientRect(), offer=this.commandsOffer(), unloaded='Draft is not loaded. Open this conversation first.';
-    const earlier=this.hooks.recallItems?.().length ? this.editor.value === '' ? '' : 'Clear the draft to browse earlier messages.' : 'No earlier messages are loaded.';
+    const earlier=this.hooks.recallItems?.().length ? this.editor.value === '' ? '' : 'Clear the draft to reuse an earlier message.' : 'No earlier messages are loaded.';
     contextMenu.open(origin,{x:box.left,y:box.top-8},'Add to message',[
       {label:'Upload files or images',icon:'upload',run:()=>this.elements.attach?.click()},
       {label:'Reference a file',icon:'file',hint:'@',enabled:!!captured && !!this.hooks.workingFile,disabledReason:captured?'Working-folder files are unavailable.':unloaded,
         run:()=>{if(captured)this.hooks.workingFile?.(files=>current() && this.addFiles(files,captured));}},
       {label:'Run a command',icon:'commands',hint:'/',enabled:!!captured && offer.enabled,disabledReason:captured?offer.reason:unloaded,run:()=>{if(current())this.openCommands();}},
-      {label:'Earlier messages',icon:'history',separatorBefore:true,enabled:!!captured && !earlier && !this.editor.disabled,disabledReason:captured?earlier||'Messages are read only.':unloaded,run:()=>{if(current())this.browseEarlier();}},
+      {label:'Reuse an earlier message',icon:'history',separatorBefore:true,enabled:!!captured && !earlier && !this.editor.disabled,disabledReason:captured?earlier||'Messages are read only.':unloaded,run:()=>{if(current())this.browseEarlier();}},
     ],current,{compact:true,above:true,presentation:'composer-intake'});
   }
   private commandsOffer(): {enabled: boolean; reason: string} {
@@ -619,7 +681,7 @@ export class Composer {
     summary.setAttribute('aria-label', `${status ? `${status}. ` : ''}Attachment details for ${name}`);
     if (status) summary.append(element('span', warning ? 'warning' : 'secondary', status));
     summary.append(element('span', 'attachment-details-label', 'Details'));
-    details.append(summary, element('p', undefined, explanation));
+    details.append(summary, element('p', undefined, explanation)); details.addEventListener('toggle', () => this.resize());
     info.append(element('span', 'attachment-name', name), element('span', 'attachment-meta', `${type} · ${size}`), details); return info;
   }
   private attachmentRow(buffer: Buffer, image: DraftImage, refusal: string): HTMLElement {
@@ -647,7 +709,7 @@ export class Composer {
     return row;
   }
   private preparationInfo(item: AttachmentItem): HTMLElement {
-    const status = item.state === 'failed' ? 'Unavailable' : item.state === 'including' ? 'Including text' : item.state === 'text' ? item.prepared === undefined ? 'Text not included' : 'Ready to insert' : 'Preparing';
+    const status = item.state === 'failed' ? 'Not attached' : item.state === 'including' ? 'Including text' : item.state === 'text' ? item.prepared === undefined ? 'Text not included' : 'Ready to insert' : 'Preparing';
     const explanation = item.error ?? (item.state === 'text' ? 'File text is not included. Use the explicit text action to insert it into this draft.' : 'Local file preparation is pending. This file is not included in a sent message until preparation completes.');
     return this.attachmentInfo(item.name, item.file?.type || 'File', item.file?.size, status, explanation, item.state === 'failed');
   }
@@ -659,8 +721,8 @@ export class Composer {
       if (item.prepared !== undefined) action('Copy text', 'Copy prepared text from', () => {void copy(item.prepared ?? '', row);});
     }
     if (item.state === 'failed' && item.file) action('Retry', 'Retry', () => buffer.attachments?.retry(item));
-    row.append(cardAction('close', `Remove ${item.name}`, () => {buffer.inclusions?.delete(item.id); buffer.attachments?.remove(item); announce(`Removed ${item.name}`);}));
     if (actions.children.length) row.append(actions);
+    row.append(cardAction('close', `Remove ${item.name}`, () => {buffer.inclusions?.delete(item.id); buffer.attachments?.remove(item); announce(`Removed ${item.name}`);}));
     return row;
   }
   private async includeFile(buffer: Buffer, item: AttachmentItem): Promise<void> {
@@ -814,14 +876,12 @@ export class Composer {
       const scrollTop = this.editor.scrollTop, scrollLeft = this.editor.scrollLeft;
       const style = getComputedStyle(this.editor); const line = Number.parseFloat(style.lineHeight);
       const extra = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom) + Number.parseFloat(style.borderTopWidth) + Number.parseFloat(style.borderBottomWidth);
-      const short = matchMedia('(max-height: 599px)').matches;
-      const baseline = line + extra;
       const available = this.hooks.layoutHeight?.() ?? this.elements.root.parentElement?.clientHeight ?? this.elements.root.clientHeight;
-      const autoCap = Math.min(10 * line + extra, available * (short ? 0.25 : 0.3));
-      // A dragged height is the resting minimum: the text still grows the box, up to the automatic cap or the dragged height when that is larger.
-      const preferred = this.manualHeight;
-      const cap = Math.max(baseline, preferred === undefined ? autoCap : Math.max(autoCap, Math.min(preferred, available * 0.6)));
-      const floor = preferred === undefined ? baseline : Math.min(cap, Math.max(baseline, preferred));
+      const {cap, floor, limit} = composerHeightBounds({line, extra, minimum: Number.parseFloat(style.minHeight) || 0, available,
+        chrome: Math.max(0, this.elements.root.offsetHeight - this.editor.offsetHeight),
+        short: matchMedia('(max-height: 599px)').matches, mobile: matchMedia('(pointer:coarse) and (max-width:999px)').matches,
+        expanded: this.expanded, manual: this.manualHeight});
+      this.elements.root.style.maxHeight = limit === undefined ? '' : `${limit}px`;
       this.editor.style.maxHeight = `${cap}px`;
       this.editor.style.height = '0px';
       this.editor.style.height = `${Math.min(cap, Math.max(floor, this.editor.scrollHeight + Number.parseFloat(style.borderTopWidth) + Number.parseFloat(style.borderBottomWidth)))}px`;
@@ -834,6 +894,7 @@ export class Composer {
     const buffer = this.current;
     this.elements.root.hidden = !buffer && !this.showsWithoutDraft; this.editor.disabled = !buffer;
     if (this.elements.sources) this.elements.sources.disabled = !buffer && this.showsWithoutDraft;
+    if (this.elements.expand) this.elements.expand.disabled = !buffer;
     this.renderControls(); this.renderHandover();
     this.elements.send.disabled = !buffer || !this.ready || this.sendSuppressed || buffer.submitting || this.textLimit || this.pendingBlocks(buffer) || !!this.commandHold(buffer) || buffer.data.server.recoverySendGuard?.state === 'blocked' || buffer.data.server.recoverySendGuard?.state === 'unavailable' || !draftHasContent({text: buffer.data.text.trim(), images: buffer.data.images});
     this.elements.queue.disabled = this.elements.send.disabled;
@@ -854,11 +915,11 @@ export class Composer {
     const {send, queue, root} = this.elements, buffer = this.current;
     const working = this.working;
     const content = !!buffer && draftHasContent({text: buffer.data.text.trim(), images: buffer.data.images});
-    // Empty working drafts keep the delivery choices visible without permitting empty input.
+    // Work state never moves Stop into the Send position.
     if (working) root.dataset.working = content ? 'draft' : 'empty'; else delete root.dataset.working;
-    send.hidden = !!this.stateView?.action || !!this.stateView?.hideSend || (!working && this.ready && !content);
+    send.hidden = !!this.stateView?.action || !!this.stateView?.hideSend;
     const reason = this.sendGuidance(), run = buffer && this.commandDraft(buffer);
-    queue.hidden = !working || !!run || send.hidden;
+    queue.hidden = true;
     this.describeSend(reason, run ? run.name : undefined, working);
     queue.setAttribute('aria-description', queueDescription);
     queue.title = queueDescription;
@@ -878,17 +939,17 @@ export class Composer {
     if (queueDescriptions) this.elements.queue.setAttribute('aria-describedby', queueDescriptions);
     else this.elements.queue.removeAttribute('aria-describedby');
   }
-  /** The action names what the key will do: run a host command, steer running work, or send. */
+  /** Busy messages keep the normal Send action; the captured delivery mode remains separate. */
   private describeSend(reason: string, command: string | undefined, working: boolean): void {
-    const send = this.elements.send, steer = working && command === undefined;
-    this.paintSendAction(command, steer);
-    send.classList.toggle('send-named', steer || command !== undefined);
-    send.setAttribute('aria-label', command !== undefined ? `Run command /${command}` : steer ? 'Steer message' : 'Send message');
+    const send = this.elements.send;
+    this.paintSendAction(command);
+    send.classList.toggle('send-named', command !== undefined);
+    send.setAttribute('aria-label', command !== undefined ? `Run command /${command}` : 'Send message');
     send.setAttribute('aria-description', reason);
-    send.title = reason || (command !== undefined ? `Run /${command} on this agent. It sends no message` : steer ? 'Steer: send now; the agent reads it at its next step' : 'Send');
+    send.title = reason || (command !== undefined ? `Run /${command} on this agent. It sends no message` : working ? 'Send now. The agent reads your message at its next step.' : 'Send');
   }
-  private paintSendAction(command: string | undefined, steer: boolean): void {
-    paintAction(this.elements.send, command !== undefined ? 'commands' : steer ? 'steer' : 'send', command !== undefined ? 'Run command' : steer ? 'Steer' : 'Send', steer || command !== undefined);
+  private paintSendAction(command: string | undefined): void {
+    paintAction(this.elements.send, command !== undefined ? 'commands' : 'send', command !== undefined ? 'Run command' : 'Send', command !== undefined);
   }
   /** An agent draft that is one of the live host's commands runs that command instead of sending a message. */
   private commandDraft(buffer: Buffer): {name: string; args: string} | undefined {
@@ -916,8 +977,11 @@ export class Composer {
     return buffer.state.target.kind === 'primary' ? 'prompt' : 'followUp';
   }
   private records(buffer?: Buffer): OperationView[] {
-    const operations = this.operations.length ? this.operations : buffer?.lastOperation ? [buffer.lastOperation] : [];
-    return targetReceipts(operations, buffer?.state.target);
+    const operations = new Map(this.operations.map(result => [result.id, result]));
+    if (buffer?.lastOperation) {
+      const last = buffer.lastOperation; operations.set(last.id, newerOperation(last, operations.get(last.id) ?? last));
+    }
+    return targetReceipts([...operations.values()], buffer?.state.target);
   }
   private saveSummary(buffer?: Buffer): string {
     if (!buffer) return '';
@@ -1023,13 +1087,15 @@ export class Composer {
     this.commandReceipt(buffer, records, slot);
     this.receiptNotices(buffer, records, slot);
     if (buffer.review) {
-      slot.append(element('p', 'warning', 'This draft changed in another tab.'), element('pre', undefined, buffer.localCopy ?? buffer.data.text), attachmentSummary(buffer.workspace, buffer.state.targetKey, buffer.data.images), button('Review', () => { void this.review(buffer); }));
+      slot.append(element('p', 'warning', 'Another saved draft is different. Your copy stays here.'), this.details(buffer.localCopy ?? buffer.data.text, 'Your draft'), attachmentSummary(buffer.workspace, buffer.state.targetKey, buffer.data.images), button('Review', () => { void this.review(buffer); }));
       if (buffer.data.conflict) slot.append(element('p', undefined, 'Draft on the Mac'), element('pre', undefined, buffer.data.conflict.text), attachmentSummary(buffer.workspace, buffer.state.targetKey, buffer.data.conflict.images), button('Use Mac draft', () => this.choose(buffer, 'server')), button('Keep my copy', () => this.choose(buffer, 'local')));
     }
     this.recoveryGuard(buffer, slot);
     for (const pending of buffer.pending.values()) if (pending.uncertain) this.recovery(buffer, pending, slot);
-    for (const retained of buffer.state.retainedInputs) this.retainedCopy(buffer, retained, slot);
+    // Queued image copies stay in saved state and the recovery views; the inline receipt slot does not repeat them.
+    for (const retained of buffer.state.retainedInputs) if (retained.admission !== 'queued-image') this.retainedCopy(buffer, retained, slot);
     if (buffer.state.recoveryPreviewTruncated && this.hooks.recovery) slot.append(button('Review all saved copies', this.hooks.recovery));
+    this.resize();
   }
   private recoveryGuard(buffer: Buffer, slot: HTMLElement): void {
     const guard = buffer.data.server.recoverySendGuard;
@@ -1044,6 +1110,8 @@ export class Composer {
     slot.append(ask);
   }
   private retainedCopy(buffer: Buffer, item: RecoveryInput, slot: HTMLElement): void {
+    const signature = JSON.stringify(item), previous = buffer.retainedCopyNodes?.get(item.operationId);
+    if (previous?.signature === signature) {slot.append(previous.node); return;}
     const label = recoveryLabel(item), row = element('section', 'send-recovery');
     row.append(element('p', 'warning', label.title), element('p', 'secondary', label.warning), this.details(item.text, 'Review message'), attachmentSummary(buffer.workspace, buffer.state.targetKey, item.images));
     if (item.textTruncated) row.append(element('p', 'secondary', 'The preview is shortened. Copy and Restore use the complete saved copy.'));
@@ -1051,7 +1119,11 @@ export class Composer {
       const origin = document.activeElement;
       void exactInput(buffer.workspace, item).then(exact => this.restore(buffer, exact, origin)).catch(error => this.recoveryError(buffer, error));
     }));
-    slot.append(row);
+    const disclosure = previous?.node ?? element('details', 'retained-input-copy');
+    if (!previous) disclosure.addEventListener('toggle', () => this.resize());
+    const summary = disclosure.querySelector('summary') ?? element('summary'); setText(summary, label.title);
+    disclosure.replaceChildren(summary, row); buffer.retainedCopyNodes ??= new Map();
+    buffer.retainedCopyNodes.set(item.operationId, {node: disclosure, signature}); slot.append(disclosure);
   }
   private receiptNotices(buffer: Buffer, records: OperationView[], slot: HTMLElement): void {
     const ordinary = buffer.lastOperation?.state === 'accepted' && buffer.notice === 'Message sent';
@@ -1072,8 +1144,7 @@ export class Composer {
   private inputReceiptNotice(buffer: Buffer, record: OperationView | undefined, slot: HTMLElement): void {
     if (!record || buffer.pending.has(record.id)) return;
     const queued = record.state === 'accepted' && record.receipt?.kind === 'rpc' && record.receipt.disposition === 'queued';
-    const mode = buffer.state.retainedInputs.find(item => item.operationId === record.id)?.mode;
-    const label = queued ? (mode === 'steer' ? 'Steer queued' : 'Message queued') : ['uncertain', 'rejected'].includes(record.state) ? operationLabel(record) : '';
+    const label = queued ? 'Message queued' : ['uncertain', 'rejected'].includes(record.state) ? operationLabel(record) : '';
     if (label && buffer.notice !== label && !(queued && queuedAdmissionNotice(buffer.notice))) slot.append(element('p', queued ? 'secondary' : 'warning', label));
   }
   private receiptDetails(records: OperationView[]): void {
@@ -1127,11 +1198,11 @@ export class Composer {
   private reasonInPanel(buffer: Buffer): boolean { return [...buffer.pending.values()].some(item => item.uncertain && item.reason !== undefined && item.reason === buffer.noticeDetails); }
   private details(text: string, title = 'Details'): HTMLDetailsElement {
     const node = element('details', 'receipt-disclosure');
-    node.append(element('summary', undefined, title), element('pre', undefined, text)); return node;
+    node.append(element('summary', undefined, title), element('pre', undefined, text)); node.addEventListener('toggle', () => this.resize()); return node;
   }
   private recovery(buffer: Buffer, pending: Pending, slot: HTMLElement): void {
     const captured = pending.submission; const row = element('div', 'send-recovery');
-    row.append(element('p', 'warning', 'Send not confirmed. Check before you send again.'),
+    row.append(element('p', 'warning', 'Delivery not confirmed. Check delivery before another send.'),
       this.details(`${pending.reason ? `${pending.reason}\n\n` : ''}${JSON.stringify(captured.target)}\n${captured.operationId}\n${captured.mode} · revision ${captured.draftRevision}`), this.details(captured.text, 'Review message'), attachmentSummary(buffer.workspace, buffer.state.targetKey, captured.images));
     if (pending.original?.textTruncated) row.append(element('p', 'secondary', 'Preview shortened. Copy or restore the full message.'));
     row.append(cardAction('restart', 'Check delivery', () => { void this.check(buffer, pending); }), cardAction('copy', 'Copy original text only', () => { void this.exact(buffer, pending).then(item => copy(item.text, row)).catch(error => this.recoveryError(buffer, error)); }), button('Restore to draft', () => {
@@ -1186,11 +1257,15 @@ export class Composer {
     } catch (error) {this.recoveryError(buffer, error);}
   }
   private async check(buffer: Buffer, pending: Pending): Promise<void> {
+    if (pending.checking) return; pending.checking = true;
     try {
       const result = await request<OperationView>(`/api/operations/${encoded(pending.submission.operationId)}/reconcile`, 'POST', {});
       if (!this.updateOperation(result)) throw new Error('The receipt does not match the original operation.');
       this.hooks.submitted(result);
-    } catch (error) { buffer.noticeDetails = `${errorMessage(error)} The original admission remains unknown.`; pending.reason = buffer.noticeDetails; buffer.notice = ''; this.receipt(buffer); }
+    } catch (error) {
+      if (definiteInputResult(pending.result)) return;
+      buffer.noticeDetails = `${errorMessage(error)} The original delivery is not confirmed.`; pending.reason = buffer.noticeDetails; buffer.notice = ''; this.receipt(buffer);
+    } finally {pending.checking = false;}
   }
   private hydrate(buffer: Buffer, state: TargetState): void {
     for (const item of state.unconfirmed) {
@@ -1201,19 +1276,22 @@ export class Composer {
       buffer.data = {...buffer.data, submissions: new Map(buffer.data.submissions).set(item.operationId, submission)};
     }
   }
+  private matchesInput(pending: Pending, result: OperationView): boolean {
+    return pending.submission.operationId === result.id && result.kind === `${pending.submission.target.kind}.input` && sameTarget(pending.submission.target, result.target);
+  }
   updateOperation(result: OperationView): boolean {
     for (const buffer of this.buffers.values()) {
       const pending = buffer.pending.get(result.id);
-      if (!pending || !sameTarget(pending.submission.target, result.target)) continue;
+      if (!pending || !this.matchesInput(pending, result)) continue;
       void this.finish(buffer, pending, result); return true;
     }
     return false;
   }
-  private finish(buffer: Buffer, pending: Pending, result: OperationView): Promise<void> {
+  private finish(buffer: Buffer, pending: Pending, incoming: OperationView): Promise<void> {
+    const result = newerOperation(pending.result, incoming); pending.result = result; buffer.lastOperation = result;
     if (pending.settling) return pending.settling;
-    buffer.lastOperation = result;
     if (result.state !== 'accepted' && result.state !== 'rejected') {
-      pending.uncertain = true; buffer.notice = ''; this.receipt(buffer); return Promise.resolve();
+      if (result.state === 'uncertain') pending.uncertain = true; this.receipt(buffer); return Promise.resolve();
     }
     const outcome = result.state;
     pending.settling = Promise.resolve().then(async () => {
@@ -1223,7 +1301,7 @@ export class Composer {
       const save=buffer.data.inFlight;
       if(outcome==='accepted'&&clearAccepted&&save?.edit===pending.submission.edit&&sameDraftTuple(save,pending.submission))this.admittedSaves.set(save,pending.submission);
       buffer.data = settleSubmission(buffer.data, pending.submission, outcome, undefined, clearAccepted); this.rebaseSelection(buffer, previous, outcome === 'accepted' && clearAccepted);
-      buffer.notice = this.admissionNotice(result, pending.submission.images.length > 0, pending.submission.mode); buffer.noticeDetails = undefined;
+      buffer.notice = this.admissionNotice(result, pending.submission.images.length > 0); buffer.noticeDetails = undefined;
       this.paint(buffer); this.receipt(buffer); announce(buffer.notice);
       if (outcome === 'accepted' || result.retainedInput) await this.refreshAccepted(buffer, pending);
       buffer.pending.delete(result.id); buffer.resolved.add(result.id);
@@ -1242,10 +1320,10 @@ export class Composer {
       } else this.receive(buffer, draft);
     } catch (error) { this.failureNotice(buffer, 'Draft could not be refreshed.', error); }
   }
-  private admissionNotice(result: OperationView, images = false, mode = ''): string {
+  private admissionNotice(result: OperationView, images = false): string {
     if (result.state !== 'accepted') return 'Message not sent';
     if (images && result.receipt?.kind === 'rpc' && result.receipt.disposition === 'handled') return 'Input handled; images not confirmed';
-    if (result.receipt?.kind === 'rpc' && result.receipt.disposition === 'queued') return mode === 'steer' ? 'Steer queued' : 'Message queued';
+    if (result.receipt?.kind === 'rpc' && result.receipt.disposition === 'queued') return 'Message queued';
     return 'Message sent';
   }
   private pendingBlocks(buffer: Buffer): boolean {
@@ -1288,7 +1366,7 @@ export class Composer {
       const result = await this.dispatch(pending.submission, literal);
       if (result.id !== pending.submission.operationId || !sameTarget(pending.submission.target, result.target)) throw new Error('The response did not match the submitted operation.');
       await this.finish(buffer, pending, result); this.hooks.submitted(result);
-    } catch (error) { this.sendError(buffer, pending, error); }
+    } catch (error) { this.sendError(buffer, pending, error); if (pending?.settling) await pending.settling; }
     finally { buffer.submitting = false; this.paint(buffer); this.receipt(buffer); this.prepare(buffer); this.flush(buffer); this.returnFocus(buffer, focusOrigin); }
   }
   private sendRefused(buffer: Buffer, consent?: SendConsent): boolean {
@@ -1338,9 +1416,9 @@ export class Composer {
   }
   private async capture(buffer: Buffer, snapshot: Edit, reservation?: Buffer['reservation'], consent?: SendConsent): Promise<Pending> {
     buffer.reservation = undefined;
-    if (reservation && Date.now() - reservation.at >= LIMITS.reservationMs) throw new Error('Input reservation expired. Your text was not sent. Send again with a new reservation.');
+    const fresh = reservation && Date.now() - reservation.at < LIMITS.reservationMs ? reservation : undefined;
     const target = {...buffer.state.target};
-    const id = reservation ? await reservation.promise : await reserve(target.kind === 'primary' ? 'primary.input' : 'agent.input', target);
+    const id = fresh ? await fresh.promise : await reserve(target.kind === 'primary' ? 'primary.input' : 'agent.input', target);
     this.assertSendReady(buffer, snapshot, consent);
     // A confirmed retry permits this capture only; older uncertain operations still own their receipts.
     const submissions = consent ? new Map([...buffer.data.submissions].filter(([id, item]) => !consent.operations.has(id) || item.edit !== snapshot.edit || !sameDraftTuple(item, snapshot))) : buffer.data.submissions;
@@ -1357,17 +1435,19 @@ export class Composer {
     return operation(target.kind === 'primary' ? 'primary.input' : 'agent.input', path, body, target, submission.operationId);
   }
   private sendError(buffer: Buffer, pending: Pending | undefined, error: unknown): void {
-    if(pending)this.hooks.failed?.(pending.submission.operationId,!(error instanceof ApiError)||['delivery_uncertain','internal'].includes(error.view.code));
+    if (definiteInputResult(pending?.result)) {this.receipt(buffer); return;}
+    const uncertain = !(error instanceof ApiError) || ['delivery_uncertain', 'internal', 'unknown_operation'].includes(error.view.code);
+    if(pending)this.hooks.failed?.(pending.submission.operationId, uncertain);
     buffer.notice = errorMessage(error);
-    if (pending && (!(error instanceof ApiError) || ['delivery_uncertain', 'internal'].includes(error.view.code))) pending.uncertain = true;
+    if (pending && uncertain) pending.uncertain = true;
     else if (pending) {
       buffer.data = settleSubmission(buffer.data, pending.submission, 'rejected'); buffer.pending.delete(pending.submission.operationId);
       if (pending.cleanup) this.receive(buffer, pending.cleanup);
     }
     if (error instanceof ApiError && error.view.code === 'stale_revision') this.stale(buffer, error);
-    if (error instanceof ApiError && error.view.code === 'unknown_operation') buffer.notice = 'Input reservation expired or unknown. Your text was not sent. Send again with a new reservation.';
+    if (error instanceof ApiError && error.view.code === 'operation_expired') buffer.notice = 'Message was not sent. Try Send again.';
     buffer.noticeDetails = buffer.notice; if (pending?.uncertain) pending.reason = buffer.notice;
     buffer.notice = [...buffer.pending.values()].some(item => item.uncertain) ? '' : 'Message not sent';
-    this.receipt(buffer); announce(buffer.notice || 'Send not confirmed. Check before you send again.');
+    this.receipt(buffer); announce(buffer.notice || 'Delivery not confirmed. Check delivery before another send.');
   }
 }

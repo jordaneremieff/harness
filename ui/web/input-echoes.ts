@@ -1,9 +1,11 @@
 import {LIMITS} from '../shared/api.ts';
 import {targetIdentity} from './state.ts';
+import {newerOperation} from './operation-state.ts';
+import {inputOperation} from './operation-label.ts';
 import type {EntryView,OperationView,Target} from '../shared/api.ts';
 import type {Submission} from './draft-state.ts';
 
-type Echo={workspace:string;submission:Submission;at:number;baseline:Set<string>;state:'sending'|'accepted'|'rejected'|'uncertain';requestId?:string};
+type Echo={workspace:string;submission:Submission;at:number;baseline:Set<string>;state:'sending'|'accepted'|'rejected'|'uncertain';requestId?:string;result?:OperationView};
 function matchesInput(echo:Echo,entry:EntryView):boolean {
   return (entry.messages??[]).some(message=>{
     if(message.role!=='user'||message.timestamp!==undefined&&message.timestamp<echo.at-1000)return false;
@@ -27,11 +29,17 @@ export class InputEchoes {
     this.pending.set(submission.operationId,{workspace,submission:{...submission,images:submission.images.map(image=>({...image}))},at:Date.now(),baseline:new Set(entries.map(entry=>entry.id)),state:'sending'});
   }
   settle(result:OperationView):void {
-    const echo=this.pending.get(result.id);if(!echo)return;
-    echo.state=result.state==='rejected'?'rejected':result.state==='uncertain'?'uncertain':'accepted';
-    if(result.receipt?.kind==='durable')echo.requestId=result.receipt.requestId;
+    const echo=this.pending.get(result.id);
+    if(!echo||!result.target||!inputOperation(result)||targetIdentity(echo.submission.target)!==targetIdentity(result.target))return;
+    if(!['accepted','rejected','uncertain'].includes(result.state))return;
+    const current=newerOperation(echo.result,result);if(current===echo.result)return;
+    echo.result=current;echo.state=current.state==='rejected'?'rejected':current.state==='uncertain'?'uncertain':'accepted';
+    if(current.receipt?.kind==='durable')echo.requestId=current.receipt.requestId;
   }
-  failed(id:string,uncertain:boolean):void {const echo=this.pending.get(id);if(echo)echo.state=uncertain?'uncertain':'rejected';}
+  failed(id:string,uncertain:boolean):void {
+    const echo=this.pending.get(id);if(!echo||echo.result?.state==='accepted'||echo.result?.state==='rejected')return;
+    echo.state=uncertain?'uncertain':'rejected';
+  }
   entries(workspace:string,target:Target,native:readonly EntryView[]):EntryView[] {
     const result=[...native],claimed=new Set<string>();
     for(const [id,echo]of this.pending) {

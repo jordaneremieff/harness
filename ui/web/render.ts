@@ -303,6 +303,7 @@ export class Transcript {
   private earlierAvailable = false;
   private hold?: {anchor: {id: string; offsetPx: number}; until: number; queued: boolean};
   private lastScrollTop = 0;
+  private readingDirty = false;
   private readonly arrivals = new ArrivalCounter();
   private unreadCount = 0;
   private activitySignature: string | undefined;
@@ -361,12 +362,12 @@ export class Transcript {
       this.syncLatest();
       this.readEarlier(upward);
       this.lastScrollTop = this.node.scrollTop;
-      this.schedule();
+      this.readingDirty = true; this.schedule();
     }, {passive: true});
     this.listen(this.node, 'wheel', event => this.readEarlier((event as WheelEvent).deltaY < 0), {passive: true});
     this.listen(this.node, 'scrollend', event => {
       if (event.target !== this.node) return;
-      this.writtenScrollTop = undefined; this.scrolling.delete(this.node); this.queueGeometry(); this.schedule(); this.saveReading();
+      this.writtenScrollTop = undefined; this.scrolling.delete(this.node); this.readingDirty = false; this.queueGeometry(); this.schedule(); this.saveReading();
     });
     if (typeof ResizeObserver === 'function') {
       this.resize = new ResizeObserver(entries => {
@@ -376,7 +377,7 @@ export class Transcript {
       });
       this.resize.observe(this.node);
     }
-    this.listen(this.latest, 'click', () => { this.scrolling.delete(this.node); this.follow = true; this.pins.clear(); this.paint(); this.queueGeometry(); });
+    this.listen(this.latest, 'click', () => { this.scrolling.delete(this.node); this.readingDirty = false; this.follow = true; this.pins.clear(); this.paint(); this.queueGeometry(); this.saveReading(); });
     this.listen(document, 'selectionchange', () => {
       if (!this.hidden() && this.hasSelection()) { this.follow = false; this.schedule(); }
       else { this.queueGeometry(); if (!this.hidden()) this.schedule(); }
@@ -528,7 +529,7 @@ export class Transcript {
     this.clearOwnMessageMarker();this.ownMessageCursor=undefined;this.failedStepCursor=undefined;this.receivedResultCursor=undefined;
     this.cancelTaskReads();this.taskReadStamps.clear();this.dismissPreview();
     this.cancelRender(); if (this.inputFrame !== undefined) this.pending = false;
-    this.clearTiming(); this.streamPending = false; this.deferred = undefined; this.chronological = []; this.view = 'chronological'; this.pendingView = undefined;
+    this.clearTiming(); this.streamPending = false; this.readingDirty = false; this.deferred = undefined; this.chronological = []; this.view = 'chronological'; this.pendingView = undefined;
     this.node.dataset.view = this.view;
     this.elapsed.stop();
     if (this.geometryTimer !== undefined) clearTimeout(this.geometryTimer);
@@ -726,6 +727,7 @@ export class Transcript {
     const refresh = this.deferred; this.deferred = undefined; let updated = false; let end: number | undefined;
     try { refresh?.(); updated = this.paint(); if (updated && start !== undefined) end = performance.now(); }
     finally { this.pending = false; this.streamPending = false; this.clearTiming(); }
+    if (this.readingDirty) { this.readingDirty = false; this.saveReading(); this.scrolling.delete(this.node); }
     if (!this.hidden()) this.queueGeometry();
     const current = () => !this.destroyed && generation === this.generation && !this.hidden() && !document.hidden && this.node.isConnected;
     if (!updated || start === undefined || end === undefined || !current()) return;
@@ -1727,7 +1729,7 @@ export class Transcript {
     const displayed = this.operatorContent(cached,message,retained,entryId,this.groupThinking(cached,children));
     if (message.coverage.truncated || message.coverage.omitted > 0 || !message.coverage.complete) {
       const reason = bounded(message.coverage.reason ?? '', 4096, 6).trim();
-      const notice = element('p', 'secondary message-coverage', reason || 'Some message content is not shown.');
+      const notice = element('p', 'secondary message-coverage', message.role === 'toolResult' ? 'Some tool output is unavailable. See Source for details.' : reason || 'Some message content is not shown.');
       displayed.push(notice);
     }
     if (cached.inspection) { this.updateOrdinarySource(cached, message); displayed.push(cached.inspection); }
@@ -1897,6 +1899,7 @@ export class Transcript {
     }, 'copy'), sourceWrap(pre));
     const coverage = element('p', 'secondary', !message.coverage.complete || message.coverage.truncated || message.coverage.omitted ? 'Only available message text is retained.' : 'Retained message text');
     const facts: HTMLElement[] = [coverage];
+    if (message.coverage.reason) facts.push(element('p', 'secondary', bounded(message.coverage.reason, 4096, 6)));
     if (message.timestamp !== undefined && isValidTimestamp(message.timestamp)) {
       const time = element('time', 'message-source-time', new Date(message.timestamp).toISOString()); time.dateTime = new Date(message.timestamp).toISOString(); facts.push(time);
     }
@@ -2167,8 +2170,13 @@ export class Transcript {
     control.onclick=event=>{event.preventDefault();event.stopPropagation();if(control.isConnected&&tool.title.contains(control))pathCopy.run();};
     for(const label of labels)label.removeAttribute('title');control.append(...labels);nodes.splice(at,0,control);return nodes;
   }
+  private toolTitleParts(source: JoinedTool): ToolLabelPart[] {
+    if (source.name !== 'bash') return toolLabelParts(source,{subject:this.hooks.subject,cwd:this.hooks.cwd?.(),nestedCount:this.rows.nestedCounts.get(source.callId)});
+    const verb = source.status === 'success' ? 'Ran' : source.status === 'working' ? 'Running' : 'Run';
+    return [{text: `${verb} a shell command`}];
+  }
   private toolTitle(tool: ToolNode, source: JoinedTool): void {
-    const parts=toolLabelParts(source,{subject:this.hooks.subject,cwd:this.hooks.cwd?.(),nestedCount:this.rows.nestedCounts.get(source.callId)}),pathCopy=this.toolPathCopy(tool,source,parts);
+    const parts=this.toolTitleParts(source),pathCopy=this.toolPathCopy(tool,source,parts);
     tool.filePath=parts.find(part=>part.role==='file')?.title;tool.filePathSource=source;
     tool.title.title=[parts.map(part=>part.text).join(''),...parts.flatMap(part=>part.title?[part.title]:[])].join('\n');
     const control=tool.title.querySelector<HTMLButtonElement>(':scope > .tool-path-copy');
@@ -2215,20 +2223,28 @@ export class Transcript {
   private quietReportResult(source: JoinedTool): boolean {
     return source.name === 'agent_send' && source.status !== 'error' && quietTextResult(source);
   }
+  private quietStructuredResult(source: JoinedTool): boolean {
+    if (source.status === 'error' || !hasStructuredResult(source.result ?? [])) return false;
+    return !(source.name === 'agent_await' && awaitedFromParts(source.result ?? []));
+  }
+  private toolPreviewText(source: JoinedTool, resolve: (identity: string) => string | undefined, title: string, quiet: boolean): string {
+    if (quiet || source.status === 'success' && quietTextResult(source)) return '';
+    return resultPreview(source.result ?? [], {resolve, tidy: source.status !== 'error', title});
+  }
+  private paintToolPreview(tool: ToolNode, source: JoinedTool): void {
+    const resolve = source.name === 'agent_await' && awaitedFromParts(source.result ?? []) ? this.responderNames() : this.nameResolver(), title = tool.title.textContent ?? '';
+    const quietReport = this.quietReportResult(source), structured = this.quietStructuredResult(source);
+    const supplied = quietReport ? undefined : presentToolPreview(source) ?? (structured ? undefined : presentResultPreview(source, resolve, title));
+    if (supplied) this.replaceContent(tool.preview, supplied);
+    else setText(tool.preview, this.toolPreviewText(source, resolve, title, quietReport || structured));
+    tool.preview.classList.toggle('tool-error', source.status === 'error');
+    this.toolPreviewFold(tool,source,quietReport || structured);
+    tool.previewSource = source;
+    tool.previewSubjectRevision = this.subjectRevision;
+  }
   private toolContent(tool: ToolNode): void {
     const source = tool.source; if (!source) return;
-    if (!this.protectedNode(tool.preview)) {
-      const resolve = source.name === 'agent_await' && awaitedFromParts(source.result ?? []) ? this.responderNames() : this.nameResolver(), title = tool.title.textContent ?? '';
-      const quietReport = this.quietReportResult(source);
-      const supplied = quietReport ? undefined : presentToolPreview(source) ?? presentResultPreview(source, resolve, title);
-      const literal = () => quietReport || source.status === 'success' && quietTextResult(source) ? '' : resultPreview(source.result ?? [], {resolve, tidy: source.status !== 'error', title});
-      if (supplied) this.replaceContent(tool.preview, supplied);
-      else setText(tool.preview, literal());
-      tool.preview.classList.toggle('tool-error', source.status === 'error');
-      this.toolPreviewFold(tool,source,quietReport);
-      tool.previewSource = source;
-      tool.previewSubjectRevision = this.subjectRevision;
-    }
+    if (!this.protectedNode(tool.preview)) this.paintToolPreview(tool, source);
     tool.preview.hidden = tool.node.open || !tool.preview.textContent;
     if (tool.node.open) this.expandTool(tool);
   }

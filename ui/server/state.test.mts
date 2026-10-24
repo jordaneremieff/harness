@@ -178,6 +178,31 @@ test('current text-only writers persist explicit image arrays and reopen without
   } finally {await reopened.close();}
 });
 
+test('recent models use bounded exact identities and workspace revision ownership', async t => {
+  const {root, store, workspace} = await setup(t), other = await store.createWorkspace();
+  assert.equal(workspace.recentModels, undefined);
+  const recentModels = [{provider: 'vendor', modelId: 'same'}, {provider: 'other', modelId: 'same'}];
+  const saved = await store.updateSelection(workspace.id, {expectedRevision: 0, recentModels});
+  const first = recentModels[0]; assert.ok(first); first.modelId = 'changed';
+  assert.deepEqual(saved.recentModels, [{provider: 'vendor', modelId: 'same'}, {provider: 'other', modelId: 'same'}]);
+  assert.equal((await store.workspace(other.id)).recentModels, undefined);
+  await assert.rejects(store.updateSelection(workspace.id, {expectedRevision: 0, recentModels: []}), /revision/);
+  for (const value of [null, {}, Array.from({length: 6}, (_, index) => ({provider: 'p', modelId: String(index)})), [{provider: 'p', modelId: 'm'}, {provider: 'p', modelId: 'm'}], [{provider: '', modelId: 'm'}], [{provider: 'p', modelId: 'x'.repeat(257)}], [{provider: 'p', modelId: '\u0000'}], [{provider: 'p', modelId: 'm', name: 'Unsupported'}]]) {
+    await assert.rejects(store.updateSelection(workspace.id, {expectedRevision: 1, recentModels: value} as unknown as Parameters<StateStore['updateSelection']>[1]), /recent model/i);
+  }
+  const retained = await store.updateSelection(workspace.id, {expectedRevision: 1, appearance: 'light'}); assert.deepEqual(retained.recentModels, saved.recentModels);
+  await store.close(); const reopened = await StateStore.open(root);
+  try {assert.deepEqual((await reopened.workspace(workspace.id)).recentModels, saved.recentModels); await reopened.updateSelection(workspace.id, {expectedRevision: 2, recentModels: []}); assert.deepEqual((await reopened.workspace(workspace.id)).recentModels, []);}
+  finally {await reopened.close();}
+});
+test('workspace reads and unrelated preference writes retain unknown top-level metadata', async t => {
+  const {root, store, workspace} = await setup(t); await store.close();
+  const path = join(root, 'workspaces', `${workspace.id}.json`), value = JSON.parse(await readFile(path, 'utf8'));
+  value.unrecognisedPreference = {exact: [{provider: 'future', modelId: 'model'}]}; await writeFile(path, JSON.stringify(value));
+  const reopened = await StateStore.open(root);
+  try {await reopened.updateSelection(workspace.id, {expectedRevision: 0, appearance: 'light'}); assert.deepEqual(JSON.parse(await readFile(path, 'utf8')).unrecognisedPreference, value.unrecognisedPreference);}
+  finally {await reopened.close();}
+});
 test('Enter preference is workspace-local, revisioned, optional and durable', async t => {
   const {root, store, workspace} = await setup(t);
   assert.equal(workspace.enterSendsMessages, undefined);

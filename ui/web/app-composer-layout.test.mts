@@ -16,10 +16,10 @@ test('working delivery guidance yields to lifecycle and settings feedback withou
   assert.equal(editor.placeholder, 'Message'); assert.match(editor.getAttribute('aria-label') ?? '', /^Message /);
   const label=line.querySelector('.composer-state-label'),spoken=line.querySelector('.composer-state-line');assert.ok(label);assert.ok(spoken);
   assert.equal(label.textContent,'');assert.equal(label.hidden,true);
-  assert.equal(spoken.textContent,'Steer at the next step; Queue adds a follow-up.');assert.equal(line.hidden,false);
+  assert.equal(spoken.textContent,'Send a message while this conversation works. The agent reads it at its next step.');assert.equal(line.hidden,false);
   assert.equal(line.classList.contains('sr-only'),true);assert.equal(line.classList.contains('composer-delivery-guidance'),true);
   assert.equal(agentControl('send').getAttribute('aria-describedby'),spoken.id);
-  for (const key of ['send', 'queue']) {assert.equal(agentControl(key).hidden, false); assert.equal(agentControl(key).disabled, true);}
+  for (const key of ['send', 'queue']) {assert.equal(agentControl(key).hidden, key === 'queue'); assert.equal(agentControl(key).disabled, true);}
   assert.equal(agentControl('stop').querySelector('.action-label')?.textContent, 'Stop');
   const composer = app.agentComposer();
   composer.setSettingsState({line: 'Updating settings', label: 'Updating settings'});
@@ -82,7 +82,11 @@ test('conversation state and split width changes retain editor ancestry, draft i
     assert.ok(form.children.indexOf(meta) > form.children.indexOf(surface));
     assert.ok(control('model').querySelector('.card-icon-chevron')); assert.ok(control('thinking').querySelector('.card-icon-chevron'));
     const submit = bar.querySelector('.composer-submit'); assert.ok(submit);
-    assert.deepEqual(bar.children, [submit]); assert.deepEqual(submit.children, [control('stop'), control('queue'), control('start'), control('send')]);
+    const expand = bar.querySelector('.composer-expand'); assert.ok(expand);
+    assert.equal(expand.getAttribute('aria-controls'), control('editor').id);
+    assert.equal(expand.getAttribute('aria-expanded'), 'false');
+    const stopSlot = submit.querySelector('.composer-stop-slot'); assert.ok(stopSlot); assert.deepEqual(stopSlot.children, [control('stop')]);
+    assert.deepEqual(bar.children, [expand, submit]); assert.deepEqual(submit.children, [stopSlot, control('queue'), control('start'), control('send')]);
     assert.equal(control('editor').rows, 1);
     assert.equal(control('transcript').parentNode?.contains(latest), false);
     assert.equal(control('editor').parentNode?.classList.contains('composer-surface'), true);
@@ -90,6 +94,16 @@ test('conversation state and split width changes retain editor ancestry, draft i
   app.agentComposer().setManualHeight(160); editor.focus(); editor.setSelectionRange(2, 9, 'backward'); editor.dispatch('select'); await settle();
   const height = (editor.style as {height?: string}).height;
   assert.equal(height, '160px');
+  const expansion = form.querySelector('.composer-expand'); assert.ok(expansion);
+  for (const expanded of [true, false, true, false]) {
+    expansion.dispatch('click'); await settle();
+    assert.equal(expansion.getAttribute('aria-expanded'), String(expanded));
+    assert.equal(expansion.textContent, expanded ? 'Return' : 'Expand');
+    assert.equal(app.agentComposer().editor, editor); assert.deepEqual(ancestors(editor), chain);
+    assert.equal(editor.value, saved.draft.text); assert.deepEqual(app.agentComposer().state?.draft.images, [image]);
+    assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [2, 9, 'backward']);
+  }
+  assert.equal((editor.style as {height?: string}).height, height);
   assert.equal(root.classList.contains('agent-empty'), true);
   let frameRevision = 0;
   for (const next of ['running', 'failed', 'incompatible', 'populated']) {
@@ -104,7 +118,7 @@ test('conversation state and split width changes retain editor ancestry, draft i
       assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [2, 9, 'backward']);
       assert.equal((editor.style as {height?: string}).height, height);
       assert.equal(root.classList.contains('agent-empty'), next !== 'populated');
-      assert.equal(agentControl('queue').hidden, next !== 'running'); assert.equal(agentControl('stop').hidden, next !== 'running');
+      assert.equal(agentControl('queue').hidden, true); assert.equal(agentControl('stop').hidden, next !== 'running');
       assert.match(editor.placeholder, layoutPlaceholderPattern(next)); assert.match(editor.getAttribute('aria-label') ?? '', /^(?:Message |Draft for )/);
     }
   }
@@ -117,7 +131,7 @@ test('a working recipient refreshes its placeholder across disconnect and reconn
   await arrive({workspace: {id: identity, revision: 1, primaryKey: null, selectedTarget: target}, primaries: [], roster: [agentFixture(identity)], targets: [saved], observations: [observation(identity, frame)]});
   event('agent.availability', {identity, connectionEpoch: app.state.agentEpochs.get(identity), state: 'live', capabilities: agentFixture(identity).capabilities}); await settle();
   const editor = agentControl('editor') as HostNode & {placeholder: string}; editor.focus(); editor.setSelectionRange(2, 7, 'backward'); editor.dispatch('select');
-  assert.equal(agentControl('queue').hidden, false); assert.equal(editor.placeholder, 'Message');
+  assert.equal(agentControl('queue').hidden, true); assert.equal(editor.placeholder, 'Message');
   const now = Date.now(); t.mock.method(Date, 'now', () => now);
   let recover: (() => void) | undefined; const timeout = window.setTimeout.bind(window);
   t.mock.method(window, 'setTimeout', (callback, delay, ...args) => {
@@ -128,7 +142,7 @@ test('a working recipient refreshes its placeholder across disconnect and reconn
   assert.equal(editor.placeholder, 'Message'); assert.doesNotMatch(agentControl('state').textContent, /Steer at the next step/); assert.equal(agentControl('queue').hidden, true);
   assert.ok(recover); recover(); await settle(); const fresh = streamSources.at(-1); assert.ok(fresh); assert.notEqual(fresh, previous);
   fresh.emit('ready', {bootId: 'boot', connectionId: 'restored-guidance-stream'}); await settle();
-  assert.equal(editor.placeholder, 'Message'); assert.equal(agentControl('queue').hidden, false);
+  assert.equal(editor.placeholder, 'Message'); assert.equal(agentControl('queue').hidden, true);
   assert.equal(app.agentComposer().editor, editor); assert.equal(editor.value, saved.draft.text);
   assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection], [2, 7, 'backward']);
 });

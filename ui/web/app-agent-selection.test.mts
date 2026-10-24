@@ -114,7 +114,7 @@ test('whole agent views retain messages independently of running, idle and incom
       assertAgentComposition(); assert.match(visibleText(agentControl('root')), /Exact retained conversation text/); assert.equal(app.agentComposer().state?.draft.text, 'Exact editable draft');
       assert.equal(agentControl('editor').disabled, false); assert.equal(agentControl('start').hidden, availability !== 'stored'); assert.equal(agentControl('start').disabled, false);
       assert.equal(agentControl('state').hidden, false);
-      assert.equal(agentControl('state-line').textContent, {live: 'Steer at the next step; Queue adds a follow-up.', stored: 'Not running. Start it to send a message.', incompatible: 'This agent cannot run here. Messages are read only.'}[availability]);
+      assert.equal(agentControl('state-line').textContent, {live: 'Send a message while this conversation works. The agent reads it at its next step.', stored: 'Not running. Start it to send a message.', incompatible: 'This agent cannot run here. Messages are read only.'}[availability]);
       assert.equal(agentControl('model').disabled, true); assert.equal(agentControl('thinking').disabled, true);
       assert.equal(agentControl('send').hidden, availability !== 'live'); assert.equal(agentControl('send').disabled, availability !== 'live');
       assert.equal(agentControl('history-note').hidden, true);
@@ -143,7 +143,7 @@ test('Refresh messages sits in Conversation actions for saved agents only and ru
       await arrive({workspace: {id: identity, revision: 1, selectedTarget: target}, primaries: [], roster: [row], targets: [targetFixture(`menu-${availability}-target`, target)], observations: availability === 'live' ? [observation(identity, {revision: 1, observedAt: '', status: {busy: false}, live: [], entries: [entry], nextBefore: null, coverage})] : []});
       if (availability === 'live') {event('agent.availability', {identity, connectionEpoch: app.state.agentEpochs.get(identity), state: 'live', capabilities: row.capabilities}); await settle();}
       assert.equal(agentControl('history-note').hidden, true);
-      app.openConversationActions(); const menu = globalThis.document.querySelector('.context-menu'); assert.ok(menu);
+      app.openConversationActions(); globalThis.document.querySelector('.context-menu')?.querySelectorAll('button').find(node=>node.textContent==='Tasks')?.click();const menu = globalThis.document.querySelector('.context-menu'); assert.ok(menu);
       const refresh = menu.children.find(item => item.textContent === 'Refresh messages');
       if (availability === 'live') {assert.equal(refresh, undefined); continue;}
       assert.ok(refresh); assert.equal(refresh.getAttribute('aria-disabled'), 'false');

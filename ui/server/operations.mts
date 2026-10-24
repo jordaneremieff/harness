@@ -81,7 +81,7 @@ export class Operations {
     return this.store.transaction(async () => {
       const record = this.store.record(id);
       if (record.view.state === 'reserved' && this.now() - Date.parse(record.view.createdAt) >= LIMITS.reservationMs) {
-        await this.store.deleteOperation(id); throw new StateError('unknown_operation', 'Operation reservation expired', 410);
+        await this.store.deleteOperation(id); throw new StateError('operation_expired', 'This action did not start. Try again.', 410);
       }
       return record.view;
     });
@@ -126,7 +126,7 @@ export class Operations {
       const record = this.store.record(id);
       if (record.workspaceId !== request.workspaceId || record.view.kind !== request.kind || !sameTarget(record.view.target, request.target) || (record.digest && record.digest !== digest)) throw new StateError('operation_conflict', 'Operation key was issued for a different request', 409);
       if (record.view.state === 'reserved' && this.now() - Date.parse(record.view.createdAt) >= LIMITS.reservationMs) {
-        await this.store.deleteOperation(id); throw new StateError('unknown_operation', 'Operation reservation expired', 410);
+        await this.store.deleteOperation(id); throw new StateError('operation_expired', 'This action did not start. Try again.', 410);
       }
       const retry = request.retryUncertainNative === true && record.view.state === 'uncertain' && record.view.kind === 'agent.input';
       if (record.view.state !== 'reserved' && !retry) return {send: false, record};

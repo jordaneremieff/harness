@@ -38,6 +38,17 @@ test('complete scans find late users and the latest name or clear', async t => {
   assert.deepEqual(await scanSessionTitle(cleared.path, cleared.size), {title: 'first', titleSource: 'prompt', titleState: 'ready'});
 });
 
+test('blank first lines retain the first nonblank line of the same first user message',async t=>{
+  for(const content of ['\n  \r\nUseful first prompt\nSecond line',[{type:'text',text:'\n  \nUseful first prompt\nSecond line'}]]){
+    const saved=await fixture(t,message('user',content)+message('user','Later prompt'));
+    assert.deepEqual(await scanSessionTitle(saved.path,saved.size),{title:'Useful first prompt',titleSource:'prompt',titleState:'ready'});
+  }
+  const named=await fixture(t,message('user','\nUseful prompt')+line({type:'session_info',name:'Manual name'}));
+  assert.deepEqual(await scanSessionTitle(named.path,named.size),{title:'Manual name',titleSource:'name',titleState:'ready'});
+  const invalid=await fixture(t,`${message('user','\nUseful prompt')}{bad json}\n`);
+  assert.equal((await scanSessionTitle(invalid.path,invalid.size)).titleState,'unavailable');
+});
+
 test('chunk-spanning UTF-8 records and final non-newline user records preserve text', async t => {
   const body = message('system', 'é'.repeat(64000)) + message('user', 'First café').trimEnd();
   const {path, size} = await fixture(t, body);

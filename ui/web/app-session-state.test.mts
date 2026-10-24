@@ -18,7 +18,7 @@ function stateWords():[string|undefined,string|undefined] {
     hostDocument.querySelectorAll('.conversation-row').find(node=>node.dataset.tabKey===key)?.querySelector('.conversation-state')?.textContent];
 }
 function readerNode(){const node=hostDocument.querySelector('.session-reader');assert.ok(node);return node;}
-function openReaderDetails():void {byId('conversation-actions').click();const item=hostDocument.body.querySelector('.context-menu')?.querySelectorAll('button').find(node=>node.textContent==='Conversation details');assert.ok(item);item.click();}
+function openReaderDetails():void {byId('conversation-actions').click();const item=hostDocument.body.querySelector('.context-menu')?.querySelectorAll('button').find(node=>node.textContent==='Session details');assert.ok(item);item.click();}
 
 test('stopped summary keeps only Closed and Resume while details retain exact command and guarded copy fallback',async t=>{
   const summary=new SessionStateBar('summary'),details=new SessionStateBar('details');

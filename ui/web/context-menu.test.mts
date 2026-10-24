@@ -6,7 +6,7 @@ import {createPaneLayout, paneById, paneLeaves, splitPane} from './pane-layout.t
 type Handler = (event: Record<string, unknown>) => void;
 class Node {
   children: Node[] = []; parent?: Node; className = ''; textContent = ''; type = ''; tabIndex = 0; title = '';
-  attrs = new Map<string, string>(); style: Record<string, string> = {}; tag: string;
+  attrs = new Map<string, string>(); style: Record<string, string> = {}; tag: string; dataset: Record<string, string> = {}; hidden = false; inert = false; open = false;
   handlers = new Map<string, Handler[]>(); ownerDocument: Doc; scrolled = false;
   constructor(doc: Doc, tag = 'div') { this.ownerDocument = doc; this.tag = tag; }
   get isConnected(): boolean { return this === this.ownerDocument.body || !!this.parent?.isConnected; }
@@ -18,15 +18,18 @@ class Node {
   replaceChildren(...nodes: Node[]): void { this.children = []; this.textContent = ''; this.append(...nodes); }
   remove(): void { if (this.parent) this.parent.children.splice(this.parent.children.indexOf(this), 1); this.parent = undefined; }
   contains(node?: Node): boolean { return !!node && (this === node || this.children.some(child => child.contains(node))); }
-  addEventListener(name: string, handler: Handler): void { this.handlers.set(name, [...this.handlers.get(name) ?? [], handler]); }
+  addEventListener(name: string, handler: Handler, capture = false): void { const handlers = this.handlers.get(name) ?? []; this.handlers.set(name, capture ? [handler, ...handlers] : [...handlers, handler]); }
+  removeEventListener(name: string, handler: Handler): void {this.handlers.set(name, (this.handlers.get(name) ?? []).filter(item => item !== handler));}
   fire(name: string, extra: Record<string, unknown> = {}) {
-    const event = {target: this, defaultPrevented: false, stopped: false, preventDefault() {this.defaultPrevented = true;}, stopPropagation() {this.stopped = true;}, ...extra};
-    for (const handler of this.handlers.get(name) ?? []) handler(event); return event;
+    const event = {target: this, defaultPrevented: false, stopped: false, immediate: false, preventDefault() {this.defaultPrevented = true;}, stopPropagation() {this.stopped = true;}, stopImmediatePropagation() {this.immediate = true;}, ...extra};
+    for (const handler of [...this.handlers.get(name) ?? []]) {handler(event); if (event.immediate) break;} return event;
   }
   click(): void { this.fire('click'); }
   focus(): void { this.ownerDocument.activeElement = this; }
   scrollIntoView(): void { this.scrolled = true; }
   getBoundingClientRect() { return {width: 260, height: 96}; }
+  showModal(): void {this.open = true; this.attrs.set('modal', '');}
+  close(): void {this.open = false; this.attrs.delete('modal'); this.fire('close');}
   popover = ''; popoverShown = false;
   showPopover(): void { this.popoverShown = true; }
   closest(selector: string): Node | null {
@@ -47,8 +50,11 @@ class Doc extends Events {
   createElement(tag: string): Node { return new Node(this, tag); }
   getElementById(): Node { return this.announcements; }
 }
-const originalDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
-afterEach(() => { if (originalDocument) Object.defineProperty(globalThis, 'document', originalDocument); else Reflect.deleteProperty(globalThis, 'document'); });
+const originalDocument = Object.getOwnPropertyDescriptor(globalThis, 'document'), originalElement = Object.getOwnPropertyDescriptor(globalThis, 'HTMLElement');
+afterEach(() => {
+  if (originalDocument) Object.defineProperty(globalThis, 'document', originalDocument); else Reflect.deleteProperty(globalThis, 'document');
+  if (originalElement) Object.defineProperty(globalThis, 'HTMLElement', originalElement); else Reflect.deleteProperty(globalThis, 'HTMLElement');
+});
 function fixture() {
   const doc = new Doc(); Object.defineProperty(globalThis, 'document', {configurable: true, value: doc});
   const origin = new Node(doc); doc.body.append(origin); origin.focus();
@@ -60,6 +66,63 @@ function fixture() {
   const key = (key: string, extra: Record<string, unknown> = {}) => menu.fire('keydown', {key, ...extra});
   return {doc, origin, controller, runs, menu, key, invalidate: () => {valid = false;}};
 }
+test('a mobile context menu uses a named native sheet, retains Tab containment and restores its trigger', () => {
+  const doc = new Doc(); Object.defineProperty(globalThis, 'document', {configurable: true, value: doc});
+  Object.assign(doc.defaultView, {matchMedia: () => ({matches: true})});
+  const origin = new Node(doc, 'button'); doc.body.append(origin); origin.focus(); const controller = new ContextMenu(); let chosen = 0;
+  controller.open(origin as unknown as HTMLElement, {x: 10, y: 10}, 'Actions', [{label: 'Choose', run: () => {chosen++;}}]);
+  const sheet = doc.body.children.at(-1); assert.ok(sheet); assert.equal(sheet.tag, 'dialog'); assert.equal(sheet.open, true); assert.equal(sheet.attrs.get('aria-label'), 'Actions');
+  const menu = sheet.children[1]; assert.ok(menu); assert.match(menu.className, /context-menu-sheet-body/); menu.fire('keydown', {key: 'Tab'}); assert.equal(controller.openNow, true);
+  doc.defaultView.fire('resize'); assert.equal(controller.openNow, true, 'keyboard and rotation resize keep the sheet open');
+  const cancel = sheet.fire('cancel'); assert.equal(cancel.defaultPrevented, true); assert.equal(controller.openNow, false); assert.equal(chosen, 0); assert.equal(doc.activeElement, origin);
+  assert.ok([...doc.handlers.values(), ...doc.defaultView.handlers.values()].every(list => list.length === 0));
+});
+test('a mobile sheet cycles Tab between the active action and Close and keeps roving focus', () => {
+  const doc = new Doc(); Object.defineProperty(globalThis, 'document', {configurable: true, value: doc}); Object.assign(doc.defaultView, {matchMedia: () => ({matches: true})});
+  const origin = new Node(doc, 'button'); doc.body.append(origin); origin.focus(); const controller = new ContextMenu(); let calls = 0;
+  controller.open(origin as unknown as HTMLElement, {x: 0, y: 0}, 'Actions', [{label: 'First', run: () => {calls++;}}, {label: 'Disabled', enabled: false, run: () => {calls++;}}, {label: 'Last', run: () => {calls++;}}]);
+  const sheet = doc.body.children.at(-1), close = sheet?.children[0]?.children[1], menu = sheet?.children[1]; assert.ok(menu && close);
+  assert.deepEqual(menu.children.map(row => row.tabIndex), [0, -1, -1]);
+  menu.fire('keydown', {key: 'ArrowDown'}); assert.deepEqual(menu.children.map(row => row.tabIndex), [-1, 0, -1]); menu.fire('keydown', {key: 'Enter'}); assert.equal(calls, 0);
+  menu.fire('keydown', {key: 'End'}); assert.deepEqual(menu.children.map(row => row.tabIndex), [-1, -1, 0]);
+  const tab = menu.fire('keydown', {key: 'Tab'});
+  assert.equal(tab.defaultPrevented, true); assert.equal(doc.activeElement, close); assert.equal(controller.openNow, true, 'Tab stays inside the sheet');
+  assert.equal(menu.children.filter(row => row.tabIndex === 0).length, 1, 'the roving action stays reachable from Close');
+  const enter = close.fire('keydown', {key: 'Enter'}); assert.equal(enter.defaultPrevented, false, 'Close keeps its native key activation');
+  const stay = close.fire('keydown', {key: 'Tab', shiftKey: true});
+  assert.equal(stay.defaultPrevented, true); assert.equal(doc.activeElement, menu.children[2], 'Shift+Tab from Close returns to the active action');
+  menu.fire('keydown', {key: 'Tab', shiftKey: true}); assert.equal(doc.activeElement, close, 'Shift+Tab from an action reaches Close');
+  close.fire('keydown', {key: 'Tab'}); assert.equal(doc.activeElement, menu.children[2], 'Tab from Close wraps to the active action');
+  menu.fire('keydown', {key: 'Enter'}); assert.equal(calls, 1); assert.equal(doc.activeElement, origin); assert.equal(controller.openNow, false);
+});
+test('a mobile modal-owned menu drills down inside its existing dialog without cancelling the request', () => {
+  const doc = new Doc(); Object.defineProperty(globalThis, 'document', {configurable: true, value: doc}); Object.defineProperty(globalThis, 'HTMLElement', {configurable: true, value: Node});
+  Object.assign(doc.defaultView, {matchMedia: () => ({matches: true})});
+  const dialog = new Node(doc, 'dialog'); dialog.showModal(); doc.body.append(dialog); const content = new Node(doc), retained = new Node(doc); retained.hidden = true; retained.inert = true;
+  const origin = new Node(doc, 'button'); origin.setAttribute('aria-haspopup', 'menu'); content.append(origin); dialog.append(content, retained); origin.focus(); let cancelled = 0;
+  dialog.addEventListener('cancel', () => {cancelled++;}); const controller = new ContextMenu(); controller.open(origin as unknown as HTMLElement, {x: 0, y: 0}, 'Choices', [{label: 'Choose', run() {}}]);
+  assert.equal(doc.body.children.length, 1); assert.equal(content.hidden, true); assert.equal(content.inert, true); assert.equal(dialog.dataset.contextSheet, 'true');
+  assert.equal(dialog.children.at(-1)?.tag, 'section'); dialog.fire('cancel');
+  assert.equal(cancelled, 0); assert.equal(dialog.open, true); assert.equal(content.hidden, false); assert.equal(content.inert, false); assert.equal(retained.hidden, true); assert.equal(retained.inert, true);
+  assert.equal(dialog.children.length, 2); assert.equal(dialog.dataset.contextSheet, undefined); assert.equal(doc.activeElement, origin); assert.equal(controller.openNow, false);
+});
+test('an embedded mobile sheet cycles Tab through Back without cancelling its dialog', () => {
+  const doc = new Doc(); Object.defineProperty(globalThis, 'document', {configurable: true, value: doc}); Object.defineProperty(globalThis, 'HTMLElement', {configurable: true, value: Node});
+  Object.assign(doc.defaultView, {matchMedia: () => ({matches: true})});
+  const dialog = new Node(doc, 'dialog'); dialog.showModal(); doc.body.append(dialog);
+  const origin = new Node(doc, 'button'); origin.setAttribute('aria-haspopup', 'menu'); dialog.append(origin); origin.focus();
+  let cancelled = 0; dialog.addEventListener('cancel', () => {cancelled++;});
+  const controller = new ContextMenu(); controller.open(origin as unknown as HTMLElement, {x: 0, y: 0}, 'Choices', [{label: 'Choose', run() {}}, {label: 'Other', run() {}}]);
+  const section = dialog.children.at(-1), back = section?.children[0]?.children[1], menu = section?.children[1]; assert.ok(section && back && menu);
+  assert.equal(back.textContent, 'Back');
+  const tab = menu.fire('keydown', {key: 'Tab'});
+  assert.equal(tab.defaultPrevented, true); assert.equal(doc.activeElement, back); assert.equal(controller.openNow, true); assert.equal(dialog.open, true);
+  const enter = back.fire('keydown', {key: 'Enter'}); assert.equal(enter.defaultPrevented, false, 'Back keeps its native key activation');
+  back.fire('keydown', {key: 'Tab', shiftKey: true}); assert.equal(doc.activeElement, menu.children[0]); assert.deepEqual(menu.children.map(row => row.tabIndex), [0, -1]);
+  menu.fire('keydown', {key: 'Tab'}); assert.equal(doc.activeElement, back);
+  dialog.fire('cancel');
+  assert.equal(cancelled, 0); assert.equal(controller.openNow, false); assert.equal(doc.activeElement, origin); assert.equal(dialog.open, true);
+});
 test('a modal-owned menu stays in the dialog and escapes transformed clipping through the top layer', () => {
   const doc = new Doc(); Object.defineProperty(globalThis, 'document', {configurable: true, value: doc});
   const dialog = new Node(doc, 'dialog'); dialog.attrs.set('modal', ''); doc.body.append(dialog);
@@ -135,6 +198,10 @@ test('Escape, outside dismissal, viewport changes and focus departure release li
     if (dismiss !== 'focus') assert.equal(f.doc.activeElement, f.origin);
     assert.ok([...f.doc.handlers.values(), ...f.doc.defaultView.handlers.values()].every(list => list.length === 0));
   }
+});
+test('a detached menu row never dispatches a second action', () => {
+  const f = fixture(); const row = f.menu.children[0]; assert.ok(row); row.click(); row.click();
+  assert.deepEqual(f.runs, ['activate']);
 });
 test('an action never dispatches after its captured target changes', () => {
   const f = fixture(); f.invalidate(); f.key('End'); f.key('Enter');

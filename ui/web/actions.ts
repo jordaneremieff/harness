@@ -42,11 +42,12 @@ const appCommands: CommandOption[] = [
 ];
 
 export type PaletteEntry = CommandOption & {shortcut?: {text: string; keys: string}; enabled: boolean; run: () => void; search?: string[]; title?: string; tail?: string; checked?: boolean; priority?: number; disabledReason?: string};
-function choice(label: string, selected: boolean, run: () => void): HTMLButtonElement {
+function choice(label: string, selected: boolean, run: () => void, detail?: string): HTMLButtonElement {
   const node = button('', run, 'option-choice');
   const check = cardIcon('success'); check.classList.add('choice-check'); check.style.visibility = selected ? 'visible' : 'hidden';
   node.append(check, element('span', 'choice-value', label));
-  node.setAttribute('role', 'menuitemradio'); node.setAttribute('aria-checked', String(selected)); node.setAttribute('aria-label', label); return node;
+  if (detail) {node.append(element('span', 'choice-detail', detail)); node.title = detail;}
+  node.setAttribute('role', 'menuitemradio'); node.setAttribute('aria-checked', String(selected)); node.setAttribute('aria-label', [label, detail].filter(Boolean).join(', ')); return node;
 }
 function commandSource(source: string): string { return ({app: 'App', primary: 'Primary', agent: 'Agent'} as Record<string, string>)[source] ?? source; }
 function paletteName(item: PaletteEntry, marks: number[], conversation: boolean): HTMLElement {
@@ -111,7 +112,7 @@ function findStatusText(result: FindStatus | undefined, query: string): string {
   const boundary = result.end === 'first' ? ' First loaded match.' : result.end === 'last' ? ' Last loaded match.' : '';
   return `Match ${result.position} of ${result.total} in loaded messages.${boundary}`;
 }
-export type SettingsSelection = {target: Target; model?: {provider: string; modelId: string}; thinking?: string; levels?: string[]; primary?: PrimaryView; closed?: () => void; guard: () => string | undefined};
+export type SettingsSelection = {trigger?: HTMLElement; target: Target; model?: {provider: string; modelId: string}; thinking?: string; levels?: string[]; primary?: PrimaryView; closed?: () => void; guard: () => string | undefined};
 export type SelectionChange = Partial<Omit<Workspace, 'selectedTarget'>> & {selectedTarget?: Target | null};
 export type ActionContext = {
   newSession(project?: string): void;
@@ -139,6 +140,8 @@ export class Actions {
   private modelNames = new Map<string, Map<string, string>>();
   private modelChoices = new Map<string, ModelChoice>();
   private modelCatalogs = new Set<string>();
+  private catalogChoices = new Map<string, Map<string, ModelChoice>>();
+  private modelPickerPaint?: () => void;
   private namedPrimaries = new Set<string>();
   private ctx: ActionContext;
   constructor(ctx: ActionContext) { this.ctx = ctx; }
@@ -205,7 +208,14 @@ export class Actions {
     const key = `${primary.key}:${primary.epoch}:${kind}:page:${cursor ?? ''}`;
     let cache = this.resources.get(key);
     if (!cache) {
-      cache = request<ResourcePage>(this.path(primary, `resources/${kind}?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`));
+      cache = request<ResourcePage>(this.path(primary, `resources/${kind}?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`)).then(page => {
+        if (kind === 'models') {
+          const owner = `${primary.key}:${primary.epoch}`, catalog = this.catalogChoices.get(owner) ?? new Map<string, ModelChoice>();
+          for (const model of page.items as ModelChoice[]) catalog.set(JSON.stringify([model.provider, model.id]), model);
+          this.catalogChoices.set(owner, catalog); this.modelPickerPaint?.();
+        }
+        return page;
+      });
       this.resources.set(key, cache); const pending = cache;
       void cache.catch(() => { if (this.resources.get(key) === pending) this.resources.delete(key); });
     }
@@ -281,22 +291,26 @@ export class Actions {
     const current = primary && this.ctx.snapshot()?.primaries.find(item => item.key === primary.key && item.epoch === primary.epoch);
     return current?.lifecycle === 'ready' && current.capabilities[capability] === true ? current : undefined;
   }
-  async control(control: Omit<PrimaryControl, 'epoch'>, captured?: PrimaryView): Promise<void> {
+  async control(control: Omit<PrimaryControl, 'epoch'>, captured?: PrimaryView, guard?: () => string | undefined): Promise<void> {
     const primary = this.readyPrimary(captured ?? this.ctx.primary());
     if (!primary) throw new Error('Resume Primary from Sessions before this action.');
-    const result = control.action === 'model' || control.action === 'thinking' ? await this.modelControl(primary, control) : await this.performControl(primary, control);
+    const result = control.action === 'model' || control.action === 'thinking' ? await this.modelControl(primary, control, guard) : await this.performControl(primary, control);
     if (result.error) throw new Error(result.error.message);
+    if ((control.action === 'model' || control.action === 'thinking') && result.state !== 'completed') throw new Error('Settings update was not confirmed. Check the conversation before another change.');
   }
-  private async modelControl(primary: PrimaryView, control: Omit<PrimaryControl, 'epoch'>): Promise<OperationView> {
+  private async modelControl(primary: PrimaryView, control: Omit<PrimaryControl, 'epoch'>, guard?: () => string | undefined): Promise<OperationView> {
     const target = this.target(primary), key = JSON.stringify(target), changes = this.modelChanges.get(key) ?? new Set<{operationId?: string}>();
     const change: {operationId?: string} = {}; changes.add(change); this.modelChanges.set(key, changes); this.ctx.modelChanged?.();
-    let settled = false;
+    let settled = false, dispatched = false;
     try {
       change.operationId = await reserve('primary.control', target);
+      const reason = guard?.();
+      if (reason || !this.readyPrimary(primary)) throw new Error(reason ?? 'This Primary is no longer ready.');
+      dispatched = true;
       const result = await this.performControl(primary, control, change.operationId);
       settled = ['accepted', 'completed', 'rejected'].includes(result.state); return result;
     } catch (error) {
-      settled = !change.operationId || error instanceof ApiError && !['delivery_uncertain', 'internal'].includes(error.view.code);
+      settled = !dispatched || error instanceof ApiError && !['delivery_uncertain', 'internal'].includes(error.view.code);
       throw error;
     } finally {
       if (settled) changes.delete(change);
@@ -377,7 +391,7 @@ export class Actions {
     const target=selection.target;
     if(target.kind==='primary') {
       if(!selection.primary)throw new Error('This Primary is unavailable.');
-      await this.control((patch.model?{action:'model',provider:patch.model.provider,modelId:patch.model.modelId}:{action:'thinking',level:patch.thinkingLevel ?? ''}) as PrimaryControl,selection.primary);return;
+      await this.control((patch.model?{action:'model',provider:patch.model.provider,modelId:patch.model.modelId}:{action:'thinking',level:patch.thinkingLevel ?? ''}) as PrimaryControl,selection.primary,selection.guard);return;
     }
     const key=JSON.stringify(target),changes=this.modelChanges.get(key)??new Set<{operationId?:string}>(),change:{operationId?:string}={};
     changes.add(change);this.modelChanges.set(key,changes);this.ctx.modelChanged?.();
@@ -390,41 +404,110 @@ export class Actions {
       if(result.state!=='completed')throw new Error('Settings update was not confirmed. Check the agent before another change.');
     } finally {changes.delete(change);if(!changes.size)this.modelChanges.delete(key);this.ctx.modelChanged?.();}
   }
+  private pickerSelection(primary: PrimaryView, selection?: SettingsSelection): SettingsSelection {
+    if (selection) return selection;
+    const workspace = this.ctx.snapshot()?.workspace?.id;
+    return {target: this.target(primary), primary, model: primary.model ? {provider: primary.model.provider, modelId: primary.model.id} : undefined, thinking: primary.thinkingLevel,
+      guard: () => this.ctx.snapshot()?.workspace?.id !== workspace || !this.readyPrimary(primary) ? 'This conversation is no longer available.' : undefined};
+  }
+  private async rememberModel(workspace: string | undefined, selection: SettingsSelection, model: ModelChoice, token: number): Promise<boolean> {
+    const current = this.ctx.snapshot()?.workspace;
+    if (!workspace || current?.id !== workspace || selection.guard()) return true;
+    const recentModels = [{provider: model.provider, modelId: model.id}, ...(current.recentModels ?? []).filter(item => item.provider !== model.provider || item.modelId !== model.id)].slice(0, 5);
+    try { await this.ctx.selection({recentModels}); return true; }
+    catch (error) {
+      if (this.ctx.snapshot()?.workspace?.id === workspace && this.ctx.modal.owns(token)) this.ctx.modal.error(error, 'Model applied. Recent choices were not saved.');
+      return false;
+    }
+  }
+  private listedModels(primary: PrimaryView, workspace: string | undefined, selected: SettingsSelection['model'], items: ModelChoice[], query: string): ModelChoice[] {
+    const current = this.ctx.snapshot()?.workspace;
+    const recent = current?.id === workspace ? current?.recentModels ?? [] : [];
+    const priority = [selected, ...recent].filter((item): item is {provider: string; modelId: string} => !!item);
+    const loaded = this.catalogChoices.get(`${primary.key}:${primary.epoch}`);
+    const preferred = priority.flatMap(item => {const model = loaded?.get(JSON.stringify([item.provider, item.modelId])); return model ? [model] : [];});
+    const catalog = [...new Map([...preferred, ...items].map(model => [JSON.stringify([model.provider, model.id]), model])).values()];
+    const rank = (model: ModelChoice): number => {const index = priority.findIndex(item => item.provider === model.provider && item.modelId === model.id); return index < 0 ? priority.length : index;};
+    return catalog.sort((a, b) => rank(a) - rank(b)).filter(model => `${model.name} ${model.provider}/${model.id}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
+  }
+  private async applyModelChoice(primary: PrimaryView, captured: SettingsSelection, workspace: string | undefined, model: ModelChoice, token: number, applied: () => void): Promise<void> {
+    await this.configure(captured, {model: {provider: model.provider, modelId: model.id}});
+    this.resources.delete(`${primary.key}:${primary.epoch}:thinking`); this.resources.delete(`${primary.key}:${primary.epoch}:thinking:page:`);
+    applied();
+    const saved = await this.rememberModel(workspace, captured, model, token);
+    if (saved && this.ctx.modal.owns(token)) this.ctx.modal.close();
+  }
+  private modelOption(model: ModelChoice, selected: SettingsSelection['model'], token: number, apply: () => Promise<void>): HTMLButtonElement {
+    const modal = this.ctx.modal, checked = selected?.provider === model.provider && selected.modelId === model.id;
+    const node = choice(model.name.trim() || model.id, checked, () => {
+      if (!modal.owns(token)) return;
+      void modal.run(async () => {
+        node.setAttribute('aria-busy', 'true');
+        try {await apply();} finally {node.removeAttribute('aria-busy');}
+      }, false);
+    }, `${model.provider}/${model.id}`);
+    node.dataset.model = JSON.stringify([model.provider, model.id]); return node;
+  }
   modelPicker(selection?: SettingsSelection): void {
     const primary = selection?.primary ?? (selection ? (this.ctx.namingPrimary ?? this.ctx.primary)() : this.ctx.primary()); if (!primary) return;
-    const selected=selection?.model ?? (primary.model?{provider:primary.model.provider,modelId:primary.model.id}:undefined);
-    const modal = this.ctx.modal; modal.open(selection?.target.kind==='agent'?'Choose model for agent':'Choose model for Primary',undefined,selection?.closed); const token = modal.token; modal.body.append(element('p', 'secondary', 'Loading models'));
+    const captured = this.pickerSelection(primary, selection), workspace = this.ctx.snapshot()?.workspace?.id;
+    let selected = captured.model;
+    const modal = this.ctx.modal; modal.open(captured.target.kind === 'agent' ? 'Choose model for agent' : 'Choose model for Primary', undefined, captured.closed); modal.sheet('searchable');
+    if (captured.trigger) modal.restoreFocus(captured.trigger);
+    const token = modal.token; modal.focusTitle(); modal.body.append(element('p', 'secondary', 'Loading models'));
     void modal.run(async () => {
-      const page = await this.resourcePage(primary,'models'); this.learnModels(page.items as ModelChoice[]); if (!modal.owns(token)) return;
-      modal.body.replaceChildren(); const search = input('Search models'); const list = element('div', 'options'); list.setAttribute('role', 'menu'); list.setAttribute('aria-label', 'Models'); modal.body.append(search.label, search.field, list);
+      const page = await this.resourcePage(primary, 'models'); if (!modal.owns(token)) return;
+      this.learnModels(page.items as ModelChoice[]);
+      modal.body.replaceChildren(); const search = input('Search models'); search.field.classList.add('model-search');
+      const list = element('div', 'options model-results'); list.setAttribute('role', 'menu'); list.setAttribute('aria-label', 'Models');
+      const coverage = element('p', 'secondary model-coverage'); coverage.setAttribute('role', 'status');
+      modal.body.append(search.label, search.field, coverage, list);
+      const applied = (model: ModelChoice) => {
+        selected = {provider: model.provider, modelId: model.id};
+        if (modal.owns(token)) paint();
+      };
       const paint = () => {
         list.replaceChildren();
-        for (const model of page.items as ModelChoice[]) if (`${model.name} ${model.provider}/${model.id}`.toLocaleLowerCase().includes(search.field.value.toLocaleLowerCase())) {
-          const label = `${model.name} · ${model.provider}/${model.id}`;
-          const node = choice(label, selected?.provider === model.provider && selected.modelId === model.id, () => {
-            node.disabled = true; node.setAttribute('aria-busy', 'true');
-            void modal.run(async () => { try { if(selection)await this.configure(selection,{model:{provider:model.provider,modelId:model.id}});else await this.control({action: 'model', provider: model.provider, modelId: model.id} as PrimaryControl, primary); this.resources.delete(`${primary.key}:${primary.epoch}:thinking`);this.resources.delete(`${primary.key}:${primary.epoch}:thinking:page:`); } finally {node.disabled = false; node.removeAttribute('aria-busy');} });
-          }); list.append(node);
+        if (!modal.owns(token)) return;
+        const catalog = this.listedModels(primary, workspace, selected, page.items as ModelChoice[], search.field.value);
+        for (const model of catalog) {
+          list.append(this.modelOption(model, selected, token, () => this.applyModelChoice(primary, captured, workspace, model, token, () => applied(model))));
         }
+        coverage.textContent = page.nextCursor ? 'Search covers listed models. More models are available below.' : 'Search covers the available model list.';
+        if (!list.children.length) list.append(element('p', 'secondary', 'No loaded models match.'));
       };
       list.addEventListener('keydown', event => navigateOptions(event, list));
-      search.field.addEventListener('input', paint); paint(); search.field.focus();
+      this.modelPickerPaint = () => {if (modal.owns(token)) paint(); else this.modelPickerPaint = undefined;};
+      search.field.addEventListener('input', paint); paint();
+      if (typeof matchMedia === 'function' && matchMedia('(pointer:coarse)').matches) modal.focusTitle(); else search.field.focus();
       if (page.nextCursor) {
-        const more = button('More models', () => { more.disabled = true; void modal.run(async () => {
-          try { const next = await request<ResourcePage>(this.path(primary, `resources/models?limit=100&cursor=${encodeURIComponent(page.nextCursor ?? '')}`)); page.items = [...page.items as ModelChoice[], ...next.items as ModelChoice[]]; page.nextCursor = next.nextCursor; more.hidden = !next.nextCursor; this.learnModels(next.items as ModelChoice[]); paint(); }
-          finally { more.disabled = false; }
+        const more = button('More models', () => { void modal.run(async () => {
+          const cursor = page.nextCursor; if (!cursor || !modal.owns(token)) return;
+          const next = await this.resourcePage(primary, 'models', cursor); if (!modal.owns(token)) return;
+          page.items = [...page.items as ModelChoice[], ...next.items as ModelChoice[]]; page.nextCursor = next.nextCursor; more.hidden = !next.nextCursor;
+          this.learnModels(next.items as ModelChoice[]); paint();
         }, false, 'Models could not be loaded.'); }); modal.body.append(more);
       }
     }, false, 'Models could not be loaded.');
   }
   thinkingPicker(selection?: SettingsSelection): void {
     const primary = selection?.primary ?? this.ctx.primary(); if (!selection && !primary) return;
-    const modal = this.ctx.modal; modal.open(selection?.target.kind==='agent'?'Thinking level for agent':'Thinking level for Primary',undefined,selection?.closed); const token = modal.token;
+    const captured = selection ?? this.pickerSelection(primary as PrimaryView), modal = this.ctx.modal;
+    modal.open(captured.target.kind === 'agent' ? 'Thinking level for agent' : 'Thinking level for Primary', undefined, captured.closed); modal.sheet('content');
+    if (captured.trigger) modal.restoreFocus(captured.trigger);
+    const token = modal.token; modal.focusTitle();
     void modal.run(async () => {
-      const page = selection?.target.kind==='agent'?{items:selection.levels ?? []}:await this.resourcePage(primary as PrimaryView,'thinking'); if (!modal.owns(token)) return;
-      const list = element('div', 'options'); list.setAttribute('role', 'menu'); list.setAttribute('aria-label', 'Thinking levels');
-      for (const level of page.items as string[]) list.append(choice(level, (selection?.thinking ?? primary?.thinkingLevel) === level, () => { void modal.run(() => selection?this.configure(selection,{thinkingLevel:level}):this.control({action: 'thinking', level} as PrimaryControl, primary)); }));
-      list.addEventListener('keydown', event => navigateOptions(event, list)); modal.body.append(list); list.querySelector<HTMLButtonElement>('button')?.focus();
+      const page = captured.target.kind === 'agent' ? {items: captured.levels ?? []} : await this.resourcePage(primary as PrimaryView, 'thinking'); if (!modal.owns(token)) return;
+      const list = element('div', 'options thinking-options'); list.setAttribute('role', 'menu'); list.setAttribute('aria-label', 'Thinking levels');
+      let selected: HTMLButtonElement | undefined;
+      for (const level of page.items as string[]) {
+        const checked = captured.thinking === level, label = ({xhigh: 'Extra high', max: 'Maximum'} as Record<string, string>)[level] ?? (level.charAt(0).toLocaleUpperCase() + level.slice(1));
+        const node = choice(label, checked, () => { if (modal.owns(token)) void modal.run(() => this.configure(captured, {thinkingLevel: level})); });
+        node.dataset.level = level; node.title = level; if (checked) selected = node; list.append(node);
+      }
+      list.addEventListener('keydown', event => navigateOptions(event, list)); modal.body.append(list);
+      if (selected) selected.focus({preventScroll: true}); else modal.focusTitle();
+      if (!list.children.length) list.append(element('p', 'secondary', 'Thinking levels are unavailable for this model.'));
     }, false, 'Thinking levels could not be loaded.');
   }
   messageInput(): void {

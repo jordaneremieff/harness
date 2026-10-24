@@ -41,7 +41,7 @@ test('named navigation views preserve pane layout, native editor, caret, draft a
   for(const view of navigationViews){
     app.showNavigationView(view);await settle();
     for(const [name,id]of Object.entries(sections)){assert.equal(byId(id).hidden,name!==view,`${view}: ${id}`);assert.equal(byId(id).inert,name!==view);}
-    assert.equal(byId('navigation-title').textContent,view==='sessions'?'Pi':view.charAt(0).toUpperCase()+view.slice(1));
+    assert.equal(byId('navigation-title').textContent,view==='sessions'?'Sessions':view.charAt(0).toUpperCase()+view.slice(1));
     assert.equal(byId('navigation-back').hidden,view==='sessions');
     assert.equal(byId('navigation-back').parentNode,byId('navigation-title').parentNode);
     for (const destination of ['agents','threads','files']) {
@@ -132,7 +132,7 @@ test('Recents selects only the exact saved row when no Primary is selected',asyn
   });
   await arrive({workspace:{id:'saved-selection',revision:1,conversationLayout:createPaneLayout([{kind:'session',id:first.id,path:first.path,project:first.project,name:first.title}])},primaries:[],roster:[]});await settle();
   const rows=byId('recent-sessions').querySelectorAll('.sidebar-content-row'),selected=rows.filter(node=>node.getAttribute('aria-current')==='page');
-  assert.equal(rows.length,2);assert.deepEqual(selected.map(node=>node.textContent),[first.title]);
+  assert.equal(rows.length,2);assert.deepEqual(selected.map(node=>node.querySelector('.row-title')?.textContent),[first.title]);
 });
 
 test('saved header actions keep pane controls behind Arrange view and close only the captured view',async t=>{
@@ -144,16 +144,16 @@ test('saved header actions keep pane controls behind Arrange view and close only
   });
   await arrive({workspace:{id:'saved-header-menu',revision:1,conversationLayout:createPaneLayout([{kind:'session',id:saved.id,path:saved.path,project:saved.project,name:saved.title}])},primaries:[],roster:[]});await settle();
   const trigger=byId('conversation-actions'),menu=()=>hostDocument.body.querySelector('.context-menu');
-  trigger.focus();trigger.click();assert.deepEqual(menu()?.querySelectorAll('button').map(node=>node.textContent),['Conversation details','Arrange view…','Close view']);
-  assert.equal(menu()?.querySelectorAll('[role="separator"]').length,1);
-  chooseMenu('Conversation details');assert.equal(byId('modal-title').textContent,'Conversation details');byId('modal-close').click();assert.equal(hostDocument.activeElement,trigger);
-  trigger.click();chooseMenu('Arrange view…');
+  trigger.focus();trigger.click();assert.deepEqual(menu()?.querySelectorAll('button').map(node=>node.textContent),['Session details','Display','Commands']);
+  assert.equal(menu()?.querySelectorAll('[role="separator"]').length,0);
+  chooseMenu('Session details');assert.equal(byId('modal-title').textContent,'Conversation details');byId('modal-close').click();assert.equal(hostDocument.activeElement,trigger);
+  trigger.click();chooseMenu('Display');chooseMenu('Arrange view…');
   const labels=menu()?.querySelectorAll('button').map(node=>node.textContent)??[];
   for(const label of ['Split right','Split down','Move tab to pane','Close tab','Close pane','Close others','Close all'])assert.ok(labels.some(text=>text.startsWith(label)),label);
   menu()?.dispatch('keydown',{key:'Escape'});assert.equal(hostDocument.activeElement,trigger);
-  trigger.click();const stale=menu()?.querySelectorAll('button').find(node=>node.textContent==='Close view');assert.ok(stale);
+  trigger.click();chooseMenu('Display');const stale=menu()?.querySelectorAll('button').find(node=>node.textContent==='Close view');assert.ok(stale);
   const workspace=app.state.workspace;assert.ok(workspace);workspace.revision++;const before=structuredClone(workspace.conversationLayout);stale.click();await settle();assert.deepEqual(app.state.workspace?.conversationLayout,before);workspace.revision--;
-  const start=browser.transportLog.length;trigger.click();chooseMenu('Close view');await settle();
+  const start=browser.transportLog.length;trigger.click();chooseMenu('Display');chooseMenu('Close view');await settle();
   assert.equal(byId('conversation-actions').disabled,true);assert.equal(hostDocument.activeElement,trigger);
   assert.equal(browser.transportLog.slice(start).some(call=>call.path==='/api/operations'||call.path.startsWith('/api/sessions/metadata')),false);
 });
@@ -185,7 +185,7 @@ test('reload restores the Agents drawer before its focused native Message editor
   t.after(()=>{byId('agent-message-close').click();host.viewport=1200;});
   const primary=primaryFixture({epoch:23400,activity:'idle'}),target={kind:'primary' as const,key:primary.key,epoch:primary.epoch},identity='navigation-message';
   await arrive({workspace:{id:'navigation-reload',revision:1,primaryKey:primary.key,conversationLayout:twoPanes(identity,'primary-pane')},primaries:[primary],roster:[agentFixture(identity)],targets:[targetFixture('navigation-reload-draft',target),targetFixture('navigation-message-draft',{kind:'agent',identity},{draft:{revision:1,text:'Retained Message draft',mode:'prompt',images:[],persisted:true}})]});
-  host.viewport=390;app.toggleSidebar(true);app.openConversationActions('agent-pane');const message=hostDocument.body.querySelector('.context-menu')?.querySelectorAll('button').find(node=>node.textContent==='Message');assert.ok(message);message.click();await settle();
+  host.viewport=390;app.toggleSidebar(true);app.openConversationActions('agent-pane');chooseMenu('Tasks');const message=hostDocument.body.querySelector('.context-menu')?.querySelectorAll('button').find(node=>node.textContent==='Message');assert.ok(message);message.click();await settle();
   const editor=hostDocument.body.querySelector('.composer[data-message-panel="true"] textarea');assert.ok(editor);editor.focus();editor.setSelectionRange(2,8,'backward');
   await app.drainDev(new AbortController().signal);await settle();
   const checkpoint:DevReloadCheckpoint={...app.captureDevCheckpoint(),version:1,generation:'a'.repeat(64),oldClient:'b'.repeat(24),capturedAt:Date.now(),interactionRevision:0};
@@ -198,8 +198,120 @@ test('reload restores the Agents drawer before its focused native Message editor
   assert.equal(hostDocument.body.querySelector('.composer[data-message-panel="true"] textarea'),editor);assert.equal(hostDocument.activeElement,editor);assert.equal(editor.value,'Retained Message draft');
 });
 
+test('direct destinations and Settings pages retain the conversation without input or preference writes',async()=>{
+  await arrive({workspace:{id:'navigation-pages',revision:1,primaryKey:'p'},primaries:[primaryFixture()],roster:[]});
+  const editor=primaryControl('editor'),parents=ancestry(editor),start=browser.transportLog.length;
+  selectionSaves.length=0;
+  for(const view of ['agents','threads','files'] as const){byId(`navigate-${view}`).click();assert.equal(app.navigationViews.view,view);byId('navigation-back').click();}
+  byId('settings-button').click();assert.equal(byId('settings-preferences').hidden,false);assert.equal(byId('settings-workspace').hidden,true);assert.equal(byId('settings-help').hidden,true);
+  byId('settings-workspace-page').click();assert.equal(byId('settings-workspace').hidden,false);assert.equal(byId('settings-preferences').hidden,true);
+  byId('settings-back').click();byId('settings-help-page').click();assert.equal(byId('settings-help').hidden,false);byId('settings-back').click();
+  assert.deepEqual(ancestry(editor),parents);assert.equal(selectionSaves.length,0);
+  assert.equal(browser.transportLog.slice(start).some(call=>call.path.includes('/inputs')||call.path==='/api/operations'),false);
+});
+
+test('recent rows join bounded title cursors and filter only loaded context without transcript reads',async t=>{
+  const saved={id:'cursor-session',path:'/fixture/project/cursor-session.jsonl',project:'/fixture/project',revision:'r',title:'(title pending)',titleState:'pending' as const,modifiedAt:'2026-10-23T00:00:00Z',size:10};
+  const fetch=globalThis.fetch,reads:string[]=[];
+  t.mock.method(globalThis,'fetch',async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const url=new URL(String(input),'http://ui.test');
+    if(url.pathname==='/api/sessions'){
+      reads.push(url.href);const filled=url.searchParams.has('titles');
+      return Response.json({ok:true,data:{items:[filled?{...saved,title:'A recognisable prompt',titleSource:'prompt',titleState:'ready'}:saved],total:1,omitted:0,nextCursor:null,titleCursor:filled?null:'bounded-cursor',observedAt:''}});
+    }
+    return fetch(input,init);
+  });
+  const primary=primaryFixture({epoch:24100,sessionId:saved.id,sessionFile:saved.path,sessionName:undefined});
+  await arrive({workspace:{id:'cursor-rows',revision:1,primaryKey:primary.key},primaries:[primary],roster:[]});await settle();
+  const row=byId('recent-sessions').querySelector('.sidebar-content-row');assert.ok(row);
+  assert.equal(row.querySelector('.row-title')?.textContent,'A recognisable prompt');assert.match(row.querySelector('.sidebar-session-context')?.textContent??'',/project/);
+  assert.equal(reads.length,2);assert.ok(reads[1]?.includes('titles=bounded-cursor'));
+  const requests=browser.transportLog.length,filter=byId('session-search');filter.value='not in loaded rows';filter.dispatch('input');assert.match(byId('recent-sessions').textContent,/No matches in loaded recent sessions/);
+  filter.value='project';filter.dispatch('input');assert.equal(byId('recent-sessions').querySelector('.sidebar-content-row'),row);
+  assert.equal(browser.transportLog.length,requests);filter.value='';filter.dispatch('input');
+});
+
+test('a replaced session never borrows a title or time from the same saved path with another id',async t=>{
+  const saved={id:'old-session',path:'/fixture/project/reused.jsonl',project:'/fixture/project',revision:'r',title:'Another session name',titleSource:'name',titleState:'ready',modifiedAt:'2026-10-23T00:00:00Z',size:10},fetch=globalThis.fetch;
+  t.mock.method(globalThis,'fetch',async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const path=new URL(String(input),'http://ui.test').pathname;
+    if(path==='/api/sessions'||path==='/api/sessions/published')return Response.json({ok:true,data:{items:[saved],total:1,omitted:0,nextCursor:null,titleCursor:null,observedAt:''}});
+    return fetch(input,init);
+  });
+  const primary=primaryFixture({epoch:24500,sessionId:'replacement-session',sessionFile:saved.path,sessionName:undefined});
+  await arrive({workspace:{id:'replaced-row-metadata',revision:1,primaryKey:primary.key},primaries:[primary],roster:[]});await settle();
+  const rows=byId('recent-sessions').querySelectorAll('.sidebar-content-row');assert.equal(rows.length,1);assert.equal(rows[0]?.querySelector('.row-title')?.textContent,'Untitled session');assert.equal(rows[0]?.querySelector('.sidebar-session-context')?.textContent,'');
+});
+
+test('a title cursor failure preserves successful catalogue rows and its separate diagnostic',async t=>{
+  const saved={id:'failed-title',path:'/fixture/project/failed-title.jsonl',project:'/fixture/project',revision:'r',title:'(title pending)',titleState:'pending' as const,modifiedAt:'2026-10-23T00:00:00Z',size:10};
+  const fetch=globalThis.fetch;
+  t.mock.method(globalThis,'fetch',async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const url=new URL(String(input),'http://ui.test');if(url.pathname==='/api/sessions'){
+      if(url.searchParams.has('titles'))throw new Error('Title source is unavailable.');
+      return Response.json({ok:true,data:{items:[saved],total:1,omitted:0,nextCursor:null,titleCursor:'failed-title-cursor',observedAt:''}});
+    }
+    return fetch(input,init);
+  });
+  const primary=primaryFixture({epoch:24300,sessionId:saved.id,sessionFile:saved.path});
+  await arrive({workspace:{id:'failed-title-rows',revision:1,primaryKey:primary.key},primaries:[primary],roster:[]});await settle();
+  const row=byId('recent-sessions').querySelector('.sidebar-content-row');assert.ok(row);assert.match(row.querySelector('.sidebar-session-context')?.textContent??'',/project/);
+  byId('settings-button').click();byId('settings-help-page').click();
+  byId('settings-help').querySelectorAll('button').find(node=>node.dataset.setting==='Version and health')?.click();await settle();
+  assert.match(byId('modal-body').textContent,/Title source is unavailable/);byId('modal-close').click();
+});
+
+test('picker dismissal restores its exact trigger instead of the native editor',async t=>{
+  const fetch=globalThis.fetch;
+  t.mock.method(globalThis,'fetch',async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const path=new URL(String(input),'http://ui.test').pathname;
+    if(path.endsWith('/resources/models'))return Response.json({ok:true,data:{items:[{provider:'fixture',id:'model',name:'Fixture model',reasoning:true,input:['text'],thinkingLevels:['off','high']}],nextCursor:null,revision:'r'}});
+    if(path.endsWith('/resources/thinking'))return Response.json({ok:true,data:{items:['off','high'],nextCursor:null,revision:'r'}});
+    return fetch(input,init);
+  });
+  const primary=primaryFixture({epoch:24200,activity:'idle',model:{provider:'fixture',id:'model',name:'Fixture model',reasoning:true,input:['text']},thinkingLevel:'high'}),target={kind:'primary' as const,key:primary.key,epoch:primary.epoch};
+  await arrive({workspace:{id:'picker-trigger',revision:1,primaryKey:primary.key},primaries:[primary],roster:[],targets:[targetFixture('picker-trigger-draft',target)]});browser.event('ready',{bootId:'boot'});await settle();
+  const editor=primaryControl('editor'),parents=ancestry(editor);
+  for(const key of ['model','thinking']){const trigger=primaryControl(key);assert.equal(trigger.disabled,false);editor.focus();trigger.click();await settle();byId('modal-close').click();assert.equal(hostDocument.activeElement,trigger);assert.equal(trigger.getAttribute('aria-expanded'),'false');assert.deepEqual(ancestry(editor),parents);}
+});
+
+test('unnamed agent tabs and open saved tabs use exact supplied folder and time context',async t=>{
+  const saved={id:'open-context',path:'/fixture/saved-context.jsonl',project:'/fixture/research',revision:'r',title:'Research',titleSource:'name' as const,titleState:'ready' as const,modifiedAt:'2026-10-23T00:00:00Z',size:10};
+  const fetch=globalThis.fetch;
+  t.mock.method(globalThis,'fetch',async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const path=new URL(String(input),'http://ui.test').pathname;
+    if(path==='/api/sessions/published')return Response.json({ok:true,data:{items:[saved],total:1,omitted:0,nextCursor:null,titleCursor:null,observedAt:''}});
+    if(path==='/api/sessions/history')return Response.json({ok:true,data:{session:saved,entries:[],coverage:browser.coverage,leaf:null,before:null,observedAt:''}});
+    return fetch(input,init);
+  });
+  const agents=[agentFixture('unnamed-agent-a',{name:undefined,handle:undefined,cwd:'/fixture/project-a',state:'working',modifiedAt:Date.parse('2026-10-22T00:00:00Z')}),agentFixture('unnamed-agent-b',{name:undefined,handle:undefined,cwd:'/fixture/project-b',state:'idle',modifiedAt:Date.parse('2026-10-23T00:00:00Z')})];
+  const layout=createPaneLayout([{kind:'session',id:saved.id,path:saved.path,project:saved.project,name:saved.title},...agents.map(row=>({kind:'agent' as const,identity:row.identity}))]);
+  await arrive({workspace:{id:'exact-row-context',revision:1,conversationLayout:layout},primaries:[],roster:agents});await settle();
+  const rows=byId('recent-sessions').querySelectorAll('.sidebar-content-row'),contexts=rows.map(row=>row.querySelector('.sidebar-session-context')?.textContent??'');
+  assert.equal(rows.length,3);assert.match(contexts[0]??'',/research/);assert.match(contexts[1]??'',/project-a.*Last observed: working/);assert.match(contexts[2]??'',/project-b.*Last observed: idle/);assert.equal(new Set(contexts).size,3);
+  assert.match(rows[0]?.title??'',/2026/,'Catalogue timestamp replaces the layout stub, after exact id and path matching.');
+  const requests=browser.transportLog.length,filter=byId('session-search');filter.value='project-b';filter.dispatch('input');
+  assert.deepEqual(byId('recent-sessions').querySelectorAll('.sidebar-content-row').map(row=>row.dataset.sessionKey),['agent:unnamed-agent-b']);
+  assert.equal(browser.transportLog.length,requests);filter.value='';filter.dispatch('input');
+});
+
+test('viewport geometry coalesces and shares height and top with sheets without a second keyboard offset',async t=>{
+  const listeners=new Map<string,()=>void>(),viewport={scale:1,height:480.4,offsetTop:31.6,addEventListener:(name:string,run:()=>void)=>listeners.set(name,run)};
+  const media=globalThis.matchMedia;t.mock.method(globalThis,'matchMedia',(query:string)=>query==='(pointer:coarse)'?{matches:true} as MediaQueryList:media(query));
+  Object.defineProperty(window,'visualViewport',{configurable:true,value:viewport});
+  t.after(()=>{Reflect.deleteProperty(window,'visualViewport');hostDocument.documentElement.style.removeProperty('--app-height');hostDocument.documentElement.style.removeProperty('--app-top');delete hostDocument.documentElement.dataset.keyboard;document.body.style.translate='';});
+  app.installViewportSync();assert.equal(hostDocument.documentElement.properties.get('--app-height'),'480px');assert.equal(hostDocument.documentElement.properties.get('--app-top'),'32px');
+  assert.equal(document.body.style.translate,'0 32px');assert.deepEqual([...listeners.keys()],['resize','scroll']);
+  viewport.height=430.2;listeners.get('resize')?.();listeners.get('scroll')?.();await settle();assert.equal(hostDocument.documentElement.properties.get('--app-height'),'430px');
+  viewport.scale=2;listeners.get('resize')?.();await settle();assert.equal(hostDocument.documentElement.properties.has('--app-height'),false);assert.equal(hostDocument.documentElement.properties.has('--app-top'),false);assert.equal(document.body.style.translate,'');
+});
+
 function chooseMenu(label:string):void {
-  const item=hostDocument.body.querySelector('.context-menu')?.querySelectorAll('button').find(node=>node.textContent===label);assert.ok(item,label);item.click();
+  const menu=()=>hostDocument.body.querySelector('.context-menu');
+  let item=menu()?.querySelectorAll('button').find(node=>node.textContent===label);
+  if(!item){const group=label==='Message box size'?'Display':label==='Conversation details'?'Session details':undefined;
+    menu()?.querySelectorAll('button').find(node=>node.textContent===group)?.click();item=menu()?.querySelectorAll('button').find(node=>node.textContent===label);}
+  assert.ok(item,label);item.click();
 }
 test('tablet drawer blocks background controls and restores focus without moving the editor',async t=>{
   t.after(()=>{host.viewport=1200;app.toggleSidebar(false);});
@@ -242,6 +354,20 @@ test('session metadata rename, archive, restore and replacement use exact aliase
   const writes=metadataWrites.length;browser.event('primary.state',{...primary,sessionId:'native-c',sessionFile:'/fixture/project/c.jsonl',sessionName:undefined});
   byId('modal-body').querySelectorAll('button').find(node=>node.textContent==='Save')?.click();await settle();assert.equal(metadataWrites.length,writes);assert.equal(byId('session-rename-name').value,'Keep this refusal input');assert.match(byId('modal-error').textContent,/session changed/);
   assert.equal(humanSessionTitle(['project · abcdef12','A loaded prompt']),'A loaded prompt');
+});
+
+test('archive prerequisites expose the real writer controls without an automatic stop or close',async t=>{
+  t.after(()=>{metadataItems=[];byId('modal-close').click();});
+  for(const activity of ['idle','running'] as const){
+    const primary=primaryFixture({epoch:24400,activity,sessionId:`archive-${activity}`,sessionFile:`/fixture/project/archive-${activity}.jsonl`,sessionName:`Archive ${activity}`}),target={kind:'primary' as const,key:primary.key,epoch:primary.epoch};
+    metadataItems=[{target,aliases:['primary:p',`path:${primary.sessionFile}`,`id:${primary.sessionId}`],title:primary.sessionName??'',archived:false,canRename:true,canArchive:false,canRestore:false,reason:'Stop this session before archiving.'}];
+    await arrive({workspace:{id:`archive-route-${activity}`,revision:1,primaryKey:primary.key},primaries:[primary],roster:[],targets:[targetFixture(`archive-draft-${activity}`,target)]});await settle();
+    const start=browser.transportLog.length;byId('recent-sessions').querySelector('.session-row-menu')?.click();await settle();
+    const menu=hostDocument.body.querySelector('.context-menu');assert.ok(menu);assert.equal(menu.querySelectorAll('button').find(node=>node.textContent.startsWith('Archive'))?.getAttribute('aria-disabled'),'true');
+    chooseMenu(activity==='idle'?'Close session':'Open conversation');await settle();
+    if(activity==='idle'){assert.match(byId('modal-title').textContent,/Close Archive idle/);byId('modal-close').click();}
+    assert.equal(browser.transportLog.slice(start).some(call=>call.path.endsWith('/close')||call.path.endsWith('/abort')||call.path.includes('/inputs')),false);
+  }
 });
 
 test('metadata listing retains unrelated archive facts when a live mutation arrives during its read',async t=>{

@@ -19,10 +19,16 @@ test('a definite receipt supersedes a retained provisional error label', () => {
   assert.equal(operationLabel({...operation('primary.input', 'accepted'), error}), 'Message sent');
 });
 test('input uncertainty and refusal retain their separate meanings', () => {
-  assert.equal(operationLabel(operation('primary.input', 'uncertain')), 'Send not confirmed');
+  assert.equal(operationLabel(operation('primary.input', 'uncertain')), 'Delivery not confirmed');
   assert.equal(operationLabel(operation('primary.input', 'rejected')), 'Message not sent');
 });
 
+test('input progress and queued acceptance use plain distinct delivery labels', () => {
+  assert.equal(operationLabel(operation('primary.input', 'reserved')), 'Preparing message');
+  assert.equal(operationLabel(operation('primary.control', 'reserved')), 'Preparing action');
+  assert.equal(operationLabel({...operation('primary.input', 'accepted'), receipt: {kind: 'rpc', disposition: 'queued'}}), 'Message queued');
+  assert.equal(operationLabel({...operation('primary.input', 'accepted'), receipt: {kind: 'rpc', disposition: 'started'}}), 'Message sent');
+});
 test('completed controls use their exact action and retain unknown-action fallback', () => {
   for (const [action, label] of [['model', 'Model changed'], ['thinking', 'Thinking changed'], ['compact', 'Compaction completed']]) assert.equal(operationLabel({...operation('primary.control','completed'), action}), label);
   assert.equal(operationLabel({...operation('primary.control','completed'), action: 'unfamiliar'}), 'Action completed');

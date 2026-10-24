@@ -31,8 +31,13 @@ export function previewAttachment(workspace: string, targetKey: string, image: D
 export function attachmentSummary(workspace: string, targetKey: string, images: readonly DraftImage[]): HTMLElement {
   const list = element('ul', 'attachment-summary');
   for (const image of images) {
-    const row = element('li'); const preview = button(`Preview ${image.name}`, () => previewAttachment(workspace, targetKey, image, preview));
-    row.append(element('span', 'attachment-name', image.name), element('code', 'attachment-digest', image.digest), preview); list.append(row);
+    const row = element('li'), preview = button('', () => previewAttachment(workspace, targetKey, image, preview), 'attachment-summary-preview');
+    preview.setAttribute('aria-label', `Preview ${image.name}`); preview.title = image.name;
+    const picture = element('img'); picture.alt = ''; picture.loading = 'lazy'; picture.decoding = 'async'; picture.referrerPolicy = 'no-referrer';
+    picture.src = draftImageUrl(workspace, targetKey, image.digest); picture.addEventListener('error', () => picture.removeAttribute('src'));
+    preview.append(picture, element('span', 'attachment-name', image.name));
+    const details = element('details'); details.append(element('summary', undefined, 'Details'), element('code', 'attachment-digest', image.digest));
+    row.append(preview, details); list.append(row);
   }
   return list;
 }
@@ -95,7 +100,7 @@ function jpegSegment(bytes: Uint8Array, view: DataView, start: number): {offset:
 function jpegSize(bytes: Uint8Array, view: DataView): {width: number; height: number} {
   if (bytes.length < 4 || view.getUint16(bytes.length - 2) !== 0xffd9) throw new Error('Invalid JPEG container.');
   let offset = 2;
-  while (offset + 4 <= bytes.length && offset < 65536) {
+  while (offset + 4 <= bytes.length) {
     const segment = jpegSegment(bytes, view, offset), {marker, length} = segment; offset = segment.offset;
     if (marker === 0xda || marker === 0xd9) break;
     if ([0xc0, 0xc1, 0xc2].includes(marker)) {
@@ -104,7 +109,7 @@ function jpegSize(bytes: Uint8Array, view: DataView): {width: number; height: nu
     }
     offset += length;
   }
-  throw new Error('JPEG dimensions are unavailable within the header limit.');
+  throw new Error('JPEG dimensions are unavailable.');
 }
 /** Matches the server's bounded container policy; browser decoding is a separate check. */
 export function attachmentMetadata(bytes: Uint8Array): Omit<DraftImage, 'digest' | 'name'> {
