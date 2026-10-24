@@ -1495,6 +1495,45 @@ test('an earlier page completes its pending saved anchor at the exact offset', (
   assert.equal(node('primary-transcript').scrollTop, anchor.offsetTop + 17); assert.equal(view.restorationCurrent(reading), false);
 });
 
+test('a viewport clamp at the tail preserves follow intent through the next output update', () => {
+  setup(); const geometry = geometryEnvironment();
+  try {
+    let earlier = 0;
+    const view = new Transcript('primary', {presentation: () => {}, reading: () => {}, earlier: () => { earlier++; }}), container = node('primary-transcript'); scrollable(container);
+    const entries = Array.from({length: 8}, (_, index) => entry(`viewport-${index}`));
+    view.set(entries); flush(); container.dispatch('scroll');
+    const observer = geometry.observers[0]; assert.ok(observer);
+    const before = container.scrollTop; view.historyAvailable(true);
+    container.clientHeight += 700; container.scrollTop = before;
+    assert.ok(container.scrollTop < before, 'the browser clamps its previous tail offset after the viewport grows');
+    container.dispatch('scroll'); observer.emit(container, container.clientWidth, container.clientHeight);
+    flush(); geometry.run(); flush();
+    assert.equal(view.captureGeometry().followTail, true);
+    assert.equal(node('primary-latest').hidden, true); assert.equal(earlier, 0, 'the clamp does not request older history');
+    view.set([...entries, entry('viewport-new', 'Newest visible line')]); flush();
+    assert.equal(container.scrollTop, container.scrollHeight - container.clientHeight);
+    container.clientHeight -= 150; observer.emit(container, container.clientWidth, container.clientHeight);
+    geometry.run(); flush();
+    assert.equal(container.scrollTop, container.scrollHeight - container.clientHeight, 'a taller composer keeps the newest line above its edge');
+    assert.equal(view.captureGeometry().followTail, true); view.destroy();
+  } finally { geometry.restore(); }
+});
+test('a short deliberate upward move still leaves the tail even inside the follow threshold', () => {
+  setup(); const view = transcript(), container = node('primary-transcript'); scrollable(container);
+  view.set(Array.from({length: 8}, (_, index) => entry(`upward-${index}`))); flush(); container.dispatch('scroll');
+  container.scrollTop -= 2; container.dispatch('scroll'); flush();
+  assert.equal(view.captureGeometry().followTail, false); assert.equal(node('primary-latest').hidden, false); view.destroy();
+});
+test('a viewport tail clamp does not override selected text', () => {
+  setup(); const view = transcript(), container = node('primary-transcript'); scrollable(container);
+  view.set(Array.from({length: 8}, (_, index) => entry(`selected-${index}`))); flush(); container.dispatch('scroll');
+  const paragraph = container.querySelector('p'); assert.ok(paragraph);
+  selection = {isCollapsed: false, anchorNode: paragraph, focusNode: paragraph};
+  const before = container.scrollTop;
+  container.clientHeight += 100; container.scrollTop = before; container.dispatch('scroll'); flush();
+  assert.equal(view.captureGeometry().followTail, false); assert.equal(node('primary-latest').hidden, false);
+  selection = null; view.destroy();
+});
 test('resize measurements reconcile the virtual tail without another scroll event', () => {
   setup(); const geometry = geometryEnvironment(); const createElement = fakeDocument.createElement;
   let height = 2000;

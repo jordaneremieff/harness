@@ -357,10 +357,11 @@ export class Transcript {
       if (this.node.scrollTop === this.writtenScrollTop) {this.writtenScrollTop = undefined; this.lastScrollTop = this.node.scrollTop; return;}
       this.writtenScrollTop = undefined;
       this.scrolling.add(this.node); this.reflowAnchor = undefined; this.restoring = undefined;
-      const upward = this.node.scrollTop < this.lastScrollTop;
-      this.follow = !upward && this.node.scrollHeight - this.node.scrollTop - this.node.clientHeight < 48 && !this.hasSelection();
+      const upward = this.node.scrollTop < this.lastScrollTop, maximum = Math.max(0, this.node.scrollHeight - this.node.clientHeight);
+      const clampedTail = this.follow && upward && this.lastScrollTop > maximum && Math.abs(this.node.scrollTop - maximum) <= 1;
+      this.follow = (!upward || clampedTail) && maximum - this.node.scrollTop < 48 && !this.hasSelection();
       this.syncLatest();
-      this.readEarlier(upward);
+      this.readEarlier(upward && !clampedTail);
       this.lastScrollTop = this.node.scrollTop;
       this.readingDirty = true; this.schedule();
     }, {passive: true});
