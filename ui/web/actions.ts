@@ -20,6 +20,8 @@ export const COMMAND_INVENTORY_PAGE_LIMIT = 8;
 export const LOADED_MESSAGE_ROW_LIMIT = 100;
 /** Pages of the Primary model list read for display names; a model beyond them shows its id. */
 export const MODEL_NAME_PAGE_LIMIT = 10;
+/** The picker reads up to this many 100-model pages; a longer list is reported as partly unlisted. */
+const MODEL_PICKER_PAGE_LIMIT = 30;
 const appearanceChoices: readonly [Appearance, string][] = [['system', 'System'], ['dark', 'Dark'], ['light', 'Light']];
 /** The server links the user stylesheet into the page only when the file is usable, so the link is the applied state. */
 export function userStylesheetApplied(): boolean {
@@ -204,11 +206,12 @@ export class Actions {
     const current = this.ctx.primary();
     return this.resourceVersion === version && current?.lifecycle === 'ready' && current.key === primary.key && current.epoch === primary.epoch;
   }
-  private resourcePage(primary: PrimaryView, kind: ResourceKind, cursor?: string): Promise<ResourcePage> {
+  private resourcePage(primary: PrimaryView, kind: ResourceKind, cursor?: string, refresh = false): Promise<ResourcePage> {
     const key = `${primary.key}:${primary.epoch}:${kind}:page:${cursor ?? ''}`;
+    if (refresh) for (const name of [...this.resources.keys()]) if (name.startsWith(`${primary.key}:${primary.epoch}:${kind}:page:`)) this.resources.delete(name);
     let cache = this.resources.get(key);
     if (!cache) {
-      cache = request<ResourcePage>(this.path(primary, `resources/${kind}?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`)).then(page => {
+      cache = request<ResourcePage>(this.path(primary, `resources/${kind}?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}${refresh ? '&refresh=1' : ''}`)).then(page => {
         if (kind === 'models') {
           const owner = `${primary.key}:${primary.epoch}`, catalog = this.catalogChoices.get(owner) ?? new Map<string, ModelChoice>();
           for (const model of page.items as ModelChoice[]) catalog.set(JSON.stringify([model.provider, model.id]), model);
@@ -448,6 +451,20 @@ export class Actions {
     }, `${model.provider}/${model.id}`);
     node.dataset.model = JSON.stringify([model.provider, model.id]); return node;
   }
+  /** Reads the process's current model list, every page up to the bound, asking it to list its models again first. */
+  private async readModelList(primary: PrimaryView): Promise<{all: ModelChoice[]; omitted: boolean}> {
+    const first = await this.resourcePage(primary, 'models', undefined, true), all = [...first.items as ModelChoice[]];
+    let cursor = first.nextCursor;
+    for (let index = 1; cursor && index < MODEL_PICKER_PAGE_LIMIT; index++) {
+      const next = await this.resourcePage(primary, 'models', cursor);
+      all.push(...next.items as ModelChoice[]); cursor = next.nextCursor;
+    }
+    return {all, omitted: !!cursor};
+  }
+  private async readThinkingLevels(primary: PrimaryView, captured: SettingsSelection, fallback: string[] = []): Promise<string[]> {
+    if (captured.target.kind === 'agent') return captured.levels ?? fallback;
+    return (await this.resourcePage(primary, 'thinking').catch(() => ({items: fallback}))).items as string[];
+  }
   modelPicker(selection?: SettingsSelection): void {
     const primary = selection?.primary ?? (selection ? (this.ctx.namingPrimary ?? this.ctx.primary)() : this.ctx.primary()); if (!primary) return;
     const captured = this.pickerSelection(primary, selection), workspace = this.ctx.snapshot()?.workspace?.id;
@@ -456,38 +473,73 @@ export class Actions {
     if (captured.trigger) modal.restoreFocus(captured.trigger);
     const token = modal.token; modal.focusTitle(); modal.body.append(element('p', 'secondary', 'Loading models'));
     void modal.run(async () => {
-      const page = await this.resourcePage(primary, 'models'); if (!modal.owns(token)) return;
-      this.learnModels(page.items as ModelChoice[]);
+      // Every open reads the process's current list, so models added after the process started appear without a restart.
+      const listing = await this.readModelList(primary); if (!modal.owns(token)) return;
+      const {all, omitted} = listing; this.learnModels(all);
+      const loadedLevels = await this.readThinkingLevels(primary, captured); if (!modal.owns(token)) return;
+      let levels = loadedLevels, thinking = captured.thinking, mode: 'quick' | 'all' = 'quick'; const expanded = new Set<string>(), collapsed = new Set<string>();
       modal.body.replaceChildren(); const search = input('Search models'); search.field.classList.add('model-search');
+      const modes = element('div', 'model-modes'); modes.setAttribute('role', 'group'); modes.setAttribute('aria-label', 'Model list');
+      const quickMode = button('Quick', () => {mode = 'quick'; paint();}, 'model-mode'), allMode = button('All', () => {mode = 'all'; paint();}, 'model-mode');
+      modes.append(quickMode, allMode);
       const list = element('div', 'options model-results'); list.setAttribute('role', 'menu'); list.setAttribute('aria-label', 'Models');
       const coverage = element('p', 'secondary model-coverage'); coverage.setAttribute('role', 'status');
-      modal.body.append(search.label, search.field, coverage, list);
+      modal.body.append(modes, search.label, search.field, coverage, list);
       const applied = (model: ModelChoice) => {
         selected = {provider: model.provider, modelId: model.id};
+        void this.readThinkingLevels(primary, captured, levels).then(next => {levels = next; if (modal.owns(token)) paint();});
         if (modal.owns(token)) paint();
       };
-      const paint = () => {
-        list.replaceChildren();
-        if (!modal.owns(token)) return;
-        const catalog = this.listedModels(primary, workspace, selected, page.items as ModelChoice[], search.field.value);
-        for (const model of catalog) {
-          list.append(this.modelOption(model, selected, token, () => this.applyModelChoice(primary, captured, workspace, model, token, () => applied(model))));
+      const row = (model: ModelChoice): HTMLElement[] => {
+        const node = this.modelOption(model, selected, token, () => this.applyModelChoice(primary, captured, workspace, model, token, () => applied(model)));
+        const current = selected?.provider === model.provider && selected.modelId === model.id, steps = (model.thinkingLevels ?? levels).filter((level): level is string => typeof level === 'string');
+        if (!current || !steps.length) return [node];
+        const strip = element('div', 'model-levels'); strip.setAttribute('role', 'group'); strip.setAttribute('aria-label', 'Thinking level');
+        for (const level of steps) {
+          const control = button(level, () => { if (!modal.owns(token)) return; void modal.run(async () => {await this.configure(captured, {thinkingLevel: level}); thinking = level; paint();}, false); }, 'model-level');
+          control.dataset.level = level; control.setAttribute('aria-pressed', String(thinking === level)); control.title = ({xhigh: 'Extra high', max: 'Maximum'} as Record<string, string>)[level] ?? level; strip.append(control);
         }
-        coverage.textContent = page.nextCursor ? 'Search covers listed models. More models are available below.' : 'Search covers the available model list.';
+        return [node, strip];
+      };
+      const heading = (text: string): HTMLElement => element('div', 'model-section', text);
+      const providerOrder = (models: ModelChoice[]): string[] => {
+        const names = [...new Set(models.map(model => model.provider))].sort((x, y) => x.localeCompare(y));
+        return selected ? [selected.provider, ...names.filter(name => name !== selected?.provider)] : names;
+      };
+      const paintQuick = (catalog: ModelChoice[]) => {
+        const key = (m: {provider: string; id?: string; modelId?: string}) => JSON.stringify([m.provider, m.id ?? m.modelId]);
+        const current = selected ? catalog.find(model => key(model) === key(selected as {provider: string; modelId: string})) : undefined;
+        if (current) list.append(heading('Current'), ...row(current));
+        const recent = ((this.ctx.snapshot()?.workspace?.recentModels) ?? []).flatMap(item => {const model = catalog.find(candidate => key(candidate) === key(item)); return model && model !== current ? [model] : [];}).slice(0, 4);
+        if (recent.length) list.append(heading('Recent'), ...recent.flatMap(row));
+        if (!current && !recent.length) {mode = 'all'; paintAll(catalog); return;}
+        const more = button('', () => {mode = 'all'; paint();}, 'model-all-link'); more.append(element('span', undefined, 'All models'), element('span', 'model-count', String(catalog.length)));
+        more.setAttribute('aria-label', `All models, ${catalog.length}`); const tail = element('div', 'model-all'); tail.append(more); list.append(tail);
+      };
+      const paintAll = (catalog: ModelChoice[]) => {
+        for (const provider of providerOrder(catalog)) {
+          const models = catalog.filter(model => model.provider === provider);
+          const open = expanded.has(provider) || !collapsed.has(provider) && (selected?.provider === provider || new Set(catalog.map(model => model.provider)).size === 1);
+          const header = element('div', 'model-group'); const toggle = button('', () => {if (open) {expanded.delete(provider); collapsed.add(provider);} else {collapsed.delete(provider); expanded.add(provider);} paint();}, 'model-group-toggle');
+          toggle.setAttribute('aria-expanded', String(open)); toggle.append(cardIcon('chevron'), element('span', 'model-group-name', provider), element('span', 'model-count', String(models.length)));
+          header.append(toggle); list.append(header);
+          if (open) list.append(...models.flatMap(row));
+        }
+      };
+      const paint = () => {
+        list.replaceChildren(); quickMode.setAttribute('aria-pressed', String(mode === 'quick')); allMode.setAttribute('aria-pressed', String(mode === 'all'));
+        if (!modal.owns(token)) return;
+        const query = search.field.value.trim(), catalog = this.listedModels(primary, workspace, selected, all, query);
+        modes.hidden = !!query;
+        if (query) list.append(...catalog.flatMap(row)); else if (mode === 'quick') paintQuick(catalog); else paintAll(catalog);
+        quickMode.setAttribute('aria-pressed', String(mode === 'quick')); allMode.setAttribute('aria-pressed', String(mode === 'all'));
+        coverage.hidden = !omitted; coverage.textContent = omitted ? 'Some models are not listed because the list is very long. Search covers the listed models.' : '';
         if (!list.children.length) list.append(element('p', 'secondary', 'No loaded models match.'));
       };
       list.addEventListener('keydown', event => navigateOptions(event, list));
       this.modelPickerPaint = () => {if (modal.owns(token)) paint(); else this.modelPickerPaint = undefined;};
       search.field.addEventListener('input', paint); paint();
       if (typeof matchMedia === 'function' && matchMedia('(pointer:coarse)').matches) modal.focusTitle(); else search.field.focus();
-      if (page.nextCursor) {
-        const more = button('More models', () => { void modal.run(async () => {
-          const cursor = page.nextCursor; if (!cursor || !modal.owns(token)) return;
-          const next = await this.resourcePage(primary, 'models', cursor); if (!modal.owns(token)) return;
-          page.items = [...page.items as ModelChoice[], ...next.items as ModelChoice[]]; page.nextCursor = next.nextCursor; more.hidden = !next.nextCursor;
-          this.learnModels(next.items as ModelChoice[]); paint();
-        }, false, 'Models could not be loaded.'); }); modal.body.append(more);
-      }
     }, false, 'Models could not be loaded.');
   }
   thinkingPicker(selection?: SettingsSelection): void {

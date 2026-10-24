@@ -609,17 +609,21 @@ test('model choices put current and exact loaded recents first, retain identity 
   const current = {...primary, model: model('vendor', 'current')}, workspace = {id: 'workspace', recentModels: [{provider: 'vendor', modelId: 'recent'}, {provider: 'missing', modelId: 'not-loaded'}, {provider: 'vendor', modelId: 'current'}]};
   const f = settingsFixture({primary: () => current, snapshot: () => ({primaries: [current], workspace}) as unknown as Snapshot});
   const paths: string[] = [];
-  globalThis.fetch = async path => {paths.push(String(path)); return Response.json({ok: true, data: String(path).includes('cursor=') ? {items: [model('other', 'later'), model('vendor', 'recent')], nextCursor: null, revision: 'r'} : {items: [model('other', 'plain'), model('vendor', 'recent'), model('vendor', 'current')], nextCursor: 'next', revision: 'r'}});};
+  globalThis.fetch = async path => {paths.push(String(path)); if (String(path).includes('/thinking')) return Response.json({ok: true, data: {items: [], nextCursor: null, revision: 'r'}}); return Response.json({ok: true, data: String(path).includes('cursor=') ? {items: [model('other', 'later'), model('vendor', 'recent')], nextCursor: null, revision: 'r'} : {items: [model('other', 'plain'), model('vendor', 'recent'), model('vendor', 'current')], nextCursor: 'next', revision: 'r'}});};
   try {
     f.actions.modelPicker(); await new Promise(resolve => setImmediate(resolve));
     assert.equal(f.nodes.get('modal')?.dataset.sheet, 'searchable'); assert.equal(focused, f.nodes.get('modal-title'));
-    assert.deepEqual(f.rows().map(row => row.title), ['vendor/current', 'vendor/recent', 'other/plain']);
+    assert.deepEqual(f.rows().map(row => row.title), ['vendor/current', 'vendor/recent']);
     assert.equal(f.rows()[0]?.attributes.get('aria-checked'), 'true'); assert.equal(f.rows()[0]?.children[1]?.textContent, 'Readable');
     const search = f.body.children.find(node => node.className === 'model-search'); assert.ok(search);
     search.value = 'other/plain'; search.dispatchEvent(new Event('input')); assert.deepEqual(f.rows().map(row => row.title), ['other/plain']);
-    assert.match(textOf(f.body), /Search covers listed models/);
-    const more = f.body.children.find(node => node.textContent === 'More models'); assert.ok(more); more.dispatchEvent(new Event('click')); await new Promise(resolve => setImmediate(resolve));
-    search.value = ''; search.dispatchEvent(new Event('input')); assert.equal(f.rows().length, 4); assert.equal(more.hidden, true); assert.match(textOf(f.body), /Search covers the available model list/); assert.equal(paths.length, 2);
+    search.value = 'later'; search.dispatchEvent(new Event('input')); assert.deepEqual(f.rows().map(row => row.title), ['other/later'], 'search reaches models beyond the first page');
+    search.value = ''; search.dispatchEvent(new Event('input'));
+    const modeButton = (label: string) => f.body.children.find(node => node.className === 'model-modes')?.children.find(node => node.textContent === label); const all = modeButton('All'); assert.ok(all); all.dispatchEvent(new Event('click'));
+    assert.deepEqual(f.rows().map(row => row.title), ['vendor/current', 'vendor/recent'], 'the selected provider group opens first');
+    const groups = () => f.body.children.find(node => node.className === 'options model-results')?.children.filter(node => node.className === 'model-group') ?? []; assert.deepEqual(groups().map(node => node.children[0]?.children[1]?.textContent), ['vendor', 'other']);
+    groups()[1]?.children[0]?.dispatchEvent(new Event('click')); assert.deepEqual(f.rows().map(row => row.title), ['vendor/current', 'vendor/recent', 'other/plain', 'other/later']);
+    assert.ok(paths[0]?.includes('refresh=1'), 'the first read asks the process for its current model list'); assert.equal(paths.filter(path => path.includes('/models')).length, 2);
   } finally {f.restore();}
 });
 test('current and recent models beyond the first page use only their exact Primary catalogue', async () => {
@@ -628,13 +632,13 @@ test('current and recent models beyond the first page use only their exact Prima
   const workspace = {id: 'workspace', recentModels: [{provider: 'vendor', modelId: 'recent-later'}]}, paths: string[] = [];
   const f = settingsFixture({primary: () => current, snapshot: () => ({primaries: [current], workspace}) as unknown as Snapshot});
   globalThis.fetch = async path => {
-    paths.push(String(path));
+    paths.push(String(path)); if (String(path).includes('/thinking')) return Response.json({ok: true, data: {items: [], nextCursor: null, revision: 'r'}});
     return Response.json({ok: true, data: String(path).includes('/other/') ? {items: [model('other-only')], nextCursor: null, revision: 'other'} : String(path).includes('cursor=') ? {items: [model('current-later'), model('recent-later')], nextCursor: null, revision: 'r'} : {items: [model('first-page')], nextCursor: 'next', revision: 'r'}});
   };
   try {
     f.actions.readModelNames(); await new Promise(resolve => setImmediate(resolve)); assert.equal(paths.length, 2);
     f.actions.modelPicker(); await new Promise(resolve => setImmediate(resolve));
-    assert.deepEqual(f.rows().map(row => row.title), ['vendor/current-later', 'vendor/recent-later', 'vendor/first-page']); assert.equal(paths.length, 2);
+    assert.deepEqual(f.rows().map(row => row.title), ['vendor/current-later', 'vendor/recent-later']);
     assert.equal(f.rows()[0]?.attributes.get('aria-checked'), 'true');
     current = {...current, key: 'other', epoch: 2}; f.modal.close(); f.actions.readModelNames(); await new Promise(resolve => setImmediate(resolve));
     f.actions.modelPicker(); await new Promise(resolve => setImmediate(resolve));
@@ -665,7 +669,7 @@ test('a confirmed model records bounded recents but a preference failure never b
   for (const fail of [false, true]) {
     const workspace = {id: 'workspace', recentModels: Array.from({length: 5}, (_, index) => ({provider: 'vendor', modelId: String(index)}))}, writes: unknown[] = [];
     const f = settingsFixture({snapshot: () => ({primaries: [primary], workspace}) as unknown as Snapshot, selection: async value => {writes.push(value); if (fail) throw new Error('Preference disk unavailable');}});
-    globalThis.fetch = async () => Response.json({ok: true, data: {items: [{provider: 'vendor', id: 'new', name: 'New model', reasoning: false, input: ['text']}], nextCursor: null, revision: 'r'}});
+    globalThis.fetch = async path => Response.json({ok: true, data: {items: String(path).includes('/thinking') ? [] : [{provider: 'vendor', id: 'new', name: 'New model', reasoning: false, input: ['text']}], nextCursor: null, revision: 'r'}});
     try {
       let applied = 0; f.actions.configure = async () => {applied++;}; f.actions.modelPicker(); await new Promise(resolve => setImmediate(resolve));
       f.rows()[0]?.dispatchEvent(new Event('click')); await new Promise(resolve => setImmediate(resolve));
@@ -677,7 +681,7 @@ test('a confirmed model records bounded recents but a preference failure never b
 });
 test('an unconfirmed model does not change selection or recents', async () => {
   const workspace = {id: 'workspace'}, f = settingsFixture({snapshot: () => ({primaries: [primary], workspace}) as unknown as Snapshot, selection: async () => {throw new Error('Recents must not change');}});
-  globalThis.fetch = async () => Response.json({ok: true, data: {items: [{provider: 'v', id: 'm', name: 'Model', reasoning: false, input: ['text']}], nextCursor: null, revision: 'r'}});
+  globalThis.fetch = async path => Response.json({ok: true, data: {items: String(path).includes('/thinking') ? [] : [{provider: 'v', id: 'm', name: 'Model', reasoning: false, input: ['text']}], nextCursor: null, revision: 'r'}});
   try {
     f.actions.configure = async () => {throw new Error('Settings update was not confirmed.');};
     f.actions.modelPicker(); await new Promise(resolve => setImmediate(resolve)); f.rows()[0]?.dispatchEvent(new Event('click')); await new Promise(resolve => setImmediate(resolve));

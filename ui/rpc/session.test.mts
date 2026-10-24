@@ -296,3 +296,13 @@ test('handoff refuses to report success while child remains alive', async () => 
   child.autoExit = false; await assert.rejects(session.handoff({ epoch: 1, mode: 'settle', clearQueue: false }), { code: 'handoff_blocked' });
   assert.equal(session.view.lifecycle, 'stopping'); child.exit(0);
 });
+
+test('refreshing models reads the process list again and changes the resource revision only when the list changed', async () => {
+  const {child, session} = create(); await session.start();
+  const before = session.resourcesRevision; await session.refreshModels(); assert.equal(session.resourcesRevision, before);
+  const listed = [{provider: 'acceptance-fixture', id: 'test', name: 'Fixture', reasoning: true, input: ['text']}, {provider: 'later', id: 'added', name: 'Added after start', reasoning: false, input: ['text']}];
+  child.onCommand = record => { if (record.type === 'get_available_models') child.response(record, {models: listed}); else child.defaults(record); };
+  await session.refreshModels(); assert.deepEqual(session.models.map(item => `${item.provider}/${item.id}`), ['acceptance-fixture/test', 'later/added']); assert.equal(session.resourcesRevision, before + 1);
+  child.onCommand = record => { if (record.type === 'get_available_models') child.response(record, {models: 'invalid'}); else child.defaults(record); };
+  await assert.rejects(session.refreshModels(), {code: 'protocol_error'}); assert.equal(session.models.length, 2); child.onCommand = record => child.defaults(record); await session.close();
+});

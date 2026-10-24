@@ -85,6 +85,11 @@ function read(registry: Registry,key: string,parts: string[],url: URL) {
   if(parts[3] === 'history') return readHistoryContent(registry,key,parts,url);
   if(parts[3] === 'diagnostics') return {stderr:projectJson(session.stderrTail),error:session.view.lastError};
   if(parts[3] !== 'resources') throw new ApiError('invalid_request','The primary read route does not exist.',404);
+  return refreshedResources(session,key,parts,url);
+}
+/** A model read may ask the process to list its models again first. */
+async function refreshedResources(session: ReturnType<Registry['primary']>,key: string,parts: string[],url: URL) {
+  if(parts[4] === 'models' && url.searchParams.get('refresh') === '1') await session.refreshModels().catch(() => undefined);
   return readResources(session,key,parts,url);
 }
 function readHistoryContent(registry: Registry,key: string,parts: string[],url: URL) {

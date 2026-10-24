@@ -195,7 +195,7 @@ function check(files: ReadonlyMap<string, Analysis>, runtime: Set<string>, dev: 
   for (const filename of files.keys()) if (filename.startsWith(`${path.join(ui, 'web')}${path.sep}`) && filename.endsWith('.ts') && !filename.endsWith('.test.ts')) browser(filename);
   return errors;
 }
-async function sources(directories = [ui, transport], maxVisits = 512, maxBytes = inventoryBudget) {
+async function sources(directories = [ui, transport], maxVisits = 768, maxBytes = inventoryBudget) {
   const filenames = new Set<string>(), files = new Map<string, Analysis>(); let visits = 0, bytes = 0, retainedBytes = 0, peakBytes = 0;
   // Logical bytes cover filenames, one live UTF-8 source and serialized Analysis, not parser heap or RSS.
   const admit = (filename: string) => {

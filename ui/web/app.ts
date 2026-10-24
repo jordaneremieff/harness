@@ -2216,11 +2216,13 @@ function paintModelSetting(node:HTMLButtonElement,view:ConversationPresentation,
   setText(node.querySelector<HTMLElement>('.composer-setting-label') as HTMLElement,view.model?listedModelText(view.model):'Model unavailable');
   node.title=[id?`${id} · ${owner}`:'Model unavailable',view.retainedModel?'Last observed model':'',reason].filter(Boolean).join('\n');
   node.setAttribute('aria-label',id?`Model for ${owner}: ${id}`:`Model for ${owner}: unavailable`);
+  // Model and thinking read as one control: the thinking effort is drawn beside the model name and chosen in the same sheet.
+  const meter=cardIcon(thinkingMeter(view.thinking));meter.classList.add('composer-meter');node.querySelector('.composer-meter')?.remove();
+  if(view.thinking){meter.setAttribute('role','img');meter.setAttribute('aria-hidden','false');meter.setAttribute('aria-label',`Thinking ${view.thinking}`);}
+  node.append(meter);
 }
 function paintThinkingSetting(node:HTMLButtonElement,view:ConversationPresentation,owner:string,reason?:string):void {
-  const label=node.querySelector<HTMLElement>('.composer-setting-label') as HTMLElement;
-  setText(label,view.thinking?effortText(view.thinking):'Thinking unavailable');label.classList.add('sr-only');
-  const meter=cardIcon(thinkingMeter(view.thinking));meter.classList.add('composer-meter');node.querySelector('.composer-meter')?.remove();node.insertBefore(meter,label);
+  setText(node.querySelector<HTMLElement>('.composer-setting-label') as HTMLElement,view.thinking?effortText(view.thinking):'Thinking unavailable');
   node.title=[view.thinking?`Thinking level: ${view.thinking}`:'Thinking unavailable',view.retainedThinking?'Last observed thinking':'',reason].filter(Boolean).join('\n');
   node.setAttribute('aria-label',view.thinking?`Thinking level for ${owner}: ${view.thinking}`:`Thinking level for ${owner}: unavailable`);
 }

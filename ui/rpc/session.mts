@@ -184,6 +184,16 @@ export class PrimarySession {
     if (Buffer.byteLength(JSON.stringify([this.commands, this.models, this.thinking])) > 1024 * 1024) throw new RpcError('capacity', 'Resource cache exceeds its limit.');
     this.resourcesRevision++; await this.resynchronize();
   }
+  /** Reads the process's current model list again, so a model added after startup is offered without a restart. A failed read keeps the cached list. */
+  async refreshModels(): Promise<void> {
+    if (this.closing) return;
+    const data = object(await this.client.request('get_available_models')).models;
+    if (!Array.isArray(data)) throw new RpcError('protocol_error', 'Invalid primary resource response.');
+    const next = data.map(model);
+    if (JSON.stringify(next) === JSON.stringify(this.models)) return;
+    if (Buffer.byteLength(JSON.stringify(next)) > 1024 * 1024) throw new RpcError('capacity', 'Resource cache exceeds its limit.');
+    this.models = next; this.resourcesRevision++;
+  }
   private deadline(): void {
     if (!this.rejectStartup) return;
     if (this.startupTimer) { clearTimeout(this.startupTimer); this.startupTimer = undefined; this.remaining -= performance.now() - this.timerAt; }
