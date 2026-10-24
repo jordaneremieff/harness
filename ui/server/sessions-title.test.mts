@@ -61,6 +61,25 @@ test('an oversized first user never becomes the short later user', async t => {
   assert.deepEqual(await scanSessionTitle(path, size), {title: '(title unavailable)', titleState: 'unavailable'});
 });
 
+test('an oversized system record before the first user keeps the first user title', async t => {
+  const pi = line({type: 'message', id: 'a1', parentId: null, timestamp: '2026-10-24T00:00:00.000Z', message: {role: 'system', content: '', sections: {preamble: 's'.repeat(300 * 1024)}}});
+  const real = await fixture(t, line({type: 'session', id: 'saved'}) + pi + message('user', 'first prompt\nmore') + message('user', 'later'));
+  assert.deepEqual(await scanSessionTitle(real.path, real.size), {title: 'first prompt', titleSource: 'prompt', titleState: 'ready'});
+  const bare = await fixture(t, message('system', 's'.repeat(300 * 1024)) + message('user', 'first prompt'));
+  assert.deepEqual(await scanSessionTitle(bare.path, bare.size), {title: 'first prompt', titleSource: 'prompt', titleState: 'ready'});
+});
+
+test('an oversized first user with a leading text block uses that text', async t => {
+  const {path, size} = await fixture(t, message('user', [{type: 'text', text: 'Look at this screenshot\nsecond line'}, {type: 'image', data: 'a'.repeat(700 * 1024)}]) + message('user', 'later'));
+  assert.deepEqual(await scanSessionTitle(path, size), {title: 'Look at this screenshot', titleSource: 'prompt', titleState: 'ready'});
+});
+
+test('string values before the message cannot forge the role of an oversized record', async t => {
+  const forged = line({type: 'message', note: '","message":{"role":"assistant"', message: {role: 'user', content: 'u'.repeat(600 * 1024)}});
+  const {path, size} = await fixture(t, forged + message('user', 'later'));
+  assert.deepEqual(await scanSessionTitle(path, size), {title: '(title unavailable)', titleState: 'unavailable'});
+});
+
 test('first image-only user does not become a later text user', async t => {
   const {path, size} = await fixture(t, message('user', [{type: 'image', data: 'image'}]) + message('user', 'later'));
   assert.equal((await scanSessionTitle(path, size)).titleState, 'unavailable');

@@ -134,9 +134,33 @@ class TypePeek {
   }
   type(): string | undefined { return !this.#invalid && this.#stage === 'done' ? this.#type : undefined; }
 }
-function skipped(type: string | undefined, state: ScanState): void {
+const HEAD_BYTES = 4096;
+const headText = new TextDecoder('utf-8', {ignoreBOM: true});
+// Root keys before `message` must hold primitives, so string content cannot forge the role or the text.
+const MESSAGE_HEAD = /^\{"type":"message"(?:,"[A-Za-z]+":(?:"(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null))*,"message":\{"role":"([A-Za-z]+)"(?:,"content":(?:("(?:[^"\\]|\\.)*")|\[\{"type":"text","text":("(?:[^"\\]|\\.)*")))?/;
+type MessageHead = {role?: string; text?: string};
+/** Reads the role and a leading complete text from the bounded start of an oversized message record. */
+function messageHead(head: Buffer | undefined): MessageHead {
+  const match = head ? MESSAGE_HEAD.exec(headText.decode(head)) : null;
+  if (!match) return {};
+  const literal = match[2] ?? match[3];
+  if (literal === undefined) return {role: match[1]};
+  try { const text: unknown = JSON.parse(literal); return typeof text === 'string' ? {role: match[1], text} : {role: match[1]}; }
+  catch { return {role: match[1]}; }
+}
+function headOf(parts: readonly Buffer[]): Buffer {
+  const head = Buffer.alloc(HEAD_BYTES); let used = 0;
+  for (const part of parts) { if (used >= HEAD_BYTES) break; used += part.copy(head, used, 0, Math.min(part.length, HEAD_BYTES - used)); }
+  return head.subarray(0, used);
+}
+function skipped(type: string | undefined, state: ScanState, head: MessageHead = {}): void {
   if (type === undefined || type === 'session_info') state.nameKnown = false;
-  if (!state.seenUser && (type === undefined || type === 'message')) { state.seenUser = true; state.userKnown = false; }
+  if (state.seenUser || (type !== undefined && type !== 'message')) return;
+  // A known system, assistant or tool record is not the first user prompt.
+  if (type === 'message' && head.role !== undefined && head.role !== 'user') return;
+  state.seenUser = true;
+  if (type === 'message' && head.role === 'user' && head.text !== undefined) state.firstUser = titleExcerpt(firstTextLine(head.text));
+  else state.userKnown = false;
 }
 function consume(line: string, bytes: Buffer, state: ScanState): void {
   if (!line.trim()) return;
@@ -157,6 +181,7 @@ class SnapshotLines {
   #parts: Buffer[] = [];
   #bytes = 0;
   #peek?: TypePeek;
+  #head?: Buffer;
   async consume(buffer: Buffer, state: ScanState, deadline: number): Promise<boolean> {
     let start = 0; let records = 0; let sliceStart = performance.now();
     while (start < buffer.length) {
@@ -174,6 +199,7 @@ class SnapshotLines {
   #part(part: Buffer): void {
     this.#bytes += part.length;
     if (!this.#peek && this.#bytes > LINE_BYTES) {
+      this.#head = headOf([...this.#parts, part]);
       this.#peek = new TypePeek();
       for (const previous of this.#parts) this.#peek.feed(previous);
       this.#parts = [];
@@ -181,13 +207,13 @@ class SnapshotLines {
     if (this.#peek) this.#peek.feed(part); else this.#parts.push(part);
   }
   #finish(state: ScanState): void {
-    if (this.#peek) skipped(this.#peek.type(), state);
+    if (this.#peek) { const type = this.#peek.type(); skipped(type, state, type === 'message' ? messageHead(this.#head) : {}); }
     else {
       const bytes = Buffer.concat(this.#parts, this.#bytes);
       try { consume(utf8.decode(bytes), bytes, state); }
       catch { const peek = new TypePeek(); peek.feed(bytes); skipped(peek.type(), state); }
     }
-    this.#parts = []; this.#bytes = 0; this.#peek = undefined;
+    this.#parts = []; this.#bytes = 0; this.#peek = undefined; this.#head = undefined;
   }
   eof(state: ScanState): void { if (this.#bytes) this.#finish(state); }
 }
