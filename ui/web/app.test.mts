@@ -1553,8 +1553,6 @@ test('conversation actions use short destinations and Settings owns workspace in
   conversationChoice('Grouped');
   for (const label of ['Conversation', 'Grouped']) {const choice = conversationChoice(label); assert.ok(choice); assert.equal(choice.getAttribute('role'), 'menuitemradio'); assert.equal(choice.getAttribute('aria-description'), `View: ${label}`); assert.equal(choice.title, `View: ${label}`); assert.equal(choice.getAttribute('aria-checked'), String(label === 'Conversation'));}
   contextMenu.close();app.showNavigationView('settings');
-  byId('settings-preferences').querySelectorAll('button').find(node=>node.dataset.setting==='Message input')?.click();
-  assert.equal(byId('modal-title').textContent, 'Message input'); assert.match(byId('modal-body').textContent, /Applies to this workspace/);
   assert.deepEqual(app.state.workspace?.selectedTarget, selected); assert.equal(selectionSaves.length, saves); assert.equal(transportLog.length, requests);
   byId('modal-close').click(); app.focusPane('primary-pane'); await settle(); app.openConversationActions('primary-pane');
   assert.deepEqual(menuNode().children.filter(node=>node.tagName==='button').map(node=>node.textContent),['Find','Display','Tasks','Session details','Commands']);
@@ -1714,7 +1712,7 @@ test('Navigation exposes its named destinations and Settings exposes the existin
   byId('navigate-commands').click();
   assert.equal(byId('modal-title').textContent,'Commands');byId('modal-close').click();
   byId('settings-button').click();assert.equal(app.navigationViews.view,'settings');
-  for(const name of ['Appearance','Message input','Keyboard shortcuts','Agent control','Workspaces','Archived workspaces','Saved drafts and messages','Help'])assert.ok(byId('settings-choices').querySelectorAll('button').find(node=>node.getAttribute('aria-label')===name),name);
+  for(const name of ['Appearance','Keyboard shortcuts','Agent control','Workspaces','Archived workspaces','Saved drafts and messages','Help'])assert.ok(byId('settings-choices').querySelectorAll('button').find(node=>node.getAttribute('aria-label')===name),name);
   const agentControl=byId('settings-choices').querySelectorAll('button').find(node=>node.getAttribute('aria-label')==='Agent control');assert.ok(agentControl);
   assert.equal(agentControl.getAttribute('role'),'switch');assert.equal(agentControl.getAttribute('aria-checked'),String(app.state.workspace?.agentControl!==false));
   const appearance=byId('settings-choices').querySelectorAll('button').find(node=>node.textContent==='Appearance');assert.ok(appearance);appearance.click();assert.equal(byId('modal-title').textContent,'Appearance');byId('modal-close').click();

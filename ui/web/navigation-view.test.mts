@@ -71,7 +71,7 @@ test('dedicated destinations show every loaded row and Settings retains the curr
   selectionSaves.length=0;app.showNavigationView('settings');
   assert.deepEqual(byId('settings-choices').querySelectorAll('.settings-group-title').map(node=>node.id),['settings-preferences-title','settings-workspace-title','settings-help-title']);
   for(const name of ['preferences','workspace','help'])assert.equal(byId(`settings-${name}`).getAttribute('aria-labelledby'),`settings-${name}-title`);
-  assert.deepEqual(byId('settings-preferences').querySelectorAll('button').map(node=>node.dataset.setting),['Appearance','Message input','Agent presentation control','Keyboard shortcuts']);
+  assert.deepEqual(byId('settings-preferences').querySelectorAll('button').map(node=>node.dataset.setting),['Appearance','Agent presentation control','Keyboard shortcuts']);
   assert.equal(byId('project-button').closest('.settings-group'),byId('settings-workspace'));
   assert.deepEqual(byId('settings-workspace').querySelectorAll('button').map(node=>node.dataset.setting).filter(Boolean),['Workspaces','Archived workspaces','Archived sessions','Saved drafts and messages']);
   assert.deepEqual(byId('settings-help').querySelectorAll('button').map(node=>node.dataset.setting),['Help','Version and health','Interface updates']);

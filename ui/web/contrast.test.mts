@@ -434,10 +434,10 @@ function runBackground(context: Context, value: string): boolean {
 }
 function diffBackground(context: Context, name: string): boolean {
   const diff = diffSurfaces.get(name), tool = toolSurfaces.get(name);
-  if (!diff && !tool) return false;
-  const selectors = diff ? [diff.selector] : tool!.selectors, foreground = (diff ?? tool!).foreground;
-  if (!selectors.includes(context.rule.selector) || token(context.decl.color ?? '') !== foreground) context.issues.push(`${context.theme}: diff surface requires its explicit foreground: ${context.source}`);
-  else context.measure('diff-background', `${context.source} --${foreground} / --${name}`, foreground, name, diff ? 6.5 : 6);
+  const explicit = diff ? {selectors: [diff.selector], foreground: diff.foreground, threshold: 6.5} : tool ? {selectors: tool.selectors, foreground: tool.foreground, threshold: 6} : undefined;
+  if (!explicit) return false;
+  if (!explicit.selectors.includes(context.rule.selector) || token(context.decl.color ?? '') !== explicit.foreground) context.issues.push(`${context.theme}: diff surface requires its explicit foreground: ${context.source}`);
+  else context.measure('diff-background', `${context.source} --${explicit.foreground} / --${name}`, explicit.foreground, name, explicit.threshold);
   return true;
 }
 // Mixed fills resolve to opaque colors, then every text tier that can sit on them is measured.

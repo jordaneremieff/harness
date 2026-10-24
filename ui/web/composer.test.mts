@@ -1580,3 +1580,11 @@ test('an open extension dialog changes the pending send line to Waiting for your
   assert.doesNotMatch(f.node('receipt').textContent, /Waiting for your answer|Sending…/);
   f.composer.destroy();
 });
+
+test('the return key hint follows what Enter does on the input device', () => {
+  for (const [sends, hint] of [[true, 'send'], [false, 'enter']] as const) {
+    const f = fixture('primary', undefined, true, undefined, () => sends);
+    assert.equal(f.node('editor').getAttribute('enterkeyhint'), hint);
+    f.composer.destroy();
+  }
+});

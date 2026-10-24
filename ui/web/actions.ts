@@ -510,23 +510,6 @@ export class Actions {
       if (!list.children.length) list.append(element('p', 'secondary', 'Thinking levels are unavailable for this model.'));
     }, false, 'Thinking levels could not be loaded.');
   }
-  messageInput(): void {
-    if (!this.ctx.snapshot()?.workspace) return;
-    const modal = this.ctx.modal; modal.open('Message input'); const token = modal.token;
-    const label = element('label', 'message-input-setting'), field = element('input'), progress=element('span','secondary','Saving preference'); field.type = 'checkbox'; field.checked = this.ctx.snapshot()?.workspace.enterSendsMessages === true;progress.hidden=true;
-    label.append(field, element('span', undefined, 'Enter sends messages'), progress);
-    this.preferencePaint=()=>{if(!modal.owns(token)){this.preferencePaint=undefined;return;}if(!field.disabled)field.checked=this.ctx.snapshot()?.workspace.enterSendsMessages === true;};
-    modal.body.append(element('p', 'secondary', 'Applies to this workspace.'), label, element('p', 'secondary', 'When off, Enter adds a new line. When on, Enter sends. Shift+Enter adds a new line. Ctrl+Enter or Command+Enter sends.'));
-    field.addEventListener('change', () => {
-      if (!modal.owns(token) || field.disabled || !this.ctx.snapshot()?.workspace) return;
-      const previous = this.ctx.snapshot()?.workspace.enterSendsMessages === true; field.disabled = true;progress.hidden=false;
-      modal.node.querySelector('#modal-error')?.replaceChildren();
-      void this.ctx.selection({enterSendsMessages: field.checked}).catch(error => {
-        if (modal.owns(token)) {field.checked = previous; modal.error(error, 'The preference was not saved.');}
-      }).finally(() => {if (modal.owns(token)) {field.disabled = false;progress.hidden=true;this.refreshPreferences();}});
-    });
-    field.focus();
-  }
   private conversionEntries():PaletteEntry[]{
     const run=this.ctx.convertSession;
     return run&&this.ctx.hasConvertibleSession?.()?[{name:'Convert to Durable',description:'Create a Durable conversation from the selected saved snapshot',source:'app',enabled:true,run}]:[];
@@ -561,7 +544,6 @@ export class Actions {
       entry('Conversation details', 'Identity, reported facts and diagnostics', () => agent ? this.conversationDetails(agent.identity) : this.sessionDetails(primary), !!primary || !!agent, undefined, 'Requires a selected conversation'),
       entry('Saved drafts and messages', 'Review saved text', () => this.ctx.recovery()),
       {...entry('Appearance', 'Choose a theme', () => this.appearance()), search: ['theme', 'stylesheet', 'css', ...appearanceChoices.flat()]},
-      {...entry('Message input', 'Set the message box Enter action', () => this.messageInput()), search: ['Enter sends messages', 'Enter', 'newline', 'Shift+Enter', 'Ctrl+Enter', 'Command+Enter']},
       {...entry('Agent presentation control', 'Allow agents to arrange this workspace and show notices', () => {
         void this.ctx.selection({agentControl:this.ctx.snapshot()?.workspace.agentControl === false}).catch(error=> {
           this.ctx.modal.open('Agent presentation control');this.ctx.modal.error(error,'The preference was not saved.');
@@ -609,8 +591,8 @@ export class Actions {
     }
     const conversation = new Set(['Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Jump to message…', 'Previous own message', 'Next own message', 'Previous result', 'Next result', 'Previous post', 'Next post', 'Copy agent ID', 'Sent and received tasks', 'Close view']);
     const primaryActions = new Set(['Close session', 'Replace current session', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Model', 'Thinking', 'Review message', 'Insert /agent new']);
-    const workspace = new Set(['New session', 'Sessions', 'Continue a handover', 'Saved drafts and messages', 'Appearance', 'Message input', 'Agent presentation control', 'Keyboard shortcuts', 'Help', 'Notifications', 'Refresh agents', 'Refresh files', 'Go to file…', 'Hide sidebar', 'Show sidebar', 'Projects', 'Next conversation', 'Previous conversation', 'Reopen closed view']);
-    const preferences = new Set(['Appearance','Message input','Agent presentation control','Hide sidebar','Show sidebar']);
+    const workspace = new Set(['New session', 'Sessions', 'Continue a handover', 'Saved drafts and messages', 'Appearance', 'Agent presentation control', 'Keyboard shortcuts', 'Help', 'Notifications', 'Refresh agents', 'Refresh files', 'Go to file…', 'Hide sidebar', 'Show sidebar', 'Projects', 'Next conversation', 'Previous conversation', 'Reopen closed view']);
+    const preferences = new Set(['Appearance','Agent presentation control','Hide sidebar','Show sidebar']);
     return [...entries.filter(item => item.enabled && (workspaceReady || !preferences.has(item.name))).map(item => {
       let priority = 2;
       if (item.source === 'app') {
@@ -658,7 +640,7 @@ export class Actions {
     return agents.slice().sort((a, b) => agentOrder(a) - agentOrder(b)).map(row => ({...(this.ctx.agentCaption?.(row.identity) ?? this.captions.get(row.identity)), description: [this.ctx.agentStatus(row), compactAge(row.modifiedAt, now)].filter(Boolean).join(' · '), search: [row.identity, ...row.handle ? [row.handle] : []], title: row.identity, source: 'agent', enabled: true, run: () => chooseTarget ? chooseTarget({kind: 'agent', identity: row.identity}) : this.ctx.selectAgent(row)}));
   }
   sessionMenuEntries(agent = false): PaletteEntry[] {
-    const names = new Set(agent ? ['Conversation details', 'Copy agent ID', 'Sent and received tasks', 'Saved drafts and messages', 'Message input', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Jump to message…', 'Appearance', 'Help'] : ['New session', 'Replace current session', 'Close session', 'Sessions', 'Continue a handover', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Conversation details', 'Sent and received tasks', 'Saved drafts and messages', 'Message input', 'Appearance', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Jump to message…', 'Model', 'Thinking', 'Review message']);
+    const names = new Set(agent ? ['Conversation details', 'Copy agent ID', 'Sent and received tasks', 'Saved drafts and messages', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Jump to message…', 'Appearance', 'Help'] : ['New session', 'Replace current session', 'Close session', 'Sessions', 'Continue a handover', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Conversation details', 'Sent and received tasks', 'Saved drafts and messages', 'Appearance', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Jump to message…', 'Model', 'Thinking', 'Review message']);
     return this.paletteEntries().filter(item => item.source === 'app' && names.has(item.name));
   }
   sessionMenu(agent = false): void {

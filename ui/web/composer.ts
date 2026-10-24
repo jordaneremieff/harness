@@ -176,6 +176,8 @@ export class Composer {
   private pickerCapture?: InsertionCapture;
   constructor(elements: ComposerElements, hooks: ComposerHooks) {
     this.elements = elements; this.hooks = hooks; this.editor = elements.editor;
+    // The soft keyboard's return key says what Enter does on this device.
+    this.editor.setAttribute('enterkeyhint', this.hooks.enterSends?.() ? 'send' : 'enter');
     if (elements.overlay) this.overlay = new ComposerOverlay(this.editor, elements.overlay);
     this.listen(this.editor, 'input', () => {
       const start = performance.now(), buffer = this.current; this.overlay?.invalidate(); this.change(this.editor.value);

@@ -701,37 +701,6 @@ test('Primary configuration rechecks the captured guard after reservation withou
   reason = 'The workspace changed.'; reserved.resolve(Response.json({ok: true, data: {operationId: 'reserved'}})); await rejected;
   assert.deepEqual(seen, ['/api/operations']); assert.equal(actions.modelChanging(target), false);
 });
-test('Message input opens the workspace preference without mutation and the native checkbox saves its value', async () => {
-  for (const enabled of [undefined, false, true]) {
-    const selections: unknown[] = [], workspace = {enterSendsMessages: enabled};
-    const f = paletteFixture({snapshot: () => ({primaries: [primary], workspace} as unknown as Snapshot), selection: async value => {selections.push(value); workspace.enterSendsMessages = value.enterSendsMessages;}});
-    try {
-      const entries = f.actions.paletteEntries(), item = entries.find(row => row.name === 'Message input'); assert.ok(item);
-      assert.equal(entries.some(row => row.name === 'Enter sends messages'), false);
-      assert.equal(rankPalette(entries, 'Enter sends messages')[0]?.item, item);
-      for (const alias of ['newline', 'Shift+Enter', 'Ctrl+Enter', 'Command+Enter']) assert.equal(rankPalette(entries, alias)[0]?.item, item);
-      item.run(); assert.deepEqual(selections, []); assert.match(textOf(f.body), /Applies to this workspace/);
-      assert.match(textOf(f.body), /When off, Enter adds a new line.*Shift\+Enter adds a new line.*Command\+Enter sends/);
-      const label = f.body.children.find(node => node.className === 'message-input-setting'), field = label?.children[0]; assert.ok(field);
-      assert.equal(label?.tagName, 'label'); assert.equal(field.type, 'checkbox'); assert.equal(field.checked, enabled === true);
-      field.checked = enabled !== true; field.dispatchEvent(new Event('change')); assert.equal(field.disabled, true);
-      await new Promise<void>(resolve => setImmediate(resolve)); assert.deepEqual(selections, [{enterSendsMessages: enabled !== true}]); assert.equal(field.disabled, false);
-    } finally {f.restore();}
-  }
-});
-test('Message input retains the checkbox and reports a failed preference without a second mutation', async () => {
-  let writes = 0; const workspace = {enterSendsMessages: false}; const failure = new Error('Preference unavailable'), errors: unknown[] = [];
-  const f = paletteFixture({snapshot: () => ({primaries: [primary], workspace} as unknown as Snapshot), selection: async value => {if (++writes === 1) throw failure; workspace.enterSendsMessages = value.enterSendsMessages === true;}});
-  f.modal.error = error => {errors.push(error); const note = new FakeNode(); note.textContent = 'The preference was not saved.'; f.error.append(note);};
-  try {
-    f.actions.messageInput(); const field = f.body.children.find(node => node.className === 'message-input-setting')?.children[0]; assert.ok(field);
-    field.checked = true; field.dispatchEvent(new Event('change')); field.dispatchEvent(new Event('change'));
-    await new Promise<void>(resolve => setImmediate(resolve)); assert.equal(writes, 1); assert.deepEqual(errors, [failure]); assert.equal(field.checked, false); assert.equal(field.disabled, false);
-    assert.match(textOf(f.error), /not saved/); field.checked = true; field.dispatchEvent(new Event('change')); assert.equal(textOf(f.error), '');
-    await new Promise<void>(resolve => setImmediate(resolve)); assert.equal(writes, 2); assert.equal(field.checked, true); assert.equal(field.disabled, false); assert.equal(textOf(f.error), ''); assert.equal(f.body.children.find(node => node.className === 'message-input-setting')?.children[0], field);
-    f.modal.open('Other'); field.dispatchEvent(new Event('change')); assert.equal(writes, 2);
-  } finally {f.restore();}
-});
 test('agent presentation control defaults on and the quiet Commands choice saves its inverse',()=> {
   for(const value of [undefined,true,false]) {
     const selections:unknown[]=[];
@@ -752,7 +721,7 @@ test('the palette lists the one sidebar action that applies and still finds it b
 test('palette covers every displaced control and session availability follows the menu', () => {
   const actions = new Actions(context(workspaceReady));
   const names = actions.paletteEntries().filter(item => item.source === 'app').map(item => item.name);
-  assert.deepEqual(names, ['New session', 'Replace current session', 'Close session', 'Sessions', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Conversation details', 'Saved drafts and messages', 'Appearance', 'Message input', 'Agent presentation control', 'Keyboard shortcuts', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Notifications', 'Refresh agents', 'Refresh files', 'Insert /agent new', 'Hide sidebar', 'Projects', 'Workspaces', 'Archived workspaces', 'Model', 'Thinking', 'Sent and received tasks']);
+  assert.deepEqual(names, ['New session', 'Replace current session', 'Close session', 'Sessions', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Conversation details', 'Saved drafts and messages', 'Appearance', 'Agent presentation control', 'Keyboard shortcuts', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Notifications', 'Refresh agents', 'Refresh files', 'Insert /agent new', 'Hide sidebar', 'Projects', 'Workspaces', 'Archived workspaces', 'Model', 'Thinking', 'Sent and received tasks']);
   const absent = new Actions(context({...workspaceReady, primary: () => undefined})).paletteEntries();
   assert.deepEqual(absent.filter(item => !item.enabled), []);
   for (const name of ['Close session', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Model', 'Thinking', 'Sent and received tasks']) assert.equal(absent.some(item => item.name === name), false, name);
@@ -832,7 +801,7 @@ test('agent-selected palette keeps ready Primary actions available but puts thei
   actions.compact = () => {compactions++;}; await actions.load('commands'); const entries = actions.paletteEntries();
   for (const name of ['Compact', 'Fork from message', 'Model', 'Thinking']) {const item = entries.find(entry => entry.name === name); assert.ok(item); assert.equal(item.enabled, true); assert.equal(item.priority, 2);}
   const imported = entries.find(item => item.name === 'Insert /imported'); assert.ok(imported); assert.equal(imported.priority, 2);
-  assert.equal(entries.find(item => item.name === 'Message input')?.priority, 1); assert.equal(entries.find(item => item.name === 'Sent and received tasks')?.priority, 0);
+  assert.equal(entries.find(item => item.name === 'Sent and received tasks')?.priority, 0);
   const ranked = rankPalette(entries, '').map(match => match.item.name); assert.ok(ranked.indexOf('Sent and received tasks') < ranked.indexOf('Compact'));
   entries.find(item => item.name === 'Compact')?.run(); assert.equal(compactions, 1);
 });
