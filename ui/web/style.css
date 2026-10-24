@@ -1994,7 +1994,7 @@ pre[data-wrap=true] { white-space: pre-wrap; overflow-wrap: anywhere; }
 .desk-row-title, .desk-agent { min-height: 32px; line-height: 32px; }
 .desk-answer { margin-top: 8px; padding: 8px 0; border-radius: 6px; background: var(--canvas); }
 .file-name { overflow-x: auto; mask-image: none; scrollbar-width: none; }
-@media (pointer:coarse) { .tool-tier { min-height: 44px; } }
+@media (pointer:coarse) { .tool-tier { min-height: 36px; } }
 [data-label-overflow=false] { mask-image: none !important; }
 .mention-option .command-name { flex: none; min-width: max-content; overflow: visible; mask-image: none; }
 .mention-option { overflow-x: auto; }
@@ -2011,6 +2011,35 @@ pre[data-wrap=true] { white-space: pre-wrap; overflow-wrap: anywhere; }
   .tab-bar > .pane-tab-nav { display: inline-flex; }
   .tab-bar > .pane-tab-nav[data-unreachable=true] { display: none; }
 }
+/* Tool calls: kind chip, tinted title row, subject as monospace title. */
+.tool-kind { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: var(--r-sm); background: var(--code); color: var(--muted); }
+.tool-kind > .card-icon { width: 16px; height: 16px; }
+.tool-shell[data-kind=shell] .tool-kind { background: var(--tool-shell-bg); color: var(--tool-shell); }
+.tool-shell[data-kind=shell] .tool-tier { background: var(--tool-shell-bg); color: var(--tool-shell); }
+.tool-shell[data-kind=read] .tool-kind { background: var(--tool-read-bg); color: var(--tool-read); }
+.tool-shell[data-kind=read] .tool-tier { background: var(--tool-read-bg); color: var(--tool-read); }
+.tool-shell[data-kind=edit] .tool-kind { background: var(--tool-edit-bg); color: var(--tool-edit); }
+.tool-shell[data-kind=edit] .tool-tier { background: var(--tool-edit-bg); color: var(--tool-edit); }
+.tool-shell[data-kind=search] .tool-kind { background: var(--tool-search-bg); color: var(--tool-search); }
+.tool-shell[data-kind=search] .tool-tier { background: var(--tool-search-bg); color: var(--tool-search); }
+.tool-shell[data-kind=web] .tool-kind { background: var(--tool-web-bg); color: var(--tool-web); }
+.tool-shell[data-kind=web] .tool-tier { background: var(--tool-web-bg); color: var(--tool-web); }
+.tool-shell[data-kind=agent] .tool-kind { background: var(--tool-agent-bg); color: var(--tool-agent); }
+.tool-shell[data-kind=agent] .tool-tier { background: var(--tool-agent-bg); color: var(--tool-agent); }
+.tool-shell[data-kind=memory] .tool-kind { background: var(--tool-memory-bg); color: var(--tool-memory); }
+.tool-shell[data-kind=memory] .tool-tier { background: var(--tool-memory-bg); color: var(--tool-memory); }
+.tool-shell[data-kind=other] .tool-kind { background: var(--tool-other-bg); color: var(--tool-other); }
+.tool-shell[data-kind=other] .tool-tier { background: var(--tool-other-bg); color: var(--tool-other); }
+.tool-tier { gap: var(--s2); min-height: 36px; padding: var(--s1) var(--s2) var(--s1) var(--s1); border-radius: var(--r-sm); }
+.tool-shell[data-status=error] .tool-tier { color: var(--error); }
+.tool-shell[data-status=pending] .tool-tier { color: var(--muted); }
+.tool-name { font-family: var(--mono); font-size: var(--fs-meta); font-weight: 400; line-height: 20px; color: inherit; }
+.tool-name-command { font-weight: 600; }
+.tool-name-scope, .tool-name-directory { font-weight: 400; }
+.tool-name-file { color: inherit; font-family: var(--mono); font-weight: 600; }
+.tool-name-added, .tool-name-removed { font-family: var(--mono); }
+/* End of tool calls. */
+
 @media (pointer:coarse) {
   .sidebar .nav-row, .sidebar .sidebar-action, .sidebar .conversation-row, .sidebar .agent-row, .sidebar .agent-row .row-select { height: auto; min-height: 44px; }
   .sidebar .agent-row .row-select { grid-template-rows: 44px auto; }

@@ -357,10 +357,10 @@ test('tool state slots follow titles and precede visible words while success sta
     const card = node('primary-transcript').querySelector('.tool-card'); const status = card?.querySelector('.tool-status');
     const word = card?.querySelector('.tool-state-word'); assert.ok(card); assert.ok(status); assert.ok(word); const icon = status.querySelector('svg');
     assert.equal(card.parentNode?.dataset.status, item.status);
-    assert.deepEqual(card.querySelector('.tool-tier')?.children, [card.querySelector('.tool-name'), status, word]);
+    assert.deepEqual(card.querySelector('.tool-tier')?.children, [card.querySelector('.tool-kind'), card.querySelector('.tool-name'), status, word]);
     assert.equal(status.className, `tool-status ${item.status}`); assert.equal(status.attributes['aria-hidden'], 'true');
     assert.equal(status.attributes.role, undefined); assert.equal(status.attributes['aria-label'], undefined); assert.equal(status.querySelector('.sr-only'), null);
-    assert.equal(status.textContent, ''); assert.equal(word.className, `tool-state-word ${item.status}`); assert.equal(word.textContent, item.label);
+    assert.equal(status.textContent, ''); assert.equal(word.className, `sr-only tool-state-word ${item.status}`); assert.equal(word.textContent, item.label);
     assert.equal(word.hidden, false); assert.equal(word.attributes['aria-hidden'], undefined); assert.equal(word.querySelector('.sr-only'), null);
     if (item.icon) {
       assert.ok(icon); assert.deepEqual(status.children, [icon]); assert.equal(icon.className, `card-icon card-icon-${item.icon}`);
@@ -382,7 +382,7 @@ test('native nested tool cards retain parent context without fabricated messages
   const nested = (value = tool): EntryView => ({id: 'live:tool:parent/child', kind: 'pi.tool-result', tool: value});
   view.set([nested()]); flush(); const root = node('primary-transcript'), card = root.querySelector('.tool-card'); assert.ok(card);
   assert.equal(root.querySelectorAll('.message').length, 0); assert.equal(root.querySelectorAll('.session-events').length, 0);
-  assert.equal(card.querySelector('.tool-name')?.textContent, 'Reading notes.md'); assert.equal(card.querySelector('.tool-target')?.textContent, '');
+  assert.equal(card.querySelector('.tool-name')?.textContent, 'notes.md'); assert.equal(card.querySelector('.tool-target')?.textContent, '');
   assert.equal(card.querySelector('.tool-target')?.title, 'notes.md'); assert.equal(card.querySelector('.tool-target')?.hidden, true);
   assert.equal(card.querySelector('.tool-state-word')?.textContent, 'Working'); assert.equal(card.querySelector('.tool-secondary')?.textContent, 'Within parent');
   assert.match(card.textContent, /partial output/); assert.doesNotMatch(card.textContent, /elapsed|ms/);
@@ -460,12 +460,12 @@ test('callId joins call and results across entries with one bounded disclosure a
   const result = {type: 'toolResult' as const, callId: 'call-1', name: 'read', isError: false, parts: [{type: 'text' as const, text: 'x'.repeat(5000)}]};
   const entries = [{id: 'call', kind: 'message', messages: [{...message('m-call', ''), parts: [call]}]}, {id: 'result', kind: 'message', messages: [{...message('m-result', ''), parts: [result]}]}];
   view.set(entries); flush(); const cards = node('primary-transcript').querySelectorAll('.tool-card'); assert.equal(cards.length, 1);
-  const card = cards[0]; assert.ok(card); assert.equal(card.querySelector('.tool-name')?.textContent, 'Read path  /full (lines 1–10)'); assert.equal(card.querySelector('.tool-target')?.title, '/full/path');
+  const card = cards[0]; assert.ok(card); assert.equal(card.querySelector('.tool-name')?.textContent, 'path  /full (lines 1–10)'); assert.equal(card.querySelector('.tool-target')?.title, '/full/path');
   assert.equal(card.querySelector('.tool-target')?.hidden, true);
   assert.equal(card.querySelector('.tool-secondary')?.textContent, 'lines 1–10');
-  assert.equal(card.parentNode?.dataset.status, 'success'); assert.equal(card.querySelector('.tool-tier')?.children[1], card.querySelector('.tool-status'));
+  assert.equal(card.parentNode?.dataset.status, 'success'); assert.equal(card.querySelector('.tool-tier')?.children[2], card.querySelector('.tool-status'));
   assert.equal(card.querySelector('.tool-status')?.attributes['aria-hidden'], 'true'); assert.equal(card.querySelector('.tool-state-word')?.textContent, '');
-  assert.deepEqual(card.querySelector('.tool-tier')?.children.map(child=>child.className), ['tool-name','tool-status success','tool-state-word success']);
+  assert.deepEqual(card.querySelector('.tool-tier')?.children.map(child=>child.className), ['tool-kind','tool-name','tool-status success','sr-only tool-state-word success']);
   assert.equal(card.querySelector('.tool-target')?.parentNode, card.querySelector('.tool-details')); assert.equal(card.querySelector('.tool-status')?.querySelector('svg'), null);
   assert.doesNotMatch(card.textContent, /The tool completed without output\.|Working|Tool error/); assert.ok((card.querySelector('.tool-preview')?.textContent.length ?? Infinity) < 2000);
   assert.doesNotMatch(card.querySelector('.tool-preview')?.textContent ?? '', /…/); assert.ok((card.querySelector('.tool-preview')?.textContent.length ?? Infinity) <= 1200);
@@ -491,7 +491,7 @@ test('collapsed cards keep structured output inside the result and preserve exac
   const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card);
   assert.equal(card.querySelector('.tool-preview')?.textContent, '');
   assert.equal(card.querySelector('.tool-preview')?.hidden, true);
-  assert.match(card.querySelector('.tool-name')?.textContent ?? '', /Read.*result.txt/);
+  assert.match(card.querySelector('.tool-name')?.textContent ?? '', /result.txt/);
   assert.equal(card.querySelector('.tool-secondary')?.textContent, 'lines 40–47');
   assert.equal(card.querySelector('summary')?.querySelectorAll('.card-icon-disclosure').length, 0);
   const action = card.parentNode?.querySelector('.tool-copy'); assert.ok(action); assert.equal(action.textContent, 'Copy output');
@@ -1119,7 +1119,7 @@ test('bash command and output stay distinct, and shell status follows live compl
   const call = {type: 'toolCall' as const, callId: 'bash', name: 'bash', arguments: {value: {command: 'echo first\necho second', timeout: 45}, truncated: false}};
   const entries = [{id: 'call', kind: 'message', messages: [{...message('bash', ''), parts: [call]}]}];
   view.set(entries); flush(); const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card);
-  assert.equal(card.parentNode?.dataset.status, 'missing'); assert.match(card.textContent, /No result recorded/); assert.equal(card.querySelector('.tool-name')?.textContent, 'Run a shell command');
+  assert.equal(card.parentNode?.dataset.status, 'missing'); assert.match(card.textContent, /No result recorded/); assert.equal(card.querySelector('.tool-name')?.textContent, 'echo first echo second');
   assert.equal(card.querySelector('.tool-target')?.title, '$ echo first\necho second'); assert.equal(card.querySelector('.tool-target')?.hidden, true);
   assert.equal(card.querySelector('.tool-secondary')?.textContent, ''); assert.match(card.querySelector('.tool-expanded')?.textContent ?? '', /\(timeout 45s\)/);
   assert.equal(card.querySelector('.tool-expanded')?.hidden, true); assert.doesNotMatch(card.querySelector('summary')?.textContent ?? '', /timeout/);
@@ -1157,10 +1157,10 @@ test('read headers keep the recorded tool name and supplied path across disclosu
   const path = '/skills/audit/SKILL.md';
   const entries = [{id: 'read', kind: 'message', messages: [{...message('read', ''), parts: [{type: 'toolCall' as const, callId: 'read', name: 'read', arguments: {value: {path, offset: 7, limit: 4}, truncated: false}}]}]}];
   view.set(entries); flush(); const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card);
-  assert.equal(card.querySelector('.tool-name')?.textContent, 'Read SKILL.md  /skills/audit (lines 7–10)'); assert.equal(card.querySelector('.tool-target')?.hidden, true);
+  assert.equal(card.querySelector('.tool-name')?.textContent, 'SKILL.md  /skills/audit (lines 7–10)'); assert.equal(card.querySelector('.tool-target')?.hidden, true);
   assert.equal(card.querySelector('.tool-target')?.title, path); assert.equal(card.querySelector('.tool-secondary')?.textContent, 'lines 7–10');
   card.open = true; card.dispatch('toggle'); flush();
-  assert.equal(card.querySelector('.tool-name')?.textContent, 'Read SKILL.md  /skills/audit (lines 7–10)'); assert.equal(card.querySelector('.tool-target')?.title, path);
+  assert.equal(card.querySelector('.tool-name')?.textContent, 'SKILL.md  /skills/audit (lines 7–10)'); assert.equal(card.querySelector('.tool-target')?.title, path);
   const args = card.querySelector('.tool-arguments'); assert.ok(args); args.open = true; args.dispatch('toggle'); assert.equal(JSON.parse(args.querySelector('pre')?.textContent ?? '{}').path, path);
   card.open = false; card.dispatch('toggle'); flush(); assert.equal(card.querySelector('.tool-target')?.title, path);
 });
@@ -2055,7 +2055,7 @@ test('expanded image output keeps supplied part order before actions and quieter
   const result = source.messages[0]?.parts.find(part => part.type === 'toolResult'); assert.ok(result); result.name = 'read';
   result.parts = [{type: 'text', text: 'Supplied introduction'}, {type: 'image', mimeType: 'image/png', digest: 'a'.repeat(64), width: 512, height: 256, bytes: 1024, alt: 'Retained image description'}, {type: 'text', text: 'Supplied conclusion'}];
   view.set([source]); flush(); const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card); card.open = true; card.dispatch('toggle'); flush();
-  assert.equal(card.querySelector('.tool-name')?.textContent, 'Read image · PNG digest.bin  /opaque/store');
+  assert.equal(card.querySelector('.tool-name')?.textContent, 'digest.bin  /opaque/store');
   const expanded = card.querySelector('.tool-expanded'), area = card.querySelector('.tool-result'), actions = card.querySelector('.tool-output-actions'), technical = card.querySelector('.tool-details');
   assert.ok(expanded); assert.ok(area); assert.ok(actions); assert.ok(technical); assert.deepEqual(expanded.children, [area, actions, technical]);
   const parts = area.querySelector('.tool-result-parts'); assert.ok(parts); assert.equal(parts.children.length, 3);
@@ -2501,7 +2501,7 @@ test('expanded source disclosures avoid the raw inspection scroll cap', () => {
   limits.open = true; limits.dispatch('toggle');
   assert.match(limits.querySelector('pre')?.textContent ?? '', /8192 characters/);
   assert.match(limits.querySelector('pre')?.textContent ?? '', /65536 characters/);
-  assert.equal(card.querySelector('.tool-name')?.textContent, 'Used custom'); assert.equal(card.querySelector('.tool-state-word')?.textContent, '');
+  assert.equal(card.querySelector('.tool-name')?.textContent, 'custom'); assert.equal(card.querySelector('.tool-state-word')?.textContent, '');
 });
 test('authored subject captions preserve exact arguments, output and guarded navigation', async () => {
   setup(); const root = '00000000-0000-4000-8000-000000000001', child = `${root}:7906`, calls: string[] = [], copies: string[] = [];
@@ -2537,7 +2537,7 @@ test('tool subjects keep complete retained text without cut marks and omit a fir
     const prefix = name === 'bash' ? '$ ' : '';
     const characterCut = targetFor(name, key, 'x'.repeat(4200));
     assert.equal(characterCut.textContent, ''); assert.equal(characterCut.hidden, true); assert.equal(characterCut.title, `${prefix}${'x'.repeat(4200)}`);
-    const captions = {bash: ['Ran a shell command', 'Ran a shell command', 'Ran a shell command'], read: [`Read ${'x'.repeat(4200)}`, 'Read first line\nsecond line', 'Read Complete unknown TypeScr'], custom: ['Used custom', 'Used custom', 'Used custom']};
+    const captions = {bash: ['x'.repeat(400), 'first line second line', 'Complete unknown TypeScr'], read: ['x'.repeat(4200), 'first line\nsecond line', 'Complete unknown TypeScr'], custom: ['custom', 'custom', 'custom']};
     assert.equal(characterCut.closest('.tool-card')?.querySelector('.tool-name')?.textContent, captions[name][0]);
     const lineCut = targetFor(name, key, 'first line\nsecond line'); assert.equal(lineCut.textContent, '');
     assert.equal(lineCut.title, prefix.concat('first line', String.fromCharCode(10), 'second line'));
@@ -2551,7 +2551,7 @@ test('multiline tool targets keep a compact row and complete retained title and 
   setup(); const view = transcript(); const command = ['printf first', 'printf second', 'printf third'].join(String.fromCharCode(10));
   const source = contentEntry('multiline-command', {command}, 'output'); const message = source.messages[0]; assert.ok(message); for (const part of message.parts) part.name = 'bash';
   view.set([source]); flush(); const card = node('primary-transcript').querySelector('.tool-card'); const target = card?.querySelector('.tool-target'); assert.ok(card); assert.ok(target);
-  assert.equal(card.querySelector('.tool-name')?.textContent, 'Ran a shell command'); assert.equal(target.textContent, ''); assert.equal(target.hidden, true); assert.equal(target.title, `$ ${command}`);
+  assert.equal(card.querySelector('.tool-name')?.textContent, 'printf first printf second printf third'); assert.equal(target.textContent, ''); assert.equal(target.hidden, true); assert.equal(target.title, `$ ${command}`);
   card.open = true; card.dispatch('toggle'); flush(); const args = card.querySelector('.tool-arguments'); assert.ok(args); args.open = true; args.dispatch('toggle'); flush();
   assert.equal(JSON.parse(args.querySelector('pre')?.textContent ?? '{}').command, command);
   assert.match(args.textContent, /printf second/); assert.match(args.textContent, /printf third/);

@@ -30,9 +30,9 @@ test('a unique loaded handle names send and result-inspection cards and preserve
   for (const handle of ['sample-agent', '@sample-agent']) {
     await show(`handle-${handle}`, [agentFixture(recipient, {handle, name: 'Sample agent'})],
       [call('send', '@sample-agent'), call('inspect', '@sample-agent', 'agent_inspect'), call('exact', recipient)]);
-    assert.equal(card('send').querySelector('.tool-name')?.textContent, 'Sent a message to Sample agent: “Hello”');
-    assert.equal(card('inspect').querySelector('.tool-name')?.textContent, 'Checked a task result from Sample agent');
-    assert.equal(card('exact').querySelector('.tool-name')?.textContent, 'Sent a message to Sample agent: “Hello”');
+    assert.equal(card('send').querySelector('.tool-name')?.textContent, 'Sample agent: “Hello”');
+    assert.equal(card('inspect').querySelector('.tool-name')?.textContent, 'Sample agent');
+    assert.equal(card('exact').querySelector('.tool-name')?.textContent, 'Sample agent: “Hello”');
     for (const id of ['send', 'inspect']) {
       assert.equal(card(id).querySelector('.tool-target')?.textContent, 'Sample agent');
       assert.equal(card(id).querySelector('.tool-target')?.title, '@sample-agent');
@@ -51,7 +51,7 @@ test('duplicate, missing and empty handles retain the existing unnamed recipient
   await show('handle-fallbacks', [agentFixture(recipient, {handle: 'duplicate', name: 'First agent'}), agentFixture(second, {handle: '@duplicate', name: 'Second agent'})],
     [call('duplicate', '@duplicate'), call('missing', '@missing'), call('empty', '@')]);
   for (const id of ['duplicate', 'missing', 'empty']) {
-    assert.equal(card(id).querySelector('.tool-name')?.textContent, 'Sent a message to another conversation: “Hello”');
+    assert.equal(card(id).querySelector('.tool-name')?.textContent, 'another conversation: “Hello”');
     assert.equal(card(id).querySelector('.tool-target')?.hidden, true);
   }
   assert.equal(app.toolSubjectCaption('@'), undefined); assert.equal(app.toolSubjectCaption(''), undefined);
@@ -60,13 +60,13 @@ test('duplicate, missing and empty handles retain the existing unnamed recipient
 test('later rows and names repaint retained handle cards without a new lookup or input action', async () => {
   await show('handle-refresh', [], [call('late-send', '@sample-agent'), call('late-inspect', '@sample-agent', 'agent_inspect')]);
   const send = card('late-send'), inspect = card('late-inspect');
-  assert.equal(send.querySelector('.tool-name')?.textContent, 'Sent a message to another conversation: “Hello”');
+  assert.equal(send.querySelector('.tool-name')?.textContent, 'another conversation: “Hello”');
   transportLog.length = 0;
   for (const name of ['Sample agent', 'Renamed agent']) {
     publish([agentFixture(recipient, {handle: 'sample-agent', name})]); await settle();
     assert.equal(card('late-send'), send); assert.equal(card('late-inspect'), inspect);
-    assert.equal(send.querySelector('.tool-name')?.textContent, `Sent a message to ${name}: “Hello”`);
-    assert.equal(inspect.querySelector('.tool-name')?.textContent, `Checked a task result from ${name}`);
+    assert.equal(send.querySelector('.tool-name')?.textContent, `${name}: “Hello”`);
+    assert.equal(inspect.querySelector('.tool-name')?.textContent, name);
     assert.equal(send.querySelector('.tool-target')?.textContent, name); assert.equal(send.querySelector('.tool-target')?.title, '@sample-agent');
   }
   assert.deepEqual(app.state.workspace?.selectedTarget, target);
@@ -76,7 +76,7 @@ test('later rows and names repaint retained handle cards without a new lookup or
 test('handle-only updates invalidate captions even when exact names and roster identities stay the same', async () => {
   await show('hint-refresh', [agentFixture(recipient, {name: 'Sample agent'}), agentFixture(second, {name: 'Second agent'})], [call('hint-send', '@sample-agent')]);
   const send = card('hint-send');
-  const expect = (name: string) => assert.equal(send.querySelector('.tool-name')?.textContent, `Sent a message to ${name}: “Hello”`);
+  const expect = (name: string) => assert.equal(send.querySelector('.tool-name')?.textContent, `${name}: “Hello”`);
   expect('another conversation');
   publish([agentFixture(recipient, {name: 'Sample agent', handle: '@sample-agent'})]); await settle(); expect('Sample agent');
   publish([agentFixture(second, {name: 'Second agent', handle: 'sample-agent'})]); await settle(); expect('another conversation');

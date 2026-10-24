@@ -20,7 +20,8 @@ import {NoticeBlocks, type NoticeChild} from './notice-blocks.ts';
 import {ResponseFailure} from './response-failure.ts';
 import type { TranscriptGroups } from './transcript-groups.ts';
 import {TranscriptRows, type StepRun, type TranscriptRow} from './transcript-rows.ts';
-import {toolSentence,toolLabelParts,quietTextResult, type NamedDestination, type ToolLabelPart} from './tool-sentences.ts';
+import {toolKind, toolKindIcon, toolKindName} from './tool-kind.ts';
+import {toolSubjectParts,toolLabel,toolSentence,toolLabelParts,quietTextResult, type NamedDestination, type ToolLabelPart} from './tool-sentences.ts';
 import {ConversationTasks, type ConversationTask, type TaskReference} from './conversation-tasks.ts';
 import { loadedReference, type FileReferenceDestination, type ReferenceQuery, type ReferenceResolver } from './references.ts';
 import type { JoinedTool } from './transcript-tools.ts';
@@ -2004,8 +2005,10 @@ export class Transcript {
   private createTool(source: JoinedTool): ToolNode {
     const card = element('div', 'tool-shell'); const node = element('details', 'tool-card'); card.append(node); const summary = element('summary');
     const tier = element('span', 'tool-tier'); const glyph = element('span', 'tool-status'); glyph.setAttribute('aria-hidden', 'true');
-    const title = element('span', 'tool-name'); const stateWord = element('span', 'tool-state-word'); const target = element('span', 'tool-target'); const meta = element('span', 'tool-secondary');
-    tier.append(title, glyph, stateWord); cardDisclosure(summary); summary.append(tier);
+    const title = element('span', 'tool-name'); const stateWord = element('span', 'sr-only tool-state-word'); const target = element('span', 'tool-target'); const meta = element('span', 'tool-secondary');
+    const kind = element('span', 'tool-kind'), kindName = element('span', 'sr-only');
+    kind.append(cardIcon(toolKindIcon(toolKind(source.name))), kindName); setText(kindName, `${toolKindName(toolKind(source.name))} `); card.dataset.kind = toolKind(source.name);
+    tier.append(kind, title, glyph, stateWord); cardDisclosure(summary); summary.append(tier);
     const preview = element('div', 'tool-preview'); const qualification = element('p', 'tool-preview-qualification', 'Partial output'); qualification.hidden = true;
     const expanded = element('div', 'tool-expanded'), resultArea = element('div', 'tool-result');
     resultArea.tabIndex = 0; resultArea.setAttribute('role', 'region'); resultArea.setAttribute('aria-label', 'Tool result');
@@ -2071,7 +2074,7 @@ export class Transcript {
     if (status === 'success') { if (tool.glyph.childNodes.length) tool.glyph.replaceChildren(); }
     else if (!tool.glyph.querySelector(`.card-icon-${stateIcon}`)) tool.glyph.replaceChildren(cardIcon(stateIcon));
     tool.glyph.className = `tool-status ${status}`;
-    setText(tool.stateWord, stateLabel); tool.stateWord.className = `tool-state-word ${status}`;
+    setText(tool.stateWord, stateLabel); tool.stateWord.className = `sr-only tool-state-word ${status}`;
   }
   private updateTool(source: JoinedTool): HTMLElement {
     const tool = this.tools.get(source.callId) ?? this.createTool(source);
@@ -2218,14 +2221,12 @@ export class Transcript {
     for(const label of labels)label.removeAttribute('title');control.append(...labels);nodes.splice(at,0,control);return nodes;
   }
   private toolTitleParts(source: JoinedTool): ToolLabelPart[] {
-    if (source.name !== 'bash') return toolLabelParts(source,{subject:this.hooks.subject,cwd:this.hooks.cwd?.(),nestedCount:this.rows.nestedCounts.get(source.callId)});
-    const verb = source.status === 'success' ? 'Ran' : source.status === 'working' ? 'Running' : 'Run';
-    return [{text: `${verb} a shell command`}];
+    return toolSubjectParts(source,{subject:this.hooks.subject,cwd:this.hooks.cwd?.(),nestedCount:this.rows.nestedCounts.get(source.callId)});
   }
   private toolTitle(tool: ToolNode, source: JoinedTool): void {
     const parts=this.toolTitleParts(source),pathCopy=this.toolPathCopy(tool,source,parts);
     tool.filePath=parts.find(part=>part.role==='file')?.title;tool.filePathSource=source;
-    tool.title.title=[parts.map(part=>part.text).join(''),...parts.flatMap(part=>part.title?[part.title]:[])].join('\n');
+    tool.title.title=[toolLabel(source,{subject:this.hooks.subject,cwd:this.hooks.cwd?.(),nestedCount:this.rows.nestedCounts.get(source.callId)}),...parts.flatMap(part=>part.title?[part.title]:[])].join('\n');
     const control=tool.title.querySelector<HTMLButtonElement>(':scope > .tool-path-copy');
     const children=[...tool.title.children].flatMap(node=>node===control?[...node.children]:[node]);
     const samePath=pathCopy?!!control&&control.title===`Copy path ${pathCopy.path}`&&this.sameToolPathSource(tool.pathCopySource,source):!control;

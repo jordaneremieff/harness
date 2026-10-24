@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {quietTextResult, toolLabel, toolSentence} from './tool-sentences.ts';
+import {quietTextResult, toolLabel, toolSentence, toolSubjectParts} from './tool-sentences.ts';
 import type {JoinedTool} from './transcript-tools.ts';
 
 const publicCall = (name: string, value: Record<string, unknown> = {}, status: JoinedTool['status'] = 'success'): JoinedTool => ({callId: 'public-call', name, owner: 'entry', slot: 'slot', status, args: {value, truncated: false}});
@@ -237,4 +237,20 @@ test('a command title keeps commands that are only cd or do not start with cd', 
   assert.equal(label(`cd ${cwd} && ${'x'.repeat(70)}`), `Ran ${'x'.repeat(70)}`);
   assert.equal(label(`cd ${cwd} && printf first\nsecond`), 'Ran printf first second');
   assert.equal(label('cd /elsewhere/place/harness && npm test', {}), 'Ran npm test in /elsewhere/place/harness');
+});
+
+const subject = (name: string, value: Record<string, unknown> = {}, cwd?: string) => toolSubjectParts(publicCall(name, value), {cwd}).map(part => part.text).join('');
+test('the visible subject names what a call acts on, without a verb', () => {
+  assert.equal(subject('bash', {command: 'git status --short\n  && git diff'}), 'git status --short && git diff');
+  assert.deepEqual(toolSubjectParts(publicCall('bash', {command: 'npm test'})), [{text: 'npm', role: 'command'}, {text: ' test', role: 'scope'}]);
+  assert.equal(subject('bash', {command: 'cd /work/app && npm test'}, '/work/app'), 'npm test');
+  assert.equal(subject('bash', {command: 'x'.repeat(5000)}).length, 400);
+  assert.equal(subject('read', {path: '/work/app/src/a.ts'}, '/work/app'), 'a.ts  src');
+  assert.equal(subject('grep', {pattern: 'splitChunks', path: 'src'}), 'splitChunks src');
+  assert.equal(subject('find', {pattern: '*.config.*'}), '*.config.*');
+  assert.equal(subject('web_read', {url: 'https://vitejs.dev/guide/build.html'}), 'vitejs.dev /guide/build.html');
+  assert.equal(subject('web_search', {query: 'vite build workers'}), 'vite build workers');
+  assert.equal(subject('agent_spawn', {name: 'Build reviewer', prompt: 'Review it.'}), 'Build reviewer');
+  assert.equal(subject('memory_read', {slug: 'web-ui-visual-direction'}), 'web-ui-visual-direction');
+  assert.equal(subject('mcp__radius'), 'mcp__radius');
 });

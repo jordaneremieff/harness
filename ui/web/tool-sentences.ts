@@ -6,7 +6,7 @@ export type NamedDestination = {text: string; name?: string; provenance?: 'repor
 export type SentenceContext = {nestedCount?:number; cwd?: string; subject?: (identity: string) => NamedDestination | undefined};
 type VerbForms = {done: string; active: string; action: string};
 type Words = VerbForms & {emphasis?: {recipient: string; message: string}; file?: {prefix: VerbForms; path: string; name: string; directory: string; suffix: string}};
-export type ToolLabelPart = {text: string; role?: 'recipient' | 'message' | 'file' | 'directory' | 'range' | 'added' | 'removed'; title?: string};
+export type ToolLabelPart = {text: string; role?: 'recipient' | 'message' | 'file' | 'directory' | 'range' | 'added' | 'removed' | 'command' | 'scope'; title?: string};
 const text = (value: unknown): string => typeof value === 'string' ? value : '';
 function first(value: unknown): string {
   return text(value).split(/\r?\n/, 1)[0] ?? '';
@@ -30,13 +30,18 @@ const leadingCd = /^\s*cd\s+(?:"([^"$`\\]+)"|'([^']+)'|([^\s;&|<>()$`"'\\]+))\s*
 function oneLine(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
 }
-function commandSentence(value: unknown, cwd?: string): string {
-  const command = text(value);if (!command) return ' a command';
+/** The command a call runs, folded to one line; a leading change of folder names the folder only when it differs from the working one. */
+function commandText(value: unknown, cwd?: string): string {
+  const command = text(value);if (!command) return '';
   const match = leadingCd.exec(command), folder = match?.[1] ?? match?.[2] ?? match?.[3];
-  if (!match || !folder || folder === '-') return ` ${oneLine(command)}`;
+  if (!match || !folder || folder === '-') return oneLine(command);
   const trim = (path: string): string => path.length > 1 ? path.replace(/\/+$/, '') : path;
   const shown = oneLine(command.slice(match[0].length)), root = cwd === undefined ? undefined : trim(cwd);
-  return trim(folder) === root ? ` ${shown}` : ` ${shown} in ${pathName(trim(folder), root)}`;
+  return trim(folder) === root ? shown : `${shown} in ${pathName(trim(folder), root)}`;
+}
+function commandSentence(value: unknown, cwd?: string): string {
+  const command = commandText(value, cwd);
+  return command ? ` ${command}` : ' a command';
 }
 function words(done: string, active: string, action: string, object = ''): Words {
   return {done: `${done}${object}`, active: `${active}${object}`, action: `${action}${object}`};
@@ -74,11 +79,13 @@ function sendWords({tool,args,identity,name}:SentenceInput):Words {
   return {...value, emphasis: {recipient: subject, message}};
 }
 function inspectWords({args,name}:SentenceInput):Words {
-  if(args.view==='result')return words('Checked a task result from','Checking a task result from','Check a task result from',` ${name}`);
-  if(args.view==='search')return words('Searched history from','Searching history from','Search history from',` ${name}${quote(args.query)}`);
-  if(args.view==='exact')return words('Read one entry from','Reading one entry from','Read one entry from',` ${name}`);
-  if(args.view==='history'||args.view==='activity')return words('Read recent history from','Reading recent history from','Read recent history from',` ${name}`);
-  return words('Checked','Checking','Check',` ${name}`);
+  const recipient=` ${name}`;
+  const emphasised=(value:Words,message=''):Words=>({...value,emphasis:{recipient,message}});
+  if(args.view==='result')return emphasised(words('Checked a task result from','Checking a task result from','Check a task result from',recipient));
+  if(args.view==='search'){const message=quote(args.query);return emphasised(words('Searched history from','Searching history from','Search history from',recipient+message),message);}
+  if(args.view==='exact')return emphasised(words('Read one entry from','Reading one entry from','Read one entry from',recipient));
+  if(args.view==='history'||args.view==='activity')return emphasised(words('Read recent history from','Reading recent history from','Read recent history from',recipient));
+  return emphasised(words('Checked','Checking','Check',recipient));
 }
 function awaitWords({args}:SentenceInput):Words {
   const count=Array.isArray(args.results)?args.results.length:undefined;
@@ -177,6 +184,9 @@ const templates:Record<string,SentenceTemplate>={
   stash_complete:quiet(()=>words('Closed a handover','Closing a handover','Close a handover')),
   stash_rotate:quiet(()=>words('Archived a handover','Archiving a handover','Archive a handover')),
   bash:({args,context})=>words('Ran','Running','Run',commandSentence(args.command,context.cwd)),
+  grep:({args})=>words('Searched','Searching','Search',args.pattern?` for ${first(args.pattern)}`:' files'),
+  find:({args})=>words('Found files','Finding files','Find files',args.pattern?` matching ${first(args.pattern)}`:''),
+  ls:()=>words('Listed a folder','Listing a folder','List a folder'),
   read:readWords,edit:editWords,write:writeWords,pillars:pillarWords,
   memory_search:({args})=>words('Searched memory','Searching memory','Search memory',quote(Array.isArray(args.query)?args.query[0]:args.query)),
   memory_read:({args})=>words('Read memory note','Reading memory note','Read memory note',args.slug?` ${first(args.slug)}`:''),
@@ -238,4 +248,44 @@ export function toolSentence(tool: JoinedTool, context: SentenceContext = {}): s
   if (tool.status === 'ended') return `Ended without a result: ${value.action}`;
   if (tool.status === 'available') return `Result available: ${value.action}`;
   return `No result recorded: ${value.action}`;
+}
+
+const SUBJECT_LIMIT = 400;
+type SubjectInput = {args: Record<string, unknown>; cwd?: string; context: SentenceContext};
+const plain = (value: string): ToolLabelPart[] => value ? [{text: value}] : [];
+const scoped = (head: string, scope: string): ToolLabelPart[] => head ? [{text: head, role: 'command'}, ...(scope ? [{text: ` ${scope}`, role: 'scope' as const}] : [])] : [];
+const searchText = (value: unknown): string => plainPreviewWords(first(Array.isArray(value) ? value[0] : value));
+function commandSubject({args, context}: SubjectInput): ToolLabelPart[] {
+  // The row clips long commands; the DOM keeps a bounded head and the tooltip keeps the whole command.
+  const command = commandText(args.command, context.cwd).slice(0, SUBJECT_LIMIT), at = command.search(/\s/);
+  return at < 0 ? scoped(command, '') : scoped(command.slice(0, at), command.slice(at + 1));
+}
+function pageSubject({args}: SubjectInput): ToolLabelPart[] {
+  let url: URL | undefined;
+  try { url = args.url ? new URL(text(args.url)) : undefined; } catch { /* An invalid supplied URL has no display destination. */ }
+  return url ? scoped(url.host, first(url.pathname) === '/' ? '' : first(url.pathname)) : [];
+}
+const subjects: Record<string, (input: SubjectInput) => ToolLabelPart[]> = {
+  bash: commandSubject,
+  grep: ({args, cwd}) => scoped(first(args.pattern), pathName(args.path, cwd)),
+  find: ({args, cwd}) => scoped(first(args.pattern), pathName(args.path, cwd)),
+  ls: ({args, cwd}) => plain(pathName(args.path, cwd) || '.'),
+  web_search: ({args}) => plain(searchText(args.query)), twitter_search: ({args}) => plain(searchText(args.query)),
+  web_read: pageSubject,
+  agent_spawn: ({args}) => plain(first(args.name)),
+  memory_search: ({args}) => plain(searchText(args.query)), history_search: ({args}) => plain(searchText(args.query)),
+  memory_read: ({args}) => plain(first(args.slug)), memory_edit: ({args}) => plain(first(args.slug)), memory_review: ({args}) => plain(first(args.slug)),
+  memory_history: ({args}) => plain(first(args.slug)), memory_retire: ({args}) => plain(first(args.slug)),
+  memory_write: ({args}) => plain(first(args.title)),
+};
+/** The thing a call acts on, as the visible title: a command, a path, a pattern, a page, a query or a recipient. The sentence stays the accessible name. */
+export function toolSubjectParts(tool: JoinedTool, context: SentenceContext = {}): ToolLabelPart[] {
+  const args = argsOf(tool), cwd = text(args.cwd) || context.cwd;
+  const parts = Object.hasOwn(subjects, tool.name) ? subjects[tool.name]?.({args, cwd, context}) ?? [] : [];
+  if (parts.length) return parts;
+  if (!Object.hasOwn(templates, tool.name)) return plain(tool.name);
+  // File and recipient calls keep their structured parts without the leading verb.
+  const label = toolLabelParts(tool, context), at = label.findIndex(part => part.role === 'file' || part.role === 'recipient');
+  if (at < 0) return label;
+  return label.slice(at).map((part, index) => index === 0 ? {...part, text: part.text.trimStart()} : part);
 }
