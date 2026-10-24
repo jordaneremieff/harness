@@ -45,7 +45,7 @@ function thinkingSpans(summary: Element): {label: HTMLElement; preview: HTMLElem
   summary.replaceChildren(made.label, made.preview); return made;
 }
 const previewSuffix = (line: string): string => line ? ` · ${line}` : '';
-export type ViewHooks = {openFile?:(destination:FileReferenceDestination)=>void;unread?: () => void; primaryDraft?:TranscriptDraftActions;owner?:string;sourceOrder?:boolean;senderCaption?: (sender:CommunicationSender)=>string; senderSummary?: (identity:string)=>SenderSummary|undefined; thread?: (id:string,title?:string)=>void; earlier?: () => void; operatorInput?: boolean; readTaskResult?: (reference:TaskReference,signal:AbortSignal)=>Promise<ResultInspection>; activity?: (text:string)=>void; cwd?: () => string | undefined; subject?: (value: string) => ToolSubjectCaption | undefined; result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView, thinking?: ThinkingChoice) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; preview?: (part: ImageView, url: string, invoker: HTMLElement) => () => void; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
+export type ViewHooks = {openFile?:(destination:FileReferenceDestination)=>void;unread?: () => void; primaryDraft?:TranscriptDraftActions;owner?:string;sourceOrder?:boolean;senderCaption?: (sender:CommunicationSender)=>string; senderSummary?: (identity:string)=>SenderSummary|undefined; thread?: (id:string,title?:string)=>void; earlier?: () => void; operatorInput?: boolean; readTaskResult?: (reference:TaskReference,signal:AbortSignal)=>Promise<ResultInspection>;stopTask?: (reference:TaskReference)=>Promise<void>;tasksChanged?: () => void; activity?: (text:string)=>void; cwd?: () => string | undefined; subject?: (value: string) => ToolSubjectCaption | undefined; result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView, thinking?: ThinkingChoice) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; preview?: (part: ImageView, url: string, invoker: HTMLElement) => () => void; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
 const RAW_LIMIT = 65536;
 /** Scrolling up within this many pixels of the first loaded row reads the next older page. */
 const EARLIER_ZONE_PX = 240;
@@ -58,6 +58,8 @@ const RESIZE_RETURN_PX = 2;
 /** A scroll this soon after a wheel, touch, key or pointer event on the scroller belongs to that gesture, never to a resize return. */
 const GESTURE_MARK_MS = 100;
 const TASK_READ_CONCURRENCY = 4;
+/** The newest unanswered requests are read even off screen, so Stop knows about work that the conversation still waits for. */
+const RECENT_TASK_READS = 3;
 const toolStateLabels:Record<JoinedTool['status'],string>={success:'',preparing:'Preparing call',working:'Working',pending:'Queued',error:'Failed',ended:'Ended without result',available:'Result available',missing:'No result recorded'};
 const toolStateIcons: Record<string, CardIcon> = {preparing: 'working', working: 'working', pending: 'history', error: 'error', ended: 'unknown', available: 'info', missing: 'unknown'};
 function selectionCopy(origin: HTMLElement): ContextItem[] {
@@ -602,7 +604,11 @@ export class Transcript {
     else if (arrived > 0) { this.syncLatest(); if (this.arrivals.count === arrived) announce('New messages below'); }
   }
   taskRows(): readonly ConversationTask[] {return [...this.tasks.sent,...this.tasks.asked];}
-  acceptTaskResult(value:ResultInspection):void {let changed=false;for(const row of this.tasks.sent)if(row.tool&&this.tasks.recordResult(row.tool.callId,value))changed=true;if(changed)this.schedule();}
+  /** Requests that this conversation sent and a result read reports as still placed or queued. */
+  outstandingTasks(): readonly TaskReference[] {return this.tasks.outstanding();}
+  /** Read the open requests again, for example after Stop. */
+  refreshTasks(): void {this.taskReadStamps.clear();this.schedule();}
+  acceptTaskResult(value:ResultInspection):void {let changed=false;for(const row of this.tasks.sent)if(row.tool&&this.tasks.recordResult(row.tool.callId,value))changed=true;if(changed){this.schedule();this.hooks.tasksChanged?.();}}
   activitySentence(): string {
     const active=[...this.joined.values()].findLast(tool=>tool.status==='working');
     return active?[`Using ${active.name.replace(/[_-]+/g,' ')}`,toolTime(active).replace(/ elapsed$/,'')].filter(Boolean).join(' · '):'';
@@ -1227,7 +1233,9 @@ export class Transcript {
   private cancelTaskReads(): void {for(const [id,controller] of this.taskReads){controller.abort();this.taskReadStamps.delete(id);}this.taskReads.clear();}
   private readVisibleTaskAnswers(visible:ReadonlySet<string>):void {
     if(!this.hooks.readTaskResult)return;
-    const tasks=[...visible].flatMap(id=>this.rows.runs.get(id)?.tools??[]).reverse().flatMap(tool=>{const row=this.tasks.byCall.get(tool.callId);return row?.reference&&!row.answer?[row]:[];}).slice(0,20);
+    const shown=[...visible].flatMap(id=>this.rows.runs.get(id)?.tools??[]).reverse().flatMap(tool=>{const row=this.tasks.byCall.get(tool.callId);return row?.reference&&!row.answer?[row]:[];});
+    const recent=this.tasks.sent.filter(row=>row.tool&&row.reference&&!row.answer).slice(0,RECENT_TASK_READS);
+    const tasks=[...new Set([...recent,...shown])].slice(0,20);
     this.cancelOffscreenTaskReads(tasks);
     for(const task of tasks){if(this.taskReads.size>=TASK_READ_CONCURRENCY)break;this.startTaskRead(task);}
   }
@@ -1243,7 +1251,7 @@ export class Transcript {
     const stamp=JSON.stringify([reference,this.tasks.incomingRevision]);if(this.taskReadStamps.get(tool.callId)===stamp)return;
     this.rememberTaskRead(tool.callId,stamp);
     const controller=new AbortController(),generation=this.generation;this.taskReads.set(tool.callId,controller);
-    void this.hooks.readTaskResult(reference,controller.signal).then(value=>{if(!controller.signal.aborted&&!this.destroyed&&generation===this.generation&&this.tasks.recordResult(tool.callId,value))this.schedule();}).catch(()=>{/* A failed read is not a failed recipient task; Refresh tasks retries the exact reference. */}).finally(()=>{if(this.taskReads.get(tool.callId)===controller){this.taskReads.delete(tool.callId);if(!this.destroyed&&generation===this.generation)this.schedule();}});
+    void this.hooks.readTaskResult(reference,controller.signal).then(value=>{if(!controller.signal.aborted&&!this.destroyed&&generation===this.generation&&this.tasks.recordResult(tool.callId,value)){this.schedule();this.hooks.tasksChanged?.();}}).catch(()=>{/* A failed read is not a failed recipient task; Refresh tasks retries the exact reference. */}).finally(()=>{if(this.taskReads.get(tool.callId)===controller){this.taskReads.delete(tool.callId);if(!this.destroyed&&generation===this.generation)this.schedule();}});
   }
   private refreshMountedTools(): void {
     for (const tool of this.tools.values()) if (tool.source && tool.node.open && this.node.contains(tool.card)) {
@@ -2089,10 +2097,25 @@ export class Transcript {
   private toolAnswer(tool: ToolNode, source: JoinedTool): void {
     const task=this.tasks.byCall.get(source.callId);let state=tool.node.querySelector<HTMLButtonElement>('.step-answer-state');
     const answer=tool.card.querySelector<HTMLElement>('.step-answer');
-    if(!task){state?.remove();answer?.remove();return;}
+    if(!task){state?.remove();answer?.remove();tool.node.querySelector('.step-answer-stop')?.remove();return;}
     if(!state){state=button('',()=>this.toggleTaskAnswer(tool,source.callId),'step-answer-state');state.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();});tool.node.querySelector('summary')?.append(state);}
     setText(state,this.taskAnswerLabel(task));state.disabled=!task.answer&&!task.reason;state.dataset.state=task.state;
+    this.toolStop(tool,source,task);
     this.inlineTaskAnswer(tool,source,task,answer);
+  }
+  /** While the recipient still works on this request, the card offers Stop for that work. */
+  private toolStop(tool:ToolNode,source:JoinedTool,task:ConversationTask):void{
+    let stop=tool.node.querySelector<HTMLButtonElement>('.step-answer-stop');
+    const reference=task.reference,stopTask=this.hooks.stopTask;
+    if(!reference||!stopTask||!this.tasks.outstandingCall(source.callId)){stop?.remove();return;}
+    if(stop)return;
+    const control=button('Stop',()=>{
+      if(control.disabled)return;control.disabled=true;setText(control,'Stopping');
+      void stopTask(reference).catch(()=>{/* The stop path reports its own failure. */}).finally(()=>{control.disabled=false;setText(control,'Stop');this.refreshTasks();});
+    },'step-answer-stop');
+    stop=control;stop.title='Stop the work this message started';stop.setAttribute('aria-label','Stop the work this message started');
+    stop.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();});
+    tool.node.querySelector('.step-answer-state')?.after(stop);
   }
   private toggleTaskAnswer(tool:ToolNode,callId:string):void{
     const current=tool.source?this.tasks.byCall.get(tool.source.callId):undefined;if(!current?.answer&&!current?.reason)return;

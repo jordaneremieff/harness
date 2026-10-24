@@ -62,6 +62,20 @@ export class ConversationTasks {
     if(!row||!reference||value.identity!==reference.sessionId||value.submissionId!==reference.submissionId||reference.requestId&&value.requestId&&reference.requestId!==value.requestId)return false;
     this.nativeAnswers.set(callId,value);if(this.nativeAnswers.size>200){const first=this.nativeAnswers.keys().next().value;if(first)this.nativeAnswers.delete(first);}this.applyResult(row,value);return true;
   }
+  /** A result read reported this request placed or queued: the recipient still works on it, or has yet to start. */
+  outstandingCall(callId:string):boolean {
+    const row=this.byCall.get(callId),native=this.nativeAnswers.get(callId);
+    return !!row?.reference&&!!native&&nativeMatches(native,row.reference)&&(native.status==='placed'||native.status==='queued');
+  }
+  /** One reference per recipient that still works on a request this conversation sent. */
+  outstanding():TaskReference[] {
+    const recipients=new Set<string>(),references:TaskReference[]=[];
+    for(const row of this.sent){
+      if(!row.tool||!row.reference||recipients.has(row.reference.sessionId)||!this.outstandingCall(row.tool.callId))continue;
+      recipients.add(row.reference.sessionId);references.push(row.reference);
+    }
+    return references;
+  }
   private applyResult(row:ConversationTask,value:ResultInspection):void {
     row.state=value.status==='done'?(value.answer?'answered':'unavailable'):value.status==='unanswered'?'unanswered':value.status==='queued'?'queued':value.status==='placed'?'awaiting':'unavailable';
     if(value.answer)row.answer={text:value.answer.text,complete:!value.answer.shortened,redacted:value.answer.protected};row.reason=value.reason?.text;

@@ -460,6 +460,9 @@ html.resizing:has(.resizer[data-axis=y][data-dragging=true]), html.resizing:has(
 .step-answer-state { flex: none; margin-left: var(--s2); color: var(--link); font-size: var(--fs-meta); }
 .step-answer-state:disabled { color: var(--muted); }
 .step-answer-state[data-state=unanswered] { color: var(--error); }
+.step-answer-stop { flex: none; margin-left: var(--s2); padding: 0 var(--s2); border: 1px solid var(--edge); color: var(--fg); font-size: var(--fs-meta); }
+.step-answer-stop:disabled { color: var(--muted); }
+@media (pointer: coarse) { .step-answer-stop { min-width: 44px; min-height: 44px; } }
 
 /* Workspace and conversation column */
 .workspace { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -850,6 +853,8 @@ summary::before { content: none; }
 .card-disclosure::before { content: none; }
 .tool-card > summary > .tool-tier { grid-column: 1; grid-row: 1; min-width: 0; }
 .tool-card > summary > .step-answer-state { grid-column: 2; grid-row: 1; }
+.tool-card > summary:has(> .step-answer-stop) { grid-template-columns: minmax(0,1fr) auto auto; }
+.tool-card > summary > .step-answer-stop { grid-column: 3; grid-row: 1; }
 .tool-card > summary > :is(.tool-preview, .tool-preview-qualification) { grid-column: 1 / -1; }
 .tool-tier { display: flex; flex-wrap: nowrap; align-items: center; gap: var(--s2); min-width: 0; min-height: 24px; }
 .tool-status { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; flex: none; color: var(--muted); font-size: var(--fs-meta); }

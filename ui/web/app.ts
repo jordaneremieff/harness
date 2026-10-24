@@ -13,7 +13,7 @@ import {recallItems} from './message-recall.ts';
 const inputEchoes=new InputEchoes();
 import {AgentInspection} from './agent-inspection.ts';
 import {createAgentLiveStrip, type AgentLiveStrip, type AgentContextReload} from './agent-live-strip.ts';
-import {taskReference, type ConversationTask} from './conversation-tasks.ts';
+import {taskReference, type ConversationTask, type TaskReference} from './conversation-tasks.ts';
 import type {AgentInspectionView, ResultInspection, ResultSelector} from '../shared/inspection.ts';
 import type { ConversationLayout, WorkspaceTab as ConversationTab, FileTab } from '../shared/api.ts';
 import type {FileDirectoryPage, FileSearchResult, FileRootSelection, FileText, FileDraftState, FileDraft, FileSave, FileMutation, FileWatchState, FileWatchScope, FileChanges} from '../shared/files.ts';
@@ -342,7 +342,7 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
     ...(target.kind === 'primary' ? {commands: () => actions.commandOptions(), moreCommands: (captured: Target) => actions.continueCommands(captured)} : {}),
     ...agentCommandHooks(controller),
     retained: (workspace, captured) => { if (workspace !== state.workspace?.id) return; if (captured.kind === 'agent') renderMessageResume(captured.identity); tabStrip.render();sessionSidebar.refreshNames(); }});
-  controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {unread: () => {tabStrip.render();sessionSidebar.refreshNames();}, openFile:destination=>{try{openToolFile(destination);}catch(error){showError(error);}}, primaryDraft:transcriptDraftActions(controller),...transcriptSource(target),earlier: () => loadEarlierRows(controller), references, subject: toolSubjectCaption, senderSummary: identity => state.roster.get(identity) ?? identityNames.get(identity), senderCaption:currentSenderCaption, thread: (id,title) => openThread({id,...(title ? {title} : {})}, controller), readTaskResult:async(reference,signal)=>{const value=await request<AgentInspectionView>(`/api/agents/${encodeURIComponent(reference.sessionId)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',{view:'result',submissionId:reference.submissionId,...(reference.requestId?{requestId:reference.requestId}:{})},undefined,AbortSignal.any([signal,controller.abort.signal,AbortSignal.timeout(15_000)]));if(value.view!=='result')throw new Error('The task result view changed.');return value;}, activity:()=>{if (footerController === controller) renderWorkbenchStatus();}, cwd: () => target.kind === 'primary' ? state.primaries.get(target.key)?.cwd : state.roster.get(target.identity)?.cwd, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
+  controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {unread: () => {tabStrip.render();sessionSidebar.refreshNames();}, openFile:destination=>{try{openToolFile(destination);}catch(error){showError(error);}}, primaryDraft:transcriptDraftActions(controller),...transcriptSource(target),earlier: () => loadEarlierRows(controller), references, subject: toolSubjectCaption, senderSummary: identity => state.roster.get(identity) ?? identityNames.get(identity), senderCaption:currentSenderCaption, thread: (id,title) => openThread({id,...(title ? {title} : {})}, controller), readTaskResult:async(reference,signal)=>{const value=await request<AgentInspectionView>(`/api/agents/${encodeURIComponent(reference.sessionId)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',{view:'result',submissionId:reference.submissionId,...(reference.requestId?{requestId:reference.requestId}:{})},undefined,AbortSignal.any([signal,controller.abort.signal,AbortSignal.timeout(15_000)]));if(value.view!=='result')throw new Error('The task result view changed.');return value;}, stopTask:reference=>stopDelegated(controller,[reference]), tasksChanged:()=>renderController(controller), activity:()=>{if (footerController === controller) renderWorkbenchStatus();}, cwd: () => target.kind === 'primary' ? state.primaries.get(target.key)?.cwd : state.roster.get(target.identity)?.cwd, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
     presentation: (expanded, thinking, view, choice) => { controller.showThinking = thinking; void savePresentation(controllerCapture(controller), expanded, thinking, view, choice); },
     reading: reading => { void saveReading(controllerCapture(controller), reading); },
     ...(target.kind === 'primary' ? {fork: (message: import('../shared/api.ts').MessageView, entry: string) => { if (sameTarget(target, primaryTarget())) actions.fork(entry, rawText(message.parts)); }, output: (more: import('../shared/api.ts').OutputContinuation) => loadControllerOutput(controller, more)} : {}),
@@ -2292,7 +2292,8 @@ function primaryActivity(item?: PrimaryView, target?: Target): void {
     if (item.lifecycle === 'ready') primaryNode('activity').append(button('Review message', () => actions.retryOutput()));
   }
   else if (!view.busy && view.responseOutcome === 'failed' && item?.lifecycle === 'ready') primaryNode('activity').append(button('Review message', () => actions.retryOutput()));
-  primaryNode('stop').hidden = !(connected && primaryBusy(item, conversation?.queue?.pending));
+  const primary = primaryTarget();
+  primaryNode('stop').hidden = !(connected && (primaryBusy(item, conversation?.queue?.pending) || !!primary && !!conversationController(primary).transcript?.outstandingTasks().length));
 }
 export function renderPrimaryQueue(queue?: EventData['primary.queue']): void {
   const list = primaryNode('queued'); const rows: HTMLElement[] = [];
@@ -2717,8 +2718,19 @@ async function restoreControllerHistory(controller: ConversationController, read
 function canStopController(controller: ConversationController): boolean {
   if (!connected || controller.workspaceId !== state.workspace?.id || controller.abort.signal.aborted) return false;
   if (controller.target.kind === 'agent' && messageTarget.current?.workspaceId === controller.workspaceId && messageTarget.current.identity === controller.target.identity) return false;
-  if (controller.target.kind === 'primary') return presentation(controller.target).busy;
+  if (controller.target.kind === 'primary') return presentation(controller.target).busy || !!controller.transcript?.outstandingTasks().length;
   const row = agentRow(controller.target.identity), view = presentation(controller.target); return !!row?.capabilities?.abort && view.input && view.busy;
+}
+/** Stop agent work that a conversation started and still waits for. Like Stop for a response, it asks for no confirmation. */
+async function stopDelegated(controller: ConversationController, references: readonly TaskReference[]): Promise<void> {
+  const workspace = controller.workspaceId;
+  const results = await Promise.allSettled(references.map(async reference => {
+    const target: Target = {kind: 'agent', identity: reference.sessionId};
+    showOperation(await operation('agent.abort', `/api/agents/${encodeURIComponent(reference.sessionId)}/abort`, {background: false}, target), workspace);
+  }));
+  const failed = results.find(result => result.status === 'rejected');
+  if (failed) showStatusError(controller.elements.receipt, 'Stop could not be confirmed.', failed.reason);
+  controller.transcript.refreshTasks();
 }
 async function stopController(controller: ConversationController): Promise<void> {
   const target = controller.target;
@@ -2730,9 +2742,13 @@ async function stopController(controller: ConversationController): Promise<void>
     }, 'Stop'); return;
   }
   if (controller.workspaceId !== state.workspace?.id || controller.root.hidden || controller.abort.signal.aborted) return;
+  const delegated = controller.transcript.outstandingTasks();
   setText(controller.elements.receipt, 'Stop requested');
-  try { showOperation(await operation('primary.stop', `/api/primaries/${encodeURIComponent(target.key)}/stop`, {epoch: target.epoch}, target), controller.workspaceId); }
-  catch (error) {showStatusError(controller.elements.receipt, 'Stop could not be confirmed.', error);}
+  if (presentation(target).busy) {
+    try { showOperation(await operation('primary.stop', `/api/primaries/${encodeURIComponent(target.key)}/stop`, {epoch: target.epoch}, target), controller.workspaceId); }
+    catch (error) {showStatusError(controller.elements.receipt, 'Stop could not be confirmed.', error);}
+  }
+  if (delegated.length) await stopDelegated(controller, delegated);
 }
 function saveReading(captured: TranscriptTarget | undefined, reading: TargetState['reading']): Promise<void> {
   if (!captured || captured.controller.historyReading || primaryHistoryNeedsResume(captured.controller)) return Promise.resolve();
