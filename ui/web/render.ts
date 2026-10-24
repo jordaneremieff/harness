@@ -2,6 +2,7 @@ import type { EntryView, ImageView, JsonDisplay, MessageView, PartView, Presenta
 import { EntryFocus } from './entry-focus.ts';
 import type {ResultInspection, ResultSelector} from '../shared/inspection.ts';
 import { announce, button, copy, details, element, rawText, setText } from './dom.ts';
+import { paintAnsi } from './ansi.ts';
 import { ArrivalCounter, latestLabel } from './arrivals.ts';
 import { cardAction, cardActionLabel, cardDisclosure, cardIcon, type CardIcon } from './card-icons.ts';
 import { contextMenu, nativeEditingTarget, type ContextItem } from './context-menu.ts';
@@ -79,13 +80,25 @@ function menuText(tool?: ToolNode, message?: MessageNode, entry?: EntryNode): st
   if (message?.source) return messageCopyText(message.source, source => partText(source.parts));
   return rawText(entry?.source?.data?.value ?? entry?.source);
 }
-function partText(parts: PartView[]): string {
+/** The colour copy last painted into an output node, so an unchanged repaint is skipped and a changed one is not. */
+const colourPainted = new WeakMap<Element, string | undefined>();
+const shownText = (part: Extract<PartView, {type: 'text' | 'thinking'}>, ansi: boolean): string => part.redacted ? 'Thinking not available' : ansi && part.type === 'text' && part.ansi !== undefined ? part.ansi : part.text;
+/** Tool output text may carry a colour copy; `ansi` selects it for painting while every other reader keeps the plain text. */
+function partText(parts: PartView[], ansi = false): string {
   return parts.map(part => {
-    if (part.type === 'text' || part.type === 'thinking') return part.redacted ? 'Thinking not available' : part.text;
+    if (part.type === 'text' || part.type === 'thinking') return shownText(part, ansi);
     if (part.type === 'omitted') return part.label;
     if (part.type === 'image') return part.alt;
-    return part.type === 'toolResult' ? partText(part.parts) : '';
+    return part.type === 'toolResult' ? partText(part.parts, ansi) : '';
   }).join('\n');
+}
+const hasAnsi = (parts: PartView[]): boolean => parts.some(part => part.type === 'text' ? part.ansi !== undefined && !part.redacted : part.type === 'toolResult' && hasAnsi(part.parts));
+const partAnsi = (parts: PartView[]): string | undefined => hasAnsi(parts) ? partText(parts, true) : undefined;
+/** One output node's content: numbered read, colour, highlighted source or plain text. */
+function outputContent(text: string, start: number | undefined, language: string | undefined, colour: string | undefined): Node {
+  if (start !== undefined) return numberedRead(text, start, language);
+  if (colour !== undefined) return paintAnsi(colour, text.length);
+  return language ? highlight(text, language) : document.createTextNode(text);
 }
 function hasSavedText(parts: readonly PartView[]): boolean {
   return parts.some(part => part.type === 'toolResult' ? hasSavedText(part.parts) : (part.type === 'text' || part.type === 'thinking') && !part.redacted && !!part.text);
@@ -2501,7 +2514,10 @@ export class Transcript {
     this.presentToolRegion(tool, source); this.expandedContent(tool, source);
     this.updateResultDocument(tool, source, pre);
     const wait = source.name === 'agent_await' ? awaitedToolState(source)?.label : undefined;
-    if (!tool.resultDocument) this.paintToolOutput(pre, source, bounded(output || wait || this.emptyToolResult(source.status)));
+    if (!tool.resultDocument) {
+      const shown = bounded(output || wait || this.emptyToolResult(source.status));
+      this.paintToolOutput(pre, source, shown, false, shown === output ? partAnsi(source.result ?? []) : undefined);
+    }
     else if (pre.textContent) setText(preTextFrame(pre as HTMLElement), '');
     this.updateOutputNotice(tool, source, pre as HTMLElement, output);
     this.refreshToolPages(tool, source); this.refreshToolInspections(tool, source);
@@ -2576,23 +2592,25 @@ export class Transcript {
     }
     if (part.text.length > RAW_LIMIT) section.setAttribute('aria-label', 'Saved text exceeds the display limit.');
     const text = element('pre', 'tool-result-text');
-    this.paintToolOutput(text, source, bounded(part.redacted ? 'Thinking not available' : part.text)); section.append(text); this.registerOutput(text);
+    const shown = bounded(part.redacted ? 'Thinking not available' : part.text);
+    this.paintToolOutput(text, source, shown, false, shown === part.text && !part.redacted && part.type === 'text' ? part.ansi : undefined); section.append(text); this.registerOutput(text);
   }
   private refreshToolPages(tool: ToolNode, source: JoinedTool): void {
     for (const page of tool.output?.querySelectorAll<HTMLElement>('.output-page') ?? []) {
       if (!page.hidden) this.paintToolOutput(page, source, page.textContent ?? '');
     }
   }
-  private paintToolOutput(pre: Element, source: JoinedTool, text: string, force = false): void {
+  private paintToolOutput(pre: Element, source: JoinedTool, text: string, force = false, ansi?: string): void {
     const args = record(source.args);
     const language = source.name === 'read' && source.status === 'success' ? languageFromPath(args.file_path ?? args.path) : undefined;
     const node = pre as HTMLElement;
     const start = node.classList.contains('output-page') ? undefined : readLineStart(source, text);
     const numbering = start === undefined ? '' : String(start);
-    if (!force && pre.textContent === text && node.dataset.language === (language ?? '') && node.dataset.readLineStart === numbering) return;
-    const frame = preTextFrame(node);
-    if (start !== undefined) frame.replaceChildren(numberedRead(text, start, language));
-    else frame.replaceChildren(language ? highlight(text, language) : document.createTextNode(text));
+    const colour = start === undefined && !language ? ansi : undefined;
+    const same = pre.textContent === text && node.dataset.language === (language ?? '') && node.dataset.readLineStart === numbering && colourPainted.get(node) === colour;
+    if (!force && same) return;
+    preTextFrame(node).replaceChildren(outputContent(text, start, language, colour));
+    colourPainted.set(node, colour);
     node.dataset.language = language ?? ''; node.dataset.readLineStart = numbering;
   }
   private toolOutputPages(more: OutputContinuation, source: JoinedTool, tool: ToolNode, generation: number): HTMLElement {

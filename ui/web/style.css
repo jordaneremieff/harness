@@ -969,6 +969,12 @@ summary::before { content: none; }
 .tool-expanded pre { display: block; box-sizing: border-box; width: 100%; max-width: 100%; max-height: 480px; padding: var(--s2) var(--s3); border: 0; border-radius: var(--r-sm); background: var(--code); }
 .tool-expanded .tool-result pre { max-height: none; }
 .tool-expanded .tool-output-text { color: var(--fg); }
+/* SGR output from tools: sixteen colours and 256 or truecolour map onto the modelled text tokens; backgrounds and inverse become a mark, never an arbitrary colour. */
+.ansi-fg-error { color: var(--error); } .ansi-fg-success { color: var(--success); } .ansi-fg-warning { color: var(--warning); } .ansi-fg-link { color: var(--link); }
+.ansi-fg-agent { color: var(--tool-agent); } .ansi-fg-search { color: var(--tool-search); } .ansi-fg-muted { color: var(--muted); } .ansi-fg-dim { color: var(--dim); } .ansi-fg-fg { color: var(--fg); }
+.ansi-b { font-weight: 600; } .ansi-dim:not([class*="ansi-fg-"]) { color: var(--dim); } .ansi-i { font-style: italic; } .ansi-u { text-decoration: underline; } .ansi-s { text-decoration: line-through; }
+.ansi-u.ansi-s { text-decoration: underline line-through; }
+.ansi-mark { font-weight: 600; text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 2px; }
 .tool-output-info { max-width: 100%; color: var(--muted); font-size: var(--fs-meta); white-space: pre-wrap; overflow-wrap: anywhere; }
 .tool-expanded details > summary { min-height: 24px; line-height: 20px; color: var(--muted); font-family: var(--sans); font-size: var(--fs-meta); }
 .tool-inspection > pre { max-height: 320px; }
@@ -1803,7 +1809,7 @@ button.thread-person:hover, button.thread-sender:hover { background: var(--raise
   .tool-inspection > .source-header + pre { padding-right: var(--s7); min-height: 48px; }
   .tool-shell { --tool-actions: 44px; }
   .message.tool-only > .message-body > .tool-shell:first-child { --tool-actions: 92px; }
-  .tool-copy { width: 44px; height: 44px; }
+  .tool-copy { min-width: 44px; min-height: 44px; white-space: nowrap; }
   dialog[data-variant=find] #modal-body > input { min-height: 44px; }
   .agent-row:is([data-action=message],[data-action=resume]) { grid-template-columns: minmax(0,1fr) max-content 44px; }
   .agent-row .row-summary { grid-column: 1; }
@@ -2092,6 +2098,7 @@ pre[data-wrap=true] { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 
 
+
 /* Navigation: toggle glyph, session status dots, date groups. */
 .session-dot { position: absolute; left: 5px; top: 17px; width: 7px; height: 7px; border-radius: 50%; }
 .session-dot[data-status=running] { background: var(--success); animation: dot-pulse 1.6s ease-in-out infinite; }
@@ -2145,7 +2152,9 @@ pre[data-wrap=true] { white-space: pre-wrap; overflow-wrap: anywhere; }
 .message-body { line-height: 1.6; }
 .message.user > .message-header { position: absolute; top: 0; right: 0; z-index: 1; min-height: 0; padding: 0; }
 .message.user .message-role { display: none; }
-.message.user .operator-message-content { padding-right: var(--s5); }
+.message.user .operator-message-content { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: var(--s3); align-items: start; padding-right: var(--s5); }
+.message.user .operator-message-content > .message-text { order: 1; }
+.message.user .operator-message-content > .operator-message-time { order: 2; float: none; }
 @media (min-width:1000px) { .message-body > :is(p, ul, ol, blockquote, h1, h2, h3, h4) { max-width: 34em; } }
 @media (max-width:999px) {
   .navigation-toggle > .card-icon-navigation, .sidebar-close > .card-icon-navigation { display: none; }

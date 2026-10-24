@@ -5,7 +5,7 @@ import { decodePublication } from '../agents/contract.mts';
 import type { Publication, Summary } from '../agents/contract.mts';
 import type { CatalogRecord } from '../agents/catalog-record.mts';
 import { retainedRows } from '../agents/catalog-state.mts';
-import { jsonDisplay, projectEntry, projectFrame, projectJson, projectMessage, projectRoster, projectSavedEntry, protectedTextPage, safeText } from './projection.mts';
+import { jsonDisplay, projectToolText, projectEntry, projectFrame, projectJson, projectMessage, projectRoster, projectSavedEntry, protectedTextPage, safeText } from './projection.mts';
 
 import type { MessageView, PartView } from '../shared/api.ts';
 const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
@@ -529,4 +529,40 @@ test('tool facts omit malformed or absent counts and bound protected path text w
   const head = result('read', {truncation: {truncated: true, truncatedBy: 'bytes', totalLines: 1, outputLines: 0,
     totalBytes: 20, outputBytes: 0, maxBytes: 2, firstLineExceedsLimit: true}}); assert.ok(head?.type === 'toolResult');
   assert.equal(head.output?.truncation?.firstLineExceedsLimit, true); assert.equal(head.output?.truncation?.outputLines, 0);
+});
+
+const toolText = (text: string, extra: Record<string, unknown> = {}) => projectMessage({role: 'toolResult', toolCallId: 'c', toolName: 'bash', content: [{type: 'text', text}], ...extra}, 'm', 'final');
+const resultPart = (message: ReturnType<typeof projectMessage>) => {
+  const result = message.parts.find(part => part.type === 'toolResult');
+  const part = result?.type === 'toolResult' ? result.parts[0] : undefined;
+  assert.equal(part?.type, 'text'); return part as Extract<NonNullable<typeof part>, {type: 'text'}>;
+};
+test('tool output keeps colour sequences beside escape-free text', () => {
+  const part = resultPart(toolText('\x1b[1;31mFAIL\x1b[0m src/a.test.ts\n\x1b[32mPASS\x1b[39m b\x1b[2K\x1b[1A'));
+  assert.equal(part.text, 'FAIL src/a.test.ts\nPASS b');
+  assert.equal(part.ansi, '\x1b[1;31mFAIL\x1b[0m src/a.test.ts\n\x1b[32mPASS\x1b[39m b');
+});
+test('tool output without colour has no colour field and hostile sequences are removed', () => {
+  const part = resultPart(toolText('plain \x1b]0;title\x07text\x1b[2J\x1b[Hdone\x07\n50%\r100%'));
+  assert.equal(part.text, 'plain textdone\n100%'); assert.equal('ansi' in part, false);
+});
+test('colour is dropped when redaction changes the text so a split secret cannot survive', () => {
+  const secret = `sk-${'a'.repeat(20)}`;
+  const part = resultPart(toolText(`\x1b[31mtok\x1b[0m ${secret.slice(0, 8)}\x1b[32m${secret.slice(8)}\x1b[0m and ${secret}`));
+  assert.equal('ansi' in part, false); assert.equal(part.text.includes(secret), false);
+  const split = resultPart(toolText(`\x1b[31m${secret.slice(0, 8)}\x1b[0m${secret.slice(8)}`));
+  assert.equal('ansi' in split, false); assert.equal(split.text.includes('sk-aaaa'), false, 'a secret split by colour is redacted in the plain text');
+});
+test('a cut keeps the colour copy aligned with the plain text', () => {
+  const cut = projectToolText(`\x1b[33m${'word '.repeat(100)}\x1b[0m`, 100);
+  assert.ok(cut.lossy && cut.text.endsWith('\n[truncated]') && cut.ansi?.endsWith('\n[truncated]'));
+  assert.equal(cut.ansi?.replace(/\x1b\[[0-9;]*m/g, ''), cut.text);
+});
+test('output too large to carry twice keeps all its text and drops only the colour', () => {
+  const part = resultPart(toolText(`\x1b[33m${'word '.repeat(9000)}\x1b[0m`));
+  assert.equal(part.text.length, 45000); assert.equal('ansi' in part, false);
+});
+test('only tool results carry colour; assistant and user text stay plain', () => {
+  const assistant = projectMessage({role: 'assistant', content: [{type: 'text', text: '\x1b[31mred\x1b[0m'}]}, 'a', 'final');
+  const part = assistant.parts[0]; assert.equal(part?.type, 'text'); assert.equal(part && 'ansi' in part, false); assert.equal(part?.type === 'text' ? part.text : '', 'red');
 });

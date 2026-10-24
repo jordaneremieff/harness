@@ -4,6 +4,7 @@ import {taskSenderHints} from '../agents/contract.mts';
 import type { AgentRow, CachedRoster, DisplayCoverage, EntryView, ImageSource, JsonDisplay, MessageView, PartView, ProjectedFrame, ToolOutputInfo, GenerationRetry, ProviderBlock } from '../shared/api.ts';
 import { imagePart, imageSource } from './images.mts';
 import { projectCommunication, type CommunicationSource } from './communication.mts';
+import { ansiOf, cutAnsi, plainOf, tokenizeAnsi } from './ansi.mts';
 
 const TEXT_BYTES = 64 * 1024;
 const DISPLAY_BYTES = 60 * 1024;
@@ -25,6 +26,16 @@ export function safeText(value: unknown, maxBytes = TEXT_BYTES): string {
   const bytes = Buffer.from(clean); let end = Math.max(0, maxBytes - 12);
   while (end > 0 && ((bytes[end] ?? 0) & 0xc0) === 0x80) end--;
   return `${bytes.subarray(0, end).toString('utf8')}\n[truncated]`;
+}
+/** Tool output keeps its colour sequences beside the plain text: `text` is escape-free for every plain consumer and `ansi` carries only SGR for painting. Redaction works on the plain text, and a redacted or control-changed string drops the colour rather than risk a split secret. */
+export function projectToolText(value: unknown, maxBytes: number): {text: string; ansi?: string; lossy: boolean} {
+  const items = tokenizeAnsi(typeof value === 'string' ? value : '');
+  const plain = plainOf(items), text = safeText(plain, maxBytes), lossy = text !== plain;
+  if (!items.some(item => item.t === 'sgr') || safeText(plain, Number.MAX_SAFE_INTEGER) !== plain) return {text, lossy};
+  const marker = '\n[truncated]';
+  const ansi = lossy ? (text.endsWith(marker) ? cutAnsi(items, text.length - marker.length) + marker : undefined) : ansiOf(items);
+  if (ansi === undefined || Buffer.byteLength(ansi) > 2 * TEXT_BYTES) return {text, lossy};
+  return {text, ansi, lossy};
 }
 /** Structured preview coverage reports cuts without adding text to the retained prefix. */
 function projectedText(value: string, maxBytes: number): string {
@@ -197,6 +208,7 @@ class MessageProjector {
   private readonly options: ProjectionOptions;
   private readonly budget: StructuredBudget;
   private structuredText = false;
+  private ansiParts = false;
   private readonly sidecars: {part: Extract<PartView, {type: 'text'}>; value: unknown; truncated: boolean}[] = [];
   private part(raw: unknown, index: number): PartView {
     const part = object(raw);
@@ -222,9 +234,13 @@ class MessageProjector {
   }
   private textPart(part: Record<string, unknown>, index: number): PartView {
     const text = part.type === 'text' ? part.text : part.thinking ?? part.text;
-    const display = part.redacted === true ? '[redacted thinking]' : safeText(text, Math.min(TEXT_BYTES, this.remaining - 128));
-    this.changed ||= display !== text;
-    const result: PartView = {type: part.type === 'text' ? 'text' : 'thinking', text: display, ...(part.redacted === true ? {redacted: true} : {})};
+    const cap = Math.min(TEXT_BYTES, this.remaining - 128);
+    let display: string, ansi: string | undefined, lossy: boolean;
+    if (part.redacted === true) { display = '[redacted thinking]'; lossy = display !== text; }
+    else if (part.type === 'text' && this.ansiParts) { const colour = projectToolText(text, cap); display = colour.text; ansi = colour.ansi; lossy = colour.lossy; }
+    else { display = safeText(text, cap); lossy = display !== text; }
+    this.changed ||= lossy;
+    const result: PartView = {type: part.type === 'text' ? 'text' : 'thinking', text: display, ...(ansi === undefined ? {} : {ansi}), ...(part.redacted === true ? {redacted: true} : {})};
     if (result.type === 'text' && part.redacted !== true && this.structuredText) this.structuredPart(part, result, index);
     if (this.options.trustedStructured && part.redacted !== true && display === text) this.continuation(part, result);
     return result;
@@ -266,8 +282,10 @@ class MessageProjector {
     for (const [index, item] of content.slice(0, limit).entries()) {
       if (this.remaining < 256 && object(item).type !== 'omitted') { this.omitted++; continue; }
       const projected = this.part(item, index); let bytes = sizeOf(projected);
+      if (bytes > this.remaining && projected.type === 'text' && projected.ansi !== undefined) { delete projected.ansi; bytes = sizeOf(projected); this.changed = true; }
       if (bytes > this.remaining && (projected.type === 'text' || projected.type === 'thinking')) {
-        projected.text = safeText(projected.text, Math.max(64, Math.floor((this.remaining - 128) / 6))); bytes = sizeOf(projected); this.changed = true;
+        projected.text = safeText(projected.text, Math.max(64, Math.floor((this.remaining - 128) / 6)));
+        bytes = sizeOf(projected); this.changed = true;
       }
       if (bytes > this.remaining) { this.omitted++; continue; }
       this.remaining -= bytes; parts.push(projected);
@@ -281,7 +299,7 @@ class MessageProjector {
   }
   message(raw: unknown, id: string, state: 'partial' | 'final'): MessageView {
     const source = object(raw);
-    this.structuredText = this.acceptsStructured(source);
+    this.structuredText = this.acceptsStructured(source); this.ansiParts = source.role === 'toolResult';
     const hidden = source.role === 'custom' && source.display === false;
     const communication = this.communication(source, id);
     const parts = hidden ? [] : this.parts(source);

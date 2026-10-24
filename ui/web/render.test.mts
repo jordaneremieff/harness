@@ -1137,6 +1137,31 @@ test('bash command and output stay distinct, and shell status follows live compl
   view.set(entries, new Map([['bash', {callId: 'bash', name: 'bash', phase: 'end', parts: [], isError: true}]])); flush();
   assert.equal(card.parentNode?.dataset.status, 'error'); assert.equal(card.querySelector('.tool-output-text')?.textContent, 'The tool failed. No output is available.');
 });
+test('coloured tool output paints modelled colour classes while its text stays plain and unchanged repaints keep the nodes', () => {
+  setup(); const view = transcript();
+  const call = {type: 'toolCall' as const, callId: 'run', name: 'bash', arguments: {value: {command: 'npm test; ls; grep -rn match .'}, truncated: false}};
+  const entries = [{id: 'call', kind: 'message', messages: [{...message('run', ''), parts: [call]}]}];
+  view.set(entries); flush(); const card = node('primary-transcript').querySelector('.tool-card'); assert.ok(card);
+  card.open = true; card.dispatch('toggle'); flush();
+  const plain = 'FAIL src/a.test.ts\ndir  file.ts\nsrc/a.ts:12: match here\n1 failed';
+  const ansi = '\x1b[1;31mFAIL\x1b[0m src/a.test.ts\n\x1b[01;34mdir\x1b[0m  file.ts\n\x1b[35msrc/a.ts\x1b[36m:\x1b[0m12\x1b[36m:\x1b[0m \x1b[01;31mmatch\x1b[m here\n\x1b[31m1 failed';
+  const result = (extra: Record<string, unknown>) => new Map([['run', {callId: 'run', name: 'bash', phase: 'end', isError: true, parts: [{type: 'text', text: plain, ...extra}]}]]);
+  view.set(entries, result({ansi})); flush();
+  const output = card.querySelector('.tool-output-text'); assert.ok(output);
+  assert.equal(output.textContent, plain, 'copy and find read the escape-free text');
+  assert.equal(output.querySelector('.ansi-fg-error')?.textContent, 'FAIL');
+  assert.ok(String(output.querySelector('.ansi-fg-error')?.className).includes('ansi-b'));
+  assert.equal(output.querySelectorAll('.ansi-fg-link').length, 1);
+  assert.equal(output.querySelectorAll('.ansi-fg-agent').length, 1);
+  assert.equal(output.querySelectorAll('.ansi-fg-search').length, 2);
+  assert.equal(output.querySelectorAll('.ansi-fg-error').length, 3, 'the failed line, the match and the unterminated colour that runs to the output end');
+  const first = output.querySelector('.ansi-fg-error');
+  view.set(entries, result({ansi})); flush();
+  assert.equal(card.querySelector('.tool-output-text')?.querySelector('.ansi-fg-error'), first, 'an unchanged repaint keeps the painted nodes');
+  view.set(entries, result({})); flush();
+  assert.equal(card.querySelector('.tool-output-text')?.querySelector('.ansi-fg-error'), null, 'output without a colour copy paints as plain text');
+  assert.equal(card.querySelector('.tool-output-text')?.textContent, plain);
+});
 test('collapsed edit and write show supplied previews but failures show the retained error output', () => {
   setup(); const view = transcript();
   const calls = [

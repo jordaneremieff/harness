@@ -46,7 +46,7 @@ export type ImageView = {type: 'image'; mimeType: 'image/png' | 'image/jpeg'; di
 export type ToolOutputInfo = {truncation?: {truncated: true; truncatedBy?: 'lines' | 'bytes';
   totalLines?: number; outputLines?: number; totalBytes?: number; outputBytes?: number;
   maxLines?: number; maxBytes?: number; lastLinePartial?: true; firstLineExceedsLimit?: true}; fullOutputPath?: string};
-export type PartView = {type: 'text'; text: string; redacted?: boolean; more?: OutputContinuation; structured?: JsonDisplay} |
+export type PartView = {type: 'text'; text: string; /** Colour sequences (SGR only) for the same text; plain consumers read `text`. */ ansi?: string; redacted?: boolean; more?: OutputContinuation; structured?: JsonDisplay} |
   {type: 'thinking'; text: string; redacted?: boolean; more?: OutputContinuation} |
   {type: 'toolCall'; callId: string; name: string; arguments: JsonDisplay; argumentsError?: string} |
   {type: 'toolResult'; callId: string; name: string; parts: PartView[]; isError: boolean; output?: ToolOutputInfo} |
