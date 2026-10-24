@@ -1518,6 +1518,25 @@ test('a viewport clamp at the tail preserves follow intent through the next outp
     assert.equal(view.captureGeometry().followTail, true); view.destroy();
   } finally { geometry.restore(); }
 });
+test('an implicit browser return after composer growth does not replace explicit tail intent', () => {
+  setup(); const geometry = geometryEnvironment();
+  try {
+    const readings: ReadingView[] = [], view = new Transcript('primary', {presentation: () => {}, reading: value => readings.push(value)}), container = node('primary-transcript'); scrollable(container);
+    const entries = Array.from({length: 8}, (_, index) => entry(`implicit-${index}`));
+    view.set(entries); flush(); container.dispatch('scroll');
+    const oldTop = container.scrollTop; container.clientHeight -= 114;
+    const observer = geometry.observers[0]; assert.ok(observer);
+    observer.emit(container, container.clientWidth, container.clientHeight); geometry.run(); flush(); container.dispatch('scroll');
+    assert.equal(container.scrollTop, oldTop + 114);
+    container.scrollTop = oldTop; container.dispatch('scroll'); flush();
+    assert.equal(view.captureGeometry().followTail, true);
+    assert.equal(container.scrollTop, container.scrollHeight - container.clientHeight);
+    view.set([...entries, entry('implicit-new', 'New content stays visible')]); flush();
+    assert.equal(container.scrollTop, container.scrollHeight - container.clientHeight);
+    assert.equal(node('primary-latest').hidden, true);
+    assert.equal(readings.some(reading => !reading.followTail), false); view.destroy();
+  } finally { geometry.restore(); }
+});
 test('a short deliberate upward move still leaves the tail even inside the follow threshold', () => {
   setup(); const view = transcript(), container = node('primary-transcript'); scrollable(container);
   view.set(Array.from({length: 8}, (_, index) => entry(`upward-${index}`))); flush(); container.dispatch('scroll');
@@ -3282,7 +3301,7 @@ test('retained Transcript disposal removes listeners and cancels queued work wit
     assert.equal(f.rafs.size, 3);
     const queuedFrames = [...f.rafs.values()], queuedTimers = [...f.timeouts.values(), ...f.intervals.values()];
     const targets = [root, latest, f.fonts, ...f.media]; const queuedListeners = [...targets.flatMap(f.listeners), ...[...documentHandlers.values()].flat()];
-    assert.equal(queuedListeners.length, 16); const observations = resize.observations;
+    assert.equal(queuedListeners.length, 20); const observations = resize.observations;
     view.destroy(); const disconnected = [resize.disconnects, ...f.mutations.map(observer => observer.disconnects)];
     const counts = [root.moves, root.writes, latest.writes, readings.length, presentations.length, region.textContent, original.textContent];
     view.destroy(); assert.deepEqual([resize.disconnects, ...f.mutations.map(observer => observer.disconnects)], disconnected);
@@ -3311,7 +3330,7 @@ test('two independent scoped Transcript roots keep Source, reading and shared si
     assert.equal(left.presentations.length, 0); assert.equal(right.presentations.length, 1); f.drain();
     left.root.dispatch('scrollend'); assert.equal(left.readings.length, 1); assert.equal(right.readings.length, 0);
     left.view.destroy(); const rightResize = f.resizes[1]; assert.ok(rightResize); assert.equal(rightResize.disconnects, 0); assert.equal(rightResize.targets.has(right.root as unknown as Element), true);
-    assert.equal(f.listeners(left.root).length, 0); assert.equal(f.listeners(right.root).length, 8); assert.equal([...documentHandlers.values()].flat().length, 3);
+    assert.equal(f.listeners(left.root).length, 0); assert.equal(f.listeners(right.root).length, 12); assert.equal([...documentHandlers.values()].flat().length, 3);
     assert.equal(f.listeners(f.fonts).length, 2); assert.equal(f.media.every(target => f.listeners(target).length === 1), true);
     assert.equal(f.mutations.filter(observer => observer.disconnects === 0).length, 4);
     const leftCounts = [left.root.moves, left.root.writes, left.latest.writes, left.readings.length, left.presentations.length];

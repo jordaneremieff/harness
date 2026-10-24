@@ -51,6 +51,12 @@ const RAW_LIMIT = 65536;
 const EARLIER_ZONE_PX = 240;
 /** After an older page lands, the anchor is held in place this long while rows around it settle. */
 const ANCHOR_HOLD_MS = 500;
+/** A viewport resize can return the scroller toward its pre-resize content position without a gesture; within this window that move is not reading intent. */
+const RESIZE_RETURN_MS = 500;
+/** The resize return lands within this distance of the pre-resize position of the same content, adjusted for later growth. */
+const RESIZE_RETURN_PX = 2;
+/** A scroll this soon after a wheel, touch, key or pointer event on the scroller belongs to that gesture, never to a resize return. */
+const GESTURE_MARK_MS = 100;
 const TASK_READ_CONCURRENCY = 4;
 const toolStateLabels:Record<JoinedTool['status'],string>={success:'',preparing:'Preparing call',working:'Working',pending:'Queued',error:'Failed',ended:'Ended without result',available:'Result available',missing:'No result recorded'};
 const toolStateIcons: Record<string, CardIcon> = {preparing: 'working', working: 'working', pending: 'history', error: 'error', ended: 'unknown', available: 'info', missing: 'unknown'};
@@ -303,6 +309,8 @@ export class Transcript {
   private earlierAvailable = false;
   private hold?: {anchor: {id: string; offsetPx: number}; until: number; queued: boolean};
   private lastScrollTop = 0;
+  private resizeReturn?: {at: number; scrollTop: number; scrollHeight: number};
+  private gestureAt = 0;
   private readingDirty = false;
   private readonly arrivals = new ArrivalCounter();
   private unreadCount = 0;
@@ -359,13 +367,26 @@ export class Transcript {
       this.scrolling.add(this.node); this.reflowAnchor = undefined; this.restoring = undefined;
       const upward = this.node.scrollTop < this.lastScrollTop, maximum = Math.max(0, this.node.scrollHeight - this.node.clientHeight);
       const clampedTail = this.follow && upward && this.lastScrollTop > maximum && Math.abs(this.node.scrollTop - maximum) <= 1;
-      this.follow = (!upward || clampedTail) && maximum - this.node.scrollTop < 48 && !this.hasSelection();
+      const returned = this.resizeReturn, position = this.node.scrollTop, now = performance.now();
+      const resizeReturn = this.follow && upward && !this.hasSelection() && returned !== undefined && now - returned.at <= RESIZE_RETURN_MS && now - this.gestureAt > GESTURE_MARK_MS
+        && Math.abs(position - (returned.scrollTop + this.node.scrollHeight - returned.scrollHeight)) <= RESIZE_RETURN_PX;
+      if (resizeReturn) {
+        // The resize return is not a scroll gesture: keep the tail intent and let the next paint restore the tail.
+        this.follow = true; this.scrolling.delete(this.node);
+      } else {
+        this.follow = (!upward || clampedTail) && maximum - position < 48 && !this.hasSelection();
+      }
       this.syncLatest();
-      this.readEarlier(upward && !clampedTail);
+      this.readEarlier(upward && !clampedTail && !resizeReturn);
       this.lastScrollTop = this.node.scrollTop;
       this.readingDirty = true; this.schedule();
     }, {passive: true});
-    this.listen(this.node, 'wheel', event => this.readEarlier((event as WheelEvent).deltaY < 0), {passive: true});
+    const gesture = () => { this.gestureAt = performance.now(); };
+    this.listen(this.node, 'wheel', event => { gesture(); this.readEarlier((event as WheelEvent).deltaY < 0); }, {passive: true});
+    this.listen(this.node, 'touchstart', gesture, {passive: true});
+    this.listen(this.node, 'touchmove', gesture, {passive: true});
+    this.listen(this.node, 'pointerdown', gesture, {passive: true});
+    this.listen(this.node, 'keydown', gesture);
     this.listen(this.node, 'scrollend', event => {
       if (event.target !== this.node) return;
       this.writtenScrollTop = undefined; this.scrolling.delete(this.node); this.readingDirty = false; this.queueGeometry(); this.schedule(); this.saveReading();
@@ -534,7 +555,7 @@ export class Transcript {
     this.node.dataset.view = this.view;
     this.elapsed.stop();
     if (this.geometryTimer !== undefined) clearTimeout(this.geometryTimer);
-    this.geometryTimer = undefined; this.geometryDirty.clear(); this.outputNodes.clear();
+    this.geometryTimer = undefined; this.geometryDirty.clear(); this.outputNodes.clear(); this.resizeReturn = undefined;
     this.resize?.disconnect(); if (!this.destroyed) this.resize?.observe(this.node); this.sizes = new WeakMap(); this.scrolling = new WeakSet(); this.reflowAnchor = undefined; this.writtenScrollTop = undefined;
     this.clearFind(false); this.findRevision++;
     this.initialSettings.clear(); this.toolStates = new Map(); this.indexedFindId = undefined;
@@ -791,6 +812,8 @@ export class Transcript {
     const size = `${entry.contentRect.width}:${entry.contentRect.height}`;
     if (this.sizes.get(target) === size) return;
     this.sizes.set(target, size); this.geometryDirty.add(target);
+    // The scroller still shows its pre-resize position here; a browser return to that position is measured against it.
+    if (target === this.node) this.resizeReturn = {at: performance.now(), scrollTop: this.node.scrollTop, scrollHeight: this.node.scrollHeight};
   }
   private queueGeometry(): void {
     if (this.destroyed || !this.geometryDirty.size) return;
