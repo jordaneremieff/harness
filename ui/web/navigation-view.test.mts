@@ -93,16 +93,16 @@ test('dedicated destinations show every loaded row and Settings retains the curr
   byId('settings-choices').querySelectorAll('button').find(node=>node.dataset.setting==='Interface updates')?.click();assert.equal(update.parentNode,byId('modal-body'));byId('modal-close').click();assert.equal(update.parentNode,byId('workbench-status'));update.remove();
 });
 
-test('stored pane layouts never restore a visible top tab strip',async()=>{
+test('a pane shows its top tab strip only when it holds two or more tabs',async()=>{
   const primary=primaryFixture({epoch:23200,activity:'idle',sessionName:'The current conversation'});
-  for(const explicit of [false,true]){
-    const layout=explicit?twoPanes('header-agent','primary-pane'):createPaneLayout([{kind:'primary'}]);
-    await arrive({workspace:{id:`header-${explicit}`,revision:1,primaryKey:primary.key,conversationLayout:layout},primaries:[primary],roster:[agentFixture('header-agent')]});
+  for(const shape of ['single','panes','tabs'] as const){
+    const layout=shape==='panes'?twoPanes('header-agent','primary-pane'):shape==='tabs'?createPaneLayout([{kind:'primary'},{kind:'agent',identity:'header-agent'}]):createPaneLayout([{kind:'primary'}]);
+    await arrive({workspace:{id:`header-${shape}`,revision:1,primaryKey:primary.key,conversationLayout:layout},primaries:[primary],roster:[agentFixture('header-agent')]});
     app.renderNavigation();
     assert.equal(byId('navigation-access').parentNode,byId('workspace'));assert.equal(byId('navigation-access').hidden,false);
     assert.equal(byId('conversation-title').textContent,'The current conversation');
-    assert.equal(byId('workspace').dataset.singleConversation,'true');assert.equal(byId('workbench-status').hidden,true);
-    for(const bar of byId('conversation-panes').querySelectorAll('.tab-bar'))assert.equal(bar.hidden,true);
+    assert.equal(byId('workbench-status').hidden,true);
+    for(const bar of byId('conversation-panes').querySelectorAll('.tab-bar'))assert.equal(bar.hidden,shape!=='tabs',`${shape}: a strip with one tab stays hidden`);
     assert.deepEqual(app.state.workspace?.conversationLayout,layout);
   }
   const user={...browser.messageFixture('first-user',[browser.textPart('Explain this interface\nwith its exact controls')]),role:'user' as const};

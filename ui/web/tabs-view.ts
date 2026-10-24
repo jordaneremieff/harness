@@ -99,6 +99,7 @@ export class TabStrip {
       });
       this.sidebarRows(list,pane.id,pane.tabs,pane.active,layout.focusedPane===pane.id,region.controls);
       host.dataset.sole = String(pane.tabs.length === 1);
+      if (host.parentElement) host.parentElement.hidden = pane.tabs.length < 2;
       host.tabIndex = pane.tabs.length ? -1 : 0; host.dataset.focused = String(layout.focusedPane === pane.id);
     });
     this.renderSection(tabs,this.paintFallback());this.renderReopen();this.renderClosed();

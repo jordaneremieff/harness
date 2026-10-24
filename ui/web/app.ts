@@ -1362,7 +1362,7 @@ function mountPaneLeaf(leaf: PaneLeaf, layout: ConversationLayout): HTMLElement 
   const reading=sessionReadPane?.id===leaf.id,fileReading=toolFilePane?.id===leaf.id;
   pane.content.hidden = fileReading || reading || threadPane?.paneId === leaf.id || deskCompanion(leaf.id)&&deskPane?.list===true; pane.content.inert = pane.content.hidden;
   mountDeskCompanion(leaf.id,pane.node);
-  const bar=pane.node.querySelector<HTMLElement>(':scope > .tab-bar');if(bar)bar.hidden=true;
+  const bar=pane.node.querySelector<HTMLElement>(':scope > .tab-bar');if(bar)bar.hidden=leaf.tabs.length<2;
   if(reading){sessionReader.node.hidden=!!fileReading;if(sessionReader.node.parentElement!==pane.node)pane.node.append(sessionReader.node);const deskNode=pane.node.querySelector<HTMLElement>(':scope > .desk');if(deskNode)deskNode.hidden=true;}
   mountToolFilePane(leaf.id,pane.node,!!fileReading);
   const activeTab = leaf.tabs[activeIndex]; pane.actions.hidden = !activeTab || activeTab.kind === 'file' || activeTab.kind === 'session'; pane.actions.disabled = pane.actions.hidden || !state.workspace;
@@ -1889,8 +1889,6 @@ function renderConversationHeader(layout: ConversationLayout): void {
     : sessionReadPane?.id === layout.focusedPane ? humanSessionTitle([sessionSidebar.metadataFor([`path:${sessionReader.saved?.path??sessionReadPane.returnKey}`,`primary:${sessionReadPane.returnKey}`])?.name,sessionReader.saved?sessionCaptionRecord(sessionReader.saved).name:undefined,state.primaries.get(sessionReadPane.returnKey)?.sessionName],!!state.primaries.get(sessionReadPane.returnKey)&&!state.primaries.get(sessionReadPane.returnKey)?.sessionFile)
     : tab ? humanTabTitle(tab) : 'Pi';
   setText(byId('conversation-title'), title); byId('conversation-title').title = title;
-  byId('workspace').dataset.singleConversation = 'true';
-  for (const pane of paneRegions.values()) {const bar=pane.tabs.parentElement;if(bar)bar.hidden=true;}
   byId<HTMLButtonElement>('conversation-actions').disabled = !tab;
 }
 export function showNavigationView(view: NavigationView): void {

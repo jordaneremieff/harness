@@ -2087,6 +2087,7 @@ pre[data-wrap=true] { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 
 
+
 /* Navigation: toggle glyph, session status dots, date groups. */
 .session-dot { position: absolute; left: 5px; top: 17px; width: 7px; height: 7px; border-radius: 50%; }
 .session-dot[data-status=running] { background: var(--success); animation: dot-pulse 1.6s ease-in-out infinite; }
@@ -2126,12 +2127,18 @@ pre[data-wrap=true] { white-space: pre-wrap; overflow-wrap: anywhere; }
 .session-summary-action > .card-icon { width: 18px; height: 18px; flex: none; color: var(--muted); }
 .session-summary-action-text { display: grid; min-width: 0; }
 .session-summary-action-note { color: var(--muted); font-size: var(--fs-meta); }
+.tab-bar > .pane-tab-nav, .tab-bar > .pane-menu, .tab-bar > .pane-actions { display: none; }
+.tab-bar { min-height: 40px; background: var(--canvas); }
+.conversation-tabs { gap: var(--s1); padding: 0 var(--s3); scroll-snap-type: x proximity; }
+.conversation-tab { scroll-snap-align: start; }
+.conversation-tab .tab-session-state, .conversation-tab .tab-identity { display: none; }
 @media (max-width:999px) {
   .navigation-toggle > .card-icon-navigation, .sidebar-close > .card-icon-navigation { display: none; }
   .navigation-toggle > .card-icon-drawer, .sidebar-close > .card-icon-drawer { display: block; }
   .navigation-access > .navigation-toggle, .nav-top > .sidebar-close { width: 44px; height: 44px; padding: 0; border: 1px solid var(--edge); border-radius: var(--r-full); color: var(--fg); }
   .nav-top { padding: 0 var(--s3); gap: var(--s3); }
   .nav-top > .sidebar-close { order: -1; }
+  .conversation-tab .tab-close { display: none; }
 }
 /* End of navigation. */
 
