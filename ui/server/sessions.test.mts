@@ -61,7 +61,7 @@ test('latest names, explicit clears, excerpts, and malformed records follow boun
   assert.ok(Number.isFinite(Date.parse(page.observedAt)));
 });
 
-test('complete scans include middle names and refuse partial or oversized records', async t => {
+test('complete scans include middle names, skip oversized messages and refuse unknown suffixes', async t => {
   const {store, project, save} = await setup(t);
   const prefix = user('head excerpt') + named('head name');
   const body = `${prefix + line({type: 'message', message: {role: 'assistant', content: 'a'.repeat(WINDOW * 3)}}) + named('tail old') + named('tail latest')}{partial`;
@@ -72,7 +72,7 @@ test('complete scans include middle names and refuse partial or oversized record
   const page = await ready(store, project);
   const titles = new Map(page.items.map(item => [item.id, item.title]));
   assert.equal(titles.get('large'), '(title unavailable)'); assert.equal(titles.get('middle'), 'middle invisible');
-  assert.equal(titles.get('giant'), '(title unavailable)'); assert.equal(titles.get('clear-tail'), 'head excerpt');
+  assert.equal(titles.get('giant'), 'first'); assert.equal(titles.get('clear-tail'), 'head excerpt');
 });
 
 test('complete chunk-boundary records preserve order and malformed suffixes refuse titles', async t => {
@@ -339,6 +339,72 @@ test('file changes reject title cache updates and opaque revisions distinguish p
   assert.equal(fresh.items[0].modifiedAt, initial.items[0].modifiedAt);
   await rm(path);
   assert.deepEqual((await store.titles(project, initial.titleCursor)).items, old.items);
+});
+
+test('growth before the title open preserves the captured page and updates a fresh revision', async t => {
+  const {store, project, save} = await setup(t);
+  const path = await save('growing', user('captured first prompt'));
+  const nativeOpen = fs.open; let opens = 0;
+  const mock = t.mock.method(fs, 'open', async (...args: Parameters<typeof open>) => {
+    if (args[0] === path && ++opens === 2) await appendFile(path, named('appended name'));
+    return nativeOpen(...args);
+  });
+  syncBuiltinESMExports(); t.after(() => { mock.mock.restore(); syncBuiltinESMExports(); });
+  const first = await store.sessions(project); assert.ok(first.titleCursor);
+  const captured = await store.titles(project, first.titleCursor);
+  assert.equal(captured.items[0].title, 'captured first prompt');
+  assert.equal(captured.items[0].size, first.items[0].size);
+  assert.equal(captured.items[0].revision, first.items[0].revision);
+  assert.equal(captured.items[0].modifiedAt, first.items[0].modifiedAt);
+  const fresh = await ready(store, project);
+  assert.equal(fresh.items[0].title, 'appended name');
+  assert.notEqual(fresh.items[0].revision, captured.items[0].revision);
+  assert.ok(fresh.items[0].size > captured.items[0].size);
+  assert.deepEqual(await store.titles(project, first.titleCursor), captured);
+});
+
+test('growth during title I/O reads the captured bytes once and never updates another revision', async t => {
+  const {store, project, save} = await setup(t);
+  const path = await save('reading', user('first') + line({type: 'message', message: {role: 'assistant', content: 'x'.repeat(WINDOW * 3)}}));
+  const capturedSize = (await stat(path)).size;
+  const nativeOpen = fs.open; let opens = 0; let readBytes = 0;
+  const mock = t.mock.method(fs, 'open', async (...args: Parameters<typeof open>) => {
+    const file = await nativeOpen(...args);
+    if (args[0] === path && ++opens === 2) {
+      const read = file.read; let appended = false;
+      t.mock.method(file, 'read', async (...values: unknown[]) => {
+        assert.ok(Number(values[3]) + Number(values[2]) <= capturedSize);
+        const result = await Reflect.apply(read, file, values); readBytes += result.bytesRead;
+        if (!appended) { appended = true; await appendFile(path, named('new name')); }
+        return result;
+      });
+    }
+    return file;
+  });
+  syncBuiltinESMExports(); t.after(() => { mock.mock.restore(); syncBuiltinESMExports(); });
+  const first = await store.sessions(project); assert.ok(first.titleCursor);
+  const captured = await store.titles(project, first.titleCursor);
+  assert.equal(captured.items[0].title, 'first'); assert.equal(readBytes, capturedSize);
+  const fresh = await ready(store, project);
+  assert.equal(fresh.items[0].title, 'new name');
+  assert.notEqual(fresh.items[0].revision, captured.items[0].revision);
+  assert.deepEqual(await store.titles(project, first.titleCursor), captured);
+});
+
+test('replacement before the title open cannot publish under the captured identity', async t => {
+  const {store, project, save} = await setup(t);
+  const path = await save('replaced', user('old title'));
+  const nativeOpen = fs.open; let opens = 0;
+  const mock = t.mock.method(fs, 'open', async (...args: Parameters<typeof open>) => {
+    if (args[0] === path && ++opens === 2) { await rename(path, `${path}.old`); await writeFile(path, sessionHeader(project, 'replaced') + user('new title')); }
+    return nativeOpen(...args);
+  });
+  syncBuiltinESMExports(); t.after(() => { mock.mock.restore(); syncBuiltinESMExports(); });
+  const first = await store.sessions(project); assert.ok(first.titleCursor);
+  assert.equal((await store.titles(project, first.titleCursor)).items[0].titleState, 'unavailable');
+  const fresh = await ready(store, project);
+  assert.equal(fresh.items[0].title, 'new title');
+  assert.notEqual(fresh.items[0].revision, first.items[0].revision);
 });
 
 test('explicit Refresh retries transient same-revision title failures without polling', async t => {

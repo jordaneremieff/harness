@@ -6,7 +6,7 @@ import { basename, isAbsolute, join, resolve } from 'node:path';
 import { setImmediate as yieldLoop } from 'node:timers/promises';
 import type { RecentProject, RecentProjectPage, SavedSession, SavedSessionPage } from '../shared/api.ts';
 import { ApiError } from './errors.mts';
-import { scanSessionTitle, sessionRecord, titleExcerpt, type SessionTitle } from './sessions-title.mts';
+import { scanSessionTitle, sessionRecord, titleExcerpt, type SessionFileStamp, type SessionTitle } from './sessions-title.mts';
 
 const READ_BYTES = 64 * 1024;
 const PAGE_ITEMS = 20;
@@ -15,7 +15,7 @@ const MAX_FILES = 2048;
 const MAX_DIRS = 128;
 const MAX_VISITED_ENTRIES = 8192;
 const MAX_CACHED_DIRS = 32;
-type FileStamp = {path: string; size: number; mtime: number; stamp: string};
+type FileStamp = {path: string; size: number; mtime: number; stamp: string; snapshot: SessionFileStamp};
 type Inventory = {files: FileStamp[]; stamp: string; omitted: number};
 type CachedFile = {stamp: string; item: SavedSession | null};
 type Listing = {items: SavedSession[]; stamp: string; omitted: number; files: Map<string, CachedFile>};
@@ -276,10 +276,7 @@ export class SessionStore {
     // Yield before any title I/O so metadata rows settle first.
     await yieldLoop();
     try {
-      if (fileStamp(file.path, await stat(file.path)) !== file.stamp) return null;
-      const title = await scanSessionTitle(file.path, file.size);
-      if (fileStamp(file.path, await stat(file.path)) !== file.stamp) return null;
-      return title;
+      return await scanSessionTitle(file.path, file.size, file.snapshot);
     } catch { return null; }
   }
   async #inventory(dir: string): Promise<Inventory> {
@@ -289,7 +286,8 @@ export class SessionStore {
       try {
         const info = await stat(path);
         if (!info.isFile()) return null;
-        return {path, size: info.size, mtime: info.mtime.getTime(), stamp: fileStamp(path, info)};
+        const snapshot = {dev: info.dev, ino: info.ino, size: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs};
+        return {path, size: info.size, mtime: info.mtime.getTime(), stamp: fileStamp(path, info), snapshot};
       } catch { return null; }
     });
     const files = stats.filter((file): file is FileStamp => file !== null);
