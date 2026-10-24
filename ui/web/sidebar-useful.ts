@@ -4,6 +4,7 @@ import {cardAction,cardActionLabel} from './card-icons.ts';
 import {reconcileChildren} from './render.ts';
 import {conversationIdentityText} from './tabs.ts';
 import {request} from './transport.ts';
+import {startedAtFromPath} from './operator-activity.ts';
 import {sessionCaptionRecord} from './sender-caption.ts';
 import {projectLabels} from './conversation-presentation.ts';
 import {absoluteTime, relativeTime} from './format.ts';
@@ -23,12 +24,24 @@ export function combinedSessionRows(open:readonly SessionRow[],catalog:readonly 
   for(const row of [...open,...catalog]){const identities=row.identities??[row.key];if(identities.some(identity=>seen.has(identity)))continue;for(const identity of identities)seen.add(identity);rows.push(row);}
   return rows;
 }
-type SessionHooks={older?:()=>{count:number;run:()=>void}|undefined;openTabs?:()=>SessionRow[];menu?:(item:SessionRow,origin:HTMLElement)=>void;updated?:()=>void;primaries:()=>readonly PrimaryView[];selected:()=>string|undefined;openPrimary:(primary:PrimaryView,saved?:SavedSession)=>void;openSaved:(saved:SavedSession)=>void};
+type SessionHooks={operatorAt?:(identities:readonly string[])=>number|undefined;older?:()=>{count:number;run:()=>void}|undefined;openTabs?:()=>SessionRow[];menu?:(item:SessionRow,origin:HTMLElement)=>void;updated?:()=>void;primaries:()=>readonly PrimaryView[];selected:()=>string|undefined;openPrimary:(primary:PrimaryView,saved?:SavedSession)=>void;openSaved:(saved:SavedSession)=>void};
 type Catalog={pages:SavedSessionPage[];notes:string[];published:Set<string>};
 type SessionRowNode={item:SessionRow;node:HTMLElement;open:HTMLButtonElement;label:HTMLElement;context:HTMLElement;menu:HTMLButtonElement};
+/** Every identity under which one open session is known. */
+export function primaryIdentities(primary:PrimaryView):string[] {
+  return [`primary:${primary.key}`,...primary.sessionFile?[`path:${primary.sessionFile}`]:[],...primary.sessionId?[`id:${primary.sessionId}`]:[]];
+}
+/** The time a Recents row sorts and reads by: the operator's latest recorded action, else the session's start, else its last file change; an open session with no file yet counts as now. */
+export function operatorTime(row:SessionRow,operatorAt?:(identities:readonly string[])=>number|undefined,now=Date.now()):number {
+  const stamped=operatorAt?.(row.identities??[row.key]),started=startedAtFromPath(row.saved?.path??row.primary?.sessionFile);
+  if(stamped!==undefined)return stamped;
+  if(started!==undefined)return started;
+  if(row.saved)return Date.parse(row.saved.modifiedAt);
+  return row.primary&&!row.primary.sessionFile?now:0;
+}
 function primarySession(primary:PrimaryView,saved:SavedSession|undefined):SessionRow {
   const at=saved?Date.parse(saved.modifiedAt):0,name=humanSessionTitle([primary.extension?.title,primary.sessionName,saved?sessionCaptionRecord(saved).name:undefined],!primary.sessionFile);
-  return {key:primary.sessionFile??primary.key,identities:[`primary:${primary.key}`,...primary.sessionFile?[`path:${primary.sessionFile}`]:[],...primary.sessionId?[`id:${primary.sessionId}`]:[]],name,at,title:name,target:{kind:'primary',key:primary.key,epoch:primary.epoch},primary,saved};
+  return {key:primary.sessionFile??primary.key,identities:primaryIdentities(primary),name,at,title:name,target:{kind:'primary',key:primary.key,epoch:primary.epoch},primary,saved};
 }
 function publishedSession(saved:SavedSession):SessionRow {
   const at=Date.parse(saved.modifiedAt),name=humanSessionTitle([sessionCaptionRecord(saved).name]);
@@ -36,7 +49,7 @@ function publishedSession(saved:SavedSession):SessionRow {
 }
 function sessionRowContext(item:SessionRow,folders:Map<string,string>):{text:string;title:string} {
   const project=item.saved?.project??item.primary?.cwd??item.project;
-  const at=item.saved?.modifiedAt||(item.at>0&&Number.isFinite(item.at)?new Date(item.at).toISOString():undefined),validTime=at&&Number.isFinite(Date.parse(at));
+  const at=item.at>0&&Number.isFinite(item.at)?new Date(item.at).toISOString():item.saved?.modifiedAt,validTime=at&&Number.isFinite(Date.parse(at));
   const suffix=item.name==='Untitled session'&&item.target?.kind==='agent'?`Agent ${item.target.identity.slice(-8)}`:undefined;
   return {text:[project?folders.get(project):undefined,validTime?relativeTime(at,Date.now()):undefined,item.activity,suffix].filter(Boolean).join(' · '),
     title:[item.name,project,validTime?absoluteTime(at):undefined].filter(Boolean).join('\n')};
@@ -117,11 +130,13 @@ export class SessionSidebar {
     const primaries=[...this.hooks.primaries()].sort((a,b)=>Number(b.lifecycle==='ready')-Number(a.lifecycle==='ready'));
     for(const primary of primaries){const key=primary.sessionFile??primary.key;if(seen.has(key))continue;seen.add(key);const saved=metadata.get(key);rows.push(primarySession(primary,saved?.id===primary.sessionId?saved:undefined));}
     for(const saved of this.saved)if(!seen.has(saved.path)&&this.published.has(saved.path))rows.push(publishedSession(saved));
-    return combinedSessionRows(this.hooks.openTabs?.()??[],rows.sort((a,b)=>(Number.isFinite(b.at)?b.at:0)-(Number.isFinite(a.at)?a.at:0))).flatMap(row=>{
+    // Recents order by the operator's own latest action, never by the session's latest output.
+    const timed=rows.map(row=>({...row,at:operatorTime(row,this.hooks.operatorAt)}));
+    return combinedSessionRows(this.hooks.openTabs?.()??[],timed.sort((a,b)=>(Number.isFinite(b.at)?b.at:0)-(Number.isFinite(a.at)?a.at:0))).flatMap(row=>{
       const metadata=this.metadataFor(row.identities??[row.key]);if(metadata?.archived)return [];
       const saved=this.saved.find(item=>(row.identities??[]).includes(`path:${item.path}`)&&(row.identities??[]).includes(`id:${item.id}`)&&(!row.saved||item.project===row.saved.project))??row.saved;
       const name=humanSessionTitle([metadata?.name,row.name==='Untitled session'?undefined:row.name,metadata?.title==='Untitled session'?undefined:metadata?.title,saved?sessionCaptionRecord(saved).name:undefined,row.name]);
-      return [{...row,name,title:name,saved,at:saved?Date.parse(saved.modifiedAt):row.at}];
+      return [{...row,name,title:name,saved}];
     });
   }
   private createRow(item:SessionRow):SessionRowNode {

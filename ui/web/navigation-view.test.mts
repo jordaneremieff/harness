@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {createAppFixture, type HostNode} from './app-fixture.mts';
 import {createPaneLayout} from './pane-layout.ts';
-import {combinedSessionRows,humanSessionTitle, type SessionRow} from './sidebar-useful.ts';
+import {combinedSessionRows,humanSessionTitle,operatorTime, type SessionRow} from './sidebar-useful.ts';
 import type {SessionMetadata,SessionMetadataTarget} from '../shared/api.ts';
 import {eventNames} from './transport.ts';
 import {targetIdentity} from './state.ts';
@@ -398,4 +398,16 @@ test('message box range and desktop handle share one height preference and prese
   byId('conversation-actions').click();chooseMenu('Message box size');assert.equal(byId('message-box-height').value,browser.hostSessionStorage.getItem(key));
   byId('modal-body').querySelectorAll('button').find(node=>node.textContent==='Automatic height')?.click();await settle();assert.equal(browser.hostSessionStorage.getItem(key),null);
   assert.deepEqual(ancestry(editor),parents);assert.deepEqual([editor.value,editor.selectionStart,editor.selectionEnd,editor.selectionDirection],['A draft with its caret',2,8,'backward']);
+});
+
+test('Recents sort by the latest operator action and never by later session output',()=>{
+  const saved=(path:string,modifiedAt:string)=>({key:path,identities:[`path:${path}`],name:'x',at:0,title:'x',saved:{id:'i',path,revision:'r',project:'/p',title:'x',modifiedAt,size:1}}) as unknown as SessionRow;
+  const old=saved('/s/2026-10-01T00-00-00-000Z_a.jsonl','2026-10-24T09:00:00.000Z'),used=saved('/s/2026-10-02T00-00-00-000Z_b.jsonl','2026-10-03T00:00:00.000Z');
+  const stamps=new Map([['path:/s/2026-10-02T00-00-00-000Z_b.jsonl',Date.parse('2026-10-20T00:00:00.000Z')]]);
+  const at=(row:SessionRow)=>operatorTime(row,ids=>ids.map(id=>stamps.get(id)).find(value=>value!==undefined));
+  assert.equal(at(used),Date.parse('2026-10-20T00:00:00.000Z'),'a stamped action wins');
+  assert.equal(at(old),Date.parse('2026-10-01T00:00:00.000Z'),'an unstamped session reads by its start, not by agent output written later');
+  assert.ok(at(used)>at(old));
+  const fresh={key:'k',identities:['primary:k'],name:'n',at:0,title:'n',primary:{key:'k',epoch:1}} as unknown as SessionRow;
+  assert.equal(operatorTime(fresh,undefined,777),777,'an open session with no file yet counts as now');
 });
