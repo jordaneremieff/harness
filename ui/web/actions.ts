@@ -1,4 +1,5 @@
 import {cardAction, cardIcon} from './card-icons.ts';
+import {ModelMemory, modelKey} from './model-memory.ts';
 import { ProjectPicker } from './picker.ts';
 import { savedPathValid } from './picker-state.ts';
 import { renderFacts, type ReportedFact } from './facts.ts';
@@ -142,6 +143,7 @@ export class Actions {
   private modelNames = new Map<string, Map<string, string>>();
   private modelChoices = new Map<string, ModelChoice>();
   private modelCatalogs = new Set<string>();
+  private readonly modelMemory = new ModelMemory();
   private catalogChoices = new Map<string, Map<string, ModelChoice>>();
   private modelPickerPaint?: () => void;
   private namedPrimaries = new Set<string>();
@@ -465,6 +467,13 @@ export class Actions {
     if (captured.target.kind === 'agent') return captured.levels ?? fallback;
     return (await this.resourcePage(primary, 'thinking').catch(() => ({items: fallback}))).items as string[];
   }
+  /** The star at the end of a model row pins or unpins it in this browser's model memory. */
+  private pinControl(model: ModelChoice, repaint: () => void): HTMLButtonElement {
+    const pinned = this.modelMemory.isPinned(modelKey(model.provider, model.id));
+    const star = button('', () => {this.modelMemory.togglePin(modelKey(model.provider, model.id)); repaint();}, 'model-pin'); star.append(cardIcon('star'));
+    star.setAttribute('aria-pressed', String(pinned)); star.setAttribute('aria-label', `${pinned ? 'Unpin' : 'Pin'} ${model.name.trim() || model.id}`); star.title = pinned ? 'Unpin' : 'Pin';
+    return star;
+  }
   modelPicker(selection?: SettingsSelection): void {
     const primary = selection?.primary ?? (selection ? (this.ctx.namingPrimary ?? this.ctx.primary)() : this.ctx.primary()); if (!primary) return;
     const captured = this.pickerSelection(primary, selection), workspace = this.ctx.snapshot()?.workspace?.id;
@@ -475,7 +484,7 @@ export class Actions {
     void modal.run(async () => {
       // Every open reads the process's current list, so models added after the process started appear without a restart.
       const listing = await this.readModelList(primary); if (!modal.owns(token)) return;
-      const {all, omitted} = listing; this.learnModels(all);
+      const {all, omitted} = listing; this.learnModels(all); this.modelMemory.observe(all.map(model => modelKey(model.provider, model.id)));
       const loadedLevels = await this.readThinkingLevels(primary, captured); if (!modal.owns(token)) return;
       let levels = loadedLevels, thinking = captured.thinking, mode: 'quick' | 'all' = 'quick'; const expanded = new Set<string>(), collapsed = new Set<string>();
       modal.body.replaceChildren(); const search = input('Search models'); search.field.classList.add('model-search');
@@ -491,7 +500,8 @@ export class Actions {
         if (modal.owns(token)) paint();
       };
       const row = (model: ModelChoice): HTMLElement[] => {
-        const node = this.modelOption(model, selected, token, () => this.applyModelChoice(primary, captured, workspace, model, token, () => applied(model)));
+        const option = this.modelOption(model, selected, token, () => this.applyModelChoice(primary, captured, workspace, model, token, () => applied(model)));
+        const node = element('div', 'model-row'); node.append(option, this.pinControl(model, () => paint()));
         const current = selected?.provider === model.provider && selected.modelId === model.id, steps = (model.thinkingLevels ?? levels).filter((level): level is string => typeof level === 'string');
         if (!current || !steps.length) return [node];
         const strip = element('div', 'model-levels'); strip.setAttribute('role', 'group'); strip.setAttribute('aria-label', 'Thinking level');
@@ -508,11 +518,14 @@ export class Actions {
       };
       const paintQuick = (catalog: ModelChoice[]) => {
         const key = (m: {provider: string; id?: string; modelId?: string}) => JSON.stringify([m.provider, m.id ?? m.modelId]);
-        const current = selected ? catalog.find(model => key(model) === key(selected as {provider: string; modelId: string})) : undefined;
-        if (current) list.append(heading('Current'), ...row(current));
-        const recent = ((this.ctx.snapshot()?.workspace?.recentModels) ?? []).flatMap(item => {const model = catalog.find(candidate => key(candidate) === key(item)); return model && model !== current ? [model] : [];}).slice(0, 4);
-        if (recent.length) list.append(heading('Recent'), ...recent.flatMap(row));
-        if (!current && !recent.length) {mode = 'all'; paintAll(catalog); return;}
+        const used = new Set<string>(), take = (models: ModelChoice[]): ModelChoice[] => models.filter(model => !used.has(key(model)) && used.add(key(model)));
+        const pinnedModels = take(catalog.filter(model => this.modelMemory.isPinned(modelKey(model.provider, model.id))));
+        const newModels = take(catalog.filter(model => this.modelMemory.isNew(modelKey(model.provider, model.id))));
+        const currentModels = take(selected ? catalog.filter(model => key(model) === key(selected as {provider: string; modelId: string})) : []);
+        const recentModels = take(((this.ctx.snapshot()?.workspace?.recentModels) ?? []).flatMap(item => catalog.filter(candidate => key(candidate) === key(item)))).slice(0, 4);
+        const sections: [string, ModelChoice[]][] = [['Pinned', pinnedModels], ['New', newModels], ['Current', currentModels], ['Recent', recentModels]];
+        for (const [title, models] of sections) if (models.length) list.append(heading(title), ...models.flatMap(row));
+        if (!used.size) {mode = 'all'; paintAll(catalog); return;}
         const more = button('', () => {mode = 'all'; paint();}, 'model-all-link'); more.append(element('span', undefined, 'All models'), element('span', 'model-count', String(catalog.length)));
         more.setAttribute('aria-label', `All models, ${catalog.length}`); const tail = element('div', 'model-all'); tail.append(more); list.append(tail);
       };

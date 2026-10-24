@@ -2021,6 +2021,7 @@ pre[data-wrap=true] { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 
 
+
 /* Tool calls: kind chip, tinted title row, subject as monospace title. */
 .tool-kind { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: var(--r-sm); background: var(--code); color: var(--muted); }
 .tool-kind > .card-icon { width: 16px; height: 16px; }
@@ -2068,6 +2069,12 @@ pre[data-wrap=true] { white-space: pre-wrap; overflow-wrap: anywhere; }
 .model-levels { display: flex; flex-wrap: wrap; gap: var(--s1); padding: var(--s1) var(--s3) var(--s2) calc(var(--s3) + 28px); }
 .model-level { min-height: 36px; padding: 0 var(--s3); border: 0; border-radius: var(--r-sm); background: var(--code); color: var(--muted); font-size: var(--fs-meta); }
 .model-level[aria-pressed=true] { background: var(--raised); color: var(--fg); font-weight: 600; }
+.model-row { display: flex; align-items: stretch; }
+.model-row > .option-choice { flex: 1; min-width: 0; }
+.model-pin { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 44px; min-height: 44px; border: 0; background: transparent; color: var(--muted); }
+.model-pin > .card-icon { width: 18px; height: 18px; }
+.model-pin[aria-pressed=true] { color: var(--tool-edit); }
+.model-pin[aria-pressed=true] > .card-icon { fill: currentColor; }
 /* End of tool calls. */
 
 @media (pointer:coarse) {

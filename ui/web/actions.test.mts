@@ -523,7 +523,7 @@ function settingsFixture(overrides: Partial<ActionContext> = {}, touch = true) {
   Object.defineProperty(globalThis, 'HTMLElement', {configurable: true, value: FakeNode});
   Object.defineProperty(globalThis, 'matchMedia', {configurable: true, value: () => ({matches: touch})});
   const modal = new Modal(), actions = new Actions(context({...ready, modal, ...overrides})), body = nodes.get('modal-body') as FakeNode;
-  return {actions, modal, body, nodes, rows: () => body.children.find(node => node.className.includes('model-results') || node.className.includes('thinking-options'))?.children.filter(node => node.tagName === 'button') ?? [], restore: () => {
+  return {actions, modal, body, nodes, rows: () => body.children.find(node => node.className.includes('model-results') || node.className.includes('thinking-options'))?.children.flatMap(node => node.tagName === 'button' ? [node] : node.className === 'model-row' && node.children[0] ? [node.children[0]] : []) ?? [], restore: () => {
     for (const [key, descriptor] of descriptors) {if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key);}
   }};
 }
@@ -1351,4 +1351,24 @@ test('a list name for the Primary model is not replaced by the name the Primary 
   const actions = new Actions(context({primary: () => current, modelNamesChanged: () => {changed++;}}));
   actions.readModelNames(); await new Promise(resolve => setTimeout(resolve, 0)); actions.readModelNames();
   assert.equal(actions.modelName('vendor', 'm'), 'Listed'); assert.equal(changed, 3, 'the reported name, catalog availability and listed name each refresh the settings');
+});
+
+test('Quick leads with pinned and newly listed models', async () => {
+  const model = (id: string) => ({provider: 'vendor', id, name: `Model ${id}`, reasoning: false, input: ['text']});
+  let list = [model('a'), model('b')];
+  const workspace = {id: 'workspace', recentModels: [{provider: 'vendor', modelId: 'a'}]};
+  const f = settingsFixture({snapshot: () => ({primaries: [primary], workspace}) as unknown as Snapshot});
+  globalThis.fetch = async path => Response.json({ok: true, data: {items: String(path).includes('/thinking') ? [] : list, nextCursor: null, revision: 'r'}});
+  const headings = () => (f.body.children.find(node => node.className === 'options model-results')?.children ?? []).filter(node => node.className === 'model-section').map(node => node.textContent);
+  try {
+    f.actions.modelPicker(); await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(headings(), ['Recent'], 'the first list is known, not new');
+    f.modal.close(); list = [model('a'), model('b'), model('c')];
+    f.actions.modelPicker(); await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(headings(), ['New', 'Recent']); assert.deepEqual(f.rows().map(row => row.title), ['vendor/c', 'vendor/a']);
+    const results = f.body.children.find(node => node.className === 'options model-results'); const rowFor = (id: string) => results?.children.find(node => node.className === 'model-row' && node.children[0]?.title === `vendor/${id}`);
+    rowFor('a')?.children[1]?.dispatchEvent(new Event('click'));
+    assert.deepEqual(headings(), ['Pinned', 'New']); assert.deepEqual(f.rows().map(row => row.title), ['vendor/a', 'vendor/c']);
+    assert.equal(rowFor('a')?.children[1]?.attributes.get('aria-pressed'), 'true');
+  } finally {f.restore();}
 });

@@ -1,6 +1,6 @@
 import { button, element, setText } from './dom.ts';
 
-export type CardIcon = 'fork' | 'copy' | 'wrap' | 'chevron' | 'success' | 'error' | 'working' | 'unknown' | 'previous' | 'next' | 'restart' | 'close' | 'menu' | 'plus' | 'search' | 'info' | 'folder' | 'folder-open' | 'navigation' | 'agent' | 'latest' | 'earlier' | 'message' | 'more' | 'commands' | 'notifications' | 'appearance' | 'send' | 'stop' | 'disconnected' | 'file' | 'play' | 'steer' | 'upload' | 'history' | 'expand' | 'collapse' | 'meter-off' | 'meter-low' | 'meter-mid' | 'meter-high' | 'terminal' | 'edit' | 'web' | 'memory' | 'plug';
+export type CardIcon = 'fork' | 'copy' | 'wrap' | 'chevron' | 'success' | 'error' | 'working' | 'unknown' | 'previous' | 'next' | 'restart' | 'close' | 'menu' | 'plus' | 'search' | 'info' | 'folder' | 'folder-open' | 'navigation' | 'agent' | 'latest' | 'earlier' | 'message' | 'more' | 'commands' | 'notifications' | 'appearance' | 'send' | 'stop' | 'disconnected' | 'file' | 'play' | 'steer' | 'upload' | 'history' | 'star' | 'expand' | 'collapse' | 'meter-off' | 'meter-low' | 'meter-mid' | 'meter-high' | 'terminal' | 'edit' | 'web' | 'memory' | 'plug';
 const paths: Record<CardIcon, string> = {
   file: 'M3 2h6l4 4v8H3Z M9 2v4h4 M5 9h6 M5 11h4',
   copy: 'M6 5V2h8v9h-3 M2 5h8v9H2Z',
@@ -37,6 +37,7 @@ const paths: Record<CardIcon, string> = {
   latest: 'M8 2v9 M4 7l4 4 4-4 M3 14h10',
   earlier: 'M8 14V5 M4 9l4-4 4 4 M3 2h10',
   message: 'M2 3h12v8H6l-4 3Z M5 6h6 M5 8h4',
+  star: 'M8 1.8l2 4.2 4.6.6-3.4 3.2.9 4.6L8 12l-4.1 2.4.9-4.6L1.4 6.6 6 6Z',
   expand: 'M9 2h5v5 M7 14H2V9 M14 2L9 7 M2 14l5-5',
   collapse: 'M14 7H9V2 M2 9h5v5 M9 7l5-5 M7 9l-5 5',
   'meter-off': 'M3 12h.01 M8 12h.01 M13 12h.01',
