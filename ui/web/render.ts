@@ -2303,11 +2303,11 @@ export class Transcript {
     const remaining=prefix?Math.max(0,total-visible):0;
     tool.preview.classList.toggle('preview-fade',remaining>0);
     if(!tool.previewMore){
-      const more=button('',()=>this.openToolPreview(tool),'tool-preview-more');
+      const more=button('',()=>this.openToolPreview(tool),'tool-preview-more');more.append(cardIcon('chevron'),element('span','tool-preview-more-count'));
       more.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();});tool.node.querySelector('summary')?.append(more);tool.previewMore=more;
     }
     tool.previewMore.hidden=remaining===0||tool.node.open;
-    setText(tool.previewMore,`Show ${remaining} more lines`);tool.previewMore.title='Expand the retained content. This count excludes unavailable source lines.';
+    setText(tool.previewMore.querySelector('.tool-preview-more-count')??tool.previewMore,String(remaining));tool.previewMore.setAttribute('aria-label',`Show ${remaining} more lines`);tool.previewMore.title='Expand the retained content. This count excludes unavailable source lines.';
   }
   private openToolPreview(tool:ToolNode):void {
     if(!tool.source||!this.currentToolSource(tool,tool.source,this.generation))return;

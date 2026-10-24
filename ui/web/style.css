@@ -810,10 +810,14 @@ a.reference-link[href]:is(:hover, :focus-visible) { text-decoration: underline; 
 pre { max-width: 100%; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: hidden; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--edge) transparent; }
 .message-body pre, .code-block > pre { padding: var(--s3) var(--s4); border: 0; border-radius: var(--r-md); background: var(--code); }
 .code-block { position: relative; min-width: 0; }
-.code-block > .source-header { position: absolute; top: 0; right: 0; z-index: 1; max-width: 100%; padding: var(--s1); border: 0; opacity: 0; background: var(--code); border-radius: var(--r-sm); }
-.code-block:hover > .source-header, .code-block:focus-within > .source-header { opacity: 1; }
-.code-block > .source-header > .source-language { flex: 0 1 auto; }
-.code-block > .source-header + pre { border-radius: var(--r-md); }
+.code-block > .source-header { display: flex; align-items: center; justify-content: space-between; max-width: 100%; padding: var(--s1) var(--s2) 0 var(--s4); border: 0; background: var(--code); border-radius: var(--r-md) var(--r-md) 0 0; }
+.code-block > .source-header > .source-language { flex: 1 1 auto; color: var(--muted); font-family: var(--mono); font-size: var(--fs-label); }
+.code-block > .source-header + pre { padding-top: var(--s2); border-radius: 0 0 var(--r-md) var(--r-md); }
+.code-block[data-capped=true] > pre { max-height: calc(14lh + var(--s2) + var(--s3)); overflow-y: hidden; border-radius: 0; }
+.source-more { display: flex; align-items: center; justify-content: center; gap: var(--s1); width: 100%; min-height: 44px; border: 0; border-radius: 0 0 var(--r-md) var(--r-md); background: var(--code); color: var(--muted); font-family: var(--mono); font-size: var(--fs-meta); }
+.source-more > .card-icon { width: 16px; height: 16px; transform: rotate(90deg); }
+.source-more[aria-expanded=true] > .card-icon { transform: rotate(-90deg); }
+.source-more:hover { color: var(--fg); }
 .code-block > pre > code:not([data-syntax=known]) { color: var(--md-code); }
 .source-header { display: flex; align-items: center; gap: var(--s1); min-width: 0; padding: var(--s1) 0; border-bottom: 1px solid var(--rule); color: var(--muted); font-family: var(--sans); font-size: var(--fs-meta); }
 .source-language { flex: 1; min-width: 0; overflow: hidden; text-overflow: clip; mask-image: linear-gradient(to right,#000 calc(100% - 24px),transparent); white-space: nowrap; }
@@ -2011,6 +2015,8 @@ pre[data-wrap=true] { white-space: pre-wrap; overflow-wrap: anywhere; }
   .tab-bar > .pane-tab-nav { display: inline-flex; }
   .tab-bar > .pane-tab-nav[data-unreachable=true] { display: none; }
 }
+
+
 /* Tool calls: kind chip, tinted title row, subject as monospace title. */
 .tool-kind { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: var(--r-sm); background: var(--code); color: var(--muted); }
 .tool-kind > .card-icon { width: 16px; height: 16px; }
@@ -2038,6 +2044,10 @@ pre[data-wrap=true] { white-space: pre-wrap; overflow-wrap: anywhere; }
 .tool-name-scope, .tool-name-directory { font-weight: 400; }
 .tool-name-file { color: inherit; font-family: var(--mono); font-weight: 600; }
 .tool-name-added, .tool-name-removed { font-family: var(--mono); }
+@media (max-width: 599px) { .code-block > pre, .tool-expanded pre, .tool-preview { font-size: var(--fs-meta); line-height: 1.5; } }
+.tool-preview-more { display: inline-flex; align-items: center; gap: var(--s1); font-family: var(--mono); }
+.tool-preview-more > .card-icon { width: 16px; height: 16px; transform: rotate(90deg); }
+@media (max-width: 599px) { .tool-preview, .tool-preview > .tool-content-preview { white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: hidden; } .tool-preview-more { width: 100%; justify-content: center; } .diff-row, .read-source-lines { min-width: 0; } .diff-row { grid-template-columns: 2ch minmax(0, 1fr); white-space: pre-wrap; overflow-wrap: anywhere; } }
 /* End of tool calls. */
 
 @media (pointer:coarse) {

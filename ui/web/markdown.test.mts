@@ -282,3 +282,19 @@ test('source controls reserve a header and toggles and Copy keep exact highlight
   wrap.dispatchEvent(new Event('click')); assert.equal(pre.dataset.wrap, 'false');
   assert.equal(pre.children[0], original); assert.equal(pre.textContent, source);
 });
+
+test('a tall code block shows a capped head and one control that reveals the rest', context => {
+  mockDocument(context);
+  const lines = Array.from({length: 20}, (_, index) => `line ${index + 1}`).join('\n');
+  const dom = markdownDom(`\`\`\`text\n${lines}\n\`\`\``) as unknown as MarkdownNode;
+  const wrap = dom.children[0]; assert.ok(wrap);
+  assert.equal(wrap.dataset.capped, 'true');
+  const more = wrap.children[2]; assert.ok(more);
+  assert.equal(more.attributes['aria-label'], 'Show 6 more lines'); assert.equal(more.attributes['aria-expanded'], 'false');
+  more.dispatchEvent(new Event('click'));
+  assert.equal(wrap.dataset.capped, 'false'); assert.equal(more.attributes['aria-label'], 'Show fewer lines'); assert.equal(more.attributes['aria-expanded'], 'true');
+  more.dispatchEvent(new Event('click'));
+  assert.equal(wrap.dataset.capped, 'true');
+  const short = markdownDom('```text\none\ntwo\n```') as unknown as MarkdownNode;
+  assert.equal(short.children[0]?.dataset.capped, undefined); assert.equal(short.children[0]?.children.length, 2);
+});

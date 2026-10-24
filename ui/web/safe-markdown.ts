@@ -1,7 +1,7 @@
 import { parseMarkdown } from './markdown.ts';
 import type { MarkdownBlock, MarkdownInline } from './markdown.ts';
 import { copy, element } from './dom.ts';
-import { cardAction, cardActionLabel } from './card-icons.ts';
+import { cardAction, cardActionLabel, cardIcon } from './card-icons.ts';
 import { highlight, knownSyntax } from './highlight.ts';
 
 function hashBoundary(character: string, after = false): boolean {
@@ -60,9 +60,14 @@ function listBlock(node: Extract<MarkdownBlock, {type: 'list'}>): HTMLElement {
   for (const item of node.items) { const li = element('li'); li.append(...item.map(block)); taskItem(li); list.append(li); }
   return list;
 }
+/** Source wraps by default where a line cannot fit; the toggle returns to horizontal scrolling. */
+function narrowViewport(): boolean {
+  return typeof matchMedia === 'function' && matchMedia('(max-width: 599px)').matches;
+}
 /** Wrap changes only the scrollport's whitespace mode, not its text nodes. */
 export function sourceWrap(pre: HTMLElement, subject = 'source lines'): HTMLButtonElement {
-  pre.dataset.wrap = 'false';
+  const initial = narrowViewport();
+  pre.dataset.wrap = String(initial);
   const label = subject === 'source lines' ? 'Wrap' : `Wrap ${subject}`;
   const wrap = cardAction('wrap', label, () => {
     pre.dispatchEvent(new Event('source-wrap', {bubbles: true}));
@@ -70,7 +75,7 @@ export function sourceWrap(pre: HTMLElement, subject = 'source lines'): HTMLButt
     pre.dataset.wrap = String(wrapped); wrap.setAttribute('aria-pressed', String(wrapped));
     wrap.title = `${wrapped ? 'Do not wrap' : 'Wrap'} ${subject}`;
   }, 'source-wrap');
-  wrap.setAttribute('aria-pressed', 'false'); cardActionLabel(wrap, label, `Wrap ${subject}`); wrap.title = `Wrap ${subject}`;
+  wrap.setAttribute('aria-pressed', String(initial)); cardActionLabel(wrap, label, `Wrap ${subject}`); wrap.title = `${initial ? 'Do not wrap' : 'Wrap'} ${subject}`;
   return wrap;
 }
 /** Controls stay outside the source's scrollport and never replace its text nodes. */
@@ -87,7 +92,23 @@ function codeBlock(node: Extract<MarkdownBlock, {type: 'code'}>): HTMLElement {
   code.append(highlight(node.text, node.language));
   if (node.language) code.dataset.language = node.language;
   if (knownSyntax(node.language)) code.dataset.syntax = 'known';
-  pre.append(code); wrap.append(sourceHeader(pre, node.language, () => node.text), pre); return wrap;
+  pre.append(code); wrap.append(sourceHeader(pre, node.language, () => node.text), pre); capSource(wrap, node.text); return wrap;
+}
+/** A block taller than the cap shows its first lines and one full-width control that reveals the rest. */
+export const SOURCE_CAP_LINES = 14;
+export function capSource(wrap: HTMLElement, text: string): void {
+  const hidden = text.replace(/\n$/, '').split('\n').length - SOURCE_CAP_LINES;
+  if (hidden <= 0) return;
+  wrap.dataset.capped = 'true';
+  const more = element('button', 'source-more'); more.type = 'button'; more.setAttribute('aria-expanded', 'false');
+  const count = element('span', 'source-more-count', String(hidden));
+  const label = (open: boolean): void => { const text = open ? 'Show fewer lines' : `Show ${hidden} more lines`; more.setAttribute('aria-label', text); more.title = text; };
+  more.append(cardIcon('chevron'), count); label(false);
+  more.addEventListener('click', () => {
+    const open = wrap.dataset.capped === 'true'; wrap.dataset.capped = String(!open);
+    more.setAttribute('aria-expanded', String(open)); label(open); count.hidden = open;
+  });
+  wrap.append(more);
 }
 const NUMBER_CELL = /^[+\-\u2212]?\$?\d[\d,]*(?:\.\d+)?(?:%|ms|s|m|h|KB|MB|GB)?$/;
 /** A column aligns right when it has body rows and every body cell is plain text holding only a number. */

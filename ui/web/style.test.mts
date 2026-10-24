@@ -466,7 +466,7 @@ test('stored and live conversation names use primary text while metadata stays q
 test('small radii and quiet surfaces limit motion to the busy marker and section chevrons', () => {
   const radii = declarations('border-radius');
   assert.match(rule('.composer-input'), /border-radius: var\(--r-lg\)/); assert.match(rule('.context-menu-compact'), /border-radius: var\(--r-md\)/);
-  assert.deepEqual([...new Set(radii)].sort(), ['0', '0 0 var(--r-md) var(--r-md)', '0 var(--r-sm) var(--r-sm) 0', '50%', '6px', '8px', 'var(--r-full)', 'var(--r-lg)', 'var(--r-lg) var(--r-lg) 0 0', 'var(--r-md)', 'var(--r-sm)']);
+  assert.deepEqual([...new Set(radii)].sort(), ['0', '0 0 var(--r-md) var(--r-md)', '0 var(--r-sm) var(--r-sm) 0', '50%', '6px', '8px', 'var(--r-full)', 'var(--r-lg)', 'var(--r-lg) var(--r-lg) 0 0', 'var(--r-md)', 'var(--r-md) var(--r-md) 0 0', 'var(--r-sm)']);
   assert.deepEqual([...new Set(declarations('box-shadow'))].sort(), ['inset 0 -2px var(--accent)', 'inset 0 -2px var(--edge)', 'none', 'var(--shadow)']);
   assert.match(rule('dialog[open][data-variant=find]'), /box-shadow: none/);
   const shadowed = [...css.matchAll(/(?:^|\n)\s*([^{}\n]+)\{[^}]*box-shadow: var\(--shadow\)/g)].map(match => match[1].trim()).sort();
@@ -1652,11 +1652,12 @@ test('soft tools keep full-width output, distinct inner code and the text-to-run
   assert.match(rule('.message-body > :not(.tool-shell) + .tool-shell'), /margin-top: var\(--s4\)/);
   assert.match(rule('.message-body > .tool-shell + .tool-shell'), /margin-top: var\(--s2\)/);
 });
-test('Markdown code actions stay quiet until hover or focus and touch keeps them visible', () => {
+test('Markdown code blocks keep a slim header with the language and the copy and wrap actions always visible', () => {
   assert.match(rule('.code-block'), /position: relative; min-width: 0/);
-  assert.match(rule('.code-block > .source-header'), /position: absolute; top: 0; right: 0;[^}]*border: 0; opacity: 0/);
-  assert.match(rule('.code-block:hover > .source-header, .code-block:focus-within > .source-header'), /opacity: 1/);
-  assert.match(media('@media (pointer:coarse)'), /\.code-block > \.source-header \{ position: static; opacity: 1/);
+  assert.match(rule('.code-block > .source-header'), /display: flex; align-items: center; justify-content: space-between;[^}]*border: 0/);
+  assert.doesNotMatch(rule('.code-block > .source-header'), /position: absolute|opacity: 0/);
+  assert.match(rule('.code-block[data-capped=true] > pre'), /max-height: calc\(14lh/);
+  assert.match(rule('.source-more'), /min-height: 44px/);
 });
 test('focus uses an offset accent outline without a blur and floating surfaces share one shadow', () => {
   assert.match(rule(':focus-visible, .entry.own-message-focus, .thread-message.own-message-focus'), /outline: 2px solid var\(--accent\); outline-offset: 2px/);
