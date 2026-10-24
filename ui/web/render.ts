@@ -46,7 +46,7 @@ function thinkingSpans(summary: Element): {label: HTMLElement; preview: HTMLElem
   summary.replaceChildren(made.label, made.preview); return made;
 }
 const previewSuffix = (line: string): string => line ? ` · ${line}` : '';
-export type ViewHooks = {openFile?:(destination:FileReferenceDestination)=>void;unread?: () => void; primaryDraft?:TranscriptDraftActions;owner?:string;sourceOrder?:boolean;senderCaption?: (sender:CommunicationSender)=>string; senderSummary?: (identity:string)=>SenderSummary|undefined; thread?: (id:string,title?:string)=>void; earlier?: () => void; operatorInput?: boolean; readTaskResult?: (reference:TaskReference,signal:AbortSignal)=>Promise<ResultInspection>;stopTask?: (reference:TaskReference)=>Promise<void>;tasksChanged?: () => void; activity?: (text:string)=>void; cwd?: () => string | undefined; subject?: (value: string) => ToolSubjectCaption | undefined; result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView, thinking?: ThinkingChoice) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; preview?: (part: ImageView, url: string, invoker: HTMLElement) => () => void; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void};
+export type ViewHooks = {openFile?:(destination:FileReferenceDestination)=>void;unread?: () => void; primaryDraft?:TranscriptDraftActions;owner?:string;sourceOrder?:boolean;senderCaption?: (sender:CommunicationSender)=>string; senderSummary?: (identity:string)=>SenderSummary|undefined; thread?: (id:string,title?:string)=>void; earlier?: () => void; operatorInput?: boolean; readTaskResult?: (reference:TaskReference,signal:AbortSignal)=>Promise<ResultInspection>;stopTask?: (reference:TaskReference)=>Promise<void>;tasksChanged?: () => void; activity?: (text:string)=>void; cwd?: () => string | undefined; subject?: (value: string) => ToolSubjectCaption | undefined; result?: (identity:string,selector:ResultSelector)=>void; references?: ReferenceResolver; presentation: (expanded: string[], showThinking: boolean, transcriptView?: TranscriptView, thinking?: ThinkingChoice) => void; reading: (anchor: ReadingView) => void; fork?: (message: MessageView, entryId: string) => void; output?: (more: OutputContinuation) => Promise<OutputPage>; image?: (part: ImageView) => string | undefined; preview?: (part: ImageView, url: string, invoker: HTMLElement) => () => void; timing?: (metric: 'render' | 'stream-to-render', start: number, end: number) => void; /** Lets following the tail glide over a few frames instead of stepping by whole lines. */ glide?: () => boolean};
 const RAW_LIMIT = 65536;
 /** Scrolling up within this many pixels of the first loaded row reads the next older page. */
 const EARLIER_ZONE_PX = 240;
@@ -58,6 +58,11 @@ const RESIZE_RETURN_MS = 500;
 const RESIZE_RETURN_PX = 2;
 /** A scroll this soon after a wheel, touch, key or pointer event on the scroller belongs to that gesture, never to a resize return. */
 const GESTURE_MARK_MS = 100;
+/** A user scroll holds the guard until scrollend or this much quiet, because browsers without scrollend and momentum scrolling leave gaps between scroll events. */
+const SCROLL_IDLE_MS = 160;
+/** Following the tail eases toward the end when it is closer than this and snaps beyond it. */
+const FOLLOW_GLIDE_MAX_PX = 160;
+const FOLLOW_GLIDE_RATE = 0.45;
 const TASK_READ_CONCURRENCY = 4;
 /** The newest unanswered requests are read even off screen, so Stop knows about work that the conversation still waits for. */
 const RECENT_TASK_READS = 3;
@@ -290,6 +295,8 @@ export class Transcript {
   private restoring?: ReadingView;
   private resize?: ResizeObserver;
   private geometryTimer?: ReturnType<typeof setTimeout>;
+  private scrollIdleTimer?: ReturnType<typeof setTimeout>;
+  private glideFrame?: number;
   private geometryDirty = new Set<HTMLElement>();
   private outputNodes = new Set<HTMLElement>();
   private outputListeners = new WeakSet<HTMLElement>();
@@ -367,7 +374,7 @@ export class Transcript {
       if (this.hidden()) return;
       if (this.node.scrollTop === this.writtenScrollTop) {this.writtenScrollTop = undefined; this.lastScrollTop = this.node.scrollTop; return;}
       this.writtenScrollTop = undefined;
-      this.scrolling.add(this.node); this.reflowAnchor = undefined; this.restoring = undefined;
+      this.scrolling.add(this.node); this.armScrollIdle(); this.reflowAnchor = undefined; this.restoring = undefined;
       const upward = this.node.scrollTop < this.lastScrollTop, maximum = Math.max(0, this.node.scrollHeight - this.node.clientHeight);
       const clampedTail = this.follow && upward && this.lastScrollTop > maximum && Math.abs(this.node.scrollTop - maximum) <= 1;
       const returned = this.resizeReturn, position = this.node.scrollTop, now = performance.now();
@@ -384,7 +391,7 @@ export class Transcript {
       this.lastScrollTop = this.node.scrollTop;
       this.readingDirty = true; this.schedule();
     }, {passive: true});
-    const gesture = () => { this.gestureAt = performance.now(); };
+    const gesture = () => { this.gestureAt = performance.now(); this.cancelGlide(); };
     this.listen(this.node, 'wheel', event => { gesture(); this.readEarlier((event as WheelEvent).deltaY < 0); }, {passive: true});
     this.listen(this.node, 'touchstart', gesture, {passive: true});
     this.listen(this.node, 'touchmove', gesture, {passive: true});
@@ -392,7 +399,7 @@ export class Transcript {
     this.listen(this.node, 'keydown', gesture);
     this.listen(this.node, 'scrollend', event => {
       if (event.target !== this.node) return;
-      this.writtenScrollTop = undefined; this.scrolling.delete(this.node); this.readingDirty = false; this.queueGeometry(); this.schedule(); this.saveReading();
+      this.writtenScrollTop = undefined; this.endScrolling(); this.readingDirty = false; this.queueGeometry(); this.schedule(); this.saveReading();
     });
     if (typeof ResizeObserver === 'function') {
       this.resize = new ResizeObserver(entries => {
@@ -429,6 +436,40 @@ export class Transcript {
     const id = requestAnimationFrame(() => { if (this.frames.delete(id) && !this.destroyed) callback(); });
     this.frames.add(id); return id;
   }
+  private cancelGlide(): void {
+    if (this.glideFrame === undefined) return;
+    this.frames.delete(this.glideFrame); if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(this.glideFrame); this.glideFrame = undefined;
+  }
+  /** The tail grows in line-sized steps; easing the follow keeps each step from showing as a jump. */
+  private followTo(): void {
+    const gap = this.node.scrollHeight - this.node.clientHeight - this.node.scrollTop;
+    if (gap <= 1 || gap > FOLLOW_GLIDE_MAX_PX || !this.hooks.glide?.()) { this.cancelGlide(); this.scrollTo(this.node.scrollHeight); return; }
+    // The first step is written in the paint itself: a layout clamp inside the paint raises a scroll event that is only recognised as ours while the position still matches the last write.
+    if (this.glideStep() && this.glideFrame === undefined) this.queueGlide();
+  }
+  private glideStep(): boolean {
+    const gap = this.node.scrollHeight - this.node.clientHeight - this.node.scrollTop;
+    if (gap <= 1) { this.scrollTo(this.node.scrollHeight); return false; }
+    this.scrollTo(this.node.scrollTop + Math.max(1, Math.ceil(gap * FOLLOW_GLIDE_RATE))); return true;
+  }
+  private queueGlide(): void {
+    this.glideFrame = this.frame(() => {
+      this.glideFrame = undefined;
+      if (!this.follow || this.hidden() || this.scrolling.has(this.node) || this.hasSelection()) return;
+      if (this.glideStep()) this.queueGlide();
+    });
+  }
+  private armScrollIdle(): void {
+    if (this.scrollIdleTimer !== undefined) clearTimeout(this.scrollIdleTimer);
+    this.scrollIdleTimer = setTimeout(() => {
+      this.scrollIdleTimer = undefined; if (this.destroyed) return;
+      this.scrolling.delete(this.node); this.readingDirty = false; this.queueGeometry(); this.schedule(); this.saveReading();
+    }, SCROLL_IDLE_MS);
+  }
+  private endScrolling(): void {
+    if (this.scrollIdleTimer !== undefined) clearTimeout(this.scrollIdleTimer);
+    this.scrollIdleTimer = undefined; this.scrolling.delete(this.node);
+  }
   private cancelRender(): void {
     if (this.renderFrame === undefined && this.renderTask === undefined) return;
     if (this.renderFrame !== undefined) {
@@ -441,7 +482,8 @@ export class Transcript {
   destroy(): void {
     this.cancelTaskReads();
     if (this.destroyed) return;
-    this.destroyed = true; this.listenerAbort.abort(); this.cancelRender(); this.dismissPreview();
+    this.destroyed = true; this.listenerAbort.abort(); this.cancelRender(); this.cancelGlide(); this.dismissPreview();
+    if (this.scrollIdleTimer !== undefined) clearTimeout(this.scrollIdleTimer); this.scrollIdleTimer = undefined;
     for (const remove of this.listenerCleanup) remove(); this.listenerCleanup = [];
     for (const id of this.frames) if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(id);
     this.frames.clear(); this.pending = false;
@@ -551,6 +593,7 @@ export class Transcript {
     this.paint(anchor); this.hooks.presentation([...this.expanded], this.showThinking, this.view); this.saveReading();
   }
   reset(): void {
+    this.cancelGlide(); if (this.scrollIdleTimer !== undefined) { clearTimeout(this.scrollIdleTimer); this.scrollIdleTimer = undefined; }
     this.clearOwnMessageMarker();this.ownMessageCursor=undefined;this.failedStepCursor=undefined;this.receivedResultCursor=undefined;
     this.cancelTaskReads();this.taskReadStamps.clear();this.dismissPreview();
     this.cancelRender(); if (this.inputFrame !== undefined) this.pending = false;
@@ -756,7 +799,7 @@ export class Transcript {
     const refresh = this.deferred; this.deferred = undefined; let updated = false; let end: number | undefined;
     try { refresh?.(); updated = this.paint(); if (updated && start !== undefined) end = performance.now(); }
     finally { this.pending = false; this.streamPending = false; this.clearTiming(); }
-    if (this.readingDirty) { this.readingDirty = false; this.saveReading(); this.scrolling.delete(this.node); }
+    if (this.readingDirty) { this.readingDirty = false; this.saveReading(); if (this.follow) this.scrolling.delete(this.node); }
     if (!this.hidden()) this.queueGeometry();
     const current = () => !this.destroyed && generation === this.generation && !this.hidden() && !document.hidden && this.node.isConnected;
     if (!updated || start === undefined || end === undefined || !current()) return;
@@ -796,7 +839,11 @@ export class Transcript {
     return this.reflowAnchor === undefined ? this.anchor() : this.reflowAnchor;
   }
   private scrollTo(position: number): void {
-    const before = this.node.scrollTop; this.node.scrollTop = position;
+    const before = this.node.scrollTop;
+    // A write that cannot move the scroller still interrupts momentum scrolling in some browsers, so it is skipped.
+    const maximum = this.node.scrollHeight - this.node.clientHeight;
+    if (position === before || (maximum > 0 && position >= maximum && Math.abs(before - maximum) < 1)) {this.lastScrollTop = before; return;}
+    this.node.scrollTop = position;
     if (this.node.scrollTop !== before) this.writtenScrollTop = this.node.scrollTop;
     this.lastScrollTop = this.node.scrollTop;
   }
@@ -1160,8 +1207,8 @@ export class Transcript {
   private finishScroll(anchor: {id: string; offsetPx: number} | null): void {
     // A virtual-window paint must not compete with an active scroll gesture.
     if (this.scrolling.has(this.node)) { this.reflowAnchor = undefined; this.syncLatest(); return; }
-    if (this.follow && !this.hasSelection()) this.scrollTo(this.node.scrollHeight);
-    else this.restorePosition(anchor);
+    if (this.follow && !this.hasSelection()) this.followTo();
+    else { this.cancelGlide(); this.restorePosition(anchor); }
     if (!this.restoring) this.reflowAnchor = this.follow ? null : this.anchor();
     this.syncLatest();
   }

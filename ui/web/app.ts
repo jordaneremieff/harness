@@ -356,7 +356,7 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
     ...(target.kind === 'primary' ? {commands: () => actions.commandOptions(), moreCommands: (captured: Target) => actions.continueCommands(captured)} : {}),
     ...agentCommandHooks(controller),
     retained: (workspace, captured) => { if (workspace !== state.workspace?.id) return; if (captured.kind === 'agent') renderMessageResume(captured.identity); tabStrip.render();sessionSidebar.refreshNames(); }});
-  controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {unread: () => {tabStrip.render();sessionSidebar.refreshNames();}, openFile:destination=>{try{openToolFile(destination);}catch(error){showError(error);}}, primaryDraft:transcriptDraftActions(controller),...transcriptSource(target),earlier: () => loadEarlierRows(controller), references, subject: toolSubjectCaption, senderSummary: identity => state.roster.get(identity) ?? identityNames.get(identity), senderCaption:currentSenderCaption, thread: (id,title) => openThread({id,...(title ? {title} : {})}, controller), readTaskResult:async(reference,signal)=>{const value=await request<AgentInspectionView>(`/api/agents/${encodeURIComponent(reference.sessionId)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',{view:'result',submissionId:reference.submissionId,...(reference.requestId?{requestId:reference.requestId}:{})},undefined,AbortSignal.any([signal,controller.abort.signal,AbortSignal.timeout(15_000)]));if(value.view!=='result')throw new Error('The task result view changed.');return value;}, stopTask:reference=>stopDelegated(controller,[reference]), tasksChanged:()=>renderController(controller), activity:()=>{if (footerController === controller) renderWorkbenchStatus();}, cwd: () => target.kind === 'primary' ? state.primaries.get(target.key)?.cwd : state.roster.get(target.identity)?.cwd, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
+  controller.transcript = new Transcript({transcript: scroller, latest, earlier}, {glide: () => !matchMedia('(prefers-reduced-motion: reduce)').matches, unread: () => {tabStrip.render();sessionSidebar.refreshNames();}, openFile:destination=>{try{openToolFile(destination);}catch(error){showError(error);}}, primaryDraft:transcriptDraftActions(controller),...transcriptSource(target),earlier: () => loadEarlierRows(controller), references, subject: toolSubjectCaption, senderSummary: identity => state.roster.get(identity) ?? identityNames.get(identity), senderCaption:currentSenderCaption, thread: (id,title) => openThread({id,...(title ? {title} : {})}, controller), readTaskResult:async(reference,signal)=>{const value=await request<AgentInspectionView>(`/api/agents/${encodeURIComponent(reference.sessionId)}/inspect?workspace=${encodeURIComponent(workspaceId)}`,'POST',{view:'result',submissionId:reference.submissionId,...(reference.requestId?{requestId:reference.requestId}:{})},undefined,AbortSignal.any([signal,controller.abort.signal,AbortSignal.timeout(15_000)]));if(value.view!=='result')throw new Error('The task result view changed.');return value;}, stopTask:reference=>stopDelegated(controller,[reference]), tasksChanged:()=>renderController(controller), activity:()=>{if (footerController === controller) renderWorkbenchStatus();}, cwd: () => target.kind === 'primary' ? state.primaries.get(target.key)?.cwd : state.roster.get(target.identity)?.cwd, timing: (metric, start, end) => {diagnostics.measure(metric, start, end);},
     presentation: (expanded, thinking, view, choice) => { controller.showThinking = thinking; void savePresentation(controllerCapture(controller), expanded, thinking, view, choice); },
     reading: reading => { void saveReading(controllerCapture(controller), reading); },
     ...(target.kind === 'primary' ? {fork: (message: import('../shared/api.ts').MessageView, entry: string) => { if (sameTarget(target, primaryTarget())) actions.fork(entry, rawText(message.parts)); }, output: (more: import('../shared/api.ts').OutputContinuation) => loadControllerOutput(controller, more)} : {}),
@@ -964,12 +964,6 @@ function refreshPaneSizes(): void {
 function renderSidebarMetadata(): void {
   byId('files-refresh').title=['Refresh files',filesTree.diagnostics()].filter(Boolean).join('\n');
   renderUsefulSidebar();
-}
-let refreshedRosterObservation = '';
-function refreshStaleRoster(): void {
-  const observedAt = state.rosterMeta?.observedAt, at = Date.parse(observedAt ?? '');
-  if (!observedAt || !Number.isFinite(at) || Date.now() - at <= 300000 || refreshedRosterObservation === observedAt || state.rosterMeta?.scan.state === 'running') return;
-  refreshedRosterObservation = observedAt; refreshRoster();
 }
 export function focusAgentSearch(): void {
   showNavigationView('agents'); if (byId('sidebar').hidden) toggleSidebar(true); roster.focusSearch();
@@ -3407,9 +3401,10 @@ function recentConversationRows(): import('./sidebar-useful.ts').SessionRow[] {
   const layout=currentLayout();
   return paneLeaves(layout.root).flatMap(pane=>pane.tabs.filter(tab=>tab.kind!=='file').map(tab=>recentTabRow(tab,pane,layout)));
 }
+const LIVE_AGENT_ROWS = 12;
 /** Durable conversations that are live join Recents beside Primary sessions, and opening one gives it a composer. */
 function liveAgentRows(): SessionRow[] {
-  return [...state.roster.values()].filter(row => row.availability === 'live').map(row => {
+  return [...state.roster.values()].filter(row => row.availability === 'live').sort((a, b) => b.modifiedAt - a.modifiedAt).slice(0, LIVE_AGENT_ROWS).map(row => {
     const target: Target = {kind: 'agent', identity: row.identity}, name = humanTabTitle({kind: 'agent', identity: row.identity});
     return {key: `agent:${row.identity}`, identities: [`agent:${row.identity}`], name, at: row.modifiedAt, title: name, project: row.cwd, target,
       ...(row.state ? {activity: `Last observed: ${row.state.replaceAll('_', ' ')}`} : {}), activate: () => {void navigateReference({target}).catch(showError);}};

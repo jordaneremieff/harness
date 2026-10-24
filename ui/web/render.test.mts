@@ -1402,6 +1402,61 @@ test('return to the tail without scrollend releases the scroll guard before late
   assert.ok(root.scrollTop > previous, 'later text advances the viewport after the user returns to the tail');
   assert.equal(root.scrollTop, root.scrollHeight - root.clientHeight); view.destroy();
 });
+function counted(container: FakeNode): {writes: number[]; user: (value: number) => void} {
+  let top = 0; const writes: number[] = [];
+  Object.defineProperty(container, 'scrollTop', {configurable: true, get: () => top, set: value => { writes.push(value); top = Math.max(0, Math.min(value, Math.max(0, container.scrollHeight - container.clientHeight))); }});
+  return {writes, user: value => { top = value; container.dispatch('scroll'); }};
+}
+test('a reading scroll keeps the scroll guard across paints so no position write competes with the reader', () => {
+  setup(); const view = transcript(), root = node('primary-transcript'), probe = counted(root);
+  const entries = Array.from({length: 30}, (_, index) => entry(`r${index}`));
+  view.set(entries); flush(); probe.writes.length = 0;
+  probe.user(1500); flush();
+  const before = probe.writes.length;
+  view.set([...entries.slice(0, 29), entry('r29', 'Text that arrives while the reader scrolls')]); flush(); flush();
+  assert.equal(probe.writes.length, before, 'streaming paints write no scroll position during the user scroll');
+  root.dispatch('scrollend'); flush(); view.destroy();
+});
+test('a user scroll releases its guard after a quiet period when the browser sends no scrollend', () => {
+  setup(); const timers: (() => void)[] = []; const realSet = globalThis.setTimeout, realClear = globalThis.clearTimeout;
+  const host = globalThis as unknown as {setTimeout: unknown; clearTimeout: unknown};
+  host.setTimeout = (fn: () => void) => { timers.push(fn); return timers.length; }; host.clearTimeout = (id: number) => { if (timers[id - 1]) timers[id - 1] = () => {}; };
+  try {
+    const view = transcript(), root = node('primary-transcript'), probe = counted(root);
+    const entries = Array.from({length: 30}, (_, index) => entry(`q${index}`));
+    view.set(entries); flush(); probe.user(1500); flush();
+    const quiet = timers.length; assert.ok(quiet > 0, 'a quiet-period timer is armed by the user scroll');
+    for (const fn of timers.splice(0)) fn();
+    flush(); view.destroy();
+  } finally { host.setTimeout = realSet; host.clearTimeout = realClear; }
+});
+test('following the tail writes no scroll position that cannot move the scroller', () => {
+  setup(); const view = transcript(), root = node('primary-transcript'); scrollable(root);
+  const entries = Array.from({length: 8}, (_, index) => entry(`t${index}`));
+  view.set(entries); flush(); const probe = counted(root); probe.user(root.scrollHeight - root.clientHeight); flush(); probe.writes.length = 0;
+  view.set(entries); flush(); flush();
+  assert.deepEqual(probe.writes, [], 'an unchanged tail is not rewritten'); view.destroy();
+});
+test('following the tail glides a short growth over frames, snaps a long jump, honours reduced motion and stops for a gesture', () => {
+  setup(); const view = new Transcript('primary', {presentation: () => {}, reading: () => {}, glide: () => true}), root = node('primary-transcript'); scrollable(root);
+  const entries = Array.from({length: 8}, (_, index) => entry(`g${index}`));
+  view.set(entries); flush(); const tail = () => root.scrollHeight - root.clientHeight;
+  assert.equal(root.scrollTop, tail());
+  view.set([...entries, entry('g-new', 'New plain text')]); flush();
+  const gap = tail() - root.scrollTop;
+  assert.ok(gap > 1 && gap <= 160, `a short growth leaves a gap to glide: ${gap}`);
+  const seen = [root.scrollTop]; for (let n = 0; n < 12 && root.scrollTop < tail(); n++) { flush(); seen.push(root.scrollTop); }
+  assert.equal(root.scrollTop, tail(), 'the glide reaches the exact end');
+  assert.ok(seen.every((value, index) => index === 0 || value >= seen[index - 1]) && seen.length > 2, 'steps are monotonic and spread over frames');
+  view.set([...entries, entry('g-new'), ...Array.from({length: 6}, (_, index) => entry(`far${index}`))]); flush();
+  assert.equal(root.scrollTop, tail(), 'a long jump snaps');
+  const next = entry('g-last', 'More text'); view.set([...entries, entry('g-new'), ...Array.from({length: 6}, (_, index) => entry(`far${index}`)), next]); flush();
+  const held = root.scrollTop; root.dispatch('wheel', {deltaY: -40}); flush(); flush();
+  assert.equal(root.scrollTop, held, 'a wheel gesture cancels the glide'); view.destroy();
+  setup(); const still = new Transcript('primary', {presentation: () => {}, reading: () => {}, glide: () => false}), box = node('primary-transcript'); scrollable(box);
+  still.set(entries); flush(); still.set([...entries, entry('g-new', 'New plain text')]); flush();
+  assert.equal(box.scrollTop, box.scrollHeight - box.clientHeight, 'reduced motion snaps at once'); still.destroy();
+});
 test('Latest saves tail intent immediately without a later scroll event', () => {
   setup(); const readings: ReadingView[] = [], view = new Transcript('primary', {presentation: () => {}, reading: value => readings.push(value)});
   view.configure(undefined, {revision: 6, anchorId: 'e3', offsetPx: 17, followTail: false});

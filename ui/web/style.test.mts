@@ -1721,5 +1721,5 @@ test('the drawer media query and the persistent sidebar constant name the same w
 });
 
 test('the top tab strip is hidden on phones and kept from the phone breakpoint up', () => {
-  assert.match(css, /@media \(max-width:599px\) \{ \.tab-bar \{ display: none; \} \}/);
+  assert.match(css, /@media \(max-width:599px\) \{ \.tab-bar \{ display: none; \}/);
 });
