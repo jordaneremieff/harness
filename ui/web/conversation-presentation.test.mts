@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { AgentRow, ProjectedFrame, PrimaryView, SavedSession } from '../shared/api.ts';
-import { showsLastObserved, effortText, modelText, composerFolder, conversationPresentation, presentationGlyph, presentationName, projectIdentity, projectLabels, agentHistoryNote, readsSavedMessages, agentComposerState, responseOutcome, settingsLabel } from './conversation-presentation.ts';
+import { thinkingMeter, showsLastObserved, effortText, modelText, composerFolder, conversationPresentation, presentationGlyph, presentationName, projectIdentity, projectLabels, agentHistoryNote, readsSavedMessages, agentComposerState, responseOutcome, settingsLabel } from './conversation-presentation.ts';
 const row: AgentRow = {identity: 'agent:one', storageId: 'agent', cwd: '/projects/work', name: 'Worker', modifiedAt: 0,
   state: 'unavailable', owner: 'unknown', availability: 'live', partial: false,
   capabilities: {input: true, observe: true, history: true, abort: true, configure: false}};
@@ -304,4 +304,8 @@ test('Last observed appears only for content that was observed earlier', () => {
   assert.equal(showsLastObserved({retainedSession: false, entries: 3}, false), false, 'a connected conversation is current');
   assert.equal(showsLastObserved({retainedSession: false, entries: 3}, true), true);
   assert.equal(showsLastObserved({retainedSession: true, entries: 0}, false), true);
+});
+
+test('thinking effort maps to one to three bars', () => {
+  assert.deepEqual([undefined, 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map(level => thinkingMeter(level)), ['meter-off', 'meter-off', 'meter-low', 'meter-low', 'meter-mid', 'meter-high', 'meter-high', 'meter-high']);
 });

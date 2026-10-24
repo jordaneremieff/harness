@@ -1021,7 +1021,7 @@ test('mobile geometry caps desktop manual height and expansion keeps the native 
     mobile = true; f.composer.resize(); paint(); assert.equal(editor.style.height, '63px');
     editor.conversationHeight = 400; f.composer.resize(); paint(); assert.equal(editor.style.height, '63px');
     editor.fire('compositionstart'); expand.fire('click'); paint();
-    assert.equal(expand.getAttribute('aria-expanded'), 'true'); assert.equal(expand.textContent, 'Return'); assert.equal(editor.style.height, '353.5px'); assert.equal(f.node('composer').style.maxHeight, '376px');
+    assert.equal(expand.getAttribute('aria-expanded'), 'true'); assert.match(expand.textContent, /Return/); assert.equal(editor.style.height, '353.5px'); assert.equal(f.node('composer').style.maxHeight, '376px');
     assert.equal(f.composer.reloadHold, 'ime'); assert.equal(editor.parentElement, parent); assert.equal(f.composer.editor, editor);
     assert.equal(f.composer.state?.draft, data); assert.deepEqual(f.composer.state?.draft.images, saved.draft.images);
     assert.deepEqual([editor.selectionStart, editor.selectionEnd, editor.selectionDirection, editor.scrollTop, editor.scrollLeft], [2, 9, 'backward', 13, 4]);
@@ -1587,4 +1587,12 @@ test('the return key hint follows what Enter does on the input device', () => {
     assert.equal(f.node('editor').getAttribute('enterkeyhint'), hint);
     f.composer.destroy();
   }
+});
+
+test('tapping Send never takes focus from the editor', () => {
+  const f = fixture('primary', undefined, true);
+  for (const name of ['send'] as const) for (const type of ['pointerdown', 'mousedown']) {
+    assert.equal(f.node(name).fire(type).defaultPrevented, true, `${name} ${type}`);
+  }
+  f.composer.destroy();
 });

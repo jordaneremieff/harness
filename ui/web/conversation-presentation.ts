@@ -57,6 +57,12 @@ export function settingsLabel(view: Pick<ConversationPresentation, 'model' | 'th
 /** Composer text for a model: the list name when one is known, otherwise the id. The provider and id stay in the tooltip and accessible name. */
 export function modelText(model: {modelId: string; name?: string}, listed?: string): string { return listed?.trim() || model.name?.trim() || model.modelId; }
 /** Effort is shown with a capital first letter; the reported level stays unchanged elsewhere. */
+/** Thinking effort drawn as one to three bars, so the composer shows it without a word. */
+export function thinkingMeter(level?: string): 'meter-off' | 'meter-low' | 'meter-mid' | 'meter-high' {
+  if (!level || level === 'off') return 'meter-off';
+  if (level === 'minimal' || level === 'low') return 'meter-low';
+  return level === 'medium' ? 'meter-mid' : 'meter-high';
+}
 export function effortText(level: string): string { return level ? level.charAt(0).toLocaleUpperCase() + level.slice(1) : level; }
 export type PresentationSource = {target?: Target; primary?: PrimaryView; savedSession?: SavedSession; row?: AgentRow; identityTail?: string; caption?: ConversationCaption;
   availability?: EventData['agent.availability']; negotiated?: Pick<TargetPreparation, 'availability' | 'capabilities'> & {identity: string}; frame?: ProjectedFrame; entries?: readonly EntryView[]; tool?: AgentRow['currentTool']; start?: AgentStartAttempt; connected: boolean};

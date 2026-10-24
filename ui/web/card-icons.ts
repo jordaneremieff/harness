@@ -1,6 +1,6 @@
 import { button, element, setText } from './dom.ts';
 
-export type CardIcon = 'fork' | 'copy' | 'wrap' | 'chevron' | 'success' | 'error' | 'working' | 'unknown' | 'previous' | 'next' | 'restart' | 'close' | 'menu' | 'plus' | 'search' | 'info' | 'folder' | 'folder-open' | 'navigation' | 'agent' | 'latest' | 'earlier' | 'message' | 'more' | 'commands' | 'notifications' | 'appearance' | 'send' | 'stop' | 'disconnected' | 'file' | 'play' | 'steer' | 'upload' | 'history' | 'terminal' | 'edit' | 'web' | 'memory' | 'plug';
+export type CardIcon = 'fork' | 'copy' | 'wrap' | 'chevron' | 'success' | 'error' | 'working' | 'unknown' | 'previous' | 'next' | 'restart' | 'close' | 'menu' | 'plus' | 'search' | 'info' | 'folder' | 'folder-open' | 'navigation' | 'agent' | 'latest' | 'earlier' | 'message' | 'more' | 'commands' | 'notifications' | 'appearance' | 'send' | 'stop' | 'disconnected' | 'file' | 'play' | 'steer' | 'upload' | 'history' | 'expand' | 'collapse' | 'meter-off' | 'meter-low' | 'meter-mid' | 'meter-high' | 'terminal' | 'edit' | 'web' | 'memory' | 'plug';
 const paths: Record<CardIcon, string> = {
   file: 'M3 2h6l4 4v8H3Z M9 2v4h4 M5 9h6 M5 11h4',
   copy: 'M6 5V2h8v9h-3 M2 5h8v9H2Z',
@@ -37,6 +37,12 @@ const paths: Record<CardIcon, string> = {
   latest: 'M8 2v9 M4 7l4 4 4-4 M3 14h10',
   earlier: 'M8 14V5 M4 9l4-4 4 4 M3 2h10',
   message: 'M2 3h12v8H6l-4 3Z M5 6h6 M5 8h4',
+  expand: 'M9 2h5v5 M7 14H2V9 M14 2L9 7 M2 14l5-5',
+  collapse: 'M14 7H9V2 M2 9h5v5 M9 7l5-5 M7 9l-5 5',
+  'meter-off': 'M3 12h.01 M8 12h.01 M13 12h.01',
+  'meter-low': 'M3 12V9 M8 12h.01 M13 12h.01',
+  'meter-mid': 'M3 12V9 M8 12V6 M13 12h.01',
+  'meter-high': 'M3 12V9 M8 12V6 M13 12V3',
   terminal: 'M2 3h12v10H2Z M5 6l2 2-2 2 M9 10h3',
   edit: 'M2 14l1-4 8-8 3 3-8 8Z M10 3l3 3',
   web: 'M14 8a6 6 0 1 1-12 0 6 6 0 0 1 12 0 M2 8h12 M8 2c-3 3-3 9 0 12 M8 2c3 3 3 9 0 12',

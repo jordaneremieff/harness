@@ -80,7 +80,7 @@ import { inputOperation, operationLabel } from './operation-label.ts';
 import { PreferenceQueue } from './preference-queue.ts';
 import { BrowserDiagnostics } from './diagnostics.ts';
 import {DevReload, devReloadPresentation, validateDevReloadCheckpoint, type DevReloadCheckpoint, type DevReloadHooks, type DevCheckpointEntry, type DevReloadHold, type DevReloadNotice} from './dev-reload.ts';
-import { conversationPresentation, effortText, modelText, presentationGlyph, presentationName, projectIdentity, composerFolder, agentHistoryNote, readsSavedMessages, agentComposerState, settingsLabel, showsLastObserved } from './conversation-presentation.ts';
+import { conversationPresentation, effortText, modelText, presentationGlyph, presentationName, projectIdentity, composerFolder, agentHistoryNote, readsSavedMessages, agentComposerState, settingsLabel, showsLastObserved, thinkingMeter } from './conversation-presentation.ts';
 import type { AgentComposerState, ConversationPresentation } from './conversation-presentation.ts';
 import type { ComposerStateView } from './composer.ts';
 import { newerOperation, mergeOperationMap } from './operation-state.ts';
@@ -2218,7 +2218,9 @@ function paintModelSetting(node:HTMLButtonElement,view:ConversationPresentation,
   node.setAttribute('aria-label',id?`Model for ${owner}: ${id}`:`Model for ${owner}: unavailable`);
 }
 function paintThinkingSetting(node:HTMLButtonElement,view:ConversationPresentation,owner:string,reason?:string):void {
-  setText(node.querySelector<HTMLElement>('.composer-setting-label') as HTMLElement,view.thinking?effortText(view.thinking):'Thinking unavailable');
+  const label=node.querySelector<HTMLElement>('.composer-setting-label') as HTMLElement;
+  setText(label,view.thinking?effortText(view.thinking):'Thinking unavailable');label.classList.add('sr-only');
+  const meter=cardIcon(thinkingMeter(view.thinking));meter.classList.add('composer-meter');node.querySelector('.composer-meter')?.remove();node.insertBefore(meter,label);
   node.title=[view.thinking?`Thinking level: ${view.thinking}`:'Thinking unavailable',view.retainedThinking?'Last observed thinking':'',reason].filter(Boolean).join('\n');
   node.setAttribute('aria-label',view.thinking?`Thinking level for ${owner}: ${view.thinking}`:`Thinking level for ${owner}: unavailable`);
 }

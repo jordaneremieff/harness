@@ -2017,6 +2017,7 @@ pre[data-wrap=true] { white-space: pre-wrap; overflow-wrap: anywhere; }
 }
 
 
+
 /* Tool calls: kind chip, tinted title row, subject as monospace title. */
 .tool-kind { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: var(--r-sm); background: var(--code); color: var(--muted); }
 .tool-kind > .card-icon { width: 16px; height: 16px; }
@@ -2048,6 +2049,7 @@ pre[data-wrap=true] { white-space: pre-wrap; overflow-wrap: anywhere; }
 .tool-preview-more { display: inline-flex; align-items: center; gap: var(--s1); font-family: var(--mono); }
 .tool-preview-more > .card-icon { width: 16px; height: 16px; transform: rotate(90deg); }
 @media (max-width: 599px) { .tool-preview, .tool-preview > .tool-content-preview { white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: hidden; } .tool-preview-more { width: 100%; justify-content: center; } .diff-row, .read-source-lines { min-width: 0; } .diff-row { grid-template-columns: 2ch minmax(0, 1fr); white-space: pre-wrap; overflow-wrap: anywhere; } }
+.composer-thinking > .card-icon.composer-meter, .composer-expand > .card-icon { width: 18px; height: 18px; }
 /* End of tool calls. */
 
 @media (pointer:coarse) {

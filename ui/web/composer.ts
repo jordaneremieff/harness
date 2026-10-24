@@ -34,6 +34,10 @@ export type ComposerStateView = {line: string; label?: string; tone?: 'error' | 
 const queuedAdmissionNotice = (text: string): boolean => text === 'Message queued';
 const queueDescription = 'Queue this message for a later step. During a wait for agent results, the message joins the current work.';
 const actionParts = new WeakMap<HTMLElement, {label: HTMLElement; icon?: CardIcon; mark?: SVGSVGElement}>();
+/** The editor size control is an icon; its words stay for assistive technology. */
+function paintExpand(node: HTMLElement, expanded: boolean): void {
+  node.replaceChildren(cardIcon(expanded ? 'collapse' : 'expand'), element('span', 'sr-only', expanded ? 'Return' : 'Expand'));
+}
 function paintAction(node: HTMLButtonElement, icon: CardIcon, label: string, visible = false): void {
   let parts = actionParts.get(node);
   if (!parts) { parts = {label: element('span', 'sr-only action-label')}; actionParts.set(node, parts); node.replaceChildren(parts.label); }
@@ -71,6 +75,8 @@ export function createComposerElements(instanceId: string): ComposerElements {
   const stop = element('button', 'stop'); stop.id = `${id}-stop`; stop.type = 'button'; stop.hidden = true; stop.title = 'Stop response'; paintAction(stop, 'stop', 'Stop');
   const send = element('button', 'send'); send.id = `${id}-send`; send.type = 'submit'; send.disabled = true; paintAction(send, 'send', 'Send');
   send.setAttribute('aria-label', 'Send message'); stop.setAttribute('aria-label', 'Stop response');
+  // Tapping Send or Stop never takes focus from the editor, so the on-screen keyboard stays open.
+  for (const type of ['pointerdown', 'mousedown'] as const) stop.addEventListener(type, event => event.preventDefault());
   const attach = element('button', 'attach', 'Attach'); attach.type = 'button'; attach.hidden = true; attach.tabIndex = -1; attach.setAttribute('aria-label', 'Upload files');
   const picker = element('input'); picker.type = 'file'; picker.multiple = true; picker.hidden = true; picker.tabIndex = -1; picker.setAttribute('aria-label', 'Choose attachments');
   const sources = cardAction('plus', 'Add to message', () => {}, 'attachment-sources');
@@ -79,7 +85,7 @@ export function createComposerElements(instanceId: string): ComposerElements {
   const start = element('button', 'send start'); start.id = `${id}-start`; start.type = 'button'; start.hidden = true; paintAction(start, 'play', 'Start', true);
   const stopSlot = element('span', 'composer-stop-slot'); stopSlot.append(stop);
   const submit = element('div', 'composer-submit'); submit.append(stopSlot, queue, start, send);
-  const expand = element('button', 'composer-expand', 'Expand'); expand.type = 'button'; expand.setAttribute('aria-label', 'Expand message editor'); expand.title = 'Expand message editor'; expand.setAttribute('aria-expanded', 'false'); expand.setAttribute('aria-controls', editor.id);
+  const expand = element('button', 'composer-expand'); paintExpand(expand, false); expand.type = 'button'; expand.setAttribute('aria-label', 'Expand message editor'); expand.title = 'Expand message editor'; expand.setAttribute('aria-expanded', 'false'); expand.setAttribute('aria-controls', editor.id);
   const bar = element('div', 'composer-bar'); bar.append(expand, submit); const line = element('div', 'composer-line');
   const model = element('button', 'composer-model'), thinking = element('button', 'composer-thinking'), settingsText = element('span', 'composer-settings-text');
   model.id = `${id}-model`; thinking.id = `${id}-thinking`; settingsText.id = `${id}-settings-text`; model.type = thinking.type = 'button'; model.hidden = thinking.hidden = settingsText.hidden = true;
@@ -187,6 +193,7 @@ export class Composer {
       });
     });
     this.listen(this.editor, 'keydown', event => this.key(event));
+    for (const type of ['pointerdown', 'mousedown'] as const) this.listen(elements.send, type, event => event.preventDefault());
     if (elements.expand) {
       this.listen(elements.expand, 'mousedown', event => event.preventDefault());
       this.listen(elements.expand, 'click', () => this.setExpanded(!this.expanded));
@@ -254,7 +261,7 @@ export class Composer {
     this.expanded = expanded; this.elements.root.dataset.expanded = String(expanded);
     const control = this.elements.expand;
     if (control) {
-      setText(control, expanded ? 'Return' : 'Expand');
+      paintExpand(control, expanded);
       control.setAttribute('aria-expanded', String(expanded));
       control.setAttribute('aria-label', expanded ? 'Return to compact message editor' : 'Expand message editor');
       control.title = expanded ? 'Return to compact message editor' : 'Expand message editor';
