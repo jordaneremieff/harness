@@ -89,6 +89,7 @@ type Context = {snapshot(): Snapshot | undefined; primary(): PrimaryView | undef
 
 const WRITER_ACTIVE = 'A terminal session is writing this file. Resume when it ends.';
 const WRITER_ENDED = 'Terminal ended';
+function capacityFull(cause: unknown): boolean { return cause instanceof ApiError && cause.view.code === 'capacity' && cause.view.message === 'The primary capacity is full.'; }
 function writerRefused(cause: unknown): boolean { return (cause as {view?: {code?: unknown}} | undefined)?.view?.code === 'writer_active'; }
 /** Metadata caches belong to the picker, never to execution or writer ownership. */
 export class ProjectPicker {
@@ -597,7 +598,7 @@ export class ProjectPicker {
       const current = sessionOwner(this.ctx.snapshot()?.primaries ?? [], path);
       await (current
         ? this.select({primaryKey: current.key, selectedTarget: {kind: 'primary', key: current.key, epoch: current.epoch}})
-        : this.start(project, path).catch(cause => { if (writerRefused(cause)) this.writersChanged(); throw cause; }));
+        : this.startRecycling(project, path));
       resumed?.();
     }, failed);
   }
@@ -625,6 +626,17 @@ export class ProjectPicker {
     if(selected)await selected(identity);
     else if(this.owns(revision)&&this.ctx.snapshot()?.workspace.id===workspace)await this.ctx.selection({panelVisible:true,selectedTarget:{kind:'agent',identity}});
     await this.ctx.reload();this.conversions.delete(item.path);
+  }
+  /** Resuming a saved session never stops at the process limit while an idle session can give up its process; its saved conversation and drafts stay. */
+  private async startRecycling(project: string, path: string, recycled = 0): Promise<void> {
+    try { await this.start(project, path); }
+    catch (cause) {
+      if (writerRefused(cause)) this.writersChanged();
+      const spare = capacityFull(cause) && recycled < RECYCLE_ATTEMPTS ? this.recyclable() : undefined, recycle = this.ctx.closeIdle;
+      if (!spare || !recycle) throw cause;
+      try { await recycle(spare); } catch { throw cause; }
+      await this.startRecycling(project, path, recycled + 1);
+    }
   }
   private async start(project: string, path?: string): Promise<void> {
     const selected = this.ctx.selectOpened?.(),revision = this.revision,inline = !!this.inline;

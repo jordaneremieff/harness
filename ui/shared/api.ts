@@ -6,7 +6,7 @@ export const LIMITS = {
   requestBytes: 128 * 1024, textBytes: 64 * 1024, displayBytes: 256 * 1024,
   pageBytes: 64 * 1024, pageItems: 100, pathChars: 4096, idChars: 256,
   cursorBytes: 4096, primaryBytes: 8 * 1024 * 1024, rosterBytes: 8 * 1024 * 1024,
-  rosterRows: 2048, identityLookup: 16, agentCacheBytes: 1024 * 1024, primaries: 4, workspaces: Number.MAX_SAFE_INTEGER,
+  rosterRows: 2048, identityLookup: 16, agentCacheBytes: 1024 * 1024, primaries: 8, workspaces: Number.MAX_SAFE_INTEGER,
   targets: 128, draftPreviewChars: 240, rpcPending: 64, hostPending: 32, workspaceReservations: 16,
   operations: 2048, unconfirmed: 128, journalEvents: 4096,
   sidebarWidthMin: 200, sidebarWidthMax: 480, conversationTabs: 128,

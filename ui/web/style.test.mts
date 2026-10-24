@@ -1719,3 +1719,7 @@ test('the drawer media query and the persistent sidebar constant name the same w
   assert.ok(css.includes(`@media (max-width:${PERSISTENT_SIDEBAR_MIN_WIDTH - 1}px) {`));
   assert.equal(css.includes('@media (max-width:899px)'), false);
 });
+
+test('the top tab strip is hidden on phones and kept from the phone breakpoint up', () => {
+  assert.match(css, /@media \(max-width:599px\) \{ \.tab-bar \{ display: none; \} \}/);
+});

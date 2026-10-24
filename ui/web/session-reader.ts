@@ -1,8 +1,8 @@
 import type {EntryView, HistoryPage, PresentationView, PrimaryView, ReadingView, SavedSession, SavedSessionRead} from '../shared/api.ts';
-import {button, element, setText} from './dom.ts';
+import {button, copy, element, setText} from './dom.ts';
 import {absoluteTime} from './format.ts';
 import {sessionLabel} from './picker-state.ts';
-import {readSessionState, SessionStateBar, type SessionState} from './session-state.ts';
+import {readSessionState, sessionResumeCommand, SessionStateBar, type SessionState} from './session-state.ts';
 import {Transcript} from './render.ts';
 import {request} from './transport.ts';
 import type {PrimaryDraftActions, PrimaryDraftSource} from './primary-draft-actions.ts';
@@ -38,6 +38,10 @@ export class SessionReader {
   private refresh=button('Refresh',()=>{void this.read(false);},'quiet');
   private resume=button('Resume here',()=>this.resumeCurrent(),'quiet');
   private sessionBar=new SessionStateBar('details');
+  /** A session this view cannot write to still shows a composer-shaped footer that says why and offers what it can do. */
+  private readonly heldNode=element('form','session-reader-held');
+  private readonly heldNote=element('p','session-reader-held-note secondary');
+  private readonly heldDraft=element('textarea','session-reader-held-draft');
   private detailsNode=element('div','session-reader-details');
   private problem=element('p','session-reader-status secondary');
   private barSource?:SessionReadSource;
@@ -68,7 +72,11 @@ export class SessionReader {
     this.heading.setAttribute('role','tab');this.heading.setAttribute('aria-selected','true');tabs.append(this.heading);
     header.append(tabs,actions);header.hidden=!!hooks.embedded;this.scroller.tabIndex=0;
     this.problem.hidden=true;this.problem.setAttribute('role','status');
-    this.node.append(header,this.problem,this.scroller,this.latest);this.node.hidden=true;
+    this.heldDraft.rows=2;this.heldDraft.setAttribute('aria-label','Draft a message for the terminal session');this.heldDraft.placeholder='Draft a message to copy';
+    const heldActions=element('div','session-reader-held-actions');
+    heldActions.append(button('Copy message',()=>{if(this.heldDraft.value.trim())void copy(this.heldDraft.value,this.heldNode);},'quiet'),button('Copy resume command',()=>{const command=sessionResumeCommand(this.source?.saved?.path??(this.source&&'primary' in this.source?this.source.primary.sessionFile:undefined));if(command)void copy(command,this.heldNode);},'quiet'));
+    this.heldNode.addEventListener('submit',event=>event.preventDefault());this.heldNode.hidden=true;this.heldNode.append(this.heldNote,this.heldDraft,heldActions);
+    this.node.append(header,this.problem,this.scroller,this.latest,this.heldNode);this.node.hidden=true;
     this.node.addEventListener('focusin',hooks.focus);
     if(hooks.embedded)this.scroller.addEventListener('scroll',()=>this.scheduleView(),{passive:true});
     else this.node.addEventListener('keydown',event=>{if(event.key==='Escape'&&!event.defaultPrevented){event.preventDefault();hooks.close();}});
@@ -152,6 +160,13 @@ export class SessionReader {
     if(!source||!this.loaded||this.reading||view.terminal||this.node.closest('[hidden],[inert]'))return;
     if(view.word==='closed'||view.primary?.lifecycle==='ready')this.hooks.resume(source);
   }
+  /** A terminal holds the writer, or the state is not known yet: say so beside the draft field instead of leaving no composer. */
+  private paintHeld(view:SessionState):void {
+    const known=view.word!==undefined||!!view.primary,held=!!view.terminal;
+    this.heldNode.hidden=!this.source||(known&&!held);
+    this.heldDraft.disabled=!held;
+    setText(this.heldNote,held?'Held by a terminal. This view cannot send, interrupt or queue for it. Draft here and copy the message, or use that terminal.':'Session state is not available yet. The composer appears when it loads.');
+  }
   private paintHeader():void {
     if(!this.source)return;
     const saved=this.source.saved,primary='primary' in this.source?this.source.primary:undefined;
@@ -162,7 +177,7 @@ export class SessionReader {
     this.heading.title=[saved?.id??primary?.sessionId,primary?`Primary ${primary.key}`:'',saved?.path??primary?.sessionFile,folder].filter(Boolean).join('\n');
     this.resume.hidden=!this.loaded||!!view.terminal||view.primary?.lifecycle!=='ready';this.resume.disabled=this.reading;
     const current=()=>{const next=this.viewState();return this.source===source&&this.loaded&&!this.reading&&next.word===view.word&&next.terminal===view.terminal&&next.path===view.path&&next.project===view.project&&next.primary?.key===view.primary?.key&&next.primary?.epoch===view.primary?.epoch;};
-    this.sessionBar.update(view,current,()=>this.resumeCurrent(),!this.reading);this.hooks.state?.();
+    this.sessionBar.update(view,current,()=>this.resumeCurrent(),!this.reading);this.paintHeld(view);this.hooks.state?.();
   }
   private async read(earlier:boolean):Promise<void>{
     const source=this.source;if(!source||this.reading)return;

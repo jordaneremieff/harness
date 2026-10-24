@@ -103,7 +103,13 @@ let controlStatusWorkspace: string | undefined;
 export let drawerOpen = false;
 /** The operator's own latest action on each session, kept in this browser. */
 const operatorActivity = new OperatorActivity();
+/** Sending to an archived session brings it back to Recents. */
+function restoreIfArchived(identities:readonly string[]):void {
+  const metadata=sessionSidebar.metadataFor(identities);
+  if(metadata?.archived&&metadata.canRestore)void changeSessionMetadata(metadata,'restore').catch(()=>{});
+}
 function stampOperator(target: Target): void {
+  restoreIfArchived(target.kind==='primary'?primaryIdentities(state.primaries.get(target.key)??{key:target.key} as PrimaryView):[`agent:${target.identity}`]);
   if (target.kind === 'primary') { const primary = state.primaries.get(target.key); operatorActivity.stamp(primary ? primaryIdentities(primary) : [`primary:${target.key}`]); }
   else operatorActivity.stamp([`agent:${target.identity}`]);
 }
@@ -1288,8 +1294,31 @@ function reopenClosedTab(only?: string): void {
     applyLayout(movePaneTab(opened, key, pane.id, Math.min(saved.index, Math.max(0, (paneById(opened, pane.id)?.tabs.length ?? 1) - 1)))); focusEditor();
   } catch (error) { showError(error); }
 }
+/** A stored saved-session tab never opens as a snapshot while its session can take a composer: activation selects its live conversation or resumes it. */
+function engageSessionTab(pane:string,key:string):boolean {
+  const tab=paneById(currentLayout(),pane)?.tabs.find(item=>tabKey(item)===key),saved=tab?.kind==='session'?sessionTabSaved(tab):undefined;
+  return !!saved&&engageSession({saved},key);
+}
+/** The engaged conversation takes the Primary tab; the snapshot tab it replaces closes. */
+function showPrimaryTab(replace?:string):void {
+  try{
+    const layout=openTab(currentLayout(),{kind:'primary'});
+    applyLayout(replace&&paneLeaves(layout.root).some(pane=>pane.tabs.some(tab=>tabKey(tab)===replace))?closeTab(layout,replace):layout);
+  }catch(error){showError(error);}
+}
+const engagedTabs=new Set<string>();
+/** Placing a saved-session tab engages it once; a terminal-held session, or one that cannot engage yet, stays a snapshot with its held composer. */
+function scheduleSessionEngage(tab:ConversationTab):void {
+  const workspace=state.workspace?.id;if(!workspace||tab.kind!=='session')return;
+  const key=`${workspace}\n${tabKey(tab)}`;if(engagedTabs.has(key))return;
+  setTimeout(()=>{
+    const active=activeTab(currentLayout());if(engagedTabs.has(key)||active?.kind!=='session'||tabKey(active)!==tabKey(tab))return;
+    const saved=sessionTabSaved(active);if(saved&&engageSession({saved},tabKey(active)))engagedTabs.add(key);
+  },0);
+}
 function activateConversationTab(pane: string, key: string): void {
   if(chooseComparison(key))return;
+  if(engageSessionTab(pane,key))return;
   const layout = activatePaneTab(currentLayout(), pane, key); if (paneById(layout, pane)?.active !== key) return;
   const target = layoutTarget(layout, primaryTarget()); if (target&&!conversationController(target).inspection?.active) conversationController(target).passive = false;
   applyLayout(layout); focusEditor();
@@ -1387,6 +1416,7 @@ function placeSessionTab(host:HTMLElement,tab:ConversationTab|undefined):boolean
   for(const [key,reader] of sessionTabReaders)if(key!==activeKey&&reader.node.parentElement===host)reader.hide();
   if(!active||!workspace)return false;
   const reader=sessionTabReader(workspace,active);
+  scheduleSessionEngage(active);
   if(reader.node.parentElement!==host)host.append(reader.node);
   reader.show();return true;
 }
@@ -1400,12 +1430,12 @@ function persistSessionView(workspace:string,key:string,view:SessionView):void {
   for(const pane of paneLeaves(layout.root))for(const tab of pane.tabs)if(tab.kind==='session'&&tabKey(tab)===key&&!sameSessionView(readSessionView(tab.view),view)){tab.view=view;changed=true;}
   if(changed)void selection({conversationLayout:layout}).catch(()=>{});
 }
-function resumeTabSource(source:SessionReadSource):void {
+function resumeTabSource(source:SessionReadSource,after?:()=>void):void {
   if(!connected||selecting)return;
-  const view=readSessionState('primary' in source?source.primary:undefined,source.saved,currentSnapshot()?.primaries);
+  const view=readSessionState('primary' in source?source.primary:undefined,withWriter(source.saved),currentSnapshot()?.primaries);
   if(view.terminal)return;
-  if(view.primary?.lifecycle==='ready')void capturePrimarySelection()(view.primary.key).then(()=>focusEditor()).catch(showError);
-  else if(view.word==='closed'&&view.project&&view.path)picker.resume(view.project,view.path,showError,()=>{renderNavigation();focusEditor();});
+  if(view.primary?.lifecycle==='ready')void capturePrimarySelection()(view.primary.key).then(()=>{after?.();focusEditor();}).catch(showError);
+  else if(view.word==='closed'&&view.project&&view.path)picker.resume(view.project,view.path,showError,()=>{after?.();renderNavigation();focusEditor();});
 }
 function placePaneContent(leaf:PaneLeaf):void {
   if(toolFilePane?.id===leaf.id)return;
@@ -3194,15 +3224,19 @@ function openSessionTab(tab:SessionTab):void {
   try{applyLayout(openTab(currentLayout(),tab));}catch(error){showError(error);}
 }
 /** Opening a session that nothing else writes engages it at once: a live conversation with a composer, never a snapshot without one. A session a terminal holds stays a snapshot. */
-function engageSession(source:SessionReadSource):boolean {
+function withWriter(saved:SavedSession|undefined):SavedSession|undefined {
+  const fresh=saved&&sessionSidebar.entry(saved.path);
+  return saved&&fresh?.writer&&!saved.writer?{...saved,writer:fresh.writer}:saved;
+}
+function engageSession(source:SessionReadSource,replaceKey?:string):boolean {
   if(!connected||selecting)return false;
-  const view=readSessionState('primary' in source?source.primary:undefined,source.saved,currentSnapshot()?.primaries);
+  const view=readSessionState('primary' in source?source.primary:undefined,withWriter(source.saved),currentSnapshot()?.primaries);
   if(view.terminal)return false;
   const ready=view.primary?.lifecycle==='ready',closed=view.word==='closed'&&!!view.project&&!!view.path;
   if(!ready&&!closed)return false;
   modal.close(false);leaveOverlayDesk();closeToolFile(false);drawerOpen=false;
   operatorActivity.stamp([...source.saved?[`path:${source.saved.path}`,`id:${source.saved.id}`]:[],...'primary' in source&&source.primary?primaryIdentities(source.primary):[]]);
-  resumeTabSource(source);return true;
+  resumeTabSource(source,()=>showPrimaryTab(replaceKey));return true;
 }
 function openSessionRead(source:SessionReadSource):void {
   if(engageSession(source))return;
@@ -3226,7 +3260,7 @@ function closeSessionRead():void {
   const row=[...byId('recent-sessions').querySelectorAll<HTMLButtonElement>('button')].find(node=>node.dataset.sessionKey===key);(row??byId('session-open')).focus({preventScroll:true});
 }
 const communicationNotices = new CommunicationNoticeShelf();
-const sessionSidebar = new SessionSidebar({status:sessionRowStatus,attention:kind=>{const toggle=byId('sidebar-show');if(kind)toggle.dataset.attention=kind;else delete toggle.dataset.attention;},operatorAt:identities=>operatorActivity.at(identities),older:()=>workspaceEntry.count&&state.workspace?{count:workspaceEntry.count,run:()=>{if(state.workspace)applyLayout(workspaceEntry.reopen(state.workspace,primaryTarget()));}}:undefined,openTabs:recentConversationRows,menu:openSessionRowMenu,updated:()=>{paintedCaptionReferenceKey='';refreshCaptionConsumers();renderConversationHeader(toolFileLayout());primaryNavigation(primary());},primaries:()=>[...state.primaries.values()],selected:()=>{const target=layoutTarget(currentLayout(),primaryTarget());return target?.kind==='primary'?target.key:undefined;},
+const sessionSidebar = new SessionSidebar({agents:liveAgentRows,archived:()=>openArchivedSessions(),status:sessionRowStatus,attention:kind=>{const toggle=byId('sidebar-show');if(kind)toggle.dataset.attention=kind;else delete toggle.dataset.attention;},operatorAt:identities=>operatorActivity.at(identities),older:()=>workspaceEntry.count&&state.workspace?{count:workspaceEntry.count,run:()=>{if(state.workspace)applyLayout(workspaceEntry.reopen(state.workspace,primaryTarget()));}}:undefined,openTabs:recentConversationRows,menu:openSessionRowMenu,updated:()=>{paintedCaptionReferenceKey='';refreshCaptionConsumers();renderConversationHeader(toolFileLayout());primaryNavigation(primary());},primaries:()=>[...state.primaries.values()],selected:()=>{const target=layoutTarget(currentLayout(),primaryTarget());return target?.kind==='primary'?target.key:undefined;},
   openPrimary:(primary,saved)=>openSessionRead({primary,saved}),
   openSaved:saved=>openSessionRead({saved})});
 const sessionActionsPending=new Set<string>();
@@ -3371,6 +3405,18 @@ function recentConversationRows(): import('./sidebar-useful.ts').SessionRow[] {
   const layout=currentLayout();
   return paneLeaves(layout.root).flatMap(pane=>pane.tabs.filter(tab=>tab.kind!=='file').map(tab=>recentTabRow(tab,pane,layout)));
 }
+/** Durable conversations that are live join Recents beside Primary sessions, and opening one gives it a composer. */
+function liveAgentRows(): SessionRow[] {
+  return [...state.roster.values()].filter(row => row.availability === 'live').map(row => {
+    const target: Target = {kind: 'agent', identity: row.identity}, name = humanTabTitle({kind: 'agent', identity: row.identity});
+    return {key: `agent:${row.identity}`, identities: [`agent:${row.identity}`], name, at: row.modifiedAt, title: name, project: row.cwd, target,
+      ...(row.state ? {activity: `Last observed: ${row.state.replaceAll('_', ' ')}`} : {}), activate: () => {void navigateReference({target}).catch(showError);}};
+  });
+}
+function rowRunning(primary: PrimaryView | undefined, target: Target): boolean {
+  if (primary) return primary.activity !== 'idle' && primary.activity !== 'unknown';
+  return target.kind === 'agent' && state.roster.get(target.identity)?.state === 'working';
+}
 /** One dot per session row: it needs an answer, it failed, it is running, or it holds unread output. */
 function sessionRowStatus(row: SessionRow): RowStatus | undefined {
   const primary = row.primary ?? (row.target?.kind === 'primary' ? state.primaries.get(row.target.key) : undefined);
@@ -3379,7 +3425,7 @@ function sessionRowStatus(row: SessionRow): RowStatus | undefined {
   const attention = attentionFor(target);
   if (attention?.label === 'Question') return {kind: 'waiting', label: 'Waiting for you'};
   if (attention || primary?.lifecycle === 'failed') return {kind: 'error', label: 'Failed'};
-  if (primary && primary.activity !== 'idle' && primary.activity !== 'unknown') return {kind: 'running', label: 'Running'};
+  if (rowRunning(primary, target)) return {kind: 'running', label: 'Running'};
   const unread = state.workspace ? controllers.get(controllerKey(state.workspace.id, target))?.transcript.unread ?? 0 : 0;
   return unread > 0 ? {kind: 'unread', label: `${unread} unread`} : undefined;
 }

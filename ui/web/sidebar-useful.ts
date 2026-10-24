@@ -35,8 +35,9 @@ export function recentGroup(at:number,now=Date.now()):string {
   if(at>=day-86_400_000)return 'Yesterday';
   return at>=day-6*86_400_000?'Previous 7 days':'Older';
 }
-type SessionHooks={status?:(item:SessionRow)=>RowStatus|undefined;attention?:(kind:RowStatus['kind']|undefined)=>void;operatorAt?:(identities:readonly string[])=>number|undefined;older?:()=>{count:number;run:()=>void}|undefined;openTabs?:()=>SessionRow[];menu?:(item:SessionRow,origin:HTMLElement)=>void;updated?:()=>void;primaries:()=>readonly PrimaryView[];selected:()=>string|undefined;openPrimary:(primary:PrimaryView,saved?:SavedSession)=>void;openSaved:(saved:SavedSession)=>void};
-type Catalog={pages:SavedSessionPage[];notes:string[];published:Set<string>};
+type SessionHooks={agents?:()=>SessionRow[];archived?:()=>void;status?:(item:SessionRow)=>RowStatus|undefined;attention?:(kind:RowStatus['kind']|undefined)=>void;operatorAt?:(identities:readonly string[])=>number|undefined;older?:()=>{count:number;run:()=>void}|undefined;openTabs?:()=>SessionRow[];menu?:(item:SessionRow,origin:HTMLElement)=>void;updated?:()=>void;primaries:()=>readonly PrimaryView[];selected:()=>string|undefined;openPrimary:(primary:PrimaryView,saved?:SavedSession)=>void;openSaved:(saved:SavedSession)=>void};
+type MoreCursor={base:string;cursor:string};
+type Catalog={pages:SavedSessionPage[];notes:string[];published:Set<string>;more:MoreCursor[]};
 type SessionRowNode={item:SessionRow;node:HTMLElement;open:HTMLButtonElement;dot:HTMLElement;label:HTMLElement;context:HTMLElement;menu:HTMLButtonElement};
 /** Every identity under which one open session is known. */
 export function primaryIdentities(primary:PrimaryView):string[] {
@@ -74,12 +75,17 @@ export class SessionSidebar {
   private metadata:SessionMetadata[]=[];
   private readonly rowNodes=new Map<string,SessionRowNode>();
   private readonly groupNodes=new Map<string,HTMLElement>();
+  private more:MoreCursor[]=[];
+  private readonly moreButton=button('Show more sessions',()=>{void this.loadMore();},'nav-row sidebar-action');
+  private readonly archivedButton=button('Archived',()=>{this.hooks.archived?.();},'nav-row sidebar-action');
   private readonly olderButton=button('Show more',()=>{this.hooks.older?.()?.run();},'nav-row sidebar-action');
   private readonly node=byId('recent-sessions');private readonly empty=element('p','secondary sidebar-empty','No recent sessions.');private hooks:SessionHooks;
   constructor(hooks:SessionHooks){this.hooks=hooks;}
   diagnostics():string{return this.notes.join('\n');}
   filter(query:string):void {this.query=query.trim().toLocaleLowerCase();this.paint();}
   refreshNames():void {this.paint();}
+  /** The catalogue's own record for a saved path, which carries the writer state a stored tab lacks. */
+  entry(path:string):SavedSession|undefined {return this.saved.find(item=>item.path===path);}
   metadataFor(identities:readonly string[]):SessionMetadata|undefined {return this.metadata.find(item=>item.aliases.some(alias=>identities.includes(alias)));}
   applyMetadata(item:SessionMetadata):void {
     this.metadata=this.metadata.filter(old=>!old.aliases.some(alias=>item.aliases.includes(alias)));this.metadata.push(item);this.paint();this.hooks.updated?.();
@@ -100,8 +106,8 @@ export class SessionSidebar {
   }
   refresh(workspace:string|undefined):void {
     if(!workspace)return;
-    const primaries=this.hooks.primaries(),projects=[...new Set(primaries.map(item=>item.cwd))],scope=JSON.stringify([workspace,projects,primaries.map(item=>[item.key,item.epoch,item.sessionId,item.sessionFile])]);
-    if(scope!==this.scope){this.controller?.abort();this.scope=scope;this.saved=[];this.published.clear();this.notes=[];this.metadata=[];this.loadedAt=0;this.pending=false;}
+    const primaries=this.hooks.primaries(),tabProjects=(this.hooks.openTabs?.()??[]).flatMap(row=>row.saved?.project??[]),projects=[...new Set([...primaries.map(item=>item.cwd),...tabProjects])],scope=JSON.stringify([workspace,projects,primaries.map(item=>[item.key,item.epoch,item.sessionId,item.sessionFile])]);
+    if(scope!==this.scope){this.controller?.abort();this.scope=scope;this.saved=[];this.more=[];this.published.clear();this.notes=[];this.metadata=[];this.loadedAt=0;this.pending=false;}
     this.paint();if(this.pending||Date.now()-this.loadedAt<60_000)return;
     this.pending=true;const controller=new AbortController();this.controller=controller;
     void this.load(projects,controller).finally(()=>{if(this.controller===controller){this.pending=false;this.loadedAt=Date.now();this.paint();}});
@@ -113,18 +119,19 @@ export class SessionSidebar {
       return mergeSessionTitles({...page,pendingTitles:[]},titles);
     }catch(error){if(!signal.aborted)catalog.notes.push(`Session titles: ${error instanceof Error?error.message:String(error)}`);return page;}
   }
-  private async catalogPage(path:string,signal:AbortSignal,catalog:Catalog):Promise<void>{
+  private async catalogPage(path:string,signal:AbortSignal,catalog:Catalog,base=path):Promise<void>{
     try{
       let page=await request<SavedSessionPage>(path,'GET',undefined,undefined,AbortSignal.any([signal,AbortSignal.timeout(15_000)]));
       page=await this.catalogTitles(path,page,signal,catalog);
       if(signal.aborted)return;catalog.pages.push(page);
+      if(page.nextCursor&&path.startsWith('/api/sessions?'))catalog.more.push({base,cursor:page.nextCursor});
       if(path==='/api/sessions/published')for(const item of page.items)catalog.published.add(item.path);
       if(page.nextCursor||page.omitted)catalog.notes.push(`Session catalog: ${page.items.length} loaded; ${page.omitted} omitted; more: ${!!page.nextCursor}`);
     }catch(error){if(!signal.aborted)catalog.notes.push(error instanceof Error?error.message:String(error));}
   }
   private async load(projects:string[],controller:AbortController):Promise<void>{
     const paths=['/api/sessions/published',...projects.map(project=>`/api/sessions?project=${encodeURIComponent(project)}`)];
-    const catalog:Catalog={pages:[],notes:[],published:new Set()};
+    const catalog:Catalog={pages:[],notes:[],published:new Set(),more:[]};
     const metadata=this.loadMetadata(controller.signal).catch(error=>{if(!controller.signal.aborted)catalog.notes.push(error instanceof Error?error.message:String(error));});
     for(let at=0;at<paths.length;at+=4){
       if(controller.signal.aborted)return;
@@ -132,7 +139,19 @@ export class SessionSidebar {
     }
     await metadata;if(controller.signal.aborted)return;
     const saved=new Map<string,SavedSession>();for(const page of catalog.pages)for(const item of page.items)saved.set(item.path,item);
-    this.saved=[...saved.values()];this.published=catalog.published;this.notes=catalog.notes;this.hooks.updated?.();
+    this.saved=[...saved.values()];this.published=catalog.published;this.notes=catalog.notes;this.more=catalog.more;this.hooks.updated?.();
+  }
+  /** Every saved session stays reachable in the list without a search: each press loads the next page of every project that has one. */
+  private async loadMore():Promise<void> {
+    if(this.pending||!this.more.length)return;
+    const jobs=this.more;this.more=[];this.pending=true;this.moreButton.disabled=true;
+    const controller=new AbortController(),catalog:Catalog={pages:[],notes:[],published:new Set(),more:[]};this.controller=controller;
+    try{
+      await Promise.all(jobs.map(job=>this.catalogPage(`${job.base}&cursor=${encodeURIComponent(job.cursor)}`,controller.signal,catalog,job.base)));
+      if(controller.signal.aborted)return;
+      const saved=new Map(this.saved.map(item=>[item.path,item]));for(const page of catalog.pages)for(const item of page.items)saved.set(item.path,item);
+      this.saved=[...saved.values()];this.more=catalog.more;this.notes=[...this.notes,...catalog.notes];
+    }finally{this.pending=false;this.moreButton.disabled=false;this.paint();this.hooks.updated?.();}
   }
   registered(identity:string):SavedSession|undefined{return this.saved.find(item=>item.id===identity&&this.published.has(item.path));}
   savedSession(primary:PrimaryView|undefined):SavedSession|undefined {
@@ -142,15 +161,16 @@ export class SessionSidebar {
     const metadata=new Map(this.saved.map(item=>[item.path,item])),seen=new Set<string>(),rows:SessionRow[]=[];
     const primaries=[...this.hooks.primaries()].sort((a,b)=>Number(b.lifecycle==='ready')-Number(a.lifecycle==='ready'));
     for(const primary of primaries){const key=primary.sessionFile??primary.key;if(seen.has(key))continue;seen.add(key);const saved=metadata.get(key);rows.push(primarySession(primary,saved?.id===primary.sessionId?saved:undefined));}
-    for(const saved of this.saved)if(!seen.has(saved.path)&&this.published.has(saved.path))rows.push(publishedSession(saved));
+    for(const saved of this.saved)if(!seen.has(saved.path)){seen.add(saved.path);rows.push(publishedSession(saved));}
     // Recents order by the operator's own latest action, never by the session's latest output.
     const byKey=new Map(this.hooks.primaries().map(primary=>[primary.key,primary]));
     const timed=(row:SessionRow):SessionRow=>{const primary=row.primary??(row.target?.kind==='primary'?byKey.get(row.target.key):undefined);return {...row,at:operatorTime({...row,...primary?{primary}:{}},this.hooks.operatorAt)};};
+    rows.push(...this.hooks.agents?.()??[]);
     return combinedSessionRows(this.hooks.openTabs?.()??[],rows).flatMap(row=>{
-      const metadata=this.metadataFor(row.identities??[row.key]);if(metadata?.archived)return [];
+      const metadata=this.metadataFor(row.identities??[row.key]);if(metadata?.archived&&!(row.activate&&row.saved))return [];
       const saved=this.saved.find(item=>(row.identities??[]).includes(`path:${item.path}`)&&(row.identities??[]).includes(`id:${item.id}`)&&(!row.saved||item.project===row.saved.project))??row.saved;
       const name=humanSessionTitle([metadata?.name,row.name==='Untitled session'?undefined:row.name,metadata?.title==='Untitled session'?undefined:metadata?.title,saved?sessionCaptionRecord(saved).name:undefined,row.name]);
-      return [timed({...row,name,title:name,saved})];
+      return [timed({...row,name,title:name,saved,...metadata?.archived?{activity:'Archived'}:{}})];
     }).sort((a,b)=>(Number.isFinite(b.at)?b.at:0)-(Number.isFinite(a.at)?a.at:0));
   }
   private createRow(item:SessionRow):SessionRowNode {
@@ -184,6 +204,14 @@ export class SessionSidebar {
     else{view.open.removeAttribute('aria-current');delete view.node.dataset.selected;}
     return view.node;
   }
+  /** Rows after the list: older tabs, the next page of saved sessions, and the archive. */
+  private trailingRows():HTMLElement[] {
+    const rows:HTMLElement[]=[],archived=this.archivedRecords().length;
+    if(this.hooks.older?.())rows.push(this.olderButton);
+    if(this.more.length&&!this.query)rows.push(this.moreButton);
+    if(archived){setText(this.archivedButton,`Archived · ${archived}`);rows.push(this.archivedButton);}
+    return rows;
+  }
   private paint():void{
     try {
     const active=document.activeElement as HTMLElement|null,focused=active?.dataset.sessionKey,owned=!!active&&this.node.contains(active),index=[...this.node.children].findIndex(node=>node.contains(active));
@@ -195,7 +223,7 @@ export class SessionSidebar {
     const needing=all.filter(item=>!(item.selected??(!!item.primary?.key&&item.primary.key===this.hooks.selected()))).map(item=>statuses.get(item.key)?.kind);
     this.hooks.attention?.(ATTENTION_ORDER.find(kind=>needing.includes(kind)));
     for(const key of this.rowNodes.keys())if(!keep.has(key))this.rowNodes.delete(key);
-    if(this.hooks.older?.())nodes.push(this.olderButton);
+    nodes.push(...this.trailingRows());
     setText(this.empty,this.query?'No matches in loaded recent sessions.':'No recent sessions.');
     reconcileChildren(this.node,nodes.length?nodes:[this.empty]);
     if(owned&&active)this.restoreFocus(active,focused,index,nodes);

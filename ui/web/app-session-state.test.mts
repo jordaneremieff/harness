@@ -139,9 +139,9 @@ test('saved footer uses checked caption, hides unrelated facts and skips to its 
 });
 
 test('focused Message footer survives saved reader updates and navigation restores each real owner',async t=>{
-  const original=globalThis.fetch;let writer:'live'|undefined='live';
+  const original=globalThis.fetch;const writer='live' as 'live'|undefined;
   t.after(()=>{globalThis.fetch=original;});
-  globalThis.fetch=async(input,init)=>new URL(String(input),'http://ui.test').pathname==='/api/sessions/history'?page({...saved,...(writer?{writer}:{})}):original(input,init);
+  globalThis.fetch=async(input,init)=>{const path=new URL(String(input),'http://ui.test').pathname;if(path==='/api/sessions/published')return Response.json({ok:true,data:{items:[{...saved,...(writer?{writer}:{})}],total:1,omitted:0,nextCursor:null,titleCursor:null,observedAt:''}});return path==='/api/sessions/history'?page({...saved,...(writer?{writer}:{})}):original(input,init);};
   const recipient=agentFixture('saved-footer-recipient',{name:'Saved footer recipient'}),target={kind:'agent' as const,identity:recipient.identity};
   const agentTab:ConversationTab={kind:'agent',identity:recipient.identity},fileTab:ConversationTab={kind:'file',rootId:'root',path:'README.md'};
   const tabs:ConversationTab[]=[{kind:'primary'},agentTab,fileTab,tab];
@@ -150,10 +150,10 @@ test('focused Message footer survives saved reader updates and navigation restor
   const editor=hostDocument.querySelector('.composer[data-message-panel="true"] textarea');assert.ok(editor);editor.focus();
   const calls=transportLog.length;
   assert.equal(byId('workbench-status').dataset.pane,'agent');assert.equal(byId('workbench-scope').title,`Saved footer recipient\n${recipient.identity}`);
-  writer=undefined;event('sessions.writers',{released:[saved.id]});await settle();
+  event('sessions.writers',{released:[]});await settle();
   assert.equal(byId('workbench-status').dataset.pane,'agent');assert.equal(hostDocument.activeElement,editor);assert.equal(editor.value,'Retained recipient draft');
   const activate=async(key:string)=>{const node=hostDocument.querySelectorAll('.conversation-tab').find(node=>node.dataset.tabKey===key);assert.ok(node);node.click();await settle();};
-  await activate(tabKey(tab));assert.equal(byId('workbench-status').dataset.pane,'session');assert.equal(byId('workbench-activity').textContent,'Closed');
+  await activate(tabKey(tab));assert.equal(byId('workbench-status').dataset.pane,'session');assert.equal(byId('workbench-activity').textContent,'Live in terminal');
   assert.equal(hostDocument.activeElement,readerNode().querySelector('.session-reader-transcript'));
   await activate('primary');assert.equal(byId('workbench-status').dataset.pane,'primary');assert.equal(byId('workbench-status-primary').hidden,false);assert.equal(byId('focused-composer-status').hidden,false);assert.equal(byId('focused-composer-status').children.length,2);
   await activate(tabKey(agentTab));assert.equal(byId('workbench-status').dataset.pane,'agent');assert.equal(byId('workbench-status-agent').hidden,false);

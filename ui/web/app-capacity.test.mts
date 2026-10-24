@@ -166,3 +166,31 @@ test('normal Close session stays absent for busy or stale Primary state',async()
     const menu=hostDocument.body.querySelector('.context-menu');menu?.dispatch('keydown',{key:'Escape',preventDefault(){},stopPropagation(){}});
   }
 });
+
+test('resuming a closed saved session at the process limit closes another idle session and resumes it',async t=>{
+  const shown=primaryFixture({key:'resume-shown',epoch:22100,activity:'idle',sessionName:'Shown session',sessionFile:'/project/shown.jsonl',pendingOperationIds:[]});
+  const other=primaryFixture({key:'resume-other',epoch:22101,activity:'idle',sessionName:'Other session',sessionFile:'/project/other.jsonl',pendingOperationIds:[]});
+  const dormant={id:'resume-dormant',path:'/project/dormant.jsonl',project:'/project',revision:'r',title:'Dormant session',titleSource:'name' as const,titleState:'ready' as const,modifiedAt:'2026-10-24T01:00:00.000Z',size:10};
+  const original=globalThis.fetch,closes:string[]=[],opens:Record<string,unknown>[]=[];
+  t.after(()=>{globalThis.fetch=original;if(byId('modal').open)byId('modal-close').click();});
+  globalThis.fetch=async(input,init)=>{
+    const path=new URL(String(input),'http://ui.test').pathname;
+    if(path==='/api/sessions/published')return Response.json({ok:true,data:{items:[dormant],total:1,omitted:0,nextCursor:null,titleCursor:null,observedAt:''}});
+    if(path==='/api/primaries'&&init?.method==='POST'){
+      opens.push(JSON.parse(String(init.body??'{}')));
+      if(opens.length===1)return capacityRefusal();
+      const opened=primaryFixture({key:'resume-opened',epoch:22102,activity:'idle',sessionFile:dormant.path,sessionId:dormant.id});
+      browser.fixture={...browser.fixture,primaries:[shown,{...other,lifecycle:'stopped'},opened]};
+      return Response.json({ok:true,data:{primaryKey:opened.key,operation:{state:'completed'}}});
+    }
+    if(path.endsWith('/close')){closes.push(path);browser.fixture={...browser.fixture,primaries:[shown,{...other,lifecycle:'stopped'}]};return Response.json({ok:true,data:{id:'resume-close',kind:'primary.close',state:'completed'}});}
+    return original(input,init);
+  };
+  await arrive({workspace:{id:'capacity-resume',revision:1,primaryKey:shown.key,conversationLayout:createPaneLayout([{kind:'primary'}])},primaries:[shown,other],roster:[],targets:[targetFixture('resume-shown-draft',{kind:'primary',key:shown.key,epoch:shown.epoch})]});
+  await settle();await settle();
+  const row=byId('recent-sessions').querySelectorAll('.sidebar-content-row').find(node=>node.querySelector('.row-title')?.textContent==='Dormant session');assert.ok(row);
+  row.click();await settle();await settle();
+  assert.deepEqual(closes,[`/api/primaries/${other.key}/close`],'Only the idle session that is not on screen closes.');
+  assert.equal(opens.length,2,'The resume continues once capacity is free.');
+  assert.notEqual(byId('modal-title').textContent,'Session limit reached');
+});

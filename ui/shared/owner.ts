@@ -1,7 +1,7 @@
 /** Private supervisor/backend transport. This module has no runtime imports. */
 export const OWNER_PROTOCOL = 'ui.primary-owner/1' as const;
 export const OWNER_LIMITS = {
-  primaries: 4, pending: 64, outcomes: 2048, outcomeBytes: 64 * 1024 * 1024,
+  primaries: 8, pending: 64, outcomes: 2048, outcomeBytes: 64 * 1024 * 1024,
   recordBytes: 32 * 1024 * 1024, decodeBytes: 64 * 1024 * 1024,
   ringRecords: 4096, ringBytes: 8 * 1024 * 1024,
   tapeRecords: 32768, tapeBytes: 16 * 1024 * 1024,

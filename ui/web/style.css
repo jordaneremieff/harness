@@ -2088,6 +2088,7 @@ pre[data-wrap=true] { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 
 
+
 /* Navigation: toggle glyph, session status dots, date groups. */
 .session-dot { position: absolute; left: 5px; top: 17px; width: 7px; height: 7px; border-radius: 50%; }
 .session-dot[data-status=running] { background: var(--success); animation: dot-pulse 1.6s ease-in-out infinite; }
@@ -2132,6 +2133,12 @@ pre[data-wrap=true] { white-space: pre-wrap; overflow-wrap: anywhere; }
 .conversation-tabs { gap: var(--s1); padding: 0 var(--s3); scroll-snap-type: x proximity; }
 .conversation-tab { scroll-snap-align: start; }
 .conversation-tab .tab-session-state, .conversation-tab .tab-identity { display: none; }
+.session-reader-held { display: grid; gap: var(--s2); flex: none; margin: var(--s3); padding: var(--s3); border: 1px solid var(--edge); border-radius: var(--r-lg); }
+.session-reader-held-note { margin: 0; font-size: var(--fs-meta); }
+.session-reader-held-draft { width: 100%; min-height: 44px; resize: none; }
+.session-reader-held-actions { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.session-reader-held-actions > button { min-height: 44px; }
+@media (max-width:599px) { .tab-bar { display: none; } }
 @media (max-width:999px) {
   .navigation-toggle > .card-icon-navigation, .sidebar-close > .card-icon-navigation { display: none; }
   .navigation-toggle > .card-icon-drawer, .sidebar-close > .card-icon-drawer { display: block; }
