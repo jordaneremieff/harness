@@ -3608,29 +3608,29 @@ test('the Latest control counts what arrives while the reader is away, announces
   setup(); const view = transcript(); const container = node('primary-transcript'); const latest = node('primary-latest'); const scroll = scrollable(container);
   const all = Array.from({length: 60}, (_, index) => entry(`e${index}`)); view.set(all); flush();
   assert.equal(latest.hidden, true);
-  scroll.to(2000); flush(); assert.equal(latest.hidden, false); assert.equal(latest.textContent, 'Latest');
+  scroll.to(2000); flush(); assert.equal(latest.hidden, false); assert.equal(latest.textContent, '');
   view.set([...all, entry('e60')]); flush();
-  assert.equal(latest.textContent, 'Latest \u00b7 1 new'); assert.equal(latest.attributes['aria-label'], 'Latest message, 1 new'); assert.equal(latest.title, 'Latest message, 1 new'); assert.equal(node('announcements').textContent, 'New messages below');
+  assert.equal(latest.textContent, '1'); assert.equal(latest.attributes['aria-label'], 'Latest message, 1 new'); assert.equal(latest.title, 'Latest message, 1 new'); assert.equal(node('announcements').textContent, 'New messages below');
   node('announcements').textContent = '';
   view.set([...all, entry('e60'), entry('e61')]); flush();
-  assert.equal(latest.textContent, 'Latest \u00b7 2 new'); assert.equal(node('announcements').textContent, '', 'later arrivals stay silent');
-  latest.dispatch('click'); flush(); assert.equal(latest.hidden, true); assert.equal(latest.textContent, 'Latest'); assert.equal(latest.attributes['aria-label'], 'Latest message'); assert.equal(latest.title, 'Latest message');
+  assert.equal(latest.textContent, '2'); assert.equal(node('announcements').textContent, '', 'later arrivals stay silent');
+  latest.dispatch('click'); flush(); assert.equal(latest.hidden, true); assert.equal(latest.textContent, ''); assert.equal(latest.attributes['aria-label'], 'Latest message'); assert.equal(latest.title, 'Latest message');
   scroll.to(1500); flush(); view.set([...all, entry('e60'), entry('e61'), entry('e62')]); flush();
-  assert.equal(latest.textContent, 'Latest \u00b7 1 new', 'the count restarted after the return');
+  assert.equal(latest.textContent, '1', 'the count restarted after the return');
 });
 test('older pages, growth of a known message, and arrivals while following do not raise the count', () => {
   setup(); const view = transcript(); const container = node('primary-transcript'); const latest = node('primary-latest'); const scroll = scrollable(container);
   const all = Array.from({length: 60}, (_, index) => entry(`e${index + 10}`)); view.set(all); flush();
-  view.set([...all, entry('e70')]); flush(); assert.equal(latest.textContent, 'Latest', 'following the end counts nothing');
+  view.set([...all, entry('e70')]); flush(); assert.equal(latest.textContent, '', 'following the end counts nothing');
   scroll.to(2000); flush();
-  view.set([entry('e8'), entry('e9'), ...all, entry('e70')]); flush(); assert.equal(latest.textContent, 'Latest', 'older entries above the known ones');
-  const grown = [entry('e8'), entry('e9'), ...all, {...entry('e70'), messages: [message('m-e70', 'Longer text now')]}]; view.set(grown); flush(); assert.equal(latest.textContent, 'Latest');
+  view.set([entry('e8'), entry('e9'), ...all, entry('e70')]); flush(); assert.equal(latest.textContent, '', 'older entries above the known ones');
+  const grown = [entry('e8'), entry('e9'), ...all, {...entry('e70'), messages: [message('m-e70', 'Longer text now')]}]; view.set(grown); flush(); assert.equal(latest.textContent, '');
 });
 test('in a Primary conversation the operator\'s own message does not count', () => {
   setup(); const view = new Transcript('primary', {presentation: () => {}, reading: () => {}, operatorInput: true}); const container = node('primary-transcript'); const latest = node('primary-latest'); const scroll = scrollable(container);
   const all = Array.from({length: 60}, (_, index) => entry(`e${index}`)); view.set(all); flush(); scroll.to(2000); flush();
-  view.set([...all, {id: 'mine', kind: 'message', messages: [{...message('m-mine', 'my question'), role: 'user'}]}]); flush(); assert.equal(latest.textContent, 'Latest');
-  view.set([...all, {id: 'mine', kind: 'message', messages: [{...message('m-mine', 'my question'), role: 'user'}]}, entry('reply')]); flush(); assert.equal(latest.textContent, 'Latest \u00b7 1 new');
+  view.set([...all, {id: 'mine', kind: 'message', messages: [{...message('m-mine', 'my question'), role: 'user'}]}]); flush(); assert.equal(latest.textContent, '');
+  view.set([...all, {id: 'mine', kind: 'message', messages: [{...message('m-mine', 'my question'), role: 'user'}]}, entry('reply')]); flush(); assert.equal(latest.textContent, '1');
 });
 const settleFrames = (): void => { for (let pass = 0; frames.length && pass < 6; pass++) flush(); };
 function olderPageFixture(lastPage: boolean) {

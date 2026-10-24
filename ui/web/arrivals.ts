@@ -9,11 +9,11 @@ function readable(message: MessageView): boolean {
   if (message.communication) return true;
   return message.parts.some(part => (part.type === 'text' && part.text.trim() !== '') || part.type === 'image');
 }
-/** The label on the control that returns to the end. */
+/** The control that returns to the end is an icon; its badge text is empty until messages arrive, and its accessible name always says what it does. */
 export function latestLabel(count: number): {text: string; accessible: string} {
-  if (count <= 0) return {text: 'Latest', accessible: 'Latest message'};
+  if (count <= 0) return {text: '', accessible: 'Latest message'};
   const shown = count > ARRIVAL_CAP ? `${ARRIVAL_CAP}+` : String(count);
-  return {text: `Latest \u00b7 ${shown} new`, accessible: count > ARRIVAL_CAP ? `Latest message, more than ${ARRIVAL_CAP} new` : `Latest message, ${count} new`};
+  return {text: shown, accessible: count > ARRIVAL_CAP ? `Latest message, more than ${ARRIVAL_CAP} new` : `Latest message, ${count} new`};
 }
 
 /**

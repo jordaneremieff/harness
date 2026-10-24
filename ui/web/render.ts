@@ -1169,7 +1169,7 @@ export class Transcript {
     if (this.follow) this.arrivals.clear();
     this.latest.hidden = this.follow;
     const label = latestLabel(this.arrivals.count);
-    const text = this.latest.querySelector('.latest-text') ?? this.latest;
+    const text = this.latest.querySelector('.latest-count') ?? this.latest;
     if (text.textContent !== label.text) text.textContent = label.text;
     this.latest.setAttribute('aria-label', label.accessible);
     this.latest.title = label.accessible;

@@ -466,7 +466,7 @@ test('stored and live conversation names use primary text while metadata stays q
 test('small radii and quiet surfaces limit motion to the busy marker and section chevrons', () => {
   const radii = declarations('border-radius');
   assert.match(rule('.composer-input'), /border-radius: var\(--r-lg\)/); assert.match(rule('.context-menu-compact'), /border-radius: var\(--r-md\)/);
-  assert.deepEqual([...new Set(radii)].sort(), ['0', '0 0 var(--r-md) var(--r-md)', '0 var(--r-sm) var(--r-sm) 0', '50%', '6px', '8px', 'var(--r-lg)', 'var(--r-lg) var(--r-lg) 0 0', 'var(--r-md)', 'var(--r-sm)']);
+  assert.deepEqual([...new Set(radii)].sort(), ['0', '0 0 var(--r-md) var(--r-md)', '0 var(--r-sm) var(--r-sm) 0', '50%', '6px', '8px', 'var(--r-full)', 'var(--r-lg)', 'var(--r-lg) var(--r-lg) 0 0', 'var(--r-md)', 'var(--r-sm)']);
   assert.deepEqual([...new Set(declarations('box-shadow'))].sort(), ['inset 0 -2px var(--accent)', 'inset 0 -2px var(--edge)', 'none', 'var(--shadow)']);
   assert.match(rule('dialog[open][data-variant=find]'), /box-shadow: none/);
   const shadowed = [...css.matchAll(/(?:^|\n)\s*([^{}\n]+)\{[^}]*box-shadow: var\(--shadow\)/g)].map(match => match[1].trim()).sort();
@@ -933,13 +933,13 @@ test('Latest occupies the existing composer control line outside the transcript 
   assert.match(rule('.transcript-region > .transcript'), /grid-area: 1 \/ 1; min-height: 0/);
   assert.doesNotMatch(css, /\.transcript-region > \.latest/);
   const latest = rule('.latest');
-  assert.match(latest, /position: static; flex: none/);
+  assert.match(latest, /position: relative; flex: none/);
   assert.doesNotMatch(latest, /position: absolute|bottom:|transform:|z-index:/);
-  assert.match(latest, /display: inline-flex; align-items: center/);
+  assert.match(latest, /display: inline-flex; align-items: center; justify-content: center/);
   assert.match(latest, /gap: var\(--s1\)/);
   assert.match(latest, /margin: 0 0 0 var\(--s2\)/, 'the jump control stands apart from what precedes it');
   assert.match(css, /\.latest\[hidden\] \{ display: none/);
-  assert.match(rule('.composer-intake > .latest'), /min-height: 32px; max-width: 140px; margin-left: var\(--s2\)/);
+  assert.match(rule('.composer-intake > .latest'), /min-width: 32px; min-height: 32px; margin-left: var\(--s2\)/);
   assert.match(media('@media (pointer:coarse)'), /\.composer-intake > \.latest \{ min-height: 44px/, 'a wide coarse composer keeps the jump control at the touch minimum');
   const app = await readFile(new URL('./app.ts', import.meta.url), 'utf8');
   assert.match(app, /const scroller = add\('transcript', 'div', 'transcript'\)/);
@@ -953,8 +953,7 @@ test('narrow composers keep Latest above the editor without extra row width or h
   const compact = css.slice(start, css.indexOf('\n}', start));
   assert.ok(start >= 0);
   assert.match(compact, /\.composer-intake > \.latest \{ position: absolute; right: 0; bottom: calc\(100% \+ 8px\)/);
-  assert.match(compact, /min-width: 44px; min-height: 44px; max-width: 100%/);
-  assert.doesNotMatch(compact, /\.latest-text \{ display: none/);
+  assert.match(compact, /width: 44px; min-width: 44px; min-height: 44px; margin: 0; padding: 0; border-radius: var\(--r-full\)/);
   assert.match(compact, /\.composer-line \{ grid-template-columns: auto minmax\(0,1fr\) auto/);
 });
 test('mobile sheets share viewport bounds, visible dismissal and separate searchable result allocation', () => {
@@ -1603,7 +1602,7 @@ test('a responder name above a wait answer uses the shared metadata tier', () =>
 
 function assertCornerScale(selectors: string, body: string): void {
   for (const [, value] of body.matchAll(/border(?:-[a-z-]+)?-radius:\s*([^;]+)/g)) {
-    for (const corner of value.trim().split(/\s+/)) assert.ok(['0', '6px', '8px', 'var(--r-sm)', 'var(--r-md)', 'var(--r-lg)', '50%'].includes(corner), `${selectors}: ${value}`);
+    for (const corner of value.trim().split(/\s+/)) assert.ok(['0', '6px', '8px', 'var(--r-sm)', 'var(--r-md)', 'var(--r-lg)', '50%'].includes(corner) || corner === 'var(--r-full)' && /\.latest/.test(selectors), `${selectors}: ${value}`);
     if (value === '50%') {
       assert.match(selectors, /(?:row-state|workbench-activity)\[data-busy=true\]::before|sidebar-content-row\[data-unread=true\] > \.row-title::before/);
       for (const [, dimension] of body.matchAll(/(?:width|height): (\d+)px/g)) assert.ok(Number(dimension) <= 12);

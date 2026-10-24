@@ -323,7 +323,7 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
   const region = element('div', 'transcript-region'); const absent = add('empty', 'div', 'empty-state'); absent.hidden = true;
   if (target.kind === 'primary') absent.append(add('empty-heading', 'h2'), add('empty-caption', 'p'));
   const scroller = add('transcript', 'div', 'transcript'); scroller.tabIndex = 0; scroller.setAttribute('aria-label', 'Conversation messages');
-  const latest = add('latest', 'button', 'latest') as HTMLButtonElement; latest.type = 'button'; latest.append(cardIcon('latest'), element('span', 'latest-text', 'Latest')); latest.setAttribute('aria-label', 'Latest message'); latest.hidden = true;
+  const latest = add('latest', 'button', 'latest') as HTMLButtonElement; latest.type = 'button'; latest.append(cardIcon('latest'), element('span', 'latest-count', '')); latest.setAttribute('aria-label', 'Latest message'); latest.hidden = true;
   nodes.set('transcript-region',region);region.append(absent, scroller); const above = add('widgets-above', 'div', 'widgets'), below = add('widgets-below', 'div', 'widgets');
   const elements = createComposerElements(instanceId); elements.root.hidden = false;
   // Navigation uses the permanent control row, so its visibility never resizes the transcript.

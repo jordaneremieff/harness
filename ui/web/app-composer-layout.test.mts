@@ -74,7 +74,7 @@ test('conversation state and split width changes retain editor ancestry, draft i
     // Utility rows precede the surface; the native editor and shelf retain their ancestry.
     assert.equal(intake.parentNode, line);
     assert.equal(latest.parentNode, intake); assert.deepEqual(meta.children, [control('state'), control('state-details')]);
-    assert.ok(latest.querySelector('.card-icon-latest')); assert.equal(latest.querySelector('.latest-text')?.textContent, 'Latest'); assert.equal(latest.getAttribute('aria-label'), 'Latest message');
+    assert.ok(latest.querySelector('.card-icon-latest')); assert.equal(latest.querySelector('.latest-count')?.textContent, ''); assert.equal(latest.textContent, ''); assert.equal(latest.getAttribute('aria-label'), 'Latest message');
     const utilities = form.querySelector('.composer-utilities'), recallLine = form.querySelector('.composer-recall'); assert.ok(utilities); assert.ok(recallLine);
     assert.deepEqual(utilities.children, [recallLine, form.querySelector('.composer-handover')]); assert.equal(utilities.parentNode, form);
     assert.deepEqual(line.children, [intake, control('settings'), bar]); assert.equal(line.parentNode, surface);

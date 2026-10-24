@@ -50,6 +50,7 @@
   --r-sm: 6px;
   --r-md: 10px;
   --r-lg: 16px;
+  --r-full: 999px;
   --s1: 4px;
   --s2: 8px;
   --s3: 12px;
@@ -1069,9 +1070,11 @@ pre.tool-document { font-family: var(--mono); font-size: var(--fs-code); line-he
 
 /* Composer */
 /* Transcript navigation shares the permanent input control row. */
-.latest { position: static; flex: none; display: inline-flex; align-items: center; align-self: center; gap: var(--s1); min-width: 24px; min-height: 24px; margin: 0 0 0 var(--s2); padding: 0; border-radius: var(--r-sm); background: transparent; color: var(--muted); font-size: var(--fs-ui); }
+.latest { position: relative; flex: none; display: inline-flex; align-items: center; justify-content: center; align-self: center; gap: var(--s1); min-width: 24px; min-height: 24px; margin: 0 0 0 var(--s2); padding: 0; border-radius: var(--r-sm); background: transparent; color: var(--muted); font-size: var(--fs-ui); }
 .latest[hidden] { display: none; }
 .latest:hover { color: var(--fg); background: var(--raised); }
+.latest-count { position: absolute; top: -4px; right: -4px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: var(--r-full); background: var(--code); color: var(--fg); font-size: var(--fs-label); font-weight: 600; line-height: 18px; text-align: center; }
+.latest-count:empty { display: none; }
 .widgets { flex: none; max-height: 180px; overflow: auto; color: var(--muted); font-size: var(--fs-ui); }
 .widgets:empty { display: none; }
 .exception { flex: none; margin: 0 0 var(--s2); color: var(--muted); font-size: var(--fs-ui); overflow-wrap: anywhere; }
@@ -1093,7 +1096,7 @@ pre.tool-document { font-family: var(--mono); font-size: var(--fs-code); line-he
 .composer-utilities { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 0 var(--s2); padding: 0; }
 .composer-utilities:not(:has(.composer-recall:not([hidden]))) { display: none; }
 .composer-utilities:has(.composer-recall:not([hidden])) { margin-bottom: var(--s2); }
-.composer-intake > .latest { min-height: 32px; max-width: 140px; margin-left: var(--s2); white-space: nowrap; }
+.composer-intake > .latest { min-width: 32px; min-height: 32px; margin-left: var(--s2); }
 .composer-recall { grid-column: 1; grid-row: 1; }
 .composer-meta { display: grid; grid-template-columns: minmax(0,1fr); align-items: center; gap: 0 var(--s3); padding: var(--s2) var(--s4) 0; min-width: 0; color: var(--muted); }
 .composer-meta:not(:has(.composer-state:not([hidden]):not(.sr-only), .composer-state-details:not([hidden]))) { display: none; }
@@ -1202,7 +1205,7 @@ pre.tool-document { font-family: var(--mono); font-size: var(--fs-code); line-he
   .composer-model { flex: 1 1 auto; min-width: 44px; max-width: 120px; }
   .composer-thinking { max-width: 76px; }
   .composer-bar { grid-column: 3; grid-row: 1; justify-self: end; max-width: 100%; gap: var(--s1); }
-  .composer-intake > .latest { position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 1; min-width: 44px; min-height: 44px; max-width: 100%; margin: 0; padding: 0 var(--s3); background: var(--raised); box-shadow: var(--shadow); }
+  .composer-intake > .latest { position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 1; width: 44px; min-width: 44px; min-height: 44px; margin: 0; padding: 0; border-radius: var(--r-full); background: var(--raised); box-shadow: var(--shadow); }
 }
 @container composer (max-width: 340px) {
   .composer-line { grid-template-columns: auto minmax(0,1fr); }
