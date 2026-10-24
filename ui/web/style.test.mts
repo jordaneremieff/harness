@@ -940,6 +940,7 @@ test('Latest occupies the existing composer control line outside the transcript 
   assert.match(latest, /margin: 0 0 0 var\(--s2\)/, 'the jump control stands apart from what precedes it');
   assert.match(css, /\.latest\[hidden\] \{ display: none/);
   assert.match(rule('.composer-intake > .latest'), /min-height: 32px; max-width: 140px; margin-left: var\(--s2\)/);
+  assert.match(media('@media (pointer:coarse)'), /\.composer-intake > \.latest \{ min-height: 44px/, 'a wide coarse composer keeps the jump control at the touch minimum');
   const app = await readFile(new URL('./app.ts', import.meta.url), 'utf8');
   assert.match(app, /const scroller = add\('transcript', 'div', 'transcript'\)/);
   assert.match(app, /const latest = add\('latest', 'button', 'latest'\)/);

@@ -1704,6 +1704,7 @@ button.thread-person:hover, button.thread-sender:hover { background: var(--raise
   .file-naming > .file-name-input { flex-basis: calc(100% - 24px); }
   .file-naming > .file-name-actions { margin-left: auto; }
   button, summary, .row-age, .row-message, .message-actions button, .transcript-actions button, .latest, .source-header button, .source-disclosure > .source-wrap, .tool-copy, .composer-model, .composer-thinking, .icon-button { min-height: 44px; min-width: 44px; }
+  .composer-intake > .latest { min-height: 44px; }
   .source-disclosure > summary.source-header { min-height: 49px; }
   .card-action, .section-toggle, .attachment-row > button, .source-header button.card-action, .source-disclosure > .source-wrap.card-action { min-height: 44px; min-width: 44px; }
   .message-menu, .communication-unverified, .message-source-close, .pane-actions, .context-menu > .context-menu-item { min-height: 44px; min-width: 44px; }
