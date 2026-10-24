@@ -2085,6 +2085,8 @@ pre[data-wrap=true] { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 
 
+
+
 /* Navigation: toggle glyph, session status dots, date groups. */
 .session-dot { position: absolute; left: 5px; top: 17px; width: 7px; height: 7px; border-radius: 50%; }
 .session-dot[data-status=running] { background: var(--success); animation: dot-pulse 1.6s ease-in-out infinite; }
@@ -2110,6 +2112,20 @@ pre[data-wrap=true] { white-space: pre-wrap; overflow-wrap: anywhere; }
 .navigation-toggle[data-attention]::after { content: ""; position: absolute; top: 4px; right: 4px; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); }
 .navigation-toggle[data-attention=waiting]::after { background: var(--warning); }
 .navigation-toggle[data-attention=error]::after { background: var(--error); }
+.session-summary { display: grid; gap: var(--s3); margin-bottom: var(--s4); }
+.session-summary-title { margin: 0; font-size: var(--fs-title); font-weight: 600; overflow-wrap: anywhere; }
+.session-summary-chips { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.session-summary-chip { padding: var(--s1) var(--s3); border-radius: var(--r-md); background: var(--run-bg); color: var(--muted); font-size: var(--fs-meta); }
+.session-summary-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--s2) var(--s4); margin: 0; font-size: var(--fs-meta); }
+.session-summary-facts > dt { color: var(--muted); }
+.session-summary-facts > dd { margin: 0; color: var(--fg); overflow-wrap: anywhere; }
+.session-summary-actions { display: grid; gap: var(--s1); }
+.session-summary-action { display: flex; align-items: center; gap: var(--s3); width: 100%; min-height: 44px; padding: 0 var(--s3); border: 0; border-radius: var(--r-sm); background: transparent; color: var(--fg); font-size: var(--fs-ui); text-align: left; }
+.session-summary-action:hover { background: var(--raised); }
+.session-summary-action[aria-disabled=true] { color: var(--muted); }
+.session-summary-action > .card-icon { width: 18px; height: 18px; flex: none; color: var(--muted); }
+.session-summary-action-text { display: grid; min-width: 0; }
+.session-summary-action-note { color: var(--muted); font-size: var(--fs-meta); }
 @media (max-width:999px) {
   .navigation-toggle > .card-icon-navigation, .sidebar-close > .card-icon-navigation { display: none; }
   .navigation-toggle > .card-icon-drawer, .sidebar-close > .card-icon-drawer { display: block; }

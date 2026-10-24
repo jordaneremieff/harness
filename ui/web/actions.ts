@@ -120,6 +120,8 @@ export type SelectionChange = Partial<Omit<Workspace, 'selectedTarget'>> & {sele
 export type ActionContext = {
   newSession(project?: string): void;
   copyLastAnswer?:()=>((()=>void)|undefined);
+  /** Opens the shared details sheet, which leads with a readable summary and the session's actions. */
+  showDetails?:(target:Target)=>void;
   threadPosts?:()=>{previous?:()=>void;next?:()=>void};
   ownMessages?:()=>{previous?:()=>void;next?:()=>void};
   loadedMessages?:()=>{entries:EntryView[];jump:(id:string)=>void}|undefined;
@@ -370,10 +372,15 @@ export class Actions {
     modal.actions(button('Enable', () => { void modal.run(() => this.control({action, enabled: true} as PrimaryControl, primary)); }), button('Disable', () => { void modal.run(() => this.control({action, enabled: false} as PrimaryControl, primary)); }));
     if (action === 'autoRetry' && primary.activity === 'retrying') modal.actions(button('Stop current retry', () => { void modal.run(() => this.control({action: 'abortRetry'} as PrimaryControl, primary)); }));
   }
+  private openDetails(identity: string | undefined, primary: PrimaryView | undefined): void {
+    const target: Target | undefined = identity ? {kind: 'agent', identity} : primary ? {kind: 'primary', key: primary.key, epoch: primary.epoch} : undefined;
+    if (target && this.ctx.showDetails) this.ctx.showDetails(target);
+    else if (identity) this.conversationDetails(identity); else this.sessionDetails(primary);
+  }
   sessionDetails(primary = this.ctx.primary()): void {
     if (!primary) return;
     const modal = this.ctx.modal; modal.open('Conversation details'); const token = modal.token;
-    modal.body.append(element('p', 'identity', primary.sessionId ?? primary.key), cardAction('copy', 'Copy session ID', () => { void copy(primary.sessionId ?? primary.key, modal.body); }), details('Reported session state', rawText(primary)));
+    modal.body.append(details('Reported session state', rawText(primary)));
     modal.body.append(button('Diagnostics', () => { void modal.run(async () => { const data = await request(this.path(primary, 'diagnostics')); if (modal.owns(token)) modal.body.append(details('Diagnostics', rawText(data))); }, false); }));
   }
   conversationDetails(identity?: string): void {
@@ -381,7 +388,6 @@ export class Actions {
     if (!captured) { this.sessionDetails(); return; }
     const row = this.ctx.agents().find(item => item.identity === captured);
     const body = this.ctx.modal.open('Conversation details');
-    body.append(element('p', 'identity', captured), cardAction('copy', 'Copy agent ID', () => { void copy(captured, body); }));
     const child = /:([1-9]\d*)$/.exec(captured)?.[1];
     body.append(element('p', 'secondary', child ? `Conversation ${child}` : 'Main conversation'));
     if (row) {
@@ -606,7 +612,7 @@ export class Actions {
       entry('Automatic retry', 'Enable or disable Pi retry', () => this.automaticSettings('autoRetry'), ready),
       entry('Automatic compaction', 'Enable or disable Pi compaction', () => this.automaticSettings('autoCompaction'), ready),
       entry('Continue in terminal', 'Continue this session in the terminal', () => this.handoff(), !!this.readyPrimary(primary,'handoff')),
-      entry('Conversation details', 'Identity, reported facts and diagnostics', () => agent ? this.conversationDetails(agent.identity) : this.sessionDetails(primary), !!primary || !!agent, undefined, 'Requires a selected conversation'),
+      entry('Conversation details', 'Identity, reported facts and diagnostics', () => this.openDetails(agent?.identity, primary), !!primary || !!agent, undefined, 'Requires a selected conversation'),
       entry('Saved drafts and messages', 'Review saved text', () => this.ctx.recovery()),
       {...entry('Appearance', 'Choose a theme', () => this.appearance()), search: ['theme', 'stylesheet', 'css', ...appearanceChoices.flat()]},
       {...entry('Agent presentation control', 'Allow agents to arrange this workspace and show notices', () => {

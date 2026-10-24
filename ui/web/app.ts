@@ -1,6 +1,7 @@
 import type { AgentHistoryPage, AgentRow, Bootstrap, EntryView, EventData, HistoryPage, OperationView, PrimaryView, PresentationView, ProjectedFrame, SavedSession, SessionMetadata, SessionMetadataTarget, SessionTab, Snapshot, Target, TargetState, ThreadOverview, ThreadPageView, Workspace, WorkspacePage } from '../shared/api.ts';
 import { persistentSidebarQuery } from './layout-breakpoints.ts';
-import { toolArgumentText } from './format.ts';
+import { absoluteTime, relativeTime, toolArgumentText } from './format.ts';
+import { appendSummaryActions, renderSessionSummary, type SessionSummary, type SummaryAction } from './session-summary.ts';
 import { draftHasContent, draftImageFingerprint, LIMITS, resolveAppearance, validSessionTab } from '../shared/api.ts';
 import { Actions } from './actions.ts';
 import {Desk, type DeskRow} from './desk.ts';
@@ -42,7 +43,7 @@ import {writeReloadState,readReloadState,deleteReloadState} from './reload-stora
 import { WorkbenchStatus } from './workbench-status.ts';
 import { VersionStatus } from './version-status.ts';
 import {SessionSidebar,humanSessionTitle,primaryIdentities,type RowStatus,type SessionRow} from './sidebar-useful.ts';
-import {OperatorActivity} from './operator-activity.ts';
+import {OperatorActivity, startedAtFromPath} from './operator-activity.ts';
 import {NavigationViews, type NavigationView} from './navigation-view.ts';
 import { HealthStatus } from './health-status.ts';
 import { ReleaseNotice, loadedRelease, readReleaseHealth, type ReleaseReloadState, type ReleaseIdentity } from './release-notice.ts';
@@ -64,7 +65,7 @@ import {HandoverDialog} from './handover-view.ts';
 import { ThreadExplorer, ThreadReader, type ThreadEntry } from './threads-view.ts';
 import {sessionLabel} from './picker-state.ts';
 import {SessionReader,readSessionView,sameSessionView,type SessionReadSource,type SessionReaderReload,type SessionView} from './session-reader.ts';
-import {primarySessionState, readSessionState, SessionStateBar} from './session-state.ts';
+import {primarySessionState, readSessionState, sessionResumeCommand, SessionStateBar} from './session-state.ts';
 import { THREAD_PAGE_EVENTS } from './threads.ts';
 import {noticeGroups, noticeGroupText, noticeTarget, unreadReviewNotice, CommunicationNoticeShelf, type CommunicationNotice, type NoticeGroup} from './notice-presentation.ts';
 import { Recovery } from './recovery.ts';
@@ -81,7 +82,7 @@ import { inputOperation, operationLabel } from './operation-label.ts';
 import { PreferenceQueue } from './preference-queue.ts';
 import { BrowserDiagnostics } from './diagnostics.ts';
 import {DevReload, devReloadPresentation, validateDevReloadCheckpoint, type DevReloadCheckpoint, type DevReloadHooks, type DevCheckpointEntry, type DevReloadHold, type DevReloadNotice} from './dev-reload.ts';
-import { conversationPresentation, effortText, modelText, presentationGlyph, presentationName, projectIdentity, composerFolder, agentHistoryNote, readsSavedMessages, agentComposerState, settingsLabel, showsLastObserved, thinkingMeter } from './conversation-presentation.ts';
+import { conversationPresentation, projectLabels, effortText, modelText, presentationGlyph, presentationName, projectIdentity, composerFolder, agentHistoryNote, readsSavedMessages, agentComposerState, settingsLabel, showsLastObserved, thinkingMeter } from './conversation-presentation.ts';
 import type { AgentComposerState, ConversationPresentation } from './conversation-presentation.ts';
 import type { ComposerStateView } from './composer.ts';
 import { newerOperation, mergeOperationMap } from './operation-state.ts';
@@ -476,7 +477,7 @@ const references = new ReferenceResolver(resolveReference, destination => { void
   root: () => fileRoot.loading ? undefined : fileRoot.selection?.root ?? undefined,
   navigate: destination => { void navigateFileReference(destination).catch(showError); },
 },loadedDraftReference);
-const actions: Actions = new Actions({newSession: project => picker.newSession(project ?? projectPath()),threadPosts:threadPostActions,copyLastAnswer:copyLastAnswerAction,receivedResults:receivedResultActions,failedSteps:failedStepActions,ownMessages:ownMessageActions,loadedMessages:loadedMessageActions,readSession:saved=>openSessionRead({saved}),hasConvertibleSession:()=>!!(sessionReader.saved??activeSessionReader()?.saved),convertSession:()=>{const item=sessionReader.saved??activeSessionReader()?.saved;if(item)picker.convertSaved(item);},desk:()=>openDesk(),closeDesk:()=>dismissDesk(),messageBox:goToMessageBox,deskOpen:()=>!!deskPane,nextUnread:openNextUnread,hasUnread:()=>!!nextUnreadNotice(),handover: () => handover.open(), snapshot: currentSnapshot, primary, modelChanged: renderAvailability, namingPrimary: () => { const selected = primary(); return selected?.lifecycle === 'ready' ? selected : [...state.primaries.values()].find(item => item.lifecycle === 'ready'); }, modelNamesChanged: renderAllComposerSettings, get composer() { return primaryComposer(); }, commandsChanged: () => {const target = primaryTarget(); if (target && state.workspace) controllers.get(controllerKey(state.workspace.id, target))?.composer.commandsChanged();}, modal, selection, reload: reloadSelection, result: showOperation, rosterRefresh: refreshRoster, filesRefresh: refreshFiles, goToFile: openFileNavigation, hasTranscript: () => !!focusedTranscript(), find: () => captureFind(), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, sidebarShown: () => !byId('sidebar').hidden, view: (tools, expand) => focusedTranscript()?.expandLoaded(tools, expand), selectPrimary, agentCaption: identity => {return presentationCaptions().get(identity);}, agentStatus: row => presentation({kind: 'agent', identity: row.identity}).activity, agentPresentation:row=>presentation({kind:'agent',identity:row.identity}), conversationFacts: identity => agentFacts(agentRow(identity), state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame), copyAgent: () => { void copy(selectedAgent() ?? '', agentNode('view-notice')); }, inspectAgent,resultLookup:()=>{const target=layoutTarget(currentLayout(),primaryTarget());if(target)conversationController(target).inspection?.open('result');},
+const actions: Actions = new Actions({showDetails:target=>showConversationDetails(target),newSession: project => picker.newSession(project ?? projectPath()),threadPosts:threadPostActions,copyLastAnswer:copyLastAnswerAction,receivedResults:receivedResultActions,failedSteps:failedStepActions,ownMessages:ownMessageActions,loadedMessages:loadedMessageActions,readSession:saved=>openSessionRead({saved}),hasConvertibleSession:()=>!!(sessionReader.saved??activeSessionReader()?.saved),convertSession:()=>{const item=sessionReader.saved??activeSessionReader()?.saved;if(item)picker.convertSaved(item);},desk:()=>openDesk(),closeDesk:()=>dismissDesk(),messageBox:goToMessageBox,deskOpen:()=>!!deskPane,nextUnread:openNextUnread,hasUnread:()=>!!nextUnreadNotice(),handover: () => handover.open(), snapshot: currentSnapshot, primary, modelChanged: renderAvailability, namingPrimary: () => { const selected = primary(); return selected?.lifecycle === 'ready' ? selected : [...state.primaries.values()].find(item => item.lifecycle === 'ready'); }, modelNamesChanged: renderAllComposerSettings, get composer() { return primaryComposer(); }, commandsChanged: () => {const target = primaryTarget(); if (target && state.workspace) controllers.get(controllerKey(state.workspace.id, target))?.composer.commandsChanged();}, modal, selection, reload: reloadSelection, result: showOperation, rosterRefresh: refreshRoster, filesRefresh: refreshFiles, goToFile: openFileNavigation, hasTranscript: () => !!focusedTranscript(), find: () => captureFind(), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, sidebarShown: () => !byId('sidebar').hidden, view: (tools, expand) => focusedTranscript()?.expandLoaded(tools, expand), selectPrimary, agentCaption: identity => {return presentationCaptions().get(identity);}, agentStatus: row => presentation({kind: 'agent', identity: row.identity}).activity, agentPresentation:row=>presentation({kind:'agent',identity:row.identity}), conversationFacts: identity => agentFacts(agentRow(identity), state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame), copyAgent: () => { void copy(selectedAgent() ?? '', agentNode('view-notice')); }, inspectAgent,resultLookup:()=>{const target=layoutTarget(currentLayout(),primaryTarget());if(target)conversationController(target).inspection?.open('result');},
   tabs: {close: () => { const tab = activeTab(currentLayout()); if (tab) closeConversationTab(tabKey(tab)); }, switch: direction => applyLayout(switchTab(currentLayout(), direction)), layout: currentLayout, reopen: {available: () => closedTabs.some(item => item.workspace === state.workspace?.id), run: () => reopenClosedTab(), choices: closedTabChoices, runKey: reopenClosedTab}},
 });
 const fileBrowse = new FileBrowseState();
@@ -1967,6 +1968,65 @@ function renderSettingsChoices(): void {
   }
   for (const node of existing.values()) if (!nodes.includes(node)) node.remove();
 }
+const SUMMARY_ICONS:Record<string,CardIcon>={Rename:'edit',Archive:'folder',Restore:'restart','Close session':'close'};
+function capitalised(text:string):string {return text?text.charAt(0).toUpperCase()+text.slice(1):text;}
+function timeFact(label:string,at:number|undefined):{label:string;value:string;title:string}[] {
+  return at!==undefined&&Number.isFinite(at)&&at>0?[{label,value:relativeTime(new Date(at).toISOString(),Date.now()),title:absoluteTime(new Date(at).toISOString())}]:[];
+}
+function savedSummary(saved:SavedSession,title:string):SessionSummary {
+  const folder=projectLabels([saved.project]).get(saved.project)??saved.project;
+  return {title,chips:['Saved'],facts:[{label:'Project',value:folder,title:saved.project},{label:'Session',value:saved.id},...timeFact('Started',startedAtFromPath(saved.path)),...timeFact('Last change',Date.parse(saved.modifiedAt))]};
+}
+function primarySummary(item:PrimaryView,target:Target):SessionSummary {
+  const view=presentation(target),folder=projectLabels([item.cwd]).get(item.cwd)??item.cwd;
+  const owner=state.workspace?controllers.get(controllerKey(state.workspace.id,target)):undefined;
+  return {title:presentationName(view),chips:[capitalised(view.activity),settingsLabel(view,false)].filter(Boolean),
+    facts:[{label:'Project',value:folder,title:item.cwd},...item.sessionId?[{label:'Session',value:item.sessionId}]:[],...timeFact('Started',startedAtFromPath(item.sessionFile)),...timeFact('Last activity',owner?.transcript.lastActivityAt)]};
+}
+function agentSummary(identity:string,target:Target):SessionSummary {
+  const row=state.roster.get(identity),view=presentation(target);
+  return {title:presentationName(view),chips:[capitalised(view.activity),settingsLabel(view,false)].filter(Boolean),
+    facts:[...row?.cwd?[{label:'Project',value:projectLabels([row.cwd]).get(row.cwd)??row.cwd,title:row.cwd}]:[],{label:'Agent',value:identity},...timeFact('Last activity',row?.modifiedAt)]};
+}
+function transcriptText(transcript:Transcript):string {
+  return [...transcript.node.querySelectorAll<HTMLElement>('.message')].map(message=>`${message.classList.contains('user')?'You':'Pi'}\n${(message.querySelector('.message-body')?.textContent??message.textContent??'').trim()}`).join('\n\n');
+}
+function copyActions(target:Target|undefined,id:string|undefined,file:string|undefined,into:HTMLElement):SummaryAction[] {
+  const owner=target&&state.workspace?controllers.get(controllerKey(state.workspace.id,target)):undefined,last=owner?.transcript.lastAnswerCopy(),resume=sessionResumeCommand(file);
+  const list:SummaryAction[]=[];
+  if(id)list.push({label:target?.kind==='agent'?'Copy agent ID':'Copy session ID',icon:'copy',run:()=>{void copy(id,into);}});
+  if(resume)list.push({label:'Copy resume command',icon:'terminal',run:()=>{void copy(resume,into);}});
+  if(last)list.push({label:'Copy last answer',icon:'message',run:last});
+  if(owner)list.push({label:'Copy loaded transcript',icon:'copy',run:()=>{void copy(transcriptText(owner.transcript),into);}});
+  return list;
+}
+/** Server-checked actions (rename, archive) join the sheet once the session's own rules arrive. */
+function appendMetadataActions(root:HTMLElement,row:SessionRow,token:number):void {
+  const target=sessionMetadataTarget(row),guard=target&&sessionGuard(target);if(!target||!guard)return;
+  void sessionSidebar.readMetadata(target).then(metadata=>{
+    if(!modal.owns(token))return;
+    appendSummaryActions(root,sessionMetadataItems(row,metadata,guard.captured,undefined,guard.current,root).map(item=>({label:item.label,icon:SUMMARY_ICONS[item.label]??'info',enabled:item.enabled,reason:item.disabledReason??item.description,note:item.enabled===false?undefined:item.description,run:()=>{modal.close();item.run();}})));
+  }).catch(()=>{});
+}
+function summaryRow(name:string,target:Target|undefined,saved?:SavedSession,primary?:PrimaryView):SessionRow {
+  return {key:saved?.path??primary?.key??name,name,at:0,title:name,...target?{target}:{},...saved?{saved}:{},...primary?{primary}:{}};
+}
+/** Puts the human summary first in an open details sheet. */
+function prependSummary(target:Target|undefined,reader:SessionReader|undefined,tab:ConversationTab|undefined):void {
+  const token=modal.token,body=modal.body;let summary:SessionSummary|undefined,list:SummaryAction[]=[],row:SessionRow|undefined;
+  const saved=reader?.saved??(tab?.kind==='session'?sessionTabSaved(tab):undefined);
+  if(target?.kind==='primary'){
+    const item=state.primaries.get(target.key);if(!item)return;
+    summary=primarySummary(item,target);list=copyActions(target,item.sessionId,item.sessionFile,body);row=summaryRow(summary.title,{kind:'primary',key:item.key,epoch:item.epoch},sessionSidebar.savedSession(item),item);
+  }else if(target?.kind==='agent'){
+    summary=agentSummary(target.identity,target);list=copyActions(target,target.identity,undefined,body);row=summaryRow(summary.title,{kind:'agent',identity:target.identity});
+  }else if(saved){
+    const name=humanSessionTitle([sessionSidebar.metadataFor([`path:${saved.path}`,`id:${saved.id}`])?.name,sessionCaptionRecord(saved).name]);
+    summary=savedSummary(saved,name);list=copyActions(undefined,saved.id,saved.path,body);row=summaryRow(name,undefined,saved);
+  }
+  if(!summary)return;
+  const node=renderSessionSummary(summary,list);body.prepend(node);if(row)appendMetadataActions(node,row,token);
+}
 function showConversationDetails(target?:Target):void {
   const workspace=state.workspace?.id,tab=activeTab(currentLayout());
   if(sessionReadPane?.id===currentLayout().focusedPane)target=undefined;
@@ -1974,7 +2034,7 @@ function showConversationDetails(target?:Target):void {
   if(target?.kind==='primary')actions.sessionDetails(state.primaries.get(target.key));
   else if(target?.kind==='agent')actions.conversationDetails(target.identity);
   else modal.open('Conversation details',undefined,()=>releaseDetails?.());
-  const body=modal.body;
+  const body=modal.body;prependSummary(target,reader,tab);
   if(target)appendTargetDetails(body,target,workspace);
   else if(reader||tab?.kind==='session')releaseDetails=appendSessionDetails(body,reader,tab);
   else if(tab?.kind==='file'&&state.workspace)appendFileDetails(body,tab,state.workspace,workspace);
@@ -3194,19 +3254,28 @@ function renameSession(item:SessionMetadata,title:string,archived:boolean,curren
   modal.actions(button('Cancel',()=>modal.close()),save);input.focus();input.select();
 }
 function openSessionRowMenu(item:SessionRow,origin:HTMLElement,known?:SessionMetadata):void {
-  const workspace=state.workspace?.id,target=known?.target??sessionMetadataTarget(item);if(!workspace||!target)return;
-  const captured=target.kind==='primary'?state.primaries.get(target.key):undefined;
-  const current=()=>workspace===state.workspace?.id&&(!captured||(()=>{const now=state.primaries.get(captured.key);return now?.epoch===captured.epoch&&now.sessionId===captured.sessionId&&now.sessionFile===captured.sessionFile;})());
+  const target=known?.target??sessionMetadataTarget(item),guard=target&&sessionGuard(target);if(!target||!guard)return;
+  const {captured,current}=guard;
   const box=origin.getBoundingClientRect(),valid=()=>current()&&origin.isConnected;
   contextMenu.open(origin,{x:box.right,y:box.bottom},`Actions for ${item.name}`,[{label:'Read session state',enabled:false,run:()=>{}}],valid);
   void sessionSidebar.readMetadata(target).then(metadata=>{
     if(!valid()||!contextMenu.owns(origin))return;
-    const pending=sessionActionPending(metadata),archived=metadata.archived,title=humanSessionTitle([metadata.name,item.name,metadata.title]);
-    const mutation=sessionRowMutation(metadata,captured);
-    contextMenu.open(origin,{x:box.right,y:box.bottom},`Actions for ${title}`,[
-      {label:'Rename',enabled:metadata.canRename&&!pending,disabledReason:pending?'A session action is in progress.':metadata.reason,run:()=>renameSession(mutation,title,!!known,current)},
-      sessionArchiveItem(metadata,archived,pending,mutation,title,known,origin),...sessionArchivePrerequisite(metadata,item)],valid);
+    contextMenu.open(origin,{x:box.right,y:box.bottom},`Actions for ${humanSessionTitle([metadata.name,item.name,metadata.title])}`,sessionMetadataItems(item,metadata,captured,known,current,origin),valid);
   }).catch(error=>{if(valid()&&contextMenu.owns(origin))contextMenu.open(origin,{x:box.right,y:box.bottom},`Actions for ${item.name}`,[{label:'Session state unavailable',enabled:false,disabledReason:errorMessage(error),run:()=>{}}],valid);});
+}
+/** Exact-identity guard for one session action: the workspace and the captured Primary must still be the ones the action was read for. */
+function sessionGuard(target:SessionMetadataTarget):{captured:PrimaryView|undefined;current:()=>boolean}|undefined {
+  const workspace=state.workspace?.id;if(!workspace)return;
+  const captured=target.kind==='primary'?state.primaries.get(target.key):undefined;
+  return {captured,current:()=>workspace===state.workspace?.id&&(!captured||(()=>{const now=state.primaries.get(captured.key);return now?.epoch===captured.epoch&&now.sessionId===captured.sessionId&&now.sessionFile===captured.sessionFile;})())};
+}
+/** The one list of server-checked session actions, drawn by the row menu and by the session details sheet. */
+function sessionMetadataItems(item:SessionRow,metadata:SessionMetadata,captured:PrimaryView|undefined,known:SessionMetadata|undefined,current:()=>boolean,origin:HTMLElement):ContextItem[] {
+  const pending=sessionActionPending(metadata),archived=metadata.archived,title=humanSessionTitle([metadata.name,item.name,metadata.title]);
+  const mutation=sessionRowMutation(metadata,captured);
+  return [
+    {label:'Rename',enabled:metadata.canRename&&!pending,disabledReason:pending?'A session action is in progress.':metadata.reason,run:()=>renameSession(mutation,title,!!known,current)},
+    sessionArchiveItem(metadata,archived,pending,mutation,title,known,origin),...sessionArchivePrerequisite(metadata,item)];
 }
 function sessionArchivePrerequisite(metadata:SessionMetadata,item:SessionRow):ContextItem[] {
   if(metadata.archived||metadata.canArchive)return [];

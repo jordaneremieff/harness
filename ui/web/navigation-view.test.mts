@@ -146,7 +146,7 @@ test('saved header actions keep pane controls behind Arrange view and close only
   const trigger=byId('conversation-actions'),menu=()=>hostDocument.body.querySelector('.context-menu');
   trigger.focus();trigger.click();assert.deepEqual(menu()?.querySelectorAll('button').map(node=>node.textContent),['Session details','Display','Commands']);
   assert.equal(menu()?.querySelectorAll('[role="separator"]').length,0);
-  chooseMenu('Session details');assert.equal(byId('modal-title').textContent,'Conversation details');byId('modal-close').click();assert.equal(hostDocument.activeElement,trigger);
+  chooseMenu('Session details');assert.equal(byId('modal-title').textContent,'Conversation details');assert.ok(byId('modal').querySelectorAll('.session-summary-action-label').map(node=>node.textContent).includes('Copy session ID'),'the sheet leads with a summary and copy actions');byId('modal-close').click();assert.equal(hostDocument.activeElement,trigger);
   trigger.click();chooseMenu('Display');chooseMenu('Arrange view…');
   const labels=menu()?.querySelectorAll('button').map(node=>node.textContent)??[];
   for(const label of ['Split right','Split down','Move tab to pane','Close tab','Close pane','Close others','Close all'])assert.ok(labels.some(text=>text.startsWith(label)),label);
@@ -167,6 +167,7 @@ test('stopped Primary keeps terminal command and Copy in details instead of the 
   assert.equal(summary.querySelectorAll('button').find(node=>node.getAttribute('aria-label')==='Copy resume command'),undefined);
   byId('conversation-actions').click();chooseMenu('Conversation details');
   const detail=byId('modal-body').querySelector('.session-state-bar');assert.ok(detail);
+  assert.deepEqual(byId('modal-body').querySelectorAll('.session-summary-action-label').map(node=>node.textContent).slice(0,2),['Copy session ID','Copy resume command'],'a stopped Primary offers its ID and resume command at the head of the sheet');
   assert.equal(detail.querySelector('.session-resume-command')?.hidden,false);assert.equal(detail.querySelector('.session-resume-command')?.textContent,"pi --session '/fixture/project/quoted'\\''s session.jsonl'");
   const resume=detail.querySelectorAll('button').find(node=>node.textContent==='Resume');assert.ok(resume);assert.equal(resume.hidden,false);
   const copy=detail.querySelectorAll('button').find(node=>node.getAttribute('aria-label')==='Copy resume command');assert.ok(copy);assert.equal(copy.hidden,false);
