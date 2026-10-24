@@ -115,6 +115,14 @@ const graphicBackgrounds = new Map([
   // The unread dot is the only unread signal on its row, so it meets the non-text threshold.
   [".sidebar-content-row[data-unread=true] > .row-title::before", "accent"],
   [".pane-split > .pane-divider:hover::after", "edge"],
+  // Status dots are the only status signal on their row or toggle.
+  [".session-dot[data-status=running]", "success"],
+  [".session-dot[data-status=waiting]", "warning"],
+  [".session-dot[data-status=error]", "error"],
+  [".session-dot[data-status=unread]", "accent"],
+  [".navigation-toggle[data-attention]::after", "accent"],
+  [".navigation-toggle[data-attention=waiting]::after", "warning"],
+  [".navigation-toggle[data-attention=error]::after", "error"],
   [".pane-split > .pane-divider:focus-visible::after", "accent"],
 
 ]);
@@ -207,7 +215,7 @@ function parse(input: string): Rule[] {
 			const end = blockEnd(body, index);
 			const inner = body.slice(index + 1, end - 1);
 			if (selector.startsWith("@")) {
-				assert.match(selector, /^(?:@(?:media|container)\b|@keyframes work-pulse$)/, `Unsupported at-rule: ${selector}`);
+				assert.match(selector, /^(?:@(?:media|container)\b|@keyframes (?:work-pulse|dot-pulse)$)/, `Unsupported at-rule: ${selector}`);
 				walk(inner, [...contexts, selector]);
 			} else rules.push({ selector, contexts, declarations: declarations(inner) });
 			start = end;

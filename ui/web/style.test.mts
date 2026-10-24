@@ -423,7 +423,7 @@ test('blue marks focus while selected rows and tabs use neutral rules and surfac
   const values = [...css.matchAll(/(?:^|\n)\s*([^{}]+)\{([^{}]+)\}/g)].flatMap(match =>
     ['background', 'background-color', 'color', 'fill'].flatMap(property =>
       [...match[2].matchAll(new RegExp(`(?:^|[;\\s])${property}:\\s*([^;}]+)`, 'g'))].map(value => ({selector: match[1].replace(/\/\*[\s\S]*?\*\//g, '').trim(), property, value: value[1].trim()}))));
-  assert.deepEqual(values.filter(item => item.value.includes('--accent') && !item.selector.endsWith('::selection')), [{selector: '.pane-split > .pane-divider:focus-visible::after', property: 'background', value: 'var(--accent)'}, {selector: '.sidebar-content-row[data-unread=true] > .row-title::before', property: 'background', value: 'var(--accent)'}, {selector: '.desk-row-title[aria-expanded=true]', property: 'color', value: 'var(--accent)'}]);
+  assert.deepEqual(values.filter(item => item.value.includes('--accent') && !item.selector.endsWith('::selection')), [{selector: '.pane-split > .pane-divider:focus-visible::after', property: 'background', value: 'var(--accent)'}, {selector: '.sidebar-content-row[data-unread=true] > .row-title::before', property: 'background', value: 'var(--accent)'}, {selector: '.desk-row-title[aria-expanded=true]', property: 'color', value: 'var(--accent)'}, {selector: '.session-dot[data-status=unread]', property: 'background', value: 'var(--accent)'}, {selector: '.navigation-toggle[data-attention]::after', property: 'background', value: 'var(--accent)'}]);
   const fills = values.filter(item => item.property === 'background' || item.property === 'background-color');
   assert.deepEqual(fills.filter(item => item.value.includes('--edge')), [
     {selector: '.pane-split > .pane-divider:hover::after', property: 'background', value: 'var(--edge)'},
@@ -476,7 +476,7 @@ test('small radii and quiet surfaces limit motion to the busy marker and section
   assert.doesNotMatch(fades, /gradient/);
   assert.deepEqual(declarations('filter'), []);
   assert.deepEqual(declarations('transition'), ['transform 120ms', 'none']);
-  assert.deepEqual(declarations('animation'), ['work-pulse 900ms linear infinite', 'none', 'work-pulse 900ms linear infinite', 'none', 'work-pulse 900ms linear infinite', 'none']);
+  assert.deepEqual(declarations('animation'), ['work-pulse 900ms linear infinite', 'none', 'work-pulse 900ms linear infinite', 'none', 'work-pulse 900ms linear infinite', 'none', 'dot-pulse 1.6s ease-in-out infinite', 'none']);
   assert.match(rule('.workbench-activity[data-busy=true]::before'), /animation: work-pulse 900ms linear infinite/);
   assert.match(css, /^@keyframes work-pulse \{ to \{ transform: rotate\(360deg\); \} \}$/m);
   assert.match(css, /@media \(prefers-reduced-motion:reduce\) \{ \.workbench-activity\[data-busy=true\]::before \{ animation: none; \} \}/);
@@ -687,7 +687,7 @@ test('lean chrome: gutter-marked user turns, no pills, compact roster rows and n
   assert.match(rule('.message.user > .message-body::before'), /content: "";[^}]*left: 0; border-left: 2px solid var\(--accent\)/);
   assert.doesNotMatch(css, /content: "You"/);
   const circles = [...css.matchAll(/(?:^|\n)\s*([^{}]+)\{[^{}]*border-radius: 50%;/g)].map(match => match[1].replace(/\/\*[\s\S]*?\*\//g, '').trim());
-  assert.deepEqual(circles, ['.row-state[data-busy=true]::before', '.workbench-activity[data-busy=true]::before', '.sidebar-content-row[data-unread=true] > .row-title::before']);
+  assert.deepEqual(circles, ['.row-state[data-busy=true]::before', '.workbench-activity[data-busy=true]::before', '.sidebar-content-row[data-unread=true] > .row-title::before', '.session-dot', '.navigation-toggle[data-attention]::after']);
   for (const value of declarations('border-radius')) if (value !== '50%') assert.doesNotMatch(value, /999|50%|9999/);
   assert.match(rule('.communication-unverified'), /display: inline-flex;[^}]*align-items: center;[^}]*width: auto/);
   assert.match(rule('.communication-unverified > .card-action-label'), /white-space: nowrap/);
@@ -1602,9 +1602,9 @@ test('a responder name above a wait answer uses the shared metadata tier', () =>
 
 function assertCornerScale(selectors: string, body: string): void {
   for (const [, value] of body.matchAll(/border(?:-[a-z-]+)?-radius:\s*([^;]+)/g)) {
-    for (const corner of value.trim().split(/\s+/)) assert.ok(['0', '6px', '8px', 'var(--r-sm)', 'var(--r-md)', 'var(--r-lg)', '50%'].includes(corner) || corner === 'var(--r-full)' && /\.latest/.test(selectors), `${selectors}: ${value}`);
+    for (const corner of value.trim().split(/\s+/)) assert.ok(['0', '6px', '8px', 'var(--r-sm)', 'var(--r-md)', 'var(--r-lg)', '50%'].includes(corner) || corner === 'var(--r-full)' && /\.latest|\.navigation-toggle/.test(selectors), `${selectors}: ${value}`);
     if (value === '50%') {
-      assert.match(selectors, /(?:row-state|workbench-activity)\[data-busy=true\]::before|sidebar-content-row\[data-unread=true\] > \.row-title::before/);
+      assert.match(selectors, /(?:row-state|workbench-activity)\[data-busy=true\]::before|sidebar-content-row\[data-unread=true\] > \.row-title::before|\.session-dot|navigation-toggle\[data-attention\]::after/);
       for (const [, dimension] of body.matchAll(/(?:width|height): (\d+)px/g)) assert.ok(Number(dimension) <= 12);
     }
   }

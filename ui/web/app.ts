@@ -41,7 +41,7 @@ import { includedText } from './composer-attachments.ts';
 import {writeReloadState,readReloadState,deleteReloadState} from './reload-storage.ts';
 import { WorkbenchStatus } from './workbench-status.ts';
 import { VersionStatus } from './version-status.ts';
-import {SessionSidebar,humanSessionTitle,primaryIdentities,type SessionRow} from './sidebar-useful.ts';
+import {SessionSidebar,humanSessionTitle,primaryIdentities,type RowStatus,type SessionRow} from './sidebar-useful.ts';
 import {OperatorActivity} from './operator-activity.ts';
 import {NavigationViews, type NavigationView} from './navigation-view.ts';
 import { HealthStatus } from './health-status.ts';
@@ -3162,7 +3162,7 @@ function closeSessionRead():void {
   const row=[...byId('recent-sessions').querySelectorAll<HTMLButtonElement>('button')].find(node=>node.dataset.sessionKey===key);(row??byId('session-open')).focus({preventScroll:true});
 }
 const communicationNotices = new CommunicationNoticeShelf();
-const sessionSidebar = new SessionSidebar({operatorAt:identities=>operatorActivity.at(identities),older:()=>workspaceEntry.count&&state.workspace?{count:workspaceEntry.count,run:()=>{if(state.workspace)applyLayout(workspaceEntry.reopen(state.workspace,primaryTarget()));}}:undefined,openTabs:recentConversationRows,menu:openSessionRowMenu,updated:()=>{paintedCaptionReferenceKey='';refreshCaptionConsumers();renderConversationHeader(toolFileLayout());primaryNavigation(primary());},primaries:()=>[...state.primaries.values()],selected:()=>{const target=layoutTarget(currentLayout(),primaryTarget());return target?.kind==='primary'?target.key:undefined;},
+const sessionSidebar = new SessionSidebar({status:sessionRowStatus,attention:kind=>{const toggle=byId('sidebar-show');if(kind)toggle.dataset.attention=kind;else delete toggle.dataset.attention;},operatorAt:identities=>operatorActivity.at(identities),older:()=>workspaceEntry.count&&state.workspace?{count:workspaceEntry.count,run:()=>{if(state.workspace)applyLayout(workspaceEntry.reopen(state.workspace,primaryTarget()));}}:undefined,openTabs:recentConversationRows,menu:openSessionRowMenu,updated:()=>{paintedCaptionReferenceKey='';refreshCaptionConsumers();renderConversationHeader(toolFileLayout());primaryNavigation(primary());},primaries:()=>[...state.primaries.values()],selected:()=>{const target=layoutTarget(currentLayout(),primaryTarget());return target?.kind==='primary'?target.key:undefined;},
   openPrimary:(primary,saved)=>openSessionRead({primary,saved}),
   openSaved:saved=>openSessionRead({saved})});
 const sessionActionsPending=new Set<string>();
@@ -3297,6 +3297,18 @@ function recentTabRow(tab:ConversationTab,pane:PaneLeaf,layout:ConversationLayou
 function recentConversationRows(): import('./sidebar-useful.ts').SessionRow[] {
   const layout=currentLayout();
   return paneLeaves(layout.root).flatMap(pane=>pane.tabs.filter(tab=>tab.kind!=='file').map(tab=>recentTabRow(tab,pane,layout)));
+}
+/** One dot per session row: it needs an answer, it failed, it is running, or it holds unread output. */
+function sessionRowStatus(row: SessionRow): RowStatus | undefined {
+  const primary = row.primary ?? (row.target?.kind === 'primary' ? state.primaries.get(row.target.key) : undefined);
+  const target: Target | undefined = primary ? {kind: 'primary', key: primary.key, epoch: primary.epoch} : row.target?.kind === 'agent' ? row.target : undefined;
+  if (!target) return undefined;
+  const attention = attentionFor(target);
+  if (attention?.label === 'Question') return {kind: 'waiting', label: 'Waiting for you'};
+  if (attention || primary?.lifecycle === 'failed') return {kind: 'error', label: 'Failed'};
+  if (primary && primary.activity !== 'idle' && primary.activity !== 'unknown') return {kind: 'running', label: 'Running'};
+  const unread = state.workspace ? controllers.get(controllerKey(state.workspace.id, target))?.transcript.unread ?? 0 : 0;
+  return unread > 0 ? {kind: 'unread', label: `${unread} unread`} : undefined;
 }
 function renderUsefulSidebar():void {sessionSidebar.refresh(state.workspace?.id);}
 function collectCommunicationNotices(previous: typeof state, event: ReceivedEvent): void {
@@ -3793,6 +3805,7 @@ function bind(): void {
     controlIcon(node, node.dataset.controlIcon as CardIcon, node.getAttribute('aria-label') ?? node.textContent ?? '');
     if (count) node.append(count);if(label)node.append(label);
   }
+  for (const id of ['sidebar-show', 'sidebar-close']) byId(id).append(cardIcon('drawer'));
   byId('files-refresh').addEventListener('click',refreshFiles);
   byId('files-search').addEventListener('click',openFileNavigation);
   // Programmatic restoration also emits trusted scroll/select events; input intent must still change the revision.

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {createAppFixture, type HostNode} from './app-fixture.mts';
 import {createPaneLayout} from './pane-layout.ts';
-import {combinedSessionRows,humanSessionTitle,operatorTime, type SessionRow} from './sidebar-useful.ts';
+import {combinedSessionRows,humanSessionTitle,operatorTime,recentGroup, type SessionRow} from './sidebar-useful.ts';
 import type {SessionMetadata,SessionMetadataTarget} from '../shared/api.ts';
 import {eventNames} from './transport.ts';
 import {targetIdentity} from './state.ts';
@@ -288,7 +288,7 @@ test('unnamed agent tabs and open saved tabs use exact supplied folder and time 
   const layout=createPaneLayout([{kind:'session',id:saved.id,path:saved.path,project:saved.project,name:saved.title},...agents.map(row=>({kind:'agent' as const,identity:row.identity}))]);
   await arrive({workspace:{id:'exact-row-context',revision:1,conversationLayout:layout},primaries:[],roster:agents});await settle();
   const rows=byId('recent-sessions').querySelectorAll('.sidebar-content-row'),contexts=rows.map(row=>row.querySelector('.sidebar-session-context')?.textContent??'');
-  assert.equal(rows.length,3);assert.match(contexts[0]??'',/research/);assert.match(contexts[1]??'',/project-a.*Last observed: working/);assert.match(contexts[2]??'',/project-b.*Last observed: idle/);assert.equal(new Set(contexts).size,3);
+  assert.equal(rows.length,3);assert.match(contexts[0]??'',/research/);assert.match(contexts[1]??'',/project-b.*Last observed: idle/);assert.match(contexts[2]??'',/project-a.*Last observed: working/);assert.equal(new Set(contexts).size,3);
   assert.match(rows[0]?.title??'',/2026/,'Catalogue timestamp replaces the layout stub, after exact id and path matching.');
   const requests=browser.transportLog.length,filter=byId('session-search');filter.value='project-b';filter.dispatch('input');
   assert.deepEqual(byId('recent-sessions').querySelectorAll('.sidebar-content-row').map(row=>row.dataset.sessionKey),['agent:unnamed-agent-b']);
@@ -410,4 +410,15 @@ test('Recents sort by the latest operator action and never by later session outp
   assert.ok(at(used)>at(old));
   const fresh={key:'k',identities:['primary:k'],name:'n',at:0,title:'n',primary:{key:'k',epoch:1}} as unknown as SessionRow;
   assert.equal(operatorTime(fresh,undefined,777),777,'an open session with no file yet counts as now');
+});
+
+test('Recents group by day and each session row shows one status dot while the toggle flags other sessions that need the operator',async()=>{
+  const day=new Date('2026-10-24T15:00:00').getTime();
+  assert.equal(recentGroup(day,day+1000),'Today');assert.equal(recentGroup(day-86_400_000,day),'Yesterday');assert.equal(recentGroup(day-3*86_400_000,day),'Previous 7 days');assert.equal(recentGroup(day-30*86_400_000,day),'Older');assert.equal(recentGroup(0,day),'Older');
+  const running=primaryFixture({epoch:23900,key:'run',activity:'running',sessionName:'Running one'}),idle=primaryFixture({epoch:23901,key:'idle',activity:'idle',sessionName:'Idle one'});
+  await arrive({workspace:{id:'row-dots',revision:1,primaryKey:'run'},primaries:[running,idle],roster:[]});await settle();
+  const dots=byId('recent-sessions').querySelectorAll('.sidebar-content-row').map(row=>({title:row.querySelector('.row-title')?.textContent,status:row.querySelector('.session-dot')?.dataset.status,hidden:row.querySelector('.session-dot')?.hidden}));
+  assert.deepEqual(dots.find(item=>item.title==='Running one'),{title:'Running one',status:'running',hidden:false});
+  assert.equal(dots.find(item=>item.title==='Idle one')?.hidden,true);
+  assert.ok(byId('recent-sessions').querySelectorAll('.sidebar-group').length>=1);
 });

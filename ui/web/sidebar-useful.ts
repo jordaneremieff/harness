@@ -24,9 +24,20 @@ export function combinedSessionRows(open:readonly SessionRow[],catalog:readonly 
   for(const row of [...open,...catalog]){const identities=row.identities??[row.key];if(identities.some(identity=>seen.has(identity)))continue;for(const identity of identities)seen.add(identity);rows.push(row);}
   return rows;
 }
-type SessionHooks={operatorAt?:(identities:readonly string[])=>number|undefined;older?:()=>{count:number;run:()=>void}|undefined;openTabs?:()=>SessionRow[];menu?:(item:SessionRow,origin:HTMLElement)=>void;updated?:()=>void;primaries:()=>readonly PrimaryView[];selected:()=>string|undefined;openPrimary:(primary:PrimaryView,saved?:SavedSession)=>void;openSaved:(saved:SavedSession)=>void};
+/** What a session needs from the operator, drawn as one dot at the start of its row. */
+export type RowStatus={kind:'running'|'waiting'|'error'|'unread';label:string};
+const ATTENTION_ORDER:RowStatus['kind'][]=['waiting','error','unread'];
+/** Recents group by the day of their sort time. */
+export function recentGroup(at:number,now=Date.now()):string {
+  if(!(at>0))return 'Older';
+  const start=new Date(now);start.setHours(0,0,0,0);const day=start.getTime();
+  if(at>=day)return 'Today';
+  if(at>=day-86_400_000)return 'Yesterday';
+  return at>=day-6*86_400_000?'Previous 7 days':'Older';
+}
+type SessionHooks={status?:(item:SessionRow)=>RowStatus|undefined;attention?:(kind:RowStatus['kind']|undefined)=>void;operatorAt?:(identities:readonly string[])=>number|undefined;older?:()=>{count:number;run:()=>void}|undefined;openTabs?:()=>SessionRow[];menu?:(item:SessionRow,origin:HTMLElement)=>void;updated?:()=>void;primaries:()=>readonly PrimaryView[];selected:()=>string|undefined;openPrimary:(primary:PrimaryView,saved?:SavedSession)=>void;openSaved:(saved:SavedSession)=>void};
 type Catalog={pages:SavedSessionPage[];notes:string[];published:Set<string>};
-type SessionRowNode={item:SessionRow;node:HTMLElement;open:HTMLButtonElement;label:HTMLElement;context:HTMLElement;menu:HTMLButtonElement};
+type SessionRowNode={item:SessionRow;node:HTMLElement;open:HTMLButtonElement;dot:HTMLElement;label:HTMLElement;context:HTMLElement;menu:HTMLButtonElement};
 /** Every identity under which one open session is known. */
 export function primaryIdentities(primary:PrimaryView):string[] {
   return [`primary:${primary.key}`,...primary.sessionFile?[`path:${primary.sessionFile}`]:[],...primary.sessionId?[`id:${primary.sessionId}`]:[]];
@@ -37,6 +48,7 @@ export function operatorTime(row:SessionRow,operatorAt?:(identities:readonly str
   if(stamped!==undefined)return stamped;
   if(started!==undefined)return started;
   if(row.saved)return Date.parse(row.saved.modifiedAt);
+  if(row.at>0)return row.at;
   return row.primary&&!row.primary.sessionFile?now:0;
 }
 function primarySession(primary:PrimaryView,saved:SavedSession|undefined):SessionRow {
@@ -60,6 +72,7 @@ export class SessionSidebar {
   private saved:SavedSession[]=[];private published=new Set<string>();private notes:string[]=[];
   private metadata:SessionMetadata[]=[];
   private readonly rowNodes=new Map<string,SessionRowNode>();
+  private readonly groupNodes=new Map<string,HTMLElement>();
   private readonly olderButton=button('Show more',()=>{this.hooks.older?.()?.run();},'nav-row sidebar-action');
   private readonly node=byId('recent-sessions');private readonly empty=element('p','secondary sidebar-empty','No recent sessions.');private hooks:SessionHooks;
   constructor(hooks:SessionHooks){this.hooks=hooks;}
@@ -131,19 +144,20 @@ export class SessionSidebar {
     for(const primary of primaries){const key=primary.sessionFile??primary.key;if(seen.has(key))continue;seen.add(key);const saved=metadata.get(key);rows.push(primarySession(primary,saved?.id===primary.sessionId?saved:undefined));}
     for(const saved of this.saved)if(!seen.has(saved.path)&&this.published.has(saved.path))rows.push(publishedSession(saved));
     // Recents order by the operator's own latest action, never by the session's latest output.
-    const timed=rows.map(row=>({...row,at:operatorTime(row,this.hooks.operatorAt)}));
-    return combinedSessionRows(this.hooks.openTabs?.()??[],timed.sort((a,b)=>(Number.isFinite(b.at)?b.at:0)-(Number.isFinite(a.at)?a.at:0))).flatMap(row=>{
+    const byKey=new Map(this.hooks.primaries().map(primary=>[primary.key,primary]));
+    const timed=(row:SessionRow):SessionRow=>{const primary=row.primary??(row.target?.kind==='primary'?byKey.get(row.target.key):undefined);return {...row,at:operatorTime({...row,...primary?{primary}:{}},this.hooks.operatorAt)};};
+    return combinedSessionRows(this.hooks.openTabs?.()??[],rows).flatMap(row=>{
       const metadata=this.metadataFor(row.identities??[row.key]);if(metadata?.archived)return [];
       const saved=this.saved.find(item=>(row.identities??[]).includes(`path:${item.path}`)&&(row.identities??[]).includes(`id:${item.id}`)&&(!row.saved||item.project===row.saved.project))??row.saved;
       const name=humanSessionTitle([metadata?.name,row.name==='Untitled session'?undefined:row.name,metadata?.title==='Untitled session'?undefined:metadata?.title,saved?sessionCaptionRecord(saved).name:undefined,row.name]);
-      return [{...row,name,title:name,saved}];
-    });
+      return [timed({...row,name,title:name,saved})];
+    }).sort((a,b)=>(Number.isFinite(b.at)?b.at:0)-(Number.isFinite(a.at)?a.at:0));
   }
   private createRow(item:SessionRow):SessionRowNode {
-    const node=element('div','sidebar-session-row'),label=element('span','row-title'),context=element('span','sidebar-session-context');
+    const node=element('div','sidebar-session-row'),dot=element('span','session-dot'),label=element('span','row-title'),context=element('span','sidebar-session-context');dot.setAttribute('aria-hidden','true');dot.hidden=true;
     const open=button('',()=>{const item=view.item;if(item.activate)item.activate();else if(item.primary)this.hooks.openPrimary(item.primary,item.saved);else if(item.saved)this.hooks.openSaved(item.saved);},'nav-row sidebar-content-row');
     const menu=cardAction('menu',`Actions for ${item.name}`,()=>this.hooks.menu?.(view.item,menu),'session-row-menu');
-    const view:SessionRowNode={item,node,open,label,context,menu};open.append(label,context);node.append(open,menu);
+    const view:SessionRowNode={item,node,open,dot,label,context,menu};open.append(dot,label,context);node.append(open,menu);
     node.dataset.sessionKey=open.dataset.sessionKey=menu.dataset.sessionKey=item.key;
     menu.setAttribute('aria-haspopup','menu');menu.setAttribute('aria-expanded','false');return view;
   }
@@ -151,12 +165,21 @@ export class SessionSidebar {
     if(active.isConnected){if(document.activeElement!==active)active.focus({preventScroll:true});}
     else([...(this.node.querySelectorAll<HTMLButtonElement>('.sidebar-content-row'))].find(node=>node.dataset.sessionKey===focused)??nodes[Math.min(Math.max(0,index),nodes.length-1)]?.querySelector<HTMLButtonElement>('.sidebar-content-row')??byId('sessions-heading')).focus({preventScroll:true});
   }
-  private paintRow(item:SessionRow,folders:Map<string,string>):HTMLElement {
+  private rowStatus(item:SessionRow):RowStatus|undefined {
+    const status=this.hooks.status?.(item),selected=item.selected??(!!item.primary?.key&&item.primary.key===this.hooks.selected());
+    return selected&&status?.kind==='unread'?undefined:status;
+  }
+  private groupHeading(label:string):HTMLElement {
+    let node=this.groupNodes.get(label);if(!node){node=element('p','sidebar-group',label);this.groupNodes.set(label,node);}return node;
+  }
+  private paintRow(item:SessionRow,folders:Map<string,string>,status:RowStatus|undefined):HTMLElement {
     let view=this.rowNodes.get(item.key);if(!view){view=this.createRow(item);this.rowNodes.set(item.key,view);}view.item=item;
     const context=sessionRowContext(item,folders);
     setText(view.label,item.name);setText(view.context,context.text);view.context.hidden=!context.text;
     view.open.title=context.title;view.open.setAttribute('aria-label',item.name);
-    if(context.text)view.open.setAttribute('aria-description',context.text);else view.open.removeAttribute('aria-description');cardActionLabel(view.menu,`Actions for ${item.name}`);
+    view.dot.hidden=!status;if(status)view.dot.dataset.status=status.kind;else delete view.dot.dataset.status;
+    const description=[status?.label,context.text].filter(Boolean).join(' · ');
+    if(description)view.open.setAttribute('aria-description',description);else view.open.removeAttribute('aria-description');cardActionLabel(view.menu,`Actions for ${item.name}`);
     if(item.selected??(!!item.primary?.key&&item.primary.key===this.hooks.selected())){view.open.setAttribute('aria-current','page');view.node.dataset.selected='true';}
     else{view.open.removeAttribute('aria-current');delete view.node.dataset.selected;}
     return view.node;
@@ -165,7 +188,12 @@ export class SessionSidebar {
     try {
     const active=document.activeElement as HTMLElement|null,focused=active?.dataset.sessionKey,owned=!!active&&this.node.contains(active),index=[...this.node.children].findIndex(node=>node.contains(active));
     const all=this.sessionRows(),folders=projectLabels([...new Set(all.map(item=>item.saved?.project??item.primary?.cwd??item.project).filter((path):path is string=>!!path))]);
-    const keep=new Set(all.map(item=>item.key)),nodes:HTMLElement[]=all.filter(item=>!this.query||[item.name,item.saved?.project,item.primary?.cwd,item.project].some(value=>value?.toLocaleLowerCase().includes(this.query))).map(item=>this.paintRow(item,folders));
+    const keep=new Set(all.map(item=>item.key)),nodes:HTMLElement[]=[],statuses=new Map(all.map(item=>[item.key,this.rowStatus(item)]));let group='';
+    for(const item of all.filter(item=>!this.query||[item.name,item.saved?.project,item.primary?.cwd,item.project].some(value=>value?.toLocaleLowerCase().includes(this.query)))){
+      const label=recentGroup(item.at);if(label!==group){group=label;nodes.push(this.groupHeading(label));}nodes.push(this.paintRow(item,folders,statuses.get(item.key)));
+    }
+    const needing=all.filter(item=>!(item.selected??(!!item.primary?.key&&item.primary.key===this.hooks.selected()))).map(item=>statuses.get(item.key)?.kind);
+    this.hooks.attention?.(ATTENTION_ORDER.find(kind=>needing.includes(kind)));
     for(const key of this.rowNodes.keys())if(!keep.has(key))this.rowNodes.delete(key);
     if(this.hooks.older?.())nodes.push(this.olderButton);
     setText(this.empty,this.query?'No matches in loaded recent sessions.':'No recent sessions.');

@@ -2077,6 +2077,39 @@ pre[data-wrap=true] { white-space: pre-wrap; overflow-wrap: anywhere; }
 .model-pin[aria-pressed=true] > .card-icon { fill: currentColor; }
 /* End of tool calls. */
 
+
+
+
+
+
+/* Navigation: toggle glyph, session status dots, date groups. */
+.sidebar-content-row { position: relative; }
+.session-dot { position: absolute; left: 2px; top: 17px; width: 7px; height: 7px; border-radius: 50%; }
+.session-dot[data-status=running] { background: var(--success); animation: dot-pulse 1.6s ease-in-out infinite; }
+.session-dot[data-status=waiting] { background: var(--warning); }
+.session-dot[data-status=error] { background: var(--error); }
+.session-dot[data-status=unread] { background: var(--accent); }
+@keyframes dot-pulse { 50% { transform: scale(1.4); } }
+@media (prefers-reduced-motion:reduce) { .session-dot[data-status=running] { animation: none; } }
+.session-search { height: auto; border-bottom: 0; }
+.session-search > .nav-filter { padding: 0 var(--s3); border: 1px solid var(--edge); border-radius: var(--r-md); }
+.session-search > .nav-filter:focus { border-color: var(--accent); }
+.sidebar-group { margin: var(--s3) 0 var(--s1); padding: 0 var(--s3); color: var(--muted); font-size: var(--fs-label); font-weight: 600; }
+.sidebar-group:first-child { margin-top: var(--s1); }
+.navigation-toggle > .card-icon-drawer, .sidebar-close > .card-icon-drawer { display: none; }
+.navigation-access > .navigation-toggle { position: relative; }
+.navigation-toggle[data-attention]::after { content: ""; position: absolute; top: 4px; right: 4px; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); }
+.navigation-toggle[data-attention=waiting]::after { background: var(--warning); }
+.navigation-toggle[data-attention=error]::after { background: var(--error); }
+@media (max-width:999px) {
+  .navigation-toggle > .card-icon-navigation, .sidebar-close > .card-icon-navigation { display: none; }
+  .navigation-toggle > .card-icon-drawer, .sidebar-close > .card-icon-drawer { display: block; }
+  .navigation-access > .navigation-toggle, .nav-top > .sidebar-close { width: 44px; height: 44px; padding: 0; border: 1px solid var(--edge); border-radius: var(--r-full); color: var(--fg); }
+  .nav-top { padding: 0 var(--s3); gap: var(--s3); }
+  .nav-top > .sidebar-close { order: -1; }
+}
+/* End of navigation. */
+
 @media (pointer:coarse) {
   .sidebar .nav-row, .sidebar .sidebar-action, .sidebar .conversation-row, .sidebar .agent-row, .sidebar .agent-row .row-select { height: auto; min-height: 44px; }
   .sidebar .agent-row .row-select { grid-template-rows: 44px auto; }
