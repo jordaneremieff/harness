@@ -10,9 +10,10 @@ const SNAPSHOT_MS = 10_000;
 const LINE_BYTES = 256 * 1024;
 const TITLE_CHARS = 200;
 const utf8 = new TextDecoder('utf-8', {fatal: true, ignoreBOM: true});
-export type SessionTitle = {title: string; titleSource?: 'name' | 'prompt'; titleState: 'ready' | 'unavailable'};
+/** `lastUserAt` is the time of the latest user-role message record; delegated and peer messages are separate record types and never count. */
+export type SessionTitle = {title: string; titleSource?: 'name' | 'prompt'; titleState: 'ready' | 'unavailable'; lastUserAt?: string};
 export type SessionFileStamp = Pick<Stats, 'dev' | 'ino' | 'size' | 'mtimeMs' | 'ctimeMs'>;
-type ScanState = {name: string; firstUser: string; seenUser: boolean; nameKnown: boolean; userKnown: boolean};
+type ScanState = {name: string; firstUser: string; seenUser: boolean; nameKnown: boolean; userKnown: boolean; lastUserAt?: number};
 const unavailable = (): SessionTitle => ({title: '(title unavailable)', titleState: 'unavailable'});
 export function titleExcerpt(text: string): string {
   return safeText(text.slice(0, TITLE_CHARS * 2), TITLE_CHARS * 4).replace(/\s+/g, ' ').trim().slice(0, TITLE_CHARS);
@@ -162,10 +163,17 @@ function skipped(type: string | undefined, state: ScanState, head: MessageHead =
   if (type === 'message' && head.role === 'user' && head.text !== undefined) state.firstUser = titleExcerpt(firstTextLine(head.text));
   else state.userKnown = false;
 }
+function noteUserTime(entry: Record<string, unknown>, state: ScanState): void {
+  const message = entry.message;
+  if (entry.type !== 'message' || !message || typeof message !== 'object' || !('role' in message) || message.role !== 'user') return;
+  const at = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN;
+  if (Number.isFinite(at) && at > (state.lastUserAt ?? -Infinity)) state.lastUserAt = at;
+}
 function consume(line: string, bytes: Buffer, state: ScanState): void {
   if (!line.trim()) return;
   const entry = sessionRecord(line);
   if (!entry || typeof entry.type !== 'string') { const peek = new TypePeek(); peek.feed(bytes); skipped(peek.type(), state); return; }
+  noteUserTime(entry, state);
   // The latest public session_info record supplies the name, including clears.
   if (entry.type === 'session_info') {
     if (entry.name != null && typeof entry.name !== 'string') { state.nameKnown = false; return; }
@@ -253,6 +261,7 @@ export async function scanSessionTitle(path: string, size: number, captured?: Se
     if (!sameFilePrefix(before, after) || !sameFilePrefix(after, await stat(path)) || performance.now() >= deadline) return unavailable();
     if (!state.nameKnown || !state.name && !state.userKnown) return unavailable();
     const title = state.name || state.firstUser;
-    return title ? {title, titleSource: state.name ? 'name' : 'prompt', titleState: 'ready'} : unavailable();
+    const lastUserAt = state.lastUserAt === undefined ? {} : {lastUserAt: new Date(state.lastUserAt).toISOString()};
+    return title ? {title, titleSource: state.name ? 'name' : 'prompt', titleState: 'ready', ...lastUserAt} : unavailable();
   } finally { await file.close(); }
 }

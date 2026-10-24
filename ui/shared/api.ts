@@ -353,7 +353,7 @@ export const ROUTES = [
 ] as const;
 
 /** `writer: 'live'` means a terminal session may still be writing the file; its absence is proof of release for the files this backend does not own. */
-export type SavedSession = {writer?: 'live'; id: string; path: string; revision: string; project: string; title: string; titleSource?: 'name' | 'prompt'; titleState?: 'pending' | 'ready' | 'unavailable'; modifiedAt: string; size: number};
+export type SavedSession = {writer?: 'live'; id: string; path: string; revision: string; project: string; title: string; titleSource?: 'name' | 'prompt'; titleState?: 'pending' | 'ready' | 'unavailable'; lastUserAt?: string; modifiedAt: string; size: number};
 export type SavedSessionRead = {session: SavedSession; entries: EntryView[]; coverage: DisplayCoverage; leaf: string | null; before: string | null; observedAt: string};
 export type RecentProject = {path: string; name: string; modifiedAt: string};
 export type SavedSessionPage = {items: SavedSession[]; total: number; omitted: number; nextCursor: string | null; titleCursor: string | null; observedAt: string};

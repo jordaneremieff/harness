@@ -250,3 +250,14 @@ test('dense complete records yield within the loop bound', async t => {
   t.diagnostic(`dense complete record scan: maximum event-loop gap ${maxGap.toFixed(3)} ms`);
   assert.ok(maxGap < 50, `loop gap ${maxGap} ms`);
 });
+
+test('the title scan reports the latest user message time and ignores peer and assistant records', async t => {
+  const stamped = (role: string, timestamp: string) => line({type: 'message', timestamp, message: {role, content: role === 'user' ? 'typed' : 'reply'}});
+  const body = line({type: 'session', id: 'id', cwd: '/project'}) + stamped('user', '2026-10-20T01:00:00.000Z') + stamped('assistant', '2026-10-24T09:00:00.000Z')
+    + line({type: 'custom_message', customType: 'agent.peer', timestamp: '2026-10-24T10:00:00.000Z', content: 'from a delegated agent'}) + stamped('user', '2026-10-22T02:30:00.000Z')
+    + line({type: 'message', timestamp: 'not a time', message: {role: 'user', content: 'bad stamp'}});
+  const {path, size} = await fixture(t, body);
+  assert.deepEqual(await scanSessionTitle(path, size), {title: 'typed', titleSource: 'prompt', titleState: 'ready', lastUserAt: '2026-10-22T02:30:00.000Z'});
+  const none = await fixture(t, line({type: 'session', id: 'id', cwd: '/project'}) + stamped('assistant', '2026-10-24T09:00:00.000Z') + message('user', 'no stamp'));
+  assert.equal((await scanSessionTitle(none.path, none.size)).lastUserAt, undefined);
+});

@@ -45,7 +45,8 @@ export function primaryIdentities(primary:PrimaryView):string[] {
 /** The time a Recents row sorts and reads by: the operator's latest recorded action, else the session's start, else its last file change; an open session with no file yet counts as now. */
 export function operatorTime(row:SessionRow,operatorAt?:(identities:readonly string[])=>number|undefined,now=Date.now()):number {
   const stamped=operatorAt?.(row.identities??[row.key]),started=startedAtFromPath(row.saved?.path??row.primary?.sessionFile);
-  if(stamped!==undefined)return stamped;
+  const typed=row.saved?.lastUserAt?Date.parse(row.saved.lastUserAt):NaN,latest=Math.max(stamped??-Infinity,Number.isFinite(typed)?typed:-Infinity);
+  if(latest>-Infinity)return latest;
   if(started!==undefined)return started;
   if(row.saved)return Date.parse(row.saved.modifiedAt);
   if(row.at>0)return row.at;

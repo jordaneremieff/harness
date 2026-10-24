@@ -423,3 +423,12 @@ test('Recents group by day and each session row shows one status dot while the t
   assert.equal(dots.find(item=>item.title==='Idle one')?.hidden,true);
   assert.ok(byId('recent-sessions').querySelectorAll('.sidebar-group').length>=1);
 });
+
+test('Recents sort by the later of the browser action and the last user message in the file',()=>{
+  const row=(path:string,lastUserAt?:string)=>({key:path,identities:[`path:${path}`],name:'x',at:0,title:'x',saved:{id:'i',path,revision:'r',project:'/p',title:'x',modifiedAt:'2026-10-24T09:00:00.000Z',size:1,...lastUserAt?{lastUserAt}:{}}}) as unknown as SessionRow;
+  const typedElsewhere=row('/s/2026-10-01T00-00-00-000Z_a.jsonl','2026-10-23T00:00:00.000Z'),stampedHere=row('/s/2026-10-02T00-00-00-000Z_b.jsonl');
+  const stamps=new Map([['path:/s/2026-10-02T00-00-00-000Z_b.jsonl',Date.parse('2026-10-22T00:00:00.000Z')],['path:/s/2026-10-01T00-00-00-000Z_a.jsonl',Date.parse('2026-10-21T00:00:00.000Z')]]);
+  const at=(item:SessionRow)=>operatorTime(item,ids=>ids.map(id=>stamps.get(id)).find(value=>value!==undefined));
+  assert.equal(at(typedElsewhere),Date.parse('2026-10-23T00:00:00.000Z'),'a message typed in a terminal outranks an older browser stamp');
+  assert.equal(at(stampedHere),Date.parse('2026-10-22T00:00:00.000Z'),'the browser stamp stands without a file time');
+});
