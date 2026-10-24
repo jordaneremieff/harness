@@ -2041,11 +2041,17 @@ export function toggleSidebar(visible: boolean): void {
   byId(visible ? 'sidebar-close' : 'sidebar-show').focus();
   void applied.catch(showError);
 }
+/** True once the last input was a key press; a tap or click clears it so script-moved focus draws no ring. */
+let keyboardModality=false;
+function focusDrawerControl(node:HTMLElement):void {
+  if(keyboardModality)delete node.dataset.tapFocus;else{node.dataset.tapFocus='true';node.addEventListener('blur',()=>{delete node.dataset.tapFocus;},{once:true});}
+  node.focus({preventScroll:true});
+}
 function toggleDrawer(visible:boolean):void {
   if(visible&&!drawerOpen){const active=document.activeElement;drawerReturnFocus=active instanceof HTMLElement&&!byId('sidebar').contains(active)?active:byId('sidebar-show');}
   drawerOpen = visible; renderNavigation(); roster.schedule();
   const restore=drawerReturnFocus; if(!visible)drawerReturnFocus=undefined;
-  drawerFocusTarget(visible,restore).focus({preventScroll:true});
+  focusDrawerControl(drawerFocusTarget(visible,restore));
 }
 function drawerFocusTarget(visible:boolean,restore?:HTMLElement):HTMLElement {
   if(visible)return byId('sidebar-close');
@@ -3796,7 +3802,8 @@ export function appKey(event: KeyboardEvent): void {
   event.preventDefault(); if (!event.repeat && !modal.openNow) actions.palette(mode);
 }
 function bind(): void {
-  document.addEventListener('keydown', () => releaseNotice.key(), true);
+  document.addEventListener('keydown', () => {keyboardModality=true;releaseNotice.key();}, true);
+  document.addEventListener('pointerdown', () => {keyboardModality=false;}, true);
   document.addEventListener('compositionstart', event=> {if(event.target)composingFields.add(event.target);},true);
   document.addEventListener('compositionend', event=> {if(event.target)composingFields.delete(event.target);},true);
   for (const toggle of document.querySelectorAll<HTMLElement>('.section-toggle')) toggle.prepend(cardIcon('chevron'));

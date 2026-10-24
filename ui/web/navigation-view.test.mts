@@ -319,7 +319,7 @@ test('tablet drawer blocks background controls and restores focus without moving
   await arrive({workspace:{id:'tablet-modal',revision:1,primaryKey:primary.key},primaries:[primary],roster:[],targets:[targetFixture('tablet-draft',target,{draft:{revision:1,text:'Keep this draft',mode:'prompt',images:[],persisted:true}})]});
   const editor=primaryControl('editor'),parents=ancestry(editor);editor.focus();editor.setSelectionRange(3,7,'backward');host.viewport=768;app.toggleSidebar(true);
   assert.equal(byId('sidebar').getAttribute('role'),'dialog');assert.equal(byId('sidebar').getAttribute('aria-modal'),'true');assert.equal(byId('sidebar-scrim').hidden,false);
-  assert.equal(byId('navigation-access').inert,true);assert.ok(ancestry(editor).some(node=>node.inert));editor.focus();assert.equal(hostDocument.activeElement,byId('sidebar-close'));
+  assert.equal(byId('sidebar-close').dataset.tapFocus,'true','script focus after a tap draws no ring');assert.equal(byId('navigation-access').inert,true);assert.ok(ancestry(editor).some(node=>node.inert));editor.focus();assert.equal(hostDocument.activeElement,byId('sidebar-close'));
   byId('sidebar-scrim').click();assert.equal(app.drawerOpen,false);assert.equal(hostDocument.activeElement,editor);assert.equal(ancestry(editor).some(node=>node.inert),false);
   assert.deepEqual(ancestry(editor),parents);assert.deepEqual([editor.value,editor.selectionStart,editor.selectionEnd,editor.selectionDirection],['Keep this draft',3,7,'backward']);
   host.viewport=1000;app.renderNavigation();assert.equal(byId('sidebar').hidden,false);assert.equal(byId('sidebar').getAttribute('aria-modal'),null);assert.equal(byId('sidebar-scrim').hidden,true);

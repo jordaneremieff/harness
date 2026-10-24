@@ -1322,7 +1322,7 @@ test('named destinations ignore former section collapse preferences and Find age
   assert.ok(browser.frameCount > before);
   Reflect.set(globalThis, 'sessionStorage', hostSessionStorage);
   assert.doesNotMatch(html, /id="primary-heading"/);
-  assert.match(html, /id="session-open"[^>]*aria-label="Search sessions"[^>]*aria-haspopup="dialog">/);
+  assert.match(html, /id="session-open"[^>]*aria-label="Browse all sessions"[^>]*aria-haspopup="dialog">/);
   assert.match(html, /id="tabs-open-session"[^>]*>Find session…/);
   assert.doesNotMatch(html, /class="section-toggle"/);
 });

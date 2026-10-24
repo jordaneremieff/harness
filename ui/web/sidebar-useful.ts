@@ -132,7 +132,6 @@ export class SessionSidebar {
     await metadata;if(controller.signal.aborted)return;
     const saved=new Map<string,SavedSession>();for(const page of catalog.pages)for(const item of page.items)saved.set(item.path,item);
     this.saved=[...saved.values()];this.published=catalog.published;this.notes=catalog.notes;this.hooks.updated?.();
-    byId('session-open').title='Search sessions';
   }
   registered(identity:string):SavedSession|undefined{return this.saved.find(item=>item.id===identity&&this.published.has(item.path));}
   savedSession(primary:PrimaryView|undefined):SavedSession|undefined {

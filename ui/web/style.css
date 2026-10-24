@@ -2082,19 +2082,28 @@ pre[data-wrap=true] { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 
 
+
+
+
 /* Navigation: toggle glyph, session status dots, date groups. */
-.sidebar-content-row { position: relative; }
-.session-dot { position: absolute; left: 2px; top: 17px; width: 7px; height: 7px; border-radius: 50%; }
+.session-dot { position: absolute; left: 5px; top: 17px; width: 7px; height: 7px; border-radius: 50%; }
 .session-dot[data-status=running] { background: var(--success); animation: dot-pulse 1.6s ease-in-out infinite; }
 .session-dot[data-status=waiting] { background: var(--warning); }
 .session-dot[data-status=error] { background: var(--error); }
 .session-dot[data-status=unread] { background: var(--accent); }
 @keyframes dot-pulse { 50% { transform: scale(1.4); } }
 @media (prefers-reduced-motion:reduce) { .session-dot[data-status=running] { animation: none; } }
-.session-search { height: auto; border-bottom: 0; }
-.session-search > .nav-filter { padding: 0 var(--s3); border: 1px solid var(--edge); border-radius: var(--r-md); }
-.session-search > .nav-filter:focus { border-color: var(--accent); }
 .sidebar-group { margin: var(--s3) 0 var(--s1); padding: 0 var(--s3); color: var(--muted); font-size: var(--fs-label); font-weight: 600; }
+.navigation-destinations { display: flex; flex-direction: column; gap: var(--s1); margin: var(--s1) var(--s3) var(--s2); }
+.navigation-destinations > button { display: flex; align-items: center; justify-content: flex-start; gap: var(--s3); width: 100%; padding: 0 var(--s3); }
+.navigation-destinations > button > .card-icon { width: 18px; height: 18px; flex: none; }
+.sidebar .sidebar-session-row > .sidebar-content-row { position: relative; padding-left: var(--s4); }
+.sidebar-group { padding-left: var(--s4); }
+.navigation-toggle[data-tap-focus]:focus-visible, .sidebar-close[data-tap-focus]:focus-visible { outline: none; }
+.session-search { margin: var(--s1) var(--s3) var(--s2); min-height: 44px; padding: 0 0 0 var(--s3); gap: var(--s2); border: 1px solid var(--edge); border-radius: var(--r-md); }
+.session-search:focus-within { border-color: var(--accent); }
+.session-search > .nav-filter { flex: 1; min-height: 42px; padding: 0; border: 0; outline: none; }
+.session-search > #session-open { min-width: 44px; height: 42px; }
 .sidebar-group:first-child { margin-top: var(--s1); }
 .navigation-toggle > .card-icon-drawer, .sidebar-close > .card-icon-drawer { display: none; }
 .navigation-access > .navigation-toggle { position: relative; }

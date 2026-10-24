@@ -207,9 +207,9 @@ test('named views retain their controls and session creation remains separate fr
   assert.match(rule('.section-toggle:hover'), /color: var\(--fg\)/); assert.match(rule('.section-toggle .count'), /margin-left: var\(--s2\)/);
   assert.match(rule('.threads-footer'), /padding-right: var\(--s3\); padding-left: var\(--s3\)/);
   assert.match(html, /id="files-heading" class="sr-only"/); assert.match(html, /id="agents-heading" class="sr-only"/);
-  assert.match(html, /<h2 id="sessions-heading" class="nav-heading"[^>]*>Recents<\/h2>/);
+  assert.match(html, /<h2 id="sessions-heading" class="nav-heading sr-only"[^>]*>Recents<\/h2>/);
   assert.match(rule('.session-catalog'), /color: var\(--muted\)/);
-  assert.match(html, /id="session-open"[^>]*data-control-icon="search"[^>]*aria-label="Search sessions"[^>]*><span class="nav-control-label">Search sessions<\/span><\/button>/);
+  assert.match(html, /id="session-search" class="nav-filter" type="search" placeholder="Search sessions"[^>]*><button id="session-open"[^>]*data-control-icon="folder-open"[^>]*aria-label="Browse all sessions"[^>]*><\/button>/);
   assert.match(html, /id="session-new"[^>]*data-control-icon="plus"[^>]*aria-label="New session"/);
 });
 
