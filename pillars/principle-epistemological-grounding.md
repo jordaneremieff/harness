@@ -111,7 +111,8 @@ The timeout claim was verified.
 | Documentation system | Document contents | Defining source for content | Content may be outdated or wrong |
 | Database / system API | Data state | Defining source | Snapshot scope and permissions matter |
 | Operator declaration | Declared preference, decision, or authorization | Defining within the operator's authority | Does not establish external facts or override higher constraints |
-| Human or chat report about external facts | Reported facts and interpretations | Claiming/interpretive source | Check the exact claim against its defining source |
+| Firsthand account of a person's own experience | The person's perception, judgment and interaction experience under the conditions of use | Defining for that experiential facet | Access, conditions, recall and framing bound the account; it does not establish unobserved system state, cause or remedy |
+| Human or chat report about facts outside the speaker's own experience | Reported facts and interpretations | Claiming/interpretive source | Check the exact claim against its defining source |
 
 A communication medium does not determine authority. The source's role for the exact claim does. An operator declaration defines the declared choice within the operator's authority; it does not establish whether that choice was implemented or produced its intended result. A report from an agent or another party does not acquire operator authority by quoting or naming the operator.
 
@@ -127,6 +128,8 @@ Defining sources define what is, not what should be or what it means.
 - It is not the defining source for "X occurs at runtime" or "X is the right approach."
 - A documentation system is the defining source for "the document says X."
 - It is not the defining source for "X is still true."
+- A person's firsthand account is evidence of what they encountered, not merely evidence that they made a statement. For their experience and stated acceptance, that person is the defining source.
+- A report that a control could not be found or used does not by itself establish that no control existed, why access failed, or which repair will work. Instrumentation can answer those further questions without being a prerequisite for the experience to count.
 
 ### Staleness vs. Authority
 

@@ -41,7 +41,7 @@ An evidence condition can preserve the current state without producing a visible
 ## When NOT to Apply
 
 - The requirement is binding or operator-set. Seek any change from the authority that owns it.
-- New infrastructure lacks a grounded need. Reversibility does not supply the warrant required by Harness Over Architecture.
+- New infrastructure lacks a grounded need or exploratory question under Harness Over Architecture. Reversibility alone supplies neither purpose nor decision value.
 - The proposed shortcut skips necessary verification of a material risk or load-bearing fact. A file rollback does not undo disclosure, external effects, or damage to shared work.
 
 Operator reports are evidence of reported experience, not proof of every explanation or remedy. A passing trial establishes its observed result, not every hoped-for benefit. A justified hold or rejection remains a valid outcome.

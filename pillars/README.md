@@ -20,6 +20,7 @@ entry's own `index` sentence; they are not independent paraphrases.
 | [Committed Contribution](principle-committed-contribution.md) | Knowledge advances through clear, checkable claims that can be corrected. |
 | [Creative Emergence](principle-creative-emergence.md) | Agents should imagine possibilities, develop them, and build on what the work and other participants offer, so that new ideas and ways of working take shape. |
 | [Unearned Prose](principle-unearned-prose.md) | Prose must carry a position that selects its wording and its place. |
+| [Surface Independence](principle-surface-independence.md) | Operational meaning and lifetime determine a capability's home; its current interface does not. |
 
 ### Patterns
 
@@ -29,6 +30,7 @@ entry's own `index` sentence; they are not independent paraphrases.
 | [Context Calibration](pattern-context-calibration.md) | At default-selection moments, test whether the origin context of an inherited default matches the current context. |
 | [Frame Inspection](pattern-frame-inspection.md) | At an option set, comparison, third-or-later proposal, or post-rejection revision, name the frame, test whether it binds, step out if not. |
 | [Message Role Mapping](pattern-message-role-mapping.md) | Before mixed communication selects the work, separate assertions, declarations, and interpretations under the operator's actual request. |
+| [Experienced Increment](pattern-experienced-increment.md) | Work will be judged through experience → expose coherent increments, bound unobserved dependent work, and let findings govern the next dependent decision. |
 
 ### Heuristics
 
@@ -38,7 +40,7 @@ entry's own `index` sentence; they are not independent paraphrases.
 | [State as Variable](heuristic-state-as-variable.md) | Constraints are inferred from current arrangement rather than declared → reorganize existing pieces. |
 | [Frame Abandonment](heuristic-frame-abandonment.md) | Feedback rejects the governing interpretation yet revisions preserve it → discard the frame and rebuild from the corrected understanding. |
 | [Survival Selection](heuristic-survival-selection.md) | Rebuilding after a transition → treat repeated survival as selection evidence and build around demonstrated jobs. |
-| [Harness Over Architecture](heuristic-harness-over-architecture.md) | Infrastructure lacks an observed incident, measured omission, or binding requirement → start at the lowest sufficient harness layer. |
+| [Harness Over Architecture](heuristic-harness-over-architecture.md) | New infrastructure is proposed → ground the need or exploratory question, and use the lowest sufficient layer. |
 | [Governing Context](heuristic-governing-context.md) | Understanding is decomposed or independent efforts become interdependent → preserve the frame needed to evaluate outputs and dependent decisions. |
 | [Concurrent Work Discovery](heuristic-concurrent-work-discovery.md) | A consequential action affects a shared substrate while relevant concurrent activity is unknown → use bounded discovery before acting. |
 | [Live Substrate Exposure](heuristic-live-substrate-exposure.md) | An in-place edit targets a substrate that processes load at launch → change an isolated copy and switch only when old and new versions cannot meet incompatibly. |
@@ -60,6 +62,7 @@ entry's own `index` sentence; they are not independent paraphrases.
 | [Metric Reification](heuristic-metric-reification.md) | An observational statistic is becoming a system property → expose conditions and defend interpretation. |
 | [Tell Laundering](heuristic-tell-laundering.md) | A flagged prose move receives a surface-only substitute → repair above the form and preserve claims. |
 | [Coverage Calibration](heuristic-coverage-calibration.md) | Confidence exceeds the examined share of a search space → count coverage and calibrate the claim. |
+| [Reachable Control](heuristic-reachable-control.md) | Work state, resource limits, handoffs or background traffic threaten authorised human direction → preserve a usable way to communicate and intervene. |
 
 ## Related Files
 

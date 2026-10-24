@@ -29,6 +29,8 @@ A locally small component can externalize cost to every caller. A plain document
 
 The inverse also occurs. A shared abstraction built before its consumers and invariants are known can add more concepts than it removes. Composition must be demonstrated by a known destination, repeated need, binding interface, or measured omission.
 
+A bounded probe may instead be built to discover whether a capability supports worthwhile work. That warrants inquiry, not an assumed permanent shared structure. Count the probe's whole cost and use its findings before committing to further integration or continued operation.
+
 The principle therefore asks where complexity lives and how often it is paid.
 
 ## Shape
@@ -112,7 +114,7 @@ A beautiful abstraction can still produce poor observability, migration, or fail
 
 ## Relationship to Other Pillars
 
-- **Harness Over Architecture:** provides the evidence gate before shared infrastructure is introduced.
+- **Harness Over Architecture:** grounds construction in a need, exploratory question or binding requirement and distinguishes a bounded probe from continuing infrastructure.
 - **Context Calibration:** tests whether a familiar architecture's origin conditions hold.
 - **System Autonomy:** moves deterministic mechanism below a boundary only when doing so reduces total burden.
 - **Cognitive Stratification:** distinct lifecycle layers may justify distinct storage and authority models.

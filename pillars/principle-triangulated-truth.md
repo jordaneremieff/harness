@@ -11,70 +11,39 @@ Institutional knowledge is distributed across complementary sources with differe
 
 ## Rationale
 
-Organizational reality usually exists across several surfaces:
+A decision, its implementation, its documentation and its effects are different facets of reality. One source can define or observe one facet without establishing the others.
 
-- A decision happens in a conversation channel
-- It may be recorded in an issue tracker
-- It may be enacted in a code host or configuration repository
-- It may be documented in a knowledge base
-- Its effects may appear in telemetry, logs, metrics, traces, database state, or user-visible behavior
+| Facet | What It Captures | Possible Sources | Boundary |
+|---|---|---|---|
+| Decision | What was chosen or authorised | An authorised declaration, conversation, decision record | Does not establish enactment or effect |
+| Intent | What was planned or assigned | A request, work record, plan | Does not establish completion |
+| Enactment | What was changed | Code, configuration, migration record | Does not establish deployed behaviour |
+| Documentation | What was written | Specification, reference, runbook | Does not establish current behaviour |
+| Execution | What the system did | Direct observation, runtime records, traces, data state | Limited by access, instrumentation, retention and scope |
+| Experience | What a person encountered when using the system | The person's direct observation and firsthand account | Defining for their experiential facet, not for unobserved system state, cause or remedy |
 
-Each source captures a different facet of the same reality:
+These are not ranks of media. A conversation can contain a binding decision, a firsthand observation and an uncertain explanation. A formal report can repeat an unverified claim. Classify each proposition by its source's relation to that exact facet.
 
-| Facet | What It Captures | Typical Sources | Strength | Weakness |
-|---|---|---|---|---|
-| Decision | What was discussed or agreed | Chat, meeting notes, comments | Rich context, rationale | Informal, noisy, subjective |
-| Intent | What was planned or assigned | Issue tracker, roadmap, task board | Structured, searchable | Aspirational, often stale |
-| Enactment | What was changed | Code host, config repo, migration history | Durable, verifiable | Narrow, may lag decisions |
-| Documentation | What was written down | Knowledge base, README, runbook | Formal, reusable | Can lag reality |
-| Execution | What actually happened | Logs, metrics, traces, database, runtime API | Directly observed, timestamped | Retention gaps, instrumentation gaps |
+Firsthand experience is evidence of what the person encountered, not merely evidence that they spoke. Instrumentation is not a prerequisite for that evidence to count. It can add a different observation or test an explanation; it does not automatically outrank experience that it did not observe.
 
-Informal decision channels are paradoxical: they can be where reality happens, but they are weak alone. Formal systems are more reliable, but often lag the actual decision. Runtime evidence shows what happened, but may not explain why.
-
-A claim that appears across heterogeneous facets is stronger than a claim repeated within one facet. Three chat messages are still one facet. A chat decision that appears in code and telemetry has crossed decision, enactment, and execution.
+Convergence across the facets a claim requires strengthens that claim. Repetition within one facet does not fill another facet's gap. A single source may settle a claim confined to the facet it defines.
 
 ## Shape
 
-```text
-Decision      → conversation, rationale, informal agreement
-Intent        → issue tracker, roadmap, planned work
-Enactment     → code, configuration, migrations
-Documentation → knowledge base, runbook, reference docs
-Execution     → logs, metrics, traces, database/runtime state
+A claim about a release being ready may require a decision, an implemented change, the selected deployment and observed use. Check each required facet at its defining or observing source.
 
-Truth confidence rises when the claim survives movement across facets.
-```
+A claim about what the operator authorised may be settled by the operator's declaration. No code or runtime record is needed to make that declaration authoritative within its scope.
 
-Single-facet claim:
-
-```text
-"A person said X in chat" → possibly true, one facet covered
-```
-
-Multi-facet convergence:
-
-```text
-"X was discussed, tracked, implemented, and observed running" → high confidence
-```
+Count the facets reached by the claim, not the number or formality of the containers that hold them.
 
 ## Decision Heuristic
 
-When evaluating a claim:
-
-| Question | Implication |
-|---|---|
-| How many source types corroborate this? | More types usually means more facets covered |
-| Which facets are represented? | Decision + enactment is stronger than decision + decision |
-| Is there convergence across informal, formal, and directly observed sources? | Stronger than any one source alone |
-| What facets are missing? | Gaps identify uncertainty and next checks |
-
-When designing knowledge systems:
-
-| Question | Design Move |
-|---|---|
-| Does corroboration count facets or just sources? | Weight heterogeneous facets higher |
-| Can one source override others? | Sometimes, but only within its domain |
-| How are informal sources handled? | Low base authority, high corroboration value |
+1. State the exact claim and the facets needed to support it.
+2. For each facet, identify which source defines it or directly observes it.
+3. Separate declarations, observations, reports and explanations even when they share one message.
+4. Check whether supposedly different sources add another facet or repeat the same underlying evidence.
+5. Name any missing facet that changes the conclusion. Do not demand unrelated facets merely to increase source count.
+6. A source may settle a claim only within the facet it defines. Do not let authority for one facet override another facet's evidence.
 
 ## Manifestations
 
@@ -106,8 +75,8 @@ Missing facets become named uncertainty and targeted follow-up.
 ### Anti-Pattern: Corroboration as Source Count
 
 ```text
-three conversation sources repeat the same claim
-result: three sources, one facet
+three messages repeat the same account of a release
+result: repeated testimony, not separate decision, enactment and execution checks
 ```
 
 ### Pattern: Corroboration as Facet Convergence
@@ -120,13 +89,13 @@ work record        -> intent facet
 result: three distinct facets
 ```
 
-## Informal Source Paradox
+## Communication and Evidence
 
-Informal sources deserve special treatment because they often contain the richest context and the weakest standalone authority.
+Communication form does not decide authority. An authorised decision conveyed in conversation remains a decision. A firsthand report remains evidence of the experience reported. A causal explanation in the same message needs support for that explanation.
 
-They are where decisions, corrections, rationale, and informal agreements often happen. They are also context-dependent, subjective, and easy to misread. A standalone informal claim is not enough for high-confidence factual claims about code, execution, or operational state.
+The converse also holds. A dashboard or formal document may repeat a claim without adding observation. A runtime record establishes what its instrumentation recorded, not what it failed to observe.
 
-The resolution: informal sources have low base authority but high corroboration potential. An informal decision corroborated by code is strong because it covers decision and enactment. An informal decision alone is a lead, not a conclusion.
+Preserve the person's actual claim. Do not reduce a report of a failed interaction to the fact that a complaint was made. Do not turn the report into proof of an unobserved technical cause. Seek another facet when it answers a question the current evidence cannot settle.
 
 ## Absence and Gaps
 
@@ -151,11 +120,11 @@ The system should surface these gaps, not paper over them.
 
 ### Epistemological Grounding
 
-Epistemological Grounding establishes that some sources define truth for specific domains. Triangulated Truth explains why multiple sources still matter: even an authoritative source captures only one facet. Code state does not prove deployment state, decision quality, or runtime behavior.
+Epistemological Grounding establishes which sources define particular facets. Triangulated Truth asks whether the evidence reaches every facet the claim requires. A source can contain evidence for several facets, but authority for one does not establish another. Code state alone does not prove deployment state, decision quality or runtime behaviour.
 
 ### Agent-Native Expertise
 
-Agent-Native Expertise says everything is input. Triangulated Truth specifies that heterogeneous inputs cover more facets of reality than homogeneous inputs. Convergence across facets is stronger than repeated agreement inside one facet.
+Agent-Native Expertise treats inputs according to what they contribute. Triangulated Truth distinguishes the facets those inputs reach. Different source types do not necessarily add different facets, and one communication medium can carry several. Judge the evidence added, not the variety of its containers.
 
 ### System Autonomy
 
@@ -163,14 +132,14 @@ At scale, the agent should not manually weigh source heterogeneity on every clai
 
 ## Agent Practice
 
-1. Treat single-facet claims as weak unless the claim is explicitly scoped to that facet.
-2. Treat informal-decision + formal-enactment convergence as strong.
-3. Name missing facets before stating high confidence.
-4. Do not convert repeated same-facet agreement into independent corroboration.
-5. When a source is authoritative, state its domain boundary.
+1. Match the evidence to the facets the exact claim requires.
+2. Preserve defining authority and firsthand evidence within their scope, regardless of medium.
+3. Name missing facets before a conclusion crosses them.
+4. Do not convert repetition or shared-source agreement into independent corroboration.
+5. When sources disagree, check whether they describe different facets, states, conditions or times before treating one as wrong. Surface a gap between firsthand experience and instrumentation rather than assume either captures the whole event.
 
 ## Summary
 
-No single source tells the whole story. Truth emerges from convergence across facets: decision, intent, enactment, documentation, and execution.
+Match evidence to the facets the claim requires, such as decision, intent, enactment, documentation, execution and experience. A defining source can settle a claim within its scope; a broader claim needs evidence for the further facets it crosses.
 
-Corroboration is not more people saying the same thing. It is evidence that a claim exists across multiple layers of reality.
+Corroboration is not a count of people, messages or source types. Preserve firsthand evidence and declared authority within their bounds, and name the gaps that matter to the conclusion.

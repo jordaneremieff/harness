@@ -125,7 +125,7 @@ Classification cannot be changed to obtain the skill rule. A capability that req
 
 No warrant is needed for a fixed repair, an operator-selected outcome or architecture, ordinary maintenance, a removal, or a documentation/test correction that preserves an established contract; those still require surface classification and proportionate verification.
 
-*Rationale (auditability, not operative):* the skill rule is a bounded, operator-approved exception to the general rule that new infrastructure is grounded in an observed failure, measured omission, or binding requirement (the Harness Over Architecture pillar). The exception is evidentiary only; the retained requirements above implement the pillar's nearest-surface, reversibility, and skill-sprawl guidance, against which the exception remains auditable.
+*Rationale (auditability, not operative):* the skill rule is a bounded, operator-approved exception to this workflow’s evidence gate for other agent-proposed surfaces and mechanisms. Harness Over Architecture also permits a grounded exploratory question to warrant a bounded capability probe; this workflow retains its narrower evidence gate for other agent-proposed surfaces and mechanisms. The skill exception is evidentiary only; the retained requirements above implement the pillar's nearest-surface, reversibility, and skill-sprawl guidance, against which the exception remains auditable.
 
 **Complete when** (warrant classification/content only; approval is gated by the approval section, not retested here):
 - no suggestion was mistaken for a surface;
