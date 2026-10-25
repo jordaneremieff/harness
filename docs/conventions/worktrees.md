@@ -347,10 +347,10 @@ private context, task records, operator quotations, generated reports, and
 non-durable chronology before publication. Existing repository content bans and
 reserved development-record filtering remain binding.
 
-The scanner permits at most 500 commits, 2,000 file revisions, 1,000,000 bytes
-per blob, and 64 MiB of cumulative blob bytes. Each changed file revision counts
-toward the cumulative bound, including repeated content. Subprocess output is
-also bounded. Exceeding a bound stops promotion rather than claims coverage.
+The scanner defines its limits in `publicationBlob` and `promotionHygiene` in
+[scripts/worktrees.mts](../../scripts/worktrees.mts). Each changed file revision
+counts toward the cumulative byte bound, including repeated content. Subprocess
+output is also bounded. Exceeding a bound stops promotion rather than claims coverage.
 Split the promotion or obtain an explicit operator decision for the specific
 blocked act; the runtime exposes no bypass. Binary content still needs
 manual review. A passing signature scan is not proof of publishable content.
