@@ -366,6 +366,12 @@ export class Registry {
   createFiles(rootId:string,path:string,work:()=>Promise<import('../shared/files.ts').FileMutation>) {return this.store.createFiles(rootId,path,work);}
   fileIdentityFailed():void {this.store.fileIdentityFailed();}
   views() { return [...this.saved.values()].map(view=>structuredClone(this.sessions.get(view.key)?.view ?? view)); }
+  /**
+   * Sessions whose Pi the owner holds now: the only ones a backend replacement must capture and detach.
+   * A refused open leaves a failed session with no owner primary and a transport that never exited, and an
+   * exited writer holds nothing; the owner refuses a capture for either as not owned.
+   */
+  ownedSessions(): PrimarySession[] { return [...this.sessions.values()].filter(session => owned(session) && !session.client.exited); }
   metadataPrimaryStopped(key:string):boolean {
     const session=this.sessions.get(key),view=session?.view??this.saved.get(key);
     return view?.lifecycle==='stopped' && !this.primaryStarts.has(key) && !this.openingKeys.has(key) && (!session || !needsStorage(session));

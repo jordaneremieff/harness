@@ -130,7 +130,7 @@ export async function startBackend(options:Options, injection:Partial<Pick<Regis
     const cancelRelease=()=>{releaseAttempt++;preparedRelease=false;http.resumeAdmission();};
     const prepareRelease=async()=> {
       const attempt=++releaseAttempt;
-      await Promise.all([...registry.sessions.values()].filter(session => !session.client.exited).map(session => session.prepareDetach()));
+      await Promise.all(registry.ownedSessions().map(session => session.prepareDetach()));
       if(attempt!==releaseAttempt)throw new ApiError('not_ready','The release attempt was canceled.',503);
       await http.fence();
       if(attempt!==releaseAttempt){http.resumeAdmission();throw new ApiError('not_ready','The release attempt was canceled.',503);}
