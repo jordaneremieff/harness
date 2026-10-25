@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { constants } from 'node:fs';
 import { access, lstat, open, realpath } from 'node:fs/promises';
+import {fileURLToPath} from 'node:url';
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import { deriveEndpoint, readClaim, readJson, readRecord, storageName, type CatalogRecord } from '../agents/catalog-record.mts';
@@ -44,10 +45,10 @@ export async function savedContextCreatorPath(agentDir?:string):Promise<string> 
   try{return await configuredRunner(resolve(agentDir??getAgentDir()),'create-saved-context.ts');}
   catch{throw new ApiError('host_unavailable','The configured saved context creator is unavailable.',503,'read');}
 }
-/** The reader comes from global server resources, never a target record or browser argument. */
-export async function retainedReaderPath(agentDir?: string): Promise<string> {
-  try { return await configuredRunner(resolve(agentDir ?? getAgentDir()), 'retained-read.ts'); }
-  catch { throw new ApiError('host_unavailable','The configured retained reader is unavailable.',503,'read'); }
+/** Read projections use the backend's packaged Agent source, independently of sealed execution tuples. */
+export async function retainedReaderPath(_agentDir?: string): Promise<string> {
+  try { return await managedAgentEntrypoint(resolve(fileURLToPath(new URL('../../',import.meta.url))), 'retained-read.ts'); }
+  catch { throw new ApiError('host_unavailable','The packaged retained reader is unavailable.',503,'read'); }
 }
 async function searchExecutable(path:string) {
   try {await access(path,constants.X_OK);return await realpath(path);}

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {createAppFixture} from './app-fixture.mts';
 import type {MessageView} from '../shared/api.ts';
+import {paneLeaves} from './pane-layout.ts';
 const f=await createAppFixture();const {app,arrive,settle,primaryFixture,agentFixture,targetFixture,singlePane,primaryControl,hostDocument,transportLog}=f;
 const identity='00000000-0000-4000-8000-000000000001:2';
 const target={kind:'agent' as const,identity};
@@ -56,7 +57,7 @@ async function referenceCase(complete:boolean,count:number,requests:ResultRead[]
     const before=requests.length;action.click();await settle();
     assert.equal(requests.length,before+1);assert.match(requests.at(-1)?.path??'',new RegExp(encodeURIComponent(identity)));
     assert.deepEqual(requests.at(-1)?.body,{view:'result',...references[index]});
-    const primaryRow=f.byId('recent-sessions').querySelector('.sidebar-content-row[data-session-key="primary"]');assert.ok(primaryRow);primaryRow.click();await settle();
+    const layout=app.state.workspace?.conversationLayout;assert.ok(layout);const primaryPane=paneLeaves(layout.root).find(pane=>pane.active==='primary');assert.ok(primaryPane);app.focusPane(primaryPane.id);await settle();
   }
 }
 test('result references use all four exact plain-text variants and retain every native selector',async t=>{

@@ -460,8 +460,9 @@ async function comparePanes(identity:string,paneId='primary-pane'):Promise<void>
     app.focusPane(paneId);await settle();app.openTabsList(paneId);
     const split=hostDocument.body.querySelector('.context-menu')?.querySelectorAll('button').find(node=>node.textContent==='Split right');
     if(!split)throw new Error('The comparison split control is absent.');split.click();await settle();
-    const peer=byId('recent-sessions').querySelector(`.sidebar-content-row[data-session-key="agent:${identity}"]`);
-    if(!peer)throw new Error('The retained comparison session is absent.');peer.click();await settle();
+    const peer=fixture.roster.find(row=>row.identity===identity);
+    if(!peer)throw new Error('The retained comparison session is absent.');
+    app.showNavigationView('agents');await app.selectAgent(peer);await settle();app.showNavigationView('sessions');
     app.focusPane(focused);await settle();
   } finally {host.viewport=width;app.renderNavigation();await settle();}
 }

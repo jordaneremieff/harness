@@ -1,3 +1,4 @@
+import { RECENTS_OPERATION, RECENTS_CONVERSATION_LIMIT, type RecentActivity, type RecentConversations } from '../../extensions/agent/recents.ts';
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { LIMITS } from "../shared/api.ts";
@@ -16,6 +17,7 @@ export type RuntimeDescriptor = {
 	operations: Record<string, OperationContract>;
 };
 export type Summary = {
+  recents?: RecentActivity;
 	id: string; storageId: string; cwd: string; modifiedAt: number; owner: "here" | "unavailable" | "unknown";
 	state: "starting" | "working" | "idle" | "done" | "failed" | "stopped" | "interrupted" | "new" | "unavailable";
 	cost: number; partial: boolean; creatingOwnerId?: string; name?: string; firstMessage?: string;
@@ -226,22 +228,46 @@ export function assertOperation(descriptor: Pick<RuntimeDescriptor, "operations"
 		throw new ContractError(`Incompatible operation: ${member}`, "incompatible");
 	return local;
 }
-export type RetainedMethod = "snapshot" | "inspect" | "collaboration-list" | "collaboration-read";
+export type RetainedMethod = "snapshot" | "inspect" | "collaboration-list" | "collaboration-read" | 'recents';
+export type RetainedResponses = Responses & {recents: RecentConversations};
+export function assertRetainedOperation(descriptor: Pick<RuntimeDescriptor, 'operations'>, member: RetainedMethod): OperationContract {
+  if(member !== 'recents')return assertOperation(descriptor,member);
+  const remote=descriptor.operations.recents;
+  requireValue(durable && remote?.request===RECENTS_OPERATION.request && remote.response===RECENTS_OPERATION.response && remote.durable===durable,'Incompatible retained Recents operation');
+  return remote;
+}
+export function recentActivity(value: unknown): RecentActivity {
+  const o=object(json(value));only(o,['creator','createdAt','lastUserAt','lastAnswerAt','hasMessages']);
+  choice(o.creator,['operator','agent','unknown']);optional(o,['createdAt','lastUserAt','lastAnswerAt'],v=>integer(v));optional(o,['hasMessages'],boolean);
+  return o as RecentActivity;
+}
+function recentConversations(value:unknown,params:JsonObject):RecentConversations {
+  const o=object(json(value));only(o,['items']);
+  const requested=recentParams(params).conversationIds as number[],seen=new Set<number>();
+  array(o.items,item=>{const row=object(item);only(row,['conversationId','activity']);integer(row.conversationId,1);requireValue(requested.includes(row.conversationId)&&!seen.has(row.conversationId),'Wrong or duplicate Recents conversation');seen.add(row.conversationId);recentActivity(row.activity);},RECENTS_CONVERSATION_LIMIT);
+  requireValue(seen.size===requested.length,'Missing Recents conversations');
+  return o as RecentConversations;
+}
+function recentParams(value:unknown):JsonObject {
+  const params=object(json(value));only(params,['conversationIds']);
+  array(params.conversationIds,id=>integer(id,1),RECENTS_CONVERSATION_LIMIT);
+  const ids=params.conversationIds as number[];requireValue(ids.length>0&&new Set(ids).size===ids.length,'Invalid Recents batch');return params;
+}
 export type RetainedDescriptor = {version: "retained-read/1.0.0"; upstream: RuntimeDescriptor["upstream"];
 	operations: Record<RetainedMethod, OperationContract>};
 export type RetainedFailure = {ok: false; error: {code: string; message: string; retryable: boolean}};
 const retainedErrors: Readonly<Record<string, boolean>> = Object.freeze({invalid_request:false, incompatible:false,
 	not_found:false, source_changed:true, source_unreadable:false, limit_exceeded:false, timeout:true, cancelled:false, internal:false});
-export function decodeRetainedDescriptor(value: unknown, collaboration = false): RetainedDescriptor {
+export function decodeRetainedDescriptor(value: unknown, collaboration: boolean | 'recents' = false): RetainedDescriptor {
 	const o = object(json(value)); only(o, ["version", "upstream", "operations"]);
 	if (o.version !== "retained-read/1.0.0") throw new ContractError("Incompatible retained reader version", "incompatible");
 	const upstream = object(o.upstream); only(upstream, ["codingAgent", "durable"]);
 	fields(upstream, ["codingAgent", "durable"], v => semver(v));
-	const members = collaboration ? ["collaboration-list", "collaboration-read"] as const : ["snapshot", "inspect"] as const;
+	const members = collaboration === 'recents' ? ['recents'] as const : collaboration ? ["collaboration-list", "collaboration-read"] as const : ["snapshot", "inspect"] as const;
 	const operations = object(o.operations); only(operations, [...members]);
 	for (const member of members) {
 		const parsed = operation(operations[member]);
-		requireValue(collaboration ? parsed.durable === undefined : parsed.durable === upstream.durable, "Reader Durable identity disagrees with its operation");
+		requireValue(collaboration === true ? parsed.durable === undefined : parsed.durable === upstream.durable, "Reader Durable identity disagrees with its operation");
 	}
 	return o as unknown as RetainedDescriptor;
 }
@@ -253,7 +279,8 @@ export function retainedTarget(value: unknown): {storageId: string; conversation
 export function decodeRetainedParams(member: RetainedMethod, value: unknown, targetIdentity: string): JsonObject {
 	const target = retainedTarget(targetIdentity);
 	const collaboration = member === "collaboration-list" || member === "collaboration-read";
-	requireValue(collaboration || member === "snapshot" || member === "inspect", "Unsupported retained method");
+	requireValue(collaboration || member === "snapshot" || member === "inspect" || member === 'recents', "Unsupported retained method");
+  if(member==='recents'){requireValue(target.conversationId===1,'Recents batches require a bare storage identity');return recentParams(value);}
 	if (collaboration) requireValue(target.conversationId === 1, "Collaboration requires a bare storage identity");
 	const params = object(json(value));
 	requireValue(params.sessionId === undefined && params.conversationId === undefined, "Target belongs in the retained envelope");
@@ -273,7 +300,7 @@ function retainedInspectParams(params: JsonObject): void {
 	if (params.view === "exact") integer(params.entryId, 1);
 	if (params.view === "search") string(params.query, 256);
 }
-export function decodeRetainedResponse<M extends RetainedMethod>(member: M, value: unknown, id: string, targetIdentity: string, params: JsonObject = {}): {ok: true; result: Responses[M]} | RetainedFailure {
+export function decodeRetainedResponse<M extends RetainedMethod>(member: M, value: unknown, id: string, targetIdentity: string, params: JsonObject = {}): {ok: true; result: RetainedResponses[M]} | RetainedFailure {
 	const o = object(json(value));
 	requireValue(o.version === "retained-read/1.0.0" && o.id === id, "Wrong retained response correlation");
 	boolean(o.ok);
@@ -288,11 +315,12 @@ export function decodeRetainedResponse<M extends RetainedMethod>(member: M, valu
 	const parsed = retainedTarget(targetIdentity);
 	requireValue(o.method === member && o.sessionId === targetIdentity && o.storageId === parsed.storageId && o.conversationId === parsed.conversationId, "Wrong retained response target");
 	if (member === "inspect" && params.view !== undefined) requireValue(object(o.result).view === params.view, "Wrong retained inspection view");
-	const result = decodeResponse(member, o.result, {identity: targetIdentity, ...(typeof params.requestId === "string" ? {requestId:params.requestId} : {})});
+	if(member==='recents')return {ok:true,result:recentConversations(o.result,params) as RetainedResponses[M]};
+  const result = decodeResponse(member as Exclude<RetainedMethod,'recents'>, o.result, {identity: targetIdentity, ...(typeof params.requestId === "string" ? {requestId:params.requestId} : {})}) as RetainedResponses[M];
 	retainedCollaborationContext(member, result, params, parsed.storageId);
 	return {ok: true, result};
 }
-function retainedCollaborationContext(member: RetainedMethod, result: Responses[RetainedMethod], params: JsonObject, storageId: string): void {
+function retainedCollaborationContext(member: RetainedMethod, result: RetainedResponses[RetainedMethod], params: JsonObject, storageId: string): void {
 	if (member === "collaboration-list") {
 		const list = result as ThreadList;
 		requireValue(list.items.length <= (typeof params.limit === "number" ? params.limit : 10), "Too many retained threads");

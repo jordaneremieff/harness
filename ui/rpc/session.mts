@@ -463,7 +463,8 @@ export class PrimarySession {
       }
       if (typeof result.cancelled !== 'boolean') throw new RpcError('protocol_error', 'Invalid session transition result.', true);
       if (!result.cancelled) {
-        this.dialogs.expireAll('epoch-changed'); this.view.epoch++; this.stats.clear(); this.projection.reset(); this.view.activity = 'unknown';
+        this.dialogs.expireAll('epoch-changed'); this.view.epoch++; this.stats.clear(); this.projection.reset(); delete this.view.createdAt; this.view.activity = 'unknown';
+        if (body.action === 'new' || body.action === 'fork') this.view.createdAt = Date.now();
         this.view.extension = { statuses: {}, widgets: {} }; await this.refreshState(); await this.client.setEpoch?.(this.view.epoch, this.view.sessionFile); await this.resynchronize();
       }
       return result;

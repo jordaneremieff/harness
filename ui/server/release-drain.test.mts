@@ -99,9 +99,8 @@ test('a release drain captures only owner-held primaries and skips a session who
   const [owned, denied] = transports as [OwnedTransport, RefusedTransport];
   const attached = owned.captures; assert.equal(attached, 1, 'attachment captured the live primary once');
 
-  // The refused open stays a session: failed, never exited, no owner primary behind it.
-  assert.equal(registry.primary(refused).view.lifecycle, 'failed');
-  assert.equal(registry.primary(refused).client.exited, false);
+  assert.throws(()=>registry.primary(refused),{code:'not_ready'});
+  assert.equal((await registry.store.readPrimaries()).some(view=>view.key===refused),false);
   assert.equal(registry.primary(ready).view.lifecycle, 'ready');
   assert.deepEqual(registry.ownedSessions().map(session => session.view.key), [ready]);
 

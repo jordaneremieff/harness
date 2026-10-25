@@ -2,6 +2,20 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { EventProjection, model } from './events.mts';
 
+test('unchanged owner wire messages supply actual activity without new owner fields',()=>{
+  const {projection}=create();
+  const saved={role:'user',timestamp:100,content:'A real prompt'};
+  projection.snapshot({entries:[{id:'u',parentId:null,type:'message',timestamp:new Date(100).toISOString(),message:saved}],leafId:'u'});
+  assert.equal(projection.view.lastUserAt,100);assert.equal(projection.view.hasMessages,true);
+  for(const [timestamp,stopReason,content] of [[200,'toolUse',[{type:'text',text:'I will use a tool'},{type:'toolCall',id:'t',name:'read',arguments:{}}]],[300,'stop',[{type:'thinking',thinking:'not an answer'}]],[400,'error',[{type:'text',text:'failed'}]],[500,'stop',[{type:'text',text:'The actual answer'}]]] as const){
+    projection.reduce({type:'message_start',message:{role:'assistant',timestamp,content:[]}});
+    projection.reduce({type:'message_end',message:{role:'assistant',timestamp,stopReason,content}});
+    assert.equal(projection.view.lastAnswerAt,timestamp===500?500:undefined);
+  }
+  projection.reduce({type:'agent_settled'});assert.equal(projection.view.lastAnswerAt,500);
+  projection.reset();assert.equal(projection.view.lastUserAt,undefined);assert.equal(projection.view.lastAnswerAt,undefined);assert.equal(projection.view.hasMessages,false);
+});
+
 test('model resources retain exact supported thinking levels from Pi capability maps',()=> {
   const base={provider:'fixture',id:'model',name:'Fixture',reasoning:true,input:['text']};
   assert.deepEqual(model(base).thinkingLevels,['off','minimal','low','medium','high']);

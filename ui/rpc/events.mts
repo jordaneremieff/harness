@@ -97,12 +97,14 @@ export class EventProjection {
     if (this.retryEnd?.revision === revision && !this.retryEnd.success && this.view.responseOutcome === 'failed') { this.view.responseOutcome = 'stopped'; this.state(); }
   }
   reset(): void {
+    delete this.view.lastUserAt; delete this.view.lastAnswerAt; this.view.hasMessages = false;
     this.manualCompactionEndRevision = undefined; this.clearRetry(); delete this.view.responseOutcome;
     this.entries = []; this.messages = []; this.ids.clear(); this.counts.clear(); this.active = undefined; this.activeSignature = undefined; this.bytes = 0;
     this.sizes.clear(); this.toolArgs.clear(); this.rawMessages.clear(); this.endedMessages.clear(); this.coverage = { complete: true, truncated: false, omitted: 0 };
   }
   exportSnapshot(): ProjectedSnapshot { return { projected: true, entries: this.entries, signatures: [...this.ids], sizes: [...this.sizes], coverage: this.coverage, rawMessages: [...this.rawMessages] }; }
   private install(snapshot: ProjectedSnapshot): void {
+    if(snapshot.coverage.complete)this.view.hasMessages=false;
     const incoming = new Map(snapshot.signatures.map(([signature, id]) => [id, signature]));
     this.rawMessages = new Map(snapshot.rawMessages);
     this.counts.clear();
@@ -113,14 +115,14 @@ export class EventProjection {
       for (const message of entry.messages ?? []) {
         const signature = incoming.get(message.id);
         if (signature) { const id = this.ids.get(signature) ?? message.id; this.ids.set(signature, id); message.id = id; }
-        this.messages.push(message);
+        this.messages.push(message); this.noteActivity(message);
       }
     }
   }
   snapshot(value: unknown, beforeEntryId?: string): void {
     const snapshot = object(value);
     if (snapshot.projected === true) { this.install(snapshot as unknown as ProjectedSnapshot); return; }
-    const ordered = activeBranch(snapshot);
+    const ordered = activeBranch(snapshot);this.view.hasMessages=false;
     this.entries = []; this.messages = []; this.bytes = 0; this.sizes.clear(); this.counts.clear(); this.rawMessages.clear();
     const cutoff = beforeEntryId === undefined ? ordered.length : ordered.findIndex((entry) => entry.id === beforeEntryId);
     if (cutoff < 0) throw new RpcError('history_limit', 'History anchor is absent from the active branch.');
@@ -130,7 +132,7 @@ export class EventProjection {
         const id = this.ids.get(signature) ?? `message:${text(entry.id)}`;
         this.ids.set(signature, id);
         const message = projectMessage(m, id, 'final', {entryId: text(entry.id), message: 0}, {communicationSource: {entryId: text(entry.id), timestamp: entry.timestamp}}); this.messages.push(message);
-        this.put({ id: text(entry.id), kind: 'message', messages: [message] });
+        this.noteActivity(message); this.put({ id: text(entry.id), kind: 'message', messages: [message] });
       } else this.put(projectEntry(entry, text(entry.id)));
     }
   }
@@ -195,6 +197,14 @@ export class EventProjection {
     if(!ids.includes(id))ids.push(id);this.endedMessages.set(fingerprint,ids);
     while(this.endedMessages.size>128)this.endedMessages.delete(this.endedMessages.keys().next().value as string);
   }
+  private noteActivity(message: MessageView): void {
+    if (message.role !== 'user' && message.role !== 'assistant') return;
+    this.view.hasMessages = true;
+    const at = message.timestamp;
+    if (at === undefined || !Number.isFinite(at) || message.state !== 'final') return;
+    if (message.role === 'user') this.view.lastUserAt = Math.max(this.view.lastUserAt ?? -Infinity, at);
+    else if (['stop', 'length'].includes(message.stopReason ?? '') && !message.error && message.parts.some(part => part.type === 'text' && part.text.trim()) && !message.parts.some(part => part.type === 'toolCall')) this.view.lastAnswerAt = Math.max(this.view.lastAnswerAt ?? -Infinity, at);
+  }
   private message(event: RpcRecord, replaySignature?: string): void {
         const raw = object(event.message); const base = key(raw);
         const ordinal = event.type === 'message_start' ? this.counts.get(base) ?? 0 : Math.max(0, (this.counts.get(base) ?? 1) - 1);
@@ -209,7 +219,7 @@ export class EventProjection {
         }
         if (event.type === 'message_end') this.rememberEnded(raw,id);
         const message = projectMessage(raw, id, event.type === 'message_start' ? 'partial' : 'final');
-        this.save(message); this.emit('primary.message', { message });
+        this.noteActivity(message); this.save(message); this.emit('primary.message', { message });
         this.responseOutcome(event.type, message);
         if (event.type === 'message_end' && this.active === id) { this.active = undefined; this.activeSignature = undefined; this.toolArgs.clear(); }
         return;
@@ -259,7 +269,7 @@ export class EventProjection {
       const id = ids?.shift() ?? `message:${entryId}`;
       if (ids && !ids.length) this.endedMessages.delete(fingerprint);
       const message = projectMessage(messageRaw, id, 'final', {entryId, message: 0}, {communicationSource: {entryId, timestamp: raw.timestamp}});
-      this.rememberRaw(fingerprint);this.installCommittedMessage(entryId,message);return;
+      this.noteActivity(message);this.rememberRaw(fingerprint);this.installCommittedMessage(entryId,message);this.state();return;
     }
     const entry = projectEntry(raw); this.put(entry); this.emit('primary.entry', {entry});
   }

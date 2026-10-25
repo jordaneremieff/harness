@@ -39,6 +39,15 @@ async function ready(store: SessionStore, project: string, cursor?: string | nul
 }
 const code = (expected: string) => (error: unknown) => error instanceof ApiError && error.code === expected;
 
+test('an unchanged native file supplies creation and activity to the current backend',async t=>{
+  const {store,project,dir}=await setup(t),createdAt='2026-10-20T00:00:00.000Z',lastUserAt='2026-10-21T00:00:00.000Z',lastAnswerAt='2026-10-22T00:00:00.000Z';
+  const header=line({type:'session',version:3,id:'native',cwd:project,timestamp:createdAt});
+  const path=join(dir,'native.jsonl');await writeFile(path,header);let page=await ready(store,project);
+  assert.equal(page.items[0].createdAt,createdAt);assert.equal(page.items[0].hasMessages,false);
+  await appendFile(path,line({type:'message',timestamp:lastUserAt,message:{role:'user',timestamp:Date.parse(lastUserAt),content:'A real prompt'}})+line({type:'message',timestamp:lastAnswerAt,message:{role:'assistant',timestamp:Date.parse(lastAnswerAt),content:[{type:'text',text:'The answer'}],stopReason:'stop'}}));
+  page=await ready(store,project);assert.equal(page.items[0].createdAt,createdAt);assert.equal(page.items[0].lastUserAt,lastUserAt);assert.equal(page.items[0].lastAnswerAt,lastAnswerAt);assert.equal(page.items[0].hasMessages,true);
+});
+
 test('latest names, explicit clears, excerpts, and malformed records follow bounded JSONL rules', async t => {
   const {store, project, save, dir} = await setup(t);
   await save('named', user('first user') + named('older') + named('  newest\n name  '));
@@ -314,7 +323,7 @@ test('title completion preserves captured metadata and starts only current-page 
   assert.ok(first.items.every(item => item.titleState === 'pending'));
   const completed = await store.titles(project, first.titleCursor);
   assert.equal(completed.titleCursor, null); assert.ok(completed.items.every(item => item.titleState === 'ready' && item.titleSource === 'prompt'));
-  const metadata = (items: typeof first.items) => items.map(({title: _title, titleSource: _source, titleState: _state, ...item}) => item);
+  const metadata = (items: typeof first.items) => items.map(({title: _title, titleSource: _source, titleState: _state, hasMessages: _messages, lastUserAt: _user, lastAnswerAt: _answer, ...item}) => item);
   assert.deepEqual(metadata(completed.items), metadata(first.items));
   assert.equal(completed.nextCursor, first.nextCursor); assert.equal(completed.observedAt, first.observedAt);
   const more = await store.sessions(project, first.nextCursor);

@@ -1,3 +1,4 @@
+import {RECENTS_CONVERSATION_LIMIT,type RecentConversations} from '../../extensions/agent/recents.ts';
 import { resolve } from "node:path";
 import { Worker } from "node:worker_threads";
 import { setImmediate as yieldTurn } from "node:timers/promises";
@@ -12,16 +13,27 @@ export type { CatalogPage, CatalogRow, CatalogScan } from "./catalog-state.mts";
 export interface AgentCatalogOptions {
 	store: string;
 	onChange?: (page: CatalogPage) => void;
+  readRecents?: (identity:string,conversationIds:number[]) => Promise<RecentConversations>;
 }
 interface Pending {
 	resolve: (value: CatalogScan) => void;
 	reject: (error: Error) => void;
 }
 
+function recentIds(entry:CatalogEntry):number[] {
+  const ids=new Set<number>();
+  for(const row of entry.rows){try {const target=retainedTarget(row.id);if(target.storageId===entry.record.storageId)ids.add(target.conversationId);}catch{}}
+  return [...ids].slice(0,RECENTS_CONVERSATION_LIMIT);
+}
 /** Paging stays cached; exact misses request bounded named reads without a host. */
 export class AgentCatalog {
 	private readonly worker: Worker;
 	private readonly onChange?: (page: CatalogPage) => void;
+  private readonly readRecents?: AgentCatalogOptions['readRecents'];
+  private readonly recentsPending = new Set<string>();
+  private readonly recentsReading = new Set<string>();
+  private recentsActive = 0;
+  private recentsTimer?: ReturnType<typeof setTimeout>;
 	private readonly entries = new Map<string, CatalogEntry>();
 	private rows: CatalogRow[] = [];
 	private incompletePublications = 0;
@@ -42,7 +54,7 @@ export class AgentCatalog {
 	private closing?: Promise<void>;
 	constructor(options: AgentCatalogOptions) {
 		if (!options.store) throw new Error("Catalog store is required");
-		this.onChange = options.onChange;
+		this.onChange = options.onChange;this.readRecents=options.readRecents;
 		this.worker = new Worker(new URL("./catalog-worker.mts", import.meta.url), {
 			workerData: { store: resolve(options.store) },
 		});
@@ -100,6 +112,7 @@ export class AgentCatalog {
 			.filter((id) => !ids.has(id));
 		for (const id of update.removed) this.removeEntry(id);
 		for (const entry of update.entries) {
+      this.retainRecents(entry);
 			this.removeEntry(entry.record.storageId);
 			this.entries.set(entry.record.storageId, entry);
 			if (!entry.record.view?.coverage.complete || entry.record.view.unavailable) this.incompletePublications++;
@@ -110,8 +123,42 @@ export class AgentCatalog {
 		this.stale = update.stale;
 		this.observedAt = update.observedAt;
 		this.revision++;
-		await this.publishDeltas(changed, removed);
+		await this.publishDeltas(changed, removed);this.pumpRecents();
 	}
+  private retainRecents(entry:CatalogEntry):void {
+    const prior=this.entries.get(entry.record.storageId);
+    entry.recentsReadAt=prior?.recentsReadAt;entry.recentsRevision=prior?.recentsRevision;
+    const previous=new Map(prior?.rows.map(row=>[row.id,row.recents]));
+    for(const row of entry.rows){const retained=previous.get(row.id);if(retained)row.recents={...retained,...row.recents};}
+    const ids=recentIds(entry),root=entry.rows.find(row=>row.id===entry.record.storageId);
+    if(!ids.length||!ids.some(id=>id!==1)&&root?.recents?.creator!=='operator')return;
+    if(entry.recentsRevision!==entry.record.view?.updatedAt||!entry.recentsReadAt)this.recentsPending.add(entry.record.storageId);
+  }
+  /** One retained snapshot enriches published conversations per storage after publication changes. */
+  private pumpRecents():void {
+    if(this.closed||!this.readRecents)return;
+    if(this.recentsTimer){clearTimeout(this.recentsTimer);this.recentsTimer=undefined;}
+    let delay=Infinity;
+    for(const id of this.recentsPending){
+      if(this.recentsActive>=2)break;
+      if(this.recentsReading.has(id))continue;
+      const entry=this.entries.get(id);
+      if(!entry){this.recentsPending.delete(id);continue;}
+      const wait=(entry.recentsReadAt??-Infinity)+30_000-Date.now();
+      if(wait>0){delay=Math.min(delay,wait);continue;}
+      this.recentsPending.delete(id);entry.recentsReadAt=Date.now();entry.recentsRevision=entry.record.view?.updatedAt;
+      this.recentsActive++;this.recentsReading.add(id);
+      void this.readRecents(id,recentIds(entry)).then(facts=>this.applyRecents(id,facts)).catch(()=>{}).finally(()=>{this.recentsActive--;this.recentsReading.delete(id);this.pumpRecents();});
+    }
+    if(Number.isFinite(delay)&&this.recentsActive<2)this.recentsTimer=setTimeout(()=>{this.recentsTimer=undefined;this.pumpRecents();},delay);
+  }
+  private async applyRecents(id:string,facts:RecentConversations):Promise<void> {
+    const current=this.entries.get(id);if(this.closed||!current)return;
+    const changed:CatalogRow[]=[];
+    for(const item of facts.items){const identity=item.conversationId===1?id:`${id}:${item.conversationId}`,row=current.rows.find(value=>value.id===identity);if(row){row.recents=item.activity;changed.push(row);}}
+    this.rows=[...this.entries.values()].flatMap(value=>value.rows).sort(compareRosterRows);this.revision++;
+    await this.publishDeltas(changed,[]);
+  }
 	private async publishDeltas(changed: CatalogRow[], removed: string[]): Promise<void> {
 		let rows: CatalogRow[] = [],
 			ids: string[] = [],
@@ -223,7 +270,7 @@ export class AgentCatalog {
 	}
 	close(): Promise<void> {
 		if (this.closing) return this.closing;
-		this.closed = true;
+		this.closed = true;if(this.recentsTimer)clearTimeout(this.recentsTimer);this.recentsPending.clear();
 		this.closing = (async () => {
 			try {
 				if (!this.exited) await this.request("close");

@@ -69,7 +69,7 @@ test('recipient switches retire the old projection visibility while retaining ea
     await seed(`retention-projection-${visible}`, [a, b], 'Exact native draft', visible);
     if(visible){
       const width=f.host.viewport;f.host.viewport=2400;app.renderNavigation();await settle();app.openTabsList('primary-pane');const split=f.hostDocument.body.querySelector('.context-menu')?.querySelectorAll('button').find(row=>row.textContent==='Split right');assert.ok(split);split.click();await settle();
-      const row=byId('recent-sessions').querySelector(`.sidebar-content-row[data-session-key="agent:${a}"]`);assert.ok(row);row.click();await settle();f.host.viewport=width;app.renderNavigation();await settle();
+      app.showNavigationView('agents');const row=app.state.roster.get(a);assert.ok(row);await app.selectAgent(row);await settle();app.showNavigationView('sessions');f.host.viewport=width;app.renderNavigation();await settle();
     }
     const first = await open(a), firstChain = ancestors(first), firstRoot = first.closest('.conversation'); assert.ok(firstRoot);
     const second = await open(b), secondChain = ancestors(second), secondRoot = second.closest('.conversation'); assert.ok(secondRoot);

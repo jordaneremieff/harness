@@ -95,7 +95,9 @@ export type ProviderBlock = {blockId: string; conversationId: number; providerSe
   model: {provider: string; modelId: string}; error: string; errorRedacted: boolean; errorTruncated: boolean;
   source: 'provider' | 'host-block'; timestamp: number; originalResults: {sessionId: string; submissionId: number; requestId?: string}[]; omittedOriginalResults: number};
 /** Public process state. Stderr is available only through diagnostics. */
-export type PrimaryView = {key: string; epoch: number; cwd: string;
+/** Retained message times, never observation or file modification times. Missing creation remains unknown. */
+export type ConversationActivity = {createdAt?: number; lastUserAt?: number; lastAnswerAt?: number; hasMessages?: boolean};
+export type PrimaryView = ConversationActivity & {key: string; epoch: number; cwd: string;
   lifecycle: 'starting' | 'ready' | 'switching' | 'stopping' | 'stopped' | 'failed';
   activity: 'unknown' | 'idle' | 'running' | 'compacting' | 'retrying';
   sessionId?: string; sessionFile?: string; sessionName?: string; pid?: number;
@@ -229,7 +231,7 @@ export type AgentCommandList = {items: {name: string; description: string; sourc
 /** The most a command result keeps; a longer result is cut and says so. */
 export const COMMAND_RESULT_BYTES = 16 * 1024;
 /** Published metadata and claim state, not an assertion of fresh native idle state. */
-export type AgentRow = {identity: string; storageId: string; cwd: string; name?: string; handle?: string; role?: string;
+export type AgentRow = {recents?: ConversationActivity & {creator:'operator'|'agent'|'unknown'}; identity: string; storageId: string; cwd: string; name?: string; handle?: string; role?: string;
   modifiedAt: number; state: string; owner: 'here' | 'unavailable' | 'unknown';
   availability: 'live' | 'stored' | 'unavailable' | 'incompatible';
   model?: {provider: string; modelId: string; thinkingLevel?: string};
@@ -353,7 +355,7 @@ export const ROUTES = [
 ] as const;
 
 /** `writer: 'live'` means a terminal session may still be writing the file; its absence is proof of release for the files this backend does not own. */
-export type SavedSession = {writer?: 'live'; id: string; path: string; revision: string; project: string; title: string; titleSource?: 'name' | 'prompt'; titleState?: 'pending' | 'ready' | 'unavailable'; lastUserAt?: string; modifiedAt: string; size: number};
+export type SavedSession = {writer?: 'live'; id: string; path: string; revision: string; project: string; title: string; titleSource?: 'name' | 'prompt'; titleState?: 'pending' | 'ready' | 'unavailable'; createdAt?: string; lastUserAt?: string; lastAnswerAt?: string; hasMessages?: boolean; modifiedAt: string; size: number};
 export type SavedSessionRead = {session: SavedSession; entries: EntryView[]; coverage: DisplayCoverage; leaf: string | null; before: string | null; observedAt: string};
 export type RecentProject = {path: string; name: string; modifiedAt: string};
 export type SavedSessionPage = {items: SavedSession[]; total: number; omitted: number; nextCursor: string | null; titleCursor: string | null; observedAt: string};

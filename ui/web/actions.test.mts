@@ -30,6 +30,12 @@ const workspaceReady = {snapshot: () => ({primaries: [primary], workspace: {}}) 
 function context(overrides: Partial<ActionContext> = {}): ActionContext {
   return {newSession: () => {}, agentPresentation: row => ({name: row.name ?? 'Unnamed conversation', activity: 'Running', tone: 'secondary', cwd: row.cwd}), snapshot: () => undefined, primary: () => primary, composer: {commandsChanged: () => {}} as ActionContext['composer'], commandsChanged: () => {overrides.composer?.commandsChanged?.();}, modal: {} as ActionContext['modal'], selection: async () => undefined, reload: async () => undefined, result: () => undefined, rosterRefresh: () => undefined, filesRefresh: () => undefined, hasTranscript: () => !!(overrides.primary ?? (() => primary))(), find: () => undefined, recovery: () => undefined, primaryEntries: () => [], agents: () => [], selectedAgent: () => undefined, agentStatus: row => row.availability === 'live' ? row.state : row.availability, selectAgent: () => {}, selectPrimary: () => {}, notices: () => {}, sidebar: () => {}, sidebarShown: () => true, view: () => {}, copyAgent: () => {}, inspectAgent: () => {}, readSession: () => {}, ...overrides};
 }
+test('Commands opens the existing Agents destination without a refresh or selection',()=>{
+  let opened=0,refreshed=0;
+  const actions=new Actions(context({openAgents:()=>{opened++;},rosterRefresh:()=>{refreshed++;}}));
+  const entry=actions.paletteEntries().find(item=>item.name==='Agents');assert.ok(entry);assert.equal(entry.enabled,true);entry.run();assert.equal(opened,1);assert.equal(refreshed,0);
+});
+
 test('model catalog absence disables choices without discarding exact thinking metadata',async()=> {
   const current={...primary,model:{provider:'fixture',id:'model',name:'Fixture',reasoning:true,input:['text'],thinkingLevels:['off','high']}};
   for(const state of ['empty','failed','loaded']){

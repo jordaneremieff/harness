@@ -59,6 +59,7 @@ const root = fileURLToPath(new URL('../../', import.meta.url));
 const ui = path.join(root, 'ui');
 const transport = path.join(root, 'transport');
 const publicTransport = path.join(transport, 'index.ts');
+const publicAgentRecents = path.join(root, 'extensions', 'agent', 'recents.ts');
 /** The documented public runtime interface (runtime/README.md): the client and its request contract. Nothing else in runtime/ is importable from the UI. */
 const runtimeDir = path.join(root, 'runtime');
 const runtimeInterface = new Set(['client.mts', 'contract.mts'].map(name => path.join(runtimeDir, name)));
@@ -162,8 +163,9 @@ function checkLocal(filename: string, specifier: string, files: ReadonlyMap<stri
     if (!resolved.startsWith(`${transport}${path.sep}`)) return `transport escape: ${specifier}`;
   } else if (!resolved.startsWith(`${ui}${path.sep}`)) {
     const publicAgentTransport = filename.startsWith(`${path.join(ui, 'agents')}${path.sep}`) && specifier === '../../transport/index.ts' && resolved === publicTransport;
+    const publicRecents = filename.startsWith(`${path.join(ui, 'agents')}${path.sep}`) && specifier === '../../extensions/agent/recents.ts' && resolved === publicAgentRecents;
     const publicRuntime = filename.startsWith(`${path.join(ui, 'server')}${path.sep}`) && /^\.\.\/\.\.\/runtime\/(?:client|contract)\.mts$/.test(specifier) && runtimeInterface.has(resolved);
-    if (!publicAgentTransport && !publicRuntime) return `harness escape: ${specifier}`;
+    if (!publicAgentTransport && !publicRecents && !publicRuntime) return `harness escape: ${specifier}`;
   }
   return target(filename, specifier, files) ? undefined : `missing local source: ${specifier}`;
 }
@@ -241,7 +243,7 @@ async function sources(directories = [ui, transport], maxVisits = 768, maxBytes 
     } finally {await file.close();}
   }
   for (const directory of directories) await walk(directory);
-  if (directories.includes(ui)) for (const filename of runtimeInterface) admit(filename);
+  if (directories.includes(ui)) {for (const filename of runtimeInterface) admit(filename);admit(publicAgentRecents);}
   for (const filename of [...filenames].sort()) {
     const value = await readAnalysis(filename); files.set(filename, value.info);
     peakBytes = Math.max(peakBytes, retainedBytes + value.sourceBytes + value.analysisBytes);
@@ -356,6 +358,23 @@ test('only the named public transport entrypoint crosses the agent UI boundary',
   assert.ok(check(files, runtime, new Set()).some(error => error.includes('transport escape')));
   const browser = path.join(ui, 'web', 'fixture.ts'); files.set(browser, analyze("import '../../transport/index.ts';", browser));
   assert.ok(check(files, runtime, new Set()).some(error => error.includes('browser server graph')));
+});
+
+test('only the public Recents contract crosses the agent UI boundary', () => {
+  const agent = path.join(ui, 'agents', 'fixture.mts');
+  const files = new Map([[agent, analyze("import '../../extensions/agent/recents.ts';", agent)],
+    [publicAgentRecents, analyze('export const RECENTS_CONVERSATION_LIMIT = 200;', publicAgentRecents)]]);
+  assert.deepEqual(check(files, new Set(), new Set()), []);
+  for (const specifier of ['../../extensions/agent/durable-observation.ts', '../../extensions/agent/./recents.ts']) {
+    files.set(agent, analyze(`import ${JSON.stringify(specifier)};`, agent));
+    assert.ok(check(files, new Set(), new Set()).some(error => error.includes('harness escape')), specifier);
+  }
+  files.delete(agent);
+  for (const other of [path.join(ui, 'web', 'fixture.ts'), path.join(ui, 'server', 'fixture.mts')]) {
+    files.set(other, analyze("import '../../extensions/agent/recents.ts';", other));
+    assert.ok(check(files, new Set(), new Set()).some(error => error.includes('harness escape')), other);
+    files.delete(other);
+  }
 });
 
 test('only the documented public runtime interface crosses the server UI boundary', () => {

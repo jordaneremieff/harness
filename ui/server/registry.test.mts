@@ -3,6 +3,7 @@ import { ChildProcess, spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, realpath, rm, unlink, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import {fileURLToPath} from 'node:url';
 import { PassThrough } from 'node:stream';
 import test, { type TestContext } from 'node:test';
 import { AgentError, type AgentServiceOptions, type CatalogPage } from '../agents/index.mts';
@@ -75,6 +76,29 @@ async function fixture(context: TestContext) {
   return {cwd, counts, options, open};
 }
 
+test('a failed new primary leaves no retained Recents placeholder',async t=>{
+  const setup=await fixture(t);
+  setup.options.primary=options=>{
+    const value=new Primary(options,setup.counts);
+    value.start=async()=>{value.view.lifecycle='failed';throw new Error('The primary capacity is full.');};
+    return value;
+  };
+  const registry=await setup.open(),key=await registry.openPrimary(setup.cwd);
+  await assert.rejects(registry.waitPrimaryReady(key),/capacity is full/);
+  assert.equal(registry.sessions.has(key),false);assert.equal(registry.saved.has(key),false);
+  assert.deepEqual(await registry.store.readPrimaries(),[]);
+});
+
+test('retained creation comes from the saved header while historical fileless creation stays unknown',async t=>{
+  const setup=await fixture(t),registry=await setup.open(),path=join(setup.cwd,'saved.jsonl'),at='2026-10-20T00:00:00.000Z';
+  await writeFile(path,`${JSON.stringify({type:'session',version:3,id:'fixture-session',cwd:setup.cwd,timestamp:at})}\n`);
+  const key=await registry.openPrimary(setup.cwd,path);assert.equal(registry.primary(key).view.createdAt,Date.parse(at));
+  await registry.primary(key).close();
+  const saved=await registry.store.readPrimaries();await registry.store.savePrimaries([...saved,{key:'old-empty',epoch:1,cwd:setup.cwd,lifecycle:'stopped',activity:'unknown',pendingDialogs:[],pendingOperationIds:[],capabilities:{}}]);
+  await registry.close();
+  const resumed=await setup.open();assert.equal(resumed.saved.get('old-empty')?.createdAt,undefined);
+});
+
 test('managed roots retain separate readers and reject a changed source or dependency route',async t=>{
   const setup=await fixture(t),added:{root:string;readerPath?:string}[]=[];
   const adapter=fakeAgents()();adapter.addStore=(root,readerPath)=>{added.push({root,readerPath});};adapter.refresh=async()=>empty.scan;
@@ -89,7 +113,7 @@ test('managed roots retain separate readers and reject a changed source or depen
   await registry.addManagedRoot(earlier.root,earlier.sourceRoot,earlier.packageDir);
   await registry.addManagedRoot(current.root,current.sourceRoot,current.packageDir);
   await registry.addManagedRoot(earlier.root,earlier.sourceRoot,earlier.packageDir);
-  assert.deepEqual(added,[earlier,current].map(value=>({root:value.root,readerPath:join(value.sourceRoot,'extensions/agent/retained-read.ts')})));
+  assert.deepEqual(added,[earlier,current].map(value=>({root:value.root,readerPath:fileURLToPath(new URL('../../extensions/agent/retained-read.ts',import.meta.url))})));
   await assert.rejects(registry.addManagedRoot(earlier.root,current.sourceRoot,earlier.packageDir),{code:'source_conflict'});
   await assert.rejects(registry.addManagedRoot(earlier.root,earlier.sourceRoot,current.packageDir),{code:'source_conflict'});
   assert.equal(setup.counts.started,0);

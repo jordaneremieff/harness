@@ -25,8 +25,8 @@ import { dispatchAgent } from './routes-agent.mts';
 import { dispatchThreads } from './routes-threads.mts';
 import { dispatchView } from './routes-view.mts';
 import { dispatchSessionMetadata } from './session-metadata.mts';
-import { managedAgentEntrypoint, StoredAgentStarter, startIdentity, type StartOptions } from './agent-start.mts';
-import { savedSessionId, validateSessionProject } from './sessions.mts';
+import { retainedReaderPath, StoredAgentStarter, startIdentity, type StartOptions } from './agent-start.mts';
+import { savedSessionCreatedAt, savedSessionId, validateSessionProject } from './sessions.mts';
 import type {Control} from './control.mts';
 import type {OwnerConnection} from './owner-client.mts';
 import type {OwnerDescriptor, OwnerStateIdentity, OwnerRecovery} from '../shared/owner.ts';
@@ -128,7 +128,7 @@ export class Registry {
   private readonly managedRoots=new Map<string,{sourceRoot:string;packageDir:string;starter:StoredAgentStarter}>();
   async addManagedRoot(root:string,sourceRoot:string,packageDir:string):Promise<void> {
     const prior=this.managedRoots.get(root);if(prior){if(prior.sourceRoot!==sourceRoot||prior.packageDir!==packageDir)throw new ApiError('source_conflict','The native root source changed.');return;}
-    const readerPath=await managedAgentEntrypoint(sourceRoot,'retained-read.ts');
+    const readerPath=await retainedReaderPath();
     if(!this.agents.addStore)throw new ApiError('unsupported','The Agent adapter does not accept another native root.');
     this.agents.addStore(root,readerPath);
     this.managedRoots.set(root,{sourceRoot,packageDir,starter:new StoredAgentStarter({store:root,sourceRoot,managedPackageDir:packageDir,executable:this.options.executable,...this.options.agentStart})});
@@ -287,6 +287,7 @@ export class Registry {
     try{
       const current=await this.reconcileOwned(owner,descriptor,previous);
       session=this.createPrimary(current.key,current.cwd,current.sessionFile,previous,current);
+      if(current.sessionFile && session.view.createdAt===undefined)session.view.createdAt=await savedSessionCreatedAt(current.sessionFile);
       this.sessions.set(current.key,session);this.saved.set(current.key,session.view);await session.start();
     }catch{
       session??=this.createPrimary(descriptor.key,descriptor.cwd,descriptor.sessionFile,previous,descriptor);
@@ -472,8 +473,10 @@ export class Registry {
     try {
       if(sessionFile) {await this.claimPath(sessionFile,key); claimed = true;}
       workspaceId=await this.queueWorkspace(key,workspaceId);
+      const createdAt=sessionFile ? await savedSessionCreatedAt(sessionFile) : previous?.createdAt;
       this.admitPrimary(previous !== undefined);
       session = this.createPrimary(key,cwd,sessionFile,previous);
+      this.initialActivity(session,sessionFile,previous,createdAt);
       this.sessions.set(key,session); this.saved.set(key,session.view);
       await this.store.savePrimaries(this.views());
       if(this.closing) throw new ApiError('not_ready','The backend no longer accepts primaries.',503);
@@ -482,9 +485,16 @@ export class Registry {
       await this.rollbackPrimary(key,previous,priorSession,priorWorkspace);
       throw error;
     } finally {this.openingKeys.delete(key);}
-    const start=session.start();this.primaryStarts.set(key,start);
+    const start=session.start().catch(async error=>{
+      if(!previous && !sessionFile && !owned(session)) await this.rollbackPrimary(key,undefined,priorSession,priorWorkspace);
+      throw error;
+    });this.primaryStarts.set(key,start);
     void start.catch(()=>{}).finally(()=>{if(this.primaryStarts.get(key) === start)this.primaryStarts.delete(key);this.metadataChanged();});
     return key;
+  }
+  private initialActivity(session:PrimarySession,path:string|undefined,previous:PrimaryView|undefined,createdAt:number|undefined):void {
+    if(path)session.view.createdAt=createdAt;
+    else if(!previous){session.view.createdAt=Date.now();session.view.hasMessages=false;}
   }
   async waitPrimaryReady(key: string): Promise<void> {
     await this.primaryStarts.get(key);
@@ -503,7 +513,8 @@ export class Registry {
       onBeforeClearQueue: async (target, pendingCount) => this.operations.beginQueueClear(this.queueWorkspaces.get(key) ?? await this.workspace(), target, pendingCount),
       onRecoveredQueue: (clearOperationId, queue) => this.operations.retainQueue(clearOperationId, queue),
       onQueueClearFailed: (clearOperationId, uncertain) => this.operations.settleQueueClearFailure(clearOperationId, uncertain)});
-    if(previous) {session.view.sessionId = previous.sessionId; session.view.sessionFile = sessionFile;}
+    if(previous) {session.view.sessionId = previous.sessionId; session.view.sessionFile = sessionFile;
+      for(const field of ['createdAt','lastUserAt','lastAnswerAt','hasMessages'] as const) if(previous[field] !== undefined) Object.assign(session.view,{[field]:previous[field]});}
     return session;
   }
   private async rollbackPrimary(key: string, previous: PrimaryView | undefined, priorSession: PrimarySession | undefined, priorWorkspace: string | undefined) {

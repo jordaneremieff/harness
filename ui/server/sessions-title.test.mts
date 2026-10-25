@@ -6,7 +6,11 @@ import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { setImmediate as yieldLoop } from 'node:timers/promises';
 import test from 'node:test';
-import { scanSessionTitle, sessionRecord } from './sessions-title.mts';
+import { scanSessionTitle as scanSessionFacts, sessionRecord } from './sessions-title.mts';
+/** Title-only assertions stay independent of the separately checked content facts. */
+async function scanSessionTitle(...args: Parameters<typeof scanSessionFacts>) {
+  const {hasMessages: _hasMessages, ...title} = await scanSessionFacts(...args);return title;
+}
 
 const line = (value: unknown) => `${JSON.stringify(value)}\n`;
 const message = (role: string, content: unknown) => line({type: 'message', message: {role, content}});
@@ -16,6 +20,16 @@ async function fixture(t: test.TestContext, body: string) {
   const path = join(root, 'session.jsonl'); await writeFile(path, body);
   return {path, size: Buffer.byteLength(body)};
 }
+
+test('saved native records distinguish empty files, prompts, answers and tool rounds',async t=>{
+  const header=line({type:'session',id:'s',cwd:'/project',timestamp:'2026-10-20T00:00:00.000Z'});
+  const empty=await fixture(t,header+line({type:'session_info',name:'Empty but named'}));
+  assert.equal((await scanSessionFacts(empty.path,empty.size)).hasMessages,false);
+  const stamped=(role:string,timestamp:string,content:unknown,stopReason?:string)=>line({type:'message',timestamp,message:{role,content,stopReason}});
+  const prompt='2026-10-21T00:00:00.000Z',answer='2026-10-22T00:00:00.000Z';
+  const full=await fixture(t,header+stamped('user',prompt,'Real prompt')+stamped('assistant',answer,[{type:'text',text:'Actual answer'}],'stop')+stamped('assistant','2026-10-24T00:00:00.000Z',[{type:'text',text:'Tool commentary'},{type:'toolCall',id:'t'}],'toolUse')+stamped('toolResult','2026-10-25T00:00:00.000Z',[{type:'text',text:'Tool output'}]));
+  assert.deepEqual(await scanSessionFacts(full.path,full.size),{title:'Real prompt',titleSource:'prompt',titleState:'ready',hasMessages:true,lastUserAt:prompt,lastAnswerAt:answer});
+});
 
 test('session records accept only complete JSON objects', () => {
   for (const value of ['', '  \t', '{', 'not json', 'null', '[]', '[{}]', '42', 'true', '"text"', '{}\n{}']) assert.equal(sessionRecord(value), null);

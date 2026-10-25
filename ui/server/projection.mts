@@ -623,7 +623,18 @@ function rosterAttention(raw: unknown): AgentRow['attention'] {
   if (need.kind === 'provider-blocked' || need.kind === 'failed-turn') return {kind: need.kind};
   if (need.kind === 'task-blocked' && ['missing_task', 'task_too_old', 'migration_failed', 'restart_limit'].includes(String(need.reason))) return {kind: 'task-blocked', reason: need.reason as 'missing_task' | 'task_too_old' | 'migration_failed' | 'restart_limit'};
 }
+function rosterRecents(row:AgentRow,value:unknown):void {
+  const recent=object(value);
+  let result:AgentRow['recents'];
+  if(['operator','agent','unknown'].includes(String(recent.creator))){
+    result={creator:recent.creator as 'operator'|'agent'|'unknown'};
+    for(const field of ['createdAt','lastUserAt','lastAnswerAt'] as const)if(typeof recent[field]==='number'&&Number.isSafeInteger(recent[field])&&Number(recent[field])>=0)result[field]=Number(recent[field]);
+    if(typeof recent.hasMessages==='boolean')result.hasMessages=recent.hasMessages;
+    row.recents=result;
+  }
+}
 function rosterOptionals(row: AgentRow, source: Record<string, unknown>): void {
+  rosterRecents(row,source.recents);
   for (const key of ['name', 'handle', 'thinkingLevel', 'latestReply', 'firstMessage', 'error', 'observedAt', 'ownerLabel'] as const) {
     if (typeof source[key] === 'string') row[key] = safeText(source[key], key === 'latestReply' || key === 'firstMessage' ? 2048 : 256);
   }

@@ -26,7 +26,7 @@ export function mergeSessionTitles(list: SessionList, page: SavedSessionPage): S
   const items = list.items.map(item => {
     const update = updates.get(item.path);
     if (item.titleState === 'ready' && update?.titleState !== 'ready') return item;
-    return update?.id === item.id && update.revision === item.revision && update.modifiedAt === item.modifiedAt && update.size === item.size ? {...item, title: update.title, titleSource: update.titleSource, titleState: update.titleState, lastUserAt: update.lastUserAt} : item;
+    return update?.id === item.id && update.revision === item.revision && update.modifiedAt === item.modifiedAt && update.size === item.size ? {...item, title: update.title, titleSource: update.titleSource, titleState: update.titleState, lastUserAt: update.lastUserAt, lastAnswerAt: update.lastAnswerAt, hasMessages: update.hasMessages} : item;
   });
   const current = new Map(items.map(item => [item.path, item]));
   const pendingTitles = list.pendingTitles.filter(page => page.items.some(item => {

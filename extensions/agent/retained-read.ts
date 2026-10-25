@@ -10,6 +10,7 @@ import { collaborationStorage, CollaborationReadError } from "./collaboration.ts
 import { DurableObservation, InspectionRequestError, parseInspectParams } from "./durable-observation.ts";
 import { checkRetainedRead, RetainedReadError, type RetainedErrorCode } from "./retained-errors.ts";
 import { HOST_CONTRACT, parseOperationContract, type OperationContract } from "./version-contract.ts";
+import { creationActor, RECENTS_OPERATION, RECENTS_CONVERSATION_LIMIT, type RecentActivity } from './recents.ts';
 
 export const RETAINED_READ_VERSION = "retained-read/1.0.0";
 export const RETAINED_REQUEST_BYTES = 65536;
@@ -20,7 +21,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 
 type Params = Record<string, unknown>;
 type CollaborationMethod = "collaboration-list" | "collaboration-read";
-type RetainedMethod = "snapshot" | "inspect" | CollaborationMethod;
+type RetainedMethod = "snapshot" | "inspect" | 'recents' | CollaborationMethod;
+const recentsContract = {...RECENTS_OPERATION, durable: HOST_CONTRACT.upstream.durable};
 interface ReadRequest {
 	version: typeof RETAINED_READ_VERSION;
 	id: string;
@@ -40,7 +42,8 @@ export type RetainedResponse = {
 	error: { code: RetainedErrorCode; message: string; retryable: boolean };
 };
 
-export function retainedReadDescriptor(scope?: "collaboration"): unknown {
+export function retainedReadDescriptor(scope?: "collaboration" | 'recents'): unknown {
+	if (scope === 'recents') return {version: RETAINED_READ_VERSION, upstream: HOST_CONTRACT.upstream, operations: {recents: recentsContract}};
 	if (scope === "collaboration") return { version: RETAINED_READ_VERSION, upstream: HOST_CONTRACT.upstream, operations: { "collaboration-list": HOST_CONTRACT.operations["collaboration-list"], "collaboration-read": HOST_CONTRACT.operations["collaboration-read"] } };
 	return { version: RETAINED_READ_VERSION, upstream: HOST_CONTRACT.upstream, operations: { snapshot: HOST_CONTRACT.operations.snapshot, inspect: HOST_CONTRACT.operations.inspect } };
 }
@@ -100,7 +103,12 @@ function collaborationParams(method: CollaborationMethod, value: Params, storage
 
 function parseParams(method: ReadRequest["method"], value: unknown, storageId: string): Params {
 	if (!object(value)) invalid();
-	if (collaborationMethod(method)) collaborationParams(method, value, storageId);
+	if (method === 'recents') {
+    keys(value,['conversationIds']);
+    const ids=value.conversationIds;
+    if(!Array.isArray(ids)||ids.length===0||ids.length>RECENTS_CONVERSATION_LIMIT||ids.some(id=>!integer(id,1))||new Set(ids).size!==ids.length)invalid();
+  }
+	else if (collaborationMethod(method)) collaborationParams(method, value, storageId);
 	else {
 		optionalInteger(value.limit, 1, 100);
 		if (method === "snapshot") snapshotParams(value);
@@ -118,7 +126,7 @@ function parseParams(method: ReadRequest["method"], value: unknown, storageId: s
 function parseTarget(sessionId: string, method: RetainedMethod): { storageId: string; conversationId: ConversationId } {
 	const [storageId, suffix, extra] = sessionId.split(":");
 	if (!UUID.test(storageId) || extra !== undefined || (suffix !== undefined && (!/^[1-9][0-9]*$/u.test(suffix) || !integer(Number(suffix), 2)))) invalid();
-	if (collaborationMethod(method) && (suffix !== undefined || storageId.length !== 36)) invalid();
+	if ((collaborationMethod(method) || method === 'recents') && (suffix !== undefined || storageId.length !== 36)) invalid();
 	return { storageId, conversationId: Number(suffix ?? 1) as ConversationId };
 }
 
@@ -128,12 +136,12 @@ function parseRequest(value: unknown): ReadRequest {
 	keys(value, required);
 	if (required.some((key) => !Object.hasOwn(value, key))) invalid();
 	if (!validId(value.id) || !text(value.store, 4096) || !isAbsolute(value.store) || typeof value.sessionId !== "string") invalid();
-	if (value.method !== "snapshot" && value.method !== "inspect" && value.method !== "collaboration-list" && value.method !== "collaboration-read") invalid();
+	if (value.method !== "snapshot" && value.method !== "inspect" && value.method !== "collaboration-list" && value.method !== "collaboration-read" && value.method !== 'recents') invalid();
 	const { storageId, conversationId } = parseTarget(value.sessionId, value.method);
 	if (value.version !== RETAINED_READ_VERSION) throw new RetainedReadError("incompatible");
 	let expected: OperationContract;
 	try { expected = parseOperationContract(value.expected); } catch { invalid(); }
-	const contract = HOST_CONTRACT.operations[value.method];
+	const contract = value.method === 'recents' ? recentsContract : HOST_CONTRACT.operations[value.method];
 	if (expected.request !== contract.request || expected.response !== contract.response || expected.durable !== contract.durable) throw new RetainedReadError("incompatible");
 	const params = parseParams(value.method, value.params, storageId);
 	return { version: RETAINED_READ_VERSION, id: value.id, store: value.store, sessionId: value.sessionId, method: value.method, expected, params, storageId, conversationId };
@@ -146,8 +154,8 @@ export function retainedFailure(error: unknown, id: string | null): RetainedResp
 
 /** Hooks replace only the boundary under test; production uses the catalog and private observation. */
 export interface RetainedReadHooks {
-	readonly readCatalog?: (store: string, storageId: string) => { storagePath: string };
-	readonly open?: (storagePath: string, storageId: string, signal: AbortSignal) => Promise<Pick<DurableObservation, "conversation" | "request" | "close">>;
+	readonly readCatalog?: (store: string, storageId: string) => { storagePath: string; createdAt?: string; ownerId?: string };
+	readonly open?: (storagePath: string, storageId: string, signal: AbortSignal) => Promise<Pick<DurableObservation, "conversation" | "request" | "close"> & Partial<Pick<DurableObservation, 'recentActivities'>>>;
 	readonly responseBytes?: number;
 	readonly deadlineMs?: number;
 }
@@ -173,12 +181,12 @@ function decodeRequest(bytes: Uint8Array): unknown {
 	try { return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); } catch { invalid(); }
 }
 
-function retainedRecord(request: ReadRequest, hooks: RetainedReadHooks): { storagePath: string } {
+function retainedRecord(request: ReadRequest, hooks: RetainedReadHooks): { storagePath: string; createdAt?: string; ownerId?: string } {
 	try { return (hooks.readCatalog ?? ((store, storageId) => new AgentCatalog(store).read(storageId)))(request.store, request.storageId); }
 	catch (error) { throw new RetainedReadError((error as NodeJS.ErrnoException).code === "ENOENT" ? "not_found" : "source_unreadable"); }
 }
 
-type ReadObservation = Pick<DurableObservation, "conversation" | "request" | "close">;
+type ReadObservation = Pick<DurableObservation, "conversation" | "request" | "close"> & Partial<Pick<DurableObservation, 'recentActivities'>>;
 
 async function openRetainedObservation(request: ReadRequest, path: string, scope: ReadDeadline, hooks: RetainedReadHooks, context: Context): Promise<ReadObservation> {
 	try {
@@ -226,13 +234,25 @@ async function readRetainedObservation(request: ReadRequest, observation: ReadOb
 	} finally { await observation.close(); }
 }
 
+async function readRecentConversations(request:ReadRequest,record:ReturnType<typeof retainedRecord>,scope:ReadDeadline,hooks:RetainedReadHooks,context:Context):Promise<unknown> {
+  const creator=creationActor(record),created=record.createdAt===undefined?NaN:Date.parse(record.createdAt);
+  const facts:RecentActivity={creator,...(Number.isFinite(created)?{createdAt:created}:{})},ids=request.params.conversationIds as number[];
+  if(creator!=='operator'&&!ids.some(id=>id!==1))return {items:ids.map(conversationId=>({conversationId,activity:facts}))};
+  const observation=await openRetainedObservation(request,record.storagePath,scope,hooks,context);
+  try {if(!observation.recentActivities)throw new RetainedReadError('incompatible');return await observation.recentActivities(ids,facts,context);}
+  finally {await observation.close();}
+}
 async function executeRetainedRead(request: ReadRequest, scope: ReadDeadline, hooks: RetainedReadHooks): Promise<RetainedResponse> {
 	scope.check();
 	const record = retainedRecord(request, hooks);
 	scope.check();
 	const context = withAbortSignal(scope.signal, BACKGROUND_CONTEXT);
-	const observation = await openRetainedObservation(request, record.storagePath, scope, hooks, context);
-	const result = await readRetainedObservation(request, observation, scope, context);
+	let result: unknown;
+  if(request.method==='recents')result=await readRecentConversations(request,record,scope,hooks,context);
+  else {
+		const observation = await openRetainedObservation(request, record.storagePath, scope, hooks, context);
+		result = await readRetainedObservation(request, observation, scope, context);
+	}
 	scope.check();
 	const response: RetainedResponse = { version: RETAINED_READ_VERSION, id: request.id, ok: true, method: request.method, sessionId: request.sessionId, storageId: request.storageId, conversationId: request.conversationId, result };
 	if (Buffer.byteLength(JSON.stringify(response)) + 1 > (hooks.responseBytes ?? RETAINED_RESPONSE_BYTES)) throw new RetainedReadError("limit_exceeded");
@@ -281,6 +301,11 @@ function readInput(signal: AbortSignal): Promise<Buffer> {
 	});
 }
 
+function descriptorScope(args:string[]):'collaboration'|'recents'|undefined {
+  if(args.length===1)return undefined;
+  if(args.length!==2||!['collaboration','recents'].includes(args[1]))invalid();
+  return args[1] as 'collaboration'|'recents';
+}
 async function main(): Promise<void> {
 	const deadline = Date.now() + RETAINED_DEADLINE_MS;
 	const controller = new AbortController();
@@ -295,8 +320,8 @@ async function main(): Promise<void> {
 	let ok = false;
 	try {
 		const args = process.argv.slice(2);
-		if (args[0] === "--contract" && (args.length === 1 || (args.length === 2 && args[1] === "collaboration"))) {
-			output = retainedReadDescriptor(args.length === 2 ? "collaboration" : undefined); ok = true;
+		if (args[0] === "--contract") {
+			output = retainedReadDescriptor(descriptorScope(args)); ok = true;
 		}
 		else {
 			if (args.length !== 0) invalid();

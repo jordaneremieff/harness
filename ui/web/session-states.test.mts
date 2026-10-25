@@ -95,10 +95,10 @@ test('Show more sessions loads the next page of a project until every saved sess
   assert.equal(byId('recent-sessions').querySelectorAll('button').some(node => node.textContent === 'Show more sessions'), false, 'the last page removes the button');
 });
 
-test('a live Durable conversation is listed in Recents and opens from the list', async t => {
+test('a confirmed operator Durable conversation is listed in Recents and opens from the list', async t => {
   const current = primaryFixture({epoch: 41400, key: 'open5', sessionId: 'id-open5', sessionFile: '/fixture/project/open5.jsonl', sessionName: 'Open now'});
-  const durable = browser.agentFixture('durable-orchestrator', {name: 'Web orchestrator', availability: 'live', state: 'working'});
-  const stored = browser.agentFixture('durable-stored', {name: 'Finished worker', availability: 'stored', state: 'done'});
+  const durable = browser.agentFixture('durable-orchestrator', {name: 'Web orchestrator', availability: 'live', state: 'working', recents:{creator:'operator',createdAt:100,lastAnswerAt:300,hasMessages:true}});
+  const stored = browser.agentFixture('durable-stored', {name: 'Finished worker', availability: 'stored', state: 'done', recents:{creator:'agent',createdAt:200,hasMessages:true}});
   const original = globalThis.fetch;
   t.mock.method(globalThis, 'fetch', async (url: RequestInfo | URL, init?: RequestInit) => {
     const path = new URL(String(url), 'http://ui.test').pathname;

@@ -69,6 +69,21 @@ test("literal descriptor and parameter grammar retain exact native identities",(
     assert.throws(()=>decodeRetainedParams("inspect",params,ROOT));
   assert.deepEqual(decodeRetainedParams("inspect",{view:"result",requestId:"native id",submissionId:2,operationId:"same operation"},ROOT),{view:"result",requestId:"native id",submissionId:2,operationId:"same operation"});
 });
+test('Recents uses its separate descriptor and validates batched conversation facts',async t=>{
+  const contract={version:descriptor.version,upstream:descriptor.upstream,operations:{recents:{request:'recents/1.0.0',response:'recents/1.0.0',durable:durableVersion}}};
+  const activity={creator:'operator',createdAt:100,lastUserAt:200,lastAnswerAt:300,hasMessages:true},params={conversationIds:[1,2]};
+  const result={items:[{conversationId:1,activity},{conversationId:2,activity:{creator:'operator',lastUserAt:400,hasMessages:true}}]};
+  const f=await fixture(t,{descriptor:contract,result,expectParams:params});
+  assert.deepEqual(await f.reader.request('recents',ROOT,params),result);
+  assert.deepEqual(f.calls.map(call=>call.args.slice(1)),[['--contract','recents'],[]]);
+  await assert.rejects(f.reader.request('recents',CHILD,params),{code:'invalid_request'});assert.equal(f.calls.length,2);
+  assert.throws(()=>decodeRetainedDescriptor(contract));
+  for(const items of [[{conversationId:1,activity:{...activity,lastAnswerAt:'300'}}],[{conversationId:1,activity}],[{conversationId:1,activity},{conversationId:1,activity}],[{conversationId:1,activity},{conversationId:3,activity}]]){
+    const invalid=await fixture(t,{descriptor:contract,result:{items}});
+    await assert.rejects(invalid.reader.request('recents',ROOT,params),{code:'protocol_error'});
+  }
+});
+
 test("collaboration uses a separate descriptor and bare storage targets", async t => {
   const collaboration = {version: descriptor.version, upstream: descriptor.upstream, operations: {
     'collaboration-list': {request: 'collaboration-list/1.0.0', response: 'collaboration-list/1.0.0'},

@@ -91,11 +91,11 @@ test("catalog refresh is explicit and cached roster stays readable after close",
   assert.throws(() => service.refresh(), hasCode("not_ready"));
 });
 
-test("offline observation and missing retained reader refuse without host acquisition", async t => {
+test("offline observation and missing retained data refuse without host acquisition", async t => {
   const { service } = await stored(t);
   await service.refresh();
   await assert.rejects(service.select("workspace", storageId), hasCode("stored"));
-  await assert.rejects(service.history(storageId), hasCode("host_unavailable"));
+  await assert.rejects(service.history(storageId), hasCode("not_found"));
   await assert.rejects(service.abort(storageId), hasCode("stored"));
   assert.equal(service.roster().rows[0].state, "unavailable");
 });

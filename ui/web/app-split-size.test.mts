@@ -6,7 +6,7 @@ import {createAppFixture} from './app-fixture.mts';
 const {app, arrive, settle, host, byId, paneNode, primaryControl, agentControl, primaryFixture, agentFixture, targetFixture, twoPanes, selectionSaves, failSelection, hostDocument} = await createAppFixture();
 async function compare(pane='primary-pane',key='agent:a'):Promise<void> {
   const width=host.viewport;host.viewport=2400;app.renderNavigation();await settle();app.openTabsList(pane);const split=hostDocument.body.querySelector('.context-menu')?.querySelectorAll('button').find(row=>row.textContent==='Split right');assert.ok(split);split.click();await settle();
-  const row=byId('recent-sessions').querySelector(`.sidebar-content-row[data-session-key="${key}"]`);assert.ok(row);row.click();await settle();host.viewport=width;app.renderNavigation();await settle();
+  app.showNavigationView('agents');const row=app.state.roster.get(key.slice('agent:'.length));assert.ok(row);await app.selectAgent(row);await settle();app.showNavigationView('sessions');host.viewport=width;app.renderNavigation();await settle();
 }
 async function fixture(width = 1200, ratio = 50, sidebar = true) {
   host.viewport = width; failSelection(undefined); const layout = twoPanes('a'); assert.equal(layout.root.kind, 'split'); if (layout.root.kind === 'split') layout.root.ratio = ratio;

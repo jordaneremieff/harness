@@ -18,7 +18,7 @@ async function apply(request:ControlRequest):Promise<ControlAck|undefined> {
 async function compare(identity:string):Promise<void> {
   const width=f.host.viewport;f.host.viewport=2400;app.renderNavigation();await settle();app.openTabsList('primary-pane');
   const split=hostDocument.body.querySelector('.context-menu')?.querySelectorAll('button').find(row=>row.textContent==='Split right');assert.ok(split);split.click();await settle();
-  const row=byId('recent-sessions').querySelector(`.sidebar-content-row[data-session-key="agent:${identity}"]`);assert.ok(row);row.click();await settle();
+  app.showNavigationView('agents');const row=app.state.roster.get(identity);assert.ok(row);await app.selectAgent(row);await settle();app.showNavigationView('sessions');
   const layout=app.state.workspace?.conversationLayout;assert.ok(layout);app.applyLayout({...layout,focusedPane:'primary-pane'});await settle();f.host.viewport=width;app.renderNavigation();await settle();hostDocument.activeElement=hostDocument.body;
 }
 async function setup(id:string,split=false) {

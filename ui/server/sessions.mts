@@ -20,7 +20,7 @@ type Inventory = {files: FileStamp[]; stamp: string; omitted: number};
 type CachedFile = {stamp: string; item: SavedSession | null};
 type Listing = {items: SavedSession[]; stamp: string; omitted: number; files: Map<string, CachedFile>};
 type Summary = {items: RecentProject[]; stamp: string; omitted: number};
-type Header = {id: string; cwd: string};
+type Header = {id: string; cwd: string; createdAt?: string};
 
 function expand(path: string) {
   return path === '~' ? homedir() : path.startsWith('~/') ? join(homedir(), path.slice(2)) : resolve(path);
@@ -49,7 +49,8 @@ function header(text: string): Header | null {
   const value = first ? sessionRecord(first) : null;
   if (value?.type !== 'session' || typeof value.id !== 'string' || !value.id || value.id.length > 512 ||
       typeof value.cwd !== 'string' || !isAbsolute(value.cwd) || value.cwd.length > 4096 || /[\u0000-\u001f\u007f]/.test(value.cwd)) return null;
-  return {id: value.id, cwd: resolve(value.cwd)};
+  const at = typeof value.timestamp === 'string' ? Date.parse(value.timestamp) : NaN;
+  return {id: value.id, cwd: resolve(value.cwd), ...(Number.isFinite(at) ? {createdAt: new Date(at).toISOString()} : {})};
 }
 async function readHead(path: string, size: number): Promise<string> {
   const file = await open(path, 'r');
@@ -79,7 +80,15 @@ export async function validateSessionProject(project: string, path: string): Pro
 async function readSession(info: FileStamp): Promise<SavedSession | null> {
   const saved = header(await readHead(info.path, info.size)); if (!saved) return null;
   return {id: saved.id, path: info.path, project: saved.cwd, revision: fingerprint([info.path, info.stamp]), title: '(title pending)', titleState: 'pending',
-    modifiedAt: new Date(info.mtime).toISOString(), size: info.size};
+    ...(saved.createdAt ? {createdAt: saved.createdAt} : {}), modifiedAt: new Date(info.mtime).toISOString(), size: info.size};
+}
+/** The native header owns creation time; a missing timestamp remains unknown. */
+export async function savedSessionCreatedAt(path: string): Promise<number | undefined> {
+  try {
+    const info = await stat(path); if (!info.isFile()) return undefined;
+    const value = header(await readHead(path, info.size))?.createdAt;
+    return value === undefined ? undefined : Date.parse(value);
+  } catch { return undefined; }
 }
 /** The session id in a saved file's header, or undefined when the file is not a readable session. */
 export async function savedSessionId(path: string): Promise<string | undefined> {

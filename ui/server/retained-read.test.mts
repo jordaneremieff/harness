@@ -6,6 +6,7 @@ import {Journal} from './journal.mts';
 import {mkdtemp,mkdir,realpath,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {fileURLToPath} from 'node:url';
 import test from 'node:test';
 import {AgentError} from '../agents/client.mts';
 import {retainedReaderPath} from './agent-start.mts';
@@ -33,7 +34,7 @@ test('HTTP loss cancels a read and normal response closure does not cancel it',{
     assert.equal(captured?.aborted,abort);assert.equal(request.listenerCount('aborted'),0);assert.equal(response.listenerCount('close'),0);
   }
 });
-test('server resources select one canonical reader without an installed Pi executable or target metadata',async t=> {
+test('the backend selects its packaged reader independently of sealed execution and global settings',async t=> {
   const root=await realpath(await mkdtemp(join(tmpdir(),'ui-reader-binding-')));t.after(()=>rm(root,{recursive:true,force:true}));
   const agentDir=join(root,'global');const owner=join(root,'owner');const slice=join(owner,'extensions','agent');
   await Promise.all([mkdir(agentDir),mkdir(slice,{recursive:true})]);
@@ -41,11 +42,12 @@ test('server resources select one canonical reader without an installed Pi execu
   await Promise.all([writeFile(entry,'// inert configured entry'),writeFile(reader,'// inert reader'),
     writeFile(join(owner,'package.json'),JSON.stringify({name:'harness',pi:{extensions:['./extensions']}})),
     writeFile(join(agentDir,'settings.json'),JSON.stringify({extensions:[entry]}))]);
-  assert.equal(await retainedReaderPath(agentDir),reader);
+  const packaged=fileURLToPath(new URL('../../extensions/agent/retained-read.ts',import.meta.url));
+  assert.equal(await retainedReaderPath(agentDir),packaged);assert.notEqual(packaged,reader);
   await writeFile(join(agentDir,'settings.json'),JSON.stringify({extensions:[entry,entry]}));
-  await assert.rejects(retainedReaderPath(agentDir),{code:'host_unavailable'});
+  assert.equal(await retainedReaderPath(agentDir),packaged);
   await writeFile(join(agentDir,'settings.json'),JSON.stringify({extensions:[entry]}));await rm(reader);
-  await assert.rejects(retainedReaderPath(agentDir),{code:'host_unavailable'});
+  assert.equal(await retainedReaderPath(agentDir),packaged);
 });
 test('retained refusal preserves read retry policy rather than mutation uncertainty',()=> {
   assert.deepEqual(errorView(new AgentError('source_changed','Source changed',false,true)),{code:'source_changed',message:'Source changed',retry:'read'});

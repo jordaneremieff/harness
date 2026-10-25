@@ -110,8 +110,51 @@ test('a pane shows its top tab strip only when it holds two or more tabs',async(
   assert.equal(byId('conversation-title').textContent,'Explain this interface');assert.equal(byId('recent-sessions').querySelector('.sidebar-content-row')?.textContent,'Explain this interface');
 });
 
-test('Sessions combines every open conversation with known sessions rather than the former small subset',async()=>{
-  const primary=primaryFixture({epoch:23300,activity:'idle'}),agents=Array.from({length:9},(_,index)=>agentFixture(`recent-${index}`,{name:`Recent ${index}`}));
+test('Recents excludes empty ordinary rows and model-owned or unknown native tabs without a bootstrap open',async()=>{
+  const active=primaryFixture({key:'operator-active',epoch:23301,hasMessages:true,createdAt:100,lastUserAt:200,lastAnswerAt:300});
+  const stale=primaryFixture({key:'stale-capacity',epoch:1,lifecycle:'stopped',activity:'idle',hasMessages:false});
+  const empty=primaryFixture({key:'header-only',epoch:23302,hasMessages:false,sessionFile:'/fixture/header-only.jsonl',createdAt:900});
+  const agents=[
+    agentFixture('operator-live',{recents:{creator:'operator',createdAt:100,lastAnswerAt:500,hasMessages:true}}),
+    agentFixture('operator-stored',{availability:'stored',recents:{creator:'operator',createdAt:400,hasMessages:true}}),
+    agentFixture('operator-empty',{recents:{creator:'operator',createdAt:900,hasMessages:false}}),
+    agentFixture('model-worker',{recents:{creator:'agent',createdAt:1000,hasMessages:true}}),
+    agentFixture('unknown-lead',{recents:{creator:'unknown',createdAt:2000,hasMessages:true}}),
+    agentFixture('owned-child'),
+    agentFixture('operator-rewind:2',{recents:{creator:'operator',lastUserAt:600,lastAnswerAt:700,hasMessages:true}}),
+    agentFixture('model-child:2',{recents:{creator:'agent',lastUserAt:10000,hasMessages:true}}),
+    agentFixture('plain-fork:2',{recents:{creator:'unknown',lastUserAt:11000,hasMessages:true}}),
+  ];
+  const layout=createPaneLayout([{kind:'primary'},...agents.map(row=>({kind:'agent' as const,identity:row.identity}))]);
+  const calls=browser.transportLog.length;
+  await arrive({workspace:{id:'recents-policy',revision:1,primaryKey:active.key,selectedTarget:{kind:'primary',key:active.key,epoch:active.epoch},conversationLayout:layout},primaries:[active,stale,empty],roster:agents,targets:[targetFixture('recents-active-draft',{kind:'primary',key:active.key,epoch:active.epoch})]});
+  app.showNavigationView('sessions');
+  const keys=()=>byId('recent-sessions').querySelectorAll('.sidebar-content-row').map(row=>row.dataset.sessionKey);
+  assert.ok(keys().includes('agent:operator-live'));assert.ok(keys().includes('agent:operator-stored'));assert.ok(byId('recent-sessions').querySelectorAll('.sidebar-content-row').some(row=>row.getAttribute('aria-current')==='page'));
+  for(const key of ['primary:stale-capacity','stale-capacity','primary:header-only','header-only','/fixture/header-only.jsonl','agent:operator-empty','agent:model-worker','agent:unknown-lead','agent:owned-child','agent:model-child:2','agent:plain-fork:2'])assert.equal(keys().includes(key),false,key);
+  assert.equal(keys()[0],'agent:operator-rewind:2');
+  assert.equal(primaryControl('editor').disabled,false);
+  assert.equal(browser.transportLog.slice(calls).some(call=>call.method==='POST'&&call.path.split('?')[0]==='/api/primaries'),false);
+  const rewind=byId('recent-sessions').querySelector('.sidebar-content-row[data-session-key="agent:operator-rewind:2"]');assert.ok(rewind);rewind.click();await settle();
+  assert.deepEqual(app.state.workspace?.selectedTarget,{kind:'agent',identity:'operator-rewind:2'});
+  app.showNavigationView('agents');assert.equal(byId('roster-section').hidden,false);
+  assert.ok(app.state.roster.has('unknown-lead'));assert.ok(app.state.roster.has('model-worker'));
+});
+
+test('selected stopped and failed fileless empty sessions stay visible across reload without an implicit open',async()=>{
+  for(const lifecycle of ['stopped','failed'] as const){
+    const current=primaryFixture({key:`selected-${lifecycle}`,epoch:23310,lifecycle,activity:'unknown',hasMessages:false}),calls=browser.transportLog.length;
+    await arrive({workspace:{id:`selected-empty-${lifecycle}`,revision:1,primaryKey:current.key,selectedTarget:{kind:'primary',key:current.key,epoch:current.epoch}},primaries:[current],roster:[]});
+    app.showNavigationView('sessions');
+    const rows=byId('recent-sessions').querySelectorAll('.sidebar-content-row');assert.equal(rows.length,1);assert.equal(rows[0].getAttribute('aria-current'),'page');
+    assert.doesNotMatch(rows[0].querySelector('.sidebar-session-context')?.textContent??'',/ago|now|Today/);
+    assert.equal(app.state.primaries.get(current.key)?.lifecycle,lifecycle);assert.equal(app.state.primaries.get(current.key)?.createdAt,undefined);
+    assert.equal(browser.transportLog.slice(calls).some(call=>call.method==='POST'&&(call.path.split('?')[0]==='/api/primaries'||(call.body as {kind?:unknown}|undefined)?.kind==='primary.open')),false);
+  }
+});
+
+test('Sessions combines confirmed operator tabs with known sessions',async()=>{
+  const primary=primaryFixture({epoch:23300,activity:'idle'}),agents=Array.from({length:9},(_,index)=>agentFixture(`recent-${index}`,{name:`Recent ${index}`,recents:{creator:'operator',hasMessages:true,createdAt:index+1}}));
   const layout=createPaneLayout([{kind:'primary'},...agents.map(row=>({kind:'agent' as const,identity:row.identity}))]);
   await arrive({workspace:{id:'combined-recent',revision:1,primaryKey:primary.key,conversationLayout:layout},primaries:[primary],roster:agents});
   app.showNavigationView('sessions');
@@ -277,7 +320,7 @@ test('picker dismissal restores its exact trigger instead of the native editor',
 });
 
 test('unnamed agent tabs and open saved tabs use exact supplied folder and time context',async t=>{
-  const saved={id:'open-context',path:'/fixture/saved-context.jsonl',project:'/fixture/research',revision:'r',title:'Research',titleSource:'name' as const,titleState:'ready' as const,modifiedAt:'2026-10-23T00:00:00Z',size:10};
+  const saved={id:'open-context',path:'/fixture/saved-context.jsonl',project:'/fixture/research',revision:'r',title:'Research',titleSource:'name' as const,titleState:'ready' as const,createdAt:'2026-10-23T00:00:00Z',modifiedAt:'2026-10-25T00:00:00Z',size:10};
   const fetch=globalThis.fetch;
   t.mock.method(globalThis,'fetch',async(input:RequestInfo|URL,init?:RequestInit)=>{
     const path=new URL(String(input),'http://ui.test').pathname;
@@ -285,12 +328,12 @@ test('unnamed agent tabs and open saved tabs use exact supplied folder and time 
     if(path==='/api/sessions/history')return Response.json({ok:true,data:{session:saved,entries:[],coverage:browser.coverage,leaf:null,before:null,observedAt:''}});
     return fetch(input,init);
   });
-  const agents=[agentFixture('unnamed-agent-a',{name:undefined,handle:undefined,cwd:'/fixture/project-a',state:'working',modifiedAt:Date.parse('2026-10-22T00:00:00Z')}),agentFixture('unnamed-agent-b',{name:undefined,handle:undefined,cwd:'/fixture/project-b',state:'idle',modifiedAt:Date.parse('2026-10-23T00:00:00Z')})];
+  const agents=[agentFixture('unnamed-agent-a',{name:undefined,handle:undefined,cwd:'/fixture/project-a',state:'working',modifiedAt:Date.parse('2026-10-25T00:00:00Z'),recents:{creator:'operator',hasMessages:true,createdAt:Date.parse('2026-10-22T00:00:00Z')}}),agentFixture('unnamed-agent-b',{name:undefined,handle:undefined,cwd:'/fixture/project-b',state:'idle',modifiedAt:Date.parse('2026-10-25T00:00:00Z'),recents:{creator:'operator',hasMessages:true,createdAt:Date.parse('2026-10-23T00:00:00Z')}})];
   const layout=createPaneLayout([{kind:'session',id:saved.id,path:saved.path,project:saved.project,name:saved.title},...agents.map(row=>({kind:'agent' as const,identity:row.identity}))]);
   await arrive({workspace:{id:'exact-row-context',revision:1,conversationLayout:layout},primaries:[],roster:agents});await settle();
   const rows=byId('recent-sessions').querySelectorAll('.sidebar-content-row'),contexts=rows.map(row=>row.querySelector('.sidebar-session-context')?.textContent??'');
-  assert.equal(rows.length,3);assert.match(contexts[0]??'',/research/);assert.match(contexts[1]??'',/project-b.*Last observed: idle/);assert.match(contexts[2]??'',/project-a.*Last observed: working/);assert.equal(new Set(contexts).size,3);
-  assert.match(rows[0]?.title??'',/2026/,'Catalogue timestamp replaces the layout stub, after exact id and path matching.');
+  assert.equal(rows.length,3);assert.ok(contexts.some(text=>/research/.test(text)));assert.ok(contexts.some(text=>/project-b.*Last observed: idle/.test(text)));assert.ok(contexts.some(text=>/project-a.*Last observed: working/.test(text)));assert.equal(new Set(contexts).size,3);
+  assert.match(rows.find(row=>row.querySelector('.row-title')?.textContent==='Research')?.title??'',/2026/,'Retained creation replaces the layout stub after exact identity matching.');
   const requests=browser.transportLog.length,filter=byId('session-search');filter.value='project-b';filter.dispatch('input');
   assert.deepEqual(byId('recent-sessions').querySelectorAll('.sidebar-content-row').map(row=>row.dataset.sessionKey),['agent:unnamed-agent-b']);
   assert.equal(browser.transportLog.length,requests);filter.value='';filter.dispatch('input');
@@ -401,22 +444,19 @@ test('message box range and desktop handle share one height preference and prese
   assert.deepEqual(ancestry(editor),parents);assert.deepEqual([editor.value,editor.selectionStart,editor.selectionEnd,editor.selectionDirection],['A draft with its caret',2,8,'backward']);
 });
 
-test('Recents sort by the latest operator action and never by later session output',()=>{
-  const saved=(path:string,modifiedAt:string)=>({key:path,identities:[`path:${path}`],name:'x',at:0,title:'x',saved:{id:'i',path,revision:'r',project:'/p',title:'x',modifiedAt,size:1}}) as unknown as SessionRow;
-  const old=saved('/s/2026-10-01T00-00-00-000Z_a.jsonl','2026-10-24T09:00:00.000Z'),used=saved('/s/2026-10-02T00-00-00-000Z_b.jsonl','2026-10-03T00:00:00.000Z');
-  const stamps=new Map([['path:/s/2026-10-02T00-00-00-000Z_b.jsonl',Date.parse('2026-10-20T00:00:00.000Z')]]);
-  const at=(row:SessionRow)=>operatorTime(row,ids=>ids.map(id=>stamps.get(id)).find(value=>value!==undefined));
-  assert.equal(at(used),Date.parse('2026-10-20T00:00:00.000Z'),'a stamped action wins');
-  assert.equal(at(old),Date.parse('2026-10-01T00:00:00.000Z'),'an unstamped session reads by its start, not by agent output written later');
-  assert.ok(at(used)>at(old));
-  const fresh={key:'k',identities:['primary:k'],name:'n',at:0,title:'n',primary:{key:'k',epoch:1}} as unknown as SessionRow;
-  assert.equal(operatorTime(fresh,undefined,777),777,'an open session with no file yet counts as now');
+test('Recents use retained creation and messages without output or current-time fallbacks',()=>{
+  const row={key:'saved',name:'x',at:999999,title:'x',saved:{id:'i',path:'/s/file.jsonl',revision:'r',project:'/p',title:'x',createdAt:'2026-10-01T00:00:00.000Z',modifiedAt:'2026-10-24T09:00:00.000Z',size:1}} as SessionRow;
+  assert.equal(operatorTime(row),Date.parse('2026-10-01T00:00:00.000Z'));
+  assert.ok(row.saved);row.saved.lastUserAt='2026-10-20T00:00:00.000Z';assert.equal(operatorTime(row),Date.parse('2026-10-20T00:00:00.000Z'));
+  row.saved.lastAnswerAt='2026-10-21T00:00:00.000Z';assert.equal(operatorTime(row),Date.parse('2026-10-21T00:00:00.000Z'));
+  const fresh={key:'k',name:'n',at:0,title:'n',primary:{key:'k',epoch:1}} as SessionRow;
+  assert.equal(operatorTime(fresh),0);assert.equal(operatorTime(fresh),0);
 });
 
 test('Recents group by day and each session row shows one status dot while the toggle flags other sessions that need the operator',async()=>{
   const day=new Date('2026-10-24T15:00:00').getTime();
   assert.equal(recentGroup(day,day+1000),'Today');assert.equal(recentGroup(day-86_400_000,day),'Yesterday');assert.equal(recentGroup(day-3*86_400_000,day),'Previous 7 days');assert.equal(recentGroup(day-30*86_400_000,day),'Older');assert.equal(recentGroup(0,day),'Older');
-  const running=primaryFixture({epoch:23900,key:'run',activity:'running',sessionName:'Running one'}),idle=primaryFixture({epoch:23901,key:'idle',activity:'idle',sessionName:'Idle one'});
+  const running=primaryFixture({epoch:23900,key:'run',activity:'running',sessionName:'Running one'}),idle=primaryFixture({epoch:23901,key:'idle',activity:'idle',sessionName:'Idle one',hasMessages:true});
   await arrive({workspace:{id:'row-dots',revision:1,primaryKey:'run'},primaries:[running,idle],roster:[]});await settle();
   const dots=byId('recent-sessions').querySelectorAll('.sidebar-content-row').map(row=>({title:row.querySelector('.row-title')?.textContent,status:row.querySelector('.session-dot')?.dataset.status,hidden:row.querySelector('.session-dot')?.hidden}));
   assert.deepEqual(dots.find(item=>item.title==='Running one'),{title:'Running one',status:'running',hidden:false});
@@ -424,11 +464,7 @@ test('Recents group by day and each session row shows one status dot while the t
   assert.ok(byId('recent-sessions').querySelectorAll('.sidebar-group').length>=1);
 });
 
-test('Recents sort by the later of the browser action and the last user message in the file',()=>{
-  const row=(path:string,lastUserAt?:string)=>({key:path,identities:[`path:${path}`],name:'x',at:0,title:'x',saved:{id:'i',path,revision:'r',project:'/p',title:'x',modifiedAt:'2026-10-24T09:00:00.000Z',size:1,...lastUserAt?{lastUserAt}:{}}}) as unknown as SessionRow;
-  const typedElsewhere=row('/s/2026-10-01T00-00-00-000Z_a.jsonl','2026-10-23T00:00:00.000Z'),stampedHere=row('/s/2026-10-02T00-00-00-000Z_b.jsonl');
-  const stamps=new Map([['path:/s/2026-10-02T00-00-00-000Z_b.jsonl',Date.parse('2026-10-22T00:00:00.000Z')],['path:/s/2026-10-01T00-00-00-000Z_a.jsonl',Date.parse('2026-10-21T00:00:00.000Z')]]);
-  const at=(item:SessionRow)=>operatorTime(item,ids=>ids.map(id=>stamps.get(id)).find(value=>value!==undefined));
-  assert.equal(at(typedElsewhere),Date.parse('2026-10-23T00:00:00.000Z'),'a message typed in a terminal outranks an older browser stamp');
-  assert.equal(at(stampedHere),Date.parse('2026-10-22T00:00:00.000Z'),'the browser stamp stands without a file time');
+test('Recents use the latest retained primary or saved-file message',()=>{
+  const row={key:'k',name:'x',at:0,title:'x',primary:primaryFixture({createdAt:10,lastUserAt:30,lastAnswerAt:40}),saved:{id:'i',path:'/s/f.jsonl',revision:'r',project:'/p',title:'x',modifiedAt:'2026-10-24T09:00:00.000Z',lastUserAt:'2026-10-23T00:00:00.000Z',size:1}} as SessionRow;
+  assert.equal(operatorTime(row),Date.parse('2026-10-23T00:00:00.000Z'));
 });

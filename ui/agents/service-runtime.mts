@@ -83,7 +83,7 @@ export class AgentService {
     this.#stateDir = options.stateDir;
     this.#onImageInput = options.onImageInput ?? (() => {});
     this.#reader = readerFactory({store:options.store,reader:() => options.readerPath ? Promise.resolve(options.readerPath) : retainedReaderPath(options.agentDir)});
-    this.#catalog = catalogFactory({ store: options.store, onChange: options.onRoster });
+    this.#catalog = catalogFactory({ store: options.store, onChange: options.onRoster, readRecents: (identity,conversationIds)=>this.#reader.request('recents',identity,{conversationIds}) });
     this.#observations = new ObservationManager({ getLink: identity => this.#link(identity, true, true), onFrame: options.onFrame ?? (() => {}), onAvailability: options.onAvailability, projectFrame: options.frameProjection });
   }
   roster(options: { cursor?: string; limit?: number } = {}): CatalogPage { return this.#catalog.page(options); }

@@ -10,10 +10,10 @@ const SNAPSHOT_MS = 10_000;
 const LINE_BYTES = 256 * 1024;
 const TITLE_CHARS = 200;
 const utf8 = new TextDecoder('utf-8', {fatal: true, ignoreBOM: true});
-/** `lastUserAt` is the time of the latest user-role message record; delegated and peer messages are separate record types and never count. */
-export type SessionTitle = {title: string; titleSource?: 'name' | 'prompt'; titleState: 'ready' | 'unavailable'; lastUserAt?: string};
+/** Message facts come from native user and assistant records, never custom peer messages or file modification time. */
+export type SessionTitle = {title: string; titleSource?: 'name' | 'prompt'; titleState: 'ready' | 'unavailable'; lastUserAt?: string; lastAnswerAt?: string; hasMessages?: boolean};
 export type SessionFileStamp = Pick<Stats, 'dev' | 'ino' | 'size' | 'mtimeMs' | 'ctimeMs'>;
-type ScanState = {name: string; firstUser: string; seenUser: boolean; nameKnown: boolean; userKnown: boolean; lastUserAt?: number};
+type ScanState = {name: string; firstUser: string; seenUser: boolean; nameKnown: boolean; userKnown: boolean; lastUserAt?: number; lastAnswerAt?: number; hasMessages: boolean};
 const unavailable = (): SessionTitle => ({title: '(title unavailable)', titleState: 'unavailable'});
 export function titleExcerpt(text: string): string {
   return safeText(text.slice(0, TITLE_CHARS * 2), TITLE_CHARS * 4).replace(/\s+/g, ' ').trim().slice(0, TITLE_CHARS);
@@ -155,6 +155,7 @@ function headOf(parts: readonly Buffer[]): Buffer {
   return head.subarray(0, used);
 }
 function skipped(type: string | undefined, state: ScanState, head: MessageHead = {}): void {
+  if (type === 'message' && (head.role === 'user' || head.role === 'assistant')) state.hasMessages = true;
   if (type === undefined || type === 'session_info') state.nameKnown = false;
   if (state.seenUser || (type !== undefined && type !== 'message')) return;
   // A known system, assistant or tool record is not the first user prompt.
@@ -163,17 +164,20 @@ function skipped(type: string | undefined, state: ScanState, head: MessageHead =
   if (type === 'message' && head.role === 'user' && head.text !== undefined) state.firstUser = titleExcerpt(firstTextLine(head.text));
   else state.userKnown = false;
 }
-function noteUserTime(entry: Record<string, unknown>, state: ScanState): void {
+function noteMessage(entry: Record<string, unknown>, state: ScanState): void {
   const message = entry.message;
-  if (entry.type !== 'message' || !message || typeof message !== 'object' || !('role' in message) || message.role !== 'user') return;
+  if (entry.type !== 'message' || !message || typeof message !== 'object' || !('role' in message) || !['user', 'assistant'].includes(String(message.role))) return;
+  state.hasMessages = true;
   const at = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN;
-  if (Number.isFinite(at) && at > (state.lastUserAt ?? -Infinity)) state.lastUserAt = at;
+  if (!Number.isFinite(at)) return;
+  if (message.role === 'user') state.lastUserAt = Math.max(state.lastUserAt ?? -Infinity, at);
+  else if ('stopReason' in message && ['stop', 'length'].includes(String(message.stopReason)) && 'content' in message && Array.isArray(message.content) && message.content.some(part => part?.type === 'text' && typeof part.text === 'string' && part.text.trim()) && !message.content.some(part => part?.type === 'toolCall')) state.lastAnswerAt = Math.max(state.lastAnswerAt ?? -Infinity, at);
 }
 function consume(line: string, bytes: Buffer, state: ScanState): void {
   if (!line.trim()) return;
   const entry = sessionRecord(line);
   if (!entry || typeof entry.type !== 'string') { const peek = new TypePeek(); peek.feed(bytes); skipped(peek.type(), state); return; }
-  noteUserTime(entry, state);
+  noteMessage(entry, state);
   // The latest public session_info record supplies the name, including clears.
   if (entry.type === 'session_info') {
     if (entry.name != null && typeof entry.name !== 'string') { state.nameKnown = false; return; }
@@ -248,6 +252,12 @@ function validStart(before: Stats, size: number, captured?: SessionFileStamp): b
   if (!before.isFile() || before.size < size) return false;
   return !captured || captured.size === size && sameFilePrefix(captured, before);
 }
+function scanResult(state:ScanState):SessionTitle {
+  const facts={hasMessages:state.hasMessages,...(state.lastUserAt===undefined?{}:{lastUserAt:new Date(state.lastUserAt).toISOString()}),...(state.lastAnswerAt===undefined?{}:{lastAnswerAt:new Date(state.lastAnswerAt).toISOString()})};
+  if(!state.nameKnown||!state.name&&!state.userKnown)return {...unavailable(),...facts};
+  const title=state.name||state.firstUser;
+  return title?{title,titleSource:state.name?'name':'prompt',titleState:'ready',...facts}:{...unavailable(),...facts};
+}
 export async function scanSessionTitle(path: string, size: number, captured?: SessionFileStamp): Promise<SessionTitle> {
   if (!Number.isSafeInteger(size) || size < 0 || size > SNAPSHOT_BYTES) return unavailable();
   const deadline = performance.now() + SNAPSHOT_MS;
@@ -255,13 +265,10 @@ export async function scanSessionTitle(path: string, size: number, captured?: Se
   try {
     const before = await file.stat();
     if (!validStart(before, size, captured)) return unavailable();
-    const state: ScanState = {name: '', firstUser: '', seenUser: false, nameKnown: true, userKnown: true};
+    const state: ScanState = {name: '', firstUser: '', seenUser: false, nameKnown: true, userKnown: true, hasMessages: false};
     if (!await readSnapshot(file, size, state, deadline)) return unavailable();
     const after = await file.stat();
     if (!sameFilePrefix(before, after) || !sameFilePrefix(after, await stat(path)) || performance.now() >= deadline) return unavailable();
-    if (!state.nameKnown || !state.name && !state.userKnown) return unavailable();
-    const title = state.name || state.firstUser;
-    const lastUserAt = state.lastUserAt === undefined ? {} : {lastUserAt: new Date(state.lastUserAt).toISOString()};
-    return title ? {title, titleSource: state.name ? 'name' : 'prompt', titleState: 'ready', ...lastUserAt} : unavailable();
+    return scanResult(state);
   } finally { await file.close(); }
 }

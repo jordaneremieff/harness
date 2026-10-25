@@ -43,8 +43,8 @@ import { includedText } from './composer-attachments.ts';
 import {writeReloadState,readReloadState,deleteReloadState} from './reload-storage.ts';
 import { WorkbenchStatus } from './workbench-status.ts';
 import { VersionStatus } from './version-status.ts';
-import {SessionSidebar,humanSessionTitle,primaryIdentities,type RowStatus,type SessionRow} from './sidebar-useful.ts';
-import {OperatorActivity, startedAtFromPath} from './operator-activity.ts';
+import {SessionSidebar,humanSessionTitle,primaryIdentities,operatorConversation,operatorTime,type RowStatus,type SessionRow} from './sidebar-useful.ts';
+import {startedAtFromPath} from './operator-activity.ts';
 import {NavigationViews, type NavigationView} from './navigation-view.ts';
 import { HealthStatus } from './health-status.ts';
 import { ReleaseNotice, loadedRelease, readReleaseHealth, type ReleaseReloadState, type ReleaseIdentity } from './release-notice.ts';
@@ -102,17 +102,13 @@ const composingFields = new Set<EventTarget>();
 let controlStatus = '';
 let controlStatusWorkspace: string | undefined;
 export let drawerOpen = false;
-/** The operator's own latest action on each session, kept in this browser. */
-const operatorActivity = new OperatorActivity();
 /** Sending to an archived session brings it back to Recents. */
 function restoreIfArchived(identities:readonly string[]):void {
   const metadata=sessionSidebar.metadataFor(identities);
   if(metadata?.archived&&metadata.canRestore)void changeSessionMetadata(metadata,'restore').catch(()=>{});
 }
-function stampOperator(target: Target): void {
+function restoreSubmittedSession(target: Target): void {
   restoreIfArchived(target.kind==='primary'?primaryIdentities(state.primaries.get(target.key)??{key:target.key} as PrimaryView):[`agent:${target.identity}`]);
-  if (target.kind === 'primary') { const primary = state.primaries.get(target.key); operatorActivity.stamp(primary ? primaryIdentities(primary) : [`primary:${target.key}`]); }
-  else operatorActivity.stamp([`agent:${target.identity}`]);
 }
 let drawerReturnFocus:HTMLElement|undefined;
 export const navigationViews = new NavigationViews();
@@ -353,7 +349,7 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
   if (target.kind === 'agent') root.insertBefore(createHistoryNote(add), region);
   const controller = {workspaceId, target: {...target}, instanceId, root, nodes, elements, sessionBar, liveStrip, abort: new AbortController(), historyAbort: new AbortController(), cursor: null, before: null, loading: false, preparing: false, passive: true, historyReady: false, historyBoundaryLoaded: false, initialized: false, showThinking: false} as ConversationController;
   wireSettingPickers(controller);
-  controller.composer = new Composer(elements, {workingFile:stage=>composerWorkingFile(controller,stage),recallItems:()=>recallItems(inputEchoes.entries(controller.workspaceId,controller.target,(()=>{const conversation=state.conversations.get(targetIdentity(controller.target));return conversation?conversationBlocks(conversation):[];})())),fileSearch:(query,signal)=>searchWorkingFiles(controller,query,signal),fileStage:(path,signal,present,stage)=>stageMentionedFile(controller,path,signal,present,stage),changed:()=>{devInteractionRevision++;},draftStatusChanged:()=>releaseNotice.refresh(),captured: submission=>{const conversation=state.conversations.get(targetIdentity(controller.target));inputEchoes.capture(workspaceId,submission,conversation?conversationBlocks(conversation):[]);renderController(controller);},failed:(id,uncertain)=>{inputEchoes.failed(id,uncertain);renderController(controller);},prepareInput: () => !controller.passive, imageState: refreshComposerImages, imageInput: captured => composerImageInput(controller, captured), recovery: () => recovery.open(), layoutHeight: () => stableViews().height(elements.root), enterSends: () => matchMedia('(any-hover: hover) and (any-pointer: fine)').matches, timing: (start, end) => {if (controller.workspaceId === state.workspace?.id && !elements.root.closest('[hidden],[inert]')) diagnostics.measure('editor-echo', start, end);}, submitted: result => {stampOperator(controller.target);inputEchoes.settle(result);showOperation(result, workspaceId);renderController(controller);}, unknownCommand: (text, literal) => target.kind === 'primary' && sameTarget(primaryTarget(), target) ? actions.unknown(text, literal) : false,
+  controller.composer = new Composer(elements, {workingFile:stage=>composerWorkingFile(controller,stage),recallItems:()=>recallItems(inputEchoes.entries(controller.workspaceId,controller.target,(()=>{const conversation=state.conversations.get(targetIdentity(controller.target));return conversation?conversationBlocks(conversation):[];})())),fileSearch:(query,signal)=>searchWorkingFiles(controller,query,signal),fileStage:(path,signal,present,stage)=>stageMentionedFile(controller,path,signal,present,stage),changed:()=>{devInteractionRevision++;},draftStatusChanged:()=>releaseNotice.refresh(),captured: submission=>{const conversation=state.conversations.get(targetIdentity(controller.target));inputEchoes.capture(workspaceId,submission,conversation?conversationBlocks(conversation):[]);renderController(controller);},failed:(id,uncertain)=>{inputEchoes.failed(id,uncertain);renderController(controller);},prepareInput: () => !controller.passive, imageState: refreshComposerImages, imageInput: captured => composerImageInput(controller, captured), recovery: () => recovery.open(), layoutHeight: () => stableViews().height(elements.root), enterSends: () => matchMedia('(any-hover: hover) and (any-pointer: fine)').matches, timing: (start, end) => {if (controller.workspaceId === state.workspace?.id && !elements.root.closest('[hidden],[inert]')) diagnostics.measure('editor-echo', start, end);}, submitted: result => {restoreSubmittedSession(controller.target);inputEchoes.settle(result);showOperation(result, workspaceId);renderController(controller);}, unknownCommand: (text, literal) => target.kind === 'primary' && sameTarget(primaryTarget(), target) ? actions.unknown(text, literal) : false,
     ...(target.kind === 'primary' ? {commands: () => actions.commandOptions(), moreCommands: (captured: Target) => actions.continueCommands(captured)} : {}),
     ...agentCommandHooks(controller),
     retained: (workspace, captured) => { if (workspace !== state.workspace?.id) return; if (captured.kind === 'agent') renderMessageResume(captured.identity); tabStrip.render();sessionSidebar.refreshNames(); }});
@@ -364,7 +360,7 @@ function conversationController(target: Target, workspaceId = state.workspace?.i
     image: part => imageUrl(part, controller.target, controller.workspaceId),preview: (part, url, invoker) => openImagePreview(modal, part, url, invoker),result:(identity,selector)=>inspectAgent(identity,'result',selector)});
   bindControllerReadingIntent(controller);
   earlier.addEventListener('click', () => { void loadControllerHistory(controller, true); });
-  stop.addEventListener('click', () => { stampOperator(controller.target); void stopController(controller); });
+  stop.addEventListener('click', () => { void stopController(controller); });
   root.addEventListener('pointerdown', focusViewPane); root.addEventListener('focusin', focusViewPane);
   elements.editor.addEventListener('focus', () => { footerController = controller; renderWorkbenchStatus(); });
   bindControllerInput(controller);
@@ -484,7 +480,7 @@ const references = new ReferenceResolver(resolveReference, destination => { void
   root: () => fileRoot.loading ? undefined : fileRoot.selection?.root ?? undefined,
   navigate: destination => { void navigateFileReference(destination).catch(showError); },
 },loadedDraftReference);
-const actions: Actions = new Actions({showDetails:target=>showConversationDetails(target),newSession: project => picker.newSession(project ?? projectPath()),threadPosts:threadPostActions,copyLastAnswer:copyLastAnswerAction,receivedResults:receivedResultActions,failedSteps:failedStepActions,ownMessages:ownMessageActions,loadedMessages:loadedMessageActions,readSession:saved=>openSessionRead({saved}),hasConvertibleSession:()=>!!(sessionReader.saved??activeSessionReader()?.saved),convertSession:()=>{const item=sessionReader.saved??activeSessionReader()?.saved;if(item)picker.convertSaved(item);},desk:()=>openDesk(),closeDesk:()=>dismissDesk(),messageBox:goToMessageBox,deskOpen:()=>!!deskPane,nextUnread:openNextUnread,hasUnread:()=>!!nextUnreadNotice(),handover: () => handover.open(), snapshot: currentSnapshot, primary, modelChanged: renderAvailability, namingPrimary: () => { const selected = primary(); return selected?.lifecycle === 'ready' ? selected : [...state.primaries.values()].find(item => item.lifecycle === 'ready'); }, modelNamesChanged: renderAllComposerSettings, get composer() { return primaryComposer(); }, commandsChanged: () => {const target = primaryTarget(); if (target && state.workspace) controllers.get(controllerKey(state.workspace.id, target))?.composer.commandsChanged();}, modal, selection, reload: reloadSelection, result: showOperation, rosterRefresh: refreshRoster, filesRefresh: refreshFiles, goToFile: openFileNavigation, hasTranscript: () => !!focusedTranscript(), find: () => captureFind(), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, sidebarShown: () => !byId('sidebar').hidden, view: (tools, expand) => focusedTranscript()?.expandLoaded(tools, expand), selectPrimary, agentCaption: identity => {return presentationCaptions().get(identity);}, agentStatus: row => presentation({kind: 'agent', identity: row.identity}).activity, agentPresentation:row=>presentation({kind:'agent',identity:row.identity}), conversationFacts: identity => agentFacts(agentRow(identity), state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame), copyAgent: () => { void copy(selectedAgent() ?? '', agentNode('view-notice')); }, inspectAgent,resultLookup:()=>{const target=layoutTarget(currentLayout(),primaryTarget());if(target)conversationController(target).inspection?.open('result');},
+const actions: Actions = new Actions({showDetails:target=>showConversationDetails(target),newSession: project => picker.newSession(project ?? projectPath()),threadPosts:threadPostActions,copyLastAnswer:copyLastAnswerAction,receivedResults:receivedResultActions,failedSteps:failedStepActions,ownMessages:ownMessageActions,loadedMessages:loadedMessageActions,readSession:saved=>openSessionRead({saved}),hasConvertibleSession:()=>!!(sessionReader.saved??activeSessionReader()?.saved),convertSession:()=>{const item=sessionReader.saved??activeSessionReader()?.saved;if(item)picker.convertSaved(item);},desk:()=>openDesk(),closeDesk:()=>dismissDesk(),messageBox:goToMessageBox,deskOpen:()=>!!deskPane,nextUnread:openNextUnread,hasUnread:()=>!!nextUnreadNotice(),handover: () => handover.open(), snapshot: currentSnapshot, primary, modelChanged: renderAvailability, namingPrimary: () => { const selected = primary(); return selected?.lifecycle === 'ready' ? selected : [...state.primaries.values()].find(item => item.lifecycle === 'ready'); }, modelNamesChanged: renderAllComposerSettings, get composer() { return primaryComposer(); }, commandsChanged: () => {const target = primaryTarget(); if (target && state.workspace) controllers.get(controllerKey(state.workspace.id, target))?.composer.commandsChanged();}, modal, selection, reload: reloadSelection, result: showOperation, rosterRefresh: refreshRoster, openAgents: () => showNavigationView('agents'), filesRefresh: refreshFiles, goToFile: openFileNavigation, hasTranscript: () => !!focusedTranscript(), find: () => captureFind(), recovery: () => recovery.open(), primaryEntries: () => primary() ? primaryBlocks(state, primary()?.key ?? '') : [], agents: () => state.rosterOrder.flatMap(identity => { const row = agentRow(identity); return row ? [row] : []; }), selectedAgent: () => { const identity = selectedAgent(); return identity ? agentRow(identity) ?? {identity, storageId: '', cwd: '', availability: 'stored'} : undefined; }, selectAgent: row => { void selectAgent(row).catch(showError); }, notices, sidebar: toggleSidebar, sidebarShown: () => !byId('sidebar').hidden, view: (tools, expand) => focusedTranscript()?.expandLoaded(tools, expand), selectPrimary, agentCaption: identity => {return presentationCaptions().get(identity);}, agentStatus: row => presentation({kind: 'agent', identity: row.identity}).activity, agentPresentation:row=>presentation({kind:'agent',identity:row.identity}), conversationFacts: identity => agentFacts(agentRow(identity), state.conversations.get(targetIdentity({kind: 'agent', identity}))?.frame), copyAgent: () => { void copy(selectedAgent() ?? '', agentNode('view-notice')); }, inspectAgent,resultLookup:()=>{const target=layoutTarget(currentLayout(),primaryTarget());if(target)conversationController(target).inspection?.open('result');},
   tabs: {close: () => { const tab = activeTab(currentLayout()); if (tab) closeConversationTab(tabKey(tab)); }, switch: direction => applyLayout(switchTab(currentLayout(), direction)), layout: currentLayout, reopen: {available: () => closedTabs.some(item => item.workspace === state.workspace?.id), run: () => reopenClosedTab(), choices: closedTabChoices, runKey: reopenClosedTab}},
 });
 const fileBrowse = new FileBrowseState();
@@ -3233,7 +3229,6 @@ function engageSession(source:SessionReadSource,replaceKey?:string):boolean {
   const ready=view.primary?.lifecycle==='ready',closed=view.word==='closed'&&!!view.project&&!!view.path;
   if(!ready&&!closed)return false;
   modal.close(false);leaveOverlayDesk();closeToolFile(false);drawerOpen=false;
-  operatorActivity.stamp([...source.saved?[`path:${source.saved.path}`,`id:${source.saved.id}`]:[],...'primary' in source&&source.primary?primaryIdentities(source.primary):[]]);
   resumeTabSource(source,()=>showPrimaryTab(replaceKey));return true;
 }
 function openSessionRead(source:SessionReadSource):void {
@@ -3258,7 +3253,7 @@ function closeSessionRead():void {
   const row=[...byId('recent-sessions').querySelectorAll<HTMLButtonElement>('button')].find(node=>node.dataset.sessionKey===key);(row??byId('session-open')).focus({preventScroll:true});
 }
 const communicationNotices = new CommunicationNoticeShelf();
-const sessionSidebar = new SessionSidebar({agents:liveAgentRows,archived:()=>openArchivedSessions(),status:sessionRowStatus,attention:kind=>{const toggle=byId('sidebar-show');if(kind)toggle.dataset.attention=kind;else delete toggle.dataset.attention;},operatorAt:identities=>operatorActivity.at(identities),older:()=>workspaceEntry.count&&state.workspace?{count:workspaceEntry.count,run:()=>{if(state.workspace)applyLayout(workspaceEntry.reopen(state.workspace,primaryTarget()));}}:undefined,openTabs:recentConversationRows,menu:openSessionRowMenu,updated:()=>{paintedCaptionReferenceKey='';refreshCaptionConsumers();renderConversationHeader(toolFileLayout());primaryNavigation(primary());},primaries:()=>[...state.primaries.values()],selected:()=>{const target=layoutTarget(currentLayout(),primaryTarget());return target?.kind==='primary'?target.key:undefined;},
+const sessionSidebar = new SessionSidebar({agents:liveAgentRows,archived:()=>openArchivedSessions(),status:sessionRowStatus,attention:kind=>{const toggle=byId('sidebar-show');if(kind)toggle.dataset.attention=kind;else delete toggle.dataset.attention;},older:()=>workspaceEntry.count&&state.workspace?{count:workspaceEntry.count,run:()=>{if(state.workspace)applyLayout(workspaceEntry.reopen(state.workspace,primaryTarget()));}}:undefined,openTabs:recentConversationRows,menu:openSessionRowMenu,updated:()=>{paintedCaptionReferenceKey='';refreshCaptionConsumers();renderConversationHeader(toolFileLayout());primaryNavigation(primary());},primaries:()=>[...state.primaries.values()],selected:()=>{const target=layoutTarget(currentLayout(),primaryTarget());return target?.kind==='primary'?target.key:undefined;},
   openPrimary:(primary,saved)=>openSessionRead({primary,saved}),
   openSaved:saved=>openSessionRead({saved})});
 const sessionActionsPending=new Set<string>();
@@ -3397,20 +3392,20 @@ function targetHumanTitle(target:Target):string {
 }
 function recentTabRow(tab:ConversationTab,pane:PaneLeaf,layout:ConversationLayout):SessionRow {
   const key=tabKey(tab),name=humanTabTitle(tab),target=controllerTarget(tab),agent=tab.kind==='agent'?state.roster.get(tab.identity):undefined;
-  return {key,identities:recentTabIdentities(tab),name,at:agent?.modifiedAt??0,title:name,...(agent?{project:agent.cwd,activity:agent.state?`Last observed: ${agent.state.replaceAll('_',' ')}`:undefined}:{}),...(target?{target}:{}),...(tab.kind==='session'?{saved:sessionTabSaved(tab)}:{}),selected:pane.id===layout.focusedPane&&key===pane.active,activate:()=>activateConversationTab(pane.id,key)};
+  return {key,identities:recentTabIdentities(tab),name,at:0,title:name,...(agent?.recents?{activityTimes:agent.recents}:{}),...(agent?{project:agent.cwd,activity:agent.state?`Last observed: ${agent.state.replaceAll('_',' ')}`:undefined}:{}),...(target?{target}:{}),...(tab.kind==='session'?{saved:sessionTabSaved(tab)}:{}),selected:pane.id===layout.focusedPane&&key===pane.active,activate:()=>activateConversationTab(pane.id,key)};
 }
 function recentConversationRows(): import('./sidebar-useful.ts').SessionRow[] {
   const layout=currentLayout();
-  return paneLeaves(layout.root).flatMap(pane=>pane.tabs.filter(tab=>tab.kind!=='file').map(tab=>recentTabRow(tab,pane,layout)));
+  return paneLeaves(layout.root).flatMap(pane=>pane.tabs.filter(tab=>tab.kind!=='file'&&(tab.kind!=='agent'||operatorConversation(state.roster.get(tab.identity)))).map(tab=>recentTabRow(tab,pane,layout)));
 }
-const LIVE_AGENT_ROWS = 12;
-/** Durable conversations that are live join Recents beside Primary sessions, and opening one gives it a composer. */
+const RECENT_NATIVE_ROWS = 12;
+/** Confirmed operator conversations use retained activity regardless of writer availability. */
 function liveAgentRows(): SessionRow[] {
-  return [...state.roster.values()].filter(row => row.availability === 'live').sort((a, b) => b.modifiedAt - a.modifiedAt).slice(0, LIVE_AGENT_ROWS).map(row => {
+  return [...state.roster.values()].filter(row => operatorConversation(row)&&row.recents?.hasMessages===true).map(row => {
     const target: Target = {kind: 'agent', identity: row.identity}, name = humanTabTitle({kind: 'agent', identity: row.identity});
-    return {key: `agent:${row.identity}`, identities: [`agent:${row.identity}`], name, at: row.modifiedAt, title: name, project: row.cwd, target,
+    return {key: `agent:${row.identity}`, identities: [`agent:${row.identity}`], name, at: 0, title: name, project: row.cwd, target, activityTimes:row.recents,
       ...(row.state ? {activity: `Last observed: ${row.state.replaceAll('_', ' ')}`} : {}), activate: () => {void navigateReference({target}).catch(showError);}};
-  });
+  }).sort((a,b)=>operatorTime(b)-operatorTime(a)||(a.key<b.key?-1:1)).slice(0,RECENT_NATIVE_ROWS);
 }
 function rowRunning(primary: PrimaryView | undefined, target: Target): boolean {
   if (primary) return primary.activity !== 'idle' && primary.activity !== 'unknown';
@@ -4489,15 +4484,6 @@ async function entryAgents(value: Bootstrap, read: SnapshotReader): Promise<Agen
   }
   return [...rows.values()];
 }
-async function entryPrimary(value: Bootstrap, read: SnapshotReader, signal?: AbortSignal): Promise<Bootstrap> {
-  const current=value.primaries.find(item=>item.key === value.workspace.primaryKey);
-  if(current && !['stopped','failed'].includes(current.lifecycle))return value;
-  const query=`workspace=${encodeURIComponent(value.workspace.id)}`;
-  const reserved=await read<{operationId:string}>(`/api/operations?${query}`,'POST',{kind:'primary.open'});
-  const result=await request<{operation:OperationView}>(`/api/primaries?${query}`,'POST',{cwd:current?.cwd ?? value.launchCwd,...(current?.sessionFile ? {sessionFile:current.sessionFile} : {}),select:false},reserved.operationId,signal);
-  if(result.operation.error)throw new Error(result.operation.error.message);
-  return read<Bootstrap>(`/api/bootstrap?${query}`);
-}
 async function readBootstrap(workspace:string|null,read:SnapshotReader,signal?:AbortSignal):Promise<Bootstrap|undefined> {
   let data:Bootstrap;
   try{data=await read<Bootstrap>(`/api/bootstrap${workspace!==null?`?workspace=${encodeURIComponent(workspace)}`:''}`);}
@@ -4520,7 +4506,6 @@ async function bootstrap(signal?: AbortSignal): Promise<void> {
   }
   let data=await readBootstrap(workspace,read,signal);if(!data)return bootstrap(signal);
   if (releasePage) {data={...data,workspace:{...releasePage.workspace,revision:data.workspace.revision}};workspaceEntry.restoreReload(releasePage.entry);}
-  try {if(!releasePage)data=await entryPrimary(data,read,signal);} catch(error) {data=await read<Bootstrap>(`/api/bootstrap?workspace=${encodeURIComponent(data.workspace.id)}`);window.reportClientError?.('Client',error);showError(error);}
   if(!releasePage && (freshEntryRecovery||page.searchParams.get('restore') !== 'workspace'))workspaceEntry.begin(data.workspace,await entryAgents(data,read));
   data=await hydrateWorkspace(data,read);signal?.throwIfAborted();
   snapshot = data; launchCwd = data.launchCwd; state = replaceSnapshot(state, data); updateDiagnostics();freshEntryRecovery=false;

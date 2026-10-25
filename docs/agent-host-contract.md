@@ -1099,10 +1099,47 @@ It does not authorize a live writer or a consumer restart.
 ## Independent retained reads
 
 `extensions/agent/retained-read.ts` exposes `retained-read/1.0.0` outside a Pi
-session. It reads retained snapshot, inspection, and collaboration evidence
+session. It reads retained snapshot, inspection, collaboration, and Recents evidence
 without starting or resuming an agent. It is a separate executable, not a
 `durable-runner.ts` mode, Unix service, or live-host fallback. Consumers use this process contract rather
 than importing Agent implementation modules or parsing private SQLite shapes.
+
+### Recents facts
+
+`--contract recents` advertises only `operations.recents`, with request and
+response identity `recents/1.0.0`, inside `retained-read/1.0.0`. Each request
+supplies that exact operation identity and the reader's current Durable version.
+`method:"recents"` accepts a bare storage UUID and
+`params:{conversationIds:[1,2,...]}`. The batch contains unique positive integer
+IDs, bounded by `RECENTS_CONVERSATION_LIMIT` in `extensions/agent/recents.ts`.
+The result is `{items:[{conversationId,activity}]}` with exactly one item per
+requested conversation. Each activity contains
+`{creator,createdAt?,lastUserAt?,lastAnswerAt?,hasMessages?}`. Times are finite
+epoch milliseconds. `creator` is `operator`, `agent`, or `unknown`.
+
+The public pure `creationActor()` export owns retained root classification.
+Consumers do not interpret Agent caller identifiers. The current reader copies
+one retained snapshot per storage batch and classifies native conversation
+metadata before reading message activity. An explicit native task owner means
+`agent`. Otherwise, a fork marker and operator correction admission with the
+same request ID and child ID establish `operator`. A later operator input with
+a different request ID does not reclassify a plain fork or model-created child.
+Children never inherit root classification. Plain command creation, plain
+forks and ownerless roots without defining actor evidence remain `unknown`.
+No migration, guessed origin or additional origin store exists.
+
+Only confirmed operator conversations receive message-activity scans. Those
+scans exclude inherited entries from other conversations. Operator message
+time uses explicit retained admission origin. Answer time uses completed
+assistant text, not tool-call rounds or status. Unknown creation time stays
+absent rather than inheriting the root's time. A header-only conversation has
+`hasMessages:false`. Reading changes neither execution nor retained source data.
+
+The UI enriches the same cached rows asynchronously. Publication revisions
+trigger one bounded batch of published conversation IDs per storage, with
+concurrency and frequency bounded in `ui/agents/catalog.mts`. A storage has no
+parallel batch of its own. Sidebar paints do not start reads. A failed or
+pending read leaves the ordinary-session list and cached Agent rows available.
 
 ### Invocation and descriptor
 
@@ -1111,11 +1148,13 @@ Invoke without a shell:
 ```text
 node <agent-extension-directory>/retained-read.ts --contract
 node <agent-extension-directory>/retained-read.ts --contract collaboration
+node <agent-extension-directory>/retained-read.ts --contract recents
 node <agent-extension-directory>/retained-read.ts
 ```
 
-The backend chooses the trusted executable path; browser input and retained
-`packageDir` never select it. The reader uses its own installed package graph.
+The backend chooses its current packaged reader independently of the target's
+execution source and starter. Existing hosts keep their execution source and
+package tuple. Browser input and retained `packageDir` never select the reader. The reader uses its own installed package graph.
 It does not load the retained target's package directory, cwd resources,
 settings, credentials, models, or extensions.
 

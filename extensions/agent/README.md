@@ -331,16 +331,35 @@ the separate one-shot executable, not the terminal attachment or writer runner:
 ```sh
 node extensions/agent/retained-read.ts --contract
 node extensions/agent/retained-read.ts --contract collaboration
+node extensions/agent/retained-read.ts --contract recents
 node extensions/agent/retained-read.ts < /example/retained-request.json
 ```
 
-The second command uses a synthetic request-file path. Supply one UTF-8 JSON
+The final command uses a synthetic request-file path. Supply one UTF-8 JSON
 request followed by EOF. The
 [public retained-read contract](../../docs/agent-host-contract.md#independent-retained-reads)
 defines the exact `retained-read/1.0.0` envelope, operation agreement, parameter
 bounds, responses, and error codes. Its
 [request fixture](../../docs/agent-host-contract.md#fixture-retained-read-request)
 uses a synthetic sessions root and exact child identity.
+
+The explicit `--contract recents` selector exposes batched per-conversation
+creation and activity facts through `recents/1.0.0`. A bare storage target and
+`params:{conversationIds:[1,2,...]}` select published conversation IDs. One
+retained snapshot serves the whole bounded batch. The response is
+`{items:[{conversationId,activity}]}`.
+
+The public pure `creationActor()` export in `recents.ts` owns root classification.
+The reader classifies an explicit native task owner as agent creation. A fork
+marker joined to an operator correction admission by request ID and child ID
+establishes operator creation. A later operator input alone changes no creator.
+Missing plain-fork or command creation origin stays unknown. Children never
+inherit root origin or creation time. Message scans run only for confirmed
+operator conversations and exclude inherited entries from other conversations.
+The UI uses its current packaged reader, not a live host's sealed execution
+source. Existing hosts remain unchanged. The same cached rows receive bounded,
+asynchronous enrichment. Paints do not start reads. Reader failure or pending
+reads do not block ordinary sessions.
 
 The unchanged default `--contract` advertises only snapshot and inspect, with
 versions from this reader's installed packages. The explicit

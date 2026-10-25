@@ -1,3 +1,4 @@
+import {creationActor} from '../../extensions/agent/recents.ts';
 import type { CatalogRecord, ClaimObservation, Publication } from "./catalog-record.mts";
 export type CatalogRow = Publication["rows"][number] & { claim: ClaimObservation["state"]; publishedAt?: string; handle?: string; role?: string; attention?: {kind: "provider-blocked" | "task-blocked" | "failed-turn"; reason?: "missing_task" | "task_too_old" | "migration_failed" | "restart_limit"} };
 /** Last native activity defines order; identity breaks equal-time ties without locale dependence. */
@@ -26,6 +27,8 @@ export interface CatalogPage {
 export interface CatalogEntry {
 	record: CatalogRecord;
 	rows: CatalogRow[];
+  recentsRevision?: string;
+  recentsReadAt?: number;
 }
 export interface CatalogUpdate {
 	entries: CatalogEntry[];
@@ -46,6 +49,11 @@ function publishedAttention(publication: Publication): Map<string, NonNullable<P
 	for (const hint of publication.attention?.rows ?? []) attention.set(hint.identity, attention.has(hint.identity) ? null : hint);
 	return attention;
 }
+function applyRootRecents(row:CatalogRow,record:CatalogRecord):void {if(row.id===record.storageId)row.recents=rootRecents(record);}
+function rootRecents(record:CatalogRecord):NonNullable<CatalogRow['recents']> {
+  const at=Date.parse(record.createdAt);
+  return {creator:creationActor(record),...(Number.isFinite(at)?{createdAt:at}:{})};
+}
 export function retainedRows(record: CatalogRecord, claim: ClaimObservation): CatalogRow[] {
 	const owner = claim.state === "live" ? "here" : claim.state === "unknown" ? "unavailable" : "unknown";
 	const publication = record.view;
@@ -58,6 +66,7 @@ export function retainedRows(record: CatalogRecord, claim: ClaimObservation): Ca
 			{
 				id: record.storageId,
 				storageId: record.storageId,
+        recents:rootRecents(record),
 				cwd: record.cwd,
 				modifiedAt: Number.isFinite(Date.parse(record.createdAt)) ? Date.parse(record.createdAt) : 0,
 				owner,
@@ -78,6 +87,7 @@ export function retainedRows(record: CatalogRecord, claim: ClaimObservation): Ca
 	const attention = publishedAttention(publication);
 	return publication.rows.map((source) => {
 		const row: CatalogRow = { ...source, owner, ownerLabel: label, claim: claim.state, publishedAt: stamp };
+    applyRootRecents(row,record);
 		// Only an unambiguous public hint for this exact conversation supplies profile facts.
 		delete row.handle; delete row.role; delete row.attention;
 		const need = attention.get(source.id);
