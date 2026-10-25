@@ -68,12 +68,12 @@ export const settings = {
 			choices: ["green", "amber", "red"],
 			default: "amber",
 			description:
-				"Lowest score band that sends findings to the agent when the score is reliable; this band and every worse band notify. Hard findings always notify.",
+				"Lowest reliable score band that requests reply repair, regardless of finding count. This band and worse bands notify. Hard findings always notify. Spelling is excluded.",
 		},
 		minScoredFindings: {
 			type: "integer",
 			env: "PI_DRAFT_MIN_SCORED_FINDINGS",
-			description: "Scored findings that send findings to the agent even when the score is not reliable.",
+			description: "Minimum scored findings that request reply repair only when the score is not reliable. Spelling is excluded.",
 			default: 2,
 			min: 1,
 			max: 50,

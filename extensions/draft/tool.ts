@@ -22,10 +22,11 @@ export const parameters = Type.Object({
 	kind: Type.Union([Type.Literal("prose"), Type.Literal("commit"), Type.Literal("diff")]),
 });
 export type DraftInput = { text?: string; path?: string; kind: "prose" | "commit" | "diff" };
-export const promptSnippet = "Check final human-facing text for slop tells; report findings without rewriting.";
+export const promptSnippet = "Check final text that leaves the chat for slop tells; report findings without rewriting.";
 export const promptGuidelines = [
-	"Run draft once on the final version of text a person will read, after facts, evidence and position are settled: chat replies longer than three sentences, status reports, questions to other people, saved documents, tickets, commit messages and pull request descriptions.",
-	"Do not run draft on notes, intermediate drafts or work in progress. After a repair, run it once more. A clean result does not show that the text is good.",
+	"Run draft once after facts, evidence and position are settled, only on text the automatic reply check does not see: documents, commit messages, pull request descriptions, tickets and other text that leaves the chat.",
+	"Do not call draft on chat replies or status reports. The reply check checks final chat replies automatically. After a reply-check repair, send the repaired reply without another draft call.",
+	"Do not run draft on notes, intermediate drafts or work in progress. A clean result does not show that the text is good.",
 ];
 export const description =
 	"Find slop tells in final prose, commit messages or unified diffs. Supply text or a saved file path and its kind. Return hard and scored findings with line numbers, score, band and calibration. Never rewrite text.";

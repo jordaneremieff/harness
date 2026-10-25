@@ -16,21 +16,31 @@ and inputs over the character limit in `tool.ts`. It reports findings with
 line numbers. Diff findings refer to added lines and carry new-file paths.
 
 The ordinary tool's `promptSnippet` and `promptGuidelines` tell the model to
-check final human-facing text after facts, evidence and position are settled.
-They exclude notes, intermediate drafts and work in progress. After a repair,
-the model checks once more. The native form supplies the same guidance through
-a prompt section.
+check only final text the automatic reply check does not see, after facts,
+evidence and position are settled. This includes documents, commit messages,
+pull request descriptions, tickets and other text that leaves the chat.
+Agents do not call the tool on chat replies or status reports. The reply check
+checks final chat replies automatically. After a reply-check repair, the agent
+sends the repaired reply without another draft call. Notes, intermediate drafts
+and work in progress stay outside the tool's scope. The native form supplies
+the same guidance through a prompt section.
 
 ## Reply check
 
 The ordinary `agent_before_settle` hook and native `GenerationTask.onYield`
 hook analyse the final reply in process. Neither starts a subprocess.
+The native check also covers replies to agents. Pi's public hook and default
+input entries do not distinguish operator input from agent input.
 
 The hook requests one repair when:
 
 - At least one hard finding exists.
-- Scored findings reach `minScoredFindings`, including short replies without a reliable band.
 - A reliable score reaches `notifyBand` or worse, in green, amber, red order.
+- Scored findings reach `minScoredFindings` only when the score is not reliable.
+
+A reliable green score does not request repair at the default amber threshold,
+regardless of finding count. Reply analysis excludes spelling rules before
+detection and scoring. Explicit tool calls still report spelling findings.
 
 The message lists hard findings first, then scored findings, up to
 `maxFindings`. It includes the score and calibration. It asks the model to
@@ -95,8 +105,8 @@ overrides. These settings control the reply hook, not explicit tool calls.
 |---|---|---|---|---|---|
 | enabled | `PI_DRAFT_ENABLED` | boolean | true | none | Run the prose meter on final replies. |
 | maxChars | `PI_DRAFT_MAX_CHARS` | integer | 20000 | min 100; max 200000 | Longest reply prefix sent to the meter, in characters. |
-| notifyBand | `PI_DRAFT_NOTIFY_BAND` | enum | "amber" | green, amber, red | Lowest score band that sends findings to the agent when the score is reliable; this band and every worse band notify. Hard findings always notify. |
-| minScoredFindings | `PI_DRAFT_MIN_SCORED_FINDINGS` | integer | 2 | min 1; max 50 | Scored findings that send findings to the agent even when the score is not reliable. |
+| notifyBand | `PI_DRAFT_NOTIFY_BAND` | enum | "amber" | green, amber, red | Lowest reliable score band that requests reply repair, regardless of finding count. This band and worse bands notify. Hard findings always notify. Spelling is excluded. |
+| minScoredFindings | `PI_DRAFT_MIN_SCORED_FINDINGS` | integer | 2 | min 1; max 50 | Minimum scored findings that request reply repair only when the score is not reliable. Spelling is excluded. |
 | maxFindings | `PI_DRAFT_MAX_FINDINGS` | integer | 12 | min 1; max 50 | Most findings listed in one message to the agent. |
 <!-- harness:settings:end -->
 

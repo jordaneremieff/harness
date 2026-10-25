@@ -5,13 +5,15 @@ description: >
   scorer or another model instead of a human reader, and the surface tells that
   come with it (dashes as connectors, bold-label bullets, stock buzzwords,
   coined compounds, unexplained codes, meta-openers, signposts, closing offers).
-  Use on final human-facing text after facts, evidence and position are settled:
-  chat replies longer than three sentences, status reports, questions to other
-  people, documents, tickets, commit messages and pull request descriptions.
-  Also use when a draft is flagged as slop, AI-sounding or too long and needs
-  repair. Do not use on notes, intermediate drafts, work in progress, code
-  review, factual research or text that must stay verbatim. The draft tool
-  reports findings and never rewrites text.
+  Use on final text that leaves the chat after facts, evidence and position
+  are settled: documents, tickets, commit messages, pull request descriptions
+  and questions for other people outside the chat. Also use when such text is
+  flagged as slop, AI-sounding or too long and needs repair. Do not call the
+  draft tool on chat replies or status reports; the reply check checks final
+  chat replies automatically. After a reply-check repair, send the repaired
+  reply without another draft call. Do not use on notes, intermediate drafts,
+  work in progress, code review, factual research or text that must stay
+  verbatim. The draft tool reports findings and never rewrites text.
 compatibility: >
   Requires the draft extension and its draft tool in Pi. The optional shell CLI
   needs Node.js 22.19 or newer. Repository instructions govern local reporting
@@ -28,10 +30,12 @@ A clean meter result is a floor, never acceptance.
 
 Use the `draft` tool once after facts, evidence and position are settled. Pass
 exactly one of `text` or a saved file `path`, with `kind` set to `prose`,
-`commit`, or `diff`. Check chat replies longer than three sentences, status
-reports, questions to other people, documents, tickets, commit messages and pull
-request descriptions. Do not check notes, intermediate drafts or work in
-progress. After a repair, check the final text once more.
+`commit`, or `diff`. Check only text the automatic reply check does not see:
+documents, tickets, commit messages, pull request descriptions and other text
+that leaves the chat. Do not call the tool on chat replies or status reports.
+The reply check checks final chat replies automatically. After a reply-check
+repair, send the repaired reply without another draft call. Do not check notes,
+intermediate drafts or work in progress.
 
 The tool never rewrites text. Shell workflows outside Pi retain the CLI for
 commit messages and unified diffs; see [README.md](README.md#shell-use).
@@ -63,10 +67,10 @@ For the reasoning behind these rules, consult the Pillars entries `principle-une
 
 1. Write the position first. Before drafting, state in one sentence what the reader should believe, decide or do, and what evidence supports it. If you cannot, you have no position yet. Get one: read the source, run the check, or ask.
 2. Draft for a reader who arrives cold. Lead with the answer, the state or the decision. Define each project term at first use, or use an ordinary word. Include only what changes the reader's understanding or next move.
-3. Run the meter (section 1).
+3. For text that leaves the chat, run the meter once (section 1). For chat replies and status reports, let the automatic reply check run.
 4. Repair above the form. Follow `references/repair.md`. Rebuild each flagged unit from its claim and evidence, or delete it. Never swap one tell for its neighbour. A dash becoming a semicolon, `pivotal` becoming `crucial` and three items becoming four are all the same tell. Never narrate the repair.
 5. Diff your claims against the earlier draft. A claim that got weaker or lost its owner needs a stated reason.
-6. Run the meter again. Hard findings must be zero. Then reread the text once for position: could a sentence be wrong, and would the reader act on it?
+6. Remove every hard finding. Reread the text once for position: could a sentence be wrong, and would the reader act on it? After a reply-check repair, send the repaired reply without another draft call.
 
 ## 4. By surface
 

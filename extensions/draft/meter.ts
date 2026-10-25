@@ -19,9 +19,10 @@ export function measure(text: string, kind: Kind | "diff" = "md", target?: strin
 	});
 }
 
+/** Reply checks exclude spelling before detection and scoring; explicit checks retain it. */
 export function runMeter(text: string): { ok: true; report: Report } | { ok: false; reason: "failed"; detail: string } {
 	try {
-		return { ok: true, report: measure(text) };
+		return { ok: true, report: analyzeText(makeAnalyzer(loadRules(), { spelling: "off" }), text, "md") };
 	} catch (error) {
 		return { ok: false, reason: "failed", detail: error instanceof Error ? error.message : "analysis error" };
 	}

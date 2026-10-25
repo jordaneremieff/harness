@@ -6,7 +6,8 @@ import { afterEach, beforeEach, test } from "node:test";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
 import { checkReply, needsRepair, repairText, unavailableText } from "./check.ts";
 import draft from "./index.ts";
-import { measure } from "./meter.ts";
+import { measure, runMeter } from "./meter.ts";
+import { filler } from "./scripts/test-kit.mts";
 import { settings } from "./settings.ts";
 
 let dir = "";
@@ -62,6 +63,7 @@ test("hard findings request one hidden repair with real line numbers and calibra
 	assert.equal(result?.entries?.[0]?.display, false);
 	assert.match(result?.entries?.[0]?.content ?? "", /punctuation\.em-dash line 2/u);
 	assert.match(result?.entries?.[0]?.content ?? "", /Calibration: .*cohort/u);
+	assert.match(result?.entries?.[0]?.content ?? "", /without another draft tool call/u);
 });
 test("a reply that only names lexical findings does not request a repair", async () => {
 	const result = await load().settle('The report flags “pivotal” and “robust” as stock vocabulary. Both findings occur on line 2.');
@@ -91,11 +93,15 @@ test("one automatic repair per run, then the guard resets", async () => {
 	await h.start();
 	assert.equal((await h.settle("Another — dash"))?.continue, true);
 });
-test("notification bands, finding counts and omitted findings retain their triggers", () => {
+test("reliable bands ignore listed and omitted counts while short replies retain count triggers", () => {
 	const clean = measure("The parser rejects an empty file.");
 	const scored = { ...clean, hard: [], scored: [], omitted: { ...clean.omitted, scored: 2 } };
 	assert.equal(needsRepair(scored, "amber", 2), true);
 	assert.equal(needsRepair(scored, "amber", 3), false);
+	const green = { ...scored, score: { ...scored.score, reliable: true, band: "green" as const } };
+	assert.equal(needsRepair(green, "amber", 2), false);
+	assert.equal(needsRepair(green, "red", 2), false);
+	assert.equal(needsRepair(green, "green", 2), true);
 	assert.equal(needsRepair({ ...clean, score: { ...clean.score, reliable: true, band: "amber" } }, "amber", 2), true);
 	assert.equal(needsRepair({ ...clean, score: { ...clean.score, reliable: true, band: "amber" } }, "red", 2), false);
 	assert.equal(needsRepair({ ...clean, omitted: { ...clean.omitted, hard: 1 } }, "red", 50), true);
@@ -103,6 +109,34 @@ test("notification bands, finding counts and omitted findings retain their trigg
 	const message = repairText(report, 1);
 	assert.ok(message.indexOf(report.hard[0]?.rule ?? "") >= 0);
 	assert.match(message, /more not listed/u);
+});
+test("reliable green replies with several lexical findings settle without repair", async () => {
+	const text = `${filler(200)} A pivotal design is robust.`;
+	const report = measure(text);
+	assert.equal(report.score.reliable, true);
+	assert.equal(report.score.band, "green");
+	assert.ok(report.scored.length >= 2);
+	assert.equal(await load().settle(text), undefined);
+});
+test("reply analysis excludes spelling from counts, omitted findings and score", async () => {
+	for (const text of ["The color and behavior changed.", `${filler(100)} The color and behavior changed.`, "color ".repeat(60)]) {
+		const explicit = measure(text);
+		assert.ok(explicit.scored.some((finding) => finding.rule.startsWith("spelling.")));
+		const reply = runMeter(text);
+		assert.equal(reply.ok, true);
+		if (!reply.ok) continue;
+		assert.ok(reply.report.scored.every((finding) => !finding.rule.startsWith("spelling.")));
+		assert.deepEqual(reply.report.score, explicit.score);
+		assert.equal(reply.report.omitted.scored, 0);
+		assert.deepEqual(reply.report.omitted.byRule, {});
+		assert.equal(await load().settle(text), undefined);
+	}
+});
+test("spelling does not add to the count for a short lexical reply", async () => {
+	assert.equal(await load().settle("The pivotal design uses color."), undefined);
+	const result = await load().settle("The pivotal design is robust and uses color.");
+	assert.equal(result?.continue, true);
+	assert.doesNotMatch(result?.entries?.[0]?.content ?? "", /spelling\./u);
 });
 test("the hook measures only the configured prefix", async () => {
 	process.env.PI_DRAFT_MAX_CHARS = "100";

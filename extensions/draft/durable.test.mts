@@ -29,6 +29,8 @@ import {
 	draftDurableContribution,
 } from "./durable.ts";
 import draft from "./index.ts";
+import { filler } from "./scripts/test-kit.mts";
+import { promptGuidelines } from "./tool.ts";
 
 const context = BACKGROUND_CONTEXT;
 async function start(t: { after(fn: () => Promise<void>): void }, checker = checkReply) {
@@ -122,6 +124,14 @@ test("a clean answer adds no findings", { timeout: 30000 }, async (t) => {
 	await h.run(fauxAssistantMessage("The parser rejects an empty file."));
 	assert.equal(count(await h.transcript(), "prose meter"), 0);
 });
+test("native replies skip repair for spelling and reliable green findings", { timeout: 30000 }, async (t) => {
+	const h = await start(t);
+	await h.run(fauxAssistantMessage("The color and behavior changed."));
+	await h.run(fauxAssistantMessage("The pivotal design uses color."));
+	await h.run(fauxAssistantMessage(`${filler(200)} A pivotal design is robust.`));
+	assert.equal(h.faux.state.callCount, 3);
+	assert.equal(count(await h.transcript(), "The prose meter found problems"), 0);
+});
 test("an unavailable meter adds one notice until analysis succeeds", { timeout: 30000 }, async (t) => {
 	let unavailable = true;
 	const h = await start(t, async () =>
@@ -159,6 +169,7 @@ test("native composition supplies the skill, tool, saved file access and usage g
 			const system = getCurrentSystemPrompt(request.messages) ?? "";
 			assert.match(system, /<name>draft<\/name>/u);
 			assert.match(system, /after facts, evidence and position are settled/u);
+			for (const guideline of promptGuidelines) assert.ok(system.includes(guideline));
 			return fauxAssistantMessage(fauxToolCall("draft", { path: "note.md", kind: "prose" }), { stopReason: "toolUse" });
 		},
 		(request) => {

@@ -26,15 +26,14 @@ function oneLine(text: string, limit = MAX_MESSAGE): string {
 }
 
 /**
- * True when the report has a hard finding, at least `minScoredFindings` scored
- * findings, or a reliable score at or above the notify band. Short replies have
- * no reliable band, so the scored-finding count is the trigger for them.
+ * Hard findings always trigger repair. A reliable score uses only the notify
+ * band; the scored-finding count applies only when no reliable band exists.
  */
 export function needsRepair(report: MeterReport, notifyBand: Band, minScoredFindings: number): boolean {
 	if (report.hard.length > 0 || report.omitted.hard > 0) return true;
-	if (report.scored.length + report.omitted.scored >= minScoredFindings) return true;
 	const { band, reliable } = report.score;
-	return reliable && band !== null && BAND_RANK[band] >= BAND_RANK[notifyBand];
+	if (reliable && band !== null) return BAND_RANK[band] >= BAND_RANK[notifyBand];
+	return report.scored.length + report.omitted.scored >= minScoredFindings;
 }
 
 function listFinding(finding: Finding): string {
@@ -63,7 +62,7 @@ export function repairText(report: MeterReport, maxFindings: number): string {
 	}
 	lines.push(score);
 	lines.push(
-		"Repair the reply above the token level: change sentence structure and claim order, not single words or symbols. Keep every claim. Do not swap one tell for its neighbour. Do not narrate the repair. Send the repaired reply as your answer.",
+		"Repair the reply above the token level: change sentence structure and claim order, not single words or symbols. Keep every claim. Do not swap one tell for its neighbour. Do not narrate the repair. Send the repaired reply as your answer without another draft tool call.",
 	);
 	return lines.join("\n");
 }

@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { checkDraft, MAX_TOOL_CHARS } from "./tool.ts";
+import { checkDraft, MAX_TOOL_CHARS, promptGuidelines, promptSnippet } from "./tool.ts";
 
 test("the tool reports hard and scored findings with locations, score and calibration", async () => {
 	const result = await checkDraft(
@@ -17,6 +17,19 @@ test("the tool reports hard and scored findings with locations, score and calibr
 	assert.match(result.text, /Scored findings/u);
 	assert.match(result.text, /Score:.*band/u);
 	assert.match(result.text, /Calibration:/u);
+});
+test("explicit checks retain spelling findings", async () => {
+	const result = await checkDraft({ text: "The color and behavior changed.", kind: "prose" }, process.cwd());
+	assert.ok(result.report.scored.some((finding) => finding.rule === "spelling.our"));
+	assert.match(result.text, /spelling\.our/u);
+});
+test("tool guidance leaves chat to the reply check and prohibits repeat calls after reply repair", () => {
+	const guidance = [promptSnippet, ...promptGuidelines].join("\n");
+	assert.match(guidance, /only on text the automatic reply check does not see/u);
+	assert.match(guidance, /documents, commit messages, pull request descriptions, tickets/u);
+	assert.match(guidance, /Do not call draft on chat replies or status reports/u);
+	assert.match(guidance, /After a reply-check repair, send the repaired reply without another draft call/u);
+	assert.doesNotMatch(guidance, /longer than three sentences|run it once more/u);
 });
 test("a careful reply has no findings", async () => {
 	const result = await checkDraft(
