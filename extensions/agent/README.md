@@ -2164,8 +2164,7 @@ retained manager contract also changes because its primary callback carries the
 transport source identity. Host operation identities remain unchanged.
 The Endpoint identity remains separate from both retained interfaces.
 
-Before replacing active host source or dependencies, drain admitted work under
-an agreed restart plan. Restart Pi windows to load the changed manager and
+Restart Pi windows to load the changed manager and
 start fresh Durable hosts for changed runtime modules and native contributions.
 A primary `/reload` does not replace the retained manager or running host
 modules. Do not mutate live stores as part of a source upgrade; store migration
