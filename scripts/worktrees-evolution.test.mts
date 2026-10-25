@@ -112,6 +112,36 @@ test("publication review accepts a deleted path without treating unavailable con
 	assert.equal(JSON.parse(result.stdout).ok, true);
 });
 
+test("publication scans larger histories without dropping signatures or its finite byte bound", (t) => {
+	const f = fixture(t);
+	const blob = `${"x".repeat(999_999)}\n`;
+	for (let index = 0; index < 9; index++) writeFileSync(join(f.tree, `source-${index}.txt`), blob);
+	f.git(["add", "."], f.tree);
+	f.git(["commit", "-q", "-m", "Add source files"], f.tree);
+	const args = ["promote", "demo", "--dry-run", "--no-push", "--json"];
+	let result = f.call(args);
+	assert.equal(result.status, 0, result.stderr || result.stdout);
+	assert.equal(JSON.parse(result.stdout).ok, true);
+
+	const privatePath = ["", "Users", "fixture", "private", "source.ts"].join("/");
+	writeFileSync(join(f.tree, "private.txt"), privatePath);
+	f.git(["add", "."], f.tree);
+	f.git(["commit", "-q", "-m", "Add another source"], f.tree);
+	result = f.call(args);
+	assert.equal(result.status, 1, result.stderr || result.stdout);
+	assert.match(JSON.parse(result.stdout).reason, /personal-path/);
+	f.git(["reset", "--hard", "HEAD^"], f.tree);
+
+	for (let index = 9; index < 68; index++) writeFileSync(join(f.tree, `source-${index}.txt`), blob);
+	f.git(["add", "."], f.tree);
+	f.git(["commit", "-q", "-m", "Add more source files"], f.tree);
+	result = f.call(args);
+	assert.equal(result.status, 1, result.stderr || result.stdout);
+	const report = JSON.parse(result.stdout);
+	assert.equal(report.stage, "hygiene");
+	assert.match(report.reason, /publication scan byte limit/);
+});
+
 test("promotion checks shipped source and commit messages before a dry run or gate override", (t) => {
 	const f = fixture(t);
 	const privatePath = ["", "Users", "fixture", "private", "source.ts"].join("/");

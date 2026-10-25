@@ -1100,7 +1100,7 @@ function publicationBlob(
 	}
 	const length = Number(size.stdout.trim());
 	budget.bytes += length;
-	if (!Number.isSafeInteger(length) || length > 1_000_000 || budget.bytes > 8_000_000) {
+	if (!Number.isSafeInteger(length) || length > 1_000_000 || budget.bytes > 64 * 1024 * 1024) {
 		return `publication scan byte limit at ${commit.sha}:${path}; split the promotion`;
 	}
 	const content = git(repoRoot, ["cat-file", "blob", specifier], {
